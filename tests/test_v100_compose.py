@@ -71,6 +71,14 @@ def test_fifo_uses_only_the_explicit_waiting_budget(compose, tmp_path):
     expected = ["/opt/venv/bin/python", *service["command"], "--max-waiting-input-bytes", "8192"]
     assert actual_argv(service) == expected
     assert service["command"][service["command"].index("--") + 1] == "/models/first shard; literal $(not-a-command).gguf"
+    # Compiler and frontend state stay under the same persistent writable
+    # named volume rather than the image user's read-only HOME.
+    caches = (service["environment"]["TRITON_CACHE_DIR"], service["environment"]["TF_GGUF_ASSETS_DIR"])
+    owners = [mount for mount in service["volumes"] if all(Path(cache).is_relative_to(mount["target"]) for cache in caches)]
+    assert len(owners) == 1
+    assert owners[0]["target"] == "/cache" and owners[0]["type"] == "volume"
+    assert owners[0]["source"] == "tensorfold-v100-cache" and not owners[0].get("read_only", False)
+    assert caches[0] != caches[1] and all(Path(cache).is_absolute() for cache in caches)
 
 
 def test_environment_metacharacters_remain_one_literal_argument(compose, tmp_path):

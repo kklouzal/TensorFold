@@ -246,6 +246,8 @@ docker run --rm --gpus all --ipc host \
   -p "127.0.0.1:$TF_PORT:$TF_PORT" \
   -e PYTHONUNBUFFERED=1 -e TENSORFOLD_NO_UPDATE_CHECK=1 \
   -e TF_GGUF_ASSETS_DIR=/cache/gguf_assets \
+  -e TRITON_CACHE_DIR=/cache/triton \
+  -e TORCH_EXTENSIONS_DIR=/cache/sm70-source-cu1292-torch2141-cccl35-nccl2323 \
   -v "$MODEL_ROOT:/models:ro" -v "$TF_CACHE_DIR:/cache" \
   "$TF_V6_IMAGE" /src/tools/launch_cuda_tp.py --gpus "$TF_RANK_GPUS" -- "${serve_args[@]}"
 ```
@@ -264,6 +266,36 @@ unset for legacy DSpark, which must omit FIFO-only flags. A missing value in a
 new FIFO configuration is still refused by ordinary CLI preflight, without an
 inferred fallback. Detailed retention/API launches use explicit argument arrays
 as described below and in the serving-profile guide.
+
+### Triton/V100 compatibility and persistent caches
+
+Keep the current pinned Triton 3.8 for the validated scalar/FMA partial path.
+Its broad hardware matrix lists CC8.0+, but
+[maintainers distinguish the best-effort pre-Ampere FMA path from MMA-v1 removal](https://github.com/triton-lang/triton/pull/5066).
+Actual V100 real-shape partial checks support that specific path, not every
+Triton kernel or the full SC117 model. Preserve the original fused operation
+contract; the separate-rounding Torch reference is not an equivalent substitute.
+Triton 3.2's older CC7.0 matrix is a deferred alternative needing its own
+compatible dependency/ABI/numerical qualification, not an in-place SDK swap.
+See [the scoped source and operator evidence](../../docs/v100-adaptive-validation.md#sm70-fp32-moe-partial-dispatch).
+
+The candidate launch above binds the dedicated host `TF_CACHE_DIR` to `/cache`.
+Reuse that same host directory across container restarts. The maintained
+Compose profile likewise sets `/cache/triton` and keeps `/cache` in its named
+`tensorfold-v100-cache` volume across container recreation. Ordinary cleanup
+must retain that volume and the host cache directory; do not delete them or
+run `docker compose down --volumes` as routine restart cleanup. Set
+`TRITON_CACHE_DIR=/cache/triton` before any Triton driver/utility import; retain
+its C helpers, PTX/cubin and metadata. The selected source SDK's native C++
+cache remains
+`TORCH_EXTENSIONS_DIR=/cache/sm70-source-cu1292-torch2141-cccl35-nccl2323`, including
+staged source/header/build metadata and native modules. Retain the entire cache
+trees, plus `/cache/gguf_assets`, rather than copying only binaries. Ensure the
+rank UID can write the cache and load its verified shared modules. Do not rely
+on in-image HOME caches or a throwaway container layer, and do not clear or
+replace mapped artifacts while workers run. Framework/compiler/source changes
+require the existing cache-identity checks and fresh qualification; persistence
+is not permission to borrow another stack's evidence.
 
 ### Retention and logical API storage
 

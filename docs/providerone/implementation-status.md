@@ -145,8 +145,20 @@ Torch exposes `_CUuuid` instead of a string/stdlib UUID. A source-only adapter
 now converts only that exact trusted property type before strict canonical
 validation. Existing str/stdlib UUID inputs, duplicate/rank/host/SKU guards and
 the voted preflight remain unchanged. The original failure and separate GPU0
-property diagnosis are retained; installed successor capture/admission and model
-execution remain pending.
+property diagnosis are retained. A later target attempt reached MTP warm-up but
+failed when FP32 MoE slots entered generic Triton and its read-only default cache.
+Triton 3.8's broad hardware matrix starts at CC8.0, but maintainers explicitly
+retain best-effort pre-Ampere FMA support. Actual real-shape FP32 partial checks
+pass the original fused kernel's exact oracle. The original dispatcher and
+arithmetic are retained for a writable-cache-only readiness retry on the same
+application. The separate-rounding Torch reference remains an independent
+comparison, not a numerically equivalent replacement; its isolated probe latency
+was higher, without an integrated model-performance claim. The unselected dispatch
+patch is preserved as read-only evidence and removed from canonical runtime.
+Persist `/cache/triton`, the native CPP cache and their metadata on the host;
+3.2 is deferred as a separately qualified future version profile. No blanket
+3.8 V100 or complete-model claim follows. Normal readiness and full-model
+quality/capacity/performance remain pending. See [dispatch evidence](../v100-adaptive-validation.md#sm70-fp32-moe-partial-dispatch).
 
 These are six required cases, not six qualified implementations. TP flags,
 smaller-world tests, KV placement degrees or manifest metadata do not establish

@@ -159,8 +159,14 @@ batches each recorded 1,458 passes, 37 inherited fixture failures and one option
 skip. See [physical stage admission and limits](docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
 A source correction adapts the pinned Torch `_CUuuid` property only at its
 trusted capture boundary; untrusted rank records retain strict UUID validation.
-The first full-model attempt's pre-weight failure is preserved. A rebuilt
-application and actual admission retry remain required before claiming a fix on target.
+The first full-model attempt's pre-weight failure is preserved. A later attempt
+reached MTP warm-up but stopped at a read-only Triton cache before readiness.
+The original Triton 3.8 scalar/FMA partial is retained after real-shape exact
+oracle checks; the maintainer describes best-effort pre-Ampere support, not a
+blanket V100 guarantee. Its fused rounding differs from the retained separate
+Torch reference. Keep host-backed Triton and native compiler caches across
+restarts; no 3.2 downgrade or runtime arithmetic change is selected. See
+[FP32 warm-up dispatch and limits](docs/v100-adaptive-validation.md#sm70-fp32-moe-partial-dispatch).
 
 The A5 fixture repair restores those 37 inherited cases without changing runtime
 code or removing their assertions. The scoped source and installed batches now

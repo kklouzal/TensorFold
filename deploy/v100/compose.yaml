@@ -22,6 +22,7 @@ services:
       TENSORFOLD_NO_UPDATE_CHECK: "1"
       TENSORFOLD_SM70_PROFILE: "${TF_SM70_PROFILE:-reference}"
       TF_GGUF_ASSETS_DIR: /cache/gguf_assets
+      TRITON_CACHE_DIR: /cache/triton
       # Required explicitly for the new FIFO profile; leave unset for legacy DSpark.
       TF_MAX_WAITING_INPUT_BYTES: "${TF_MAX_WAITING_INPUT_BYTES:-}"
       TF_EXPERT_TENSOR_PARALLEL_SIZE: "${TF_EXPERT_TENSOR_PARALLEL_SIZE:-}"

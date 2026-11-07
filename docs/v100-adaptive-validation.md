@@ -446,8 +446,8 @@ not gain string coercion. String/stdlib UUID forms and ordered/distinct physical
 rank validation remain intact. These source/CPU controls do not establish a
 successful installed successor admission or model load. The original failure
 and probe are retained in the private `sm-v100-sc117-firstload-plan-v1` and
-`sm-v100-uuid-property-probe-v1` packets; a new application artifact and target
-retry remain necessary.
+`sm-v100-uuid-property-probe-v1` packets. A subsequent target attempt reached MTP
+warm-up but still stopped before readiness, as recorded below.
 
 All SM70 TP8 ranks enter the same bounded CPU Store preflight, independently of
 their local canonical/legacy admission choice. Mixed participation refuses
@@ -516,6 +516,82 @@ and current-host CPU Store exercises do not
 qualify the selected x86 ABI, eight actual V100s, the NVLink/P2P/PCIe/NUMA mesh,
 complete model numerics, capacity or throughput. Unmanaged launches retain their
 existing external failure-containment responsibility. Production is unchanged.
+
+### SM70 FP32 MoE partial dispatch
+
+A subsequent SC117 TP8/ETP4 shared-Q8 MTP attempt reached constructor warm-up,
+then failed along `absorb → mtp_compute → layer_forward → moe_block →
+glue.moe_partial`: its intentional FP32 slot storage selected the original
+Triton partial, whose default `/home/ubuntu/.triton` cache was read-only.
+The normal failure trace and operator retirement remain preserved. This is not
+a completed readiness or model-quality result.
+
+The original dispatcher and kernel remain unchanged: Half uses the existing
+family implementation; FP32 uses the original Triton scalar kernel. The
+unselected SM70-to-Torch dispatch candidate is archived as read-only evidence,
+with its checks, and removed from canonical runtime. It would change operation
+boundaries as well as launch count. The existing family reference/native
+selector, its default, FP32 slot/partial storage, ordered TP8 gather, admission,
+context, method and graph policy are unchanged. No Half cast is introduced.
+
+The three-hop MTP trace confirms its input embeddings, HC streams, norms,
+activations, projection/mix storage and attention operands are Half. Their glue
+wrappers already select by those Half owners, including activation/write-back
+operations that consume FP32 branches. Only non-prefill MoE slot storage is
+intentionally FP32, including the method buffer. Existing target-verifier and
+prompt constructors select Half MoE storage. MTP staging bounds the active row
+count to its admitted buffer; the partial writes only that prefix. No additional
+same-path dispatch patch was indicated.
+
+An actual isolated GPU0 probe on installed image `d64f55ea` verified the existing
+reference FP32 partial against an independent ordered oracle at R1/R7,
+D2560/S11. It also executed a tiny generic Triton SM70 dyadic partial exactly
+with a private writable cache and the real bundled CUDA12.9.86 assembler.
+That genuine successful experiment is retained in `sm-v100-f32-moe-probe-v1`
+(gate SHA256 `386b7e3c2d83d0da2bc8bcf0da84149193a85a2d6d5a31da53dab0e9664a512b`).
+The broad [Triton 3.8 hardware matrix](https://github.com/triton-lang/triton/blob/v3.8.0/README.md#compatibility)
+starts at compute capability 8.0; the
+[3.2 matrix](https://github.com/triton-lang/triton/blob/v3.2.0/README.md#compatibility)
+listed 7.0+. However, the official
+[pre-Ampere MMA change and maintainer clarification](https://github.com/triton-lang/triton/pull/5066)
+distinguishes removal of MMA-v1 from the FMA path, which remains maintained
+with best-effort older-platform support and no upstream testing promise.
+The earlier inference that the 3.8 README excludes every SM70 kernel was too
+categorical. This loads/multiply/add/store kernel does not need tensor cores;
+its actual successful compilation/execution must be assessed within that
+specific maintained subset. It does not qualify unrelated dot/MMA kernels or
+the complete model, and it does not justify a full-stack downgrade.
+
+The generated original PTX contains `fma.rn.f32`: its fused rounding differs
+from separate Torch multiplication/addition on sensitive inputs. Extended actual
+R1/R7, D2560/S11 finite, cancellation, shared-slot and inactive-row cases pass
+each implementation's own exact oracle. The original fused route is retained
+for the unchanged-application cache-only retry. This preserves its numerical
+contract and avoids an unnecessary application or full-stack rebuild. The
+separate-rounding Torch path remains a valid reference, but is not equivalent:
+for the sensitive case, fused gives `-2**-46` and separate operations give zero.
+No tolerance is invented to hide that difference. The extended receipt is
+`sm-v100-f32-moe-extended-v1/extended-f32-actual-gate-v1.json`, SHA256
+`3568e218036c8daa67d8196ed16883774bdb1d7c6ecbfa4e047eb6f8c6b72653`.
+Isolated latency results do not establish an integrated model-performance gain.
+
+Maintained CPU controls retain independent scalar separate-operation and C99
+`fmaf` fused oracles, order-sensitive cancellation and shared-slot cases, and
+inactive-row bit checks. Dispatch controls preserve the original FP32 Triton
+call and existing Half/native/reference roles. New canonical CUDA controls
+exercise both selected operation policies; those new test nodes are unrun here,
+separately from the actual private extended probe. No native-family promotion,
+compiler flag forcing or architecture override is selected. Triton 3.2 remains
+an optional future version profile, requiring its own compatible stack and
+qualification; it is deferred rather than swapped into the current pinned SDK.
+
+Use an owned host-backed `/cache` for `TRITON_CACHE_DIR=/cache/triton` and the
+selected `TORCH_EXTENSIONS_DIR`, retaining entire trees and compiler/cache
+metadata across restarts. In-image HOME is read-only and is not the cache
+owner. Retire workers before clearing/replacing their loaded compiler artifacts.
+See the [persistent-cache launch contract](../deploy/v100/README.md#tritonv100-compatibility-and-persistent-caches).
+Normal readiness and later model gates remain required. No whole-model quality,
+useful capacity or performance qualification follows from these operator checks.
 
 ## Restored fixture contracts (A5)
 
