@@ -790,6 +790,56 @@ selected final V100 SDK. Access to `sm-v100` is now available; the subsequent
 standalone component campaign below records its own physical evidence. It does
 not execute the native expert operator or promote a serving candidate.
 
+### Installed SM70 SDK and native ETP4 component
+
+On 2026-11-07, the genuine final source build/export from
+`e90caf5879f0eac5566c9d9aae85e4595be51e00` produced immutable AMD64 image
+`sha256:a24a579e3ffd2a1ead0def6b0d68947d94796135c00c946e8440ebe1f47c5015`.
+The installed Torch is `2.14.1+tfcu129sm70`, source
+`04cf2557f315a350e7eea7ab064288def65db75a`, CUDA 12.9/native SM70 and CXX11 ABI 1.
+The genuine wheel SHA256 is
+`d2e7eb3ffb8120544e2d39b7b031e37ba322268cb0d58f54b532a568c2595a86`;
+the protected read-only installed manifest SHA256 is
+`4854c6356624834838cc945ff1c534af8fb0220ad7c018ad673dc9ecdad78484`.
+The installed software audit and both named runtime CPU tests passed, including
+a separate read-only UID1000 run. The earlier interrupted Ninja generation
+remains quarantined and contributes no final-build qualification.
+
+The same installed image then ran
+`tests/cuda/test_sm70_gguf_etp.py` on `sm-v100` GPU0, driver 580.178.04,
+through the normal guarded `gguf_ops` extension loader and protected selected
+headers. There was no editable source overlay or diagnostic loader bypass.
+Actual Ninja 1.13.2 used `-j24`; NVCC 12.9.86/GCC 13.3 built native SM70 code
+with the recorded production flags. All **49 cases passed**, with zero skips,
+failures or errors, in 4.061 pytest seconds after preparation. They cover the
+component's packed arithmetic, FP16/FP32 outputs, route mapping/publication,
+foreign and invalid routes, graph replay, scratch contracts and D2560 shapes.
+This is component correctness evidence, not model throughput.
+
+Normal extension preparation took 47.745 seconds. The pre-fixture cumulative
+host cgroup memory peak was 3,445,723,136 bytes, including Torch/CUDA discovery,
+header auditing, compilation, linking and loading. It is neither GPU memory nor
+a phase-exclusive peak, minimum RAM requirement or worst-case bound. The
+container had a 24-CPU quota, 256 GiB memory limit and no swap; runtime OMP was 1.
+Source/header identities and protected inputs matched before/after; the process
+audit passed, GPU health counters were unchanged and all owned consumers retired
+with exit 0/PID 0 and no remaining compute applications.
+
+Private receipts under `providerone-alignment-20261106` retain raw outputs,
+binary/SASS/tool/header identities and retirement evidence:
+
+| Receipt | SHA256 |
+| --- | --- |
+| `sm-v100-final-sdk-plan-v1/canonical-e90-installed-sdk-cpu-pass-gate-v1.json` | `68e75f62241163ba20f68ac251ce9761b1c7c105b5ab1c3fc44bad2a032a9268` |
+| `sm-v100-native-etp4-plan-v1/native-etp49-actual-pass-gate-v1.json` | `d99d670b2496877f667a663694d03d4cf167f33289a2d808892ecaa9f7529fac` |
+
+The native gate binds 30 direct artifacts, independently rehashed during review.
+`release_qualified` remains false. Distributed ETP4, SC117/MTP/DFlash and media
+quality, complete model/state allocations, full-window capacity and matched
+end-to-end performance remain separate gates. Synthetic success does not close
+vendor issue6111901 applicability. The reference serving path stays selected.
+Later source commits do not retroactively change this image's identity.
+
 ### Physical standalone component campaign
 
 On 2026-11-07, the maintained primitive/library/reconvergence probes were staged,

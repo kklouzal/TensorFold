@@ -314,6 +314,15 @@ test tmpfs and the unchanged-source retry are retained in
 
 ### Executed fresh bootstrap
 
+The following records the earlier bootstrap checkpoint. A subsequent genuine
+final source build/export from `e90caf58` produced the protected installed SM70
+SDK image `sha256:a24a579e3ffd2a1ead0def6b0d68947d94796135c00c946e8440ebe1f47c5015`.
+Its installed software audit and two runtime CPU tests passed; the normal
+guarded native ETP4 loader then passed 49 component cases on `sm-v100` GPU0.
+The earlier interrupted-tool generation remains quarantined. This advances
+software/component evidence, not full-model or compiler-issue qualification.
+See [the exact final artifacts and remaining gates](../../docs/v100-adaptive-validation.md#installed-sm70-sdk-and-native-etp4-component).
+
 The fresh producer was then exercised with driver commit
 `9d65b43df4fe1667ae38a96382801858f108e450` on native AMD64. All four source
 closures passed their pinned byte inventories. NCCL 2.32.3 compiled successfully;
@@ -362,8 +371,8 @@ metadata; the principal receipt identities are:
 | `executor-postcommit-cpu-readback-gate-v1.json` | `2063724d2dbd7cc6b82a5f20c08e09a699255f791314fa3dcfe7ccd7b73d5c93` |
 | `executor-diagnostic-compile-gate-v2.json` | `ffb2d4820f742c7f69fa22f54025d4ad45987b9af7dd691aeb1c306a5dd570fe` |
 
-These are native build, source and CPU-load results. The active bootstrap
-marker remains present and no final release Torch wheel was produced. They do
+These were native build, source and CPU-load results. At that checkpoint the bootstrap
+marker remained present and no final release Torch wheel had been produced. They do
 not establish final installed-SDK audit, compiler-issue disposition, V100 kernel
 correctness, model quality, capacity or performance. Retained compiler/layout,
 link-hygiene and pinned-tool deprecation advisories are not suppressed; later

@@ -67,6 +67,18 @@ or performance gate is inferred from these repaired CPU controls. See
 
 ## Required SC117 parallelism matrix
 
+The latest installed software/component checkpoint uses source `e90caf58` and
+immutable image `sha256:a24a579e3ffd2a1ead0def6b0d68947d94796135c00c946e8440ebe1f47c5015`.
+The genuine final SM70 source build/export, protected installed software audit
+and two runtime CPU tests passed. Normal guarded `gguf_ops` JIT compilation on
+`sm-v100` GPU0 then passed 49 native ETP4 component cases with zero skips,
+failures or errors. This advances the earlier offline-only evidence below;
+it does not qualify distributed ETP4 or a complete SC117 profile. The subsequent
+`104e6987` media producer change is a separate source checkpoint and is not
+installed in that immutable image. Full-model quality, worst-rank capacity,
+matched performance, media and compiler issue6111901 gates remain pending.
+See [exact artifacts and scope](../v100-adaptive-validation.md#installed-sm70-sdk-and-native-etp4-component).
+
 Current delivery priority is the one-server TP8/ETP4 profile, ahead of further
 PP2 implementation. The existing reference path remains selected. An explicit
 owned-routed native component now separates ETP4 width160 from shared-expert

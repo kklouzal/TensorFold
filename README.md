@@ -20,8 +20,17 @@ skip; this does not establish native CUDA execution. See
 Standalone primitive, library and synthetic reconvergence probes have now passed
 40 single-device runs across all eight V100s on `sm-v100`, plus 12 Compute
 Sanitizer runs on GPU0. These 52 jobs establish the recorded component-fixture
-results; the native expert operator, multi-rank NCCL, model and final SDK gates
-remain separate. See [physical component evidence](docs/v100-adaptive-validation.md#physical-standalone-component-campaign).
+results; native expert, multi-rank NCCL, model and installed SDK evidence have
+separate identities. See [physical component evidence](docs/v100-adaptive-validation.md#physical-standalone-component-campaign).
+
+The genuine source-built SM70 SDK is now installed in immutable image
+`sha256:a24a579e3ffd2a1ead0def6b0d68947d94796135c00c946e8440ebe1f47c5015`
+from `e90caf58`. Its protected software audit and two runtime CPU tests passed.
+On GPU0 of `sm-v100`, the normal guarded native ETP4 loader then compiled and
+passed all 49 component cases, with no skips. These results qualify the recorded
+software/component boundaries; full-model TP8/ETP4 quality, capacity, performance
+and compiler issue6111901 disposition remain open. The reference serving path
+remains selected. See [installed SDK and native execution](docs/v100-adaptive-validation.md#installed-sm70-sdk-and-native-etp4-component).
 
 The corrected four/eight-rank SM70 collective fixture passed both physical GPU
 cases with no skips on `sm-v100`, following 42 passing CPU status-cohort controls.
@@ -74,9 +83,10 @@ subtests, with two selected-SDK-receipt skips. The actual native editable
 framework build, full five-path Spin checks, exact source-commit finalization,
 postcommit metadata rebuild and CPU-load readback have also passed. The TP8/ETP4
 native operator separately passed offline SM70 compilation and diagnostic
-loading with unchanged inputs; no GPU kernel was invoked. Final
-release-wheel/export, installed-SDK audit and full-model V100 qualification
-remain pending; the bootstrap export barrier is still active. The owner has
+loading with unchanged inputs; no GPU kernel was invoked in that earlier run.
+A subsequent genuine final source build/export and installed-SDK software audit
+passed; the earlier interrupted-tool generation remains quarantined. Full-model
+V100 qualification remains pending. The owner has
 directly authorized the necessary pinned builds and tests; permission is no
 longer the blocker for that work. See the
 [source-build evidence](deploy/v100/source-foundation.md#executed-fresh-bootstrap).
