@@ -271,6 +271,20 @@ and compiled configuration also report that commit.
 A subsequent containerized CPU readback passed in 8.84 seconds with CXX11 ABI
 enabled, the exact CPU result `[2, 3, 4]`, and CUDA uninitialized throughout.
 Mapped library hashes matched the owned NCCL library and pinned C++ runtime.
+The canonical TP8/ETP4 `gguf_ops.cpp` and `gguf_ops.cu` also passed a separate
+offline diagnostic compile/load in 112.79 seconds through public
+`torch.utils.cpp_extension.load`, using the runtime math flags and explicit
+SM70 code generation. The extension exported `experts_owned` and contained an
+SM70 cubin. Complete source/header/tool identities matched before and after,
+and all 58 common and 11 required mapped library identities matched the CPU
+gate. CUDA remained uninitialized and no kernel was invoked. Normal TensorFold
+device checks and runtime loaders were unchanged. Standalone `ldd` could not
+resolve five Torch libraries in its separate process; the actual
+Torch-preloaded Python process resolved every required identity. This
+diagnostic extension is not a self-contained deployment artifact. The earlier
+manifest/Ninja identity refusal and its measured-environment correction remain
+preserved alongside the accepted attempt.
+
 The private audit root retains the full logs and immutable earlier build
 metadata; the principal receipt identities are:
 
@@ -280,6 +294,7 @@ metadata; the principal receipt identities are:
 | `executor-finalize-gate-v1.json` | `46d89789d97d886b80abb348dfee909919b5a6bf6038d140a00f9b95374b129c` |
 | `executor-framework-postcommit-gate-v1.json` | `fdd7a17a8beee67c75edae47bcaf3d0f9fa07ee25d953eaca9b65a8ea8977108` |
 | `executor-postcommit-cpu-readback-gate-v1.json` | `2063724d2dbd7cc6b82a5f20c08e09a699255f791314fa3dcfe7ccd7b73d5c93` |
+| `executor-diagnostic-compile-gate-v2.json` | `ffb2d4820f742c7f69fa22f54025d4ad45987b9af7dd691aeb1c306a5dd570fe` |
 
 These are native build, source and CPU-load results. The active bootstrap
 marker remains present and no final release Torch wheel was produced. They do

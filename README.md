@@ -39,7 +39,9 @@ required lint and commit finalization. Final SDK capture rejects bootstrap-only
 outputs. Native AMD64 checks passed 112 producer/input/install tests and 17
 subtests, with two selected-SDK-receipt skips. The actual native editable
 framework build, full five-path Spin checks, exact source-commit finalization,
-postcommit metadata rebuild and CPU-load readback have also passed. Final
+postcommit metadata rebuild and CPU-load readback have also passed. The TP8/ETP4
+native operator separately passed offline SM70 compilation and diagnostic
+loading with unchanged inputs; no GPU kernel was invoked. Final
 release-wheel/export, installed-SDK audit and V100 qualification remain pending;
 the bootstrap export barrier is still active. See the
 [source-build evidence](deploy/v100/source-foundation.md#executed-fresh-bootstrap).
