@@ -246,6 +246,48 @@ build, lint or final SDK audit. Initial executable-fixture failures on a `noexec
 test tmpfs and the unchanged-source retry are retained in
 `native-sdk-bootstrap-v1` under the private audit root.
 
+### Executed fresh bootstrap
+
+The fresh producer was then exercised with driver commit
+`9d65b43df4fe1667ae38a96382801858f108e450` on native AMD64. All four source
+closures passed their pinned byte inventories. NCCL 2.32.3 compiled successfully;
+its library contains 56 SM70 objects and 20 upstream specialized SM100 objects.
+The genuine editable framework build completed
+in 8,742.35 seconds. Full Spin checks on all five patched paths passed before
+the producer created the exact `04cf2557f315a350e7eea7ab064288def65db75a`
+commit and verified all four final source inventories.
+
+Spin regenerates Python version metadata before that commit, so those files
+alone do not establish a postcommit native build. While the release-wheel
+instruction remains unresolved, rerunning the same permitted
+`framework-bootstrap` stage under the finalized commit refreshes genuine CMake,
+Git and CUDA metadata without clearing the bootstrap export barrier. This
+postcommit editable build completed a 17-step incremental graph in 212.49
+seconds. A separate canonical `capture-sources` then refreshed the actual
+generated-input receipt. Both source and installed version metadata report
+`2.14.1+tfcu129sm70`, Git `04cf2557` and CUDA 12.9; the generated native macros
+and compiled configuration also report that commit.
+
+A subsequent containerized CPU readback passed in 8.84 seconds with CXX11 ABI
+enabled, the exact CPU result `[2, 3, 4]`, and CUDA uninitialized throughout.
+Mapped library hashes matched the owned NCCL library and pinned C++ runtime.
+The private audit root retains the full logs and immutable earlier build
+metadata; the principal receipt identities are:
+
+| Receipt in `native-sdk-bootstrap-v1` | SHA256 |
+| --- | --- |
+| `executor-framework-bootstrap-gate-v1.json` | `616245c1638c78e09173baa63c12f9f9404eeb0ac3af334c2b67286b255b4ff3` |
+| `executor-finalize-gate-v1.json` | `46d89789d97d886b80abb348dfee909919b5a6bf6038d140a00f9b95374b129c` |
+| `executor-framework-postcommit-gate-v1.json` | `fdd7a17a8beee67c75edae47bcaf3d0f9fa07ee25d953eaca9b65a8ea8977108` |
+| `executor-postcommit-cpu-readback-gate-v1.json` | `2063724d2dbd7cc6b82a5f20c08e09a699255f791314fa3dcfe7ccd7b73d5c93` |
+
+These are native build, source and CPU-load results. The active bootstrap
+marker remains present and no final release Torch wheel was produced. They do
+not establish final installed-SDK audit, compiler-issue disposition, V100 kernel
+correctness, model quality, capacity or performance. Retained compiler/layout,
+link-hygiene and pinned-tool deprecation advisories are not suppressed; later
+consumers must preserve the compatible compiler/layout contract.
+
 The initial producer bootstrap used the pinned CUDA image and recorded Ubuntu
 24.04 APT inputs to acquire the tool environment. Its exact added package bytes
 were then frozen in the artifact bundle and the generated builder was rebuilt
