@@ -5,14 +5,14 @@
     "os_name": "posix",
     "platform_machine": "x86_64",
     "platform_python_implementation": "CPython",
-    "platform_release": "7.0.0-31-generic",
+    "platform_release": "7.0.0-43-generic",
     "platform_system": "Linux",
-    "platform_version": "#31-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 04:26:38 UTC 2026",
+    "platform_version": "#43-Ubuntu SMP PREEMPT_DYNAMIC Fri Oct 23 13:25:25 UTC 2026",
     "python_full_version": "3.12.3",
     "python_version": "3.12",
     "sys_platform": "linux"
   },
-  "lock_sha256": "02b4a9d933d26853e92ed6d556b2b441e9b14ee5f6ca4937851828876a0c6c82",
+  "lock_sha256": "41acc01c96cc71b104bdf34fec4c394a49c3799651b6a8b56c68205d94180b51",
   "packages": {
     "annotated-doc": {
       "requires_dist": [],
@@ -476,9 +476,9 @@
     },
     "ninja": {
       "requires_dist": [],
-      "sha256": "fb46acf6b93b8dd0322adc3a4945452a4e774b75b91293bafcc7b7f8e6517dfa",
-      "url": "https://files.pythonhosted.org/packages/ed/de/0e6edf44d6a04dabd0318a519125ed0415ce437ad5a1ec9b9be03d9048cf/ninja-1.13.0-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
-      "version": "1.13.0"
+      "sha256": "65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c",
+      "url": "https://files.pythonhosted.org/packages/6e/53/ebfed7b689c338dd8ebeec9c0730c8d56821292f14e2536e5f3ef1a05744/ninja-1.13.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
+      "version": "1.13.2"
     },
     "numpy": {
       "requires_dist": [],
@@ -847,7 +847,7 @@
       "version": "0.48.0"
     }
   },
-  "resolver_report_sha256": "27ce36d2104914515677624cb5dd46f51891082737e8fbe968b90b6291605ece",
+  "resolver_report_sha256": "a7c316082e8b2c15d99fa9e6d1084b8bf2a6cf29b2ace27bef48fb60dbd09ccf",
   "schema": "tensorfold.v100-source-runtime",
   "version": 1
 }

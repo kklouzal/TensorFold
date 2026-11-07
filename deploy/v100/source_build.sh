@@ -124,6 +124,10 @@ export)
         --dest "$tf_state/release/python-wheels"
     ;;
 framework|framework-bootstrap)
+    python "$tf_project/deploy/v100/source_foundation.py" verify-ninja \
+        --tools "$tf_project/deploy/v100/source-build-tools-amd64.json" \
+        --wheels "$tf_state/release/python-wheels" --output "$tf_state/receipts/ninja-toolchain.json"
+    tf_ninja=$(type -P ninja)
     tf_capture_sources "$1"
     tf_framework_phase=$1
     test -f "$tf_prefix/cccl-3.5.0/include/cub/version.cuh"
@@ -169,6 +173,7 @@ PY
     cd "$tf_state/sources/pytorch"
     tf_framework_args=(
         --config-settings="cmake.args=--fresh;-UNCCL_VERSION_DEFINED"
+        --config-settings="cmake.define.CMAKE_MAKE_PROGRAM=$tf_ninja"
         --config-settings="cmake.define.CUB_INCLUDE_DIR=$tf_prefix/cccl-3.5.0/include"
         --config-settings="cmake.define.CMAKE_CUDA_FLAGS=-I$tf_prefix/cccl-3.5.0/include"
         --config-settings="cmake.define.CMAKE_CUDA_ARCHITECTURES=70"

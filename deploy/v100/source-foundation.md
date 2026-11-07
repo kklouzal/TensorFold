@@ -245,6 +245,62 @@ requires a new recorded producer snapshot and actual build-environment receipt;
 do not mutate an active build. These are build controls, not model-serving
 capacity or throughput claims.
 
+### Fixed Ninja producer boundary
+
+Active V100 source build/runtime/lint and media closures select the official
+Python distribution `ninja==1.13.2`. Its AMD64 wheel is 183,365 bytes, SHA256
+`65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c`.
+[Ninja 1.13.2](https://github.com/ninja-build/ninja/releases/tag/v1.13.2)
+contains [fix 2690](https://github.com/ninja-build/ninja/pull/2690): interrupted
+waits set a failure status, and the command-result status is initialized.
+Ninja 1.13.0 could instead report success after interruption. The observed
+interrupted framework wheel/export remains held; its formal exit 0 does not
+establish a completed graph or a valid replacement SDK. Historical receipts
+retain their original scope and are not rewritten.
+
+Before framework or media build work, `source_foundation.py verify-ninja`
+checks the installed package version, exact pinned wheel, active package-owned
+AMD64 ELF bytes and actual binary version, then writes `ninja-toolchain.json`.
+The framework explicitly binds `CMAKE_MAKE_PROGRAM` to that verified executable.
+Export revalidates the tool receipt and framework CMake path; no fallback to a
+system or older Ninja is allowed. An independent real-binary interruption gate
+and complete framework build remain required; identity checks alone do not
+prove either execution result.
+
+Regenerate the five closures from actual native AMD64/CPython 3.12 resolver
+reports with all other exact pins retained. `render-build-tools --constraints`
+also emits the media build constraints from the same report. Bootstrap locks
+contain only packaging/pip and must remain byte-identical for this Ninja-only
+update; the generated source-builder Dockerfile is unchanged. Reusing its
+existing image therefore does not claim a new baked-in Ninja: the selected
+build tool is installed into the owned `/work/venv` by `prepare`, with fresh
+actual provider receipts. Final runtime/media images consume their updated
+full locks and retain their normal artifact/audit gates. Installed binaries or
+vendored sources are not patched in place.
+
+The isolated native tool gate passed with the exact 370,448-byte executable,
+SHA256 `08639e194fffa7f08b259fc4abfa4803aff66b64de52549cee42ec527d55cea6`,
+and the authentic CLI string `1.13.2.git.kitware.jobserver-pipe-1`. The package
+version remains 1.13.2; the suffix is recorded, not mistaken for another tool.
+A normal `-j2` graph exited 0, while real SIGINT/SIGHUP/SIGTERM cases each
+exited 130, retained a completed dependency, removed both active partial outputs
+and retired all owned children. These are isolated tool regressions, not a
+24-job framework build or final SDK pass. The earlier bare-version assertion
+failure stopped before cases ran and is retained as a fixture correction,
+with no installed-binary or guard patch.
+
+Actual native AMD64/Python 3.12 reports regenerated all five closures without
+changing any non-Ninja package row. Both bootstrap locks and all three generated
+Dockerfiles stayed byte-identical, preserving the source-builder image `934497`
+input contract. Full report/tool proof is retained in
+`ninja-fixed-tool-v1/fixed-tool-native-prerequisite-gate-v1.json`, SHA256
+`c45da7c920ab43aa41f8ade675570781fff39b6b10bc675ff3317673959db0a5`.
+The canonical `verify-ninja` CLI also passed against that private native tool
+with unchanged helper/report bytes; its actual tool receipt SHA256 is
+`be65b5bcdf047d16c74ad555ecaeec5c85b0b9ef9d7aa049e7ae9f8541b2953d`.
+No SDK environment or source cache was mounted or changed by these checks.
+A new completed framework/SDK artifact is still required before promotion.
+
 The fresh-bootstrap repair passed 59 affected tests on native AMD64 tooling.
 The broader five-module producer/input/install batch passed 112 tests and 17
 subtests, with two selected-SDK-receipt skips; required deployment controls

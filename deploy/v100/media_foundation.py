@@ -19,7 +19,7 @@ import subprocess
 import tarfile
 from urllib.parse import urlsplit
 
-from source_foundation import canonical, expected_identity, file_identity, read_json, runtime_identity as foundation_runtime_identity
+from source_foundation import canonical, expected_identity, file_identity, read_json, runtime_identity as foundation_runtime_identity, ninja_tool_identity
 
 
 def source_inventory(row, downloads, sources):
@@ -112,10 +112,13 @@ def capture_build(pins, state, project):
              "media-build-constraints.txt", "requirements-media-runtime-amd64.lock",
              "requirements-media-runtime-offline-amd64.lock", "requirements-media-build-amd64.lock",
              "requirements-media-build-offline-amd64.lock"]
+    ninja = ninja_tool_identity(read_json(project / "deploy/v100/media-build-amd64.json")[0], state / "support-wheels")
+    if read_json(state / "receipts/ninja-toolchain.json")[0] != ninja:
+        raise ValueError("media build changed its selected Ninja tool identity")
     return {"schema": "tensorfold.v100-media-build", "version": 1,
             "pins_sha256": hashlib.sha256(canonical(pins)).hexdigest(), "source_receipts": inputs,
             "source_wheels": {path.name: file_identity(path) for path in wheels},
-            "native_prefix": prefix_inventory(state / "native"),
+            "native_prefix": prefix_inventory(state / "native"), "ninja_toolchain": ninja,
             "producer_inputs": {name: file_identity(project / "deploy/v100" / name) for name in owned},
             "release_qualified": False}
 

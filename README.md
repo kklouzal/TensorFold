@@ -57,6 +57,12 @@ CPU/memory budgets and a fresh producer/environment receipt; this does not
 change source pins or imply a measured build-speed gain. See the
 [build resource contract](deploy/v100/source-foundation.md#build-stages).
 
+Active V100 producer/media dependencies select fixed Ninja 1.13.2, with pinned
+wheel-to-executable ownership proof and an explicit CMake tool binding. The
+interrupted old-tool wheel remains held; a successful exit alone cannot certify
+its completion. Actual signal/build evidence and final SDK gates stay separate.
+See [the fixed-tool contract](deploy/v100/source-foundation.md#fixed-ninja-producer-boundary).
+
 Fresh SDK bootstrap now stages the exact owned source patch, prepares its native
 prerequisites and produces a genuine editable-build compilation database before
 required lint and commit finalization. Final SDK capture rejects bootstrap-only

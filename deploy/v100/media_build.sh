@@ -15,6 +15,9 @@ mkdir -p "$tf_media/build" "$tf_media/logs" "$tf_media/receipts" "$tf_media/whee
 
 tf_stage=${1:-}
 if [[ "$tf_stage" =~ ^(torchvision|transformers|ffmpeg|pyav|dav1d)$ ]]; then
+    python "$tf_project/deploy/v100/source_foundation.py" verify-ninja \
+        --tools "$tf_project/deploy/v100/media-build-amd64.json" \
+        --wheels "$tf_media/support-wheels" --output "$tf_media/receipts/ninja-toolchain.json"
     python "$tf_project/deploy/v100/media_foundation.py" verify-source \
         --pins "$tf_project/deploy/v100/media-pins.json" --downloads "$tf_media/downloads" \
         --sources "$tf_media/sources" --source-name "$tf_stage" \

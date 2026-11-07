@@ -13,14 +13,19 @@ import ctypes
 import hashlib
 import importlib.metadata
 import importlib.util
+import io
 import json
 import os
+import platform
 import shlex
+import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
+import zipfile
 
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
@@ -109,6 +114,54 @@ def read_json(path):
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def ninja_tool_identity(tools, wheels):
+    """Bind the selected fixed Ninja executable to its exact official wheel.
+
+    This is a preparation/export check, not a substitute for the independently
+    exercised interruption regression or completed framework build graph.
+    """
+    selected = tools["packages"]["ninja"]
+    if selected["version"] != "1.13.2":
+        raise ValueError("source producer requires the selected fixed Ninja 1.13.2")
+    if sys.platform != "linux" or platform.machine() != "x86_64":
+        raise ValueError("selected Ninja tool proof requires native Linux AMD64")
+    distribution = importlib.metadata.distribution("ninja")
+    if distribution.version != selected["version"]:
+        raise ValueError("installed Ninja package differs from its selected tool lock")
+    wheel = wheels / Path(urlsplit(selected["url"]).path).name
+    raw = read_document(wheel)
+    if hashlib.sha256(raw).hexdigest() != selected["sha256"]:
+        raise ValueError("selected Ninja wheel differs from its pinned hash")
+    executable_name = shutil.which("ninja")
+    if executable_name is None:
+        raise ValueError("selected Ninja executable is unavailable")
+    executable = Path(executable_name).resolve(strict=True)
+    owned = {Path(distribution.locate_file(entry)).resolve(strict=True)
+             for entry in distribution.files or () if Path(entry).name == "ninja"}
+    if executable not in owned:
+        raise ValueError("active Ninja executable is not owned by the selected package")
+    actual = file_identity(executable)
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        candidates = [entry for entry in archive.infolist() if not entry.is_dir() and Path(entry.filename).name == "ninja"]
+        if len(candidates) != 1 or not 0 < candidates[0].file_size <= MAX_DOCUMENT_BYTES:
+            raise ValueError("selected Ninja wheel needs one bounded native executable")
+        payload = archive.read(candidates[0])
+    if (payload[:6] != b"\x7fELF\x02\x01" or len(payload) < 20
+            or int.from_bytes(payload[18:20], "little") != 62
+            or actual != {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}):
+        raise ValueError("active Ninja bytes differ from the selected AMD64 wheel executable")
+    version = subprocess.check_output([str(executable), "--version"], text=True, timeout=10).strip()
+    if version != selected["version"] and not version.startswith(selected["version"] + "."):
+        raise ValueError("actual Ninja binary version differs from the selected fixed tool")
+    if file_identity(executable) != actual:
+        raise ValueError("selected Ninja executable changed during preparation")
+    return {"schema": "tensorfold.v100-ninja-tool", "version": 1,
+            "package_version": distribution.version, "wheel_url": selected["url"],
+            "wheel": {"path": str(wheel.resolve(strict=True)), "bytes": len(raw), "sha256": selected["sha256"]},
+            "executable": {"path": str(executable), **actual}, "binary_version": version,
+            "wheel_member": candidates[0].filename}
 
 
 def effective_commit(source):
@@ -769,6 +822,12 @@ def capture_build(pins, state, project):
                 "NCCL_LIBRARIES": "/opt/tensorfold-native/nccl-2.32.3/lib/libnccl.so"}
     if any(cache.get(name) != value for name, value in expected.items()):
         raise ValueError("completed framework build has a different CMake provider/architecture configuration")
+    ninja = ninja_tool_identity(read_json(project / "deploy/v100/source-build-tools-amd64.json")[0],
+                                 state / "release/python-wheels")
+    if read_json(state / "receipts/ninja-toolchain.json")[0] != ninja:
+        raise ValueError("completed build changed its selected Ninja tool identity")
+    if Path(cache.get("CMAKE_MAKE_PROGRAM", "")).resolve() != Path(ninja["executable"]["path"]):
+        raise ValueError("completed CMake graph used another Ninja executable")
     wheels = list((state / "wheels").glob("torch-*.whl"))
     if len(wheels) != 1:
         raise ValueError("completed source build must produce exactly one framework wheel")
@@ -801,7 +860,7 @@ def capture_build(pins, state, project):
                        ("cccl-primitives", "libraries-probe", "reconvergence-6111901")},
             "cmake_cache": file_identity(cache_path), "cmake_configuration": cache,
             "build_environment": read_json(state / "receipts/framework-build-environment.json")[0],
-            "toolchain": tools, "producer_inputs": generated, "native_prefix": native,
+            "toolchain": tools, "ninja_toolchain": ninja, "producer_inputs": generated, "native_prefix": native,
             "framework_private_cutlass": {"version": "4.6.1", "source": "pytorch/third_party/cutlass"},
             "native_device_execution": "unrun", "compiler_6111901": "unresolved-release-gate"}
 
@@ -1198,6 +1257,7 @@ def main():
     render.add_argument("--lock", type=Path, required=True)
     render.add_argument("--receipt", type=Path, required=True)
     render.add_argument("--bootstrap-lock", type=Path)
+    render.add_argument("--constraints", type=Path)
     runtime = commands.add_parser("render-runtime")
     runtime.add_argument("--report", type=Path, required=True)
     runtime.add_argument("--lock", type=Path, required=True)
@@ -1206,6 +1266,10 @@ def main():
     lint.add_argument("--report", type=Path, required=True)
     lint.add_argument("--lock", type=Path, required=True)
     lint.add_argument("--receipt", type=Path, required=True)
+    ninja = commands.add_parser("verify-ninja")
+    ninja.add_argument("--tools", type=Path, required=True)
+    ninja.add_argument("--wheels", type=Path, required=True)
+    ninja.add_argument("--output", type=Path, required=True)
     offline = commands.add_parser("offline-lock")
     offline.add_argument("--receipt", type=Path, required=True)
     offline.add_argument("--output", type=Path, required=True)
@@ -1273,6 +1337,9 @@ def main():
     process_audit.add_argument("--pins", type=Path, default=Path("/opt/tensorfold-pins/source-pins.json"))
     process_audit.add_argument("--manifest", type=Path, default=Path("/opt/tensorfold-pins/v100-source-foundation.json"))
     args = parser.parse_args()
+    if args.command == "verify-ninja":
+        args.output.write_bytes(canonical(ninja_tool_identity(read_json(args.tools)[0], args.wheels)) + b"\n")
+        return
     if args.command == "verify-native":
         verify_native(read_json(args.pins)[0], args.directory)
         return
@@ -1340,6 +1407,10 @@ def main():
                                         lint=args.command == "render-lint-tools")
     args.lock.write_text(lock)
     args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+    if getattr(args, "constraints", None) is not None:
+        args.constraints.write_text("# Generated from " + args.receipt.name
+            + "; no dependency resolution during source builds.\n" + "".join(
+                f"{name}=={Version(row['version'])}\n" for name, row in sorted(receipt["packages"].items())))
     if getattr(args, "bootstrap_lock", None) is not None:
         rows = ["# Generated by deploy/v100/source_foundation.py from the same native dependency report.\n"]
         for name in ("packaging", "pip"):

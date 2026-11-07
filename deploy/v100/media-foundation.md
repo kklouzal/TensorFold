@@ -111,7 +111,11 @@ producer inputs and the native prefix. Do not reuse an export after changing
 any of its inputs. Regenerate support locks using the existing
 `source_foundation.py render-runtime`/`render-build-tools` and `offline-lock` commands
 from matching-platform resolver reports; the companion JSON records their
-identities. Do not edit generated locks.
+identities. Generate `media-build-constraints.txt` with the same native report's
+`render-build-tools --constraints` option. Active source/media Ninja pins stay
+at the selected fixed 1.13.2 tool; build stages and export bind its actual wheel/
+executable provenance through the shared producer guard. This does not qualify
+media output or a completed SDK. Do not edit generated locks or installed tools.
 
 ## Installed identity and controls
 

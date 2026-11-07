@@ -46,7 +46,7 @@ def test_precommit_framework_outputs_cannot_be_exported(tmp_path):
 
 
 @pytest.mark.parametrize("jobs,final_outcome", [
-    (jobs, outcome) for jobs in ("4", "24") for outcome in ("success", "pip-failure", "source-rejection")
+    (jobs, outcome) for jobs in ("4", "24") for outcome in ("success", "pip-failure", "source-rejection", "tool-rejection")
 ] + [(jobs, "success") for jobs in (None, "", "1", "9", "10", "19", "20")])
 def test_framework_driver_keeps_native_configuration_and_bootstrap_export_barrier(tmp_path, jobs, final_outcome):
     # Substitute only the external producer/pip boundaries to observe the real
@@ -89,6 +89,8 @@ if args[0].endswith("source_foundation.py"):
             '{{"phase":"precommit-build-inputs"}}\\n')
     if args[1] == "capture-sources" and os.environ.get("TF_TEST_FINAL_OUTCOME") == "source-rejection":
         sys.exit(7)
+    if args[1] == "verify-ninja" and os.environ.get("TF_TEST_FINAL_OUTCOME") == "tool-rejection":
+        sys.exit(9)
 elif args[:2] == ["-m", "pip"]:
     if "wheel" in args and os.environ.get("TF_TEST_FINAL_OUTCOME") == "pip-failure":
         sys.exit(8)
@@ -115,9 +117,9 @@ else:
     assert not (state / "receipts/framework-build-environment.json").exists()
     environment["TF_TEST_FINAL_OUTCOME"] = final_outcome
     final = subprocess.run([*driver, "framework"], env=environment, capture_output=True, text=True)
-    assert final.returncode == {"success": 0, "source-rejection": 7, "pip-failure": 8}[final_outcome], final.stderr
+    assert final.returncode == {"success": 0, "source-rejection": 7, "pip-failure": 8, "tool-rejection": 9}[final_outcome], final.stderr
     assert marker.exists() == (final_outcome != "success")
-    receipts = ["framework-bootstrap-environment.json"] + ([] if final_outcome == "source-rejection"
+    receipts = ["framework-bootstrap-environment.json"] + ([] if final_outcome in ("source-rejection", "tool-rejection")
                                                           else ["framework-build-environment.json"])
     for receipt in receipts:
         actual = json.loads((state / "receipts" / receipt).read_text())
@@ -128,6 +130,9 @@ else:
     assert "--no-build-isolation" in pip[0]["args"] and "--no-deps" in pip[0]["args"]
     assert all(row["arch"] == "7.0" and row["nccl"] == str(prefix / "nccl-2.32.3/lib") for row in pip)
     assert all(row["parallel"] == expected_parallel for row in pip)
+    assert commands[0]["args"][1] == "verify-ninja"
+    assert all(any(arg.startswith("--config-settings=cmake.define.CMAKE_MAKE_PROGRAM=") for arg in row["args"])
+               for row in pip)
     expected = {
         "--config-settings=cmake.args=--fresh;-UNCCL_VERSION_DEFINED",
         "--config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=70",
@@ -135,9 +140,9 @@ else:
         f"--config-settings=cmake.define.NCCL_LIBRARIES={prefix}/nccl-2.32.3/lib/libnccl.so",
     }
     assert expected <= set(pip[0]["args"])
-    if final_outcome == "source-rejection":
+    if final_outcome in ("source-rejection", "tool-rejection"):
         assert len(pip) == 1
-        assert commands[-1]["args"][1] == "capture-sources"
+        assert commands[-1]["args"][1] == ("verify-ninja" if final_outcome == "tool-rejection" else "capture-sources")
     else:
         assert "wheel" in pip[1]["args"]
         bootstrap_settings = [arg for arg in pip[0]["args"] if arg.startswith("--config-settings=")]
@@ -232,3 +237,98 @@ def test_recorded_source_stack_is_distinct_from_the_historical_cu126_wheel_recip
     assert "ubuntu24.04@sha256:" in pins["base"]
     assert all(len(source["commit"]) == 40 for source in pins["sources"].values())
     assert "candidate" in pins["status"] and "unrun" in pins["status"]
+
+
+@pytest.fixture
+def selected_ninja(tmp_path, monkeypatch):
+    """Actual file/wheel ownership checks; execution is an explicit unit boundary."""
+    import zipfile
+    from types import SimpleNamespace
+    tool = tmp_path / "bin/ninja"
+    tool.parent.mkdir()
+    payload = b"\x7fELF\x02\x01" + b"\0" * 12 + (62).to_bytes(2, "little") + b"unit-native-payload"
+    tool.write_bytes(payload)
+    tool.chmod(0o755)
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    wheel = wheels / "ninja-1.13.2-py3-none-manylinux2014_x86_64.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("ninja-1.13.2.data/scripts/ninja", payload)
+    selected = {"version": "1.13.2", "url": "https://files.pythonhosted.org/packages/" + wheel.name,
+                "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}
+    package = SimpleNamespace(version="1.13.2", files=[Path("bin/ninja")], locate_file=lambda _entry: tool)
+    monkeypatch.setattr(SOURCE.platform, "machine", lambda: "x86_64")
+    original_distribution = SOURCE.importlib.metadata.distribution
+    monkeypatch.setattr(SOURCE.importlib.metadata, "distribution",
+                        lambda name: package if name == "ninja" else original_distribution(name))
+    monkeypatch.setattr(SOURCE.shutil, "which", lambda name: str(tool))
+    calls = []
+    def version(argv, **kwargs):
+        calls.append(argv)
+        assert argv == [str(tool), "--version"] and kwargs == {"text": True, "timeout": 10}
+        return "1.13.2.git.kitware.jobserver-pipe-1\n"
+    monkeypatch.setattr(SOURCE.subprocess, "check_output", version)
+    return {"packages": {"ninja": selected}}, wheels, tool, wheel, package, calls
+
+
+def test_selected_ninja_binds_actual_package_wheel_and_executable(selected_ninja):
+    tools, wheels, tool, wheel, package, calls = selected_ninja
+    actual = SOURCE.ninja_tool_identity(tools, wheels)
+    assert actual["package_version"] == package.version == "1.13.2"
+    assert actual["wheel"] == {"path": str(wheel), "bytes": wheel.stat().st_size,
+                               "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}
+    assert actual["executable"] == {"path": str(tool), **SOURCE.file_identity(tool)}
+    assert actual["binary_version"] == "1.13.2.git.kitware.jobserver-pipe-1"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("change", ["old-lock", "old-package", "wheel-hash", "foreign-origin", "binary-bytes", "binary-version", "changed-during-query"])
+def test_selected_ninja_refuses_unbound_or_unfixed_tool_before_build(selected_ninja, monkeypatch, change):
+    tools, wheels, tool, wheel, package, calls = selected_ninja
+    if change == "old-lock":
+        tools["packages"]["ninja"]["version"] = "1.13.0"
+    elif change == "old-package":
+        package.version = "1.13.0"
+    elif change == "wheel-hash":
+        tools["packages"]["ninja"]["sha256"] = "0" * 64
+    elif change == "foreign-origin":
+        package.files = []
+    elif change == "binary-bytes":
+        tool.write_bytes(b"different ELF")
+    else:
+        def version(*args, **kwargs):
+            if change == "changed-during-query":
+                tool.write_bytes(tool.read_bytes() + b"changed")
+            return "1.13.0" if change == "binary-version" else "1.13.2"
+        monkeypatch.setattr(SOURCE.subprocess, "check_output", version)
+    with pytest.raises(ValueError, match="Ninja"):
+        SOURCE.ninja_tool_identity(tools, wheels)
+    assert not calls
+
+
+
+def test_native_report_regeneration_changes_only_ninja_and_retains_bootstrap(tmp_path):
+    baseline = report()
+    changed = copy.deepcopy(baseline)
+    ninja = next(row for row in changed["install"] if row["metadata"]["name"] == "ninja")
+    ninja["metadata"]["version"] = "1.13.2"
+    ninja["download_info"]["url"] = "https://files.pythonhosted.org/packages/ninja-1.13.2-py3-none-manylinux2014_x86_64.whl"
+    results = []
+    for index, selected in enumerate((baseline, changed)):
+        root = tmp_path / str(index)
+        root.mkdir()
+        source = root / "report.json"
+        source.write_text(json.dumps(selected))
+        args = [sys.executable, str(ROOT / "deploy/v100/source_foundation.py"), "render-build-tools",
+                "--report", str(source), "--lock", str(root / "lock"), "--receipt", str(root / "receipt.json"),
+                "--bootstrap-lock", str(root / "bootstrap"), "--constraints", str(root / "constraints")]
+        subprocess.run(args, check=True, capture_output=True)
+        actual = json.loads((root / "receipt.json").read_text())
+        constraints = [line for line in (root / "constraints").read_text().splitlines() if not line.startswith("#")]
+        assert constraints == [name + "==" + row["version"] for name, row in sorted(actual["packages"].items())]
+        results.append((actual, (root / "bootstrap").read_bytes()))
+    before, after = results
+    assert before[1] == after[1]
+    assert {name: row for name, row in before[0]["packages"].items() if name != "ninja"} == {
+        name: row for name, row in after[0]["packages"].items() if name != "ninja"}
+    assert after[0]["packages"]["ninja"]["version"] == "1.13.2"
