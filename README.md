@@ -38,6 +38,9 @@ A subsequent [batched-normalization trial](docs/benchmarking.md#batched-global-n
 observed higher rates at all seven levels, but selection is held: only 74/87
 outputs and 72/87 proposal-work records match the baseline. The cause is
 unresolved; this is not an accepted gain, quality result or default promotion.
+A private [same-input normalization witness](docs/benchmarking.md#private-same-input-normalization-parity-witness)
+is available for diagnosis; its comparison fences invalidate all performance
+timings. The actual pinned-model witness remains pending.
 Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
 capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.

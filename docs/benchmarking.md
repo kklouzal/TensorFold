@@ -347,6 +347,49 @@ SHA256 `95fb86c8b4627fa8a25ab7d6946115751c06a3d34c3f28d9144207a82d5c39b3`.
 The preceding `597c7435` curve remains the historical baseline, not a rewritten
 candidate result.
 
+
+### Private same-input normalization parity witness
+
+Add `--normalization-parity` **before** the existing `--` serve separator in
+`tools/v100_owned_qualification.py`. The CLI requires an admitted
+`--benchmark-plan` and `--reference-tiles`, and excludes scheduler tracing,
+router-row and history capture. This investigation reuses the full original
+`e18f4ca3` seven-level/87-request plan as its protocol, rather than a hardcoded
+tool restriction. Retain the ordinary profile and immutable `f126` application;
+no application-image rebuild is required. The diagnostic adds execution and
+fences, while leaving weights, precision, tolerance, public API and defaults
+unchanged.
+
+Every rank invokes the actual candidate once, preserving its arguments, and
+compares against the unchanged scalar oracle using the same pre-call input
+snapshot and shadow statuses seeded from the pre-call state. Raw gathered-input,
+FP32 maximum/denominator and status bits are checked. It borrows an unused paid tail of `owner.partial`, the local send/PV slab,
+rather than adding a persistent GPU buffer; host obligations
+are funded before admission. **One comparison fence per helper invalidates all
+event, HTTP and other timings from this run for performance claims.** This is
+neither another performance sample nor proof of the cause of earlier differences.
+
+Live CPU metadata is published at `work_observations.normalization_parity`,
+including role/layer calls, row extents, mismatches and source/resource identity.
+A first mismatch attempts nine bounded NPY snapshots plus `mismatch.json`
+before fatal cohort notification; recording failures remain failures. On proven
+Engine retirement the hook restores its bindings and writes
+`normalization-parity-rank-0/summary.json` through
+`normalization-parity-rank-7/summary.json` under the fresh qualification output.
+All eight successful summaries must report `closed: true`, `failed: false`,
+nonzero comparison coverage for the protocol's required roles, and zero
+mismatches; client/retirement outcomes remain required. These artifacts concern one helper,
+not general model quality or numerical acceptance.
+
+Frozen tool controls passed 17 focused CPU cases plus Ruff/AST checks, then
+222 selected-x86 CPU and four SM70 GPU controls with zero skips. The injected
+GPU mismatch produced and verified all nine NPY files; it is fault-control
+evidence, not an observed live-model mismatch. Gate:
+`normalization-parity-tool-v1/target-v2/normalization-parity-source-CPU222-GPU4-gate-v1.json`,
+SHA256 `5d97592fc4093158cc6da6f84f07be1850ecfffadaff8962f789a67e15bdd4ac`.
+The full original pinned-model witness is planned, **not yet executed**;
+selection remains held.
+
 ## First SC117 Q4 reference
 
 The first descriptive reference used eight V100-SXM2-32GB GPUs, SC117 IQ3_S

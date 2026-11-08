@@ -379,6 +379,319 @@ def prepare_router_rows(engine, prepared, output):
     return resources
 
 
+def _normalization_resources(output):
+    # OwnerBuffers.from_text caps every prepared role at min(rows,256).
+    rows = 256
+    from tensorfold.cuda.sm70 import reference_owner_tiles
+    if not all(callable(getattr(reference_owner_tiles, name, None)) for name in
+               ('merge_global_statistics', 'global_normalization_workspace_bytes')):
+        raise ValueError('installed runtime lacks normalization parity capability before construction')
+    path_chars = len(json.dumps(str(Path(output).absolute()), ensure_ascii=True))
+    base = _history_resources(3 * 49 + 16 + (path_chars + 1023) // 1024, 4096)
+    # One same-dtype D2H file at a time; binary payload, streaming writer/hash,
+    # bounded source-file identities and metadata, never JSON float arrays.
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+    source_bytes = sum(Path(path).stat().st_size for path in
+                       (__file__, reference_owner_tiles.__file__, history_owner.__file__))
+    extra = 8 * rows * 12 * 2 * 4 + 2 * 65536 + source_bytes
+    per_rank = base['per_rank_payload_bytes'] + extra
+    return {**base, 'per_rank_payload_bytes': per_rank,
+            'global_host_obligation_bytes': 8 * per_rank, 'maximum_rows': rows,
+            'maximum_layer': 48, 'additional_device_bytes': 0,
+            'diagnostic_only': True, 'comparison_fence_per_call': 1}
+
+
+class _NormalizationParity:
+    """Same-input all-rank diagnostic; never installed by ordinary serving."""
+    def __init__(self, engine, output, resources, *, module=None, scalar=None, writer=None):
+        import torch
+        from tensorfold.cuda.sm70 import reference_owner_tiles
+        from tensorfold.families.qwen4_exp.cuda.history_owner import merge_statistics
+        self.engine, self.output, self.resources = engine, Path(output), resources
+        self.rank = engine.rank
+        self.module = reference_owner_tiles if module is None else module
+        self.scalar = merge_statistics if scalar is None else scalar
+        self.writer = _save_router_tensor if writer is None else writer
+        self.original = self.module.merge_global_statistics
+        self.observations = engine.multi.controller.work_observations
+        self.original_record, self.original_close = self.observations.record, engine.close
+        self.had_close = 'close' in vars(engine)
+        self.old_close_attribute = vars(engine).get('close')
+        self.active = self.failed = self.installed = self.closed = False
+        self.counts, self.geometry, self.role_layouts, self.roles = {}, {}, {}, []
+        self.sources = {name: hashlib.sha256(Path(path).read_bytes()).hexdigest() for name, path in
+                        [('candidate_file', self.module.__file__), ('tool_file', __file__)]}
+        import inspect
+        self.sources['scalar_body'] = hashlib.sha256(inspect.getsource(self.scalar).encode()).hexdigest()
+        for role, name in [('decode', 'buf'), ('prefill', 'pbuf'), ('mtp', 'mbuf')]:
+            buffer = getattr(engine.multi, name, None)
+            if buffer is None:
+                continue
+            owner = buffer.history_owner
+            maximum = owner.rows
+            if (not 0 < maximum <= resources['maximum_rows'] or owner.global_stats is None
+                    or owner.partial.dtype != torch.float32 or owner.partials.dtype != torch.float32
+                    or owner.global_stats.dtype != torch.float32
+                    or not owner.partial.is_contiguous() or not owner.partials.is_contiguous()
+                    or not owner.global_stats.is_contiguous() or owner.partial.data_ptr() % 512
+                    or owner.global_stats.shape != (maximum, 12, 2)
+                    or owner.partial.device != owner.partials.device or owner.partial.device != owner.global_stats.device
+                    or any(torch._C._overlaps(a, b) for a, b in
+                           ((owner.partial, owner.partials), (owner.partial, owner.global_stats),
+                            (owner.partials, owner.global_stats)))
+                    or owner.reference_tiles.normalization_workspace is not owner.partial
+                    or owner.reference_tiles.normalization_output is not owner.global_stats):
+                raise ValueError('normalization parity lacks the actual prepared owner')
+            raw = owner.partial.view(torch.uint8).view(-1)
+            cursor = -(-reference_owner_tiles.global_normalization_workspace_bytes(maximum) // 512) * 512
+            tail_start = cursor
+            def take(count, dtype):
+                nonlocal cursor
+                size = 1 if dtype == torch.bool else 4
+                cursor = -(-cursor // size) * size
+                end = cursor + count * size
+                if end > raw.numel():
+                    raise ValueError('normalization parity exceeds the unused paid local tail')
+                value = raw[cursor:end].view(dtype)
+                cursor = end
+                return value
+            entry = {'role': role, 'owner': owner, 'maximum': maximum,
+                     'snapshot': take(8 * maximum * 24, torch.float32),
+                     'old': take(2 * maximum * 12, torch.float32),
+                     'before': take(2 * maximum, torch.int32).view(maximum, 2),
+                     'shadow': take(2 * maximum, torch.int32).view(maximum, 2),
+                     'actual': take(2 * maximum, torch.int32).view(maximum, 2),
+                     'input_equal': take(8 * maximum * 24, torch.bool),
+                     'output_equal': take(2 * maximum * 12, torch.bool),
+                     'status_equal': take(2 * maximum, torch.bool), 'flags': take(4, torch.bool)}
+            self.roles.append(entry)
+            self.role_layouts[role] = {'maximum_rows': maximum, 'tail_start_bytes': tail_start,
+                                      'tail_bytes': cursor - tail_start, 'local_slab_bytes': raw.numel()}
+        if not self.roles:
+            raise ValueError('normalization parity has no prepared roles')
+        self.directory = self.output / f'normalization-parity-rank-{engine.rank}'
+        self.directory.mkdir(mode=0o700)
+        self._publish()
+
+    def _publish(self):
+        self.published = {'schema': 'tensorfold.normalization-parity-v1', 'diagnostic_only': True,
+            'rank': self.rank, 'sources': dict(self.sources), 'failed': self.failed,
+            'resources': dict(self.resources), 'closed': self.closed,
+            'role_layouts': dict(self.role_layouts), 'geometry': {k: dict(v) for k, v in self.geometry.items()},
+            'performance_qualification': 'invalid: per-helper diagnostic comparison fence',
+            'counts': {key: dict(value) for key, value in self.counts.items()}}
+
+    def __call__(self, gathered, workspace, output, group_start, status_ranges, layer):
+        import torch
+        if self.closed:
+            raise RuntimeError('normalization parity callback already retired')
+        engine = self.engine
+        entered = False
+        try:
+            if self.failed or self.active:
+                raise RuntimeError('normalization parity is closed, failed or concurrently entered')
+            entry = next((e for e in self.roles if e['owner'].partial is workspace
+                          and e['owner'].global_stats is output), None)
+            if entry is None or type(layer) is not int or not 0 <= layer <= self.resources['maximum_layer']:
+                raise ValueError('normalization parity role/layer is outside its admitted source')
+            rows = gathered.shape[1]
+            if (gathered.shape != (8, rows, 12, 2) or not 0 < rows <= entry['maximum']
+                    or gathered.dtype != torch.float32 or not gathered.is_contiguous()
+                    or gathered.data_ptr() != entry['owner'].partials.data_ptr()
+                    or group_start not in (0, 4) or type(status_ranges) not in (tuple, list)):
+                raise ValueError('normalization parity input differs from its prepared gather')
+            if gathered.is_cuda and torch.cuda.is_current_stream_capturing():
+                raise ValueError('normalization parity cannot run in CUDA capture')
+            unique, mapped, cursor = [], [], 0
+            for status, first, last in status_ranges:
+                if (type(first) is not int or type(last) is not int or first != cursor or not first < last <= rows
+                        or status.dtype != torch.int32 or status.shape != (2,) or not status.is_contiguous()
+                        or status.device != workspace.device
+                        or any(torch._C._overlaps(status, t) for t in (gathered, workspace, output))):
+                    raise ValueError('normalization parity status ranges are malformed or overlap scratch')
+                index = next((i for i, old in enumerate(unique) if old.data_ptr() == status.data_ptr()), len(unique))
+                if index == len(unique):
+                    unique.append(status)
+                mapped.append((index, first, last))
+                cursor = last
+            if cursor != rows:
+                raise ValueError('normalization parity ranges do not cover the gather')
+            self.active = entered = True
+            snapshot = entry['snapshot'][:8 * rows * 24].view(8, rows, 12, 2)
+            snapshot.copy_(gathered)
+            for i, status in enumerate(unique):
+                entry['before'][i].copy_(status)
+                entry['shadow'][i].copy_(entry['before'][i])
+            result = self.original(gathered, workspace, output, group_start, status_ranges, layer)
+            old = entry['old'][:2 * rows * 12].view(2, rows, 12)
+            for index, first, last in mapped:
+                for row in range(first, last):
+                    pieces = snapshot[group_start:group_start + 4, row]
+                    maximum, denominator = self.scalar(pieces[..., 0], pieces[..., 1],
+                        status=entry['shadow'][index], layer=layer)
+                    old[0, row].copy_(maximum)
+                    old[1, row].copy_(denominator)
+            for i, status in enumerate(unique):
+                entry['actual'][i].copy_(status)
+            masks = entry['output_equal'][:2 * rows * 12].view(2, rows, 12)
+            for i in range(2):
+                if result[i].shape != (rows, 12) or result[i].dtype != torch.float32:
+                    raise ValueError('normalization parity candidate returned an unexpected schema')
+                torch.eq(result[i].view(torch.int32), old[i].view(torch.int32), out=masks[i])
+            input_mask = entry['input_equal'][:gathered.numel()].view_as(gathered)
+            torch.eq(gathered.view(torch.int32), snapshot.view(torch.int32), out=input_mask)
+            status_mask = entry['status_equal'][:2 * len(unique)].view(len(unique), 2)
+            torch.eq(entry['actual'][:len(unique)], entry['shadow'][:len(unique)], out=status_mask)
+            flags = entry['flags']
+            torch.all(input_mask.flatten(), dim=0, out=flags[0])
+            torch.all(masks.flatten(), dim=0, out=flags[1])
+            torch.all(status_mask.flatten(), dim=0, out=flags[2])
+            torch.logical_and(flags[0], flags[1], out=flags[3])
+            torch.logical_and(flags[3], flags[2], out=flags[3])
+            matches = bool(flags[3].item())  # Exactly one success-path comparison fence.
+            failure = None if matches else RuntimeError('same-input normalization raw-bit/status parity mismatch')
+            metadata_errors = []
+            try:
+                key = f"{entry['role']}:{layer}"
+                prior = self.counts.get(key, {'calls': 0, 'rows': 0, 'mismatches': 0})
+                if prior['calls'] >= 2**63 - 1 or prior['rows'] > 2**63 - 1 - rows:
+                    raise OverflowError('normalization parity counters exhausted')
+                self.counts[key] = {'calls': prior['calls'] + 1, 'rows': prior['rows'] + rows,
+                                    'mismatches': prior['mismatches'] + int(not matches)}
+                prior_rows = self.geometry.get(entry['role'], {'min_rows': rows, 'max_rows': rows})
+                self.geometry[entry['role']] = {'min_rows': min(rows, prior_rows['min_rows']),
+                                                 'max_rows': max(rows, prior_rows['max_rows'])}
+                self.failed = not matches
+                self._publish()
+            except BaseException as error:
+                if failure is None:
+                    raise
+                metadata_errors.append(error)
+            if failure is not None:
+                try:
+                    tensors = {'gathered-before': snapshot.view(-1, 2), 'gathered-after': gathered.view(-1, 2),
+                               'new-max': result[0], 'new-den': result[1], 'old-max': old[0], 'old-den': old[1],
+                               'status-before': entry['before'][:len(unique)].view(torch.float32),
+                               'status-new': entry['actual'][:len(unique)].view(torch.float32),
+                               'status-old': entry['shadow'][:len(unique)].view(torch.float32)}
+                    files = {name: self.writer(self.directory / f'{name}.npy', tensor)
+                             for name, tensor in tensors.items()}
+                    target = self.directory / 'mismatch.json'
+                    if target.exists() or target.is_symlink():
+                        raise ValueError('normalization parity mismatch receipt already exists')
+                    write_json(target, {'role': entry['role'], 'layer': layer,
+                        'rows': rows, 'group_start': group_start, 'sources': self.sources, 'files': files,
+                        'status_storage': 'raw int32 bits viewed as float32; no numeric conversion',
+                        'status_ranges': mapped})
+                except BaseException as cleanup:
+                    metadata_errors.append(cleanup)
+                raise_failures(failure, metadata_errors)
+            return result  # Preserve the candidate's actual tuple and tensor identities.
+        except BaseException as primary:
+            self.failed = True
+            errors = []
+            try:
+                self._publish()
+            except BaseException as error:
+                errors.append(error)
+            try:
+                _observer_failure(engine, primary)
+            except BaseException as error:
+                raise_failures(error, errors)
+            raise_failures(primary, errors)
+        finally:
+            if entered:
+                self.active = False
+
+    def install(self):
+        if self.installed:
+            raise ValueError('normalization parity is already installed')
+        original_record = self.original_record
+        def record(*, credit=None):
+            result = original_record(**({} if credit is None else {'credit': credit}))
+            published = self.published
+            if credit is not None:
+                credit(published)
+            return {**result, 'normalization_parity': published}
+        def close(*args, **kwargs):
+            if self.closed:
+                raise RuntimeError('normalization parity lifecycle callback already retired')
+            engine = self.engine
+            try:
+                result = self.original_close(*args, **kwargs)
+                if engine._closed is not True or self.active:
+                    raise RuntimeError('normalization parity callbacks did not prove retirement')
+            except BaseException as primary:
+                _observer_failure(engine, primary)
+                raise  # Keep binding/views for unresolved owners; never retry here.
+            errors = []
+            for restore in (lambda: self._restore_module(),
+                            lambda: setattr(self.observations, 'record', self.original_record),
+                            lambda: setattr(engine, 'close', self.old_close_attribute) if self.had_close else delattr(engine, 'close')):
+                try:
+                    restore()
+                except BaseException as error:
+                    errors.append(error)
+            self.closed = True
+            self.roles.clear()  # Original close fenced owners and drained callbacks.
+            published = False
+            try:
+                self._publish()
+                published = True
+            except BaseException as error:
+                errors.append(error)
+            if published:
+                try:
+                    target = self.directory / 'summary.json'
+                    if target.exists() or target.is_symlink():
+                        raise ValueError('normalization parity summary already exists')
+                    write_json(target, self.published)
+                except BaseException as error:
+                    errors.append(error)
+            self.engine = self.original_close = self.original_record = self.observations = None
+            self.record_binding = self.close_binding = self.original = self.scalar = self.writer = self.module = None
+            if errors:
+                primary = errors[0]
+                try:
+                    _observer_failure(engine, primary)
+                except BaseException as error:
+                    raise_failures(error, errors[1:])
+                raise_failures(primary, errors[1:])
+            return result
+        self.record_binding, self.close_binding = record, close
+        try:
+            self.module.merge_global_statistics = self
+            self.observations.record = record
+            self.engine.close = close
+            self.installed = True
+        except BaseException as primary:
+            errors = []
+            for restore in (lambda: self._restore_module(rollback=True),
+                            lambda: setattr(self.observations, 'record', self.original_record),
+                            lambda: setattr(self.engine, 'close', self.old_close_attribute) if self.had_close else vars(self.engine).pop('close', None)):
+                try:
+                    restore()
+                except BaseException as error:
+                    errors.append(error)
+            raise_failures(primary, errors)
+
+    def _restore_module(self, *, rollback=False):
+        if rollback and self.module.merge_global_statistics is self.original:
+            return
+        if self.module.merge_global_statistics is not self:
+            raise RuntimeError('normalization parity module binding changed before retirement')
+        self.module.merge_global_statistics = self.original
+
+
+def prepare_normalization_parity(engine, resources, output):
+    if (engine._owned_qualification_host != (resources['total_global_host_obligation_bytes'], resources['input_sha256'])
+            or engine.retention_catalog.host_resources.baseline_host_bytes < resources['total_global_host_obligation_bytes']):
+        raise ValueError('normalization parity obligation is absent from original host admission')
+    observer = _NormalizationParity(engine, output, resources)
+    observer.install()
+    return observer.published
+
+
 def _observer_failure(engine, primary):
     engine._abort_comm = True
     try:
@@ -992,11 +1305,13 @@ def _reference_tile_receipt(engine, requested):
     return {"requested": True, "configured": True, "prebudget_preparation": identity, "roles": records}
 
 def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
-                    execution_rows=None, reference_tiles=False):
+                    execution_rows=None, reference_tiles=False, normalization_parity=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
         receipt["reference_tile_preparation"] = _reference_tile_receipt(engine, reference_tiles)
+        if normalization_parity is not None:
+            receipt["normalization_parity"] = normalization_parity
         receipt["half_partial_policy"] = _half_policy(half_request)
         receipt["private_router_policy"] = _router_policy(router_request)
         receipt["empty_prefix_policy"] = _empty_prefix_policy(empty_request)
@@ -1055,13 +1370,18 @@ def worker(argv):
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
+    parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
+    if selected.normalization_parity and (selected.benchmark_plan is None or not selected.reference_tiles
+            or selected.scheduler_trace is not None or selected.router_row_input is not None
+            or selected.history_input is not None):
+        raise ValueError("normalization parity requires benchmark/reference-tiles and excludes other captures")
     tail = selected.serve_args[1:] if selected.serve_args[:1] == ["--"] else selected.serve_args
     receipt_failed = False
     prepared = router_prepared = None
-    benchmark = benchmark_resources = None
+    benchmark = benchmark_resources = parity_resources = None
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
     router_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS")
     empty_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX")
@@ -1093,9 +1413,17 @@ def worker(argv):
                 except BaseException as primary:
                     _observer_failure(engine, primary)
                     raise
+            parity_receipt = None
+            if parity_resources is not None:
+                try:
+                    parity_receipt = prepare_normalization_parity(engine, parity_resources, selected.out)
+                except BaseException as primary:
+                    _observer_failure(engine, primary)
+                    raise
             publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation,
                             half_request=half_request, router_request=router_request, empty_request=empty_request,
-                            execution_rows=selected.execution_rows, reference_tiles=selected.reference_tiles)
+                            execution_rows=selected.execution_rows, reference_tiles=selected.reference_tiles,
+                            **({"normalization_parity": parity_receipt} if parity_receipt is not None else {}))
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
@@ -1118,6 +1446,14 @@ def worker(argv):
             benchmark = load_matrix(selected.benchmark_plan)
             size = selected.benchmark_plan.stat().st_size
             benchmark_resources = _history_resources(sum(c["level"] for c in benchmark["cohorts"]), size)
+            if selected.normalization_parity:
+                parity_resources = _normalization_resources(selected.out)
+                benchmark_resources = {**benchmark_resources, "global_host_obligation_bytes":
+                    benchmark_resources["global_host_obligation_bytes"] + parity_resources["global_host_obligation_bytes"],
+                    "per_rank_payload_bytes": benchmark_resources["per_rank_payload_bytes"] + parity_resources["per_rank_payload_bytes"]}
+                parity_resources = {**parity_resources,
+                    "total_global_host_obligation_bytes": benchmark_resources["global_host_obligation_bytes"],
+                    "input_sha256": hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest()}
         if selected.history_input is not None:
             if (type(selected.history_run_id) is not str or len(selected.history_run_id) != 32
                     or any(char not in "0123456789abcdef" for char in selected.history_run_id)):
@@ -1291,11 +1627,15 @@ def main(argv=None):
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
+    parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
     parser.add_argument("--execution-rows", type=int, help="private prepared MTP row envelope; requires explicit depth/parallel")
     parser.add_argument("--router-row-input", type=Path, help="private four-row layer0 capture DATA; diagnostic overhead only")
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if args.normalization_parity and (args.benchmark_plan is None or not args.reference_tiles
+            or args.scheduler_trace is not None or args.router_row_input is not None or args.history_input is not None):
+        parser.error("normalization parity requires benchmark/reference-tiles and excludes other captures")
     if args.execution_rows is not None and not 1 <= args.execution_rows <= 65535:
         parser.error("private execution rows must be in 1..65535")
     if args.router_row_input is not None and (args.history_input is not None or args.benchmark_plan is not None):
@@ -1320,6 +1660,8 @@ def main(argv=None):
         prefix += ["--dense-implementation", args.dense_implementation]
     if args.reference_tiles:
         prefix += ["--reference-tiles"]
+    if args.normalization_parity:
+        prefix += ["--normalization-parity"]
     if args.execution_rows is not None:
         prefix += ["--execution-rows", str(args.execution_rows)]
     if args.benchmark_plan is not None:
