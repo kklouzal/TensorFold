@@ -667,8 +667,21 @@ model-buffer attribution. Source, SDK and health were preserved, and execution
 retired with exit 0/PID 0 and no cleanup errors. Combined gate:
 `reference-owner-engine-integration-v1/target-v1/final20-CPU408-GPU17-prebudget-gate-v1.json`,
 SHA256 `a44c103bf8e283854166abe0f235a3ea0085fa00d308263e87570bbaa1f972f5`.
-Installed application, enabled model/state behavior, output quality,
-resource/P3 comparisons and selection remain separate. Omitting the private
+The combined application image from source `899934ec`, image
+`sha256:597c743531a328aeaf5d711d2e86c5a25ff0d1bd652b95275bf45ff4f3073a42`,
+contains 785 installed runtime files and passed 744 distinct CPU controls on
+the pinned V100 host's x86 runtime, with CUDA uninitialized. The first batch
+recorded 733 passes and eight failures: an extracted-startup test omitted a
+real initializer assignment and used outdated agreement-field positions.
+After correcting that fixture and adding three independent field-disagreement
+cases, the same image passed the entire affected module (37 tests, no skips).
+The 707 unaffected passes are retained; 26 affected passes were repeated,
+not added again. Runtime files were unchanged and both test containers retired
+without OOM or cleanup errors; the initial failed result remains preserved.
+Installed gate: `combined-core-app-899934-v1/genuine-combined-core-installed-gate-v1.json`,
+SHA256 `567c09d7b7178074863ad2d2ccfc322a9ca51a02cef1a9efefb4d43613f4eed4`.
+Enabled model/state behavior, output quality, resource/P3 comparisons and
+selection remain separate. Omitting the private
 option and retaining `inherit` preserve the original reference/native selection
 and existing EMPTY behavior; no public/admin or broader native promotion is made.
 

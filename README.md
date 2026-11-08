@@ -68,6 +68,8 @@ reference Tile128 preparation](docs/v100-adaptive-validation.md#private-grouped-
 The integrated source passed 408 CPU and 17 updated GPU checks; component
 results and memory accounting remain separate from installed-model quality,
 performance selection and deployment defaults.
+The combined application image also passed 744 distinct installed CPU controls
+after a startup-fixture correction; enabled full-model performance remains pending.
 The private launcher can also [prepare a larger MTP verification envelope](docs/benchmarking.md#private-verification-row-envelope-trials)
 before loading; memory and throughput qualification remain required.
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)
