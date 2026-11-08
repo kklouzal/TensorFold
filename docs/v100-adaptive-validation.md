@@ -441,10 +441,14 @@ independent installed-baseline evidence while preserving the generation native
 retention barrier. Public stats fields remain unchanged; constructor refusal
 diagnostics are bounded and retained in operator tracebacks.
 
-This advances source integration only. Installed successor admission, actual
-C27 activity, model/quality/performance, native encoder/Jinja heap, allocator/RSS,
-C-stack and broader managed/media profiles remain separate gates. The immediate
-next target run is a short correctness smoke and throughput benchmark.
+The installed `7ea3d8ce` successor subsequently passed 214 focused CPU checks
+with no skips, then admitted the actual model with 32 Q4 full-window States on
+each of eight V100 ranks. Arithmetic MTP/cold-serial smoke passed and the
+[partial phase reference](benchmarking.md#first-sc117-q4-reference) completed
+levels 1–16 before intentional cancellation during 24. This advances installed
+admission and bounded execution evidence; it does not qualify actual C27
+activity, 32 active requests, complete model quality/performance, native
+encoder/Jinja heap, allocator/RSS, C-stack or broader managed/media profiles.
 
 ## Neutral artifact I/O boundary (A1)
 

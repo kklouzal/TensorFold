@@ -10,7 +10,8 @@ The V100 source now has one App-owned host-payload pool with grants before
 allocation and ownership through worker, socket and error retirement. Its C27
 joint-reservation control passes with unchanged service limits; 591 distinct
 CPU test nodes and 21 subtests passed across the explicitly scoped runtime
-environments. The installed successor and token/s benchmark remain pending.
+environments. The installed successor subsequently loaded the model, materialized
+32 full-window Q4 States on each rank and completed the partial benchmark below.
 See [the host-credit scope](docs/v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
 
 Personal V100 deployment profiles cap Q8 KV at 24 concurrent requests and the
@@ -21,8 +22,11 @@ See [the profile configuration](deploy/v100/README.md#personal-concurrency-ceili
 The standard [V100 phase benchmark](docs/benchmarking.md) reuses one loaded
 service across levels 1, 2, 4, 8, 16, 24 and 32, within each profile's cap.
 It reports prefill/decode CUDA-stream envelopes, separate native/client timings,
-and coherent backend-owner overlap evidence. Tool checks passed; actual model
-measurements and 32-slot admission still require the target run.
+and coherent backend-owner overlap evidence. The first Q4 reference completed
+levels 1–16 with verified active-owner overlap; 24 was intentionally cancelled
+and 32 was not run so shared-path profiling could take priority. This does not
+qualify a complete sweep or 32 simultaneously active requests. See the
+[measured reference and limits](docs/benchmarking.md#first-sc117-q4-reference).
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload

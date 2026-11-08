@@ -43,10 +43,12 @@ Private receipts are provenance, not dependencies for fresh-checkout tests.
 
 Ordinary fixed-profile HTTP now has source-verified global host phase credits,
 including worker/error tails and actual metadata/ID conversions. The recorded C27
-joint-reservation control and 591 distinct CPU nodes plus 21 subtests passed;
-the installed successor, live C27 admission and short throughput run remain
-pending. Managed profile publication and native allocator/RSS qualification keep
-their separate gates. See [the integrated source scope](../v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
+joint-reservation control and 591 distinct CPU nodes plus 21 subtests passed.
+The installed successor has since admitted 32 full-window Q4 States per rank
+and completed the [first partial throughput reference](../benchmarking.md#first-sc117-q4-reference)
+through 16 active requests. Live C27 activity, the complete sweep, managed
+profile publication and native allocator/RSS qualification keep their separate
+gates. See [the integrated scope](../v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
 
 “Implemented” below identifies existing starting source and bounded software
 controls, not completion of the full governing subsystem. Qualification and

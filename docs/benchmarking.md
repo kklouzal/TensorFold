@@ -128,3 +128,39 @@ Keep image/weights/source/driver/GPU clocks, method, KV format, context, fronten
 caps, caches, background load and execution settings fixed within each curve.
 A different cache-format profile is a separately loaded curve, never a silent
 fallback or a restart per level.
+
+## First SC117 Q4 reference
+
+The first descriptive reference used eight V100-SXM2-32GB GPUs, SC117 IQ3_S
+revision `90a3350cd800ec1fe0d1660a38414ad9e985782f`, shared-Q8 MTP depth 4,
+TP8/PP1/ETP4, ISO4 KV, configured context 262,144, 32 full-window slots and
+eager prefill rows 256. Application source was `7ea3d8ce`, immutable image
+`sha256:0a13de3c01a4171139a0fa120b7a859ddc8b8f9c224bd191eacbdbb9df94ff75`,
+with benchmark tools at `d68d3573`. Each measured request had 64 uncached input
+tokens and 256 output IDs; each level ran once after the separate warmup.
+
+| Concurrent requests | Prefill envelope token/s | Decode envelope token/s | HTTP-wall output token/s | Active-owner peak |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 17.1962 | 2.6097 | 2.5200 | 1 |
+| 2 | 17.1927 | 3.1797 | 3.1177 | 2 |
+| 4 | 17.7008 | 4.6617 | 4.5986 | 4 |
+| 8 | 17.0966 | 5.4382 | 5.4038 | 8 |
+| 16 | 15.3982 | 5.3763 | 5.3682 | 16 |
+
+These are the inclusive envelopes defined above, including submission gaps;
+they are not kernel-busy rates. There is no repeated-sample uncertainty estimate
+or matched optimization claim. Before the matrix, all eight ranks reported 32
+materialized full-window States and the arithmetic MTP/cold-serial smoke matched.
+That allocation does not prove 32 active requests or populated full histories.
+
+The operator intentionally stopped during level 24 to prioritize shared-path
+profiling. Level 24 is cancelled/unmeasured and 32 is unrun; the full-sweep result
+remains false. Normal launcher retirement completed, GPU workers exited, and
+health/source checks matched. Raw cancellation and incomplete-matrix errors are
+retained. Private provenance is
+`tp8-etp4-standard-iso4-c32-v1/intentional-partial-baseline-gate-v1.json`, SHA256
+`e557283e1862927794c5e0e96cd2b4972c906075d13fb224ed71fc84e47cb4ca`.
+Q8 and longer-input performance, broader output quality and full-window activity
+remain unqualified. The current objectives are 4,500 prefill and 450 aggregate
+decode token/s, with shared implementation work preceding topology tuning;
+these objectives are not measured results or hardware ceilings.
