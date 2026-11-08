@@ -567,6 +567,8 @@ class OwnerBuffers:
             self.descriptors_host = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64,
                                                 pin_memory=self.queries.is_cuda)
             self.global_stats = torch.empty((self.rows, 12, 2), dtype=torch.float32, device=device)
+            if self.reference_tiles is not None:
+                self.reference_tiles.bind_global_statistics(self.partial, self.global_stats)
             self.lane_rows = torch.zeros((self.rows,), dtype=torch.int32, device=device)
             self.native_layer = torch.zeros((1,), dtype=torch.int32, device=device)
             if self.queries.is_cuda:
@@ -921,6 +923,11 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
         raise ValueError("unsupported owner attention graph family")
     if buffers.owner_graph_family != "uncaptured" and (not native_selected or buffers.owner_graphs is None):
         raise RuntimeError("owner attention graph family was not prepared before serving")
+    if (not native_selected and reference_tiles is not None
+            and (owner.global_stats is None
+                 or reference_tiles.normalization_workspace is not owner.partial
+                 or reference_tiles.normalization_output is not owner.global_stats)):
+        raise RuntimeError("reference tile global normalization was not prepared on the admitted owner")
     if native_selected:
         from tensorfold.cuda.sm70.paged_attention import KERNEL_FAMILY
 
@@ -1041,10 +1048,20 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
         partials = owner.partials.reshape(-1)[:8 * partial.numel()].view(8, *partial.shape)
         comm.all_gather(partial, partials)
         normalized = []
+        global_normalization = None
+        if reference_tiles is not None:
+            from tensorfold.cuda.sm70.reference_owner_tiles import merge_global_statistics
+
+            global_normalization = merge_global_statistics(partials, owner.partial, owner.global_stats,
+                group_start, [(state.kv_status, first, last) for state, _, first, last, _, _ in selected_segments],
+                layer.index)
         for state, cache, row, query, ids, visible in jobs:
-            pieces = partials[group_start:group_start + 4, row]
-            maximum, denominator = merge_statistics(pieces[..., 0], pieces[..., 1],
-                                                     status=state.kv_status, layer=layer.index)
+            if global_normalization is None:
+                pieces = partials[group_start:group_start + 4, row]
+                maximum, denominator = merge_statistics(pieces[..., 0], pieces[..., 1],
+                                                         status=state.kv_status, layer=layer.index)
+            else:
+                maximum, denominator = global_normalization[0][row], global_normalization[1][row]
             normalized.append((state, cache, row, query, ids, visible, maximum, denominator))
         value_part = owner.partial.reshape(-1)[:count * 4 * c.heads * c.head_dim].view(count, 4 * c.heads, c.head_dim)
         for state, cache, row, query, ids, visible, maximum, denominator in normalized:

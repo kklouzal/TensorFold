@@ -74,6 +74,7 @@ class ReferenceTiles:
         self._token = None
         self.closed = False
         self.workspace = self.mask = self.indices = self.half = None
+        self.normalization_workspace = self.normalization_output = None
         if (workspace.dtype != torch.float32 or not workspace.is_contiguous()
                 or workspace.numel() * workspace.element_size() < WORKSPACE_BYTES
                 or workspace.data_ptr() % 512):
@@ -104,11 +105,30 @@ class ReferenceTiles:
         if not self.closed:
             raise RuntimeError("reference tile views require proven owner retirement")
         self.workspace = self.mask = self.indices = self.half = None
+        self.normalization_workspace = self.normalization_output = None
+
+    def bind_global_statistics(self, workspace, output):
+        """Bind existing local/global slabs once, after native owner preparation."""
+        if (self.closed or self.normalization_workspace is not None
+                or output.ndim != 3 or output.shape[1:] != (12, 2) or output.shape[0] < 1
+                or workspace.dtype != torch.float32 or output.dtype != torch.float32
+                or workspace.device != self.workspace.device or output.device != self.workspace.device
+                or not workspace.is_contiguous() or not output.is_contiguous() or workspace.data_ptr() % 512
+                or workspace.nbytes < global_normalization_workspace_bytes(output.shape[0])
+                or any(torch._C._overlaps(a, b) for a, b in
+                       ((workspace, output), (workspace, self.workspace), (output, self.workspace)))):
+            raise ValueError("global reference normalization needs fresh disjoint paid owner slabs")
+        self.normalization_workspace, self.normalization_output = workspace, output
 
     def record(self):
         return {"policy": "reference-owner-tile128-preparation-v1", "borrowed_device_bytes": WORKSPACE_BYTES,
                 "additional_device_bytes": 0, "module_code_residency": "separate-unmeasured", "source": "already-paid owner.partials receive slab",
-                "tile": TILE, "head_dim": DIM, "attention_arithmetic": "unchanged-ATen-reference"}
+                "tile": TILE, "head_dim": DIM, "attention_arithmetic": "unchanged-ATen-reference",
+                "global_normalization": {
+                    "policy": "scalar-reductions-batched-pointwise-v1",
+                    "prepared": self.normalization_workspace is not None,
+                    "additional_device_bytes": 0,
+                    "rows": None if self.normalization_output is None else self.normalization_output.shape[0]}}
 
     def verify(self, workspace, preparation):
         if (self.closed or self.workspace is not workspace or self.preparation != preparation
@@ -180,3 +200,113 @@ class _Tile:
             context.status, owner.half, self.count, cache.value_format.bits, cache.value_format.codec,
             context.slot, context.generation, context.layer)
         return owner.half[:self.count]
+
+
+def global_normalization_workspace_bytes(rows):
+    """Local-send/PV borrow; final M/S use the existing separate global slab."""
+    if type(rows) is not int or rows < 1:
+        raise ValueError("global normalization rows must be positive")
+    floats = (3 * 128 + 4 * 12) * rows
+    bools = (6 * 12 + 1) * rows + 2
+    return ((floats * 4 + bools + 3) // 4 + 5) * 4
+
+
+def merge_global_statistics(gathered, workspace, output, group_start, status_ranges, layer):
+    """Batch independent normalization work; retain each scalar reduction ABI.
+
+    The caller has submitted the statistics gather on this stream. `workspace`
+    is the now-retired local-send/PV slab; gathered receive data stays read-only
+    until every reduction/pointwise consumer is enqueued. Final M/S live in the
+    separate paid `output` slab through all later tile/PV consumers. No device
+    Tensor allocation occurs here. This is partial A21, not grouped QSA/top-k.
+    """
+    if gathered.ndim != 4 or type(status_ranges) not in (tuple, list):
+        raise ValueError("global reference normalization requires row statistics and reusable State ranges")
+    rows = gathered.shape[1]
+    heads, stride = 12, 128  # 512-byte aligned rows, matching scalar CUDA outputs.
+    if (gathered.dtype != torch.float32 or gathered.shape != (8, rows, heads, 2)
+            or not gathered.is_contiguous() or type(group_start) is not int or group_start not in (0, 4)
+            or type(layer) is not int or not 0 <= layer < 2**31
+            or workspace.dtype != torch.float32 or not workspace.is_contiguous()
+            or output.dtype != torch.float32 or not output.is_contiguous()
+            or output.ndim != 3 or output.shape[1:] != (heads, 2) or not 0 < rows <= output.shape[0]
+            or workspace.device != gathered.device or output.device != gathered.device
+            or workspace.data_ptr() % 512
+            or any(torch._C._overlaps(a, b) for a, b in
+                   ((gathered, workspace), (gathered, output), (workspace, output)))):
+        raise ValueError("global reference normalization requires disjoint paid FP32 owner slabs")
+    # Three padded rows (max, denominator, products) and one abs-finite span.
+    floats = (3 * stride + 4 * heads) * rows
+    bools = (2 * heads + 4 * heads + 1) * rows + 2
+    constant_start = (floats * 4 + bools + 3) // 4
+    if workspace.nbytes < global_normalization_workspace_bytes(rows):
+        raise ValueError("global reference normalization exceeds its paid local slab")
+    cursor = 0
+    for status, first, last in status_ranges:
+        if (type(first) is not int or type(last) is not int or first != cursor or not first < last <= rows
+                or status.dtype != torch.int32 or status.shape != (2,) or not status.is_contiguous()
+                or status.device != gathered.device
+                or any(torch._C._overlaps(status, slab) for slab in (gathered, workspace, output))):
+            raise ValueError("global reference normalization needs complete ordered State status ranges")
+        cursor = last
+    if cursor != rows:
+        raise ValueError("global reference normalization status ranges do not cover rows")
+    raw = workspace.view(-1)
+    maxima = raw[:rows * stride].as_strided((rows, heads), (stride, 1))
+    denominators = raw[rows * stride:2 * rows * stride].as_strided((rows, heads), (stride, 1))
+    product = raw[2 * rows * stride:3 * rows * stride].as_strided((rows, 4, heads), (stride, heads, 1))
+    absolute = raw[3 * rows * stride:floats].view(rows, 4, heads)
+    flags = raw.view(torch.uint8)[floats * 4:floats * 4 + bools].view(torch.bool)
+    finite_max = flags[:rows * heads].view(rows, heads)
+    finite_peer = flags[rows * heads:5 * rows * heads].view(rows, 4, heads)
+    bad_elements = flags[5 * rows * heads:6 * rows * heads].view(rows, heads)
+    bad_rows = flags[6 * rows * heads:6 * rows * heads + rows]
+    bad_state, needs_layer = flags[-2:-1].view(()), flags[-1:].view(())
+    constants = raw[constant_start:constant_start + 5]
+    zero, one = constants[0].view(()), constants[1].view(())
+    minus_two, layer_word, error_word = [constants[i:i + 1].view(torch.int32).view(()) for i in (2, 3, 4)]
+    zero.zero_()
+    one.fill_(1)
+    minus_two.fill_(-2)
+    layer_word.fill_(layer)
+    target = output.view(-1)
+    maximum = target[:output.shape[0] * heads].view(output.shape[0], heads)[:rows]
+    denominator = target[output.shape[0] * heads:].view(output.shape[0], heads)[:rows]
+    pieces = gathered[group_start:group_start + 4]
+    # EXACT old input shape/stride: [4,12] from [8,R,12,2]. Padded
+    # destinations and product rows retain scalar-output 512-byte alignment.
+    for row in range(rows):
+        torch.amax(pieces[:, row, :, 0], dim=0, out=maxima[row])
+    # isfinite has no ordinary out overload. abs(x)<inf implements the same
+    # finite predicate (including NaN/+-inf/+-0) using standard out operations.
+    torch.abs(maxima, out=absolute[:, 0])
+    torch.lt(absolute[:, 0], torch.inf, out=finite_max)
+    torch.where(finite_max, maxima, zero, out=maximum)
+    peer_maxima = pieces[..., 0].permute(1, 0, 2)
+    torch.abs(peer_maxima, out=absolute)
+    torch.lt(absolute, torch.inf, out=finite_peer)
+    torch.sub(peer_maxima, maximum[:, None], out=product)
+    torch.exp(product, out=product)
+    torch.where(finite_peer, product, zero, out=product)
+    torch.mul(product, pieces[..., 1].permute(1, 0, 2), out=product)
+    for row in range(rows):
+        torch.sum(product[row], dim=0, out=denominators[row])
+    torch.abs(denominators, out=absolute[:, 0])
+    torch.lt(absolute[:, 0], torch.inf, out=finite_max)
+    torch.logical_not(finite_max, out=finite_max)
+    torch.le(denominators, 0, out=bad_elements)
+    torch.logical_or(finite_max, bad_elements, out=bad_elements)
+    torch.any(bad_elements, dim=1, out=bad_rows)
+    # Every row for this State uses the same layer; aggregate only the error
+    # predicate, preserving sticky bits and the original first-failure layer.
+    for status, first, last in status_ranges:
+        torch.any(bad_rows[first:last], dim=0, out=bad_state)
+        error_word.copy_(bad_state)
+        error_word.mul_(16)
+        status[0].bitwise_or_(error_word)
+        torch.eq(status[1], minus_two, out=needs_layer)
+        torch.logical_and(bad_state, needs_layer, out=needs_layer)
+        torch.where(needs_layer, layer_word, status[1], out=status[1])
+    torch.gt(denominators, 0, out=finite_max)
+    torch.where(finite_max, denominators, one, out=denominator)
+    return maximum, denominator

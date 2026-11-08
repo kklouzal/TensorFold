@@ -77,7 +77,10 @@ The integrated source passed 408 CPU and 17 updated GPU checks; component
 results and memory accounting remain separate from installed-model quality,
 performance selection and deployment defaults.
 The combined application image also passed 744 distinct installed CPU controls
-after a startup-fixture correction; enabled full-model performance remains pending.
+after a startup-fixture correction; enabled full-model performance qualification remains pending.
+The source-only [batched reference global normalization](docs/v100-adaptive-validation.md#batched-reference-global-normalization-source-candidate)
+passed 169 pinned-runtime CPU checks; 15 SM70 GPU controls matched the unchanged
+scalar oracle. Installed-model, performance and default-release gates remain open.
 The private launcher can also [prepare a larger MTP verification envelope](docs/benchmarking.md#private-verification-row-envelope-trials)
 before loading; memory and throughput qualification remain required.
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)

@@ -685,6 +685,37 @@ selection remain separate. Omitting the private
 option and retaining `inherit` preserve the original reference/native selection
 and existing EMPTY behavior; no public/admin or broader native promotion is made.
 
+## Batched reference global normalization source candidate
+
+This partial A21 / Design Sections 10 and 15 increment batches independent
+global-normalization pointwise work inside the existing private reference-tile
+selection. It retains the unchanged scalar `merge_statistics` oracle, per-row
+four-peer/12-head `amax` and `sum` layouts and 512-byte scratch-row alignment, normalization before the Half
+probability cast, ordered peer folding and sticky per-State error/layer words.
+It does not implement top-k, full grouped attention or a new public selector.
+
+Owner preparation binds already-paid `owner.partial` and `global_stats` storage.
+The receipt's `global_normalization` marker reports
+`scalar-reductions-batched-pointwise-v1`, prepared state and row extent; missing
+or disconnected preparation fails before device/collective work. Gathered
+`owner.partials` stays read-only through all queued merge consumers before its
+reference-tile borrow. Final safe statistics remain in separate `global_stats`
+through all queued PV reads; reuse follows those consumers on the same stream. No new persistent device
+buffer is added. Legacy selection retains the original scalar path.
+
+The immutable canonical-source composition passed 169 pinned-x86 CPU controls
+and 15 actual SM70 GPU cases, zero skips, with Ruff/syntax checks. Raw FP32 bits
+and status match the scalar oracle at R1/5/40/160/256 and both four-rank groups,
+including adverse/empty/nonfinite/zero cases, slab reuse and component graph
+replay. Replay is not whole-attention/forward graph qualification. Source and
+health were preserved; both containers retired zero without OOM/cleanup errors.
+Gate: `global-normalization-batch-v1/target-v1/global-normalization-source-CPU169-GPU15-gate-v1.json`,
+SHA256 `731a8b98e54d8d9bff5d7314b7bcb8ef5eda3a366cde143308824523eda6196f`.
+This is source-component evidence using the existing `597c7435` SDK image,
+not a rebuilt installed application, full-model/quality/P3 gain or deployment
+default. Its earlier complete short curve remains historical evidence for its
+own unchanged source/image.
+
 ## Unchanged baseline reproducibility
 
 One unchanged `0a13de3c` instance completed all 28 preserved-request exchanges
