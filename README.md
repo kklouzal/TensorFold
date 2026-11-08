@@ -30,6 +30,8 @@ qualify a complete sweep or 32 simultaneously active requests. See the
 Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
 capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.
+The private launcher can also [select Dense alone for a controlled trial](docs/benchmarking.md#prepare-once-load-once-run-the-complete-short-matrix),
+with per-rank selection receipts; this does not promote a new runtime default.
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload

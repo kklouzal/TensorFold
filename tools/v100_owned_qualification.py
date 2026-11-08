@@ -628,10 +628,18 @@ def bound_receipt(engine):
             "qualification": "private candidate binding only; no full-native, quality or performance claim"}
 
 
-def publish_receipt(engine, output):
+def publish_receipt(engine, output, *, dense_implementation=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
+        from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat
+        actual = GGUFDense.implementation
+        if dense_implementation is not None and (
+                actual != dense_implementation or GGUFConcat.implementation != "reference"
+                or engine.w.meta.get("sm70_profile") != "reference"):
+            raise ValueError("private dense trial differs from its selected reference-profile binding")
+        receipt["dense_implementation"] = {"requested": dense_implementation, "actual": actual,
+                                           "concat": GGUFConcat.implementation}
         obligation = getattr(engine, "_owned_qualification_host", ())
         if obligation:
             receipt["history_host_obligation"] = {"global_bytes": obligation[0], "input_sha256": obligation[1]}
@@ -674,6 +682,7 @@ def worker(argv):
     parser.add_argument("--history-run-id")
     parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("--scheduler-trace", type=Path)
+    parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
     tail = selected.serve_args[1:] if selected.serve_args[:1] == ["--"] else selected.serve_args
@@ -702,7 +711,7 @@ def worker(argv):
                 except BaseException as primary:
                     _observer_failure(engine, primary)
                     raise
-            publish_receipt(engine, selected.out)
+            publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation)
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
@@ -727,6 +736,13 @@ def worker(argv):
         args = cli.build_parser().parse_args(["serve", *tail])
         if args.tp != 8 or args.expert_tensor_parallel_size != 4 or not 0 <= args.rank < 8:
             raise ValueError("private qualification requires explicit TP8/ETP4 rank ownership")
+        if selected.dense_implementation is not None:
+            from tensorfold.cuda.sm70.execution_policy import PROFILE_ENV
+            from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
+            if os.environ.get(PROFILE_ENV, "reference") != "reference":
+                raise ValueError("private dense trial requires the reference SM70 profile")
+            # Each supervised rank selects once, before construction, weight preparation and warmup.
+            GGUFDense.implementation = selected.dense_implementation
         obligation = () if prepared is None else (prepared[2]["global_host_obligation_bytes"], prepared[1])
         if benchmark_resources is not None:
             obligation = (benchmark_resources["global_host_obligation_bytes"],
@@ -860,6 +876,7 @@ def main(argv=None):
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("--scheduler-trace", type=Path)
+    parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -877,6 +894,8 @@ def main(argv=None):
     prefix = [sys.executable, str(Path(__file__).resolve()), "--worker", "--out", str(output)]
     if args.history_input is not None:
         prefix += ["--history-input", str(args.history_input.absolute()), "--history-run-id", uuid.uuid4().hex]
+    if args.dense_implementation is not None:
+        prefix += ["--dense-implementation", args.dense_implementation]
     if args.benchmark_plan is not None:
         prefix += ["--benchmark-plan", str(args.benchmark_plan.absolute())]
     if args.scheduler_trace is not None:

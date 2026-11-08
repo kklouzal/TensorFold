@@ -58,6 +58,18 @@ metadata obligation is passed through the existing private preparation/admission
 owner. Four CUDA event objects are reused sequentially between cohorts. Ordinary shipping class definitions/default instances and installed libraries
 remain unchanged; only the selected private instance uses source-owned wrappers.
 
+For a controlled dense-operator comparison, the private launcher accepts
+`--dense-implementation reference` or `--dense-implementation native32` before
+the `--` serve-argument separator. Keep `TENSORFOLD_SM70_PROFILE=reference`.
+Each worker selects Dense before model preparation and warmup; Concat remains
+reference. Every rank receipt records requested/actual Dense and Concat, and
+a mismatch prevents readiness. Omitting the option preserves prior selection.
+Use an immutable application image containing the exact candidate bytes and
+record its digest/source identity; the option cannot add code to an older image.
+This is a private trial selector, not an optimized-profile switch, production
+promotion or evidence of a speedup. Preserve matched inputs and all other
+settings, and run comparisons without the scheduler profiler.
+
 After normal readiness, perform the ordinary arithmetic MTP/cold-serial smoke
 checks in the same loaded container. The observer has an explicit unobserved
 pre-matrix phase. After the first planned cohort starts, it rejects unplanned

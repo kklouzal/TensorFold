@@ -108,18 +108,24 @@ def channel(monkeypatch):
         os.close(read)
 
 
-def test_parent_delegates_eight_ranks_and_borrows_supervised_pipe(monkeypatch, tmp_path):
+@pytest.mark.parametrize("dense", [None, "reference", "native32"])
+def test_parent_delegates_eight_ranks_and_borrows_supervised_pipe(monkeypatch, tmp_path, dense):
     captured = {}
     def supervise(commands, environments, **options):
         captured.update(commands=commands, environments=environments, options=options)
         os.fstat(options["pass_fds"][0])
         return 23
     monkeypatch.setattr(launcher, "supervise", supervise)
-    assert owned.main(["--gpus", "0,1,2,3,4,5,6,7", "--out", str(tmp_path / "new"),
+    selection = [] if dense is None else ["--dense-implementation", dense]
+    assert owned.main([*selection, "--gpus", "0,1,2,3,4,5,6,7", "--out", str(tmp_path / "new"),
                        "--", "model", "--backend", "cuda"]) == 23
     assert [env["CUDA_VISIBLE_DEVICES"] for env in captured["environments"]] == ["1", "2", "3", "4", "5", "6", "7", "0"]
     for command in captured["commands"]:
         assert command[:3] == [sys.executable, str(Path(owned.__file__).resolve()), "--worker"]
+        if dense is None:
+            assert "--dense-implementation" not in command
+        else:
+            assert command[command.index("--dense-implementation") + 1] == dense
         assert command[command.index("--tp") + 1] == "8"
         assert command[command.index("--") + 1] == "model"
     assert captured["options"]["stop_on_departure"] is True
@@ -164,6 +170,67 @@ def test_worker_uses_shared_parser_and_typed_private_capability(channel, monkeyp
     with pytest.raises(BlockingIOError):
         os.read(channel[0], 8)
 
+
+
+@pytest.mark.parametrize("dense", [None, "reference", "native32"])
+def test_dense_worker_selects_before_constructor_and_records_every_rank(channel, monkeypatch, tmp_path, dense):
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat
+    # An omitted selector preserves existing process behavior rather than silently resetting it.
+    monkeypatch.setattr(GGUFDense, "implementation", "reference" if dense else "native32")
+    monkeypatch.setattr(GGUFConcat, "implementation", "reference")
+    monkeypatch.delenv("TENSORFOLD_SM70_PROFILE", raising=False)
+    expected = dense or "native32"
+    monkeypatch.setattr(owned, "bound_receipt", lambda engine: {"rank": engine.rank})
+    calls = []
+    def serve(args):
+        assert GGUFDense.implementation == expected and GGUFConcat.implementation == "reference"
+        engine = NS(rank=args.rank, w=NS(meta={"sm70_profile": "reference"}),
+                    comm=NS(ready=lambda label: calls.append((args.rank, label))))
+        args._owned_expert_qualification.before_listener(engine)
+        return 0
+    monkeypatch.setattr(cli, "cmd_serve", serve)
+    selection = [] if dense is None else ["--dense-implementation", dense]
+    for rank in range(8):
+        argv = worker_args(tmp_path)
+        argv[argv.index("--rank") + 1] = str(rank)
+        assert owned.worker([*selection, *argv]) == 0
+        receipt = json.loads((tmp_path / f"rank-{rank}.json").read_text())
+        assert receipt["dense_implementation"] == {"requested": dense, "actual": expected, "concat": "reference"}
+    assert calls == [(rank, "owned_expert_qualification") for rank in range(8)]
+
+
+@pytest.mark.parametrize("bad", ["dense", "concat", "profile"])
+def test_dense_trial_mismatch_refuses_receipt_and_ready(channel, monkeypatch, tmp_path, bad):
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat
+    monkeypatch.setattr(GGUFDense, "implementation", "reference" if bad == "dense" else "native32")
+    monkeypatch.setattr(GGUFConcat, "implementation", "native32" if bad == "concat" else "reference")
+    engine = NS(rank=2, _abort_comm=False,
+                w=NS(meta={"sm70_profile": "optimized" if bad == "profile" else "reference"}),
+                comm=NS(ready=lambda _: pytest.fail("mismatch reached all-rank ready")))
+    monkeypatch.setattr(owned, "bound_receipt", lambda _: {})
+    with pytest.raises(ValueError, match="selected reference-profile binding"):
+        owned.publish_receipt(engine, tmp_path, dense_implementation="native32")
+    assert engine._abort_comm and os.read(channel[0], 8) == b"F"
+    assert not (tmp_path / "rank-2.json").exists()
+
+
+def test_dense_trial_refuses_whole_optimized_profile_before_constructor(channel, monkeypatch, tmp_path):
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "optimized")
+    monkeypatch.setattr(cli, "cmd_serve", lambda _: pytest.fail("unqualified profile reached constructor"))
+    with pytest.raises(ValueError, match="requires the reference SM70 profile"):
+        owned.worker(["--dense-implementation", "native32", *worker_args(tmp_path)])
+    assert os.read(channel[0], 8) == b"F"
+
+
+def test_private_dense_choice_refuses_invalid_parent_and_worker(channel, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "cmd_serve", lambda _: pytest.fail("invalid choice reached constructor"))
+    monkeypatch.setattr(launcher, "main", lambda *a, **k: pytest.fail("invalid choice launched workers"))
+    with pytest.raises(SystemExit) as parent:
+        owned.main(["--dense-implementation", "wmma", "--gpus", "0,1,2,3,4,5,6,7", "--out", str(tmp_path / "new"), "--", "model"])
+    with pytest.raises(SystemExit) as worker:
+        owned.worker(["--dense-implementation", "wmma", *worker_args(tmp_path)])
+    assert parent.value.code == worker.value.code == 2
+    assert not (tmp_path / "new").exists()
 
 def test_failed_receipt_poison_notifies_once_before_shared_cli_retirement(channel, monkeypatch, tmp_path):
     engine = NS(rank=3, _abort_comm=False)
