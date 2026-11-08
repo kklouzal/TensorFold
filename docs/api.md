@@ -627,10 +627,13 @@ A streamed request may send `return_progress: true` (llama.cpp's field; on CUDA 
 llama.cpp's `prompt_progress` frames while its prompt prefills: a chunk with no output (`delta` `{"role":
 "assistant", "content": null}`, `finish_reason` null) and `prompt_progress` `{"total", "cache", "processed",
 "time_ms"}`: the prompt's tokens, those its resumed prefix cache held, those its state holds now (cached ones
-included), and elapsed prefill milliseconds. Flash Next's concurrent engine (`--parallel N`) sends a frame when a
-lane takes the prompt and after each prefill pass. Gemma 4 sends a frame after each prefill pass, including its
-reused prefix in `processed`; a fully cached prompt needs no prefill pass. Frames stop before the first generated
-token. Other engines, the Mac server and requests that do not ask send none.
+included), and elapsed prefill milliseconds. Flash Next's concurrent engine (`--parallel N`) publishes status when a
+lane takes the prompt and after each prefill pass. Its bounded mailbox retains the latest status, so intermediate
+updates may coalesce before caller delivery; every published pass is not a separately guaranteed wire frame.
+Gemma 4 reports after each prefill pass, including its reused prefix in `processed`; a fully cached prompt needs
+no prefill pass. Frames stop before the first generated token. Other engines, the Mac server and requests that do
+not ask send no progress frames. Supported engines may still receive an internal prefill callback for disconnect
+and keepalive polling, including nonstream requests; that is independent of opting into progress frames.
 
 On CUDA, `GET /health` also carries counters a poller can difference into rates: `busy`, `requests_running`,
 `requests_total`, `completion_tokens_total` (the running replies' tokens included as they stream), and totals that

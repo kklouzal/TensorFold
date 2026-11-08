@@ -362,6 +362,36 @@ media image has a different installed application/manifest; this check does not
 qualify an installed successor, the complete host-credit integration, C27
 admission, native encoder/Jinja heap usage, model execution or performance.
 
+## Progress fixture contract reconciliation
+
+Three old stats/progress assertions failed on unchanged installed image
+`540c54b7`: internal engine progress callbacks remained active for disconnect
+polling even without requested wire progress, and the Scheduler delivered the
+latest coalesced status rather than every intermediate publication. The retained
+baseline gate is
+`http-stats-installed-baseline3-v1/installed540-stats-three-node-baseline-gate-v1.json`,
+SHA256 `1f3b4b996bd3e838c5e918a767a5892b8bc126f837c7ea31ab1f1c8a88897c47`.
+The source and bounded-cell contract introduced by `0a7a7509` independently
+establish the intended behavior; no runtime change was made for these fixtures.
+
+The corrected fake producer emits valid nondecreasing progress bounded by its
+unchanged prompt length. Chat and completion tests retain numeric bounds,
+pre-token order, usage, refusal and no-unsolicited-frame checks. Scheduler tests
+still require publication at rows 1, 4, 7 and 8; delivery must be a monotone valid
+subset ending at 8 before the token. A deterministic stalled-consumer control
+requires admission row 1 followed by latest row 8 before token 7. Documentation
+now distinguishes publication from potentially coalesced delivery.
+
+With only the held test overlay and committed test/documentation inputs, the
+whole stats module passed 33 tests with zero skips against unchanged installed
+image `540c54b7`. Ruff/syntax passed, CUDA remained uninitialized and the container
+exited 0 with PID 0 and no cleanup errors. Gate:
+`http-progress-fixture-installed540-v1/corrected-progress-installed540-CPU-gate-v1.json`,
+SHA256 `849f6ee82d80be4e4afbdf185229d7147c702353cafe23d188d969dacb0d82ca`.
+Baseline failures and the initial missing-documentation test-input error remain
+retained. This closes fixture drift, not the moving host-credit integration,
+model admission or performance qualification.
+
 ## Neutral artifact I/O boundary (A1)
 
 The source now separates bounded container/file validation from model and device

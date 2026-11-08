@@ -413,8 +413,9 @@ class Prefilling:
     def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, progress=None):
         self.progressed.append(progress is not None)
         if progress is not None:
-            for processed in (2, 5, len(prompt)):
-                if progress(len(prompt), 2, processed, processed * 10.0):
+            total = len(prompt)
+            for step, processed in enumerate((min(2, total), min(5, total), total), start=1):
+                if progress(total, min(2, total), processed, step * 10.0):
                     return {}
         on_tokens([ord("o"), ord("k"), 0])
         return {}
@@ -441,12 +442,24 @@ def test_return_progress_streams_llamacpp_prompt_progress_before_the_reply(tmp_p
         last = harness_accepts(events)
         assert last["processed"] == last["total"] and last["cache"] == 2
         first_text = next(i for i, e in enumerate(events) if e["choices"] and e["choices"][0]["delta"].get("content"))
-        assert max(marked) < first_text
     else:
         assert all(events[i]["choices"][0]["text"] == "" for i in marked)
+        first_text = next(i for i, e in enumerate(events) if e["choices"] and e["choices"][0].get("text"))
+    assert max(marked) < first_text
+    statuses = [events[i]["prompt_progress"] for i in marked]
+    for state in statuses:
+        assert all(type(state[key]) is int for key in ("total", "cache", "processed"))
+        assert 0 <= state["cache"] <= state["processed"] <= state["total"]
+        assert state["time_ms"] >= 0
+    assert all(state["total"] == statuses[0]["total"] for state in statuses)
+    assert all(all(after[key] >= before[key] for key in ("cache", "processed", "time_ms"))
+               for before, after in zip(statuses, statuses[1:]))
+    assert statuses[-1]["processed"] == statuses[-1]["total"]
     assert all(events[i]["usage"] is None for i in marked)
     assert "prompt_progress" not in plain and unasked == 200 and malformed == 400
-    assert app.engine.progressed == [True, False, False]
+    # Internal supported callbacks also poll disconnects/keepalive; only the
+    # requested writer emits SSE progress, as checked above.
+    assert app.engine.progressed == [True, True, True]
 
 
 def test_an_engine_without_progress_sends_no_progress_frames(tmp_path):
@@ -457,7 +470,8 @@ def test_an_engine_without_progress_sends_no_progress_frames(tmp_path):
     assert "prompt_progress" not in text and frames(text)[-1]["choices"][0]["finish_reason"] == "stop"
 
 
-def test_the_scheduler_reports_admission_and_each_reported_pass():
+@pytest.mark.parametrize("slow", [False, True], ids=["normal-consumer", "stalled-consumer"])
+def test_the_scheduler_reports_admission_and_each_reported_pass(slow):
     from tensorfold.cleanup import finish
     from tensorfold.cuda.scheduler import Scheduler
 
@@ -466,23 +480,34 @@ def test_the_scheduler_reports_admission_and_each_reported_pass():
 
         def __init__(self):
             self.streams, self.filling = {}, []
+            self.published = []
+            self.first_heard, self.completed = threading.Event(), threading.Event()
 
         def live(self):
             return len(self.streams) + len(self.filling)
 
         def admit(self, s):
             s.cached, s.rows = 1, 1
+            on_fill = s.on_fill
+            def publish(rows):
+                self.published.append((len(s.prompt), s.cached, rows))
+                on_fill(rows)
+            s.on_fill = publish
             self.filling.append(s)
 
         def round(self):
             done = []
             for s in list(self.filling):
+                if slow and s.rows == 1:
+                    if not self.first_heard.wait(5):
+                        raise AssertionError("admission status was not consumed before later publications")
                 s.rows = min(len(s.prompt), s.rows + 3)
                 if s.on_fill is not None:
                     s.on_fill(s.rows)
                 if s.rows == len(s.prompt):
                     self.filling.remove(s)
                     s.take([7], eos=(7,))
+                    self.completed.set()
                     done.append(s)
             return done
 
@@ -495,16 +520,36 @@ def test_the_scheduler_reports_admission_and_each_reported_pass():
         def drop(self):
             return []
 
-    scheduler = Scheduler(Passes(), max_streams=2).start()
+    decoder = Passes()
+    scheduler = Scheduler(decoder, max_streams=2).start()
+    heard, out, delivery = [], [], []
+    def progress(*values):
+        heard.append(values)
+        delivery.append(("progress", values[2]))
+        if slow and values[2] == 1:
+            decoder.first_heard.set()
+            if not decoder.completed.wait(5):
+                raise AssertionError("coordinator stalled while the caller held its progress callback")
+        return False
+    def emit(new):
+        out.extend(new)
+        if new:
+            delivery.append(("tokens", tuple(new)))
     try:
-        heard = []
-        out = []
-        stats_ = scheduler.submit(list(range(8)), 4, None, True, lambda new: out.extend(new),
-                                  progress=lambda *values: heard.append(values) or False)
+        stats_ = scheduler.submit(list(range(8)), 4, None, True, emit, progress=progress)
     finally:
         finish([scheduler.close])
-    assert [(total, cached, rows) for total, cached, rows, _ in heard] == [(8, 1, 1), (8, 1, 4), (8, 1, 7), (8, 1, 8)]
-    assert all(ms >= 0 for *_, ms in heard) and out == [7] and stats_["queue_s"] >= 0
+    published = [(8, 1, 1), (8, 1, 4), (8, 1, 7), (8, 1, 8)]
+    assert decoder.published == published
+    observed = [(total, cached, rows) for total, cached, rows, _ in heard]
+    assert observed and observed[-1] == published[-1]
+    assert all(value in published for value in observed)
+    assert all(after[2] >= before[2] and after[3] >= before[3] for before, after in zip(heard, heard[1:]))
+    assert all(total == 8 and cache == 1 and cache <= rows <= total and ms >= 0 for total, cache, rows, ms in heard)
+    assert delivery[-1] == ("tokens", (7,)) and delivery[-2] == ("progress", 8)
+    if slow:
+        assert observed == [published[0], published[-1]]
+    assert out == [7] and stats_["queue_s"] >= 0
 
 
 def test_a_replayed_stream_sums_its_queue_time():

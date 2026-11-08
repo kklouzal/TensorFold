@@ -56,6 +56,11 @@ part construction. An isolated source check passed 78 CPU tests with no skips;
 the complete host-credit integration remains pending. See
 [the callback scope](docs/v100-adaptive-validation.md#prompt-encoding-allocation-boundaries).
 
+Progress fixtures now verify the existing internal polling and coalesced-delivery
+contract while keeping wire progress opt-in. All 33 stats tests passed against
+the unchanged installed V100 runtime. See
+[the fixture reconciliation](docs/v100-adaptive-validation.md#progress-fixture-contract-reconciliation).
+
 Source startup diagnostics now separate the existing GGUF target-load interval,
 stock-MTP attachment, vocabulary binding and surrounding engine setup. They
 report host elapsed/submission time without extra device synchronization or
