@@ -198,3 +198,40 @@ Q8 and longer-input performance, broader output quality and full-window activity
 remain unqualified. The current objectives are 4,500 prefill and 450 aggregate
 decode token/s, with shared implementation work preceding topology tuning;
 these objectives are not measured results or hardware ceilings.
+
+## Matched owner-attention pilot
+
+A subsequent paired pilot kept the same SC117 target/MTP weights, eight V100s,
+ISO4, configured context 262,144, 32 resident slots, MTP depth 4, eager rows 256
+and unchanged application image `0a13de3c`. Both arms prepared the native owner
+workspaces and verified the same complete input closure. Only the explicit
+startup trial selected reference versus native owner attention; graphs remained
+uncaptured and Dense/Concat stayed reference. No profiler or build overlapped
+the measured requests.
+
+Each request used 64 uncached input tokens and 128 output IDs. Prompt IDs matched
+across fresh service/run identities; each arm ran one repetition after its
+separate warmup. Native ran before the corrected reference. The inclusive
+envelope definitions above still apply:
+
+| Active requests | Reference prefill token/s | Native prefill token/s | Reference decode token/s | Native decode token/s |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 17.4576 | 64.6492 | 2.8001 | 3.4745 |
+| 8 | 17.0336 | 56.0141 | 5.5198 | 10.3801 |
+
+Actual backend owner peaks were 1 and 8 in both arms. All 128 output IDs matched
+in the single-request case. Every eight-request continuation differed between
+arms, with first differences at output indices 6–94. That row therefore includes
+changed token, routing and draft trajectories; it is not an isolated kernel
+speedup. Even C1 used different speculative work: native ran 45 rounds with
+109 drafted/82 accepted tokens, versus reference's 43 rounds and 101/84.
+Neither row isolates kernel-only cost. The samples establish neither
+repeatability nor model-quality or
+numerical acceptance. Native attention remains an unqualified trial.
+
+An initial reference attempt stopped at an incorrect supervisor stats-field
+lookup before measuring any row. Its failure is retained separately and excluded
+from this pair. Both measured arms retired normally with matching source/health
+checks. Private provenance:
+`native-owner-clean-pilot-v1/matched-owner-pilot-gate-v1.json`, SHA256
+`d8751c4a4dd76a3e05d3ff0da06ce2b91f1138913fd751b369520826e492fa15`.

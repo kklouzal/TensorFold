@@ -36,6 +36,9 @@ The private M32 Dense candidate passed its GPU component checks; integrated
 [performance and graph qualification remain separate](docs/v100-adaptive-validation.md#private-dense-m32-component-checkpoint).
 Native owner-attention controls passed on V100, but nonuniform comparisons are
 not bit-exact; [full-model qualification remains open](docs/v100-adaptive-validation.md#shared-owner-attention-diagnostics).
+The [first matched owner-attention pilot](docs/benchmarking.md#matched-owner-attention-pilot)
+records higher trial rates and changed concurrent outputs; repeatability and
+quality acceptance remain pending.
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload
