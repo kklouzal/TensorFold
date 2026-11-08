@@ -27,10 +27,17 @@ levels 1–16 with verified active-owner overlap; 24 was intentionally cancelled
 and 32 was not run so shared-path profiling could take priority. This does not
 qualify a complete sweep or 32 simultaneously active requests. See the
 [measured reference and limits](docs/benchmarking.md#first-sc117-q4-reference).
+
+A later [complete grouped/reference short curve](docs/benchmarking.md#complete-grouped-and-reference-tile-short-curve)
+completed all seven levels with matching backend-owner peaks. At 32 requests it
+observed 19.9860 prefill and 8.6503 aggregate decode token/s (HTTP-wall 8.6590).
+This single short-prompt run remains far below the 4,500/450 objectives; it is
+not a matched gain, populated-long-history, quality or deployment-default qualification.
 Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
 capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.
-Active captures label reference-attention and HC dispatch work for attribution.
+Active captures label reference-attention and HC dispatch work for attribution;
+the updated hook passed 205 selected-x86 CPU checks, while its new trace run is pending.
 The private launcher can also [select Dense alone for a controlled trial](docs/benchmarking.md#prepare-once-load-once-run-the-complete-short-matrix),
 with per-rank selection receipts; this does not promote a new runtime default.
 The private M32 Dense candidate passed its GPU component checks; integrated

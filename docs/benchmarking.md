@@ -198,6 +198,14 @@ The five-window limit, scheduler-thread guard and synchronization behavior are
 unchanged. Nested/inclusive ranges and correlated GPU activity aid attribution;
 annotation overhead is diagnostic, not a clean throughput measurement.
 
+Tool source `5e412dfd2154623ecf048d57bae07d7081475d0e` passed 205 CPU controls
+with zero skips on the selected x86 runtime in the same `597c7435` application
+image; CUDA remained uninitialized. The earlier local ARM resource-guard refusal
+is retained separately and is not a new target failure. This validates the
+expanded hook's controls, not an actual new profiling result. Gate:
+`combined-core-residual-trace-preparation-v1/CPU205-actual-gate-v1.json`, SHA256
+`3535996d18a73bac1c86f6a1146674c1bdf94680fa23118a4c4b76852cd2387d`.
+
 The private qualification launcher additionally accepts
 `--scheduler-trace /qualification-output/fresh-trace-directory` together with
 `--benchmark-plan`. Use a fresh directory and a separate supervised diagnostic
@@ -230,6 +238,63 @@ Keep image/weights/source/driver/GPU clocks, method, KV format, context, fronten
 caps, caches, background load and execution settings fixed within each curve.
 A different cache-format profile is a separately loaded curve, never a silent
 fallback or a restart per level.
+
+
+## Complete grouped and reference-tile short curve
+
+One immutable application, source `899934ecc00ac027f290ebd6c230ca47b2821231`,
+image `sha256:597c743531a328aeaf5d711d2e86c5a25ff0d1bd652b95275bf45ff4f3073a42`,
+completed all seven levels in one loaded container. The SC117 IQ3_S target with
+shared-Q8 MTP retained TP8/ETP4/PP1, ISO4 (`rotorquant-iso4-sm70-v1`) KV, context
+262,144 with 32 materialized and
+reserved full-window States on every rank, MTP depth 4, eager prefill rows 256
+and an execution-row envelope of 160. Grouped down `grouped-v1` and reference
+Tile128 preparation were enabled; Dense/Concat stayed reference and the native
+owner-attention trial was off. Half/Router/EMPTY environment overrides were
+absent. This is the recorded combination, not an all-candidate selection.
+
+Each request used 64 uncached input IDs and 128 output IDs. There was one
+repetition per level: 87 measured requests. One separate 16-output-token warmup
+and two arithmetic MTP/cold-serial smoke requests are excluded from this table.
+All measured replies retained zero cached tokens, full token-ID/hash/length
+checks and actual worker-boundary owner peaks matching the requested levels.
+No profiler or concurrent target job ran during measurement.
+
+| Concurrent requests | Prefill envelope token/s | Aggregate decode envelope token/s | HTTP-wall output token/s | Active-owner peak |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 23.5970 | 3.2606 | 3.0504 | 1 |
+| 2 | 23.2190 | 4.7486 | 4.5323 | 2 |
+| 4 | 27.0960 | 5.7081 | 5.5776 | 4 |
+| 8 | 24.5767 | 7.0107 | 6.9022 | 8 |
+| 16 | 22.4508 | 7.8726 | 7.8442 | 16 |
+| 24 | 21.3734 | 8.5347 | 8.5293 | 24 |
+| 32 | 19.9860 | 8.6503 | 8.6590 | 32 |
+
+The [declared denominators](#denominators-and-actual-overlap) apply: rank0 CUDA
+stream envelopes are inclusive, can overlap and contain submission/communication
+gaps. They are neither kernel-only nor additive phase times. Decode is aggregate
+committed output after each request's first token, without a TP8 multiplier.
+HTTP-wall uses all completed output tokens and a separate client interval,
+including recording/I/O and transport; it need not equal the decode rate.
+The event/owner observer is part of this measured procedure, so these are not
+uninstrumented shipping-TPS measurements.
+
+This is a **descriptive single short curve**. It has no matched repeats,
+variance estimate, gain/winner selection, output-quality acceptance or
+deployment-default release. Full-window allocation and owner peaks do not prove
+populated near-full histories, sustained 32-owner occupancy throughout every
+interval, or the longer-input matrix. The observed rates remain far below the
+4,500 prefill / 450 aggregate decode token/s objectives. The earlier partial
+reference below remains historical; different output budgets and execution
+settings prevent interpreting these tables as a controlled speedup comparison.
+
+Client, launcher, container and controller exited successfully. The container
+retired with PID 0, no OOM or cleanup errors, and unchanged recorded source and
+GPU health. Full-precision rows and raw exchanges
+are retained in `combined-core-model-899934-v1/live-matrix.json` and
+`combined-core-model-899934-v1/actual-model`. Sealed gate:
+`combined-core-model-899934-v1/combined-core-full7-actual-gate-v1.json`, SHA256
+`5507eaf035687779d093fe716c9d544a2e3fc386d4e0cb02fbda81393400f3ea`.
 
 ## First SC117 Q4 reference
 
