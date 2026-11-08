@@ -11,6 +11,93 @@ from tensorfold.gguf_file import PackedTensor, resolve_gguf
 from tensorfold.families.qwen4_exp.gguf import decode_rows, metadata_config
 
 
+def _incumbent_dense_m32(linear, x, out):
+    """Frozen pre-candidate padding/product/copy oracle, independent of dispatch."""
+    import torch
+    for start in range(0, x.shape[0], 32):
+        count = min(32, x.shape[0] - start)
+        padded = torch.zeros((32, linear.k), dtype=x.dtype, device=x.device)
+        padded[:count].copy_(x[start:start + count])
+        result = torch.mm(padded, linear.weight.T)
+        out[start:start + count].copy_(result[:count])
+    return out
+
+
+def _aligned_cpu_dense(shape):
+    import torch
+    count = int(np.prod(shape))
+    owner = torch.zeros(count + 256, dtype=torch.float16)
+    offset = ((-owner.data_ptr()) % 512) // owner.element_size()
+    return owner[offset:offset + count].view(shape)
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("rows", [1, 31, 32, 33, 64, 65, 256])
+def test_native32_fulltile_guard_dispatch_and_tail_use_frozen_oracle(rows, monkeypatch):
+    """CPU spies validate dispatch only, NOT physical GPU numeric equivalence."""
+    import torch
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
+    x, out = _aligned_cpu_dense((rows, 64)), _aligned_cpu_dense((rows, 64))
+    x.copy_(torch.arange(rows * 64).view(rows, 64).remainder(31).half() / 32)
+    linear = GGUFDense(torch.eye(64, dtype=torch.float16))
+    linear.implementation = "native32"
+    calls = []
+    monkeypatch.setattr(linear, "can_matmul_prepared", lambda dtype: True)
+    def prepared(source, target):
+        calls.append((source.shape, target.shape))
+        return _incumbent_dense_m32(linear, source, target)
+    monkeypatch.setattr(linear, "matmul_prepared", prepared)
+    expected = _incumbent_dense_m32(linear, x, torch.empty_like(out))
+    assert linear.matmul_reference(x, out=out) is out
+    assert len(calls) == rows // 32
+    assert torch.equal(out.view(torch.int16), expected.view(torch.int16))
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("case", ["reference", "input-stride", "output-stride", "input-align",
+                                  "output-align", "input-negative", "output-negative", "weight-grad", "weight-parameter",
+                                  "input-output-overlap", "output-weight-overlap", "later-input-overlap"])
+def test_fulltile_guard_preserves_incumbent_for_unsupported_layouts(case, monkeypatch):
+    import torch
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
+    x, out = _aligned_cpu_dense((64, 64)), _aligned_cpu_dense((64, 64))
+    linear = GGUFDense(torch.eye(64, dtype=torch.float16))
+    linear.implementation = "reference" if case == "reference" else "native32"
+    if case == "input-stride":
+        x = _aligned_cpu_dense((64, 128))[:, ::2]
+    elif case == "output-stride":
+        out = _aligned_cpu_dense((64, 128))[:, ::2]
+    elif case == "input-align":
+        x = _aligned_cpu_dense((64 * 64 + 1,))[1:].view(64, 64)
+    elif case == "output-align":
+        out = _aligned_cpu_dense((64 * 64 + 1,))[1:].view(64, 64)
+    elif case == "input-negative":
+        x = torch._neg_view(x)
+    elif case == "output-negative":
+        out = torch._neg_view(out)
+    elif case == "weight-grad":
+        linear.weight.requires_grad_()
+    elif case == "weight-parameter":
+        linear.weight = torch.nn.Parameter(linear.weight, requires_grad=False)
+    elif case == "input-output-overlap":
+        out = x
+    elif case == "output-weight-overlap":
+        out = linear.weight
+    elif case == "later-input-overlap":
+        owner = _aligned_cpu_dense((96, 64))
+        x, out = owner[:64], owner[32:]
+    monkeypatch.setattr(linear, "can_matmul_prepared", lambda dtype: True)
+    def forbidden(*args):
+        pytest.fail("unsupported dense layout selected the prepared candidate")
+    monkeypatch.setattr(linear, "matmul_prepared", forbidden)
+    # Some legacy alias/autograd combinations can reject during copy; the
+    # important boundary is that the new prepared path cannot consume them.
+    try:
+        linear.matmul_reference(x, out=out)
+    except RuntimeError as error:
+        assert case in ("weight-grad", "output-weight-overlap") and "grad" in str(error)
+
+
 @pytest.mark.parametrize("kind,width", [(0, 33), (1, 33), (30, 33), (8, 96), (7, 96),
                                       (12, 512), (13, 512), (20, 96)])
 def test_mixed_cpu_decoders_match_independent_scalar_oracle(kind, width):

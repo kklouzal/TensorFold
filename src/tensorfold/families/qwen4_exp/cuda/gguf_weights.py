@@ -171,8 +171,26 @@ class GGUFDense:
             out = torch.empty((x.shape[0], self.n), dtype=dtype, device=x.device)
         if out.shape != (x.shape[0], self.n) or out.device != x.device:
             raise ValueError("GGUF linear output has the wrong shape or device")
+        # Existing native32 is the candidate selector; reference remains the
+        # incumbent. Full tiles may reuse the already-defined prepared path,
+        # never a larger GEMM or a changed output leading dimension. Whole-call
+        # disjointness also excludes output overlapping a later input tile.
+        prepared_tiles = (self.implementation == "native32"
+            and type(x) is type(out) is type(self.weight) is torch.Tensor and self.can_matmul_prepared(dtype)
+            and x.is_contiguous() and out.is_contiguous()
+            and x.stride() == (self.k, 1) and out.stride() == (self.n, 1)
+            and not x.requires_grad and not out.requires_grad and not self.weight.requires_grad
+            and not x.is_neg() and not x.is_conj() and not out.is_neg() and not out.is_conj()
+            and not self.weight.is_neg() and not self.weight.is_conj())
+        if prepared_tiles:
+            prepared_tiles = not torch._C._overlaps(out, x) and not torch._C._overlaps(out, self.weight)
         for start in range(0, x.shape[0], MATMUL_ROWS):
             count = min(MATMUL_ROWS, x.shape[0] - start)
+            if prepared_tiles and count == MATMUL_ROWS:
+                source, target = x[start:start + count], out[start:start + count]
+                if source.data_ptr() % 512 == target.data_ptr() % 512 == 0:
+                    self.matmul_prepared(source, target)
+                    continue
             padded = torch.zeros((MATMUL_ROWS, self.k), dtype=torch.float16, device=x.device)
             padded[:count].copy_(x[start:start + count])
             result = (torch.mm(padded, self.weight.T, out_dtype=torch.float32) if dtype == torch.float32

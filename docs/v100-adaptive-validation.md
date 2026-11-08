@@ -450,6 +450,35 @@ admission and bounded execution evidence; it does not qualify actual C27
 activity, 32 active requests, complete model quality/performance, native
 encoder/Jinja heap, allocator/RSS, C-stack or broader managed/media profiles.
 
+## Private Dense M32 component checkpoint
+
+The existing private `native32` Dense selector now reuses prepared operands
+for complete, contiguous, 512-byte-aligned M32 tiles with disjoint output.
+It retains the incumbent M32 products, dtype and output leading dimension.
+In this new multi-tile path, tails, unsupported views, gradients and aliases
+keep the original implementation.
+There is no new kernel or persistent storage. Reference remains the default.
+
+On the current V100 SDK/image `0a13de3c`, a read-only canonical-source candidate
+passed all 117 Dense GPU checks plus 39 existing prepared controls, with no
+skips. Frozen incumbent oracles cover FP16/FP32 bits, actual projection widths,
+tails, guard regions, changed-input replay, signed zeros and subnormals.
+The source CPU module passed 127 tests. This is component evidence, not an
+installed candidate image or full-model performance/quality qualification.
+
+The broader legacy bound-graph checks remain incomplete. After correcting
+invalid no-method proposal geometry and an unqualified native-attention fixture
+selection, a strict stock-MTP/INT8 graph comparison still differed by up to
+`4.041939973831177e-6`; its failure is retained without widening equality.
+The graph investigation and distributed follow-up remain open. The controlled
+Dense benchmark will use uncaptured execution and a genuine successor image
+containing the tested candidate bytes before any promotion decision.
+
+Private source hold: `sm70-shared-operator-audit-v1/dense-prototype-hold-v1.json`,
+SHA256 `fe4ae5b91bd9cc84e1e57730bbc71f63533e110954789b15113b6439138aa4db`.
+Initial GPU results and subsequent graph failures remain under the same audit
+directory in `dense-GPU-source-v1/` and `graph-GPU-v3/`.
+
 ## Shared owner-attention diagnostics
 
 On the existing V100 SDK/application image `0a13de3c` (application source

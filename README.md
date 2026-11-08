@@ -32,6 +32,8 @@ capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.
 The private launcher can also [select Dense alone for a controlled trial](docs/benchmarking.md#prepare-once-load-once-run-the-complete-short-matrix),
 with per-rank selection receipts; this does not promote a new runtime default.
+The private M32 Dense candidate passed its GPU component checks; integrated
+[performance and graph qualification remain separate](docs/v100-adaptive-validation.md#private-dense-m32-component-checkpoint).
 Native owner-attention controls passed on V100, but nonuniform comparisons are
 not bit-exact; [full-model qualification remains open](docs/v100-adaptive-validation.md#shared-owner-attention-diagnostics).
 
