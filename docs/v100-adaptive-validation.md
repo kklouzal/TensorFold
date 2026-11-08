@@ -450,6 +450,48 @@ admission and bounded execution evidence; it does not qualify actual C27
 activity, 32 active requests, complete model quality/performance, native
 encoder/Jinja heap, allocator/RSS, C-stack or broader managed/media profiles.
 
+## Shared owner-attention diagnostics
+
+On the existing V100 SDK/application image `0a13de3c` (application source
+`7ea3d8ce`, Torch `2.14.1+tfcu129sm70`), all 42 maintained paged-owner GPU
+controls passed with no skips. These cover Q8, ISO4 and Planar4 ownership,
+mask/epoch/status, exact structured normalization/merge and capture behavior.
+They do not establish general numerical equivalence or model quality.
+
+The separate seeded diagnostic uses the original owner Torch operations as its
+oracle, with actual encoded Q8/ISO4 caches and matching query/selection inputs.
+Seven CPU metric controls passed and all 48 GPU diagnostic cases executed.
+There is no acceptance threshold or quality verdict:
+
+| KV format | Cases with any output-bit difference | Largest final absolute difference | Largest final finite ULP distance |
+| --- | ---: | ---: | ---: |
+| Q8 | 23/24 | 0.015625 | 127 |
+| ISO4 | 24/24 | 0.015625 | 44 |
+
+Final outputs were finite. Empty-shard local maxima retain their expected
+negative-infinity sentinels. Phase differences are cumulative through the
+native pipeline; they do not isolate an individual kernel's error. These are
+component frames, not language-model logits, perplexity or output-quality
+measurements. The native WMMA/TILE32 path and incumbent ATen/TILE128 path
+therefore remain separate candidates pending full-model qualification; no
+existing INT8/8192 quality tolerance is borrowed for this decision.
+
+Reproduce the diagnostic on actual SM70 with the pinned application environment:
+
+```bash
+python -m pytest -q tests/test_paged_attention_diagnostic.py
+python -m pytest -q -s tests/cuda/test_sm70_paged_attention_diagnostic.py \
+  -o junit_family=xunit1 --junitxml=numerical-diagnostic.xml
+```
+
+The original run's xunit2 property-format advisories are retained: all 48
+JSON properties were present and parsed. The command above selects the format
+that supports those diagnostic properties; it changes no numerical checks.
+Raw provenance is retained under `native-owner-numerical-diagnostic-v1/GPU-v1/`,
+including `numerical-records-v1.json` and `numerical-summary-v1.json`.
+The source/CPU seal is `source-checks-final-v2.json`, SHA256
+`8e5ac9e235dd76e92cde3eb0549f1eedc85c0685dd2e9ddf466552d871828021`.
+
 ## Neutral artifact I/O boundary (A1)
 
 The source now separates bounded container/file validation from model and device

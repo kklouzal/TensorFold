@@ -32,6 +32,8 @@ capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.
 The private launcher can also [select Dense alone for a controlled trial](docs/benchmarking.md#prepare-once-load-once-run-the-complete-short-matrix),
 with per-rank selection receipts; this does not promote a new runtime default.
+Native owner-attention controls passed on V100, but nonuniform comparisons are
+not bit-exact; [full-model qualification remains open](docs/v100-adaptive-validation.md#shared-owner-attention-diagnostics).
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload
