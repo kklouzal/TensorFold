@@ -43,6 +43,13 @@ service/run; they have not yet qualified an installed long-context run.
 The C27/H28 attempt failed host admission before HTTP; see the
 [recorded scope](docs/v100-adaptive-validation.md#supplied-long-client-and-host-admission).
 
+Ordinary TP admission now releases completed RPC frame payloads after a
+recoverable `NoRoom`, preserving the original exception and queued Stream data.
+Source checks cover leader and seven-peer retries without cyclic GC; managed
+profiles retain their existing retirement certifier. Installed/model integration
+and the host-admission successor remain pending. See
+[the lifetime evidence](docs/v100-adaptive-validation.md#ordinary-tp-admission-error-lifetimes).
+
 Source startup diagnostics now separate the existing GGUF target-load interval,
 stock-MTP attachment, vocabulary binding and surrounding engine setup. They
 report host elapsed/submission time without extra device synchronization or

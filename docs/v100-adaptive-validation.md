@@ -288,6 +288,49 @@ not an all-active success. The reviewed receipt is
 Host-accounting successor work requires its own implementation and verification;
 this client checkpoint neither bypasses admission nor qualifies that successor.
 
+## Ordinary TP admission error lifetimes
+
+The CPU diagnostic using the actual TP invocation/execution methods and a
+two-rank Store/backend stand-in found eight operation-parent graphs retained
+after eight recoverable `NoRoom` attempts and acknowledgment/key reclamation
+with cyclic GC disabled. Explicit diagnostic GC released those parents while
+all eight deliberately leased Stream children remained alive. The retained gate
+is `tp-noroom-parent-diagnostic-v1/diagnostic-gate-v1.json`, SHA256
+`cf31262804c05c22a99ea90b4d4854f9eeec6f26fda42b396569d0b1c5b6644e`.
+Operation completion does not retire a queued Stream or its input claim.
+
+The source fix returns the authentic `NoRoom` through a private admission
+outcome after peer acknowledgments, drops the packed parent before rethrow,
+and clears only finished owned RPC-frame locals. Traceback code/lines,
+cause/context/notes, foreign/backend locals and live Stream children remain
+intact. The Scheduler applies the same cleanup at its FIFO and legacy retry
+boundaries. Peer cleanup relinquishes operation bindings after acknowledgment.
+CPython's cached locals snapshots are explicitly refreshed after frame clearing;
+the preserved seven-peer regression exposed that additional parent reference.
+Managed serving profiles keep the original propagation and their existing
+certified State-retirement/fatal-owner policy.
+
+The final seven-module source batch passed 302 tests with zero skips and no
+CUDA initialization. It covers leader and all seven follower parent lifetimes
+without GC, still-owned Stream children, original diagnostic identity, managed
+certifier behavior, and real Scheduler FIFO/legacy queue exercises with a CPU
+backend stand-in. The source seal is
+`tp-noroom-lifecycle-v1/author-source-seal-v1.json`, SHA256
+`e94c3ee84ac25056c878035bb6f97df32369e784c60896b483151fcc4cc9745f`.
+Earlier failing fixture and peer-lifetime logs remain retained. These are source
+ownership checks, not transport, device/model, RSS or throughput qualification.
+The host-credit implementation and its installed full-model checks remain pending.
+
+Separately, the committed private-history tool and exact C27 corpus input passed
+a CPU-only helper check on `sm-v100` using installed image `540c54b7`. The selected
+JSON policy computed a global obligation of 45,889,656 bytes (eight times
+5,736,207 bytes), with zero materialized credit. Torch was not imported and the
+container exited 0 with PID 0. The helper gate is
+`private-history-sdk-control-0e100ce5-v1/actual-SDK-history-helper-control-gate-v1.json`,
+SHA256 `31f5da0a70f677eb4e4d33e61980de769923f07418012e71d945cc0e4aebb45e`.
+This checks input/resource-helper applicability only; the new CLI/application,
+worker attestation and long-context model execution are still unqualified.
+
 ## Neutral artifact I/O boundary (A1)
 
 The source now separates bounded container/file validation from model and device

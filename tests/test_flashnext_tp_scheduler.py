@@ -112,6 +112,7 @@ def cohort(request):
                 if body is None:
                     return
                 peer.apply(body)
+                body = None  # Match Engine._follow_concurrent: retire this received parent after apply.
         except BaseException as error:
             errors.append(error)
 
@@ -581,3 +582,220 @@ def test_incomplete_acknowledgment_batch_poisons_the_cohort():
     with pytest.raises(RuntimeError, match="incomplete acknowledgment batch"):
         root.round()
     assert root.failure is not None and engine._abort_comm
+
+
+def test_noroom_retries_retire_actual_rpc_parents_but_keep_live_stream_children(cohort):
+    """Real dispatch/ACK paths, CPU backend only; GC is not the cleanup protocol."""
+    import gc
+    import weakref
+    class Parent(dict):
+        pass
+    class Child(list):
+        pass
+    root = cohort[0]
+    parents = []
+    original_pack = root._pack
+    def pack(stream):
+        parent = Parent(original_pack(stream))
+        parents.append(weakref.ref(parent))
+        return parent
+    root._pack = pack
+    peer_parents = []
+    for peer in cohort[1:]:
+        original_receive = peer.receive
+        def receive(original=original_receive):
+            body = original()
+            if body is None:
+                return None
+            parent = Parent(body)
+            peer_parents.append(weakref.ref(parent))
+            return parent
+        peer.receive = receive
+    first, second = Stream([1], 100), Stream([2], 100)
+    root.admit(first)
+    root.admit(second)
+    retry = Stream(Child([3, 4]), 100)
+    child = weakref.ref(retry.prompt)
+    gc.collect()
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(16):
+            try:
+                root.admit(retry)
+            except NoRoom as error:
+                # Same optional boundary called by both real Scheduler catches.
+                scheduler = object.__new__(Scheduler)
+                scheduler.decoder = root
+                scheduler.serving_profiles = None
+                scheduler._retire_no_room_frames(error)
+            else:
+                pytest.fail('controlled two-slot backend unexpectedly admitted a third stream')
+        deadline = time.monotonic() + 2
+        while any(parent() is not None for parent in peer_parents) and time.monotonic() < deadline:
+            time.sleep(.001)  # ACK precedes peer apply/receive-loop local retirement.
+        assert all(parent() is None for parent in parents)
+        assert peer_parents and all(parent() is None for parent in peer_parents)
+        assert child() is retry.prompt
+        assert all(any(stream is retry for stream in peer.requests.values()) if peer is root
+                   else len(peer.requests) == 3 for peer in cohort)
+        assert all(peer.decoder.live() == 2 for peer in cohort)
+    finally:
+        if enabled:
+            gc.enable()
+    root.finish([first, second])
+
+
+def test_noroom_preserves_authentic_error_diagnostics_and_foreign_frame_locals(cohort):
+    root = cohort[0]
+    cause, context = ValueError('authentic cause'), RuntimeError('authentic context')
+    primary = NoRoom('authentic pressure')
+    primary.__cause__, primary.__context__ = cause, context
+    primary.add_note('owned diagnostic note')
+    marker = object()
+    original = root.decoder.admit
+    for peer in cohort:
+        def refuse(stream, selected=peer):
+            foreign_marker = marker  # noqa: F841 - preserved foreign-frame diagnostic is the oracle
+            if selected is root:
+                raise primary
+            raise NoRoom('authentic pressure')
+        peer.decoder.admit = refuse
+    try:
+        with pytest.raises(NoRoom) as caught:
+            root.admit(Stream([1, 2], 4))
+        error = caught.value
+        assert error is primary and error.__cause__ is cause and error.__context__ is context
+        assert error.__notes__ == ['owned diagnostic note']
+        traceback = error.__traceback__
+        names, foreign = [], []
+        while traceback is not None:
+            names.append(traceback.tb_frame.f_code.co_name)
+            if traceback.tb_frame.f_code.co_name == 'refuse':
+                foreign.append(traceback.tb_frame.f_locals['foreign_marker'])
+            traceback = traceback.tb_next
+        assert '_execute' in names and '_dispatch' in names and 'admit' in names
+        assert foreign == [marker]
+        root.retire_admission_frames(error)
+        assert error.__cause__ is cause and error.__context__ is context and error.__notes__ == ['owned diagnostic note']
+    finally:
+        root.decoder.admit = original
+
+
+def test_noroom_frame_cleanup_failure_preserves_primary():
+    primary, cleanup = NoRoom('pressure'), OSError('frame cleanup')
+    scheduler = object.__new__(Scheduler)
+    scheduler.serving_profiles = None
+    scheduler.decoder = SimpleNamespace(retire_admission_frames=lambda error: (_ for _ in ()).throw(cleanup))
+    with pytest.raises(NoRoom) as caught:
+        scheduler._retire_no_room_frames(primary)
+    assert caught.value is primary
+    assert caught.value.__cause__ is cleanup or caught.value.__context__ is cleanup
+
+
+@pytest.mark.parametrize('policy', ['legacy', 'fifo'])
+def test_real_scheduler_noroom_catches_release_rpc_frames_before_live_retry(cohort, policy):
+    import gc
+    import weakref
+    class Parent(dict):
+        pass
+    root = cohort[0]
+    if policy == 'fifo':
+        from tensorfold.families.qwen4_exp.cuda.input_preparation import install_input_preparation
+        store = root.comm.store
+        def wait(keys, duration):
+            assert duration in (timedelta(hours=1), timedelta(seconds=60))
+            with store.condition:
+                assert store.condition.wait_for(lambda: all(key in store.data for key in keys), 5), keys
+        store.wait = wait
+        for rank, peer in enumerate(cohort):
+            decoder = peer.decoder
+            decoder.logical_context = decoder.prefill_rows
+            decoder.w.cfg = SimpleNamespace(vocab=64)
+            decoder.w.positions = object()
+            decoder.w.meta = {'rank': rank, 'world': 8, 'coordinate_profile_identity': 'a' * 64}
+            decoder.input_preparation_context = install_input_preparation(decoder.w)
+            decoder.input_preparation_context.bind_decoder(decoder)
+    entered, release = threading.Event(), threading.Event()
+    original_admit = root.decoder.admit
+    def gated_admit(stream):
+        if not release.is_set():
+            entered.set()
+            assert release.wait(5)
+        return original_admit(stream)
+    root.decoder.admit = gated_admit
+    original_pack, parents = root._pack, []
+    def pack(stream):
+        parent = Parent(original_pack(stream))
+        parents.append(weakref.ref(parent))
+        return parent
+    root._pack = pack
+    options = {} if policy == 'legacy' else dict(admission_policy='fifo', max_pending_requests=8,
+                                                 max_waiting_input_bytes=4096)
+    scheduler = Scheduler(root, max_streams=3, **options).start()
+    failures, outputs = [], {}
+    def request(token):
+        try:
+            words = []
+            scheduler.submit([token], 5, None, False, lambda new: words.extend(new))
+            outputs[token] = words
+        except BaseException as error:
+            failures.append(error)
+    clients = [threading.Thread(target=request, args=(token,)) for token in (3, 15, 31)]
+    enabled = gc.isenabled()
+    gc.collect()
+    gc.disable()
+    try:
+        for client in clients:
+            client.start()
+        assert entered.wait(5)
+        with scheduler.waiting.not_empty:
+            assert scheduler.waiting.not_empty.wait_for(lambda: len(scheduler.waiting.queue) >= (3 if policy == "fifo" else 2), 5)
+        release.set()  # All three published before admitting to the backend's two slots.
+        for client in clients:
+            client.join(10)
+            assert not client.is_alive()
+        assert failures == []
+        assert len(parents) >= 4  # Three successes plus at least one NoRoom/retry.
+        assert all(parent() is None for parent in parents)
+        assert set(outputs) == {3, 15, 31}
+        assert all(len(words) == 5 for words in outputs.values())
+    finally:
+        release.set()
+        scheduler.close()
+        for client in clients:
+            client.join(5)
+        if enabled:
+            gc.enable()
+
+
+def test_managed_noroom_preserves_raw_frames_for_existing_error_outcome_certifier(cohort):
+    root, observed = cohort[0], []
+    for peer in cohort:
+        def certify(error, selected=peer):
+            trace, bodies = error.__traceback__, []
+            while trace is not None:
+                if trace.tb_frame.f_code.co_name in ('_invoke', '_execute', '_dispatch'):
+                    bodies.append(trace.tb_frame.f_locals.get('body'))
+                trace = trace.tb_next
+            assert any(body is not None for body in bodies)
+            observed.append((selected.comm.rank, error))
+            return error
+        peer.engine.serving_profiles = SimpleNamespace(gate=SimpleNamespace(epoch=0, available=True),
+                                                       error_outcome=certify)
+    first, second = Stream([1], 4), Stream([2], 4)
+    root.admit(first)
+    root.admit(second)
+    with pytest.raises(NoRoom) as caught:
+        root.admit(Stream([3], 4))
+    error = caught.value
+    assert root._operation_error is error
+    root.retire_admission_frames(error)  # Explicit guard refuses managed-frame mutation.
+    scheduler = object.__new__(Scheduler)
+    scheduler.decoder, scheduler.serving_profiles = root, root.engine.serving_profiles
+    scheduler._retire_no_room_frames(error)
+    scheduler._retire_admission_error(error)
+    assert next(value for rank, value in observed if rank == 0) is error
+    assert sorted(rank for rank, value in observed) == list(range(8))
+    assert all(peer._operation_error is None for peer in cohort)
+    root.finish([first, second])

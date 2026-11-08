@@ -9,6 +9,8 @@ no follower polls a private client queue or chooses a different collective path.
 from __future__ import annotations
 
 from datetime import timedelta
+from dataclasses import dataclass
+import sys
 import hashlib
 import json
 
@@ -21,6 +23,12 @@ from . import media_requests
 
 MAX_PROTOCOL_SEQUENCE = (1 << 63) - 1
 FIFO_CHILD_SCHEMA = ("tensorfold.tp-fifo-retained-children", 1)
+
+
+@dataclass(frozen=True, slots=True)
+class _AdmissionNoRoom:
+    # Same authentic exception, returned beyond completed RPC frames before rethrow.
+    error: NoRoom
 
 
 def _check_protocol_advance(value, label):
@@ -947,8 +955,43 @@ class TensorParallelDecoder:
             self.engine._abort_comm = True
             raise RuntimeError("tensor-parallel scheduler operation failed; retire all rank owners") from self.failure
         if error is not None:
+            if (body["kind"] == "admit" and isinstance(error, NoRoom)
+                    and getattr(self.engine, "serving_profiles", None) is None):
+                return _AdmissionNoRoom(error)
             raise error
         return result
+
+    def retire_admission_frames(self, error):
+        """Retire completed owned RPC locals, never a Stream/State or foreign frame.
+
+        Traceback nodes/code/lines and the authentic error/cause/context/notes stay
+        intact. f_back can retain an already-returned _invoke even when it is not
+        itself a traceback node. Active owner frames are cleared by the caller
+        boundary only after return; their current local bindings remain valid.
+        """
+        if getattr(self.engine, "serving_profiles", None) is not None:
+            return  # Managed errors keep raw owners until their existing retirement certifier.
+        owned = {getattr(TensorParallelDecoder, name).__code__ for name in
+                 ("_execute", "_dispatch", "_invoke", "admit", "apply")}
+        active, current = set(), sys._getframe()
+        while current is not None:
+            active.add(id(current))
+            current = current.f_back
+        seen = set()
+        trace = error.__traceback__
+        while trace is not None:
+            current = trace.tb_frame
+            while current is not None and id(current) not in seen:
+                seen.add(id(current))
+                previous = current.f_back
+                if (id(current) not in active and current.f_code in owned
+                        and current.f_locals.get("self") is self):
+                    current.clear()
+                    # CPython 3.12 caches f_locals snapshots; refresh after clear
+                    # so the snapshot itself cannot retain body/error/closure cells.
+                    _ = current.f_locals
+                current = previous
+            trace = trace.tb_next
 
     def admit(self, stream):
         wire = self.wires.get(id(stream))
@@ -959,7 +1002,15 @@ class TensorParallelDecoder:
                 wire, self.next_wire = self.next_wire, self.next_wire + 1
         body = {"kind": "admit", "wire": wire, "stream": self._pack(stream),
                 "points": [] if self._points is None else list(self._points(stream.prompt))}
-        return self._invoke(body, source=stream)
+        outcome = self._invoke(body, source=stream)
+        del body  # ACK retires this parent, not its still-live borrowed Stream children.
+        if type(outcome) is _AdmissionNoRoom:
+            try:
+                self.retire_admission_frames(outcome.error)
+            except BaseException as cleanup:
+                raise_failures(outcome.error, (cleanup,))
+            raise outcome.error
+        return outcome
 
     def round(self):
         body = {"kind": "round"}
@@ -1134,3 +1185,12 @@ class TensorParallelDecoder:
         if error is not None and not self._recoverable_operation(error, body["kind"]):
             self._poison_control(error)
             raise RuntimeError("tensor-parallel scheduler peer failed; retire all rank owners") from error
+        if (body["kind"] == "admit" and isinstance(error, NoRoom)
+                and getattr(self.engine, "serving_profiles", None) is None):
+            try:
+                self.retire_admission_frames(error)
+            except BaseException as cleanup:
+                raise_failures(error, (cleanup,))
+            # This apply frame is still active; relinquish only operation-local
+            # bindings before return. _follow_concurrent clears its own body.
+            error = body = status = _result = None

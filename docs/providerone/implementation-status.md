@@ -170,6 +170,15 @@ H1/P1 remained in effect: this is resident allocation evidence, not simultaneous
 next-count refusal is a resource-model result rather than a physical C28 test.
 See [the allocation scope](../v100-adaptive-validation.md#automatic-resident-allocation-on-eight-v100s).
 
+The ordinary unmanaged TP `NoRoom` path now retires completed operation-frame
+payloads after acknowledgments while preserving the authentic error, queued
+Stream children and retry semantics. Source CPU controls pass 302 cases with
+zero skips, including GC-disabled leader/seven-peer lifetime checks and both
+FIFO and legacy admission. Managed profiles keep their existing State-retirement
+certifier. This source fix does not qualify the pending host-credit integration
+or an installed/model run. See
+[the scoped evidence](../v100-adaptive-validation.md#ordinary-tp-admission-error-lifetimes).
+
 The installed SDK/native-component checkpoint uses source `e90caf58` and
 immutable image `sha256:a24a579e3ffd2a1ead0def6b0d68947d94796135c00c946e8440ebe1f47c5015`.
 The genuine final SM70 source build/export, protected installed software audit

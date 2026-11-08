@@ -870,6 +870,7 @@ class Scheduler:
                     self.boxes.pop(id(stream), None)
                     continue
             except NoRoom as error:
+                self._retire_no_room_frames(error)
                 catalog = getattr(self.decoder, "retention_catalog", None)
                 if self._occupied() or catalog is not None and catalog.has_retained:
                     if self.serving_profiles is not None:
@@ -946,6 +947,7 @@ class Scheduler:
                 if stream.on_fill is not None:                    # its prefill starts from the rows it resumed
                     stream.on_fill(stream.cached)
             except NoRoom as exc:
+                self._retire_no_room_frames(exc)
                 if self.serving_profiles is not None:
                     self._retire_admission_error(exc)
                 if self.decoder.live():              # waits, first in line, until a live stream finishes
@@ -1005,6 +1007,16 @@ class Scheduler:
         for stream in ready:
             self._reply(stream, *(("error", stream.error) if stream.error is not None else ("done", stream.stats())),
                         retired=self.serving_profiles is not None and stream.error is not None)
+
+    def _retire_no_room_frames(self, error):
+        if self.serving_profiles is not None:
+            return  # Its error_outcome certifier owns managed failure-frame retirement.
+        retire = getattr(self.decoder, "retire_admission_frames", None)
+        if retire is not None:
+            try:
+                retire(error)
+            except BaseException as cleanup:
+                raise_failures(error, (cleanup,))
 
     def _retire_admission_error(self, error):
         coordinated = getattr(self.decoder, "retire_admission_error", None)
