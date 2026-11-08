@@ -1,0 +1,130 @@
+# V100 one-session phase matrix
+
+Use the maintained `tools/bench_concurrent.py` matrix mode with the private
+`tools/v100_owned_qualification.py` observer. This attaches to one loaded
+SC117 service for all warmups, levels and repetitions; it never launches or
+restarts the server itself. The existing finite launch supervisor owns container,
+image, weights, provider identity and retirement. Tool/plan hashes are separate
+from that runtime provenance. The older generic OpenAI decode-arrival mode remains
+available and keeps its explicitly estimated SSE timing scope.
+
+The standard levels are **1, 2, 4, 8, 16, 24, 32**. These personal deployment
+profiles retain context 262,144 and MTP depth 4:
+
+| Profile | Administrator ceiling | Eligible standard levels |
+| --- | ---: | --- |
+| INT8/Q8 KV | 24 | 1,2,4,8,16,24;32 excluded by administrator cap |
+| `rotorquant-iso4-sm70-v1` KV | 32 | All seven, subject to actual safe residency |
+
+These are administrator choices, not generic engine limits or measured hardware
+maxima. Use the maintained [V100 personal profile recipe](../deploy/v100/README.md#candidate-launch)
+with explicit parallel/full-window24 or32 and the corresponding admitted frontend
+budgets. The tool checks actual selected cache format, full context, configured
+ceiling and residency. Insufficient actual residency is unsupported, never
+relabelled as successful concurrency. Q4 component tests alone do not qualify
+32-way model capacity, output quality or performance.
+
+## Prepare once, load once, run the complete short matrix
+
+Run preparation in the existing application environment containing tokenizers,
+against the exact read-only frontend directory that the service will use. The
+plan contains pretokenized natural-text completion prompts, not random special
+IDs. A recorded fresh run identity and distinct natural prefixes prevent reuse
+across warmups, levels, repetitions and streams. Native tokenization establishes
+exact input length; no character-to-token ratio or prompt truncation is guessed.
+The worker verifies the actual tokenizer file and full prompt hashes.
+
+```bash
+python tools/bench_concurrent.py "$URL" "$MODEL_NAME" \
+  --prepare-matrix "$MODEL_FRONTEND_DIR" --profile q4 \
+  --input-tokens 64 --tokens 256 --reps 1 --output matrix-plan.json
+```
+
+The default standard levels are already selected. Preparation does not contact
+or load the GPU model. Use fresh plan/results paths. Stage the canonical tools
+and their existing protocol/lifetime/output helpers together read-only, keeping
+their commit/byte identities. Add the plan to the existing private supervised
+launch, preserving the profile's ordinary model/context/method/cache arguments:
+
+```bash
+python tools/v100_owned_qualification.py --gpus "$TF_RANK_GPUS" \
+  --out /qualification-output/new-run --benchmark-plan matrix-plan.json \
+  -- "${serve_args[@]}" --expert-tensor-parallel-size 4
+```
+
+This observer currently uses the existing private owned-native SC117 capability;
+it does not promote that policy to a public/default serving mode. Its bounded
+metadata obligation is passed through the existing private preparation/admission
+owner. Four CUDA event objects are reused sequentially between cohorts. Ordinary shipping class definitions/default instances and installed libraries
+remain unchanged; only the selected private instance uses source-owned wrappers.
+
+After normal readiness, perform the ordinary arithmetic MTP/cold-serial smoke
+checks in the same loaded container. The observer has an explicit unobserved
+pre-matrix phase. After the first planned cohort starts, it rejects unplanned
+model work or cross-cohort overlap. Then run:
+
+```bash
+python tools/bench_concurrent.py "$URL" "$MODEL_NAME" \
+  --matrix-plan matrix-plan.json --output matrix-results.json \
+  --timeout 1800 --response-mib 16 --sse-line-kib 64
+```
+
+A barrier releases each cohort's callers together. Every response must complete
+its declared fixed work with `ignore_eos`, complete IDs, matching independent
+ID SHA, `length` finish and zero reported cached prompt tokens. Transport,
+protocol, stale-service and control failures remain in partial results/raw
+exchanges; they do not become successful measurements. Socket inactivity and
+post-cohort readiness polling are bounded by `--timeout`; this is not a claim
+of a whole-suite wall deadline. All child callers drain before return.
+
+One short warmup per input size precedes measured repetitions in the same
+session. With one repetition, Q4 sends 1 warmup + 87 measured requests; Q8 sends
+1 + 55 and records 32 as administrator-excluded. The token budget must be long enough
+for actual backend overlap; offered simultaneous requests alone do not qualify a
+level. No forced model scheduling or hidden server reconfiguration creates that
+proof. If overlap is not observed, keep the row unqualified and its raw data.
+
+## Denominators and actual overlap
+
+The private worker samples the full non-done `streams`+`filling` set at successful
+worker boundaries, checks distinct actual GPU States/wires and planned prompt
+identity, and reports actual owner high-water. Forward microbatch State count is
+reported separately: MTP rows/windows are not additional requests. A requested
+level satisfies the measured overlap criterion only when its real backend owner count reaches that level.
+A large HTTP queue or a 32-row matrix cannot substitute for 32 owners.
+
+| Metric | Numerator | Denominator/scope |
+| --- | --- | --- |
+| Prefill envelope TPS | Uncached original prompt tokens, once per request | First `_prepare_pass` entry to final original-prompt `_joined` entry on rank0's actual current CUDA stream |
+| Decode envelope TPS | Sum of `max(completion_ID_count-1,0)` | First positive first-token `_take` commit to last cohort final `_take` commit on that same stream |
+| Per-request reported host rates | Prompt tokens or output IDs after first | Existing `prefill_s`/`decode_s`; prefill includes admission setup and apportioned shared-pass host time |
+| Cohort HTTP-wall TPS | Completed output tokens | Earliest declared barrier-released client start to latest complete response, including local protocol recording/I/O, serialization, transport, queueing and server work |
+
+GPU-stream envelopes are **inclusive**. They may overlap each other and include
+interleaved prefill/decode, communication and CPU submission gaps. They are not
+kernel-only busy times, mutually exclusive phase partitions or summed per-request
+service durations. Rank0 is the declared critical-stream clock domain; tokens
+are never multiplied by TP8. TTFT is not used as a pure prefill denominator.
+The client constructs its already-tokenized request before the barrier, so the
+API-wall measure includes the canonical client's request-directory creation and durable request recording before network acquisition; it does not represent ordinary text-tokenization latency or a network-send-only interval.
+
+Events are recorded only at the four cohort boundaries; there is no per-step
+synchronize or disk flush. Timer query/elapsed-time collection is deferred until
+the cohort has completed and the decoder is idle. Immutable published snapshots
+bind the plan identity and actual serving instance. Missing/zero/invalid timing
+or failed identity/overlap checks produce an unmeasured/failed row, not fabricated
+TPS. The observer's instrumentation is part of this measured profile; absolute
+figures are not a matched speedup or general quality/capacity claim.
+
+## Longer inputs and reproducibility
+
+Future runs may prepare `--input-tokens 16384,32768,65536,131072`, with the full
+reply allowance still fitting the unchanged 262,144 context. This support does not
+mean that long matrix has been executed or qualified. Each input size is a
+separate workload; retain every repetition and error, warmup policy, request/plan
+hash, actual owner peaks, cache counters, complete outputs and timing scopes.
+Do not aggregate different input lengths or cache formats into one speed claim.
+Keep image/weights/source/driver/GPU clocks, method, KV format, context, frontend
+caps, caches, background load and execution settings fixed within each curve.
+A different cache-format profile is a separately loaded curve, never a silent
+fallback or a restart per level.

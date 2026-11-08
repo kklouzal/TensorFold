@@ -14,6 +14,8 @@ from pathlib import Path
 import stat
 import sys
 import uuid
+import threading
+import math
 
 from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
@@ -200,6 +202,207 @@ class _HistoryAttestation:
         return result
 
 
+
+class _BenchmarkObserver:
+    """Private current-stream inclusive envelopes; four events reused per cohort."""
+    def __init__(self, engine, plan, *, events=None):
+        import torch
+        from tensorfold.server.stats import INSTANCE_ID
+        self.server_instance_id = INSTANCE_ID
+        self.engine, self.plan = engine, plan
+        self.decoder, self.observations = engine.multi, engine.multi.controller.work_observations
+        self.events = events if events is not None else [torch.cuda.Event(enable_timing=True) for _ in range(4)]
+        self.current = None
+        self.records = {}
+        self.identities = {}
+        self.cases = {tuple(request["prefix"]): (cohort, request)
+                      for cohort in plan["cohorts"] for request in cohort["requests"]}
+        self.prefix_lengths = sorted({len(prefix) for prefix in self.cases})
+        self.published = {"schema": "tensorfold.private-benchmark-v1", "run_identity": plan["run_identity"],
+                          "server_instance_id": self.server_instance_id, "cohorts": {}}
+        self.stream = None
+
+    def _invalid(self, message):
+        error = ValueError(message)
+        _observer_failure(self.engine, error)
+        raise error
+
+    def _identity(self, stream):
+        key = self.engine.tp_decoder.wires.get(id(stream))
+        if type(key) is not int:
+            self._invalid("benchmark request lost its stable TP wire identity")
+        if key not in self.identities:
+            match = next((self.cases[tuple(stream.prompt[:size])] for size in self.prefix_lengths
+                          if tuple(stream.prompt[:size]) in self.cases), None)
+            if match is None:
+                if self.current is None:
+                    return None  # Explicit pre-matrix unobserved smoke phase.
+                self._invalid("request does not belong to the private benchmark plan")
+            cohort, request = match
+            if (len(stream.prompt) != cohort["input_tokens"] or stream.count != cohort["tokens"]
+                    or _prompt_digest(stream.prompt) != request["prompt_sha256"]):
+                self._invalid("actual benchmark prompt/reply differs from its plan")
+            self.identities[key] = (cohort, request)
+        return self.identities[key]
+
+    def _cohort(self, stream):
+        import torch
+        identity = self._identity(stream)
+        if identity is None:
+            return None
+        cohort, request = identity
+        if self.current != cohort["id"]:
+            if self.current is not None and not self.records[self.current].get("events_ready"):
+                self._invalid("next benchmark cohort arrived before prior idle timer retirement")
+            self.current = cohort["id"]
+            self.records[self.current] = {"level": cohort["level"], "prefill_done": set(), "done": set(),
+                "hashes": set(), "active_owner_highwater": 0, "prefill_batch_highwater": 0,
+                "decode_batch_highwater": 0, "started": [False] * 4, "events_ready": False}
+            self.stream = torch.cuda.current_stream(self.engine.w.device)
+        return cohort, request, self.records[self.current]
+
+    def _record(self, index):
+        import torch
+        if torch.cuda.current_stream(self.engine.w.device) != self.stream:
+            self._invalid("benchmark changed the actual critical CUDA stream")
+        if self.records[self.current]["started"][index]:
+            self._invalid("benchmark phase event was already recorded")
+        try:
+            self.events[index].record(self.stream)
+        except BaseException as error:
+            _observer_failure(self.engine, error)
+            raise
+        self.records[self.current]["started"][index] = True
+
+    def _observe(self):
+        if self.current is None:
+            return
+        record = self.records[self.current]
+        streams = [s for s in [*self.decoder.streams.values(), *self.decoder.filling]
+                   if not s.done and s.st is not None]
+        if len({id(s.st) for s in streams}) != len(streams):
+            self._invalid("benchmark active owners alias GPU States")
+        if any(self._identity(s)[0]["id"] != self.current for s in streams):
+            self._invalid("benchmark active cohort was contaminated")
+        record["active_owner_highwater"] = max(record["active_owner_highwater"], len(streams))
+        self._publish()
+
+    def _publish(self):
+        rows = {}
+        for key, record in self.records.items():
+            rows[str(key)] = {name: record[name] for name in
+                ("level", "active_owner_highwater", "prefill_batch_highwater", "decode_batch_highwater", "events_ready")}
+            rows[str(key)].update(completed=len(record["done"]), prompt_hashes=sorted(record["hashes"]))
+            for name in ("prefill_ms", "decode_ms"):
+                rows[str(key)][name] = record.get(name)
+        self.published = {"schema": "tensorfold.private-benchmark-v1", "run_identity": self.plan["run_identity"],
+                          "server_instance_id": self.server_instance_id,
+                          "clock": "rank0 actual CUDA current stream; overlapping inclusive envelopes/host gaps, no TP token multiplier", "cohorts": rows}
+
+    def install(self):
+        decoder, observations = self.decoder, self.observations
+        admit, prepare, joined, take, round_, finish = (getattr(decoder, name) for name in
+                                                       ("admit", "_prepare_pass", "_joined", "_take", "round", "finish"))
+        target, record = observations.target, observations.record
+        def admitted(stream):
+            self._identity(stream)
+            result = admit(stream)
+            self._cohort(stream)
+            self._observe()
+            return result
+        def preparing(pieces):
+            for stream, start, count in pieces:
+                identity = self._cohort(stream)
+                if identity is None:
+                    continue
+                cohort, request, state = identity
+                state["hashes"].add(request["prompt_sha256"])
+                if count and not state["started"][0]:
+                    self._record(0)
+            return prepare(pieces)
+        def joining(pieces, *args):
+            for stream, start, count in pieces:
+                identity = self._cohort(stream)
+                if identity is None:
+                    continue
+                cohort, request, state = identity
+                if start + count == len(stream.prompt) and request["index"] not in state["prefill_done"]:
+                    state["prefill_done"].add(request["index"])
+                    if len(state["prefill_done"]) == cohort["level"]:
+                        self._record(1)
+            return joined(pieces, *args)
+        def taking(stream, values):
+            before = len(stream.out)
+            result = take(stream, values)
+            identity = self._cohort(stream)
+            if identity is None:
+                return result
+            cohort, request, state = identity
+            if len(stream.out) > before:
+                if not state["started"][2]:
+                    self._record(2)
+                if stream.done and request["index"] not in state["done"]:
+                    state["done"].add(request["index"])
+                    if len(state["done"]) == cohort["level"]:
+                        self._record(3)
+            return result
+        def targeted(segments, **kwargs):
+            result = target(segments, **kwargs)
+            if self.current is not None:
+                name = "prefill_batch_highwater" if kwargs.get("prefill", False) else "decode_batch_highwater"
+                self.records[self.current][name] = max(self.records[self.current][name],
+                    len({id(state) for state, first, last in segments if last > first}))
+            return result
+        def rounded():
+            result = round_()
+            self._observe()
+            return result
+        def finished(streams):
+            result = finish(streams)
+            for stream in streams:
+                self.identities.pop(self.engine.tp_decoder.wires.get(id(stream)), None)
+            self._observe()
+            return result
+        def recorded(*, credit=None):
+            # Internal TP status readers never query/drain timers. HTTP reads
+            # may query only a completely finished, idle model cohort.
+            if (self.current is not None and threading.current_thread() is not self.engine.scheduler.thread
+                    and not self.decoder.streams and not self.decoder.filling):
+                state = self.records[self.current]
+                if (not state["events_ready"] and len(state["done"]) == state["level"]
+                        and all(state["started"]) and all(event.query() for event in self.events)):
+                    try:
+                        state["prefill_ms"] = self.events[0].elapsed_time(self.events[1])
+                        state["decode_ms"] = self.events[2].elapsed_time(self.events[3])
+                    except BaseException as error:
+                        _observer_failure(self.engine, error)
+                        raise
+                    if any(not math.isfinite(state[name]) or state[name] < 0 for name in ("prefill_ms", "decode_ms")):
+                        self._invalid("invalid CUDA event envelope")
+                    state["events_ready"] = True
+                    self._publish()
+            result = record(**({"credit": credit} if credit is not None else {}))
+            published = self.published
+            if credit is not None:
+                credit(published)
+            return {**result, "benchmark": published}
+        # The private before-listener capability is the only selector. Default
+        # instances/class implementations retain their original methods.
+        decoder.admit, decoder._prepare_pass, decoder._joined, decoder._take = admitted, preparing, joining, taking
+        decoder.round, decoder.finish = rounded, finished
+        observations.target, observations.record = targeted, recorded
+
+
+def prepare_benchmark(engine, plan):
+    if engine.rank != 0:
+        return
+    path = Path(engine.model_dir) / "tokenizer.json"
+    if hashlib.sha256(path.read_bytes()).hexdigest() != plan["tokenizer_sha256"]:
+        raise ValueError("benchmark tokenizer differs from the actual prepared frontend")
+    observer = _BenchmarkObserver(engine, plan)
+    observer.install()
+
+
 def bound_receipt(engine):
     import torch
     from tensorfold.families.qwen4_exp.cuda.owned_experts import Plan, POLICY
@@ -252,8 +455,9 @@ def publish_receipt(engine, output):
         obligation = getattr(engine, "_owned_qualification_host", ())
         if obligation:
             receipt["history_host_obligation"] = {"global_bytes": obligation[0], "input_sha256": obligation[1]}
-            receipt["run_identity"] = engine._history_run_identity
-            receipt["server_instance_id"] = engine._history_server_instance
+            if hasattr(engine, "_history_run_identity"):
+                receipt["run_identity"] = engine._history_run_identity
+                receipt["server_instance_id"] = engine._history_server_instance
         receipt["tool_sha256"] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         receipt["runtime_cli_sha256"] = hashlib.sha256(Path(cli.__file__).read_bytes()).hexdigest()
         target = Path(output) / f"rank-{engine.rank}.json"
@@ -288,11 +492,13 @@ def worker(argv):
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--history-input", type=Path)
     parser.add_argument("--history-run-id")
+    parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
     tail = selected.serve_args[1:] if selected.serve_args[:1] == ["--"] else selected.serve_args
     receipt_failed = False
     prepared = None
+    benchmark = benchmark_resources = None
 
     def before_listener(engine):
         nonlocal receipt_failed
@@ -306,11 +512,27 @@ def worker(argv):
                 except BaseException as primary:
                     _observer_failure(engine, primary)
                     raise
+            if benchmark is not None:
+                try:
+                    prepare_benchmark(engine, benchmark)
+                except BaseException as primary:
+                    _observer_failure(engine, primary)
+                    raise
             publish_receipt(engine, selected.out)
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
     try:
+        if selected.benchmark_plan is not None:
+            if selected.history_input is not None:
+                raise ValueError("history witness and phase matrix are separate controlled procedures")
+            if __package__:
+                from .bench_concurrent import load_matrix
+            else:
+                from bench_concurrent import load_matrix
+            benchmark = load_matrix(selected.benchmark_plan)
+            size = selected.benchmark_plan.stat().st_size
+            benchmark_resources = _history_resources(sum(c["level"] for c in benchmark["cohorts"]), size)
         if selected.history_input is not None:
             if (type(selected.history_run_id) is not str or len(selected.history_run_id) != 32
                     or any(char not in "0123456789abcdef" for char in selected.history_run_id)):
@@ -322,6 +544,9 @@ def worker(argv):
         if args.tp != 8 or args.expert_tensor_parallel_size != 4 or not 0 <= args.rank < 8:
             raise ValueError("private qualification requires explicit TP8/ETP4 rank ownership")
         obligation = () if prepared is None else (prepared[2]["global_host_obligation_bytes"], prepared[1])
+        if benchmark_resources is not None:
+            obligation = (benchmark_resources["global_host_obligation_bytes"],
+                          hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
         args._owned_expert_qualification = cli._OwnedExpertQualification(before_listener, obligation)
         return cli.cmd_serve(args)
     except BaseException as primary:
@@ -449,6 +674,7 @@ def main(argv=None):
     parser.add_argument("--gpus", required=True)
     parser.add_argument("--master-port", type=int, default=29551)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -464,6 +690,8 @@ def main(argv=None):
     prefix = [sys.executable, str(Path(__file__).resolve()), "--worker", "--out", str(output)]
     if args.history_input is not None:
         prefix += ["--history-input", str(args.history_input.absolute()), "--history-run-id", uuid.uuid4().hex]
+    if args.benchmark_plan is not None:
+        prefix += ["--benchmark-plan", str(args.benchmark_plan.absolute())]
     prefix += ["--"]
     return launch_cuda_tp.main(["--gpus", args.gpus, "--master-port", str(args.master_port), *args.serve_args],
                                _command_prefix=prefix)

@@ -133,3 +133,132 @@ def test_strict_no_seed_is_refused_before_requests(bench, monkeypatch):
     with pytest.raises(SystemExit) as caught:
         bench.main()
     assert caught.value.code == 2
+
+
+def matrix_fixture():
+    import hashlib
+    plan = {'schema': 'tensorfold.phase-matrix-plan-v1', 'run_identity': 'a' * 32, 'model': 'fixture',
+            'profile': 'q8', 'admin_cap': 24, 'levels': [1, 2, 32], 'context': 262144, 'tokens': 3,
+            'reps': 1, 'inputs': [6], 'tokenizer_sha256': 'b' * 64, 'filler_ids': [7],
+            'cohorts': [], 'excluded_levels': [32]}
+    for cid, level in enumerate((1, 2)):
+        cohort = {'id': cid, 'level': level, 'input_tokens': 6, 'tokens': 3, 'repetition': 0,
+                  'warmup': cid == 0, 'requests': []}
+        for index in range(level):
+            ids = [10 + cid * 2 + index] + [7] * 5
+            cohort['requests'].append({'prefix': ids[:1], 'input_tokens': 6, 'index': index,
+                'prompt_sha256': hashlib.sha256(json.dumps(ids, separators=(',', ':')).encode()).hexdigest()})
+        plan['cohorts'].append(cohort)
+    return plan
+
+
+def test_matrix_defaults_include_two_and_explicit_profile_caps(bench):
+    assert bench.STANDARD_LEVELS == (1, 2, 4, 8, 16, 24, 32)
+    assert bench.PROFILE_CAPS == {'q8': 24, 'q4': 32}
+
+
+def test_matrix_data_roundtrip_rejects_changed_ids_and_boolean_counts(bench, tmp_path):
+    plan = matrix_fixture()
+    path = tmp_path / 'plan.json'
+    path.write_text(json.dumps(plan))
+    assert bench.load_matrix(path) == plan
+    plan['cohorts'][0]['requests'][0]['prefix'] = [False]
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        bench.load_matrix(path)
+    plan = matrix_fixture()
+    plan['cohorts'][0]['tokens'] = True
+    path.write_text(json.dumps(plan))
+    with pytest.raises(ValueError):
+        bench.load_matrix(path)
+
+
+def test_natural_matrix_preparation_exact_lengths_unique_requests_and_admin_exclusion(bench, tmp_path):
+    from test_segment_encoder import bpe
+    tokenizer = bpe()
+    tokenizer.save(str(tmp_path / 'tokenizer.json'))
+    plan = bench.prepare_matrix(tmp_path, 'fixture', 'q8', list(bench.STANDARD_LEVELS), [256], 4, 1)
+    assert plan['excluded_levels'] == [32]
+    assert [c['level'] for c in plan['cohorts']] == [1, 1, 2, 4, 8, 16, 24]
+    hashes = set()
+    for cohort in plan['cohorts']:
+        for request in cohort['requests']:
+            ids = bench.matrix_ids(plan, request)
+            assert len(ids) == 256 and 'Run ' in tokenizer.decode(ids[:len(request['prefix'])])
+            assert request['prompt_sha256'] not in hashes
+            hashes.add(request['prompt_sha256'])
+
+
+@pytest.mark.parametrize('fault', [None, 'overlap', 'zero-time', 'restart', 'cached', 'stale-observer', 'hash', 'observer-instance', 'materialization'])
+def test_matrix_runner_keeps_one_service_denominators_raw_errors_and_actual_overlap(bench, monkeypatch, tmp_path, fault):
+    from types import SimpleNamespace as NS
+    from tools import v100_rotorquant_live as live
+    monkeypatch.setitem(sys.modules, 'v100_rotorquant_live', live)
+    from tools import v100_adaptive_qualification as qualification
+    monkeypatch.setitem(sys.modules, 'v100_adaptive_qualification', qualification)
+    plan = matrix_fixture()
+    calls, stats_calls = [], [0]
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        def call(self, label, body=None, **kwargs):
+            calls.append((label, body, kwargs))
+            if body is None and kwargs.get('path') == '/stats':
+                stats_calls[0] += 1
+                return {'server': {'instance_id': 'other' if fault == 'restart' and stats_calls[0] > 1 else 'one'},
+                        'object': 'tensorfold.stats',
+                        'model': {'id': 'fixture', 'kv_dtype': 'int8', 'context_length': 262144},
+                        'capacity_plan': {'session_capacity': {'resident_capacity': 24, 'configured_ceiling': 24,
+                            'context_tokens': 262144, 'full_context_commitments': 24},
+                            'kv_full_windows': {'materialized': fault != 'materialization', 'reserved': 24, 'stream_slots': 24,
+                                'ranks': [{'rank': rank, 'materialized': True, 'startup_capacities': [262149] * 24,
+                                           'allocated_cache_bytes': 100, 'torch_allocated_bytes': 200, 'torch_reserved_bytes': 300}
+                                          for rank in range(8)]}},
+                        'load': {'requests_in_flight': 0, 'requests_running': 0, 'requests_waiting': 0}}
+            if body is None:
+                return {'execution': {'work_observations': {'benchmark': {
+                    'run_identity': 'stale' if fault == 'stale-observer' else plan['run_identity'], 'server_instance_id': 'other' if fault == 'observer-instance' else 'one',
+                    'cohorts': {str(c['id']): {'events_ready': True, 'completed': c['level'],
+                        'active_owner_highwater': 1 if fault == 'overlap' else c['level'],
+                        'prompt_hashes': sorted(r['prompt_sha256'] for r in c['requests']),
+                        'prefill_ms': 0 if fault == 'zero-time' else 20., 'decode_ms': 40.}
+                        for c in plan['cohorts']}}}}}
+            kwargs['observer']({}, ['natural text'])
+            return {'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'natural text'}, 'finish_reason': 'length'}],
+                    'usage': {'prompt_tokens': 6, 'completion_tokens': 3, 'total_tokens': 9,
+                              'prompt_tokens_details': {'cached_tokens': 0}},
+                    'tensorfold': {'token_ids': [1, 2, 3],
+                                   'token_sha': 'wrong' if fault == 'hash' else __import__('hashlib').sha256(b'1,2,3').hexdigest()[:12], 'cached': 1 if fault == 'cached' else 0,
+                                   'prefill_s': .2, 'decode_s': .4}}
+    monkeypatch.setattr(live, 'Client', Client)
+    args = NS(base='http://unused', model='fixture', output=tmp_path / 'report.json', timeout=.2,
+              response_mib=16, sse_line_kib=64)
+    if fault in ('restart', 'stale-observer', 'observer-instance', 'materialization'):
+        with pytest.raises(ValueError):
+            bench.run_matrix(args, plan)
+        report = json.loads(args.output.read_text())
+        assert report['error']['type'] == 'ValueError' and report['passed'] is False
+        assert 'unrun_cohorts' in report
+        return
+    result = bench.run_matrix(args, plan)
+    assert result == (0 if fault is None else 2)
+    report = json.loads(args.output.read_text())
+    assert report['excluded_by_admin_cap'] == [32]
+    assert sum(body is not None for label, body, kw in calls) == (1 if fault in ('cached', 'hash') else 3)
+    assert all(body['ignore_eos'] and body['return_token_ids'] for label, body, kw in calls if body is not None)
+    if fault is None:
+        assert report['cohorts'][1]['rates']['prefill_envelope_tps'] == 600
+        assert report['cohorts'][1]['rates']['decode_envelope_tps'] == 100
+        assert report['cohorts'][1]['requests'][0]['prefill_reported_host_tps'] == 30
+        assert report['cohorts'][1]['requests'][0]['decode_reported_host_tps'] == 5
+
+
+def test_matrix_geometry_is_rejected_before_any_token_list_allocation(bench, monkeypatch, tmp_path):
+    plan = matrix_fixture()
+    plan['cohorts'][0]['input_tokens'] = 1 << 30
+    plan['cohorts'][0]['requests'][0]['input_tokens'] = 1 << 30
+    path = tmp_path / 'malformed.json'
+    path.write_text(json.dumps(plan))
+    monkeypatch.setattr(bench, 'matrix_ids', lambda *a: pytest.fail('allocated before context validation'))
+    with pytest.raises(ValueError):
+        bench.load_matrix(path)

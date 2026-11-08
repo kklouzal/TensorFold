@@ -39,6 +39,10 @@ import math
 import statistics
 import sys
 import threading
+import hashlib
+import itertools
+from pathlib import Path
+import uuid
 import time
 import urllib.request
 
@@ -85,6 +89,13 @@ def stream(base: str, model: str, item: dict, tokens: int, temperature: float, s
                 "error": f"{type(exc).__name__}: {exc}"}
 
 
+def completion_fields(chunk):
+    # Responses has a nullable error member; completion SSE has no such field.
+    if "error" in chunk:
+        raise ValueError("SSE error or invalid completion event")
+    return protocol.chunk_fields(chunk)
+
+
 def _stream(base: str, model: str, item: dict, tokens: int, temperature: float, seed: int | None, draft: bool,
             gate: threading.Barrier | None, *, limits=None) -> dict:
     body = {"model": model, "max_tokens": tokens, "temperature": temperature, "stream": True,
@@ -112,7 +123,7 @@ def _stream(base: str, model: str, item: dict, tokens: int, temperature: float, 
     with urllib.request.urlopen(req, timeout=1800) as resp:
         protocol.response_type(resp, 'text/event-stream')
         for chunk in protocol.sse_objects(resp, limits=limits):
-            new_usage, new_runtime, new_pieces = protocol.chunk_fields(chunk)
+            new_usage, new_runtime, new_pieces = completion_fields(chunk)
             usage = new_usage if new_usage is not None else usage
             runtime = new_runtime if new_runtime is not None else runtime
             for piece in new_pieces:
@@ -242,11 +253,252 @@ def aggregates(runs: list[dict]) -> dict:
     return out
 
 
+
+STANDARD_LEVELS = (1, 2, 4, 8, 16, 24, 32)
+PROFILE_CAPS = {"q8": 24, "q4": 32}
+MATRIX_TEXT = "A careful engineer records observations, checks each result, and explains the next useful step. "
+
+
+def matrix_ids(plan, request):
+    prefix = request["prefix"]
+    return prefix + list(itertools.islice(itertools.cycle(plan["filler_ids"]), request["input_tokens"] - len(prefix)))
+
+
+def prepare_matrix(model_dir, model, profile, levels, inputs, tokens, reps):
+    from tokenizers import Tokenizer
+    path = Path(model_dir) / "tokenizer.json"
+    tokenizer = Tokenizer.from_file(str(path))
+    tokenizer.no_padding()
+    tokenizer.no_truncation()
+    run = uuid.uuid4().hex
+    filler = tokenizer.encode(MATRIX_TEXT, add_special_tokens=False).ids
+    if not filler:
+        raise ValueError("benchmark natural text produced no tokens")
+    plan = {"schema": "tensorfold.phase-matrix-plan-v1", "run_identity": run, "model": model,
+            "profile": profile, "admin_cap": PROFILE_CAPS[profile], "levels": levels,
+            "context": 262144, "tokens": tokens, "reps": reps, "inputs": inputs,
+            "tokenizer_sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "filler_ids": filler,
+            "input_scope": "pretokenized natural completion text; model-core phases and separate HTTP wall time",
+            "cohorts": [], "excluded_levels": [n for n in levels if n > PROFILE_CAPS[profile]]}
+    for size in inputs:
+        for level, repetition, warmup in [(1, 0, True)] + [(n, rep, False) for n in levels if n <= plan["admin_cap"] for rep in range(reps)]:
+            cohort = {"id": len(plan["cohorts"]), "level": level, "input_tokens": size,
+                      "tokens": min(tokens, 16) if warmup else tokens, "repetition": repetition, "warmup": warmup, "requests": []}
+            for index in range(level):
+                text = f"Run {run} case {cohort['id']}/{index}. Continue: "
+                prefix = tokenizer.encode(text, add_special_tokens=False).ids
+                if len(prefix) >= size or size + cohort["tokens"] > plan["context"]:
+                    raise ValueError("input must fit the natural identity prefix and complete reply within262144")
+                row = {"prefix": prefix, "input_tokens": size, "index": index}
+                ids = matrix_ids(plan, row)
+                row["prompt_sha256"] = hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode()).hexdigest()
+                cohort["requests"].append(row)
+            plan["cohorts"].append(cohort)
+    hashes = [r["prompt_sha256"] for c in plan["cohorts"] for r in c["requests"]]
+    if len(set(hashes)) != len(hashes):
+        raise ValueError("native tokenizer collapsed benchmark request identities")
+    return plan
+
+
+def load_matrix(path):
+    from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
+    with Path(path).open("rb") as source:
+        raw = source.read(MAX_MESSAGE_BYTES + 1)
+    if len(raw) > MAX_MESSAGE_BYTES:
+        raise ValueError("matrix plan exceeds existing96MiB data envelope")
+    plan = json.loads(raw)
+    if (plan.get("schema") != "tensorfold.phase-matrix-plan-v1" or plan.get("profile") not in PROFILE_CAPS
+            or plan.get("admin_cap") != PROFILE_CAPS[plan["profile"]] or plan.get("context") != 262144
+            or type(plan.get("run_identity")) is not str or len(plan["run_identity"]) != 32
+            or any(char not in "0123456789abcdef" for char in plan["run_identity"])
+            or not plan.get("cohorts") or not plan.get("filler_ids")
+            or any(type(token) is not int or not 0 <= token < (1 << 31) for token in plan["filler_ids"])):
+        raise ValueError("invalid private benchmark plan")
+    seen = set()
+    for cohort in plan["cohorts"]:
+        if (any(type(cohort[key]) is not int or not 0 < cohort[key] <= (1 << 31) for key in ("level", "tokens", "input_tokens"))
+                or type(cohort["id"]) is not int or cohort["id"] < 0
+                or not 0 < cohort["level"] <= plan["admin_cap"]
+                or cohort["input_tokens"] + cohort["tokens"] > plan["context"]
+                or len(cohort["requests"]) != cohort["level"] or cohort["id"] in seen):
+            raise ValueError("invalid cohort cardinality or identity")
+        seen.add(cohort["id"])
+        for row in cohort["requests"]:
+            if (type(row.get("prefix")) is not list or not row["prefix"]
+                    or len(row["prefix"]) >= cohort["input_tokens"]
+                    or any(type(token) is not int or not 0 <= token < (1 << 31) for token in row["prefix"])
+                    or row.get("input_tokens") != cohort["input_tokens"]):
+                raise ValueError("invalid benchmark natural prefix")
+            ids = matrix_ids(plan, row)
+            if (len(ids) != cohort["input_tokens"] or len(ids) + cohort["tokens"] > plan["context"]
+                    or any(type(token) is not int or token < 0 for token in ids)
+                    or hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode()).hexdigest() != row["prompt_sha256"]):
+                raise ValueError("matrix prompt geometry/hash mismatch")
+    return plan
+
+
+def _run_matrix(args, plan, report):
+    if __package__:
+        from . import v100_rotorquant_live as live
+        from . import v100_adaptive_qualification as qualification
+    else:
+        import v100_rotorquant_live as live
+        import v100_adaptive_qualification as qualification
+    output = Path(args.output)
+    if output.exists():
+        raise ValueError("matrix output must be fresh")
+    raw = output.with_suffix(output.suffix + ".raw")
+    raw.mkdir()
+    client = live.Client(args.base, raw, timeout=args.timeout, limits=protocol.from_arguments(args))
+    serial = itertools.count()
+    def read(path):
+        return client.call(f"control-{next(serial)}", path=path, object_response=True)
+    report.update(schema="tensorfold.phase-matrix-result-v1", plan=plan, cohorts=[], passed=False)
+    write_json(output, report)
+    initial = read("/stats")
+    effective = qualification.profile(initial)
+    materialized = qualification.materialization(initial, effective)
+    qualification.require_idle(initial)
+    report["materialization"] = materialized
+    instance = initial["server"]["instance_id"]
+    if args.model != plan["model"]:
+        raise ValueError("benchmark model differs from its immutable input plan")
+    expected_kv = "int8" if plan["profile"] == "q8" else "rotorquant-iso4-sm70-v1"
+    if initial["model"].get("kv_dtype") != expected_kv or initial["model"].get("context_length") != plan["context"]:
+        raise ValueError("service differs from the selected cache/full-context profile")
+    session = initial["capacity_plan"]["session_capacity"]
+    capacity = session["resident_capacity"]
+    if session.get("configured_ceiling") != plan["admin_cap"] or capacity > plan["admin_cap"]:
+        raise ValueError("service does not use the selected administrator concurrency ceiling")
+    report.update(instance_id=instance, actual_resident_capacity=capacity,
+                  excluded_by_admin_cap=plan["excluded_levels"],
+                  scope="one loaded immutable service; overlapping inclusive GPU-stream envelopes/host gaps, not kernel-only")
+    def publish():
+        write_json(output, report)
+    publish()
+    for cohort in plan["cohorts"]:
+        row = {"cohort": cohort["id"], "level": cohort["level"], "input_tokens": cohort["input_tokens"],
+               "repetition": cohort["repetition"], "warmup": cohort["warmup"], "requests": [], "passed": False}
+        report["cohorts"].append(row)
+        if cohort["level"] > capacity:
+            row.update(status="unsupported-resident-capacity", rates=None)
+            publish()
+            continue
+        stats = read("/stats")
+        if stats["server"]["instance_id"] != instance or stats["load"]["requests_in_flight"]:
+            raise ValueError("benchmark requires the same idle service and no unrelated jobs")
+        gate = threading.Barrier(cohort["level"])
+        results, errors = [None] * cohort["level"], [None] * cohort["level"]
+        row.update(requests=results, errors=errors)
+        def request(index):
+            spec = cohort["requests"][index]
+            body = {"model": args.model, "prompt": matrix_ids(plan, spec), "max_tokens": cohort["tokens"],
+                    "temperature": 0, "draft": True, "ignore_eos": True, "stream": True,
+                    "stream_options": {"include_usage": True}, "return_token_ids": True}
+            try:
+                gate.wait()
+                started = time.perf_counter()
+                pieces = []
+                reply = client.call(f"cohort-{cohort['id']}-request-{index}", body, path="/v1/completions",
+                                    observer=lambda event, text: (completion_fields(event), pieces.extend(text)))
+                reply["choices"][0]["message"]["content"] = "".join(pieces) or None
+                finished = time.perf_counter()
+                completion = live.completion(reply, cohort["tokens"])
+                usage, native = reply["usage"], reply["tensorfold"]
+                token_sha = hashlib.sha256(",".join(map(str, completion["ids"])).encode()).hexdigest()[:12]
+                if native.get("token_sha") != token_sha:
+                    raise ValueError("independent full token-ID SHA mismatch")
+                if (usage["prompt_tokens"] != spec["input_tokens"] or native.get("cached") != 0
+                        or usage.get("prompt_tokens_details", {}).get("cached_tokens") != 0
+                        or len(completion["ids"]) != cohort["tokens"] or completion["finish"] != "length"):
+                    raise ValueError("cold full-work benchmark request did not conform")
+                phases = {}
+                for name, numerator in (("prefill", usage["prompt_tokens"]), ("decode", max(0, len(completion["ids"]) - 1))):
+                    seconds = native.get(name + "_s")
+                    phases[name + "_reported_host_tps"] = numerator / seconds if type(seconds) in (int, float) and seconds > 0 else None
+                results[index] = {"reply": reply, "sent": started, "finished": finished,
+                                  "prompt_sha256": spec["prompt_sha256"], **phases}
+            except BaseException as error:
+                errors[index] = {"type": type(error).__name__, "message": str(error)}
+                gate.abort()
+        tasks = []
+        primary = None
+        try:
+            for index in range(cohort["level"]):
+                task = Task(partial(request, index), name=f"phase-matrix-{index}")
+                tasks.append(task)
+                task.start()
+        except BaseException as error:
+            primary = error
+            gate.abort()
+        finally:
+            drain(tasks, primary)
+        row.update(requests=results, errors=errors)
+        if any(errors):
+            row["status"] = "request-failed"
+            publish()
+            break
+        final = read("/stats")
+        if final["server"]["instance_id"] != instance or final["load"]["requests_in_flight"]:
+            raise ValueError("cohort did not retire on the same service")
+        deadline = time.monotonic() + args.timeout
+        while True:
+            snapshot = read("/v1/runtime")["execution"]["work_observations"].get("benchmark")
+            pending = None if not snapshot else snapshot.get("cohorts", {}).get(str(cohort["id"]))
+            if pending and pending.get("events_ready") or time.monotonic() >= deadline:
+                break
+            time.sleep(.01)  # Only post-cohort event readiness; no model/per-step fence.
+        if (not snapshot or snapshot["run_identity"] != plan["run_identity"]
+                or snapshot.get("server_instance_id") != instance):
+            raise ValueError("the required private worker observer is absent or belongs to another plan")
+        evidence = snapshot["cohorts"].get(str(cohort["id"]))
+        row["backend"] = evidence
+        if not evidence or evidence.get("completed") != cohort["level"] or not evidence.get("events_ready"):
+            row["status"] = "unmeasured-worker-envelope"
+            publish()
+            break
+        if evidence["prompt_hashes"] != sorted(r["prompt_sha256"] for r in cohort["requests"]):
+            raise ValueError("worker prompt identity differs from the actual benchmark cohort")
+        input_count = cohort["level"] * cohort["input_tokens"]
+        decode_count = sum(max(len(live.completion(r["reply"], cohort["tokens"])["ids"]) - 1, 0) for r in results)
+        prefill_seconds, decode_seconds = evidence["prefill_ms"] / 1000, evidence["decode_ms"] / 1000
+        row["rates"] = {"prefill_envelope_tps": input_count / prefill_seconds if prefill_seconds > 0 else None,
+                        "decode_envelope_tps": decode_count / decode_seconds if decode_seconds > 0 else None,
+                        "cohort_http_wall_tps": sum(r["reply"]["usage"]["completion_tokens"] for r in results)
+                            / (max(r["finished"] for r in results) - min(r["sent"] for r in results))}
+        row["passed"] = evidence["active_owner_highwater"] >= cohort["level"] and all(value is not None for value in row["rates"].values())
+        row["status"] = "measured" if row["passed"] else "unmeasured-phase-or-overlap"
+        publish()
+    report["unrun_cohorts"] = [c["id"] for c in plan["cohorts"] if c["id"] not in {r["cohort"] for r in report["cohorts"]}]
+    report["passed"] = not report["unrun_cohorts"] and all(row["passed"] for row in report["cohorts"])
+    publish()
+    return 0 if report["passed"] else 2
+
+
+def run_matrix(args, plan):
+    output = Path(args.output)
+    if output.exists() or output.with_suffix(output.suffix + ".raw").exists():
+        raise ValueError("matrix output and raw directory must be fresh")
+    report = {"schema": "tensorfold.phase-matrix-result-v1", "plan": plan, "cohorts": [], "passed": False}
+    try:
+        return _run_matrix(args, plan, report)
+    except BaseException as error:
+        report["error"] = {"type": type(error).__name__, "message": str(error)}
+        report["passed"] = False
+        report["unrun_cohorts"] = [c["id"] for c in plan["cohorts"]
+                                  if c["id"] not in {r["cohort"] for r in report["cohorts"]}]
+        try:
+            write_json(output, report)
+        except BaseException as publication:
+            raise_failures(error, (publication,))
+        raise
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("base")
     p.add_argument("model")
-    p.add_argument("--levels", default="4", help="concurrent requests, a comma list")
+    p.add_argument("--levels", default="1,2,4,8,16,24,32", help="concurrent requests, a comma list")
     p.add_argument("--tokens", type=int, default=256)
     p.add_argument("--reps", type=int, default=3)
     p.add_argument("--seed", type=int, default=1234)
@@ -259,9 +511,28 @@ def main() -> int:
     p.add_argument("--stagger-ms", type=float, default=0.0, help="start request i this many ms after request i - 1")
     p.add_argument("--label", default="")
     p.add_argument("--output")
+    p.add_argument("--prepare-matrix", type=Path)
+    p.add_argument("--matrix-plan", type=Path)
+    p.add_argument("--profile", choices=tuple(PROFILE_CAPS), default="q8")
+    p.add_argument("--input-tokens", default="64")
+    p.add_argument("--timeout", type=float, default=1800)
     protocol.add_arguments(p)
     args = p.parse_args()
     limits = protocol.from_arguments(args)
+    if args.prepare_matrix is not None or args.matrix_plan is not None:
+        if not args.output or args.prepare_matrix is not None and args.matrix_plan is not None:
+            p.error("matrix requires one preparation/run mode and a fresh --output")
+        if args.prepare_matrix is not None:
+            levels = sorted(set(int(value) for value in args.levels.split(",")))
+            inputs = sorted(set(int(value) for value in args.input_tokens.split(",")))
+            if any(value <= 0 for value in [*levels, *inputs, args.tokens, args.reps]):
+                p.error("matrix sizes/levels/tokens/reps must be positive")
+            if Path(args.output).exists():
+                p.error("matrix plan output must be fresh")
+            write_json(args.output, prepare_matrix(args.prepare_matrix, args.model, args.profile, levels, inputs, args.tokens, args.reps))
+            return 0
+        return run_matrix(args, load_matrix(args.matrix_plan))
+
     if args.strict and args.no_seed:
         p.error("--strict requires keyed requests; omit --no-seed")
     if args.no_seed:

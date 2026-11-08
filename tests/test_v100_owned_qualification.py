@@ -608,3 +608,96 @@ def test_offline_acceptor_requires_own_startup_rank_service(history_acceptance_p
     path.write_text(json.dumps(startup))
     with pytest.raises(ValueError):
         owned.accept_history(root, client)
+
+
+def test_private_benchmark_events_exact_cohort_identity_and_full_active_owner_proof(monkeypatch):
+    import torch
+    from test_bench_concurrent import matrix_fixture
+    plan = matrix_fixture()
+    plan['cohorts'] = [plan['cohorts'][1]]
+    cohort = plan['cohorts'][0]
+    clock, queries = [0], []
+    actual_stream = object()
+    monkeypatch.setattr(torch.cuda, 'current_stream', lambda device: actual_stream)
+    class Event:
+        def __init__(self):
+            self.at, self.records = None, 0
+        def record(self, stream):
+            assert stream is actual_stream
+            clock[0] += 1
+            self.at, self.records = clock[0], self.records + 1
+        def query(self):
+            queries.append('query')
+            return True
+        def elapsed_time(self, other):
+            return (other.at - self.at) * 10.
+    observations = NS(target=lambda *a, **k: None, record=lambda **k: {'existing': True})
+    streams = []
+    from tools.bench_concurrent import matrix_ids
+    for request in cohort['requests']:
+        streams.append(NS(prompt=matrix_ids(plan, request), count=3, out=[], done=False, st=object()))
+    decoder = NS(streams={}, filling=[], controller=NS(work_observations=observations))
+    def admit(stream):
+        decoder.filling.append(stream)
+    def take(stream, values):
+        stream.out.extend(values)
+        stream.done = len(stream.out) >= stream.count
+    def joined(pieces, *args):
+        for stream, start, count in pieces:
+            decoder.filling.remove(stream)
+            decoder.streams[id(stream)] = stream
+            decoder._take(stream, [20])
+    def finish(done):
+        for stream in done:
+            decoder.streams.pop(id(stream))
+    decoder.admit, decoder._take, decoder._joined, decoder.finish = admit, take, joined, finish
+    decoder._prepare_pass = lambda pieces: 'prepared'
+    decoder.round = lambda: []
+    engine = NS(rank=0, multi=decoder, w=NS(device='cuda'), scheduler=NS(thread=object()),
+                tp_decoder=NS(wires={id(stream): index for index, stream in enumerate(streams)}), _abort_comm=False)
+    events = [Event() for _ in range(4)]
+    observer = owned._BenchmarkObserver(engine, plan, events=events)
+    observer.install()
+    smoke = NS(prompt=[99, 98], count=3, out=[], done=False, st=object())
+    engine.tp_decoder.wires[id(smoke)] = 99
+    decoder.admit(smoke)
+    decoder._prepare_pass([(smoke, 0, 2)])
+    decoder._joined([(smoke, 0, 2)], None, None, 0.)
+    decoder._take(smoke, [21, 22])
+    decoder.finish([smoke])
+    assert observer.published['cohorts'] == {} and all(event.records == 0 for event in events)
+    for stream in streams:
+        decoder.admit(stream)
+    pieces = [(stream, 0, len(stream.prompt)) for stream in streams]
+    assert decoder._prepare_pass(pieces) == 'prepared'
+    observations.target([(streams[0].st, 0, 6)], prefill=True)  # Microbatch1 is not active-owner concurrency2.
+    decoder._joined(pieces, None, None, 0.)
+    for stream in streams:
+        decoder._take(stream, [21, 22])
+    assert queries == []  # No timer query/fence while model cohort executes.
+    decoder.round()
+    decoder.finish(streams)
+    snapshot = observations.record()['benchmark']['cohorts'][str(cohort['id'])]
+    assert snapshot['events_ready'] and snapshot['completed'] == 2
+    assert snapshot['active_owner_highwater'] == 2 and snapshot['prefill_batch_highwater'] == 1
+    assert snapshot['prompt_hashes'] == sorted(row['prompt_sha256'] for row in cohort['requests'])
+    assert snapshot['prefill_ms'] > 0 and snapshot['decode_ms'] > 0
+    assert [event.records for event in events] == [1, 1, 1, 1]
+    from tensorfold.server.stats import INSTANCE_ID
+    assert observer.published['server_instance_id'] == INSTANCE_ID
+    published = observer.published
+    credited = []
+    def credit(value):
+        credited.append(value)
+        observer.published = {**published, 'later_generation': True}
+    assert observations.record(credit=credit)['benchmark'] is published
+    assert credited == [published]
+    monkeypatch.setattr(owned, 'notify_failure', lambda: True)
+    with pytest.raises(ValueError, match='does not belong'):
+        decoder.admit(smoke)  # Foreign traffic is forbidden once the matrix started.
+    assert engine._abort_comm
+
+
+def test_benchmark_plan_does_not_add_public_cli_flag():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(['serve', 'model', '--benchmark-plan', 'data.json'])

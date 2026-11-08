@@ -18,6 +18,12 @@ SM70 ISO4 Q4 profile at 32, retaining the full context and VRAM headroom.
 These are administrator ceilings; the engine's capacity checks remain in force.
 See [the profile configuration](deploy/v100/README.md#personal-concurrency-ceilings).
 
+The standard [V100 phase benchmark](docs/benchmarking.md) reuses one loaded
+service across levels 1, 2, 4, 8, 16, 24 and 32, within each profile's cap.
+It reports prefill/decode CUDA-stream envelopes, separate native/client timings,
+and coherent backend-owner overlap evidence. Tool checks passed; actual model
+measurements and 32-slot admission still require the target run.
+
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload
 projection. It separately pays completed HTTP continuations, default-cache
