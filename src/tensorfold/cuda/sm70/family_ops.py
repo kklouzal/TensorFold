@@ -9,6 +9,7 @@ The existing family owns all weights, request state, cache formats and buffers.
 from __future__ import annotations
 
 import math
+import os
 
 import torch
 import torch.nn.functional as F
@@ -860,6 +861,11 @@ def _torch_shift_windows(old, new, keep, channels):
 # Keep the hardware-generic implementations above as numerical references.
 # CPU tensors always use them. The private selector is for numerical oracle
 # tests; promotion follows the native component and full-forward receipts.
+# Operator-granular private experiment, fixed before worker preparation. This
+# never selects the other family kernels or the distinct F32 Triton FMA route.
+_PRIVATE_HALF_PARTIAL = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL", "inherit")
+if _PRIVATE_HALF_PARTIAL not in ("inherit", "native-half-v1"):
+    raise ValueError("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL requires inherit or native-half-v1")
 _NATIVE_FAMILY = False
 _NATIVE_ATTENTION = False
 _reference = {name: globals()["_torch_" + name] for name in (
@@ -963,6 +969,13 @@ def add_streams(e, hs, out, streams):
 
 
 def moe_partial(y, wts, out, rows):
+    if (_PRIVATE_HALF_PARTIAL == "native-half-v1" and y.is_cuda and y.dtype == torch.float16
+            and torch.cuda.get_device_capability(y.device) == (7, 0)):
+        from .family_native import extension
+
+        # Existing ABI validates contiguous same-device Half/FP32 operands,
+        # geometry and live row bounds before the allocation-free launch.
+        return extension().partial(y, wts, out, rows)
     native = _fused(out, half=False)
     if native is not None:
         return native.partial(y, wts, out, rows)

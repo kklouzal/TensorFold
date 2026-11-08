@@ -479,6 +479,32 @@ SHA256 `fe4ae5b91bd9cc84e1e57730bbc71f63533e110954789b15113b6439138aa4db`.
 Initial GPU results and subsequent graph failures remain under the same audit
 directory in `dense-GPU-source-v1/` and `graph-GPU-v3/`.
 
+## Ordered Half MoE partial component checkpoint
+
+The process-start private selector
+`TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL=native-half-v1` reuses the existing SM70
+CUDA kernel for ordered Half expert partials. It retains the original separate
+FP32 multiply/add sequence (`--fmad=false`), output storage and row bounds.
+There is no new kernel or tensor allocation. The selector applies only to CUDA
+Half on SM70; CPU/other-device paths, the distinct F32 Triton FMA path and other
+family operators retain their prior policy.
+
+Unset or explicit `inherit` preserves the existing family policy, including
+legacy optimized-profile behavior. The value is fixed at module import;
+changing the environment after import does not change the selected policy.
+Unknown values fail closed. Use only a candidate image containing this source,
+record its exact identity and verify the selected policy before an integrated
+trial; an environment variable cannot add support to an older image.
+
+The held source passed 51 CPU and 13 actual SM70 GPU checks with zero skips on
+the pinned `0a13de3c` SDK. Strict independent ordered oracles cover cancellation,
+subnormals, signed zeros, row/guard bounds, malformed inputs and selector
+isolation. Source-only verification and the existing native-kernel ELF are
+recorded in `native-half-partial-prototype-v1/source-CPU51-GPU13-gate-v1.json`,
+SHA256 `844dbef4aaa55384f388ca32ec444f8d1f25d0ad327a0027d8ed4ef4afc127e2`.
+Installed-image, complete model output and performance checks remain pending;
+this checkpoint selects no new deployment default.
+
 ## Shared owner-attention diagnostics
 
 On the existing V100 SDK/application image `0a13de3c` (application source

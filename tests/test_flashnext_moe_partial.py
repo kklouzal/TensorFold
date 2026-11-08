@@ -114,7 +114,9 @@ def test_cpu_family_partial_preserves_fp32_slot_order_and_live_row_bounds(monkey
     (torch.bfloat16, True, (8, 0), "triton"),
     (torch.bfloat16, True, (12, 1), "triton"),
 ])
-def test_glue_retains_selected_float32_kernel_and_existing_half_routes(monkeypatch, dtype, cuda, capability, expected):
+@pytest.mark.parametrize("private", ["inherit", "native-half-v1"])
+def test_glue_retains_selected_float32_kernel_and_existing_half_routes(monkeypatch, dtype, cuda, capability, expected, private):
+    monkeypatch.setattr(family_ops, "_PRIVATE_HALF_PARTIAL", private)
     y = NS(dtype=dtype, is_cuda=cuda, device=torch.device("cuda:2" if cuda else "cpu"))
     wts, out = NS(shape=(4, 11)), NS(shape=(4, 2560))
     queries, calls = [], []
@@ -139,6 +141,7 @@ def test_glue_retains_selected_float32_kernel_and_existing_half_routes(monkeypat
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("enabled", [False, True])
 def test_existing_family_partial_selector_retains_both_supported_storage_types(monkeypatch, dtype, enabled):
+    monkeypatch.setattr(family_ops, "_PRIVATE_HALF_PARTIAL", "inherit")
     y, wts = NS(dtype=dtype), object()
     out = NS(dtype=torch.float32, is_cuda=True)
     calls = []
@@ -147,3 +150,76 @@ def test_existing_family_partial_selector_retains_both_supported_storage_types(m
     monkeypatch.setitem(family_ops._reference, "moe_partial", lambda *args: calls.append(("reference", args)))
     family_ops.moe_partial(y, wts, out, 3)
     assert calls == [("native" if enabled else "reference", (y, wts, out, 3))]
+
+
+def half_partial_adverse_case(rows, width=2560):
+    values, weights = partial_case(torch.float16, rows, width)
+    if rows:
+        # Stored Half subnormals, signed zeros, extremes and FP32 subnormal
+        # products; the independent oracle rounds each product then each sum.
+        values[0] = 0
+        weights[0] = 1
+        values[0, 0, 0::4] = np.float16(2**-24)
+        weights[0, 0] = np.float32(2**-120)
+        values[0, 1, 1::4] = np.float16(-0.)
+        values[0, 2, 2::4] = np.float16(65504)
+        values[0, 3, 2::4] = np.float16(-65504)
+        values[0, 4, 3::4] = np.float16(2**-14)
+        values[0, -1, 3::4] = np.float16(-2**-24)
+    return values, weights
+
+
+@pytest.mark.parametrize("selected", ["inherit", "native-half-v1"])
+@pytest.mark.parametrize("dtype,cuda,capability,expected", [
+    (torch.float16, True, (7, 0), "native"),
+    (torch.float16, True, (8, 0), "reference"),
+    (torch.float16, False, None, "reference"),
+    (torch.float32, True, (7, 0), "reference"),
+])
+def test_private_half_partial_dispatch_is_operator_dtype_and_device_scoped(monkeypatch, selected, dtype, cuda,
+                                                                         capability, expected):
+    y = NS(dtype=dtype, is_cuda=cuda, device=torch.device("cuda:2" if cuda else "cpu"))
+    out, wts = NS(dtype=torch.float32, is_cuda=cuda), object()
+    calls, queries = [], []
+    monkeypatch.setattr(family_ops, "_PRIVATE_HALF_PARTIAL", selected)
+    monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: queries.append(device) or capability)
+    monkeypatch.setattr(family_native, "extension", lambda: NS(partial=lambda *args: calls.append(("native", args))))
+    monkeypatch.setitem(family_ops._reference, "moe_partial", lambda *args: calls.append(("reference", args)))
+    family_ops.moe_partial(y, wts, out, 3)
+    expected = expected if selected == "native-half-v1" else "reference"
+    assert calls == [(expected, (y, wts, out, 3))]
+    assert queries == ([y.device] if selected == "native-half-v1" and cuda and dtype == torch.float16 else [])
+    assert family_ops._fused(NS(dtype=torch.float16, is_cuda=True)) is None
+
+
+@pytest.mark.parametrize("setting", [None, "inherit", "native-half-v1", "", "1", "native"])
+def test_private_half_partial_selector_is_validated_once_at_process_start(setting):
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env.pop("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL", None)
+    if setting is not None:
+        env["TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL"] = setting
+    code = ("import os, torch; from tensorfold.cuda.sm70 import family_ops as f; "
+            "print(f._PRIVATE_HALF_PARTIAL); "
+            "os.environ['TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL']='changed'; "
+            "print(f._PRIVATE_HALF_PARTIAL); print(torch.cuda.is_initialized())")
+    result = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True, timeout=60)
+    if setting in (None, "inherit", "native-half-v1"):
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [setting or "inherit", setting or "inherit", "False"]
+    else:
+        assert result.returncode != 0
+        assert "TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL requires inherit or native-half-v1" in result.stderr
+
+
+def test_half_adverse_oracle_has_subnormal_and_separate_shared_slot_contributions():
+    values, weights = half_partial_adverse_case(1, 8)
+    result = ordered_partial(values, weights, 1)
+    assert result[0, 0] == np.float32(2**-144)
+    assert result[0, 1].view(np.uint32) == 0
+    assert result[0, 2].view(np.uint32) == 0
+    assert result[0, 3] == np.float32(2**-14 - 2**-24)
