@@ -50,10 +50,12 @@ records four actual prompt-tail inputs and logits for numerical diagnosis;
 its blocking copies and file I/O are excluded from performance measurements.
 The completed capture found identical sampled inputs but different router logits
 between solo and concurrent runs; routing-weight and output attribution remain open.
+GPU replays reproduced the sampled batch-context differences without changing
+the derived expert choices or rounded routing weights.
 The private [ordered Half partial trial](docs/v100-adaptive-validation.md#ordered-half-moe-partial-component-checkpoint)
 passed component checks and has per-rank policy attestation; default policy
-and other operators remain unchanged. Its dedicated candidate image also passed
-276 installed CPU checks; model and performance qualification remain pending.
+and other operators remain unchanged. The current combined-selector candidate
+passed 371 installed CPU checks; model and performance qualification remain pending.
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)
 isolates the existing native decode-logit operator for qualification, without
 enabling the broader optimized profile; the ordinary default remains unchanged.

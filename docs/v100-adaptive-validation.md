@@ -580,6 +580,24 @@ performance. GPU replay remains a separate check.
 Gate: `actual-router-row-capture-v1/actual-router-capture-final-gate-v1.json`,
 SHA256 `3f1021979a98ba5bf326af726af25c8e809c4e1d5f0cc8af2bde4fa259ffb438`.
 
+The subsequent single-GPU replay used installed `8e08ef95`, the same pinned
+SDK and normal router ELF `74c0678e`. Both unique input rows had repeatable
+serial R1 results; all 12 native R2/8/32 component rows matched R1 exactly.
+Eight synthetic 64/128-row contexts, using zero or repeated-input fillers,
+reproduced their corresponding captured rows exactly. This supports the tested
+batch-context arithmetic, without reconstructing the original full frames or
+physical layouts. R1 differed from all four captured prefill-logit rows.
+
+Original selection APIs derived identical expert IDs and Half-rounded FP32
+weights from each sampled concurrent/isolated pair and its R1 result, including
+eight matching-shape selection controls. Actual in-model picks and weights
+were not captured. These samples therefore do not establish a routing-weight
+change or explain the full output differences. The replay exited zero with
+unchanged math modes, source/health and no OOM or cleanup errors; no numerical
+acceptance, model-quality result or performance selection follows.
+Gate: `router-four-row-GPU-replay-v1/actual-router-row-replay-gate-v1.json`, SHA256
+`d733eac96b1da41a5c24dc912198bcf5b851ce30465206c0cd8e6e61b865b1be`.
+
 ## Independent serial-router trial
 
 `TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS=native-serial-v1` selects the existing
@@ -605,6 +623,17 @@ An earlier ARM run's unchanged x86-resource guard failure is retained, rather
 than deselected or described as a whole-module pass.
 Source/CPU seal: `router-selector-attestation-v1/source-final-v1.json`, SHA256
 `8c74e6f85728aca7faa7a25b329c82295b017145b66902e1a43580af7e03cd89`.
+
+A genuine application-only image from committed `69c3ce2c`,
+`sha256:60dcb0e2d51f429d54875d874c06c8e3f672c0dcd4b7e5a4eace8dbb50c61027`,
+passed 371 installed CPU checks with zero skips. Its 782-member runtime inventory
+differs from `0a13de3c` only in the inherited private Dense implementation,
+Half selector and router selector. Generic expert CUDA, native FD, Torch and
+the protected SDK remain unchanged. Both selectors default to `inherit`, with
+no image environment override; this is packaging/control qualification, not
+an enabled-mode model, performance or production qualification.
+Gate: `router-app-69c3-v1/genuine-router-half-installed-gate-v1.json`, SHA256
+`2ace3188e033eecbbaf690afac9181132ff9891b182c7718d571d7a156bf472b`.
 
 The selector passed 49 local ARM CPU controls with zero skips, plus Ruff and
 syntax checks. These establish policy isolation and unchanged guard behavior,
