@@ -63,6 +63,8 @@ The default-off [empty-first-page shortcut](docs/v100-adaptive-validation.md#pri
 passed 368 integrated CPU checks and eight eight-rank GPU cases. Its image
 packaging then passed 582 CPU checks; enabled-mode model and performance
 qualification remain pending.
+The private launcher can also [prepare a larger MTP verification envelope](docs/benchmarking.md#private-verification-row-envelope-trials)
+before loading; memory and throughput qualification remain required.
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)
 isolates the existing native decode-logit operator for qualification, without
 enabling the broader optimized profile; the ordinary default remains unchanged.

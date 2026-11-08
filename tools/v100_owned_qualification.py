@@ -936,13 +936,28 @@ def _empty_prefix_policy(requested):
 
 
 
-def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None):
+def _execution_rows_receipt(engine, requested):
+    decoder = engine.multi
+    values = {"engine": engine.execution_rows, "target": decoder.buf.rows,
+              "maximum": decoder.controller.maximum["row_budget"],
+              "configured": decoder.controller.configured["row_budget"]}
+    if decoder.mbuf is not None:
+        values["mtp"] = decoder.mbuf.rows
+    if any(type(value) is not int or value != requested for value in values.values()):
+        raise ValueError("private execution rows differ from prepared engine/buffers/controller")
+    return {"requested": requested, **values}
+
+
+def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
+                    execution_rows=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
         receipt["half_partial_policy"] = _half_policy(half_request)
         receipt["private_router_policy"] = _router_policy(router_request)
         receipt["empty_prefix_policy"] = _empty_prefix_policy(empty_request)
+        if execution_rows is not None:
+            receipt["execution_rows"] = _execution_rows_receipt(engine, execution_rows)
         from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat
         actual = GGUFDense.implementation
         if dense_implementation is not None and (
@@ -995,6 +1010,7 @@ def worker(argv):
     parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
+    parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
     tail = selected.serve_args[1:] if selected.serve_args[:1] == ["--"] else selected.serve_args
@@ -1033,7 +1049,8 @@ def worker(argv):
                     _observer_failure(engine, primary)
                     raise
             publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation,
-                            half_request=half_request, router_request=router_request, empty_request=empty_request)
+                            half_request=half_request, router_request=router_request, empty_request=empty_request,
+                            execution_rows=selected.execution_rows)
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
@@ -1066,6 +1083,16 @@ def worker(argv):
         args = cli.build_parser().parse_args(["serve", *tail])
         if args.tp != 8 or args.expert_tensor_parallel_size != 4 or not 0 <= args.rank < 8:
             raise ValueError("private qualification requires explicit TP8/ETP4 rank ownership")
+        if selected.execution_rows is not None:
+            # Keep this experiment explicit: resolve no model-dependent draft
+            # defaults and pay its complete envelope before engine construction.
+            if (args.draft_method != "mtp" or args.no_drafts or type(args.mtp_drafts) is not int
+                    or args.mtp_drafts < 0 or str(args.parallel).lower() == "auto"):
+                raise ValueError("private execution rows require explicit MTP depth and parallel count")
+            slots = cli._parallel(args.parallel)
+            each = args.mtp_drafts + 1
+            if not each <= selected.execution_rows <= min(65535, slots * each):
+                raise ValueError("private execution rows must fit the explicit complete-window envelope")
         if selected.dense_implementation is not None:
             from tensorfold.cuda.sm70.execution_policy import PROFILE_ENV
             from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
@@ -1079,7 +1106,13 @@ def worker(argv):
         if benchmark_resources is not None:
             obligation = (benchmark_resources["global_host_obligation_bytes"],
                           hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
-        args._owned_expert_qualification = cli._OwnedExpertQualification(before_listener, obligation)
+        if selected.execution_rows is None:
+            args._owned_expert_qualification = cli._OwnedExpertQualification(before_listener, obligation)
+        else:
+            if "execution_rows" not in cli._OwnedExpertQualification.__dataclass_fields__:
+                raise ValueError("installed CLI does not support private execution rows")
+            args._owned_expert_qualification = cli._OwnedExpertQualification(
+                before_listener, obligation, execution_rows=selected.execution_rows)
         return cli.cmd_serve(args)
     except BaseException as primary:
         try:
@@ -1209,10 +1242,13 @@ def main(argv=None):
     parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
+    parser.add_argument("--execution-rows", type=int, help="private prepared MTP row envelope; requires explicit depth/parallel")
     parser.add_argument("--router-row-input", type=Path, help="private four-row layer0 capture DATA; diagnostic overhead only")
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if args.execution_rows is not None and not 1 <= args.execution_rows <= 65535:
+        parser.error("private execution rows must be in 1..65535")
     if args.router_row_input is not None and (args.history_input is not None or args.benchmark_plan is not None):
         parser.error("router row capture cannot be combined with history/benchmark")
     if args.scheduler_trace is not None and args.benchmark_plan is None:
@@ -1233,6 +1269,8 @@ def main(argv=None):
         prefix += ["--history-input", str(args.history_input.absolute()), "--history-run-id", uuid.uuid4().hex]
     if args.dense_implementation is not None:
         prefix += ["--dense-implementation", args.dense_implementation]
+    if args.execution_rows is not None:
+        prefix += ["--execution-rows", str(args.execution_rows)]
     if args.benchmark_plan is not None:
         prefix += ["--benchmark-plan", str(args.benchmark_plan.absolute())]
     if args.scheduler_trace is not None:

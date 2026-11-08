@@ -96,6 +96,30 @@ for actual backend overlap; offered simultaneous requests alone do not qualify a
 level. No forced model scheduling or hidden server reconfiguration creates that
 proof. If overlap is not observed, keep the row unqualified and its raw data.
 
+## Private verification-row envelope trials
+
+The supervised qualification launcher accepts `--execution-rows N` before its
+`--` separator. This experiment requires an explicit MTP method, draft depth
+and parallel count in the serve arguments. It validates the complete-window
+bound before construction and forwards the requested envelope through the
+trusted Python capability into the ordinary factory, planner and allocator.
+No administrator/public serve option, context or concurrency default changes.
+
+For example, a 40-row envelope can hold eight complete four-proposal MTP
+windows; the current 32-row default holds six. Actual draft lengths and fair
+ready-work selection still determine each round. Every rank records and checks
+the requested rows against the engine, target/MTP buffers and controller
+maximum/configured budgets before publication. This cannot hot-raise a loaded
+32-row controller or bypass physical admission. Omission preserves the prior
+constructor and default envelope; an older CLI without capability support
+rejects an explicit request.
+
+Source integration passed 308 selected x86 CPU checks with zero skips. Installed
+successor, physical allocation, active-work/quality and throughput comparisons
+remain pending; planner estimates are not grants or performance results.
+Review/evidence: `private-execution-rows-v1/reviewer-final-source-CPU-v3.json`,
+SHA256 `0c483856461b8d77b7800a6b94dc4e31b9aec48c1b226bc696963fd2e873fc16`.
+
 ## Denominators and actual overlap
 
 The private worker samples the full non-done `streams`+`filling` set at successful

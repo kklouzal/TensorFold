@@ -108,8 +108,8 @@ def channel(monkeypatch):
         os.close(read)
 
 
-@pytest.mark.parametrize("dense", [None, "reference", "native32"])
-def test_parent_delegates_eight_ranks_and_borrows_supervised_pipe(monkeypatch, tmp_path, dense):
+@pytest.mark.parametrize("dense,rows", [(None, None), ("reference", None), ("native32", None), (None, 40)])
+def test_parent_delegates_eight_ranks_and_borrows_supervised_pipe(monkeypatch, tmp_path, dense, rows):
     captured = {}
     def supervise(commands, environments, **options):
         captured.update(commands=commands, environments=environments, options=options)
@@ -117,6 +117,8 @@ def test_parent_delegates_eight_ranks_and_borrows_supervised_pipe(monkeypatch, t
         return 23
     monkeypatch.setattr(launcher, "supervise", supervise)
     selection = [] if dense is None else ["--dense-implementation", dense]
+    if rows is not None:
+        selection += ["--execution-rows", str(rows)]
     assert owned.main([*selection, "--gpus", "0,1,2,3,4,5,6,7", "--out", str(tmp_path / "new"),
                        "--", "model", "--backend", "cuda"]) == 23
     assert [env["CUDA_VISIBLE_DEVICES"] for env in captured["environments"]] == ["1", "2", "3", "4", "5", "6", "7", "0"]
@@ -126,6 +128,11 @@ def test_parent_delegates_eight_ranks_and_borrows_supervised_pipe(monkeypatch, t
             assert "--dense-implementation" not in command
         else:
             assert command[command.index("--dense-implementation") + 1] == dense
+        if rows is None:
+            assert "--execution-rows" not in command
+        else:
+            assert command[command.index("--execution-rows") + 1] == str(rows)
+            assert command.index("--execution-rows") < command.index("--")
         assert command[command.index("--tp") + 1] == "8"
         assert command[command.index("--") + 1] == "model"
     assert captured["options"]["stop_on_departure"] is True
@@ -374,8 +381,8 @@ def test_public_parser_cannot_select_native_and_untyped_marker_fails_closed(tmp_
         cli.cmd_serve(args)
 
 
-@pytest.mark.parametrize("private", [False, True])
-def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch, tmp_path, request, private):
+@pytest.mark.parametrize("private,rows", [(False, None), (True, None), (True, 40)])
+def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch, tmp_path, request, private, rows):
     import tensorfold.cuda.server as server
     (tmp_path / "config.json").write_text('{"max_position_embeddings":128}')
     calls, options = [], []
@@ -385,11 +392,16 @@ def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch,
     install_cli_server(monkeypatch, request, server, on_serve=lambda _app: calls.append("serve"))
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
     if private:
-        args._owned_expert_qualification = cli._OwnedExpertQualification(lambda selected: calls.append("receipt") if selected is engine else pytest.fail("different engine"))
+        args._owned_expert_qualification = cli._OwnedExpertQualification(
+            lambda selected: calls.append("receipt") if selected is engine else pytest.fail("different engine"),
+            execution_rows=rows)
     assert cli._serve_cuda(args, family, tmp_path, 128) == 0
     assert options[0].get("_owned_expert_native", False) is private
     if not private:
         assert "_owned_expert_native" not in options[0]
+    assert options[0].get("execution_rows") == rows
+    if rows is None:
+        assert "execution_rows" not in options[0]
     assert calls == (["receipt"] if private else []) + ["serve", "engine-close"]
 
 
@@ -1345,3 +1357,48 @@ def test_empty_prefix_attestation_refuses_unsupported_or_changed_present_mode(
     assert not (tmp_path / 'rank-3.json').exists()
     if stage == 'constructor' or requested != 'invalid':
         assert not hasattr(history_owner, '_PRIVATE_EMPTY_PREFIX') if absent else history_owner._PRIVATE_EMPTY_PREFIX == configured
+
+
+@pytest.mark.parametrize('rows', [0, -1, True, 1.5, '40', 65536])
+def test_private_execution_rows_capability_rejects_invalid_bounds(rows):
+    with pytest.raises(TypeError, match='execution rows'):
+        cli._OwnedExpertQualification(lambda _: None, execution_rows=rows)
+
+
+def test_worker_passes_explicit_row_envelope_before_constructor(channel, monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(cli, 'cmd_serve', lambda args: seen.append(args) or 0)
+    args = ['--execution-rows', '40', *worker_args(tmp_path), '--parallel', '32',
+            '--draft-method', 'mtp', '--mtp-drafts', '4']
+    assert owned.worker(args) == 0
+    assert seen[0]._owned_expert_qualification.execution_rows == 40
+
+
+@pytest.mark.parametrize('rows', [4, 161])
+def test_worker_rejects_rows_outside_complete_window_before_constructor(channel, monkeypatch, tmp_path, rows):
+    monkeypatch.setattr(cli, 'cmd_serve', lambda _: pytest.fail('invalid envelope reached constructor'))
+    with pytest.raises(ValueError, match='complete-window envelope'):
+        owned.worker(['--execution-rows', str(rows), *worker_args(tmp_path), '--parallel', '32',
+                      '--draft-method', 'mtp', '--mtp-drafts', '4'])
+
+
+def test_worker_requires_explicit_draft_geometry_for_row_trial(channel, monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, 'cmd_serve', lambda _: pytest.fail('implicit envelope reached constructor'))
+    with pytest.raises(ValueError, match='explicit MTP depth'):
+        owned.worker(['--execution-rows', '40', *worker_args(tmp_path)])
+
+
+@pytest.mark.parametrize('field', ['engine', 'target', 'mtp', 'maximum', 'configured'])
+def test_execution_row_receipt_requires_real_preparation(field):
+    engine = NS(execution_rows=40, multi=NS(buf=NS(rows=40), mbuf=NS(rows=40),
+        controller=NS(maximum={'row_budget': 40}, configured={'row_budget': 40})))
+    assert owned._execution_rows_receipt(engine, 40) == {
+        'requested': 40, 'engine': 40, 'target': 40, 'mtp': 40, 'maximum': 40, 'configured': 40}
+    if field == 'engine':
+        engine.execution_rows = 32
+    elif field in ('target', 'mtp'):
+        getattr(engine.multi, 'buf' if field == 'target' else 'mbuf').rows = 32
+    else:
+        getattr(engine.multi.controller, field)['row_budget'] = 32
+    with pytest.raises(ValueError, match='prepared engine/buffers/controller'):
+        owned._execution_rows_receipt(engine, 40)
