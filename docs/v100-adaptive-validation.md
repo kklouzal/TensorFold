@@ -571,6 +571,20 @@ guards remain unchanged: eligible Half inputs have 2–32 rows of width2560,
 with aligned contiguous FP32 router weights and disjoint FP32 output on SM70.
 Prefill, one-row and unsupported operands retain their existing paths.
 
+The supervised private launcher snapshots the request before CLI/family
+imports, then validates it before model construction and before publication.
+Each rank records `private_router_policy`: requested/configured values, selector
+support and the actual boolean inherited native-logits flag. Only an absent
+selector with no explicit request receives `legacy-inherited`; present invalid
+metadata and unsupported or mismatched requests fail closed. A shared startup
+validator preserves the existing Half-policy interface and messages. All 157
+owned-qualification CPU controls passed with zero skips on the pinned V100
+runtime; installed selector/model/performance qualification remains separate.
+An earlier ARM run's unchanged x86-resource guard failure is retained, rather
+than deselected or described as a whole-module pass.
+Source/CPU seal: `router-selector-attestation-v1/source-final-v1.json`, SHA256
+`8c74e6f85728aca7faa7a25b329c82295b017145b66902e1a43580af7e03cd89`.
+
 The selector passed 49 local ARM CPU controls with zero skips, plus Ruff and
 syntax checks. These establish policy isolation and unchanged guard behavior,
 not current-V100 arithmetic, model quality or performance qualification.

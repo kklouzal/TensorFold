@@ -1189,3 +1189,87 @@ def test_router_npy_failure_preserves_authentic_primary_and_close_failure(tmp_pa
     assert secondary in roots(primary.__cause__)
     assert original_cause in roots(primary.__cause__)
     assert 'existing diagnostic note' in primary.__notes__
+
+
+@pytest.mark.parametrize('requested,configured', [(None, 'inherit'), ('inherit', 'inherit'),
+                                                ('native-serial-v1', 'native-serial-v1'), (None, None)])
+@pytest.mark.parametrize('inherited', [False, True])
+def test_router_attestation_preserves_process_request_and_actual_inherited_policy(
+        channel, monkeypatch, tmp_path, requested, configured, inherited):
+    from tensorfold.cuda.sm70 import routing_native
+    name = 'TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS'
+    if requested is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, requested)
+    if configured is None:
+        monkeypatch.delattr(routing_native, '_PRIVATE_SERIAL_LOGITS', raising=False)
+    else:
+        monkeypatch.setattr(routing_native, '_PRIVATE_SERIAL_LOGITS', configured)
+    monkeypatch.setattr(routing_native, '_NATIVE_LOGITS', inherited)
+    monkeypatch.setattr(owned, 'bound_receipt', lambda _: {})
+    calls = []
+    def serve(args):
+        monkeypatch.setenv(name, 'later-environment-edit')
+        engine = NS(rank=3, comm=NS(ready=lambda label: calls.append(label)))
+        args._owned_expert_qualification.before_listener(engine)
+        return 0
+    monkeypatch.setattr(cli, 'cmd_serve', serve)
+    assert owned.worker(worker_args(tmp_path)) == 0
+    receipt = json.loads((tmp_path / 'rank-3.json').read_text())['private_router_policy']
+    assert receipt == {'requested': requested, 'configured': configured or 'legacy-inherited',
+                       'private_selector_supported': configured is not None,
+                       'inherited_native_logits': inherited}
+    assert getattr(routing_native, '_PRIVATE_SERIAL_LOGITS', None) == configured
+    assert routing_native._NATIVE_LOGITS is inherited
+    assert calls == ['owned_expert_qualification']
+
+
+@pytest.mark.parametrize('requested,field,bad,absent', [
+    ('inherit', '_PRIVATE_SERIAL_LOGITS', None, True),
+    ('native-serial-v1', '_PRIVATE_SERIAL_LOGITS', None, True),
+    ('native-serial-v1', '_PRIVATE_SERIAL_LOGITS', 'inherit', False),
+    ('invalid', '_PRIVATE_SERIAL_LOGITS', 'inherit', False),
+    (None, '_PRIVATE_SERIAL_LOGITS', 'native-serial-v1', False),
+    (None, '_PRIVATE_SERIAL_LOGITS', None, False),
+    (None, '_PRIVATE_SERIAL_LOGITS', 'legacy-inherited', False),
+    (None, '_NATIVE_LOGITS', None, False),
+    (None, '_NATIVE_LOGITS', 1, False),
+    (None, '_NATIVE_LOGITS', 'false', False),
+    (None, '_NATIVE_LOGITS', None, True),
+])
+@pytest.mark.parametrize('stage', ['constructor', 'publication'])
+def test_router_attestation_fails_closed_at_both_boundaries_without_mutation(
+        channel, monkeypatch, tmp_path, requested, field, bad, absent, stage):
+    from tensorfold.cuda.sm70 import routing_native
+    name = 'TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS'
+    if requested is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, requested)
+    initial = requested if requested in ('inherit', 'native-serial-v1') else 'inherit'
+    monkeypatch.setattr(routing_native, '_PRIVATE_SERIAL_LOGITS', initial)
+    monkeypatch.setattr(routing_native, '_NATIVE_LOGITS', False)
+    monkeypatch.setattr(owned, 'bound_receipt', lambda _: {})
+    engine = NS(rank=3, _abort_comm=False, comm=NS(ready=lambda _: pytest.fail('router mismatch reached ready')))
+    def corrupt():
+        if absent:
+            monkeypatch.delattr(routing_native, field, raising=False)
+        else:
+            monkeypatch.setattr(routing_native, field, bad)
+    def serve(args):
+        assert stage == 'publication', 'corrupt router metadata reached constructor'
+        corrupt()
+        args._owned_expert_qualification.before_listener(engine)
+    monkeypatch.setattr(cli, 'cmd_serve', serve)
+    if stage == 'constructor':
+        corrupt()
+    # An invalid request cannot reach publication: it must stop at first validation.
+    with pytest.raises(ValueError, match='private router'):
+        owned.worker(worker_args(tmp_path))
+    assert os.read(channel[0], 8) == b'F'
+    if stage == 'publication' and requested != 'invalid':
+        assert engine._abort_comm
+    assert not (tmp_path / 'rank-3.json').exists()
+    if stage == 'constructor' or requested != 'invalid':
+        assert (not hasattr(routing_native, field)) if absent else getattr(routing_native, field) == bad

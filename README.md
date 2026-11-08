@@ -55,6 +55,8 @@ and other operators remain unchanged. Its dedicated candidate image also passed
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)
 isolates the existing native decode-logit operator for qualification, without
 enabling the broader optimized profile; the ordinary default remains unchanged.
+The private launcher validates each worker's requested and configured router
+policy before model preparation and service publication.
 GPU component results retain a separate unresolved graph-fixture failure.
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
