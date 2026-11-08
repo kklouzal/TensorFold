@@ -566,13 +566,25 @@ The new worker explicitly selects the pinned non-libuv Store and verifies its
 origin/cohort; legacy workers were unchanged and their whole file is not a
 pass claim. The earlier local ARM guard refusal remains recorded separately.
 
-This is source/component qualification. Installed-image, actual enabled-mode
-target/MTP execution, quality, full-context and performance selection remain
-pending; no deployment default changes.
+This is source/component qualification. Actual enabled-mode target/MTP execution,
+quality, full-context and performance selection remain pending; no deployment
+default changes.
 CPU gate: `empty-prefix-attestation-v1/CPU-combined-v1/combined5-selected-x86-CPU-gate-v1.json`,
 SHA256 `daed8e8fe3cbcd6b799ad4d6746e6fe3ff1bfc9834dac37c0beaa983d0489b5f`.
 GPU gate: `empty-owner-prefix-prototype-v1/GPU-v1/empty-prefix8-SOURCE-GPU-gate-v1.json`,
 SHA256 `2a1baa8d38176f31b1ae4e084ace49f4880ae2d4a409c9229c6069be9cf93f72`.
+
+A genuine application-only image from committed `d4410a80`,
+`sha256:e56010dccc1d880cb489b13d7732e71cf40043d279542a8c88524befe730f7cf`,
+passed 582 installed CPU checks with zero skips. Its 782 runtime members match
+the committed source packet: only private Dense, Half, router and history-owner
+Python files differ from `0a13de3c`. Generic CUDA, native FD, Torch and the
+protected SDK remain unchanged. All three selectors default to `inherit`, and
+the image sets no private policy environment override. Installed origin and
+clean wheel/build/test retirement were verified; this does not enable the
+shortcut or qualify a model/performance/default change.
+Gate: `empty-app-d441-v1/genuine-empty-app-installed-gate-v1.json`, SHA256
+`c6bffc6a512d9b062cb291a53af079a45e3b0be065f77f60257ef0c028ed2773`.
 
 ## Unchanged baseline reproducibility
 
