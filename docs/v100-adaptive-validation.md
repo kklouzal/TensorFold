@@ -586,6 +586,92 @@ shortcut or qualify a model/performance/default change.
 Gate: `empty-app-d441-v1/genuine-empty-app-installed-gate-v1.json`, SHA256
 `c6bffc6a512d9b062cb291a53af079a45e3b0be065f77f60257ef0c028ed2773`.
 
+## Private grouped down and reference-tile preparation
+
+These are independent, default-off source candidates for the existing
+TP8/ETP4/PP1 profile. They do not change context, precision, MTP, administrator
+caps or the public serving API. Full ProviderOne delivery remains incomplete.
+
+`TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN=grouped-v1` selects the private grouped
+expert-down implementation at process start; unset or `inherit` preserves the
+incumbent, and invalid values fail closed. It groups owned expert assignments
+while retaining each expert's original 16-column arithmetic, original slot
+identity/scatter, storage rounding and independent old-ABI oracle. The shared
+expert keeps its TP8 width-80 slices; weighted slot accumulation and the final
+TP8 rank fold retain their original order. Grouping is an implementation
+candidate, not an ETP/topology or precision change.
+
+For the recorded target/prompt/MTP arenas with row counts 32/256/32, grouping physically
+allocates **46,148 additional device bytes per rank**. That scratch, together
+with the existing local routing arenas, fits the already paid 292,864-byte
+exclusive-routing reservation. The zero *additional budget charge* is not a
+zero-allocation claim; actual startup allocations remain subject to physical
+admission and reconciliation.
+
+The isolated grouped source passed 285 selected-runtime CPU controls and 107
+strict paired V100 GPU cases, followed by 40 new real256-expert-bank cases.
+The latter cover both EP ranges, deep arrivals, original slot coverage and
+counter/prefix/bin bounds. Comparisons retain the frozen independent old ELF,
+original local/activation/output bits, foreign positive zero and invalid/shared
+semantics, without tolerance or reduction changes. These are component results,
+not a model, throughput or deployment-default qualification.
+Gates: `grouped-down160-prototype-v1/target-v1/grouped-source-CPU285-GPU107-gate-v1.json`,
+SHA256 `90b176c6c30b2c0e8445e6d02c3b063d8f60effbe81cdd177f3cccef34417ba7`;
+`grouped-down160-prototype-v1/E256-target-v1/grouped-E256-strict40-gate-v1.json`,
+SHA256 `0950e9b748adf989c51ba6b8bc164a72bd1a52675bede322c99d760894f961d3`.
+The 40-case follow-up reused the unchanged candidate binary; it did not rerun
+or relabel the preceding 107 cases as new coverage.
+
+The separate reference-tile candidate fuses only integer mapping, masking,
+gathering and packed Q8/compact-Q4 decode. It retains the original ATen QK/PV,
+exp/max/sum/div operations, global normalization before FP16 probability
+rounding, Tile128 accumulation and ordered peer fold. It does not select the
+numerically different native-owner WMMA/Tile32 attention path. Each exclusive
+current-stream lease borrows 67,072 bytes from `OwnerBuffers.partials`, whose
+minimum existing receive slab is 98,304 bytes at one row. K staging is reused
+for V only after its QK consumer is enqueued; all consumers precede slab reuse.
+The preparer adds no separate model device buffer. CUDA module/code residency
+is a separate physical cost, not inferred from the ELF file size.
+
+A standalone predecessor passed 17 strict V100 cases covering exact original
+preparation/two-pass outputs, status/epoch, tail/reuse and alias controls.
+CUDA-capture and EMPTY refusal guards are separate CPU/source controls, not
+coverage claimed for those 17 GPU cases.
+Gate: `reference-owner-tile128-fusion-v1/target-v1/reference-tile128-strict-GPU17-gate-v1.json`,
+SHA256 `ef8c33fdb67f2e7d6108a85016910a48bccd7334f8b6e239703b6e520e639a32`.
+That result does not qualify the subsequently added startup preload/integration.
+
+Current source exposes only the private launcher's `--reference-tiles` option,
+before its `--` serve separator. A trusted boolean capability passes through
+the shared factory into Engine. The existing voted preparation phase calls
+`module.prepare()` and both `cudaFuncGetAttributes` entry-point checks **before
+the physical-free baseline and admission**. Owner roles are journalled before
+fallible setup, and the real decode/prompt/MTP buffers and States adopt those
+owners before warmup. Per-rank receipts bind actual source/ELF preparation,
+receive-slab identity and each adopted role. Failure and retirement use the
+existing owned lifecycle. An older installed image cannot acquire this code
+through a flag.
+
+The frozen final 20-file combined source passed all 408 selected-x86 CPU checks
+with zero skips, plus Ruff/syntax checks; CUDA remained uninitialized and the
+container retired with exit 0/PID 0 and unchanged source. Gate:
+`reference-owner-engine-integration-v1/target-v1/selected-x86-CPU408-gate-v1.json`,
+SHA256 `b7e334c05d40d677d092336f1f7bcf9450c023d264b8b13e81474f1882cffeb1`.
+The updated 17-case GPU run also passed with zero skips. It invoked the real
+`prepare()` API, including both `cudaFuncGetAttributes` calls, before pytest or
+any owner buffer. The fresh module ELF is 422,520 bytes on disk, SHA256
+`992d1926a03d3daef40258827058712cc5d9a1f84951b05af24e2f77861b493a`.
+An observed 2,097,152-byte free-device-memory decrease across preparation may
+include driver/runtime/module residency; it is not an exact code-byte or new
+model-buffer attribution. Source, SDK and health were preserved, and execution
+retired with exit 0/PID 0 and no cleanup errors. Combined gate:
+`reference-owner-engine-integration-v1/target-v1/final20-CPU408-GPU17-prebudget-gate-v1.json`,
+SHA256 `a44c103bf8e283854166abe0f235a3ea0085fa00d308263e87570bbaa1f972f5`.
+Installed application, enabled model/state behavior, output quality,
+resource/P3 comparisons and selection remain separate. Omitting the private
+option and retaining `inherit` preserve the original reference/native selection
+and existing EMPTY behavior; no public/admin or broader native promotion is made.
+
 ## Unchanged baseline reproducibility
 
 One unchanged `0a13de3c` instance completed all 28 preserved-request exchanges

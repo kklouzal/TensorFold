@@ -320,6 +320,11 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         if expert_ranks > 1:
             raise ValueError("private owned qualification cannot use expert-only follower sessions")
         engine_options["_owned_expert_native"] = True
+    reference_tiles = options.get("_reference_owner_tiles", False)
+    if type(reference_tiles) is not bool or reference_tiles and not owned:
+        raise TypeError("reference tile preparation requires the trusted owned qualification lifecycle")
+    if reference_tiles:
+        engine_options["_reference_owner_tiles"] = True
     obligation = options.get("_owned_qualification_host", ())
     if obligation:
         if not owned:

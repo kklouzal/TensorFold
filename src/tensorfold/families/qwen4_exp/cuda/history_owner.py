@@ -314,11 +314,19 @@ def _decode(payload, scales, format, dims):
     return ops.dequantize_int8(payload, scales)
 
 
-def _attention_tiles(query, cache, selected, visible, scale, *, values=False):
+def _attention_tiles(query, cache, selected, visible, scale, *, values=False, tile_preparer=None):
     """Bounded selected-domain tiles, excluding future/unowned operands."""
     dims = query.shape[1]
     for start in range(0, selected.numel(), 128):
         positions = selected[start:start + 128]
+        if tile_preparer is not None:
+            with tile_preparer.tile(cache, positions, visible[start:start + 128]) as prepared:
+                # Same ATen shapes, scale, mask and downstream cast/reduction order.
+                score = ops._matmul32(query, prepared.key.T) * scale
+                score.masked_fill_(~prepared.mask[None], -torch.inf)
+                value = prepared.values() if values else None
+                yield score, prepared.mask, value
+            continue
         offsets, owned = cache.local_indices(positions)
         mask = owned & visible[start:start + 128]
         key_payload = torch.where(mask[:, None, None], cache.k[offsets], 0)
@@ -340,14 +348,14 @@ def _attention_tiles(query, cache, selected, visible, scale, *, values=False):
         yield score, mask, value
 
 
-def partial_statistics(query, cache, selected, visible, scale):
+def partial_statistics(query, cache, selected, visible, scale, *, tile_preparer=None):
     """A shard's unnormalized FP32 maximum and denominator; no PV rounding."""
     heads = query.shape[0]
     maximum = torch.full((heads,), -torch.inf, dtype=torch.float32, device=query.device)
     denominator = torch.zeros_like(maximum)
     if not cache.capacity:
         return maximum, denominator
-    for score, mask, _ in _attention_tiles(query, cache, selected, visible, scale):
+    for score, mask, _ in _attention_tiles(query, cache, selected, visible, scale, tile_preparer=tile_preparer):
         tile_max = score.amax(-1)
         next_max = torch.maximum(maximum, tile_max)
         finite = torch.isfinite(next_max)
@@ -380,7 +388,7 @@ def merge_statistics(maxima, denominators, *, status=None, layer=0):
     return safe, torch.where(denominator > 0, denominator, 1)
 
 
-def normalized_partial(query, cache, selected, visible, scale, maximum, denominator):
+def normalized_partial(query, cache, selected, visible, scale, maximum, denominator, *, tile_preparer=None):
     """PV with globally normalized FP16 probabilities, matching target rounding.
 
     A local unnormalized numerator cannot be rescaled after casting its
@@ -390,7 +398,8 @@ def normalized_partial(query, cache, selected, visible, scale, maximum, denomina
     result = torch.zeros(query.shape, dtype=torch.float32, device=query.device)
     if not cache.capacity:
         return result
-    for score, mask, value in _attention_tiles(query, cache, selected, visible, scale, values=True):
+    for score, mask, value in _attention_tiles(query, cache, selected, visible, scale, values=True,
+                                               tile_preparer=tile_preparer):
         probability = torch.where(mask[None], torch.exp(score - maximum[:, None]) / denominator[:, None], 0).half()
         result = result + ops._matmul32(probability, value)
     return result
@@ -403,6 +412,7 @@ class OwnerBuffers:
         self.rows = self.heads = self.head_dim = self.idw = self.rank = self.device = self.prefill = self.comm = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
+        self.reference_tiles = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_upload = self.native_done = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
@@ -435,9 +445,12 @@ class OwnerBuffers:
         self.partials = torch.empty((world, rows, group * c.heads, extent), dtype=torch.float32, device=device)
         self.position = torch.zeros((1,), dtype=torch.int32, device=device)
         self._base_ready = True
+        preparation = weights.meta.get("reference_tile_preparation")
+        if preparation is not None:
+            self.prepare_reference_tiles(preparation)
 
     @classmethod
-    def from_text(cls, text, *, rows, prefill, idw, world, rank, device, comm, register=None):
+    def from_text(cls, text, *, rows, prefill, idw, world, rank, device, comm, register=None, reference_preparation=None):
         """Header-only factory: no target/draft weights or State allocation."""
         if (type(world) is not int or world != 8 or type(rank) is not int or not 0 <= rank < world
                 or type(rows) is not int or rows < 1 or type(prefill) is not bool):
@@ -456,13 +469,37 @@ class OwnerBuffers:
                 or type(idw) is not int or idw != budget + ratio):
             raise ValueError("native owner header geometry differs from TP8 H3/D256 and its canonical index width")
         weights = SimpleNamespace(cfg=SimpleNamespace(heads=heads // world, head_dim=dim),
-                                  device=torch.device(device), meta={"rank": rank, "world": world}, comm=comm)
+                                  device=torch.device(device), meta={"rank": rank, "world": world, **({"reference_tile_preparation": reference_preparation}
+                                      if reference_preparation is not None else {})}, comm=comm)
         owner = object.__new__(cls)
         owner._empty_resources()
         if register is not None:
             register(owner)  # Journal the canonical partial owner before any fallible device allocation.
         owner.__init__(weights, min(rows, 256), SimpleNamespace(idw=idw), prefill=prefill)
         return owner
+
+    def prepare_reference_tiles(self, preparation=None):
+        """Explicit pre-admission trial: borrow paid receive scratch; change no attention math.
+
+        Queries/selections use separate slabs. During local statistics the stats
+        receive slab is free. All merged global statistics are materialized before
+        PV; its queued consumers precede this borrow on the same stream. The next
+        collective overwrites the slab only after every tile consumer is queued.
+        """
+        if self.closed or not self._base_ready or self.reference_tiles is not None:
+            raise RuntimeError("reference tile preparation requires a fresh live owner")
+        from tensorfold.cuda.sm70.reference_owner_tiles import ReferenceTiles, prepare
+
+        preparation = prepare() if preparation is None else preparation
+        self.reference_tiles = object.__new__(ReferenceTiles)  # Retire even a failed view-construction traceback.
+        self.reference_tiles.__init__(self.partials, preparation)
+        return self.reference_tiles.record()
+
+    def reference_tile_context(self, state, layer):
+        if self.reference_tiles is None:
+            return None
+        return self.reference_tiles.context(status=state.kv_status, generations=state.history_generations,
+            slot_generation=state.slot_generation, owner_generation=state.history_generation, layer=layer)
 
     def allocation_record(self):
         """Owned tensor extents, separated from observed driver/graph residency.
@@ -823,7 +860,12 @@ class OwnerBuffers:
         """
         if self.closed:
             return
+        if self.reference_tiles is not None:
+            self.reference_tiles.begin_retirement()
         self.retire_native()
+        if self.reference_tiles is not None:
+            self.reference_tiles.release_views()
+        self.reference_tiles = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_upload = self.native_done = None
@@ -872,6 +914,7 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
     if comm is None or comm.world != 8 or comm.rank != rank:
         raise ValueError("unique history requires its live TP8 communicator")
     owner = buffers.history_owner
+    reference_tiles = getattr(owner, "reference_tiles", None)
     family = buffers.owner_kernel_family
     native_selected = family != "torch-reference"
     if buffers.owner_graph_family not in ("uncaptured", "owner-attention-v1"):
@@ -987,7 +1030,11 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                     ids = torch.arange(visible_end, dtype=torch.int64, device=weights.device)
                 query = query_all[group_start:group_start + 4, row].reshape(4 * c.heads, c.head_dim)
                 visible = ids < visible_end
-                maximum, denominator = partial_statistics(query, cache, ids, visible, c.head_dim ** -0.5)
+                if reference_tiles is None:
+                    maximum, denominator = partial_statistics(query, cache, ids, visible, c.head_dim ** -0.5)
+                else:
+                    maximum, denominator = partial_statistics(query, cache, ids, visible, c.head_dim ** -0.5,
+                        tile_preparer=owner.reference_tile_context(state, layer.index))
                 partial[row, :, 0].copy_(maximum)
                 partial[row, :, 1].copy_(denominator)
                 jobs.append((state, cache, row, query, ids, visible))
@@ -1000,12 +1047,16 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                                                      status=state.kv_status, layer=layer.index)
             normalized.append((state, cache, row, query, ids, visible, maximum, denominator))
         value_part = owner.partial.reshape(-1)[:count * 4 * c.heads * c.head_dim].view(count, 4 * c.heads, c.head_dim)
-        for _, cache, row, query, ids, visible, maximum, denominator in normalized:
+        for state, cache, row, query, ids, visible, maximum, denominator in normalized:
             if ids is None:
                 value_part[row].zero_()
             else:
-                value_part[row].copy_(normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
-                                                         maximum, denominator))
+                if reference_tiles is None:
+                    value_part[row].copy_(normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
+                                                             maximum, denominator))
+                else:
+                    value_part[row].copy_(normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
+                        maximum, denominator, tile_preparer=owner.reference_tile_context(state, layer.index)))
         value_parts = owner.partials.reshape(-1)[:8 * value_part.numel()].view(8, *value_part.shape)
         comm.all_gather(value_part, value_parts)
         local_heads = slice((rank % 4) * c.heads, (rank % 4 + 1) * c.heads)

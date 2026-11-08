@@ -43,12 +43,18 @@ def parse_preparation(value):
 
 
 class OwnerPreparation:
-    def __init__(self, specification, *, role_rows, manifest_sha256):
+    def __init__(self, specification, *, role_rows, manifest_sha256, reference_tiles=False):
         self.specification = parse_preparation(specification)
         if self.specification is None or not isinstance(role_rows, dict) or not {"decode", "prefill"} <= role_rows.keys():
             raise ValueError("native preparation requires the actual decode and prefill envelopes")
         if set(role_rows).difference(_ROLES) or set(self.specification["row_buckets"]).difference(role_rows):
             raise ValueError("native preparation names a role absent from the selected method")
+        if type(reference_tiles) is not bool or reference_tiles and (
+                self.specification["trial"] or self.specification["graph_family"] != UNCAPTURED
+                or self.specification["collective_family"] != FULL_COLLECTIVE):
+            raise ValueError("reference tile preparation requires the uncaptured full-TP8 reference policy")
+        self.reference_tiles_requested = reference_tiles
+        self.reference_preparation = None
         self.role_rows = {role: role_rows[role] for role in ("decode", "mtp", "prefill") if role in role_rows}
         self.buckets = {role: row_buckets(rows, self.specification["row_buckets"].get(role))
                         for role, rows in self.role_rows.items()}
@@ -103,7 +109,12 @@ class OwnerPreparation:
                 from tensorfold.cuda.sm70.foundation_headers import selected_identity
 
                 self.source_foundation = selected_identity()
-                return {**contract, "source_foundation": self.source_foundation}
+                if self.reference_tiles_requested:
+                    from tensorfold.cuda.sm70.reference_owner_tiles import prepare
+                    self.reference_preparation = prepare()
+                return {**contract, "source_foundation": self.source_foundation,
+                        **({"reference_tile_preparation": self.reference_preparation}
+                           if self.reference_tiles_requested else {})}
 
             peers = self._phase(engine, "contract", prepared_contract)
             if any(peer != peers[0] for peer in peers):
@@ -146,7 +157,8 @@ class OwnerPreparation:
                     owner = OwnerBuffers.from_text(text, rows=rows, prefill=role == "prefill",
                         idw=contract["index_budget"] + contract["index_ratio"], world=engine.tp,
                         rank=engine.rank, device=device, comm=engine.comm,
-                        register=lambda owner: self.workspaces.__setitem__(role, owner))
+                        register=lambda owner: self.workspaces.__setitem__(role, owner),
+                        **({"reference_preparation": self.reference_preparation} if self.reference_tiles_requested else {}))
                     owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
                     owner.configure_native_transport(self.specification["collective_family"],
                                                      self.head_comm or engine.comm)
@@ -299,7 +311,9 @@ class OwnerPreparation:
                 "roles": dict(self.role_rows),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
-                "allocator_accounting": "exclude-proved-private-spare; physical-only-when-unavailable"}
+                "allocator_accounting": "exclude-proved-private-spare; physical-only-when-unavailable",
+                **({"reference_tile_preparation": dict(self.reference_preparation)}
+                   if self.reference_preparation is not None else {})}
 
     def record(self):
         before, after = self.before, self.after

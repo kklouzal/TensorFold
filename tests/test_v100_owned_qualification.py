@@ -381,8 +381,9 @@ def test_public_parser_cannot_select_native_and_untyped_marker_fails_closed(tmp_
         cli.cmd_serve(args)
 
 
-@pytest.mark.parametrize("private,rows", [(False, None), (True, None), (True, 40)])
-def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch, tmp_path, request, private, rows):
+@pytest.mark.parametrize("private,rows,reference", [(False, None, False), (True, None, False), (True, 40, False),
+                                                  (True, None, True)])
+def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch, tmp_path, request, private, rows, reference):
     import tensorfold.cuda.server as server
     (tmp_path / "config.json").write_text('{"max_position_embeddings":128}')
     calls, options = [], []
@@ -394,11 +395,14 @@ def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch,
     if private:
         args._owned_expert_qualification = cli._OwnedExpertQualification(
             lambda selected: calls.append("receipt") if selected is engine else pytest.fail("different engine"),
-            execution_rows=rows)
+            execution_rows=rows, reference_tiles=reference)
     assert cli._serve_cuda(args, family, tmp_path, 128) == 0
     assert options[0].get("_owned_expert_native", False) is private
     if not private:
         assert "_owned_expert_native" not in options[0]
+    assert options[0].get("_reference_owner_tiles", False) is reference
+    if not reference:
+        assert "_reference_owner_tiles" not in options[0]
     assert options[0].get("execution_rows") == rows
     if rows is None:
         assert "execution_rows" not in options[0]
@@ -433,6 +437,10 @@ def test_family_wrapper_preserves_private_request_and_normal_default(monkeypatch
     assert "_owned_expert_native" not in made[-1]
     qwen4_exp.cuda_engine(path, **options, _owned_expert_native=True)
     assert made[-1]["_owned_expert_native"] is True and made[-1]["adaptive_sessions"] is True
+    qwen4_exp.cuda_engine(path, **options, _owned_expert_native=True, _reference_owner_tiles=True)
+    assert made[-1]["_reference_owner_tiles"] is True
+    with pytest.raises(TypeError, match="trusted owned"):
+        qwen4_exp.cuda_engine(path, **options, _reference_owner_tiles=True)
     with pytest.raises(TypeError, match="literal boolean"):
         qwen4_exp.cuda_engine(path, **options, _owned_expert_native="true")
 
@@ -1402,3 +1410,80 @@ def test_execution_row_receipt_requires_real_preparation(field):
         getattr(engine.multi.controller, field)['row_budget'] = 32
     with pytest.raises(ValueError, match='prepared engine/buffers/controller'):
         owned._execution_rows_receipt(engine, 40)
+
+
+
+def test_reference_tile_capability_is_private_typed_and_forwarded_before_constructor(channel, monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(cli, "cmd_serve", lambda args: seen.append(args) or 0)
+    assert owned.worker(["--reference-tiles", *worker_args(tmp_path)]) == 0
+    assert seen[0]._owned_expert_qualification.reference_tiles is True
+    with pytest.raises(TypeError, match="literal boolean"):
+        cli._OwnedExpertQualification(lambda _: None, reference_tiles=1)
+
+
+def test_parent_forwards_reference_tile_preparation_to_all_workers(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(launcher, "supervise", lambda commands, environments, **kwargs: seen.extend(commands) or 0)
+    assert owned.main(["--reference-tiles", "--gpus", "0,1,2,3,4,5,6,7", "--out", str(tmp_path / "new"),
+                       "--", "model"]) == 0
+    assert len(seen) == 8 and all("--reference-tiles" in command for command in seen)
+
+
+def test_reference_receipt_requires_all_actual_journalled_roles_and_fresh_source(monkeypatch):
+    from tensorfold.cuda.sm70 import reference_owner_tiles as module
+    from tensorfold.cuda.sm70.reference_owner_tiles import ReferenceTiles
+    identity = {"policy": "reference-owner-tile128-preparation-v1", "source_sha256": "b" * 64}
+    monkeypatch.setattr(module, "preparation_identity", lambda: identity)
+    owners = {}
+    def verify(self, workspace, expected):
+        assert self.workspace is workspace and expected == identity
+        return {"additional_device_bytes": 0, "borrowed_device_bytes": 67072, "preparation": expected}
+    monkeypatch.setattr(ReferenceTiles, "verify", verify)
+    for role in ("decode", "mtp", "prefill"):
+        tiles = object.__new__(ReferenceTiles)
+        tiles.workspace = object()
+        owners[role] = NS(reference_tiles=tiles, partials=tiles.workspace, rows=32)
+    decoder = NS(**{key: NS(history_owner=owners[role], rows=32)
+                    for key, role in (("buf", "decode"), ("mbuf", "mtp"), ("pbuf", "prefill"))})
+    engine = NS(_reference_owner_tiles_requested=True, _owner_preparation=NS(reference_preparation=identity, workspaces=owners),
+                w=NS(meta={"reference_tile_preparation": identity}, mtp=object()), multi=decoder)
+    receipt = owned._reference_tile_receipt(engine, True)
+    assert set(receipt["roles"]) == {"decode", "mtp", "prefill"}
+    decoder.mbuf.history_owner = owners["decode"]
+    with pytest.raises(ValueError, match="journalled"):
+        owned._reference_tile_receipt(engine, True)
+    decoder.mbuf.history_owner = owners["mtp"]
+    engine._owner_preparation.reference_preparation = {"source_sha256": "changed"}
+    with pytest.raises(ValueError, match="source identity"):
+        owned._reference_tile_receipt(engine, True)
+
+
+def test_reference_tile_request_unexpected_engine_state_refuses_publication(channel, monkeypatch, tmp_path):
+    monkeypatch.setattr(owned, "bound_receipt", lambda _: {})
+    engine = NS(rank=0, _abort_comm=False, _reference_owner_tiles_requested=False,
+                comm=NS(ready=lambda _: pytest.fail("mismatch reached ready")))
+    with pytest.raises(ValueError, match="actual Engine"):
+        owned.publish_receipt(engine, tmp_path, reference_tiles=True)
+    assert engine._abort_comm and os.read(channel[0], 8) == b"F"
+    assert not (tmp_path / "rank-0.json").exists()
+
+
+
+def test_enabled_reference_worker_carries_request_through_actual_publication_boundary(channel, monkeypatch, tmp_path):
+    seen = []
+    engine = NS(rank=3, comm=NS(ready=lambda label: seen.append(label)))
+    monkeypatch.setattr(owned, "bound_receipt", lambda _: {})
+    def reference_receipt(actual, requested):
+        assert actual is engine and requested is True
+        return {"requested": True, "configured": True, "roles": {"decode": {}, "mtp": {}, "prefill": {}}}
+    monkeypatch.setattr(owned, "_reference_tile_receipt", reference_receipt)
+    def serve(args):
+        assert args._owned_expert_qualification.reference_tiles is True
+        args._owned_expert_qualification.before_listener(engine)
+        return 0
+    monkeypatch.setattr(cli, "cmd_serve", serve)
+    assert owned.worker(["--reference-tiles", *worker_args(tmp_path)]) == 0
+    receipt = json.loads((tmp_path / "rank-3.json").read_text())
+    assert receipt["reference_tile_preparation"]["requested"] is True
+    assert seen == ["owned_expert_qualification"]

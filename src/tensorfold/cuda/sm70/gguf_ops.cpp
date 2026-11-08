@@ -26,12 +26,17 @@ void gguf_experts_owned(const at::Tensor&, const at::Tensor&,
     const at::Tensor&, int64_t, int64_t, const at::Tensor&, int64_t, int64_t,
     const at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t,
     const at::Tensor&, at::Tensor, at::Tensor, at::Tensor);
+void gguf_experts_owned_grouped(const at::Tensor&, const at::Tensor&,
+    const at::Tensor&, int64_t, int64_t, const at::Tensor&, int64_t, int64_t,
+    const at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t,
+    const at::Tensor&, at::Tensor, at::Tensor, at::Tensor, at::Tensor);
 void gguf_dense32(const at::Tensor&, const at::Tensor&, at::Tensor, bool);
 void gguf_dense_wmma(const at::Tensor&, const at::Tensor&, at::Tensor);
 void gguf_concat32(const at::Tensor&, const std::vector<at::Tensor>&, at::Tensor);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("experts_owned", &gguf_experts_owned);
+    m.def("experts_owned_grouped", &gguf_experts_owned_grouped);
     m.def("decode", &gguf_decode);
     m.def("experts", &gguf_experts);
     m.def("experts_splitk4", &gguf_experts_splitk4);

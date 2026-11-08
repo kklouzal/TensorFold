@@ -456,7 +456,7 @@ template <typename Index, int Splits = 1>
 void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, PackedView up, PackedView down,
                    const at::Tensor& shared_gate, const at::Tensor& shared_up, const at::Tensor& shared_down,
                    at::Tensor& output, at::Tensor& activation, int dims, int width, int slots, int experts,
-                   bool blockwise = false, bool split_projections = false, bool exact_down = false) {
+                   bool blockwise = false, bool split_projections = false, bool exact_down = false, bool gate_only = false) {
     const int pairs = int(picks.numel());
     const auto* xx = reinterpret_cast<const __half*>(x.data_ptr<at::Half>());
     const auto* ids = picks.data_ptr<Index>();
@@ -520,6 +520,7 @@ void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, 
             intermediate.data_ptr<float>(), act, count);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
+    if (gate_only) return;
     if (exact_down) {
         run_exact_down(activation, picks, down, shared_down, output, dims, experts);
         return;
@@ -1161,13 +1162,97 @@ __global__ void publish_owned(const Index* global, const int64_t* local, const f
         else static_cast<__half*>(output)[at] = __float2half_rn(value);
     }
 }
+
+// GPU-only bounded counting/grouping. Atomic arrival order chooses columns,
+// never slot order or any arithmetic reduction; every pair scatters back alone.
+struct OwnedGrouping {
+    int *counts, *offsets, *ordinal, *pairs, *tiles, *total;
+    int max_tiles;
+};
+
+template <typename Index>
+__global__ void group_owned_routes(const Index* global, int64_t* local, int count,
+                                    int first, int experts, OwnedGrouping group) {
+    for (int pair = blockIdx.x * blockDim.x + threadIdx.x; pair < count; pair += gridDim.x * blockDim.x) {
+        const auto id = global[pair];
+        const int expert = id >= first && id < int64_t(first) + experts ? int(id - first) : -1;
+        local[pair] = expert;
+        if (expert >= 0) group.ordinal[pair] = atomicAdd(group.counts + expert, 1);
+    }
 }
-void gguf_experts_owned(const at::Tensor& x, const at::Tensor& picks,
+
+__global__ void group_owned_prefix(int experts, OwnedGrouping group) {
+    int offset = 0, tile = 0;
+    for (int expert = 0; expert < experts; ++expert) {
+        const int count = group.counts[expert];
+        group.offsets[expert] = offset;
+        for (int begin = 0; begin < count; begin += 16) {
+            group.tiles[3 * tile] = expert;
+            group.tiles[3 * tile + 1] = offset + begin;
+            group.tiles[3 * tile + 2] = min(16, count - begin);
+            ++tile;
+        }
+        offset += count;
+    }
+    group.offsets[experts] = offset;
+    *group.total = tile;
+}
+
+__global__ void group_owned_scatter(const int64_t* local, int count, OwnedGrouping group) {
+    for (int pair = blockIdx.x * blockDim.x + threadIdx.x; pair < count; pair += gridDim.x * blockDim.x) {
+        const int expert = int(local[pair]);
+        if (expert >= 0) group.pairs[group.offsets[expert] + group.ordinal[pair]] = pair;
+    }
+}
+
+template <bool F32, int Kind = -1>
+__global__ void expert_down160_grouped(const __half* activation, PackedView down,
+                                      int dims, OwnedGrouping group, void* output) {
+    namespace wmma = nvcuda::wmma;
+    const int tile = blockIdx.y;
+    if (tile >= *group.total) return; // CTA-uniform, before any warp participation.
+    const int expert = group.tiles[3 * tile], begin = group.tiles[3 * tile + 1];
+    const int count = group.tiles[3 * tile + 2], first = blockIdx.x * 16;
+    __shared__ __align__(32) __half aa[256], bb[256];
+    __shared__ __align__(32) float cc[256];
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> accum;
+    wmma::fill_fragment(accum, 0.0f);
+    #pragma unroll
+    for (int base = 0; base < 160; base += 16) {
+        for (int i = threadIdx.x; i < 256; i += 32) {
+            const int row = i / 16, k = i % 16;
+            aa[i] = __float2half_rn(coefficient<Kind>(down, int64_t(expert) * dims + first + row, base + k));
+            // B is column-major: each independent original pair owns one column.
+            bb[i] = row < count ? activation[int64_t(group.pairs[begin + row]) * 160 + base + k]
+                                : __float2half_rn(0.0f);
+        }
+        __syncwarp();
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> b;
+        wmma::load_matrix_sync(a, aa, 16);
+        wmma::load_matrix_sync(b, bb, 16);
+        wmma::mma_sync(accum, a, b, accum);
+        __syncwarp();
+    }
+    wmma::store_matrix_sync(cc, accum, 16, wmma::mem_row_major);
+    __syncwarp();
+    for (int i = threadIdx.x; i < 256; i += 32) {
+        const int row = i / 16, col = i % 16;
+        if (col < count) {
+            const float value = fmaf(1.0f, cc[i], 0.0f) + 0.0f;
+            const int64_t at = int64_t(group.pairs[begin + col]) * dims + first + row;
+            if constexpr (F32) static_cast<float*>(output)[at] = value;
+            else static_cast<__half*>(output)[at] = __float2half_rn(value);
+        }
+    }
+}
+}
+void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
     const at::Tensor& up, int64_t up_kind, int64_t up_offset,
     const at::Tensor& down, int64_t down_kind, int64_t down_offset,
     int64_t width, int64_t first, int64_t global_experts, const at::Tensor& shared,
-    at::Tensor local, at::Tensor activation, at::Tensor output) {
+    at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping) {
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2 && x.is_contiguous()
                 && x.size(1) > 0 && x.size(1) <= std::numeric_limits<int>::max(),
                 "owned experts require contiguous FP16 CUDA [rows,hidden] inputs");
@@ -1204,17 +1289,64 @@ void gguf_experts_owned(const at::Tensor& x, const at::Tensor& picks,
     tensorfold::check_disjoint(output, {&x, &picks, &gate, &up, &down, &shared, &local, &activation}, "owned output overlap");
     tensorfold::check_disjoint(local, {&x, &picks, &gate, &up, &down, &shared, &activation}, "owned route scratch overlap");
     tensorfold::check_disjoint(activation, {&x, &picks, &gate, &up, &down, &shared}, "owned activation scratch overlap");
+    const int pairs = int(picks.numel());
+    OwnedGrouping group{};
+    if (grouping.defined()) {
+        TORCH_CHECK(dims == 2560 && global_experts == 512,
+                    "grouped owned down160 requires the admitted SC117 hidden/global expert geometry");
+        operand(grouping, at::kInt, device, "owned grouping scratch");
+        const int tiles = int(std::min<int64_t>(pairs, (pairs + 15) / 16 + std::max(0, experts - 1)));
+        const int64_t words = 2LL * pairs + 2LL * experts + 3LL * tiles + 2;
+        TORCH_CHECK(grouping.dim() == 1 && grouping.numel() == words,
+                    "owned grouping scratch requires its exact bounded layout");
+        tensorfold::check_disjoint(grouping, {&x, &picks, &gate, &up, &down, &shared, &local, &activation, &output},
+                                   "owned grouping scratch overlap");
+        int* ptr = grouping.data_ptr<int>();
+        group.counts = ptr; ptr += experts;
+        group.offsets = ptr; ptr += experts + 1;
+        group.ordinal = ptr; ptr += pairs;
+        group.pairs = ptr; ptr += pairs;
+        group.tiles = ptr; ptr += 3 * tiles;
+        group.total = ptr;
+        group.max_tiles = tiles;
+    }
     if (!picks.numel()) return;
     auto stream = at::cuda::getCurrentCUDAStream();
     const int blocks = int((picks.numel() + 127) / 128);
-    if (picks.scalar_type() == at::kLong)
+    if (grouping.defined()) {
+        C10_CUDA_CHECK(cudaMemsetAsync(group.counts, 0, experts * sizeof(int), stream));
+        if (picks.scalar_type() == at::kLong)
+            group_owned_routes<<<blocks, 128, 0, stream>>>(picks.data_ptr<int64_t>(), local.data_ptr<int64_t>(),
+                                                         pairs, int(first), experts, group);
+        else group_owned_routes<<<blocks, 128, 0, stream>>>(picks.data_ptr<int32_t>(), local.data_ptr<int64_t>(),
+                                                          pairs, int(first), experts, group);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        group_owned_prefix<<<1, 1, 0, stream>>>(experts, group);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        group_owned_scatter<<<blocks, 128, 0, stream>>>(local.data_ptr<int64_t>(), pairs, group);
+    } else if (picks.scalar_type() == at::kLong)
         owned_routes<<<blocks, 128, 0, stream>>>(picks.data_ptr<int64_t>(), local.data_ptr<int64_t>(), picks.numel(), int(first), experts);
     else owned_routes<<<blocks, 128, 0, stream>>>(picks.data_ptr<int32_t>(), local.data_ptr<int64_t>(), picks.numel(), int(first), experts);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     // No mapped ID equals experts, so shared pointers are never dereferenced.
     // Existing FP16 input storage supplies a valid pointer without a dummy bank.
     run_experts<int64_t>(x, local, g, u, d, x, x, x, output, activation,
-                         dims, int(width), int(picks.size(1)), experts, true, true, dims == 2560);
+                         dims, int(width), int(picks.size(1)), experts, true, true, dims == 2560, grouping.defined());
+    if (grouping.defined()) {
+        const dim3 grid(dims / 16, group.max_tiles);
+        auto act = reinterpret_cast<const __half*>(activation.data_ptr());
+        #define GROUPED_DOWN(FLOAT, KIND) \
+            expert_down160_grouped<FLOAT, KIND><<<grid, 32, 0, stream>>>(act, d, dims, group, output.data_ptr())
+        if (output.scalar_type() == at::kFloat) {
+            if (d.kind == 7) GROUPED_DOWN(true, 7);
+            else GROUPED_DOWN(true, -1);
+        } else {
+            if (d.kind == 7) GROUPED_DOWN(false, 7);
+            else GROUPED_DOWN(false, -1);
+        }
+        #undef GROUPED_DOWN
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+    }
     const int64_t count = output.numel();
     const int publish_blocks = int(std::min<int64_t>((count + 127) / 128, 65535));
     #define PUBLISH_OWNED(INDEX, FLOAT) \
@@ -1230,4 +1362,24 @@ void gguf_experts_owned(const at::Tensor& x, const at::Tensor& picks,
     }
     #undef PUBLISH_OWNED
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void gguf_experts_owned(const at::Tensor& x, const at::Tensor& picks,
+    const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
+    const at::Tensor& up, int64_t up_kind, int64_t up_offset,
+    const at::Tensor& down, int64_t down_kind, int64_t down_offset,
+    int64_t width, int64_t first, int64_t global_experts, const at::Tensor& shared,
+    at::Tensor local, at::Tensor activation, at::Tensor output) {
+    gguf_experts_owned_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
+        down, down_kind, down_offset, width, first, global_experts, shared, local, activation, output, at::Tensor());
+}
+
+void gguf_experts_owned_grouped(const at::Tensor& x, const at::Tensor& picks,
+    const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
+    const at::Tensor& up, int64_t up_kind, int64_t up_offset,
+    const at::Tensor& down, int64_t down_kind, int64_t down_offset,
+    int64_t width, int64_t first, int64_t global_experts, const at::Tensor& shared,
+    at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping) {
+    gguf_experts_owned_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
+        down, down_kind, down_offset, width, first, global_experts, shared, local, activation, output, grouping);
 }

@@ -63,6 +63,11 @@ The default-off [empty-first-page shortcut](docs/v100-adaptive-validation.md#pri
 passed 368 integrated CPU checks and eight eight-rank GPU cases. Its image
 packaging then passed 582 CPU checks; enabled-mode model and performance
 qualification remain pending.
+Two further private candidates cover [grouped expert down projection and
+reference Tile128 preparation](docs/v100-adaptive-validation.md#private-grouped-down-and-reference-tile-preparation).
+The integrated source passed 408 CPU and 17 updated GPU checks; component
+results and memory accounting remain separate from installed-model quality,
+performance selection and deployment defaults.
 The private launcher can also [prepare a larger MTP verification envelope](docs/benchmarking.md#private-verification-row-envelope-trials)
 before loading; memory and throughput qualification remain required.
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)

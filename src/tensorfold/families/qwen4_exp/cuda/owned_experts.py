@@ -4,10 +4,14 @@ Default serving retains reference execution. These arenas are execution scratch,
 not sequence state; target/prompt/method owners coexist and execute serially.
 """
 from dataclasses import dataclass
+import os
 
 from ..expert_partition import ExpertPartition
 
 POLICY = "owned-etp4-native-slots-v1"
+_GROUPED_DOWN = os.environ.get("TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN", "inherit")
+if _GROUPED_DOWN not in ("inherit", "grouped-v1"):
+    raise ValueError("TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN requires inherit or grouped-v1")
 
 
 @dataclass(frozen=True)
@@ -28,13 +32,16 @@ class Plan:
             raise ValueError("owned native preparation requires positive exact geometry")
         if max(self.rows, self.prefill_rows) * self.slots > 65535:
             raise ValueError("owned native preparation exceeds its 65535-pair envelope")
+        if _GROUPED_DOWN == "grouped-v1" and (self.hidden != 2560 or p.experts != 512):
+            raise ValueError("grouped owned down160 requires the admitted SC117 hidden/global expert geometry")
         self.resources(self.rows)
 
     @property
     def identity(self):
         p = self.partition
-        return (POLICY, p.world, p.etp, p.experts, p.full_width, self.hidden,
-                self.slots, self.rows, self.prefill_rows, self.mtp)
+        original = (POLICY, p.world, p.etp, p.experts, p.full_width, self.hidden,
+                    self.slots, self.rows, self.prefill_rows, self.mtp)
+        return original if _GROUPED_DOWN == "inherit" else original + (_GROUPED_DOWN,)
 
     def resources(self, rows):
         if type(rows) is not int or not 0 < rows <= self.rows:
@@ -42,9 +49,16 @@ class Plan:
         local = 8 * self.slots * ((1 + int(self.mtp)) * rows + self.prefill_rows)
         reserve = (1 + int(self.mtp)) * self.partition.routing_workspace(
             max(rows, self.prefill_rows), self.slots)
-        if local > reserve:
+        grouped = 0
+        if _GROUPED_DOWN == "grouped-v1":
+            from tensorfold.cuda.sm70.gguf_ops import grouped_workspace_words
+
+            grouped = 4 * ((1 + int(self.mtp)) * grouped_workspace_words(rows * self.slots, self.partition.count)
+                           + grouped_workspace_words(self.prefill_rows * self.slots, self.partition.count))
+        if local + grouped > reserve:
             raise MemoryError("owned arenas exceed the paid reference routing reservation")
         return {"policy": POLICY, "exclusive_provider": True, "local_arena_bytes": local,
+                "grouped_down": _GROUPED_DOWN, "grouping_arena_bytes": grouped,
                 "contained_routing_reserve_bytes": reserve, "additional_device_bytes": 0,
                 "activation_storage": "existing-moe-act", "output_storage": "existing-moe-y",
                 "qualification": "private-unqualified"}
@@ -87,7 +101,13 @@ class Plan:
                 or b.pick.shape != (rows, self.slots) or b.pick.device != b.act.device
                 or b.y.device != b.act.device):
             raise ValueError("owned arena cannot reuse the actual MoE storage")
-        return Arena(self, torch.empty((rows, self.slots), dtype=torch.int64, device=b.act.device), b.act, b.y)
+        grouping = None
+        if _GROUPED_DOWN == "grouped-v1":
+            from tensorfold.cuda.sm70.gguf_ops import grouped_workspace_words
+
+            grouping = torch.empty(grouped_workspace_words(rows * self.slots, self.partition.count),
+                                   dtype=torch.int32, device=b.act.device)
+        return Arena(self, torch.empty((rows, self.slots), dtype=torch.int64, device=b.act.device), b.act, b.y, grouping)
 
     def reconcile(self, decoder):
         arenas = [decoder.buf, decoder.pbuf] + ([decoder.mbuf] if self.mtp else [])
@@ -100,9 +120,13 @@ class Plan:
             raise ValueError("owned execution arena lacks its prepared owner")
         pointers = [a.local.data_ptr() for a in owners]
         actual = sum(a.local.numel() * a.local.element_size() for a in owners)
+        grouping_bytes = sum(0 if a.grouping is None else a.grouping.numel() * a.grouping.element_size() for a in owners)
+        grouping_pointers = [a.grouping.data_ptr() for a in owners if a.grouping is not None]
+        if len(set(grouping_pointers)) != len(grouping_pointers) or grouping_bytes != expected["grouping_arena_bytes"]:
+            raise MemoryError("materialized grouped routing arenas differ from their contained reservation")
         if len(set(pointers)) != len(pointers) or actual != expected["local_arena_bytes"]:
             raise MemoryError("materialized owned arenas differ from their contained reservation")
-        return {**expected, "materialized_local_arena_bytes": actual,
+        return {**expected, "materialized_local_arena_bytes": actual, "materialized_grouping_arena_bytes": grouping_bytes,
                 "arena_rows": [b.rows for b in arenas]}
 
 
@@ -112,11 +136,19 @@ class Arena:
     local: object
     activation: object
     output: object
+    grouping: object = None
 
     def execute(self, bank, x, picks, out):
         if (getattr(bank, "_owned_expert_plan", None) is not self.plan or bank.implementation != POLICY
                 or out.data_ptr() != self.output.data_ptr() or x.shape[0] > self.local.shape[0]):
             raise ValueError("owned execution lacks its exclusive prepared bank/arena")
         rows = x.shape[0]
+        if self.grouping is None:
+            return bank.forward_partitioned_native_candidate(x, picks,
+                local=self.local[:rows], activation=self.activation[:rows].view(-1, 160), out=out)
+        from tensorfold.cuda.sm70.gguf_ops import grouped_workspace_words
+
+        words = grouped_workspace_words(rows * picks.shape[1], self.plan.partition.count)
         return bank.forward_partitioned_native_candidate(x, picks,
-            local=self.local[:rows], activation=self.activation[:rows].view(-1, 160), out=out)
+            local=self.local[:rows], activation=self.activation[:rows].view(-1, 160), out=out,
+            grouping=self.grouping[:words])

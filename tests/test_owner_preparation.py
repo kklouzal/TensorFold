@@ -66,8 +66,10 @@ def test_live_grant_never_credits_unknown_private_pool_or_omits_outside_cap_comm
     assert prepared.live_bytes() == expected
 
 
-@pytest.mark.parametrize("trial,head4", [(False, False), (True, False), (True, True)])
-def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monkeypatch, trial, head4):
+@pytest.mark.parametrize("trial,head4,reference,module_failure",
+                         [(False, False, False, False), (True, False, False, False),
+                          (True, True, False, False), (False, False, True, False), (False, False, True, True)])
+def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monkeypatch, trial, head4, reference, module_failure):
     import torch
     from tensorfold.cuda import capacity
     from tensorfold.families.qwen4_exp.cuda import history_owner
@@ -100,6 +102,18 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
     store = Store()
     memory = [{"free": 1 << 30, "active": 0, "reserved": 0} for _ in range(8)]
     created, groups, group_owners, bound_heads, retired, init_frontiers = [], [], [], [], [], []
+    from tensorfold.cuda.sm70 import reference_owner_tiles
+    local = threading.local()
+    module_ready = set()
+    identity = {"policy": "reference-owner-tile128-preparation-v1", "source_sha256": "b" * 64,
+                "module_sha256": "c" * 64}
+    def prepare_module():
+        if module_failure and local.rank == 3:
+            raise ValueError("reference module refused before buffers")
+        module_ready.add(local.rank)
+        memory[local.rank]["free"] -= 128  # Code outside Torch, consumed BEFORE the arena baseline.
+        return dict(identity)
+    monkeypatch.setattr(reference_owner_tiles, "prepare", prepare_module)
     from tensorfold.cuda import comm as comm_module
 
     class HeadGroup:
@@ -180,6 +194,11 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
             self.bytes, self.closed = 0, True
 
     def factory(text, *, rows, prefill, rank, register, **kwargs):
+        if reference:
+            assert rank in module_ready
+            assert kwargs["reference_preparation"] == identity
+        else:
+            assert "reference_preparation" not in kwargs
         owner = Owner(rank, rows, prefill)
         register(owner)
         created.append(owner)
@@ -196,6 +215,7 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
             "indexer_budget": 8, "indexer_compress_ratio": 4}
 
     def prepare(rank):
+        local.rank = rank
         engine = NS(rank=rank, tp=8, comm=NS(world=8, rank=rank, store=store), multi=None, _calls={})
         if head4:
             def bind_protocol(target, attribute, label, *, refusal):
@@ -217,11 +237,18 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
         spec = specification(trial=trial)
         if head4:
             spec["collective_family"] = "head4-allgather-v1"
-        prepared = OwnerPreparation(spec, role_rows=roles, manifest_sha256="a" * 64)
+        prepared = OwnerPreparation(spec, role_rows=roles, manifest_sha256="a" * 64, reference_tiles=reference)
         prepared.prepare(engine, text, get_pair("int8"), page_tokens=128, device=rank)
         return prepared
 
     with ThreadPoolExecutor(max_workers=8) as workers:
+        if module_failure:
+            results = [workers.submit(prepare, rank) for rank in range(8)]
+            for result in results:
+                with pytest.raises(ValueError, match="phase|refused"):
+                    result.result(timeout=10)
+            assert not created and values == {}
+            return
         prepared = list(workers.map(prepare, range(8)))
     assert values == {} and len(created) == 24
     assert all(item.identity() == prepared[0].identity() for item in prepared)
@@ -241,8 +268,38 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
         assert decoder.buf.owner_kernel_family == (KERNEL_FAMILY if trial else "torch-reference")
         assert len(created) == 24  # Adoption did not create a second serving allocation.
         item.close()
-        assert memory[rank] == {"free": 1 << 30, "active": 0, "reserved": 0}
+        assert memory[rank] == {"free": (1 << 30) - (128 if reference else 0), "active": 0, "reserved": 0}
     assert len(groups) == (8 if head4 else 0) and all(group.closed for group in groups)
     if head4:
         assert sorted(init_frontiers) == list(range(8))
         assert len(bound_heads) == 8 and all(group in bound_heads for group in groups)
+
+
+@pytest.mark.parametrize("change", [{"trial": True}, {"graph_family": GRAPH_FAMILY, "graph_budget_bytes": 1},
+                                    {"collective_family": "head4-allgather-v1"}])
+def test_reference_preparation_requires_original_uncaptured_reference_contract(change):
+    with pytest.raises(ValueError, match="full-TP8 reference"):
+        OwnerPreparation({**specification(), **change}, role_rows={"decode": 4, "prefill": 8},
+                         manifest_sha256="a" * 64, reference_tiles=True)
+
+
+
+def test_journalled_owner_constructor_attaches_prepared_borrower_without_late_module_load(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+    from tensorfold.cuda.sm70 import reference_owner_tiles as native
+    journal = []
+    identity = {"policy": "reference-owner-tile128-preparation-v1", "source_sha256": "b" * 64}
+    class Borrower:
+        def __init__(self, workspace, preparation):
+            assert len(journal) == 1 and journal[0]._base_ready
+            assert workspace is journal[0].partials and preparation == identity
+            self.workspace = workspace
+        def record(self):
+            return {"additional_device_bytes": 0}
+    monkeypatch.setattr(native, "ReferenceTiles", Borrower)
+    monkeypatch.setattr(native, "prepare", lambda: pytest.fail("constructor attempted late module load"))
+    text = {"num_attention_heads": 24, "num_key_value_heads": 2, "head_dim": 256,
+            "indexer_budget": 8, "indexer_compress_ratio": 4}
+    owner = history_owner.OwnerBuffers.from_text(text, rows=8, prefill=True, idw=12, world=8, rank=0,
+        device="cpu", comm=NS(world=8, rank=0), register=journal.append, reference_preparation=identity)
+    assert owner is journal[0] and owner.reference_tiles.workspace is owner.partials

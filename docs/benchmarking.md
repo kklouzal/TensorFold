@@ -96,6 +96,40 @@ for actual backend overlap; offered simultaneous requests alone do not qualify a
 level. No forced model scheduling or hidden server reconfiguration creates that
 proof. If overlap is not observed, keep the row unqualified and its raw data.
 
+## Private grouped-down and reference-tile trials
+
+These source candidates remain unselected. Use an immutable application image
+containing their exact bytes; flags cannot add missing code to an older image.
+Keep the profile's ordinary TP8/ETP4/PP1, full context, precision, MTP, caps and
+serve arguments unchanged. Preserve `TENSORFOLD_SM70_PROFILE=reference` for the
+reference-tile trial.
+
+Inside the candidate container, set
+`TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN=grouped-v1` before starting the existing
+private supervised launcher to request grouped expert down projection. Unset or
+`inherit` retains the incumbent. Separately, add `--reference-tiles` to
+`tools/v100_owned_qualification.py` **before** its existing `--` separator to
+request reference Tile128 preparation. The trusted capability reaches the
+ordinary factory/Engine; it is not a public serving/admin flag or a switch to
+native-owner WMMA attention. The default omits the capability.
+
+Reference preparation loads/checks both CUDA entry points in the voted startup
+phase before the physical baseline and admission. Decode/prompt/MTP owners are
+journalled and adopted before warmup; retain all-rank source/ELF/slab/role
+receipts. The reference preparer borrows a paid 67,072-byte receive prefix;
+module residency is separate. Grouping physically adds 46,148 bytes per rank in
+the recorded 32/256/32-row arenas inside the paid 292,864-byte reservation, rather
+than allocating zero bytes. Original arithmetic folds remain unchanged;
+component comparisons use no tolerance.
+
+[Component and source-integration evidence](v100-adaptive-validation.md#private-grouped-down-and-reference-tile-preparation)
+are separate from model and P3 selection. The final combined source passed
+408 selected-x86 CPU and 17 updated GPU checks, including real entry-point
+preparation before owner-buffer construction. No new speedup or deployment-default claim follows
+from source availability or strict component passes. Compare only after normal
+readiness/resource admission, with matched recorded inputs and controls;
+retain failures and existing baseline reproducibility limits.
+
 ## Private verification-row envelope trials
 
 The supervised qualification launcher accepts `--execution-rows N` before its

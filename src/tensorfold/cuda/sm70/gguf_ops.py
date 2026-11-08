@@ -120,7 +120,16 @@ def owned_workspace_bytes(rows, slots, width=160):
     return rows * slots * (8 + 2 * width)
 
 
-def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, local, activation, out):
+def grouped_workspace_words(pairs, resident_experts):
+    """Fixed GPU-only route counters/maps/tiles; no expert-by-pair expansion."""
+    if (type(pairs) is not int or not 0 <= pairs <= 65535
+            or type(resident_experts) is not int or not 0 <= resident_experts <= 512):
+        raise ValueError("grouped SC117 routes require bounded pairs and resident experts")
+    tiles = min(pairs, (pairs + 15) // 16 + max(0, resident_experts - 1))
+    return 2 * pairs + 2 * resident_experts + 3 * tiles + 2
+
+
+def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, local, activation, out, grouping=None):
     """Explicit unselected ETP4 candidate, with caller-owned fixed native scratch.
 
     Foreign global slots become zero; invalid global IDs become NaN without any
@@ -133,7 +142,12 @@ def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, lo
     owned_workspace_bytes(x.shape[0], picks.shape[1], width)
     if any(type(v) is not int for v in (first, experts, width)) or not 0 <= first < experts:
         raise ValueError("owned expert range requires native integer global placement")
-    extension().experts_owned(x, picks, gate.data, gate.ggml_type, gate.column_offset,
+    if grouping is not None and (experts != 512 or x.shape[1] != 2560):
+        raise ValueError("grouped owned down160 requires SC117 hidden/global expert geometry")
+    native = extension()
+    execute = native.experts_owned if grouping is None else native.experts_owned_grouped
+    extra = () if grouping is None else (grouping,)
+    execute(x, picks, gate.data, gate.ggml_type, gate.column_offset,
         up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
-        width, first, experts, shared, local, activation, out)
+        width, first, experts, shared, local, activation, out, *extra)
     return out

@@ -511,7 +511,7 @@ class GGUFExperts:
             target[start:start + count].copy_(result[:count])
         return self._write_shared(x, picks, out)
 
-    def forward_partitioned_native_candidate(self, x, picks, *, local, activation, out):
+    def forward_partitioned_native_candidate(self, x, picks, *, local, activation, out, grouping=None):
         """Unselected ETP4 operator candidate; caller owns reusable role scratch.
 
         No automatic dispatch or whole-model graph claim. Native scratch is
@@ -527,7 +527,7 @@ class GGUFExperts:
                               * up.matmul(x, f32=True)).half(), f32=True)
         return gguf_ops.experts_owned(x, picks, self.gate, self.up, self.down,
             first=part.first, experts=part.experts, width=self.width,
-            shared=shared, local=local, activation=activation, out=out)
+            shared=shared, local=local, activation=activation, out=out, grouping=grouping)
 
     def forward_partitioned_reference(self, x, picks, out=None, *, _pairs=None):
         """Only owned global assignments enter the resident bank; all peers still gather.

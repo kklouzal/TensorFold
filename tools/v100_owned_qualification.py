@@ -948,11 +948,41 @@ def _execution_rows_receipt(engine, requested):
     return {"requested": requested, **values}
 
 
+
+def _reference_tile_receipt(engine, requested):
+    actual = getattr(engine, "_reference_owner_tiles_requested", False)
+    if type(actual) is not bool or actual is not requested:
+        raise ValueError("reference tile request differs from actual Engine preparation")
+    if not requested:
+        return {"requested": False, "configured": False}
+    from tensorfold.cuda.sm70.reference_owner_tiles import ReferenceTiles, preparation_identity
+    preparation = engine._owner_preparation
+    identity = preparation_identity()
+    if (preparation is None or preparation.reference_preparation != identity
+            or engine.w.meta.get("reference_tile_preparation") != identity):
+        raise ValueError("reference tile pre-budget/source identity differs from actual weights")
+    roles = {"decode": engine.multi.buf, "prefill": engine.multi.pbuf}
+    if engine.w.mtp is not None:
+        roles["mtp"] = engine.multi.mbuf
+    if set(preparation.workspaces) != set(roles):
+        raise ValueError("reference tile preparation roles differ from actual decoder")
+    records = {}
+    owners = set()
+    for role, buffers in roles.items():
+        owner = buffers.history_owner
+        if (preparation.workspaces[role] is not owner or id(owner) in owners
+                or type(owner.reference_tiles) is not ReferenceTiles or owner.rows != min(buffers.rows, 256)):
+            raise ValueError("reference tile role did not adopt its exact journalled receive owner")
+        owners.add(id(owner))
+        records[role] = owner.reference_tiles.verify(owner.partials, identity)
+    return {"requested": True, "configured": True, "prebudget_preparation": identity, "roles": records}
+
 def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
-                    execution_rows=None):
+                    execution_rows=None, reference_tiles=False):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
+        receipt["reference_tile_preparation"] = _reference_tile_receipt(engine, reference_tiles)
         receipt["half_partial_policy"] = _half_policy(half_request)
         receipt["private_router_policy"] = _router_policy(router_request)
         receipt["empty_prefix_policy"] = _empty_prefix_policy(empty_request)
@@ -1010,6 +1040,7 @@ def worker(argv):
     parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
+    parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
@@ -1050,7 +1081,7 @@ def worker(argv):
                     raise
             publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation,
                             half_request=half_request, router_request=router_request, empty_request=empty_request,
-                            execution_rows=selected.execution_rows)
+                            execution_rows=selected.execution_rows, reference_tiles=selected.reference_tiles)
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
@@ -1106,13 +1137,16 @@ def worker(argv):
         if benchmark_resources is not None:
             obligation = (benchmark_resources["global_host_obligation_bytes"],
                           hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
-        if selected.execution_rows is None:
-            args._owned_expert_qualification = cli._OwnedExpertQualification(before_listener, obligation)
-        else:
+        capability = {}
+        if selected.execution_rows is not None:
             if "execution_rows" not in cli._OwnedExpertQualification.__dataclass_fields__:
-                raise ValueError("installed CLI does not support private execution rows")
-            args._owned_expert_qualification = cli._OwnedExpertQualification(
-                before_listener, obligation, execution_rows=selected.execution_rows)
+                raise ValueError("installed CLI lacks private execution-row preparation")
+            capability["execution_rows"] = selected.execution_rows
+        if selected.reference_tiles:
+            if "reference_tiles" not in cli._OwnedExpertQualification.__dataclass_fields__:
+                raise ValueError("installed CLI lacks pre-budget reference tile preparation")
+            capability["reference_tiles"] = True
+        args._owned_expert_qualification = cli._OwnedExpertQualification(before_listener, obligation, **capability)
         return cli.cmd_serve(args)
     except BaseException as primary:
         try:
@@ -1242,6 +1276,7 @@ def main(argv=None):
     parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
+    parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
     parser.add_argument("--execution-rows", type=int, help="private prepared MTP row envelope; requires explicit depth/parallel")
     parser.add_argument("--router-row-input", type=Path, help="private four-row layer0 capture DATA; diagnostic overhead only")
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
@@ -1269,6 +1304,8 @@ def main(argv=None):
         prefix += ["--history-input", str(args.history_input.absolute()), "--history-run-id", uuid.uuid4().hex]
     if args.dense_implementation is not None:
         prefix += ["--dense-implementation", args.dense_implementation]
+    if args.reference_tiles:
+        prefix += ["--reference-tiles"]
     if args.execution_rows is not None:
         prefix += ["--execution-rows", str(args.execution_rows)]
     if args.benchmark_plan is not None:

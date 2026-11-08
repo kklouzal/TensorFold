@@ -60,7 +60,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _owned_qualification_host: tuple=()) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=()) -> None:
         if type(_owned_expert_native) is not bool:
             raise ValueError("private owned expert selection must be a literal boolean")
         if (type(_owned_qualification_host) is not tuple or _owned_qualification_host and (not _owned_expert_native
@@ -69,6 +69,10 @@ class FlashNextEngine:
                 or type(_owned_qualification_host[1]) is not str or len(_owned_qualification_host[1]) != 64
                 or any(char not in "0123456789abcdef" for char in _owned_qualification_host[1]))):
             raise ValueError("private qualification host obligation requires bounded bytes and SHA256 provenance")
+        if type(_reference_owner_tiles) is not bool or _reference_owner_tiles and (not _owned_expert_native
+                or execution_profile_manifest is None):
+            raise ValueError("reference tiles require the private owned preparation lifecycle")
+        self._reference_owner_tiles_requested = _reference_owner_tiles
         self._owned_qualification_host = _owned_qualification_host
         self._owned_expert_requested = _owned_expert_native
         self._owned_expert_admin_requested = serving_profile_root is not None
@@ -83,6 +87,7 @@ class FlashNextEngine:
         profile_options.pop("self")
         profile_options.pop("model_dir")
         profile_options.pop("serving_profile_root")
+        profile_options.pop("_reference_owner_tiles")
         profile_options.pop("_owned_expert_native")
         profile_options.pop("_owned_qualification_host")
         profile_options.pop("_prepared_family_plan")  # private startup cache is never an administrator option
@@ -170,6 +175,7 @@ class FlashNextEngine:
             retention_policy.validate_world(tp)
         self.retention_policy = retention_policy
 
+        self._reference_owner_tiles_requested = getattr(self, "_reference_owner_tiles_requested", False)
         self._owned_expert_requested = getattr(self, "_owned_expert_requested", False)
         self._owned_expert_admin_requested = getattr(self, "_owned_expert_admin_requested", False)
         self._owned_expert_plan = None
@@ -643,7 +649,8 @@ class FlashNextEngine:
                             -1 if execution_rows is None else execution_rows,
                             *(self.expert_partition.agreement() if self.expert_partition is not None else (0, 0, 0)),
                             int(self._owned_expert_requested),
-                            int(self._owned_expert_requested and self._owned_expert_admin_requested)])
+                            int(self._owned_expert_requested and self._owned_expert_admin_requested),
+                            int(self._reference_owner_tiles_requested)])
             if any(row != modes[0] for row in modes[1:]):
                 raise RuntimeError("tensor-parallel ranks selected different history/session or expert placement policies")
         if self._owned_expert_requested and self._owned_expert_plan is None:
@@ -665,6 +672,8 @@ class FlashNextEngine:
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec)
                      or sm70 and self.kv_pair.key.quantized or indexer_history == "ram")
         rows0 = chunk or PREFILL_ROWS
+        if self._reference_owner_tiles_requested and (owner_specification is None or self.sm70_profile != "reference"):
+            raise ValueError("reference tiles require explicit pre-budget owner preparation")
         history_plan = None
         history_maximum_owners = 0
         history_geometry = {}
@@ -690,7 +699,8 @@ class FlashNextEngine:
             roles = {"decode": min(bound, ATT_ROWS),
                      **({"mtp": min(bound, ATT_ROWS)} if mtp else {}), "prefill": min(rows0, ATT_ROWS)}
             owner_preparation = OwnerPreparation(owner_specification, role_rows=roles,
-                                                  manifest_sha256=preparation_manifest_sha)
+                                                  manifest_sha256=preparation_manifest_sha,
+                **({"reference_tiles": True} if self._reference_owner_tiles_requested else {}))
             self._owner_preparation = owner_preparation
             owner_preparation.prepare(self, text, self.kv_pair, page_tokens=history_placement.page_tokens,
                                       device=torch.device("cuda", torch.cuda.current_device()))
@@ -1433,6 +1443,8 @@ class FlashNextEngine:
             w.meta.update(history_layout="unique", attention_degree=history_placement.degree)
         if owner_preparation is not None:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
+            if self._reference_owner_tiles_requested:
+                w.meta["reference_tile_preparation"] = dict(owner_preparation.reference_preparation)
         if self._indexer_history_session is not None:
             w.meta.update(indexer_history="ram", indexer_history_session=self._indexer_history_session)
         if expert_session is not None:
