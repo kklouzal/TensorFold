@@ -43,7 +43,8 @@ The [preserved-request repro diagnostic](docs/benchmarking.md#preserved-raw-comp
 checks baseline batch/serial repeatability without treating differences as
 quality acceptance or performance measurements.
 The private [ordered Half partial trial](docs/v100-adaptive-validation.md#ordered-half-moe-partial-component-checkpoint)
-passed component checks; default policy and other operators remain unchanged.
+passed component checks and has per-rank policy attestation; default policy
+and other operators remain unchanged.
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload

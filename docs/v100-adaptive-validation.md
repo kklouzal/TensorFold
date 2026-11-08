@@ -505,6 +505,18 @@ SHA256 `844dbef4aaa55384f388ca32ec444f8d1f25d0ad327a0027d8ed4ef4afc127e2`.
 Installed-image, complete model output and performance checks remain pending;
 this checkpoint selects no new deployment default.
 
+The private owned launcher additionally validates a captured startup request
+before model construction and again before publication. Each rank records
+`half_partial_policy`: requested/configured values, selector support and the
+inherited native-family flag. An older image with no selector is accepted only
+when no explicit request was supplied, and is labeled `legacy-inherited`.
+Present invalid metadata, unsupported requests and mismatches fail closed;
+the launcher never mutates the policy or treats a later environment edit as
+a mode change. The attestation passed 111 local ARM CPU protocol controls,
+Ruff and syntax checks; that is separate from V100 numerical qualification.
+Gate: `private-half-attestation-CPU-v1/half-attestation-final-gate.json`, SHA256
+`b8c70391b469f7a48cca431ee2340b9cc3efba3009e29870cfe242f876b670f7`.
+
 ## Shared owner-attention diagnostics
 
 On the existing V100 SDK/application image `0a13de3c` (application source

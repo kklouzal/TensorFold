@@ -628,10 +628,30 @@ def bound_receipt(engine):
             "qualification": "private candidate binding only; no full-native, quality or performance claim"}
 
 
-def publish_receipt(engine, output, *, dense_implementation=None):
+def _half_policy(requested):
+    """Attest process-fixed selection; never turn an environment edit into a policy update."""
+    from tensorfold.cuda.sm70 import family_ops
+
+    missing = object()
+    configured = getattr(family_ops, "_PRIVATE_HALF_PARTIAL", missing)
+    supported = configured is not missing
+    expected = "inherit" if requested is None else requested
+    if (not supported and requested is not None or supported and (
+            configured not in ("inherit", "native-half-v1") or configured != expected)):
+        raise ValueError("private Half policy request is unsupported or differs from the installed configuration")
+    native_family = getattr(family_ops, "_NATIVE_FAMILY", None)
+    if type(native_family) is not bool:
+        raise ValueError("private Half inherited family status must be an actual bool")
+    return {"requested": requested, "configured": configured if supported else "legacy-inherited",
+            "private_selector_supported": supported, "inherited_native_family": native_family}
+
+
+
+def publish_receipt(engine, output, *, dense_implementation=None, half_request=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
+        receipt["half_partial_policy"] = _half_policy(half_request)
         from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat
         actual = GGUFDense.implementation
         if dense_implementation is not None and (
@@ -689,6 +709,7 @@ def worker(argv):
     receipt_failed = False
     prepared = None
     benchmark = benchmark_resources = None
+    half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
 
     def before_listener(engine):
         nonlocal receipt_failed
@@ -711,11 +732,13 @@ def worker(argv):
                 except BaseException as primary:
                     _observer_failure(engine, primary)
                     raise
-            publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation)
+            publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation,
+                            half_request=half_request)
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
     try:
+        _half_policy(half_request)  # Before the ordinary constructor can prepare any model/workspace.
         if selected.benchmark_plan is not None:
             if selected.history_input is not None:
                 raise ValueError("history witness and phase matrix are separate controlled procedures")

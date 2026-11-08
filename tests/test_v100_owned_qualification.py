@@ -232,6 +232,107 @@ def test_private_dense_choice_refuses_invalid_parent_and_worker(channel, monkeyp
     assert parent.value.code == worker.value.code == 2
     assert not (tmp_path / "new").exists()
 
+
+@pytest.mark.parametrize("requested,configured", [("inherit", "inherit"), ("native-half-v1", "native-half-v1"),
+                                                   (None, "inherit"), (None, None)])
+@pytest.mark.parametrize("native_family", [False, True])
+def test_half_attestation_precedes_constructor_and_keeps_initial_request(
+        channel, monkeypatch, tmp_path, requested, configured, native_family):
+    from tensorfold.cuda.sm70 import family_ops
+    name = "TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL"
+    if requested is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, requested)
+    if configured is None:
+        monkeypatch.delattr(family_ops, "_PRIVATE_HALF_PARTIAL", raising=False)
+    else:
+        monkeypatch.setattr(family_ops, "_PRIVATE_HALF_PARTIAL", configured)
+    monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", native_family)
+    monkeypatch.setattr(owned, "bound_receipt", lambda _: {})
+    calls = []
+    def serve(args):
+        # A later environment edit cannot select another policy or replace the captured request.
+        monkeypatch.setenv(name, "changed-after-preparation")
+        engine = NS(rank=3, comm=NS(ready=lambda label: calls.append(label)))
+        args._owned_expert_qualification.before_listener(engine)
+        return 0
+    monkeypatch.setattr(cli, "cmd_serve", serve)
+    assert owned.worker(worker_args(tmp_path)) == 0
+    receipt = json.loads((tmp_path / "rank-3.json").read_text())["half_partial_policy"]
+    assert receipt == {"requested": requested, "configured": configured or "legacy-inherited",
+                       "private_selector_supported": configured is not None,
+                       "inherited_native_family": native_family}
+    assert getattr(family_ops, "_PRIVATE_HALF_PARTIAL", None) == configured
+    assert calls == ["owned_expert_qualification"]
+
+
+@pytest.mark.parametrize("requested,configured", [("inherit", None), ("native-half-v1", None),
+                                                   ("native-half-v1", "inherit"), ("invalid", "inherit"),
+                                                   (None, "native-half-v1")])
+def test_half_attestation_refuses_unsupported_or_mismatched_before_constructor(
+        channel, monkeypatch, tmp_path, requested, configured):
+    from tensorfold.cuda.sm70 import family_ops
+    if requested is None:
+        monkeypatch.delenv("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL", raising=False)
+    else:
+        monkeypatch.setenv("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL", requested)
+    if configured is None:
+        monkeypatch.delattr(family_ops, "_PRIVATE_HALF_PARTIAL", raising=False)
+    else:
+        monkeypatch.setattr(family_ops, "_PRIVATE_HALF_PARTIAL", configured)
+    monkeypatch.setattr(cli, "cmd_serve", lambda _: pytest.fail("Half request reached constructor"))
+    with pytest.raises(ValueError, match="Half policy request"):
+        owned.worker(worker_args(tmp_path))
+    assert os.read(channel[0], 8) == b"F"
+    assert not (tmp_path / "rank-3.json").exists()
+
+
+def test_half_attestation_configuration_drift_refuses_publication(channel, monkeypatch, tmp_path):
+    from tensorfold.cuda.sm70 import family_ops
+    monkeypatch.setenv("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL", "native-half-v1")
+    monkeypatch.setattr(family_ops, "_PRIVATE_HALF_PARTIAL", "native-half-v1")
+    monkeypatch.setattr(owned, "bound_receipt", lambda _: {})
+    def serve(args):
+        monkeypatch.setattr(family_ops, "_PRIVATE_HALF_PARTIAL", "inherit")
+        engine = NS(rank=3, _abort_comm=False,
+                    comm=NS(ready=lambda _: pytest.fail("Half drift reached ready")))
+        with pytest.raises(ValueError, match="Half policy request"):
+            args._owned_expert_qualification.before_listener(engine)
+        assert engine._abort_comm and os.read(channel[0], 8) == b"F"
+        assert not (tmp_path / "rank-3.json").exists()
+        return 0
+    monkeypatch.setattr(cli, "cmd_serve", serve)
+    assert owned.worker(worker_args(tmp_path)) == 0
+
+
+@pytest.mark.parametrize("field,bad", [("_PRIVATE_HALF_PARTIAL", None), ("_PRIVATE_HALF_PARTIAL", "changed"),
+                                      ("_PRIVATE_HALF_PARTIAL", "legacy-inherited"),
+                                      ("_NATIVE_FAMILY", None), ("_NATIVE_FAMILY", 1), ("_NATIVE_FAMILY", "false")])
+@pytest.mark.parametrize("stage", ["constructor", "publication"])
+def test_half_attestation_refuses_corrupted_present_metadata(
+        channel, monkeypatch, tmp_path, field, bad, stage):
+    from tensorfold.cuda.sm70 import family_ops
+    monkeypatch.delenv("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL", raising=False)
+    monkeypatch.setattr(family_ops, "_PRIVATE_HALF_PARTIAL", "inherit")
+    monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
+    monkeypatch.setattr(owned, "bound_receipt", lambda _: {})
+    engine = NS(rank=3, _abort_comm=False,
+                comm=NS(ready=lambda _: pytest.fail("corrupted metadata reached ready")))
+    def serve(args):
+        assert stage == "publication", "corrupted metadata reached constructor"
+        monkeypatch.setattr(family_ops, field, bad)
+        args._owned_expert_qualification.before_listener(engine)
+    monkeypatch.setattr(cli, "cmd_serve", serve)
+    if stage == "constructor":
+        monkeypatch.setattr(family_ops, field, bad)
+    with pytest.raises(ValueError, match="private Half"):
+        owned.worker(worker_args(tmp_path))
+    assert os.read(channel[0], 8) == b"F"
+    if stage == "publication":
+        assert engine._abort_comm
+    assert not (tmp_path / "rank-3.json").exists()
+
 def test_failed_receipt_poison_notifies_once_before_shared_cli_retirement(channel, monkeypatch, tmp_path):
     engine = NS(rank=3, _abort_comm=False)
     primary = ValueError("actual native binding mismatch")
