@@ -27,6 +27,8 @@ levels 1–16 with verified active-owner overlap; 24 was intentionally cancelled
 and 32 was not run so shared-path profiling could take priority. This does not
 qualify a complete sweep or 32 simultaneously active requests. See the
 [measured reference and limits](docs/benchmarking.md#first-sc117-q4-reference).
+Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
+capture finite CPU/CUDA windows separately from clean performance comparisons.
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload

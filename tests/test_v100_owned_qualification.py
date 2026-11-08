@@ -15,6 +15,65 @@ from tools import v100_owned_qualification as owned
 from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 
 
+def test_scheduler_trace_selects_only_five_finite_nonwarmup_calls(tmp_path):
+    import threading
+    engine = NS(scheduler=NS(thread=threading.current_thread()))
+    tracer = owned._SchedulerTrace(engine, tmp_path)
+    stream = NS(done=False, st=object(), out=[1, 2])
+    observer = NS(current=0, plan={"cohorts": [
+        {"id": 0, "level": 1, "warmup": True},
+        {"id": 1, "level": 1, "warmup": False},
+        {"id": 2, "level": 8, "warmup": False}]},
+        decoder=NS(streams={0: stream}, filling=[stream]))
+    assert tracer.label(observer) is None
+    observer.current = 1
+    assert tracer.label(observer) == "c1-cold-prefill-containing-round"
+    assert tracer.label(observer) is None
+    observer.decoder.filling = []
+    assert [tracer.label(observer) for _ in range(3)] == [
+        "c1-warmed-decode-round-1", "c1-warmed-decode-round-2", None]
+    observer.current = 2
+    observer.decoder.streams = {n: NS(done=False, st=object(), out=[1, 2]) for n in range(8)}
+    assert [tracer.label(observer) for _ in range(3)] == [
+        "c8-warmed-decode-round-1", "c8-warmed-decode-round-2", None]
+
+
+def test_scheduler_trace_preserves_primary_stop_export_and_receipt_failures(tmp_path, monkeypatch):
+    import threading
+    primary, stop, export, receipt = [RuntimeError(name) for name in ("model", "stop", "export", "receipt")]
+    calls = []
+    class Profiler:
+        def __enter__(self):
+            calls.append("start")
+        def __exit__(self, kind, value, tb):
+            assert value is primary
+            calls.append("stop")
+            raise stop
+        def export_chrome_trace(self, path):
+            calls.append("export")
+            raise export
+    engine = NS(rank=0, scheduler=NS(thread=threading.current_thread()))
+    tracer = owned._SchedulerTrace(engine, tmp_path, factory=Profiler)
+    monkeypatch.setattr(owned, "write_json", lambda *_: (_ for _ in ()).throw(receipt))
+    def run():
+        calls.append("work")
+        raise primary
+    with pytest.raises(RuntimeError) as raised:
+        tracer.capture("c1-warmed-decode-round-1", run)
+    def leaves(error):
+        return sum((leaves(child) for child in error.exceptions), []) if isinstance(error, BaseExceptionGroup) else [error]
+    assert raised.value is primary
+    assert leaves(raised.value.__cause__) == [stop, export, receipt]
+    assert calls == ["start", "work", "stop", "export"] and tracer.active is False
+
+
+def test_scheduler_trace_refuses_foreign_thread_before_profiler_or_work(tmp_path):
+    tracer = owned._SchedulerTrace(NS(scheduler=NS(thread=object())), tmp_path,
+                                  factory=lambda: pytest.fail("profiler created on foreign thread"))
+    with pytest.raises(RuntimeError, match="actual scheduler thread"):
+        tracer.capture("c1-warmed-decode-round-1", lambda: pytest.fail("foreign work"))
+
+
 @pytest.fixture
 def channel(monkeypatch):
     read, write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)

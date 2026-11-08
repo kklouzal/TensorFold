@@ -16,6 +16,8 @@ import sys
 import uuid
 import threading
 import math
+import resource
+import time
 
 from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
@@ -201,6 +203,181 @@ class _HistoryAttestation:
                 raise
         return result
 
+
+
+class _SchedulerTrace:
+    """Five finite rank-zero scheduler calls, never a live cross-call profiler."""
+    def __init__(self, engine, output, *, factory=None):
+        self.engine, self.output, self.factory = engine, Path(output), factory
+        self.counts, self.active = {}, False
+
+    def label(self, observer):
+        if observer.current is None:
+            return None
+        cohort = next(c for c in observer.plan["cohorts"] if c["id"] == observer.current)
+        if cohort["warmup"] or cohort["level"] not in (1, 8):
+            return None
+        live = [s for s in observer.decoder.streams.values() if not s.done and s.st is not None]
+        if cohort["level"] == 1 and observer.decoder.filling and not self.counts.get("prefill"):
+            self.counts["prefill"] = 1
+            return "c1-cold-prefill-containing-round"
+        key = str(cohort["level"])
+        if (not observer.decoder.filling and len(live) == cohort["level"]
+                and all(len(s.out) > 1 for s in live) and self.counts.get(key, 0) < 2):
+            self.counts[key] = self.counts.get(key, 0) + 1
+            return f"c{key}-warmed-decode-round-{self.counts[key]}"
+        return None
+
+    @staticmethod
+    def process():
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        return {"io": Path("/proc/self/io").read_text(), "minor_faults": usage.ru_minflt,
+                "major_faults": usage.ru_majflt, "maxrss_kib_cumulative": usage.ru_maxrss}
+
+    def capture(self, label, callback):
+        if threading.current_thread() is not self.engine.scheduler.thread:
+            raise RuntimeError("profiler must be owned by the actual scheduler thread")
+        if self.factory is None:
+            import torch
+            profiler = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA], record_shapes=False, profile_memory=False,
+                with_stack=True)
+        else:
+            profiler = self.factory()
+        before, started = self.process(), time.monotonic()
+        primary, errors, entered, result = None, [], False, None
+        try:
+            profiler.__enter__()
+            entered = True
+            self.active = True
+            entered_at = time.monotonic()
+            result = callback()
+        except BaseException as error:
+            primary = error
+        finally:
+            self.active = False
+            work_end = time.monotonic()
+            if entered:
+                try:
+                    profiler.__exit__(type(primary) if primary else None, primary,
+                                      primary.__traceback__ if primary else None)
+                except BaseException as error:
+                    errors.append(error)
+                stopped = time.monotonic()
+                try:
+                    trace = self.output / (label + ".json")
+                    profiler.export_chrome_trace(str(trace))
+                    if trace.stat().st_size > 256 << 20:
+                        raise RuntimeError("trace exceeds 256 MiB acceptance threshold; raw file retained")
+                except BaseException as error:
+                    errors.append(error)
+                try:
+                    write_json(self.output / (label + "-receipt.json"), {
+                        "rank": self.engine.rank, "thread": threading.current_thread().name,
+                        "thread_ident": threading.get_ident(), "label": label,
+                        "profiler_enter_seconds": entered_at - started,
+                        "work_call_seconds": work_end - entered_at,
+                        "profiler_stop_seconds": stopped - work_end,
+                        "export_seconds": time.monotonic() - stopped,
+                        "process_before": before, "process_after": self.process(),
+                        "primary": None if primary is None else repr(primary),
+                        "post_errors": [repr(error) for error in errors],
+                        "export_acceptance_threshold_bytes": 256 << 20,
+                        "resource_scope": "five fixed calls/input64; native profiler memory is container-limited, not source-bounded256MiB; disk guard retained",
+                        "scope": "rank0 TP adapter round; inclusive prefill/decode/control, diagnostic only; peers untraced"})
+                except BaseException as error:
+                    errors.append(error)
+        raise_failures(primary, errors)
+        return result
+
+    def wrap(self, owner, name, label):
+        original = getattr(owner, name)
+        def wrapped(*args, **kwargs):
+            if not self.active:
+                return original(*args, **kwargs)
+            import torch
+            with torch.profiler.record_function(label):
+                return original(*args, **kwargs)
+        setattr(owner, name, wrapped)
+
+    def install(self, observer):
+        adapter, decoder = self.engine.tp_decoder, observer.decoder
+        for owner, name, label in ((adapter, "_invoke", "TP.publish_execute_vote_retire"),
+                (adapter, "_execute", "TP.local_dispatch"),
+                (decoder, "_prepare_pass", "PLE.prepare_frame_stage"),
+                (decoder, "_read_ahead", "PLE.read_ahead"),
+                (self.engine.w.meta["input_preparation_context"], "prepare", "input_prepare.agree_vote_retire")):
+            self.wrap(owner, name, label)
+        original = adapter.round
+        def rounded():
+            label = self.label(observer)
+            if label is None:
+                return original()
+            try:
+                return self.capture(label, original)
+            except BaseException as primary:
+                _observer_failure(self.engine, primary)
+                raise
+        adapter.round = rounded
+
+
+def _trace_inventory(engine, output):
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat, GGUFPacked
+    from tensorfold.cuda.sm70 import family_ops
+    buffers = {}
+    for name in ("buf", "pbuf", "mbuf"):
+        buf = getattr(engine.multi, name)
+        buffers[name] = None if buf is None else {"moe_y_dtype": str(buf.moe.y.dtype),
+            "moe_y_shape": list(buf.moe.y.shape), "rows": buf.rows}
+    matrices = []
+    def matrix(name, value):
+        if value is None:
+            return
+        if not isinstance(value, (GGUFDense, GGUFConcat, GGUFPacked)):
+            raise ValueError("trace inventory requires an actual declared GGUF matrix")
+        matrices.append({"role": name, "class": type(value).__name__,
+            "implementation": None if isinstance(value, GGUFPacked) else value.implementation,
+            "n": value.n, "k": value.k})
+        if isinstance(value, GGUFConcat):
+            for index, part in enumerate(value.parts):
+                matrices.append({"role": f"{name}.part{index}", "class": type(part).__name__,
+                    "implementation": None if isinstance(part, GGUFPacked) else part.implementation,
+                    "n": part.n, "k": part.k})
+    def layer_sample(name, layer):
+        for role in ("attn_hc", "mlp_hc"):
+            pair = getattr(layer, role)
+            matrix(name + "." + role + ".down", pair.down)
+            matrix(name + "." + role + ".up", pair.up)
+        if layer.gdn is not None:
+            matrix(name + ".gdn.proj", layer.gdn.proj)
+            matrix(name + ".gdn.out", layer.gdn.out)
+        if layer.attn is not None:
+            matrix(name + ".attn.proj", layer.attn.proj)
+            matrix(name + ".attn.o", layer.attn.o)
+        if layer.ple is not None:
+            matrix(name + ".ple.key", layer.ple.key)
+            matrix(name + ".ple.value", layer.ple.value)
+        for index, value in enumerate(layer.moe.experts.shared):
+            matrix(f"{name}.shared{index}", value)
+    matrix("head", engine.w.head)
+    selected = {0}
+    for role in ("gdn", "attn", "ple"):
+        selected.add(next(index for index, layer in enumerate(engine.w.layers)
+                          if getattr(layer, role) is not None))
+    for index in sorted(selected):
+        layer_sample(f"target-layer{index}", engine.w.layers[index])
+    if engine.w.mtp is not None:
+        matrix("mtp.fc_e", engine.w.mtp.fc_e)
+        matrix("mtp.fc_h", engine.w.mtp.fc_h)
+        layer_sample("mtp.layer", engine.w.mtp.layer)
+    write_json(Path(output) / "inventory.json", {"rank": engine.rank, "buffers": buffers,
+        "Dense_implementation": GGUFDense.implementation,
+        "Concat_implementation": GGUFConcat.implementation,
+        "sm70_profile": engine.w.meta.get("sm70_profile"),
+        "family_native": family_ops._NATIVE_FAMILY,
+        "actual_matrix_samples": matrices,
+        "cold_scope": "cold request prefix after model/compiler warmup; no filesystem/cache-cold claim",
+        "scope": "CPU metadata only; no tensor values copied; buf/pbuf/mbuf roles remain distinct"})
 
 
 class _BenchmarkObserver:
@@ -393,7 +570,7 @@ class _BenchmarkObserver:
         observations.target, observations.record = targeted, recorded
 
 
-def prepare_benchmark(engine, plan):
+def prepare_benchmark(engine, plan, trace_output=None):
     if engine.rank != 0:
         return
     path = Path(engine.model_dir) / "tokenizer.json"
@@ -401,6 +578,9 @@ def prepare_benchmark(engine, plan):
         raise ValueError("benchmark tokenizer differs from the actual prepared frontend")
     observer = _BenchmarkObserver(engine, plan)
     observer.install()
+    if trace_output is not None:
+        _trace_inventory(engine, trace_output)
+        _SchedulerTrace(engine, trace_output).install(observer)
 
 
 def bound_receipt(engine):
@@ -493,6 +673,7 @@ def worker(argv):
     parser.add_argument("--history-input", type=Path)
     parser.add_argument("--history-run-id")
     parser.add_argument("--benchmark-plan", type=Path)
+    parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
     tail = selected.serve_args[1:] if selected.serve_args[:1] == ["--"] else selected.serve_args
@@ -514,7 +695,10 @@ def worker(argv):
                     raise
             if benchmark is not None:
                 try:
-                    prepare_benchmark(engine, benchmark)
+                    if selected.scheduler_trace is None:
+                        prepare_benchmark(engine, benchmark)
+                    else:
+                        prepare_benchmark(engine, benchmark, selected.scheduler_trace)
                 except BaseException as primary:
                     _observer_failure(engine, primary)
                     raise
@@ -675,9 +859,12 @@ def main(argv=None):
     parser.add_argument("--master-port", type=int, default=29551)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--benchmark-plan", type=Path)
+    parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if args.scheduler_trace is not None and args.benchmark_plan is None:
+        parser.error("scheduler trace requires its private benchmark plan")
     devices = [value.strip() for value in args.gpus.split(",")]
     if len(devices) != 8 or len(set(devices)) != 8 or not all(devices):
         parser.error("private qualification requires eight distinct physical devices")
@@ -692,6 +879,10 @@ def main(argv=None):
         prefix += ["--history-input", str(args.history_input.absolute()), "--history-run-id", uuid.uuid4().hex]
     if args.benchmark_plan is not None:
         prefix += ["--benchmark-plan", str(args.benchmark_plan.absolute())]
+    if args.scheduler_trace is not None:
+        trace_output = args.scheduler_trace.absolute()
+        trace_output.mkdir(mode=0o700)
+        prefix += ["--scheduler-trace", str(trace_output)]
     prefix += ["--"]
     return launch_cuda_tp.main(["--gpus", args.gpus, "--master-port", str(args.master_port), *args.serve_args],
                                _command_prefix=prefix)
