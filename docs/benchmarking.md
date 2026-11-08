@@ -129,10 +129,11 @@ and MTP forwards, communication and host waits.
 
 Each profiler context starts, stops and exports on the actual scheduler thread
 within one call. It records CPU/CUDA activity, preparation/control/staging labels,
-process I/O/page-fault snapshots and operator metadata. Exported trace size is
-checked afterward; this is an acceptance check, not a preallocation or write
-limit. The existing diagnostic operator's resource and filesystem containment
-still applies. Errors remain failures and retain any primary work exception.
+process I/O/page-fault snapshots and operator metadata; Python stack recording
+is disabled. Receipts record the exported byte count. The existing diagnostic
+operator's resource and filesystem containment still applies; the tool does
+not impose an additional post-write file-size refusal. Export and stat errors
+remain failures and retain any primary work exception.
 Profiler start/stop/export changes execution timing: rates from that diagnostic
 run must not enter clean performance comparisons. The ordinary launcher path
 without this option installs no trace hook.

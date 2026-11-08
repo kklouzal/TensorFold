@@ -74,6 +74,29 @@ def test_scheduler_trace_refuses_foreign_thread_before_profiler_or_work(tmp_path
         tracer.capture("c1-warmed-decode-round-1", lambda: pytest.fail("foreign work"))
 
 
+def test_scheduler_trace_records_large_export_without_failing_completed_work(tmp_path):
+    import threading
+    size, result = (256 << 20) + 1, object()
+    class Profiler:
+        def __enter__(self):
+            pass
+        def __exit__(self, kind, value, tb):
+            assert kind is value is tb is None
+        def export_chrome_trace(self, path):
+            # Only the export/size boundary is under test, not the vendor's JSON
+            # encoder. Sparse storage avoids allocating a large test buffer.
+            with open(path, "wb") as stream:
+                stream.truncate(size)
+    engine = NS(rank=0, scheduler=NS(thread=threading.current_thread()))
+    tracer = owned._SchedulerTrace(engine, tmp_path, factory=Profiler)
+    label = "c1-warmed-decode-round-1"
+    assert tracer.capture(label, lambda: result) is result
+    receipt = json.loads((tmp_path / (label + "-receipt.json")).read_text())
+    assert receipt["exported_trace_bytes"] == size
+    assert receipt["primary"] is None and receipt["post_errors"] == []
+    assert tracer.active is False
+
+
 @pytest.fixture
 def channel(monkeypatch):
     read, write = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)

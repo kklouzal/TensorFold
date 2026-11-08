@@ -241,7 +241,7 @@ class _SchedulerTrace:
             import torch
             profiler = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                 torch.profiler.ProfilerActivity.CUDA], record_shapes=False, profile_memory=False,
-                with_stack=True)
+                with_stack=False)
         else:
             profiler = self.factory()
         before, started = self.process(), time.monotonic()
@@ -264,11 +264,11 @@ class _SchedulerTrace:
                 except BaseException as error:
                     errors.append(error)
                 stopped = time.monotonic()
+                trace_bytes = None
                 try:
                     trace = self.output / (label + ".json")
                     profiler.export_chrome_trace(str(trace))
-                    if trace.stat().st_size > 256 << 20:
-                        raise RuntimeError("trace exceeds 256 MiB acceptance threshold; raw file retained")
+                    trace_bytes = trace.stat().st_size
                 except BaseException as error:
                     errors.append(error)
                 try:
@@ -282,8 +282,8 @@ class _SchedulerTrace:
                         "process_before": before, "process_after": self.process(),
                         "primary": None if primary is None else repr(primary),
                         "post_errors": [repr(error) for error in errors],
-                        "export_acceptance_threshold_bytes": 256 << 20,
-                        "resource_scope": "five fixed calls/input64; native profiler memory is container-limited, not source-bounded256MiB; disk guard retained",
+                        "exported_trace_bytes": trace_bytes,
+                        "resource_scope": "source bounds capture count to five calls; operator owns profiler memory and filesystem containment",
                         "scope": "rank0 TP adapter round; inclusive prefill/decode/control, diagnostic only; peers untraced"})
                 except BaseException as error:
                     errors.append(error)
