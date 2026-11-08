@@ -1487,3 +1487,105 @@ def test_enabled_reference_worker_carries_request_through_actual_publication_bou
     receipt = json.loads((tmp_path / "rank-3.json").read_text())
     assert receipt["reference_tile_preparation"]["requested"] is True
     assert seen == ["owned_expert_qualification"]
+
+
+@pytest.mark.parametrize('active', [False, True])
+@pytest.mark.parametrize('fails', [False, True])
+def test_scheduler_trace_wrap_preserves_arguments_return_and_authentic_error(monkeypatch, tmp_path, active, fails):
+    import torch
+    calls, labels = [], []
+    result, argument, primary = object(), object(), RuntimeError('actual operation')
+    primary.add_note('original operation note')
+    class Record:
+        def __init__(self, label):
+            labels.append(('created', label))
+        def __enter__(self):
+            labels.append(('entered', None))
+        def __exit__(self, kind, value, tb):
+            labels.append(('exited', value))
+    monkeypatch.setattr(torch.profiler, 'record_function', Record)
+    def operation(*args, **kwargs):
+        calls.append((args, kwargs))
+        if fails:
+            raise primary
+        return result
+    owner = NS(operation=operation)
+    tracer = owned._SchedulerTrace(NS(), tmp_path)
+    tracer.wrap(owner, 'operation', 'diagnostic.boundary')
+    tracer.active = active
+    if fails:
+        with pytest.raises(RuntimeError) as caught:
+            owner.operation(argument, selected=argument)
+        assert caught.value is primary and primary.__notes__ == ['original operation note']
+    else:
+        assert owner.operation(argument, selected=argument) is result
+    assert calls == [((argument,), {'selected': argument})]
+    assert labels == ([('created', 'diagnostic.boundary'), ('entered', None),
+                       ('exited', primary if fails else None)] if active else [])
+
+
+def test_scheduler_trace_labels_actual_attention_work_and_dynamic_half_glue_bindings(monkeypatch, tmp_path):
+    import torch
+    from tensorfold.cuda.sm70 import family_ops
+    from tensorfold.families.qwen4_exp.cuda import history_owner, glue
+    before_cuda = torch.cuda.is_initialized()
+    names = [(history_owner, name) for name in ('partial_statistics', 'merge_statistics', 'normalized_partial')]
+    names += [(family_ops, name) for name in ('hc_writeback', 'hc_normed', 'hc_act', 'hc_mix')]
+    # install() uses ordinary setattr; register every original with pytest so
+    # teardown restores all seven module slots, avoiding cumulative wrappers.
+    originals = {(owner, name): getattr(owner, name) for owner, name in names}
+    for (owner, name), original in originals.items():
+        monkeypatch.setattr(owner, name, original)
+    stack, labels, multiplications = [], [], []
+    class Record:
+        def __init__(self, label):
+            self.label = label
+        def __enter__(self):
+            labels.append(self.label)
+            stack.append(self.label)
+        def __exit__(self, kind, value, tb):
+            assert stack.pop() == self.label
+    monkeypatch.setattr(torch.profiler, 'record_function', Record)
+    matmul = family_ops._matmul32
+    def actual_matmul(*args, **kwargs):
+        multiplications.append(stack[-1] if stack else None)
+        return matmul(*args, **kwargs)
+    monkeypatch.setattr(family_ops, '_matmul32', actual_matmul)
+    adapter = NS(_invoke=lambda: None, _execute=lambda: None, round=lambda: None)
+    decoder = NS(_prepare_pass=lambda: None, _read_ahead=lambda: None)
+    engine = NS(tp_decoder=adapter, w=NS(meta={'input_preparation_context': NS(prepare=lambda: None)}))
+    tracer = owned._SchedulerTrace(engine, tmp_path)
+    tracer.install(NS(decoder=decoder, current=None))
+    assert glue._half_ops is family_ops
+    for name in ('partial_statistics', 'merge_statistics', 'normalized_partial'):
+        assert history_owner._attention_layer.__globals__[name] is getattr(history_owner, name)
+        assert getattr(history_owner, name) is not originals[history_owner, name]
+    cache = NS(capacity=2, k=torch.arange(8).half().reshape(2, 1, 4), v=torch.ones(2, 1, 4).half(),
+               key_format=NS(quantized=False), value_format=NS(quantized=False),
+               local_indices=lambda positions: (positions, torch.ones_like(positions, dtype=torch.bool)))
+    query, ids, visible = torch.ones(2, 4).half(), torch.arange(2), torch.ones(2, dtype=torch.bool)
+    def work():
+        # Resolve exactly as _attention_layer does, not a saved original alias.
+        scope = history_owner._attention_layer.__globals__
+        maximum, denominator = scope['partial_statistics'](query, cache, ids, visible, .5, tile_preparer=None)
+        maximum, denominator = scope['merge_statistics'](maximum[None], denominator[None])
+        value = scope['normalized_partial'](query, cache, ids, visible, .5, maximum, denominator, tile_preparer=None)
+        h, pss = torch.ones(1, 128).half(), torch.empty(1, 1, 4)
+        normed, xs = torch.empty_like(h), torch.empty(1, 4)
+        glue.hc_writeback(h, h, pss, 4, 0, block=32)
+        glue.hc_normed(h, pss, torch.ones(128).half(), normed, xs, 4, 1e-6)
+        act, inj = torch.empty(1, 32).half(), torch.empty(1, 4).half()
+        glue.hc_act(torch.ones(1, 36).half(), act, torch.empty(1, 1), inj, 4, 32)
+        mixed = torch.empty(1, 32).half()
+        glue.hc_mix(torch.zeros(1, 128).half(), normed, mixed, torch.empty(1, 1), 4)
+        return value, h, normed, act, inj, mixed
+    expected = work()
+    assert labels == [] and multiplications == [None, None, None]
+    multiplications.clear()
+    tracer.active = True
+    actual = work()
+    assert all(torch.equal(a, b) for a, b in zip(actual, expected))
+    assert labels == ['attention.partial_statistics', 'attention.global_statistics', 'attention.normalized_partial',
+                      'HC.writeback', 'HC.normed', 'HC.act', 'HC.mix']
+    assert multiplications == ['attention.partial_statistics', 'attention.normalized_partial', 'attention.normalized_partial']
+    assert not stack and torch.cuda.is_initialized() is before_cuda

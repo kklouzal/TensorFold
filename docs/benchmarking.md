@@ -188,6 +188,16 @@ figures are not a matched speedup or general quality/capacity claim.
 
 ## Bounded scheduler diagnostics
 
+Active capture windows additionally label `attention.partial_statistics`,
+`attention.global_statistics` (the global merge) and
+`attention.normalized_partial`, plus `HC.writeback`, `HC.normed`, `HC.act` and
+`HC.mix`. These ranges enclose the regular functions that actually execute the
+tile/body work; they do not wrap only generator creation or enable Python stack
+profiling. Outside an active capture, the wrappers call the original directly.
+The five-window limit, scheduler-thread guard and synchronization behavior are
+unchanged. Nested/inclusive ranges and correlated GPU activity aid attribution;
+annotation overhead is diagnostic, not a clean throughput measurement.
+
 The private qualification launcher additionally accepts
 `--scheduler-trace /qualification-output/fresh-trace-directory` together with
 `--benchmark-plan`. Use a fresh directory and a separate supervised diagnostic

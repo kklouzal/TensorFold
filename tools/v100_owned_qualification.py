@@ -564,12 +564,26 @@ class _SchedulerTrace:
         setattr(owner, name, wrapped)
 
     def install(self, observer):
+        from tensorfold.families.qwen4_exp.cuda import history_owner
+        from tensorfold.cuda.sm70 import family_ops
+
         adapter, decoder = self.engine.tp_decoder, observer.decoder
         for owner, name, label in ((adapter, "_invoke", "TP.publish_execute_vote_retire"),
                 (adapter, "_execute", "TP.local_dispatch"),
                 (decoder, "_prepare_pass", "PLE.prepare_frame_stage"),
                 (decoder, "_read_ahead", "PLE.read_ahead"),
-                (self.engine.w.meta["input_preparation_context"], "prepare", "input_prepare.agree_vote_retire")):
+                (self.engine.w.meta["input_preparation_context"], "prepare", "input_prepare.agree_vote_retire"),
+                # These regular functions consume the tile generator inside the
+                # label. _attention_layer resolves their module globals at use.
+                (history_owner, "partial_statistics", "attention.partial_statistics"),
+                (history_owner, "merge_statistics", "attention.global_statistics"),
+                (history_owner, "normalized_partial", "attention.normalized_partial"),
+                # Half glue resolves these entrypoints dynamically. Wrapping
+                # _torch_* instead would miss the cached _reference aliases.
+                (family_ops, "hc_writeback", "HC.writeback"),
+                (family_ops, "hc_normed", "HC.normed"),
+                (family_ops, "hc_act", "HC.act"),
+                (family_ops, "hc_mix", "HC.mix")):
             self.wrap(owner, name, label)
         original = adapter.round
         def rounded():
