@@ -951,3 +951,241 @@ def test_private_benchmark_events_exact_cohort_identity_and_full_active_owner_pr
 def test_benchmark_plan_does_not_add_public_cli_flag():
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(['serve', 'model', '--benchmark-plan', 'data.json'])
+
+
+def test_router_input_is_bounded_strict_and_distinct(tmp_path):
+    path = tmp_path / 'input.json'
+    data = {'schema': 'tensorfold.router-row-input-v1', 'run_identity': 'a' * 32,
+            'prompt_token_ids_sha256': ['b' * 64, 'c' * 64]}
+    path.write_text(json.dumps(data))
+    assert owned._router_input(path)[0] == data
+    data['prompt_token_ids_sha256'][1] = 'b' * 64
+    path.write_text(json.dumps(data))
+    with pytest.raises(ValueError, match='ordered prompt'):
+        owned._router_input(path)
+    path.write_bytes(b' ' * 4097)
+    with pytest.raises(ValueError, match='exceeds4096'):
+        owned._router_input(path)
+
+
+def test_router_tensor_capture_uses_only_direct_cpu_copy_and_npy_view(tmp_path):
+    import hashlib
+    import numpy as np
+    import torch
+    host = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+    calls = []
+    class CUDAView:
+        is_cuda, requires_grad, ndim, dtype, shape = True, False, 2, torch.float32, (3, 4)
+        def is_contiguous(self):
+            return True
+        def is_neg(self):
+            return False
+        def is_conj(self):
+            return False
+        def detach(self):
+            calls.append('detach')
+            return self
+        def to(self, **kwargs):
+            assert kwargs == {'device': 'cpu', 'copy': True}
+            calls.append('direct-cpu')
+            return host
+        def numel(self):
+            return 12
+        def element_size(self):
+            return 4
+    target = tmp_path / 'actual.npy'
+    record = owned._save_router_tensor(target, CUDAView())
+    np.testing.assert_array_equal(np.load(target, allow_pickle=False), host.numpy())
+    assert calls == ['detach', 'direct-cpu']
+    assert record['sha256'] == hashlib.sha256(target.read_bytes()).hexdigest()
+    assert record['shape'] == [3, 4] and record['bytes'] <= 48 + 256
+    assert target.stat().st_mode & 0o222 == 0
+    with pytest.raises(FileExistsError):
+        owned._save_router_tensor(target, CUDAView())
+
+
+def test_router_resources_fund_host_payload_without_device_allocation(tmp_path):
+    import torch
+    before = torch.cuda.is_initialized()
+    resources = owned._router_resources(tmp_path)
+    assert resources['additional_device_bytes'] == 0
+    assert resources['maximum_capture_rows'] == 4
+    assert resources['rank0_tensor_bytes'] == 513 * 2560 * 4 + 4 * (2560 * 2 + 513 * 4)
+    assert resources['global_host_obligation_bytes'] >= resources['rank0_tensor_bytes']
+    assert torch.cuda.is_initialized() is before
+
+
+@pytest.mark.parametrize('fault', [None, 'bank', 'segments', 'marker'])
+def test_router_capture_selects_c8_and_alone_once_preserving_original_calls_and_states(tmp_path, monkeypatch, fault):
+    import hashlib
+    data = {'schema': 'tensorfold.router-row-input-v1', 'run_identity': 'a' * 32,
+            'prompt_token_ids_sha256': [owned._prompt_digest([2] * 64), owned._prompt_digest([7] * 64)]}
+    events, files, marker = [], [], tmp_path / 'router-row-stage.json'
+    placement = NS(indexer_owner=lambda slot, layer: (slot + layer) % 8,
+                   kv_owner=lambda slot, layer, head, page: (slot + layer) % 4 ^ page)
+    streams = [NS(prompt=[index] * 64, count=128, draft=True, sampling=NS(temperature=0, seed=None, top_k=0, top_p=1, min_p=0),
+                  st=NS(history_slot=slot, slot_generation=1, history_generation=2, att_index={3: 0}, history_placement=placement))
+               for slot, index in enumerate((2, 7))]
+    class Matrix:
+        def __init__(self, shape, pointer):
+            self.shape, self.pointer = shape, pointer
+        def data_ptr(self):
+            return self.pointer
+        def narrow(self, axis, offset, count):
+            assert axis == 0 and count == 1
+            return NS(shape=(1, self.shape[1]), source=self, offset=offset)
+    x, logits, weight = Matrix((128, 2560), 10), Matrix((256, 513), 20), Matrix((513, 2560), 30)
+    original_error = RuntimeError('original bank failed')
+    def bank(*args, **kwargs):
+        events.append('bank')
+        if fault == 'bank':
+            raise original_error
+        return 'original-result'
+    decoder = NS(pbuf=NS(rows=256, mixed=x, moe=NS(logits=logits)))
+    observations = NS(target=lambda *args, **kwargs: events.append('target'))
+    decoder.controller = NS(work_observations=observations)
+    decoder._prepare_pass = lambda pieces: events.append('prepare') or 'prepared'
+    bank_owner = NS(forward_partitioned_native_candidate=bank)
+    engine = NS(rank=0, multi=decoder, w=NS(layers=[NS(moe=NS(experts=bank_owner, router=weight))]),
+                tp_decoder=NS(wires={id(s): i for i, s in enumerate(streams)}, prefix_operation=5))
+    chosen = [streams[0], streams[1]]
+    def rounded():
+        pieces = [(s, 0, 64) for s in chosen]
+        assert decoder._prepare_pass(pieces) == 'prepared'
+        x.shape = (len(chosen) * 64, 2560)
+        assert bank_owner.forward_partitioned_native_candidate(x, object()) == 'original-result'
+        segments = [(s.st, i * 64, (i + 1) * 64) for i, s in enumerate(chosen)]
+        if fault == 'segments':
+            segments[0] = (object(), 0, 64)
+        observations.target(segments, prefill=True)
+        return 'round-result'
+    decoder.round = rounded
+    def save(path, tensor):
+        files.append((Path(path).name, tensor))
+        assert 'bank' in events or tensor is weight
+        return {'file': Path(path).name, 'sha256': hashlib.sha256(Path(path).name.encode()).hexdigest(),
+                'shape': list(tensor.shape)}
+    monkeypatch.setattr(owned, '_save_router_tensor', save)
+    failures = []
+    monkeypatch.setattr(owned, '_observer_failure', lambda engine, error: failures.append(error))
+    observer = owned._RouterRows(engine, data, 'd' * 64, {'receipt_bytes_limit': 200000}, tmp_path)
+    observer.install()
+    def phase(stage):
+        marker.write_text(json.dumps({'schema': 'tensorfold.router-row-stage-v1',
+                                     'run_identity': 'wrong' if fault == 'marker' else 'a' * 32, 'stage': stage}))
+        return decoder.round()
+    if fault:
+        with pytest.raises(RuntimeError if fault == 'bank' else ValueError) as caught:
+            phase('baseline-c8-mtp')
+        assert failures[-1] is caught.value
+        if fault == 'bank':
+            assert caught.value is original_error and len(files) == 1
+        assert not (tmp_path / 'router-rank-0.json').exists()
+        return
+    assert phase('baseline-c8-mtp') == 'round-result'
+    assert len(observer.records) == 2 and len(files) == 5
+    phase('baseline-c8-mtp-repeat')
+    assert len(observer.records) == 2 and len(files) == 5
+    chosen[:] = [streams[0]]
+    phase('alone-2-mtp')
+    chosen[:] = [streams[1]]
+    phase('alone-7-mtp')
+    assert len(observer.records) == 4 and len(files) == 9
+    phase('alone-7-serial')
+    assert len(observer.records) == 4 and len(files) == 9
+    receipt = json.loads((tmp_path / 'router-rank-0.json').read_text())
+    assert receipt['complete'] and receipt['run_identity'] == 'a' * 32
+    assert [r['row_offset'] for r in receipt['records']] == [63, 127, 63, 63]
+    assert [r['selected']['slot'] for r in receipt['records']] == [0, 1, 0, 1]
+    assert events.count('bank') == events.count('prepare') == events.count('target') == 5
+    assert receipt['records'][0]['selected']['attention_model_layer'] == 3
+
+
+@pytest.mark.parametrize('fault', [None, 'obligation', 'baseline', 'capacity', 'context', 'shape'])
+def test_router_capture_uses_original_immutable_host_obligation_before_install(monkeypatch, tmp_path, fault):
+    resources = {'global_host_obligation_bytes': 1000}
+    data, sha = {}, 'a' * 64
+    engine = NS(_owned_qualification_host=(1000, sha), context_window=262144,
+                multi=NS(states=[object()] * 32),
+                retention_catalog=NS(host_resources=NS(baseline_host_bytes=1000)),
+                w=NS(layers=[NS(moe=NS(router=NS(shape=(513, 2560))))]))
+    if fault == 'obligation':
+        engine._owned_qualification_host = (999, sha)
+    elif fault == 'baseline':
+        engine.retention_catalog.host_resources.baseline_host_bytes = 999
+    elif fault == 'capacity':
+        engine.multi.states.pop()
+    elif fault == 'context':
+        engine.context_window = 128
+    elif fault == 'shape':
+        engine.w.layers[0].moe.router.shape = (512, 2560)
+    calls = []
+    monkeypatch.setattr(owned, '_RouterRows', lambda *args: NS(install=lambda: calls.append(args)))
+    if fault:
+        with pytest.raises(ValueError):
+            owned.prepare_router_rows(engine, (data, sha, resources), tmp_path)
+        assert calls == []
+    else:
+        assert owned.prepare_router_rows(engine, (data, sha, resources), tmp_path) is resources
+        assert calls == [(engine, data, sha, resources, tmp_path)]
+
+
+def test_router_frame_cardinality_refuses_before_metadata_or_original_prepare():
+    observer = object.__new__(owned._RouterRows)
+    with pytest.raises(ValueError, match='prepared frame'):
+        observer.preparing([object()] * 33)
+
+
+@pytest.mark.parametrize('phase', ['write-close', 'directory-close'])
+def test_router_npy_failure_preserves_authentic_primary_and_close_failure(tmp_path, monkeypatch, phase):
+    import numpy as np
+    import torch
+    import stat
+    host = torch.zeros((1, 2), dtype=torch.float16)
+    tensor = NS(is_cuda=True, requires_grad=False, ndim=2, dtype=torch.float16, shape=(1, 2),
+                is_contiguous=lambda: True, is_neg=lambda: False, is_conj=lambda: False,
+                numel=lambda: 2, element_size=lambda: 2)
+    tensor.detach = lambda: NS(to=lambda **kwargs: host)
+    primary, secondary = OSError('authentic I/O primary'), OSError('close secondary')
+    original_cause = RuntimeError('existing source cause')
+    primary.__cause__ = original_cause
+    primary.add_note('existing diagnostic note')
+    original_open, original_fsync, original_close = Path.open, os.fsync, os.close
+    if phase == 'write-close':
+        class Output:
+            def __init__(self, stream):
+                self.stream = stream
+            def close(self):
+                self.stream.close()
+                raise secondary
+        def opening(path, mode='r', *args, **kwargs):
+            result = original_open(path, mode, *args, **kwargs)
+            return Output(result) if mode == 'xb' else result
+        monkeypatch.setattr(Path, 'open', opening)
+        def fail(*args, **kwargs):
+            raise primary
+        monkeypatch.setattr(np, 'save', fail)
+    else:
+        directory_fds = []
+        def syncing(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                directory_fds.append(fd)
+                raise primary
+            return original_fsync(fd)
+        def closing(fd):
+            result = original_close(fd)
+            if fd in directory_fds:
+                raise secondary
+            return result
+        monkeypatch.setattr(os, 'fsync', syncing)
+        monkeypatch.setattr(os, 'close', closing)
+    with pytest.raises(OSError) as caught:
+        owned._save_router_tensor(tmp_path / 'failed.npy', tensor)
+    assert caught.value is primary
+    def roots(error):
+        if isinstance(error, BaseExceptionGroup):
+            return [root for child in error.exceptions for root in roots(child)]
+        return [error]
+    assert secondary in roots(primary.__cause__)
+    assert original_cause in roots(primary.__cause__)
+    assert 'existing diagnostic note' in primary.__notes__

@@ -281,3 +281,40 @@ independent-row router arithmetic. History-slot assignment also selects page
 and indexer owners, with ordered per-owner attention reductions. These are
 investigation axes, not established causes of any observed divergence;
 request bodies and actual state mapping must resolve attribution.
+
+### Private router-row capture
+
+The supervised private qualification tool can install a default-off diagnostic
+with `--router-row-input capture.json`. This is separate from its history and
+benchmark modes. DATA schema `tensorfold.router-row-input-v1` contains a fresh
+32-character lowercase hexadecimal `run_identity` and two ordered
+`prompt_token_ids_sha256` strings for original requests 2 and 7. These hashes
+use compact JSON integer arrays, matching the private history helper.
+
+The repro client takes the same run identity and the qualification directory's
+fixed marker path:
+
+```bash
+python tools/bench_concurrent.py BASE MODEL --repro-input original-repro.json \
+  --output fresh-repro.json --router-row-stage QUALIFICATION_DIR/router-row-stage.json \
+  --router-row-run-id RUN_ID --timeout 1800
+```
+
+The marker is atomically published before each offered batch; request bodies
+remain unchanged. Only `baseline-c8-mtp`, `alone-2-mtp` and `alone-7-mtp` can
+capture their selected prompt tails. Conditional repeated C8 and serial phases
+do not consume the four snapshots. Worker metadata records actual frame size,
+row offset, stable wire, slot/generations, sampling settings, first attention
+owner mapping and the marker's path/identity/hash/stat. Actual submitted State
+segments must match. Successful worker-round records do not replace client
+outputs or distributed operation ACKs.
+
+Rank 0 saves real layer-0 router weights once and at most four actual Half
+input rows with their already computed FP32 router logits. Contiguous views
+are copied directly to CPU; no GPU clone or device scratch is introduced.
+CPU tensor payload, wrappers, NPY/file/hash workspace and bounded metadata are
+funded through the existing private host obligation before model admission.
+NPY files are created without overwriting, flushed/fsynced, made read-only and
+recorded with shape/dtype/stat/SHA. Failed rounds never publish successful
+capture records. This observer adds blocking copies and file I/O: its runs are
+numerical diagnostics, never performance measurements or numerical acceptance.

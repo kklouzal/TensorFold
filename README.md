@@ -45,6 +45,9 @@ quality acceptance or performance measurements.
 The unchanged baseline completed all 28 diagnostic exchanges and showed
 context-dependent output variants; [the evidence and operator failure](docs/v100-adaptive-validation.md#unchanged-baseline-reproducibility)
 remain separate from candidate qualification.
+The private [router-row capture](docs/benchmarking.md#private-router-row-capture)
+records four actual prompt-tail inputs and logits for numerical diagnosis;
+its blocking copies and file I/O are excluded from performance measurements.
 The private [ordered Half partial trial](docs/v100-adaptive-validation.md#ordered-half-moe-partial-component-checkpoint)
 passed component checks and has per-rank policy attestation; default policy
 and other operators remain unchanged. Its dedicated candidate image also passed
@@ -52,6 +55,7 @@ and other operators remain unchanged. Its dedicated candidate image also passed
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)
 isolates the existing native decode-logit operator for qualification, without
 enabling the broader optimized profile; the ordinary default remains unchanged.
+GPU component results retain a separate unresolved graph-fixture failure.
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload

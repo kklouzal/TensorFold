@@ -339,6 +339,9 @@ def test_repro_runs_twenty_or_conditional_twenty_eight_and_retains_failures(benc
                                            'allocated_cache_bytes': 100, 'torch_allocated_bytes': 200, 'torch_reserved_bytes': 300}
                                           for rank in range(8)]}},
                         'load': {'requests_in_flight': 0, 'requests_running': 0, 'requests_waiting': 0}}
+            marker = json.loads((tmp_path / 'stage.json').read_text())
+            assert marker['run_identity'] == 'a' * 32
+            assert label.startswith(marker['stage'] + '-')
             index = body['prompt'][0]
             if fault == 'transport' and index == 2:
                 raise transport
@@ -364,7 +367,7 @@ def test_repro_runs_twenty_or_conditional_twenty_eight_and_retains_failures(benc
     data = bench.load_repro(source, 'fixture')
     source.unlink()  # Run must use exactly the already loaded bytes/hash, not reread DATA.
     args = NS(base='http://unused', model='fixture', output=tmp_path / 'out.json', repro_input=source,
-              timeout=1, response_mib=16, sse_line_kib=64)
+              timeout=1, response_mib=16, sse_line_kib=64, router_row_stage=tmp_path / 'stage.json', router_row_run_id='a' * 32)
     if fault not in (None, 'different'):
         with pytest.raises((ValueError, OSError)) as caught:
             bench.run_repro(args, data)

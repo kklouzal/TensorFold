@@ -583,6 +583,9 @@ def run_repro(args, data):
             raise ValueError("repro service instance/configuration changed")
         return stats, effective
     def stage(name, indices, draft):
+        if getattr(args, "router_row_stage", None) is not None:
+            write_json(args.router_row_stage, {"schema": "tensorfold.router-row-stage-v1",
+                "run_identity": args.router_row_run_id, "stage": name})
         before, _ = idle()
         row = {"name": name, "indices": indices, "draft": draft, "requests": [None] * len(indices),
                "errors": [None] * len(indices), "stats_before": before}
@@ -695,6 +698,8 @@ def main() -> int:
     p.add_argument("--stagger-ms", type=float, default=0.0, help="start request i this many ms after request i - 1")
     p.add_argument("--label", default="")
     p.add_argument("--output")
+    p.add_argument("--router-row-stage", type=Path, help="private atomic phase marker for router capture")
+    p.add_argument("--router-row-run-id", help="fresh private router-capture run identity")
     p.add_argument("--repro-input", type=Path, help="diagnostic replay of eight preserved raw completion bodies/references; differences are data")
     p.add_argument("--prepare-matrix", type=Path)
     p.add_argument("--matrix-plan", type=Path)
@@ -704,6 +709,11 @@ def main() -> int:
     protocol.add_arguments(p)
     args = p.parse_args()
     limits = protocol.from_arguments(args)
+    if args.router_row_stage is not None or args.router_row_run_id is not None:
+        if (args.repro_input is None or args.router_row_stage is None or type(args.router_row_run_id) is not str
+                or len(args.router_row_run_id) != 32 or any(c not in "0123456789abcdef" for c in args.router_row_run_id)
+                or args.router_row_stage.exists()):
+            p.error("router marker requires repro, a fresh path and a lowercase32hex run identity")
     if args.repro_input is not None:
         if not args.output or args.prepare_matrix is not None or args.matrix_plan is not None:
             p.error("repro requires fresh --output and cannot be mixed with matrix modes")

@@ -19,7 +19,7 @@ import math
 import resource
 import time
 
-from tensorfold.cleanup import raise_failures
+from tensorfold.cleanup import raise_failures, rollback
 from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
 
 if __package__:
@@ -112,6 +112,269 @@ def prepare_history(engine, prepared, output):
     if catalog.host_resources.baseline_host_bytes < resources["global_host_obligation_bytes"]:
         raise ValueError("history qualification obligation is absent from the host baseline")
     observer = _HistoryAttestation(engine, data, input_sha, output, resources)
+    observer.install()
+    return resources
+
+
+def _router_input(path):
+    if __package__:
+        from .openai_protocol import object_json
+    else:
+        from openai_protocol import object_json
+    with Path(path).open("rb") as source:
+        raw = source.read(4097)
+    if len(raw) > 4096:
+        raise ValueError("router-row input exceeds4096bytes")
+    data = object_json(raw)
+    if (set(data) != {"schema", "run_identity", "prompt_token_ids_sha256"}
+            or data["schema"] != "tensorfold.router-row-input-v1"
+            or type(data["run_identity"]) is not str or len(data["run_identity"]) != 32
+            or any(c not in "0123456789abcdef" for c in data["run_identity"])):
+        raise ValueError("router-row input requires its fresh bounded run identity")
+    hashes = data["prompt_token_ids_sha256"]
+    if (type(hashes) is not list or len(hashes) != 2
+            or any(type(h) is not str or len(h) != 64 or any(c not in "0123456789abcdef" for c in h) for h in hashes)
+            or len(set(hashes)) != 2):
+        raise ValueError("router-row input requires ordered prompt2/prompt7 SHA256")
+    return data, hashlib.sha256(raw).hexdigest()
+
+
+def _router_resources(output):
+    import io
+    import numpy as np
+    import torch
+    # Four frames of <=32 piece records plus four selected aliases/markers.
+    # Each piece fits the existing <=1024-byte receipt-row bound.
+    path_chars = len(json.dumps(str((Path(output) / "router-row-stage.json").absolute()), ensure_ascii=True))
+    base = _history_resources(4 * (32 + 1) + 8 + (path_chars + 1023) // 1024, 4096)
+    # One rank owns W and four x/logit pairs; NumPy views borrow the CPU tensors.
+    payload = 513 * 2560 * 4 + 4 * (2560 * 2 + 513 * 4)
+    wrappers = 9 * (sys.getsizeof(torch.empty(0)) + sys.getsizeof(np.empty((0, 0))))
+    io_work = 2 * 65536 + io.DEFAULT_BUFFER_SIZE + 9 * 256
+    return {**base, "global_host_obligation_bytes": base["global_host_obligation_bytes"] + payload + wrappers + io_work,
+            "rank0_tensor_bytes": payload, "tensor_numpy_headers": wrappers, "file_hash_writer_bytes": io_work,
+            "additional_device_bytes": 0, "maximum_capture_rows": 4,
+            "copy_policy": "contiguous same-dtype CUDA view directly to CPU; no CUDA clone/contiguous conversion"}
+
+
+def _save_router_tensor(path, tensor):
+    import io
+    import numpy as np
+    import torch
+    if (not tensor.is_cuda or not tensor.is_contiguous() or tensor.requires_grad
+            or tensor.dtype not in (torch.float16, torch.float32) or tensor.ndim != 2
+            or tensor.is_neg() or tensor.is_conj()):
+        raise ValueError("router capture requires admitted contiguous CUDA Half/Float matrices")
+    # Same dtype + contiguous source/destination takes ATen's direct D2H copy.
+    # This synchronously observes the diagnostic stream, never a performance run.
+    host = tensor.detach().to(device="cpu", copy=True)
+    view = host.numpy()
+    if not view.flags.c_contiguous or view.ctypes.data != host.data_ptr():
+        raise ValueError("router CPU NumPy view did not borrow the copied storage")
+    output = Path(path).open("xb", buffering=io.DEFAULT_BUFFER_SIZE)
+    try:
+        np.save(output, view, allow_pickle=False)
+        output.flush()
+        os.fchmod(output.fileno(), 0o444)
+        os.fsync(output.fileno())
+    except BaseException as primary:
+        rollback(output, primary, output.close)
+    else:
+        output.close()
+    directory = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    except BaseException as primary:
+        rollback(directory, primary, lambda: os.close(directory))
+    else:
+        os.close(directory)
+    before = Path(path).stat()
+    if before.st_size > tensor.numel() * tensor.element_size() + 256:
+        raise ValueError("router NPY header exceeds its funded bound")
+    digest = hashlib.sha256()
+    source = Path(path).open("rb", buffering=io.DEFAULT_BUFFER_SIZE)
+    try:
+        while chunk := source.read(65536):
+            digest.update(chunk)
+    except BaseException as primary:
+        rollback(source, primary, source.close)
+    else:
+        source.close()
+    after = Path(path).stat()
+    def stamp(s):
+        return [s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_ctime_ns]
+    if stamp(before) != stamp(after):
+        raise ValueError("router NPY changed during hashing")
+    return {"file": Path(path).name, "sha256": digest.hexdigest(), "shape": list(tensor.shape),
+            "dtype": view.dtype.str, "stat": stamp(after), "bytes": after.st_size}
+
+
+class _RouterRows:
+    """Default-off finite private observer; original math calls remain once."""
+    def __init__(self, engine, data, input_sha, resources, output):
+        self.engine, self.data, self.input_sha, self.resources = engine, data, input_sha, resources
+        self.output, self.decoder = Path(output), engine.multi
+        self.frame, self.pending, self.records, self.seen = None, [], [], set()
+        self.bank = engine.w.layers[0].moe.experts
+        self.weights = engine.w.layers[0].moe.router
+        self.original_bank = self.bank.forward_partitioned_native_candidate
+        self.original_prepare = self.decoder._prepare_pass
+        self.observations = self.decoder.controller.work_observations
+        self.original_target, self.original_round = self.observations.target, self.decoder.round
+        self.weight_record = None
+
+    def marker(self):
+        if __package__:
+            from .openai_protocol import object_json
+        else:
+            from openai_protocol import object_json
+        path = self.output / "router-row-stage.json"
+        with open(path, "rb", opener=lambda name, flags: os.open(name, flags | os.O_NOFOLLOW)) as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                raise ValueError("router stage marker requires an ordinary file")
+            raw = source.read(513)
+            after = os.fstat(source.fileno())
+        if (before.st_ino, before.st_dev, before.st_size, before.st_mtime_ns) != (
+                after.st_ino, after.st_dev, after.st_size, after.st_mtime_ns):
+            raise ValueError("router stage marker changed during reading")
+        if len(raw) > 512:
+            raise ValueError("router stage marker exceeds512bytes")
+        marker = object_json(raw)
+        if (set(marker) != {"schema", "run_identity", "stage"}
+                or marker["schema"] != "tensorfold.router-row-stage-v1"
+                or marker["run_identity"] != self.data["run_identity"]
+                or marker["stage"] not in {"baseline-c8-mtp", "baseline-c8-mtp-repeat", "alone-2-mtp",
+                                            "alone-2-serial", "alone-7-mtp", "alone-7-serial", "baseline-c8-serial"}):
+            raise ValueError("router stage marker differs from its controlled run")
+        marker.update(path=path.name, sha256=hashlib.sha256(raw).hexdigest(),
+                      stat=[after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns])
+        return marker
+
+    def preparing(self, pieces):
+        if len(pieces) > 32:
+            raise ValueError("router metadata exceeds its prepared frame")
+        self.frame = None
+        marker = self.marker()
+        stage = marker["stage"]
+        allowed = ({0, 1} if stage == "baseline-c8-mtp" else {0} if stage == "alone-2-mtp"
+                   else {1} if stage == "alone-7-mtp" else set())
+        rows, records, targets, state_cuts = 0, [], [], []
+        for stream, start, count in pieces:
+            state = stream.st
+            wire = self.engine.tp_decoder.wires.get(id(stream))
+            digest = _prompt_digest(stream.prompt)
+            policy = stream.sampling
+            sampling = {key: None if policy is None else getattr(policy, key, None)
+                        for key in ("temperature", "seed", "top_k", "top_p", "min_p")}
+            if any(value is not None and (type(value) not in (int, float) or not math.isfinite(value)
+                                         or abs(value) > sys.maxsize) for value in sampling.values()):
+                raise ValueError("router sampling metadata exceeds bounded scalar domain")
+            attention_layer = min(state.att_index)
+            ordinal = state.att_index[attention_layer]
+            record = {"wire": wire, "prompt_sha256": digest, "slot": state.history_slot,
+                      "slot_generation": state.slot_generation, "ownership_generation": state.history_generation,
+                      "prompt_start": start, "count": count, "first": rows, "last": rows + count,
+                      "sampling": sampling, "draft": stream.draft,
+                      "attention_model_layer": attention_layer, "attention_ordinal": ordinal,
+                      "indexer_owners": [state.history_placement.indexer_owner(state.history_slot, ordinal)],
+                      "page_owners": [state.history_placement.kv_owner(state.history_slot, ordinal, 0, page) for page in (0, 1)]}
+            records.append(record)
+            state_cuts.append((state, rows, rows + count))
+            if digest in self.data["prompt_token_ids_sha256"]:
+                ordinal = self.data["prompt_token_ids_sha256"].index(digest)
+                key = (stage, ordinal)
+                if ordinal in allowed and key not in self.seen and start + count == len(stream.prompt):
+                    if len(stream.prompt) != 64 or stream.count != 128 or not stream.draft or wire is None:
+                        raise ValueError("router selected request differs from original64/128MTP")
+                    targets.append((key, rows + count - 1, record))
+            rows += count
+        if rows > self.decoder.pbuf.rows:
+            raise ValueError("router metadata exceeds its prepared frame")
+        result = self.original_prepare(pieces)
+        self.frame = {"stage": stage, "marker": marker, "rows": rows, "pieces": records,
+                      "state_cuts": state_cuts, "targets": targets, "prefix_operation": self.engine.tp_decoder.prefix_operation}
+        return result
+
+    def bank_call(self, x, picks, **kwargs):
+        result = self.original_bank(x, picks, **kwargs)
+        frame = self.frame
+        if frame is None or not frame["targets"] or x.data_ptr() != self.decoder.pbuf.mixed.data_ptr():
+            return result
+        if x.shape != (frame["rows"], 2560) or len(self.records) + len(self.pending) + len(frame["targets"]) > 4:
+            raise ValueError("router capture exceeds its four admitted rows")
+        for key, offset, record in frame["targets"]:
+            item = {"stage": frame["stage"], "target": key[1], "frame_rows": frame["rows"], "row_offset": offset,
+                    "pieces": frame["pieces"], "marker": frame["marker"], "selected": record, "prefix_operation": frame["prefix_operation"]}
+            if self.engine.rank == 0:
+                label = f"router-{key[0]}-{key[1]}"
+                item["input"] = _save_router_tensor(self.output / (label + "-input.npy"), x.narrow(0, offset, 1))
+                item["logits"] = _save_router_tensor(self.output / (label + "-logits.npy"),
+                                                       self.decoder.pbuf.moe.logits.narrow(0, offset, 1))
+            self.pending.append(item)
+            self.seen.add(key)
+        frame["targets"] = []
+        return result
+
+    def targeted(self, segments, **kwargs):
+        result = self.original_target(segments, **kwargs)
+        if kwargs.get("prefill") and self.frame is not None:
+            expected = [(r["first"], r["last"]) for r in self.frame["pieces"]]
+            if ([(first, last) for _, first, last in segments] != expected
+                    or any(actual is not wanted for (actual, _, _), (wanted, _, _) in
+                           zip(segments, self.frame["state_cuts"]))):
+                raise ValueError("router submitted segment cuts/States differ from captured frame")
+            for item in self.pending:
+                item["submitted"] = True
+        return result
+
+    def rounded(self):
+        try:
+            result = self.original_round()
+            if self.pending:
+                if any(not item.get("submitted") for item in self.pending):
+                    raise ValueError("router capture lacks successful target submission")
+                self.records.extend(self.pending)
+                self.pending = []
+                from tensorfold.server.stats import INSTANCE_ID
+                receipt = {
+                    "schema": "tensorfold.router-row-capture-v1", "diagnostic_only": True,
+                    "rank": self.engine.rank, "run_identity": self.data["run_identity"], "server_instance": INSTANCE_ID,
+                    "input_sha256": self.input_sha, "stage_path": str((self.output / "router-row-stage.json").absolute()),
+                    "resources": self.resources, "weights": self.weight_record,
+                    "records": self.records, "complete": len(self.records) == 4,
+                    "scope": "successful worker submission/round; client outputs and operation ACKs remain required"}
+                encoded_bytes = 0
+                for chunk in json.JSONEncoder(indent=1, ensure_ascii=True, allow_nan=False).iterencode(receipt):
+                    encoded_bytes += len(chunk)
+                    if encoded_bytes + 1 > self.resources["receipt_bytes_limit"]:
+                        raise ValueError("router receipt exceeds its funded metadata bound")
+                write_json(self.output / f"router-rank-{self.engine.rank}.json", receipt)
+            return result
+        except BaseException as primary:
+            _observer_failure(self.engine, primary)
+            raise
+
+    def install(self):
+        if self.engine.rank == 0:
+            self.weight_record = _save_router_tensor(self.output / "router-layer0-weights.npy", self.weights)
+        self.decoder._prepare_pass = self.preparing
+        self.bank.forward_partitioned_native_candidate = self.bank_call
+        self.observations.target = self.targeted
+        self.decoder.round = self.rounded
+
+
+def prepare_router_rows(engine, prepared, output):
+    data, input_sha, resources = prepared
+    if len(engine.multi.states) != 32 or engine.context_window != 262144:
+        raise ValueError("router capture requires its original32/full262144 profile")
+    if engine._owned_qualification_host != (resources["global_host_obligation_bytes"], input_sha):
+        raise ValueError("router row obligation differs from original admission")
+    if engine.retention_catalog.host_resources.baseline_host_bytes < resources["global_host_obligation_bytes"]:
+        raise ValueError("router row obligation missing from immutable host baseline")
+    if engine.w.layers[0].moe.router.shape != (513, 2560):
+        raise ValueError("router capture requires actual layer0 SC117 weights")
+    observer = _RouterRows(engine, data, input_sha, resources, output)
     observer.install()
     return resources
 
@@ -698,6 +961,7 @@ def worker(argv):
         raise ValueError("private worker requires the borrowed nonblocking supervisor writer")
     parser = argparse.ArgumentParser(description="Internal supervised worker")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--router-row-input", type=Path)
     parser.add_argument("--history-input", type=Path)
     parser.add_argument("--history-run-id")
     parser.add_argument("--benchmark-plan", type=Path)
@@ -707,13 +971,19 @@ def worker(argv):
     selected = parser.parse_args(argv)
     tail = selected.serve_args[1:] if selected.serve_args[:1] == ["--"] else selected.serve_args
     receipt_failed = False
-    prepared = None
+    prepared = router_prepared = None
     benchmark = benchmark_resources = None
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
 
     def before_listener(engine):
         nonlocal receipt_failed
         try:
+            if router_prepared is not None:
+                try:
+                    prepare_router_rows(engine, router_prepared, selected.out)
+                except BaseException as primary:
+                    _observer_failure(engine, primary)
+                    raise
             if prepared is not None:
                 try:
                     from tensorfold.server.stats import INSTANCE_ID
@@ -739,6 +1009,11 @@ def worker(argv):
             raise
     try:
         _half_policy(half_request)  # Before the ordinary constructor can prepare any model/workspace.
+        if selected.router_row_input is not None:
+            if selected.history_input is not None or selected.benchmark_plan is not None:
+                raise ValueError("router row capture is a separate controlled procedure")
+            data, input_sha = _router_input(selected.router_row_input)
+            router_prepared = (data, input_sha, _router_resources(selected.out))
         if selected.benchmark_plan is not None:
             if selected.history_input is not None:
                 raise ValueError("history witness and phase matrix are separate controlled procedures")
@@ -767,6 +1042,8 @@ def worker(argv):
             # Each supervised rank selects once, before construction, weight preparation and warmup.
             GGUFDense.implementation = selected.dense_implementation
         obligation = () if prepared is None else (prepared[2]["global_host_obligation_bytes"], prepared[1])
+        if router_prepared is not None:
+            obligation = (router_prepared[2]["global_host_obligation_bytes"], router_prepared[1])
         if benchmark_resources is not None:
             obligation = (benchmark_resources["global_host_obligation_bytes"],
                           hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
@@ -900,9 +1177,12 @@ def main(argv=None):
     parser.add_argument("--benchmark-plan", type=Path)
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
+    parser.add_argument("--router-row-input", type=Path, help="private four-row layer0 capture DATA; diagnostic overhead only")
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if args.router_row_input is not None and (args.history_input is not None or args.benchmark_plan is not None):
+        parser.error("router row capture cannot be combined with history/benchmark")
     if args.scheduler_trace is not None and args.benchmark_plan is None:
         parser.error("scheduler trace requires its private benchmark plan")
     devices = [value.strip() for value in args.gpus.split(",")]
@@ -915,6 +1195,8 @@ def main(argv=None):
     output = args.out.absolute()
     output.mkdir(mode=0o700)  # Fresh, caller-owned output; never reuse another qualification's receipts.
     prefix = [sys.executable, str(Path(__file__).resolve()), "--worker", "--out", str(output)]
+    if args.router_row_input is not None:
+        prefix += ["--router-row-input", str(args.router_row_input.absolute())]
     if args.history_input is not None:
         prefix += ["--history-input", str(args.history_input.absolute()), "--history-run-id", uuid.uuid4().hex]
     if args.dense_implementation is not None:

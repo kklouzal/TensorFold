@@ -549,6 +549,16 @@ performance result is inferred from the diagnostic.
 Gate: `coefficient-baseline-repro-v1/baseline-repro-actual-gate-v1.json`, SHA256
 `cca46c70e3fcade464ecc9a0e2e9dad822b54bb16709b76ff83f33e9e768a469`.
 
+The private [router-row observer](benchmarking.md#private-router-row-capture)
+passed 186 CPU controls with zero skips on the pinned V100 runtime. Exact
+Torch `04cf2557` source inspection confirms its same-dtype contiguous D2H
+copies do not allocate device temporaries. A subsequent removal of one
+redundant piece-count check is structurally neutral: the pre-loop bound and
+one-append-per-piece invariant remain. Actual capture and numerical attribution
+are pending; the observer is excluded from performance measurements.
+CPU gate: `router-row-capture-v1/CPU-v2/capture-source-CPU-gate-v2.json`, SHA256
+`2debc35014d6440b9da656154683778b41a453430f8c6395cb2487775dad0a8a`.
+
 ## Independent serial-router trial
 
 `TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS=native-serial-v1` selects the existing
@@ -564,11 +574,24 @@ Prefill, one-row and unsupported operands retain their existing paths.
 The selector passed 49 local ARM CPU controls with zero skips, plus Ruff and
 syntax checks. These establish policy isolation and unchanged guard behavior,
 not current-V100 arithmetic, model quality or performance qualification.
-The existing kernel's strict serial-cuBLAS comparisons on the current V100
-SDK remain required. In those tests the private selector must stay unset or
-`inherit`: their independent reference arm toggles only the original profile
-flag. Enabling the private override for both arms would invalidate the oracle.
+The kernel's strict serial-cuBLAS comparisons on the current V100 SDK are
+separate from selector and complete-model qualification. In those tests the
+private selector must stay unset or `inherit`: their independent reference arm
+toggles only the original profile flag. Enabling the private override for both
+arms would invalidate the oracle.
 No new default or production deployment is selected by this checkpoint.
+
+On one physical V100, the unchanged installed `8e08ef95` router kernel and
+the two maintained GPU test modules from `5fccdc2c` collected 64 tests:
+59 direct arithmetic/dispatch/routing checks and four full-forward/state/prefix
+checks passed, with zero skips. The remaining six-lane graph fixture failed
+before capture or router comparison: it requested two proposals for a model
+with speculation method `none`. The overall suite remains failed; no runtime
+guard was relaxed. The private selector was unset, preserving independent
+reference/native arms. These results do not qualify the new selector in an
+installed candidate or establish full-model performance or quality.
+Gate: `current-SDK-router-GPU-v1/current-SDK-router-component-gate-v1.json`,
+SHA256 `b378912e41947a1277e43b577751493c98b0b25673c6f5890dbe27ba35b964f4`.
 
 ## Shared owner-attention diagnostics
 
