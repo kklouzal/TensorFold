@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
+from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
@@ -426,12 +427,17 @@ def actual_client_module():
 
 
 @contextmanager
-def correctness_service(fault=None):
+def correctness_service(fault=None, *, long_capacity=0, allowance=64):
     """Independent HTTP answers; this fixture is not a model/tokenizer oracle."""
-    state = SimpleNamespace(calls=[], stats_calls=0, lock=threading.Lock())
+    state = SimpleNamespace(calls=[], stats_calls=0, lock=threading.Lock(), active=set(), samples=0)
 
     def answer(body):
         prompt = body["messages"][-1]["content"]
+        if prompt.startswith("long-"):
+            text = "SENTINEL-" + prompt.split("-")[-1]
+            if fault == "answer":
+                return "WRONG"
+            return " \n" + text + "\t" if fault == "whitespace" else text
         if prompt.startswith("Calculate"):
             return str(17 * 23 - 19)
         if prompt.startswith("Start x"):
@@ -465,20 +471,45 @@ def correctness_service(fault=None):
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
-            self.wfile.write(raw)
+            try:
+                self.wfile.write(raw)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # A negative client test may cancel a diagnostic mate.
+            finally:
+                if hasattr(self, "long_index"):
+                    with state.lock:
+                        state.active.discard(self.long_index)
 
         def do_GET(self):
             with state.lock:
                 state.calls.append((self.path, None))
             if self.path == "/v1/runtime":
+                if long_capacity:
+                    with state.lock:
+                        active = set(state.active)
+                        state.samples += 1
+                        selected = state.samples % long_capacity
+                    floor = 4096 - allowance
+                    slots = []
+                    for index in range(long_capacity):
+                        length = floor if index in active else 0
+                        if fault == "underfilled" or fault == "union-only" and index != selected:
+                            length = max(0, length - 1)
+                        slots.append({"slot": index, "slot_generation": 1, "request_active": index in active,
+                                      "target_cached_length": length, "history_poisoned": False})
+                    return self.respond({"object": "tensorfold.runtime", "context_tokens": 4096,
+                        "reading_contract": "advisory_host_snapshot_no_gpu_synchronization",
+                        "sessions": {"retained": 0, "active": len(active), "decode": len(active), "prefill": 0},
+                        "placement": {"slots": slots, "active_request_slots": len(active)},
+                        "execution": {"effective": {"proposal_limit": 4}}})
                 return self.respond({"object": "tensorfold.runtime", "context_tokens": 4096,
                     "sessions": {"retained": 0, "active": 0, "decode": 0, "prefill": 0},
                     "placement": {"slots": []}, "execution": {"effective": {}}})
-            row = statistics(capacity=1)
+            row = statistics(capacity=long_capacity or 1)
             row["model"]["context_length"] = 4096
             row["capacity_plan"]["session_capacity"]["context_tokens"] = 4096
             for rank in row["capacity_plan"]["kv_full_windows"]["ranks"]:
-                rank["startup_capacities"] = [4101]
+                rank["startup_capacities"] = [4101] * (long_capacity or 1)
             row["totals"]["failed"] = 0
             with state.lock:
                 state.stats_calls += 1
@@ -494,7 +525,18 @@ def correctness_service(fault=None):
             with state.lock:
                 state.calls.append((self.path, copy.deepcopy(body)))
             if self.path == "/v1/tokenize":
+                if long_capacity:
+                    index = int(body["messages"][-1]["content"].split("-")[-1])
+                    ids = [100 + index, *range(4095 - allowance)]
+                    if fault == "token-collision":
+                        ids[0] = 100
+                    return self.respond({"count": len(ids), "tokens": ids, "max_model_len": 4096})
                 return self.respond({"count": 12, "tokens": list(range(12)), "max_model_len": 4096})
+            if long_capacity:
+                self.long_index = int(body["messages"][-1]["content"].split("-")[-1])
+                with state.lock:
+                    state.active.add(self.long_index)
+                time.sleep(.10)  # Make same-snapshot overlap observable, not an inference performance fixture.
             text = answer(body)
             if fault == "answer" and body["messages"][-1]["content"].startswith("Calculate"):
                 text = "wrong"
@@ -506,7 +548,8 @@ def correctness_service(fault=None):
             stats = {"token_ids": ids, "token_sha": "bad" if fault == "sha" else sha,
                      "drafts": body["draft"], "drafted": int(body["draft"] and fault != "no-proposals"),
                      "accepted": 0, "cached": cached}
-            usage = {"prompt_tokens": 12, "completion_tokens": len(ids), "total_tokens": 12 + len(ids),
+            prompt_count = 4096 - allowance if long_capacity else 12
+            usage = {"prompt_tokens": prompt_count, "completion_tokens": len(ids), "total_tokens": prompt_count + len(ids),
                      "prompt_tokens_details": {"cached_tokens": cached},
                      "completion_tokens_details": {"reasoning_tokens": 0}}
             finish = "length" if fault == "finish" else "stop"
@@ -664,3 +707,141 @@ def test_group_failure_cancels_real_keepalive_readers_and_drains_before_releasin
     exchanges = [json.loads(path.read_text()) for path in args.out.glob("*/exchange.json")]
     assert len(exchanges) == 2 and all(row["complete"] is False for row in exchanges)
     assert all(row["error"]["type"] == "ReadCancelled" for row in exchanges)
+
+
+def supplied_long_arguments(tmp_path, *, capacity=2, allowance=64):
+    args = arguments(tmp_path, ["supplied-long"], names=())
+    args.oracle = []
+    for index in range(capacity):
+        name = f"case-{index}"
+        body = request(f"long-{index}", maximum=allowance)
+        path, gold = tmp_path / f"{name}.json", tmp_path / f"{name}-gold.json"
+        path.write_text(json.dumps(body))
+        gold.write_text(json.dumps({"expected_text": f"SENTINEL-{index}"}))
+        args.request.append(name + "=" + str(path))
+        args.oracle.append(name + "=" + str(gold))
+    return args
+
+
+@pytest.mark.parametrize("capacity", [2, 3])
+def test_supplied_long_derives_capacity_and_accepts_semantic_eos_without_claiming_exhaustion(monkeypatch, tmp_path, capacity):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path, capacity=capacity)
+    originals = [json.loads(Path(item.split("=", 1)[1]).read_text()) for item in args.request]
+    with correctness_service(long_capacity=capacity) as (args.url, state):
+        assert exercise.run(args) == 2  # Semantics pass; strict simultaneous-owner proof remains unsupported.
+    report = json.loads((args.out / "suite.json").read_text())
+    result = report["supplied_long"]
+    assert result["resident_capacity"] == capacity and result["prompt_tokens"] == 4032
+    assert result["declared_reply_tokens"] == 64 and result["context_tokens"] == 4096
+    assert result["context_exhaustion"].startswith("UNRUN")
+    assert result["semantic_parity_passed"] and result["sse_nonstream_parity_passed"]
+    assert result["mtp_work"] == "observed" and result["drafted_total"] > 0
+    assert result["strict_simultaneous_history"].startswith("unsupported")
+    witness = result["concurrent"]["observed"]["advisory_all_active_histories"]
+    assert witness["reading_contract"] == "advisory_host_snapshot_no_gpu_synchronization"
+    assert witness["active"] == capacity
+    assert len({slot["slot"] for slot in witness["slots"]}) == capacity
+    assert all(slot["request_active"] and slot["target_cached_length"] >= 4032 for slot in witness["slots"])
+    generations = [body for path, body in state.calls if path == "/v1/chat/completions"]
+    assert len(generations) == 3 * capacity
+    for body in generations:
+        original = next(row for row in originals if row["messages"] == body["messages"])
+        assert all(body[key] == value for key, value in original.items())
+    assert sum(path == "/v1/tokenize" for path, _body in state.calls) == capacity
+    for pair in result["cases"].values():
+        assert pair["serial"]["choices"][0]["finish_reason"] == "stop"
+        assert pair["serial"]["usage"]["completion_tokens"] < 64
+        assert pair["serial"]["tensorfold"]["cached"] == 0
+        assert len(pair["prompt_token_ids_sha256"]) == 64
+    assert all(row["sha256"] for row in result["oracles"].values())
+
+
+@pytest.mark.parametrize("fault", ["underfilled", "union-only", "no-proposals"])
+def test_supplied_long_does_not_infer_coverage_from_capacity_peaks_or_requested_mode(monkeypatch, tmp_path, fault):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path)
+    with correctness_service(fault, long_capacity=2) as (args.url, _state):
+        assert exercise.run(args) == 2
+    report = json.loads((args.out / "suite.json").read_text())
+    assert report["scenarios"][0]["status"] == "unsupported" and not report["passed"]
+    result = report["supplied_long"]
+    assert result["semantic_parity_passed"] and result["context_exhaustion"].startswith("UNRUN")
+    if fault == "no-proposals":
+        assert result["drafted_total"] == 0 and result["mtp_work"] == "unsupported-no-proposals"
+    else:
+        assert result["concurrent"]["observed"]["peak_active"] == 2
+        assert result["concurrent"]["observed"]["advisory_all_active_histories"] is None
+    assert list(args.out.glob("*concurrent-runtime/response.raw"))
+
+
+def test_supplied_long_uses_actual_token_ids_for_distinct_histories(monkeypatch, tmp_path):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path)
+    with correctness_service("token-collision", long_capacity=2) as (args.url, state), pytest.raises(ValueError, match="distinct actual tokenizer"):
+        exercise.run(args)
+    assert not any(path == "/v1/chat/completions" for path, _body in state.calls)
+    report = json.loads((args.out / "suite.json").read_text())
+    assert len({row["prompt_token_ids_sha256"] for row in report["inputs"].values()}) == 1
+
+
+def test_supplied_long_reports_large_reply_budget_as_explicit_floor_not_generic_nearfull(monkeypatch, tmp_path):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path, allowance=4095)
+    with correctness_service(long_capacity=2, allowance=4095) as (args.url, _state):
+        assert exercise.run(args) == 2
+    result = json.loads((args.out / "suite.json").read_text())["supplied_long"]
+    assert result["prompt_tokens"] == 1 and result["declared_reply_tokens"] == 4095
+    assert "no generic near-full" in result["scope"]
+    assert result["context_exhaustion"].startswith("UNRUN")
+
+
+def test_supplied_long_text_gold_uses_existing_response_whitespace_contract(monkeypatch, tmp_path):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path)
+    with correctness_service("whitespace", long_capacity=2) as (args.url, _state):
+        assert exercise.run(args) == 2
+    record = json.loads((args.out / "suite.json").read_text())["supplied_long"]
+    assert record["cases"]["case-0"]["mtp"]["choices"][0]["message"]["content"].startswith(" \n")
+    assert record["oracles"]["case-0"]["expected"]["expected_text"] == "SENTINEL-0"
+
+
+@pytest.mark.parametrize("payload", [{"expected_text": 3}, {"expected_json": {"sum": True}},
+                                     {"expected_text": "answer", "code": "execute"}])
+def test_supplied_oracles_are_bounded_typed_answer_data_only(tmp_path, payload):
+    path = tmp_path / "gold.json"
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="oracle requires"):
+        exercise.load_oracles(["one=" + str(path)], budget_bytes=1024)
+    with pytest.raises(ValueError, match="byte budget"):
+        exercise.load_oracles(["one=" + str(path)], budget_bytes=1)
+
+
+@pytest.mark.parametrize("fault", ["answer", "ids", "sha", "cold", "sse-missing-done", "sse-parity", "identity"])
+def test_supplied_long_rejects_wrong_gold_ids_protocol_and_service_identity(monkeypatch, tmp_path, fault):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path)
+    with correctness_service(fault, long_capacity=2) as (args.url, _state), pytest.raises(ValueError):
+        exercise.run(args)
+    report = json.loads((args.out / "suite.json").read_text())
+    assert not report["passed"] and report["scenarios"][0]["status"] == "failed"
+    assert list(args.out.glob("*/response.raw"))
+
+
+def test_supplied_long_does_not_normalize_the_declared_gold(monkeypatch, tmp_path):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path)
+    Path(args.oracle[0].split("=", 1)[1]).write_text(json.dumps({"expected_text": " SENTINEL-0"}))
+    with correctness_service("whitespace", long_capacity=2) as (args.url, _state), pytest.raises(ValueError, match="known answer"):
+        exercise.run(args)
+
+
+def test_supplied_long_prompt_fit_alone_does_not_prove_selected_boundary(monkeypatch, tmp_path):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path, allowance=63)
+    with correctness_service(long_capacity=2, allowance=64) as (args.url, state):
+        assert exercise.run(args) == 2
+    report = json.loads((args.out / "suite.json").read_text())
+    assert all(row["fits"] for row in report["inputs"].values())
+    assert report["scenarios"][0]["status"] == "unsupported"
+    assert not any(path == "/v1/chat/completions" for path, _body in state.calls)

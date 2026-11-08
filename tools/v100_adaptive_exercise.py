@@ -44,7 +44,31 @@ else:
 
 
 SCENARIOS = ("requests", "mixed", "burst", "cancel", "reuse", "retention", "migration",
-             "oscillation", "limits", "zero-proposal", "stop", "eos", "context", "correctness")
+             "oscillation", "limits", "zero-proposal", "stop", "eos", "context", "correctness", "supplied-long")
+
+
+def load_oracles(named, *, budget_bytes):
+    """Independent answer DATA only; no executable predicates or captured replies."""
+    qualification.positive(budget_bytes, "oracle-data byte budget")
+    result, remaining = {}, budget_bytes
+    for entry in named:
+        name, separator, filename = entry.partition("=")
+        if not separator or re.fullmatch(r"[A-Za-z0-9_-]{1,48}", name) is None or name in result:
+            raise ValueError("unique safe oracle NAME=JSON_FILE entries required")
+        with Path(filename).open("rb") as source:
+            raw = source.read(remaining + 1)
+        if len(raw) > remaining:
+            raise ValueError("oracle data exceeds cumulative byte budget")
+        remaining -= len(raw)
+        expected = protocol.object_json(raw)
+        text = set(expected) == {"expected_text"} and type(expected["expected_text"]) is str and bool(expected["expected_text"])
+        integers = (set(expected) == {"expected_json"} and type(expected["expected_json"]) is dict
+                    and all(type(value) is int for value in expected["expected_json"].values()))
+        if not text and not integers:
+            raise ValueError("oracle requires declared expected_text or a flat integer expected_json object")
+        result[name] = {"expected": expected, "source": filename,
+                        "sha256": hashlib.sha256(raw).hexdigest()}
+    return result
 
 
 def correctness_cases():
@@ -66,20 +90,110 @@ def correctness_cases():
     ]
 
 
-def correctness_reply(reply):
-    selected = live.completion(reply, 64)
+def correctness_reply(reply, maximum=64, *, required_finish="stop"):
+    selected = live.completion(reply, maximum)
     message, ids = selected["message"], selected["ids"]
     stats, usage = reply["tensorfold"], reply["usage"]
-    if (not ids or selected["finish"] != "stop" or type(message["content"]) is not str
+    if (not ids or (required_finish is not None and selected["finish"] != required_finish) or type(message["content"]) is not str
             or message.get("reasoning_content")
             or usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0) != 0):
-        raise ValueError("correctness requires a positive complete text-only answer with stop finish")
+        raise ValueError("correctness requires a positive complete text-only answer with the requested finish policy")
     digest = hashlib.sha256(",".join(map(str, ids)).encode()).hexdigest()[:12]
     if stats.get("token_sha") != digest:
         raise ValueError("independent comma-separated token-ID SHA mismatch")
     return {"content": message["content"], "token_ids": ids, "token_sha": digest,
             "finish": selected["finish"], "completion_tokens": len(ids),
             "stats": stats, "usage": usage}
+
+
+def supplied_long(suite):
+    """Supplied semantic/parity proof at an explicit reported prompt floor."""
+    names = [name for name in suite.requests if name != "overrun"]
+    capacity, context = suite.effective["resident_capacity"], suite.effective["context_tokens"]
+    if len(names) != capacity or set(suite.oracles) != set(names):
+        raise ValueError("supplied-long requires exactly computed C requests and matching independent oracles")
+    suite.require_concurrency(capacity)
+    replies = {suite.requests[name]["body"]["max_tokens"] for name in names}
+    if len(replies) != 1:
+        raise ValueError("supplied-long requires one explicit common reply allowance for its history floor")
+    allowance = replies.pop()
+    floor = context - allowance
+    histories = set()
+    for name in names:
+        row, body = suite.requests[name], suite.requests[name]["body"]
+        if not row["fits"] or row["prompt_tokens"] != floor:
+            raise Unsupported("supplied-long requires tokenizer N + declared reply allowance = actual context")
+        if type(body.get("temperature")) not in (int, float) or body["temperature"] != 0:
+            raise ValueError("supplied-long requires explicit greedy temperature0 without changing sampling")
+        histories.add(row["prompt_token_ids_sha256"])
+    if len(histories) != capacity:
+        raise ValueError("supplied-long requires C distinct actual tokenizer ID histories")
+    result = {"schema": "tensorfold.supplied-long-correctness-v1", "passed": False, "cases": {}, "resident_capacity": capacity,
+              "prompt_tokens": floor, "declared_reply_tokens": allowance, "context_tokens": context,
+              "expected_generation_calls": 3 * capacity,
+              "oracles": copy.deepcopy(suite.oracles), "context_exhaustion": "UNRUN; use the separate context scenario",
+              "scope": "supplied semantic/parity and advisory readings at reported N/R/L; no generic near-full or exhaustion qualification"}
+    suite.report["supplied_long"] = result
+    serial = {}
+
+    def generate(name, label, *, draft, stream, first=None):
+        original = suite.requests[name]["body"]
+        body = {**copy.deepcopy(original), "draft": draft, "stream": stream, "return_token_ids": True}
+        if stream:
+            body["stream_options"] = {**body.get("stream_options", {}), "include_usage": True}
+        wire = suite.call(label, body, first=first)
+        record = correctness_reply(wire, allowance, required_finish=None)
+        if wire["usage"]["prompt_tokens"] != floor or record["stats"].get("drafts") is not draft:
+            raise ValueError("supplied-long tokenizer count or requested draft dispatch mismatch")
+        if any(type(record["stats"].get(field, 0)) is not int or record["stats"].get(field, 0) < 0
+               for field in ("drafted", "accepted")):
+            raise ValueError("supplied-long draft counters must be nonnegative integers")
+        if not draft and (record["stats"].get("cached") != 0
+                or wire["usage"].get("prompt_tokens_details", {}).get("cached_tokens") != 0
+                or record["stats"].get("drafted", 0) or record["stats"].get("accepted", 0)):
+            raise ValueError("supplied-long serial oracle must be cold without draft work")
+        correctness_answer({"id": name, **suite.oracles[name]["expected"]}, record)
+        return wire
+
+    for index, name in enumerate(names):
+        pair = {}
+        pair["prompt_token_ids_sha256"] = suite.requests[name]["prompt_token_ids_sha256"]
+        result["cases"][name] = pair
+        for mode in (("mtp", "serial") if index % 2 == 0 else ("serial", "mtp")):
+            pair[mode] = generate(name, f"long-{name}-{mode}", draft=mode == "mtp", stream=False)
+        if not live.compare(pair["serial"], pair["mtp"], allowance)["passed"]:
+            raise ValueError("supplied-long cold serial/MTP IDs/message/finish differ")
+        serial[name] = pair["serial"]
+        suite.stats("long-case-stats")
+        suite.save()
+
+    def active_request(name, label, *, first=None):
+        wire = generate(name, label, draft=True, stream=True, first=first)
+        if not live.compare(serial[name], wire, allowance)["passed"]:
+            raise ValueError("supplied-long concurrent answer differs from its cold serial oracle")
+        return {"request": name, "reply": wire}
+
+    result["concurrent"] = suite.concurrent(names, operation=active_request, history_floor=floor)
+    result["semantic_parity_passed"] = True
+    # Concurrent SSE equals serial; the prior nonstream MTP/serial proof gives
+    # SSE/nonstream parity without another C full-history requests.
+    result["sse_nonstream_parity_passed"] = True
+    result["drafted_total"] = sum(pair["mtp"]["tensorfold"].get("drafted", 0)
+                                  for pair in result["cases"].values())
+    result["drafted_total"] += sum(row["reply"]["tensorfold"].get("drafted", 0)
+                                   for row in result["concurrent"]["results"])
+    result["mtp_work"] = "observed" if result["drafted_total"] > 0 else "unsupported-no-proposals"
+    result["strict_simultaneous_history"] = "unsupported; advisory runtime has no stable-owner publication proof"
+    result["advisory_prompt_floor_observed"] = result["concurrent"]["observed"]["advisory_all_active_histories"] is not None
+    suite.save()
+    if result["drafted_total"] <= 0:
+        raise Unsupported("supplied-long semantic parity passed but no MTP proposal work was observed",
+                          evidence={"record": "supplied_long", "axis": "mtp-work", "drafted_total": 0})
+    if not result["advisory_prompt_floor_observed"]:
+        raise Unsupported("simultaneous C active history slots at the reported prompt floor were not observed",
+                          evidence={"record": "supplied_long", "axis": "active-history"})
+    raise Unsupported("semantic/parity and advisory prompt-floor readings completed; strict simultaneous ownership is unproven",
+                      evidence={"record": "supplied_long", "axis": "strict-simultaneous-history"})
 
 
 def correctness_answer(case, record):
@@ -231,8 +345,9 @@ def load_requests(named, *, budget_bytes):
 
 
 class Suite:
-    def __init__(self, args, requests):
+    def __init__(self, args, requests, oracles=None):
         self.args, self.requests, self.out = args, requests, args.out
+        self.oracles = {} if oracles is None else oracles
         self.limits = protocol.from_arguments(args)
         if "correctness" in args.scenarios and (
                 self.limits.response_bytes > 1 << 20 or self.limits.line_bytes > 65536
@@ -264,6 +379,8 @@ class Suite:
                                          "stochastic-acceptance-distribution", "native-SM70-memory-diagnostics",
                                          "measured-static-versus-adaptive-performance-frontier",
                                          "continuous-hardware-thermal-clock-link-telemetry"]}
+        if self.oracles:
+            self.report["budgets"]["oracle_data_bytes"] = args.request_mib << 20
 
     def save(self):
         with self.lock:
@@ -426,7 +543,7 @@ class Suite:
         if count > self.args.max_inflight or count * self.limits.response_bytes > self.args.batch_response_mib << 20:
             raise Unsupported("requested concurrent response/worker budgets need an explicit increase")
 
-    def concurrent(self, names, *, burst=False, degree_sequence=()):
+    def concurrent(self, names, *, burst=False, degree_sequence=(), operation=None, history_floor=None):
         count = len(names)
         self.require_concurrency(count)
         ready, abort, first = threading.Event(), threading.Event(), threading.Event()
@@ -436,12 +553,15 @@ class Suite:
         observed = {"peak_active": 0, "peak_prefill": 0, "peak_decode": 0,
                     "mixed_prefill_decode": False, "partial_migration": False, "first_before_burst": False,
                     "retained_counts_while_active": []}
+        if history_floor is not None:
+            observed["advisory_all_active_histories"] = None
+        request = self.request if operation is None else operation
 
         def work(index):
             if index or not burst:
                 ready.wait()
             if not abort.is_set():
-                results[index] = self.request(names[index], "concurrent-request", first=first if index == 0 else None)
+                results[index] = request(names[index], "concurrent-request", first=first if index == 0 else None)
 
         def sample():
             state = self.runtime("concurrent-runtime")
@@ -452,6 +572,17 @@ class Suite:
                 observed["retained_counts_while_active"].append(sessions["retained"])
             observed["mixed_prefill_decode"] |= sessions["prefill"] > 0 and sessions["decode"] > 0
             slots = (state.get("placement") or {}).get("slots") or []
+            if history_floor is not None and observed["advisory_all_active_histories"] is None:
+                active = [slot for slot in slots if slot.get("request_active") is True]
+                if (sessions["active"] == count and len(active) == count
+                        and (state.get("placement") or {}).get("active_request_slots") == count):
+                    ids = [slot.get("slot") for slot in active]
+                    if any(type(slot) is not int or slot < 0 for slot in ids) or len(set(ids)) != count:
+                        raise ValueError("active history slot identities must be distinct nonnegative integers")
+                    if all(slot["target_cached_length"] >= history_floor for slot in active):
+                        observed["advisory_all_active_histories"] = {"active": count, "minimum_tokens": history_floor,
+                            "reading_contract": state.get("reading_contract"),
+                            "slots": copy.deepcopy(active), "execution": copy.deepcopy(state.get("execution"))}
             observed["partial_migration"] |= any(slot.get("pending_attention_degree") is not None for slot in slots)
             return state
 
@@ -540,6 +671,8 @@ def migration_done(runtime, degree):
 def exercise_scenario(suite, scenario):
     if scenario == "correctness":
         return correctness(suite)
+    if scenario == "supplied-long":
+        return supplied_long(suite)
     capacity = suite.effective["resident_capacity"]
     name = suite.choose()
     if scenario == "requests":
@@ -685,10 +818,16 @@ def exercise_scenario(suite, scenario):
 def run(args):
     requests = ({} if args.scenarios == ["correctness"] and not args.request else
                 load_requests(args.request, budget_bytes=args.request_mib << 20))
+    oracles = load_oracles(getattr(args, "oracle", []), budget_bytes=args.request_mib << 20)
+    if "supplied-long" in args.scenarios:
+        if set(oracles) != set(requests) - {"overrun"}:
+            raise ValueError("supplied-long requires one named oracle for each supplied generation request")
+    elif oracles:
+        raise ValueError("answer oracle files apply only to supplied-long")
     if args.out.exists():
         raise ValueError("fresh exercise output directory required")
     args.out.mkdir(parents=True)
-    suite, primary = Suite(args, requests), None
+    suite, primary = Suite(args, requests, oracles), None
     try:
         initial = suite.stats("stats-initial")
         qualification.require_idle(initial)
@@ -709,6 +848,10 @@ def run(args):
                 raise ValueError("tokenizer must report exact IDs/count and the effective context")
             row.update(prompt_tokens=count, fits=count + row["body"]["max_tokens"] <= suite.effective["context_tokens"])
             suite.report["inputs"][name].update(prompt_tokens=count, max_tokens=row["body"]["max_tokens"], fits=row["fits"])
+            if "supplied-long" in args.scenarios:
+                digest = hashlib.sha256(json.dumps(ids, separators=(",", ":")).encode()).hexdigest()
+                row["prompt_token_ids_sha256"] = digest
+                suite.report["inputs"][name]["prompt_token_ids_sha256"] = digest
         suite.save()
         for scenario in args.scenarios:
             outcome = {"scenario": scenario, "status": "running"}
@@ -756,7 +899,9 @@ def main(argv=None):
     parser.add_argument("--url", required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--request", action="append", default=[], metavar="NAME=JSON_FILE")
-    parser.add_argument("--scenarios", default=",".join(name for name in SCENARIOS if name != "correctness"),
+    parser.add_argument("--oracle", action="append", default=[], metavar="NAME=JSON_FILE",
+                        help="supplied-long DATA: observed content.strip() == declared expected_text, or flat integer expected_json")
+    parser.add_argument("--scenarios", default=",".join(name for name in SCENARIOS if name not in ("correctness", "supplied-long")),
                         help="comma-separated explicit exercises; correctness uses its fixed seven cases")
     parser.add_argument("--cycles", type=int, default=2)
     parser.add_argument("--request-mib", type=int, default=64)

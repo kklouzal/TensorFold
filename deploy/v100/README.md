@@ -563,6 +563,47 @@ the affected batch; semantic mismatches remain recorded with their diagnostic
 mates. Other exercise scenarios still require explicit request files and keep
 their existing defaults. No Q4-specific qualification guard is relaxed.
 
+## Supplied-long correctness
+
+The explicit `--scenarios supplied-long --cycles 1` mode uses the existing
+client against an already loaded immutable service. Supply exactly its reported
+resident capacity C named `--request NAME=JSON_FILE` and matching
+`--oracle NAME=JSON_FILE` entries. Each oracle contains only
+`{"expected_text":"independent gold"}` or a flat integer `expected_json` object.
+Text semantics use `observed_content.strip() == expected_text`; declared gold is
+unchanged. ID, message and finish parity remains exact. Request and oracle file
+hashes are retained separately from runtime identity; each data collection uses
+the existing `--request-mib` cumulative bound. Use a fresh output directory.
+
+All requests must preserve their explicit greedy settings and common reply
+allowance R. One tokenizer intake records each distinct actual ID-history hash
+and count N, requiring `N + R = L` for the actual context L. The report names
+N/R/L: this equality alone does not imply a near-full prompt (R may be large).
+Correct EOS before R is valid for semantics; exact context exhaustion remains
+UNRUN here. The separate `context` scenario still requires its exact boundary
+and rejects early EOS as unsupported.
+
+The run sends 3C generations: alternating cold serial/nonstream MTP pairs,
+then C concurrent MTP SSE requests. Each SSE reply equals its cold serial oracle;
+the preceding pair gives transitive SSE/nonstream parity without another C
+long-prefill calls. It retains actual per-mode cached/draft counters; serial must
+be cold, while MTP/SSE may reuse prefixes. Positive actual proposal work is
+required for the MTP-work axis. There are C tokenizer calls, C per-case stats
+reads, setup/final reads and concurrent polls. At C27 this is 81 generations;
+choose sufficient explicit `--timeout`, `--operation-timeout`,
+`--poll-timeout`, `--max-calls` and response/SSE bounds for the intended workload. Existing
+cooperative body/socket deadline limitations apply; there are no automatic
+retries or prompt trimming. Monitoring also needs frontend capacity H >= C+1.
+
+Raw runtime `reading_contract`, active slot IDs, generations and cached lengths
+are retained as advisory observations. The runtime does not publish them under
+one ownership lock, so even a single response showing C populated active slots
+cannot establish strict simultaneous ownership. That axis and the overall
+scenario remain Unsupported (exit 2), while semantic/parity and observed MTP
+work can pass independently. A separate coherent worker attestation is needed
+before claiming populated all-C qualification. Existing defaults and Q4 guards
+are unchanged; this client-only addition does not rebuild or reload the service.
+
 ## Historical cu126 reference
 
 The remaining original build/serve commands and measured host configurations

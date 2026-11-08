@@ -33,6 +33,13 @@ unset/empty retains the backend plan. [Pilot observations](docs/v100-adaptive-va
 and the A-B-B-A control select 256 for the recorded eager development workflow,
 with 73.785% less mean readiness time; no global default or long-prompt claim changes.
 
+The explicit [supplied-long client scenario](deploy/v100/README.md#supplied-long-correctness)
+adds independent request/oracle data, cold serial/MTP/SSE parity and reported
+`N/R/L` prompt-floor observations. Runtime readings remain advisory: strict
+simultaneous populated-C ownership is Unsupported, not a qualified capacity result.
+The C27/H28 attempt failed host admission before HTTP; see the
+[recorded scope](docs/v100-adaptive-validation.md#supplied-long-client-and-host-admission).
+
 Source startup diagnostics now separate the existing GGUF target-load interval,
 stock-MTP attachment, vocabulary binding and surrounding engine setup. They
 report host elapsed/submission time without extra device synchronization or

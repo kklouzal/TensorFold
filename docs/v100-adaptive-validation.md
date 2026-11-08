@@ -254,6 +254,29 @@ requests are not a throughput benchmark. General quality, all-active capacity,
 full-history behavior and performance remain open; prior checkpoint quality
 failures and the unchanged default reference policy remain explicit.
 
+## Supplied-long client and host admission
+
+The maintained opt-in [supplied-long client](../deploy/v100/README.md#supplied-long-correctness)
+records independent oracle/request provenance, actual tokenizer histories,
+explicit N/R/L, cold serial/MTP/SSE parity and positive draft work. Source CPU
+controls passed 322 tests with no skips and no CUDA initialization. These are
+client/fixture checks, not an actual long-context model run. Valid EOS can pass
+semantic retrieval without proving exact exhaustion. Advisory slot readings
+retain their reading contract; strict simultaneous populated-C ownership and
+the overall requested gate remain Unsupported until a separate coherent
+ownership attestation exists.
+
+After the resident C27 allocation above, the H28/P27 frontend attempt failed
+the mandatory host guard: projected commitment 4,403,538,763,721 bytes exceeded
+351,202,996,224 usable bytes. Physical GPU allocation passed, but no API listener,
+concurrent burst or benchmark was reached. All processes retired; retained raw
+evidence includes the inner readiness/terminal-1 markers and outer-stop sentinel,
+not an all-active success. The reviewed receipt is
+`tp8-etp4-C27-allactive-v1/C27-H28-host-refusal-gate-v1.json`, SHA-256
+`fe8ab915343de9c0aa2b4ba4c8305a416137d765b252a2125a9413bd225af9ad`.
+Host-accounting successor work requires its own implementation and verification;
+this client checkpoint neither bypasses admission nor qualifies that successor.
+
 ## Neutral artifact I/O boundary (A1)
 
 The source now separates bounded container/file validation from model and device
