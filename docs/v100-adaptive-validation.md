@@ -502,8 +502,8 @@ subnormals, signed zeros, row/guard bounds, malformed inputs and selector
 isolation. Source-only verification and the existing native-kernel ELF are
 recorded in `native-half-partial-prototype-v1/source-CPU51-GPU13-gate-v1.json`,
 SHA256 `844dbef4aaa55384f388ca32ec444f8d1f25d0ad327a0027d8ed4ef4afc127e2`.
-Installed-image, complete model output and performance checks remain pending;
-this checkpoint selects no new deployment default.
+Complete model output and performance checks remain pending; this checkpoint
+selects no new deployment default.
 
 The private owned launcher additionally validates a captured startup request
 before model construction and again before publication. Each rank records
@@ -516,6 +516,38 @@ a mode change. The attestation passed 111 local ARM CPU protocol controls,
 Ruff and syntax checks; that is separate from V100 numerical qualification.
 Gate: `private-half-attestation-CPU-v1/half-attestation-final-gate.json`, SHA256
 `b8c70391b469f7a48cca431ee2340b9cc3efba3009e29870cfe242f876b670f7`.
+
+An application-only image built directly on V100 from committed `5fccdc2c`
+is `sha256:8e08ef95fd2e30b9229e6b569f17d3389827b143fca97a36e14f352bd9c02cb8`.
+It passed 276 installed CPU controls with zero skips. Its 782-member runtime
+inventory differs from `0a13de3c` only in `family_ops.py` and the inherited
+private Dense implementation in `gguf_weights.py`; the generic expert CUDA
+source, SDK, Torch and native FD remain unchanged. The image retains `inherit`
+without an environment override. This is packaging/control evidence, not an
+enabled-Half model trial, numerical requalification or deployment promotion.
+Gate: `half-app-5fcc-v1/genuine-half-only-installed-gate-v1.json`, SHA256
+`25fb37f12c80042d4f0bce9bdfab947d564f9b48aea749ffddf548ced769236d`.
+
+## Unchanged baseline reproducibility
+
+One unchanged `0a13de3c` instance completed all 28 preserved-request exchanges
+at TP8/ETP4/PP1, ISO4, MTP4, context 262144 and cap32. All responses retained
+128 output IDs, length termination and zero cached tokens. Across the saved
+reference, repeated concurrent batches and isolated/serial variants, five
+prompts produced two distinct full output sequences. Both sequences changed
+by the coefficient candidate were also observed in unchanged-baseline runs.
+This prevents uniquely attributing those differences to that candidate;
+it does not establish candidate equivalence, quality acceptance or causality.
+Actual router inputs and state mapping remain investigation requirements.
+
+The client, normal launcher and container exited zero with no OOM or cleanup
+errors and unchanged source/health. The outer supervisor exited one because
+it still required a matrix-only `allactive_observation_completed` marker from
+the diagnostic result. That operator schema failure remains recorded; this
+is not a whole-operator pass or an active-owner capacity certificate. No
+performance result is inferred from the diagnostic.
+Gate: `coefficient-baseline-repro-v1/baseline-repro-actual-gate-v1.json`, SHA256
+`cca46c70e3fcade464ecc9a0e2e9dad822b54bb16709b76ff83f33e9e768a469`.
 
 ## Shared owner-attention diagnostics
 
