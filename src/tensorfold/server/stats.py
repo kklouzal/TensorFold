@@ -45,7 +45,19 @@ def snapshot(app: Any, *, server: Any = None,
     if reading is None:
         reading = metrics.counters_now(app, stats_only=True)
     fixed = _fixed(app)
+    credit = None
+    if getattr(app, "host_payload_pool", None) is not None:
+        from .host_payload import current
+        owner = current()
+        if owner is not None and owner.pool is not app.host_payload_pool:
+            raise ValueError("HTTP stats belong to a different host payload pool")
+        credit = None if owner is None else owner.snapshot
+        if credit is not None:
+            credit(fixed)
     engine = getattr(app, "engine", None)
+    plan = getattr(engine, "capacity_plan", None)
+    if credit is not None:
+        credit(plan)  # Immutable published model plan, before its first copy.
     sched = getattr(engine, "scheduler", None) if engine is not None else None     # a CUDA concurrent engine's
     decoder = getattr(sched, "decoder", None) if sched is not None else None
     usage = decoder.usage() if callable(getattr(decoder, "usage", None)) else None
@@ -77,7 +89,7 @@ def snapshot(app: Any, *, server: Any = None,
                  "held_for_memory": (getattr(sched, "held", None) is not None) if decoder is not None else None,
                  "http_connections_in_use": transport["in_use"] if transport is not None else None,
                  "stream_tokens": metrics.stream_tokens(app)},
-        "capacity_plan": deepcopy(getattr(engine, "capacity_plan", None)),
+        "capacity_plan": deepcopy(plan),
         "kv": memory.get("kv"),
         "prefix_cache": memory.get("prefix_cache"),
         "totals": {"requests": reading.requests,
@@ -157,7 +169,6 @@ def _describe(app: Any) -> dict[str, Any]:
                   "kv_dtype": kv_dtype, "mtp_drafts": depth if isinstance(depth, int) else None,
                   "vision": getattr(app, "vision", None) is not None,
                   "thinking_default": thinking if isinstance(thinking, bool) else None},
-        "capacity_plan": deepcopy(getattr(engine, "capacity_plan", None)) if cuda else None,
         "limits": {"lanes": lanes, "pending_requests": getattr(app, "max_pending_requests", None),
                    "engine_calls": limit, "http_connections": None,
                    "prefix_cache_entries": getattr(decoder, "keep", None) if decoder is not None else None},

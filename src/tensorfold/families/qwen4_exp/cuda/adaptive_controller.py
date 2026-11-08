@@ -591,7 +591,15 @@ class AdaptiveController:
                                       "prefill_tokens": self.total_prefill_tokens - before[1],
                                       "committed_tokens": self.total_committed_tokens - before[2]}
 
-    def _record(self):
+    def _record(self, *, credit=None):
+        if credit is not None:
+            # Lock owner protects these actual JSON values through all copies.
+            # Never wait for payload credit while holding this identity lock.
+            credit((self.configured, self.pending, self.effective, self.maximum,
+                self.identity, self.binding_invalidated_reason, self._deferred_migration,
+                self.profile_table_digest, self.selected_profile, self.effective_family,
+                self.native_prepared, self.graph_rows, self.trial_family, self.migration,
+                self.applied_migration, self.observation, self.round_observation))
         return {"configured": dict(self.configured),
                 "pending": None if self.pending is None else dict(self.pending),
                 "effective": dict(self.effective), "allocated_maximum": dict(self.maximum),
@@ -617,11 +625,12 @@ class AdaptiveController:
                 "device_step_elapsed_s": None,
                 "last_round": dict(self.round_observation),
                 "timing_contract": "last_round includes migration, prefill, decode and host control; last_step is a phase",
-                "work_observations": self.work_observations.record(),
+                "work_observations": (self.work_observations.record() if credit is None else
+                                      self.work_observations.record(credit=credit)),
                 "total_target_rows": self.total_target_rows,
                 "total_prefill_tokens": self.total_prefill_tokens,
                 "total_committed_tokens": self.total_committed_tokens}
 
-    def record(self):
+    def record(self, *, credit=None):
         with self._lock:
-            return self._record()
+            return self._record() if credit is None else self._record(credit=credit)

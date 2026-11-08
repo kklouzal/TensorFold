@@ -71,6 +71,7 @@ class PreparedRequest:
     _profile_use: Any = None
     _admission: Any = None
     _media_release: Any = None
+    count_only: bool = False  # Validation/count preparation never authorizes model execution.
 
     def release_media(self):
         """Whole logical request owns replay across every generation subrun."""
@@ -246,13 +247,35 @@ class App:
         # The HTTP class outlives profile publication. Keep managed endpoints
         # conservative until their encoder hook can follow that lifetime.
         fixed_profile = getattr(self.engine, "serving_profiles", None) is None
-        return finalize_retention_resources(catalog, tokenizer=self.tok,
+        serialized_chars = 0
+        static_metadata = None
+        if (fixed_profile and catalog.world == 8 and catalog.policy is None
+                and callable(getattr(self.tok, "to_str", None))):
+            serialized_chars = len(self.tok.to_str())
+            from tensorfold.server import stats
+            static_metadata = stats._fixed(self)
+        result = finalize_retention_resources(catalog, tokenizer=self.tok,
             max_pending_requests=None if self._request_limit is None else self._request_limit.maximum,
             max_waiting_input_bytes=getattr(scheduler, "max_waiting_input_bytes", None),
             output_queue_tokens=getattr(scheduler, "output_queue_tokens", None),
             max_http_connections=self.max_http_connections, max_http_body_bytes=self.max_http_body_bytes,
             logical_api_limits=self.logical_api_limits, scheduler=scheduler if fixed_profile else None,
-            request_limit=self._request_limit if fixed_profile else None)
+            request_limit=self._request_limit if fixed_profile else None,
+            segment_encoder=getattr(self, "segments", None), tokenizer_serialized_chars=serialized_chars,
+            static_http_metadata=static_metadata)
+        self.host_payload_pool = getattr(catalog, "_http_payload_pool", None)
+        if self.host_payload_pool is not None:
+            self.engine.host_payload_pool = self.host_payload_pool
+            scheduler.host_payload_pool = self.host_payload_pool
+        return result
+
+    def _host_credits(self):
+        from tensorfold.server.host_payload import current
+
+        owner = current()
+        if owner is not None and owner.pool is not self.host_payload_pool:
+            raise ValueError("HTTP tokenizer belongs to a different host payload pool")
+        return owner
 
     def _retained_constraint_refusal(self):
         catalog = getattr(self.engine, "retention_catalog", None)
@@ -384,16 +407,30 @@ class App:
 
         if not hasattr(self.engine, "score_labels"):
             raise RequestError("this model's CUDA engine does not score decision labels")
+        credit = self._host_credits() if getattr(self, "host_payload_pool", None) is not None else None
+        held_ids = 0
+        if credit is not None:
+            credit.render_input(body)
 
         def render(content: str) -> str:
             try:
-                return self.template.render([{"role": "user", "content": content}], tools=None, enable_thinking=False)
+                return self.template.render([{"role": "user", "content": content}], tools=None, enable_thinking=False,
+                    **({"render_credit": credit.render} if credit is not None else {}))
             except TemplateError as exc:
                 raise DecisionError(f"the chat template failed: {exc}") from exc
 
         def encode(text: str) -> list[int]:
+            nonlocal held_ids
             try:
-                return [int(token) for token in self.template.encode(self.tok, text, segments=self.segments)]
+                if credit is None:
+                    return [int(token) for token in self.template.encode(self.tok, text, segments=self.segments)]
+                def reserve(count, **kwargs):
+                    credit.ids(held_ids + count, **kwargs)
+                values = self.template.encode(self.tok, text, segments=self.segments,
+                    ids_credit=reserve, cache_credit=credit.segment_cache)
+                held_ids += len(values)
+                credit.ids(held_ids + len(values))  # Source IDs and the caller's typed copy coexist.
+                return [int(token) for token in values]
             except PromptEncodingError as exc:
                 raise DecisionError(f"the chat template could not encode literal content: {exc}") from exc
 
@@ -428,6 +465,9 @@ class App:
                  add_generation_prompt: bool = True) -> PreparedRequest:
         from jinja2.exceptions import TemplateError
 
+        credit = self._host_credits() if getattr(self, "host_payload_pool", None) is not None else None
+        if credit is not None:
+            credit.render_input(body)
         if type(add_generation_prompt) is not bool:
             raise RequestError("add_generation_prompt must be a boolean")
         validate_modalities(body)
@@ -489,6 +529,7 @@ class App:
                 try:
                     ceiling = getattr(self, "render_budget_bytes", None)
                     text = self.template.render(messages, tools=tools, enable_thinking=thinking, extra=kwargs,
+                                                **({"render_credit": credit.render} if credit is not None else {}),
                                                 **({"max_render_bytes": ceiling} if ceiling is not None else {}),
                                                 **({"add_generation_prompt": False} if not add_generation_prompt else {}),
                                                 **images)
@@ -514,7 +555,8 @@ class App:
                     return PreparedRequest(rendered.tokens, max_tokens, tools, thinking,
                                            self.sampling_for(body, rendered.tokens), ignore_eos=ignore_eos, stop=stop,
                                            vision=rendered.vision, grammar=compiled, think_budget=budget, calls=calls,
-                                           thought_open=thought_open, penalties=penalties, _media_release=retire)
+                                           thought_open=thought_open, penalties=penalties, _media_release=retire,
+                                           count_only=not for_generation)
                 except BaseException as primary:
                     if retire is not None:
                         from tensorfold.cleanup import rollback
@@ -524,7 +566,11 @@ class App:
             text = render(body["messages"])
             from tensorfold.server.prompt_literals import PromptEncodingError
             try:
-                prompt = self.template.encode(self.tok, text, segments=self.segments)
+                if credit is None:
+                    prompt = self.template.encode(self.tok, text, segments=self.segments)
+                else:
+                    prompt = self.template.encode(self.tok, text, segments=self.segments,
+                                                  ids_credit=credit.ids, cache_credit=credit.segment_cache)
             except PromptEncodingError as exc:
                 raise RequestError(f"the chat template could not encode literal content: {exc}") from exc
         elif isinstance(body.get("prompt"), list):       # token ids (vLLM's and OpenAI's form): served as given
@@ -533,13 +579,19 @@ class App:
             text = body.get("prompt")
             if not isinstance(text, str):
                 raise RequestError("prompt must be a string or a list of token ids")
-            prompt = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", False)).ids
+            if credit is None:
+                prompt = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", False)).ids
+            else:
+                encoded = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", False))
+                credit.ids(len(encoded))
+                prompt = encoded.ids
+                del encoded
         if not prompt:
             raise RequestError("rendered prompt is empty")
         # sampling is resolved here, so a malformed control is refused before a stream opens
         return PreparedRequest(prompt, max_tokens, tools, thinking, self.sampling_for(body, prompt),
                                ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget, calls=calls,
-                               thought_open=thought_open, penalties=penalties)
+                               thought_open=thought_open, penalties=penalties, count_only=not for_generation)
 
     def _strict_calls(self, body: dict[str, Any], tools: list[dict[str, Any]], spec: Any,
                       policy: ToolCallPolicy, *, for_generation: bool = True) -> "strict_tools.Plan | None":
@@ -603,6 +655,12 @@ class App:
 
         from tensorfold.token_metadata import tokenizer_vocab_size
 
+        if getattr(self, "host_payload_pool", None) is not None:
+            credit = self._host_credits()
+            if credit is not None:
+                items = value[0] if type(value) is list and len(value) == 1 and type(value[0]) is list else value
+                if type(items) is list:
+                    credit.ids(len(items))
         size = tokenizer_vocab_size(self.tok) if hasattr(self.tok, "get_vocab_size") else None
         return token_ids(value, size, field)
 
@@ -615,6 +673,9 @@ class App:
         if not isinstance(body, dict):
             raise RequestError("the request body must be a JSON object")
         strings = flag(body, "return_token_strs", False)
+        credit = self._host_credits() if getattr(self, "host_payload_pool", None) is not None else None
+        if credit is not None:
+            credit.tokenization_reply, credit.lexical_output = True, strings
         if "messages" in body:
             fields = dict(body)
             def release_prepared_media():
@@ -631,7 +692,15 @@ class App:
             text = body.get("prompt")
             if not isinstance(text, str):
                 raise RequestError("prompt must be a string (or send messages)")
-            ids = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", True)).ids
+            if credit is None:
+                ids = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", True)).ids
+            else:
+                encoded = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", True))
+                credit.ids(len(encoded))
+                ids = encoded.ids
+                del encoded
+        if credit is not None:
+            credit.ids(len(ids))  # Reply copy/lexical strings are funded before either is built.
         limit = self._context_limit()
         reply: dict[str, Any] = {"count": len(ids), "tokens": [int(t) for t in ids],
                                  "max_model_len": limit if limit is not None else self.native_context_window}
@@ -750,6 +819,44 @@ class App:
                                "send them as 0, 0 and 1 (or omit them)")
         return penalties
 
+    def _reserve_http_generation(self, body, prepared, cancelled):
+        pool = getattr(self, "host_payload_pool", None)
+        if pool is None:
+            return
+        from tensorfold.server.host_payload import current
+
+        owner = current()
+        if owner is None:
+            # A direct, non-HTTP caller cannot borrow socket/phase authority.
+            # Preserve its original conservative commitment check unchanged.
+            from tensorfold.cuda.capacity import admit_host_commitment
+            record = self.engine.retention_catalog.host_resource_envelope["static_maximum_projection"]
+            admit_host_commitment(record["global_host_commitment_bytes"],
+                                  materialized_owned_bytes=record["materialized_owned_bytes"])
+            return
+        if owner.pool is not pool:
+            raise ValueError("HTTP generation belongs to a different host payload pool")
+        if cancelled is not None:
+            owner.cancelled = cancelled
+        context = pool.context_tokens
+        output = context
+        # Thinking/tool/grammar/gating/replay regions keep the established full
+        # context envelope. Only this plain no-thinking operation has no legal
+        # forced/gated continuation beyond its effective requested token cap.
+        if prepared is not None:
+            plain = (not prepared.thinking and not prepared.tools and prepared.grammar is None
+                     and prepared.calls is None)
+            if plain:
+                output = min(context, max(1, prepared.max_tokens))
+        elif (not self.default_thinking and body.get("enable_thinking", False) is False
+              and all(key in (
+                "model", "messages", "prompt", "temperature", "top_k", "top_p", "min_p", "seed",
+                "max_tokens", "max_completion_tokens", "return_token_ids", "stream", "stream_options",
+                "draft", "ignore_eos", "stop", "priority", "service_tier", "user", "enable_thinking")
+                for key in body)):
+            output = min(context, max(1, self._requested_tokens(body)))
+        owner.generation(body_bytes=owner.body_bytes, output_tokens=output)
+
     def run(self, body: dict[str, Any], chat: bool, emit: Callable[[dict[str, Any]], bool], *,
             prepared: PreparedRequest | None = None, cancelled: Callable[[], bool] | None = None,
             request_id: str | None = None, arrived: float | None = None,
@@ -761,6 +868,9 @@ class App:
         ``progress`` receives llama.cpp's ``prompt_progress`` (total, cache, processed, time_ms) while the prompt
         prefills, where the engine reports it, and returns False once the client has gone."""
 
+        if prepared is not None and getattr(prepared, "count_only", False):
+            raise RequestError("count-only preparation cannot be used for generation; prepare the request for generation")
+        self._reserve_http_generation(body, prepared, cancelled)
         entered = time.perf_counter()
         request_id = request_id or new_request_id()
         arrived = entered if arrived is None else float(arrived)

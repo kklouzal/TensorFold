@@ -6,6 +6,13 @@ SC117/V100 is the immediate delivery priority while selected existing profiles,
 including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
 separates requested, source-implemented, qualified and effective behavior.
 
+The V100 source now has one App-owned host-payload pool with grants before
+allocation and ownership through worker, socket and error retirement. Its C27
+joint-reservation control passes with unchanged service limits; 591 distinct
+CPU test nodes and 21 subtests passed across the explicitly scoped runtime
+environments. The installed successor and token/s benchmark remain pending.
+See [the host-credit scope](docs/v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
+
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload
 projection. It separately pays completed HTTP continuations, default-cache

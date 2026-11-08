@@ -49,9 +49,11 @@ def content_length(handler, limit: int, *, require_nonempty: bool = False) -> in
     return length
 
 
-def read(handler, limit: int) -> bytes:
+def read(handler, limit: int, *, credit=None) -> bytes:
     """Read exactly one supported frame; never accept truncated valid JSON."""
     length = content_length(handler, limit)
+    if credit is not None:
+        credit.receive(length)  # Funds the read AND the later JSON parse before allocation.
     try:
         payload = handler.rfile.read(length)
     except BaseException:
@@ -62,7 +64,7 @@ def read(handler, limit: int) -> bytes:
     return payload
 
 
-def _chunked(handler, limit: int, *, discard: bool) -> bytes:
+def _chunked(handler, limit: int, *, discard: bool, credit=None) -> bytes:
     """Cap total payload and framing work, including chunk lines, delimiters and trailers."""
     if handler.headers.get_all('Content-Length'):
         _refuse(handler, 'Content-Length and Transfer-Encoding cannot be combined')
@@ -108,6 +110,10 @@ def _chunked(handler, limit: int, *, discard: bool) -> bytes:
         if discard:
             _discard_exact(handler, size)
         else:
+            if credit is not None:
+                # A complete next raw/parse phase is reserved atomically. A
+                # live reader never waits while all readers retain buffers.
+                credit.receive(total)
             block = handler.rfile.read(size)
             if len(block) != size:
                 _refuse(handler, 'request body ended before chunk size')
@@ -184,6 +190,8 @@ def read_body(handler, *, limit: int = LIMIT, deadline=None, cancelled=None) -> 
     original = previous_timeout = None
     primary = _native_cause = _native_context = None
     try:
+        prepare_credit = getattr(handler, "begin_host_body", None)
+        credit = None if prepare_credit is None else prepare_credit()
         if deadline is not None or cancelled is not None:
             if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
                 raise ValueError('body deadline must be finite monotonic seconds')
@@ -195,8 +203,8 @@ def read_body(handler, *, limit: int = LIMIT, deadline=None, cancelled=None) -> 
             original = handler.rfile
             handler.rfile = reader
         if handler.headers.get_all('Transfer-Encoding'):
-            return _chunked(handler, limit, discard=False)
-        return read(handler, limit)
+            return _chunked(handler, limit, discard=False, credit=credit)
+        return read(handler, limit, credit=credit)
     except BaseException as error:
         primary = error
         _native_cause = BaseException.__cause__.__get__(error)

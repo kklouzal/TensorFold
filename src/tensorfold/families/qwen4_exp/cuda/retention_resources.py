@@ -903,7 +903,7 @@ def _http_json_encoding_payload(encoded_bytes, policy):
 
 
 def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_bytes, copy_enabled,
-                               presentation_fixed=0, json_policy=None):
+                               presentation_fixed=0, json_policy=None, output_tokens=None):
     """Named future owned Python/NumPy payloads for ONE logical CPU owner.
 
     InputClaim independently pays the original full prompt and encoded replay.
@@ -920,6 +920,10 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
     _size(presentation_fixed, "presentation fixed bytes", zero=True)
     layout = _python_layout()
     integer = max(layout["integer"], sys.getsizeof(vocab_size - 1), sys.getsizeof(context))
+    if output_tokens is None:
+        output_tokens = context
+    if type(output_tokens) is not int or not 0 <= output_tokens <= context:
+        raise ValueError("presentation output tokens must fit the unchanged logical context")
 
     def sequence(n):
         return layout["list"] + (n + (n >> 3) + 6) * layout["pointer"] + n * integer
@@ -935,7 +939,7 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
     # one-item list, the (list,count) tuple and a deque pointer pair.
     from collections import deque
 
-    mailbox = context * (sequence(1) + layout["tuple"] + 2 * layout["pointer"]
+    mailbox = output_tokens * (sequence(1) + layout["tuple"] + 2 * layout["pointer"]
                          + integer + sys.getsizeof(deque((None,))))
     # CPU CopyIndex: at most context n-grams, each owns an eight-ID tuple and a
     # start-list; singleton dictionary storage dominates its CPython table per
@@ -953,7 +957,7 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
     # Incremental decode keeps before/after/accumulated text; stop/markup/reply
     # splitting can retain old and new presentation strings at the same call.
     # Count actual source string roles rather than assuming one byte/character.
-    chars = context * presentation + presentation_fixed
+    chars = output_tokens * presentation + presentation_fixed
     string = layout["unicode"] + 4 * chars + chars  # PEP393 payload plus possible UTF8 cache.
     text_roles = ("decoder.before", "decoder.after", "decoder.text", "decoder.append_slice", "decoder.new_text",
                   "final.before", "final.decoded", "final.slice", "final.joined", "app.raw", "app.reasoning",
@@ -1070,7 +1074,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     wire_preparation_fields = frozenset(("_fifo_started", "_media_outcome_retired", "admission_eligibility",
         "admission_status", "admission_ticket", "blocked_input", "delivery_owner", "output_capacity",
         "principal", "production_budget", "retirement_host", "_media_rank_owned", "_retention_staged",
-        "_tp_token_limit", "retention_intent", "_media_wire"))
+        "_tp_token_limit", "retention_intent", "_media_wire", "_host_payload_borrow"))
     stream_fields = set(Stream.__dataclass_fields__) | wire_preparation_fields
     if len(Stream.__dataclass_fields__) <= 30:
         raise ValueError("Stream metadata no longer has the selected combined dictionary layout")
@@ -1168,6 +1172,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     # N request/error journals plus one managed actor error root per rank.
     # Raised receive/publication paths preserve byte/text/graph diagnostics.
     error_owners = (pending + 1) * (source_graph + peers * graph + world * (raw + text))
+    one_error_owner = source_graph + peers * graph + world * (raw + text)
     leader_prompt_refs = pending * partition["per_list_pointer_bytes"]
     fixed = {"follower_owned_rpc_children": persistent_children,
              "preserved_rpc_error_owners": error_owners,
@@ -1181,6 +1186,8 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
             "source_json_graph_bytes": source_graph, "parse_working": parsed,
             "source_fixed_record_tables": source_record_tables,
             "persistent_child_schema": child_schema,
+            "one_cohort_error_owner_bytes": one_error_owner,
+            "one_serialized_phase_bytes": max(stages.values()),
             "source_ack_graph_bytes": ack_graph, "source_ack_schema": "error-state-completion-v1",
             "per_http_rpc_error_tail_bytes": max(source_graph, graph) + raw + text,
             "encoder_working_bytes": encoding, "digest_working_bytes": digest_working,
@@ -1324,15 +1331,42 @@ def _admit_host_record(catalog, record, materialized):
 
     if catalog.has_retained:
         raise ValueError("host resources must finalize before request admission")
-    identity = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    declaration = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     old = getattr(catalog, "host_resource_envelope", None)
-    if old is not None and old["identity"] != identity:
-        raise ValueError("the active retention endpoint resource envelope is immutable")
+    if old is not None:
+        if old.get("declaration_identity", old["identity"]) != declaration:
+            raise ValueError("the active retention endpoint resource envelope is immutable")
+        return old
     try:
         authority = admit_host_commitment(record["global_host_commitment_bytes"], materialized_owned_bytes=materialized)
+        if "dynamic_host_payload" in record:
+            fixed = record["global_host_commitment_bytes"]
+            capacity = authority["usable_remaining_bytes"] - authority["remaining_commitment_bytes"]
+            if capacity <= 0:
+                raise ValueError("fixed host obligations leave no HTTP payload allowance")
+            record = {**record, "global_host_commitment_bytes": fixed + capacity,
+                "dynamic_host_payload": {**record["dynamic_host_payload"], "capacity_bytes": capacity,
+                    "physical_snapshot_is_exclusive_reservation": False}}
+            authority = {**authority, "fixed_obligations_bytes": fixed,
+                "variable_payload_capacity_bytes": capacity,
+                "total_commitment_bytes": fixed + capacity,
+                "remaining_commitment_bytes": authority["usable_remaining_bytes"]}
     except BaseException as primary:
         from tensorfold.cleanup import raise_failures
         try:
+            # Constructor-only operator evidence, never a public HTTP payload.
+            # The selected subrecords contain bounds/identities, not request
+            # text, credentials, model values or arbitrary exception objects.
+            diagnostic = {name: record[name] for name in (
+                "schema", "context_tokens", "world", "max_pending_requests",
+                "max_http_connections", "global_host_commitment_bytes",
+                "http_owner_scope", "generation_owner_bound", "continuation",
+                "tp_rpc_python", "logical_api", "ordinary_host_baseline") if name in record}
+            encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+            if len(encoded) <= 256 * 1024:
+                BaseException.__dict__["__dict__"].__get__(primary, type(primary))[
+                    "_tensorfold_host_refusal"] = diagnostic
+                BaseException.add_note(primary, "tensorfold.host-refusal-v1 " + encoded)
             names = ("global_model_cpu_projection_bytes", "global_completed_http_projection_bytes",
                 "global_http_rpc_error_tail_bytes", "global_transport_projection_bytes",
                 "global_logical_api_projection_bytes", "global_rpc_python_working_bytes",
@@ -1344,7 +1378,8 @@ def _admit_host_record(catalog, record, materialized):
         except BaseException as secondary:
             raise_failures(primary, [secondary])
         raise
-    result = {**record, "identity": identity, "authority": authority}
+    identity = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    result = {**record, "identity": identity, "declaration_identity": declaration, "authority": authority}
     catalog.host_resource_envelope = result
     return result
 
@@ -1422,6 +1457,308 @@ def finalize_backend_resources(catalog, *, tokenizer, scheduler, request_limit, 
     return _admit_host_record(catalog, record, materialized)
 
 
+def _http_header_resources(policy):
+    """Selected HTTP/email parser's pre-body phase; no parser limit changes.
+
+    Raw lines/joined bytes, Latin1 text, outer StringIO, partial StringIO's
+    old/new storage, split lines, header name/value folding and defect text are
+    bounded by64 times their aggregate input extent. Per-line containers and
+    Message/defect metadata have a separate128-singleton-table allowance.
+    The malformed101st line and overlong request line are included before the
+    selected parser raises. This is source/object payload, not allocator RSS.
+    """
+    import http.client
+    import http.server
+    import email.parser
+    import email.feedparser
+    from pathlib import Path
+    from tensorfold.engine.model_identity import capture_model_identity
+
+    if http.client._MAXLINE != 65536 or http.client._MAXHEADERS != 100:
+        raise ValueError("HTTP header payload has no proof for these parser limits")
+    expected = {
+        "http.client": (http.client, 58537, "0242200eed2aa47dc2723c99605055c9b792dc197ab36884db0a193772ba99d1"),
+        "http.server": (http.server, 48516, "6ef28116c245a8e5e7f2d57f17607b7df706fd86110cf1c5a2b8416151b41248"),
+        "email.parser": (email.parser, 4975, "88890ea9994c55ff7d6c1fd570fece2785f51ed407ee95df4aff946e250bcd66"),
+        "email.feedparser": (email.feedparser, 22796, "6046239fcdd6977d1c25841581cabedaeec8046cc5fedcb8ff2d6450a36442bd"),
+    }
+    files = {name: Path(row[0].__file__).resolve(strict=True) for name, row in expected.items()}
+    authority = capture_model_identity(files, runtime_identity={"policy": "http-header-payload-v1"},
+        authorize=lambda _name, path: path.resolve(strict=True), max_files=len(files),
+        max_file_bytes=max(row[1] for row in expected.values()),
+        max_total_bytes=sum(row[1] for row in expected.values()))
+    if any((item.size, item.sha256) != expected[item.logical_name][1:] for item in authority.files):
+        raise ValueError("HTTP header payload source differs from its selected parser proof")
+    authority.verify_unchanged()
+    layout = _python_layout()
+    def bound(extent, lines):
+        return 64 * extent + (lines + 2) * 128 * layout["dict_entry"] + policy.frame_work
+    maximum = (http.client._MAXHEADERS + 2) * (http.client._MAXLINE + 1)
+    return {"identity": authority.model_prefix, "maximum_input_bytes": maximum,
+            "maximum_header_lines": http.client._MAXHEADERS + 1,
+            "payload_bytes": bound(maximum, http.client._MAXHEADERS + 1), "bound": bound}
+
+
+def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
+                           segment_encoder=None, tokenizer_serialized_chars=0, static_http_metadata=None):
+    """Fund fixed owners once and admit variable HTTP payloads before allocation.
+
+    Serialized RPC workspace and one poisoned-cohort journal are global. Live
+    request children/expected diagnostics retain their per-request leases;
+    they are not a pending-count multiplier on every possible96MiB frame.
+    The legacy static projection remains diagnostic, never an admitted grant.
+    """
+    from tensorfold.server.host_payload import HostPayloadPool, json_wire_bound
+    from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
+    from tensorfold.cuda.http import TOKENIZER_BODY_LIMIT
+    from .tokenizer_payload import bytelevel_decode_payload
+    from tensorfold.server.segments import SegmentEncoder, _Segment
+    from tensorfold.server.prompt_literals import MAX_RENDER_BYTES
+    from array import array
+
+    policy, layout = core["json_policy"], _python_layout()
+    headers = _http_header_resources(policy)
+    rpc = core["rpc_python"]
+    if policy is None or catalog.policy is not None:
+        raise ValueError("dynamic HTTP payloads require the certified ordinary JSON owner")
+    # Detokenize has a wire-body limit, not a model-context ID limit. Bind its
+    # existing native/Python conversion proof ONCE, before publishing admission;
+    # per-chunk credit callbacks must not rehash the11MiB loaded tokenizer DSO.
+    detokenize = bytelevel_decode_payload(core["bound"],
+        encoded_id_bytes=min(record["max_http_body_bytes"], TOKENIZER_BODY_LIMIT))
+    # The shape walker charges12 bytes per codepoint; UTF8 byte extent also
+    # bounds codepoint count. Metadata covers the reply's fixed wrapper keys.
+    detokenize_wire = 12 * detokenize["decoded_utf8_bytes"] + MAX_MESSAGE_BYTES
+    detokenize_owned = (max(detokenize["native_heap_requested_bytes"],
+                            detokenize["result_to_python_payload_bytes"])
+        + _append_list_payload(detokenize["input_ids"])
+        + detokenize["input_ids"] * max(layout["integer"], sys.getsizeof(core["bound"].vocab_size - 1)))
+    peers = catalog.world - 1
+    _size(tokenizer_serialized_chars, "captured tokenizer serialization characters", zero=True)
+    segment_limit = 0
+    opener_chars = 1
+    if segment_encoder is not None:
+        if type(segment_encoder) is not SegmentEncoder:
+            raise ValueError("HTTP segment payload requires its actual prepared cache")
+        segment_limit = _size(segment_encoder.limit, "actual segment cache byte limit", zero=True)
+        if type(segment_encoder.opener) is not str or not segment_encoder.opener:
+            raise ValueError("HTTP segment cache needs its actual nonempty opener")
+        opener_chars = len(segment_encoder.opener)
+    array_header = sys.getsizeof(array("i"))
+    minimum_segment = sys.getsizeof("") + sys.getsizeof(object.__new__(_Segment)) + 2 * array_header
+    maximum_segments = segment_limit // minimum_segment
+    # Keep the existing insert-all/evict algorithm and its exact LRU semantics.
+    # A qualified HTTP writer accepts at most MAX_RENDER_BYTES; nonempty opener
+    # length bounds its fresh batch. OrderedDict bucket/fast-node capacity can
+    # remain at that peak AFTER payload eviction, so pay it for App lifetime.
+    cache_peak_keys = 0 if segment_encoder is None else maximum_segments + MAX_RENDER_BYTES // opener_chars + 1
+    cache_capacity = 1 << (max(8, 3 * (cache_peak_keys + 1)) - 1).bit_length()
+    cache_width = 1 if cache_capacity < 256 else 2 if cache_capacity < 65536 else 4 if cache_capacity < 1 << 32 else 8
+    cache_table = 32 + cache_capacity * cache_width + (2 * cache_capacity // 3) * 24
+    segment_fixed = (segment_limit + 2 * cache_table + 2 * cache_capacity * layout["pointer"]
+                     + 32 * cache_peak_keys + 128)
+    if segment_encoder is None:
+        segment_fixed = 0
+    depth = 10000
+    capacity = 1 << (max(8, 3 * (depth + 1)) - 1).bit_length()
+    width = 1 if capacity < 256 else 2 if capacity < 65536 else 4 if capacity < 1 << 32 else 8
+    marker_table = 32 + capacity * width + (2 * capacity // 3) * 24
+    iterator = max(sys.getsizeof(iter([])), sys.getsizeof(iter(())), sys.getsizeof(iter({}.values())))
+    measurement = (policy.frame_work + 2 * marker_table + 36 * (depth + 1)
+                   + depth * (sys.getsizeof((None, None)) + iterator)
+                   + 2 * _append_list_payload(depth + 1))
+    # Existing protocol diagnostic extent, not a new request/route limit.
+    refusal = {"error": {"message": "\0" * 1024, "type": "server_error",
+                         "param": "response_id", "code": "server_is_overloaded"}}
+    refusal_wire = json_wire_bound(refusal, maximum=1 << 20)
+    prepaid_encoder = _http_json_encoding_payload(refusal_wire, policy)["total_bytes"]
+    static_wire = 0 if static_http_metadata is None else json_wire_bound(static_http_metadata, maximum=sys.maxsize)
+    static_payload = _json_tree_payload(static_wire, policy)
+    # Fixed scalar/container shells in stats/runtime/usage/history records.
+    # Dynamic JSON mappings are credited separately under their publication
+    # lock; model aliases/descriptions are measured, not capped. Per State256
+    # covers history/rank/page/catalog fields; each layer adds16 indexer cells.
+    layers = len(getattr(core["decoder"].w, "layers", ()))
+    shell_nodes = (1024 + 8 * (core["decoder"].depth + 2)
+                   + 256 * len(catalog.states) + 16 * layers * len(catalog.states))
+    integer_payload = sys.getsizeof(10 ** 4300 - 1)
+    shell_payload = shell_nodes * (layout["dict_entry"] + layout["unicode"] + 5 * 128
+        + integer_payload + layout["list"] + layout["tuple"] + 4 * layout["pointer"])
+    shell_wire = shell_nodes * (4302 + 12 * 128 + 4)
+    # execution_manifest_record bounds its diagnostic to1024 characters;
+    # migration reasons are fixed text plus the validated <=8 rank IDs.
+    shell_payload += 2 * (layout["unicode"] + 5 * 1024)
+    shell_wire += 2 * 12 * 1024
+    fixed_rpc = (rpc.get("one_cohort_error_owner_bytes", 0)
+                 + rpc.get("one_serialized_phase_bytes", 0)
+                 + _total(rpc.get("leader_request_map_metadata", {}).values()))
+    static = dict(record)
+    cache = record["logical_api"]["encoded_cache_bytes"]
+    wrappers = record["logical_api"]["cache_wrappers"]
+    fixed_cache = _json_tree_payload(cache, policy) + (0 if wrappers is None else wrappers["total_bytes"])
+    fixed_handlers = record["max_http_connections"] * (
+        measurement + prepaid_encoder + headers["payload_bytes"] + 65536)
+    fixed = _total((core["baseline"].baseline_host_bytes, core["header"].global_host_bytes,
+        record["global_waiting_input_bytes"], fixed_cache, fixed_rpc, fixed_handlers,
+        record["global_unpaid_native_fixed_payload_bytes"], record["global_unpaid_native_prefix_payload_bytes"],
+        segment_fixed, static_payload))
+    dynamic = {**record, "static_maximum_projection": static,
+        "global_model_cpu_projection_bytes": 0, "global_completed_http_projection_bytes": 0,
+        "global_http_rpc_error_tail_bytes": 0, "global_transport_projection_bytes": fixed_handlers,
+        "global_logical_api_projection_bytes": fixed_cache, "global_rpc_python_working_bytes": fixed_rpc,
+        "global_http_encoder_payload_bytes": 0, "global_future_cpu_payload_bytes": 0,
+        "global_host_commitment_bytes": fixed,
+        "dynamic_host_payload": {"schema": "tensorfold.http-host-payload-admission-v1",
+            "fixed_obligations_bytes": fixed, "prepaid_measurement_bytes_per_handler": measurement,
+            "prepaid_encoder_bytes_per_handler": prepaid_encoder,
+            "prepaid_header_payload_bytes_per_handler": headers["payload_bytes"],
+            "header_source_identity": headers["identity"],
+            "detokenize_phase": detokenize,
+            "segment_cache_limit_bytes": segment_limit,
+            "segment_cache_fixed_bytes": segment_fixed,
+            "segment_cache_persistent_key_highwater": cache_peak_keys,
+            "segment_cache_opener_chars": opener_chars,
+            "tokenizer_serialized_chars": tokenizer_serialized_chars,
+            "fixed_http_metadata_payload_bytes": static_payload,
+            "monitor_shell_nodes": shell_nodes, "monitor_shell_payload_bytes": shell_payload,
+            "monitor_shell_wire_bytes": shell_wire,
+            "variable_owners": "HTTP frame/generation/cache/encoder plus all TP peers",
+            "growth_policy": "whole-phase preallocation or capacity refusal; no live-owner growth wait"}}
+    result = _admit_host_record(catalog, dynamic, materialized)
+    existing = getattr(catalog, "_http_payload_pool", None)
+    if existing is not None:
+        return result
+    pool_bytes = result["dynamic_host_payload"]["capacity_bytes"]
+    body_max = record["max_http_body_bytes"]
+
+    def body_bound(amount):
+        _size(amount, "HTTP payload frame", zero=True)
+        if amount > body_max:
+            raise ValueError("HTTP payload frame exceeds the existing body maximum")
+        # Includes raw buffers, chunk growth/final bytes and the full later
+        # parse/error phase BEFORE read/json.loads. Empty bodies fund {} too.
+        return _json_parse_payload(amount, policy)["total_bytes"] + 3 * amount + 65536
+
+    rpc_request_base = max(rpc["json_graph_bytes"],
+        peers * (0 if rpc["persistent_child_schema"] is None else
+                 _total(value for key, value in rpc["persistent_child_schema"].items()
+                        if type(value) is int and key != "largest_retained_integer_bytes")))
+
+    def ids_bound(count, entries=0, positions=0, metadata_chars=0, *, reply=False, lexical=False):
+        # Simultaneous cardinalities supplied before the owned native getters
+        # and list/array transforms. Each unit pays the larger representation,
+        # including getter's cloned u32, PyLong, pointers and array growth.
+        owned = (4 * count + _append_list_payload(count)
+                 + count * (max(layout["integer"], sys.getsizeof(core["bound"].vocab_size - 1)) + 16)
+                 + entries * (2 * layout["dict_entry"] + layout["tuple"] + 2 * array_header + 2 * layout["list"])
+                 # positions counts int32 ARRAY ELEMENTS, not dictionaries.
+                 # Three live extents cover old/new geometric array growth;
+                 # map/tuple/array object headers are separately in entries.
+                 + 12 * positions)
+        if metadata_chars:
+            wire = 4 * metadata_chars
+            owned += (_json_parse_payload(wire, policy)["total_bytes"]
+                      + 2 * _json_tree_payload(wire, policy) + _json_copy_working(wire, policy) + 12 * metadata_chars)
+        future_wire = 0
+        if reply:
+            future_wire = count * (len(str(core["bound"].vocab_size - 1)) + 3) + MAX_MESSAGE_BYTES
+            if lexical:
+                extent = count * core["bound"].piece_utf8_bytes
+                owned += _append_list_payload(count) + count * layout["unicode"] + 5 * extent
+                future_wire += 12 * extent + 3 * count
+            owned += max(0, _http_json_encoding_payload(future_wire, policy)["total_bytes"] - prepaid_encoder)
+        return owned, future_wire
+
+    generation_ids_base = ids_bound(4 * core["context"])[0]
+
+    def generation_bound(amount, output_tokens):
+        terms = continuation_payload_bytes(context=core["context"], vocab_size=core["bound"].vocab_size,
+            presentation=core["bound"].decoded_utf8_bytes_per_token,
+            presentation_fixed=core["bound"].decoded_utf8_fixed_bytes, max_body_bytes=max(1, amount),
+            copy_enabled=core["copy_enabled"], json_policy=policy, output_tokens=output_tokens)
+        if record["output_queue_tokens"] is not None:
+            terms["project_payload_bytes"] -= terms["mailbox"]
+            terms["mailbox"] *= min(output_tokens, record["output_queue_tokens"])
+            terms["mailbox"] //= max(1, output_tokens)
+            terms["project_payload_bytes"] += terms["mailbox"]
+        # The same parsed body is already paid by its HTTP frame lease.
+        owned = terms["project_payload_bytes"] - terms["request_graph"]
+        # The old graph+wire source envelope is a conservative wrapper bound,
+        # not a measured encoded length. Retain it for FUTURE generation here;
+        # the actual encoder separately measures its exact owned JSON shape.
+        # Echo/translated request fields may expand ASCII escaping and wrappers;
+        # one existing protocol extent also funds fixed response/stat metadata.
+        future_wire = terms["reply_graph_and_wire"] + 12 * amount + MAX_MESSAGE_BYTES
+        future_encoder = _http_json_encoding_payload(future_wire, policy)["total_bytes"]
+        return (owned + peers * rpc["per_follower_scope_bytes"] + rpc_request_base + generation_ids_base
+                + max(0, future_encoder - prepaid_encoder)), future_wire
+
+    def cache_bound(amount, *, copying):
+        _size(amount, "cached encoded payload", zero=True)
+        if amount > cache:
+            raise ValueError("cache owner exceeds the unchanged Store byte maximum")
+        if copying:
+            owned = (90 * amount + _json_copy_working(amount, policy)
+                    + _append_list_payload(amount // 2) + _append_list_payload(
+                        record["logical_api"]["cache_entry_limit"]))
+        else:
+            owned = _json_tree_payload(amount, policy) + layout["bytes"] + amount
+        future_wire = 12 * amount + MAX_MESSAGE_BYTES
+        return owned + max(0, _http_json_encoding_payload(future_wire, policy)["total_bytes"] - prepaid_encoder)
+
+    def control_bound(amount, kind):
+        future_wire = 12 * amount + MAX_MESSAGE_BYTES
+        extra = 0
+        if kind == "detokenize":
+            future_wire = max(future_wire, detokenize_wire)
+            extra = detokenize_owned
+        elif kind == "monitor":
+            future_wire = shell_wire
+        elif kind != "metadata":
+            raise ValueError("HTTP control phase differs from its prepared source owner")
+        return (_json_tree_payload(amount, None) + policy.frame_work
+                + extra + shell_payload
+                + max(0, _http_json_encoding_payload(future_wire, policy)["total_bytes"] - prepaid_encoder)), future_wire
+
+    pool = HostPayloadPool(pool_bytes, body_bound=body_bound,
+        generation_bound=generation_bound,
+        encoding_bound=lambda amount: _http_json_encoding_payload(amount, policy)["total_bytes"],
+        cache_bound=cache_bound, measurement_bytes=measurement, prepaid_encoder_bytes=prepaid_encoder,
+        max_handlers=record["max_http_connections"],
+        control_bound=control_bound,
+        deadline_seconds=scheduler.queue_timeout_s)
+    pool.rpc_request_base = rpc_request_base
+    pool.generation_ids_base = generation_ids_base
+    pool.ids_bound = ids_bound
+    pool.tokenizer_serialized_chars = tokenizer_serialized_chars
+    def segment_bound(limit, entries, text_chars):
+        if limit > segment_limit:
+            raise ValueError("HTTP segment cache changed after immutable admission")
+        if text_chars > MAX_RENDER_BYTES:
+            raise ValueError("HTTP segment text exceeds the existing bounded-render contract")
+        # Current cache is fixed-paid; this phase pins a possible old generation
+        # plus split/lookup/fresh metadata before acquiring its lock.
+        return (limit + 2 * _fresh_dict_payload(entries, 24)[0] + 4 * _append_list_payload(entries)
+                + entries * (2 * array_header + layout["tuple"] + 2 * layout["dict_entry"])
+                + 30 * text_chars)
+    pool.segment_bound = segment_bound
+    pool.render_bound = lambda chars, parts: (47 * chars + 4 * _append_list_payload(parts)
+        + parts * (3 * layout["unicode"] + 2 * layout["bytes"] + layout["tuple"] + 2 * layout["list"]))
+    pool.metadata_wire_bytes = MAX_MESSAGE_BYTES
+    pool.monitor_wire_bytes = shell_wire
+    pool.snapshot_bound = lambda wire: (_json_tree_payload(wire, policy) + _json_copy_working(wire, policy))
+    pool.cache_max_bytes = cache
+    pool.context_tokens = core["context"]
+    pool.header_bound = headers["bound"]
+    pool.header_payload_bytes = headers["payload_bytes"]
+    pool.header_other_bytes = measurement + prepaid_encoder + 65536
+    pool.rpc_bound = lambda amount: (catalog.world * (_json_tree_payload(amount, policy)
+        + 2 * amount + layout["unicode"] + layout["bytes"]) +
+        _total(rpc["source_fixed_record_tables"].values()))
+    catalog._http_payload_pool = pool
+    return result
+
+
 def _http_fifo_projection_scope(catalog, tokenizer, scheduler, request_limit, *,
                                 pending, waiting, output, logical_api_limits):
     """Initial ordinary HTTP ownership; unsupported regions keep their old bound."""
@@ -1459,7 +1796,8 @@ def _http_fifo_projection_scope(catalog, tokenizer, scheduler, request_limit, *,
 def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
                                 max_waiting_input_bytes, max_http_connections, output_queue_tokens=None,
                                 max_http_body_bytes=None, logical_api_limits=None, fifo_child_schema=None,
-                                scheduler=None, request_limit=None):
+                                scheduler=None, request_limit=None, segment_encoder=None,
+                                tokenizer_serialized_chars=0, static_http_metadata=None):
     """Freeze actual endpoint obligations before handlers/accepted generation.
 
     Physical admission is a current source-candidate check, not an exclusive OS
@@ -1610,4 +1948,8 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
         "native_constraints": ("ordinary unretained matcher residency/allocator qualification pending" if catalog.policy is None
                                else "retained/tiered combination refused before compilation"),
         "evidence": catalog.evidence}
+    if scope is not None and catalog.world == 8 and rpc_python.get("persistent_child_schema") is not None:
+        return _finalize_dynamic_http(catalog, record, core, materialized, scheduler,
+            segment_encoder=segment_encoder, tokenizer_serialized_chars=tokenizer_serialized_chars,
+            static_http_metadata=static_http_metadata)
     return _admit_host_record(catalog, record, materialized)

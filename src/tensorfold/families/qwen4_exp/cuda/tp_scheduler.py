@@ -902,6 +902,9 @@ class TensorParallelDecoder:
         from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES, bounded_json
 
         text = bounded_json(body, separators=(",", ":"))
+        if source is not None and getattr(self.engine, "host_payload_pool", None) is not None:
+            from tensorfold.server.host_payload import reserve_rpc
+            reserve_rpc(source, len(text))  # Before sequence/publication, never a partial RPC grow.
         self.sequence += 1
         try:
             messages = [self._key(sequence, peer) for peer in range(1, self.comm.world)]

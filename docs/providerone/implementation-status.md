@@ -41,6 +41,13 @@ Private receipts are provenance, not dependencies for fresh-checkout tests.
 
 ## Requested, implemented, qualified and effective
 
+Ordinary fixed-profile HTTP now has source-verified global host phase credits,
+including worker/error tails and actual metadata/ID conversions. The recorded C27
+joint-reservation control and 591 distinct CPU nodes plus 21 subtests passed;
+the installed successor, live C27 admission and short throughput run remain
+pending. Managed profile publication and native allocator/RSS qualification keep
+their separate gates. See [the integrated source scope](../v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
+
 “Implemented” below identifies existing starting source and bounded software
 controls, not completion of the full governing subsystem. Qualification and
 effective deployment require their own exact artifacts, target and receipts.

@@ -55,7 +55,9 @@ The pinned-SDK CPU source composition recorded 302 passed, two failed and
 zero skipped, with CUDA uninitialized. Both failures are unchanged counting
 fixtures (expecting grammar compilation on count and a compiled grammar on a
 count-prepared request); they reproduce on the pre-increment `1b765` baseline and
-old installed runtime. Their assertions and failure evidence are preserved.
+old installed runtime. At that checkpoint their assertions were unchanged;
+failure evidence remains preserved. The later phase-credit integration below
+reconciles the count fixtures against the established count-only contract.
 This is a partially passing source gate, not an all-green or installed-runtime
 qualification. The original 22 focused containment controls passed independently. The final
 actual pinned-SDK four-module check then recorded 75 passed and only the same
@@ -391,6 +393,58 @@ SHA256 `849f6ee82d80be4e4afbdf185229d7147c702353cafe23d188d969dacb0d82ca`.
 Baseline failures and the initial missing-documentation test-input error remain
 retained. This closes fixture drift, not the moving host-credit integration,
 model admission or performance qualification.
+
+## Ordinary HTTP phase-credit integration
+
+The ordinary fixed-profile FIFO/ByteLevel source path now funds fixed model,
+cache, header and RPC obligations once, then derives one App-owned global
+variable-payload allowance from the existing physical/cgroup sample. This is
+an application payload bound, not an exclusive OS reservation. It preserves
+the selected context, MTP, H/P limits, body limits, output queue and cache caps.
+The maintained CLI initializes one App exclusively before listener publication;
+concurrent factories on one engine are outside this qualified source scope.
+
+Grants precede body reads/parse, generation preparation/publication and future
+encoding, actual metadata copies, token-ID/lexical conversion, segment-cache
+pins/render assembly, and RPC publication. Stream/mailbox shared loans and
+authentic error loans survive socket/logical-request completion. Unknown cleanup
+failures fence the owner; live-owner growth does not wait while holding payloads.
+Store HTTP reads borrow immutable snapshots while public copy semantics and
+cache/LRU behavior stay intact. Metadata credits accumulate both capacity-plan
+copies and controller observations before copying, without reducing route caps.
+The earlier generic RPC future allowance remains funded.
+
+The immutable V4 source check passed the C27 joint-arithmetic node first, then
+576 suite nodes plus 21 subtests on image `540c54b7`. Its 13 missing-Transformers
+failures and two PIL skips were replayed as the exact 15 nodes on the same
+snapshot in compatible media image `8f5c4ddd`; all 15 passed with zero skips.
+Thus 591 distinct suite nodes were exercised passing across explicitly separate
+source-test environments. Configured Ruff and syntax passed, native FD/source
+identity matched, and both containers retired with CUDA uninitialized. Gate:
+`http-host-admission-source-cpu-v1/increment-v4/coherent-V4-source-CPU-gate-v1.json`,
+SHA256 `76f0462c0079517e8cfd309cd8cd5c5cf6d4744512fe7e2ef2d876a96dfb4417`.
+The C27 node uses recorded geometry/baseline, 27 conservative 1 MiB/R64 owners
+and monitoring, with mocked physical allowance; it is not a fresh physical grant.
+
+Final V5 cleanup removed two verified write-only fields, including an unnecessary
+closed lease/body cycle. All other V4 files remained unchanged. The targeted
+selected-image rerun passed the C27 node and 41 core tests with no skips, plus
+Ruff/syntax; the new lifetime control runs with GC disabled. Gate:
+`http-host-admission-source-cpu-v1/increment-v5-targeted/V5-targeted-cleanup-CPU-gate-v1.json`,
+SHA256 `bd6b98a3252112720fb1a9b7667bbc2a6c5e5666128497687dce13127da6fc91`.
+
+Count routes retain validation without native generation-grammar compilation.
+Count-produced preparation is explicitly refused if reused for generation,
+before generation-host/model/matcher work; outer logical-limit bookkeeping is
+unchanged. The old counting assertions were corrected against `2173fa21` and
+independent installed-baseline evidence while preserving the generation native
+retention barrier. Public stats fields remain unchanged; constructor refusal
+diagnostics are bounded and retained in operator tracebacks.
+
+This advances source integration only. Installed successor admission, actual
+C27 activity, model/quality/performance, native encoder/Jinja heap, allocator/RSS,
+C-stack and broader managed/media profiles remain separate gates. The immediate
+next target run is a short correctness smoke and throughput benchmark.
 
 ## Neutral artifact I/O boundary (A1)
 

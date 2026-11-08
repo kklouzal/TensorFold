@@ -1,5 +1,14 @@
 # Flash Next on eight V100 GPUs
 
+The ordinary fixed-profile HTTP source path now derives a shared host-payload
+allowance from the existing physical/cgroup guard after fixed obligations.
+Existing request/socket/body/cache/context limits remain in force. Phase grants
+precede allocation; worker, response and error owners retain credit until their
+consumers retire. The maintained CLI initializes one App exclusively before
+publishing its listener; concurrent App construction on one engine is unqualified.
+This source checkpoint still needs an installed-image admission/smoke test before
+the short throughput run. See [source checks and limits](../../docs/v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
+
 Source and fresh installed CPU controls cover PP1 routed-expert partitioning. Startup may select
 `--expert-tensor-parallel-size 8|4|2` with local Flash Next GGUF TP8, resident
 expert banks and GPU histories. Every rank must use the same effective degree;

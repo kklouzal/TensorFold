@@ -56,13 +56,23 @@ def snapshot(app: Any) -> dict[str, Any] | None:
 def _snapshot_current(app: Any) -> dict[str, Any] | None:
     """Project only host metadata; caller owns the profile read until return."""
     engine, scheduler, decoder, controller = _owner(app)
+    credit = None
+    if getattr(app, "host_payload_pool", None) is not None:
+        from .host_payload import current
+        owner = current()
+        if owner is not None and owner.pool is not app.host_payload_pool:
+            raise ValueError("HTTP runtime belongs to a different host payload pool")
+        credit = None if owner is None else owner.snapshot
     profiles = getattr(engine, "serving_profiles", None)
     serving = None if profiles is None else profiles.record()
     if controller is None or serving is not None and not serving["available"]:
         return (None if serving is None else {"object": "tensorfold.runtime", "schema_version": 1,
                 "serving_profile": serving, "context_tokens": None, "capacity_plan": None,
                 "execution": None, "sessions": None, "placement": None})
-    execution = controller.record()
+    execution = controller.record() if credit is None else controller.record(credit=credit)
+    plan = getattr(engine, "capacity_plan", None)
+    if credit is not None:
+        credit(plan)  # Second coexisting capacity-plan copy, not a max with the first.
     streams = list(getattr(decoder, "streams", {}).values())
     filling = list(getattr(decoder, "filling", ()))
     kept = list(getattr(decoder, "kept", ()))
@@ -75,7 +85,7 @@ def _snapshot_current(app: Any) -> dict[str, Any] | None:
         "object": "tensorfold.runtime", "schema_version": 1,
         "serving_profile": serving,
         "context_tokens": getattr(engine, "context_window", None),
-        "capacity_plan": deepcopy(getattr(engine, "capacity_plan", None)),
+        "capacity_plan": deepcopy(plan),
         "execution": execution,
         "sessions": {"lifetime": "request_scoped", "retained": 0,
                      "active": len(streams) + len(filling),
@@ -84,7 +94,7 @@ def _snapshot_current(app: Any) -> dict[str, Any] | None:
                      "allocated_slots": controller.slots,
                      "admission_ceiling": controller.admission_limit(),
                      "queued": scheduler.waiting.qsize() + int(scheduler.held is not None)},
-        "placement": placement() if placement is not None else None,
+        "placement": (None if placement is None else placement() if credit is None else placement(credit=credit)),
         "profile_manifest": manifest() if manifest is not None else None,
         "reading_contract": "advisory_host_snapshot_no_gpu_synchronization",
     }

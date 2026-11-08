@@ -174,10 +174,14 @@ class Server(ThreadingHTTPServer):
             with self._connection_lock:
                 if self.stopping.is_set() or self._serve_stop.is_set():
                     return
+                # Pool retirement sets this event without taking the socket
+                # lock. Clear BEFORE observing either capacity predicate.
+                self._capacity_changed.clear()
                 full = len(self._connections) >= self.max_connections
+                payload_pool = getattr(self.RequestHandlerClass, "_host_payload_pool", None)
+                if payload_pool is not None:
+                    full = full or payload_pool.fixed_slots_full()
                 retired = full and any(j["closed"] or "close_error" in j for j in self._connections.values())
-                if full and not retired:
-                    self._capacity_changed.clear()
             if full:
                 if not retired:
                     self._capacity_changed.wait(self._capacity_poll)

@@ -1423,7 +1423,7 @@ class MultiDecoder:
         return [prefix_limit(lambda _new, _out, decision=decision: tuple(decision), new, s.out)
                 for s, new, decision in zip(streams, news, decisions)]
 
-    def history_record(self):
+    def history_record(self, *, credit=None):
         records = [state.history_record() for state in self.states]
         active = {id(stream.st) for stream in [*self.streams.values(), *self.filling] if stream.st is not None}
         catalog = getattr(self, "retention_catalog", None)
@@ -1442,7 +1442,7 @@ class MultiDecoder:
                 "derived_prefix_slots": len(cached),
                 "derived_prefix_entries": len(self.kept),
                 "migration": None if self.controller is None else
-                self.controller.record()["migration"]}
+                (self.controller.record() if credit is None else self.controller.record(credit=credit))["migration"]}
         if catalog is not None:
             result.update(retained_gpu_slots=len(protected), retention=retention)
         return result

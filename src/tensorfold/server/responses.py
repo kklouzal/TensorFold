@@ -82,6 +82,11 @@ class Store:
         self.lock = threading.Lock()
 
     def put(self, response: dict[str, Any], added: list[dict[str, Any]], *, principal=None) -> None:
+        from .host_payload import current
+        owner = current()
+        if owner is not None:
+            # Before history construction/counting/cloning, never under lock.
+            owner.cache(self.max_bytes, copying=True)
         principal = principal or current_principal() or "local-unauthenticated"
         # The response producer owns these JSON trees until put returns. Count
         # the same default ASCII JSON representation without joining its wire
@@ -131,6 +136,22 @@ class Store:
         # Keeping this reference makes deletion/eviction safe while it is copied.
         return copy.deepcopy(entry.response) if entry is not None else None
 
+    def _http_snapshot(self, rid, *, principal=None):
+        """Private immutable read borrow for the HTTP serializer, not public get()."""
+        from .host_payload import current
+        owner = current()
+        if owner is None:
+            return self.get(rid, principal=principal)
+        # Reserve a whole old generation before acquiring a reference. Eviction
+        # cannot create an unpaid pin; the handler retains this lease to close.
+        owner.cache(self.max_bytes, copying=False)
+        principal = principal or current_principal() or "local-unauthenticated"
+        with self.lock:
+            entry = self.entries.get(rid)
+            if entry is None or entry.principal != principal:
+                return None
+            return entry.response
+
     def delete(self, rid: str, *, principal=None) -> bool:
         principal = principal or current_principal() or "local-unauthenticated"
         with self.lock:
@@ -147,6 +168,10 @@ class Store:
 
         if not isinstance(rid, str):
             raise RequestError("previous_response_id must be a string")
+        from .host_payload import current
+        owner = current()
+        if owner is not None:
+            owner.cache(self.max_bytes, copying=True)
         principal = principal or current_principal() or "local-unauthenticated"
         chain: list[list[dict[str, Any]]] = []
         with self.lock:
@@ -362,6 +387,12 @@ def post(handler: Any, app: Any) -> None:
     principal = current_principal() or "local-unauthenticated"
     try:
         body, model = _read(handler, app)
+        from .host_payload import current
+        owner = current()
+        if owner is not None and type(store) is Store:
+            # Response publication/cache copying is a legal future of this
+            # operation and must be paid before its model generation begins.
+            owner.cache(store.max_bytes, copying=True)
         durable = getattr(store, "durable_conversations", False)
         from tensorfold.server.api_record_media import video_capable
         request = translate(body, store, principal=principal, history=[] if durable else None,
@@ -534,7 +565,8 @@ def get(handler: Any, app: Any, rid: str | None) -> None:
             return _send(handler, 500, {"error": server_error("logical API operation failed")})
         return _send(handler, 200, result)
     try:
-        found = store.get(rid, principal=principal) if rid else None
+        found = (store._http_snapshot(rid, principal=principal) if type(store) is Store else
+                 store.get(rid, principal=principal)) if rid else None
     except RequestError as error:
         return _refused(handler, error, store=store)
     except Exception as error:

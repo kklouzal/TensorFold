@@ -188,8 +188,11 @@ class ExecutionObservations:
                            tuple(self.accepted_by_offered), tuple(self.accepted_histogram), self.overflowed,
                            self.geometry)
 
-    def record(self):
-        totals, offered, accepted, histogram, overflowed, geometry = self._published
+    def record(self, *, credit=None):
+        published = self._published
+        if credit is not None:
+            credit(published)  # Published immutable tuple pins this exact generation.
+        totals, offered, accepted, histogram, overflowed, geometry = published
         return {"scope": "logical_successful_forward_submissions_not_device_traffic_or_completion",
                 "indexer_geometry": None if geometry is None else
                 dict(zip(("ratio", "budget", "heads", "target_caches"), geometry)),

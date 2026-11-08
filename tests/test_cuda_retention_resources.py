@@ -206,19 +206,33 @@ def test_native_constraint_gate_uses_runtime_policy_and_trusted_logical_owner(tm
 
 
 def test_ram_generation_refuses_before_strict_plan_but_counting_preserves_constraint_validation(tmp_path, monkeypatch):
-    app, _, _ = configured_app(tmp_path, monkeypatch,
+    app, engine, _ = configured_app(tmp_path, monkeypatch,
         RetentionPolicy("ram", 1, 10, 1 << 30, 4096, 8192, 0))
     compiler = Compiler()
     app.grammars = compiler
     body = {"messages": [{"role": "user", "content": "a"}], "guided_choice": ["a", "b"]}
-    assert count_chat(app, body) > 0 and len(compiler.specs) == 1
-    assert app.tokenize(body)["count"] > 0 and len(compiler.specs) == 2
+    assert count_chat(app, body) > 0 and compiler.specs == []
+    assert app.tokenize(body)["count"] > 0 and compiler.specs == []
+    invalid = [
+        ({"messages": body["messages"], "guided_choice": []}, "non-empty list"),
+        ({"messages": body["messages"], "response_format": {
+            "type": "json_schema", "json_schema": {"schema": []}}}, "JSON schema object"),
+        ({**body, "ignore_eos": True}, "ignore_eos true"),
+    ]
+    for request, problem in invalid:
+        with pytest.raises(RequestError, match=problem):
+            count_chat(app, request)
+        with pytest.raises(RequestError, match=problem):
+            app.tokenize(request)
+        assert compiler.specs == []
+    assert engine.calls == []
     strict = {"messages": body["messages"], "tools": [{"type": "function", "function": {
         "name": "tool", "strict": True, "parameters": {"type": "object"}}}]}
     monkeypatch.setattr(app, "_strict_calls", lambda *_args: pytest.fail("native strict Plan reached before capability gate"))
     with pytest.raises(RequestError, match="native matcher CPU-memory envelope"):
         app.prepare(strict, True)
-    assert len(compiler.specs) == 2
+    assert compiler.specs == []
+    assert engine.calls == []
 
 
 def test_ordinary_engine_keeps_unconfigured_constraints(tmp_path):
@@ -270,12 +284,21 @@ def test_prepared_grammar_rechecks_trusted_retention_before_matcher_or_model(tmp
     app.grammars = compiler
     body = {"messages": [{"role": "user", "content": "a"}], "guided_choice": ["a"]}
     prepared = (app.prepare_for_count if for_count else app.prepare)(body, True)
-    assert prepared.grammar[1] == "compiled"
+    if for_count:
+        assert prepared.grammar is None and prepared.count_only is True
+        assert compiler.specs == []
+        monkeypatch.setattr(app, "_reserve_http_generation", lambda *_args: pytest.fail(
+            "count-only preparation reached generation reservation"))
+    else:
+        assert prepared.grammar[1] == "compiled"
+        assert prepared.count_only is False
     store = ApiRecordStore(tmp_path / "api.sqlite", limits=limits())
     try:
         with store.response_operation("trusted", "resp_new", previous_response_id=None, conversation_id=None,
             added=[{"role": "user", "content": "a"}], stored=True) as operation, operation.execution_scope():
-            with pytest.raises(RequestError, match="native matcher CPU-memory envelope"):
+            problem = ("count-only preparation cannot be used for generation" if for_count
+                       else "native matcher CPU-memory envelope")
+            with pytest.raises(RequestError, match=problem):
                 app.run(body, True, lambda _delta: None, prepared=prepared)
         assert engine.calls == []
     finally:

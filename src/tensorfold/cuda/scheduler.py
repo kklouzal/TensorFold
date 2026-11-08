@@ -454,6 +454,10 @@ class Scheduler:
         return self._request_limit.used if self._request_limit is not None else None
 
     def _terminal(self, box: OutputMailbox, kind: str, value: Any, *, retired=False) -> None:
+        borrowed = getattr(box, "_host_payload_borrow", None)
+        if kind == "error" and borrowed is not None:
+            from tensorfold.server.host_payload import keep_error
+            keep_error(value, lease=borrowed.lease)
         if kind == "error" and self.serving_profiles is not None:
             if not retired:
                 value = self.serving_profiles.error_outcome(value)
@@ -476,9 +480,14 @@ class Scheduler:
         else:
             box.put((kind, value))
         self._error_retirements.pop(box, None)
+        # Stream/mailbox Python containers may outlive rank retirement and
+        # publication. Their shared host loan retires after their last alias.
 
     def _unregister_unpublished(self, box, signal=None):
         finish((lambda: self._error_retirements.pop(box, None), lambda: self._request_boxes.discard(box)))
+        if getattr(self, "host_payload_pool", None) is not None:
+            from tensorfold.server.host_payload import retire_mailbox
+            retire_mailbox(box)  # The existing rollback certifies no work was published.
         if signal is not None:
             signal.set()  # No model work was published; a completed rollback is safe for this caller.
 
@@ -634,6 +643,9 @@ class Scheduler:
 
                         raise ProfileUnavailable("scheduler submission requires an admitted model-profile lease")
                 self._check_profile(stream.profile_epoch)
+                if getattr(self, "host_payload_pool", None) is not None:
+                    from tensorfold.server.host_payload import borrow_request
+                    borrow_request(self.host_payload_pool, stream, box)
                 try:
                     if self._request_limit is not None:
                         self._request_limit.borrow(box)
@@ -1192,6 +1204,9 @@ class Scheduler:
                     elif self._cleanup_failure is None:
                         self._terminal(box, "error", exc)
                     else:
+                        borrowed = getattr(box, "_host_payload_borrow", None)
+                        if borrowed is not None:
+                            borrowed.lease.poison(exc)
                         box.put(("error", exc))  # failed native cleanup keeps the admission owner retained
                 except BaseException as publication:
                     errors.append(publication)
@@ -1363,6 +1378,7 @@ class Scheduler:
                     shutdown=self._stopping and not waiting and not live and not self._retiring and not backend_claims)
                 drained, changed = progress["drained"], progress["changed"]
             if ran or changed:
+                entries = done = waiting = claims = None
                 continue  # Runnable generation progresses without waiting for queue arrivals.
             if self._stopping and not waiting and not live and not self._retiring and not backend_claims:
                 if drained:
@@ -1376,6 +1392,10 @@ class Scheduler:
                 at = expiry()
                 if at is not None:
                     deadlines.append(at)
+            # Drop obsolete SNAPSHOT aliases, not live queue/claim payloads.
+            # A completed loan must not wait for a new grant merely to replace
+            # last round's local list after this blocking idle boundary.
+            entries = done = waiting = claims = None
             control = self.waiting.get_control(since=revision, deadline=min(deadlines, default=None))
             if control is None:
                 self._stopping = True
