@@ -16,7 +16,7 @@ compose = _compose
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy" / "v100"
 
 
-def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=None, prefill=None):
+def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=None, prefill=None, variables=None):
     env = {name: value for name, value in os.environ.items()
            if not name.startswith(("TF_", "TENSORFOLD_")) and name not in
            ("MODEL_ROOT", "GGUF_FILE", "MTP_DIRECTORY", "DRAFTER_DIRECTORY")}
@@ -31,6 +31,11 @@ def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=No
         env["TF_MAX_WAITING_INPUT_BYTES"] = waiting
     if etp is not None:
         env["TF_EXPERT_TENSOR_PARALLEL_SIZE"] = etp
+    for name, value in (variables or {}).items():
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
     empty = tmp_path / "empty.env"
     empty.write_text("")
     result = subprocess.run([*compose, "--env-file", str(empty), "-f", str(DEPLOY / "compose.yaml"),
@@ -43,7 +48,7 @@ def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=No
     return json.loads(result.stdout.replace("$$", "$"))["services"]["tensorfold"]
 
 
-def actual_argv(service):
+def actual_argv(service, *, succeeds=True):
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("V100 Compose entrypoint requires the declared Linux Bash host capability")
@@ -51,14 +56,68 @@ def actual_argv(service):
     assert entry[:2] == ["/bin/bash", "-c"] and len(entry) == 4
     # Capture only the exec boundary. The actual rendered Bash array/quoting
     # code runs unchanged, without starting a model or an alternate interpreter.
-    script = "exec() { printf '%s\\0' \"$@\"; }\n" + entry[2]
+    script = ("source() { [[ $1 == /run/tensorfold-v100/personal_profile.sh ]] || return 2; "
+              "builtin source \"$TF_TEST_PROFILE_HELPER\"; }\n"
+              "exec() { printf '%s\\0' \"$@\"; }\n" + entry[2])
     env = {name: value for name, value in os.environ.items()
            if name not in ("TF_MAX_WAITING_INPUT_BYTES", "TF_EXPERT_TENSOR_PARALLEL_SIZE", "BASH_ENV")}
     env.update(service["environment"])
+    env["TF_TEST_PROFILE_HELPER"] = str(DEPLOY / "personal_profile.sh")
     result = subprocess.run([bash, "--noprofile", "--norc", "-c", script, entry[3], *service["command"]],
                             env=env, capture_output=True, timeout=10, check=False)
+    if not succeeds:
+        assert result.returncode != 0
+        return result
     assert result.returncode == 0, result.stderr
     return [value.decode() for value in result.stdout.split(b"\0")[:-1]]
+
+
+@pytest.mark.parametrize("codec,cap,waiting", [
+    ("int8", 24, 226493088), ("rotorquant-iso4-sm70-v1", 32, 301990784)])
+def test_personal_codecs_reach_actual_cli_with_finite_admin_ceilings(compose, tmp_path, codec, cap, waiting):
+    from tensorfold.cli import build_parser
+    service = render(compose, tmp_path, variables={
+        "TF_KV_DTYPE": codec, "TF_MAX_PENDING_REQUESTS": None, "TF_MAX_HTTP_CONNECTIONS": None})
+    argv = actual_argv(service)
+    parsed = build_parser().parse_args(["serve", *argv[argv.index("--") + 1:]])
+    assert str(parsed.parallel) == str(cap) and str(parsed.kv_full_windows) == str(cap)
+    assert parsed.context == 262144 and parsed.mtp_drafts == 4
+    assert parsed.max_pending_requests == cap and parsed.max_http_connections == cap + 1
+    assert parsed.max_waiting_input_bytes == waiting
+    mounted = [v for v in service["volumes"] if v["target"] == "/run/tensorfold-v100/personal_profile.sh"]
+    assert len(mounted) == 1 and mounted[0]["read_only"] is True
+
+
+def test_personal_profile_keeps_explicit_lower_parallel_and_queued_pending(compose, tmp_path):
+    argv = actual_argv(render(compose, tmp_path, variables={"TF_KV_DTYPE": "int8",
+        "TF_PARALLEL": "12", "TF_KV_FULL_WINDOWS": "8", "TF_MAX_PENDING_REQUESTS": "16",
+        "TF_MAX_HTTP_CONNECTIONS": "19"}))
+    assert argv[argv.index("--parallel") + 1] == "12"
+    assert argv[argv.index("--kv-full-windows") + 1] == "8"
+    assert argv[argv.index("--max-pending-requests") + 1] == "16"
+    assert argv[argv.index("--max-http-connections") + 1] == "19"
+    assert argv[argv.index("--max-waiting-input-bytes") + 1] == str(16 * 9437212)
+
+
+def test_explicit_above_personal_cap_never_reaches_python_exec(compose, tmp_path):
+    service = render(compose, tmp_path, variables={"TF_KV_DTYPE": "int8", "TF_PARALLEL": "25"})
+    rejected = actual_argv(service, succeeds=False)
+    assert rejected.returncode == 2 and b"personal V100 ceiling 24" in rejected.stderr
+    assert rejected.stdout == b""
+
+
+def test_unknown_codec_still_requires_explicit_request_limits_before_exec(compose, tmp_path):
+    service = render(compose, tmp_path, variables={"TF_MAX_PENDING_REQUESTS": None})
+    rejected = actual_argv(service, succeeds=False)
+    assert b"Set TF_MAX_PENDING_REQUESTS" in rejected.stderr and rejected.stdout == b""
+
+
+def test_personal_ram_history_keeps_legacy_argv_without_fifo_credit(compose, tmp_path):
+    service = render(compose, tmp_path, variables={"TF_KV_DTYPE": "int8", "TF_CONTEXT": "262144",
+        "TF_PARALLEL": "2", "TF_KV_FULL_WINDOWS": "2", "TF_INDEXER_HISTORY": "ram"})
+    assert service["environment"]["TF_INDEXER_HISTORY"] == "ram"
+    assert actual_argv(service) == ["/opt/venv/bin/python", *service["command"]]
+    assert "--max-waiting-input-bytes" not in actual_argv(service)
 
 
 @pytest.mark.parametrize("waiting", [None, ""])

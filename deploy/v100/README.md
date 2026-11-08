@@ -298,7 +298,8 @@ that producer, cancellation and slow-client gates passed on V100.
 
 Supply resource budgets, context, codec and remaining method choices from the
 intended qualification profile. Stock MTP depth uses the user-selected default 4
-unless explicitly overridden; this recipe introduces no serving-budget defaults:
+unless explicitly overridden. The personal INT8/ISO4 deployment ceilings below
+resolve their existing environment settings before this argument array is built:
 
 ```bash
 : "${TF_V6_IMAGE:?Set the verified local sha256 image ID or actual registry digest reference}"
@@ -307,10 +308,12 @@ unless explicitly overridden; this recipe introduces no serving-budget defaults:
 : "${MTP_FILE:?Set the verified shared-Q8 MTP companion path under /models}"
 : "${TF_CACHE_DIR:?Set a dedicated host cache directory}"
 : "${TF_RANK_GPUS:?Set eight physical GPU IDs or UUIDs in rank order}"
+: "${TF_KV_DTYPE:?Set the selected supported KV codec}"
+source deploy/v100/personal_profile.sh
+tf_v100_personal_profile || exit $?
 : "${TF_CONTEXT:?Set the declared prompt-plus-reply context}"
 : "${TF_PARALLEL:?Set auto or an explicitly qualified session ceiling}"
 : "${TF_KV_FULL_WINDOWS:?Set auto or an explicitly qualified full-window ceiling}"
-: "${TF_KV_DTYPE:?Set the selected supported KV codec}"
 : "${TF_DRAFTS:=4}"
 : "${TF_DRAFT_CONFIDENCE:?Set the declared MTP confidence policy}"
 : "${TF_MAX_PENDING_REQUESTS:?Set the finite unfinished-request limit}"
@@ -819,11 +822,12 @@ MODEL_ROOT=/path/to/models GGUF_FILE=/models/Flash-Next-00001-of-00004.gguf \
 
 `TF_CONTEXT`, `TF_PARALLEL`, `TF_KV_DTYPE`, `TF_PORT`, `TF_BIND_ADDRESS`,
 `TF_MODEL_NAME`, `MTP_DIRECTORY`, `TF_CACHE_VOLUME` and `TENSORFOLD_V100_IMAGE`
-configure that profile. `TF_PARALLEL` and `TF_KV_FULL_WINDOWS` default to `auto`;
-numeric overrides constrain automatic capacity rather than forcing unsafe
-allocation.
-`TF_MAX_PENDING_REQUESTS` and `TF_MAX_HTTP_CONNECTIONS` are required positive
-integers chosen for the installation, with no inferred numeric default.
+configure that profile. Other codecs keep `auto` parallel/full-window settings
+and require explicit positive `TF_MAX_PENDING_REQUESTS` and
+`TF_MAX_HTTP_CONNECTIONS`. Numeric overrides constrain automatic capacity rather
+than forcing allocation. Personal INT8/ISO4 settings are resolved by the shared
+read-only deployment helper before Python starts; they work with an already-built
+verified image and require no SDK rebuild.
 GGUF GPU-history slots reserve their full prompt-plus-reply windows.
 The optional legacy RAM-indexer path requires explicit numeric settings and
 retains its separately documented accounting; it does not inherit unique GPU
@@ -911,11 +915,53 @@ auxiliary KV. Normal prefix retirement keeps these allocations. The existing
 4GiB device floor remains, with explicit 2GiB serving workspace and protected
 cache replacement; graph publication cannot spend those reservations.
 
-Compose defaults both `TF_PARALLEL` and `TF_KV_FULL_WINDOWS` to `auto`.
+For codecs outside the personal profiles below, Compose defaults both
+`TF_PARALLEL` and `TF_KV_FULL_WINDOWS` to `auto`.
 Counts need not be even or powers of two. The legacy RAM-indexer path uses
 explicit numeric counts with N≥2 and its separate admission policy. Modern
 providers and the one-GPU automatic expert-pool mode retain their existing
 growth/full-window contracts.
+
+## Personal concurrency ceilings
+
+The personal deployment and benchmark launch recipes cap **INT8/Q8 at24** and
+the initial `rotorquant-iso4-sm70-v1` Q4 profile at **32** complete windows.
+These are administrative ceilings for VRAM headroom, not changes to the generic
+hardware solver or evidence that either count is qualified. The solver and
+ordinary memory guards can select/refuse a smaller capacity.
+
+| Profile | KV codec | Parallel/full-window ceiling | Default P/H/W at L262144, MTP4 |
+| --- | --- | --- | --- |
+| Personal Q8 | `int8` | 24 | 24 / 25 / 226493088bytes |
+| Personal Q4 | `rotorquant-iso4-sm70-v1` | 32 | 32 / 33 / 301990784bytes |
+
+Use the maintained environment example with the same Compose recipe:
+
+```bash
+# Set MODEL_ROOT, GGUF_FILE and the verified image reference separately.
+docker compose --env-file deploy/v100/personal-q8.env.example -f deploy/v100/compose.yaml config
+docker compose --env-file deploy/v100/personal-q8.env.example -f deploy/v100/compose.yaml up -d
+# Select personal-q4.env.example for the separate ISO4 qualification candidate.
+```
+
+`personal_profile.sh` maps missing/`auto` parallel and full-window settings to the
+codec's finite ceiling. Explicit positive lower settings remain lower; explicit
+values above24/32 fail before Python/model loading. The effective GPU ceiling is
+the minimum of the two settings. Default P is that effective ceiling; explicit
+P may be higher for bounded queuing, up to the personal ceiling. Queued requests
+are not simultaneous active windows. H defaults to P+1 for a monitor; explicit
+positive H/W settings remain subject to the existing guards and benchmark
+preflight, without a new universal HTTP cap.
+
+Only the pinned SC117 GPU-history full-context262144/MTP4 `mtp`/`auto` profile gets the default
+W=P×9437212, using its actual full-prompt input claim. Other contexts/methods must
+supply their existing explicit qualified input credit; the helper invents no
+input-size formula for them. Context262144 and MTP depth4 remain these personal
+profiles' defaults; explicit context/draft settings are retained. Other codec
+profiles are unchanged. Source the same helper before constructing raw Docker or
+benchmark server arguments, as in the maintained full-context Bash recipe above.
+The Compose helper is a read-only deployment-config bind, not an application,
+header or SDK overlay. Never append conflicting ceiling flags afterward.
 
 Native attention scratch is capped at its qualified8192-token dispatch range,
 while KV remains allocated at the full context limit. Longer queries retain

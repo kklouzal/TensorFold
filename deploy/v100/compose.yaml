@@ -17,6 +17,7 @@ services:
     volumes:
       - "${MODEL_ROOT:?Set MODEL_ROOT to the existing model directory}:/models:ro"
       - tensorfold-v100-cache:/cache
+      - ./personal_profile.sh:/run/tensorfold-v100/personal_profile.sh:ro
     environment:
       PYTHONUNBUFFERED: "1"
       TENSORFOLD_NO_UPDATE_CHECK: "1"
@@ -27,11 +28,35 @@ services:
       # Required explicitly for the new FIFO profile; leave unset for legacy DSpark.
       TF_MAX_WAITING_INPUT_BYTES: "${TF_MAX_WAITING_INPUT_BYTES:-}"
       TF_EXPERT_TENSOR_PARALLEL_SIZE: "${TF_EXPERT_TENSOR_PARALLEL_SIZE:-}"
+      TF_KV_DTYPE: "${TF_KV_DTYPE:-fp16}"
+      TF_CONTEXT: "${TF_CONTEXT:-}"
+      TF_PARALLEL: "${TF_PARALLEL:-}"
+      TF_KV_FULL_WINDOWS: "${TF_KV_FULL_WINDOWS:-}"
+      TF_MAX_PENDING_REQUESTS: "${TF_MAX_PENDING_REQUESTS:-}"
+      TF_MAX_HTTP_CONNECTIONS: "${TF_MAX_HTTP_CONNECTIONS:-}"
+      TF_DRAFT_METHOD: "${TF_DRAFT_METHOD:-auto}"
+      TF_DRAFTS: "${TF_DRAFTS:-4}"
+      TF_INDEXER_HISTORY: "${TF_INDEXER_HISTORY:-gpu}"
     entrypoint:
       - /bin/bash
       - -c
       - |
         args=("$$@")
+        source /run/tensorfold-v100/personal_profile.sh
+        tf_v100_personal_profile || exit $$?
+        : "$${TF_MAX_PENDING_REQUESTS:?Set TF_MAX_PENDING_REQUESTS to a positive finite unfinished-request limit}"
+        : "$${TF_MAX_HTTP_CONNECTIONS:?Set TF_MAX_HTTP_CONNECTIONS to a positive finite HTTP connection limit}"
+        if [[ -n $$TF_V100_PERSONAL_CAP ]]; then
+          for ((i=0; i<$${#args[@]}; i++)); do
+            case $${args[i]} in
+              --context) args[i+1]=$$TF_CONTEXT; ((i+=1)) ;;
+              --parallel) args[i+1]=$$TF_PARALLEL; ((i+=1)) ;;
+              --kv-full-windows) args[i+1]=$$TF_KV_FULL_WINDOWS; ((i+=1)) ;;
+              --max-pending-requests) args[i+1]=$$TF_MAX_PENDING_REQUESTS; ((i+=1)) ;;
+              --max-http-connections) args[i+1]=$$TF_MAX_HTTP_CONNECTIONS; ((i+=1)) ;;
+            esac
+          done
+        fi
         if [[ -n "$${TF_MAX_WAITING_INPUT_BYTES:-}" ]]; then
           args+=(--max-waiting-input-bytes "$$TF_MAX_WAITING_INPUT_BYTES")
         fi
@@ -55,9 +80,9 @@ services:
       - --name
       - "${TF_MODEL_NAME:-flash-next}"
       - --max-pending-requests
-      - "${TF_MAX_PENDING_REQUESTS:?Set TF_MAX_PENDING_REQUESTS to a positive finite unfinished-request limit}"
+      - "${TF_MAX_PENDING_REQUESTS:-}"
       - --max-http-connections
-      - "${TF_MAX_HTTP_CONNECTIONS:?Set TF_MAX_HTTP_CONNECTIONS to a positive finite HTTP connection limit}"
+      - "${TF_MAX_HTTP_CONNECTIONS:-}"
       - --context
       - "${TF_CONTEXT:-8192}"
       - --parallel

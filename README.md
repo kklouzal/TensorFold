@@ -13,6 +13,11 @@ CPU test nodes and 21 subtests passed across the explicitly scoped runtime
 environments. The installed successor and token/s benchmark remain pending.
 See [the host-credit scope](docs/v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
 
+Personal V100 deployment profiles cap Q8 KV at 24 concurrent requests and the
+SM70 ISO4 Q4 profile at 32, retaining the full context and VRAM headroom.
+These are administrator ceilings; the engine's capacity checks remain in force.
+See [the profile configuration](deploy/v100/README.md#personal-concurrency-ceilings).
+
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload
 projection. It separately pays completed HTTP continuations, default-cache
