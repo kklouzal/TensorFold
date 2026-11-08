@@ -48,6 +48,8 @@ remain separate from candidate qualification.
 The private [router-row capture](docs/benchmarking.md#private-router-row-capture)
 records four actual prompt-tail inputs and logits for numerical diagnosis;
 its blocking copies and file I/O are excluded from performance measurements.
+The completed capture found identical sampled inputs but different router logits
+between solo and concurrent runs; routing-weight and output attribution remain open.
 The private [ordered Half partial trial](docs/v100-adaptive-validation.md#ordered-half-moe-partial-component-checkpoint)
 passed component checks and has per-rank policy attestation; default policy
 and other operators remain unchanged. Its dedicated candidate image also passed

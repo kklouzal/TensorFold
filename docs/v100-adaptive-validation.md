@@ -554,10 +554,31 @@ passed 186 CPU controls with zero skips on the pinned V100 runtime. Exact
 Torch `04cf2557` source inspection confirms its same-dtype contiguous D2H
 copies do not allocate device temporaries. A subsequent removal of one
 redundant piece-count check is structurally neutral: the pre-loop bound and
-one-append-per-piece invariant remain. Actual capture and numerical attribution
-are pending; the observer is excluded from performance measurements.
+one-append-per-piece invariant remain. The observer is excluded from performance
+measurements; numerical attribution and the complete output cause remain open.
 CPU gate: `router-row-capture-v1/CPU-v2/capture-source-CPU-gate-v2.json`, SHA256
 `2debc35014d6440b9da656154683778b41a453430f8c6395cb2487775dad0a8a`.
+
+The actual observer run used unchanged `0a13de3c` with immutable `b1fe5bad`
+tools and the original request DATA. All 28 cold 64-input/128-output exchanges
+completed, all eight workers published four capture records, and the nine
+weight/input/logit files passed their producer checks. Client, launcher,
+container and controller exited zero, with no OOM or cleanup/observation errors
+and unchanged source/health. The corrected supervisor consumed the diagnostic
+schema; the earlier outer-controller failure remains historical evidence.
+Output differences remain recorded (`all_exact: false`).
+
+For both sampled requests 2 and 7, the concurrent frame had 128 rows and the
+isolated frame had 64. Their sampled 2,560-element Half inputs were bit-identical,
+with the same immutable router weights. Captured FP32 logits differed in
+363/513 and 370/513 elements, respectively; maximum absolute differences were
+`3.814697265625e-6` and `2.86102294921875e-6`. Independent CPU byte comparisons
+confirm variation at this sampled router boundary. Full frames and physical
+layouts were not captured; this does not establish the cause of later output
+differences, changed expert choices/rounded weights, numerical acceptance or
+performance. GPU replay remains a separate check.
+Gate: `actual-router-row-capture-v1/actual-router-capture-final-gate-v1.json`,
+SHA256 `3f1021979a98ba5bf326af726af25c8e809c4e1d5f0cc8af2bde4fa259ffb438`.
 
 ## Independent serial-router trial
 
