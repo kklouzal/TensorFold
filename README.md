@@ -49,6 +49,9 @@ The private [ordered Half partial trial](docs/v100-adaptive-validation.md#ordere
 passed component checks and has per-rank policy attestation; default policy
 and other operators remain unchanged. Its dedicated candidate image also passed
 276 installed CPU checks; model and performance qualification remain pending.
+An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)
+isolates the existing native decode-logit operator for qualification, without
+enabling the broader optimized profile; the ordinary default remains unchanged.
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload

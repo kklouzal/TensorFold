@@ -549,6 +549,27 @@ performance result is inferred from the diagnostic.
 Gate: `coefficient-baseline-repro-v1/baseline-repro-actual-gate-v1.json`, SHA256
 `cca46c70e3fcade464ecc9a0e2e9dad822b54bb16709b76ff83f33e9e768a469`.
 
+## Independent serial-router trial
+
+`TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS=native-serial-v1` selects the existing
+native router-logit operator independently of the broader execution profile.
+The import-time default `inherit` preserves that profile's existing flag;
+invalid values fail closed and later environment edits do not change the
+selection. This does not enable native top-k/route, padded linears, attention
+or other family kernels. Existing decode-only dispatch and storage/device
+guards remain unchanged: eligible Half inputs have 2–32 rows of width2560,
+with aligned contiguous FP32 router weights and disjoint FP32 output on SM70.
+Prefill, one-row and unsupported operands retain their existing paths.
+
+The selector passed 49 local ARM CPU controls with zero skips, plus Ruff and
+syntax checks. These establish policy isolation and unchanged guard behavior,
+not current-V100 arithmetic, model quality or performance qualification.
+The existing kernel's strict serial-cuBLAS comparisons on the current V100
+SDK remain required. In those tests the private selector must stay unset or
+`inherit`: their independent reference arm toggles only the original profile
+flag. Enabling the private override for both arms would invalidate the oracle.
+No new default or production deployment is selected by this checkpoint.
+
 ## Shared owner-attention diagnostics
 
 On the existing V100 SDK/application image `0a13de3c` (application source

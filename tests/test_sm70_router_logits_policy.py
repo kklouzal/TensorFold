@@ -1,5 +1,8 @@
 """Exact router qualification stays explicit, decode-only and on matching storage."""
 from types import SimpleNamespace as NS
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -22,6 +25,7 @@ def operands(monkeypatch):
     weight = tensor((513, 2560), torch.float32, 1024)
     output = tensor((3, 513), torch.float32, 1536)
     monkeypatch.setattr(routing_native, "_NATIVE_LOGITS", True)
+    monkeypatch.setattr(routing_native, "_PRIVATE_SERIAL_LOGITS", "inherit")
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (7, 0))
     monkeypatch.setattr(torch._C, "_overlaps", lambda *args: False)
     return x, weight, output
@@ -29,6 +33,7 @@ def operands(monkeypatch):
 
 def test_exact_router_policy_is_disabled_by_default_and_does_not_probe_cuda(monkeypatch):
     monkeypatch.setattr(routing_native, "_NATIVE_LOGITS", False)
+    monkeypatch.setattr(routing_native, "_PRIVATE_SERIAL_LOGITS", "inherit")
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args: pytest.fail("disabled policy probes CUDA"))
     assert not routing_native.supports_logits(NS(), NS(), NS())
 
@@ -40,8 +45,12 @@ def test_matching_serial_decode_geometry_selects_without_retained_workspace(monk
 @pytest.mark.parametrize("mismatch", ["zero", "one", "large", "width", "bf16", "cpu", "input_stride",
     "input_row_overlap", "half_weight", "weight_shape", "weight_stride", "weight_alignment", "weight_device",
     "output_shape", "output_type", "output_stride", "output_device", "new_gpu", "alias"])
-def test_unqualified_storage_or_device_retains_original_router(monkeypatch, mismatch):
+@pytest.mark.parametrize("private", [False, True])
+def test_unqualified_storage_or_device_retains_original_router(monkeypatch, mismatch, private):
     x, weight, output = operands(monkeypatch)
+    if private:
+        monkeypatch.setattr(routing_native, "_NATIVE_LOGITS", False)
+        monkeypatch.setattr(routing_native, "_PRIVATE_SERIAL_LOGITS", "native-serial-v1")
     if mismatch in ("zero", "one", "large"):
         rows = {"zero": 0, "one": 1, "large": 33}[mismatch]
         x.shape, output.shape = (rows, 2560), (rows, 513)
@@ -106,3 +115,33 @@ def test_enabled_policy_keeps_cpu_and_half_weight_fallback_arithmetic(monkeypatc
     x, weight = torch.randn(3, 32).half(), torch.randn(5, 32).half()
     expected = torch.cat([row[None].float() @ weight.float().T for row in x])
     torch.testing.assert_close(moe.router(x, weight, independent_rows=True), expected, rtol=0, atol=0)
+
+
+
+def test_private_serial_logits_is_independent_of_profile_flag(monkeypatch):
+    values = operands(monkeypatch)
+    monkeypatch.setattr(routing_native, "_NATIVE_LOGITS", False)
+    monkeypatch.setattr(routing_native, "_PRIVATE_SERIAL_LOGITS", "native-serial-v1")
+    assert routing_native.supports_logits(*values)
+    assert routing_native._NATIVE_LOGITS is False
+    assert routing_native._PRIVATE_SERIAL_LOGITS == "native-serial-v1"
+
+
+@pytest.mark.parametrize("setting", [None, "inherit", "native-serial-v1", "", "native", "other"])
+def test_private_router_setting_is_fixed_at_import_and_rejects_invalid_values(setting):
+    env = dict(os.environ)
+    name = "TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS"
+    env.pop(name, None)
+    if setting is not None:
+        env[name] = setting
+    code = ("import os,sys; from tensorfold.cuda.sm70 import routing_native as r; "
+            "print(r._PRIVATE_SERIAL_LOGITS); "
+            "os.environ['TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS']='changed'; "
+            "print(r._PRIVATE_SERIAL_LOGITS); assert 'torch' not in sys.modules")
+    result = subprocess.run([sys.executable, "-B", "-c", code], env=env, capture_output=True, text=True, timeout=15)
+    if setting in (None, "inherit", "native-serial-v1"):
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [setting or "inherit"] * 2
+    else:
+        assert result.returncode != 0
+        assert "TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS requires inherit or native-serial-v1" in result.stderr
