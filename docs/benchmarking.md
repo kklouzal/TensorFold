@@ -296,6 +296,57 @@ are retained in `combined-core-model-899934-v1/live-matrix.json` and
 `combined-core-model-899934-v1/combined-core-full7-actual-gate-v1.json`, SHA256
 `5507eaf035687779d093fe716c9d544a2e3fc386d4e0cb02fbda81393400f3ea`.
 
+
+## Batched global-normalization trial: selection held
+
+A later candidate used source `09b2f0fbdddb3a6b775dbc02a677240f3d271561`, image
+`sha256:f1269e70cc4b95a2149555644eea09c77b7912764fd7cf84774a741c03629921`.
+Its genuine installed CPU controls passed 191 checks with zero skips; the
+separate source-component evidence remains 169 CPU / 15 GPU cases, not model
+qualification. The actual model run reused the **exact** `e18f4ca3` matrix bytes
+and the `597c7435` baseline profile above: TP8/PP1/ETP4, ISO4, full 262,144
+context with 32 full-window States/rank, shared-Q8 MTP4, eager prefill rows 256,
+execution rows 160, Grouped + reference Tiles, reference Dense/Concat and no
+native-owner trial or Half/Router/EMPTY environment overrides.
+
+All seven protocol, requested-token-count and owner-peak checks passed, with zero cached tokens,
+one 64-input/128-output repetition per level, and warmup/smoke excluded as in
+the baseline. All eight ranks reported the prepared batched-normalization policy
+on decode/prefill/MTP roles 160/256/160 before the client ran. Observed rates
+were higher in every cell:
+
+| Requests | Baseline prefill token/s | Candidate prefill token/s | Baseline aggregate decode token/s | Candidate aggregate decode token/s | Exact outputs | Same proposal work |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 23.5970 | 29.0620 | 3.2606 | 3.7157 | 1/1 | 1/1 |
+| 2 | 23.2190 | 29.1380 | 4.7486 | 5.6331 | 2/2 | 2/2 |
+| 4 | 27.0960 | 33.1131 | 5.7081 | 6.8692 | 4/4 | 4/4 |
+| 8 | 24.5767 | 33.3702 | 7.0107 | 8.6092 | 6/8 | 6/8 |
+| 16 | 22.4508 | 29.2216 | 7.8726 | 9.3672 | 14/16 | 13/16 |
+| 24 | 21.3734 | 26.3286 | 8.5347 | 10.0862 | 20/24 | 19/24 |
+| 32 | 19.9860 | 25.0366 | 8.6503 | 10.2865 | 27/32 | 27/32 |
+
+**Selection is held.** Only 74/87 replies match full token IDs and choice output;
+13 differ. The `rounds`/`drafted`/`accepted` work counters match for 72/87,
+with 15 differing records. The
+cause is unresolved. Prior baseline variability does not exonerate this new
+signal, and identical requests do not imply identical executed work. This
+single baseline-then-candidate sequence, without matched repeats or controlled
+run-order drift, establishes neither a repeatable gain nor equivalence. The
+[inclusive, overlapping envelope definitions](#denominators-and-actual-overlap)
+still apply; these are not kernel-only rates. No general output-quality,
+populated long-history, deployment-default or target-achievement claim follows.
+The 4,500/450 objectives remain unmet.
+
+Both runs retired normally without OOM or cleanup errors and with unchanged
+recorded source/health. Full-precision rates, separate HTTP/client latency and
+all differences remain in `global-normalization-model-v1/final-matched-comparison-v1.json`,
+SHA256 `3c0f3f0d52e3ba89924c3b33efcf6227f934d5d190c9ecd141e046c8c0c8e3ee`.
+Actual candidate gate:
+`global-normalization-model-v1/global-normalization-full7-actual-gate-v1.json`,
+SHA256 `95fb86c8b4627fa8a25ab7d6946115751c06a3d34c3f28d9144207a82d5c39b3`.
+The preceding `597c7435` curve remains the historical baseline, not a rewritten
+candidate result.
+
 ## First SC117 Q4 reference
 
 The first descriptive reference used eight V100-SXM2-32GB GPUs, SC117 IQ3_S

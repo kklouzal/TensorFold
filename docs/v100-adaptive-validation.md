@@ -716,6 +716,28 @@ not a rebuilt installed application, full-model/quality/P3 gain or deployment
 default. Its earlier complete short curve remains historical evidence for its
 own unchanged source/image.
 
+
+A subsequent genuine application image from source
+`09b2f0fbdddb3a6b775dbc02a677240f3d271561`,
+`sha256:f1269e70cc4b95a2149555644eea09c77b7912764fd7cf84774a741c03629921`,
+passed 191 installed CPU checks with zero skips and CUDA uninitialized.
+Only `reference_owner_tiles.py` and `history_owner.py` differ from `597c7435`;
+CUDA/C++/headers, native FD and SDK remain unchanged. Installed gate:
+`global-normalization-app-09b2f0-v1/genuine-global-normalization-installed-gate-v1.json`,
+SHA256 `874125b1c4771b01d6d048bfdd2e709a229d7cb2dd2a66349894867a84cd2405`.
+This packaging result is separate from the 169/15 source-component result.
+
+The [actual full seven-level trial](benchmarking.md#batched-global-normalization-trial-selection-held)
+then completed the exact old matrix and profile with all protocol/owner checks
+passing and normal retirement. All seven observed rate pairs were higher, but
+only 74/87 outputs and 72/87 proposal-work records match the baseline; 13 outputs
+and 15 work records differ. **Selection remains held and the cause unresolved.**
+Neither component bit tests nor earlier baseline variability waive the signal.
+There are no matched repeats, accepted P3 gain, general quality, populated
+near-full-history or default-promotion results, and the objectives remain unmet.
+Gate: `global-normalization-model-v1/global-normalization-full7-actual-gate-v1.json`,
+SHA256 `95fb86c8b4627fa8a25ab7d6946115751c06a3d34c3f28d9144207a82d5c39b3`.
+
 ## Unchanged baseline reproducibility
 
 One unchanged `0a13de3c` instance completed all 28 preserved-request exchanges
