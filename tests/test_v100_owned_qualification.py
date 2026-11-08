@@ -1273,3 +1273,75 @@ def test_router_attestation_fails_closed_at_both_boundaries_without_mutation(
     assert not (tmp_path / 'rank-3.json').exists()
     if stage == 'constructor' or requested != 'invalid':
         assert (not hasattr(routing_native, field)) if absent else getattr(routing_native, field) == bad
+
+
+@pytest.mark.parametrize('requested,configured', [(None, 'inherit'), ('inherit', 'inherit'),
+                                                ('cpu-empty-v1', 'cpu-empty-v1'), (None, None)])
+def test_empty_prefix_attestation_has_no_native_flag_and_keeps_original_request(
+        channel, monkeypatch, tmp_path, requested, configured):
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+    name = 'TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX'
+    if requested is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, requested)
+    if configured is None:
+        monkeypatch.delattr(history_owner, '_PRIVATE_EMPTY_PREFIX', raising=False)
+    else:
+        monkeypatch.setattr(history_owner, '_PRIVATE_EMPTY_PREFIX', configured, raising=False)
+    monkeypatch.setattr(owned, 'bound_receipt', lambda _: {})
+    ready = []
+    def serve(args):
+        monkeypatch.setenv(name, 'changed-after-construction')
+        engine = NS(rank=3, comm=NS(ready=lambda label: ready.append(label)))
+        args._owned_expert_qualification.before_listener(engine)
+        return 0
+    monkeypatch.setattr(cli, 'cmd_serve', serve)
+    assert owned.worker(worker_args(tmp_path)) == 0
+    receipt = json.loads((tmp_path / 'rank-3.json').read_text())['empty_prefix_policy']
+    assert receipt == {'requested': requested, 'configured': configured or 'legacy-inherited',
+                       'private_selector_supported': configured is not None}
+    assert getattr(history_owner, '_PRIVATE_EMPTY_PREFIX', None) == configured
+    assert ready == ['owned_expert_qualification']
+
+
+@pytest.mark.parametrize('requested,configured,absent', [
+    ('inherit', None, True), ('cpu-empty-v1', None, True),
+    ('cpu-empty-v1', 'inherit', False), ('invalid', 'inherit', False),
+    (None, 'cpu-empty-v1', False), (None, None, False),
+    (None, 'legacy-inherited', False), (None, False, False),
+])
+@pytest.mark.parametrize('stage', ['constructor', 'publication'])
+def test_empty_prefix_attestation_refuses_unsupported_or_changed_present_mode(
+        channel, monkeypatch, tmp_path, requested, configured, absent, stage):
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+    name = 'TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX'
+    if requested is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, requested)
+    initial = requested if requested in ('inherit', 'cpu-empty-v1') else 'inherit'
+    monkeypatch.setattr(history_owner, '_PRIVATE_EMPTY_PREFIX', initial, raising=False)
+    monkeypatch.setattr(owned, 'bound_receipt', lambda _: {})
+    engine = NS(rank=3, _abort_comm=False,
+                comm=NS(ready=lambda _: pytest.fail('invalid empty-prefix mode reached ready')))
+    def corrupt():
+        if absent:
+            monkeypatch.delattr(history_owner, '_PRIVATE_EMPTY_PREFIX', raising=False)
+        else:
+            monkeypatch.setattr(history_owner, '_PRIVATE_EMPTY_PREFIX', configured, raising=False)
+    def serve(args):
+        assert stage == 'publication', 'invalid empty-prefix mode reached constructor'
+        corrupt()
+        args._owned_expert_qualification.before_listener(engine)
+    monkeypatch.setattr(cli, 'cmd_serve', serve)
+    if stage == 'constructor':
+        corrupt()
+    with pytest.raises(ValueError, match='private empty-prefix'):
+        owned.worker(worker_args(tmp_path))
+    assert os.read(channel[0], 8) == b'F'
+    if stage == 'publication' and requested != 'invalid':
+        assert engine._abort_comm
+    assert not (tmp_path / 'rank-3.json').exists()
+    if stage == 'constructor' or requested != 'invalid':
+        assert not hasattr(history_owner, '_PRIVATE_EMPTY_PREFIX') if absent else history_owner._PRIVATE_EMPTY_PREFIX == configured

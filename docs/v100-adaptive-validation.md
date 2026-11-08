@@ -502,8 +502,9 @@ subnormals, signed zeros, row/guard bounds, malformed inputs and selector
 isolation. Source-only verification and the existing native-kernel ELF are
 recorded in `native-half-partial-prototype-v1/source-CPU51-GPU13-gate-v1.json`,
 SHA256 `844dbef4aaa55384f388ca32ec444f8d1f25d0ad327a0027d8ed4ef4afc127e2`.
-Complete model output and performance checks remain pending; this checkpoint
-selects no new deployment default.
+Broader model-output and performance qualification remain pending. The
+[balanced short pilot](benchmarking.md#balanced-ordered-half-partial-pilot)
+records four actual model runs at C1/C8; it selects no new deployment default.
 
 The private owned launcher additionally validates a captured startup request
 before model construction and again before publication. Each rank records
@@ -527,6 +528,51 @@ without an environment override. This is packaging/control evidence, not an
 enabled-Half model trial, numerical requalification or deployment promotion.
 Gate: `half-app-5fcc-v1/genuine-half-only-installed-gate-v1.json`, SHA256
 `25fb37f12c80042d4f0bce9bdfab947d564f9b48aea749ffddf548ced769236d`.
+
+## Private shortcut for an empty first page
+
+`TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX=cpu-empty-v1` is a process-fixed,
+default-off component trial. Unset or `inherit` retains the existing reference
+path; invalid values fail closed. It uses the current CPU page table of an
+exact `OwnedKVCache` to recognize a positive visible prefix wholly within its
+unowned first page. Shared arenas otherwise keep capacity nonzero, so the
+existing zero-capacity shortcut does not cover this case.
+
+After the existing preparation, coordinate/frame, epoch/status and native-reuse
+checks, this reference-only shortcut publishes the same local `(-inf, +0)`
+statistics and `+0` value contribution. It avoids unused query copies, indices,
+decoding and QK/PV work. All four collectives, global merge and final ordered
+fold remain unchanged. It reads the current table rather than caching a rank
+heuristic. Owned/mixed prefixes and later pages retain the existing math;
+CUDA capture and other execution families retain the original device path.
+This does not qualify or enable a graph family.
+
+The private launcher snapshots the requested mode before imports and validates
+it before construction and publication. Per-rank `empty_prefix_policy` contains
+only requested/configured values and selector support, without an invented
+native flag. Only an absent selector with no explicit request is accepted as
+`legacy-inherited`. The shared validator preserves Half/Router interfaces;
+older images cannot acquire the new implementation through an environment
+variable.
+
+An integrated five-file snapshot passed 368 CPU checks with zero skips on the
+selected x86 runtime, plus Ruff/syntax checks. Eight new structured eight-V100
+cases passed with zero skips: both policies, Q8/ISO4 and starts0/126 exercise
+the first page and the 128→129 crossing. GPU checks cover byte-exact attention
+output against the original full-cache operator, status and the actual capture
+guard. CPU checks also cover positive-zero wire contributions, collective counts
+and current-table updates.
+The new worker explicitly selects the pinned non-libuv Store and verifies its
+origin/cohort; legacy workers were unchanged and their whole file is not a
+pass claim. The earlier local ARM guard refusal remains recorded separately.
+
+This is source/component qualification. Installed-image, actual enabled-mode
+target/MTP execution, quality, full-context and performance selection remain
+pending; no deployment default changes.
+CPU gate: `empty-prefix-attestation-v1/CPU-combined-v1/combined5-selected-x86-CPU-gate-v1.json`,
+SHA256 `daed8e8fe3cbcd6b799ad4d6746e6fe3ff1bfc9834dac37c0beaa983d0489b5f`.
+GPU gate: `empty-owner-prefix-prototype-v1/GPU-v1/empty-prefix8-SOURCE-GPU-gate-v1.json`,
+SHA256 `2a1baa8d38176f31b1ae4e084ace49f4880ae2d4a409c9229c6069be9cf93f72`.
 
 ## Unchanged baseline reproducibility
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import copy
 from dataclasses import dataclass
+import os
 import traceback
 from types import SimpleNamespace
 
@@ -17,6 +18,31 @@ import torch
 from tensorfold.cuda.sm70 import family_ops as ops
 
 from .kvcache import KVCache, KVPairFormat
+
+
+# Component-only, process-fixed trial. Ordinary serving retains the incumbent.
+_PRIVATE_EMPTY_PREFIX = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX", "inherit")
+if _PRIVATE_EMPTY_PREFIX not in ("inherit", "cpu-empty-v1"):
+    raise ValueError("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX requires inherit or cpu-empty-v1")
+
+
+def _first_page_empty(cache, visible_end):
+    """Use the current CPU table, never a rank heuristic or retained generation.
+
+    Every contributing position satisfies local_indices' nonnegative logical
+    bounds AND position < visible_end. Thus even sparse/future-masked selections
+    cannot contribute outside this first page. This does not validate a frame.
+    """
+    return (type(cache) is OwnedKVCache and type(visible_end) is int
+            and 0 < visible_end <= min(cache.placement.page_tokens, cache.logical_capacity)
+            and bool(cache.offsets) and cache.offsets[0] < 0)
+
+
+def _empty_prefix_reference_allowed(weights, buffers):
+    if (buffers.owner_graph_family != "uncaptured"
+            or weights.meta.get("execution_provider") != "sm70"):
+        return False
+    return not (torch.device(weights.device).type == "cuda" and torch.cuda.is_current_stream_capturing())
 
 
 @dataclass(frozen=True)
@@ -881,6 +907,11 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
         buffers.compact_indexer_stage.begin(mtp=mtp)
     for state, first, last in segments:
         prepare(buffers.pa, state, layer, weights, buffers, first, last, mtp=mtp)
+    empty_prefix = False
+    if _PRIVATE_EMPTY_PREFIX == "cpu-empty-v1" and not native_selected:
+        # A captured CPU predicate would retain the old page ownership/length.
+        # Capture always records the original device-table/mask computation.
+        empty_prefix = _empty_prefix_reference_allowed(weights, buffers)
     for base in range(0, total_rows, owner.rows):
         count = min(owner.rows, total_rows - base)
         graph_manager = buffers.owner_graphs if native_selected else None
@@ -941,6 +972,13 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
             cache = state.mtp_kc if mtp else state.kc[ai]
             for row in range(first, last):
                 visible_end = host_pos + row - first + 1
+                if empty_prefix and _first_page_empty(cache, visible_end):
+                    partial[row, :, 0].fill_(-torch.inf)
+                    partial[row, :, 1].zero_()
+                    # None marks only this proved empty contribution; global
+                    # statistics/status and all four collectives still execute.
+                    jobs.append((state, cache, row, None, None, None))
+                    continue
                 complete = visible_end // c.index_ratio
                 if complete > c.index_budget // c.index_ratio:
                     n = (c.index_budget // c.index_ratio) * c.index_ratio + visible_end % c.index_ratio
@@ -963,8 +1001,11 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
             normalized.append((state, cache, row, query, ids, visible, maximum, denominator))
         value_part = owner.partial.reshape(-1)[:count * 4 * c.heads * c.head_dim].view(count, 4 * c.heads, c.head_dim)
         for _, cache, row, query, ids, visible, maximum, denominator in normalized:
-            value_part[row].copy_(normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
-                                                     maximum, denominator))
+            if ids is None:
+                value_part[row].zero_()
+            else:
+                value_part[row].copy_(normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
+                                                         maximum, denominator))
         value_parts = owner.partials.reshape(-1)[:8 * value_part.numel()].view(8, *value_part.shape)
         comm.all_gather(value_part, value_parts)
         local_heads = slice((rank % 4) * c.heads, (rank % 4 + 1) * c.heads)

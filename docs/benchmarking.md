@@ -237,6 +237,43 @@ checks. Private provenance:
 `d8751c4a4dd76a3e05d3ff0da06ce2b91f1138913fd751b369520826e492fa15`.
 
 
+## Balanced ordered Half partial pilot
+
+Four clean runs used A/B/B/A order on image `60dcb0e2` (committed `69c3ce2c`),
+with TP8/ETP4/PP1, ISO4, cap32, context262144, MTP4, row budget32 and prefill256.
+Dense/Concat and owner attention retained their reference selections; Router
+remained `inherit`. A used inherited Half partials; B alone set
+`TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL=native-half-v1`. All eight workers attested
+those selections. Original measured request bodies, 64 input/128 output tokens,
+one repetition per run and the untimed smoke/warmup procedures were unchanged.
+No build, profiler or other target job ran during timing.
+
+Prefill/decode are the established inclusive CUDA-stream envelopes; HTTP is
+separate wall throughput. All nine measured requests per run were uncached,
+with coherent active-owner peaks1/8 and clean lifecycle/health/source checks.
+
+| Run | Concurrency | Prefill tok/s | Decode tok/s | HTTP tok/s |
+| --- | ---: | ---: | ---: | ---: |
+| A1 inherit | 1 | 17.179579 | 3.005478 | 2.775337 |
+| A1 inherit | 8 | 16.878539 | 5.557588 | 5.477276 |
+| B1 native Half | 1 | 15.987849 | 3.067251 | 2.808309 |
+| B1 native Half | 8 | 17.881589 | 5.692447 | 5.614675 |
+| B2 native Half | 1 | 17.303511 | 3.150825 | 2.898253 |
+| B2 native Half | 8 | 16.536820 | 5.613603 | 5.537426 |
+| A2 inherit | 1 | 16.054689 | 3.029498 | 2.779220 |
+| A2 inherit | 8 | 17.419297 | 5.596376 | 5.519570 |
+
+Using full-precision records, observed mean decode was 3.03396% higher at C1
+and 1.36351% higher at C8 for native Half; mean HTTP was 2.73660%/1.41181%
+higher. Prefill means were 0.17179%/0.35154% higher, with wide overlapping
+ranges. Two runs per mode do not establish formal confidence or equivalence.
+C1 IDs and proposal work matched across all four runs; C8 trajectories and
+proposal work varied, including between the two controls, and remain retained.
+No outlier was discarded. This partial pilot does not qualify the full
+1/2/4/8/16/24/32 matrix, long context, new output quality or production/default
+promotion. Private gate: `half-clean-pilot-v1/balanced-Half-pilot-final-gate-v1.json`,
+SHA256 `b723c656d5a13d9bb83eefade944e1b07d23b7bf1c88efbf45dff5dffba48d55`.
+
 ## Preserved raw-completion reproducibility diagnostic
 
 Use the existing client without a private benchmark observer to investigate

@@ -891,8 +891,8 @@ def bound_receipt(engine):
             "qualification": "private candidate binding only; no full-native, quality or performance claim"}
 
 
-def _startup_selector(module, requested, field, native_field, selection, label, inherited):
-    """Read one process-fixed selector; only an absent field can mean legacy."""
+def _configured_selector(module, requested, field, selection, label):
+    """Read one process-fixed mode; only an absent field can mean legacy."""
     missing = object()
     configured = getattr(module, field, missing)
     supported = configured is not missing
@@ -900,11 +900,17 @@ def _startup_selector(module, requested, field, native_field, selection, label, 
     if (not supported and requested is not None or supported and (
             configured not in ("inherit", selection) or configured != expected)):
         raise ValueError(f"private {label} policy request is unsupported or differs from the installed configuration")
+    return {"requested": requested, "configured": configured if supported else "legacy-inherited",
+            "private_selector_supported": supported}
+
+
+def _startup_selector(module, requested, field, native_field, selection, label, inherited):
+    result = _configured_selector(module, requested, field, selection, label)
     native = getattr(module, native_field, None)
     if type(native) is not bool:
         raise ValueError(f"private {label} inherited {inherited} status must be an actual bool")
-    return {"requested": requested, "configured": configured if supported else "legacy-inherited",
-            "private_selector_supported": supported, "inherited_native_" + inherited: native}
+    result["inherited_native_" + inherited] = native
+    return result
 
 
 def _half_policy(requested):
@@ -923,12 +929,20 @@ def _router_policy(requested):
 
 
 
-def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None):
+def _empty_prefix_policy(requested):
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+
+    return _configured_selector(history_owner, requested, "_PRIVATE_EMPTY_PREFIX", "cpu-empty-v1", "empty-prefix")
+
+
+
+def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
         receipt["half_partial_policy"] = _half_policy(half_request)
         receipt["private_router_policy"] = _router_policy(router_request)
+        receipt["empty_prefix_policy"] = _empty_prefix_policy(empty_request)
         from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat
         actual = GGUFDense.implementation
         if dense_implementation is not None and (
@@ -989,6 +1003,7 @@ def worker(argv):
     benchmark = benchmark_resources = None
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
     router_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS")
+    empty_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX")
 
     def before_listener(engine):
         nonlocal receipt_failed
@@ -1018,13 +1033,14 @@ def worker(argv):
                     _observer_failure(engine, primary)
                     raise
             publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation,
-                            half_request=half_request, router_request=router_request)
+                            half_request=half_request, router_request=router_request, empty_request=empty_request)
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
     try:
         _half_policy(half_request)  # Before the ordinary constructor can prepare any model/workspace.
         _router_policy(router_request)
+        _empty_prefix_policy(empty_request)
         if selected.router_row_input is not None:
             if selected.history_input is not None or selected.benchmark_plan is not None:
                 raise ValueError("router row capture is a separate controlled procedure")

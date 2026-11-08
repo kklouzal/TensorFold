@@ -118,3 +118,120 @@ def test_sm70_tp8_unique_histories_and_real_page_migration(format_name):
             if process.is_alive():
                 process.kill()
             process.join(timeout=10)
+
+
+def _empty_prefix_worker(rank, port, format_name, start, policy):
+    """Fresh process and current frame fixture; never rewrites the legacy worker."""
+    import os
+    import sys
+
+    assert "tensorfold.families.qwen4_exp.cuda.history_owner" not in sys.modules
+    os.environ["TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX"] = policy
+    from tensorfold.cleanup import raise_failures
+    from tensorfold.cuda.comm import NCCL, validate_store_origin
+    from tensorfold.cuda.sm70 import family_ops as ops
+    from tensorfold.families.qwen4_exp.cuda import history_owner as h
+    from tensorfold.families.qwen4_exp.cuda.attention import AttnScratch
+    from tensorfold.families.qwen4_exp.cuda.compact_indexer import Staging
+    from tensorfold.families.qwen4_exp.cuda.kvcache import KVCache
+    from tensorfold.families.qwen4_exp.cuda.state import State
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+    from tests.test_flashnext_history_placement import _seed_zero_indexer_prefix
+
+    torch.set_num_threads(1)
+    torch.cuda.set_device(rank)
+    comm, primary, errors = NCCL(), None, []
+    try:
+        comm.open(rank, 8, "127.0.0.1", port, timeout_s=90, key="tf_empty_prefix_uid", use_libuv=False)
+        comm.verify_store_cohort()
+        validate_store_origin(comm.store_origin, comm.store, rank, 8, verified=True)
+        assert comm.store_origin.record() == {
+            "use_libuv": False, "rank0_owned_server": rank == 0,
+            "cohort_verified": True, "retired": False, "source": "guarded-process-factory",
+        }
+        device = torch.device("cuda", rank)
+        cfg = NS(hidden=512, streams=4, conv_kernel=4, conv_dim=1024, nk=2, nv=4, dk=128, dv=128,
+                 kv_heads=1, head_dim=256, index_dim=128, index_ratio=4, ple_kernel=4, ngram_size=3,
+                 ple_layers=[], eos=(0,), heads=1, index_heads=2, index_budget=2048, eps=1e-6,
+                 mrope_section=(1, 1, 1), rope_attention_factor=1.)
+        w = NS(cfg=cfg, device=device, layers=[NS(index=i, linear=False) for i in range(12)], mtp=None,
+               comm=comm, inv_freq=torch.tensor([1.], device=device), positions=None,
+               meta={"world": 8, "rank": rank, "full": NS(kv_heads=2), "execution_dtype": "float16",
+                     "execution_provider": "sm70", "history_layout": "unique", "attention_degree": 4})
+        state = State(w, 257, 3, format_name)
+        pair = get_pair(format_name)
+        key = torch.zeros((start + 3, 1, 256), dtype=torch.float16, device=device)
+        value = torch.full_like(key, 1 if rank < 4 else 2)
+        codes, scales = h._encode(key, pair.key, state.kv_status, 0, error=2)
+        values, value_scales = h._encode(value, pair.value, state.kv_status, 0, error=4)
+        for cache in state.kc:
+            cache.append(0, codes[:start], values[:start], scales[:start], value_scales[:start])
+        _seed_zero_indexer_prefix(state, start)
+        scratch = AttnScratch(3, 1, 256, 257, device, budget=2048, ratio=4, dtype=torch.float16)
+        projection = torch.zeros((3, 4 * 256 + 3 * 128), dtype=torch.float16, device=device)
+        projection[:, 3 * 256:4 * 256].fill_(1 if rank < 4 else 2)
+        buffers = NS(pa=projection, q=torch.empty((3, 1, 256), dtype=torch.float16, device=device),
+                     iq=torch.empty((3, 2, 128), dtype=torch.float16, device=device),
+                     attn_o=torch.empty((3, 1, 256), dtype=torch.float16, device=device),
+                     attn=scratch, prefill=False, input_preparation_context=None,
+                     owner_kernel_family="torch-reference", owner_graph_family="uncaptured", owner_graphs=None)
+        buffers.compact_indexer_stage = Staging(3, state.layers, device, mtp=False)
+        buffers.target_indexer_coordinates = buffers.target_indexer_frame = buffers.target_indexer_position = None
+        buffers.target_indexer_frame_id = 0
+        buffers.target_indexer_coordinate_storage = buffers.compact_indexer_stage.coordinates
+        buffers.history_owner = h.OwnerBuffers(w, 3, scratch)
+        layer = NS(index=0, attn=NS(q_scale=torch.ones(256, device=device), k_scale=torch.ones(256, device=device),
+                                  iq_scale=torch.ones(128, device=device), ik_scale=torch.ones(128, device=device)))
+        state.kv_begin()
+        actual = h.attention_layer(layer, w, [(state, 0, 3)], buffers, 3).clone()
+        full = KVCache(257, 1, 256, device, pair=pair)
+        for original, frame in ((full.k, codes), (full.v, values), (full.ks, scales), (full.vs, value_scales)):
+            original[:start + 3].copy_(frame)
+        pos = torch.tensor([start], dtype=torch.int32, device=device)
+        ops.qsa_rows(torch.zeros((3, 2, 128), dtype=torch.float16, device=device),
+                     torch.zeros((65, 128), dtype=torch.float16, device=device), pos, scratch, 3, context=start + 3)
+        expected = ops.attention(torch.zeros_like(actual), full.k, full.v, pos, scratch, 3, 256 ** -0.5,
+                                 context=start + 3, ks=full.ks, vs=full.vs,
+                                 k_bits=pair.key.bits, k_codec=pair.key.codec,
+                                 v_bits=pair.value.bits, v_codec=pair.value.codec)
+        assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
+        state.kv_check()
+        assert state.kv_status[0].item() == 0
+        sentinel = torch.empty((1,), device=device)
+        capture = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(capture):
+            sentinel.fill_(1 if h._empty_prefix_reference_allowed(w, buffers) else 0)
+        capture.replay()
+        assert sentinel.item() == 0  # CPU page ownership never becomes a captured decision.
+        comm.ready("empty-prefix-component-complete", every=1, timeout=60)
+    except BaseException as error:
+        primary = error
+    finally:
+        try:
+            comm.close(abort=primary is not None)
+        except BaseException as error:
+            errors.append(error)
+    raise_failures(primary, errors)
+
+
+@pytest.mark.parametrize("policy", ["inherit", "cpu-empty-v1"])
+@pytest.mark.parametrize("format_name", ["int8", "rotorquant-iso4-sm70-v1"])
+@pytest.mark.parametrize("start", [0, 126])
+def test_sm70_tp8_empty_first_page_keeps_original_attention_bits(format_name, start, policy):
+    if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
+        pytest.skip("requires eight real SM70 GPUs and the pinned V100 foundation")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    context = torch.multiprocessing.spawn(_empty_prefix_worker, args=(port, format_name, start, policy),
+                                          nprocs=8, join=False)
+    try:
+        deadline = time.monotonic() + 180
+        while not context.join(timeout=1):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("empty-prefix participant did not retire")
+    finally:
+        for process in context.processes:
+            if process.is_alive():
+                process.kill()
+            process.join(timeout=10)

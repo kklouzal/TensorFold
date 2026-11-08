@@ -56,6 +56,12 @@ The private [ordered Half partial trial](docs/v100-adaptive-validation.md#ordere
 passed component checks and has per-rank policy attestation; default policy
 and other operators remain unchanged. The current combined-selector candidate
 passed 371 installed CPU checks; model and performance qualification remain pending.
+The [balanced short Half pilot](docs/benchmarking.md#balanced-ordered-half-partial-pilot)
+observed higher mean decode at C1/C8; its partial coverage and prefill variability
+do not qualify a new default.
+The default-off [empty-first-page shortcut](docs/v100-adaptive-validation.md#private-shortcut-for-an-empty-first-page)
+passed 368 integrated CPU checks and eight eight-rank GPU cases. Installed-image,
+model and performance qualification remain pending.
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)
 isolates the existing native decode-logit operator for qualification, without
 enabling the broader optimized profile; the ordinary default remains unchanged.
