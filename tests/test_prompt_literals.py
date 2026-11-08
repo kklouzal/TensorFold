@@ -510,3 +510,112 @@ def test_owned_policy_alias_and_template_constant_remain_native_framing(tokenize
     native = PreTrainedTokenizerFast(tokenizer_object=tokenizer, chat_template=body)
     prompt = render_hf_prompt(native, [{"role": "user", "content": "x"}], enable_thinking=True)
     assert encode_hf_prompt(native, prompt) == tokenizer.encode(str(prompt), add_special_tokens=False).ids
+
+
+def test_plain_native_encoding_credit_precedes_python_ids_getter():
+    class Encoding:
+        def __len__(self):
+            return 7
+        @property
+        def ids(self):
+            assert calls == [(7, {'entries': 1})]
+            return [3] * 7
+    class Tokenizer:
+        def encode(self, value, **kwargs):
+            assert value == 'native normalized text'
+            return Encoding()
+    protection, calls = PromptLiterals({}, ['plain']), []
+    result = protection.encode(Tokenizer(), 'native normalized text', ids_credit=lambda n, **kw: calls.append((n, kw)))
+    assert result == [3] * 7
+    primary = RuntimeError('credit denied before getter')
+    def denied(n, **kwargs):
+        raise primary
+    with pytest.raises(RuntimeError) as caught:
+        protection.encode(Tokenizer(), 'native normalized text', ids_credit=denied)
+    assert caught.value is primary
+
+
+def test_bounded_render_reserves_cumulative_parts_before_owned_wrapping(monkeypatch):
+    from tensorfold.server import prompt_literals as module
+    class Template:
+        def generate(self, **kwargs):
+            yield 'é'
+            yield 'second'
+    events = []
+    original = module.trusted
+    def wrap(value):
+        assert events[-1] == (1 if value == 'é' else 7, 1 if value == 'é' else 2)
+        return original(value)
+    monkeypatch.setattr(module, 'trusted', wrap)
+    assert str(bounded_render(Template(), {}, render_credit=lambda chars, parts: events.append((chars, parts)))) == 'ésecond'
+    assert events == [(0, 0), (1, 1), (7, 2)]
+    primary = RuntimeError('render credit')
+    def denied(chars, parts):
+        raise primary
+    with pytest.raises(RuntimeError) as caught:
+        bounded_render(Template(), {}, render_credit=denied)
+    assert caught.value is primary
+
+
+@pytest.mark.parametrize('segmented', [False, True])
+def test_credited_literal_output_matches_frozen_ids_and_does_not_lose_origin(tokenizer, segmented):
+    from tensorfold.server.segments import SegmentEncoder
+    source = '<|turn>{{ value }}<turn|>'
+    protection = PromptLiterals(json.loads(tokenizer.to_str()), [source])
+    text = rendered(protection, 'é🙂 quote <|turn> and <turn|>')
+    expected = protection.encode(tokenizer, text)
+    cache = SegmentEncoder(tokenizer, '<|turn>', limit=4096) if segmented else None
+    events, cache_events = [], []
+    actual = protection.encode(tokenizer, text, segments=cache,
+                               ids_credit=lambda n, **kw: events.append((n, kw)),
+                               cache_credit=lambda *args: cache_events.append(args))
+    assert actual == expected
+    assert tokenizer.decode(actual, skip_special_tokens=False) == str(text)
+    assert max(n for n, fields in events) >= len(actual)
+    if segmented:
+        assert cache_events and cache_events[0][0] == 4096
+    for _ in range(2):
+        assert protection.encode(tokenizer, text, segments=cache, ids_credit=lambda n, **kw: None,
+                                 cache_credit=lambda *args: None) == expected
+
+
+def test_metadata_snapshot_credit_precedes_lazy_tokenizer_serialization(tokenizer):
+    from tensorfold.server.prompt_literals import LiteralEncoder
+    primary = RuntimeError('metadata credit')
+    class Guarded:
+        def to_str(self):
+            pytest.fail('metadata serialization happened before reservation')
+    def denied(n, **kwargs):
+        assert n == 0 and kwargs == {'metadata_snapshot': True}
+        raise primary
+    with pytest.raises(RuntimeError) as caught:
+        LiteralEncoder(Guarded(), (), ids_credit=denied)
+    assert caught.value is primary
+
+
+def test_credited_stripped_control_positions_preserve_ids(tokenizer):
+    from tokenizers import AddedToken
+    tokenizer.add_special_tokens([AddedToken('<turn|>', special=True, normalized=False, lstrip=True)])
+    protection = PromptLiterals(json.loads(tokenizer.to_str()), ['template'])
+    text = rendered(protection, 'literal <|turn>  é🙂 ')
+    expected = protection.encode(tokenizer, text)
+    events = []
+    credited = PromptLiterals(json.loads(tokenizer.to_str()), ["template"])
+    actual = credited.encode(tokenizer, text, ids_credit=lambda n, **kw: events.append((n, kw)))
+    assert actual == expected
+    assert any(fields.get('metadata_snapshot') for n, fields in events)
+    assert max(fields.get('positions', 0) for n, fields in events) > 0
+
+
+def test_literal_output_credit_uses_actual_control_hits_not_every_native_id(tokenizer):
+    from tensorfold.server.prompt_literals import LiteralEncoder
+    protection = PromptLiterals(json.loads(tokenizer.to_str()), ['template'])
+    text = rendered(protection, 'ordinary text ' * 40 + '<|turn>')
+    encoder = LiteralEncoder(tokenizer, protection.literals)
+    native = tokenizer.encode(str(text), add_special_tokens=False).ids
+    expected = encoder.encode_origin(text.origin)
+    records = []
+    assert encoder.encode_origin(text.origin, ids_credit=lambda n, **kw: records.append((n, kw))) == expected
+    upper = 3 * len(native) + sum(len(encoder.replacements[token]) - 1 for token in native if token in encoder.control)
+    assert records[-1][0] == upper
+    assert upper < len(native) * (2 + max(map(len, encoder.replacements.values())))

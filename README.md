@@ -50,6 +50,12 @@ profiles retain their existing retirement certifier. Installed/model integration
 and the host-admission successor remain pending. See
 [the lifetime evidence](docs/v100-adaptive-validation.md#ordinary-tp-admission-error-lifetimes).
 
+Prompt-encoding helpers now accept optional request-local allocation callbacks
+before token-ID conversion, literal expansion, segment-cache access and rendered
+part construction. An isolated source check passed 78 CPU tests with no skips;
+the complete host-credit integration remains pending. See
+[the callback scope](docs/v100-adaptive-validation.md#prompt-encoding-allocation-boundaries).
+
 Source startup diagnostics now separate the existing GGUF target-load interval,
 stock-MTP attachment, vocabulary binding and surrounding engine setup. They
 report host elapsed/submission time without extra device synchronization or

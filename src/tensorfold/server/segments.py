@@ -61,14 +61,18 @@ class SegmentEncoder:
                                                       for i in range(1, len(t.content)))
                        for t in added if t.content != opener)
 
-    def encode(self, text: str) -> list[int]:
-        return self._encode(text)
+    def encode(self, text: str, *, ids_credit=None, cache_credit=None) -> list[int]:
+        return self._encode(text, ids_credit=ids_credit, cache_credit=cache_credit)
 
-    def encode_origin(self, text, controls, replacements, content_bounds):
-        return self._encode(text, frozenset(controls), replacements, content_bounds)
+    def encode_origin(self, text, controls, replacements, content_bounds, *, ids_credit=None, cache_credit=None):
+        return self._encode(text, frozenset(controls), replacements, content_bounds,
+                            ids_credit=ids_credit, cache_credit=cache_credit)
 
-    def _encode(self, text, controls=None, replacements=None, content_bounds=None):
+    def _encode(self, text, controls=None, replacements=None, content_bounds=None, *, ids_credit=None, cache_credit=None):
         origin = text if controls is not None else None
+        if cache_credit is not None:
+            # OriginText -> base str can copy: reserve before that conversion too.
+            cache_credit(self.limit, str.count(text, self.opener) + 1, str.__len__(text))
         raw = str.__str__(text)
         parts = raw.split(self.opener)
         segments = ([parts[0]] if parts[0] else []) + [self.opener + p for p in parts[1:]]
@@ -84,10 +88,25 @@ class SegmentEncoder:
                 self.cache.move_to_end(segment)
         missing = list(dict.fromkeys(s for s in segments if s not in known))
         fresh = {}
+        held_ids = held_positions = previous_native = 0
+        entries = 4 * len(missing) + len(known)
+        if ids_credit is not None:
+            ids_credit(0, entries=entries)  # Before batch Encoding wrappers/fresh containers exist.
         for segment, encoded in zip(missing, self.tok.encode_batch(missing, add_special_tokens=False)):
+            if ids_credit is not None:
+                count = len(encoded)
+                ids_credit(held_ids + previous_native + 3 * count, entries=entries,
+                           positions=held_positions + 4 * count)
             native_ids = encoded.ids
             positions = array("i")
-            content = content_bounds(segment, native_ids) if content_bounds is not None else None
+            if ids_credit is None:
+                content = content_bounds(segment, native_ids) if content_bounds is not None else None
+            else:
+                content = None  # Previous segment's lookup has no remaining consumer.
+                if content_bounds is not None:
+                    content = content_bounds(segment, native_ids, ids_credit=ids_credit,
+                                             credit_base=held_ids + 3 * count,
+                                             positions_base=held_positions + 4 * count, entries_base=entries)
             if authority:
                 for index, token in enumerate(native_ids):
                     if token in authority:
@@ -97,6 +116,22 @@ class SegmentEncoder:
                             offsets = content(token, *offsets)
                         positions.extend((index, *offsets, automatic))
             fresh[segment] = _Segment(array("i", native_ids), positions)
+            if ids_credit is not None:
+                held_ids += count
+                held_positions += len(positions)
+                previous_native = count
+                content = None
+        if ids_credit is not None:
+            # Known cache arrays are separately pinned by cache_credit. Pay all
+            # fresh arrays, last getter, mapped output and one source slice.
+            output_count = maximum_slice = 0
+            expansion = max((len(ids) for ids in (replacements or {}).values()), default=1)
+            for segment in segments:
+                entry = known.get(segment) or fresh[segment]
+                maximum_slice = max(maximum_slice, len(entry.ids))
+                output_count += len(entry.ids) + (len(entry.controls) // 4 * expansion if origin is not None else 0)
+            ids_credit(held_ids + previous_native + output_count + maximum_slice,
+                       entries=entries, positions=held_positions + 4)
         out: list[int] = []
         base = 0
         for segment in segments:

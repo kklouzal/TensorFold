@@ -331,6 +331,37 @@ SHA256 `31f5da0a70f677eb4e4d33e61980de769923f07418012e71d945cc0e4aebb45e`.
 This checks input/resource-helper applicability only; the new CLI/application,
 worker attestation and long-context model execution are still unqualified.
 
+## Prompt encoding allocation boundaries
+
+The owned chat-template, protected-literal and segment encoders now accept
+optional request-local allocation callbacks. They expose native Encoding counts
+before Python ID getters, known batch-wrapper counts before batch encoding,
+replacement/output lengths before list growth, cache obligations before base-str
+conversion/splitting/lookup, and rendered-part counts before wrapping or joining.
+Counts include simultaneously retained fresh arrays and cached output, without
+per-input-token pool locking. A captured metadata extent can be credited before
+tokenizer serialization. Normalization, literal/origin decisions, tokenizer IDs,
+cache publication and LRU ordering remain unchanged; omitted callbacks retain
+the existing interfaces.
+
+The isolated prerequisite check used immutable `b7fe8e2b` source plus only the
+three encoder files and their two focused test modules. It ran directly on
+`sm-v100` in existing media image
+`sha256:8f5c4dddd460bad82f584db3cf44e739454b317c3dd452a5ca8de76b96dab5fd`,
+whose Transformers/PIL dependencies cover the shared frontend paths absent from
+the text-only image `540c54b7`. All 78 tests passed with zero skips; configured
+Ruff and syntax checks passed. Native FD/source identity matched, CUDA remained
+uninitialized, and the container retired with exit 0, PID 0 and no cleanup errors.
+The retained gate is
+`http-host-admission-source-cpu-v1/foundation-isolated-v1/isolated-foundation-CPU-gate-v1.json`,
+SHA256 `5fdfda8bc6dc9fbacfc7ef53b7495629811eee92b24ad866fb0ab2378c7f50b1`.
+
+This is source-level allocation-boundary and output-preservation evidence.
+The moving host-pool/App implementation was excluded from the snapshot. The
+media image has a different installed application/manifest; this check does not
+qualify an installed successor, the complete host-credit integration, C27
+admission, native encoder/Jinja heap usage, model execution or performance.
+
 ## Neutral artifact I/O boundary (A1)
 
 The source now separates bounded container/file validation from model and device

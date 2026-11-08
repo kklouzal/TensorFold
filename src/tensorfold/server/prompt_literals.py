@@ -149,11 +149,16 @@ def native_tokenizer(tokenizer):
     return None
 
 
-def bounded_render(template, kwargs, max_render_bytes=MAX_RENDER_BYTES):
+def bounded_render(template, kwargs, max_render_bytes=MAX_RENDER_BYTES, *, render_credit=None):
     if type(max_render_bytes) is not int or max_render_bytes <= 0:
         raise PromptEncodingError("render byte budget must be a positive integer")
-    parts, used = [], 0
+    if render_credit is not None:
+        render_credit(0, 0)
+    parts, used, chars = [], 0, 0
     for part in template.generate(**kwargs):
+        if render_credit is not None:
+            chars += len(part)
+            render_credit(chars, len(parts) + 1)  # Before owned origin/UTF8/list/concat materialization.
         # Owned origin compiler marks every dynamic output. Raw strings here
         # are static template output (also useful for a plain Jinja caller).
         part = part if isinstance(part, OriginText) else trusted(part)
@@ -202,27 +207,39 @@ class PromptLiterals:
         measure(value)
         return request_values(value), True
 
-    def encode(self, tokenizer, text, *, segments=None):
+    def encode(self, tokenizer, text, *, segments=None, ids_credit=None, cache_credit=None):
+        options = {}
+        if ids_credit is not None:
+            options["ids_credit"] = ids_credit
+        if cache_credit is not None:
+            options["cache_credit"] = cache_credit
+        def plain(value):
+            if segments is not None:
+                return segments.encode(value, **options)
+            if ids_credit is None:
+                return tokenizer.encode(value, add_special_tokens=False).ids
+            encoded = tokenizer.encode(value, add_special_tokens=False)
+            ids_credit(len(encoded), entries=1)
+            return encoded.ids
         if not isinstance(text, RenderedPrompt):
-            return segments.encode(text) if segments is not None else tokenizer.encode(text, add_special_tokens=False).ids
+            return plain(text)
         if not self.spellings:
             # No reserved token authority is declared by this model metadata.
             # Ordinary lexical codecs need no Rust tokenizer clone or slots.
             logical = str.__str__(text)
-            return (segments.encode(logical) if segments is not None
-                    else tokenizer.encode(logical, add_special_tokens=False).ids)
+            return plain(logical)
         actual = native_tokenizer(tokenizer)
         if actual is None:
             raise PromptEncodingError("reserved prompt tokens require an origin-aware native tokenizer")
         with self._lock:
             encoder = next((e for owner, e in self._encoders if owner is actual), None)
             if encoder is None:
-                encoder = LiteralEncoder(actual, self.literals)
+                encoder = LiteralEncoder(actual, self.literals, **({"ids_credit": ids_credit} if ids_credit is not None else {}))
                 self._encoders.append((actual, encoder))
                 if len(self._encoders) > 2:
                     self._encoders.pop(0)
         # Equal visible strings can have different control-token provenance.
-        return encoder.encode_origin(text.origin, segments=segments)
+        return encoder.encode_origin(text.origin, segments=segments, **options)
 
 
 def _without_prepend(value):
@@ -243,10 +260,16 @@ def _without_prepend(value):
 
 class LiteralEncoder:
     """One authoritative reserved-ID set; no synthetic IDs or tokenizer mutation."""
-    def __init__(self, tokenizer, literals):
+    def __init__(self, tokenizer, literals, *, ids_credit=None):
         from tokenizers import Tokenizer
 
-        data = json.loads(tokenizer.to_str())
+        if ids_credit is None:
+            data = json.loads(tokenizer.to_str())
+        else:
+            ids_credit(0, metadata_snapshot=True)
+            source = tokenizer.to_str()
+            ids_credit(0, metadata_chars=2 * len(source))  # Source graph and lexical clone coexist.
+            data = json.loads(source)
         self.tokenizer = tokenizer
         control = {i for i, token in tokenizer.get_added_tokens_decoder().items() if token.special}
         # Configured role tokens need not carry the added-token special flag.
@@ -284,7 +307,12 @@ class LiteralEncoder:
         self.replacements = {}
         for token_id in control:
             spelling = tokenizer.decode([token_id], skip_special_tokens=False)
-            ids = tuple(ordinary.encode(spelling, add_special_tokens=False).ids)
+            if ids_credit is None:
+                ids = tuple(ordinary.encode(spelling, add_special_tokens=False).ids)
+            else:
+                encoded = ordinary.encode(spelling, add_special_tokens=False)
+                ids_credit(sum(map(len, self.replacements.values())) + len(encoded), entries=len(control))
+                ids = tuple(encoded.ids)
             if not ids or control.intersection(ids):
                 raise PromptEncodingError("tokenizer cannot represent a control spelling as ordinary text")
             if tokenizer.decode(list(ids), skip_special_tokens=False) != spelling:
@@ -292,7 +320,7 @@ class LiteralEncoder:
             self.replacements[token_id] = ids
         self.literals = tuple(literals)
 
-    def content_bounds(self, text, native_ids):
+    def content_bounds(self, text, native_ids, *, ids_credit=None, credit_base=0, positions_base=0, entries_base=0):
         """Native content offsets, excluding AddedToken strip-only whitespace.
 
         One immutable alternate matcher per codec retains the actual normalizer
@@ -304,7 +332,13 @@ class LiteralEncoder:
         with self._strip_lock:
             if self._unstripped is None:
                 from tokenizers import Tokenizer
-                data = json.loads(self.tokenizer.to_str())
+                if ids_credit is None:
+                    data = json.loads(self.tokenizer.to_str())
+                else:
+                    ids_credit(credit_base, metadata_snapshot=True)
+                    source = self.tokenizer.to_str()
+                    ids_credit(credit_base, metadata_chars=2 * len(source))
+                    data = json.loads(source)
                 for token in data.get("added_tokens", []):
                     token["lstrip"] = token["rstrip"] = False
                 other = Tokenizer.from_str(json.dumps(data))
@@ -313,6 +347,9 @@ class LiteralEncoder:
                 self._unstripped = other
             other = self._unstripped
         encoded = other.encode(str.__str__(text), add_special_tokens=False)
+        if ids_credit is not None:
+            ids_credit(credit_base + len(encoded), entries=entries_base + 3 * len(self._strip_ids) + 1,
+                       positions=positions_base + 2 * len(encoded))
         positions = {}
         for index, token_id in enumerate(encoded.ids):
             if token_id in self._strip_ids:
@@ -335,14 +372,33 @@ class LiteralEncoder:
             return starts[index], ends[index]
         return content
 
-    def encode_origin(self, text, *, segments=None):
+    def encode_origin(self, text, *, segments=None, ids_credit=None, cache_credit=None):
         if segments is not None:
             if segments.tok is not self.tokenizer:
                 raise PromptEncodingError("segment cache belongs to a different tokenizer")
-            return segments.encode_origin(text, self.control, self.replacements, self.content_bounds)
+            options = {}
+            if ids_credit is not None:
+                options["ids_credit"] = ids_credit
+            if cache_credit is not None:
+                options["cache_credit"] = cache_credit
+            return segments.encode_origin(text, self.control, self.replacements, self.content_bounds, **options)
         encoded = self.tokenizer.encode(str.__str__(text), add_special_tokens=False)
+        budget = 0
+        if ids_credit is not None:
+            # Pay native ID/mask conversions before the first Python getter.
+            budget = 2 * len(encoded)
+            ids_credit(budget, entries=1, positions=4 * len(encoded))
         native_ids = encoded.ids
-        content = self.content_bounds(text, native_ids)
+        if ids_credit is not None:
+            # Only actual control hits can expand; reserve one bulk mapped-output
+            # upper before any append, preserving native normalization and IDs.
+            mapped = len(native_ids) + sum(len(self.replacements[token]) - 1
+                                          for token in native_ids if token in self.control)
+            budget += mapped
+            ids_credit(budget, entries=1, positions=4 * len(encoded))
+        content = (self.content_bounds(text, native_ids) if ids_credit is None else
+                   self.content_bounds(text, native_ids, ids_credit=ids_credit, credit_base=budget,
+                                       positions_base=4 * len(encoded), entries_base=1))
         out = []
         for index, token_id in enumerate(native_ids):
             if token_id not in self.control:

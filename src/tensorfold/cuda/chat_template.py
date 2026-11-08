@@ -83,7 +83,7 @@ class ChatTemplate:
     def render(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None,
                enable_thinking: bool, extra: dict[str, Any] | None = None, allow_images: bool = False,
                allow_audio: bool = False, max_render_bytes: int = MAX_RENDER_BYTES,
-               add_generation_prompt: bool = True) -> str:
+               add_generation_prompt: bool = True, render_credit=None) -> str:
         active = self.selected(tools=tools)
         messages = _normalize_tool_call_arguments(normalize_messages(messages, late_system=active.late_system,
                                                                      allow_images=allow_images,
@@ -103,16 +103,22 @@ class ChatTemplate:
                           add_generation_prompt=add_generation_prompt, enable_thinking=enable_thinking)
             kwargs.update(values["extra"])
             trust_policy_strings(kwargs)
-            text = bounded_render(active.template, kwargs, max_render_bytes)
+            text = bounded_render(active.template, kwargs, max_render_bytes,
+                                  **({"render_credit": render_credit} if render_credit is not None else {}))
             return RenderedPrompt(text, self.literals.literals)
         except (PromptEncodingError, UnicodeError) as exc:
             from jinja2.exceptions import TemplateError
 
             raise TemplateError(str(exc)) from exc
 
-    def encode(self, tokenizer, text, *, segments=None):
+    def encode(self, tokenizer, text, *, segments=None, ids_credit=None, cache_credit=None):
         """Count and generate from the same provenance-aware token sequence."""
-        return self.literals.encode(tokenizer, text, segments=segments)
+        options = {}
+        if ids_credit is not None:
+            options["ids_credit"] = ids_credit
+        if cache_credit is not None:
+            options["cache_credit"] = cache_credit
+        return self.literals.encode(tokenizer, text, segments=segments, **options)
 
 
 def prepare_chat_template(model_dir, *, template_file=None, template_name=None):

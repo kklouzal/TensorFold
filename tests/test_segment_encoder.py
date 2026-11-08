@@ -130,3 +130,90 @@ def test_a_qwen_template_gets_a_message_encoder_that_equals_the_whole_encode(tmp
         talk.append({"role": ("user", "assistant")[turn % 2], "content": "".join(rng.choice(PIECES) for _ in range(30))})
         text = template.render(talk, tools=None, enable_thinking=True)
         assert enc.encode(text) == tok.encode(text, add_special_tokens=False).ids, turn
+
+
+def test_credits_precede_split_cache_lock_batch_and_python_getters():
+    tok, calls, cache_calls = bpe(), [], []
+    class Encoding:
+        def __init__(self, value):
+            self.value = value
+        def __len__(self):
+            return len(self.value)
+        @property
+        def ids(self):
+            assert calls[-1][0] >= len(self.value)
+            return self.value.ids
+    class Guarded:
+        def __getattr__(self, name):
+            return getattr(tok, name)
+        def encode_batch(self, missing, **kwargs):
+            assert cache_calls and calls[-1][1]['entries'] >= len(missing)
+            return [Encoding(value) for value in tok.encode_batch(missing, **kwargs)]
+    encoder = SegmentEncoder(Guarded(), OPEN, limit=4096)
+    text = f'{OPEN}user\né🙂{END}{OPEN}assistant\nanswer{END}'
+    def cache_credit(limit, entries, chars):
+        assert not encoder.lock.locked()
+        cache_calls.append((limit, entries, chars))
+    actual = encoder.encode(text, ids_credit=lambda n, **kw: calls.append((n, kw)), cache_credit=cache_credit)
+    assert actual == tok.encode(text, add_special_tokens=False).ids
+    assert cache_calls == [(4096, text.count(OPEN) + 1, len(text))]
+    assert max(n for n, kw in calls) >= len(actual)
+    # Cached arrays still require payment before constructing the output list.
+    calls.clear()
+    assert encoder.encode(text, ids_credit=lambda n, **kw: calls.append((n, kw)), cache_credit=cache_credit) == actual
+    assert max(n for n, kw in calls) >= len(actual)
+
+
+def test_fresh_segment_credits_cover_cumulative_arrays_not_only_largest_segment():
+    tok, records = bpe(), []
+    encoder = SegmentEncoder(tok, OPEN, limit=0)
+    text = ''.join(f'{OPEN}user\n{value}{END}' for value in ['é🙂', 'long ' * 17, 'third 日本語'])
+    result = encoder.encode(text, ids_credit=lambda n, **kw: records.append((n, kw)))
+    assert result == tok.encode(text, add_special_tokens=False).ids
+    counts = [len(tok.encode(OPEN + part, add_special_tokens=False)) for part in text.split(OPEN)[1:]]
+    assert records[-1][0] >= 2 * sum(counts)
+    assert not encoder.cache
+
+
+def test_cache_credit_failure_happens_before_cache_or_native_batch():
+    encoder = SegmentEncoder(bpe(), OPEN)
+    primary = RuntimeError('cache pins denied')
+    class Forbidden:
+        def __enter__(self):
+            pytest.fail('cache lock entered before credit')
+        def __exit__(self, *args):
+            pass
+    encoder.lock = Forbidden()
+    def denied(*args):
+        raise primary
+    with pytest.raises(RuntimeError) as caught:
+        encoder.encode(OPEN + 'text', cache_credit=denied)
+    assert caught.value is primary
+
+
+def test_concurrent_publication_keeps_old_lock_entry_eligibility_and_lru_suffix():
+    """Preserve the insert-all/trim semantics; naive per-insert eviction fails here."""
+    from array import array
+    from tensorfold.server.segments import _Segment
+    tok = bpe()
+    a, x, y = (OPEN + letter for letter in 'AXY')
+    def entry(text):
+        return _Segment(array('i', tok.encode(text, add_special_tokens=False).ids), array('i'))
+    ea, ey = entry(a), entry(y)
+    assert _size(a, ea) == _size(y, ey)
+    class Concurrent:
+        def __getattr__(self, name):
+            return getattr(tok, name)
+        def encode_batch(self, missing, **kwargs):
+            assert missing == [x, y]
+            with encoder.lock:
+                encoder.cache[y] = ey
+                encoder.cache.move_to_end(a)
+                encoder.held += _size(y, ey)
+            return tok.encode_batch(missing, **kwargs)
+    encoder = SegmentEncoder(Concurrent(), OPEN, limit=2 * _size(a, ea))
+    encoder.cache[a], encoder.held = ea, _size(a, ea)
+    text = x + y
+    assert encoder.encode(text, ids_credit=lambda n, **kw: None, cache_credit=lambda *args: None) == tok.encode(text, add_special_tokens=False).ids
+    assert list(encoder.cache) == [a, x]
+    assert encoder.held <= encoder.limit
