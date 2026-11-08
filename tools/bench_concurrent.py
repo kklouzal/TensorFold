@@ -21,7 +21,9 @@ for measured replies and verifies all requested comparisons; failed/unmeasured
 cells or unverified comparisons exit nonzero. Ordinary servers may omit hashes
 without strict mode. SSE arrivals measure text pieces, not individual tokens. Rates estimate tokens
 from total usage and text arrivals; the first piece can contain multiple tokens.
-Transport errors and unequal requested comparisons always exit nonzero.
+Transport errors and unequal requested comparisons exit nonzero in benchmark modes.
+With --repro-input, exact differences are diagnostic data and a complete procedure
+exits zero; transport/protocol/configuration failures still exit nonzero.
 
   python3 tools/bench_concurrent.py http://127.0.0.1:8080 MODEL --levels 1,2,4,8 --alone --output out.json
 
@@ -494,6 +496,188 @@ def run_matrix(args, plan):
         raise
 
 
+def _repro_reply(live, reply, body):
+    completion = live.completion(reply, 128)
+    runtime, usage = reply["tensorfold"], reply["usage"]
+    digest = hashlib.sha256(",".join(map(str, completion["ids"])).encode()).hexdigest()[:12]
+    if (runtime.get("token_sha") != digest or len(completion["ids"]) != 128
+            or completion["finish"] != "length" or usage["prompt_tokens"] != 64
+            or type(runtime.get("cached")) is not int or runtime["cached"] != 0
+            or type(usage.get("prompt_tokens_details", {}).get("cached_tokens")) is not int
+            or usage["prompt_tokens_details"]["cached_tokens"] != 0
+            or runtime.get("drafts") is not body["draft"]):
+        raise ValueError("repro requires complete hashed cold64/128 replies and actual dispatch")
+    for key in ("drafted", "accepted"):
+        value = runtime.get(key)
+        if type(value) is not int or value < 0 or (not body["draft"] and value != 0):
+            raise ValueError("invalid actual repro proposal counters")
+    if runtime["accepted"] > runtime["drafted"]:
+        raise ValueError("repro accepted counter exceeds proposals")
+    return completion
+
+
+def load_repro(path, model):
+    with path.open("rb") as source:
+        raw = source.read((16 << 20) + 1)
+    if len(raw) > 16 << 20:
+        raise ValueError("repro DATA exceeds16MiB")
+    data = protocol.object_json(raw)
+    data["_source_sha256"] = hashlib.sha256(raw).hexdigest()
+    if data.get("schema") != "tensorfold.raw-completion-repro-input-v1" or len(data.get("cases", [])) != 8:
+        raise ValueError("repro requires eight preserved completion cases")
+    for index, case in enumerate(data["cases"]):
+        body = case["body"]
+        ids = body.get("prompt")
+        if (type(case.get("index")) is not int or case["index"] != index or type(ids) is not list or len(ids) != 64
+                or any(type(token) is not int or not 0 <= token < 2**31 for token in ids)
+                or body.get("model") != model or type(body.get("max_tokens")) is not int or body["max_tokens"] != 128
+                or type(body.get("temperature")) not in (int, float) or body["temperature"] != 0
+                or any(body.get(key) is not True for key in ("draft", "ignore_eos", "stream", "return_token_ids"))
+                or body.get("stream_options") != {"include_usage": True}):
+            raise ValueError("repro requires original indexed greedy64/128 completion bodies")
+        digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if digest != case.get("body_sha256"):
+            raise ValueError("repro body provenance differs")
+    configuration = data.get("model_configuration")
+    if (type(configuration) is not dict or configuration.get("id") != model
+            or configuration.get("kv_dtype") != "rotorquant-iso4-sm70-v1"
+            or configuration.get("context_length") != 262144 or configuration.get("mtp_drafts") != 4):
+        raise ValueError("recorded full-context ISO4 MTP4 repro model configuration required")
+    return data
+
+
+def run_repro(args, data):
+    if __package__:
+        from . import v100_rotorquant_live as live
+        from . import v100_adaptive_qualification as qualification
+    else:
+        import v100_rotorquant_live as live
+        import v100_adaptive_qualification as qualification
+    output = Path(args.output)
+    raw = output.with_suffix(output.suffix + ".raw")
+    if output.exists() or raw.exists():
+        raise ValueError("repro output and raw directory must be fresh")
+    for case in data["cases"]:
+        _repro_reply(live, case["reference"], case["body"])
+    raw.mkdir(parents=True)
+    client = live.Client(args.base, raw, timeout=args.timeout, limits=protocol.from_arguments(args))
+    report = {"schema": "tensorfold.raw-completion-repro-result-v1", "diagnostic_only": True,
+              "performance_claim": False, "input_sha256": data["_source_sha256"],
+              "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+              "stages": [], "completed": False, "differences": [], "conditional_repeat_required": None}
+    control = itertools.count()
+    initial = None
+    def idle():
+        stats = client.call(f"control-{next(control)}", path="/stats", object_response=True)
+        effective = qualification.profile(stats)
+        qualification.require_idle(stats)
+        expert = stats.get("capacity_plan", {}).get("expert_parallel", {})
+        if any(expert.get(key) != value for key, value in
+               (("tp", 8), ("pp", 1), ("etp", 4), ("ep", 2), ("implementation", "owned-etp4-native-slots-v1"))):
+            raise ValueError("repro requires the unchanged TP8/ETP4 owned-native implementation")
+        effective["expert_parallel"] = expert
+        if (effective["model"] != data["model_configuration"] or effective["context_tokens"] != 262144
+                or effective["resident_capacity"] != 32 or effective["session_capacity"].get("configured_ceiling") != 32):
+            raise ValueError("service differs from original full-context cap32 repro configuration")
+        if initial is not None and effective != initial:
+            raise ValueError("repro service instance/configuration changed")
+        return stats, effective
+    def stage(name, indices, draft):
+        before, _ = idle()
+        row = {"name": name, "indices": indices, "draft": draft, "requests": [None] * len(indices),
+               "errors": [None] * len(indices), "stats_before": before}
+        report["stages"].append(row)
+        write_json(output, report)
+        gate = threading.Barrier(len(indices))
+        def request(position, index):
+            released = False
+            try:
+                body = dict(data["cases"][index]["body"])
+                if not draft:
+                    body["draft"] = False  # The only permitted serial variant.
+                gate.wait()
+                released = True
+                pieces = []
+                reply = client.call(f"{name}-{index}", body, path="/v1/completions",
+                    observer=lambda event, text: (completion_fields(event), pieces.extend(text)))
+                reply["choices"][0]["message"]["content"] = "".join(pieces) or None
+                _repro_reply(live, reply, body)
+                row["requests"][position] = {"index": index, "body": body, "reply": reply,
+                    "reference_comparison": live.compare(data["cases"][index]["reference"], reply, 128)}
+            except BaseException as error:  # Task/drain retains the authentic primary after all borrowers stop.
+                try:
+                    row["errors"][position] = {"type": type(error).__name__, "message": str(error)}
+                    if not released:
+                        gate.abort()
+                except BaseException as recording:
+                    raise_failures(error, [recording])
+                raise
+        tasks, primary = [], None
+        try:
+            for position, index in enumerate(indices):
+                task = Task(partial(request, position, index), name=f"repro-{name}-{index}")
+                tasks.append(task)
+                task.start()
+        except BaseException as error:
+            primary = error
+            gate.abort()
+        finally:
+            drain(tasks, primary)
+        row["stats_after"], _ = idle()
+        write_json(output, report)
+        return row
+    primary = None
+    try:
+        stats, initial = idle()
+        report["initial_stats"] = stats
+        report["materialization"] = qualification.materialization(stats, initial)
+        first = stage("baseline-c8-mtp", list(range(8)), True)
+        report["conditional_repeat_required"] = any(not item["reference_comparison"]["passed"] for item in first["requests"])
+        if report["conditional_repeat_required"]:
+            stage("baseline-c8-mtp-repeat", list(range(8)), True)
+        for index in (2, 7):
+            stage(f"alone-{index}-mtp", [index], True)
+            stage(f"alone-{index}-serial", [index], False)
+        stage("baseline-c8-serial", list(range(8)), False)
+        by_index = {index: [] for index in range(8)}
+        for row in report["stages"]:
+            for item in row["requests"]:
+                if item is not None:
+                    by_index[item["index"]].append((row["name"], item["reply"]))
+        for index, replies in by_index.items():
+            for left, right in itertools.combinations(replies, 2):
+                comparison = live.compare(left[1], right[1], 128)
+                report["differences"].append({"index": index, "left": left[0], "right": right[0], **comparison})
+        report["completed"] = True
+        report["all_exact"] = (all(item["reference_comparison"]["passed"] for row in report["stages"]
+                                  for item in row["requests"])
+                               and all(item["passed"] for item in report["differences"]))
+        return 0  # Exact differences are diagnostic data, not a numerical acceptance gate.
+    except BaseException as error:
+        primary = error
+        report["error"] = {"type": type(error).__name__, "message": str(error)}
+        raise
+    finally:
+        cleanup = []
+        planned = ["baseline-c8-mtp", "alone-2-mtp", "alone-2-serial", "alone-7-mtp", "alone-7-serial", "baseline-c8-serial"]
+        if report["conditional_repeat_required"]:
+            planned.insert(1, "baseline-c8-mtp-repeat")
+        report["unrun_stages"] = [name for name in planned if name not in {row["name"] for row in report["stages"]}]
+        try:
+            report["final_stats"], _ = idle()
+        except BaseException as error:
+            report["completed"] = False
+            report["final_stats_error"] = {"type": type(error).__name__, "message": str(error)}
+            if primary is None:
+                report["error"] = report["final_stats_error"]
+            cleanup.append(error)
+        try:
+            write_json(output, report)
+        except BaseException as error:
+            cleanup.append(error)
+        raise_failures(primary, cleanup)
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("base")
@@ -511,6 +695,7 @@ def main() -> int:
     p.add_argument("--stagger-ms", type=float, default=0.0, help="start request i this many ms after request i - 1")
     p.add_argument("--label", default="")
     p.add_argument("--output")
+    p.add_argument("--repro-input", type=Path, help="diagnostic replay of eight preserved raw completion bodies/references; differences are data")
     p.add_argument("--prepare-matrix", type=Path)
     p.add_argument("--matrix-plan", type=Path)
     p.add_argument("--profile", choices=tuple(PROFILE_CAPS), default="q8")
@@ -519,6 +704,10 @@ def main() -> int:
     protocol.add_arguments(p)
     args = p.parse_args()
     limits = protocol.from_arguments(args)
+    if args.repro_input is not None:
+        if not args.output or args.prepare_matrix is not None or args.matrix_plan is not None:
+            p.error("repro requires fresh --output and cannot be mixed with matrix modes")
+        return run_repro(args, load_repro(args.repro_input, args.model))
     if args.prepare_matrix is not None or args.matrix_plan is not None:
         if not args.output or args.prepare_matrix is not None and args.matrix_plan is not None:
             p.error("matrix requires one preparation/run mode and a fresh --output")

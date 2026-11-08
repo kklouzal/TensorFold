@@ -39,6 +39,9 @@ not bit-exact; [full-model qualification remains open](docs/v100-adaptive-valida
 The [first matched owner-attention pilot](docs/benchmarking.md#matched-owner-attention-pilot)
 records higher trial rates and changed concurrent outputs; repeatability and
 quality acceptance remain pending.
+The [preserved-request repro diagnostic](docs/benchmarking.md#preserved-raw-completion-reproducibility-diagnostic)
+checks baseline batch/serial repeatability without treating differences as
+quality acceptance or performance measurements.
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload

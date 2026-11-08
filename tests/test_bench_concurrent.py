@@ -262,3 +262,159 @@ def test_matrix_geometry_is_rejected_before_any_token_list_allocation(bench, mon
     monkeypatch.setattr(bench, 'matrix_ids', lambda *a: pytest.fail('allocated before context validation'))
     with pytest.raises(ValueError):
         bench.load_matrix(path)
+
+
+def repro_fixture():
+    import hashlib
+    configuration = {'id': 'fixture', 'kv_dtype': 'rotorquant-iso4-sm70-v1',
+                     'context_length': 262144, 'mtp_drafts': 4}
+    cases = []
+    for index in range(8):
+        body = {'model': 'fixture', 'prompt': [index] * 64, 'max_tokens': 128, 'temperature': 0,
+                'draft': True, 'ignore_eos': True, 'stream': True,
+                'stream_options': {'include_usage': True}, 'return_token_ids': True}
+        ids = [index + 1] * 128
+        reply = {'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'text'}, 'finish_reason': 'length'}],
+                 'usage': {'prompt_tokens': 64, 'completion_tokens': 128, 'total_tokens': 192,
+                           'prompt_tokens_details': {'cached_tokens': 0}},
+                 'tensorfold': {'token_ids': ids, 'token_sha': hashlib.sha256(','.join(map(str, ids)).encode()).hexdigest()[:12],
+                                'cached': 0, 'drafts': True, 'drafted': 100, 'accepted': 80}}
+        digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        cases.append({'index': index, 'body': body, 'body_sha256': digest, 'reference': reply})
+    return {'schema': 'tensorfold.raw-completion-repro-input-v1', 'model_configuration': configuration, 'cases': cases}
+
+
+@pytest.mark.parametrize('fault', [None, 'hash', 'geometry', 'mode', 'configuration'])
+def test_repro_data_validation_preserves_original_bodies(bench, tmp_path, fault):
+    data = repro_fixture()
+    if fault == 'hash':
+        data['cases'][0]['body']['prompt'][0] = 999
+    elif fault == 'geometry':
+        data['cases'][0]['body']['max_tokens'] = 127
+    elif fault == 'mode':
+        data['cases'][0]['body']['stream'] = False
+    elif fault == 'configuration':
+        data['model_configuration']['mtp_drafts'] = 6
+    path = tmp_path / 'input.json'
+    path.write_text(json.dumps(data))
+    if fault:
+        with pytest.raises(ValueError):
+            bench.load_repro(path, 'fixture')
+    else:
+        assert bench.load_repro(path, 'fixture') == {**data, '_source_sha256': __import__('hashlib').sha256(path.read_bytes()).hexdigest()}
+
+
+@pytest.mark.parametrize('fault', [None, 'different', 'cached', 'bad-sha', 'wrong-dispatch', 'serial-proposals', 'transport', 'restart', 'final-stats', 'repeat-idle'])
+def test_repro_runs_twenty_or_conditional_twenty_eight_and_retains_failures(bench, monkeypatch, tmp_path, fault):
+    import copy
+    import hashlib
+    from types import SimpleNamespace as NS
+    from tools import v100_rotorquant_live as live
+    from tools import v100_adaptive_qualification as qualification
+    monkeypatch.setitem(sys.modules, 'v100_rotorquant_live', live)
+    monkeypatch.setitem(sys.modules, 'v100_adaptive_qualification', qualification)
+    data, calls = repro_fixture(), []
+    final_reads = [0]
+    transport = OSError('retained original transport failure')
+    transport.add_note('authentic primary note')
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        def call(self, label, body=None, **kwargs):
+            calls.append((label, copy.deepcopy(body), kwargs.get('path')))
+            if body is None:
+                if fault == 'repeat-idle' and label == 'control-3':
+                    raise OSError('conditional repeat idle failed')
+                if sum(body is not None for _, body, _ in calls) == 20:
+                    final_reads[0] += 1
+                    if fault == 'final-stats' and final_reads[0] == 2:
+                        raise OSError('final stats failed')
+                return {'server': {'instance_id': 'changed' if fault == 'restart' and len(calls) > 2 else 'one'},
+                        'object': 'tensorfold.stats', 'model': data['model_configuration'],
+                        'capacity_plan': {'expert_parallel': {'tp': 8, 'pp': 1, 'etp': 4, 'ep': 2,
+                            'implementation': 'owned-etp4-native-slots-v1'}, 'session_capacity': {'resident_capacity': 32, 'configured_ceiling': 32,
+                            'context_tokens': 262144, 'full_context_commitments': 32},
+                            'kv_full_windows': {'materialized': True, 'reserved': 32, 'stream_slots': 32,
+                                'ranks': [{'rank': rank, 'materialized': True, 'startup_capacities': [262149] * 32,
+                                           'allocated_cache_bytes': 100, 'torch_allocated_bytes': 200, 'torch_reserved_bytes': 300}
+                                          for rank in range(8)]}},
+                        'load': {'requests_in_flight': 0, 'requests_running': 0, 'requests_waiting': 0}}
+            index = body['prompt'][0]
+            if fault == 'transport' and index == 2:
+                raise transport
+            reply = copy.deepcopy(data['cases'][index]['reference'])
+            runtime = reply['tensorfold']
+            runtime.update(drafts=body['draft'], drafted=100 if body['draft'] else 0, accepted=80 if body['draft'] else 0)
+            if fault in ('different', 'repeat-idle') and index == 2 and body['draft']:
+                runtime['token_ids'][6] = 555
+                runtime['token_sha'] = hashlib.sha256(','.join(map(str, runtime['token_ids'])).encode()).hexdigest()[:12]
+            elif fault == 'cached':
+                runtime['cached'] = 1
+            elif fault == 'bad-sha':
+                runtime['token_sha'] = 'bad'
+            elif fault == 'wrong-dispatch':
+                runtime['drafts'] = not body['draft']
+            elif fault == 'serial-proposals' and not body['draft']:
+                runtime['drafted'] = 1
+            kwargs['observer']({}, ['text'])
+            return reply
+    monkeypatch.setattr(live, 'Client', Client)
+    source = tmp_path / 'input.json'
+    source.write_text(json.dumps(data))
+    data = bench.load_repro(source, 'fixture')
+    source.unlink()  # Run must use exactly the already loaded bytes/hash, not reread DATA.
+    args = NS(base='http://unused', model='fixture', output=tmp_path / 'out.json', repro_input=source,
+              timeout=1, response_mib=16, sse_line_kib=64)
+    if fault not in (None, 'different'):
+        with pytest.raises((ValueError, OSError)) as caught:
+            bench.run_repro(args, data)
+        if fault == 'transport':
+            assert caught.value is transport
+            assert 'authentic primary note' in caught.value.__notes__
+    else:
+        assert bench.run_repro(args, data) == 0
+    report = json.loads(args.output.read_text())
+    assert 'final_stats' in report or 'final_stats_error' in report
+    requests = [(label, body, path) for label, body, path in calls if body is not None]
+    for label, body, path in requests:
+        original = data['cases'][body['prompt'][0]]['body']
+        assert body == (original if body['draft'] else {**original, 'draft': False})
+        assert path == '/v1/completions'
+    if fault in (None, 'different'):
+        assert report['completed'] and not report['unrun_stages']
+        assert len(requests) == (28 if fault == 'different' else 20)
+        assert report['all_exact'] is (fault is None)
+        assert len([row for row in report['stages'] if row['name'] == 'baseline-c8-mtp-repeat']) == (fault == 'different')
+        assert any(not item['passed'] for item in report['differences']) is (fault == 'different')
+    else:
+        assert not report['completed'] and report['error']
+        assert bool(report['unrun_stages']) is (fault != 'final-stats')
+        if fault == 'repeat-idle':
+            assert report['conditional_repeat_required'] is True
+            assert 'baseline-c8-mtp-repeat' in report['unrun_stages']
+        if fault not in ('restart', 'final-stats', 'repeat-idle'):
+            assert any(error for row in report['stages'] for error in row['errors'])
+
+
+def test_repro_loader_reads_once_bounded_and_rejects_oversize_before_parse(bench, monkeypatch):
+    reads = []
+    class Source:
+        def open(self, mode):
+            assert mode == 'rb'
+            class Stream(io.BytesIO):
+                def read(self, size):
+                    reads.append(size)
+                    return super().read(size)
+            return Stream(b' ' * ((16 << 20) + 2))
+    monkeypatch.setattr(bench.protocol, 'object_json', lambda raw: pytest.fail('oversize reached JSON parser'))
+    with pytest.raises(ValueError, match='exceeds16MiB'):
+        bench.load_repro(Source(), 'fixture')
+    assert reads == [(16 << 20) + 1]
+
+
+@pytest.mark.parametrize('raw', [b'{"schema":1,"schema":2}', b'{"schema":NaN}', b'{"schema":1e999}'])
+def test_repro_loader_reuses_strict_object_json(bench, tmp_path, raw):
+    path = tmp_path / 'invalid.json'
+    path.write_bytes(raw)
+    with pytest.raises(ValueError):
+        bench.load_repro(path, 'fixture')

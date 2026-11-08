@@ -235,3 +235,49 @@ from this pair. Both measured arms retired normally with matching source/health
 checks. Private provenance:
 `native-owner-clean-pilot-v1/matched-owner-pilot-gate-v1.json`, SHA256
 `d8751c4a4dd76a3e05d3ff0da06ce2b91f1138913fd751b369520826e492fa15`.
+
+
+## Preserved raw-completion reproducibility diagnostic
+
+Use the existing client without a private benchmark observer to investigate
+repeatability before attributing a model difference to an operator candidate:
+
+```bash
+python tools/bench_concurrent.py http://127.0.0.1:8000 SERVED_MODEL \
+  --repro-input preserved-repro-input.json --output fresh-repro-result.json \
+  --timeout 1800 --response-mib 16 --sse-line-kib 64
+```
+
+DATA uses schema `tensorfold.raw-completion-repro-input-v1`, the recorded
+`model_configuration` from `/stats.model`, and eight ordered `cases`. Each case
+contains `index`, the original `body`, its `body_sha256` (SHA256 of JSON encoded
+with sorted keys and separators `(',', ':')`), and the original normalized
+`reference` completion including message, usage, token IDs and independent
+ID hash. The source DATA file hash and client source hash are recorded.
+The selected diagnostic preserves 64 prompt IDs, 128 output tokens, greedy
+sampling, streaming and all original fields; only serial variants change
+`draft` to false. It requires the recorded ISO4/MTP4/full262144/cap32,
+TP8/PP1/ETP4 native-owned service and actual eight-rank full-window receipts.
+It never changes model settings or starts/reloads the service.
+
+One loaded instance runs an eight-request MTP repeat, prompts 2 and 7 alone
+with MTP and serial decoding, then the eight-request serial batch: 20 requests.
+If the first batch differs from its saved baseline, one further eight-request
+MTP repeat makes 28 requests. The start barrier describes offered batches;
+this diagnostic does not certify strict simultaneous backend occupancy.
+Every response must retain complete ID/hash/finish evidence, actual mode and
+proposal counters, and zero cached tokens in both native and usage metadata.
+Compiler/frontend caches are independent of prompt-cache reuse. Full output
+comparisons are exact; there is no tolerance or performance result. A completed
+procedure can exit zero with differences (`all_exact: false`); exchange,
+identity, cache or protocol failures remain errors with partial results and
+raw exchanges retained. Initial, per-stage and final stats identify the
+service and lifecycle. `--timeout` retains the existing client socket/read
+semantics; it does not promise a hard whole-suite wall deadline. Output and
+its `.raw` directory must both be fresh.
+
+Prefill router FP32 GEMM can use a different batch shape from decode's
+independent-row router arithmetic. History-slot assignment also selects page
+and indexer owners, with ordered per-owner attention reductions. These are
+investigation axes, not established causes of any observed divergence;
+request bodies and actual state mapping must resolve attribution.
