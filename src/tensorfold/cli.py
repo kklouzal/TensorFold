@@ -32,8 +32,16 @@ COMMANDS = ("serve", "pull", "models", "info", "update", "service", "tui", "plan
 class _OwnedExpertQualification:
     """Trusted Python-only entry; never a parser, environment or admin option."""
     before_listener: Callable[[Any], None]
+    host_obligation: tuple = ()
 
     def __post_init__(self):
+        if self.host_obligation and (type(self.host_obligation) is not tuple or len(self.host_obligation) != 2
+                or type(self.host_obligation[0]) is not int or not 0 < self.host_obligation[0] <= (1 << 63) - 1
+                or type(self.host_obligation[1]) is not str or len(self.host_obligation[1]) != 64
+                or any(char not in "0123456789abcdef" for char in self.host_obligation[1])):
+            raise TypeError("private qualification requires bounded host bytes and SHA256 provenance")
+        if type(self.host_obligation) is not tuple:
+            raise TypeError("private qualification host obligation must be a tuple")
         if not callable(self.before_listener):
             raise TypeError("private qualification requires its receipt/containment owner")
 
@@ -389,6 +397,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     }
     if qualification is not None:
         options["_owned_expert_native"] = True
+        if qualification.host_obligation:
+            options["_owned_qualification_host"] = qualification.host_obligation
     options.update(_model_overrides(args))
     if getattr(args, "draft_method", "auto") != "auto":
         options["draft_method"] = args.draft_method

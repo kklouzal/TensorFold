@@ -60,9 +60,16 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _owned_qualification_host: tuple=()) -> None:
         if type(_owned_expert_native) is not bool:
             raise ValueError("private owned expert selection must be a literal boolean")
+        if (type(_owned_qualification_host) is not tuple or _owned_qualification_host and (not _owned_expert_native
+                or len(_owned_qualification_host) != 2 or type(_owned_qualification_host[0]) is not int
+                or not 0 < _owned_qualification_host[0] <= (1 << 63) - 1
+                or type(_owned_qualification_host[1]) is not str or len(_owned_qualification_host[1]) != 64
+                or any(char not in "0123456789abcdef" for char in _owned_qualification_host[1]))):
+            raise ValueError("private qualification host obligation requires bounded bytes and SHA256 provenance")
+        self._owned_qualification_host = _owned_qualification_host
         self._owned_expert_requested = _owned_expert_native
         self._owned_expert_admin_requested = serving_profile_root is not None
         self._owned_expert_plan = None
@@ -77,6 +84,7 @@ class FlashNextEngine:
         profile_options.pop("model_dir")
         profile_options.pop("serving_profile_root")
         profile_options.pop("_owned_expert_native")
+        profile_options.pop("_owned_qualification_host")
         profile_options.pop("_prepared_family_plan")  # private startup cache is never an administrator option
         self._profile_build = None
         self.serving_profiles = None
@@ -1200,6 +1208,9 @@ class FlashNextEngine:
                 media_resources["shared_host_payload_bound"])
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + (
                 media_resources["vision_loading_host_payload_bound"])
+        if self._owned_qualification_host:
+            # Private observer input persists through loading and serving; no materialized credit.
+            host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + self._owned_qualification_host[0]
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision and not media_requested, rank, workspace),
                                    weight_rule,
@@ -2142,6 +2153,8 @@ class FlashNextEngine:
                   getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
         if owned is not None:
             policy.append(["owned-expert-native", owned.identity])
+        if getattr(self, "_owned_qualification_host", ()):
+            policy.append(["private-qualification-host", self._owned_qualification_host])
         if getattr(self, "position_profile", None) is not None:
             policy.append(["position-profile", self.position_profile.identity, self.position_profile.epoch,
                            self.position_method_binding])

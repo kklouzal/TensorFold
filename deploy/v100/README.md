@@ -90,6 +90,47 @@ only after actual bank binding. Attention and other kernel-family labels retain
 their own meanings; these receipts do not claim a fully native model, correctness,
 quality or performance qualification. See [the completed bounded functional run](../../docs/v100-adaptive-validation.md#private-native-owned-sc117-functional-milestone).
 
+For controlled populated-history qualification, the source tool additionally accepts
+`--history-input /data/history-witness.json` before `--`. This private DATA object
+has exactly `C`, `N`, `R`, `L` and `prompt_token_ids_sha256` (C distinct lowercase
+SHA-256 strings). Use the same compact JSON integer-array hashes as the supplied-long
+client/corpus, with `N+R=L`; no prompts, gold or executable callbacks are accepted
+in this file. Actual admitted C and context must match before listener publication.
+The bounded observer obligation is paid once in both original loading and serving
+host commitments, with no materialized credit or catalog rebinding.
+
+Only that private worker selects an instance wrapper around its existing round.
+It snapshots C distinct active non-done Stream/State owners at a coherent pre-round
+boundary, requiring cached position >=N and actual prompt hashes, wire IDs,
+slot/ownership generations and coordinate/native identities. The original round
+runs exactly once. A successful return permits one durable per-rank receipt;
+then the original method is restored. Failure poisons/notifies the existing
+supervisor. Normal workers and shipping round implementations are unchanged.
+No GPU fence is added: this establishes logical owner/device-stream ordering,
+not wall-clock simultaneous GPU execution. The diagnostic round/publication is
+excluded from any later performance comparison.
+
+The supervised parent generates one fresh run identity shared by all eight
+workers; receipts also bind the actual rank-zero stats service instance. After
+the existing supplied-long client finishes, run from the canonical checkout:
+
+```bash
+python tools/v100_owned_qualification.py --accept-history \
+  --out /qualification-output/new-native-run \
+  --client-report /path/to/long-client-output/suite.json
+```
+
+This offline acceptor requires all eight same-prefix/input/native/coordinate/owner
+facts and the matching completed service's independent gold, exact mode parity,
+cold serial and positive actual MTP work. Successful ordinary request retirement
+provides the existing TP finish acknowledgment, rather than a new collective.
+It writes a separate fresh `history-acceptance.json`; it never rewrites an advisory
+client report into a pass. Missing receipts or no qualifying C-owner boundary
+remain unsupported. Stage the normal tool dependency closure for offline use.
+The source controls do not establish an installed/actual long-context pass;
+that run remains blocked by the recorded frontend host admission until its
+separate successor is verified.
+
 Canonical SM70 TP8 GPU-history startup also requires the basic
 [A4 physical-stage binding](../../docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4)
 before NCCL/model admission. Expose the intended physical GPU as device zero

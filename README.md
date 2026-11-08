@@ -37,6 +37,9 @@ The explicit [supplied-long client scenario](deploy/v100/README.md#supplied-long
 adds independent request/oracle data, cold serial/MTP/SSE parity and reported
 `N/R/L` prompt-floor observations. Runtime readings remain advisory: strict
 simultaneous populated-C ownership is Unsupported, not a qualified capacity result.
+A source-only private worker attestation and offline acceptor now provide a
+separate path to coherent logical-owner evidence, bound to the actual client
+service/run; they have not yet qualified an installed long-context run.
 The C27/H28 attempt failed host admission before HTTP; see the
 [recorded scope](docs/v100-adaptive-validation.md#supplied-long-client-and-host-admission).
 

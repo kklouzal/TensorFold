@@ -266,6 +266,17 @@ retain their reading contract; strict simultaneous populated-C ownership and
 the overall requested gate remain Unsupported until a separate coherent
 ownership attestation exists.
 
+A source-only [private worker attestation procedure](../deploy/v100/README.md#private-owned-routed-qualification-procedure)
+now observes the actual sole-owner round boundary instead of the advisory API.
+It binds all-eight common TP prefix sequences and real State/wire/generation/
+prompt/coordinate/native facts to a fresh run identity and the client service
+instance. Its separate offline acceptor rechecks completed client gold, cold
+serial/MTP/SSE parity and actual proposal work. There is no new GPU fence or
+public mode, no change to ordinary round methods, and no catalog rebinding;
+bounded private metadata is paid in loading and serving admission. The scope is
+logical owner/device-stream ordering, not GPU wall-clock simultaneity. Source
+checks and the pending installed long-context/host-successor run remain separate.
+
 After the resident C27 allocation above, the H28/P27 frontend attempt failed
 the mandatory host guard: projected commitment 4,403,538,763,721 bytes exceeded
 351,202,996,224 usable bytes. Physical GPU allocation passed, but no API listener,

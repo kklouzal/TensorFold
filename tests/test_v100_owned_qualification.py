@@ -268,3 +268,343 @@ def test_private_prefix_uses_real_supervisor_failure_and_process_retirement(monk
     for child in children:
         with pytest.raises(ProcessLookupError):
             os.kill(child.pid, 0)
+
+
+def history_fixture(tmp_path):
+    coordinate, identity = 'a' * 64, ('owned-etp4-native-slots-v1', 8, 4)
+    states = [NS(pos=12, history_slot=index, slot_generation=3, history_generation=7,
+                 coordinate_profile_identity=coordinate,
+                 kv_identity=(("owned-expert-native", identity), ("coordinate-profile-v1", coordinate)))
+              for index in range(2)]
+    streams = [NS(st=state, done=False, prompt=[index + 1] * 12, count=4) for index, state in enumerate(states)]
+    result, calls = object(), []
+    def original():
+        calls.append('round')
+        return result
+    decoder = NS(states=states, streams=dict(enumerate(streams)), filling=[], round=original)
+    engine = NS(multi=decoder, tp_decoder=NS(wires={id(stream): index for index, stream in enumerate(streams)}, prefix_operation=19),
+                w=NS(meta={"coordinate_profile_identity": coordinate}), _owned_expert_plan=NS(identity=identity),
+                rank=0, tp=8, _abort_comm=False, context_window=16,
+                _history_run_identity="c" * 32, _history_server_instance="instance")
+    data = {"C": 2, "N": 12, "R": 4, "L": 16,
+            "prompt_token_ids_sha256": [owned._prompt_digest(stream.prompt) for stream in streams]}
+    resources = {"receipt_bytes_limit": 6144, "global_host_obligation_bytes": 8000}
+    observer = owned._HistoryAttestation(engine, data, 'b' * 64, tmp_path, resources)
+    return engine, data, observer, calls, result
+
+
+def test_streamed_prompt_hash_matches_independent_compact_json():
+    import hashlib
+    values = [0, 1, 10, 248046]
+    assert owned._prompt_digest(values) == hashlib.sha256(json.dumps(values, separators=(',', ':')).encode()).hexdigest()
+    assert owned._prompt_digest(iter(values)) == owned._prompt_digest(values)
+    for bad in ([True], [-1], [1 << 31], ['1']):
+        with pytest.raises(ValueError):
+            owned._prompt_digest(bad)
+
+
+def test_private_round_captures_before_mutation_publishes_after_and_restores(tmp_path, monkeypatch):
+    engine, data, observer, calls, result = history_fixture(tmp_path)
+    original = observer.original
+    def step():
+        engine.multi.states[0].pos = 13
+        return original()
+    observer.original = step
+    publish = owned.write_json
+    def write(path, record):
+        assert calls == ['round'] and engine.multi.states[0].pos == 13
+        assert record['owners'][0]['cached_length'] == 12
+        publish(path, record)
+    monkeypatch.setattr(owned, 'write_json', write)
+    observer.install()
+    assert engine.multi.round() is result
+    receipt = json.loads((tmp_path / 'history-rank-0.json').read_text())
+    assert receipt['prefix_sequence'] == 19 and receipt['C'] == 2
+    assert receipt['input_sha256'] == 'b' * 64
+    assert engine.multi.round is step
+    assert engine.multi.round() is result and calls == ['round', 'round']
+
+
+@pytest.mark.parametrize('incomplete', ['underfilled', 'done', 'filling'])
+def test_private_round_no_witness_keeps_original_work_without_success(tmp_path, incomplete):
+    engine, data, observer, calls, result = history_fixture(tmp_path)
+    if incomplete == 'underfilled':
+        engine.multi.states[0].pos = 11
+    elif incomplete == 'done':
+        engine.multi.streams[0].done = True
+    else:
+        engine.multi.filling = [engine.multi.streams[0]]
+    observer.install()
+    assert engine.multi.round() is result and calls == ['round']
+    assert not (tmp_path / 'history-rank-0.json').exists()
+
+
+@pytest.mark.parametrize('bad', ['alias', 'coordinate', 'native', 'poisoned', 'prompt', 'wire', 'slot', 'generation', 'count'])
+def test_private_round_refuses_falsified_owner_before_model(channel, tmp_path, bad):
+    engine, data, observer, calls, result = history_fixture(tmp_path)
+    state = engine.multi.states[0]
+    if bad == 'alias':
+        engine.multi.streams[1].st = state
+    elif bad == 'coordinate':
+        state.coordinate_profile_identity = 'c' * 64
+    elif bad == 'native':
+        state.kv_identity = ()
+    elif bad == 'poisoned':
+        state._history_error = RuntimeError('bad history')
+    elif bad == 'prompt':
+        engine.multi.streams[0].prompt[0] += 1
+    elif bad == 'wire':
+        engine.tp_decoder.wires[id(engine.multi.streams[1])] = 0
+    elif bad == 'slot':
+        state.history_slot = 1
+    elif bad == 'generation':
+        state.history_generation = -1
+    else:
+        engine.multi.streams[0].count = 3
+    observer.install()
+    with pytest.raises(ValueError):
+        engine.multi.round()
+    assert calls == [] and engine._abort_comm and os.read(channel[0], 8) == b'F'
+    assert not (tmp_path / 'history-rank-0.json').exists()
+
+
+def test_private_model_failure_retains_primary_without_publishing(tmp_path):
+    engine, data, observer, calls, result = history_fixture(tmp_path)
+    primary = RuntimeError('model step')
+    def step():
+        calls.append('round')
+        raise primary
+    observer.original = step
+    observer.install()
+    with pytest.raises(RuntimeError) as caught:
+        engine.multi.round()
+    assert caught.value is primary and calls == ['round']
+    assert not (tmp_path / 'history-rank-0.json').exists()
+
+
+def test_private_receipt_failure_notifies_and_preserves_primary(channel, tmp_path, monkeypatch):
+    engine, data, observer, calls, result = history_fixture(tmp_path)
+    primary = OSError('durability')
+    monkeypatch.setattr(owned, 'write_json', lambda *a: (_ for _ in ()).throw(primary))
+    observer.install()
+    with pytest.raises(OSError) as caught:
+        engine.multi.round()
+    assert caught.value is primary and calls == ['round'] and engine._abort_comm
+    assert os.read(channel[0], 8) == b'F'
+
+
+def test_history_data_and_actual_preparation_bind_paid_geometry(tmp_path):
+    engine, data, observer, calls, result = history_fixture(tmp_path)
+    source = tmp_path / 'input.json'
+    source.write_text(json.dumps(data))
+    parsed, digest, limit = owned._history_input(source, 2, 16)
+    assert parsed == data and limit == 1536 and len(digest) == 64
+    engine._owned_qualification_host = (8000, digest)
+    engine.retention_catalog = NS(host_resources=NS(baseline_host_bytes=8000))
+    assert owned.prepare_history(engine, (parsed, digest, observer.resources), tmp_path) == observer.resources
+    engine._owned_qualification_host = (1, digest)
+    with pytest.raises(ValueError, match='paid obligation'):
+        owned.prepare_history(engine, (parsed, digest, observer.resources), tmp_path)
+
+
+@pytest.mark.parametrize('change', ['bool', 'duplicate', 'samehash', 'wrongcontext', 'oversize'])
+def test_history_input_rejects_untrusted_data(tmp_path, change):
+    engine, data, observer, calls, result = history_fixture(tmp_path)
+    raw = json.dumps(data)
+    if change == 'bool':
+        data['C'] = True
+        raw = json.dumps(data)
+    elif change == 'duplicate':
+        raw = raw[:-1] + ',"C":2}'
+    elif change == 'samehash':
+        data['prompt_token_ids_sha256'][1] = data['prompt_token_ids_sha256'][0]
+        raw = json.dumps(data)
+    elif change == 'wrongcontext':
+        data['L'] = 17
+        raw = json.dumps(data)
+    else:
+        raw += ' ' * 2000
+    source = tmp_path / 'data.json'
+    source.write_text(raw)
+    with pytest.raises(ValueError):
+        owned._history_input(source, 2, 16)
+
+
+def test_private_host_obligation_defaults_and_validation():
+    def callback(engine):
+        return None
+    assert cli._OwnedExpertQualification(callback).host_obligation == ()
+    assert cli._OwnedExpertQualification(callback, (8000, 'a' * 64)).host_obligation[0] == 8000
+    for invalid in ([], (True, 'a' * 64), (-1, 'a' * 64), (8000, 'bad'), (8000, 'A' * 64)):
+        with pytest.raises(TypeError):
+            cli._OwnedExpertQualification(callback, invalid)
+
+
+def test_history_worker_prepares_obligation_before_shared_constructor(channel, monkeypatch, tmp_path):
+    engine, data, observer, calls, result = history_fixture(tmp_path)
+    path = tmp_path / 'data.json'
+    path.write_text(json.dumps(data))
+    monkeypatch.setattr(owned, '_history_resources', lambda count, limit: observer.resources)
+    seen = []
+    monkeypatch.setattr(cli, 'cmd_serve', lambda args: seen.append(args._owned_expert_qualification) or 0)
+    assert owned.worker(['--history-input', str(path), '--history-run-id', 'c' * 32, *worker_args(tmp_path)]) == 0
+    assert seen[0].host_obligation == (8000, __import__('hashlib').sha256(path.read_bytes()).hexdigest())
+
+
+def test_failed_history_input_notifies_existing_supervisor(channel, tmp_path):
+    source = tmp_path / 'bad.json'
+    source.write_text('{}')
+    with pytest.raises(ValueError):
+        owned.worker(['--history-input', str(source), '--history-run-id', 'c' * 32, *worker_args(tmp_path)])
+    assert os.read(channel[0], 8) == b'F'
+
+
+@pytest.fixture
+def history_acceptance_packet(tmp_path, monkeypatch):
+    import copy
+    from test_v100_adaptive_exercise import supplied_long_arguments, correctness_service, actual_client_module
+    from tools import v100_adaptive_exercise as exercise
+    monkeypatch.setattr(exercise.live, 'Client', actual_client_module().Client)
+    args = supplied_long_arguments(tmp_path)
+    with correctness_service(long_capacity=2) as (args.url, service):
+        assert exercise.run(args) == 2
+    client_path = args.out / 'suite.json'
+    client = json.loads(client_path.read_text())
+    result = client['supplied_long']
+    root = tmp_path / 'workers'
+    root.mkdir()
+    for rank in range(8):
+        owners = [{'wire': index, 'slot': index, 'slot_generation': 3, 'ownership_generation': 7,
+                   'cached_length': 4032, 'prompt_tokens': 4032, 'prompt_token_ids_sha256': pair['prompt_token_ids_sha256']}
+                  for index, pair in enumerate(result['cases'].values())]
+        receipt = {'schema': 'tensorfold.private-owned-history-v1', 'rank': rank, 'world': 8,
+                   'prefix_sequence': 19, 'input_sha256': 'b' * 64, 'C': 2, 'N': 4032, 'R': 64, 'L': 4096,
+                   'coordinate_profile_identity': 'a' * 64, 'plan_identity': ['owned', 8, 4], 'owners': owners,
+                   'run_identity': 'c' * 32, 'server_instance_id': client['initial_stats']['server']['instance_id']}
+        startup = {key: copy.deepcopy(receipt[key]) for key in ('run_identity', 'server_instance_id', 'coordinate_profile_identity', 'plan_identity')}
+        startup.update(schema='tensorfold.private-owned-qualification-v1', rank=rank, world=8)
+        startup['history_host_obligation'] = {'input_sha256': 'b' * 64}
+        (root / f'history-rank-{rank}.json').write_text(json.dumps(receipt))
+        (root / f'rank-{rank}.json').write_text(json.dumps(startup))
+    return root, client_path
+
+
+def test_offline_intersection_binds_completed_client_and_all_rank_facts(history_acceptance_packet):
+    root, client = history_acceptance_packet
+    accepted = owned.accept_history(root, client)
+    assert accepted['passed'] and accepted['facts']['prefix_sequence'] == 19
+    assert accepted['run_identity'] == 'c' * 32
+    assert 'not GPU wall-clock' in accepted['scope']
+    assert json.loads(client.read_text())['passed'] is False  # Source advisory report is never rewritten.
+
+
+@pytest.mark.parametrize('bad', ['sequence', 'run', 'instance', 'input', 'prompt', 'generation', 'client-answer', 'client-identity', 'missing'])
+def test_offline_intersection_refuses_unbound_or_inconsistent_evidence(history_acceptance_packet, bad):
+    root, client = history_acceptance_packet
+    path = root / 'history-rank-0.json'
+    receipt = json.loads(path.read_text())
+    if bad == 'sequence':
+        receipt['prefix_sequence'] += 1
+    elif bad == 'run':
+        receipt['run_identity'] = 'd' * 32
+    elif bad == 'instance':
+        receipt['server_instance_id'] = 'different-service'
+    elif bad == 'input':
+        receipt['input_sha256'] = 'd' * 64
+    elif bad == 'prompt':
+        receipt['owners'][0]['prompt_token_ids_sha256'] = 'd' * 64
+    elif bad == 'generation':
+        receipt['owners'][0]['slot_generation'] += 1
+    elif bad.startswith('client-'):
+        report = json.loads(client.read_text())
+        if bad == 'client-answer':
+            report['supplied_long']['cases']['case-0']['mtp']['choices'][0]['message']['content'] = 'wrong'
+        else:
+            report['final_stats']['server']['instance_id'] = 'another-server'
+        client.write_text(json.dumps(report))
+    else:
+        path.unlink()
+    if bad != 'missing':
+        path.write_text(json.dumps(receipt))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        owned.accept_history(root, client)
+
+
+@pytest.mark.parametrize('bad', ['no-work', 'mtp-dispatch', 'serial-dispatch', 'serial-work', 'counter-bool'])
+def test_offline_acceptor_recomputes_actual_mode_work(history_acceptance_packet, bad):
+    root, client = history_acceptance_packet
+    report = json.loads(client.read_text())
+    result = report['supplied_long']
+    if bad == 'no-work':
+        for pair in result['cases'].values():
+            pair['mtp']['tensorfold']['drafted'] = 0
+        for row in result['concurrent']['results']:
+            row['reply']['tensorfold']['drafted'] = 0
+    elif bad == 'mtp-dispatch':
+        result['cases']['case-0']['mtp']['tensorfold']['drafts'] = False
+    elif bad == 'serial-dispatch':
+        result['cases']['case-0']['serial']['tensorfold']['drafts'] = True
+    elif bad == 'serial-work':
+        result['cases']['case-0']['serial']['tensorfold']['drafted'] = 1
+    else:
+        result['cases']['case-0']['mtp']['tensorfold']['drafted'] = True
+    assert result['drafted_total'] > 0
+    client.write_text(json.dumps(report))
+    with pytest.raises(ValueError):
+        owned.accept_history(root, client)
+
+
+def test_family_forwards_only_nonempty_private_host_obligation(monkeypatch, tmp_path):
+    from gguf_fixture import tiny_model
+    from tensorfold.families import qwen4_exp
+    from tensorfold.families.qwen4_exp.cuda import engine as implementation
+    made = []
+    monkeypatch.setattr(implementation, 'FlashNextEngine', lambda *a, **k: made.append(k) or NS(**k))
+    path = tiny_model(tmp_path / 'target.gguf')
+    options = dict(no_drafts=True, tp=8, rank=0, kv_dtype='fp16', expert_tensor_parallel_size=4,
+                   max_waiting_input_bytes=16384)
+    qwen4_exp.cuda_engine(path, **options)
+    assert '_owned_qualification_host' not in made[-1]
+    obligation = (8000, 'a' * 64)
+    qwen4_exp.cuda_engine(path, **options, _owned_expert_native=True, _owned_qualification_host=obligation)
+    assert made[-1]['_owned_qualification_host'] == obligation
+    with pytest.raises(ValueError, match='requires private owned'):
+        qwen4_exp.cuda_engine(path, **options, _owned_qualification_host=obligation)
+
+
+def test_private_observer_resource_plan_pays_all_ranks_and_future_work(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
+    monkeypatch.setattr(resources, '_json_payload_policy', lambda: NS(identity='selected-layout-boundary-spy', frame_work=4096))
+    small = owned._history_resources(2, 1536)
+    large = owned._history_resources(27, 1024 + 256 * 27)
+    assert small['global_host_obligation_bytes'] == 8 * small['per_rank_payload_bytes'] > 0
+    assert large['global_host_obligation_bytes'] > small['global_host_obligation_bytes']
+    assert large['materialized_credit_bytes'] == 0
+    assert large['runtime_policy'] == 'selected-layout-boundary-spy'
+    assert large['receipt_bytes_limit'] >= 4096 + 1024 * 27
+
+
+def test_offline_acceptor_remains_torch_free_in_fresh_interpreter(history_acceptance_packet):
+    root, client = history_acceptance_packet
+    code = '''import sys
+from tools import v100_owned_qualification as owned
+assert 'torch' not in sys.modules
+assert owned.accept_history(sys.argv[1],sys.argv[2])['passed']
+assert 'torch' not in sys.modules
+'''
+    result = subprocess.run([sys.executable, '-c', code, str(root), str(client)], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('bad', ['rank', 'service'])
+def test_offline_acceptor_requires_own_startup_rank_service(history_acceptance_packet, bad):
+    root, client = history_acceptance_packet
+    path = root / 'rank-0.json'
+    startup = json.loads(path.read_text())
+    if bad == 'rank':
+        startup['rank'] = 1
+    else:
+        startup['server_instance_id'] = 'other-process'
+    path.write_text(json.dumps(startup))
+    with pytest.raises(ValueError):
+        owned.accept_history(root, client)

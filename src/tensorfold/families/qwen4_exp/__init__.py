@@ -320,6 +320,11 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         if expert_ranks > 1:
             raise ValueError("private owned qualification cannot use expert-only follower sessions")
         engine_options["_owned_expert_native"] = True
+    obligation = options.get("_owned_qualification_host", ())
+    if obligation:
+        if not owned:
+            raise ValueError("qualification host obligation requires private owned execution")
+        engine_options["_owned_qualification_host"] = obligation
     for name in ("max_waiting_input_bytes", "max_waiting_input_bytes_per_principal", "output_queue_tokens", "queue_timeout_s", "retention_policy"):
         if options.get(name) is not None:
             engine_options[name] = options[name]
