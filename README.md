@@ -26,15 +26,18 @@ has 37 passing standard-library controls, including inert multiprocessing
 imports and a CPU route that never queries CUDA. The paired controller passed
 32 controls on the real V100 host. The complete pair ran the 16-case CUDA/host
 lifetime module successfully and preserved real frontend failures and
-generation-bound diagnostic cancellations. Its newer mapped-ELF observer still
-needs target integration; complete model, resource and numerical gates remain
-separate.
+generation-bound diagnostic cancellations. The newer qualification-only
+mapped-ELF observer passed its installed CPU check and the eight-rank owner
+case without the extra head communicator. The extra-head case stops at its
+64 MiB test preparation guard; complete model, resource and numerical gates
+remain separate.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
 The current source also preserves origin through Unicode capitalization and
-removes only fully trusted, complete Max/Low/High effort headers. All 253 local
-CPU controls passed; a genuinely rebuilt owned application still needs its
-installed-target recheck. Legacy raw-tokenizer compatibility remains a separate
+removes only fully trusted, complete Max/Low/High effort headers. All 253 CPU
+controls passed on the genuinely rebuilt owned application with an isolated,
+matching CPU TorchVision verification layer. This does not qualify GPU vision,
+MLX or complete models. Legacy raw-tokenizer compatibility remains a separate
 open contract decision.
 
 The V100 source now has one App-owned host-payload pool with grants before

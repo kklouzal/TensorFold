@@ -96,9 +96,9 @@ outside that archive's verified scope.
 
 ## Remaining work
 
-Keep `python-0.6`. Commit `d3fb277dd06d4a73315ec97f1393ebf24f3a1023`
+Keep `python-0.6`. Commit `18e3798236d734c8c67d807b28cb73699ef8df5c`
 includes execution basis `e5ff14a0e22a8fbb361ff2bcdb41ae3f28019fdc`.
-The fresh complete application image is
+The initial complete application at `d3fb277d` produced image
 `sha256:031b609d6ae1aa0709f1b23a4d30c571839d8e45db90c0d69793b5dafcf58d14`;
 its 786 installed runtime files match the expected inventory, retaining owned
 Torch `04cf2557` and the protected CUDA12.9/SM70 foundation. All 654 affected
@@ -110,11 +110,23 @@ The separate installed lifetime module also passed all 16 cases (5 host and
 11 CUDA), with zero skips and clean retirement. Its sampled allocator, cgroup
 and RSS values remain observations rather than admission or physical bounds.
 
+The subsequent genuine `18e37982` application image is
+`sha256:f1da8349738b53de9cb3825827ea2afc1f9a8af2629dd1052d63c15d742df259`.
+Its 786 runtime files have exactly the two reviewed GLM Python changes; protected
+Torch/SDK/FD identities remain unchanged. The base text image passed 251 CPU
+checks and retained two missing-TorchVision failures. An isolated verification
+layer, `f019c258173c6702302b72157fd756e03bc5e404caa3c10ebab8820545ff5dc4`,
+adds the matching owned CPU-only wheel and three pinned codec packages. All
+253 checks then passed with zero skips and clean retirement. The original
+dependency failures remain recoverable; this establishes frontend/CPU behavior,
+not GPU vision, model quality, MLX or serving performance.
+
 The original prepared run retains 39 passes and four fixture failures. The
 initial reviewed applicability repairs were exercised in the subsequent run
 below, preserving strict numerical/state assertions and real MTP
-multirow/truncated-prefix coverage. Newer API/growth repairs and numerical
-diagnostics still require their own actual-target checks.
+multirow/truncated-prefix coverage. Newer API/growth repairs still require
+their own actual-target checks; strict numerical qualification remains open
+despite the separate diagnostic below.
 Owner-graph orchestration failures and the subsequent unresolved participant
 timeout at its unchanged 600-second deadline remain in the evidence. The other
 cohort case was interrupted after preserving that failure. No cohort pass is
@@ -134,21 +146,37 @@ The compact commit guard remains intact. Selected NCCL source also confirms
 that communicator release waits for its captured graphs to die; the fixture's
 failure cleanup must retire graphs and borrowers first. Reviewed source repairs
 produce real spans and preserve sticky errors and failure ownership; their
-actual eight-rank verification remains open.
+actual eight-rank check without the extra head communicator now passes. The
+extra-head case stops before numerical checks because measured preparation
+residency is 96 MiB against its 64 MiB test guard. These are observed costs,
+not worst-case physical bounds; a separately funded positive fixture and full
+resource/model admission checks remain open.
 
 A bounded current-image TCPStore probe succeeded in both default libuv and
 explicit non-libuv modes. It contradicts the older unavailable-backend
 explanation in the foundation notes and does not establish the cause of the
 eight-rank stall. Reviewed worker diagnostics preserve the original assertions
 and deadline; maintained host/driver repairs must retain lifetime-safe
-cancellation and exact device/process ownership before further qualification.
+cancellation and exact device/process ownership. The explicit qualification-only
+mapped-file observer now verifies actual native mappings using retained VMA
+file descriptors, including all eight ranks in the passing owner case. Its
+limited capability mode does not change service or production privileges.
+
+A separate conditional numerical diagnostic reproduces the strict prepared
+int8 failure: 512 of 3,072 logits differ, with maximum absolute difference
+`4.041939973831177e-6`. In its instrumented rerun, repeated eager results agree,
+and padded eager and graph results agree; changing the context extent first
+changes four retained FP16 attention outputs. The original prestate was not
+proved identical to this instrumented rerun. These observations neither
+establish the first arithmetic cause nor qualify numerical quality or speed.
+The original zero-tolerance assertions remain unchanged.
 
 | Open item | Remaining action |
 | --- | --- |
 | Q03 | Complete repaired prepared/bound-graph tests, then actual SC117 native32 selector, wrapper and complete-request cost/quality checks on immutable identities. |
 | Q05 | Complete corrected eight-rank graph tests, release-image identity checks, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. The 16-case lifetime module passed on the bound image; Python header sizes still do not bound native metadata, allocator pages or RSS. |
 | Q06 | Obtain and verify the exact seven-path C06-only packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`), then use an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
-| Q-GLM | Rebuild and execute the capitalization/complete-header repairs on the owned installed stack. The first real run retained 60 passes and 16 failures; the unchanged real controls pass in the local 253-test repair closure. Resolve the separate raw-tokenizer compatibility/authority contract. Full checkpoint CUDA and applicable MLX serving remain unqualified without actual model/platform inputs. |
+| Q-GLM | Resolve the separate raw-tokenizer compatibility/authority contract and complete actual model/context/stop serving checks for available platform/checkpoint pairs. The capitalization/complete-header frontend repairs passed the bound installed 253-test verification; full checkpoint CUDA and applicable MLX inference remain unqualified without their actual inputs. |
 | B1 | Change default `main` to `python-0.6` after reviewing current consumers. The authenticated CLI account has repository admin role, but its token's Administration request returned HTTP403; the default is still `main`. The connected source/ref interface exposes no default-change operation. |
 | B2/B3 | Obtain the exact manifest, recovery bundle and integrity receipt, verify current restore availability and the retained C06 packet, then retire only unchanged reviewed non-target refs with expected-SHA guards. Non-`main` retirement need not wait for C06 adoption; deleting `main` must follow B1. Stop on new or advanced refs. |
 | B4 | Verify only `python-0.6` remains, it is the actual default and contains the execution basis plus authorized changes, and independent recovery remains usable. |
@@ -156,3 +184,12 @@ cancellation and exact device/process ownership before further qualification.
 The bounded accessible-path search did not locate the supplied personal-library
 recovery artifacts or C06 packet. Their local paths are required; this is not a
 claim of global absence. No branch deletion or default change has been performed.
+
+A supplemental current-head bundle (`ecdc578cdfd119241169658160a66ad7afd9a59fe5b3decb7cd32ad336f14ea8`)
+independently restores all 607 original branch names and exact captured tips,
+without alternates, and passes strict integrity checks. A separate parser of the
+actual user message verifies all 606 queued names/full SHAs, 69 ancestral and
+537 divergent entries, with no drift in the captured fresh remote read. This is
+supplemental recovery evidence: approval to substitute it for the specified
+personal-library recovery set remains pending, as do C06 availability, default
+change and future freshness/expected-SHA retirement checks.
