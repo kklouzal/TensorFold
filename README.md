@@ -16,6 +16,15 @@ prepared native owner fills descriptor words through a retained host view with
 separately accounted metadata; pinned payload, DMA and device math stay intact.
 Installed SM70/model qualification remains pending; Tail/Pool preparation stays
 in a qualification patch. No deployment profile or measured gain is promoted.
+The fresh `d3fb277d` installed application passed 654 affected CPU tests with
+zero skips. Its Dense native32, pinned descriptor, paged-attention, query-pack
+and reference-arithmetic component checks also passed on V100. Prepared/graph,
+physical-resource and model gates remain open; see the
+[remaining consolidation work](docs/branch-consolidation.md#remaining-work).
+The maintained [installed-contract driver](deploy/v100/source-foundation.md#installed-contract-driver)
+has 22 passing standard-library controls, including inert multiprocessing
+imports and a CPU route that never queries CUDA. Actual host/driver integration
+and remaining target checks are still required.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
 

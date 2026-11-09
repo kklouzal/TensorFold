@@ -504,9 +504,19 @@ performance remain separate Section 21 gates.
 
 The maintained four/eight-rank collective fixture now passes `use_libuv=False`
 explicitly and verifies the owned Store/cohort through the existing comm API.
-This matches the adaptive SM70 engine: pinned Torch `04cf2557` has
-`USE_LIBUV=OFF`, while its native `TCPStore` constructor defaults to `True`.
-The correction changes no SDK pin, runtime default or oracle. After independent
+This matches the adaptive SM70 engine's owned native-listener contract. It does
+not establish that the default backend is unavailable. The earlier fixture
+explanation attributed its failure to `USE_LIBUV=OFF` and a `True` constructor
+default; that explanation must not be applied to the current installed image.
+On immutable application image
+`031b609d6ae1aa0709f1b23a4d30c571839d8e45db90c0d69793b5dafcf58d14`,
+with owned Torch `04cf2557` and the unchanged protected foundation, a CPU-only
+single-rank loopback probe successfully constructed and used both the default
+Store (`libuvBackend=True`) and explicit `use_libuv=False` Store
+(`libuvBackend=False`). Both containers retired normally without CUDA
+initialization. This is measured constructor/set/get behavior, not a compiler
+flag audit, eight-rank proof or explanation of the unresolved owner-graph stall.
+No SDK pin, runtime default or oracle is changed. After independent
 status-fixture defaults were repaired, 42 CPU controls and both physical
 four/eight-rank GPU cases passed with no skips using the editable Torch closure.
 The first fixture failure remains preserved. This is communication correctness
@@ -745,3 +755,34 @@ four and all original lifecycle assertions; original failures remain archived.
 All package/protected/Config bytes and FD4a06 identities are bound separately.
 The live target crossed the former rank-0 failure boundary with all ranks, but
 model health/output/serving qualification remains separately owned.
+
+## Installed contract driver
+
+Use the maintained [`v100_native_contract_driver.py`](../../tools/v100_native_contract_driver.py)
+inside the controlled immutable application image. The host owns container,
+device, cgroup and descendant retirement; this inner driver does not launch or
+retire containers. Stage its exact canonical bytes and unchanged
+`benchmark_output.py`/`worker_lifetime.py` helpers read-only. Supply an operator
+spec with schema `tensorfold.v100-native-contract.v1`, complete installed-file
+and selected-test inventories, source/image/SDK/FD/Torch identities and the
+explicit CPU or CUDA route. The source's `validate_spec` defines the closed
+schema; caller-provided byte length and SHA256 bind the complete JSON before use.
+
+```bash
+python tools/v100_native_contract_driver.py \
+  --spec "$TF_CONTRACT_SPEC" --spec-sha256 "$TF_CONTRACT_SPEC_SHA256" \
+  --spec-bytes "$TF_CONTRACT_SPEC_BYTES" --source "$TF_CONTRACT_SOURCE" \
+  --evidence "$TF_CONTRACT_EVIDENCE"
+```
+
+The source/test snapshot must match the declared inputs and must not replace
+the installed application. Each declared module executes in full, with exact
+pytest root/module identities; qualification rejects skips and retains the
+first failure. Fixed `--capture=no` keeps child diagnostics live; external
+`PYTEST_ADDOPTS` is refused rather than allowing hidden selection changes.
+CUDA-context-fatal results stop remaining affected work. The CPU
+route never queries CUDA and cannot qualify a native case. Sampled resource
+observations are separate from allocator/admission bounds and serving timings.
+Import, `__mp_main__` and `--help` have no runtime/spec/evidence side effects.
+The 22 standard-library controls cover these contracts, including real spawn;
+actual installed-target and host-controller integration remain required.

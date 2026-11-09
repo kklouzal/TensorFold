@@ -84,16 +84,55 @@ baseline dispositions. Cleanup and policy reviews have no outstanding source
 finding. CUDA-only collection skips cleanly on the CPU substitute; mandatory
 actual-target tests must execute on the owned SM70 image before qualification.
 
-All 607 original branch refs and their Git object closure were bundled before
-source integration. Restoration into an independent bare repository matched all
-607 exact refs; full strict Git integrity verification passed. The bundle's
+The earlier consolidation record reports that all 607 original branch refs and
+their Git object closure were bundled before source integration, and an
+independent bare restore matched all 607 refs with strict integrity checks.
+The recorded bundle's
 SHA256 is
 `8bc5d09a5e23bbc50f861d8ffc3bbedfb60cf60cf419adf16ff95198bb5d1317`.
-The 606 non-target tips are unchanged from the review. External untracked server
-evidence is outside this archive's verified scope.
+Those historical checks do not replace the required current restore-availability
+and expected-tip checks before deletion. External untracked server evidence is
+outside that archive's verified scope.
 
-Branch deletion and the `main` to `python-0.6` default change remain unexecuted.
-The available GitHub interface exposes source/ref updates, while administration
-and ref deletion require an authenticated administration session. Re-read each
-expected tip, resolve its candidate gates and verify the archive before deleting
-it. Keep `python-0.6`; do not force shared history or remove new user work.
+## Remaining work
+
+Keep `python-0.6`. Commit `d3fb277dd06d4a73315ec97f1393ebf24f3a1023`
+includes execution basis `e5ff14a0e22a8fbb361ff2bcdb41ae3f28019fdc`.
+The fresh complete application image is
+`sha256:031b609d6ae1aa0709f1b23a4d30c571839d8e45db90c0d69793b5dafcf58d14`;
+its 786 installed runtime files match the expected inventory, retaining owned
+Torch `04cf2557` and the protected CUDA12.9/SM70 foundation. All 654 affected
+installed CPU tests passed without skips. Actual component results are Dense
+native32 131, pinned descriptor 6, paged attention 42, query packing 15 and
+reference arithmetic 18 tests, each with zero skips. These results are scoped
+component evidence, not complete release or performance qualification.
+
+The original prepared run retains 39 passes and four fixture failures. Reviewed
+test applicability repairs preserve strict numerical/state assertions and real
+MTP multirow/truncated-prefix coverage; their target rerun is still required.
+Owner-graph orchestration failures and the subsequent unresolved participant
+timeout at its unchanged 600-second deadline remain in the evidence. The other
+cohort case was interrupted after preserving that failure. No cohort pass is
+inferred from worker startup or device visibility. The retained defaults are
+unchanged.
+
+A bounded current-image TCPStore probe succeeded in both default libuv and
+explicit non-libuv modes. It contradicts the older unavailable-backend
+explanation in the foundation notes and does not establish the cause of the
+eight-rank stall. Reviewed worker diagnostics preserve the original assertions
+and deadline; maintained host/driver repairs must retain lifetime-safe
+cancellation and exact device/process ownership before further qualification.
+
+| Open item | Remaining action |
+| --- | --- |
+| Q03 | Complete repaired prepared/bound-graph tests, then actual SC117 native32 selector, wrapper and complete-request cost/quality checks on immutable identities. |
+| Q05 | Complete eight-rank graph and reviewed adversarial lifetime controls, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. Python header sizes do not bound native metadata, allocator pages or RSS. |
+| Q06 | Obtain and verify the exact seven-path C06-only packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`), then use an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
+| Q-GLM | Execute the real native/HF frontend controls with both pinned tokenizer/template inputs. Full checkpoint CUDA and applicable MLX serving remain unqualified without their actual model/platform inputs. Frontend-only assets do not establish model results. |
+| B1 | Change default `main` to `python-0.6` after reviewing current consumers. The authenticated CLI account has repository admin role, but its token's Administration request returned HTTP403; the default is still `main`. The connected source/ref interface exposes no default-change operation. |
+| B2/B3 | Obtain the exact manifest, recovery bundle and integrity receipt, verify current restore availability and the retained C06 packet, then retire only unchanged reviewed non-target refs with expected-SHA guards. Non-`main` retirement need not wait for C06 adoption; deleting `main` must follow B1. Stop on new or advanced refs. |
+| B4 | Verify only `python-0.6` remains, it is the actual default and contains the execution basis plus authorized changes, and independent recovery remains usable. |
+
+The bounded accessible-path search did not locate the supplied personal-library
+recovery artifacts or C06 packet. Their local paths are required; this is not a
+claim of global absence. No branch deletion or default change has been performed.
