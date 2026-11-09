@@ -967,6 +967,38 @@ quality. Transfer/fence/writer overhead invalidates P3 timings. Preserve separat
 capture/replay cohorts and actual output-quality, state, sampling and resource
 gates; do not borrow the old 8192-context/714-step profile or its margins.
 
+### Private model-operation time funding
+
+The qualification client's socket interval is explicit DATA and may exceed the
+initial 300-second pilot limit. It remains positive and finite, no greater than
+the whole client interval; readiness is at most 3,600 seconds and whole time at
+most 7,500. Existing short-control values remain supported. This is private
+qualification timing support, not a service SLA or a latency result.
+
+After parent content verification, fixed argv preparation and synchronous phase
+publication, the driver checks the actual clock immediately before entering the
+owned model operation. Remaining work time must fund **whole client interval +
+one configured in-flight socket interval**. The 7,800-second outer envelope and
+90-second retirement reservation remain unchanged. Parent hashing, imports and
+phase IO consume that envelope; a numerically valid client declaration may
+therefore be refused before workers start if its combined allowance no longer
+fits. No timeout is silently widened after a failed run.
+
+The existing `ReadControl` bounds body work cooperatively, and an in-flight
+read can outlast that cooperative deadline by one socket interval. DNS/status/
+header acquisition uses socket inactivity limits; this admission check does
+not manufacture a whole-wall acquisition guarantee. Existing outer containment
+and response ownership remain required. There is no new launcher, timeout
+fallback profile or model numerical policy.
+
+For the preselected 65,472-input reference probe, the planned private values are
+600 seconds readiness, 3,900 whole and 3,000 socket: 6,900 seconds of combined
+client-plus-tail funding. The old 3,900/300 short control needs 4,200. These are
+predeclared operational allowances; the observed 52-token control supplies no
+64K completion guarantee. The updated driver passed 76 x86 controls with no
+skips, including refusal after phase publication consumes the remaining
+allowance. The long model operation remains pending.
+
 ### Reproducing independent quality inputs
 
 `tools/v100_quality_data.py` preserves the original 27 C27 bodies, adds five

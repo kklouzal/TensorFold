@@ -70,6 +70,10 @@ token choices and diagnostic error metrics without inherited quality margins.
 Its 132 x86 CPU controls passed. The actual paired control matched all 993,280
 logits bit-for-bit across four steps, with identical original token selections.
 This short reference check does not qualify broader quality or performance.
+The private qualification client can admit longer socket intervals only when
+its whole timeout plus an in-flight socket tail fit the actual remaining
+outer work budget. Its 76 x86 driver controls pass; the longer-input model
+capture remains pending.
 The maintained `tools/v100_quality_data.py` producer can capture a distinct
 current frontend identity and verifies all 27 preserved long-request token
 counts and hashes before publication. Its 42 x86 CPU controls pass. Genuine

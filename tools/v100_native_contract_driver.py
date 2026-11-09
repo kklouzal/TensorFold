@@ -1259,10 +1259,15 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
             os.environ[model_contract.DRIVER_ENV] = str(source / 'tools/v100_native_contract_driver.py')
             os.environ[model_contract.DRIVER_SHA_ENV] = source_files['tools/v100_native_contract_driver.py']['sha256']
             os.environ[model_contract.PREFIX_ENV] = json.dumps(spec['required_native_elf_prefixes'])
-            if time.monotonic() + client['whole_timeout_s'] > deadline:
-                raise TimeoutError('remaining outer model budget cannot fund declared client whole deadline')
+            argv = model_contract.qualifier_argv(operation, client, spec['UUIDs'], str(evidence / 'teacher'))
             output.phase('owned-teacher-model')
-            code = _call_owned_model(model_contract.qualifier_argv(operation, client, spec['UUIDs'], str(evidence / 'teacher')))
+            # One in-flight body read may outlive cooperative cancellation by
+            # its acquisition-time socket timeout. Fund that tail after argv
+            # preparation and synchronous phase publication, just before entry.
+            # Outer containment still owns uncertain acquisition.
+            if time.monotonic() + client['whole_timeout_s'] + client['socket_timeout_s'] > deadline:
+                raise TimeoutError('remaining outer model budget cannot fund client whole deadline and socket tail')
+            code = _call_owned_model(argv)
             if time.monotonic() > deadline:
                 raise TimeoutError('owned teacher operation exceeded total declared work deadline')
             if type(code) is not int or code != 0:

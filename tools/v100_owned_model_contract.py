@@ -281,7 +281,7 @@ def validate_teacher_client(value):
     for key in ('readiness_timeout_s', 'whole_timeout_s', 'socket_timeout_s'):
         require(type(value[key]) in (int, float) and math.isfinite(value[key]) and value[key] > 0,
                 'finite positive teacher client timeouts required')
-    require(value['readiness_timeout_s'] <= 3600 and value['socket_timeout_s'] <= 300
+    require(value['readiness_timeout_s'] <= 3600
             and value['whole_timeout_s'] <= 7500 and value['readiness_timeout_s'] <= value['whole_timeout_s']
             and value['socket_timeout_s'] <= value['whole_timeout_s'], 'teacher client deadline exceeds operation envelope')
     require(type(value['response_bytes']) is int and value['response_bytes'] == 1048576, 'fixed bounded client response required')

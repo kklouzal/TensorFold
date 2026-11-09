@@ -835,7 +835,7 @@ except ValueError as error:
         c = driver.model_contract
         return {'schema': 'tensorfold.owned-teacher-client-v1', 'teacher_plan_sha256': 'a'*64,
                 'base': 'http://127.0.0.1:8000', 'model': 'diagnostic-fixture', 'expected_service': dict(c.SERVICE),
-                'readiness_timeout_s': 3600, 'whole_timeout_s': 7500, 'socket_timeout_s': 300, 'response_bytes': 1048576}
+                'readiness_timeout_s': 3600, 'whole_timeout_s': 3900, 'socket_timeout_s': 300, 'response_bytes': 1048576}
 
     def model_spec(self):
         self.qualified_spec()
@@ -1382,6 +1382,92 @@ except ValueError as error:
         positive_host.assert_called_once()
         self.assertEqual(accept.call_args.kwargs['teacher_binding'], {
             'mode': 'replay', 'reference_sha256': 'a'*64, 'teacher_ids': (18, 22, 17, 248046)})
+
+
+    def test_long_reference_socket_budget_is_finite_positive_and_within_whole(self):
+        c = driver.model_contract
+        client = {**self.teacher_client(), 'readiness_timeout_s': 600, 'whole_timeout_s': 3900, 'socket_timeout_s': 3000}
+        self.assertIs(c.validate_teacher_client(client), client)
+        self.assertEqual(self.teacher_client()['whole_timeout_s'] + self.teacher_client()['socket_timeout_s'], 4200)
+        for value in (True, False, float('nan'), float('inf'), -float('inf'), -1, 0, 3901):
+            with self.subTest(socket=value), self.assertRaises(ValueError):
+                c.validate_teacher_client({**client, 'socket_timeout_s': value})
+        for change in ({'readiness_timeout_s': 3601}, {'whole_timeout_s': 7501},
+                       {'readiness_timeout_s': 3901}, {'whole_timeout_s': True}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                c.validate_teacher_client({**client, **change})
+
+    def timeout_run_controls(self, *, whole=3900, socket=3000, elapsed=810):
+        calls = self.model_run_controls()
+        client = {**self.teacher_client(), 'readiness_timeout_s': 600,
+                  'whole_timeout_s': whole, 'socket_timeout_s': socket}
+        plan = {'mode': 'capture', 'context': 262144, 'max_frames': 64}
+        clock = [1000.0]
+        def data(path, *args, **kwargs):
+            return client if str(path).endswith('teacher-client.json') else plan
+        def prepare(operation):
+            clock[0] += elapsed  # Actual time spent before worker admission.
+            return Path(operation['frontend_root'])
+        patches = contextlib.ExitStack()
+        patches.enter_context(mock.patch.object(driver, '_bound_model_json', side_effect=data))
+        patches.enter_context(mock.patch.object(driver, '_prepare_model_frontend', side_effect=prepare))
+        patches.enter_context(mock.patch.object(driver.time, 'monotonic', side_effect=lambda: clock[0]))
+        self.addCleanup(patches.close)
+        return calls
+
+    def test_whole_budget_that_cannot_fund_socket_tail_refuses_before_workers(self):
+        # Whole alone fits even after parent work; whole+socket exceeds the
+        # remaining7710 work budget by one second and must never start ranks.
+        calls = self.timeout_run_controls(elapsed=811)
+        with self.assertRaisesRegex(TimeoutError, 'whole deadline and socket tail'):
+            self.execute()
+        self.assertEqual(calls, [])
+        result = json.loads((self.evidence/'owned-teacher-operation-result.json').read_text())
+        self.assertFalse(result['content_binding_complete'])
+
+    def test_exact_whole_plus_socket_boundary_includes_parent_elapsed_time(self):
+        # 7800outer-90retire-810actual parent =6900 =3900whole+3000tail.
+        calls = self.timeout_run_controls(elapsed=810)
+        self.assertEqual(self.execute(), 0)
+        self.assertEqual(calls, [['fixed-argv']])
+        result = json.loads((self.evidence/'owned-teacher-operation-result.json').read_text())
+        self.assertTrue(result['content_binding_complete'])
+
+    def test_old_max_whole_cannot_hide_an_unfunded_short_socket_tail(self):
+        # Valid DATA independently:7500+300 must still refuse under7710 even
+        # with zero parent work. Actual short3900/300 remains funded elsewhere.
+        calls = self.timeout_run_controls(whole=7500, socket=300, elapsed=0)
+        with self.assertRaisesRegex(TimeoutError, 'whole deadline and socket tail'):
+            self.execute()
+        self.assertEqual(calls, [])
+
+
+    def test_phase_publication_time_is_charged_before_final_worker_funding(self):
+        calls = self.model_run_controls()
+        client = {**self.teacher_client(), 'readiness_timeout_s': 600,
+                  'whole_timeout_s': 3900, 'socket_timeout_s': 3000}
+        plan = {'mode': 'capture', 'context': 262144, 'max_frames': 64}
+        clock, phases = [1000.0], []
+        def data(path, *args, **kwargs):
+            return client if str(path).endswith('teacher-client.json') else plan
+        def prepare(operation):
+            clock[0] += 809  #6901 remains: enough before phase publication.
+            return Path(operation['frontend_root'])
+        def publish(path, value):
+            if Path(path).name == 'phase.json' and value['phase'] == 'owned-teacher-model':
+                self.assertTrue(driver.model_contract.qualifier_argv.called)
+                phases.append(value['phase'])
+                clock[0] += 2  #6899 remains: synchronous fsync consumed funding.
+            self.publish(path, value)
+        with mock.patch.object(driver, '_bound_model_json', side_effect=data), \
+                mock.patch.object(driver, '_prepare_model_frontend', side_effect=prepare), \
+                mock.patch.object(driver.time, 'monotonic', side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(TimeoutError, 'whole deadline and socket tail'):
+                self.execute(publisher=publish)
+        self.assertEqual(phases, ['owned-teacher-model'])
+        self.assertEqual(calls, [])
+        result = json.loads((self.evidence/'owned-teacher-operation-result.json').read_text())
+        self.assertFalse(result['content_binding_complete'])
 
 
 if __name__ == '__main__':
