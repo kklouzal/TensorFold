@@ -929,8 +929,11 @@ The isolated mode has actually passed the 29-case CPU integration with the
 reviewed pair, unchanged protected SDK/FD/App origins and no CUDA query. The
 full-TP8 owner-graph case (`head4=False`) also passed on eight V100s with all
 eight matching child records. The separate head-communicator case
-(`head4=True`) failed its graph-budget gate; its funding/source review and fresh
-execution remain pending. Eight successful records do not satisfy both
-cohorts' 16-record obligation. These are scoped workflow/component results,
+(`head4=True`) initially failed its 64 MiB graph-budget gate. The corrected
+positive fixture uses the existing 2 GiB caller workspace allowance with joint admission
+and phase resource checks; its 34 CPU cases and both GPU cases passed with
+zero skips and all 16 required child records. The original insufficient-budget
+result remains preserved. These caller checks do not establish complete
+physical peak bounds or full-model admission. These are scoped workflow/component results,
 not regular cap-zero equivalence, complete native/model/quality admission,
 serving readiness, performance or a deployment-default release.

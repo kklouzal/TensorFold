@@ -31,9 +31,11 @@ imports and a CPU route that never queries CUDA. The paired controller has
 V100 host. The pair ran the 16-case CUDA/host lifetime module successfully
 and preserved real frontend failures and generation-bound cancellations. The newer qualification-only
 mapped-ELF observer passed its installed CPU check and the eight-rank owner
-case without the extra head communicator. The extra-head case stops at its
-64 MiB test preparation guard; complete model, resource and numerical gates
-remain separate. The current installed Q03 prepared/graph run passed 53 of
+cases with and without the extra head communicator. The funded fixture passed
+all 36 cases and recorded all 16 required child origins. Its earlier 64 MiB
+preparation refusal remains preserved; the positive fixture uses the existing
+2 GiB caller workspace allowance and physical admission checks. Complete model, physical
+resource and numerical gates remain separate. The current installed Q03 prepared/graph run passed 53 of
 57 cases with zero skips; four strict numerical failures remain open. The
 callback/growth repairs passed, and distributed cases now reach their numerical
 checks. Parent native-origin proof does not establish distributed-child origins.

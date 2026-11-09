@@ -146,10 +146,14 @@ that communicator release waits for its captured graphs to die; the fixture's
 failure cleanup must retire graphs and borrowers first. Reviewed source repairs
 produce real spans and preserve sticky errors and failure ownership; their
 actual eight-rank check without the extra head communicator now passes. The
-extra-head case stops before numerical checks because measured preparation
+initial extra-head case stopped before numerical checks because measured preparation
 residency is 96 MiB against its 64 MiB test guard. These are observed costs,
-not worst-case physical bounds; a separately funded positive fixture and full
-resource/model admission checks remain open.
+not worst-case physical bounds. A separately funded positive fixture now passes
+34 CPU and both eight-rank GPU cases, with zero skips and all 16 required
+child-origin records. It uses the existing 2 GiB caller workspace allowance, joint
+admission and before-phase resource checks; full physical bounds and model
+admission remain open. The original 64 MiB refusal and independent insufficient-
+budget control remain preserved.
 
 A bounded current-image TCPStore probe succeeded in both default libuv and
 explicit non-libuv modes. It contradicts the older unavailable-backend
@@ -182,7 +186,7 @@ failed run retired cleanly without OOM or residual GPU contexts.
 | Open item | Remaining action |
 | --- | --- |
 | Q03 | Complete repaired prepared/bound-graph tests, then actual SC117 native32 selector, wrapper and complete-request cost/quality checks on immutable identities. |
-| Q05 | Complete corrected eight-rank graph tests, release-image identity checks, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. The 16-case lifetime module passed on the bound image; Python header sizes still do not bound native metadata, allocator pages or RSS. |
+| Q05 | Complete release-image qualification, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. The corrected graph fixture passed all 36 CPU/GPU cases with all 16 child-origin records; this does not establish complete physical bounds or model admission. The 16-case lifetime module passed on the bound image; Python header sizes still do not bound native metadata, allocator pages or RSS. |
 | Q06 | Obtain and verify the exact seven-path C06-only packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`), then use an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
 | Q-GLM | Preserve legacy raw-tokenizer compatibility, as explicitly selected by the user, and complete actual model/context/stop serving checks for available platform/checkpoint pairs. The capitalization/complete-header frontend repairs passed the bound installed 253-test verification; full checkpoint CUDA and applicable MLX inference remain unqualified without their actual inputs. |
 | B3 | Reverify the user-approved recovery bundle, exact queue, current tips and unselected C06 source/tests/evidence recoverability, then retire only reviewed unchanged divergent refs with expected-SHA guards. The exact C06 qualification packet is still unavailable; reconstructed variants have different hashes. C06 adoption remains separate. Stop on new or advanced refs. |
