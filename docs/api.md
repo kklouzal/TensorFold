@@ -287,6 +287,10 @@ render a later system message, the server renders it as a user message. Text con
 in order. Caller messages are not mutated.
 Changing earlier rendered tokens can reduce prefix reuse.
 
+New function-tool definitions require a string name containing a non-whitespace
+character. Invalid definitions are rejected before rendering or generation on
+both endpoints; names are not accepted by converting numbers or objects to text.
+
 On both backends, Qwen XML tool parameters use the offered schema's explicit type for arrays, objects, booleans,
 integers, numbers and nulls, streamed or not. Strings preserve text and whitespace. Malformed or mismatched values
 remain strings for the client to validate. Union types and schema references are not resolved by this conversion.

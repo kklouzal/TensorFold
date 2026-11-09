@@ -10,10 +10,10 @@ import argparse
 import ctypes
 import hashlib
 import json
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 import numpy as np
 
@@ -39,7 +39,7 @@ def function(source, name):
     return source[start:end]
 
 
-def generate(quants, common, output):
+def generate(quants, common, output, *, finite_projections=False):
     for path, name in ((quants, "ggml-quants.c"), (common, "ggml-common.h")):
         if hashlib.sha256(path.read_bytes()).hexdigest() != SOURCES[name]:
             raise ValueError("reference source identity mismatch: " + name)
@@ -77,6 +77,16 @@ static float fp16_to_fp32(uint16_t bits) {
             scales = np.array([0., -0., 2.**-24, -2.**-24, 2.**-14, -2.**-14,
                                .001, -.25, 1., -2., 65504., -65504., 64., -64.,
                                3.140625, .33325] + [1.] * 48, dtype="<f2")
+            if finite_projections:
+                # Independent bounds: Q6_K 4096, IQ3_XXS 1976.25, IQ3_S 7905,
+                # IQ2_S 988.125, IQ4_XS 4064 and Q2_0 2 times the stored scale.
+                # |d| <= 2^-20 with multiplier <= 8192 gives |coefficient| <= 2^-7.
+                # For |input| <= 1, K=2560 dots stay below 21 including rounding,
+                # FP16 SwiGLU below 441 and K=80 down below 276.
+                scales = np.array([0., -0., 2.**-24, -2.**-24, 2.**-23, -2.**-23,
+                                   2.**-22, -2.**-22, 2.**-21, -2.**-21,
+                                   2.**-20, -2.**-20, 2.**-22, -2.**-22,
+                                   2.**-23, 2.**-24] + [2.**-20] * 48, dtype="<f2")
             raw[:, scale_at:scale_at + 2] = scales.view(np.uint8).reshape(64, 2)
             # Exercise every IQ codebook entry, including both high index bits.
             if kind == 22:
@@ -103,6 +113,13 @@ static float fp16_to_fp32(uint16_t bits) {
             "flags": flags,
             "oracle": "unmodified selected dequantize_row functions and common header; _Float16 conversion shim",
             "generator_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "scale_domain": "finite-fp16-projections-v1" if finite_projections else "full-fp32-wire-range-v1",
+            "projection_bounds": ({"maximum_abs_scale": 2.**-20, "maximum_quant_multiplier": 8192,
+                                   "maximum_abs_coefficient": 2.**-7, "maximum_abs_input": 1,
+                                   "K": 2560, "maximum_abs_dot_including_rounding": 21,
+                                   "maximum_abs_fp16_activation": 441,
+                                   "K80_maximum_abs_down_including_rounding": 276}
+                                  if finite_projections else None),
         }, sort_keys=True))
         output.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(output, **arrays)
@@ -113,9 +130,21 @@ def main():
     parser.add_argument("--quants", required=True, type=Path)
     parser.add_argument("--common", required=True, type=Path)
     parser.add_argument("--output", type=Path,
-                        default=Path(__file__).resolve().parents[1] / "tests/fixtures/gguf_mixed_ggml.npz")
+                        help="override the mode-specific fixture path; finite mode defaults to its separate corpus")
+    parser.add_argument("--finite-projections", action="store_true",
+                        help="generate finite FP16 projection controls; default retains full-range FP32 wire controls")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the selected output and mode without reading sources, compiling or writing files")
     args = parser.parse_args()
-    generate(args.quants, args.common, args.output)
+    output = args.output
+    if output is None:
+        name = "gguf_mixed_projection_ggml.npz" if args.finite_projections else "gguf_mixed_ggml.npz"
+        output = Path(__file__).resolve().parents[1] / "tests/fixtures" / name
+    if args.dry_run:
+        print(json.dumps({"output": str(output), "finite_projections": args.finite_projections,
+                          "scope": "plan only; source hashes/compiler are checked during generation"}))
+        return
+    generate(args.quants, args.common, output, finite_projections=args.finite_projections)
 
 
 if __name__ == "__main__":

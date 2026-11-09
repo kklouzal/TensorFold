@@ -2,6 +2,8 @@
 
 import random
 import threading
+import weakref
+from collections import OrderedDict
 
 import pytest
 
@@ -194,6 +196,7 @@ def test_cache_credit_failure_happens_before_cache_or_native_batch():
 def test_concurrent_publication_keeps_old_lock_entry_eligibility_and_lru_suffix():
     """Preserve the insert-all/trim semantics; naive per-insert eviction fails here."""
     from array import array
+
     from tensorfold.server.segments import _Segment
     tok = bpe()
     a, x, y = (OPEN + letter for letter in 'AXY')
@@ -217,3 +220,168 @@ def test_concurrent_publication_keeps_old_lock_entry_eligibility_and_lru_suffix(
     assert encoder.encode(text, ids_credit=lambda n, **kw: None, cache_credit=lambda *args: None) == tok.encode(text, add_special_tokens=False).ids
     assert list(encoder.cache) == [a, x]
     assert encoder.held <= encoder.limit
+
+
+def small_encoder():
+    tok = tokenizers.Tokenizer(tokenizers.models.BPE(vocab={"a": 0, "b": 1, OPEN: 2}, merges=[]))
+    tok.add_tokens([tokenizers.AddedToken(OPEN, normalized=False)])
+    return SegmentEncoder(tok, OPEN)
+
+
+def test_cache_size_failure_after_multiple_insertions_cannot_leave_it_over_limit(monkeypatch):
+    from tensorfold.server import segments
+
+    enc = small_encoder()
+    first, second, third = (OPEN + value for value in ("a" * 512, "b" * 512, "a" * 513))
+    enc.encode(first)
+    enc.limit = enc.held + 16
+    enc.cache.clear()
+    enc.held = 0
+    primary = MemoryError("controlled later cache size failure")
+    def size(text, ids):
+        if text == third:
+            assert len(enc.cache) == 2 and enc.held > enc.limit
+            raise primary
+        return _size(text, ids)
+    with monkeypatch.context() as patch:
+        patch.setattr(segments, "_size", size)
+        with pytest.raises(MemoryError) as caught:
+            enc.encode(first + second + third)
+        assert caught.value is primary and not enc.cache and enc.held == 0
+    assert enc.encode(first) == enc.tok.encode(first, add_special_tokens=False).ids
+    assert enc.held == sum(_size(text, ids) for text, ids in enc.cache.items()) <= enc.limit
+
+
+@pytest.mark.parametrize("cut", ["size", "counter", "map-before", "map-after"])
+def test_cache_publication_exhaustion_clears_charge_and_preserves_primary(monkeypatch, cut):
+    from tensorfold.server import segments
+
+    enc = small_encoder()
+    enc.encode(OPEN + "a" * 512)
+    new, primary = OPEN + "b" * 512, MemoryError("controlled cache publication failure")
+    with monkeypatch.context() as patch:
+        if cut == "size":
+            def size(text, ids):
+                if text == new:
+                    raise primary
+                return _size(text, ids)
+            patch.setattr(segments, "_size", size)
+        elif cut == "counter":
+            class Counter(int):
+                def __add__(self, other):
+                    assert new not in enc.cache
+                    raise primary
+            enc.held = Counter(enc.held)
+        else:
+            class Publishing(OrderedDict):
+                def __setitem__(self, key, value):
+                    if key == new:
+                        if cut == "map-after":
+                            super().__setitem__(key, value)
+                        raise primary
+                    super().__setitem__(key, value)
+            enc.cache = Publishing(enc.cache)
+        with pytest.raises(MemoryError) as caught:
+            enc.encode(new)
+        assert caught.value is primary and not enc.cache and enc.held == 0
+    enc.cache = OrderedDict(enc.cache)  # Retire the publication fault injector.
+    assert enc.encode(new) == enc.tok.encode(new, add_special_tokens=False).ids
+    assert enc.held == sum(_size(text, ids) for text, ids in enc.cache.items()) > 0
+
+
+@pytest.mark.parametrize("cut", ["size", "counter", "map-before", "map-after"])
+def test_cache_eviction_exhaustion_clears_charge_and_preserves_primary(monkeypatch, cut):
+    from tensorfold.server import segments
+
+    enc = small_encoder()
+    old, new = OPEN + "a" * 512, OPEN + "b" * 512
+    enc.encode(old)
+    enc.limit = enc.held
+    primary = MemoryError("controlled cache eviction failure")
+    with monkeypatch.context() as patch:
+        if cut in ("size", "counter"):
+            class Size(int):
+                def __rsub__(self, other):
+                    raise primary
+            def size(text, ids):
+                if text == old:
+                    assert text not in enc.cache
+                    if cut == "size":
+                        raise primary
+                    return Size(_size(text, ids))
+                return _size(text, ids)
+            patch.setattr(segments, "_size", size)
+        else:
+            class Evicting(OrderedDict):
+                def popitem(self, last=True):
+                    if cut == "map-after":
+                        super().popitem(last=last)
+                    raise primary
+            enc.cache = Evicting(enc.cache)
+        with pytest.raises(MemoryError) as caught:
+            enc.encode(new)
+        assert caught.value is primary and not enc.cache and enc.held == 0
+    assert enc.encode(new) == enc.tok.encode(new, add_special_tokens=False).ids
+    assert list(enc.cache) == [new] and enc.held == _size(new, enc.cache[new]) <= enc.limit
+
+
+def test_cache_containment_preserves_another_callers_borrowed_hit(monkeypatch):
+    from tensorfold.server import segments
+
+    enc = small_encoder()
+    old, new = OPEN + "a" * 512, OPEN + "b" * 512
+    expected = enc.encode(old)
+    owner = weakref.ref(enc.cache[old].ids)
+    native, entered, released, results, errors = enc.tok, threading.Event(), threading.Event(), [], []
+    class Batch:
+        def encode_batch(self, missing, **options):
+            if not missing:
+                entered.set()
+                assert released.wait(3)
+            return native.encode_batch(missing, **options)
+    enc.tok = Batch()
+    def read():
+        try:
+            results.append(enc.encode(old))
+        except BaseException as error:  # noqa: BLE001 - surface every worker failure to the owning test
+            errors.append(error)
+    thread = threading.Thread(target=read)
+    thread.start()
+    primary = MemoryError("controlled competing publication failure")
+    def size(text, ids):
+        if text == new:
+            raise primary
+        return _size(text, ids)
+    try:
+        assert entered.wait(3)
+        monkeypatch.setattr(segments, "_size", size)
+        with pytest.raises(MemoryError) as caught:
+            enc.encode(new)
+        assert caught.value is primary and not enc.cache and enc.held == 0
+        assert owner() is not None
+    finally:
+        released.set()
+        thread.join(3)
+    assert not thread.is_alive() and errors == [] and results == [expected]
+    assert owner() is None
+
+
+def test_concurrent_control_authority_change_does_not_publish_stale_positions():
+    from tensorfold.server.prompt_origin import OriginText, trusted
+
+    enc = small_encoder()
+    old, outer, inner = (OPEN + value for value in ("aaa", "bbb", "aba"))
+    enc.encode_origin(trusted(old), {2}, {2: [0]}, None)
+    native = enc.tok
+    class Batch:
+        changed = False
+        def encode_batch(self, missing, **options):
+            if not self.changed:
+                self.changed = True
+                enc.encode_origin(trusted(inner), {0}, {0: [1]}, None)
+            return native.encode_batch(missing, **options)
+    enc.tok = Batch()
+    assert enc.encode_origin(OriginText(outer), {2}, {2: [0]}, None) == [0, 1, 1, 1]
+    assert enc._controls == frozenset({0})
+    assert list(enc.cache) == [inner]
+    assert enc.held == sum(_size(text, ids) for text, ids in enc.cache.items()) <= enc.limit

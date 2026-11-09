@@ -157,13 +157,21 @@ class SegmentEncoder:
                 out.extend(entry.ids[at:])
             base += len(segment)
         with self.lock:
-            for segment, ids in fresh.items() if self._controls == authority else ():
-                size = _size(segment, ids)
-                if segment not in self.cache and size <= self.limit:
-                    self.cache[segment] = ids
-                    self.held += size
-            while self.held > self.limit and self.cache:
-                self.held -= _size(*self.cache.popitem(last=False))
+            try:
+                for segment, ids in fresh.items() if self._controls == authority else ():
+                    size = _size(segment, ids)
+                    if segment not in self.cache and size <= self.limit:
+                        held = self.held + size
+                        self.cache[segment] = ids
+                        self.held = held
+                while self.held > self.limit and self.cache:
+                    self.held -= _size(*self.cache.popitem(last=False))
+            except MemoryError:
+                # Drop only this cache's owners before a partial publication or
+                # eviction can escape with an invalid byte charge.
+                self.cache.clear()
+                self.held = 0
+                raise
         return out
 
 
