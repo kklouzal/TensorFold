@@ -96,8 +96,9 @@ outside that archive's verified scope.
 
 ## Remaining work
 
-Keep `python-0.6`. Commit `18e3798236d734c8c67d807b28cb73699ef8df5c`
-includes execution basis `e5ff14a0e22a8fbb361ff2bcdb41ae3f28019fdc`.
+Keep `python-0.6`. Validated checkpoint
+`4b35d4478a4b5d1583bcf1a181fc3b24fd49e02b` includes execution basis
+`e5ff14a0e22a8fbb361ff2bcdb41ae3f28019fdc` and the subsequent authorized changes.
 The initial complete application at `d3fb277d` produced image
 `sha256:031b609d6ae1aa0709f1b23a4d30c571839d8e45db90c0d69793b5dafcf58d14`;
 its 786 installed runtime files match the expected inventory, retaining owned
@@ -189,8 +190,6 @@ failed run retired cleanly without OOM or residual GPU contexts.
 | Q05 | Complete release-image qualification, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. The corrected graph fixture passed all 36 CPU/GPU cases with all 16 child-origin records; this does not establish complete physical bounds or model admission. The 16-case lifetime module passed on the bound image; Python header sizes still do not bound native metadata, allocator pages or RSS. |
 | Q06 | The exact seven-path C06 packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`) is recovered and independently restored. Apply only that packet in an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
 | Q-GLM | Preserve legacy raw-tokenizer compatibility, as explicitly selected by the user, and complete actual model/context/stop serving checks for available platform/checkpoint pairs. The capitalization/complete-header frontend repairs passed the bound installed 253-test verification; full checkpoint CUDA and applicable MLX inference remain unqualified without their actual inputs. |
-| B3 | Reverify the user-approved recovery bundle, exact queue, current tips and unselected C06 source/tests/evidence recoverability, then retire only reviewed unchanged divergent refs with expected-SHA guards. The exact C06 qualification packet is now available and independently restored; adoption remains a separate deferred gate. Stop on new or advanced refs. |
-| B4 | Verify only `python-0.6` remains, it is the actual default and contains the execution basis plus authorized changes, and independent recovery remains usable. |
 
 The earlier bounded accessible-path search did not locate the personal-library
 recovery artifacts or C06 packet; that was not a claim of global absence. The user subsequently supplied the full patch text.
@@ -200,7 +199,7 @@ its separate packet archive restores independently and the isolated current-
 branch applicability check passes. The other eight sections are excluded: seven
 are already integrated, and one Dense test has diverged. Nothing from this
 patch is reapplied canonically. The user-approved fresh Git archive replaces
-the original recovery set; C06 adoption and B3 retirement remain open.
+the original recovery set; C06 qualification and adoption remain open.
 
 A supplemental current-head bundle (`ecdc578cdfd119241169658160a66ad7afd9a59fe5b3decb7cd32ad336f14ea8`)
 independently restores all 607 original branch names and exact captured tips,
@@ -212,6 +211,14 @@ set. The user changed the default to `python-0.6`, verified through the live
 GitHub API. All 69 ancestral names, including `main` last, were then retired
 serially with exact-SHA guards and live full-ref checks before and after each
 deletion. The verified final set contains 538 heads: the retained target and
-537 divergent names. The archive remains available for restoration; B3 and
-final B4 closure remain open. Legacy raw-tokenizer compatibility is retained
+537 divergent names. All 537 were subsequently retired serially, including
+the 14 C06-flagged names last, with the exact packet and recovery archive
+checked throughout. The complete 606-name queue is now retired. Independent
+final checks found only `python-0.6`, confirmed it as default and verified
+the execution basis in its retained history. The self-contained archive passes
+strict integrity checks and restores all 606 original non-target tips; its
+607-head restore also retains the original target tip. The exact C06 packet
+and independent packet archive remain hash-verified and recoverable. Tags,
+releases and local recovery refs were outside these mutations. B1–B4 are closed
+for the remote-branch scope; this does not qualify C06 or complete ProviderOne. Legacy raw-tokenizer compatibility is retained
 by explicit user decision, without a protected-interface qualification claim.
