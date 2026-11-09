@@ -387,8 +387,30 @@ GPU mismatch produced and verified all nine NPY files; it is fault-control
 evidence, not an observed live-model mismatch. Gate:
 `normalization-parity-tool-v1/target-v2/normalization-parity-source-CPU222-GPU4-gate-v1.json`,
 SHA256 `5d97592fc4093158cc6da6f84f07be1850ecfffadaff8962f789a67e15bdd4ac`.
-The full original pinned-model witness is planned, **not yet executed**;
-selection remains held.
+The first full original pinned-model witness **executed but failed retirement
+verification**. All 87 requests across all seven levels passed the HTTP client,
+and no mismatch files were found, but **0/8 mandatory retirement summaries**
+were produced. Final pre-stop rank0 stats alone report 6,086 helper calls,
+247,765 summed per-layer rows and zero mismatches, with `closed: false` and
+`failed: false`. This is neither all-eight-rank evidence nor a completed parity
+proof; absence of mismatch files does not supply that proof.
+
+The inner launcher exited zero, while the outer/container outcome was exit 1,
+PID 0, no OOM and unchanged recorded source/health. This is a retained failure,
+not normal witness retirement. All diagnostic timings remain invalid for P3;
+selection is held and the earlier 13 output differences remain unresolved.
+No normalization numerical failure or cause waiver is inferred from the
+missing summaries.
+
+The audited shutdown path gives rank0 a TERM handler in `cuda/http.serve`, while
+followers skip that server path. The TP parent signals all worker groups;
+early stop-on-departure killing and a forced parent-zero outcome can bypass
+follower cleanup and summary publication. A bounded leader-first shutdown
+correction is being implemented and is **not yet qualified**. That lifecycle
+finding is separate from numerical attribution. Failure gate:
+`normalization-parity-model-v1/normalization-parity-live-failure-gate-v1.json`,
+SHA256 `b49952e6b672fc2a9d7372d3373cf3f44768e7a985de459f54baa4db0f8e77d2`.
+Raw HTTP, pre-stop observations and failed retirement outcomes are preserved.
 
 ## First SC117 Q4 reference
 

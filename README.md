@@ -40,7 +40,9 @@ outputs and 72/87 proposal-work records match the baseline. The cause is
 unresolved; this is not an accepted gain, quality result or default promotion.
 A private [same-input normalization witness](docs/benchmarking.md#private-same-input-normalization-parity-witness)
 is available for diagnosis; its comparison fences invalidate all performance
-timings. The actual pinned-model witness remains pending.
+timings. Its first actual run completed all 87 HTTP requests but produced none
+of the eight mandatory retirement summaries. The parity proof is incomplete,
+and selection remains held.
 Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
 capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.
