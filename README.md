@@ -6,6 +6,14 @@ SC117/V100 is the immediate delivery priority while selected existing profiles,
 including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
 separates requested, source-implemented, qualified and effective behavior.
 
+The [branch consolidation](docs/branch-consolidation.md) hardens benchmark
+publication, new tool-definition validation and optional segment-cache failure
+accounting, removes an unused normal-round FIFO snapshot, and adds a separate
+finite GGML projection fixture. Its CPU checks are separate from installed
+CUDA/model qualification. Dense-wrapper and compact-state candidates remain
+qualification patches pending their actual SM70 and model gates; no deployment
+profile or measured performance result is promoted by the consolidation.
+
 The V100 source now has one App-owned host-payload pool with grants before
 allocation and ownership through worker, socket and error retirement. Its C27
 joint-reservation control passes with unchanged service limits; 591 distinct
