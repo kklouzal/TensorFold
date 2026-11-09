@@ -1,4 +1,5 @@
 """Offline matched-control boundary/metric tests; no model or quality margins."""
+import copy
 import hashlib
 import json
 import sys
@@ -22,9 +23,17 @@ def _write(root, name, value):
     return {'file': name, 'bytes': len(raw), 'sha256': _sha(raw)}
 
 
-def _side(root, mode, reference=None, *, arrays=None, alter=None, host_fault=None, completion_fault=None, native_fault=None, image=None):
+def _side(root, mode, reference=None, *, arrays=None, alter=None, host_fault=None, completion_fault=None, native_fault=None, image=None, activation=None, record_fault=None, state_change=None):
     root.mkdir()
     teacher_ids = [1, 1, 1, 3]
+    activation = (('8' if mode == 'capture' else '9') * 64) if activation is None else activation
+    state_kv = ['basis-v1', ['position-profile-v1', 'a' * 64, 0],
+                ['coordinate-profile-v1', activation], ['logical-context-v1', 262144]]
+    if state_change:
+        state_change(state_kv)
+    profile = {key: 'stable' for key in ('plan_identity', 'policy', 'target_banks', 'mtp_banks', 'state_count', 'capability')}
+    profile.update(coordinate_profile_identity=activation, teacher_semantics={
+        'state_kv_identity': state_kv, 'context': 262144, 'other_stable': 'unchanged'})
     sources = {key: 'a' * 64 for key in ('engine', 'multi', 'decode', 'sampling')}
     sources['teacher'] = ('b' if mode == 'capture' else 'c') * 64
     frames = []
@@ -37,7 +46,7 @@ def _side(root, mode, reference=None, *, arrays=None, alter=None, host_fault=Non
         frames.append({'step': step, 'position': 2 + step, 'teacher_id': teacher_ids[step], 'full_vocab': 4,
                        'selected_original': teacher_ids[step], 'role': 'prefill' if step == 0 else 'decode',
                        'execution_family': {'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'},
-                       'kv_identity': ['same-semantic-state'], 'vector': {
+                       'kv_identity': copy.deepcopy(state_kv), 'vector': {
                            'file': f'teacher-rank0/frame-{step:06d}.npy', 'bytes': len(raw),
                            'sha256': _sha(raw), 'dtype': '<f4', 'shape': [4]}})
     groups = {}
@@ -50,10 +59,18 @@ def _side(root, mode, reference=None, *, arrays=None, alter=None, host_fault=Non
                     f'child-native/teacher-closed-rank-{rank}-pid-{100+rank}.json')
             record = {'rank': rank, 'closed': True, 'finished': True, 'failed': False,
                       'mode': mode, 'teacher_ids': teacher_ids, 'runtime_sources': sources}
+            if group == 'rank_receipts':
+                record['actual_owned_profile'] = copy.deepcopy(profile)
+                record['frames'] = copy.deepcopy(frames)
+            elif group == 'startup_receipts':
+                record['teacher_profile'] = copy.deepcopy(profile)
+                record['coordinate_profile_identity'] = activation
             if group == 'child_native_records':
                 record['mapped_elfs'] = [{'name': 'tf_gguf_fixture', 'sha256': '7' * 64}]
                 if native_fault:
                     native_fault(record)
+            if record_fault:
+                record_fault(group, rank, record)
             item = {**_write(root, name, record), 'rank': rank}
             groups[group].append(item)
             authority_groups[group].append({**item, 'file': name.removeprefix('teacher/')})
@@ -63,8 +80,7 @@ def _side(root, mode, reference=None, *, arrays=None, alter=None, host_fault=Non
                  'widths': [1] * 4, 'teacher_ids': teacher_ids, 'frames': frames, 'runtime_sources': sources,
                  'owner_family': {'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'},
                  'declared_identity': {key: 'e' * 64 for key in ('case_id', 'model_sha256', 'frontend_sha256', 'profile_sha256')},
-                 'actual_owned_profile': {key: 'stable' for key in ('teacher_semantics', 'coordinate_profile_identity',
-                     'plan_identity', 'policy', 'target_banks', 'mtp_banks', 'state_count', 'capability')},
+                 'actual_owned_profile': copy.deepcopy(profile),
                  'rank_receipts': authority_groups['rank_receipts'], 'startup_receipts': authority_groups['startup_receipts']}
     if alter:
         alter(authority)
@@ -307,3 +323,65 @@ def test_comparison_deadline_domain_precedes_clock_and_io(monkeypatch, seconds):
     monkeypatch.setattr(quality, '_owned_comparison_side', lambda *args: pytest.fail('IO before deadline validation'))
     with pytest.raises(ValueError, match='positive finite'):
         quality.compare_owned_teacher({}, {}, read_timeout_s=seconds)
+
+
+def test_distinct_resident_activations_normalize_only_after_complete_within_run_linkage(tmp_path):
+    first, second = _pair(tmp_path)
+    report = quality.compare_owned_teacher(first, second, read_timeout_s=10)
+    assert report['status'] == 'EXACT_MATCHED_CONTROL'
+    assert report['coordinate_activations'] == ['8' * 64, '9' * 64]
+    assert 'typed resident-activation' in report['coordinate_scope']
+
+
+@pytest.mark.parametrize('location', ['summary-profile', 'startup-top', 'startup-profile', 'summary-frame', 'authority-profile', 'authority-frame'])
+def test_mismatched_activation_within_one_run_is_refused_before_numeric_payload(tmp_path, monkeypatch, location):
+    def records(group, rank, record):
+        if rank != 7:
+            return
+        if location == 'summary-profile' and group == 'rank_receipts':
+            record['actual_owned_profile']['coordinate_profile_identity'] = '0' * 64
+        elif location == 'startup-top' and group == 'startup_receipts':
+            record['coordinate_profile_identity'] = '0' * 64
+        elif location == 'startup-profile' and group == 'startup_receipts':
+            record['teacher_profile']['teacher_semantics']['state_kv_identity'][2][1] = '0' * 64
+        elif location == 'summary-frame' and group == 'rank_receipts':
+            record['frames'][0]['kv_identity'][2][1] = '0' * 64
+    def authority(value):
+        if location == 'authority-profile':
+            value['actual_owned_profile']['coordinate_profile_identity'] = '0' * 64
+        elif location == 'authority-frame':
+            value['frames'][0]['kv_identity'][2][1] = '0' * 64
+    first, second = _pair(tmp_path, alter=authority, record_fault=records)
+    monkeypatch.setattr(quality, '_owned_comparison_vector', lambda *args: pytest.fail('numeric payload before activation proof'))
+    with pytest.raises(ValueError, match='activation|coordinate|State'):
+        quality.compare_owned_teacher(first, second, read_timeout_s=10)
+
+
+@pytest.mark.parametrize('fault', ['missing', 'duplicate', 'malformed', 'wrong-hash', 'position', 'context', 'other-marker'])
+def test_only_one_typed_activation_marker_is_normalized_and_other_kv_fields_stay_exact(tmp_path, monkeypatch, fault):
+    def change(identity):
+        if fault == 'missing':
+            identity.pop(2)
+        elif fault == 'duplicate':
+            identity.append(copy.deepcopy(identity[2]))
+        elif fault == 'malformed':
+            identity[2].append('extra')
+        elif fault == 'wrong-hash':
+            identity[2][1] = '0' * 64
+        elif fault == 'position':
+            identity[1][2] = 1
+        elif fault == 'context':
+            identity[3][1] = 131072
+        else:
+            identity.append(['another-stable-marker', '9' * 64])
+    first, second = _pair(tmp_path, state_change=change)
+    monkeypatch.setattr(quality, '_owned_comparison_vector', lambda *args: pytest.fail('numeric payload before stable KV proof'))
+    with pytest.raises(ValueError, match='marker|State|activation'):
+        quality.compare_owned_teacher(first, second, read_timeout_s=10)
+
+
+@pytest.mark.parametrize('activation', ['not-a-sha', False, 123])
+def test_actual_activation_identity_requires_sha256_before_normalization(tmp_path, activation):
+    first, second = _pair(tmp_path, activation=activation)
+    with pytest.raises(ValueError, match='actual activation SHA'):
+        quality.compare_owned_teacher(first, second, read_timeout_s=10)

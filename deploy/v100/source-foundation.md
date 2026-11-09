@@ -1026,3 +1026,12 @@ startup/native/closure, parent no-CUDA, asset/cache, CLI and outer Host gates
 passed with normal retirement. See the [receipt and strict scope](../../docs/benchmarking.md#first-actual-reference-teacher-capture).
 This qualifies that short capture operation, not replay, 24 active requests,
 long-context quality, physical worst-case bounds or performance.
+
+The matched four-frame replay also passed on clean operator `3e582361`, using
+its unchanged committed teacher helper and the same application, frontend,
+Q8/C24/NONE/reference profile and native identities. All eight workers and
+outer CLI/Host gates retired positively. The separate maintained offline
+comparison matched all four vectors bit-for-bit, with all 132 current x86
+controls passing. See the [actual replay receipt](../../docs/benchmarking.md#actual-matched-reference-replay).
+No candidate family, broader quality or performance gate is selected by this
+bounded control.

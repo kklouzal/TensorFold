@@ -339,6 +339,35 @@ def _owned_comparison_vector(path, vector, vocab, control):
     return array
 
 
+
+def _owned_coordinate_kv(identity, activation):
+    """Normalize only State's typed activation marker, after same-run proof.
+
+    Engine._bind_coordinate_profile issues a nonce-bearing resident namespace,
+    explicitly not a content/qualification certificate. Position and all other
+    KV markers remain unchanged; malformed/duplicate/missing markers refuse.
+    """
+    if type(identity) is not list:
+        raise ValueError('owned comparison requires the complete State KV identity')
+    markers = [index for index, value in enumerate(identity)
+               if type(value) is list and value and value[0] == 'coordinate-profile-v1']
+    if len(markers) != 1:
+        raise ValueError('owned comparison requires exactly one typed coordinate activation marker')
+    index = markers[0]
+    if len(identity[index]) != 2 or identity[index][1] != activation:
+        raise ValueError('owned comparison State coordinate marker differs from its own activation')
+    return [*identity[:index], ['coordinate-profile-v1', '<resident-activation>'], *identity[index + 1:]]
+
+
+def _owned_coordinate_semantics(profile, activation):
+    if type(profile) is not dict or profile.get('coordinate_profile_identity') != activation:
+        raise ValueError('owned comparison profile coordinate activation differs within its run')
+    semantic = profile.get('teacher_semantics')
+    if type(semantic) is not dict:
+        raise ValueError('owned comparison requires actual teacher State semantics')
+    return {**semantic, 'state_kv_identity': _owned_coordinate_kv(semantic.get('state_kv_identity'), activation)}
+
+
 def _owned_comparison_side(selected, mode, control):
     """Consume successful owner records; never rerun or reinterpret a launcher."""
     contract = _owned_comparison_contract()
@@ -381,6 +410,12 @@ def _owned_comparison_side(selected, mode, control):
             or type(authority.get('launch_exit')) is not int or authority['launch_exit'] != 0
             or authority.get('method') != 'none' or authority.get('input_sha256') != model['teacher_plan_sha256']):
         raise ValueError('owned comparison authority is not a completed none cohort')
+    profile = authority.get('actual_owned_profile')
+    activation = profile.get('coordinate_profile_identity') if type(profile) is dict else None
+    if type(activation) is not str or not SHA.fullmatch(activation):
+        raise ValueError('owned comparison requires its actual activation SHA identity')
+    stable_semantics = _owned_coordinate_semantics(profile, activation)
+    state_kv = profile['teacher_semantics']['state_kv_identity']
     frames, ids, vocab = (authority.get(key) for key in ('frames', 'teacher_ids', 'vocab'))
     if (type(ids) is not list or not 0 < len(ids) <= 64 or type(vocab) is not int or not 0 < vocab <= (64 << 20) // 4 - 1024
             or any(type(token) is not int or not 0 <= token < vocab for token in ids)
@@ -388,6 +423,9 @@ def _owned_comparison_side(selected, mode, control):
         raise ValueError('owned comparison requires bounded complete full-vocabulary frames')
     # All metadata/cardinalities are checked before loading any NPY payload.
     for step, frame in enumerate(frames):
+        if frame.get('kv_identity') != state_kv:
+            raise ValueError('owned comparison authority frame State identity differs within its activation')
+        _owned_coordinate_kv(frame['kv_identity'], activation)
         vector = frame.get('vector', {})
         if (frame.get('step') != step or frame.get('position') != len(authority['input_ids']) + step
                 or frame.get('teacher_id') != ids[step] or frame.get('full_vocab') != vocab
@@ -410,6 +448,20 @@ def _owned_comparison_side(selected, mode, control):
             record = _owned_comparison_file(root, reference, control)
             if record.get('rank') != rank:
                 raise ValueError('owned comparison rank record order differs')
+            if collection in ('rank_receipts', 'startup_receipts'):
+                own_profile = record.get('actual_owned_profile') if collection == 'rank_receipts' else record.get('teacher_profile')
+                if _owned_coordinate_semantics(own_profile, activation) != stable_semantics:
+                    raise ValueError('owned comparison rank State semantics differ within its activation')
+                if collection == 'startup_receipts' and record.get('coordinate_profile_identity') != activation:
+                    raise ValueError('owned comparison startup activation differs from its linked profile')
+                if collection == 'rank_receipts':
+                    own_frames = record.get('frames')
+                    if type(own_frames) is not list or len(own_frames) != len(frames):
+                        raise ValueError('owned comparison rank frame list differs')
+                    for frame in own_frames:
+                        if frame.get('kv_identity') != state_kv:
+                            raise ValueError('owned comparison rank frame State identity differs within its activation')
+                        _owned_coordinate_kv(frame['kv_identity'], activation)
             if collection == 'child_native_records':
                 mapped = record.get('mapped_elfs')
                 if (type(mapped) is not list or not 0 < len(mapped) <= 64
@@ -425,7 +477,8 @@ def _owned_comparison_side(selected, mode, control):
     content = _owned_comparison_file(root, inner['content_binding'], control)
     if content.get('completed') is not True:
         raise ValueError('owned comparison model content was not completed')
-    return {'root': root, 'inner': inner, 'authority': authority, 'authority_ref': authority_ref, 'native_sets': native_sets}
+    return {'root': root, 'inner': inner, 'authority': authority, 'authority_ref': authority_ref,
+            'native_sets': native_sets, 'activation': activation, 'stable_semantics': stable_semantics}
 
 
 def compare_owned_teacher(reference, replay, *, read_timeout_s):
@@ -453,7 +506,9 @@ def compare_owned_teacher(reference, replay, *, read_timeout_s):
     for key in ('case_id', 'model_sha256', 'frontend_sha256', 'profile_sha256'):
         if a.get('declared_identity', {}).get(key) != b.get('declared_identity', {}).get(key):
             raise ValueError('owned comparison declared semantic identity differs: ' + key)
-    for key in ('teacher_semantics', 'coordinate_profile_identity', 'plan_identity', 'policy', 'target_banks', 'mtp_banks', 'state_count', 'capability'):
+    if first['stable_semantics'] != second['stable_semantics']:
+        raise ValueError('owned comparison stable actual teacher State semantics differ')
+    for key in ('plan_identity', 'policy', 'target_banks', 'mtp_banks', 'state_count', 'capability'):
         if a.get('actual_owned_profile', {}).get(key) != b.get('actual_owned_profile', {}).get(key):
             raise ValueError('owned comparison actual semantic profile differs: ' + key)
     for key in ('engine', 'multi', 'decode', 'sampling'):
@@ -462,9 +517,12 @@ def compare_owned_teacher(reference, replay, *, read_timeout_s):
             raise ValueError('owned comparison installed runtime source differs: ' + key)
     rows = []
     for index, (old, current) in enumerate(zip(a['frames'], b['frames'])):
-        for key in ('step', 'position', 'teacher_id', 'full_vocab', 'role', 'execution_family', 'kv_identity'):
+        for key in ('step', 'position', 'teacher_id', 'full_vocab', 'role', 'execution_family'):
             if old.get(key) != current.get(key):
                 raise ValueError('owned comparison frame pairing differs: ' + key)
+        if (_owned_coordinate_kv(old['kv_identity'], first['activation'])
+                != _owned_coordinate_kv(current['kv_identity'], second['activation'])):
+            raise ValueError('owned comparison stable frame KV identities differ')
         vectors = []
         for side, frame in ((first, old), (second, current)):
             vector = frame['vector']
@@ -494,6 +552,8 @@ def compare_owned_teacher(reference, replay, *, read_timeout_s):
         'qualification': False, 'quality_acceptance': False, 'P3_valid': False,
         'reference': reference, 'replay': replay, 'frames': rows,
         'image_id': first['inner']['image_id_declared'], 'native_sets_by_rank': first['native_sets'],
+        'coordinate_activations': [first['activation'], second['activation']],
+        'coordinate_scope': 'each run linked completely; only typed resident-activation marker normalized across runs',
         'runtime_sources': {key: a['runtime_sources'][key] for key in ('engine', 'multi', 'decode', 'sampling')},
         'teacher_sources': [a['runtime_sources'].get('teacher'), b['runtime_sources'].get('teacher')],
         'operator_commits': [first['inner'].get('source_commit'), second['inner'].get('source_commit')],

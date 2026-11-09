@@ -1027,10 +1027,40 @@ The reference authority SHA256 is
 `4a7197c49e803ddf371c8e9d571d12feb88c605e2853dcb1dd4ef1773b7e97f4`;
 the complete actual receipt is
 `e22054dbdb11ff24699a628065ff95edfc292f48c44c8226a8d9f539f9541c84`.
-This makes bounded reference DATA available. Replay, broad task/media and MTP
+This makes bounded reference DATA available. Broader replay/task/media and MTP
 quality, worst-case resources, NativeRN/C06 adoption and matched per-count
 performance keep separate gates. Copying, synchronization and recording make
 all timings diagnostic; no token/s result is published from this operation.
+
+
+### Actual matched reference replay
+
+One matched replay subsequently passed using clean operator `3e582361` and
+its committed teacher helper, excluding the newer offline comparator. The
+application `d736ab78`, verification image `efb4cb8f`, current frontend
+`61ea346c`, installed math sources and actual four native-module hash sets
+match the capture. The same Q8/NONE/reference/no-graphs profile materialized
+24 logical 262,144-row windows per rank with the extra physical anchor.
+
+One cold 52-ID POST returned HTTP200 with four frozen IDs
+`[18,22,17,248046]`, EOS/stop and text `372`. The replay plan's frame count
+was exactly four; the CLI's separate ceiling remained 64. All eight ranks
+closed positively with four finite full-vocabulary FP32 vectors. The held
+32-file content pass, normal read-only frontend cache hit, parent no-CUDA,
+source/health, native-origin, CLI/Host and retirement gates passed. The original
+external CLI exit 0 is recorded separately from attach/container exit 0;
+post-retirement GPU compute contexts were empty.
+
+The actual replay gate SHA256 is
+`4ee2cd9b5a6ccf0cc33531b3cfc9c57c728715966837a32c34afa0d84902c4c9`,
+its replay authority is
+`5c22ec0812c1317d0be74f850c483bc19408f8136ce3f1ab290fea54bfe2dfb5`,
+and independent actual review is
+`fc4b86e598e7d9e33531b4147d03909f88035d848fc9eade846ec3a31667af4c`.
+A forced replay answer establishes no numerical agreement by itself. The
+separate full-vector comparison below passed exactly. This short control does not
+qualify MTP/media/full histories, 24 active requests, physical worst-case
+bounds, candidate adoption or P3. All timings remain diagnostic.
 
 
 ### Offline matched teacher comparison
@@ -1046,7 +1076,12 @@ Pairing requires the same immutable image and recorded native-module identities,
 model/frontend/execution declaration, input IDs, vocabulary, frozen output
 sequence and installed math-source identities.
 Capture and replay retain their distinct mode, operator and observer source
-identities. Appending this offline comparator changes the quality tool's whole
+identities. Coordinate profile IDs are resident-activation namespaces issued
+from a fresh nonce, not content certificates. The comparator validates each
+run's own activation linkage across its authority, startup, rank and frame
+records, preserves both IDs, and normalizes only the single well-typed
+`coordinate-profile-v1` activation marker when comparing stable KV semantics.
+All other positional and numerical markers remain exact. Appending this offline comparator changes the quality tool's whole
 file hash; carry-forward of existing teacher behavior requires structural
 verification rather than relabeling the old hash as current.
 
@@ -1056,6 +1091,28 @@ teacher ID, and diagnostic KL, NLL change and maximum absolute logit difference.
 A forced matching answer is not evidence that its underlying logits agree.
 Nonexact control repeats remain observed variability requiring analysis, not an
 automatic quality pass or an invented numerical tolerance. The comparator
-passed 115 x86 CPU controls with no skips. The 27 prior helpers and classes
+passed 132 x86 CPU controls with no skips. The 27 original helpers and classes
 retain their ASTs; the legacy main body follows the new explicit offline
-selector unchanged. Actual replay and comparison execution remain pending.
+selector unchanged. Actual replay passed the operation gates above; its paired
+comparison result follows.
+
+
+The maintained comparator subsequently executed on the owned x86 application
+image with immutable held source `4ea8c2c2`, after all 132 current controls
+passed. It consumed the unchanged pinned capture/replay pair and reported
+`EXACT_MATCHED_CONTROL`: four full Float32 vectors, 248,320 entries each, all
+993,280 uint32 representations identical. Every frame had zero differing bits,
+zero KL, zero teacher NLL change and zero maximum absolute logit difference.
+Raw argmax and original sampler selections agreed at all four steps, with one
+unique maximum per frame. Both distinct resident-activation IDs are retained
+and each run's complete internal linkage passed; no numerical tolerance or
+runtime guard change was used.
+
+The comparison CLI exited 0; its container retired with exit 0, PID 0 and no
+OOM. Its report SHA256 is
+`6f87902e2bcab325139ac08853d5f2a1304ec303a1a35ec7966c96baea902e50`. The
+report explicitly retains `qualification=false`, `quality_acceptance=false`
+and `P3_valid=false`: this is one short matched reference control. Broader
+quality/capacity/history/method/media and candidate/performance gates remain
+open. The earlier pre-metrics activation-identity refusal remains preserved in
+the audit evidence; the corrected comparator did not rerun either model.
