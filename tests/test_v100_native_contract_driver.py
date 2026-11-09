@@ -1470,5 +1470,265 @@ except ValueError as error:
         self.assertFalse(result['content_binding_complete'])
 
 
+    def benchmark_setup(self):
+        c = driver.model_contract
+        if 'modules' in self.spec:
+            self.model_spec()
+        operation = self.spec['operation']
+        operation['benchmark_plan'] = {**operation.pop('teacher_plan'), 'path': '/operator/benchmark-plan.json'}
+        operation['benchmark_client'] = {**operation.pop('teacher_client'), 'path': '/operator/benchmark-client.json'}
+        operation['trace'] = {'prefill_start': 1, 'host_obligation_bytes': 4096,
+                              'device_headroom_bytes': 8192, 'disk_bytes': 1 << 20}
+        self.spec.update(schema=c.BENCHMARK_SCHEMA, mode=c.BENCHMARK_MODE)
+        for name in ('bench_concurrent.py', 'v100_adaptive_qualification.py', 'openai_protocol.py',
+                     'worker_lifetime.py', 'benchmark_output.py'):
+            path = self.source/'tools'/name
+            path.write_bytes((Path(driver.__file__).parent/name).read_bytes())
+            self.spec['source_files']['tools/'+name] = {k: driver.file_identity(path)[k] for k in ('bytes', 'sha256')}
+        for name in ('cli.py', 'families/qwen4_exp/cuda/engine.py', 'families/qwen4_exp/cuda/multi.py',
+                     'families/qwen4_exp/cuda/decode.py', 'cuda/sampling.py'):
+            path = self.app/name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'# installed source '+name.encode())
+        self.spec['expected_app'] = driver.app_inventory(self.app)
+        client = self.teacher_client()
+        client.update(schema=c.BENCHMARK_CLIENT_SCHEMA, benchmark_plan_sha256=client.pop('teacher_plan_sha256'), sse_line_bytes=4096)
+        digest = hashlib.sha256(b'[1,2,2,2]').hexdigest()
+        cohort = {'id': 7, 'warmup': False, 'level': 1, 'tokens': 2, 'input_tokens': 4,
+                  'requests': [{'index': 0, 'prefix': [1], 'input_tokens': 4, 'prompt_sha256': digest}]}
+        plan = {'schema': 'tensorfold.phase-matrix-plan-v1', 'model': client['model'], 'profile': 'q8',
+                'admin_cap': 24, 'context': 262144, 'levels': [1], 'reps': 1, 'excluded_levels': [],
+                'tokens': 2, 'inputs': [4], 'cohorts': [cohort], 'filler_ids': [2], 'run_identity': '1'*32}
+        binding = c.validate_benchmark_operation_plan(operation, plan, client)
+        return plan, client, binding
+
+    def benchmark_result_fixture(self):
+        plan, client, binding = self.benchmark_setup()
+        c, op = driver.model_contract, self.spec['operation']
+        def publish(name, data, rank=None):
+            path = self.evidence/name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data))
+            return {'file': name, **{k: driver.file_identity(path)[k] for k in ('bytes', 'sha256')},
+                    **({} if rank is None else {'rank': rank})}
+        observer = {'path': str(self.source/'tools/v100_native_contract_driver.py'),
+                    **self.spec['source_files']['tools/v100_native_contract_driver.py']}
+        access = {'uids': [1000]*4, 'gids': [1000]*4, 'NoNewPrivs': '0',
+                  'caps': {k: '0000010000000000' for k in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')}}
+        resources = {'trace_grants': op['trace'], 'global_host_obligation_bytes': 10000}
+        headroom = {'free_bytes': 16384, 'total_bytes': 32768, 'required_free_bytes': 8192, 'scope': 'measured admission only'}
+        startups, ranks, native = [], [], []
+        for rank in range(8):
+            semantics = {'method': 'none', 'context': 262144, 'resident_slots': 24, 'full_resident': True,
+                'state_kv_identity': ['bound-state'], 'capacity_min': 262145, 'capacity_max': 262145,
+                'limit_min': 262145, 'limit_max': 262145, 'logical_min': 262144, 'logical_max': 262144,
+                'target_rows': 160, 'prefill_rows': 160, 'target_family': {'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'},
+                'prefill_family': {'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'}}
+            profile = {'rank': rank, 'benchmark_semantics': semantics}
+            windows = {**{key: semantics[key] for key in ('full_resident', 'capacity_min', 'capacity_max',
+                'limit_min', 'limit_max', 'logical_min', 'logical_max')}, 'slots': 24}
+            startups.append(publish(f'benchmark/rank-{rank}.json', {'rank': rank, 'world': 8,
+                'benchmark_worker_PID': rank+10, 'benchmark_server_instance_id': 'server-'+str(rank),
+                'benchmark_observer': observer, 'benchmark_profile': profile, 'benchmark_windows': windows,
+                'benchmark_resources': resources, 'benchmark_headroom': headroom,
+                'tool_sha256': self.spec['source_files']['tools/v100_owned_qualification.py']['sha256'],
+                'runtime_cli_sha256': self.spec['expected_app']['cli.py']['sha256']}, rank))
+            ranks.append(publish(f'benchmark/benchmark-rank{rank}/summary.json', {
+                'schema': 'tensorfold.owned-benchmark-rank-result-v1', 'rank': rank, 'world': 8,
+                'closed': True, 'finished': True, 'failed': False, 'benchmark_plan_sha256': 'a'*64,
+                'benchmark_client_sha256': 'a'*64, 'run_identity': plan['run_identity'],
+                'server_instance_id': 'server-'+str(rank), 'actual_owned_profile': profile,
+                'resources': resources, 'headroom': headroom, 'qualification': False, 'P3_valid': False,
+                'runtime_sources': {**{key: self.spec['expected_app'][name]['sha256'] for key, name in (
+                    ('engine', 'families/qwen4_exp/cuda/engine.py'), ('multi', 'families/qwen4_exp/cuda/multi.py'),
+                    ('decode', 'families/qwen4_exp/cuda/decode.py'), ('sampling', 'cuda/sampling.py'))},
+                    'observer_tool': self.spec['source_files']['tools/v100_owned_qualification.py']['sha256']},
+                'cohorts': [{'id': 7, 'prompt_hashes': [binding['prompt_sha256']], 'completed': 1, 'level': 1}]}, rank))
+            native.append(publish(f'child-native/benchmark-closed-rank-{rank}-pid-{rank+10}.json', {
+                'schema': 'tensorfold.native-elf-observation-v3', 'identity_method': 'kernel-vma-backed-fd-v1',
+                'rank': rank, 'PID': rank+10, 'tag': 'benchmark-closed', 'operation_limits': dict(c.MODEL_OBSERVER_LIMITS),
+                'observer': self.spec['source_files']['tools/v100_native_contract_driver.py'],
+                'access_precondition': access, 'missing_required_prefixes': [], 'mapped_elfs': [{'name': 'tf_gguf_fixture'}]}, rank))
+        report = publish('benchmark/benchmark-client-report.json', {
+            'schema': 'tensorfold.owned-benchmark-client-report-v1', 'complete': True,
+            'client_protocol_passed': True, 'matrix_passed': True, 'observed_trace': True,
+            'benchmark_plan_sha256': 'a'*64, 'benchmark_client_sha256': 'a'*64,
+            'run_identity': plan['run_identity'], 'server_instance_id': 'server-0', 'request_count': 1,
+            'matrix_tool_sha256': self.spec['source_files']['tools/bench_concurrent.py']['sha256'],
+            'quality_acceptance': False, 'P3_valid': False})
+        matrix = publish('benchmark/matrix-results.json', {'schema': 'tensorfold.phase-matrix-result-v1',
+            'passed': True, 'unrun_cohorts': [], 'plan': plan, 'instance_id': 'server-0',
+            'cohorts': [{'cohort': 7, 'passed': True, 'status': 'measured', 'warmup': False}]})
+        selection = {'status': 'OBSERVED', 'reason': None, 'run_identity': plan['run_identity'],
+            'cohort_id': 7, 'prompt_sha256': binding['prompt_sha256'], 'input_tokens': 4,
+            'requested_start': 1, 'prepared_calls': 1, 'prepared_returned': True, 'P3_valid': False,
+            'boundary_start': 1, 'actual_start': 1, 'actual_count': 3, 'slot': 0, 'slot_generation': 0,
+            'state_pos': 0, 'actual_state_pos': 0, 'wire': 0, 'profiler_entry_headroom': headroom}
+        trace = {'inventory': publish('benchmark/trace/inventory.json', {'rank': 0, 'sm70_profile': 'reference',
+                                                                       'actual_matrix_samples': [{'role': 'head'}]}),
+                 'selection': publish('benchmark/trace/prefill-selection.json', selection),
+                 'chrome': publish('benchmark/trace/c1-prefill-start-ge-1-round.json', {'traceEvents': []})}
+        trace['receipt'] = publish('benchmark/trace/c1-prefill-start-ge-1-round-receipt.json', {
+            'rank': 0, 'primary': None, 'post_errors': [], 'prefill_selection': selection, 'P3_valid': False,
+            'exported_trace_bytes': trace['chrome']['bytes']})
+        result = {'schema': c.BENCHMARK_RESULT_SCHEMA, 'benchmark_plan_sha256': 'a'*64,
+            'benchmark_client_sha256': 'a'*64, 'launch_exit': 0, 'client_report': report,
+            'matrix_report': matrix, 'startup_receipts': startups, 'rank_receipts': ranks,
+            'child_native_records': native, 'trace': trace, 'P3_valid': False}
+        (self.evidence/'benchmark/benchmark-model-result.json').write_text(json.dumps(result))
+        return plan, client, binding, result
+
+    def test_closed_benchmark_schema_cannot_be_teacher_or_pytest(self):
+        self.benchmark_setup()
+        self.assertIs(driver.validate_spec(self.spec), self.spec)
+        for change in ({'mode': driver.model_contract.MODE}, {'modules': ['tests/x.py']},
+                       {'schema': driver.model_contract.SCHEMA}, {'source_files': {}}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                driver.validate_spec({**self.spec, **change})
+
+    def accept_benchmark_fixture(self, fixture):
+        plan, _, binding, _ = fixture
+        return driver._accept_benchmark_result(self.evidence, self.spec, self.source, binding=binding, plan=plan)
+
+    def test_closed_benchmark_accepts_actual_eight_native_close_and_one_observed_trace(self):
+        fixture = self.benchmark_result_fixture()
+        self.assertEqual(self.accept_benchmark_fixture(fixture), fixture[3])
+        self.assertFalse((self.evidence/'teacher').exists())
+
+    def test_closed_benchmark_rejects_rebound_failed_client_cohort_close_source_and_trace(self):
+        fixture = self.benchmark_result_fixture()
+        original_result = fixture[3]
+        original_files = {p: p.read_bytes() for p in self.evidence.rglob('*') if p.is_file()}
+        mutations = [('client_report', {'complete': False}), ('client_report', {'P3_valid': True}),
+            ('client_report', {'request_count': True}), ('client_report', {'matrix_tool_sha256': '0'*64}),
+            ('matrix_report', {'unrun_cohorts': [7]}), ('matrix_report', {'instance_id': 'foreign'}),
+            ('rank_receipts', {'closed': False}), ('rank_receipts', {'runtime_sources': {}}),
+            ('rank_receipts', {'cohorts': []}), ('rank_receipts', {'headroom': {}}),
+            ('startup_receipts', {'benchmark_worker_PID': 9999}),
+            ('child_native_records', {'tag': 'teacher-closed'}),
+            ('child_native_records', {'access_precondition': {}}),
+            ('selection', {'status': 'SELECTED_UNVERIFIED'}), ('selection', {'actual_count': 0}),
+            ('selection', {'slot_generation': True}), ('receipt', {'post_errors': ['export-failed']}),
+            ('receipt', {'exported_trace_bytes': 1})]
+        import copy
+        for key, change in mutations:
+            with self.subTest(key=key, change=change):
+                for path, raw in original_files.items():
+                    path.write_bytes(raw)
+                result = copy.deepcopy(original_result)
+                row = (result['trace'][key] if key in result['trace'] else
+                       result[key][3] if isinstance(result[key], list) else result[key])
+                path = self.evidence/row['file']
+                data = json.loads(path.read_text())
+                data.update(change)
+                path.write_text(json.dumps(data))
+                row.update({k: driver.file_identity(path)[k] for k in ('bytes', 'sha256')})
+                (self.evidence/'benchmark/benchmark-model-result.json').write_text(json.dumps(result))
+                with self.assertRaises((ValueError, RuntimeError)):
+                    self.accept_benchmark_fixture(fixture)
+
+    def test_closed_benchmark_rejects_extra_capture_and_wrong_mode_result(self):
+        fixture = self.benchmark_result_fixture()
+        extra = self.evidence/'benchmark/trace/c1-warmed-decode-round-1.json'
+        extra.write_text('{}')
+        with self.assertRaisesRegex(RuntimeError, 'another capture'):
+            self.accept_benchmark_fixture(fixture)
+        extra.unlink()
+        path = self.evidence/'benchmark/benchmark-model-result.json'
+        raw = json.loads(path.read_text())
+        raw['schema'] = driver.model_contract.RESULT_SCHEMA
+        path.write_text(json.dumps(raw))
+        with self.assertRaises(ValueError):
+            self.accept_benchmark_fixture(fixture)
+
+    def benchmark_run_controls(self):
+        self.model_run_controls()
+        plan, client, _ = self.benchmark_setup()
+        calls, patches = [], contextlib.ExitStack()
+        def call(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return 0
+        patches.enter_context(mock.patch.object(driver, '_load_benchmark_plan', return_value=plan))
+        patches.enter_context(mock.patch.object(driver, '_bound_model_json', return_value=client))
+        patches.enter_context(mock.patch.object(driver.model_contract, 'benchmark_qualifier_argv', return_value=['fixed-benchmark']))
+        patches.enter_context(mock.patch.object(driver, '_accept_benchmark_result', return_value={'typed': 'benchmark'}))
+        patches.enter_context(mock.patch.object(driver, '_call_owned_model', side_effect=call))
+        self.addCleanup(patches.close)
+        return calls, client
+
+    def test_closed_benchmark_dispatches_private_operation_once_and_preserves_budget_tail(self):
+        calls, _ = self.benchmark_run_controls()
+        self.assertEqual(self.execute(), 0)
+        self.assertEqual(calls, [(['fixed-benchmark'], {'benchmark_operation': self.spec['operation']})])
+        result = json.loads((self.evidence/'owned-benchmark-operation-result.json').read_text())
+        self.assertEqual(result['schema'], driver.model_contract.BENCHMARK_HOST_RESULT_SCHEMA)
+        self.assertTrue(result['content_binding_complete'])
+        self.assertFalse((self.evidence/'owned-teacher-operation-result.json').exists())
+
+    def test_closed_benchmark_phase_elapsed_time_cannot_spend_socket_tail(self):
+        calls, client = self.benchmark_run_controls()
+        client.update(whole_timeout_s=3900, socket_timeout_s=3000)
+        clock = [1000.0]
+        def publish(path, value):
+            if Path(path).name == 'phase.json' and value['phase'] == 'owned-benchmark-model':
+                clock[0] += 811
+            self.publish(path, value)
+        with mock.patch.object(driver.time, 'monotonic', side_effect=lambda: clock[0]):
+            with self.assertRaisesRegex(TimeoutError, 'whole deadline and socket tail'):
+                self.execute(publisher=publish)
+        self.assertEqual(calls, [])
+        result = json.loads((self.evidence/'owned-benchmark-operation-result.json').read_text())
+        self.assertFalse(result['content_binding_complete'])
+
+    def test_closed_benchmark_failed_launch_and_publisher_keep_primary_and_terminal(self):
+        self.benchmark_run_controls()
+        primary = ValueError('authentic closed benchmark failure')
+        def publish(path, value):
+            if Path(path).name == 'owned-benchmark-operation-result.json':
+                raise OSError('benchmark result publisher failed')
+            self.publish(path, value)
+        with mock.patch.object(driver, '_call_owned_model', side_effect=primary):
+            try:
+                self.execute(publisher=publish)
+            except BaseException as caught:
+                self.assertIs(caught, primary)
+                self.assertIsNotNone(caught.__cause__)
+            else:
+                self.fail('closed benchmark failure was replaced or hidden')
+        self.assertEqual(json.loads((self.evidence/'phase.json').read_text())['phase'], 'owned-benchmark-terminal')
+        for name in (driver.model_contract.CHILD_ENV, driver.model_contract.DRIVER_ENV,
+                     driver.model_contract.DRIVER_SHA_ENV, driver.model_contract.PREFIX_ENV):
+            self.assertNotIn(name, os.environ)
+
+    def test_closed_benchmark_loader_origin_and_real_prompt_hash_are_required(self):
+        plan, _, _ = self.benchmark_setup()
+        path = self.root/'plan.json'
+        path.write_text(json.dumps(plan))
+        code = """
+import json,sys,types
+from pathlib import Path
+from tools import bench_concurrent, v100_native_contract_driver as driver
+path,source=Path(sys.argv[1]),Path(sys.argv[2])
+plan=json.loads(path.read_text())
+fake=types.SimpleNamespace(__file__=str(source/'tools/bench_concurrent.py'),load_matrix=bench_concurrent.load_matrix)
+sys.modules['bench_concurrent']=fake
+operation={'benchmark_plan':{'path':str(path)}}
+assert driver._load_benchmark_plan(operation,source)==plan
+plan['cohorts'][0]['requests'][0]['prompt_sha256']='0'*64
+path.write_text(json.dumps(plan))
+try:driver._load_benchmark_plan(operation,source)
+except ValueError as error:assert 'hash mismatch' in str(error)
+else:raise AssertionError('invalid full prompt hash accepted')
+fake.__file__=str(path)
+try:driver._load_benchmark_plan(operation,source)
+except ValueError as error:assert 'origin' in str(error)
+else:raise AssertionError('foreign loader accepted')
+"""
+        env = {**os.environ, 'PYTHONPATH': str(Path(driver.__file__).resolve().parents[1]/'src')}
+        result = subprocess.run([sys.executable, '-c', code, str(path), str(self.source)],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()

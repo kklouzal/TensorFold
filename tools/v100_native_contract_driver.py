@@ -40,7 +40,7 @@ CONTEXT_FATAL = ('illegal memory access', 'device-side assert triggered', 'unspe
 OUTPUTS = ('installed-SDK-source-origin.json', 'collection-identities.json', 'first-failure.json',
            'named-suite.xml', 'sampled-allocation-process-cgroup.json', 'actual-native-ELF.json',
            'source-after.json', 'named-suite-result.json', 'phase.json', 'child-native-ELF',
-           'verification-launcher-preflight.json', 'owned-teacher-operation-result.json', 'model-content-binding.json')
+           'verification-launcher-preflight.json', 'owned-teacher-operation-result.json', 'owned-benchmark-operation-result.json', 'model-content-binding.json')
 
 
 def _sha(value, length=64):
@@ -77,13 +77,14 @@ def normal_uuid(value):
 def validate_spec(spec):
     fields = ('schema', 'mode', 'image_id', 'source_commit', 'app_root', 'expected_app', 'sdk_manifest',
               'fd', 'torch', 'UUIDs', 'SM', 'modules', 'test_files', 'diagnostics', 'required_native_elf_prefixes')
-    model = type(spec) is dict and spec.get('schema') == model_contract.SCHEMA
+    benchmark = type(spec) is dict and spec.get('schema') == model_contract.BENCHMARK_SCHEMA
+    model = type(spec) is dict and spec.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA)
     if model:
         fields = tuple(key for key in fields if key not in ('modules', 'test_files')) + ('operation', 'source_files')
     if (type(spec) is not dict or set(spec) not in (set(fields), set(fields) | {'verification_launcher'})
-            or spec['schema'] != (model_contract.SCHEMA if model else SCHEMA)):
+            or spec['schema'] != (model_contract.BENCHMARK_SCHEMA if benchmark else model_contract.SCHEMA if model else SCHEMA)):
         raise ValueError('unsupported or incomplete native-contract spec schema')
-    if spec['mode'] not in ((model_contract.MODE,) if model else ('cpu', 'cuda')):
+    if spec['mode'] not in ((model_contract.BENCHMARK_MODE,) if benchmark else (model_contract.MODE,) if model else ('cpu', 'cuda')):
         raise ValueError('an explicit CPU or CUDA qualification route is required')
     if (not _sha(spec['source_commit'], 40) or type(spec['image_id']) is not str
             or not spec['image_id'].startswith('sha256:') or not _sha(spec['image_id'][7:])
@@ -137,8 +138,8 @@ def validate_spec(spec):
     if model:
         if len(spec['UUIDs']) != 8 or 'verification_launcher' not in spec or prefixes != model_contract.REQUIRED_PREFIXES:
             raise ValueError('first model operation requires eight ranks and owned capability/native observer contract')
-        model_contract.validate_operation(spec['operation'])
-        model_contract.validate_sources(spec['source_files'])
+        (model_contract.validate_benchmark_operation if benchmark else model_contract.validate_operation)(spec['operation'])
+        (model_contract.validate_benchmark_sources if benchmark else model_contract.validate_sources)(spec['source_files'])
     return spec
 
 
@@ -843,7 +844,7 @@ def _junit(path, collected):
 def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=_helpers):
     """Execute once. Tests may inject dependencies; production has no bypass CLI."""
     validate_spec(spec)
-    if spec['mode'] == model_contract.MODE:
+    if spec['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE):
         return _run_model(spec, source, evidence, runtime_loader=None if runtime_loader is _load_runtime else runtime_loader,
                           helpers_loader=helpers_loader)
     if os.environ.get(CHILD_EVIDENCE_ENV):
@@ -1085,12 +1086,14 @@ def _prepare_model_frontend(operation):
     return prepare(operation['model_entrypoint'])
 
 
-def _call_owned_model(argv):
+def _call_owned_model(argv, *, benchmark_operation=None):
     # The source root is already bound and the installed app remains separate.
     if __package__:
         from . import v100_owned_qualification
     else:
         import v100_owned_qualification
+    if benchmark_operation is not None:
+        return v100_owned_qualification.main(argv, _benchmark_operation=benchmark_operation)
     return v100_owned_qualification.main(argv)
 
 
@@ -1100,6 +1103,13 @@ def _prepare_replay_plan(operation):
     else:
         import v100_rotorquant_quality
     return v100_rotorquant_quality.owned_teacher_plan(operation['teacher_plan']['path'])
+
+
+def _load_benchmark_plan(operation, source):
+    import bench_concurrent
+    if Path(bench_concurrent.__file__).resolve(strict=True) != source / 'tools/bench_concurrent.py':
+        raise ValueError('benchmark matrix loader origin differs from reviewed source')
+    return bench_concurrent.load_matrix(operation['benchmark_plan']['path'])
 
 
 def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
@@ -1144,6 +1154,14 @@ def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
             or client.get('token_ids') != authority.get('teacher_ids')
             or not client.get('token_ids') or client.get('completion_tokens') != len(client['token_ids'])):
         raise RuntimeError('one cold teacher client completion does not bind the original authority')
+    rank0 = _accept_model_native_records(root, result, spec, source, role='teacher')
+    if client.get('server_instance_id') != rank0.get('teacher_server_instance_id') or not client.get('server_instance_id'):
+        raise RuntimeError('teacher HTTP response does not bind the original rank0 server instance')
+    return result
+
+
+def _accept_model_native_records(root, result, spec, source, *, role):
+    contract = model_contract
     pids = set()
     observer = spec['source_files']['tools/v100_native_contract_driver.py']
     for rank, item in enumerate(result['child_native_records']):
@@ -1153,12 +1171,13 @@ def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
         access = record.get('access_precondition')
         if (record.get('schema') != 'tensorfold.native-elf-observation-v3'
                 or record.get('identity_method') != 'kernel-vma-backed-fd-v1'
-                or record.get('rank') != rank or record.get('tag') != 'teacher-closed'
+                or record.get('rank') != rank or record.get('tag') != role + '-closed'
                 or type(record.get('PID')) is not int or record['PID'] <= 1
+                or item['file'] != f"child-native/{role}-closed-rank-{rank}-pid-{record['PID']}.json"
                 or type(startup.get('rank')) is not int or startup.get('rank') != rank or startup.get('world') != 8
-                or type(startup.get('teacher_worker_PID')) is not int
-                or startup.get('teacher_worker_PID') != record['PID']
-                or startup.get('teacher_observer') != {'path': str(source / 'tools/v100_native_contract_driver.py'),
+                or type(startup.get(role + '_worker_PID')) is not int
+                or startup.get(role + '_worker_PID') != record['PID']
+                or startup.get(role + '_observer') != {'path': str(source / 'tools/v100_native_contract_driver.py'),
                     **observer}
                 or record.get('operation_limits') != contract.MODEL_OBSERVER_LIMITS
                 or record.get('missing_required_prefixes') != [] or not record.get('mapped_elfs')
@@ -1168,11 +1187,144 @@ def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
                 or access != {'uids': [1000]*4, 'gids': [1000]*4, 'NoNewPrivs': '0',
                               'caps': {key: '0000010000000000' for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')}}):
             raise RuntimeError('actual child native origin/rank/access/source evidence differs')
-    rank0 = _bound_model_json(root / result['startup_receipts'][0]['file'])
-    if client.get('server_instance_id') != rank0.get('teacher_server_instance_id') or not client.get('server_instance_id'):
-        raise RuntimeError('teacher HTTP response does not bind the original rank0 server instance')
     if len(pids) != 8:
-        raise RuntimeError('teacher operation requires eight distinct actual worker processes')
+        raise RuntimeError('model operation requires eight distinct actual worker processes')
+    return _bound_model_json(root / result['startup_receipts'][0]['file'])
+
+
+def _benchmark_headroom(value, required):
+    return (type(value) is dict and set(value) == {'free_bytes', 'total_bytes', 'required_free_bytes', 'scope'}
+            and all(type(value[key]) is int for key in ('free_bytes', 'total_bytes', 'required_free_bytes'))
+            and value['required_free_bytes'] == required <= value['free_bytes'] <= value['total_bytes']
+            and type(value['scope']) is str and bool(value['scope']))
+
+
+def _accept_benchmark_result(root, spec, source, *, binding, plan):
+    contract, operation = model_contract, spec['operation']
+    result = contract.validate_benchmark_model_result(_bound_model_json(root / 'benchmark/benchmark-model-result.json'))
+    if (result['benchmark_plan_sha256'] != operation['benchmark_plan']['sha256']
+            or result['benchmark_client_sha256'] != operation['benchmark_client']['sha256']):
+        raise RuntimeError('benchmark result input binding differs')
+    if sum(row['bytes'] for row in result['trace'].values()) > operation['trace']['disk_bytes']:
+        raise RuntimeError('benchmark declared trace output exceeds grant')
+    files = [result['client_report'], result['matrix_report'], *result['rank_receipts'],
+             *result['startup_receipts'], *result['child_native_records'], *result['trace'].values()]
+    for item in files:
+        path = root / item['file']
+        if not path.resolve(strict=True).is_relative_to(root.resolve(strict=True)):
+            raise ValueError('benchmark result reference escapes owned output')
+        if path.lstat().st_size != item['bytes']:
+            raise RuntimeError('benchmark result referenced file extent differs')
+        actual = file_identity(path)
+        if any(actual[key] != item[key] for key in ('bytes', 'sha256')):
+            raise RuntimeError('benchmark result referenced file differs')
+    rank0 = _accept_model_native_records(root, result, spec, source, role='benchmark')
+    client = _bound_model_json(root / result['client_report']['file'])
+    matrix = _bound_model_json(root / result['matrix_report']['file'])
+    instance = rank0.get('benchmark_server_instance_id')
+    if (client.get('schema') != 'tensorfold.owned-benchmark-client-report-v1'
+            or any(client.get(key) is not True for key in ('complete', 'client_protocol_passed', 'matrix_passed', 'observed_trace'))
+            or client.get('benchmark_plan_sha256') != result['benchmark_plan_sha256']
+            or client.get('benchmark_client_sha256') != result['benchmark_client_sha256']
+            or client.get('run_identity') != plan['run_identity']
+            or type(instance) is not str or not instance or client.get('server_instance_id') != instance
+            or type(client.get('request_count')) is not int or client['request_count'] != binding['request_count']
+            or client.get('matrix_tool_sha256') != spec['source_files']['tools/bench_concurrent.py']['sha256']
+            or client.get('quality_acceptance') is not False or client.get('P3_valid') is not False):
+        raise RuntimeError('benchmark client protocol/identity/diagnostic scope differs')
+    if (matrix.get('schema') != 'tensorfold.phase-matrix-result-v1' or matrix.get('passed') is not True
+            or matrix.get('unrun_cohorts') != [] or matrix.get('plan') != plan
+            or matrix.get('instance_id') != instance or type(matrix.get('cohorts')) is not list
+            or len(matrix['cohorts']) != len(plan['cohorts'])):
+        raise RuntimeError('benchmark matrix completion/plan/instance differs')
+    for actual, expected in zip(matrix['cohorts'], plan['cohorts'], strict=True):
+        if (actual.get('cohort') != expected['id'] or actual.get('passed') is not True
+                or actual.get('status') != 'measured' or actual.get('warmup') is not expected['warmup']):
+            raise RuntimeError('benchmark matrix cohort failed or differs from the finite plan')
+    for rank in range(8):
+        startup = _bound_model_json(root / result['startup_receipts'][rank]['file'])
+        closed = _bound_model_json(root / result['rank_receipts'][rank]['file'])
+        resources, headroom = startup.get('benchmark_resources'), startup.get('benchmark_headroom')
+        if (closed.get('schema') != 'tensorfold.owned-benchmark-rank-result-v1'
+                or type(closed.get('rank')) is not int or closed['rank'] != rank
+                or type(closed.get('world')) is not int or closed['world'] != 8
+                or closed.get('closed') is not True or closed.get('finished') is not True or closed.get('failed') is not False
+                or closed.get('benchmark_plan_sha256') != result['benchmark_plan_sha256']
+                or closed.get('benchmark_client_sha256') != result['benchmark_client_sha256']
+                or closed.get('run_identity') != plan['run_identity']
+                or type(startup.get('benchmark_server_instance_id')) is not str or not startup['benchmark_server_instance_id']
+                or closed.get('server_instance_id') != startup['benchmark_server_instance_id']
+                or type(startup.get('benchmark_profile')) is not dict
+                or closed.get('actual_owned_profile') != startup['benchmark_profile']
+                or type(resources) is not dict or closed.get('resources') != resources
+                or resources.get('trace_grants') != operation['trace']
+                or type(resources.get('global_host_obligation_bytes')) is not int
+                or resources['global_host_obligation_bytes'] < operation['trace']['host_obligation_bytes']
+                or type(headroom) is not dict or closed.get('headroom') != headroom
+                or not _benchmark_headroom(headroom, operation['trace']['device_headroom_bytes'])
+                or startup.get('tool_sha256') != spec['source_files']['tools/v100_owned_qualification.py']['sha256']
+                or startup.get('runtime_cli_sha256') != spec['expected_app']['cli.py']['sha256']
+                or closed.get('qualification') is not False or closed.get('P3_valid') is not False):
+            raise RuntimeError('benchmark actual rank close/profile/source/resource admission differs')
+        semantics = startup['benchmark_profile'].get('benchmark_semantics')
+        windows = startup.get('benchmark_windows')
+        if (type(semantics) is not dict or semantics.get('method') != 'none'
+                or type(semantics.get('context')) is not int or semantics['context'] != 262144
+                or type(semantics.get('resident_slots')) is not int or semantics['resident_slots'] != 24
+                or semantics.get('full_resident') is not True
+                or type(semantics.get('state_kv_identity')) is not list or not semantics['state_kv_identity']
+                or any(type(semantics.get(key)) is not int for key in
+                       ('capacity_min', 'capacity_max', 'limit_min', 'limit_max', 'logical_min', 'logical_max',
+                        'target_rows', 'prefill_rows'))
+                or semantics['logical_min'] != 262144 or semantics['logical_max'] != 262144
+                or not semantics['capacity_min'] == semantics['capacity_max'] >= 262144
+                or not semantics['limit_min'] == semantics['limit_max'] >= 262144
+                or semantics['target_rows'] <= 0 or semantics['prefill_rows'] <= 0
+                or any(semantics.get(key) != {'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'}
+                       for key in ('target_family', 'prefill_family'))
+                or windows != {**{key: semantics[key] for key in
+                    ('full_resident', 'capacity_min', 'capacity_max', 'limit_min', 'limit_max', 'logical_min', 'logical_max')},
+                    'slots': 24}):
+            raise RuntimeError('benchmark actual all-State full-window/reference semantics differ')
+        expected_sources = {name: spec['expected_app'][path]['sha256'] for name, path in (
+            ('engine', 'families/qwen4_exp/cuda/engine.py'), ('multi', 'families/qwen4_exp/cuda/multi.py'),
+            ('decode', 'families/qwen4_exp/cuda/decode.py'), ('sampling', 'cuda/sampling.py'))}
+        expected_sources['observer_tool'] = spec['source_files']['tools/v100_owned_qualification.py']['sha256']
+        if closed.get('runtime_sources') != expected_sources:
+            raise RuntimeError('benchmark closed worker runtime sources differ from the installed App')
+        expected_cohorts = [{'id': row['id'], 'prompt_hashes': sorted(r['prompt_sha256'] for r in row['requests']),
+                             'completed': 1, 'level': 1} for row in plan['cohorts']]
+        if closed.get('cohorts') != expected_cohorts:
+            raise RuntimeError('benchmark rank did not finish every actual finite cohort')
+    trace = result['trace']
+    selection = _bound_model_json(root / trace['selection']['file'])
+    receipt = _bound_model_json(root / trace['receipt']['file'])
+    inventory = _bound_model_json(root / trace['inventory']['file'])
+    if ('reason' not in selection or 'primary' not in receipt
+            or not _benchmark_headroom(selection.get('profiler_entry_headroom'), operation['trace']['device_headroom_bytes'])
+            or selection.get('status') != 'OBSERVED' or selection.get('reason') is not None
+            or selection.get('run_identity') != plan['run_identity']
+            or any(selection.get(key) != binding[key] for key in ('cohort_id', 'prompt_sha256', 'input_tokens'))
+            or selection.get('requested_start') != binding['prefill_start']
+            or type(selection.get('prepared_calls')) is not int or selection['prepared_calls'] != 1
+            or selection.get('prepared_returned') is not True or selection.get('P3_valid') is not False
+            or any(type(selection.get(key)) is not int for key in
+                   ('boundary_start', 'actual_start', 'actual_count', 'slot', 'slot_generation', 'state_pos', 'actual_state_pos', 'wire'))
+            or not binding['prefill_start'] <= selection['actual_start'] == selection['boundary_start'] < binding['input_tokens']
+            or not 0 < selection['actual_count'] <= binding['input_tokens'] - selection['actual_start']
+            or not 0 <= selection['slot'] < 24 or selection['slot_generation'] < 0
+            or selection['state_pos'] != selection['actual_state_pos']
+            or receipt.get('primary') is not None or receipt.get('post_errors') != []
+            or receipt.get('prefill_selection') != selection or receipt.get('P3_valid') is not False
+            or type(receipt.get('rank')) is not int or receipt['rank'] != 0
+            or type(receipt.get('exported_trace_bytes')) is not int
+            or receipt['exported_trace_bytes'] != trace['chrome']['bytes']
+            or inventory.get('rank') != 0 or inventory.get('sm70_profile') != 'reference'
+            or type(inventory.get('actual_matrix_samples')) is not list or not inventory['actual_matrix_samples']):
+        raise RuntimeError('benchmark selected prefill was not one actual successful OBSERVED trace')
+    if (sum(row['bytes'] for row in trace.values()) > operation['trace']['disk_bytes']
+            or {p.name for p in (root / 'benchmark/trace').iterdir()} != {Path(row['file']).name for row in trace.values()}):
+        raise RuntimeError('benchmark trace output exceeds grant or contains another capture')
     return result
 
 
@@ -1188,6 +1340,9 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
     errors = _FailureSlots(12)
     source_after_match, content_complete = False, False
     source_files, operation = spec['source_files'], spec['operation']
+    benchmark = spec['mode'] == model_contract.BENCHMARK_MODE
+    role = 'benchmark' if benchmark else 'teacher'
+    result_schema = model_contract.BENCHMARK_HOST_RESULT_SCHEMA if benchmark else model_contract.HOST_RESULT_SCHEMA
     old_path = list(sys.path)
     env_keys = (model_contract.CHILD_ENV, model_contract.DRIVER_ENV, model_contract.DRIVER_SHA_ENV,
                 model_contract.PREFIX_ENV)
@@ -1223,30 +1378,35 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
             'CUDA': runtime.torch.version.cuda, 'FD_SHA': spec['fd']['sha256'], 'FD_C': spec['fd']['source_sha256'],
             'module_origins': origins, 'parent_cuda': before_cuda, 'devices_visible': None,
             'scope': 'Parent CPU/runtime/provider prequalification; actual GPU proof belongs to eight children.'})
-        assets = model_contract.operation_assets(operation)
+        assets = (model_contract.benchmark_operation_assets if benchmark else model_contract.operation_assets)(operation)
         output.phase('model-content-binding')
         with _held_model_assets(assets, deadline, content):
-            plan = _bound_model_json(operation['teacher_plan']['path'])
-            client = model_contract.validate_teacher_client(_bound_model_json(operation['teacher_client']['path']))
-            verified = reference = None
-            if plan.get('mode') == 'replay' and 'reference' in operation:
-                verified = _prepare_replay_plan(operation)
-                reference = _bound_model_json(operation['reference']['authority']['path'])
-                proof = operation['reference']
-                capture_host = _bound_model_json(proof['host_result']['path'])
-                capture_inner = model_contract.validate_completed_teacher_host(capture_host,
-                    authority_sha256=proof['authority']['sha256'], authority_bytes=proof['authority']['bytes'],
-                    image_id=spec['image_id'])
-                model_contract.validate_teacher_completion(_bound_model_json(proof['completion']['path']),
-                    host_result_sha256=proof['host_result']['sha256'], authority_sha256=proof['authority']['sha256'])
-                if 'reference' in capture_inner['operation']:
-                    raise ValueError('matched replay requires an original capture, not a replay chain')
-                for key in ('model_assets', 'model_entrypoint', 'frontend_assets', 'frontend_root', 'execution_manifest'):
-                    if capture_inner['operation'][key] != operation[key]:
-                        raise ValueError('matched reference replay model/frontend inputs differ from the capture')
+            if benchmark:
+                plan = _load_benchmark_plan(operation, source)
+                client = model_contract.validate_benchmark_client(_bound_model_json(operation['benchmark_client']['path']))
+                benchmark_binding = model_contract.validate_benchmark_operation_plan(operation, plan, client)
+            else:
+                plan = _bound_model_json(operation['teacher_plan']['path'])
+                client = model_contract.validate_teacher_client(_bound_model_json(operation['teacher_client']['path']))
+                verified = reference = None
+                if plan.get('mode') == 'replay' and 'reference' in operation:
+                    verified = _prepare_replay_plan(operation)
+                    reference = _bound_model_json(operation['reference']['authority']['path'])
+                    proof = operation['reference']
+                    capture_host = _bound_model_json(proof['host_result']['path'])
+                    capture_inner = model_contract.validate_completed_teacher_host(capture_host,
+                        authority_sha256=proof['authority']['sha256'], authority_bytes=proof['authority']['bytes'],
+                        image_id=spec['image_id'])
+                    model_contract.validate_teacher_completion(_bound_model_json(proof['completion']['path']),
+                        host_result_sha256=proof['host_result']['sha256'], authority_sha256=proof['authority']['sha256'])
+                    if 'reference' in capture_inner['operation']:
+                        raise ValueError('matched replay requires an original capture, not a replay chain')
+                    for key in ('model_assets', 'model_entrypoint', 'frontend_assets', 'frontend_root', 'execution_manifest'):
+                        if capture_inner['operation'][key] != operation[key]:
+                            raise ValueError('matched reference replay model/frontend inputs differ from the capture')
 
-            teacher_binding = model_contract.validate_teacher_operation_plan(
-                operation, plan, client, prepared=verified, reference=reference)
+                teacher_binding = model_contract.validate_teacher_operation_plan(
+                    operation, plan, client, prepared=verified, reference=reference)
             if os.environ.get('TF_GGUF_ASSETS_DIR') != '/frontend':
                 raise ValueError('model operation requires separate readonly prepared frontend')
             prepared = _prepare_model_frontend(operation)
@@ -1259,20 +1419,22 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
             os.environ[model_contract.DRIVER_ENV] = str(source / 'tools/v100_native_contract_driver.py')
             os.environ[model_contract.DRIVER_SHA_ENV] = source_files['tools/v100_native_contract_driver.py']['sha256']
             os.environ[model_contract.PREFIX_ENV] = json.dumps(spec['required_native_elf_prefixes'])
-            argv = model_contract.qualifier_argv(operation, client, spec['UUIDs'], str(evidence / 'teacher'))
-            output.phase('owned-teacher-model')
+            argv = (model_contract.benchmark_qualifier_argv if benchmark else model_contract.qualifier_argv)(
+                operation, client, spec['UUIDs'], str(evidence / role))
+            output.phase('owned-' + role + '-model')
             # One in-flight body read may outlive cooperative cancellation by
             # its acquisition-time socket timeout. Fund that tail after argv
             # preparation and synchronous phase publication, just before entry.
             # Outer containment still owns uncertain acquisition.
             if time.monotonic() + client['whole_timeout_s'] + client['socket_timeout_s'] > deadline:
                 raise TimeoutError('remaining outer model budget cannot fund client whole deadline and socket tail')
-            code = _call_owned_model(argv)
+            code = (_call_owned_model(argv, benchmark_operation=operation) if benchmark else _call_owned_model(argv))
             if time.monotonic() > deadline:
                 raise TimeoutError('owned teacher operation exceeded total declared work deadline')
             if type(code) is not int or code != 0:
                 raise RuntimeError('owned teacher launcher/model operation failed')
-            model_result = _accept_teacher_result(evidence, spec, source, teacher_binding=teacher_binding)
+            model_result = (_accept_benchmark_result(evidence, spec, source, binding=benchmark_binding, plan=plan) if benchmark else
+                            _accept_teacher_result(evidence, spec, source, teacher_binding=teacher_binding))
             _parent_cuda_flag(runtime)
         content_complete = True
     except BaseException as error:
@@ -1309,19 +1471,20 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
         except BaseException as error:
             errors.values[9] = error
         try:
-            output.save('owned-teacher-operation-result.json', {
-                'schema': model_contract.HOST_RESULT_SCHEMA, 'mode': spec['mode'],
+            output.save('owned-' + role + '-operation-result.json', {
+                'schema': result_schema, 'mode': spec['mode'],
                 'source_commit': spec['source_commit'], 'image_id_declared': spec['image_id'],
                 'operation': operation, 'source_after_match': source_after_match, 'content_binding_complete': content_complete,
                 'content_binding': binding_record,
                 'parent_cuda_uninitialized': runtime is not None and vars(runtime.torch.cuda).get('_initialized') is False,
                 'model_result': model_result, 'primary_error': None if primary is None else _error('model', primary),
                 'post_errors': [_error('post-check', error) for error in errors],
-                'scope': 'One cold teacher diagnostic. Full service/quality/performance qualification is not implied.'})
+                'scope': ('One closed benchmark diagnostic. Full service/quality/performance qualification is not implied.' if benchmark else
+                          'One cold teacher diagnostic. Full service/quality/performance qualification is not implied.')})
         except BaseException as error:
             errors.values[10] = error
         try:
-            output.phase('owned-teacher-terminal')
+            output.phase('owned-' + role + '-terminal')
         except BaseException as error:
             errors.values[11] = error
     raise_failures(primary, errors)

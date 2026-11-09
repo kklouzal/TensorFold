@@ -1035,3 +1035,22 @@ comparison matched all four vectors bit-for-bit, with all 132 current x86
 controls passing. See the [actual replay receipt](../../docs/benchmarking.md#actual-matched-reference-replay).
 No candidate family, broader quality or performance gate is selected by this
 bounded control.
+
+
+### Closed benchmark-diagnostic workflow
+
+The sibling closed benchmark schema/mode reuses the owned model Host/driver
+admission and installed-source/SDK checks. It binds a canonical matrix plan,
+finite client bounds, explicit trace grants and fixed qualifier argv, then uses
+the existing matrix client through the owned Task/supervisor lifecycle. It
+requires actual eight-rank startup, resource admission, closed native origins
+and typed client/trace/result evidence. Teacher-mode trace exclusions and suite
+behavior remain unchanged.
+
+The integrated implementation passed all 571 pinned x86 CPU controls across
+five isolated suites, with zero skips and clean diagnostics/retirement. The
+CPU-generated plan remains DATA only; neither result is model/profiler or
+physical-resource qualification. See [the closed diagnostic contract](../../docs/benchmarking.md#closed-benchmark-diagnostic-operation)
+for the initial region, cooperative cancellation, exact byte-unit conversion,
+headroom-versus-reservation distinction and outstanding activation gates. No
+new runtime wheel or application image is inferred from qualification-tool edits.

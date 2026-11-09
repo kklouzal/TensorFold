@@ -1,4 +1,4 @@
-"""Closed DATA contract for one cold owned-teacher model operation.
+"""Closed DATA contracts for owned teacher and finite benchmark operations.
 
 Shared by the host, inert driver and canonical qualifier. This module performs
 no IO/import of the runtime and executes no operation. It is not an argv runner.
@@ -8,12 +8,18 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 import re
 import math
+import sys
 import urllib.parse
 
 SCHEMA = 'tensorfold.v100-owned-teacher-operation-v1'
 MODE = 'owned-teacher-model-v1'
 RESULT_SCHEMA = 'tensorfold.owned-teacher-model-result-v1'
 HOST_RESULT_SCHEMA = 'tensorfold.owned-teacher-operation-result-v1'
+BENCHMARK_SCHEMA = 'tensorfold.v100-owned-benchmark-operation-v1'
+BENCHMARK_MODE = 'owned-benchmark-model-v1'
+BENCHMARK_CLIENT_SCHEMA = 'tensorfold.owned-benchmark-client-v1'
+BENCHMARK_RESULT_SCHEMA = 'tensorfold.owned-benchmark-model-result-v1'
+BENCHMARK_HOST_RESULT_SCHEMA = 'tensorfold.owned-benchmark-operation-result-v1'
 CHILD_ENV = 'TENSORFOLD_NATIVE_CONTRACT_CHILD_EVIDENCE'
 DRIVER_ENV = 'TF_NATIVE_CONTRACT_DRIVER'
 DRIVER_SHA_ENV = 'TF_NATIVE_CONTRACT_DRIVER_SHA256'
@@ -62,6 +68,13 @@ def validate_operation(value):
     for name in ('teacher_plan', 'teacher_client'):
         identity(value[name])
         require(PurePosixPath(value[name]['path']).parent == PurePosixPath('/operator'), 'teacher DATA must be flat operator input')
+    _validate_model_assets(value)
+    if 'reference' in value:
+        validate_reference(value['reference'])
+    return value
+
+
+def _validate_model_assets(value):
     require(value['execution_manifest'] is None, 'first reference operation has no execution-profile manifest')
     model = value['model_assets']
     require(type(model) is list and len(model) == 2, 'exact two target shards required; no drafter/media')
@@ -86,9 +99,6 @@ def validate_operation(value):
         require(PurePosixPath(item['path']).parent == PurePosixPath(value['frontend_root']), 'frontend asset outside prepared directory')
     require(sum(item['bytes'] for item in assets) <= 64 << 20, 'prepared frontend closure exceeds first operation limit')
     require({PurePosixPath(item['path']).name for item in assets} == FRONTEND_NAMES, 'frontend filenames differ')
-    if 'reference' in value:
-        validate_reference(value['reference'])
-    return value
 
 
 def validate_reference(value):
@@ -164,7 +174,11 @@ def validate_teacher_operation_plan(operation, plan, client, *, prepared=None, r
 
 
 def validate_sources(value):
-    require(type(value) is dict and REQUIRED_TOOLS <= value.keys() and len(value) <= 128, 'bounded canonical operator closure required')
+    return _validate_sources(value, REQUIRED_TOOLS)
+
+
+def _validate_sources(value, required):
+    require(type(value) is dict and required <= value.keys() and len(value) <= 128, 'bounded canonical operator closure required')
     for name, item in value.items():
         require(relative(name) and name.startswith('tools/') and name.endswith('.py')
                 and type(item) is dict and set(item) == {'bytes', 'sha256'}
@@ -175,11 +189,16 @@ def validate_sources(value):
 def qualifier_argv(operation, client, uuids, output):
     validate_operation(operation)
     validate_teacher_client(client)
+    return _qualifier_argv(operation, client, uuids, output,
+        ['--teacher-plan', operation['teacher_plan']['path'], '--teacher-client', operation['teacher_client']['path']])
+
+
+def _qualifier_argv(operation, client, uuids, output, inputs):
     require(type(uuids) is list and len(uuids) == 8 and len(set(uuids)) == 8
             and all(type(value) is str and re.fullmatch(r'GPU-[0-9a-f-]{36}', value) for value in uuids), 'exact eight GPU UUIDs required')
     require(absolute(output), 'absolute fresh teacher output required')
     return ['--gpus', ','.join(uuids), '--master-port', '29551', '--out', output,
-            '--teacher-plan', operation['teacher_plan']['path'], '--teacher-client', operation['teacher_client']['path'],
+            *inputs,
             '--', operation['model_entrypoint'], '--backend', 'cuda', '--context', '262144', '--parallel', '24',
             '--kv-full-windows', '24', '--kv-dtype', 'int8', '--indexer-history', 'gpu',
             '--expert-tensor-parallel-size', '4', '--draft-method', 'none', '--no-graphs', '--no-prefill-fp8',
@@ -268,6 +287,12 @@ def validate_teacher_client(value):
             and value['schema'] == 'tensorfold.owned-teacher-client-v1', 'closed teacher client DATA required')
     require(sha(value['teacher_plan_sha256']) and type(value['model']) is str
             and 0 < len(value['model']) <= 256 and '\0' not in value['model'], 'teacher plan and served model identity required')
+    _validate_client_service(value)
+    require(type(value['response_bytes']) is int and value['response_bytes'] == 1048576, 'fixed bounded client response required')
+    return value
+
+
+def _validate_client_service(value):
     require(type(value['base']) is str, 'literal loopback HTTP base required')
     parsed = urllib.parse.urlsplit(value['base'])
     require(parsed.scheme == 'http' and parsed.hostname == '127.0.0.1' and parsed.username is None
@@ -284,8 +309,6 @@ def validate_teacher_client(value):
     require(value['readiness_timeout_s'] <= 3600
             and value['whole_timeout_s'] <= 7500 and value['readiness_timeout_s'] <= value['whole_timeout_s']
             and value['socket_timeout_s'] <= value['whole_timeout_s'], 'teacher client deadline exceeds operation envelope')
-    require(type(value['response_bytes']) is int and value['response_bytes'] == 1048576, 'fixed bounded client response required')
-    return value
 
 
 def child_observer_resources():
@@ -306,7 +329,35 @@ def validate_host_operation(host, inner):
     """Bind only the declared first-model envelope; old suite policy is separate."""
     validate_operation(inner['operation'])
     validate_sources(inner['source_files'])
-    require(inner['mode'] == MODE and inner['schema'] == SCHEMA and len(host['uuids']) == 8
+    _validate_model_host(host, inner, schema=SCHEMA, mode=MODE)
+    mounts = host['mounts']
+    if 'reference' in inner['operation']:
+        reference = inner['operation']['reference']
+        owners = [m for m in mounts if m['target'] == reference['root']]
+        require(len(owners) == 1 and owners[0]['read_only'] is True, 'separate readonly capture reference bind required')
+        source = PurePosixPath(owners[0]['source'])
+        for mount in mounts:
+            if not mount['read_only']:
+                writable = PurePosixPath(mount['source'])
+                require(not source.is_relative_to(writable) and not writable.is_relative_to(source),
+                        'capture reference cannot have a writable source alias')
+        for item in operation_assets(inner['operation']):
+            if item['path'].startswith('/reference/'):
+                covered = [m for m in mounts if PurePosixPath(item['path']).is_relative_to(PurePosixPath(m['target']))]
+                require(len(covered) == 1 and covered[0] is owners[0], 'every consumed reference file must share the exact RO bind')
+    _validate_reference_environment(host)
+    return inner
+
+
+def _validate_reference_environment(host):
+    for key in ('TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL', 'TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS',
+                'TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX', 'TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN'):
+        require(host['environment'].get(key) in (None, 'inherit'), 'first teacher operation must inherit default selectors')
+    require(host['environment'].get('TENSORFOLD_SM70_PROFILE', 'reference') == 'reference', 'first teacher profile must remain reference')
+
+
+def _validate_model_host(host, inner, *, schema, mode):
+    require(inner['mode'] == mode and inner['schema'] == schema and len(host['uuids']) == 8
             and inner['UUIDs'] == host['uuids'] and inner['SM'] == [7, 0]
             and inner['image_id'] == host['image_id'] and 'verification_launcher' in host,
             'model host/image/eight-device/capability contract differs')
@@ -322,40 +373,192 @@ def validate_host_operation(host, inner):
     for item in assets:
         owners = [m for m in mounts if PurePosixPath(item['path']).is_relative_to(PurePosixPath(m['target']))]
         require(len(owners) == 1 and owners[0]['read_only'] is True, 'model/frontend asset lacks unique readonly bind owner')
-    if 'reference' in inner['operation']:
-        reference = inner['operation']['reference']
-        owners = [m for m in mounts if m['target'] == reference['root']]
-        require(len(owners) == 1 and owners[0]['read_only'] is True, 'separate readonly capture reference bind required')
-        source = PurePosixPath(owners[0]['source'])
-        for mount in mounts:
-            if not mount['read_only']:
-                writable = PurePosixPath(mount['source'])
-                require(not source.is_relative_to(writable) and not writable.is_relative_to(source),
-                        'capture reference cannot have a writable source alias')
-        for item in operation_assets(inner['operation']):
-            if item['path'].startswith('/reference/'):
-                covered = [m for m in mounts if PurePosixPath(item['path']).is_relative_to(PurePosixPath(m['target']))]
-                require(len(covered) == 1 and covered[0] is owners[0], 'every consumed reference file must share the exact RO bind')
-    for key in ('TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL', 'TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS',
-                'TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX', 'TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN'):
-        require(host['environment'].get(key) in (None, 'inherit'), 'first teacher operation must inherit default selectors')
-    require(host['environment'].get('TENSORFOLD_SM70_PROFILE', 'reference') == 'reference', 'first teacher profile must remain reference')
-    return inner
 
 
 def validate_host_result(value, expected):
+    result = _validate_host_result(value, expected, schema=HOST_RESULT_SCHEMA, mode=MODE, result_validator=validate_model_result)
+    require(result['teacher_plan_sha256'] == expected['operation']['teacher_plan']['sha256']
+            and result['teacher_client_sha256'] == expected['operation']['teacher_client']['sha256'],
+            'owned teacher final result has different input identity')
+    return value
+
+
+def _validate_host_result(value, expected, *, schema, mode, result_validator):
     fields = {'schema', 'mode', 'source_commit', 'image_id_declared', 'operation', 'source_after_match',
               'content_binding_complete', 'content_binding', 'parent_cuda_uninitialized', 'model_result', 'primary_error', 'post_errors', 'scope'}
-    require(type(value) is dict and set(value) == fields and value['schema'] == HOST_RESULT_SCHEMA
-            and value['mode'] == MODE and value['operation'] == expected['operation']
+    require(type(value) is dict and set(value) == fields and value['schema'] == schema
+            and value['mode'] == mode and value['operation'] == expected['operation']
             and value['source_commit'] == expected['source_commit'] and value['image_id_declared'] == expected['image_id']
             and value['source_after_match'] is True and value['content_binding_complete'] is True
             and value['parent_cuda_uninitialized'] is True and value['primary_error'] is None
             and value['post_errors'] == [], 'owned teacher operation did not complete its owning contract')
     identity(value['content_binding'], key='file')
     require(value['content_binding']['file'] == 'model-content-binding.json', 'fixed owned content binding record required')
-    result = validate_model_result(value['model_result'])
-    require(result['teacher_plan_sha256'] == expected['operation']['teacher_plan']['sha256']
-            and result['teacher_client_sha256'] == expected['operation']['teacher_client']['sha256'],
-            'owned teacher final result has different input identity')
+    return result_validator(value['model_result'])
+
+
+def validate_benchmark_operation(value):
+    fields = {'benchmark_plan', 'benchmark_client', 'model_entrypoint', 'model_assets',
+              'frontend_root', 'frontend_assets', 'execution_manifest', 'trace'}
+    require(type(value) is dict and set(value) == fields, 'closed benchmark diagnostic operation required')
+    for name, filename in (('benchmark_plan', 'benchmark-plan.json'), ('benchmark_client', 'benchmark-client.json')):
+        identity(value[name])
+        require(value[name]['path'] == '/operator/' + filename, 'fixed benchmark DATA input path required')
+        require(value[name]['bytes'] <= 8 << 20, 'bounded closed benchmark DATA required')
+    _validate_model_assets(value)
+    validate_benchmark_trace(value['trace'])
+    return value
+
+
+def validate_benchmark_trace(trace):
+    """Validate global host/disk grants and device minimum-free headroom DATA.
+
+    This is neither a physical admission proof nor a device reservation.
+    """
+    require(type(trace) is dict and set(trace) == {'prefill_start', 'host_obligation_bytes', 'device_headroom_bytes', 'disk_bytes'},
+            'explicit closed trace grants required')
+    require(type(trace['prefill_start']) is int and 0 <= trace['prefill_start'] < 262144,
+            'trace threshold must lie in the logical context')
+    for key in ('host_obligation_bytes', 'device_headroom_bytes', 'disk_bytes'):
+        require(type(trace[key]) is int and 0 < trace[key] < 2**63, 'positive bounded trace grant required')
+    # These are caller declarations, not proof of physical funding/residency.
+    return trace
+
+
+def benchmark_operation_assets(value):
+    return [*value['model_assets'], *value['frontend_assets'], value['benchmark_plan'], value['benchmark_client']]
+
+
+def validate_benchmark_sources(value):
+    return _validate_sources(value, REQUIRED_TOOLS | {'tools/bench_concurrent.py', 'tools/v100_adaptive_qualification.py',
+        'tools/openai_protocol.py', 'tools/worker_lifetime.py', 'tools/benchmark_output.py'})
+
+
+def validate_benchmark_client(value):
+    keys = {'schema', 'benchmark_plan_sha256', 'base', 'model', 'expected_service',
+            'readiness_timeout_s', 'whole_timeout_s', 'socket_timeout_s', 'response_bytes', 'sse_line_bytes'}
+    require(type(value) is dict and set(value) == keys and value['schema'] == BENCHMARK_CLIENT_SCHEMA,
+            'closed benchmark client DATA required')
+    require(sha(value['benchmark_plan_sha256']) and type(value['model']) is str
+            and 0 < len(value['model']) <= 256 and '\0' not in value['model'], 'benchmark plan and served model identity required')
+    _validate_client_service(value)
+    require(type(value['response_bytes']) is int and type(value['sse_line_bytes']) is int
+            and 0 < value['sse_line_bytes'] <= value['response_bytes'] <= sys.maxsize
+            and value['response_bytes'] % (1 << 20) == 0 and value['sse_line_bytes'] % (1 << 10) == 0,
+            'bounded benchmark response/SSE extents must be exact integer MiB/KiB units')
+    return value
+
+
+def validate_benchmark_operation_plan(operation, plan, client):
+    """Additional closed-region checks AFTER canonical load_matrix validation.
+
+    The caller owns the actual plan-file SHA and reviewed loaded bench module
+    source binding. This function does not copy its ID construction/hash algorithm.
+    """
+    validate_benchmark_operation(operation)
+    validate_benchmark_client(client)
+    require(type(plan) is dict and client['benchmark_plan_sha256'] == operation['benchmark_plan']['sha256']
+            and plan.get('model') == client['model'] and plan.get('profile') == 'q8'
+            and type(plan.get('admin_cap')) is int and plan['admin_cap'] == 24
+            and type(plan.get('context')) is int and plan['context'] == 262144
+            and type(plan.get('levels')) is list and len(plan['levels']) == 1
+            and type(plan['levels'][0]) is int and plan['levels'][0] == 1
+            and type(plan.get('reps')) is int and plan['reps'] == 1 and plan.get('excluded_levels') == [],
+            'closed C1 Q8 benchmark plan/client linkage differs')
+    cohorts = plan.get('cohorts')
+    require(type(cohorts) is list and 1 <= len(cohorts) <= 2
+            and all(type(c) is dict and type(c.get('warmup')) is bool for c in cohorts),
+            'one measured C1 and optional preceding warmup required')
+    measured = [c for c in cohorts if not c['warmup']]
+    require(len(measured) == 1 and (len(cohorts) == 1 or cohorts[0]['warmup'] and not cohorts[1]['warmup']),
+            'ambiguous or unordered benchmark diagnostic subset')
+    # Reply2 prevents the unchanged trace hook selecting warmed decode calls:
+    # a stream with out>1 is already done. This first closed region is one trace.
+    require(type(plan.get('tokens')) is int and plan['tokens'] == 2
+            and all(type(c.get('tokens')) is int and c['tokens'] == 2
+                    and type(c.get('level')) is int and c['level'] == 1
+                    and type(c.get('input_tokens')) is int and 0 < c['input_tokens'] <= 262142
+                    and type(c.get('requests')) is list and len(c['requests']) == 1
+                    and type(c['requests'][0].get('index')) is int
+                    and c['requests'][0]['index'] == 0 for c in cohorts), 'one-trace C1 reply2 region required')
+    inputs = plan.get('inputs')
+    require(type(inputs) is list and 1 <= len(inputs) <= 2 and all(type(n) is int for n in inputs)
+            and len(set(inputs)) == len(inputs) and set(inputs) == {c['input_tokens'] for c in cohorts},
+            'diagnostic subset input metadata differs from actual cohorts')
+    selected = measured[0]
+    require(operation['trace']['prefill_start'] < selected['input_tokens'], 'trace threshold must precede measured prompt end')
+    return {'cohort_id': selected['id'], 'input_tokens': selected['input_tokens'],
+            'prompt_sha256': selected['requests'][0]['prompt_sha256'],
+            'prefill_start': operation['trace']['prefill_start'], 'request_count': len(cohorts)}
+
+
+def benchmark_qualifier_argv(operation, client, uuids, output):
+    validate_benchmark_operation(operation)
+    validate_benchmark_client(client)
+    require(client['benchmark_plan_sha256'] == operation['benchmark_plan']['sha256'], 'benchmark client plan SHA differs')
+    require(output == '/evidence/benchmark', 'fixed closed benchmark output required')
+    require(type(uuids) is list and all(type(v) is str and re.fullmatch(
+        r'GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', v) for v in uuids), 'exact GPU UUID syntax required')
+    return _qualifier_argv(operation, client, uuids, output,
+        ['--benchmark-plan', operation['benchmark_plan']['path'], '--benchmark-client', operation['benchmark_client']['path'],
+         '--scheduler-trace', output + '/trace', '--scheduler-trace-prefill-start', str(operation['trace']['prefill_start'])])
+
+
+def validate_benchmark_model_result(value):
+    fields = {'schema', 'benchmark_plan_sha256', 'benchmark_client_sha256', 'launch_exit', 'client_report',
+              'matrix_report', 'startup_receipts', 'rank_receipts', 'child_native_records', 'trace', 'P3_valid'}
+    require(type(value) is dict and set(value) == fields and value['schema'] == BENCHMARK_RESULT_SCHEMA
+            and sha(value['benchmark_plan_sha256']) and sha(value['benchmark_client_sha256'])
+            and type(value['launch_exit']) is int and value['launch_exit'] == 0 and value['P3_valid'] is False,
+            'positive closed diagnostic result required; timings cannot qualify P3')
+    for key, name in (('client_report', 'benchmark-client-report.json'), ('matrix_report', 'matrix-results.json')):
+        identity(value[key], key='file')
+        require(value[key]['file'] == 'benchmark/' + name, 'fixed benchmark result path required')
+    for key in ('startup_receipts', 'rank_receipts', 'child_native_records'):
+        rows = value[key]
+        require(type(rows) is list and len(rows) == 8, 'all eight benchmark rank records required')
+        for rank, row in enumerate(rows):
+            identity(row, key='file', rank=True)
+            require(row['rank'] == rank, 'benchmark rank ordering differs')
+            expected = (f'benchmark/rank-{rank}.json' if key == 'startup_receipts' else
+                        f'benchmark/benchmark-rank{rank}/summary.json' if key == 'rank_receipts' else None)
+            require(row['file'] == expected if expected is not None else re.fullmatch(
+                rf'child-native/benchmark-closed-rank-{rank}-pid-[1-9][0-9]*\.json', row['file']) is not None,
+                'benchmark record role/rank path differs')
+    trace = value['trace']
+    require(type(trace) is dict and set(trace) == {'inventory', 'selection', 'receipt', 'chrome'}, 'complete one-trace identity required')
+    for row in trace.values():
+        identity(row, key='file')
+    require(trace['inventory']['file'] == 'benchmark/trace/inventory.json'
+            and trace['selection']['file'] == 'benchmark/trace/prefill-selection.json'
+            and re.fullmatch(r'benchmark/trace/c1-(cold-prefill-containing|prefill-start-ge-[0-9]+)-round-receipt\.json',
+                             trace['receipt']['file']) is not None
+            and trace['chrome']['file'] == trace['receipt']['file'].replace('-receipt.json', '.json'),
+            'one matching prefill receipt/trace required')
+    require(trace['chrome']['bytes'] + sum(trace[k]['bytes'] for k in ('inventory', 'selection', 'receipt')) < 2**63,
+            'trace artifact total exceeds size domain')
+    return value
+
+
+def validate_benchmark_host_operation(host, inner):
+    validate_benchmark_operation(inner['operation'])
+    validate_benchmark_sources(inner['source_files'])
+    _validate_model_host(host, inner, schema=BENCHMARK_SCHEMA, mode=BENCHMARK_MODE)
+    _validate_reference_environment(host)
+    require(inner['operation']['trace']['host_obligation_bytes'] < host['resources']['memory_bytes'],
+            'declared trace host obligation does not fit the outer host memory ceiling')
+    return inner
+
+
+def validate_benchmark_host_result(value, expected):
+    result = _validate_host_result(value, expected, schema=BENCHMARK_HOST_RESULT_SCHEMA, mode=BENCHMARK_MODE,
+                                   result_validator=validate_benchmark_model_result)
+    operation = expected['operation']
+    require(result['benchmark_plan_sha256'] == operation['benchmark_plan']['sha256']
+            and result['benchmark_client_sha256'] == operation['benchmark_client']['sha256'], 'benchmark result input SHA differs')
+    start = operation['trace']['prefill_start']
+    label = 'c1-cold-prefill-containing-round' if start == 0 else f'c1-prefill-start-ge-{start}-round'
+    require(result['trace']['receipt']['file'] == f'benchmark/trace/{label}-receipt.json'
+            and sum(row['bytes'] for row in result['trace'].values()) <= operation['trace']['disk_bytes'],
+            'actual trace threshold/artifact grant differs')
     return value

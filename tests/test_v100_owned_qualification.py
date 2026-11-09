@@ -2388,3 +2388,436 @@ def test_initial_trace_selection_write_failure_survives_failed_setup_notificatio
                       '--scheduler-trace-prefill-start', '128', *argv])
     assert caught.value is primary and primary.__cause__ is notification
     assert tracer.profiler is None  # Setup failed before any profiler acquisition.
+
+
+def _closed_benchmark_plan():
+    cohorts = []
+    for index, prompt in enumerate(([10, 11, 12], [20, 21, 22, 23])):
+        cohorts.append({'id': index, 'level': 1, 'warmup': index == 0, 'tokens': 2,
+                        'input_tokens': len(prompt), 'requests': [{'index': 0, 'prefix': prompt[:2],
+                            'input_tokens': len(prompt), 'prompt_sha256': owned._prompt_digest(prompt)}]})
+    return {'run_identity': 'a' * 32, 'cohorts': cohorts}, ([10, 11, 12], [20, 21, 22, 23])
+
+
+def test_closed_benchmark_followers_track_real_completion_without_cuda_events(monkeypatch):
+    import torch
+    plan, prompts = _closed_benchmark_plan()
+    monkeypatch.setattr(torch.cuda, 'Event', lambda *a, **k: pytest.fail('follower created timing event'))
+    monkeypatch.setattr(torch.cuda, 'current_stream', lambda *a: pytest.fail('follower queried CUDA stream'))
+    monkeypatch.setattr(owned, 'notify_failure', lambda: True)
+    observations = NS(target=lambda *a, **k: None, record=lambda **k: {})
+    decoder = NS(streams={}, filling=[], controller=NS(work_observations=observations))
+    def admit(stream):
+        decoder.filling.append(stream)
+    def take(stream, values):
+        stream.out.extend(values)
+        stream.done = len(stream.out) == 2
+    def joined(pieces, *args):
+        for stream, _, _ in pieces:
+            decoder.filling.remove(stream)
+            decoder.streams[id(stream)] = stream
+            decoder._take(stream, [1])
+    def finish(done):
+        for stream in done:
+            decoder.streams.pop(id(stream))
+    decoder.admit, decoder._take, decoder._joined, decoder.finish = admit, take, joined, finish
+    decoder._prepare_pass, decoder.round = lambda pieces: None, lambda: []
+    engine = NS(rank=1, multi=decoder, w=NS(device='cuda'), tp_decoder=NS(wires={}), _abort_comm=False)
+    observer = owned._BenchmarkObserver(engine, plan, timed=False, strict=True)
+    observer.install()
+    assert observer.events == [] and not observer.finished
+    for index, prompt in enumerate(prompts):
+        stream = NS(prompt=list(prompt), count=2, out=[], done=False, st=object(), error=None, cancel=None)
+        engine.tp_decoder.wires[id(stream)] = index + 1
+        decoder.admit(stream)
+        pieces = [(stream, 0, len(prompt))]
+        decoder._prepare_pass(pieces)
+        decoder._joined(pieces)
+        decoder._take(stream, [2])
+        assert not observer.finished
+        decoder.finish([stream])
+        assert observer.finished is (index == 1)
+    assert observer.failed is None
+    duplicate = NS(prompt=list(prompts[0]), count=2, out=[], done=False, st=object(), error=None, cancel=None)
+    engine.tp_decoder.wires[id(duplicate)] = 17
+    with pytest.raises(ValueError, match='repeated'):
+        decoder.admit(duplicate)
+    assert observer.failed is not None and engine._abort_comm
+
+
+def _closed_benchmark_client(tmp_path, monkeypatch, *, matrix_code=0, matrix_error=None, trace_error=None):
+    from tools import bench_concurrent, openai_protocol
+    teacher, calls = _one_teacher_client(tmp_path, monkeypatch)
+    for rank in range(8):
+        path = tmp_path / f'rank-{rank}.json'
+        value = json.loads(path.read_text())
+        for key in list(value):
+            if key.startswith('teacher_'):
+                value['benchmark_' + key.removeprefix('teacher_')] = value.pop(key)
+        value['tool_sha256'] = owned._source_sha(owned.__file__)
+        path.write_text(json.dumps(value))
+    plan, _ = _closed_benchmark_plan()
+    data = dict(teacher.selected['data'], response_bytes=16 << 20, sse_line_bytes=64 << 10)
+    selected = {'data': data, 'sha256': 'b' * 64}
+    prepared = {'plan': plan, 'plan_sha256': 'a' * 64, 'client': selected,
+                'trace': {'prefill_start': 1}, 'resources': {'matrix_report_bytes': 1 << 20}}
+    controls = []
+    def run(args, actual_plan, *, read_control):
+        assert actual_plan is plan and read_control.cancelled is client.cancelled
+        # Use the REAL protocol unit conversion and exact-int Limits boundary.
+        limits = openai_protocol.from_arguments(args)
+        assert limits.response_bytes == 16 << 20 and limits.line_bytes == 64 << 10
+        controls.append(read_control)
+        read_control.check()
+        if matrix_error is not None:
+            raise matrix_error
+        args.output.write_text(json.dumps({'plan': plan, 'passed': matrix_code == 0,
+            'unrun_cohorts': [], 'instance_id': 'same-process'}))
+        return matrix_code
+    monkeypatch.setattr(owned, '_benchmark_module', lambda: NS(run_matrix=run, __file__=bench_concurrent.__file__))
+    def trace(*args):
+        if trace_error is not None:
+            raise trace_error
+        return {}
+    monkeypatch.setattr(owned, '_benchmark_trace_files', trace)
+    client = owned._BenchmarkClient(prepared, tmp_path)
+    return client, calls, controls
+
+
+def test_closed_benchmark_client_reuses_matrix_and_original_whole_control(tmp_path, monkeypatch):
+    client, calls, controls = _closed_benchmark_client(tmp_path, monkeypatch)
+    client.run()
+    assert [row[2] for row in calls] == ['/stats', '/stats']  # POSTs belong solely to maintained matrix client.
+    assert len(controls) == 1 and controls[0].cancelled is client.cancelled
+    assert client.result['complete'] and client.result['matrix_passed'] and client.result['observed_trace']
+    assert client.result['request_count'] == 2 and client.result['server_instance_id'] == 'same-process'
+    assert client.result['quality_acceptance'] is False and client.result['P3_valid'] is False
+
+
+@pytest.mark.parametrize('fault', ['matrix-nonzero', 'matrix-primary', 'trace', 'cancel'])
+def test_closed_benchmark_client_failure_cannot_request_normal_stop(tmp_path, monkeypatch, fault):
+    from tools.v100_rotorquant_live import ReadCancelled
+    primary = OSError('matrix owner')
+    client, calls, controls = _closed_benchmark_client(tmp_path, monkeypatch,
+        matrix_code=2 if fault == 'matrix-nonzero' else 0,
+        matrix_error=primary if fault == 'matrix-primary' else None,
+        trace_error=ValueError('trace unsupported') if fault == 'trace' else None)
+    if fault == 'cancel':
+        client.cancelled.set()
+    expected = ReadCancelled if fault == 'cancel' else OSError if fault == 'matrix-primary' else ValueError
+    with pytest.raises(expected) as caught:
+        client.run()
+    if fault == 'matrix-primary':
+        assert caught.value is primary
+    assert client.result is None and not (tmp_path / 'benchmark-client-report.json').exists()
+
+
+def test_common_native_observer_prepaid_once_and_teacher_key_contract_unchanged():
+    base, native = {'global_host_obligation_bytes': 10}, {'global_host_bytes': 20}
+    value = owned._owned_observer_credit(base, native)
+    assert base == {'global_host_obligation_bytes': 10} and value['global_host_obligation_bytes'] == 30
+    assert value['child_native_observer'] is native
+    with pytest.raises(ValueError, match='twice'):
+        owned._owned_observer_credit(value, native)
+
+
+def _closed_benchmark_engine(tmp_path, monkeypatch):
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+    pair = get_pair('int8')
+    coordinate, position = 'a' * 64, 'b' * 64
+    identity = (pair.identity, 'working-policy', ('logical-context-v1', 262144),
+                ('position-profile-v1', position, 0), ('coordinate-profile-v1', coordinate))
+    states = [NS(capacity=262145, limit=262145, logical_context=262144, kv_identity=identity) for _ in range(24)]
+    family = {'owner_kernel_family': 'torch-reference', 'owner_graph_family': 'uncaptured'}
+    decoder = NS(states=states, speculation=NS(method='none', maximum_proposals=0), graphs=None, full_resident=True,
+                 buf=NS(rows=24, **family), pbuf=NS(rows=256, **family))
+    events = []
+    engine = NS(rank=0, tp=8, multi=decoder, w=NS(mtp=None, device='cuda'), sm70_profile='reference',
+        kv_pair=pair, position_profile=NS(identity=position, epoch=0), context_window=262144,
+        _lifecycle=object(), _closed=False, _owned_qualification_host=(1000, 'c' * 64),
+        retention_catalog=NS(host_resources=NS(baseline_host_bytes=1000)))
+    def resources():
+        events.append('resource-fence')
+    engine._close_resources = resources
+    def close():
+        engine._close_resources()
+        engine._closed = True
+        events.append('closed')
+    engine.close = close
+    plan, _ = _closed_benchmark_plan()
+    native = {'module': NS(record_native_elfs=lambda *args, **kwargs: events.append('native')),
+              'directory': tmp_path, 'source': {'path': '/operator/driver.py', 'bytes': 1, 'sha256': 'f' * 64}}
+    prepared = {'resources': {'global_host_obligation_bytes': 1000}, 'plan_sha256': 'c' * 64,
+                'client': {'sha256': 'd' * 64}, 'trace': {'device_headroom_bytes': 512 << 20},
+                'native': native, 'output': tmp_path}
+    profile = {'coordinate_profile_identity': coordinate}
+    monkeypatch.setattr(owned, 'bound_receipt', lambda current: profile)
+    monkeypatch.setattr(owned, '_benchmark_sources', lambda current: {'engine': 'e' * 64})
+    headroom = {'free_bytes': 1 << 30, 'total_bytes': 32 << 30, 'required_free_bytes': 512 << 20,
+                'scope': 'boundary spy, not physical qualification'}
+    monkeypatch.setattr(owned, '_benchmark_headroom', lambda *args: dict(headroom))
+    observer = NS(engine=engine, plan=plan, records={c['id']: {'done': {0}, 'hashes': {c['requests'][0]['prompt_sha256']}}
+                  for c in plan['cohorts']}, finished=True, failed=None, server_instance_id='local-rank')
+    return engine, observer, prepared, events
+
+
+def test_closed_benchmark_native_proof_follows_real_owner_fence_and_positive_close(tmp_path, monkeypatch):
+    engine, observer, prepared, events = _closed_benchmark_engine(tmp_path, monkeypatch)
+    owned._prepare_closed_benchmark(engine, observer, prepared)
+    engine.close()
+    assert events == ['resource-fence', 'native', 'closed']
+    record = json.loads((tmp_path / 'benchmark-rank0/summary.json').read_text())
+    assert record['closed'] and record['finished'] and not record['failed']
+    assert record['actual_owned_profile']['benchmark_semantics']['resident_slots'] == 24
+    assert record['headroom'] == observer.headroom and record['P3_valid'] is False
+    with pytest.raises(RuntimeError, match='already attempted'):
+        engine.close()
+
+
+@pytest.mark.parametrize('fault', ['obligation', 'baseline', 'State', 'KV', 'method', 'family'])
+def test_closed_benchmark_rejects_false_admission_before_hook_or_headroom(tmp_path, monkeypatch, fault):
+    engine, observer, prepared, events = _closed_benchmark_engine(tmp_path, monkeypatch)
+    if fault == 'obligation':
+        engine._owned_qualification_host = (999, 'c' * 64)
+    elif fault == 'baseline':
+        engine.retention_catalog.host_resources.baseline_host_bytes = 999
+    elif fault == 'State':
+        engine.multi.states[7].limit = 1024
+    elif fault == 'KV':
+        engine.multi.states[7].kv_identity = ('wrong',)
+    elif fault == 'method':
+        engine.multi.speculation.method = 'mtp'
+    else:
+        engine.multi.pbuf.owner_graph_family = 'captured'
+    monkeypatch.setattr(owned, '_benchmark_headroom', lambda *args: pytest.fail('headroom before admission proof'))
+    with pytest.raises(ValueError):
+        owned._prepare_closed_benchmark(engine, observer, prepared)
+    assert events == [] and not (tmp_path / 'benchmark-rank0').exists()
+
+
+def test_closed_benchmark_failed_close_and_summary_failure_preserve_original(tmp_path, monkeypatch):
+    engine, observer, prepared, events = _closed_benchmark_engine(tmp_path, monkeypatch)
+    primary, publication = RuntimeError('actual close failure'), OSError('summary')
+    def close():
+        raise primary
+    engine.close = close
+    owned._prepare_closed_benchmark(engine, observer, prepared)
+    monkeypatch.setattr(owned, 'write_json', lambda *args: (_ for _ in ()).throw(publication))
+    with pytest.raises(RuntimeError) as caught:
+        engine.close()
+    assert caught.value is primary and primary.__cause__ is publication and engine._closed is False
+    assert events == []
+
+
+@pytest.mark.parametrize('free', [1 << 30, (512 << 20) - 1])
+def test_benchmark_headroom_is_fresh_free_observation_not_reserve_or_allocation(monkeypatch, free):
+    import torch
+    calls = []
+    monkeypatch.setattr(torch.cuda, 'mem_get_info', lambda device: calls.append(device) or (free, 32 << 30))
+    monkeypatch.setattr(torch.cuda, 'empty_cache', lambda: pytest.fail('invented physical reservation'))
+    monkeypatch.setattr(torch.cuda, 'synchronize', lambda: pytest.fail('extra headroom fence'))
+    monkeypatch.setattr(torch, 'empty', lambda *a, **k: pytest.fail('headroom must not allocate'))
+    engine = NS(w=NS(device='actual-owned-device'))
+    if free < 512 << 20:
+        with pytest.raises(MemoryError):
+            owned._benchmark_headroom(engine, {'device_headroom_bytes': 512 << 20})
+    else:
+        row = owned._benchmark_headroom(engine, {'device_headroom_bytes': 512 << 20})
+        assert row['free_bytes'] == free and row['required_free_bytes'] == 512 << 20
+        assert 'NOT a reservation' in row['scope']
+    assert calls == ['actual-owned-device']
+
+
+def test_benchmark_client_cannot_activate_from_public_or_untrusted_input(tmp_path):
+    output = tmp_path / 'not-created'
+    with pytest.raises(SystemExit):
+        owned.main(['--gpus', '0,1,2,3,4,5,6,7', '--out', str(output), '--benchmark-plan', 'plan',
+                    '--benchmark-client', 'client', '--scheduler-trace', str(output / 'trace'), '--', 'model'])
+    assert not output.exists()
+
+
+def test_closed_benchmark_parent_uses_shared_task_path_and_only_bounded_trace_dto(tmp_path, monkeypatch):
+    import threading
+    from tools import v100_owned_model_contract as contract
+    output = tmp_path / 'benchmark'
+    plan_path, client_path = tmp_path / 'plan.json', tmp_path / 'client.json'
+    plan_path.write_text('{}')
+    client_path.write_text('{}')
+    def identity(path):
+        return {'path': str(path), 'bytes': path.stat().st_size, 'sha256': owned._source_sha(path)}
+    trace = {'prefill_start': 1, 'host_obligation_bytes': 8 << 30,
+             'device_headroom_bytes': 512 << 20, 'disk_bytes': 16 << 30}
+    operation = {'benchmark_plan': identity(plan_path), 'benchmark_client': identity(client_path), 'trace': trace}
+    plan, _ = _closed_benchmark_plan()
+    class Contract:
+        def __getattr__(self, name):
+            return getattr(contract, name)
+        def validate_benchmark_operation(self, value):
+            assert value is operation
+            return value
+        def validate_benchmark_operation_plan(self, actual, selected_plan, client):
+            assert actual is operation and selected_plan is plan
+    monkeypatch.setattr(owned, '_model_contract', lambda: Contract())
+    monkeypatch.setattr(owned, '_benchmark_module', lambda: NS(load_matrix=lambda path: plan))
+    monkeypatch.setattr(owned, '_benchmark_client_input', lambda *args: {'data': {}, 'bytes': 2, 'sha256': 'b' * 64})
+    monkeypatch.setattr(owned, '_owned_model_observer', lambda *args: {'resources': {}})
+    monkeypatch.setattr(owned, '_benchmark_resources', lambda *args: {'global_host_obligation_bytes': 1000})
+    completed, events = threading.Event(), []
+    class Client:
+        def __init__(self, *args):
+            self.result, self.cancelled, self.post_attempts = None, threading.Event(), 0
+        def run(self):
+            self.result = {'complete': True}
+            completed.set()
+    monkeypatch.setattr(owned, '_BenchmarkClient', Client)
+    def launch(command, **kwargs):
+        assert completed.wait(2)
+        prefix = kwargs['_command_prefix']
+        assert '--teacher-client-bytes' not in prefix and '--teacher-plan' not in prefix
+        assert prefix[prefix.index('--benchmark-client') + 1] == str(client_path)
+        assert json.loads(prefix[prefix.index('--benchmark-trace-data') + 1]) == trace
+        from time import monotonic
+        deadline = monotonic() + 2
+        while not kwargs['_shutdown_probe'](False):
+            assert monotonic() < deadline
+        assert kwargs['_failure_probe']() is False
+        events.append('all8-launch0')
+        return 0
+    monkeypatch.setattr(launcher, 'main', launch)
+    monkeypatch.setattr(owned, '_benchmark_model_result', lambda *args: events.append('typed-result'))
+    assert owned.main(['--gpus', '0,1,2,3,4,5,6,7', '--out', str(output), '--benchmark-plan', str(plan_path),
+        '--benchmark-client', str(client_path), '--scheduler-trace', str(output / 'trace'),
+        '--scheduler-trace-prefill-start', '1', '--', 'model'], _benchmark_operation=operation) == 0
+    assert events == ['all8-launch0', 'typed-result']
+
+
+@pytest.mark.parametrize('stage', ['record', 'elapsed'])
+def test_closed_benchmark_event_primary_survives_notify_exhaustion(monkeypatch, stage):
+    import torch
+    primary, notification = RuntimeError('event record'), MemoryError('notify')
+    events = []
+    class Event:
+        def record(self, stream):
+            if stage == 'record':
+                raise primary
+        def query(self):
+            return True
+        def elapsed_time(self, other):
+            raise primary
+    plan, prompts = _closed_benchmark_plan()
+    observations = NS(target=lambda *a, **k: None, record=lambda **k: {})
+    decoder = NS(streams={}, filling=[], controller=NS(work_observations=observations),
+        _prepare_pass=lambda pieces: pytest.fail('prepare after event failure'),
+        _joined=lambda *a: None, _take=lambda *a: None, round=lambda: [], finish=lambda *a: None)
+    stream = NS(prompt=prompts[0], count=2, out=[], done=False, st=object(), error=None, cancel=None)
+    decoder.admit = lambda selected: decoder.filling.append(selected)
+    engine = NS(rank=0, multi=decoder, w=NS(device='cuda'), tp_decoder=NS(wires={id(stream): 1}))
+    monkeypatch.setattr(torch.cuda, 'current_stream', lambda device: 'stream')
+    def notify(current, error):
+        events.append(error)
+        raise notification
+    monkeypatch.setattr(owned, '_observer_failure', notify)
+    observer = owned._BenchmarkObserver(engine, plan, events=[Event() for _ in range(4)], strict=True)
+    observer.install()
+    decoder.admit(stream)
+    with pytest.raises(RuntimeError) as caught:
+        if stage == 'record':
+            decoder._prepare_pass([(stream, 0, len(stream.prompt))])
+        else:
+            decoder.filling = []
+            engine.scheduler = NS(thread=object())
+            observer.records[0]['done'] = {0}
+            observer.records[0]['started'] = [True] * 4
+            observations.record()
+    assert caught.value is primary and primary.__cause__ is notification
+    assert observer.failed is primary and events == [primary]
+
+
+def _benchmark_aggregate_fixture(tmp_path, *, semantic_rank=None, producer_rank=None):
+    import copy
+    from tools import v100_owned_model_contract as contract
+    output, native = tmp_path / 'benchmark', tmp_path / 'child-native'
+    output.mkdir()
+    native.mkdir()
+    plan, _ = _closed_benchmark_plan()
+    trace = {'prefill_start': 1, 'host_obligation_bytes': 8 << 30,
+             'device_headroom_bytes': 512 << 20, 'disk_bytes': 16 << 30}
+    resources = {'global_host_obligation_bytes': 1000, 'trace_grants': trace}
+    source = {'path': '/canonical/tools/v100_native_contract_driver.py', 'bytes': 1, 'sha256': 'f' * 64}
+    prepared = {'plan': plan, 'plan_sha256': 'c' * 64, 'client': {'sha256': 'd' * 64}, 'trace': trace,
+                'resources': resources, 'native': {'directory': native, 'source': source}}
+    sources = {key: 'e' * 64 for key in ('engine', 'multi', 'decode', 'sampling', 'observer_tool')}
+    headroom = {'free_bytes': 1 << 30, 'total_bytes': 32 << 30, 'required_free_bytes': 512 << 20, 'scope': 'CPU fixture'}
+    cohorts = [{'id': c['id'], 'level': c['level'], 'completed': 1,
+                'prompt_hashes': [c['requests'][0]['prompt_sha256']]} for c in plan['cohorts']]
+    def write(path, value):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(value))
+    for rank in range(8):
+        profile = {'rank': rank, 'resources': {'rank_local_observation': rank}, 'benchmark_semantics': {
+            'method': 'none', 'state_kv_identity': ['pair', ['position-profile-v1', 'a' * 64, 0]],
+            'context': 262144, 'resident_slots': 24}}
+        if rank == semantic_rank:
+            profile['benchmark_semantics']['state_kv_identity'][1][2] = 1
+        startup = {'rank': rank, 'world': 8, 'benchmark_profile': copy.deepcopy(profile),
+            'benchmark_worker_PID': 100 + rank, 'benchmark_server_instance_id': f'worker-{rank}',
+            'benchmark_resources': resources, 'benchmark_headroom': headroom, 'benchmark_observer': source,
+            'tool_sha256': 'e' * 64, 'runtime_cli_sha256': 'a' * 64,
+            'private_router_policy': {'configured': 'inherit'}, 'reference_tile_preparation': {'requested': False}}
+        if rank == producer_rank:
+            startup['private_router_policy'] = {'configured': 'native-serial-v1'}
+        summary = {'schema': 'tensorfold.owned-benchmark-rank-result-v1', 'rank': rank, 'world': 8,
+            'closed': True, 'finished': True, 'failed': False, 'benchmark_plan_sha256': 'c' * 64,
+            'benchmark_client_sha256': 'd' * 64, 'run_identity': plan['run_identity'],
+            'server_instance_id': f'worker-{rank}', 'actual_owned_profile': copy.deepcopy(profile),
+            'runtime_sources': sources, 'cohorts': cohorts, 'resources': resources, 'headroom': headroom,
+            'qualification': False, 'P3_valid': False}
+        write(output / f'rank-{rank}.json', startup)
+        write(output / f'benchmark-rank{rank}/summary.json', summary)
+        write(native / f'benchmark-closed-rank-{rank}-pid-{100+rank}.json', {
+            'rank': rank, 'PID': 100 + rank, 'operation_limits': contract.MODEL_OBSERVER_LIMITS,
+            'missing_required_prefixes': [], 'observer': {'sha256': 'f' * 64},
+            'mapped_elfs': [{'name': 'tf_gguf_fixture', 'sha256': 'a' * 64}]})
+    write(output / 'benchmark-client-report.json', {'schema': 'tensorfold.owned-benchmark-client-report-v1',
+        'complete': True, 'matrix_passed': True, 'observed_trace': True, 'P3_valid': False})
+    write(output / 'matrix-results.json', {'schema': 'tensorfold.phase-matrix-result-v1', 'plan': plan,
+        'passed': True, 'unrun_cohorts': []})
+    selected = owned._trace_prefill_selection(plan, 1)
+    selected.update(status='OBSERVED', boundary_start=1, actual_start=1, actual_count=1,
+        actual_state_pos=1, state_pos=1, slot=0, slot_generation=1, wire=17, prefix_operation=4,
+        prepared_calls=1, prepared_returned=True, profiler_entry_headroom=headroom)
+    write(output / 'trace/prefill-selection.json', selected)
+    write(output / 'trace/inventory.json', {'actual_matrix_samples': [{'name': 'CPU fixture'}]})
+    label = 'c1-prefill-start-ge-1-round'
+    chrome = output / f'trace/{label}.json'
+    chrome.write_text('{}')
+    write(output / f'trace/{label}-receipt.json', {'primary': None, 'post_errors': [], 'P3_valid': False,
+        'prefill_selection': selected, 'exported_trace_bytes': chrome.stat().st_size})
+    return output, prepared
+
+
+def test_benchmark_actual_aggregate_seals_all_eight_and_preserves_rank_local_observations(tmp_path):
+    from tools import v100_owned_model_contract as contract
+    output, prepared = _benchmark_aggregate_fixture(tmp_path)
+    result = owned._benchmark_model_result(output, prepared)
+    assert contract.validate_benchmark_model_result(result) is result
+    assert result['schema'] == 'tensorfold.owned-benchmark-model-result-v1' and result['P3_valid'] is False
+    assert [row['rank'] for row in result['rank_receipts']] == list(range(8))
+    assert result['startup_receipts'][7]['file'] == 'benchmark/rank-7.json'
+    assert result['rank_receipts'][7]['file'] == 'benchmark/benchmark-rank7/summary.json'
+    assert result['child_native_records'][7]['file'] == 'child-native/benchmark-closed-rank-7-pid-107.json'
+    assert result['trace']['chrome']['file'] == 'benchmark/trace/c1-prefill-start-ge-1-round.json'
+    assert json.loads((output / 'benchmark-model-result.json').read_text()) == result
+
+
+@pytest.mark.parametrize('drift', ['semantic', 'producer'])
+def test_benchmark_actual_aggregate_refuses_rebound_single_rank_semantic_or_selector_drift(tmp_path, drift):
+    output, prepared = _benchmark_aggregate_fixture(tmp_path,
+        semantic_rank=7 if drift == 'semantic' else None, producer_rank=7 if drift == 'producer' else None)
+    if drift == 'semantic':
+        startup = json.loads((output / 'rank-7.json').read_text())
+        closed = json.loads((output / 'benchmark-rank7/summary.json').read_text())
+        assert startup['benchmark_profile'] == closed['actual_owned_profile']  # Rebound within-rank equality is insufficient.
+    with pytest.raises(ValueError, match='semantics differ across ranks'):
+        owned._benchmark_model_result(output, prepared)
+    assert not (output / 'benchmark-model-result.json').exists()

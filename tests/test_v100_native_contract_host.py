@@ -1162,5 +1162,113 @@ assert 'torch' not in sys.modules
             c.validate_teacher_completion(closure, host_result_sha256='c'*64, authority_sha256='a'*64)
 
 
+    def benchmark_host_spec(self):
+        spec, data = self.model_spec()
+        c, op = host.model_contract, data['operation']
+        for role in ('plan', 'client'):
+            old = self.operator/f'teacher-{role}.json'
+            spec['inputs'] = [item for item in spec['inputs'] if item['path'] != str(old)]
+            path = self.operator/f'benchmark-{role}.json'
+            path.write_text('{}\n')
+            record = file_record(path)
+            spec['inputs'].append(record)
+            op['benchmark_'+role] = {**record, 'path': '/operator/'+path.name}
+            op.pop('teacher_'+role)
+        op['trace'] = {'prefill_start': 1, 'host_obligation_bytes': 4096,
+                       'device_headroom_bytes': 8192, 'disk_bytes': 1 << 20}
+        for name in ('bench_concurrent.py', 'v100_adaptive_qualification.py', 'openai_protocol.py',
+                     'worker_lifetime.py', 'benchmark_output.py'):
+            source = self.source/'tools'/name
+            source.write_bytes(b'# reviewed benchmark dependency\n')
+            data['source_files']['tools/'+name] = {k: file_record(source)[k] for k in ('bytes', 'sha256')}
+        manifest_path = Path(spec['source']['manifest']['path'])
+        manifest = json.loads(manifest_path.read_text())
+        for name in data['source_files']:
+            path = self.source/name
+            manifest['files'][name] = {'type': 'file', 'stored_mode': path.stat().st_mode & 0o7777,
+                                       **data['source_files'][name]}
+        manifest_path.write_text(json.dumps(manifest))
+        spec['source']['manifest'] = file_record(manifest_path)
+        data.update(schema=c.BENCHMARK_SCHEMA, mode=c.BENCHMARK_MODE)
+        inner_path = self.operator/'spec.json'
+        inner_path.write_text(json.dumps(data))
+        spec['inputs'][1] = file_record(inner_path)
+        spec['argv'][5], spec['argv'][7] = spec['inputs'][1]['sha256'], str(spec['inputs'][1]['bytes'])
+        return spec, data
+
+    def benchmark_host_outcome(self, expected):
+        c, op = host.model_contract, expected['operation']
+        def ref(name, rank=None):
+            return {'file': name, 'bytes': 1, 'sha256': 'a'*64, **({} if rank is None else {'rank': rank})}
+        model = {'schema': c.BENCHMARK_RESULT_SCHEMA, 'benchmark_plan_sha256': op['benchmark_plan']['sha256'],
+            'benchmark_client_sha256': op['benchmark_client']['sha256'], 'launch_exit': 0, 'P3_valid': False,
+            'client_report': ref('benchmark/benchmark-client-report.json'), 'matrix_report': ref('benchmark/matrix-results.json'),
+            'rank_receipts': [ref(f'benchmark/benchmark-rank{i}/summary.json', i) for i in range(8)],
+            'startup_receipts': [ref(f'benchmark/rank-{i}.json', i) for i in range(8)],
+            'child_native_records': [ref(f'child-native/benchmark-closed-rank-{i}-pid-{i+2}.json', i) for i in range(8)],
+            'trace': {'inventory': ref('benchmark/trace/inventory.json'),
+                      'selection': ref('benchmark/trace/prefill-selection.json'),
+                      'receipt': ref('benchmark/trace/c1-prefill-start-ge-1-round-receipt.json'),
+                      'chrome': ref('benchmark/trace/c1-prefill-start-ge-1-round.json')}}
+        binding = {'schema': 'tensorfold.owned-model-content-binding-v1', 'completed': True,
+                   'assets': [{'identity': item} for item in c.benchmark_operation_assets(op)]}
+        path = self.output/'model-content-binding.json'
+        path.write_text(json.dumps(binding))
+        return {'schema': c.BENCHMARK_HOST_RESULT_SCHEMA, 'mode': c.BENCHMARK_MODE,
+            'source_commit': expected['source_commit'], 'image_id_declared': expected['image_id'], 'operation': op,
+            'source_after_match': True, 'content_binding_complete': True,
+            'content_binding': {'file': path.name, **{k: file_record(path)[k] for k in ('bytes', 'sha256')}},
+            'parent_cuda_uninitialized': True, 'model_result': model, 'primary_error': None, 'post_errors': [],
+            'scope': 'fake boundary result, not model qualification'}
+
+    def test_closed_benchmark_host_binds_new_mode_sources_and_two_fixed_data_files(self):
+        spec, data = self.benchmark_host_spec()
+        expected = host.validate_data(spec)
+        self.assertEqual(expected['mode'], host.model_contract.BENCHMARK_MODE)
+        self.assertEqual(expected['operation'], data['operation'])
+        self.assertNotIn('modules', expected)
+        bad = json.loads(json.dumps(data))
+        bad['schema'] = host.model_contract.SCHEMA
+        inner = self.operator/'spec.json'
+        inner.write_text(json.dumps(bad))
+        spec['inputs'][1] = file_record(inner)
+        spec['argv'][5], spec['argv'][7] = spec['inputs'][1]['sha256'], str(spec['inputs'][1]['bytes'])
+        with self.assertRaises(ValueError):
+            host.validate_data(spec)
+
+    def test_closed_benchmark_host_uses_typed_fixed_result_and_retires_actual_owned_handle(self):
+        spec, _ = self.benchmark_host_spec()
+        system = FakeSystem(spec, self.output)
+        original = system.start
+        def start(cid, log):
+            process = original(cid, log)
+            expected = host.validate_data(spec)
+            (self.output/'owned-benchmark-operation-result.json').write_text(json.dumps(self.benchmark_host_outcome(expected)))
+            return process
+        system.start = start
+        result = host.run(spec, self.output, system=system)
+        self.assertEqual(result['inner']['mode'], host.model_contract.BENCHMARK_MODE)
+        self.assertEqual(result['container']['State']['Pid'], 0)
+        self.assertFalse((self.output/'owned-teacher-operation-result.json').exists())
+        self.assertIn(['close'], system.calls)
+
+    def test_closed_benchmark_host_rejects_suite_zero_and_wrong_mode_receipt_after_retirement(self):
+        spec, _ = self.benchmark_host_spec()
+        system = FakeSystem(spec, self.output)
+        original = system.start
+        def start(cid, log):
+            process = original(cid, log)
+            expected = host.validate_data(spec)
+            result = self.benchmark_host_outcome(expected)
+            result['mode'] = host.model_contract.MODE
+            (self.output/'owned-benchmark-operation-result.json').write_text(json.dumps(result))
+            return process
+        system.start = start
+        with self.assertRaises(ValueError):
+            host.run(spec, self.output, system=system)
+        self.assertIn(['close'], system.calls)
+        self.assertTrue(host.terminal(json.loads((self.output/'host-result.json').read_text())['container']))
+
+
 if __name__ == "__main__":
     unittest.main()

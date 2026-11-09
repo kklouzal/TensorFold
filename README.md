@@ -55,6 +55,10 @@ full-method/context/resource, model-quality and performance gates remain open.
 The existing private benchmark trace can now select a late C1 prefill cursor
 and verify the actual prepared geometry. Its 275 x86 CPU controls pass; no
 late profiler or model activation is qualified by those controls.
+A closed benchmark-diagnostic path is implemented around the existing matrix
+client, owned launcher and worker-origin observer. Its five integrated x86 CPU
+suites passed 571 checks with zero skips and clean diagnostics. Model/profiler
+execution, physical resource qualification and performance remain separate.
 The [private teacher diagnostic](docs/benchmarking.md#private-reference-first-teacher-diagnostics)
 has 284 passing x86 CPU controls. Its first region supports NONE/greedy text
 only, with MTP4 explicitly unsupported; actual capture evidence follows below.

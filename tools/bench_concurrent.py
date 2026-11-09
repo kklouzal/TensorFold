@@ -339,7 +339,7 @@ def load_matrix(path):
     return plan
 
 
-def _run_matrix(args, plan, report):
+def _run_matrix(args, plan, report, *, read_control=None):
     if __package__:
         from . import v100_rotorquant_live as live
         from . import v100_adaptive_qualification as qualification
@@ -353,8 +353,11 @@ def _run_matrix(args, plan, report):
     raw.mkdir()
     client = live.Client(args.base, raw, timeout=args.timeout, limits=protocol.from_arguments(args))
     serial = itertools.count()
+    control_kwargs = {} if read_control is None else {"read_control": read_control}
     def read(path):
-        return client.call(f"control-{next(serial)}", path=path, object_response=True)
+        if read_control is not None:
+            read_control.check()
+        return client.call(f"control-{next(serial)}", path=path, object_response=True, **control_kwargs)
     report.update(schema="tensorfold.phase-matrix-result-v1", plan=plan, cohorts=[], passed=False)
     write_json(output, report)
     initial = read("/stats")
@@ -391,18 +394,33 @@ def _run_matrix(args, plan, report):
             raise ValueError("benchmark requires the same idle service and no unrelated jobs")
         gate = threading.Barrier(cohort["level"])
         results, errors = [None] * cohort["level"], [None] * cohort["level"]
+        # Failure transport is cold, but status ownership must predate threads.
+        # Filters are prepaid too; no allocation is needed to retain an error.
+        callback_failures = [[None, None] for _ in results]
+        callback_views = [filter(lambda value: value is not None, values) for values in callback_failures]
         row.update(requests=results, errors=errors)
         def request(index):
-            spec = cohort["requests"][index]
-            body = {"model": args.model, "prompt": matrix_ids(plan, spec), "max_tokens": cohort["tokens"],
-                    "temperature": 0, "draft": True, "ignore_eos": True, "stream": True,
-                    "stream_options": {"include_usage": True}, "return_token_ids": True}
+            body_ready = False
             try:
-                gate.wait()
+                if read_control is not None:
+                    read_control.check()
+                spec = cohort["requests"][index]
+                body = {"model": args.model, "prompt": matrix_ids(plan, spec), "max_tokens": cohort["tokens"],
+                        "temperature": 0, "draft": True, "ignore_eos": True, "stream": True,
+                        "stream_options": {"include_usage": True}, "return_token_ids": True}
+                body_ready = True
+                if read_control is None:
+                    gate.wait()
+                else:
+                    # Keep a failed/interrupted abort from stranding accepted
+                    # callbacks beyond the caller's finite acquisition bound.
+                    gate.wait(timeout=read_control.acquisition_timeout(args.timeout))
+                if read_control is not None:
+                    read_control.check()
                 started = time.perf_counter()
                 pieces = []
                 reply = client.call(f"cohort-{cohort['id']}-request-{index}", body, path="/v1/completions",
-                                    observer=lambda event, text: (completion_fields(event), pieces.extend(text)))
+                                    observer=lambda event, text: (completion_fields(event), pieces.extend(text)), **control_kwargs)
                 reply["choices"][0]["message"]["content"] = "".join(pieces) or None
                 finished = time.perf_counter()
                 completion = live.completion(reply, cohort["tokens"])
@@ -421,20 +439,51 @@ def _run_matrix(args, plan, report):
                 results[index] = {"reply": reply, "sent": started, "finished": finished,
                                   "prompt_sha256": spec["prompt_sha256"], **phases}
             except BaseException as error:
-                errors[index] = {"type": type(error).__name__, "message": str(error)}
-                gate.abort()
+                try:
+                    errors[index] = {"type": type(error).__name__, "message": str(error)}
+                except BaseException as formatting:
+                    callback_failures[index][0] = formatting
+                try:
+                    gate.abort()
+                except BaseException as cleanup:
+                    callback_failures[index][1] = cleanup
+                if not body_ready or callback_failures[index][0] is not None or callback_failures[index][1] is not None:
+                    raise_failures(error, callback_views[index])
         tasks = []
         primary = None
+        parent_failures = [None, None]
+        parent_view = filter(lambda value: value is not None, parent_failures)
         try:
             for index in range(cohort["level"]):
+                if read_control is not None:
+                    read_control.check()
                 task = Task(partial(request, index), name=f"phase-matrix-{index}")
                 tasks.append(task)
                 task.start()
+            if read_control is not None:
+                # Observe the caller while callbacks/barrier/HTTP are live.
+                # A flag only requests cancellation; drain below still waits
+                # for every accepted callback, including in-flight socket IO.
+                for task in tasks:
+                    while not task.done.wait(.01):
+                        read_control.check()
+                read_control.check()
         except BaseException as error:
             primary = error
-            gate.abort()
+            try:
+                gate.abort()
+            except BaseException as cleanup:
+                parent_failures[0] = cleanup
         finally:
-            drain(tasks, primary)
+            try:
+                drain(tasks, primary)
+            except BaseException as error:
+                if primary is None:
+                    primary = error
+                elif error is not primary:
+                    parent_failures[1] = error
+            if primary is not None:
+                raise_failures(primary, parent_view)
         row.update(requests=results, errors=errors)
         if any(errors):
             row["status"] = "request-failed"
@@ -449,7 +498,12 @@ def _run_matrix(args, plan, report):
             pending = None if not snapshot else snapshot.get("cohorts", {}).get(str(cohort["id"]))
             if pending and pending.get("events_ready") or time.monotonic() >= deadline:
                 break
-            time.sleep(.01)  # Only post-cohort event readiness; no model/per-step fence.
+            if read_control is None:
+                time.sleep(.01)  # Only post-cohort readiness; no model/per-step fence.
+            else:
+                read_control.check()
+                read_control.cancelled.wait(.01)
+                read_control.check()
         if (not snapshot or snapshot["run_identity"] != plan["run_identity"]
                 or snapshot.get("server_instance_id") != instance):
             raise ValueError("the required private worker observer is absent or belongs to another plan")
@@ -477,22 +531,33 @@ def _run_matrix(args, plan, report):
     return 0 if report["passed"] else 2
 
 
-def run_matrix(args, plan):
+def run_matrix(args, plan, *, read_control=None):
+    """Optional caller-owned TF ReadControl; None retains the ordinary CLI.
+
+    Control is shared, never reset per cohort/request. Accepted callbacks are
+    drained before return; cancellation is cooperative, not a socket/whole-wall
+    termination guarantee. Opt-in readers retain Client's framing restrictions.
+    """
     output = Path(args.output)
     if output.exists() or output.with_suffix(output.suffix + ".raw").exists():
         raise ValueError("matrix output and raw directory must be fresh")
     report = {"schema": "tensorfold.phase-matrix-result-v1", "plan": plan, "cohorts": [], "passed": False}
+    publication_status = [None]
+    publication_view = filter(lambda value: value is not None, publication_status)
     try:
-        return _run_matrix(args, plan, report)
+        if read_control is None:
+            return _run_matrix(args, plan, report)
+        return _run_matrix(args, plan, report, read_control=read_control)
     except BaseException as error:
-        report["error"] = {"type": type(error).__name__, "message": str(error)}
-        report["passed"] = False
-        report["unrun_cohorts"] = [c["id"] for c in plan["cohorts"]
-                                  if c["id"] not in {r["cohort"] for r in report["cohorts"]}]
         try:
+            report["error"] = {"type": type(error).__name__, "message": str(error)}
+            report["passed"] = False
+            report["unrun_cohorts"] = [c["id"] for c in plan["cohorts"]
+                                      if c["id"] not in {r["cohort"] for r in report["cohorts"]}]
             write_json(output, report)
         except BaseException as publication:
-            raise_failures(error, (publication,))
+            publication_status[0] = publication
+            raise_failures(error, publication_view)
         raise
 
 

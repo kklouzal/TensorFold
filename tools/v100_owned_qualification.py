@@ -1047,6 +1047,7 @@ class _SchedulerTrace:
         self.capture_error_order = (0, 1, 2, 3, 6, 4, 5)  # Geometry precedes receipt/publication.
         self.notification_errors = [None] * 2
         self.transport = raise_failures
+        self.headroom_check = None
 
     def label(self, observer):
         if observer.current is None:
@@ -1126,6 +1127,8 @@ class _SchedulerTrace:
             raise self.failed  # No retry after uncertain profiler retirement.
         if self.active:
             raise RuntimeError('scheduler profiler capture is reentrant')
+        if self.headroom_check is not None:
+            self.selection['profiler_entry_headroom'] = self.headroom_check()
         errors = self.capture_errors
         for index in range(len(errors)):
             errors[index] = None
@@ -1369,13 +1372,17 @@ def _trace_inventory(engine, output):
 
 class _BenchmarkObserver:
     """Private current-stream inclusive envelopes; four events reused per cohort."""
-    def __init__(self, engine, plan, *, events=None):
+    def __init__(self, engine, plan, *, events=None, timed=True, strict=False):
         import torch
         from tensorfold.server.stats import INSTANCE_ID
         self.server_instance_id = INSTANCE_ID
         self.engine, self.plan = engine, plan
         self.decoder, self.observations = engine.multi, engine.multi.controller.work_observations
-        self.events = events if events is not None else [torch.cuda.Event(enable_timing=True) for _ in range(4)]
+        self.timed, self.strict = timed, strict
+        self.finished, self.failed = False, None
+        self.seen = set()
+        self.failure_status = [None] * 2
+        self.events = events if events is not None else ([torch.cuda.Event(enable_timing=True) for _ in range(4)] if timed else [])
         self.current = None
         self.records = {}
         self.identities = {}
@@ -1388,6 +1395,9 @@ class _BenchmarkObserver:
 
     def _invalid(self, message):
         error = ValueError(message)
+        if self.strict:
+            self.failed = error
+            _owned_model_failure(self.engine, error, self.failure_status)
         _observer_failure(self.engine, error)
         raise error
 
@@ -1399,10 +1409,15 @@ class _BenchmarkObserver:
             match = next((self.cases[tuple(stream.prompt[:size])] for size in self.prefix_lengths
                           if tuple(stream.prompt[:size]) in self.cases), None)
             if match is None:
-                if self.current is None:
+                if self.current is None and not self.strict:
                     return None  # Explicit pre-matrix unobserved smoke phase.
                 self._invalid("request does not belong to the private benchmark plan")
             cohort, request = match
+            marker = (cohort['id'], request['index'])
+            if self.strict and marker in self.seen:
+                self._invalid('closed benchmark repeated an already admitted request')
+            if self.strict:
+                self.seen.add(marker)
             if (len(stream.prompt) != cohort["input_tokens"] or stream.count != cohort["tokens"]
                     or _prompt_digest(stream.prompt) != request["prompt_sha256"]):
                 self._invalid("actual benchmark prompt/reply differs from its plan")
@@ -1418,14 +1433,19 @@ class _BenchmarkObserver:
         if self.current != cohort["id"]:
             if self.current is not None and not self.records[self.current].get("events_ready"):
                 self._invalid("next benchmark cohort arrived before prior idle timer retirement")
+            if self.strict and self.current is not None and len(self.records[self.current]['done']) != self.records[self.current]['level']:
+                self._invalid('closed benchmark advanced before actual request completion')
             self.current = cohort["id"]
             self.records[self.current] = {"level": cohort["level"], "prefill_done": set(), "done": set(),
                 "hashes": set(), "active_owner_highwater": 0, "prefill_batch_highwater": 0,
-                "decode_batch_highwater": 0, "started": [False] * 4, "events_ready": False}
-            self.stream = torch.cuda.current_stream(self.engine.w.device)
+                "decode_batch_highwater": 0, "started": [False] * 4, "events_ready": not self.timed}
+            self.stream = torch.cuda.current_stream(self.engine.w.device) if self.timed else None
         return cohort, request, self.records[self.current]
 
     def _record(self, index):
+        if not self.timed:
+            self.records[self.current]['started'][index] = True
+            return
         import torch
         if torch.cuda.current_stream(self.engine.w.device) != self.stream:
             self._invalid("benchmark changed the actual critical CUDA stream")
@@ -1434,6 +1454,9 @@ class _BenchmarkObserver:
         try:
             self.events[index].record(self.stream)
         except BaseException as error:
+            if self.strict:
+                self.failed = error
+                _owned_model_failure(self.engine, error, self.failure_status)
             _observer_failure(self.engine, error)
             raise
         self.records[self.current]["started"][index] = True
@@ -1522,15 +1545,25 @@ class _BenchmarkObserver:
             self._observe()
             return result
         def finished(streams):
+            if self.strict:
+                for stream in streams:
+                    identity = self._identity(stream)
+                    if (identity is None or stream.error is not None or len(stream.out) != identity[0]['tokens']
+                            or stream.cancel is not None and stream.cancel.is_set()):
+                        self._invalid('closed benchmark request did not finish its exact planned work')
             result = finish(streams)
             for stream in streams:
                 self.identities.pop(self.engine.tp_decoder.wires.get(id(stream)), None)
             self._observe()
+            if self.strict:
+                self.finished = (len(self.records) == len(self.plan['cohorts']) and all(
+                    len(self.records[c['id']]['done']) == c['level'] and self.records[c['id']]['hashes'] == {
+                        r['prompt_sha256'] for r in c['requests']} for c in self.plan['cohorts']))
             return result
         def recorded(*, credit=None):
             # Internal TP status readers never query/drain timers. HTTP reads
             # may query only a completely finished, idle model cohort.
-            if (self.current is not None and threading.current_thread() is not self.engine.scheduler.thread
+            if (self.timed and self.current is not None and threading.current_thread() is not self.engine.scheduler.thread
                     and not self.decoder.streams and not self.decoder.filling):
                 state = self.records[self.current]
                 if (not state["events_ready"] and len(state["done"]) == state["level"]
@@ -1539,6 +1572,9 @@ class _BenchmarkObserver:
                         state["prefill_ms"] = self.events[0].elapsed_time(self.events[1])
                         state["decode_ms"] = self.events[2].elapsed_time(self.events[3])
                     except BaseException as error:
+                        if self.strict:
+                            self.failed = error
+                            _owned_model_failure(self.engine, error, self.failure_status)
                         _observer_failure(self.engine, error)
                         raise
                     if any(not math.isfinite(state[name]) or state[name] < 0 for name in ("prefill_ms", "decode_ms")):
@@ -1552,23 +1588,42 @@ class _BenchmarkObserver:
             return {**result, "benchmark": published}
         # The private before-listener capability is the only selector. Default
         # instances/class implementations retain their original methods.
-        decoder.admit, decoder._prepare_pass, decoder._joined, decoder._take = admitted, preparing, joining, taking
-        decoder.round, decoder.finish = rounded, finished
-        observations.target, observations.record = targeted, recorded
+        def guarded(callback):
+            if not self.strict:
+                return callback
+            def run(*args, **kwargs):
+                try:
+                    return callback(*args, **kwargs)
+                except BaseException as primary:
+                    if self.failed is primary:
+                        raise
+                    self.failed = primary
+                    _owned_model_failure(self.engine, primary, self.failure_status)
+            return run
+        decoder.admit, decoder._prepare_pass, decoder._joined, decoder._take = map(guarded, (admitted, preparing, joining, taking))
+        decoder.round, decoder.finish = guarded(rounded), guarded(finished)
+        observations.target, observations.record = guarded(targeted), guarded(recorded)
 
 
-def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0):
-    if engine.rank != 0:
+def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0, closed=None):
+    if engine.rank != 0 and closed is None:
         return
     path = Path(engine.model_dir) / "tokenizer.json"
     if hashlib.sha256(path.read_bytes()).hexdigest() != plan["tokenizer_sha256"]:
         raise ValueError("benchmark tokenizer differs from the actual prepared frontend")
     selection = None if trace_output is None else _trace_prefill_selection(plan, trace_prefill_start)
-    observer = _BenchmarkObserver(engine, plan)
+    observer = _BenchmarkObserver(engine, plan, timed=engine.rank == 0, strict=closed is not None)
+    if closed is not None:
+        engine._owned_benchmark = observer  # Journal before callback installation.
+        _prepare_closed_benchmark(engine, observer, closed)
     observer.install()
-    if trace_output is not None:
+    if trace_output is not None and engine.rank == 0:
         _trace_inventory(engine, trace_output)
-        _SchedulerTrace(engine, trace_output, prefill_start=trace_prefill_start, selection=selection).install(observer)
+        tracer = _SchedulerTrace(engine, trace_output, prefill_start=trace_prefill_start, selection=selection)
+        if closed is not None:
+            tracer.headroom_check = lambda: _benchmark_headroom(engine, closed['trace'])
+        tracer.install(observer)
+    return observer
 
 
 def _teacher_module():
@@ -1628,6 +1683,101 @@ def _teacher_client_credit(teacher, client_bytes):
     teacher['resources'] = resources
 
 
+
+def _owned_model_startup_fields(engine, profile, observer, role):
+    from tensorfold.server.stats import INSTANCE_ID
+    states = engine.multi.states
+    fields = {role + '_profile': profile, role + '_worker_PID': os.getpid(), role + '_server_instance_id': INSTANCE_ID,
+        role + '_windows': {'full_resident': engine.multi.full_resident, 'slots': len(states),
+            'capacity_min': min(st.capacity for st in states), 'capacity_max': max(st.capacity for st in states),
+            'limit_min': min(st.limit for st in states), 'limit_max': max(st.limit for st in states),
+            'logical_min': min(st.logical_context for st in states), 'logical_max': max(st.logical_context for st in states)}}
+    if observer is not None:
+        fields[role + '_observer'] = observer['source']
+    return fields
+
+
+def _owned_client_service(stats, spec, instance, role):
+    if __package__:
+        from . import v100_adaptive_qualification as qualification
+    else:
+        import v100_adaptive_qualification as qualification
+    effective = qualification.profile(stats)
+    qualification.require_idle(stats)
+    qualification.materialization(stats, effective)
+    expected = spec['expected_service']
+    expert = stats['capacity_plan']['expert_parallel']
+    families = stats['runtime']['execution']['execution_families']
+    if (effective['instance_id'] != instance or effective['model']['id'] != spec['model']
+            or effective['context_tokens'] != expected['context_tokens']
+            or effective['resident_capacity'] != expected['resident_capacity']
+            or effective['session_capacity']['configured_ceiling'] != expected['configured_ceiling']
+            or effective['model']['kv_dtype'] != expected['kv_dtype']
+            or any(expert.get(key) != expected[key] for key in ('tp', 'pp', 'etp', 'ep'))
+            or families['effective'] != {'kernel_family': expected['kernel_family'], 'graph_family': expected['graph_family']}
+            or families.get('trial') is not None):
+        raise ValueError(role + ' HTTP actual profile/instance differs from the frozen control')
+    return effective
+
+
+def _owned_client_open(owner, role, *, deadline=None):
+    import urllib.error
+    if __package__:
+        from . import v100_rotorquant_live as live, openai_protocol as protocol
+    else:
+        import v100_rotorquant_live as live
+        import openai_protocol as protocol
+    spec = owner.selected['data']
+    raw = owner.output / (role + '-client-raw')
+    raw.mkdir(mode=0o700)
+    client = live.Client(spec['base'], raw, timeout=spec['socket_timeout_s'],
+                         limits=protocol.Limits(response_bytes=spec['response_bytes']))
+    deadline = time.monotonic() + spec['whole_timeout_s'] if deadline is None else deadline
+    ready_deadline = min(deadline, time.monotonic() + spec['readiness_timeout_s'])
+    control = live.ReadControl(deadline, owner.cancelled)
+    while not all((owner.output / f'rank-{rank}.json').is_file() for rank in range(8)):
+        if time.monotonic() >= ready_deadline:
+            raise TimeoutError(role + ' startup receipts did not complete within readiness budget')
+        control.check()
+        owner.cancelled.wait(min(1.0, max(0., ready_deadline - time.monotonic())))
+    startup = None
+    for rank in range(8):
+        row = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(owner.output / f'rank-{rank}.json', 8 << 20))
+        windows, expected = row.get(role + '_windows', {}), spec['expected_service']
+        if (row.get('rank') != rank or row.get('mtp_banks') != 0 or windows.get('full_resident') is not True
+                or windows.get('slots') != expected['resident_capacity']
+                or windows.get('capacity_min') != windows.get('capacity_max')
+                or windows.get('limit_min') != windows.get('limit_max')
+                or windows.get('capacity_min', 0) < expected['context_tokens']
+                or windows.get('limit_min', 0) < expected['context_tokens']
+                or windows.get('logical_min') != expected['context_tokens']
+                or windows.get('logical_max') != expected['context_tokens']):
+            raise ValueError(role + ' startup lacks actual all-rank full-window materialization')
+        if rank == 0:
+            startup = row
+        if role == 'benchmark' and row.get('tool_sha256') != owner.producer_sha:
+            raise ValueError('benchmark startup source differs from actual owned client')
+    instance = startup.get(role + '_server_instance_id')
+    if type(instance) is not str or not instance or startup.get('state_count') != expected['resident_capacity']:
+        raise ValueError('fresh ' + role + ' startup lacks its actual NONE/instance/State binding')
+    initial, attempt = None, 0
+    while initial is None:
+        if attempt >= _TEACHER_READINESS_ATTEMPTS:
+            raise TimeoutError(role + ' readiness exhausted its prepaid attempt count')
+        control.check()
+        if time.monotonic() >= ready_deadline:
+            raise TimeoutError(role + ' HTTP readiness budget expired')
+        try:
+            initial = client.call(f'readiness-{attempt}', path='/stats', object_response=True,
+                                  read_control=live.ReadControl(ready_deadline, owner.cancelled))
+        except urllib.error.URLError as error:
+            if type(error.reason) is not ConnectionRefusedError:
+                raise
+            attempt += 1
+            owner.cancelled.wait(min(1., max(0., ready_deadline - time.monotonic())))
+    return client, control, _owned_client_service(initial, spec, instance, role), instance
+
+
 class _TeacherClient:
     """One owned non-stream completion; no alternate serving/launch stack."""
     def __init__(self, teacher, selected, output):
@@ -1637,79 +1787,12 @@ class _TeacherClient:
         self.post_attempts = 0
 
     def run(self):
-        import urllib.error
         if __package__:
-            from . import v100_rotorquant_live as live, openai_protocol as protocol, v100_adaptive_qualification as qualification
+            from . import openai_protocol as protocol
         else:
-            import v100_rotorquant_live as live
             import openai_protocol as protocol
-            import v100_adaptive_qualification as qualification
         spec, plan = self.selected['data'], self.teacher['data']
-        raw = self.output / 'teacher-client-raw'
-        raw.mkdir(mode=0o700)
-        client = live.Client(spec['base'], raw, timeout=spec['socket_timeout_s'],
-                             limits=protocol.Limits(response_bytes=spec['response_bytes']))
-        deadline = time.monotonic() + spec['whole_timeout_s']
-        ready_deadline = min(deadline, time.monotonic() + spec['readiness_timeout_s'])
-        control = live.ReadControl(deadline, self.cancelled)
-        startup = self.output / 'rank-0.json'
-        while not all((self.output / f'rank-{rank}.json').is_file() for rank in range(8)):
-            if time.monotonic() >= ready_deadline:
-                raise TimeoutError('teacher startup receipts did not complete within readiness budget')
-            control.check()
-            self.cancelled.wait(min(1.0, ready_deadline - time.monotonic()))
-        startup_data = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(startup, 8 << 20))
-        expected = spec['expected_service']
-        for rank in range(8):
-            row = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(self.output / f'rank-{rank}.json', 8 << 20))
-            windows = row.get('teacher_windows', {})
-            if (row.get('rank') != rank or row.get('mtp_banks') != 0
-                    or windows.get('full_resident') is not True or windows.get('slots') != expected['resident_capacity']
-                    or windows.get('capacity_min') != windows.get('capacity_max')
-                    or windows.get('limit_min') != windows.get('limit_max')
-                    or windows.get('capacity_min', 0) < expected['context_tokens']
-                    or windows.get('limit_min', 0) < expected['context_tokens']
-                    or windows.get('logical_min') != expected['context_tokens']
-                    or windows.get('logical_max') != expected['context_tokens']):
-                raise ValueError('teacher startup lacks actual all-rank full-window materialization')
-            del row
-        instance = startup_data.get('teacher_server_instance_id')
-        if (type(instance) is not str or not instance or startup_data.get('mtp_banks') != 0
-                or startup_data.get('state_count') != spec['expected_service']['resident_capacity']):
-            raise ValueError('fresh teacher startup lacks its actual NONE/instance/State binding')
-        initial = None
-        attempt = 0
-        while initial is None:
-            if attempt >= _TEACHER_READINESS_ATTEMPTS:
-                raise TimeoutError('teacher readiness exhausted its prepaid attempt count')
-            control.check()
-            if time.monotonic() >= ready_deadline:
-                raise TimeoutError('teacher HTTP readiness budget expired')
-            try:
-                initial = client.call(f'readiness-{attempt}', path='/stats', object_response=True,
-                                      read_control=live.ReadControl(ready_deadline, self.cancelled))
-            except urllib.error.URLError as error:
-                if type(error.reason) is not ConnectionRefusedError:
-                    raise
-                attempt += 1
-                self.cancelled.wait(min(1.0, max(0.0, ready_deadline - time.monotonic())))
-        def service(stats):
-            effective = qualification.profile(stats)
-            qualification.require_idle(stats)
-            qualification.materialization(stats, effective)
-            expert = stats['capacity_plan']['expert_parallel']
-            families = stats['runtime']['execution']['execution_families']
-            if (effective['instance_id'] != instance or effective['model']['id'] != spec['model']
-                    or effective['context_tokens'] != expected['context_tokens']
-                    or effective['resident_capacity'] != expected['resident_capacity']
-                    or effective['session_capacity']['configured_ceiling'] != expected['configured_ceiling']
-                    or effective['model']['kv_dtype'] != expected['kv_dtype']
-                    or any(expert.get(key) != expected[key] for key in ('tp', 'pp', 'etp', 'ep'))
-                    or families['effective'] != {'kernel_family': expected['kernel_family'], 'graph_family': expected['graph_family']}
-                    or families.get('trial') is not None):
-                raise ValueError('teacher HTTP actual profile/instance differs from the frozen control')
-            return effective
-        before = service(initial)
+        client, control, before, instance = _owned_client_open(self, 'teacher')
         body = {'model': spec['model'], 'prompt': plan['input_ids'], 'max_tokens': plan['max_frames'],
                 'temperature': 0, 'draft': False, 'stream': False, 'return_token_ids': True}
         self.post_attempts += 1
@@ -1730,7 +1813,7 @@ class _TeacherClient:
                 or reply['usage']['prompt_tokens_details']['cached_tokens'] != 0):
             raise ValueError('teacher completion is not complete hashed cold NONE output')
         final = client.call('final-stats', path='/stats', object_response=True, read_control=control)
-        if service(final) != before:
+        if _owned_client_service(final, spec, instance, 'teacher') != before:
             raise ValueError('teacher service identity/configuration changed during its one request')
         self.result = {'schema': 'tensorfold.owned-teacher-client-report-v1', 'complete': True,
                        'post_attempts': self.post_attempts, 'teacher_plan_sha256': self.teacher['input_sha256'],
@@ -1742,23 +1825,25 @@ class _TeacherClient:
         write_json(self.output / 'teacher-client-report.json', self.result)
 
 
-def _teacher_model_observer(output):
+def _owned_model_observer(output, role):
     """The closed operation supplies the current inert observer, never user code."""
+    if role not in ('teacher', 'benchmark'):
+        raise ValueError('closed owned model observer role required')
     contract = _model_contract()
     names = (contract.CHILD_ENV, contract.DRIVER_ENV, contract.DRIVER_SHA_ENV, contract.PREFIX_ENV)
     values = [os.environ.get(name) for name in names]
     if any(value is None for value in values):
-        raise ValueError('teacher client requires the complete closed child-observer operation')
+        raise ValueError(role + ' client requires the complete closed child-observer operation')
     directory, source, expected, prefix_raw = values
     if (not contract.absolute(directory) or Path(directory).parent != Path(output).parent
             or not contract.absolute(source) or not contract.sha(expected)
             or _teacher_module()._owned_teacher_object('{"prefixes":' + prefix_raw + '}')['prefixes'] != contract.REQUIRED_PREFIXES):
-        raise ValueError('teacher child observer input differs from the closed model contract')
+        raise ValueError(role + ' child observer input differs from the closed model contract')
     info = Path(source).stat()
     if _teacher_module()._owned_teacher_hash(source, info.st_size, 8 << 20) != expected:
         raise ValueError('current staged child-observer source SHA differs')
     import importlib.util
-    spec = importlib.util.spec_from_file_location('_owned_teacher_native_observer', source)
+    spec = importlib.util.spec_from_file_location('_owned_model_native_observer', source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # Inert __name__, no main/forced native load.
     if _teacher_module()._owned_teacher_hash(source, info.st_size, 8 << 20) != expected:
@@ -1767,41 +1852,99 @@ def _teacher_model_observer(output):
             'resources': contract.child_observer_resources()}
 
 
+
+def _teacher_model_observer(output):
+    return _owned_model_observer(output, 'teacher')
+
 def _teacher_operation_credit(teacher, client_bytes, observer):
     _teacher_client_credit(teacher, client_bytes)
     resources = dict(teacher['resources'])
-    resources['child_native_observer'] = observer['resources']
-    resources['global_host_obligation_bytes'] += observer['resources']['global_host_bytes']
-    teacher['resources'] = resources
+    teacher['resources'] = _owned_observer_credit(resources, observer['resources'])
 
 
-def _attach_teacher_native_observer(engine, selected):
-    """Observe after ordinary resource fences, before Engine marks close positive."""
+def _owned_observer_credit(resources, native):
+    if 'child_native_observer' in resources:
+        raise ValueError('owned native observer cannot be prepaid twice')
+    return {**resources, 'child_native_observer': native,
+            'global_host_obligation_bytes': resources['global_host_obligation_bytes'] + native['global_host_bytes']}
+
+
+def _owned_model_failure(engine, primary, status):
+    try:
+        _observer_failure(engine, primary)
+    except BaseException as notification:
+        if notification is primary:
+            raise
+        status[0], status[1] = notification, primary
+        try:
+            raise_failures(primary, status)
+        except BaseException as failure:
+            if failure is primary:
+                raise
+            raise primary from failure
+    raise primary
+
+
+def _attach_owned_model_observer(engine, selected, *, role, complete, summary=None):
+    """One shared native observer, after real fences and before positive close."""
     original = engine._close_resources
     attempted = False
-    engine._teacher_native_observer = selected  # Keep source/callback ownership through terminal outcome.
+    status = [None] * 2
+    setattr(engine, '_' + role + '_native_observer', selected)
     def resources(*args, **kwargs):
         nonlocal attempted
         if attempted:
-            raise RuntimeError('teacher native-retirement observer already attempted; no retry')
+            raise RuntimeError(role + ' native-retirement observer already attempted; no retry')
         attempted = True
         result = original(*args, **kwargs)
-        teacher = engine._owned_teacher_frames
-        if teacher.finished and teacher.failed is None:
+        if complete():
             try:
                 selected['module'].record_native_elfs(_model_contract().REQUIRED_PREFIXES,
-                    rank=engine.rank, tag='teacher-closed', evidence_dir=selected['directory'],
+                    rank=engine.rank, tag=role + '-closed', evidence_dir=selected['directory'],
                     limits=_model_contract().MODEL_OBSERVER_LIMITS)
             except BaseException as primary:
-                try:
-                    _observer_failure(engine, primary)
-                except BaseException as notification:
-                    if notification is primary:
-                        raise
-                    raise primary from notification
-                raise
+                _owned_model_failure(engine, primary, status)
         return result
     engine._close_resources = resources
+    if summary is not None:
+        close, close_status = engine.close, [None] * 2
+        close_attempted = False
+        def closing():
+            nonlocal close_attempted
+            if close_attempted:
+                raise RuntimeError('owned benchmark close already attempted; uncertain owners retained')
+            close_attempted = True
+            primary, result = None, None
+            try:
+                result = close()
+            except BaseException as error:
+                primary = error
+            retired = getattr(engine, '_lifecycle', None) is not None and getattr(engine, '_closed', False) is True
+            if not retired and primary is None:
+                primary = RuntimeError('owned benchmark lacks positive actual Engine retirement')
+            try:
+                summary(retired)
+            except BaseException as error:
+                close_status[0] = error
+                if primary is None:
+                    primary = error
+            if primary is not None:
+                if close_status[0] is None:
+                    close_status[0] = primary
+                close_status[1] = primary
+                try:
+                    raise_failures(primary, close_status)
+                except BaseException as failure:
+                    if failure is primary:
+                        raise
+                    raise primary from failure
+            return result
+        engine.close = closing
+
+
+def _attach_teacher_native_observer(engine, selected):
+    return _attach_owned_model_observer(engine, selected, role='teacher',
+        complete=lambda: engine._owned_teacher_frames.finished and engine._owned_teacher_frames.failed is None)
 
 
 def _teacher_file(path, root, *, rank=None):
@@ -1838,6 +1981,277 @@ def _teacher_model_result(output, teacher, selected, observer, authority):
               'child_native_records': native}
     _model_contract().validate_model_result(result)
     write_json(Path(output) / 'teacher-model-result.json', result)
+    return result
+
+
+def _benchmark_module():
+    if __package__:
+        from . import bench_concurrent
+    else:
+        import bench_concurrent
+    return bench_concurrent
+
+
+def _source_sha(path, maximum=8 << 20):
+    path = Path(path)
+    return _teacher_module()._owned_teacher_hash(path, path.stat().st_size, maximum)
+
+
+def _benchmark_client_input(path, plan_sha):
+    raw = _teacher_module()._owned_teacher_read(path, 8 << 20)
+    data = _model_contract().validate_benchmark_client(_teacher_module()._owned_teacher_object(raw))
+    if data['benchmark_plan_sha256'] != plan_sha:
+        raise ValueError('benchmark client differs from its actual immutable plan')
+    return {'data': data, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def _benchmark_resources(plan, plan_bytes, selected, trace, native):
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import (
+        _json_payload_policy, _json_parse_payload, _json_tree_payload, _http_json_encoding_payload,
+    )
+    policy = _json_payload_policy()
+    count = sum(c['level'] for c in plan['cohorts'])
+    # Actual State24/bank48/cohort/source rows share the existing 1024B-row
+    # qualification serializer bound. No materialized allocation credit.
+    resources = _history_resources(24 + 48 + count + 8, plan_bytes)
+    spec = selected['data']
+    skeleton = {'model': spec['model'], 'prompt': [], 'max_tokens': 2, 'temperature': 0,
+                'draft': True, 'ignore_eos': True, 'stream': True,
+                'stream_options': {'include_usage': True}, 'return_token_ids': True}
+    # load_matrix guarantees IDs<2^31: <=10 decimal digits plus one comma.
+    request_bytes = len(json.dumps(skeleton).encode()) + 11 * max(c['input_tokens'] for c in plan['cohorts'])
+    matrix_limit = plan_bytes + (6 * count + 4) * spec['response_bytes']
+    worker = (_json_parse_payload(selected['bytes'], policy)['total_bytes']
+              + _json_tree_payload(selected['bytes'], policy) + _json_tree_payload(request_bytes, policy))
+    resources['per_rank_payload_bytes'] += worker
+    resources['global_host_obligation_bytes'] += 8 * worker + resources['per_rank_payload_bytes']
+    prepared = {'resources': {**resources, 'input_bytes': request_bytes}}
+    _teacher_client_credit(prepared, selected['bytes'])  # Same bounded readiness/error ownership.
+    resources = prepared['resources']
+    extra = (_http_json_encoding_payload(request_bytes, policy)['total_bytes']
+             + 2 * _json_tree_payload(matrix_limit, policy)
+             + _json_parse_payload(matrix_limit, policy)['total_bytes'])
+    resources['global_host_obligation_bytes'] += extra + trace['host_obligation_bytes']
+    resources = _owned_observer_credit(resources, native)
+    if resources['global_host_obligation_bytes'] > sys.maxsize:
+        raise ValueError('closed benchmark host obligation exceeds size domain')
+    resources.update(trace_grants=dict(trace), matrix_report_bytes=matrix_limit,
+        parent_matrix_payload_bytes=extra, benchmark_client_bytes=selected['bytes'],
+        scope='original immutable host admission; trace grant additional, no materialized credit; allocator/RSS separate')
+    return resources
+
+
+def _benchmark_sources(engine):
+    values = _teacher_module()._owned_runtime_sources(engine)
+    return {**{key: values[key] for key in ('engine', 'multi', 'decode', 'sampling')},
+            'observer_tool': _source_sha(__file__)}
+
+
+def _benchmark_headroom(engine, trace):
+    import torch
+    free, total = map(int, torch.cuda.mem_get_info(engine.w.device))
+    if not 0 < total or free < trace['device_headroom_bytes']:
+        raise MemoryError('closed diagnostic lacks declared fresh physical CUDA headroom')
+    return {'free_bytes': free, 'total_bytes': total, 'required_free_bytes': trace['device_headroom_bytes'],
+            'scope': 'fresh CUDA free after full States; admission observation, NOT a reservation or profiler peak guarantee'}
+
+
+def _prepare_closed_benchmark(engine, observer, prepared):
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+    decoder, expected = engine.multi, _model_contract().SERVICE
+    states = decoder.states
+    obligation = (prepared['resources']['global_host_obligation_bytes'], prepared['plan_sha256'])
+    if (engine._owned_qualification_host != obligation
+            or engine.retention_catalog.host_resources.baseline_host_bytes < obligation[0]):
+        raise ValueError('benchmark resource grants differ from original immutable admission')
+    if (getattr(engine, '_lifecycle', None) is None or getattr(engine, '_closed', None) is not False
+            or engine.w.mtp is not None or decoder.speculation.method != 'none' or decoder.speculation.maximum_proposals != 0
+            or engine.sm70_profile != 'reference' or engine.kv_pair.identity != get_pair('int8').identity or decoder.graphs is not None
+            or engine.context_window != expected['context_tokens'] or not decoder.full_resident
+            or len(states) != expected['resident_capacity'] or any(st.capacity < engine.context_window
+                or st.limit < engine.context_window or st.logical_context != engine.context_window for st in states)
+            or any(st.kv_identity != states[0].kv_identity for st in states)):
+        raise ValueError('closed benchmark requires actual full C24 NONE/reference/noGraphs States')
+    profile = bound_receipt(engine)
+    def family(buf):
+        return {'kernel_family': buf.owner_kernel_family, 'graph_family': buf.owner_graph_family}
+    wanted = {'kernel_family': expected['kernel_family'], 'graph_family': expected['graph_family']}
+    if family(decoder.buf) != wanted or family(decoder.pbuf) != wanted:
+        raise ValueError('closed benchmark actual prepared family differs')
+    coordinate = ('coordinate-profile-v1', profile['coordinate_profile_identity'])
+    if (states[0].kv_identity[0] != engine.kv_pair.identity
+            or ('logical-context-v1', engine.context_window) not in states[0].kv_identity
+            or ('position-profile-v1', engine.position_profile.identity, engine.position_profile.epoch) not in states[0].kv_identity
+            or coordinate not in states[0].kv_identity):
+        raise ValueError('closed benchmark actual State numerical identity differs')
+    windows = _owned_model_startup_fields(engine, profile, prepared['native'], 'benchmark')['benchmark_windows']
+    semantics = {'method': decoder.speculation.method, 'state_kv_identity': states[0].kv_identity,
+        'context': engine.context_window, 'resident_slots': len(states), **windows,
+        'target_rows': decoder.buf.rows, 'prefill_rows': decoder.pbuf.rows,
+        'target_family': family(decoder.buf), 'prefill_family': family(decoder.pbuf)}
+    semantics.pop('slots')  # resident_slots is the single semantic count owner.
+    observer.actual_profile = {**profile, 'benchmark_semantics': semantics}
+    observer.sources = _benchmark_sources(engine)
+    observer.headroom = _benchmark_headroom(engine, prepared['trace'])
+    observer.prepared = prepared
+    observer.directory = Path(prepared['output']) / f'benchmark-rank{engine.rank}'
+    observer.directory.mkdir(mode=0o700)
+    def summary(retired):
+        current = _benchmark_sources(engine)
+        if current != observer.sources:
+            raise ValueError('benchmark source changed before positive retirement')
+        cohorts = [{'id': c['id'], 'level': c['level'],
+                    'completed': len(observer.records.get(c['id'], {}).get('done', ())),
+                    'prompt_hashes': sorted(observer.records.get(c['id'], {}).get('hashes', ()))}
+                   for c in observer.plan['cohorts']]
+        write_json(observer.directory / 'summary.json', {
+            'schema': 'tensorfold.owned-benchmark-rank-result-v1', 'rank': engine.rank, 'world': engine.tp,
+            'closed': retired, 'finished': observer.finished, 'failed': observer.failed is not None or not retired or not observer.finished,
+            'benchmark_plan_sha256': prepared['plan_sha256'], 'benchmark_client_sha256': prepared['client']['sha256'],
+            'run_identity': observer.plan['run_identity'], 'server_instance_id': observer.server_instance_id,
+            'actual_owned_profile': observer.actual_profile, 'runtime_sources': current, 'cohorts': cohorts,
+            'headroom': observer.headroom, 'resources': prepared['resources'], 'qualification': False, 'P3_valid': False})
+    _attach_owned_model_observer(engine, prepared['native'], role='benchmark',
+        complete=lambda: observer.finished and observer.failed is None, summary=summary)
+
+
+def _benchmark_trace_files(output, plan, trace):
+    directory = Path(output) / 'trace'
+    selection = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(directory / 'prefill-selection.json', 8 << 20))
+    wanted = _trace_prefill_selection(plan, trace['prefill_start'])
+    if (selection.get('status') != 'OBSERVED' or any(selection.get(key) != wanted[key] for key in
+            ('run_identity', 'cohort_id', 'prompt_sha256', 'input_tokens', 'requested_start'))
+            or selection.get('prepared_calls') != 1 or selection.get('prepared_returned') is not True
+            or type(selection.get('actual_count')) is not int or selection['actual_count'] <= 0
+            or type(selection.get('actual_start')) is not int
+            or not trace['prefill_start'] <= selection['actual_start'] < selection['input_tokens']
+            or selection['actual_start'] + selection['actual_count'] > selection['input_tokens']
+            or any(type(selection.get(key)) is not int or selection[key] < 0 for key in
+                   ('slot', 'slot_generation', 'wire', 'prefix_operation', 'actual_state_pos'))
+            or not 0 <= selection['slot'] < 24):
+        raise ValueError('closed benchmark lacks exactly observed planned prefill geometry')
+    entry = selection.get('profiler_entry_headroom')
+    if (type(entry) is not dict or any(type(entry.get(k)) is not int for k in
+            ('free_bytes', 'total_bytes', 'required_free_bytes'))
+            or entry['required_free_bytes'] != trace['device_headroom_bytes']
+            or not entry['required_free_bytes'] <= entry['free_bytes'] <= entry['total_bytes']):
+        raise ValueError('closed benchmark lacks its fresh physical profiler-entry admission observation')
+    receipts = list(directory.glob('*-receipt.json'))
+    chromes = [p for p in directory.glob('*.json') if p.name not in ('inventory.json', 'prefill-selection.json') and not p.name.endswith('-receipt.json')]
+    label = ('c1-cold-prefill-containing-round' if trace['prefill_start'] == 0
+             else f"c1-prefill-start-ge-{trace['prefill_start']}-round")
+    if (len(receipts) != 1 or len(chromes) != 1 or receipts[0].name != label + '-receipt.json'
+            or chromes[0].name != label + '.json' or chromes[0].stat().st_size <= 0):
+        raise ValueError('closed benchmark requires exactly one prefill profiler window')
+    receipt = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(receipts[0], 8 << 20))
+    if ('primary' not in receipt or receipt.get('primary') is not None or receipt.get('post_errors') != []
+            or receipt.get('prefill_selection') != selection or receipt.get('P3_valid') is not False
+            or receipt.get('exported_trace_bytes') != chromes[0].stat().st_size):
+        raise ValueError('closed benchmark profiler failed or source geometry changed')
+    paths = {'inventory': directory / 'inventory.json', 'selection': directory / 'prefill-selection.json',
+             'receipt': receipts[0], 'chrome': chromes[0]}
+    if sum(path.stat().st_size for path in paths.values()) > trace['disk_bytes']:
+        raise ValueError('closed benchmark trace exceeds declared disk extent')
+    return paths
+
+
+class _BenchmarkClient:
+    def __init__(self, prepared, output):
+        self.prepared, self.output = prepared, Path(output)
+        self.selected = prepared['client']
+        self.cancelled, self.result = threading.Event(), None
+        self.post_attempts = 0
+        self.producer_sha = _source_sha(__file__)
+
+    def run(self):
+        from types import SimpleNamespace
+        spec, plan = self.selected['data'], self.prepared['plan']
+        deadline = time.monotonic() + spec['whole_timeout_s']
+        client, control, before, instance = _owned_client_open(self, 'benchmark', deadline=deadline)
+        module = _benchmark_module()
+        source = _source_sha(module.__file__)
+        args = SimpleNamespace(base=spec['base'], model=spec['model'], output=self.output / 'matrix-results.json',
+            timeout=spec['socket_timeout_s'], response_mib=spec['response_bytes'] // (1 << 20),
+            sse_line_kib=spec['sse_line_bytes'] // 1024)
+        code = module.run_matrix(args, plan, read_control=control)
+        control.check()
+        matrix = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(
+            args.output, self.prepared['resources']['matrix_report_bytes']))
+        if (type(code) is not int or code != 0 or matrix.get('passed') is not True
+                or matrix.get('unrun_cohorts') != [] or matrix.get('instance_id') != instance or matrix.get('plan') != plan):
+            raise ValueError('closed benchmark matrix did not complete its actual planned work')
+        final = client.call('final-stats', path='/stats', object_response=True, read_control=control)
+        if _owned_client_service(final, spec, instance, 'benchmark') != before:
+            raise ValueError('closed benchmark final idle service identity changed')
+        _benchmark_trace_files(self.output, plan, self.prepared['trace'])
+        if _source_sha(module.__file__) != source or _source_sha(__file__) != self.producer_sha:
+            raise ValueError('closed benchmark source changed during client work')
+        self.result = {'schema': 'tensorfold.owned-benchmark-client-report-v1', 'complete': True,
+            'client_protocol_passed': True, 'benchmark_plan_sha256': self.prepared['plan_sha256'],
+            'benchmark_client_sha256': self.selected['sha256'], 'run_identity': plan['run_identity'],
+            'server_instance_id': instance, 'matrix_passed': True, 'observed_trace': True,
+            'request_count': sum(c['level'] for c in plan['cohorts']), 'matrix_tool_sha256': source,
+            'quality_acceptance': False, 'P3_valid': False}
+        write_json(self.output / 'benchmark-client-report.json', self.result)
+
+
+def _benchmark_model_result(output, prepared):
+    root, native, summaries, startup = Path(output).parent, [], [], []
+    common = common_semantics = common_producer = None
+    for rank in range(8):
+        start_path = Path(output) / f'rank-{rank}.json'
+        summary_path = Path(output) / f'benchmark-rank{rank}/summary.json'
+        start = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(start_path, 8 << 20))
+        record = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(summary_path, 8 << 20))
+        paths = list(prepared['native']['directory'].glob(f'benchmark-closed-rank-{rank}-pid-*.json'))
+        if len(paths) != 1:
+            raise ValueError('benchmark requires one actual closed native record per rank')
+        observed = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(paths[0], 4 << 20))
+        if (record.get('schema') != 'tensorfold.owned-benchmark-rank-result-v1'
+                or record.get('rank') != rank or record.get('world') != 8 or record.get('closed') is not True
+                or record.get('finished') is not True or record.get('failed') is not False
+                or record.get('benchmark_plan_sha256') != prepared['plan_sha256']
+                or record.get('benchmark_client_sha256') != prepared['client']['sha256']
+                or record.get('actual_owned_profile') != start.get('benchmark_profile')
+                or record.get('resources') != prepared['resources'] or start.get('benchmark_resources') != prepared['resources']
+                or record.get('headroom') != start.get('benchmark_headroom')
+                or observed.get('PID') != start.get('benchmark_worker_PID') or observed.get('rank') != rank
+                or observed.get('operation_limits') != _model_contract().MODEL_OBSERVER_LIMITS
+                or observed.get('missing_required_prefixes') != []
+                or observed.get('observer', {}).get('sha256') != prepared['native']['source']['sha256']):
+            raise ValueError('closed benchmark rank completion/source/origin binding differs')
+        wanted = [{'id': c['id'], 'level': c['level'], 'completed': c['level'],
+                   'prompt_hashes': sorted(r['prompt_sha256'] for r in c['requests'])} for c in prepared['plan']['cohorts']]
+        if record.get('cohorts') != wanted:
+            raise ValueError('benchmark rank did not consume exactly its planned requests')
+        semantics = record['actual_owned_profile'].get('benchmark_semantics')
+        producer = {key: start.get(key) for key in ('tool_sha256', 'runtime_cli_sha256', 'dense_implementation',
+            'half_partial_policy', 'private_router_policy', 'empty_prefix_policy', 'grouped_gate_up')}
+        producer['reference_tiles_requested'] = start.get('reference_tile_preparation', {}).get('requested')
+        if common_semantics is None:
+            common_semantics, common_producer = semantics, producer
+        elif semantics != common_semantics or producer != common_producer:
+            raise ValueError('benchmark immutable State/producer semantics differ across ranks')
+        sources = record.get('runtime_sources')
+        if (type(sources) is not dict or set(sources) != {'engine', 'multi', 'decode', 'sampling', 'observer_tool'}
+                or any(not _model_contract().sha(value) for value in sources.values())):
+            raise ValueError('benchmark closed rank lacks complete source identity')
+        if common is None:
+            common = sources
+        elif sources != common:
+            raise ValueError('benchmark runtime sources disagree across ranks')
+        native.append(_teacher_file(paths[0], root, rank=rank))
+        summaries.append(_teacher_file(summary_path, root, rank=rank))
+        startup.append(_teacher_file(start_path, root, rank=rank))
+    paths = _benchmark_trace_files(output, prepared['plan'], prepared['trace'])
+    result = {'schema': _model_contract().BENCHMARK_RESULT_SCHEMA, 'benchmark_plan_sha256': prepared['plan_sha256'],
+        'benchmark_client_sha256': prepared['client']['sha256'], 'launch_exit': 0,
+        'client_report': _teacher_file(Path(output) / 'benchmark-client-report.json', root),
+        'matrix_report': _teacher_file(Path(output) / 'matrix-results.json', root),
+        'startup_receipts': startup, 'rank_receipts': summaries, 'child_native_records': native,
+        'trace': {key: _teacher_file(path, root) for key, path in paths.items()}, 'P3_valid': False}
+    _model_contract().validate_benchmark_model_result(result)
+    write_json(Path(output) / 'benchmark-model-result.json', result)
     return result
 
 
@@ -2026,18 +2440,14 @@ def publish_receipt(engine, output, *, dense_implementation=None, half_request=N
         from tensorfold import cli
         receipt = bound_receipt(engine)
         if teacher_profile is not None:
-            from tensorfold.server.stats import INSTANCE_ID
-            receipt['teacher_profile'] = teacher_profile
-            receipt['teacher_worker_PID'] = os.getpid()
-            receipt['teacher_server_instance_id'] = INSTANCE_ID
-            states = engine.multi.states
-            receipt['teacher_windows'] = {'full_resident': engine.multi.full_resident, 'slots': len(states),
-                'capacity_min': min(state.capacity for state in states), 'capacity_max': max(state.capacity for state in states),
-                'limit_min': min(state.limit for state in states), 'limit_max': max(state.limit for state in states),
-                'logical_min': min(state.logical_context for state in states), 'logical_max': max(state.logical_context for state in states)}
-            observer = getattr(engine, '_teacher_native_observer', None)
-            if observer is not None:
-                receipt['teacher_observer'] = observer['source']
+            receipt.update(_owned_model_startup_fields(engine, teacher_profile,
+                getattr(engine, '_teacher_native_observer', None), 'teacher'))
+        benchmark = getattr(engine, '_owned_benchmark', None)
+        if benchmark is not None:
+            receipt.update(_owned_model_startup_fields(engine, benchmark.actual_profile,
+                getattr(engine, '_benchmark_native_observer', None), 'benchmark'))
+            receipt['benchmark_resources'] = benchmark.prepared['resources']
+            receipt['benchmark_headroom'] = benchmark.headroom
         receipt["grouped_gate_up"] = _grouped_gate_up_receipt(engine, grouped_gate_up)
         if prepared_features is not None:
             receipt["prepared_features"] = prepared_features
@@ -2099,6 +2509,8 @@ def worker(argv):
     parser.add_argument("--history-input", type=Path)
     parser.add_argument("--history-run-id")
     parser.add_argument("--benchmark-plan", type=Path)
+    parser.add_argument("--benchmark-client", type=Path)
+    parser.add_argument("--benchmark-trace-data")
     parser.add_argument("--teacher-plan", type=Path)
     parser.add_argument('--teacher-client-bytes', type=int)
     parser.add_argument("--scheduler-trace", type=Path)
@@ -2113,6 +2525,18 @@ def worker(argv):
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
+    if selected.benchmark_client is not None and (selected.benchmark_plan is None or selected.scheduler_trace is None
+            or selected.benchmark_trace_data is None or selected.teacher_plan is not None):
+        raise ValueError('closed benchmark client requires benchmark/trace and trusted trace DATA only')
+    if selected.benchmark_trace_data is not None and selected.benchmark_client is None:
+        raise ValueError('internal trace DATA requires its closed benchmark client')
+    trace_data = None
+    if selected.benchmark_trace_data is not None:
+        if len(selected.benchmark_trace_data) > 4096:
+            raise ValueError('internal benchmark trace DATA exceeds bounded DTO')
+        trace_data = _model_contract().validate_benchmark_trace(_teacher_module()._owned_teacher_object(selected.benchmark_trace_data))
+        if trace_data['prefill_start'] != (selected.scheduler_trace_prefill_start or 0):
+            raise ValueError('benchmark trace DATA differs from selected threshold')
     if selected.scheduler_trace_prefill_start is not None and (selected.scheduler_trace is None or selected.benchmark_plan is None
             or not 0 <= selected.scheduler_trace_prefill_start <= sys.maxsize):
         raise ValueError('late scheduler trace requires trace+benchmark and a nonnegative prefill start')
@@ -2133,7 +2557,7 @@ def worker(argv):
     prepared = router_prepared = None
     benchmark = benchmark_resources = parity_resources = feature_resources = None
     benchmark_setup_errors = [None] * 2  # Before listener/setup hooks can fail.
-    teacher = model_observer = None
+    teacher = model_observer = closed_benchmark = None
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
     router_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS")
     empty_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX")
@@ -2171,7 +2595,8 @@ def worker(argv):
                         prepare_benchmark(engine, benchmark)
                     else:
                         prepare_benchmark(engine, benchmark, selected.scheduler_trace,
-                            trace_prefill_start=selected.scheduler_trace_prefill_start or 0)
+                            trace_prefill_start=selected.scheduler_trace_prefill_start or 0,
+                            **({'closed': closed_benchmark} if closed_benchmark is not None else {}))
                 except BaseException as primary:
                     try:
                         _observer_failure(engine, primary)
@@ -2232,6 +2657,14 @@ def worker(argv):
                 _trace_prefill_selection(benchmark, selected.scheduler_trace_prefill_start or 0)  # Before Engine/admission.
             size = selected.benchmark_plan.stat().st_size
             benchmark_resources = _history_resources(sum(c["level"] for c in benchmark["cohorts"]), size)
+            if selected.benchmark_client is not None:
+                from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
+                plan_sha = _source_sha(selected.benchmark_plan, MAX_MESSAGE_BYTES)
+                client_input = _benchmark_client_input(selected.benchmark_client, plan_sha)
+                model_observer = _owned_model_observer(selected.out, 'benchmark')
+                benchmark_resources = _benchmark_resources(benchmark, size, client_input, trace_data, model_observer['resources'])
+                closed_benchmark = {'plan': benchmark, 'plan_sha256': plan_sha, 'client': client_input,
+                    'trace': trace_data, 'native': model_observer, 'resources': benchmark_resources, 'output': selected.out}
             if selected.normalization_parity:
                 parity_resources = _normalization_resources(selected.out)
                 benchmark_resources = {**benchmark_resources, "global_host_obligation_bytes":
@@ -2410,7 +2843,89 @@ def accept_history(output, client_report):
             "scope": "coherent logical owner/device-stream ordering plus completed client parity; not GPU wall-clock simultaneity"}
 
 
-def main(argv=None):
+def _run_owned_client(client, command, prefix, output, *, role, plan_sha, client_sha, mode):
+    if __package__:
+        from . import launch_cuda_tp
+    else:
+        import launch_cuda_tp
+    if __package__:
+        from .worker_lifetime import Task, drain
+        from .v100_rotorquant_live import ReadCancelled
+    else:
+        from worker_lifetime import Task, drain
+        from v100_rotorquant_live import ReadCancelled
+    task = Task(client.run, name='owned-' + role + '-one-client')
+    tasks, cleanup_status = [task], [None] * 4
+    primary = None
+    result = None
+    worker_failure = False
+    try:
+        task.start()
+        def failed():
+            if task.done.is_set() and task.error is not None:
+                raise task.error
+            return False
+        def stopping(requested):
+            if requested:
+                client.cancelled.set()
+            if task.done.is_set() and task.error is not None:
+                raise task.error
+            return task.done.is_set() and task.error is None and client.result is not None and client.result['complete'] is True
+        result = launch_cuda_tp.main(command, _command_prefix=prefix, _shutdown_probe=stopping, _failure_probe=failed)
+        if result != 0 and task.error is None:
+            primary = RuntimeError(role + ' cohort failed with launcher status ' + str(result))
+            worker_failure = True
+    except BaseException as error:
+        primary = error
+    if task.error is not None and task.error is not primary and not worker_failure:
+        cleanup_status[0] = primary
+        primary = task.error
+    try:
+        client.cancelled.set()
+    except BaseException as error:
+        cleanup_status[1] = error
+        if primary is None:
+            primary = error
+    try:
+        drain(tasks, primary=primary)  # Task.done, not Thread.is_alive, owns the captured state.
+    except BaseException as error:
+        cleanup_status[2] = error
+        if primary is None:
+            primary = error
+    if task.error is not None and task.error is not primary and not isinstance(task.error, ReadCancelled):
+        if worker_failure:
+            cleanup_status[0] = task.error
+        else:
+            cleanup_status[0] = primary
+            primary = task.error
+    if primary is not None:
+        try:
+            failed_report = {'schema': 'tensorfold.owned-' + role + '-client-report-v1', 'complete': False,
+                'post_attempts': client.post_attempts if role == 'teacher' else None, 'launch_exit': result, role + '_plan_sha256': plan_sha,
+                role + '_client_sha256': client_sha, 'mode': mode,
+                'client_protocol_passed': False, 'quality_acceptance': False, 'P3_valid': False,
+                'error_type': type.__dict__['__name__'].__get__(type(primary))}
+            write_json(output / (role + '-client-failure.json'), failed_report)
+        except BaseException as report_error:
+            cleanup_status[3] = report_error
+        # Fixed status slots remain owned through any neutral-transport failure.
+        index = 0
+        while index < 4:
+            if cleanup_status[index] is None:
+                cleanup_status[index] = primary
+            index += 1
+        try:
+            raise_failures(primary, cleanup_status)
+        except BaseException as failure:
+            if failure is primary:
+                raise
+            raise primary from failure
+    if result != 0 or client.result is None or client.result.get('complete') is not True:
+        raise RuntimeError(role + ' model lacks positive cohort and client completion')
+    return result
+
+
+def main(argv=None, *, _benchmark_operation=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["--accept-history"]:
         parser = argparse.ArgumentParser(description="Offline private history evidence intersection")
@@ -2429,6 +2944,7 @@ def main(argv=None):
     parser.add_argument("--master-port", type=int, default=29551)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--benchmark-plan", type=Path)
+    parser.add_argument("--benchmark-client", type=Path)
     parser.add_argument("--teacher-plan", type=Path, help="private none/greedy raw full-vocabulary capture or frozen-prefix replay DATA; never P3")
     parser.add_argument('--teacher-client', type=Path, help='closed one-request client DATA; normal shutdown only after validated completion')
     parser.add_argument("--scheduler-trace", type=Path)
@@ -2446,6 +2962,32 @@ def main(argv=None):
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     teacher = selected_client = model_observer = None
+    closed_benchmark = None
+    if args.benchmark_client is not None:
+        if (args.benchmark_plan is None or args.scheduler_trace is None or args.teacher_plan is not None
+                or _benchmark_operation is None or args.normalization_parity or args.prepared_feature_receipts
+                or args.router_row_input is not None or args.history_input is not None):
+            parser.error('benchmark client requires the trusted closed benchmark/trace operation')
+        from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
+        operation = _model_contract().validate_benchmark_operation(_benchmark_operation)
+        for name, path in (('benchmark_plan', args.benchmark_plan), ('benchmark_client', args.benchmark_client)):
+            item = operation[name]
+            if str(path.absolute()) != item['path'] or path.stat().st_size != item['bytes'] or _source_sha(path, MAX_MESSAGE_BYTES if name == 'benchmark_plan' else 8 << 20) != item['sha256']:
+                raise ValueError('closed benchmark actual DATA differs from trusted operation')
+        if (args.out.absolute() / 'trace' != args.scheduler_trace.absolute()
+                or operation['trace']['prefill_start'] != (args.scheduler_trace_prefill_start or 0)):
+            raise ValueError('closed benchmark output/trace selector differs from operation')
+        plan = _benchmark_module().load_matrix(args.benchmark_plan)
+        selected_client = _benchmark_client_input(args.benchmark_client, operation['benchmark_plan']['sha256'])
+        _model_contract().validate_benchmark_operation_plan(operation, plan, selected_client['data'])
+        model_observer = _owned_model_observer(args.out, 'benchmark')
+        resources = _benchmark_resources(plan, operation['benchmark_plan']['bytes'], selected_client,
+            operation['trace'], model_observer['resources'])
+        closed_benchmark = {'plan': plan, 'plan_sha256': operation['benchmark_plan']['sha256'],
+            'client': selected_client, 'native': model_observer, 'trace': operation['trace'], 'resources': resources,
+            'output': args.out}
+    elif _benchmark_operation is not None:
+        raise ValueError('trusted benchmark operation requires its private client DATA')
     if args.scheduler_trace_prefill_start is not None and (args.scheduler_trace is None or args.benchmark_plan is None
             or not 0 <= args.scheduler_trace_prefill_start <= sys.maxsize):
         parser.error('late scheduler trace requires trace+benchmark and a nonnegative prefill start')
@@ -2484,7 +3026,7 @@ def main(argv=None):
     prefix = [sys.executable, str(Path(__file__).resolve()), "--worker", "--out", str(output)]
     if args.teacher_plan is not None:
         prefix += ['--teacher-plan', str(args.teacher_plan.absolute())]
-    if selected_client is not None:
+    if selected_client is not None and teacher is not None:
         prefix += ['--teacher-client-bytes', str(selected_client['bytes'])]
     if args.router_row_input is not None:
         prefix += ["--router-row-input", str(args.router_row_input.absolute())]
@@ -2504,6 +3046,9 @@ def main(argv=None):
         prefix += ["--execution-rows", str(args.execution_rows)]
     if args.benchmark_plan is not None:
         prefix += ["--benchmark-plan", str(args.benchmark_plan.absolute())]
+    if closed_benchmark is not None:
+        prefix += ['--benchmark-client', str(args.benchmark_client.absolute()), '--benchmark-trace-data',
+                   json.dumps(closed_benchmark['trace'], sort_keys=True, separators=(',', ':'))]
     if args.scheduler_trace is not None:
         trace_output = args.scheduler_trace.absolute()
         trace_output.mkdir(mode=0o700)
@@ -2517,81 +3062,15 @@ def main(argv=None):
         if teacher is not None and result == 0:
             _teacher_module().seal_owned_teacher(output, teacher, result)
         return result
-    if __package__:
-        from .worker_lifetime import Task, drain
-        from .v100_rotorquant_live import ReadCancelled
-    else:
-        from worker_lifetime import Task, drain
-        from v100_rotorquant_live import ReadCancelled
+    if closed_benchmark is not None:
+        client = _BenchmarkClient(closed_benchmark, output)
+        result = _run_owned_client(client, command, prefix, output, role='benchmark',
+            plan_sha=closed_benchmark['plan_sha256'], client_sha=selected_client['sha256'], mode='diagnostic')
+        _benchmark_model_result(output, closed_benchmark)
+        return result
     client = _TeacherClient(teacher, selected_client, output)
-    task = Task(client.run, name='owned-teacher-one-client')
-    tasks, cleanup_status = [task], [None] * 4
-    primary = None
-    result = None
-    worker_failure = False
-    try:
-        task.start()
-        def failed():
-            if task.done.is_set() and task.error is not None:
-                raise task.error
-            return False
-        def stopping(requested):
-            if requested:
-                client.cancelled.set()
-            if task.done.is_set() and task.error is not None:
-                raise task.error
-            return task.done.is_set() and task.error is None and client.result is not None and client.result['complete'] is True
-        result = launch_cuda_tp.main(command, _command_prefix=prefix, _shutdown_probe=stopping, _failure_probe=failed)
-        if result != 0 and task.error is None:
-            primary = RuntimeError('teacher cohort failed with launcher status ' + str(result))
-            worker_failure = True
-    except BaseException as error:
-        primary = error
-    if task.error is not None and task.error is not primary and not worker_failure:
-        cleanup_status[0] = primary
-        primary = task.error
-    try:
-        client.cancelled.set()
-    except BaseException as error:
-        cleanup_status[1] = error
-        if primary is None:
-            primary = error
-    try:
-        drain(tasks, primary=primary)  # Task.done, not Thread.is_alive, owns the captured state.
-    except BaseException as error:
-        cleanup_status[2] = error
-        if primary is None:
-            primary = error
-    if task.error is not None and task.error is not primary and not isinstance(task.error, ReadCancelled):
-        if worker_failure:
-            cleanup_status[0] = task.error
-        else:
-            cleanup_status[0] = primary
-            primary = task.error
-    if primary is not None:
-        try:
-            failed_report = {'schema': 'tensorfold.owned-teacher-client-report-v1', 'complete': False,
-                'post_attempts': client.post_attempts, 'launch_exit': result, 'teacher_plan_sha256': teacher['input_sha256'],
-                'teacher_client_sha256': selected_client['sha256'], 'mode': teacher['data']['mode'],
-                'client_protocol_passed': False, 'quality_acceptance': False, 'P3_valid': False,
-                'error_type': type.__dict__['__name__'].__get__(type(primary))}
-            write_json(output / 'teacher-client-failure.json', failed_report)
-        except BaseException as report_error:
-            cleanup_status[3] = report_error
-        # Fixed status slots remain owned through any neutral-transport failure.
-        index = 0
-        while index < 4:
-            if cleanup_status[index] is None:
-                cleanup_status[index] = primary
-            index += 1
-        try:
-            raise_failures(primary, cleanup_status)
-        except BaseException as failure:
-            if failure is primary:
-                raise
-            raise primary from failure
-    if result != 0 or client.result is None or client.result.get('complete') is not True:
-        raise RuntimeError('teacher model lacks positive cohort and client completion')
+    result = _run_owned_client(client, command, prefix, output, role='teacher',
+        plan_sha=teacher['input_sha256'], client_sha=selected_client['sha256'], mode=teacher['data']['mode'])
     rank0 = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(output / 'teacher-rank0/summary.json', 8 << 20))
     if rank0.get('teacher_ids') != client.result['token_ids']:
         raise ValueError('teacher HTTP output differs from captured frozen-prefix frames')

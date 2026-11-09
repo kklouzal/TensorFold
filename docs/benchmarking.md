@@ -1308,3 +1308,77 @@ export-file costs; operator RAM, device headroom, disk and deadline admission
 remain required. All trace timing is `P3_valid=false`. A closed benchmark
 client/shutdown/native-origin/result workflow must be admitted before an actual
 late-prefill diagnostic is released; no new GPU run follows from this selector.
+
+
+### Closed benchmark-diagnostic operation
+
+The new `tensorfold.v100-owned-benchmark-operation-v1` schema with mode
+`owned-benchmark-model-v1` uses the existing Host, canonical driver, owned
+qualifier and rank supervisor. Its fixed operation DATA binds the model and
+five prepared frontend assets, canonical matrix plan, client declaration and
+four trace fields: committed prefill threshold, host obligation, minimum free
+device headroom and disk allowance. It accepts no embedded program or arbitrary
+argv. Teacher and component-suite operations keep their separate schemas and
+constraints.
+
+The initial diagnostic region is Q8/int8, C24 full native 262,144-row windows,
+TP8/ETP4/PP1, NONE with no MTP, reference attention, no graphs, one measured C1
+cohort and an optional preceding C1 warmup. Reply length is two. This prevents
+the unchanged warmed-decode trace guard from selecting another window once a
+stream reaches its limit, but actual receipts must still prove exactly one
+observed prefill trace. The first proposed plan selects a 64-token warmup and
+16,384-token measured prompt, with threshold 8,192. It is a diagnostic subset,
+not the complete standard matrix or the failed golden 64K retrieval task.
+
+The qualifier's private `--benchmark-client` input is admitted only with the
+matching benchmark/trace operation supplied by the validated driver. Explicit
+trace grants travel through a trusted Python-only operation argument and a
+bounded internal worker DATA argument. Ordinary manual benchmark behavior and
+teacher exclusions remain intact; appending unsupported flags to a teacher
+operation is not an admission shortcut.
+
+The client waits for eight actual startup bindings and same-instance full-State
+readiness, then delegates to the canonical `bench_concurrent.run_matrix`.
+Its optional caller-owned `ReadControl` reaches stats, SSE requests and event
+polling; default `None` preserves the ordinary CLI request/work semantics.
+Controlled barriers have finite waits, failure aborts pending rendezvous, and
+accepted tasks are drained through their completion journals. A cancellation
+flag or timeout alone does not release the client or its consumers. Byte grants
+must be exactly representable in the canonical integer MiB/KiB arguments;
+unaligned extents are rejected, never rounded or truncated.
+
+Only complete matrix protocol/work/hash checks, the same idle service instance
+and one valid `OBSERVED` trace permit the normal leader-first stop. The shared
+owned-model observer records real worker PID/source/profile/full-State bindings,
+positive resource retirement and child VMA-FD native origins. The parent and
+Host consume typed client, matrix, trace and ordered all-eight completion
+records. No teacher authority or parent-only native-origin proof is fabricated.
+
+The host trace obligation joins the existing immutable pre-constructor host
+admission once; it is not a later rebind or a second charge for settled
+residents. Each worker observes physical free CUDA memory after full States,
+and rank0 checks the declared floor again only at selected profile entry.
+Those observations are headroom checks, not reserved memory or a proven
+profiler peak. Disk extents and outer memory/time containment remain operator
+obligations; an exported file must satisfy the declared bound before acceptance.
+All instrumented client/trace results retain `P3_valid=false` and
+`quality_acceptance=false`, regardless of rates printed by the matrix tool.
+
+The integrated implementation passed five pinned x86 CPU suites: 84 Driver
+and 57 Host tests in separate fresh standalone interpreters before real App
+preload, plus 60 contract, 71 matrix and 299 owned-qualification tests through
+the genuine qualified CPU route. All 571 passed with zero skips, no primary,
+post or outer diagnostic errors, and successful CLI/container retirement.
+Source and recorded health stayed stable. The final test-only revision added
+real eight-rank aggregate and rebound semantic/producer-drift rejection
+controls; implementation bytes did not change, and the four earlier suites
+were not repeated.
+
+The source snapshot is committed `43cb5549` plus exactly ten held source/test
+paths, including the new contract test. These CPU checks exercise real
+protocol code and synthetic model/transport fixtures; they do not execute a
+model or profiler, prove physical allocator peaks, or establish P3. The old
+component failures remain preserved rather than relabelled as passes. No new
+model or profiler operation is released by this documentation. Accepted CPU
+plan DATA and source/CPU controls do not replace actual runtime, resource,
+trace, native-origin and all-rank closure gates.

@@ -421,3 +421,273 @@ def test_repro_loader_reuses_strict_object_json(bench, tmp_path, raw):
     path.write_bytes(raw)
     with pytest.raises(ValueError):
         bench.load_repro(path, 'fixture')
+
+
+def controlled_matrix(bench, monkeypatch, tmp_path, *, levels=(1, 2, 4), name='report',
+                      on_call=None, ready_after=0):
+    """Boundary fixture: actual benchmark Tasks/barriers/protocol validation."""
+    import hashlib
+    import threading
+    from types import SimpleNamespace as NS
+    from tools import v100_rotorquant_live as live
+    from tools import v100_adaptive_qualification as qualification
+    monkeypatch.setitem(sys.modules, 'v100_rotorquant_live', live)
+    monkeypatch.setitem(sys.modules, 'v100_adaptive_qualification', qualification)
+    plan = matrix_fixture()
+    plan['cohorts'] = []
+    for cid, level in enumerate(levels):
+        cohort = {'id': cid, 'level': level, 'input_tokens': 6, 'tokens': 3,
+                  'repetition': 0, 'warmup': cid == 0, 'requests': []}
+        for index in range(level):
+            ids = [100 + cid*32 + index] + [7]*5
+            cohort['requests'].append({'prefix': ids[:1], 'input_tokens': 6, 'index': index,
+                'prompt_sha256': hashlib.sha256(json.dumps(ids, separators=(',', ':')).encode()).hexdigest()})
+        plan['cohorts'].append(cohort)
+    calls, polls, lock = [], [0], threading.Lock()
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        def call(self, label, body=None, **kwargs):
+            with lock:
+                calls.append((label, body, kwargs))
+            if on_call is not None:
+                on_call(label, body, kwargs)
+            if body is None and kwargs['path'] == '/stats':
+                return {'server': {'instance_id': 'one'}, 'object': 'tensorfold.stats',
+                    'model': {'id': 'fixture', 'kv_dtype': 'int8', 'context_length': 262144},
+                    'capacity_plan': {'session_capacity': {'resident_capacity': 24, 'configured_ceiling': 24,
+                        'context_tokens': 262144, 'full_context_commitments': 24},
+                        'kv_full_windows': {'materialized': True, 'reserved': 24, 'stream_slots': 24,
+                            'ranks': [{'rank': rank, 'materialized': True, 'startup_capacities': [262149]*24,
+                                       'allocated_cache_bytes': 100, 'torch_allocated_bytes': 200, 'torch_reserved_bytes': 300}
+                                      for rank in range(8)]}},
+                    'load': {'requests_in_flight': 0, 'requests_running': 0, 'requests_waiting': 0}}
+            if body is None:
+                polls[0] += 1
+                return {'execution': {'work_observations': {'benchmark': {
+                    'run_identity': plan['run_identity'], 'server_instance_id': 'one',
+                    'cohorts': {str(c['id']): {'events_ready': polls[0] > ready_after, 'completed': c['level'],
+                        'active_owner_highwater': c['level'], 'prompt_hashes': sorted(r['prompt_sha256'] for r in c['requests']),
+                        'prefill_ms': 20., 'decode_ms': 40.} for c in plan['cohorts']}}}}}
+            kwargs['observer']({}, ['bounded text'])
+            return {'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': 'bounded text'}, 'finish_reason': 'length'}],
+                    'usage': {'prompt_tokens': 6, 'completion_tokens': 3, 'total_tokens': 9, 'prompt_tokens_details': {'cached_tokens': 0}},
+                    'tensorfold': {'token_ids': [1, 2, 3], 'token_sha': hashlib.sha256(b'1,2,3').hexdigest()[:12],
+                                   'cached': 0, 'prefill_s': .2, 'decode_s': .4}}
+    monkeypatch.setattr(live, 'Client', Client)
+    args = NS(base='http://unused', model='fixture', output=tmp_path/(name+'.json'), timeout=1,
+              response_mib=16, sse_line_kib=64)
+    return args, plan, calls
+
+
+def test_matrix_control_none_preserves_calls_bodies_work_and_rate_denominators(bench, monkeypatch, tmp_path):
+    outcomes = []
+    for name, supplied in (('omitted', False), ('explicit-none', True)):
+        args, plan, calls = controlled_matrix(bench, monkeypatch, tmp_path, name=name)
+        result = bench.run_matrix(args, plan, **({'read_control': None} if supplied else {}))
+        report = json.loads(args.output.read_text())
+        assert result == 0 and report['passed'] is True
+        assert all('read_control' not in kwargs for _, _, kwargs in calls)
+        assert sum(body is not None for _, body, _ in calls) == 7
+        outcomes.append(([(label, body, {k: v for k, v in kwargs.items() if k != 'observer'}) for label, body, kwargs in calls],
+                         [row['rates']['prefill_envelope_tps'] for row in report['cohorts']],
+                         [row['rates']['decode_envelope_tps'] for row in report['cohorts']]))
+    # HTTP tasks may arrive in either order; logical request identities/work do not.
+    assert sorted(outcomes[0][0], key=lambda x: x[0]) == sorted(outcomes[1][0], key=lambda x: x[0])
+    assert outcomes[0][1:] == outcomes[1][1:]
+
+
+def test_matrix_same_control_reaches_stats_sse_ready_polls_and_true_1_2_4_overlap(bench, monkeypatch, tmp_path):
+    import threading
+    import time
+    from tools.v100_rotorquant_live import ReadControl
+    control = ReadControl(time.monotonic()+10)
+    gates = {cid: threading.Barrier(level) for cid, level in enumerate((1, 2, 4))}
+    def on_call(label, body, kwargs):
+        assert kwargs['read_control'] is control
+        if body is not None:
+            cid = int(label.split('-')[1])
+            gates[cid].wait(timeout=2)  # Independent proof all HTTP callbacks overlap.
+    args, plan, calls = controlled_matrix(bench, monkeypatch, tmp_path, on_call=on_call, ready_after=2)
+    assert bench.run_matrix(args, plan, read_control=control) == 0
+    assert all(kwargs['read_control'] is control for _, _, kwargs in calls)
+    assert sum(body is not None for _, body, _ in calls) == 7
+    assert sum(kwargs.get('path') == '/v1/runtime' for _, _, kwargs in calls) == 5
+    assert all(body['ignore_eos'] and body['draft'] and body['stream'] for _, body, _ in calls if body is not None)
+
+
+@pytest.mark.parametrize('expired', [False, True], ids=['cancelled', 'deadline'])
+def test_matrix_preexisting_control_failure_publishes_without_http(bench, monkeypatch, tmp_path, expired):
+    import time
+    from tools.v100_rotorquant_live import ReadControl, ReadCancelled
+    control = ReadControl(time.monotonic()+(-1 if expired else 10))
+    if not expired:
+        control.cancelled.set()
+    args, plan, calls = controlled_matrix(bench, monkeypatch, tmp_path)
+    with pytest.raises(TimeoutError if expired else ReadCancelled):
+        bench.run_matrix(args, plan, read_control=control)
+    assert calls == []
+    report = json.loads(args.output.read_text())
+    assert report['passed'] is False and report['unrun_cohorts'] == [0, 1, 2]
+
+
+def test_matrix_cancel_during_event_readiness_stops_polling_same_control(bench, monkeypatch, tmp_path):
+    import time
+    from tools.v100_rotorquant_live import ReadControl, ReadCancelled
+    control = ReadControl(time.monotonic()+10)
+    def on_call(label, body, kwargs):
+        if kwargs.get('path') == '/v1/runtime':
+            control.cancelled.set()
+    args, plan, calls = controlled_matrix(bench, monkeypatch, tmp_path, on_call=on_call, ready_after=100)
+    with pytest.raises(ReadCancelled):
+        bench.run_matrix(args, plan, read_control=control)
+    assert sum(kwargs.get('path') == '/v1/runtime' for _, _, kwargs in calls) == 1
+    assert all(kwargs['read_control'] is control for _, _, kwargs in calls)
+
+
+def test_matrix_cancel_does_not_release_accepted_http_callbacks_before_retirement(bench, monkeypatch, tmp_path):
+    import threading
+    import time
+    from tools.worker_lifetime import Task
+    from tools.v100_rotorquant_live import ReadControl, ReadCancelled
+    entered, observed, release = threading.Event(), threading.Event(), threading.Event()
+    lock, count = threading.Lock(), [0]
+    primary = ReadCancelled('caller cancellation')
+    class Control(ReadControl):
+        def check(self):
+            if self.cancelled.is_set() and threading.current_thread().name == 'matrix-parent':
+                observed.set()
+                raise primary
+            return super().check()
+    control = Control(time.monotonic()+10)
+    def on_call(label, body, kwargs):
+        if label.startswith('cohort-1-request'):
+            with lock:
+                count[0] += 1
+                if count[0] == 2:
+                    entered.set()
+            resumed = release.wait(3)  # Model a single in-flight noninterruptible read.
+            if not resumed:
+                raise TimeoutError('test did not release accepted read')
+            kwargs['read_control'].check()
+    args, plan, _ = controlled_matrix(bench, monkeypatch, tmp_path, levels=(1, 2), on_call=on_call)
+    parent = Task(lambda: bench.run_matrix(args, plan, read_control=control), name='matrix-parent')
+    parent.start()
+    try:
+        assert entered.wait(3)
+        control.cancelled.set()
+        assert observed.wait(2)
+        assert not parent.done.wait(.05)  # The flag did not retire either callback.
+    finally:
+        release.set()
+        retired = parent.done.wait(5)
+        if retired:
+            parent.thread.join(1)
+    assert retired and not parent.thread.is_alive()
+    assert parent.error is primary
+    assert json.loads(args.output.read_text())['passed'] is False
+
+
+def test_matrix_partial_thread_start_aborts_barrier_drains_and_preserves_primary(bench, monkeypatch, tmp_path):
+    import threading
+    from tools.worker_lifetime import Task
+    primary = ValueError('accepted start failure')
+    tasks = []
+    class OwnedTask(Task):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            tasks.append(self)
+        def start(self):
+            if len(tasks) == 2:
+                raise primary
+            return super().start()
+    original = threading.Barrier
+    class Gate(original):
+        def abort(self):
+            super().abort()
+            raise OSError('barrier abort report failed')
+    args, plan, calls = controlled_matrix(bench, monkeypatch, tmp_path, levels=(2,))
+    monkeypatch.setattr(bench, 'Task', OwnedTask)
+    monkeypatch.setattr(bench.threading, 'Barrier', Gate)
+    with pytest.raises(ValueError) as caught:
+        bench.run_matrix(args, plan)
+    assert caught.value is primary and caught.value.__cause__ is not None
+    assert len(tasks) == 2 and all(task.done.is_set() for task in tasks)
+    assert all(not task.thread.is_alive() for task in tasks)
+    assert not any(body is not None for _, body, _ in calls)
+
+
+@pytest.mark.parametrize('formatting', [False, True], ids=['publish', 'render'])
+def test_matrix_control_primary_survives_failure_report_exhaustion(bench, monkeypatch, tmp_path, formatting):
+    class Failure(Exception):
+        def __str__(self):
+            if formatting:
+                raise MemoryError('failure rendering exhausted')
+            return 'authentic caller failure'
+    primary = Failure()
+    def failed(*args, **kwargs):
+        raise primary
+    args, plan, _ = controlled_matrix(bench, monkeypatch, tmp_path)
+    monkeypatch.setattr(bench, '_run_matrix', failed)
+    if not formatting:
+        monkeypatch.setattr(bench, 'write_json', lambda *args: (_ for _ in ()).throw(OSError('report storage failed')))
+    with pytest.raises(Failure) as caught:
+        bench.run_matrix(args, plan, read_control=object())
+    assert caught.value is primary and caught.value.__cause__ is not None
+
+
+def test_controlled_matrix_failed_abort_before_effect_still_retires_barrier_waiter(bench, monkeypatch, tmp_path):
+    import threading
+    import time
+    from tools.worker_lifetime import Task
+    from tools.v100_rotorquant_live import ReadControl
+    primary = ValueError('partial thread acquisition failed')
+    tasks = []
+    class OwnedTask(Task):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            tasks.append(self)
+        def start(self):
+            if len(tasks) == 2:
+                raise primary
+            return super().start()
+    original = threading.Barrier
+    class FailedAbort(original):
+        def abort(self):
+            raise OSError('abort failed before changing barrier state')
+    args, plan, calls = controlled_matrix(bench, monkeypatch, tmp_path, levels=(2,))
+    args.timeout = .05
+    control = ReadControl(time.monotonic()+2)
+    monkeypatch.setattr(bench, 'Task', OwnedTask)
+    monkeypatch.setattr(bench.threading, 'Barrier', FailedAbort)
+    with pytest.raises(ValueError) as caught:
+        bench.run_matrix(args, plan, read_control=control)
+    assert caught.value is primary and caught.value.__cause__ is not None
+    assert len(tasks) == 2 and all(task.done.is_set() for task in tasks)
+    assert all(not task.thread.is_alive() for task in tasks)
+    assert not any(body is not None for _, body, _ in calls)
+
+
+@pytest.mark.parametrize('level', [1, 2])
+def test_matrix_body_preparation_keeps_original_exception_after_aborting_and_draining(bench, monkeypatch, tmp_path, level):
+    from tools.worker_lifetime import Task
+    primary = MemoryError('request body preparation failed')
+    original = bench.matrix_ids
+    def ids(plan, request):
+        if request['index'] == 0:
+            raise primary
+        return original(plan, request)
+    tasks = []
+    class OwnedTask(Task):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            tasks.append(self)
+    args, plan, calls = controlled_matrix(bench, monkeypatch, tmp_path, levels=(level,))
+    monkeypatch.setattr(bench, 'matrix_ids', ids)
+    monkeypatch.setattr(bench, 'Task', OwnedTask)
+    with pytest.raises(MemoryError) as caught:
+        bench.run_matrix(args, plan)
+    assert caught.value is primary
+    assert len(tasks) == level and all(task.done.is_set() and not task.thread.is_alive() for task in tasks)
+    assert not any(body is not None for _, body, _ in calls)
+    assert json.loads(args.output.read_text())['error']['type'] == 'MemoryError'
