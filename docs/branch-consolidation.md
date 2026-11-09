@@ -106,15 +106,35 @@ installed CPU tests passed without skips. Actual component results are Dense
 native32 131, pinned descriptor 6, paged attention 42, query packing 15 and
 reference arithmetic 18 tests, each with zero skips. These results are scoped
 component evidence, not complete release or performance qualification.
+The separate installed lifetime module also passed all 16 cases (5 host and
+11 CUDA), with zero skips and clean retirement. Its sampled allocator, cgroup
+and RSS values remain observations rather than admission or physical bounds.
 
-The original prepared run retains 39 passes and four fixture failures. Reviewed
-test applicability repairs preserve strict numerical/state assertions and real
-MTP multirow/truncated-prefix coverage; their target rerun is still required.
+The original prepared run retains 39 passes and four fixture failures. The
+initial reviewed applicability repairs were exercised in the subsequent run
+below, preserving strict numerical/state assertions and real MTP
+multirow/truncated-prefix coverage. Newer API/growth repairs and numerical
+diagnostics still require their own actual-target checks.
 Owner-graph orchestration failures and the subsequent unresolved participant
 timeout at its unchanged 600-second deadline remain in the evidence. The other
 cohort case was interrupted after preserving that failure. No cohort pass is
 inferred from worker startup or device visibility. The retained defaults are
 unchanged.
+
+The repaired Q03 test-input attempt subsequently executed 57 cases: 49 passed
+and eight failed, with zero skips. Two strict int8 numerical differences remain
+unresolved; the other cases expose stale instrumentation/method fixtures and a
+missing writable Triton import-cache setting. The original eager oracle and
+zero tolerances are retained. A separate parent-ELF observation error is not
+evidence that child kernels failed or never executed.
+
+Worker diagnostics now identify the owner fixture's primary error on all eight
+ranks: `State.set_pos(129)` is called without a produced compact-indexer span.
+The compact commit guard remains intact. Selected NCCL source also confirms
+that communicator release waits for its captured graphs to die; the fixture's
+failure cleanup must retire graphs and borrowers first. Reviewed source repairs
+produce real spans and preserve sticky errors and failure ownership; their
+actual eight-rank verification remains open.
 
 A bounded current-image TCPStore probe succeeded in both default libuv and
 explicit non-libuv modes. It contradicts the older unavailable-backend
@@ -126,9 +146,9 @@ cancellation and exact device/process ownership before further qualification.
 | Open item | Remaining action |
 | --- | --- |
 | Q03 | Complete repaired prepared/bound-graph tests, then actual SC117 native32 selector, wrapper and complete-request cost/quality checks on immutable identities. |
-| Q05 | Complete eight-rank graph and reviewed adversarial lifetime controls, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. Python header sizes do not bound native metadata, allocator pages or RSS. |
+| Q05 | Complete corrected eight-rank graph tests, release-image identity checks, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. The 16-case lifetime module passed on the bound image; Python header sizes still do not bound native metadata, allocator pages or RSS. |
 | Q06 | Obtain and verify the exact seven-path C06-only packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`), then use an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
-| Q-GLM | Execute the real native/HF frontend controls with both pinned tokenizer/template inputs. Full checkpoint CUDA and applicable MLX serving remain unqualified without their actual model/platform inputs. Frontend-only assets do not establish model results. |
+| Q-GLM | Rebuild and execute the capitalization/complete-header repairs on the owned installed stack. The first real run retained 60 passes and 16 failures; the unchanged real controls pass in the local 253-test repair closure. Resolve the separate raw-tokenizer compatibility/authority contract. Full checkpoint CUDA and applicable MLX serving remain unqualified without actual model/platform inputs. |
 | B1 | Change default `main` to `python-0.6` after reviewing current consumers. The authenticated CLI account has repository admin role, but its token's Administration request returned HTTP403; the default is still `main`. The connected source/ref interface exposes no default-change operation. |
 | B2/B3 | Obtain the exact manifest, recovery bundle and integrity receipt, verify current restore availability and the retained C06 packet, then retire only unchanged reviewed non-target refs with expected-SHA guards. Non-`main` retirement need not wait for C06 adoption; deleting `main` must follow B1. Stop on new or advanced refs. |
 | B4 | Verify only `python-0.6` remains, it is the actual default and contains the execution basis plus authorized changes, and independent recovery remains usable. |

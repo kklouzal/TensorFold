@@ -112,6 +112,20 @@ class OriginText(str):
     def lower(self):
         return self._case(str.lower, str.lower)
 
+    def capitalize(self):
+        # Native capitalize titlecases only the first codepoint, then lowercases
+        # the rest. The complete native value is computed once by _case; these
+        # per-codepoint operations transport masks through Unicode expansions.
+        first = True
+
+        def unit(char):
+            nonlocal first
+            operation = str.title if first else str.lower
+            first = False
+            return operation(char)
+
+        return self._case(str.capitalize, unit)
+
     def casefold(self):
         return self._case(str.casefold, str.casefold)
 

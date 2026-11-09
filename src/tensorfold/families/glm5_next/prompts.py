@@ -10,6 +10,9 @@ from tensorfold.server.prompt_literals import MAX_RENDER_BYTES, PromptEncodingEr
 from tensorfold.server.prompt_origin import origin_concat, trusted
 
 EFFORT_LINE = "<|system|>Reasoning Effort: Max"
+EFFORT_PREFIX = "<|system|>Reasoning Effort: "
+EFFORT_LINES = (EFFORT_LINE, EFFORT_PREFIX+"Low", EFFORT_PREFIX+"High")
+_EFFORT_FOLLOWERS = ("<|system|>", "<|user|>", "<|assistant|>", "<|observation|>")
 OPENED = "<|assistant|><think>"
 CLEAR_THINKING = "TF_GLM_CLEAR_THINKING"
 
@@ -40,13 +43,28 @@ def thinking_off(text: str) -> str:
 def thinking_off_prompt(rendered, *, max_render_bytes=MAX_RENDER_BYTES, render_credit=None):
     """Transform native template controls while retaining request origins and owners."""
     origin = rendered.origin
-    at = origin.find(EFFORT_LINE)
-    while at >= 0 and any(origin._mask[at:at + len(EFFORT_LINE)]):
-        at = origin.find(EFFORT_LINE, at + len(EFFORT_LINE))
+    at, removed = origin.find(EFFORT_PREFIX), 0
+    while at >= 0:
+        for line in EFFORT_LINES:
+            if origin.startswith(line, at) and not any(origin._mask[at:at + len(line)]):
+                end = at + len(line)
+                # A source label ends at whitespace/EOF or a complete trusted
+                # GLM role delimiter. A transition into request data also ends
+                # its authority; that data remains literal, even without space.
+                boundary = (end == len(origin) or bool(origin._mask[end]) or origin[end].isspace()
+                            or any(origin.startswith(role, end)
+                                   and not any(origin._mask[end:end + len(role)])
+                                   for role in _EFFORT_FOLLOWERS))
+                if boundary:
+                    removed = len(line)
+                    break
+        if removed:
+            break  # Exactly the earliest fully trusted known header, never request data.
+        at = origin.find(EFFORT_PREFIX, at + 1)
     close = origin.endswith(OPENED) and not any(origin._mask[-len(OPENED):])
     if at < 0 and not close:
         return rendered
-    remaining = len(origin) - (len(EFFORT_LINE) if at >= 0 else 0)
+    remaining = len(origin) - removed
     final = remaining + (len("</think>") if close else 0)
     if render_credit is not None:
         # Both prompts retain origins and opaque media views. Each unsafe run
@@ -58,10 +76,10 @@ def thinking_off_prompt(rendered, *, max_render_bytes=MAX_RENDER_BYTES, render_c
         media_chars = final + runs * marker_chars
         render_credit(len(origin) + len(rendered.encoded_text) + final + media_chars,
                       len(rendered.literals) + runs + 3)
-    if close and (len(origin.encode("utf-8")) - (len(EFFORT_LINE) if at >= 0 else 0)
+    if close and (len(origin.encode("utf-8")) - removed
                   + len("</think>") > max_render_bytes):
         raise PromptEncodingError("rendered prompt exceeds the chat-render byte budget")
-    parts = [origin] if at < 0 else [origin[:at], origin[at + len(EFFORT_LINE):]]
+    parts = [origin] if at < 0 else [origin[:at], origin[at + removed:]]
     if close:
         parts.append(trusted("</think>"))
     result = RenderedPrompt(origin_concat(parts), rendered.literals, control_literals=rendered.control_literals)

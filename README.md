@@ -22,11 +22,20 @@ and reference-arithmetic component checks also passed on V100. Prepared/graph,
 physical-resource and model gates remain open; see the
 [remaining consolidation work](docs/branch-consolidation.md#remaining-work).
 The maintained [installed-contract driver](deploy/v100/source-foundation.md#installed-contract-driver)
-has 22 passing standard-library controls, including inert multiprocessing
-imports and a CPU route that never queries CUDA. Actual host/driver integration
-and remaining target checks are still required.
+has 37 passing standard-library controls, including inert multiprocessing
+imports and a CPU route that never queries CUDA. The paired controller passed
+32 controls on the real V100 host. The complete pair ran the 16-case CUDA/host
+lifetime module successfully and preserved real frontend failures and
+generation-bound diagnostic cancellations. Its newer mapped-ELF observer still
+needs target integration; complete model, resource and numerical gates remain
+separate.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
+The current source also preserves origin through Unicode capitalization and
+removes only fully trusted, complete Max/Low/High effort headers. All 253 local
+CPU controls passed; a genuinely rebuilt owned application still needs its
+installed-target recheck. Legacy raw-tokenizer compatibility remains a separate
+open contract decision.
 
 The V100 source now has one App-owned host-payload pool with grants before
 allocation and ownership through worker, socket and error retirement. Its C27

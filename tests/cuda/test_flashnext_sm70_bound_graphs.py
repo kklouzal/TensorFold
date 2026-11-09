@@ -52,8 +52,11 @@ def _phase(w, label):
 
 def _qualify_six_lanes(w, kv_dtype, reference_context=None):
     _phase(w, "verify:decoder")
-    decoder = MultiDecoder(w, slots=6, capacity=64, depth=2, prefill_rows=8, kv_dtype=kv_dtype,
+    stock_mtp = w.mtp is not None
+    decoder = MultiDecoder(w, slots=6, capacity=64, depth=2 if stock_mtp else 0, prefill_rows=8, kv_dtype=kv_dtype,
                            graphs=False, keep=0)
+    assert decoder.speculation.method == ("mtp" if stock_mtp else "none")
+    assert (decoder.mbuf is not None) == stock_mtp
     graphs = RoundGraphs(decoder, 1024 * 2**20)
     try:
         _phase(w, "verify:capture")
@@ -67,10 +70,12 @@ def _qualify_six_lanes(w, kv_dtype, reference_context=None):
                 state.rec[1 - state.cur[0]].copy_(state.rec[state.cur[0]])
                 state.cur = [1 - value for value in state.cur]
         _phase(w, "verify:prefilled")
-        # Deliberately reverse slot order, vary row counts and truncate accepted
-        # prefixes. These would fail if capture read a fixed parity or lane.
+        # Both methods reverse slot order/parities. Only real stock-MTP has
+        # proposal occupancy for varied rows and truncated accepted prefixes.
         states = list(reversed(decoder.free))
-        counts = [1, 3, 2, 1, 2, 3]
+        counts = [1, 3, 2, 1, 2, 3] if stock_mtp else [1] * 6
+        assert max(counts) == decoder.speculation.target_tail_rows
+        truncated = 0
         reference = Buffers(w, decoder.buf.rows, 64, moe_prefill=True)
         for iteration in range(2):
             _phase(w, f"verify:iteration={iteration}:reference")
@@ -91,11 +96,13 @@ def _qualify_six_lanes(w, kv_dtype, reference_context=None):
                                        rtol=0, atol=0)
             for index, ((state, a0, a1), expected_state) in enumerate(zip(segs, expected_states)):
                 kept = min(counts[index], 1 + index % 2)
+                truncated += kept < counts[index]
                 commit(w, state, decoder.buf, counts[index], kept, at=a0)
                 commit(w, expected_state, reference, counts[index], kept, at=a0)
                 _assert_state(state, expected_state)
             _phase(w, f"verify:iteration={iteration}:exact")
         assert graphs.bound.hits > 0
+        assert truncated == (8 if stock_mtp else 0)
     except BaseException:
         traceback.print_exc()
         raise
@@ -184,16 +191,20 @@ def _qualify_singleton_draft_protocol(w, cache):
     def trace_steps(dec, frames):
         forward = dec._mtp
 
-        def traced(segs):
+        def traced(segs, *, logits=True, next_inputs=None):
             rows = segs[-1][2]
             inputs = dec.mbuf.mtp_in[:rows].clone()
             state = segs[0][0]
             cache = tuple(getattr(state.mtp_kc, name)[:state.mtp_len].clone()
                           for name in ("k", "v", "ks", "vs"))
             pooled = state.mtp_pooled[:state.mtp_len // state.ratio].clone()
-            logits = forward(segs)
-            frames.append((*cache, pooled, inputs, dec.mbuf.streams[:rows].clone(), logits.clone()))
-            return logits
+            result = forward(segs, logits=logits, next_inputs=next_inputs)
+            # Zero-proposal refresh is real conditioning work with no head
+            # projection. Keep its frame and None result, never skip the call.
+            assert (result is None) == (not logits)
+            frames.append((*cache, pooled, inputs, dec.mbuf.streams[:rows].clone(),
+                           None if result is None else result.clone(), logits, next_inputs is not None))
+            return result
 
         dec._mtp = traced
 
@@ -210,8 +221,12 @@ def _qualify_singleton_draft_protocol(w, cache):
             decoder.round()
             assert len(actual_frames) == len(expected_frames)
             for step, (received, wanted) in enumerate(zip(actual_frames, expected_frames)):
+                assert received[8:] == wanted[8:]  # same projection/input dispatch
                 for name, a, b in zip(("K", "V", "Kscale", "Vscale", "pooled", "inputs", "streams", "logits"),
                                       received, wanted):
+                    if name == "logits" and not received[8]:
+                        assert a is b is None
+                        continue
                     torch.testing.assert_close(a, b, rtol=0, atol=0,
                                                msg=f"round={iteration}, MTPstep={step}, {name}")
             actual_frames.clear()
@@ -246,10 +261,12 @@ def test_bound_singleton_draft_protocol_matches_eager_tokens_drafts_and_committe
 
 
 @pytest.mark.parametrize("kv_dtype", ["fp16", "int8"])
-def test_bound_six_lane_graphs_match_logits_and_partial_commits_at_mixed_parities(kv_dtype):
+@pytest.mark.parametrize("mtp", [False, True], ids=["none-single-row", "stock-mtp-multirow"])
+def test_bound_six_lane_graphs_match_logits_and_partial_commits_at_mixed_parities(kv_dtype, mtp):
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("SM70 bound graph gate")
-    _qualify_six_lanes(_small_weights(include_ple=True), kv_dtype)
+    from test_flashnext_sm70_mtp import _weights_with_stock_mtp_protocol
+    _qualify_six_lanes(_weights_with_stock_mtp_protocol() if mtp else _small_weights(include_ple=True), kv_dtype)
 
 
 def _distributed_graphs(rank, world, port, outcomes, reference_context=None):
@@ -277,6 +294,7 @@ def _distributed_graphs(rank, world, port, outcomes, reference_context=None):
         draft.head.weight = draft.head.weight[rank * width:(rank + 1) * width].contiguous()
         draft.head.n, draft.comm = width, comm
         draft.meta.update(world=world, vocab_offset=rank * width)
+        _qualify_six_lanes(draft, "int8", reference_context)
         _qualify_mtp(draft, "int8", reference_context)
         _qualify_mtp(draft, "int8", reference_context, slots=1)
         _qualify_singleton_draft_protocol(draft, "int8")
@@ -341,7 +359,8 @@ def test_bound_owner_is_invalidated_before_growth_replaces_cache_storage():
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("SM70 bound graph gate")
     w = _small_weights(include_ple=True)
-    decoder = MultiDecoder(w, slots=1, capacity=64, depth=2, prefill_rows=8, kv_dtype="fp16", graphs=False)
+    decoder = MultiDecoder(w, slots=1, capacity=64, depth=0, prefill_rows=8, kv_dtype="fp16", graphs=False)
+    assert decoder.speculation.method == "none" and decoder.speculation.target_tail_rows == 1
     state = decoder.free[0]
     state.resize(32)
     graphs = RoundGraphs(decoder, 128 * 2**20)
@@ -361,9 +380,14 @@ def test_bound_owner_is_invalidated_before_growth_replaces_cache_storage():
 def test_bound_floor_prefix_copy_and_growth_cross_the_8192_boundary():
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("SM70 bound graph storage boundary")
-    w = _small_weights(include_ple=True)
+    from test_flashnext_sm70_mtp import _weights_with_stock_mtp_protocol
+
+    # This fixture needs two live rows plus a third speculative padding row.
+    # The real companion adds capability; its builder preserves target weights.
+    w = _weights_with_stock_mtp_protocol()
     decoder = MultiDecoder(w, slots=2, capacity=16384, depth=2, prefill_rows=8,
                            kv_dtype="int8", graphs=False, keep=0)
+    assert decoder.speculation.method == "mtp" and decoder.speculation.target_tail_rows == 3
     assert decoder._prepare_graph_floor()
     assert all(state.capacity == 8192 for state in decoder.free)
     graphs = RoundGraphs(decoder, 1024 * 2**20)

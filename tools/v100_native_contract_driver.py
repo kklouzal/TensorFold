@@ -9,9 +9,11 @@ read-only; generated operator copies must retain the canonical bytes.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
+import re
 from pathlib import Path, PurePosixPath
 import stat
 import sys
@@ -20,10 +22,11 @@ import types
 import xml.etree.ElementTree as ET
 
 SCHEMA = 'tensorfold.v100-native-contract.v1'
+CHILD_EVIDENCE_ENV = 'TENSORFOLD_NATIVE_CONTRACT_CHILD_EVIDENCE'
 CONTEXT_FATAL = ('illegal memory access', 'device-side assert triggered', 'unspecified launch failure')
 OUTPUTS = ('installed-SDK-source-origin.json', 'collection-identities.json', 'first-failure.json',
            'named-suite.xml', 'sampled-allocation-process-cgroup.json', 'actual-native-ELF.json',
-           'source-after.json', 'named-suite-result.json', 'phase.json')
+           'source-after.json', 'named-suite-result.json', 'phase.json', 'child-native-ELF')
 
 
 def _sha(value, length=64):
@@ -347,17 +350,154 @@ def _admit_runtime(spec, runtime):
     return root, devices
 
 
-def _native_elfs(required):
-    modules = {}
+def _read_native_maps():
+    # Observation is bounded and failure is owning evidence, never absence.
+    return _read_text('/proc/self/maps', 16 << 20)
+
+
+def _native_map_rows(text):
+    rows = {}
+    for line in text.splitlines():
+        fields = line.split(None, 5)
+        if len(fields) != 6:
+            continue
+        _, permissions, _, device, inode, encoded = fields
+        path = re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), encoded)
+        deleted = path.endswith(' (deleted)')
+        if deleted:
+            path = path[:-10]
+        name = Path(path).name
+        if not (name.startswith('tf_') and name.endswith('.so') and 'x' in permissions):
+            continue
+        if deleted or not Path(path).is_absolute():
+            raise ValueError('mapped native ELF has no stable ordinary pathname')
+        major, minor = device.split(':')
+        key = (int(major, 16), int(minor, 16), int(inode), path)
+        if key[2] <= 0:
+            raise ValueError('mapped native ELF has no file inode')
+        rows[key] = name[:-3]
+    return rows
+
+
+@contextmanager
+def _owned_descriptor(path, flags, mode=0o777, *, dir_fd=None):
+    _, raise_failures = _helpers()
+    errors = [None]  # Allocate the one cleanup-status slot before acquiring FD.
+    descriptor = os.open(path, flags, mode, dir_fd=dir_fd)
+    try:
+        yield descriptor
+    except BaseException as primary:
+        try:
+            os.close(descriptor)
+        except BaseException as cleanup:
+            errors[0] = cleanup
+            raise_failures(primary, errors)
+        raise
+    else:
+        os.close(descriptor)
+
+
+def _mapped_elf_identity(key):
+    major, minor, inode, path = key
+    with _owned_descriptor(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW) as descriptor:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode)
+                or (os.major(before.st_dev), os.minor(before.st_dev), before.st_ino) != (major, minor, inode)):
+            raise RuntimeError('mapped native ELF device/inode differs from its opened file')
+        digest = hashlib.sha256()
+        header = b''
+        while len(header) < 4:
+            block = os.read(descriptor, 4 - len(header))
+            if not block:
+                raise ValueError('mapped native file is not ELF')
+            header += block
+        if header != b'\x7fELF':
+            raise ValueError('mapped native file is not ELF')
+        digest.update(header)
+        while True:
+            block = os.read(descriptor, 1 << 20)
+            if not block:
+                break
+            digest.update(block)
+        after = os.fstat(descriptor)
+        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        if any(getattr(before, field) != getattr(after, field) for field in fields):
+            raise RuntimeError('mapped native ELF changed while hashed')
+        pathname = os.stat(path, follow_symlinks=False)
+        if any(getattr(after, field) != getattr(pathname, field) for field in fields):
+            raise RuntimeError('mapped native ELF pathname changed while hashed')
+        return {'path': path, 'device_major': major, 'device_minor': minor, 'inode': inode,
+                'bytes': after.st_size, 'mode': stat.S_IMODE(after.st_mode), 'sha256': digest.hexdigest()}
+
+
+def observe_native_elfs(required):
+    """Observe current-process executable file mappings; never load an extension.
+
+    A Python registry entry alone is not mapping evidence. Mapped-file evidence
+    does not establish which kernel executed or describe another process.
+    """
+    if (type(required) is not list or any(type(prefix) is not str or not prefix.startswith('tf_')
+            or not all(c.isascii() and (c.isalnum() or c == '_') for c in prefix) for prefix in required)
+            or len(set(required)) != len(required)):
+        raise ValueError('distinct owned native prefixes required')
+    before = _native_map_rows(_read_native_maps())
+    mapped = [{**_mapped_elf_identity(key), 'name': name} for key, name in sorted(before.items())]
+    after = _native_map_rows(_read_native_maps())
+    if before != after:
+        raise RuntimeError('native ELF mappings changed during observation')
+    registry = {}
     for name, module in tuple(sys.modules.items()):
         if name.startswith('tf_') and isinstance(module, types.ModuleType):
             value = module.__dict__.get('__file__')
             if type(value) is str and value.endswith('.so'):
-                path = Path(value).resolve()
-                modules[name] = {'path': str(path), **file_identity(path)}
-    missing = [prefix for prefix in required if not any(name.startswith(prefix) for name in modules)]
-    return {'modules': modules, 'missing_required_parent_prefixes': missing,
-            'scope': 'Already loaded parent-process modules only; no forced load or child execution inference.'}
+                registry[name] = value
+    missing = [prefix for prefix in required if not any(row['name'].startswith(prefix) for row in mapped)]
+    return {'schema': 'tensorfold.native-elf-observation-v2', 'PID': os.getpid(),
+            'mapped_elfs': mapped, 'python_registry': registry,
+            'missing_required_prefixes': missing,
+            'scope': 'Current process executable mappings only; no forced load, kernel-use or child inference.'}
+
+
+def _native_elfs(required):
+    report = observe_native_elfs(required)
+    report['missing_required_parent_prefixes'] = report.pop('missing_required_prefixes')
+    return report
+
+
+def record_native_elfs(required, *, rank, tag, evidence_dir):
+    """Explicit child call AFTER native use; exclusive durable bounded record.
+
+    The controlled driver provides a fresh directory. Its source file must be
+    part of the declared read-only test/tool inventory; this helper imports no
+    runtime, initializes no CUDA state and does not query another process.
+    """
+    if type(rank) is not int or not 0 <= rank < 65536 or type(tag) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', tag):
+        raise ValueError('bounded child rank/tag required')
+    root = Path(evidence_dir)
+    with _owned_descriptor(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW) as directory:
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ValueError('child evidence requires an ordinary private owned directory')
+        report = observe_native_elfs(required)
+        report.update(rank=rank, tag=tag, observer=file_identity(__file__),
+                      scope='This child process AFTER caller native use; no all-rank/kernel-use inference from mappings alone.')
+        raw = (json.dumps(report, sort_keys=True) + '\n').encode('utf-8')
+        if len(raw) > 4 << 20:
+            raise ValueError('child native observation exceeds bounded evidence extent')
+        name = tag + '-rank-' + str(rank) + '-pid-' + str(os.getpid()) + '.json'
+        with _owned_descriptor(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                               0o600, dir_fd=directory) as descriptor:
+            written = 0
+            while written < len(raw):
+                count = os.write(descriptor, raw[written:])
+                if count <= 0:
+                    raise OSError('child native evidence write made no progress')
+                written += count
+            os.fsync(descriptor)
+        os.fsync(directory)
+    if report['missing_required_prefixes']:
+        raise RuntimeError('required child native ELF was not actually mapped')
+    return report
 
 
 def _junit(path, collected):
@@ -376,6 +516,8 @@ def _junit(path, collected):
 def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=_helpers):
     """Execute once. Tests may inject dependencies; production has no bypass CLI."""
     validate_spec(spec)
+    if os.environ.get(CHILD_EVIDENCE_ENV):
+        raise ValueError('external child-native evidence path is forbidden')
     if os.environ.get('PYTEST_ADDOPTS'):
         raise ValueError('external PYTEST_ADDOPTS is forbidden for full-module qualification')
     source, evidence = Path(source).resolve(strict=True), Path(evidence).resolve(strict=True)
@@ -389,6 +531,7 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
     code = suite = None
     source_after_match = False
     old_path = list(sys.path)
+    old_child_evidence = os.environ.get(CHILD_EVIDENCE_ENV)
     try:
         if any(Path(value or os.getcwd()).resolve().is_relative_to(source / 'src') for value in sys.path):
             raise ValueError('application source overlay is forbidden')
@@ -410,6 +553,10 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
         guard.sample('before-suite')
         # The host owns full raw logs. Keep worker stderr/faulthandler output
         # live instead of hiding it in pytest's global FD capture until return.
+        if spec['mode'] == 'cuda':
+            child_evidence = evidence / 'child-native-ELF'
+            child_evidence.mkdir(mode=0o700)
+            os.environ[CHILD_EVIDENCE_ENV] = str(child_evidence)
         code = int(runtime.pytest.main(['-c', '/dev/null', '--capture=no', '--rootdir=' + str(source), '--import-mode=importlib',
             '-o', 'pythonpath=' + ' '.join((str(source), str(source / 'tests'), str(source / 'tests/cuda'))),
             '-p', 'no:cacheprovider', '-vv', '-ra', '-o', 'junit_family=legacy',
@@ -463,7 +610,7 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
                 native = _native_elfs(spec['required_native_elf_prefixes'])
                 output.save('actual-native-ELF.json', native)
                 if native['missing_required_parent_prefixes']:
-                    raise RuntimeError('required parent native ELF was not actually loaded')
+                    raise RuntimeError('required parent native ELF was not actually mapped')
             except BaseException as error:
                 errors.append(error)
             try:
@@ -471,6 +618,13 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
             except BaseException as error:
                 errors.append(error)
         sys.path[:] = old_path
+        try:
+            if old_child_evidence is None:
+                os.environ.pop(CHILD_EVIDENCE_ENV, None)
+            else:
+                os.environ[CHILD_EVIDENCE_ENV] = old_child_evidence
+        except BaseException as error:
+            errors.append(error)  # No retry; preserve receipt and original primary.
     result = None
     try:
         result = {'schema': 'tensorfold.native-contract-result-v1', 'mode': spec['mode'], 'pytest_exit': code, 'JUnit': suite,

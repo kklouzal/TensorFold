@@ -784,5 +784,64 @@ CUDA-context-fatal results stop remaining affected work. The CPU
 route never queries CUDA and cannot qualify a native case. Sampled resource
 observations are separate from allocator/admission bounds and serving timings.
 Import, `__mp_main__` and `--help` have no runtime/spec/evidence side effects.
-The 22 standard-library controls cover these contracts, including real spawn;
-actual installed-target and host-controller integration remain required.
+The 37 standard-library controls cover these contracts, including real spawn;
+actual target integration of the newer mapped-ELF observer and updated fixtures
+remains required. Earlier complete-pair results are scoped separately below.
+
+Native origin evidence comes from executable process mappings and stable
+regular-file device/inode/hash checks. Python's module registry is supplementary:
+Torch JIT extensions need not register there. The observer never loads an
+extension to manufacture evidence. Parent requirements describe parent mappings;
+spawned workers must separately emit anchored rank/PID/tag/observer-source
+records after actual native use. Stage the one exact driver at
+`/operator/v100_native_contract_driver.py` so those workers import the same
+inert observer. CUDA pytest execution owns and restores the private child-evidence
+directory setting; completed records do not replace numerical assertions.
+
+### Host controller and cancellation
+
+The paired [`v100_native_contract_host.py`](../../tools/v100_native_contract_host.py)
+consumes a hash/byte-bound JSON spec with schema
+`tensorfold.native-contract-host-v1`. Its source `validate_spec` defines the
+closed resource, image, device, mount, environment and input contract. Use one
+new evidence directory per attempt; do not rewrite Python for different cases.
+
+```bash
+set -e
+python -B -m tools.v100_native_contract_host \
+  --spec "$TF_HOST_SPEC" --spec-sha256 "$TF_HOST_SPEC_SHA256" \
+  --spec-bytes "$TF_HOST_SPEC_BYTES" --out "$TF_HOST_EVIDENCE" --validate-only
+python -B -m tools.v100_native_contract_host \
+  --spec "$TF_HOST_SPEC" --spec-sha256 "$TF_HOST_SPEC_SHA256" \
+  --spec-bytes "$TF_HOST_SPEC_BYTES" --out "$TF_HOST_EVIDENCE"
+```
+
+Launch only after validation succeeds. Validation alone does not establish the
+Docker configuration: the controller checks the actual created container before
+starting it. Bind daemon-provided limits explicitly from current inspection;
+the observed host `nofile=1048576` is not a universal default or permission to
+change another host's limits. Keep the ordinary persistent `/cache` mount and
+declare `TORCH_EXTENSIONS_DIR` and, where imported, `TRITON_CACHE_DIR` beneath it.
+A writable Triton import cache does not qualify SM70 Triton execution.
+
+Structured spec/source-manifest JSON remains bounded at 8 MiB, and cancellation
+control JSON at 4 KiB. Raw inputs such as the 20 MiB tokenizer are streamed in
+64 KiB chunks against their exact declared byte length, SHA256 and stable
+regular-file identity. They are not omitted from provenance or accumulated in
+an in-memory payload map.
+
+Retain the `run_token` from `controller-identity.json` at launch. To cancel that
+operation, use the retained token, not a freshly guessed or checked numeric PID:
+
+```bash
+python -B -m tools.v100_native_contract_host \
+  --out "$TF_HOST_EVIDENCE" --cancel-token "$TF_RETAINED_RUN_TOKEN"
+```
+
+Request publication is not retirement. Inspect the owning `host-result.json`,
+container terminal state, descendant/GPU observations, source/health comparisons
+and all primary/cleanup errors. The 32 standard-library host controls passed on
+the actual Python 3.14.4 V100 host. The pair also completed the 16-case lifetime
+run and preserved real frontend failures and interrupted diagnostics. Those are
+workflow/component results; they do not qualify complete admission, models or
+serving performance.

@@ -4,6 +4,8 @@ import hashlib
 import io
 import json
 import multiprocessing
+import mmap
+import os
 from pathlib import Path
 import runpy
 import subprocess
@@ -336,7 +338,12 @@ except ValueError as error:
 
     def test_skips_are_not_success_and_sampling_errors_are_separate(self):
         self.skips = 1
-        with mock.patch.object(driver, '_read_text', side_effect=OSError('sample unavailable')):
+        read_text = driver._read_text
+        def fail_sample(path, limit):
+            if str(path) == '/proc/self/maps':
+                return read_text(path, limit)
+            raise OSError('sample unavailable')
+        with mock.patch.object(driver, '_read_text', side_effect=fail_sample):
             self.assertEqual(self.execute(), 1)
         result = self.outcome()
         self.assertEqual(result['pytest_exit'], 0)
@@ -390,16 +397,211 @@ except ValueError as error:
         self.assertIsNotNone(primary.__cause__)
         self.assertFalse((self.evidence / 'named-suite-result.json').exists())
 
+    def native_library(self, name='tf_fixture.so'):
+        path = self.root / name
+        path.write_bytes(b'\x7fELFfixture mapped bytes')
+        return path
+
+    def mapping(self, path, *, inode=None, permissions='r-xp'):
+        info = path.stat()
+        encoded = str(path).replace(' ', r'\040')
+        return ('1000-2000 ' + permissions + ' 00000000 '
+                + format(os.major(info.st_dev), 'x') + ':' + format(os.minor(info.st_dev), 'x')
+                + ' ' + str(info.st_ino if inode is None else inode) + ' ' + encoded + '\n')
+
     def test_observed_native_elf_is_hashed_without_extension_loading(self):
-        library = self.root / 'native.so'
-        library.write_bytes(b'\x7fELFfixture')
+        library = self.native_library()
+        self.spec['required_native_elf_prefixes'] = ['tf_fixture']
+        # An actual executable file mapping, with NO Python module registration
+        # or extension import; no instruction from this synthetic ELF executes.
+        with library.open('rb') as stream, mmap.mmap(stream.fileno(), 0,
+                flags=mmap.MAP_PRIVATE, prot=mmap.PROT_READ | mmap.PROT_EXEC):
+            self.assertNotIn('tf_fixture', sys.modules)
+            self.assertEqual(self.execute(), 0)
+        result = json.loads((self.evidence / 'actual-native-ELF.json').read_text())
+        row = next(row for row in result['mapped_elfs'] if row['name'] == 'tf_fixture')
+        self.assertEqual(row['sha256'], hashlib.sha256(library.read_bytes()).hexdigest())
+        self.assertEqual(row['inode'], library.stat().st_ino)
+        self.assertEqual(result['missing_required_parent_prefixes'], [])
+
+    def test_python_registry_alone_cannot_satisfy_required_mapping(self):
+        library = self.native_library()
         module = types.ModuleType('tf_fixture')
         module.__file__ = str(library)
         self.spec['required_native_elf_prefixes'] = ['tf_fixture']
-        with mock.patch.dict(sys.modules, {'tf_fixture': module}):
-            self.assertEqual(self.execute(), 0)
+        with mock.patch.dict(sys.modules, {'tf_fixture': module}), self.assertRaisesRegex(RuntimeError, 'actually mapped'):
+            self.execute()
         result = json.loads((self.evidence / 'actual-native-ELF.json').read_text())
-        self.assertEqual(result['modules']['tf_fixture']['sha256'], hashlib.sha256(library.read_bytes()).hexdigest())
+        self.assertEqual(result['python_registry']['tf_fixture'], str(library))
+        self.assertEqual(result['missing_required_parent_prefixes'], ['tf_fixture'])
+
+    def test_mapping_segments_deduplicate_and_escaped_path_is_verified(self):
+        library = self.native_library('tf_space name.so')
+        text = self.mapping(library) * 3 + self.mapping(library, permissions='r--p')
+        with mock.patch.object(driver, '_read_native_maps', return_value=text):
+            result = driver.observe_native_elfs(['tf_space'])
+        self.assertEqual(len(result['mapped_elfs']), 1)
+        self.assertEqual(result['mapped_elfs'][0]['path'], str(library))
+
+    def test_mapping_identity_disagreement_and_deleted_files_are_errors(self):
+        library = self.native_library()
+        for text, expected in ((self.mapping(library, inode=library.stat().st_ino + 1), 'device/inode'),
+                               (self.mapping(library).rstrip() + ' (deleted)\n', 'stable ordinary')):
+            with self.subTest(text=text), mock.patch.object(driver, '_read_native_maps', return_value=text):
+                with self.assertRaisesRegex((ValueError, RuntimeError), expected):
+                    driver.observe_native_elfs(['tf_fixture'])
+
+    def test_nonelf_symlink_and_mapping_change_are_not_absence(self):
+        library = self.native_library()
+        text = self.mapping(library)
+        with mock.patch.object(driver, '_read_native_maps', side_effect=[text, '']):
+            with self.assertRaisesRegex(RuntimeError, 'mappings changed'):
+                driver.observe_native_elfs([])
+        library.write_bytes(b'not an ELF')
+        with mock.patch.object(driver, '_read_native_maps', return_value=text):
+            with self.assertRaisesRegex(ValueError, 'not ELF'):
+                driver.observe_native_elfs([])
+        link = self.root / 'tf_symlink.so'
+        link.symlink_to(library)
+        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(link)):
+            with self.assertRaises(OSError):
+                driver.observe_native_elfs([])
+
+    def test_identity_mutation_and_descriptor_cleanup_preserve_authentic_failure(self):
+        library = self.native_library()
+        info = library.stat()
+        changed = types.SimpleNamespace(**{field: getattr(info, field) for field in
+            ('st_dev', 'st_ino', 'st_size', 'st_mode', 'st_mtime_ns', 'st_ctime_ns')})
+        changed.st_size += 1
+        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)):
+            with mock.patch.object(driver.os, 'fstat', side_effect=[info, changed]):
+                with self.assertRaisesRegex(RuntimeError, 'changed while hashed'):
+                    driver.observe_native_elfs([])
+        primary, cleanup = OSError('body'), OSError('close')
+        with mock.patch.object(driver.os, 'open', return_value=123), mock.patch.object(driver.os, 'close', side_effect=cleanup):
+            with self.assertRaises(OSError) as caught:
+                with driver._owned_descriptor('/unused', os.O_RDONLY):
+                    raise primary
+        self.assertIs(caught.exception, primary)
+        self.assertIs(primary.__cause__, cleanup)
+
+    def test_descriptor_close_failure_retains_prior_cause_context_notes_and_policy(self):
+        for suppression in (False, True):
+            with self.subTest(suppression=suppression):
+                primary = OSError('authentic body')
+                cause, context, cleanup = ValueError('prior cause'), RuntimeError('prior context'), OSError('close')
+                primary.__cause__, primary.__context__ = cause, context
+                primary.__suppress_context__ = suppression
+                primary.add_note('authentic note')
+                with mock.patch.object(driver.os, 'open', return_value=123), mock.patch.object(driver.os, 'close', side_effect=cleanup):
+                    with self.assertRaises(OSError) as caught:
+                        with driver._owned_descriptor('/unused', os.O_RDONLY):
+                            raise primary
+                self.assertIs(caught.exception, primary)
+                self.assertIsInstance(primary.__cause__, BaseExceptionGroup)
+                self.assertEqual(primary.__cause__.exceptions, (cause, context, cleanup))
+                self.assertEqual(primary.__notes__[0], 'authentic note')
+                # Existing neutral helper makes all owned cleanup causes explicit;
+                # the prior context remains present even if formerly suppressed.
+                self.assertTrue(primary.__suppress_context__)
+
+    def test_short_raw_reads_hash_complete_mapped_file(self):
+        library = self.native_library()
+        read = driver.os.read
+        def short_read(descriptor, count):
+            return read(descriptor, min(count, 2))
+        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)):
+            with mock.patch.object(driver.os, 'read', side_effect=short_read):
+                report = driver.observe_native_elfs(['tf_fixture'])
+        self.assertEqual(report['mapped_elfs'][0]['sha256'], hashlib.sha256(library.read_bytes()).hexdigest())
+
+    def test_raw_elf_read_failure_and_close_failure_preserve_both(self):
+        library = self.native_library()
+        text = self.mapping(library)
+        primary, cleanup = OSError('authentic ELF read'), OSError('FD close')
+        close = driver.os.close
+        def close_then_fail(descriptor):
+            close(descriptor)
+            raise cleanup
+        with mock.patch.object(driver, '_read_native_maps', return_value=text):
+            with mock.patch.object(driver.os, 'read', side_effect=primary), mock.patch.object(driver.os, 'close', side_effect=close_then_fail):
+                with self.assertRaises(OSError) as caught:
+                    driver.observe_native_elfs([])
+        self.assertIs(caught.exception, primary)
+        self.assertIs(primary.__cause__, cleanup)
+
+    def test_map_read_failure_and_missing_prefix_remain_distinct(self):
+        primary = PermissionError('authentic maps read failure')
+        with mock.patch.object(driver, '_read_native_maps', side_effect=primary):
+            with self.assertRaises(PermissionError) as caught:
+                driver.observe_native_elfs(['tf_fixture'])
+        self.assertIs(caught.exception, primary)
+        with mock.patch.object(driver, '_read_native_maps', return_value=''):
+            self.assertEqual(driver.observe_native_elfs(['tf_fixture'])['missing_required_prefixes'], ['tf_fixture'])
+
+    def test_child_record_is_scoped_durable_exclusive_and_source_identified(self):
+        library = self.native_library()
+        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)):
+            report = driver.record_native_elfs(['tf_fixture'], rank=7, tag='owner-head4-1', evidence_dir=self.evidence)
+            with self.assertRaises(FileExistsError):
+                driver.record_native_elfs(['tf_fixture'], rank=7, tag='owner-head4-1', evidence_dir=self.evidence)
+        path = self.evidence / ('owner-head4-1-rank-7-pid-' + str(os.getpid()) + '.json')
+        self.assertEqual(json.loads(path.read_text()), report)
+        self.assertEqual(report['rank'], 7)
+        self.assertEqual(report['PID'], os.getpid())
+        self.assertEqual(report['observer']['sha256'], driver.file_identity(driver.__file__)['sha256'])
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_missing_child_mapping_is_published_before_owning_failure(self):
+        with mock.patch.object(driver, '_read_native_maps', return_value=''):
+            with self.assertRaisesRegex(RuntimeError, 'required child'):
+                driver.record_native_elfs(['tf_fixture'], rank=0, tag='missing', evidence_dir=self.evidence)
+        records = list(self.evidence.glob('missing-*.json'))
+        self.assertEqual(len(records), 1)
+        self.assertEqual(json.loads(records[0].read_text())['missing_required_prefixes'], ['tf_fixture'])
+
+    def test_child_publication_failure_is_owning_and_preserves_error(self):
+        library = self.native_library()
+        primary = OSError('durability failed')
+        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)):
+            with mock.patch.object(driver.os, 'fsync', side_effect=primary):
+                with self.assertRaises(OSError) as caught:
+                    driver.record_native_elfs(['tf_fixture'], rank=0, tag='fault', evidence_dir=self.evidence)
+        self.assertIs(caught.exception, primary)
+
+    def test_child_context_is_scoped_and_restored_after_test_failure(self):
+        primary = OSError('authentic test failure')
+        def fail(argv, *, plugins):
+            self.assertEqual(os.environ[driver.CHILD_EVIDENCE_ENV], str(self.evidence / 'child-native-ELF'))
+            raise primary
+        self.runtime.pytest.main = fail
+        with self.assertRaises(OSError) as caught:
+            self.execute()
+        self.assertIs(caught.exception, primary)
+        self.assertNotIn(driver.CHILD_EVIDENCE_ENV, os.environ)
+
+    def test_environment_restore_failure_is_retained_without_losing_test_primary(self):
+        primary, cleanup = OSError('authentic pytest primary'), RuntimeError('unsetenv failure')
+        self.primary = primary
+        try:
+            with mock.patch.object(driver.os.environ, 'pop', side_effect=cleanup):
+                with self.assertRaises(OSError) as caught:
+                    self.execute()
+            self.assertIs(caught.exception, primary)
+            report = self.outcome()
+            self.assertEqual(report['primary_error']['type'], 'OSError')
+            self.assertIn('authentic pytest primary', report['primary_error']['error'])
+            self.assertTrue(any('unsetenv failure' in error['error'] for error in report['post_errors']))
+            self.assertIsNotNone(primary.__cause__)
+        finally:
+            os.environ.pop(driver.CHILD_EVIDENCE_ENV, None)
+
+    def test_external_child_evidence_cannot_redirect_worker_records(self):
+        with mock.patch.dict(os.environ, {driver.CHILD_EVIDENCE_ENV: '/unowned'}):
+            with self.assertRaisesRegex(ValueError, 'external child-native'):
+                self.execute()
+        self.assertEqual(self.events, [])
+        self.assertEqual(list(self.evidence.iterdir()), [])
 
     def test_app_mutation_cannot_be_hidden_by_pytest_zero_exit(self):
         self.mutate = lambda: (self.app / '__init__.py').write_text('changed')
