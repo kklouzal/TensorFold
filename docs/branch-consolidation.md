@@ -176,9 +176,9 @@ The original zero-tolerance assertions remain unchanged.
 | Q03 | Complete repaired prepared/bound-graph tests, then actual SC117 native32 selector, wrapper and complete-request cost/quality checks on immutable identities. |
 | Q05 | Complete corrected eight-rank graph tests, release-image identity checks, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. The 16-case lifetime module passed on the bound image; Python header sizes still do not bound native metadata, allocator pages or RSS. |
 | Q06 | Obtain and verify the exact seven-path C06-only packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`), then use an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
-| Q-GLM | Resolve the separate raw-tokenizer compatibility/authority contract and complete actual model/context/stop serving checks for available platform/checkpoint pairs. The capitalization/complete-header frontend repairs passed the bound installed 253-test verification; full checkpoint CUDA and applicable MLX inference remain unqualified without their actual inputs. |
-| B1 | Change default `main` to `python-0.6` after reviewing current consumers. The authenticated CLI account has repository admin role, but its token's Administration request returned HTTP403; the default is still `main`. The connected source/ref interface exposes no default-change operation. |
-| B2/B3 | Obtain the exact manifest, recovery bundle and integrity receipt, verify current restore availability and the retained C06 packet, then retire only unchanged reviewed non-target refs with expected-SHA guards. Non-`main` retirement need not wait for C06 adoption; deleting `main` must follow B1. Stop on new or advanced refs. |
+| Q-GLM | Preserve legacy raw-tokenizer compatibility, as explicitly selected by the user, and complete actual model/context/stop serving checks for available platform/checkpoint pairs. The capitalization/complete-header frontend repairs passed the bound installed 253-test verification; full checkpoint CUDA and applicable MLX inference remain unqualified without their actual inputs. |
+| B1 | The user will change default `main` to `python-0.6`; verify the actual change before retiring `main`. The authenticated CLI account has repository admin role, but its token's Administration request returned HTTP403; the default is still `main`. The connected source/ref interface exposes no default-change operation. |
+| B2/B3 | Use the user-approved fresh recovery bundle, reviewed exact queue and restore receipt. Reverify restore availability, ancestry and current expected SHAs before B2 retirement. B3 additionally requires the unselected C06 source/tests and evidence to remain recoverable; C06 adoption is a separate gate. Delete only reviewed unchanged refs with expected-SHA guards; deleting `main` must follow B1. Stop on new or advanced refs. |
 | B4 | Verify only `python-0.6` remains, it is the actual default and contains the execution basis plus authorized changes, and independent recovery remains usable. |
 
 The bounded accessible-path search did not locate the supplied personal-library
@@ -190,6 +190,7 @@ independently restores all 607 original branch names and exact captured tips,
 without alternates, and passes strict integrity checks. A separate parser of the
 actual user message verifies all 606 queued names/full SHAs, 69 ancestral and
 537 divergent entries, with no drift in the captured fresh remote read. This is
-supplemental recovery evidence: approval to substitute it for the specified
-personal-library recovery set remains pending, as do C06 availability, default
-change and future freshness/expected-SHA retirement checks.
+the user-approved replacement for the inaccessible personal-library recovery
+set. C06 availability, the actual default change and fresh expected-SHA
+retirement checks remain open. Legacy raw-tokenizer compatibility is retained
+by explicit user decision, without a protected-interface qualification claim.

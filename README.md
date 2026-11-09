@@ -37,8 +37,8 @@ The current source also preserves origin through Unicode capitalization and
 removes only fully trusted, complete Max/Low/High effort headers. All 253 CPU
 controls passed on the genuinely rebuilt owned application with an isolated,
 matching CPU TorchVision verification layer. This does not qualify GPU vision,
-MLX or complete models. Legacy raw-tokenizer compatibility remains a separate
-open contract decision.
+MLX or complete models. Legacy raw-tokenizer compatibility is retained by
+explicit user decision; it does not inherit protected-interface qualification.
 
 The V100 source now has one App-owned host-payload pool with grants before
 allocation and ownership through worker, socket and error retirement. Its C27
