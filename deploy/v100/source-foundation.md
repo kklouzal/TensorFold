@@ -937,3 +937,60 @@ result remains preserved. These caller checks do not establish complete
 physical peak bounds or full-model admission. These are scoped workflow/component results,
 not regular cap-zero equivalence, complete native/model/quality admission,
 serving readiness, performance or a deployment-default release.
+
+### Closed owned-teacher model operation
+
+The separate `tensorfold.v100-owned-teacher-operation-v1` schema with mode
+`owned-teacher-model-v1` uses the maintained Host/driver lifecycle for an actual
+model operation. Its shared stdlib-only schema and fixed argv live in
+[`v100_owned_model_contract.py`](../../tools/v100_owned_model_contract.py).
+It has no test-module/JUnit selection and is not a generic command runner.
+Existing CPU/CUDA component schemas and default launch behavior are unchanged.
+The canonical driver/data entrypoint stays fixed; supply the exact closed
+model spec through that existing interface.
+
+The initial region fixes eight SM70 ranks, TP8/ETP4/PP1, ordinary Q8 KV,
+262,144-row context, 24 full-window States, NONE with no loaded MTP, reference
+SM70 policy, no graphs and one cold greedy raw-ID completion. The 64-token
+request is a maximum budget; valid EOS can end it earlier. Readiness GETs bind
+the actual fresh rank0 server instance and service/materialization facts;
+there is exactly one completion POST and no benchmark/warmup POST. Actual C24
+admission must succeed; neither queued requests nor a smaller context/capacity
+can substitute. This operation does not make NativeRN effective merely because
+its code is present in the application.
+
+Model/front assets are separately read-only and hash-bound. The parent streams
+one full descriptor content pass before launching ranks, retains source handles,
+then validates path/stat identity and closes them before marking content binding
+complete. Normal `gguf_assets.prepare` must hit the bound prepared frontend;
+the operation cannot quietly regenerate files in a writable cache. Keep the
+frontend mount separate from writable JIT/runtime cache and forbid protected
+image/process shadow mounts.
+
+The parent imports the verified installed runtime but must not create a CUDA
+context before or after delegation. Actual workers supply SM70/rank/profile and
+native-use evidence. This route uses the explicit verification launcher contract;
+the existing inactive/default service capability policy is not changed.
+Model-only observer bounds and their prepaid host reservation are explicit:
+4 GiB globally covering eight workers and accounted parent overlap, derived from
+bounded maps/mount/module/segment/path and serialization projections. These are
+controlled resource reservations, not a measured allocator or RSS bound.
+
+The operation calls the canonical owned qualifier once. Its one client Task
+uses the existing bounded HTTP reader and rank-supervisor normal/fatal shutdown
+paths. All eight positive worker summaries/startup bindings, child VMA-FD records,
+client report and sealed teacher authority are required. The typed inner result
+and outer Host completion are separate gates; a file or parent mapping cannot
+stand in for worker provenance or successful retirement. Forced-prefix replay
+is diagnostic data, not candidate free-generation quality or a P3 denominator.
+
+Unit validation passed 64 standalone Driver and 51 standalone Host protocol
+tests in separate fresh interpreters on the owned x86 image; their synthetic App
+fixtures intentionally precede any genuine App import. The Owned client suite
+passed 243 controls through the canonical installed-runtime CPU route. All 358
+passed without skips. Earlier attempts under an outer pytest admission wrapper
+are retained as failed arrangements: genuine imports conflict with synthetic
+roots and native unittest subtests change JUnit aggregates. No origin/count
+guard was relaxed and no real module registry was cleared to obtain a pass.
+These unit results do not execute a model or qualify actual asset/cache paths,
+physical C24 capacity, model quality, capture/replay, throughput or deployment.

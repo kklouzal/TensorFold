@@ -941,5 +941,145 @@ assert 'torch' not in sys.modules
                 child.wait(timeout=5)
 
 
+    def model_spec(self):
+        c = host.model_contract
+        spec = self.verification_spec()
+        ids = ['GPU-00000000-0000-0000-0000-' + format(i, '012x') for i in range(8)]
+        spec['uuids'] = ids
+        spec['environment'].update(CUDA_VISIBLE_DEVICES=','.join(ids), NVIDIA_VISIBLE_DEVICES=','.join(ids), TF_GGUF_ASSETS_DIR='/frontend')
+        spec['health_baseline'] = {u: [i, 0, 0, 0, 0, 'No'] for i, u in enumerate(ids)}
+        spec['resources'].update(nano_cpus=64*10**9, memory_bytes=340 << 30, memory_swap_bytes=340 << 30)
+        spec['timeouts'].update(run=7800, retire=90, poll=1, monitor=120)
+        modelroot = '/models/hf/hub/models--fixture/snapshots/' + 'a'*40
+        frontend = '/frontend/' + 'b'*64
+        def asset(path):
+            return {'path': path, 'bytes': 1, 'sha256': '1'*64}
+        shards = [asset(modelroot + '/fixture-0000' + str(i) + '-of-00002.gguf') for i in (1, 2)]
+        operation = {'teacher_plan': None, 'teacher_client': None, 'model_entrypoint': shards[0]['path'],
+                     'model_assets': shards, 'frontend_root': frontend,
+                     'frontend_assets': [asset(frontend+'/'+name) for name in sorted(c.FRONTEND_NAMES)], 'execution_manifest': None}
+        for name in ('teacher-plan.json', 'teacher-client.json'):
+            path = self.operator / name
+            path.write_text('{}\n')
+            record = file_record(path)
+            spec['inputs'].append(record)
+            operation['teacher_plan' if 'plan' in name else 'teacher_client'] = {**record, 'path': '/operator/'+name}
+        contract_path = self.operator / 'v100_owned_model_contract.py'
+        contract_path.write_text('# immutable contract fixture\n')
+        spec['inputs'].append(file_record(contract_path))
+        sources = {}
+        for name in c.REQUIRED_TOOLS:
+            source = self.source / name
+            source.parent.mkdir(exist_ok=True)
+            staged = self.operator / Path(name).name
+            source.write_bytes(staged.read_bytes() if staged.exists() else b'# canonical source fixture\n')
+            sources[name] = {key: file_record(source)[key] for key in ('bytes', 'sha256')}
+        manifest_path = Path(spec['source']['manifest']['path'])
+        manifest = json.loads(manifest_path.read_text())
+        for name in sources:
+            path = self.source/name
+            manifest['files'][name] = {'type': 'file', 'stored_mode': path.stat().st_mode & 0o7777, **sources[name]}
+        manifest_path.write_text(json.dumps(manifest))
+        spec['source']['manifest'] = file_record(manifest_path)
+        inner_path = self.operator/'spec.json'
+        data = json.loads(inner_path.read_text())
+        data.pop('modules')
+        data.update(schema=c.SCHEMA, mode=c.MODE, UUIDs=ids, operation=operation, source_files=sources)
+        inner_path.write_text(json.dumps(data))
+        spec['inputs'][1] = file_record(inner_path)
+        spec['argv'][5], spec['argv'][7] = spec['inputs'][1]['sha256'], str(spec['inputs'][1]['bytes'])
+        spec['mounts'] += [{'source': str(self.root/'readonly-model'), 'target': modelroot, 'read_only': True},
+                           {'source': str(self.root/'readonly-frontend'), 'target': '/frontend', 'read_only': True}]
+        return spec, data
+
+    def model_outcome(self, expected):
+        c = host.model_contract
+        def ref(name, rank=None):
+            value = {'file': name, 'bytes': 1, 'sha256': 'a'*64}
+            return value if rank is None else {**value, 'rank': rank}
+        model = {'schema': c.RESULT_SCHEMA, 'teacher_plan_sha256': expected['operation']['teacher_plan']['sha256'],
+                 'teacher_client_sha256': expected['operation']['teacher_client']['sha256'], 'launch_exit': 0,
+                 'client_report': ref('teacher/teacher-client-report.json'), 'teacher_authority': ref('teacher/teacher-authority.json'),
+                 'rank_receipts': [ref(f'teacher/teacher-rank{i}/summary.json', i) for i in range(8)],
+                 'startup_receipts': [ref(f'teacher/rank-{i}.json', i) for i in range(8)],
+                 'child_native_records': [ref(f'child-native/teacher-closed-rank-{i}-pid-{i+2}.json', i) for i in range(8)]}
+        assets = expected['operation']
+        binding = {'schema': 'tensorfold.owned-model-content-binding-v1', 'completed': True,
+                   'assets': [{'identity': item, 'stat': [1, 2, 3, item['bytes'], 4, 5]} for item in
+                              [*assets['model_assets'], *assets['frontend_assets'], assets['teacher_plan'], assets['teacher_client']]]}
+        record = self.output/'model-content-binding.json'
+        record.write_text(json.dumps(binding))
+        return {'schema': c.HOST_RESULT_SCHEMA, 'mode': c.MODE, 'source_commit': expected['source_commit'],
+                'image_id_declared': expected['image_id'], 'operation': assets, 'source_after_match': True,
+                'content_binding_complete': True, 'content_binding': {**{k: file_record(record)[k] for k in ('bytes', 'sha256')}, 'file': record.name},
+                'parent_cuda_uninitialized': True, 'model_result': model, 'primary_error': None, 'post_errors': [],
+                'scope': 'unit boundary fixture only'}
+
+    def test_model_mode_binds_exact_eight_ro_inputs_and_canonical_operator(self):
+        spec, data = self.model_spec()
+        host.validate_spec(spec)
+        expected = host.validate_data(spec)
+        self.assertEqual(expected['operation'], data['operation'])
+        self.assertNotIn('modules', expected)
+        host.admit(document(spec), spec, CID)
+        argv = host.create_argv(spec, self.output)
+        self.assertEqual(argv[argv.index('--network')+1], 'none')
+        self.assertEqual(argv.count('--cap-add'), 1)
+        self.assertEqual(argv[argv.index('--cpus')+1], '64')
+        self.assertEqual(argv[argv.index('--memory')+1], str(340 << 30))
+
+    def test_model_mode_refuses_writable_assets_wrong_floors_missing_ranks_and_selection(self):
+        spec, data = self.model_spec()
+        c = host.model_contract
+        for change in ('writable-model', 'low-memory', 'short-deadline', 'four-ranks', 'optimized', 'private-select'):
+            bad = copy.deepcopy(spec)
+            if change == 'writable-model':
+                bad['mounts'][-2]['read_only'] = False
+            elif change == 'low-memory':
+                bad['resources']['memory_bytes'] -= 1
+            elif change == 'short-deadline':
+                bad['timeouts']['run'] = 600
+            elif change == 'four-ranks':
+                bad['uuids'] = bad['uuids'][:4]
+            elif change == 'optimized':
+                bad['environment']['TENSORFOLD_SM70_PROFILE'] = 'optimized'
+            else:
+                bad['environment']['TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS'] = 'native-serial-v1'
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                c.validate_host_operation(bad, data)
+
+    def test_typed_model_result_is_not_a_junit_success_substitute(self):
+        spec, _ = self.model_spec()
+        expected = host.validate_data(spec)
+        self.output.mkdir()
+        result = self.model_outcome(expected)
+        c = host.model_contract
+        self.assertIs(c.validate_host_result(result, expected), result)
+        for change in ({'parent_cuda_uninitialized': False}, {'content_binding_complete': False},
+                       {'post_errors': [{'error': 'retirement'}]}, {'primary_error': {'error': 'model'}},
+                       {'model_result': {**result['model_result'], 'rank_receipts': result['model_result']['rank_receipts'][:-1]}},
+                       {'model_result': {**result['model_result'], 'launch_exit': 1}}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                c.validate_host_result({**result, **change}, expected)
+        with self.assertRaises(ValueError):
+            c.validate_host_result(inner(), expected)
+
+    def test_model_host_lifecycle_requires_typed_result_content_receipt_and_retirement(self):
+        spec, _ = self.model_spec()
+        system = FakeSystem(spec, self.output)
+        original = system.start
+        def start(cid, log):
+            process = original(cid, log)
+            expected = host.validate_data(spec)
+            (self.output/'owned-teacher-operation-result.json').write_text(json.dumps(self.model_outcome(expected)))
+            return process
+        system.start = start
+        outcome = host.run(spec, self.output, system=system)
+        self.assertEqual(outcome['inner']['mode'], host.model_contract.MODE)
+        self.assertEqual(outcome['inner']['model_result']['launch_exit'], 0)
+        self.assertEqual(outcome['container']['State']['Pid'], 0)
+        self.assertIn(['close'], system.calls)
+
+
 if __name__ == "__main__":
     unittest.main()

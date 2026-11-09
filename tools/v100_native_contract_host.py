@@ -33,10 +33,12 @@ import subprocess
 import time
 
 if __package__:
+    from . import v100_owned_model_contract as model_contract
     from .benchmark_output import write_json
     from .openai_protocol import object_json
     from .worker_lifetime import raise_failures
 else:
+    import v100_owned_model_contract as model_contract
     from benchmark_output import write_json
     from openai_protocol import object_json
     from worker_lifetime import raise_failures
@@ -308,22 +310,41 @@ def source_inventory(spec):
 
 def validate_data(spec):
     """Bind the canonical inner mode/data BEFORE any output or Docker effect."""
-    source_inventory(spec)
+    source_files, _ = source_inventory(spec)
     operator = next(m["source"] for m in spec["mounts"] if m["target"] == "/operator")
     inner_path = str(Path(operator) / Path(spec["argv"][3]).name)
-    inner = None
-    for item in spec["inputs"]:
-        if item["path"] == inner_path:
-            inner = object_json(bound_file(item))
-        else:
+    inner_input = next(item for item in spec['inputs'] if item['path'] == inner_path)
+    inner = object_json(bound_file(inner_input))
+    model = inner.get('schema') == model_contract.SCHEMA
+    if model:
+        model_contract.validate_host_operation(spec, inner)
+        for name, identity in inner['source_files'].items():
+            require(name in source_files and all(source_files[name][key] == identity[key] for key in ('bytes', 'sha256')),
+                    'model operator differs from complete reviewed source fixture')
+        inputs = {Path(item['path']).name: item for item in spec['inputs'] if Path(item['path']).parent == Path(operator)}
+        for name in ('v100_native_contract_driver.py', 'v100_owned_model_contract.py'):
+            require(name in inputs and all(inputs[name][key] == inner['source_files']['tools/' + name][key]
+                                          for key in ('bytes', 'sha256')), 'staged operator does not match canonical model source')
+        for label in ('teacher_plan', 'teacher_client'):
+            item = inner['operation'][label]
+            staged = inputs.get(Path(item['path']).name)
+            require(staged is not None and all(staged[key] == item[key] for key in ('bytes', 'sha256')),
+                    'model DATA not bound in readonly operator closure')
+        result = {key: inner[key] for key in ('mode', 'source_commit', 'image_id', 'operation')}
+    else:
+        mode = "cuda" if spec["uuids"] else "cpu"
+        require(inner.get("schema") == "tensorfold.v100-native-contract.v1" and inner.get("mode") == mode
+                and inner.get("UUIDs") == spec["uuids"] and inner.get("SM") == ([7, 0] if spec["uuids"] else [])
+                and inner.get("image_id") == spec["image_id"], "host/inner mode, devices or image differ")
+        result = {key: inner[key] for key in ("mode", "source_commit", "image_id", "modules")}
+    for item in spec['inputs']:
+        if item is not inner_input:
+            # Large target bytes are bound/hash-checked once by the inner owner.
+            # The host input closure is operator/frontend authority DATA only.
+            require(not model or not item['path'].endswith('.gguf'), 'model payloads must not be duplicate host hash inputs')
             check_raw_file(item)
-    mode = "cuda" if spec["uuids"] else "cpu"
-    require(inner.get("schema") == "tensorfold.v100-native-contract.v1" and inner.get("mode") == mode
-            and inner.get("UUIDs") == spec["uuids"] and inner.get("SM") == ([7, 0] if spec["uuids"] else [])
-            and inner.get("image_id") == spec["image_id"], "host/inner mode, devices or image differ")
     require(("verification_launcher" in inner) == ("verification_launcher" in spec)
             and inner.get("verification_launcher") == spec.get("verification_launcher"), "host/inner verification mode differs")
-    result = {key: inner[key] for key in ("mode", "source_commit", "image_id", "modules")}
     if "verification_launcher" in spec:
         require(all(key in inner for key in ("app_root", "expected_app", "sdk_manifest", "fd", "torch")),
                 "verification runtime identity fields required")
@@ -949,11 +970,23 @@ def run(spec, output, system=None, *, spec_identity=None):
             require("verification_preflight" not in outcome or outcome["verification_preflight"] == verified,
                     "verification prequalification receipt changed")
             outcome["verification_preflight"] = verified
-        outcome["inner"] = object_json(read_bytes(output / "named-suite-result.json", LIMIT))
-        suite_result(outcome["inner"], expected_inner["mode"])
-        require(outcome["inner"]["source_commit"] == expected_inner["source_commit"]
-                and outcome["inner"]["image_id_declared"] == expected_inner["image_id"]
-                and outcome["inner"]["modules"] == expected_inner["modules"], "inner result identity differs")
+        if expected_inner['mode'] == model_contract.MODE:
+            outcome['inner'] = object_json(read_bytes(output / 'owned-teacher-operation-result.json', LIMIT))
+            model_contract.validate_host_result(outcome['inner'], expected_inner)
+            binding_record = outcome['inner']['content_binding']
+            binding = object_json(bound_file({'path': str(output / binding_record['file']),
+                                             **{key: binding_record[key] for key in ('bytes', 'sha256')}}))
+            assets = expected_inner['operation']
+            require(binding.get('schema') == 'tensorfold.owned-model-content-binding-v1' and binding.get('completed') is True
+                    and [row.get('identity') for row in binding.get('assets', [])] ==
+                    [*assets['model_assets'], *assets['frontend_assets'], assets['teacher_plan'], assets['teacher_client']],
+                    'model content binding is incomplete or different from admitted assets')
+        else:
+            outcome["inner"] = object_json(read_bytes(output / "named-suite-result.json", LIMIT))
+            suite_result(outcome["inner"], expected_inner["mode"])
+            require(outcome["inner"]["source_commit"] == expected_inner["source_commit"]
+                    and outcome["inner"]["image_id_declared"] == expected_inner["image_id"]
+                    and outcome["inner"]["modules"] == expected_inner["modules"], "inner result identity differs")
         admit(final, spec, cid)
     except BaseException as error:
         primary = error

@@ -55,6 +55,10 @@ full-method/context/resource, model-quality and performance gates remain open.
 The [private teacher diagnostic](docs/benchmarking.md#private-reference-first-teacher-diagnostics)
 has 284 passing x86 CPU controls. Actual model capture/replay is still unrun;
 its first region supports none/greedy text only, with MTP4 explicitly unsupported.
+The [closed teacher-model operation](deploy/v100/source-foundation.md#closed-owned-teacher-model-operation)
+now has 358 x86 unit controls: 115 standalone synthetic protocol tests and 243
+canonical runtime controls. Its single-request client, eight-rank shutdown and
+host contracts are implemented; actual model capture/replay remains unrun.
 The offline quality-DATA producer is now maintained in `tools/v100_quality_data.py`.
 Its 29 local CPU controls cover immutable inputs, independent gold, bounded
 publication and current frontend provenance. Historical DATA is preserved;

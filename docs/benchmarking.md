@@ -908,6 +908,21 @@ penalties, media, retention, background work or other diagnostic procedures.
 MTP4 and other regions reject explicitly. GET readiness is allowed; do not run
 an unrelated arithmetic POST before the single planned request.
 
+The optional private `--teacher-client CLIENT.json` entry now drives that one
+request and requests normal leader-first shutdown only after validated client
+completion. Failure uses the existing rank supervisor; client work is cancelled
+and drained before authority publication. The shared closed
+`tensorfold.owned-teacher-client-v1` schema binds the plan SHA, literal loopback
+base/model, actual expected service profile, readiness/whole/socket deadlines
+and response bound. This is not an arbitrary warmup or benchmark client.
+The new client/host integration passed 358 x86 unit controls, not a model run.
+
+The [closed host operation](../deploy/v100/source-foundation.md#closed-owned-teacher-model-operation)
+is the maintained model launch boundary. Existing CPU/CUDA pytest specs remain
+component suites; do not substitute model argv or infer a model pass from a
+JUnit count. Actual model DATA, assets/cache binding, physical C24 admission,
+client request and complete all-rank/host retirement still require execution.
+
 ```bash
 python tools/v100_owned_qualification.py --gpus "$TF_RANK_GPUS" \
   --out "$TF_TEACHER_FRESH_OUTPUT" --teacher-plan "$TF_TEACHER_PLAN" \

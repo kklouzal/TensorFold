@@ -17,7 +17,7 @@ from tensorfold.cuda.expert_launch import supervise
 from tensorfold.cleanup import raise_failures
 
 
-def main(argv=None, *, _command_prefix=None) -> int:
+def main(argv=None, *, _command_prefix=None, _shutdown_probe=None, _failure_probe=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpus", required=True, help="Comma-separated visible CUDA device IDs or UUIDs, rank order")
     parser.add_argument("--master-port", type=int, default=29551)
@@ -40,6 +40,8 @@ def main(argv=None, *, _command_prefix=None) -> int:
                 or any(type(value) is not str or not value or "\0" in value for value in _command_prefix)):
             raise ValueError("private rank command prefix must be a nonempty argument sequence")
         prefix = list(_command_prefix)
+    if any(probe is not None and not callable(probe) for probe in (_shutdown_probe, _failure_probe)):
+        raise ValueError('private launch probes must be callable before cohort acquisition')
     # Keep the failure channel process-owned until every rank/session retires.
     # A fatal worker can wake the supervisor even when another rank is stuck
     # inside a collective and cannot produce a normal operation acknowledgment.
@@ -59,19 +61,29 @@ def main(argv=None, *, _command_prefix=None) -> int:
 
         def failed():
             try:
-                return bool(os.read(read_fd, 1))
+                worker_failed = bool(os.read(read_fd, 1))
             except BlockingIOError:
-                return False
+                worker_failed = False
+            client_failed = False if _failure_probe is None else _failure_probe()
+            if type(client_failed) is not bool:
+                raise ValueError('private failure probe must return a boolean')
+            return worker_failed or client_failed
 
         def stop(signum, _frame):
             nonlocal stopping
             stopping = True
 
+        def normal_stop():
+            client_done = False if _shutdown_probe is None else _shutdown_probe(stopping)
+            if type(client_done) is not bool:
+                raise ValueError('private shutdown probe must return a boolean')
+            return stopping or client_done
+
         for index, signum in enumerate((signal.SIGINT, signal.SIGTERM)):
             previous[index] = signal.getsignal(signum)
             signal.signal(signum, stop)
         result = supervise(commands, environments, grace=30.0, failure_probe=failed,
-                           pass_fds=(write_fd,), shutdown_probe=lambda: stopping,
+                           pass_fds=(write_fd,), shutdown_probe=normal_stop,
                            shutdown_rank=len(commands) - 1)
     except BaseException as error:
         primary = error

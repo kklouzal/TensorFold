@@ -1640,3 +1640,374 @@ def test_teacher_obligation_refuses_before_observer_setup(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match='admitted baseline'):
         owned.prepare_owned_teacher(engine, prepared, tmp_path)
     assert not hasattr(engine, '_owned_teacher_frames')
+
+
+def _one_teacher_client(tmp_path, monkeypatch, mutate=None):
+    import copy
+    import hashlib
+    from tests.test_v100_adaptive_qualification import stats
+    from tools import v100_rotorquant_live as live
+    expected = {'context_tokens': 262144, 'resident_capacity': 24, 'configured_ceiling': 24,
+                'kv_dtype': 'int8', 'kernel_family': 'torch-reference', 'graph_family': 'uncaptured',
+                'tp': 8, 'pp': 1, 'etp': 4, 'ep': 2}
+    teacher = {'data': {'input_ids': [1, 2], 'max_frames': 2, 'vocab': 16, 'mode': 'capture'}, 'input_sha256': 'a' * 64}
+    selected = {'data': {'expected_service': expected, 'base': 'http://127.0.0.1:8000', 'model': 'target-revision',
+                         'socket_timeout_s': 1, 'whole_timeout_s': 2, 'readiness_timeout_s': 1,
+                         'response_bytes': 1 << 20}, 'sha256': 'b' * 64}
+    value = stats(24)
+    value['capacity_plan']['session_capacity']['configured_ceiling'] = 24
+    value['capacity_plan']['expert_parallel'] = {key: expected[key] for key in ('tp', 'pp', 'etp', 'ep')}
+    value['runtime'] = {'execution': {'execution_families': {'effective': {
+        'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'}, 'trial': None}}}
+    reply = {'choices': [{'index': 0, 'text': 'plain completion', 'finish_reason': 'length'}],
+             'usage': {'prompt_tokens': 2, 'completion_tokens': 2, 'total_tokens': 4,
+                       'prompt_tokens_details': {'cached_tokens': 0}},
+             'tensorfold': {'token_ids': [3, 4], 'token_sha': hashlib.sha256(b'3,4').hexdigest()[:12],
+                            'drafts': False, 'drafted': 0, 'accepted': 0, 'cached': 0}}
+    for rank in range(8):
+        (tmp_path / f'rank-{rank}.json').write_text(json.dumps({
+            'rank': rank, 'mtp_banks': 0, 'state_count': 24,
+            'teacher_server_instance_id': 'same-process' if rank == 0 else f'follower-{rank}',
+            'teacher_windows': {'full_resident': True, 'slots': 24, 'capacity_min': 262144,
+                                'capacity_max': 262144, 'limit_min': 262144, 'limit_max': 262144,
+                                'logical_min': 262144, 'logical_max': 262144}}))
+    calls = []
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+        def call(self, label, body=None, **kwargs):
+            kwargs['read_control'].check()
+            calls.append((label, body, kwargs['path']))
+            result = copy.deepcopy(reply if body is not None else value)
+            if mutate is not None:
+                mutate(label, result)
+            return result
+    monkeypatch.setattr(live, 'Client', Client)
+    return owned._TeacherClient(teacher, selected, tmp_path), calls
+
+
+def test_teacher_client_one_plain_cold_post_with_actual_all_rank_binding(tmp_path, monkeypatch):
+    client, calls = _one_teacher_client(tmp_path, monkeypatch)
+    client.run()
+    assert [row[2] for row in calls] == ['/stats', '/v1/completions', '/stats']
+    assert calls[1][1] == {'model': 'target-revision', 'prompt': [1, 2], 'max_tokens': 2,
+                           'temperature': 0, 'draft': False, 'stream': False, 'return_token_ids': True}
+    assert client.result['complete'] is True and client.result['post_attempts'] == 1
+    assert client.result['token_ids'] == [3, 4] and client.result['server_instance_id'] == 'same-process'
+    assert client.result['quality_acceptance'] is False and client.result['P3_valid'] is False
+    assert json.loads((tmp_path / 'teacher-client-report.json').read_text()) == client.result
+
+
+@pytest.mark.parametrize('fault', ['hash', 'cached', 'cached-bool', 'drafts', 'finish', 'text', 'usage', 'instance', 'family', 'physical'])
+def test_teacher_client_rejects_protocol_or_actual_profile_without_retry(tmp_path, monkeypatch, fault):
+    def mutate(label, value):
+        if label == 'teacher-completion':
+            if fault == 'hash':
+                value['tensorfold']['token_sha'] = '0' * 12
+            if fault == 'cached':
+                value['tensorfold']['cached'] = 1
+            if fault == 'cached-bool':
+                value['usage']['prompt_tokens_details']['cached_tokens'] = False
+            if fault == 'drafts':
+                value['tensorfold']['drafts'] = True
+            if fault == 'finish':
+                value['choices'][0]['finish_reason'] = None
+            if fault == 'text':
+                value['choices'][0].pop('text')
+            if fault == 'usage':
+                value['usage']['total_tokens'] = 3
+        if label == 'readiness-0':
+            if fault == 'instance':
+                value['server']['instance_id'] = 'stale'
+            if fault == 'family':
+                value['runtime']['execution']['execution_families']['effective']['kernel_family'] = 'native'
+            if fault == 'physical':
+                value['capacity_plan']['kv_full_windows']['ranks'][7]['startup_capacities'][0] = 128
+    client, calls = _one_teacher_client(tmp_path, monkeypatch, mutate)
+    with pytest.raises(ValueError):
+        client.run()
+    assert sum(body is not None for _, body, _ in calls) <= 1
+    assert client.result is None
+
+
+def test_teacher_client_requires_all_rank_residency_before_http(tmp_path, monkeypatch):
+    client, calls = _one_teacher_client(tmp_path, monkeypatch)
+    path = tmp_path / 'rank-7.json'
+    value = json.loads(path.read_text())
+    value['teacher_windows']['full_resident'] = False
+    path.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match='full-window'):
+        client.run()
+    assert calls == []
+
+
+def test_teacher_client_cancelled_before_http_does_not_post(tmp_path, monkeypatch):
+    from tools.v100_rotorquant_live import ReadCancelled
+    client, calls = _one_teacher_client(tmp_path, monkeypatch)
+    client.cancelled.set()
+    with pytest.raises(ReadCancelled):
+        client.run()
+    assert calls == []
+
+
+@pytest.mark.parametrize('slot', ['_shutdown_probe', '_failure_probe'])
+def test_private_launcher_probes_validate_before_pipe(monkeypatch, slot):
+    monkeypatch.setattr(launcher.os, 'pipe2', lambda *_: pytest.fail('acquisition before validation'))
+    with pytest.raises(ValueError, match='callable'):
+        launcher.main(['--gpus', '0,1', '--', 'model'], **{slot: False})
+
+
+def test_private_launcher_probes_preserve_stop_and_failure_semantics(monkeypatch):
+    seen = []
+    def supervise(commands, environments, **kwargs):
+        assert len(commands) == 2 and kwargs['shutdown_rank'] == 1
+        assert kwargs['failure_probe']() is False
+        assert kwargs['shutdown_probe']() is True
+        return 0
+    monkeypatch.setattr(launcher, 'supervise', supervise)
+    assert launcher.main(['--gpus', '0,1', '--', 'model'],
+                         _shutdown_probe=lambda requested: seen.append(requested) or True,
+                         _failure_probe=lambda: False) == 0
+    assert seen == [False]
+
+
+@pytest.mark.parametrize('slot', ['_shutdown_probe', '_failure_probe'])
+def test_private_launcher_probe_errors_remain_authentic(monkeypatch, slot):
+    primary = RuntimeError('private callback')
+    def callback(*args):
+        raise primary
+    def supervise(commands, environments, **kwargs):
+        return kwargs['shutdown_probe' if slot == '_shutdown_probe' else 'failure_probe']()
+    monkeypatch.setattr(launcher, 'supervise', supervise)
+    with pytest.raises(RuntimeError) as caught:
+        launcher.main(['--gpus', '0,1', '--', 'model'], **{slot: callback})
+    assert caught.value is primary
+
+
+def test_teacher_native_observation_is_after_resource_fence_and_no_retry(monkeypatch, tmp_path):
+    events = []
+    engine = NS(rank=3, _owned_teacher_frames=NS(finished=True, failed=None),
+                _close_resources=lambda: events.append('positive-resource-fence') or 'unchanged')
+    def record(required, **kwargs):
+        events.append('observation')
+        assert required == ['tf_gguf_'] and kwargs['rank'] == 3
+        assert kwargs['limits'] == owned._model_contract().MODEL_OBSERVER_LIMITS
+    selected = {'module': NS(record_native_elfs=record), 'directory': tmp_path}
+    owned._attach_teacher_native_observer(engine, selected)
+    assert engine._close_resources() == 'unchanged'
+    assert events == ['positive-resource-fence', 'observation']
+    with pytest.raises(RuntimeError, match='no retry'):
+        engine._close_resources()
+    assert events == ['positive-resource-fence', 'observation']
+
+
+def test_teacher_native_observer_failure_notifies_and_preserves_primary(monkeypatch, tmp_path):
+    primary, events = RuntimeError('origin'), []
+    def fail(*args, **kwargs):
+        raise primary
+    engine = NS(rank=0, _owned_teacher_frames=NS(finished=True, failed=None), _close_resources=lambda: None)
+    monkeypatch.setattr(owned, '_observer_failure', lambda current, error: events.append((current, error)))
+    owned._attach_teacher_native_observer(engine, {'module': NS(record_native_elfs=fail), 'directory': tmp_path})
+    with pytest.raises(RuntimeError) as caught:
+        engine._close_resources()
+    assert caught.value is primary and events == [(engine, primary)]
+
+
+def _teacher_parent_setup(tmp_path, monkeypatch, run):
+    import threading
+    output = tmp_path / 'parent'
+    teacher = {'input_sha256': 'a' * 64, 'data': {'mode': 'capture'}}
+    selected = {'bytes': 10, 'sha256': 'b' * 64, 'data': {'expected_service': {
+        'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'}}}
+    events = []
+    module = NS(owned_teacher_plan=lambda path: teacher,
+                seal_owned_teacher=lambda *args: events.append('sealed') or {},
+                _owned_teacher_read=lambda *args: b'{}',
+                _owned_teacher_object=lambda *args: {'teacher_ids': [3], 'frames': [
+                    {'execution_family': selected['data']['expected_service']}]})
+    monkeypatch.setattr(owned, '_teacher_module', lambda: module)
+    monkeypatch.setattr(owned, '_teacher_client_input', lambda *args: selected)
+    monkeypatch.setattr(owned, '_teacher_model_observer', lambda *args: {})
+    monkeypatch.setattr(owned, '_teacher_operation_credit', lambda *args: None)
+    monkeypatch.setattr(owned, '_teacher_model_result', lambda *args: events.append('result'))
+    class Client:
+        def __init__(self, *args):
+            self.cancelled = threading.Event()
+            self.entered = threading.Event()
+            self.result = None
+            self.post_attempts = 0
+            events.append(self)
+        def run(self):
+            self.entered.set()
+            run(self)
+    monkeypatch.setattr(owned, '_TeacherClient', Client)
+    argv = ['--gpus', '0,1,2,3,4,5,6,7', '--out', str(output), '--teacher-plan', 'plan',
+            '--teacher-client', 'client', '--', 'model']
+    return argv, events
+
+
+def test_teacher_parent_client_completion_normally_stops_and_seals(tmp_path, monkeypatch):
+    def run(client):
+        client.result = {'complete': True, 'token_ids': [3]}
+    argv, events = _teacher_parent_setup(tmp_path, monkeypatch, run)
+    def launch(*args, **kwargs):
+        client = events[0]
+        assert client.entered.wait(2)
+        # The actual Task's completion journal, not thread liveness, is tested.
+        assert kwargs['_failure_probe']() is False
+        from time import monotonic
+        deadline = monotonic() + 2
+        while not kwargs['_shutdown_probe'](False):
+            assert monotonic() < deadline
+        return 0
+    monkeypatch.setattr(launcher, 'main', launch)
+    assert owned.main(argv) == 0
+    assert events[1:] == ['sealed', 'result']
+
+
+@pytest.mark.parametrize('late_genuine', [False, True])
+def test_teacher_parent_nonzero_rank_owns_primary_before_client_cancel(tmp_path, monkeypatch, late_genuine):
+    from tools.v100_rotorquant_live import ReadCancelled
+    late = RuntimeError('late genuine protocol failure') if late_genuine else ReadCancelled('cancelled readiness')
+    retired = []
+    def run(client):
+        assert client.cancelled.wait(2)
+        retired.append(True)
+        raise late
+    argv, events = _teacher_parent_setup(tmp_path, monkeypatch, run)
+    def launch(*args, **kwargs):
+        assert events[0].entered.wait(2)
+        return 7
+    monkeypatch.setattr(launcher, 'main', launch)
+    with pytest.raises(RuntimeError, match='launcher status 7') as caught:
+        owned.main(argv)
+    assert retired == [True] and len(events) == 1
+    def contains(error, target):
+        if error is target:
+            return True
+        return (any(contains(item, target) for item in getattr(error, 'exceptions', ()))
+                or (error.__cause__ is not None and contains(error.__cause__, target)))
+    assert contains(caught.value, late)
+    failure = json.loads((tmp_path / 'parent/teacher-client-failure.json').read_text())
+    assert failure['complete'] is False
+
+
+def test_teacher_parent_authentic_client_failure_survives_launch_secondary(tmp_path, monkeypatch):
+    import threading
+    primary, secondary = RuntimeError('protocol'), RuntimeError('launch cleanup')
+    finished = threading.Event()
+    def run(client):
+        finished.set()
+        raise primary
+    argv, events = _teacher_parent_setup(tmp_path, monkeypatch, run)
+    def launch(*args, **kwargs):
+        assert finished.wait(2)
+        # Task records its authentic error after callback exit; wait through probe.
+        from time import monotonic
+        deadline = monotonic() + 2
+        while True:
+            try:
+                kwargs['_failure_probe']()
+            except RuntimeError as error:
+                assert error is primary
+                raise secondary from error
+            assert monotonic() < deadline
+    monkeypatch.setattr(launcher, 'main', launch)
+    with pytest.raises(RuntimeError) as caught:
+        owned.main(argv)
+    assert caught.value is primary and len(events) == 1
+
+
+def test_teacher_parent_zero_launch_without_client_completion_cancels_drains_no_seal(tmp_path, monkeypatch):
+    from tools.v100_rotorquant_live import ReadCancelled
+    retired = []
+    def run(client):
+        assert client.cancelled.wait(2)
+        retired.append(True)
+        raise ReadCancelled('ranks exited before request complete')
+    argv, events = _teacher_parent_setup(tmp_path, monkeypatch, run)
+    monkeypatch.setattr(launcher, 'main', lambda *args, **kwargs: 0)
+    with pytest.raises(ReadCancelled):
+        owned.main(argv)
+    assert retired == [True] and len(events) == 1
+
+
+@pytest.mark.parametrize('slot', ['_shutdown_probe', '_failure_probe'])
+def test_private_launcher_probe_results_are_strict_booleans(monkeypatch, slot):
+    def supervise(commands, environments, **kwargs):
+        return kwargs['shutdown_probe' if slot == '_shutdown_probe' else 'failure_probe']()
+    monkeypatch.setattr(launcher, 'supervise', supervise)
+    with pytest.raises(ValueError, match='boolean'):
+        launcher.main(['--gpus', '0,1', '--', 'model'], **{slot: lambda *args: 1})
+
+
+def test_teacher_native_observer_never_certifies_failed_resource_retirement(monkeypatch, tmp_path):
+    primary, events = RuntimeError('resource fence'), []
+    def fail():
+        raise primary
+    engine = NS(rank=0, _owned_teacher_frames=NS(finished=True, failed=None), _close_resources=fail)
+    selected = {'module': NS(record_native_elfs=lambda *args, **kwargs: events.append('unexpected')), 'directory': tmp_path}
+    owned._attach_teacher_native_observer(engine, selected)
+    with pytest.raises(RuntimeError) as caught:
+        engine._close_resources()
+    assert caught.value is primary and events == []
+
+
+def test_teacher_client_preserves_authentic_transport_error_without_second_post(tmp_path, monkeypatch):
+    primary = OSError('socket read failed')
+    def mutate(label, result):
+        if label == 'teacher-completion':
+            raise primary
+    client, calls = _one_teacher_client(tmp_path, monkeypatch, mutate)
+    with pytest.raises(OSError) as caught:
+        client.run()
+    assert caught.value is primary
+    assert sum(body is not None for _, body, _ in calls) == 1 and client.result is None
+
+
+def test_teacher_parent_task_start_failure_prevents_cohort_acquisition(tmp_path, monkeypatch):
+    from tools.worker_lifetime import Task
+    primary = RuntimeError('thread startup')
+    argv, events = _teacher_parent_setup(tmp_path, monkeypatch, lambda client: pytest.fail('callback entered'))
+    def start(task):
+        raise primary
+    monkeypatch.setattr(Task, 'start', start)
+    monkeypatch.setattr(launcher, 'main', lambda *args, **kwargs: pytest.fail('launch before client task started'))
+    with pytest.raises(RuntimeError) as caught:
+        owned.main(argv)
+    assert caught.value is primary and len(events) == 1
+
+
+def test_teacher_readiness_exhausts_prepaid_attempts_even_with_early_waits(tmp_path, monkeypatch):
+    import urllib.error
+    from tools import v100_rotorquant_live as live
+    client, _ = _one_teacher_client(tmp_path, monkeypatch)
+    calls = []
+    class Refused:
+        def __init__(self, *args, **kwargs):
+            pass
+        def call(self, label, body=None, **kwargs):
+            calls.append(label)
+            assert body is None and kwargs['path'] == '/stats'
+            raise urllib.error.URLError(ConnectionRefusedError('not ready'))
+    monkeypatch.setattr(live, 'Client', Refused)
+    monkeypatch.setattr(owned, '_TEACHER_READINESS_ATTEMPTS', 2)
+    monkeypatch.setattr(client.cancelled, 'wait', lambda seconds: False)
+    with pytest.raises(TimeoutError, match='prepaid attempt count'):
+        client.run()
+    assert calls == ['readiness-0', 'readiness-1'] and client.post_attempts == 0
+
+
+@pytest.mark.parametrize('secondary', [RuntimeError('notify'), MemoryError('notification aggregation')])
+def test_teacher_native_observer_preserves_primary_when_failure_transport_fails(monkeypatch, tmp_path, secondary):
+    primary = RuntimeError('native origin')
+    def fail(*args, **kwargs):
+        raise primary
+    def notify(*args):
+        raise secondary
+    engine = NS(rank=0, _owned_teacher_frames=NS(finished=True, failed=None), _close_resources=lambda: None)
+    monkeypatch.setattr(owned, '_observer_failure', notify)
+    owned._attach_teacher_native_observer(engine, {'module': NS(record_native_elfs=fail), 'directory': tmp_path})
+    with pytest.raises(RuntimeError) as caught:
+        engine._close_resources()
+    assert caught.value is primary and primary.__cause__ is secondary

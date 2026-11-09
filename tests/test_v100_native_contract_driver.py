@@ -819,5 +819,409 @@ except ValueError as error:
         self.assertFalse(self.outcome()['source_after_match'])
 
 
+    def model_operation(self):
+        c = driver.model_contract
+        root = '/models/hf/hub/models--fixture/snapshots/' + 'a'*40
+        def item(path):
+            return {'path': path, 'bytes': 1, 'sha256': 'a'*64}
+        frontend = '/frontend/' + 'b'*64
+        model = [item(root + '/fixture-0000' + str(i) + '-of-00002.gguf') for i in (1, 2)]
+        return {'teacher_plan': item('/operator/teacher-plan.json'), 'teacher_client': item('/operator/teacher-client.json'),
+                'model_entrypoint': model[0]['path'], 'model_assets': model, 'frontend_root': frontend,
+                'frontend_assets': [item(frontend + '/' + name) for name in sorted(c.FRONTEND_NAMES)],
+                'execution_manifest': None}
+
+    def teacher_client(self):
+        c = driver.model_contract
+        return {'schema': 'tensorfold.owned-teacher-client-v1', 'teacher_plan_sha256': 'a'*64,
+                'base': 'http://127.0.0.1:8000', 'model': 'diagnostic-fixture', 'expected_service': dict(c.SERVICE),
+                'readiness_timeout_s': 3600, 'whole_timeout_s': 7500, 'socket_timeout_s': 300, 'response_bytes': 1048576}
+
+    def model_spec(self):
+        self.qualified_spec()
+        self.spec.update(schema=driver.model_contract.SCHEMA, mode=driver.model_contract.MODE,
+                         UUIDs=['GPU-' + format(i, '032x') for i in range(8)],
+                         required_native_elf_prefixes=['tf_gguf_'], operation=self.model_operation())
+        del self.spec['modules'], self.spec['test_files']
+        source_files = {}
+        for name in driver.model_contract.REQUIRED_TOOLS:
+            data = (Path(driver.__file__).parent / Path(name).name).read_bytes()
+            path = self.source / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(data)
+            source_files[name] = {key: driver.file_identity(path)[key] for key in ('bytes', 'sha256')}
+        self.spec['source_files'] = source_files
+        self.runtime.torch.cuda = types.SimpleNamespace(_initialized=False)
+        return self.spec
+
+    def test_model_schema_is_distinct_closed_capability_and_eight_rank_only(self):
+        spec = self.model_spec()
+        self.assertIs(driver.validate_spec(spec), spec)
+        self.assertNotIn('modules', spec)
+        self.assertNotIn('test_files', spec)
+        for patch in ({'modules': ['tests/example.py']}, {'mode': 'cuda'}, {'UUIDs': spec['UUIDs'][:4]},
+                      {'required_native_elf_prefixes': []}, {'verification_launcher': None}):
+            with self.subTest(patch=patch), self.assertRaises((ValueError, TypeError)):
+                driver.validate_spec({**spec, **patch})
+
+    def test_teacher_client_and_fixed_argv_reject_profile_timeout_or_command_escape(self):
+        c = driver.model_contract
+        client = self.teacher_client()
+        argv = c.qualifier_argv(self.model_operation(), client,
+                               ['GPU-00000000-0000-0000-0000-' + format(i, '012x') for i in range(8)], '/evidence/teacher')
+        self.assertEqual(argv.count('--teacher-client'), 1)
+        for flag, value in (('--context', '262144'), ('--parallel', '24'), ('--draft-method', 'none'),
+                            ('--expert-tensor-parallel-size', '4'), ('--kv-full-windows', '24')):
+            self.assertEqual(argv[argv.index(flag)+1], value)
+        self.assertIn('--no-graphs', argv)
+        self.assertNotIn('--reference-tiles', argv)
+        for change in ({'base': 'http://example.com:8000'}, {'base': 'http://127.0.0.1:8000/?x=1'},
+                       {'base': 'http://user@127.0.0.1:8000'}, {'socket_timeout_s': True},
+                       {'whole_timeout_s': float('inf')}, {'readiness_timeout_s': 3601},
+                       {'response_bytes': 2**20+1}, {'argv': ['python', '-c', 'unsafe']},
+                       {'expected_service': {**client['expected_service'], 'resident_capacity': 23}}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                c.validate_teacher_client({**client, **change})
+
+    def test_model_operation_rejects_extra_assets_paths_frontend_and_manifest(self):
+        c = driver.model_contract
+        operation = self.model_operation()
+        self.assertIs(c.validate_operation(operation), operation)
+        for change in ({'execution_manifest': '/arbitrary.json'}, {'model_assets': operation['model_assets'][:1]},
+                       {'frontend_assets': operation['frontend_assets'][:-1]}, {'frontend_root': '/cache/frontend'},
+                       {'argv': []}, {'model_entrypoint': '/models/../arbitrary.gguf'}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                c.validate_operation({**operation, **change})
+
+    def test_held_assets_hash_once_retain_fds_and_refuse_post_use_change(self):
+        asset = self.root / 'payload.gguf'
+        asset.write_bytes(b'actual independent file bytes')
+        record = {'path': str(asset), **{k: driver.file_identity(asset)[k] for k in ('bytes', 'sha256')}}
+        content = {'assets': []}
+        import time
+        with driver._held_model_assets([record], time.monotonic()+10, content) as held:
+            fd = held[0]['descriptor']
+            self.assertEqual(os.fstat(fd).st_size, record['bytes'])
+        with self.assertRaises(OSError):
+            os.fstat(fd)
+        self.assertEqual(len(content['assets']), 1)
+        with self.assertRaisesRegex(RuntimeError, 'input changed'):
+            with driver._held_model_assets([record], time.monotonic()+10, {'assets': []}):
+                asset.write_bytes(b'changed input')
+
+    def test_content_binding_failure_and_primary_plus_postcheck_failure_propagate(self):
+        import time
+        asset = self.root / 'payload.gguf'
+        asset.write_bytes(b'payload')
+        record = {'path': str(asset), 'bytes': 7, 'sha256': '0'*64}
+        with self.assertRaisesRegex(ValueError, 'SHA differs'):
+            with driver._held_model_assets([record], time.monotonic()+10, {'assets': []}):
+                self.fail('bad content reached operation')
+        record['sha256'] = hashlib.sha256(b'payload').hexdigest()
+        primary = ValueError('authentic model failure')
+        try:
+            with driver._held_model_assets([record], time.monotonic()+10, {'assets': []}):
+                asset.write_bytes(b'changed')
+                raise primary
+        except BaseException as caught:
+            self.assertIs(caught, primary)
+            self.assertIsNotNone(caught.__cause__)
+        else:
+            self.fail('combined failures suppressed')
+        with self.assertRaises(TimeoutError):
+            with driver._held_model_assets([record], 0, {'assets': []}):
+                self.fail('expired operation entered')
+
+    def test_model_asset_fd_is_journalled_before_metadata_and_close_failure_preserves_primary(self):
+        import time
+        asset = self.root/'owned-payload'
+        asset.write_bytes(b'payload')
+        record = {'path': str(asset), 'bytes': 7, 'sha256': hashlib.sha256(b'payload').hexdigest()}
+        actual_close, closed = os.close, []
+        primary = MemoryError('metadata allocation failed after owned open')
+        def close(descriptor):
+            closed.append(descriptor)
+            actual_close(descriptor)
+            raise OSError('close completion report failed')
+        with mock.patch.object(driver.os, 'fstat', side_effect=primary), mock.patch.object(driver.os, 'close', side_effect=close):
+            try:
+                with driver._held_model_assets([record], time.monotonic()+10, {'assets': []}):
+                    self.fail('metadata failure reached model')
+            except BaseException as caught:
+                self.assertIs(caught, primary)
+                self.assertIsNotNone(caught.__cause__)
+            else:
+                self.fail('primary and cleanup failure suppressed')
+        self.assertEqual(len(closed), 1)
+        with self.assertRaises(OSError):
+            os.fstat(closed[0])
+
+    def model_run_controls(self):
+        self.model_spec()
+        @contextlib.contextmanager
+        def fake_held(*args):
+            yield []
+        calls = []
+        plan = {'mode': 'capture', 'context': 262144, 'max_frames': 64}
+        client = self.teacher_client()
+        def data(path, *args, **kwargs):
+            return client if str(path).endswith('teacher-client.json') else plan
+        patches = contextlib.ExitStack()
+        patches.enter_context(mock.patch.object(driver, '_verification_process', return_value='prequal'))
+        patches.enter_context(mock.patch.object(driver, '_verification_receipt', return_value={'verified': True}))
+        patches.enter_context(mock.patch.object(driver, '_held_model_assets', fake_held))
+        patches.enter_context(mock.patch.object(driver, '_bound_model_json', side_effect=data))
+        patches.enter_context(mock.patch.object(driver, '_prepare_model_frontend', return_value=Path(self.spec['operation']['frontend_root'])))
+        patches.enter_context(mock.patch.object(driver, '_accept_teacher_result', return_value={'typed': True}))
+        patches.enter_context(mock.patch.object(driver.model_contract, 'qualifier_argv', return_value=['fixed-argv']))
+        patches.enter_context(mock.patch.object(driver, '_visible_devices', side_effect=AssertionError('CUDA device query')))
+        patches.enter_context(mock.patch.object(driver, 'Guard', side_effect=AssertionError('pytest/Guard entered')))
+        patches.enter_context(mock.patch.object(driver, '_call_owned_model', side_effect=lambda argv: calls.append(argv) or 0))
+        patches.enter_context(mock.patch.dict(os.environ, {'TF_GGUF_ASSETS_DIR': '/frontend'}))
+        self.addCleanup(patches.close)
+        return calls
+
+    def test_model_branch_calls_canonical_parent_once_no_cuda_pytest_or_guard(self):
+        calls = self.model_run_controls()
+        self.assertEqual(self.execute(), 0)
+        self.assertEqual(calls, [['fixed-argv']])
+        result = json.loads((self.evidence / 'owned-teacher-operation-result.json').read_text())
+        self.assertTrue(result['source_after_match'])
+        self.assertTrue(result['parent_cuda_uninitialized'])
+        self.assertFalse((self.evidence / 'named-suite-result.json').exists())
+        self.assertNotIn(driver.CHILD_EVIDENCE_ENV, os.environ)
+
+    def test_model_parent_flag_and_frontend_cache_mismatch_fail_before_launch(self):
+        calls = self.model_run_controls()
+        self.runtime.torch.cuda._initialized = True
+        with self.assertRaisesRegex(RuntimeError, 'uninitialized'):
+            self.execute()
+        self.assertEqual(calls, [])
+
+    def test_model_failure_and_result_persistence_failure_preserve_primary(self):
+        self.model_run_controls()
+        primary = ValueError('actual owned model failure')
+        def publish(path, value):
+            if Path(path).name == 'owned-teacher-operation-result.json':
+                raise OSError('result storage failed')
+            self.publish(path, value)
+        with mock.patch.object(driver, '_call_owned_model', side_effect=primary):
+            try:
+                self.execute(publisher=publish)
+            except BaseException as caught:
+                self.assertIs(caught, primary)
+                self.assertIsNotNone(caught.__cause__)
+            else:
+                self.fail('model and persistence failures suppressed')
+        self.assertNotIn(driver.CHILD_EVIDENCE_ENV, os.environ)
+
+    def test_model_observer_limits_are_explicit_optional_and_enforced(self):
+        limits = driver.model_contract.MODEL_OBSERVER_LIMITS
+        self.assertEqual(driver._native_map_rows('', limits=limits), {})
+        for text in ('\n' * limits['map_lines'], 'x' * (limits['line_characters']+1)):
+            with self.assertRaisesRegex(ValueError, 'budget exceeded'):
+                driver._native_map_rows(text, limits=limits)
+        with self.assertRaisesRegex(ValueError, 'unknown model observer'):
+            driver.observe_native_elfs([], limits={**limits, 'elfs': 65})
+        resources = driver.model_contract.child_observer_resources()
+        self.assertEqual(resources['global_host_bytes'], 8 * resources['per_rank_host_bytes'])
+        self.assertEqual(resources['limits'], limits)
+
+
+    def test_model_observer_budgets_mount_fields_and_module_snapshot_before_materializing(self):
+        limits = driver.model_contract.MODEL_OBSERVER_LIMITS
+        text = '1 0 0:1 / /' + 'x' * limits['path_characters'] + ' rw - tmpfs tmpfs rw'
+        with mock.patch.object(driver, '_read_text', return_value=text):
+            with self.assertRaisesRegex(ValueError, 'mount field budget'):
+                driver._mount_table(limits=limits)
+        modules = dict.fromkeys(range(limits['modules']+1))
+        with mock.patch.object(driver, '_read_native_maps', return_value=''), \
+                mock.patch.object(driver, 'sys', types.SimpleNamespace(modules=modules)):
+            with self.assertRaisesRegex(ValueError, 'module snapshot budget'):
+                driver.observe_native_elfs([], limits=limits)
+        projection = driver.model_contract.child_observer_resources()
+        self.assertLessEqual(projection['projection']['simultaneous_controlled_bytes'], projection['global_host_bytes'])
+
+    def test_model_cleanup_attempts_all_restorations_checks_and_reports_despite_exhaustion(self):
+        self.model_run_controls()
+        primary = ValueError('authentic model primary')
+        attempted, paths = [], []
+        class Environment(dict):
+            def pop(env, key, default=None):
+                if key in (driver.model_contract.CHILD_ENV, driver.model_contract.DRIVER_ENV,
+                           driver.model_contract.DRIVER_SHA_ENV, driver.model_contract.PREFIX_ENV):
+                    attempted.append(key)
+                    raise MemoryError('independent restoration failure')
+                return super().pop(key, default)
+        class Paths(list):
+            def __setitem__(items, key, value):
+                if isinstance(key, slice) and key.start is None and key.stop is None:
+                    paths.append('restore')
+                    raise MemoryError('path restoration failed')
+                return super().__setitem__(key, value)
+        env = Environment(os.environ)
+        check_counts = {}
+        def fail_post(name, function):
+            def call(*args):
+                check_counts[name] = check_counts.get(name, 0)+1
+                if check_counts[name] > 1:
+                    raise OSError('independent postcheck failure '+name)
+                return function(*args)
+            return call
+        def publish(path, value):
+            if Path(path).name == 'owned-teacher-operation-result.json':
+                raise OSError('independent report publication failure')
+            self.publish(path, value)
+        with contextlib.ExitStack() as patches:
+            patches.enter_context(mock.patch.object(driver.os, 'environ', env))
+            patches.enter_context(mock.patch.object(driver.sys, 'path', Paths(sys.path)))
+            for name in ('check_tests', '_admit_runtime', '_installed_origins', '_parent_cuda_flag'):
+                patches.enter_context(mock.patch.object(driver, name, side_effect=fail_post(name, getattr(driver, name))))
+            patches.enter_context(mock.patch.object(driver, '_call_owned_model', side_effect=primary))
+            patches.enter_context(mock.patch('tools.worker_lifetime._raise_failures', side_effect=MemoryError('neutral grouping exhausted')))
+            try:
+                self.execute(publisher=publish)
+            except BaseException as caught:
+                self.assertIs(caught, primary)
+                self.assertIsInstance(caught.__cause__, MemoryError)
+                statuses = []
+                trace = caught.__traceback__
+                while trace is not None:
+                    value = trace.tb_frame.f_locals.get('errors')
+                    if isinstance(value, driver._FailureSlots):
+                        statuses.extend(error for error in value.values if error is not None)
+                    trace = trace.tb_next
+                self.assertGreaterEqual(len(statuses), 10)
+            else:
+                self.fail('cleanup/report/transport exhaustion replaced or suppressed primary')
+        self.assertEqual(len(attempted), 4)
+        self.assertEqual(paths, ['restore'])
+        self.assertEqual(set(check_counts.values()), {2})
+        self.assertEqual(json.loads((self.evidence/'phase.json').read_text())['phase'], 'owned-teacher-terminal')
+
+    def assert_model_context_failure_incomplete(self, message):
+        self.model_run_controls()
+        @contextlib.contextmanager
+        def fail_exit(*args):
+            yield []
+            raise OSError(message)
+        with mock.patch.object(driver, '_held_model_assets', fail_exit):
+            with self.assertRaisesRegex(OSError, message):
+                self.execute()
+        content = json.loads((self.evidence/'model-content-binding.json').read_text())
+        result = json.loads((self.evidence/'owned-teacher-operation-result.json').read_text())
+        self.assertFalse(content['completed'])
+        self.assertFalse(result['content_binding_complete'])
+
+    def test_model_postcheck_failure_cannot_label_content_completed(self):
+        self.assert_model_context_failure_incomplete('asset postcheck failed')
+
+    def test_model_close_failure_cannot_label_content_completed(self):
+        self.assert_model_context_failure_incomplete('asset close failed')
+
+    def test_model_error_rendering_exhaustion_preserves_primary_and_terminal_phase(self):
+        self.model_run_controls()
+        primary = ValueError('authentic client failure')
+        with mock.patch.object(driver, '_call_owned_model', side_effect=primary), \
+                mock.patch.object(driver, '_error', side_effect=MemoryError('error rendering exhausted')):
+            try:
+                self.execute()
+            except BaseException as caught:
+                self.assertIs(caught, primary)
+            else:
+                self.fail('error rendering replaced primary')
+        self.assertEqual(json.loads((self.evidence/'phase.json').read_text())['phase'], 'owned-teacher-terminal')
+
+    def test_held_asset_all_postchecks_and_neutral_transport_keep_original_failure(self):
+        import time
+        records = []
+        for index in range(2):
+            path = self.root/('held-'+str(index))
+            path.write_bytes(b'payload')
+            records.append({'path': str(path), 'bytes': 7, 'sha256': hashlib.sha256(b'payload').hexdigest()})
+        seen, postchecks = {}, []
+        actual = driver._check_opened_asset
+        def check(held):
+            path = held['identity']['path']
+            seen[path] = seen.get(path, 0)+1
+            if seen[path] > 1:
+                postchecks.append(path)
+                raise OSError('independent retained-asset postcheck')
+            return actual(held)
+        primary = ValueError('authentic body failure')
+        with mock.patch.object(driver, '_check_opened_asset', side_effect=check), \
+                mock.patch('tools.worker_lifetime._raise_failures', side_effect=MemoryError('neutral transport exhaustion')):
+            try:
+                with driver._held_model_assets(records, time.monotonic()+10, {'assets': []}):
+                    raise primary
+            except BaseException as caught:
+                self.assertIs(caught, primary)
+            else:
+                self.fail('asset cleanup/transport lost primary')
+        self.assertEqual(postchecks, [record['path'] for record in records])
+
+    def teacher_result_fixture(self):
+        spec = self.model_spec()
+        teacher, children = self.evidence/'teacher', self.evidence/'child-native'
+        teacher.mkdir()
+        children.mkdir()
+        c = driver.model_contract
+        def publish(name, data, rank=None):
+            path = self.evidence/name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(json.dumps(data))
+            identity = {key: driver.file_identity(path)[key] for key in ('bytes', 'sha256')}
+            return {'file': name, **identity, **({} if rank is None else {'rank': rank})}
+        ranks, startups, native = [], [], []
+        observer = {'path': str(self.source/'tools/v100_native_contract_driver.py'),
+                    **spec['source_files']['tools/v100_native_contract_driver.py']}
+        access = {'uids': [1000]*4, 'gids': [1000]*4, 'NoNewPrivs': '0',
+                  'caps': {key: '0000010000000000' for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')}}
+        for rank in range(8):
+            ranks.append(publish(f'teacher/teacher-rank{rank}/summary.json', {'rank': rank}, rank))
+            startups.append(publish(f'teacher/rank-{rank}.json', {'rank': rank, 'world': 8,
+                'teacher_worker_PID': rank+10, 'teacher_server_instance_id': 'fresh-server-'+str(rank),
+                'teacher_observer': observer}, rank))
+            native.append(publish(f'child-native/teacher-closed-rank-{rank}-pid-{rank+10}.json', {
+                'schema': 'tensorfold.native-elf-observation-v3', 'identity_method': 'kernel-vma-backed-fd-v1',
+                'rank': rank, 'PID': rank+10, 'tag': 'teacher-closed', 'operation_limits': dict(c.MODEL_OBSERVER_LIMITS),
+                'observer': spec['source_files']['tools/v100_native_contract_driver.py'], 'access_precondition': access,
+                'missing_required_prefixes': [], 'mapped_elfs': [{'name': 'tf_gguf_fixture'}]}, rank))
+        authority = publish('teacher/teacher-authority.json', {'schema': 'tensorfold.owned-teacher-authority-v1',
+            'launch_exit': 0, 'cohort_complete': True, 'teacher_ids': [7, 8],
+            'rank_receipts': [{**row, 'file': row['file'].removeprefix('teacher/')} for row in ranks],
+            'startup_receipts': [{**row, 'file': row['file'].removeprefix('teacher/')} for row in startups]})
+        report = publish('teacher/teacher-client-report.json', {'schema': 'tensorfold.owned-teacher-client-report-v1',
+            'complete': True, 'post_attempts': 1, 'mode': 'capture', 'teacher_plan_sha256': 'a'*64,
+            'teacher_client_sha256': 'a'*64, 'server_instance_id': 'fresh-server-0', 'token_ids': [7, 8],
+            'completion_tokens': 2, 'prompt_tokens': 52, 'cached_tokens': 0, 'drafts': False, 'drafted': 0, 'accepted': 0,
+            'client_protocol_passed': True, 'quality_acceptance': False, 'P3_valid': False})
+        result = {'schema': c.RESULT_SCHEMA, 'teacher_plan_sha256': 'a'*64, 'teacher_client_sha256': 'a'*64,
+                  'launch_exit': 0, 'client_report': report, 'teacher_authority': authority,
+                  'rank_receipts': ranks, 'startup_receipts': startups, 'child_native_records': native}
+        (teacher/'teacher-model-result.json').write_text(json.dumps(result))
+        return result
+
+    def test_actual_bound_evidence_accepts_exact_eight_children_and_matching_cold_client(self):
+        expected = self.teacher_result_fixture()
+        result = driver._accept_teacher_result(self.evidence, self.spec, self.source)
+        self.assertEqual(result, expected)
+        record = self.evidence/expected['child_native_records'][4]['file']
+        record.write_text('{}')
+        with self.assertRaisesRegex(RuntimeError, 'referenced file differs'):
+            driver._accept_teacher_result(self.evidence, self.spec, self.source)
+
+    def test_model_result_refuses_missing_rank_or_changed_input_before_authority_use(self):
+        expected = self.teacher_result_fixture()
+        target = self.evidence/'teacher/teacher-model-result.json'
+        for change in ({'child_native_records': expected['child_native_records'][:-1]},
+                       {'teacher_plan_sha256': 'b'*64}, {'launch_exit': 1},
+                       {'client_report': {**expected['client_report'], 'file': '../escape'}}):
+            with self.subTest(change=change):
+                target.write_text(json.dumps({**expected, **change}))
+                with self.assertRaises((ValueError, RuntimeError)):
+                    driver._accept_teacher_result(self.evidence, self.spec, self.source)
+
+
 if __name__ == '__main__':
     unittest.main()
