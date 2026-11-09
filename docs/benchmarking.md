@@ -946,3 +946,30 @@ logits. Its returned text is forced reference text, not candidate free-generatio
 quality. Transfer/fence/writer overhead invalidates P3 timings. Preserve separate
 capture/replay cohorts and actual output-quality, state, sampling and resource
 gates; do not borrow the old 8192-context/714-step profile or its margins.
+
+### Reproducing independent quality inputs
+
+`tools/v100_quality_data.py` preserves the original 27 C27 bodies, adds five
+independently labelled near-full histories, three fixed 64K multi-key/order
+cases and the seven short cases. The dependent-history short case stays in
+its original contract rather than an invented standalone request. Its 29 local
+CPU controls passed; this is not
+inference, new DATA generation or a model-quality pass. The archived original
+generator is provenance input, not executable code required by this producer.
+
+```bash
+python -m tools.v100_quality_data \
+  --corpus "$TF_C27_CORPUS" --short-contract "$TF_SHORT_CONTRACT" \
+  --input-identity "$TF_INPUT_IDENTITY" --input-identity-sha "$TF_INPUT_IDENTITY_SHA" \
+  --frontend "$TF_MODEL_FRONTEND_DIR" --output "$TF_QUALITY_FRESH_OUTPUT"
+```
+
+Supply the immutable original corpus/short inputs and a distinct, matching
+current frontend identity. Asset bytes, actual loaded source closure and its
+aggregate hash, native tokenizer binary, dependency versions and machine must
+match before publication and sealing. A stale historical identity is refused;
+do not rewrite it or force-import its old modules to manufacture a match.
+Use a fresh output directory. Historical `5fadb028` DATA and its 82 case files
+remain unchanged. Tokenization equivalence, sparse-QSA execution, teacher
+vectors, maximum live capacity, media gold and full-model quality keep their
+separate actual-target gates; no older codec-profile margins are inherited.

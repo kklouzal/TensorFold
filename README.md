@@ -55,6 +55,10 @@ full-method/context/resource, model-quality and performance gates remain open.
 The [private teacher diagnostic](docs/benchmarking.md#private-reference-first-teacher-diagnostics)
 has 284 passing x86 CPU controls. Actual model capture/replay is still unrun;
 its first region supports none/greedy text only, with MTP4 explicitly unsupported.
+The offline quality-DATA producer is now maintained in `tools/v100_quality_data.py`.
+Its 29 local CPU controls cover immutable inputs, independent gold, bounded
+publication and current frontend provenance. Historical DATA is preserved;
+new generation and model-quality qualification remain separate.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
 The current source also preserves origin through Unicode capitalization and
