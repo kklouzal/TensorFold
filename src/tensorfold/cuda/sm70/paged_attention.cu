@@ -367,6 +367,253 @@ __global__ void merge_values_kernel(const float* gathered, const int64_t* table,
     if (!isfinite(value) || !isfinite(__half2float(result))) latch(descriptor, 4, layer);
     output[destination] = result;
 }
+
+// Distinct experimental RN/ex2 numerical family. The incumbent WMMA kernels
+// above remain independent controls; no contraction/reduction order is shared
+// by implication. Constants/ELF/PTX and analytical oracle require qualification.
+constexpr int RN_MAX_SELECTED = 2051;
+
+__device__ __forceinline__ float rn_exp(float x, const int64_t* descriptor, int layer) {
+    if (x == -CUDART_INF_F) return 0.f;
+    if (!isfinite(x) || x > 0.f) {
+        latch(descriptor, 16, layer);
+        return 0.f;  // Defined failed-row scratch; status forbids accepted publication.
+    }
+    if (x == 0.f) return 1.f;
+    const float exponent = __fmul_rn(x, __int_as_float(0x3fb8aa3b));
+    float result;
+    asm volatile("ex2.approx.f32 %0, %1;" : "=f"(result) : "f"(exponent));
+    return result;
+}
+
+__device__ __forceinline__ bool rn_domain(const int64_t* descriptor, const int* selections,
+        int rows, int width, int row, int page_tokens, int layer, int& end, int& count, const int*& ids) {
+    if (!domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids)) return false;
+    if (count > RN_MAX_SELECTED) {
+        latch(descriptor, 32, layer);
+        return false;  // Never truncate or address outside the fixed Half-P pitch.
+    }
+    return true;
+}
+
+__device__ __forceinline__ float rn_warp_sum(float value) {
+    #pragma unroll
+    for (int offset = 16; offset; offset >>= 1)
+        value = __fadd_rn(value, __shfl_down_sync(0xffffffffu, value, offset));
+    return value;  // Only lane zero's full tree is consumed.
+}
+
+template<int H> struct RNStorage {
+    __half query[H * DIM];
+    __half key[TILE * DIM];
+    int64_t physical[TILE];
+    float scores[H * TILE];
+};
+
+// Each head has one FULL warp: lane l consumes l+32*t, t=0..7 in
+// increasing order. K decode is cooperatively reused across H heads; changing
+// H never changes an individual dot's eight FMAs/five RN shuffle additions.
+template<int H, bool Probability>
+__global__ void rn_qk_kernel(const __half* queries, const int* selections, const int64_t* table,
+        const float* global, float* statistics, __half* probability, int rows, int width, int group,
+        int page_tokens, const int* layer_word, int codec) {
+    __shared__ RNStorage<H> storage;
+    __shared__ int end, count, enabled, invalid;
+    __shared__ const int* ids;
+    const int row = blockIdx.x, head_base = blockIdx.y * H;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, head = head_base + warp;
+    const int layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    if (Probability) {
+        for (int at = threadIdx.x; at < H * RN_MAX_SELECTED; at += H * 32)
+            probability[(int64_t(row) * HEADS + head_base + at / RN_MAX_SELECTED) * RN_MAX_SELECTED
+                        + at % RN_MAX_SELECTED] = __float2half_rn(0.f);
+    } else if (!lane) {
+        statistics[(int64_t(row) * HEADS + head) * 2] = -CUDART_INF_F;
+        statistics[(int64_t(row) * HEADS + head) * 2 + 1] = 0.f;
+    }
+    if (!threadIdx.x)
+        enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
+    __syncthreads();
+    if (!enabled) return;  // CTA-uniform: no partial-warp shuffle participation.
+    for (int at = threadIdx.x; at < H * DIM; at += H * 32) {
+        const int h = head_base + at / DIM, col = at % DIM;
+        __half value = queries[((int64_t(group + h / 3) * rows + row) * 3 + h % 3) * DIM + col];
+        if (!isfinite(__half2float(value))) {
+            latch(descriptor, 1, layer);
+            value = __float2half_rn(0.f);
+        }
+        storage.query[at] = value;
+    }
+    __syncthreads();
+    float maximum = -CUDART_INF_F, denominator = 0.f;
+    for (int first = 0; first < count; first += TILE) {
+        if (!threadIdx.x) invalid = 0;
+        __syncthreads();
+        if (threadIdx.x < TILE) {
+            const int at = first + threadIdx.x;
+            const int logical = at < count ? (ids == nullptr ? at : ids[at]) : -1;
+            storage.physical[threadIdx.x] = local_row(descriptor, logical, end, page_tokens, layer);
+            if (storage.physical[threadIdx.x] == -2) atomicExch(&invalid, 1);
+        }
+        __syncthreads();
+        if (invalid) return;
+        for (int at = threadIdx.x; at < TILE * DIM; at += H * 32) {
+            const int64_t physical = storage.physical[at / DIM];
+            __half value = __float2half_rn(0.f);
+            if (physical >= 0) {
+                value = tf_sm70::decoded_half(pointer<const void>(descriptor[meta::K_DATA]),
+                    pointer<const void>(descriptor[meta::K_METADATA]), codec ? 4 : 8, codec,
+                    physical * DIM + at % DIM);
+                if (!isfinite(__half2float(value))) {
+                    latch(descriptor, 2, layer);
+                    value = __float2half_rn(0.f);
+                }
+            }
+            storage.key[at] = value;
+        }
+        __syncthreads();
+        #pragma unroll
+        for (int key = 0; key < TILE; ++key) {
+            float value = 0.f;
+            if (storage.physical[key] >= 0) {
+                #pragma unroll
+                for (int t = 0; t < 8; ++t) {
+                    const int col = lane + t * 32;
+                    value = __fmaf_rn(__half2float(storage.query[warp * DIM + col]),
+                                     __half2float(storage.key[key * DIM + col]), value);
+                }
+                value = rn_warp_sum(value);
+            }
+            if (!lane) storage.scores[warp * TILE + key] = __fmul_rn(value, .0625f);
+        }
+        __syncthreads();
+        if (!lane) {
+            if (Probability) {
+                const float m = global[(int64_t(row) * HEADS + head) * 2];
+                const float l = global[(int64_t(row) * HEADS + head) * 2 + 1];
+                if (!isfinite(m) || !isfinite(l) || l <= 0.f) latch(descriptor, 16, layer);
+                else {
+                    #pragma unroll
+                    for (int key = 0; key < TILE; ++key) {
+                        if (first + key < count && storage.physical[key] >= 0) {
+                            const float p = __fdiv_rn(rn_exp(__fsub_rn(storage.scores[warp * TILE + key], m), descriptor, layer), l);
+                            const __half result = __float2half_rn(p);
+                            if (!isfinite(p) || !isfinite(__half2float(result))) latch(descriptor, 16, layer);
+                            probability[(int64_t(row) * HEADS + head) * RN_MAX_SELECTED + first + key] = result;
+                        }
+                    }
+                }
+            } else {
+                float tile_max = -CUDART_INF_F;
+                #pragma unroll
+                for (int key = 0; key < TILE; ++key)
+                    if (storage.physical[key] >= 0) tile_max = fmaxf(tile_max, storage.scores[warp * TILE + key]);
+                const float next_max = fmaxf(maximum, tile_max);
+                if (isfinite(next_max)) {
+                    const float alpha = isfinite(maximum) ? rn_exp(__fsub_rn(maximum, next_max), descriptor, layer) : 0.f;
+                    float mass = 0.f;
+                    #pragma unroll
+                    for (int key = 0; key < TILE; ++key)
+                        if (storage.physical[key] >= 0)
+                            mass = __fadd_rn(mass, rn_exp(__fsub_rn(storage.scores[warp * TILE + key], next_max), descriptor, layer));
+                    denominator = __fadd_rn(__fmul_rn(denominator, alpha), mass);
+                }
+                maximum = next_max;
+            }
+        }
+        __syncthreads();
+    }
+    if (!Probability && !lane) {
+        statistics[(int64_t(row) * HEADS + head) * 2] = maximum;
+        statistics[(int64_t(row) * HEADS + head) * 2 + 1] = denominator;
+    }
+}
+
+__global__ void rn_merge_kernel(const float* gathered, const int64_t* table, float* output,
+                                int rows, int group, const int* layer_word) {
+    const int row = blockIdx.x, head = threadIdx.x;
+    const int layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    __shared__ int enabled;
+    if (!head) enabled = active(descriptor, layer);
+    __syncthreads();
+    if (head >= HEADS) return;
+    float maximum = -CUDART_INF_F, denominator = 0.f;
+    bool valid = true;
+    if (enabled) {
+        #pragma unroll
+        for (int peer = 0; peer < 4; ++peer) {
+            const int64_t at = ((int64_t(group + peer) * rows + row) * HEADS + head) * 2;
+            const float m = gathered[at], l = gathered[at + 1];
+            valid = valid && ((isfinite(m) && isfinite(l) && l > 0.f) || (m == -CUDART_INF_F && l == 0.f));
+            maximum = fmaxf(maximum, m);
+        }
+        if (isfinite(maximum)) {
+            #pragma unroll
+            for (int peer = 0; peer < 4; ++peer) {
+                const int64_t at = ((int64_t(group + peer) * rows + row) * HEADS + head) * 2;
+                if (isfinite(gathered[at]))
+                    denominator = __fadd_rn(denominator, __fmul_rn(rn_exp(__fsub_rn(gathered[at], maximum), descriptor, layer), gathered[at + 1]));
+            }
+        }
+        valid = valid && isfinite(maximum) && isfinite(denominator) && denominator > 0.f;
+        if (!valid) latch(descriptor, 16, layer);
+    }
+    output[(int64_t(row) * HEADS + head) * 2] = enabled && valid ? maximum : 0.f;
+    output[(int64_t(row) * HEADS + head) * 2 + 1] = enabled && valid ? denominator : 1.f;
+}
+
+// Four full warps, 64 output columns/block/head: warp w owns base+w+4*t,
+// t=0..15. Every thread keeps exactly sixteen independent FP32 accumulators.
+// Lane l visits selected i=l+32*t monotonically; lane0 publishes after five
+// explicit RN shuffle additions. P is globally normalized Half, not local-P.
+__global__ void rn_pv_kernel(const __half* probability, const int* selections, const int64_t* table,
+        float* output, int rows, int width, int page_tokens, const int* layer_word, int codec) {
+    const int row = blockIdx.x, head = blockIdx.y, column_base = blockIdx.z * 64;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    __shared__ int enabled, end, count;
+    __shared__ const int* ids;
+    if (!threadIdx.x) enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
+    __syncthreads();
+    float result[16];
+    #pragma unroll
+    for (int part = 0; part < 16; ++part) result[part] = 0.f;
+    if (enabled) {
+        for (int at = lane; at < count; at += 32) {
+            const int logical = ids == nullptr ? at : ids[at];
+            const int64_t physical = local_row(descriptor, logical, end, page_tokens, layer);
+            if (physical < 0) continue;  // Never read foreign/masked/error V payloads.
+            const __half p = probability[(int64_t(row) * HEADS + head) * RN_MAX_SELECTED + at];
+            if (!isfinite(__half2float(p)) || __half2float(p) < 0.f) {
+                latch(descriptor, 16, layer);
+                continue;
+            }
+            #pragma unroll
+            for (int part = 0; part < 16; ++part) {
+                const int col = column_base + warp + 4 * part;
+                __half value = tf_sm70::decoded_half(pointer<const void>(descriptor[meta::V_DATA]),
+                    pointer<const void>(descriptor[meta::V_METADATA]), codec ? 4 : 8, codec, physical * DIM + col);
+                if (!isfinite(__half2float(value))) {
+                    latch(descriptor, 4, layer);
+                    value = __float2half_rn(0.f);
+                }
+                result[part] = __fmaf_rn(__half2float(p), __half2float(value), result[part]);
+            }
+        }
+    }
+    #pragma unroll
+    for (int part = 0; part < 16; ++part) {
+        const float value = rn_warp_sum(result[part]);
+        if (!lane) {
+            if (!isfinite(value)) latch(descriptor, 4, layer);
+            output[(int64_t(row) * HEADS + head) * DIM + column_base + warp + 4 * part] = value;
+        }
+    }
+}
+
 }  // namespace
 
 void sm70_paged_statistics_cuda(const T& queries, const T& selected, const T& table, T& output,
@@ -404,5 +651,47 @@ void sm70_paged_merge_values_cuda(const T& gathered, const T& table, T& output, 
     merge_values_kernel<<<dim3(rows, 3), DIM, 0, at::cuda::getCurrentCUDAStream()>>>(
         gathered.data_ptr<float>(), table.data_ptr<int64_t>(), reinterpret_cast<__half*>(output.data_ptr()),
         rows, rank, layer.data_ptr<int>(), codec);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+
+template<int H, bool P>
+void launch_rn_qk(const T& queries, const T& selected, const T& table, const T& global, T& output,
+                  int group, int page_tokens, const T& layer, int codec) {
+    const int rows = int(queries.size(1));
+    if (!rows) return;
+    rn_qk_kernel<H, P><<<dim3(rows, HEADS / H), H * 32, 0, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<const __half*>(queries.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+        P ? global.data_ptr<float>() : nullptr, P ? nullptr : output.data_ptr<float>(),
+        P ? reinterpret_cast<__half*>(output.data_ptr()) : nullptr, rows, int(selected.size(2)), group,
+        page_tokens, layer.data_ptr<int>(), codec);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_paged_rn_qk_cuda(const T& queries, const T& selected, const T& table, const T& global, T& output,
+                           int group, int page_tokens, const T& layer, int codec, int heads, bool probability) {
+    #define RN_LAUNCH(H) if (heads == H) { if (probability) launch_rn_qk<H, true>(queries, selected, table, global, output, group, page_tokens, layer, codec); \
+        else launch_rn_qk<H, false>(queries, selected, table, global, output, group, page_tokens, layer, codec); return; }
+    RN_LAUNCH(1)
+    RN_LAUNCH(4)
+    RN_LAUNCH(12)
+    #undef RN_LAUNCH
+    TORCH_CHECK(false, "RN QK heads per block must be explicitly1,4,12");
+}
+
+void sm70_paged_rn_merge_cuda(const T& gathered, const T& table, T& output, int group, const T& layer) {
+    const int rows = int(gathered.size(1));
+    if (!rows) return;
+    rn_merge_kernel<<<rows, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(gathered.data_ptr<float>(),
+        table.data_ptr<int64_t>(), output.data_ptr<float>(), rows, group, layer.data_ptr<int>());
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_paged_rn_pv_cuda(const T& probability, const T& selected, const T& table, T& output,
+                          int rows, int page_tokens, const T& layer, int codec) {
+    if (!rows) return;
+    rn_pv_kernel<<<dim3(rows, HEADS, 4), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<const __half*>(probability.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+        output.data_ptr<float>(), rows, int(selected.size(2)), page_tokens, layer.data_ptr<int>(), codec);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

@@ -29,16 +29,25 @@ has 46 passing standard-library controls, including inert multiprocessing
 imports and a CPU route that never queries CUDA. The paired controller has
 47 passing CPU controls; its earlier version passed 32 controls on the real
 V100 host. The pair ran the 16-case CUDA/host lifetime module successfully
-and preserved real frontend failures and generation-bound cancellations. The newer qualification-only
+and preserved real frontend failures and generation-bound cancellations.
+The newer qualification-only
 mapped-ELF observer passed its installed CPU check and the eight-rank owner
 cases with and without the extra head communicator. The funded fixture passed
 all 36 cases and recorded all 16 required child origins. Its earlier 64 MiB
 preparation refusal remains preserved; the positive fixture uses the existing
-2 GiB caller workspace allowance and physical admission checks. Complete model, physical
-resource and numerical gates remain separate. The current installed Q03 prepared/graph run passed 53 of
+2 GiB caller workspace allowance and physical admission checks. Complete model,
+physical resource and numerical gates remain separate. The current installed
+Q03 prepared/graph run passed 53 of
 57 cases with zero skips; four strict numerical failures remain open. The
 callback/growth repairs passed, and distributed cases now reach their numerical
 checks. Parent native-origin proof does not establish distributed-child origins.
+The separate [NativeRN component trial](docs/v100-adaptive-validation.md#nativern-current-source-component-qualification)
+passed 52 SM70 operator cases with independent decoded-operator enclosures.
+After a view-allocation cleanup, a fresh image passed 255 installed CPU cases
+and 42 owner-fixture cases, including four eight-rank GPU cases and all 32
+child origins, with zero skips. This bounded RN-H1/toy-Q8 graph evidence does
+not establish full-model quality, full-window capacity or throughput. The trial remains unselected and existing defaults are unchanged;
+the four Q03 numerical failures receive no waiver.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
 The current source also preserves origin through Unicode capitalization and

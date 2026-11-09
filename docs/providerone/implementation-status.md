@@ -48,6 +48,16 @@ remains outside integration for target qualification. Those source checks do not
 qualify an installed image, change the selected profiles below or complete the
 ProviderOne release.
 
+The unselected [NativeRN component trial](../v100-adaptive-validation.md#nativern-current-source-component-qualification)
+has 52 passing SM70 operator cases. After a structurally verified view-return
+cleanup, a fresh genuine image passed 255 installed CPU controls and 42
+owner-fixture cases, including four eight-rank cases and 32 child origins,
+without skips. These are bounded API/ownership, numerical-enclosure and
+RN-H1/toy-Q8 graph/transport results, not full-model inference or a selected
+serving profile. Full model, context/capacity, resource and performance gates
+remain open; the
+existing four Q03 strict numerical failures remain open.
+
 Ordinary fixed-profile HTTP now has source-verified global host phase credits,
 including worker/error tails and actual metadata/ID conversions. The recorded C27
 joint-reservation control and 591 distinct CPU nodes plus 21 subtests passed.

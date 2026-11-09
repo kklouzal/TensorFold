@@ -61,7 +61,8 @@ def prepared_owner(monkeypatch):
     calls = []
     output = torch.zeros((6, 3, 256))
     side = SimpleNamespace(bits=8, codec=0)
-    owner = SimpleNamespace(queries=torch.zeros((8, 6, 3, 256)), rows=6, rank=0, heads=3, head_dim=256,
+    owner = SimpleNamespace(native_kernel_family="sm70-paged-owner-q8-compact-v1", native_heads_per_block=None,
+                            queries=torch.zeros((8, 6, 3, 256)), rows=6, rank=0, heads=3, head_dim=256,
                             native_buckets=(1, 2, 4, 6),
                             selection=torch.zeros((6, 4), dtype=torch.int32), native_page_tokens=128,
                             native_pair=SimpleNamespace(key=side, value=side),
@@ -94,6 +95,8 @@ def test_fixed_catalogue_replays_without_python_recapture_and_eager_uses_same_bo
     assert calls[-2:] == [("wait",), ("native", 4)]
     assert catalogue.record()["vote_workspace_bytes"] == 72
     catalogue.close()
+    assert catalogue.record()["kernel_family"] == "sm70-paged-owner-q8-compact-v1"
+    assert catalogue.record()["closed"]
     assert all(graph.resets == 1 for graph in graphs)
     assert not status.notifications
 

@@ -460,12 +460,13 @@ class OwnerBuffers:
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.reference_tiles = None
+        self.native_kernel_family, self.native_heads_per_block = "sm70-paged-owner-q8-compact-v1", None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_host_words = None
         self.descriptor_upload = self.native_done = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
         self.native_comm = self.native_collective = None
-        self._native_transport_configured = False
+        self._native_transport_configured = self._native_family_configured = False
         self.reference_transport_rows = 0
         self.closed = False
 
@@ -757,6 +758,23 @@ class OwnerBuffers:
             self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
             self._upload_pending = True
 
+    def configure_native_family(self, family, heads_per_block=None):
+        """Fix numerical policy before capture/admission; no serving redispatch."""
+        from .owner_execution import KERNEL_FAMILY, RN_KERNEL_FAMILY
+        if self._native_family_configured or self.native_states is not None or self._native_pending:
+            raise RuntimeError("native numerical family is immutable after startup configuration")
+        if (family not in (KERNEL_FAMILY, RN_KERNEL_FAMILY)
+                or (family == RN_KERNEL_FAMILY and (type(heads_per_block) is not int or heads_per_block not in (1, 4, 12)))
+                or (family == KERNEL_FAMILY and heads_per_block is not None)):
+            raise ValueError("native numerical family requires its exact prepared head geometry")
+        if family == RN_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.paged_attention import rn_probability_bytes
+            if (self.partials.numel() * self.partials.element_size() < rn_probability_bytes(self.rows)
+                    or torch._C._overlaps(self.partials, self.partial)):
+                raise ValueError("RN Half-P requires its fully paid disjoint PV receive slab")
+        self.native_kernel_family, self.native_heads_per_block = family, heads_per_block
+        self._native_family_configured = True
+
     def native_views(self, rows):
         if self.descriptors is None or type(rows) is not int or not 1 <= rows <= self.rows:
             raise ValueError("native views require a prepared bounded row bucket")
@@ -769,6 +787,17 @@ class OwnerBuffers:
         # Final value merge runs after normalized PV has consumed all queries.
         # Reuse that FP16 slab for output without another row-output allocation.
         out = self.queries.reshape(-1)[:rows * 3 * 256].view(rows, 3, 256)
+        # RN phase ownership: gathered statistics have retired before Half-P
+        # writes this RECEIVE slab; every PV read precedes the next gather.
+        # Never borrow local_values (the simultaneously live local SEND slab).
+        from .owner_execution import RN_KERNEL_FAMILY
+        if self.native_kernel_family == RN_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.paged_attention import rn_probability_bytes, RN_MAX_SELECTED
+            required = rn_probability_bytes(rows)
+            probability = self.partials.view(torch.float16).reshape(-1)[:required // 2].view(rows, 12, RN_MAX_SELECTED)
+            return {"probability": probability, "q_all": q, "selected_all": selection, "row_table": self.descriptors[:rows],
+                    "local_stats": local_stats, "all_stats": all_stats, "global_stats": self.global_stats[:rows],
+                    "local_values": local_values, "all_values": all_values, "out": out}
         return {"q_all": q, "selected_all": selection, "row_table": self.descriptors[:rows],
                 "local_stats": local_stats, "all_stats": all_stats, "global_stats": self.global_stats[:rows],
                 "local_values": local_values, "all_values": all_values, "out": out}
@@ -862,7 +891,12 @@ class OwnerBuffers:
         self.reference_transport_rows = self.rows
 
     def native_run(self, rows):
-        """The same preallocated partial-attention pipeline for eager and graphs."""
+        """The same preallocated partial-attention pipeline for eager and graphs.
+
+        The caller owns a serialized same-stream owner frame through final
+        output consumption/mark_native_submitted. Kernel issue order, not a CPU
+        boolean or the temporary P view, retires receive-slab phase consumers.
+        """
         from tensorfold.cuda.sm70 import paged_attention as native
 
         if rows not in self.native_buckets:
@@ -872,13 +906,25 @@ class OwnerBuffers:
             raise ValueError("native owner execution requires its active TP8 communicator")
         bits, codec = self.native_pair.key.bits, self.native_pair.key.codec
         common = {"group_start": self.rank // 4 * 4, "page_tokens": self.native_page_tokens, "layer": self.native_layer}
-        native.local_statistics(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
-                                key_bits=bits, key_codec=codec, scale=256 ** -0.5, **common)
-        self.gather_native(views["local_stats"], views["all_stats"])
-        native.merge_statistics(views["all_stats"], views["row_table"], views["global_stats"], **common)
-        native.normalized_partial(views["q_all"], views["selected_all"], views["row_table"], views["global_stats"],
-                                  views["local_values"], key_bits=bits, key_codec=codec,
-                                  value_bits=bits, value_codec=codec, scale=256 ** -0.5, **common)
+        if self.native_kernel_family == native.RN_KERNEL_FAMILY:
+            native.rn_local_statistics(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
+                key_bits=bits, key_codec=codec, heads_per_block=self.native_heads_per_block, **common)
+            self.gather_native(views["local_stats"], views["all_stats"])
+            native.rn_merge_statistics(views["all_stats"], views["row_table"], views["global_stats"], **common)
+            # Same current stream: ALL gathered-statistics readers finish before
+            # P writes receive bytes, then ALL PV readers before gather overwrite.
+            native.rn_probabilities(views["q_all"], views["selected_all"], views["row_table"], views["global_stats"],
+                views["probability"], key_bits=bits, key_codec=codec, heads_per_block=self.native_heads_per_block, **common)
+            native.rn_partial_values(views["probability"], views["selected_all"], views["row_table"], views["local_values"],
+                page_tokens=self.native_page_tokens, layer=self.native_layer, value_bits=bits, value_codec=codec)
+        else:
+            native.local_statistics(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
+                                    key_bits=bits, key_codec=codec, scale=256 ** -0.5, **common)
+            self.gather_native(views["local_stats"], views["all_stats"])
+            native.merge_statistics(views["all_stats"], views["row_table"], views["global_stats"], **common)
+            native.normalized_partial(views["q_all"], views["selected_all"], views["row_table"], views["global_stats"],
+                                      views["local_values"], key_bits=bits, key_codec=codec,
+                                      value_bits=bits, value_codec=codec, scale=256 ** -0.5, **common)
         self.gather_native(views["local_values"], views["all_values"])
         native.merge_values(views["all_values"], views["row_table"], views["out"], rank=self.rank,
                              page_tokens=self.native_page_tokens, layer=self.native_layer, value_bits=bits, value_codec=codec)
@@ -931,6 +977,10 @@ class OwnerBuffers:
     def native_record(self):
         return {"prepared": self.descriptors is not None,
                 "collective_family": self.native_collective,
+                **({"kernel_family": self.native_kernel_family, "rn_heads_per_block": self.native_heads_per_block,
+                    "rn_probability_borrow_bytes": self.rows * 12 * 2051 * 2,
+                    "rn_probability_additional_device_bytes": 0, "rn_probability_source": "PV receive slab owner.partials"}
+                   if self.native_heads_per_block is not None else {}),
                 "attention_members": list(range(self.rank // 4 * 4, self.rank // 4 * 4 + 4))
                                      if self.native_comm is not None and self.native_comm.world == 4 else list(range(8)),
                 "native_rows": list(self.native_buckets),
@@ -976,8 +1026,10 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
     reference_tiles = getattr(owner, "reference_tiles", None)
     family = buffers.owner_kernel_family
     native_selected = family != "torch-reference"
-    if buffers.owner_graph_family not in ("uncaptured", "owner-attention-v1"):
-        raise ValueError("unsupported owner attention graph family")
+    from .owner_execution import NATIVE_FAMILIES, graph_family_for
+    if buffers.owner_graph_family != "uncaptured" and (
+            family not in NATIVE_FAMILIES or buffers.owner_graph_family != graph_family_for(family)):
+        raise ValueError("unsupported owner attention graph/numerical family pairing")
     if buffers.owner_graph_family != "uncaptured" and (not native_selected or buffers.owner_graphs is None):
         raise RuntimeError("owner attention graph family was not prepared before serving")
     if (not native_selected and reference_tiles is not None
@@ -986,9 +1038,7 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                  or reference_tiles.normalization_output is not owner.global_stats)):
         raise RuntimeError("reference tile global normalization was not prepared on the admitted owner")
     if native_selected:
-        from tensorfold.cuda.sm70.paged_attention import KERNEL_FAMILY
-
-        if family != KERNEL_FAMILY:
+        if family not in NATIVE_FAMILIES or family != owner.native_kernel_family:
             raise ValueError("unsupported owner attention kernel family")
         if owner.native_states is None or any(id(state) not in owner.native_states for state, _, _ in segments):
             raise RuntimeError("native owner kernel and its canonical State catalogue were not prepared before serving")
@@ -1066,8 +1116,7 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                 owner.wait_native_inputs()
                 output = owner.native_run(bucket)[:count]
             else:
-                output = graph_manager.run(count, graph=buffers.owner_graph_family
-                                           == "owner-attention-v1")
+                output = graph_manager.run(count, graph=buffers.owner_graph_family != "uncaptured")
             owner.wait_native_reuse()
             buffers.attn_o[base:base + count].copy_(output)
             owner.mark_native_submitted()  # The lease includes this last consumer of the reused query/output slab.

@@ -228,7 +228,31 @@ def _emit_fixture_funding(rank, head4, funding):
         raise OSError('fixture funding receipt write was incomplete')
 
 
-def _fixture_reports(rank, head4, funding, graphs, workspace, weights, attempted, errors):
+def _fixture_case_id(head4, rn):
+    return ('owner-rn-h1' if rn else 'owner') + '-head4-' + str(int(head4))
+
+
+def _configure_rn_fixture(workspace):
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import RN_KERNEL_FAMILY
+    workspace.configure_native_family(RN_KERNEL_FAMILY, heads_per_block=1)
+    if (workspace.native_kernel_family != RN_KERNEL_FAMILY
+            or type(workspace.native_heads_per_block) is not int or workspace.native_heads_per_block != 1):
+        raise RuntimeError('RN fixture did not adopt its explicit H1 numerical family')
+
+
+def _check_rn_graph_identity(workspace, graphs):
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import RN_KERNEL_FAMILY, RN_GRAPH_FAMILY
+    record = graphs.record()
+    if (workspace.native_kernel_family != RN_KERNEL_FAMILY
+            or type(workspace.native_heads_per_block) is not int or workspace.native_heads_per_block != 1
+            or not graphs.prepared or graphs.kernel_family != RN_KERNEL_FAMILY
+            or type(graphs.heads_per_block) is not int or graphs.heads_per_block != 1
+            or record['kernel_family'] != RN_KERNEL_FAMILY or record['graph_family'] != RN_GRAPH_FAMILY
+            or type(record['rn_heads_per_block']) is not int or record['rn_heads_per_block'] != 1):
+        raise RuntimeError('prepared RN graph numerical family/head identity differs')
+
+
+def _fixture_reports(rank, head4, funding, graphs, workspace, weights, attempted, errors, rn=False):
     """Attempt each independent sink once; journal errors without escaping."""
     if funding is not None and not attempted[0]:
         attempted[0] = True  # Publication precedes every fallible callback.
@@ -239,18 +263,23 @@ def _fixture_reports(rank, head4, funding, graphs, workspace, weights, attempted
     if graphs is not None and not attempted[1]:
         attempted[1] = True
         try:
-            _emit_graph_resource_context(rank, head4, graphs, workspace, weights)
+            if rn:
+                _emit_graph_resource_context(rank, head4, graphs, workspace, weights,
+                    reference_required=True, case_id=_fixture_case_id(head4, True))
+            else:
+                _emit_graph_resource_context(rank, head4, graphs, workspace, weights)
         except BaseException as error:
             errors[1] = error
 
 
-def _graph_resource_context(rank, head4, graphs, workspace, weights):
+def _graph_resource_context(rank, head4, graphs, workspace, weights, reference_required=None, case_id=None):
     """Stored Python metadata only: no free-memory query, fence or device work."""
     from tensorfold.families.qwen4_exp.cuda.history_placement import (
         compact_stage_bytes, for_weights,
     )
 
     record = graphs.record()  # Existing fields/numel metadata; no CUDA query.
+    reference_required = head4 if reference_required is None else reference_required
     pair = workspace.native_pair
     layout = for_weights(weights)
     future = {
@@ -259,8 +288,8 @@ def _graph_resource_context(rank, head4, graphs, workspace, weights):
             'history_tensor_plan_bytes': layout.rank_bytes(0, 257, rank, pair.row_bytes(1, 256),
                 pair.dummy_bytes, index_dim=128, ratio=4, include_mtp=False, proposal_rows=4),
             'other': 'PLE tail, position/status/generation scalars and host metadata remain additional.'},
-        'reference_owner': {'enabled': bool(head4), 'rows': 4, 'native_comm_world': 8,
-            'same_layout_existing_tensor_bytes': workspace.nbytes if head4 else 0,
+        'reference_owner': {'enabled': bool(reference_required), 'rows': 4, 'native_comm_world': 8,
+            'same_layout_existing_tensor_bytes': workspace.nbytes if reference_required else 0,
             'scope': 'Same owner tensor layout; allocator/transport cost is not measured or inferred.'},
         'compact_stage': {'rows': 133, 'caches': 12, 'tensor_plan_bytes': compact_stage_bytes(133, 12)},
         'population': {'kv_half_shapes': [2, 133, 1, 256], 'raw_indexer_half_shape': [133, 128],
@@ -269,15 +298,18 @@ def _graph_resource_context(rank, head4, graphs, workspace, weights):
         'later_work': 'Pool/encode workspace; eager/replay/reference output clones for rows1,3,4,1; reset/stale replay.',
         'unmeasured': 'Allocator/CUDA/NCCL lazy allocations and physical peaks are not bounded by these tensor plans.'}
     return {'schema': 'tensorfold.owner-graph-resource-context-v1', 'PID': os.getpid(), 'rank': rank,
-        'head4': bool(head4), 'graph_record': record, 'workspace_tensor_bytes': workspace.nbytes,
+        'head4': bool(head4), **({'case_id': case_id} if case_id is not None else {}), 'graph_record': record, 'workspace_tensor_bytes': workspace.nbytes,
         'capture_transport_world': workspace.native_comm.world, 'vote_world': graphs.comm.world,
         'remaining_capture_rows': [rows for rows in graphs.buckets if rows not in graphs.graphs],
         'prepare_start_free': None, 'prepare_start_free_reason': 'Not retained by existing producer fields.',
         'future_schedule': future, 'scope': 'Stored producer values at the success/failure boundary, not a worst-case bound.'}
 
 
-def _emit_graph_resource_context(rank, head4, graphs, workspace, weights):
-    context = _graph_resource_context(rank, head4, graphs, workspace, weights)
+def _emit_graph_resource_context(rank, head4, graphs, workspace, weights, reference_required=None, case_id=None):
+    if reference_required is None and case_id is None:
+        context = _graph_resource_context(rank, head4, graphs, workspace, weights)
+    else:
+        context = _graph_resource_context(rank, head4, graphs, workspace, weights, reference_required, case_id)
     raw = ('OWNER_GRAPH_RESOURCES ' + json.dumps(context, sort_keys=True, allow_nan=False) + '\n').encode('utf-8')
     if len(raw) > 4096:
         raise ValueError('owner graph diagnostic exceeds its one-line 4096-byte extent')
@@ -389,7 +421,7 @@ def _finish_worker(rank, head4, primary, graphs, workspace, reference, staging, 
         _worker_outcome(rank, head4, primary, errors, retired, diagnostics)
 
 
-def _worker(rank, port, head4):
+def _worker(rank, port, head4, rn=False):
     with _worker_diagnostics(rank, head4):
         _diagnostic_phase(rank, head4, "imports.before")
         from tensorfold.cuda.comm import NCCL
@@ -414,6 +446,7 @@ def _worker(rank, port, head4):
         workspace = reference = staging = funding = None
         primary = None
         weights = None
+        reference_required = head4 or rn
         _diagnostic_phase(rank, head4, "comm.construct.after")
         try:
             _diagnostic_phase(rank, head4, "comm.open.before")
@@ -443,12 +476,15 @@ def _worker(rank, port, head4):
             _diagnostic_phase(rank, head4, "owner.prepare_native.before")
             workspace.prepare_native(pair=pair, page_tokens=128)
             _diagnostic_phase(rank, head4, "owner.prepare_native.after")
+            if rn:
+                _configure_rn_fixture(workspace)
             _diagnostic_phase(rank, head4, "owner.transport.before")
             workspace.configure_native_transport(HEAD_COLLECTIVE if head4 else FULL_COLLECTIVE, head_comm or comm)
             _diagnostic_phase(rank, head4, "owner.transport.after")
             budget_send = torch.empty((3,), dtype=torch.int64, device=device)
             budget_receive = torch.empty((8, 3), dtype=torch.int64, device=device)
-            funding = _fixture_admit(weights, head4, workspace, scratch, comm, budget_send, budget_receive)
+            funding = _fixture_admit(weights, reference_required, workspace, scratch, comm, budget_send, budget_receive)
+            funding['case_id'] = _fixture_case_id(head4, rn)
             _diagnostic_phase(rank, head4, "graphs.construct.before")
             graphs = object.__new__(OwnerAttentionGraphs)
             graphs.__init__(workspace, rows=4, budget_bytes=funding['graph_bytes'], comm=comm)
@@ -457,6 +493,8 @@ def _worker(rank, port, head4):
             _diagnostic_phase(rank, head4, "graphs.prepare.before")
             graphs.prepare(quiescent=lambda: workspace.native_states is None)
             _diagnostic_phase(rank, head4, "graphs.prepare.after")
+            if rn:
+                _check_rn_graph_identity(workspace, graphs)
             from tensorfold.cuda.capacity import device_allocation_baseline
             torch.cuda.synchronize(device)
             prepared = device_allocation_baseline(torch, preallocated_device_bytes=funding['fixed_tensor_bytes'])
@@ -473,18 +511,26 @@ def _worker(rank, port, head4):
             if native_evidence:
                 from v100_native_contract_driver import record_native_elfs
                 record_native_elfs(['tf_sm70_paged_attention_'], rank=rank,
-                    tag='owner-head4-' + str(int(head4)), evidence_dir=native_evidence)
+                    tag=_fixture_case_id(head4, rn), evidence_dir=native_evidence)
             _diagnostic_phase(rank, head4, "state.adopt.before")
             state = State(weights, 257, 4, "int8")
             workspace.bind_native_states((state,))
             graphs.validate_adoption()
+            if rn:
+                _check_rn_graph_identity(workspace, graphs)
             _diagnostic_phase(rank, head4, "state.adopt.after")
-            if head4:
+            if reference_required:
                 _fixture_check(funding, comm, budget_send, budget_receive, 'before-reference', done=('state',))
                 _diagnostic_phase(rank, head4, "reference.prepare.before")
                 reference = object.__new__(OwnerBuffers)
                 reference.__init__(weights, 4, scratch)
-                reference.prepare_native((state,), pair=pair, page_tokens=128)
+                if rn:
+                    reference.prepare_native(pair=pair, page_tokens=128)
+                    _configure_rn_fixture(reference)
+                    reference.configure_native_transport(FULL_COLLECTIVE, comm)
+                    reference.bind_native_states((state,))
+                else:
+                    reference.prepare_native((state,), pair=pair, page_tokens=128)
                 _diagnostic_phase(rank, head4, "reference.prepare.after")
             _fixture_check(funding, comm, budget_send, budget_receive, 'before-population', done=('state', 'reference'))
             _diagnostic_phase(rank, head4, "state.populate.before")
@@ -530,6 +576,8 @@ def _worker(rank, port, head4):
                 _diagnostic_phase(rank, head4, "replay.after", rows)
                 workspace.mark_native_submitted()
                 assert torch.equal(captured, eager)
+                if rn:
+                    assert torch.equal(captured.view(torch.int16), eager.view(torch.int16))
                 _diagnostic_phase(rank, head4, "eager_replay.compare.after", rows)
                 if reference is not None:
                     bucket = reference.native_bucket(rows)
@@ -541,6 +589,8 @@ def _worker(rank, port, head4):
                     _diagnostic_phase(rank, head4, "reference.run.after", rows)
                     reference.mark_native_submitted()
                     assert torch.equal(captured, full)
+                    if rn:
+                        assert torch.equal(captured.view(torch.int16), full.view(torch.int16))
                 assert not int(state.kv_status[0])
                 _diagnostic_phase(rank, head4, "status.after", rows)
                 live_clones = eager.nbytes + captured.nbytes + (full.nbytes if reference is not None else 0)
@@ -557,12 +607,14 @@ def _worker(rank, port, head4):
             _diagnostic_phase(rank, head4, "stale.replay.after")
             workspace.mark_native_submitted()
             assert not bool(stale.any()) and int(state.kv_status[0]) & 32
+            if rn:
+                assert not bool(stale.view(torch.int16).any())
             _diagnostic_phase(rank, head4, "ready.before")
             comm.ready("owner-native-graphs-complete", every=1, timeout=60)
             _diagnostic_phase(rank, head4, "ready.after")
             _fixture_check(funding, comm, budget_send, budget_receive, 'complete',
                 done=('state', 'reference', 'staging', 'population'), live_clones=live_clones + stale.nbytes, complete=True)
-            _fixture_reports(rank, head4, funding, graphs, workspace, weights, report_attempted, report_errors)
+            _fixture_reports(rank, head4, funding, graphs, workspace, weights, report_attempted, report_errors, rn=rn)
             if report_errors[0] is not None:
                 raise report_errors[0]
             if report_errors[1] is not None:
@@ -570,7 +622,7 @@ def _worker(rank, port, head4):
         except BaseException as error:
             failed, primary = True, error
             _diagnostic_exception(rank, head4, error)
-            _fixture_reports(rank, head4, funding, graphs, workspace, weights, report_attempted, report_errors)
+            _fixture_reports(rank, head4, funding, graphs, workspace, weights, report_attempted, report_errors, rn=rn)
         finally:
             # Successful graph retirement is required even when the body failed
             # after capture. Uncertain owners remain live for process containment.
@@ -592,6 +644,27 @@ def test_v100_tp8_owner_partial_graphs_replay_live_and_masked_rows(head4):
         while not context.join(timeout=1):
             if time.monotonic() >= deadline:
                 raise TimeoutError("native owner graph participant did not retire")
+    finally:
+        for process in context.processes:
+            if process.is_alive():
+                process.kill()
+            process.join(timeout=10)
+
+
+@pytest.mark.parametrize("head4", [False, True])
+def test_v100_tp8_rn_h1_five_phase_graphs_match_rn_full8_reference(head4):
+    """New-family graph/transport/lifetime proof; independent math gate is separate."""
+    if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
+        pytest.skip("requires eight real SM70 GPUs and the supported source-built V100 foundation")
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    context = torch.multiprocessing.spawn(_worker, args=(port, head4, True), nprocs=8, join=False)
+    try:
+        deadline = time.monotonic() + 600
+        while not context.join(timeout=1):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("RN owner graph participant did not retire")
     finally:
         for process in context.processes:
             if process.is_alive():

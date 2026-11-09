@@ -11,7 +11,10 @@ from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
 from tensorfold.cleanup import finish, raise_failures
-from .owner_execution import FULL_COLLECTIVE, HEAD_COLLECTIVE, GRAPH_FAMILY, KERNEL_FAMILY, UNCAPTURED, row_buckets
+from .owner_execution import (
+    FULL_COLLECTIVE, HEAD_COLLECTIVE, KERNEL_FAMILY, RN_KERNEL_FAMILY,
+    NATIVE_FAMILIES, UNCAPTURED, graph_family_for, row_buckets,
+)
 
 _ROLES = frozenset({"decode", "mtp", "prefill"})
 _CHANNEL = "tensorfold/owner-preparation/v1"
@@ -44,14 +47,18 @@ def parse_preparation(value):
         return None
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
-            or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic"})
+            or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
-            or value["kernel_family"] != KERNEL_FAMILY
-            or value["graph_family"] not in (UNCAPTURED, GRAPH_FAMILY)
+            or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
+            or value["graph_family"] not in (UNCAPTURED, graph_family_for(value["kernel_family"]))
             or type(value["trial"]) is not bool or type(value["graph_budget_bytes"]) is not int
             or value["graph_budget_bytes"] < 0
-            or (value["graph_family"] == GRAPH_FAMILY) != (value["graph_budget_bytes"] > 0)):
+            or (value["graph_family"] != UNCAPTURED) != (value["graph_budget_bytes"] > 0)):
         raise ValueError("native preparation needs its exact family, explicit trial flag and bounded graph allowance")
+    rn = value["kernel_family"] == RN_KERNEL_FAMILY
+    if (rn and (type(value.get("rn_heads_per_block")) is not int or value["rn_heads_per_block"] not in (1, 4, 12))
+            or not rn and "rn_heads_per_block" in value):
+        raise ValueError("RN numerical preparation requires an explicit1/4/12-head block choice only for that family")
     buckets = value.get("row_buckets", {})
     if not isinstance(buckets, dict) or set(buckets).difference(_ROLES):
         raise ValueError("native preparation row buckets must name supported execution roles")
@@ -64,6 +71,7 @@ def parse_preparation(value):
             "graph_budget_bytes": value["graph_budget_bytes"], "trial": value["trial"],
             "collective_family": value.get("collective_family", FULL_COLLECTIVE),
             "row_buckets": deepcopy(buckets),
+            **({"rn_heads_per_block": value["rn_heads_per_block"]} if rn else {}),
             **({"reference_arithmetic": {"policy": request.policy, "graph_budget_bytes": request.graph_budget_bytes}}
                if request is not None else {})}
 
@@ -76,7 +84,8 @@ class OwnerPreparation:
         if set(role_rows).difference(_ROLES) or set(self.specification["row_buckets"]).difference(role_rows):
             raise ValueError("native preparation names a role absent from the selected method")
         if type(reference_tiles) is not bool or reference_tiles and (
-                self.specification["trial"] or self.specification["graph_family"] != UNCAPTURED
+                self.specification["trial"] or self.specification["kernel_family"] != KERNEL_FAMILY
+                or self.specification["graph_family"] != UNCAPTURED
                 or self.specification["collective_family"] != FULL_COLLECTIVE):
             raise ValueError("reference tile preparation requires the uncaptured full-TP8 reference policy")
         self.reference_arithmetic_request = ArithmeticRequest.parse(self.specification.get("reference_arithmetic"))
@@ -86,6 +95,7 @@ class OwnerPreparation:
         self.reference_tiles_requested = reference_tiles
         self.reference_preparation = None
         self.reference_arithmetic_source = None
+        self.rn_numerical_identity = None
         self.role_rows = {role: role_rows[role] for role in ("decode", "mtp", "prefill") if role in role_rows}
         self.buckets = {role: row_buckets(rows, self.specification["row_buckets"].get(role))
                         for role, rows in self.role_rows.items()}
@@ -144,6 +154,10 @@ class OwnerPreparation:
                     from tensorfold.cuda.sm70.reference_owner_tiles import prepare
                     self.reference_preparation = prepare()
                 arithmetic_source = {}
+                if self.specification["kernel_family"] == RN_KERNEL_FAMILY:
+                    from tensorfold.cuda.sm70.paged_attention import rn_preparation_identity
+                    self.rn_numerical_identity = deepcopy(rn_preparation_identity())
+                    arithmetic_source["rn_numerical_identity"] = self.rn_numerical_identity
                 if self.reference_arithmetic_request is not None:
                     from . import reference_arithmetic
                     import hashlib
@@ -198,6 +212,7 @@ class OwnerPreparation:
                         register=lambda owner: self.workspaces.__setitem__(role, owner),
                         **({"reference_preparation": self.reference_preparation} if self.reference_tiles_requested else {}))
                     owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
+                    owner.configure_native_family(self.specification["kernel_family"], self.specification.get("rn_heads_per_block"))
                     owner.configure_native_transport(self.specification["collective_family"],
                                                      self.head_comm or engine.comm)
                     return owner.allocation_record()
@@ -226,7 +241,7 @@ class OwnerPreparation:
                             raise ValueError("reference arithmetic aggregate preparation exceeds its explicit budget")
                         return graph.record()
                     self._phase(engine, "reference-arithmetic-" + role, arithmetic_owner, may_refuse=False)
-                if self.specification["graph_family"] == GRAPH_FAMILY:
+                if self.specification["graph_family"] != UNCAPTURED:
                     remaining = self.specification["graph_budget_bytes"] - self.graph_physical_bytes
                     before_graph = self._memory(torch, device)
 
@@ -311,6 +326,9 @@ class OwnerPreparation:
         for graphs in (*self.graphs.values(), *self.reference_arithmetic.values()):
             graphs.validate_adoption()
         for owner in self.workspaces.values():
+            if (owner.native_kernel_family != self.specification["kernel_family"]
+                    or owner.native_heads_per_block != self.specification.get("rn_heads_per_block")):
+                raise RuntimeError("serving owner numerical policy differs from its prepared source identity")
             owner.bind_native_states(decoder.states)
         for role, buffers in (("decode", decoder.buf), ("mtp", decoder.mbuf), ("prefill", decoder.pbuf)):
             if buffers is None:
@@ -322,7 +340,8 @@ class OwnerPreparation:
         # larger model batch is split into several such attention operations.
         graph_rows = decoder.buf.rows if self.graphs else 0
         decoder.controller.configure_execution_families(native=True, graph_rows=graph_rows,
-            trial={"kernel_family": KERNEL_FAMILY, "graph_family": self.specification["graph_family"]}
+            native_family=self.specification["kernel_family"],
+            trial={"kernel_family": self.specification["kernel_family"], "graph_family": self.specification["graph_family"]}
                   if self.specification["trial"] else None)
         decoder.apply_execution_family()
 
@@ -364,6 +383,8 @@ class OwnerPreparation:
         # the resulting verified execution proof to be installed for release.
         return {"specification": {name: deepcopy(value) for name, value in self.specification.items() if name != "trial"},
                 "source_foundation_headers": deepcopy(self.source_foundation),
+                **({"rn_numerical_identity": deepcopy(self.rn_numerical_identity)}
+                   if self.specification["kernel_family"] == RN_KERNEL_FAMILY else {}),
                 "roles": dict(self.role_rows),
                 **({"reference_arithmetic_source_sha256": self.reference_arithmetic_source}
                    if self.reference_arithmetic_request is not None else {}),

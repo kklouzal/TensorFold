@@ -15,7 +15,7 @@ import re
 from contextlib import contextmanager
 
 from tensorfold.cleanup import raise_failures
-from .owner_execution import FAMILY_FIELDS, GRAPH_FAMILY, KERNEL_FAMILY, REFERENCE, UNCAPTURED
+from .owner_execution import FAMILY_FIELDS, KERNEL_FAMILY, NATIVE_FAMILIES, REFERENCE, UNCAPTURED, graph_family_for
 
 IDENTITY_DIGESTS = frozenset({"target", "draft", "tokenizer", "codec", "numerics", "source",
                              "kernel_build", "runtime", "topology", "retention", "target_weight_encoding", "placement"})
@@ -110,30 +110,32 @@ class AdaptiveController:
         self._profile_reservation = None
         self._deferred_migration = None
         self.native_prepared = False
+        self.prepared_kernel_family = KERNEL_FAMILY
         self.graph_rows = 0
         self.trial_family = None
         self.effective_family = dict(REFERENCE)
 
-    def configure_execution_families(self, *, native=False, graph_rows=0, trial=None):
+    def configure_execution_families(self, *, native=False, graph_rows=0, trial=None, native_family=KERNEL_FAMILY):
         """Register startup-owned preparation; compiling alone never selects it.
 
         The engine supplies actual native/graph preparation results before
         warmup or identity binding. A trial tuple is an explicit maintained
         qualification run, never a production performance promotion.
         """
-        if type(native) is not bool or type(graph_rows) is not int or graph_rows < 0 or graph_rows and not native:
+        if (type(native) is not bool or type(graph_rows) is not int or graph_rows < 0 or graph_rows and not native
+                or type(native_family) is not str or native_family not in NATIVE_FAMILIES):
             raise ValueError("native execution preparation requires explicit capability and graph row bounds")
         with self._lock:
             if self.epoch or self.steps or self.rounds or self.identity is not None or self._profile_reservation is not None:
                 raise RuntimeError("execution families must be prepared before startup workload or profile binding")
-            original = self.native_prepared, self.graph_rows
-            self.native_prepared, self.graph_rows = native, graph_rows
+            original = self.native_prepared, self.graph_rows, self.prepared_kernel_family
+            self.native_prepared, self.graph_rows, self.prepared_kernel_family = native, graph_rows, native_family
             try:
                 selected = None if trial is None else dict(trial)
                 if selected is not None:
                     self._check_family(selected, self.maximum["row_budget"])
             except BaseException:
-                self.native_prepared, self.graph_rows = original
+                self.native_prepared, self.graph_rows, self.prepared_kernel_family = original
                 raise
             self.trial_family = selected
             self.effective_family = dict(REFERENCE if selected is None else selected)
@@ -143,11 +145,11 @@ class AdaptiveController:
             raise ValueError("an execution family requires its kernel and graph choices")
         if family == REFERENCE:
             return
-        if family["kernel_family"] != KERNEL_FAMILY or not self.native_prepared:
+        if family["kernel_family"] != self.prepared_kernel_family or not self.native_prepared:
             raise ValueError("native owner kernel family was not prepared at startup")
         if family["graph_family"] == UNCAPTURED:
             return
-        if family["graph_family"] != GRAPH_FAMILY or rows > self.graph_rows:
+        if family["graph_family"] != graph_family_for(self.prepared_kernel_family) or rows > self.graph_rows:
             raise ValueError("owner graph family does not cover this execution row envelope")
 
     def _profile_family(self, execution):
@@ -417,7 +419,7 @@ class AdaptiveController:
                                     proposal_limit=self.maximum["proposal_limit"],
                                     prefill_tokens=self.maximum["prefill_tokens"])
         staged.configure_execution_families(native=self.native_prepared, graph_rows=self.graph_rows,
-                                            trial=self.trial_family)
+                                            trial=self.trial_family, native_family=self.prepared_kernel_family)
         staged.bind_identity(identity, evidence=evidence)
         staged.install_profiles(table)
         with self._lock:
@@ -598,7 +600,7 @@ class AdaptiveController:
             credit((self.configured, self.pending, self.effective, self.maximum,
                 self.identity, self.binding_invalidated_reason, self._deferred_migration,
                 self.profile_table_digest, self.selected_profile, self.effective_family,
-                self.native_prepared, self.graph_rows, self.trial_family, self.migration,
+                self.native_prepared, self.prepared_kernel_family, self.graph_rows, self.trial_family, self.migration,
                 self.applied_migration, self.observation, self.round_observation))
         return {"configured": dict(self.configured),
                 "pending": None if self.pending is None else dict(self.pending),
@@ -616,6 +618,7 @@ class AdaptiveController:
                 "selected_profile": self.selected_profile,
                 "execution_families": {"effective": dict(self.effective_family),
                                        "native_prepared": self.native_prepared,
+                                       "prepared_kernel_family": self.prepared_kernel_family,
                                        "graph_rows": self.graph_rows,
                                        "trial": None if self.trial_family is None else dict(self.trial_family)},
                 "migration": None if self.migration is None else dict(self.migration),

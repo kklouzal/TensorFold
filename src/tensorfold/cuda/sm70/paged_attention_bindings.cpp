@@ -14,6 +14,9 @@ void sm70_paged_statistics_cuda(const T&, const T&, const T&, T&, int, int, cons
 void sm70_paged_merge_cuda(const T&, const T&, T&, int, const T&);
 void sm70_paged_values_cuda(const T&, const T&, const T&, const T&, T&, int, int, const T&, int, int, float);
 void sm70_paged_merge_values_cuda(const T&, const T&, T&, int, const T&, int);
+void sm70_paged_rn_qk_cuda(const T&, const T&, const T&, const T&, T&, int, int, const T&, int, int, bool);
+void sm70_paged_rn_merge_cuda(const T&, const T&, T&, int, const T&);
+void sm70_paged_rn_pv_cuda(const T&, const T&, const T&, T&, int, int, const T&, int);
 
 namespace {
 constexpr int WORLD = 8, HEADS = 12, DIM = 256, WORDS = tf_sm70_paged::WORD_COUNT;
@@ -152,7 +155,94 @@ void merge_values(const T& gathered, const T& table, T output, int rank, int pag
     sm70_paged_merge_values_cuda(gathered, table, output, rank, layer, value_bits == 4 ? value_codec : 0);
 }
 
+
+namespace {
+void rn_heads(int heads) {
+    TORCH_CHECK(heads == 1 || heads == 4 || heads == 12, "RN heads per block must be explicitly1,4,12");
+}
+void rn_probability(const T& probability, const T& owner, int rows) {
+    check(probability, owner, at::kHalf, "global Half probabilities");
+    TORCH_CHECK(probability.dim() == 3 && probability.size(0) == rows && probability.size(1) == HEADS
+                && probability.size(2) == 2051, "RN Half-P requires exact[rows,12,2051] caller-owned receive storage");
+}
+void rn_values(const T& output, const T& owner, int rows) {
+    check(output, owner, at::kFloat, "RN local values");
+    TORCH_CHECK(output.dim() == 3 && output.size(0) == rows && output.size(1) == HEADS && output.size(2) == DIM,
+                "RN local values require[rows,12,256]");
+}
+}
+
+void rn_local_statistics(const T& queries, const T& selected, const T& table, T output,
+        int group, int page_tokens, const T& layer, int key_bits, int key_codec, int heads) {
+    const int rows = rows_of(queries);
+    controls(table, queries, rows, group, page_tokens, layer);
+    selections(selected, queries, rows);
+    statistics(output, queries, rows, false);
+    format(key_bits, key_codec);
+    rn_heads(heads);
+    for (const auto* input : {&queries, &selected, &table, &layer}) distinct(output, *input);
+    c10::cuda::CUDAGuard guard(queries.device());
+    sm70_paged_rn_qk_cuda(queries, selected, table, output, output, group, page_tokens, layer,
+                          key_bits == 4 ? key_codec : 0, heads, false);
+}
+
+void rn_merge_statistics(const T& gathered, const T& table, T output, int group, int page_tokens, const T& layer) {
+    check(gathered, gathered, at::kFloat, "RN gathered statistics");
+    const auto* properties = at::cuda::getDeviceProperties(gathered.get_device());
+    TORCH_CHECK(properties->major == 7 && properties->minor == 0, "RN owner attention requires SM70");
+    TORCH_CHECK(gathered.dim() == 4 && gathered.size(1) <= INT32_MAX, "RN gathered statistics geometry");
+    const int rows = int(gathered.size(1));
+    controls(table, gathered, rows, group, page_tokens, layer);
+    statistics(gathered, gathered, rows, true);
+    statistics(output, gathered, rows, false);
+    for (const auto* input : {&gathered, &table, &layer}) distinct(output, *input);
+    c10::cuda::CUDAGuard guard(gathered.device());
+    sm70_paged_rn_merge_cuda(gathered, table, output, group, layer);
+}
+
+void rn_probabilities(const T& queries, const T& selected, const T& table, const T& global, T output,
+        int group, int page_tokens, const T& layer, int key_bits, int key_codec, int heads) {
+    const int rows = rows_of(queries);
+    controls(table, queries, rows, group, page_tokens, layer);
+    selections(selected, queries, rows);
+    statistics(global, queries, rows, false);
+    rn_probability(output, queries, rows);
+    format(key_bits, key_codec);
+    rn_heads(heads);
+    for (const auto* input : {&queries, &selected, &table, &global, &layer}) distinct(output, *input);
+    c10::cuda::CUDAGuard guard(queries.device());
+    sm70_paged_rn_qk_cuda(queries, selected, table, global, output, group, page_tokens, layer,
+                          key_bits == 4 ? key_codec : 0, heads, true);
+}
+
+void rn_partial_values(const T& probability, const T& selected, const T& table, T output,
+        int page_tokens, const T& layer, int value_bits, int value_codec) {
+    check(probability, probability, at::kHalf, "RN global Half-P");
+    const auto* properties = at::cuda::getDeviceProperties(probability.get_device());
+    TORCH_CHECK(properties->major == 7 && properties->minor == 0, "RN owner attention requires SM70");
+    TORCH_CHECK(probability.dim() == 3 && probability.size(0) <= INT32_MAX, "RN probability geometry");
+    const int rows = int(probability.size(0));
+    rn_probability(probability, probability, rows);
+    controls(table, probability, rows, 0, page_tokens, layer);
+    selections(selected, probability, rows);
+    rn_values(output, probability, rows);
+    format(value_bits, value_codec);
+    for (const auto* input : {&probability, &selected, &table, &layer}) distinct(output, *input);
+    c10::cuda::CUDAGuard guard(probability.device());
+    sm70_paged_rn_pv_cuda(probability, selected, table, output, rows, page_tokens, layer,
+                          value_bits == 4 ? value_codec : 0);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+    module.attr("rn_family") = "sm70-paged-owner-rn-ex2-p2051-v1";
+    module.attr("rn_graph_family") = "owner-attention-rn-five-phase-v1";
+    module.attr("rn_max_selected") = 2051;
+    module.attr("rn_log2e_bits") = uint32_t(0x3fb8aa3b);
+    module.attr("rn_algorithm") = "qk-fma8-shuffle5/ordered32-ml/ex2-nonftz/half-global-p/pv-stride32-shuffle5";
+    module.def("rn_local_statistics", &rn_local_statistics);
+    module.def("rn_merge_statistics", &rn_merge_statistics);
+    module.def("rn_probabilities", &rn_probabilities);
+    module.def("rn_partial_values", &rn_partial_values);
     module.attr("descriptor_abi") = tf_sm70_paged::ABI_VERSION;
     module.attr("descriptor_words") = int(tf_sm70_paged::WORD_COUNT);
     module.attr("descriptor_schema_id") = tf_sm70_paged::SCHEMA_ID;

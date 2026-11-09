@@ -187,15 +187,20 @@ failed run retired cleanly without OOM or residual GPU contexts.
 | --- | --- |
 | Q03 | Complete repaired prepared/bound-graph tests, then actual SC117 native32 selector, wrapper and complete-request cost/quality checks on immutable identities. |
 | Q05 | Complete release-image qualification, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. The corrected graph fixture passed all 36 CPU/GPU cases with all 16 child-origin records; this does not establish complete physical bounds or model admission. The 16-case lifetime module passed on the bound image; Python header sizes still do not bound native metadata, allocator pages or RSS. |
-| Q06 | Obtain and verify the exact seven-path C06-only packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`), then use an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
+| Q06 | The exact seven-path C06 packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`) is recovered and independently restored. Apply only that packet in an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
 | Q-GLM | Preserve legacy raw-tokenizer compatibility, as explicitly selected by the user, and complete actual model/context/stop serving checks for available platform/checkpoint pairs. The capitalization/complete-header frontend repairs passed the bound installed 253-test verification; full checkpoint CUDA and applicable MLX inference remain unqualified without their actual inputs. |
-| B3 | Reverify the user-approved recovery bundle, exact queue, current tips and unselected C06 source/tests/evidence recoverability, then retire only reviewed unchanged divergent refs with expected-SHA guards. The exact C06 qualification packet is still unavailable; reconstructed variants have different hashes. C06 adoption remains separate. Stop on new or advanced refs. |
+| B3 | Reverify the user-approved recovery bundle, exact queue, current tips and unselected C06 source/tests/evidence recoverability, then retire only reviewed unchanged divergent refs with expected-SHA guards. The exact C06 qualification packet is now available and independently restored; adoption remains a separate deferred gate. Stop on new or advanced refs. |
 | B4 | Verify only `python-0.6` remains, it is the actual default and contains the execution basis plus authorized changes, and independent recovery remains usable. |
 
-The bounded accessible-path search did not locate the supplied personal-library
-recovery artifacts or C06 packet. Their local paths are required; this is not a
-claim of global absence. The user-approved replacement archive closes the
-original recovery-set access decision; the exact C06 packet remains open.
+The earlier bounded accessible-path search did not locate the personal-library
+recovery artifacts or C06 packet; that was not a claim of global absence. The user subsequently supplied the full patch text.
+Extracting only its seven C06 sections reproduces the exact required digest
+`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`;
+its separate packet archive restores independently and the isolated current-
+branch applicability check passes. The other eight sections are excluded: seven
+are already integrated, and one Dense test has diverged. Nothing from this
+patch is reapplied canonically. The user-approved fresh Git archive replaces
+the original recovery set; C06 adoption and B3 retirement remain open.
 
 A supplemental current-head bundle (`ecdc578cdfd119241169658160a66ad7afd9a59fe5b3decb7cd32ad336f14ea8`)
 independently restores all 607 original branch names and exact captured tips,

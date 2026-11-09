@@ -6,7 +6,9 @@ import threading
 
 import pytest
 
-from tensorfold.families.qwen4_exp.cuda.owner_execution import GRAPH_FAMILY, KERNEL_FAMILY, UNCAPTURED, row_buckets
+from tensorfold.families.qwen4_exp.cuda.owner_execution import (
+    GRAPH_FAMILY, KERNEL_FAMILY, RN_KERNEL_FAMILY, UNCAPTURED, row_buckets,
+)
 from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation, parse_preparation
 
 
@@ -66,10 +68,12 @@ def test_live_grant_never_credits_unknown_private_pool_or_omits_outside_cap_comm
     assert prepared.live_bytes() == expected
 
 
-@pytest.mark.parametrize("trial,head4,reference,module_failure",
-                         [(False, False, False, False), (True, False, False, False),
-                          (True, True, False, False), (False, False, True, False), (False, False, True, True)])
-def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monkeypatch, trial, head4, reference, module_failure):
+@pytest.mark.parametrize("trial,head4,reference,module_failure,rn",
+                         [(False, False, False, False, False), (True, False, False, False, False),
+                          (True, True, False, False, False), (False, False, True, False, False),
+                          (False, False, True, True, False), (True, False, False, False, True)])
+def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(
+        monkeypatch, trial, head4, reference, module_failure, rn):
     import torch
     from tensorfold.cuda import capacity
     from tensorfold.families.qwen4_exp.cuda import history_owner
@@ -151,6 +155,7 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
             self.closed = False
             self.warmed, self.wire_shapes = [], []
             self.reference_transport_rows = 0
+            self.native_kernel_family, self.native_heads_per_block = KERNEL_FAMILY, None
 
         def allocate(self, count):
             self.bytes += count
@@ -165,6 +170,11 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
         def allocation_record(self):
             return {"rank": self.rank, "rows": self.rows, "prefill": self.prefill,
                     "device_tensor_bytes": self.bytes, "host_staging_bytes": self.rows * 128}
+
+        def configure_native_family(self, family, heads_per_block):
+            assert family == (RN_KERNEL_FAMILY if rn else KERNEL_FAMILY)
+            assert heads_per_block == (1 if rn else None)
+            self.native_kernel_family, self.native_heads_per_block = family, heads_per_block
 
         def configure_native_transport(self, policy, comm):
             self.transport = (policy, comm)
@@ -235,6 +245,8 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
         # Insertion order differs deliberately; the operation protocol must not.
         roles = {"decode": 4, "mtp": 4, "prefill": 8} if rank % 2 else {"prefill": 8, "mtp": 4, "decode": 4}
         spec = specification(trial=trial)
+        if rn:
+            spec.update(kernel_family=RN_KERNEL_FAMILY, rn_heads_per_block=1)
         if head4:
             spec["collective_family"] = "head4-allgather-v1"
         prepared = OwnerPreparation(spec, role_rows=roles, manifest_sha256="a" * 64, reference_tiles=reference)
@@ -265,7 +277,10 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
                      controller=AdaptiveController(slots=2, row_budget=4, proposal_limit=1, prefill_tokens=8))
         decoder.apply_execution_family = lambda d=decoder: MultiDecoder.apply_execution_family(d)
         item.adopt(NS(meta={"owner_workspaces": item.workspaces}), decoder)
-        assert decoder.buf.owner_kernel_family == (KERNEL_FAMILY if trial else "torch-reference")
+        assert decoder.buf.owner_kernel_family == ((RN_KERNEL_FAMILY if rn else KERNEL_FAMILY) if trial else "torch-reference")
+        if rn:
+            assert item.identity()["rn_numerical_identity"]["max_selected"] == 2051
+            assert decoder.controller.record()["execution_families"]["prepared_kernel_family"] == RN_KERNEL_FAMILY
         assert len(created) == 24  # Adoption did not create a second serving allocation.
         item.close()
         assert memory[rank] == {"free": (1 << 30) - (128 if reference else 0), "active": 0, "reserved": 0}

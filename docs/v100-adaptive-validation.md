@@ -2422,3 +2422,73 @@ pending. It drains response owners before restoring changed controls. Its
 cooperative body deadline has the documented one-socket-read bound; it does not
 claim instantaneous DNS/header cancellation. HTTP observations alone do not
 authorize a qualified execution profile.
+
+## NativeRN current-source component qualification
+
+The current qualification-only snapshot starts from committed `1655e370` plus
+exactly eight reviewed NativeRN runtime changes. Its complete wheel is
+`499040e3bffcaecf8ffea9125f55b76f6be3907272d5188ecb2cf5865ac909f1`;
+the genuine application image is
+`sha256:d736ab78e732281170a6a4153eda544c1cef7896f3457f3d6cf2ccbcfa0a2e73`.
+Its manifest truthfully records an uncommitted trial, source UID
+`7d699c62e9ca3cb8d26089ae1fd0bfa7c38bfdcf85ed97ddc66c319e8f99606c`.
+All 786 installed runtime files match, with only those eight changes relative
+to the genuine `18e37982` application. Protected source-built Torch `04cf2557`,
+CUDA12.9/SM70 foundation `491f93da`, FD extension and installed package origins
+remain unchanged; there is no editable installed overlay.
+
+NativeRN has a distinct private numerical identity,
+`sm70-paged-owner-rn-ex2-p2051-v1`, and five-phase graph identity. Its explicit
+RN dot/reduction program, non-FTZ exponential contract and global Half
+probabilities have independent exact-dyadic/interval controls. WMMA and
+reference families remain controls. NativeRN is unselected; this checkpoint
+adds no ordinary serving profile or new default.
+
+The preceding trial of the unchanged CUDA arithmetic used application
+`sha256:e87c93184e63316e53d7d6a8bb57f3427c17b74767989ac1700c81ab41b92a64`,
+source basis `98fb4cef` plus the original eight runtime changes. It passed 249
+installed CPU cases and all 52 SM70 cases with zero skips, including 19 fixed
+whole-phase decoded-operator enclosure cases and domain/stale-status/fatal
+normalization controls. The original independent bounds, masks, status and
+finite work budgets remain intact; no tolerance was fitted to results.
+Actual membership checks execute the held independent oracle assertions;
+archived properties retain input identities, bounds and check counts, not a
+replayable copy of every device intermediate.
+
+The normal loader selected cached native ELF
+`20c5b26787216c87131def13941d8e5a7efa23b41cdb16003ce48d943f323e9a`.
+Its identical source/flags/ABI and scoped RN-function SASS evidence are reused.
+This is an observed cache hit, not a new compilation or substituted binary;
+the cubin-only PTX header is not represented as a complete PTX body. An initial
+installed verifier caller used an outdated return signature; its preserved
+failure was resolved by correcting only that caller.
+
+Review then removed unnecessary transient dictionaries from `native_views`.
+The RN and incumbent returns preserve tensor expressions, evaluation/key order,
+strides, storage aliases and lifetime contracts. CPython structural evidence
+shows three dictionary builds reduced to one per path; this is not a measured
+serving gain. The history source and its test authority literal are rebound
+explicitly. CUDA kernels, ABI, arithmetic and `native_run` are unchanged, so
+the 52-case numerical evidence carries only for those unchanged operators.
+It is not relabelled as a fresh execution of the changed Python caller.
+
+The new `d736ab78` image passed seven installed CPU modules: 255 cases, zero
+skips, including six added view-contract controls. Its actual owner fixture
+also passed 42 cases: 38 CPU and four eight-rank GPU cases, zero skips. The two
+incumbent cases remain intact; the two new RN cases use
+`rn_heads_per_block=1` (RN-H1, exercising all twelve query heads) and compare
+the same family across eager/graph execution and full8/head4 transport against a separate full8
+RN owner. All 32 family-tagged child VMA-FD origins, once-only funding/resource
+reports, phase admission checks and ordered retirement were verified. The
+[isolated verification derivative](../deploy/v100/source-foundation.md#isolated-vma-fd-verification-mode)
+is `sha256:efb4cb8f860881368f507a51920214d5ce5cb0d6e2eb8c80c5848fe16c0b4744`.
+Both runs retired without OOM, residual GPU contexts or source/health changes.
+
+This owner evidence covers RN-H1, toy Q8, dense attention counts130–133,
+query-row counts1/3/4 and a 257-row context. It does not establish cross-family
+bit identity, other heads-per-block graph configurations,
+full-context capacity or full SC117 serving. Full Q8/iso4 and none/MTP quality,
+frozen teacher comparisons, sparse-QSA model execution, media, complete physical
+resource bounds and matched per-count performance remain unqualified. No
+production cutover, token/s gain or waiver for the four Q03 strict numerical
+failures follows from these component results.

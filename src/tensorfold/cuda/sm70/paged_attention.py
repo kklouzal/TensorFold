@@ -18,6 +18,12 @@ from .paged_attention_descriptor import ABI_VERSION, BYTES, SCHEMA_ID, WORDS
 
 
 KERNEL_FAMILY = "sm70-paged-owner-q8-compact-v1"
+RN_KERNEL_FAMILY = "sm70-paged-owner-rn-ex2-p2051-v1"
+RN_GRAPH_FAMILY = "owner-attention-rn-five-phase-v1"
+RN_MAX_SELECTED = 2051
+RN_LOG2E_BITS = 0x3fb8aa3b
+RN_ALGORITHM = "qk-fma8-shuffle5/ordered32-ml/ex2-nonftz/half-global-p/pv-stride32-shuffle5"
+RN_CUDA_FLAGS = ("-O3", "--fmad=false", "--ftz=false", "--prec-div=true", "--prec-sqrt=true")
 DESCRIPTOR_WORDS = WORDS
 DESCRIPTOR_BYTES = BYTES
 LAYER_BYTES = 4
@@ -81,10 +87,16 @@ def extension():
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=headers, source_root=root.parent)
     module = build.load("tf_sm70_paged_attention_" + digest.hexdigest()[:20], staged, need=(7, 0),
-                        extra_cuda_cflags=["-O3", "--fmad=false"], extra_cflags=["-O3"])
+                        extra_cuda_cflags=list(RN_CUDA_FLAGS),
+                        extra_cflags=["-O3"])
     if (getattr(module, "descriptor_abi", None), getattr(module, "descriptor_words", None),
             getattr(module, "descriptor_schema_id", None)) != (ABI_VERSION, WORDS, SCHEMA_ID):
         raise RuntimeError("native owner attention descriptor ABI differs from its caller schema")
+    if (getattr(module, "rn_family", None), getattr(module, "rn_graph_family", None),
+            getattr(module, "rn_max_selected", None), getattr(module, "rn_log2e_bits", None),
+            getattr(module, "rn_algorithm", None)) != (
+                RN_KERNEL_FAMILY, RN_GRAPH_FAMILY, RN_MAX_SELECTED, RN_LOG2E_BITS, RN_ALGORITHM):
+        raise RuntimeError("native RN numerical-family/constant ABI differs from its caller")
     return module
 
 
@@ -125,3 +137,60 @@ def merge_values(gathered, row_table, out, *, rank, page_tokens, layer, value_bi
     _format(value_bits, value_codec)
     extension().merge_values(gathered, row_table, out, rank, page_tokens, layer, value_bits, value_codec)
     return out
+
+
+def rn_probability_bytes(rows):
+    if type(rows) is not int or not 0 <= rows <= 2**31 - 1:
+        raise ValueError("RN Half-P rows must be a bounded nonnegative integer")
+    return rows * HEADS * RN_MAX_SELECTED * 2
+
+
+def _rn_heads(heads):
+    if type(heads) is not int or heads not in (1, 4, 12):
+        raise ValueError("RN heads per block must be explicitly1,4,12")
+
+
+def rn_local_statistics(queries, selections, row_table, out, *, group_start, page_tokens, layer,
+                        key_bits, key_codec, heads_per_block):
+    _controls(group_start, page_tokens)
+    _format(key_bits, key_codec)
+    _rn_heads(heads_per_block)
+    extension().rn_local_statistics(queries, selections, row_table, out, group_start, page_tokens,
+                                     layer, key_bits, key_codec, heads_per_block)
+    return out
+
+
+def rn_merge_statistics(gathered, row_table, out, *, group_start, page_tokens, layer):
+    _controls(group_start, page_tokens)
+    extension().rn_merge_statistics(gathered, row_table, out, group_start, page_tokens, layer)
+    return out
+
+
+def rn_probabilities(queries, selections, row_table, global_statistics, out, *, group_start,
+                     page_tokens, layer, key_bits, key_codec, heads_per_block):
+    _controls(group_start, page_tokens)
+    _format(key_bits, key_codec)
+    _rn_heads(heads_per_block)
+    extension().rn_probabilities(queries, selections, row_table, global_statistics, out, group_start,
+                                 page_tokens, layer, key_bits, key_codec, heads_per_block)
+    return out
+
+
+def rn_partial_values(probability, selections, row_table, out, *, page_tokens, layer, value_bits, value_codec):
+    _controls(0, page_tokens)
+    _format(value_bits, value_codec)
+    extension().rn_partial_values(probability, selections, row_table, out, page_tokens, layer, value_bits, value_codec)
+    return out
+
+
+def rn_preparation_identity():
+    """Startup source policy, not proof of actual PTX/SASS or quality bounds."""
+    root = Path(__file__).parent
+    sources = (root / "paged_attention.py", root / "paged_attention_bindings.cpp", root / "paged_attention.cu")
+    return {"kernel_family": RN_KERNEL_FAMILY, "graph_family": RN_GRAPH_FAMILY,
+            "algorithm": RN_ALGORITHM, "log2e_bits": RN_LOG2E_BITS, "max_selected": RN_MAX_SELECTED,
+            "max_dense": RN_MAX_SELECTED, "qk_heads_per_block_choices": [1, 4, 12], "pv_columns_per_block": 64,
+            "pv_warps_per_block": 4, "pv_accumulators_per_thread": 16,
+            "requested_cuda_flags": list(RN_CUDA_FLAGS),
+            "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources},
+            "qualification": "experimental numerical family; bounds/binary/quality/resource/P3 unqualified"}

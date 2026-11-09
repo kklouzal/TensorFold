@@ -7,13 +7,25 @@ requires the content-verified profile evidence contract.
 
 from types import MappingProxyType
 
-from tensorfold.cuda.sm70.paged_attention import KERNEL_FAMILY as KERNEL_FAMILY
+from tensorfold.cuda.sm70.paged_attention import (
+    KERNEL_FAMILY as KERNEL_FAMILY, RN_KERNEL_FAMILY as RN_KERNEL_FAMILY,
+    RN_GRAPH_FAMILY as RN_GRAPH_FAMILY,
+)
 
 REFERENCE_KERNEL = "torch-reference"
 UNCAPTURED = "uncaptured"
 GRAPH_FAMILY = "owner-attention-v1"
 FULL_COLLECTIVE = "tp8-allgather-v1"
 HEAD_COLLECTIVE = "head4-allgather-v1"
+NATIVE_FAMILIES = frozenset({KERNEL_FAMILY, RN_KERNEL_FAMILY})
+
+
+def graph_family_for(kernel):
+    if type(kernel) is not str or kernel not in NATIVE_FAMILIES:
+        raise ValueError("unsupported native numerical family")
+    return RN_GRAPH_FAMILY if kernel == RN_KERNEL_FAMILY else GRAPH_FAMILY
+
+
 FAMILY_FIELDS = frozenset({"kernel_family", "graph_family"})
 REFERENCE = MappingProxyType({"kernel_family": REFERENCE_KERNEL, "graph_family": UNCAPTURED})
 

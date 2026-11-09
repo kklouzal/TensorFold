@@ -87,7 +87,9 @@ def test_native_source_closure_reuses_the_owned_codec_decoder_and_pins_sm70(monk
     monkeypatch.setattr(provider, "_native", lambda: NS(__name__="verified-pinned-foundation"))
     monkeypatch.setattr(source_cache, "stage_sources", stage)
     module = NS(descriptor_abi=descriptor.ABI_VERSION, descriptor_words=descriptor.WORDS,
-                descriptor_schema_id=descriptor.SCHEMA_ID)
+                descriptor_schema_id=descriptor.SCHEMA_ID, rn_family=operator.RN_KERNEL_FAMILY,
+                rn_graph_family=operator.RN_GRAPH_FAMILY, rn_max_selected=operator.RN_MAX_SELECTED,
+                rn_log2e_bits=operator.RN_LOG2E_BITS, rn_algorithm=operator.RN_ALGORITHM)
     monkeypatch.setattr(build, "load", lambda *args, **kwargs: built.append((args, kwargs)) or module)
     operator.extension.cache_clear()
     try:
@@ -98,7 +100,7 @@ def test_native_source_closure_reuses_the_owned_codec_decoder_and_pins_sm70(monk
     assert {path.name for path in staged[0][1]} == {"paged_attention_descriptor.cuh", "packed_kv_decode.cuh",
                                                   "rotorquant_q4.cuh", "rotorquant_q4_tables.cuh"}
     assert built[0][1]["need"] == (7, 0)
-    assert built[0][1]["extra_cuda_cflags"] == ["-O3", "--fmad=false"]
+    assert built[0][1]["extra_cuda_cflags"] == list(operator.RN_CUDA_FLAGS)
 
 
 def test_maintained_native_descriptor_header_matches_its_single_source():

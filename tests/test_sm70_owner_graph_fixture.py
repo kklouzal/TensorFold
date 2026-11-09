@@ -499,3 +499,59 @@ def test_both_report_failures_keep_original_body_and_all_cleanup(monkeypatch):
     assert caught.value is body
     assert body.__cause__.exceptions == (first, second)
     assert [name for name, _ in events] == ['graphs', 'workspace', 'reference', 'head_comm', 'comm']
+
+
+def test_rn_fixture_binds_h1_explicitly_and_refuses_ignored_configuration():
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import RN_KERNEL_FAMILY
+    calls = []
+    workspace = NS(native_kernel_family='old', native_heads_per_block=None)
+    def configure(family, *, heads_per_block):
+        calls.append((family, heads_per_block))
+        workspace.native_kernel_family, workspace.native_heads_per_block = family, heads_per_block
+    workspace.configure_native_family = configure
+    fixture._configure_rn_fixture(workspace)
+    assert calls == [(RN_KERNEL_FAMILY, 1)]
+    workspace.native_kernel_family = 'old'
+    workspace.configure_native_family = lambda *args, **kwargs: None
+    with pytest.raises(RuntimeError, match='explicit H1'):
+        fixture._configure_rn_fixture(workspace)
+
+
+def test_rn_graph_identity_requires_actual_prepared_family_and_head():
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import RN_KERNEL_FAMILY, RN_GRAPH_FAMILY
+    workspace = NS(native_kernel_family=RN_KERNEL_FAMILY, native_heads_per_block=1)
+    record = {'kernel_family': RN_KERNEL_FAMILY, 'graph_family': RN_GRAPH_FAMILY, 'rn_heads_per_block': 1}
+    graph = NS(prepared=True, kernel_family=RN_KERNEL_FAMILY, heads_per_block=1, record=lambda: dict(record))
+    fixture._check_rn_graph_identity(workspace, graph)
+    for field, value in (('prepared', False), ('kernel_family', 'old'), ('heads_per_block', 4)):
+        old = getattr(graph, field)
+        setattr(graph, field, value)
+        with pytest.raises(RuntimeError, match='identity differs'):
+            fixture._check_rn_graph_identity(workspace, graph)
+        setattr(graph, field, old)
+    record['graph_family'] = 'owner-attention-v1'
+    with pytest.raises(RuntimeError, match='identity differs'):
+        fixture._check_rn_graph_identity(workspace, graph)
+
+
+@pytest.mark.parametrize('head4', [False, True])
+def test_rn_resource_and_origin_tags_are_separate_and_reference_is_always_funded(monkeypatch, head4):
+    graphs, workspace, weights = graph_metadata(head4)
+    workspace.native_kernel_family = 'sm70-paged-owner-rn-ex2-p2051-v1'
+    workspace.native_heads_per_block = 1
+    plan = fixture._fixture_future_plan(weights, True, workspace)
+    assert plan['persistent']['reference'] == workspace.nbytes
+    assert fixture._fixture_case_id(head4, False) == 'owner-head4-' + str(int(head4))
+    case = fixture._fixture_case_id(head4, True)
+    assert case == 'owner-rn-h1-head4-' + str(int(head4))
+    context = fixture._graph_resource_context(0, head4, graphs, workspace, weights,
+                                             reference_required=True, case_id=case)
+    assert context['future_schedule']['reference_owner']['enabled']
+    assert context['case_id'] == case
+    calls, flags, errors = [], [False, False], [None, None]
+    monkeypatch.setattr(fixture, '_emit_fixture_funding', lambda *args: calls.append(('funding', args)))
+    monkeypatch.setattr(fixture, '_emit_graph_resource_context', lambda *args, **kwargs: calls.append(('resource', kwargs)))
+    fixture._fixture_reports(0, head4, {}, graphs, workspace, weights, flags, errors, rn=True)
+    fixture._fixture_reports(0, head4, {}, graphs, workspace, weights, flags, errors, rn=True)
+    assert len(calls) == 2 and errors == [None, None]
+    assert calls[1] == ('resource', {'reference_required': True, 'case_id': case})

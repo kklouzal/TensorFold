@@ -14,7 +14,7 @@ import time
 import torch
 
 from tensorfold.cleanup import error_name, raise_failures
-from .owner_execution import GRAPH_FAMILY, KERNEL_FAMILY, row_buckets
+from .owner_execution import graph_family_for, row_buckets
 
 
 class OwnerAttentionGraphs:
@@ -32,6 +32,7 @@ class OwnerAttentionGraphs:
         if comm is None or comm.world != 8:
             raise ValueError("owner attention graphs require the canonical TP8 communicator")
         self.workspace, self.comm = workspace, comm
+        self.kernel_family, self.heads_per_block = workspace.native_kernel_family, workspace.native_heads_per_block
         self.rows, self.budget = rows, budget_bytes
         self.device = workspace.queries.device
         self.side = self.pool = self.votes = None
@@ -81,7 +82,8 @@ class OwnerAttentionGraphs:
 
     def _execution_signature(self):
         owner, pair = self.workspace, self.workspace.native_pair
-        return (owner.rows, owner.rank, owner.heads, owner.head_dim, owner.native_page_tokens,
+        return (owner.native_kernel_family, owner.native_heads_per_block,
+                owner.rows, owner.rank, owner.heads, owner.head_dim, owner.native_page_tokens,
                 owner.native_buckets, pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec,
                 owner.native_collective, owner.native_comm.world)
 
@@ -268,7 +270,9 @@ class OwnerAttentionGraphs:
             raise
 
     def record(self):
-        return {"kernel_family": KERNEL_FAMILY, "graph_family": GRAPH_FAMILY,
+        return {"kernel_family": self.kernel_family,
+                "graph_family": graph_family_for(self.kernel_family),
+                "rn_heads_per_block": self.heads_per_block,
                 "scope": "partial native owner attention; preparation/indexer/sampling remain outside",
                 "prepared": self.prepared, "closed": self.closed,
                 "failure_type": None if self.failure is None else error_name(self.failure),
