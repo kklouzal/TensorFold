@@ -42,9 +42,11 @@ Private receipts are provenance, not dependencies for fresh-checkout tests.
 ## Requested, implemented, qualified and effective
 
 The [branch consolidation scope](../branch-consolidation.md) records the
-independently ported boundary/tool/fixture changes and the Dense/state candidates
-held for target qualification. Those source checks do not qualify an installed
-image, change the selected profiles below or complete the ProviderOne release.
+independently ported boundary/tool/fixture changes, the Dense wrapper correctness
+repair and the prepared native-owner host-word component. Tail/Pool preparation
+remains outside integration for target qualification. Those source checks do not
+qualify an installed image, change the selected profiles below or complete the
+ProviderOne release.
 
 Ordinary fixed-profile HTTP now has source-verified global host phase credits,
 including worker/error tails and actual metadata/ID conversions. The recorded C27

@@ -364,7 +364,10 @@ def test_model_zero_byte_rows_preserve_stop_context_and_precommit_continuation(t
             on_tokens(new[:count])
             return {}
 
-    def continue_after_gate(generate, prompt, max_tokens, gates, on_tokens):
+    def continue_after_gate(generate, prompt, max_tokens, gates, on_tokens, *, on_think_close=None):
+        # This synthetic continuation has no thinking gate to close; retain
+        # the current server callback protocol without inventing a close.
+        assert not gates and callable(on_think_close)
         generate(prompt, len(first), on_tokens)
         return generate([*prompt, *first], max_tokens - len(first), on_tokens)
 

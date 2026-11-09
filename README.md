@@ -9,10 +9,15 @@ separates requested, source-implemented, qualified and effective behavior.
 The [branch consolidation](docs/branch-consolidation.md) hardens benchmark
 publication, new tool-definition validation and optional segment-cache failure
 accounting, removes an unused normal-round FIFO snapshot, and adds a separate
-finite GGML projection fixture. Its CPU checks are separate from installed
-CUDA/model qualification. Dense-wrapper and compact-state candidates remain
-qualification patches pending their actual SM70 and model gates; no deployment
-profile or measured performance result is promoted by the consolidation.
+finite GGML projection fixture. The Dense native32 wrapper also validates its
+input/output contract and publishes raw-copy mutation metadata. Its CUDA math,
+default selection and prepared entry points are unchanged. The explicitly
+prepared native owner fills descriptor words through a retained host view with
+separately accounted metadata; pinned payload, DMA and device math stay intact.
+Installed SM70/model qualification remains pending; Tail/Pool preparation stays
+in a qualification patch. No deployment profile or measured gain is promoted.
+GLM prompt adapters forward the current encoding/render-credit interface and
+preserve caller literal origins in thinking-off transformations on CUDA and HF.
 
 The V100 source now has one App-owned host-payload pool with grants before
 allocation and ownership through worker, socket and error retirement. Its C27

@@ -167,15 +167,26 @@ def for_weights(weights) -> HistoryPlacement | None:
 
 
 def native_owner_workspace_bytes(rows: int) -> dict[str, int]:
-    """Exact added native tables; communication and output slabs are reused."""
+    """Native tables and retained host-view headers; payload aliases count once.
+
+    Python headers are measured on this runtime. Library-private allocation,
+    allocator overhead and RSS retain their independent physical qualification.
+    """
     _int(rows, "native execution rows", 1)
-    from tensorfold.cuda.sm70.paged_attention import DESCRIPTOR_BYTES, LAYER_BYTES, workspace_bytes
+    import sys
+
+    import torch
+
+    from tensorfold.cuda.sm70.paged_attention import DESCRIPTOR_BYTES, DESCRIPTOR_WORDS, LAYER_BYTES, workspace_bytes
 
     chunk = min(rows, 256)
     descriptors, operator = chunk * DESCRIPTOR_BYTES, workspace_bytes(chunk)
+    mirror = torch.empty((0, DESCRIPTOR_WORDS), dtype=torch.int64).numpy()
+    metadata = sys.getsizeof(mirror) + sys.getsizeof(mirror.base)
     return {"descriptor_bytes": descriptors, "global_statistics_bytes": operator - descriptors,
             "lane_control_bytes": chunk * 4, "layer_control_bytes": LAYER_BYTES,
-            "device_bytes": operator + chunk * 4 + LAYER_BYTES, "host_staging_bytes": descriptors}
+            "device_bytes": operator + chunk * 4 + LAYER_BYTES,
+            "host_metadata_bytes": metadata, "host_staging_bytes": descriptors + metadata}
 
 
 def owner_workspace_bytes(text, rows: int, world: int = 8, *, native: bool = False) -> dict[str, int]:
@@ -206,7 +217,8 @@ def owner_workspace_bytes(text, rows: int, world: int = 8, *, native: bool = Fal
     persistent = (world * chunk * heads * dims * 2
                   + (world + 1) * chunk * (idw + 2) * 4
                   + (world + 1) * chunk * 4 * heads * max(dims, 2) * 4 + 4)
-    native_bytes = native_owner_workspace_bytes(rows) if native else {"device_bytes": 0, "host_staging_bytes": 0}
+    native_bytes = (native_owner_workspace_bytes(rows) if native else
+                    {"device_bytes": 0, "host_staging_bytes": 0, "host_metadata_bytes": 0})
     if native and (heads != 3 or dims != 256):
         raise ValueError("native owner workspace requires H3/D256")
     persistent += native_bytes["device_bytes"]
@@ -221,5 +233,6 @@ def owner_workspace_bytes(text, rows: int, world: int = 8, *, native: bool = Fal
     attention = 128 * dims * 64 + 4 * heads * (128 + dims) * 32
     prefix = 128 * (2 * dims * 2 + 2 * index_dim)
     return {"persistent_bytes": persistent, "host_staging_bytes": native_bytes["host_staging_bytes"],
+            "host_metadata_bytes": native_bytes["host_metadata_bytes"],
             "native_device_bytes": native_bytes["device_bytes"],
             "temporary_bytes": prepare + indexer + attention + prefix}

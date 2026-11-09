@@ -6,6 +6,9 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from tensorfold.server.prompt_literals import MAX_RENDER_BYTES, PromptEncodingError, RenderedPrompt
+from tensorfold.server.prompt_origin import origin_concat, trusted
+
 EFFORT_LINE = "<|system|>Reasoning Effort: Max"
 OPENED = "<|assistant|><think>"
 CLEAR_THINKING = "TF_GLM_CLEAR_THINKING"
@@ -34,6 +37,39 @@ def thinking_off(text: str) -> str:
     return text + "</think>" if text.endswith(OPENED) else text
 
 
+def thinking_off_prompt(rendered, *, max_render_bytes=MAX_RENDER_BYTES, render_credit=None):
+    """Transform native template controls while retaining request origins and owners."""
+    origin = rendered.origin
+    at = origin.find(EFFORT_LINE)
+    while at >= 0 and any(origin._mask[at:at + len(EFFORT_LINE)]):
+        at = origin.find(EFFORT_LINE, at + len(EFFORT_LINE))
+    close = origin.endswith(OPENED) and not any(origin._mask[-len(OPENED):])
+    if at < 0 and not close:
+        return rendered
+    remaining = len(origin) - (len(EFFORT_LINE) if at >= 0 else 0)
+    final = remaining + (len("</think>") if close else 0)
+    if render_credit is not None:
+        # Both prompts retain origins and opaque media views. Each unsafe run
+        # can need its own marker/value/slot entry in the new view, whose text
+        # can be much longer (and wider) than the logical prompt.
+        runs = origin._mask.count(b"\0\1") + int(origin._mask.startswith(b"\1"))
+        root_chars = len(rendered.control_literals[-1][1]) if rendered.control_literals else len("tfl_")
+        marker_chars = root_chars + len("data_") + len(str(len(origin))) + len(str(max(0, runs - 1))) + 2
+        media_chars = final + runs * marker_chars
+        render_credit(len(origin) + len(rendered.encoded_text) + final + media_chars,
+                      len(rendered.literals) + runs + 3)
+    if close and (len(origin.encode("utf-8")) - (len(EFFORT_LINE) if at >= 0 else 0)
+                  + len("</think>") > max_render_bytes):
+        raise PromptEncodingError("rendered prompt exceeds the chat-render byte budget")
+    parts = [origin] if at < 0 else [origin[:at], origin[at + len(EFFORT_LINE):]]
+    if close:
+        parts.append(trusted("</think>"))
+    result = RenderedPrompt(origin_concat(parts), rendered.literals, control_literals=rendered.control_literals)
+    object.__setattr__(result, "_renderer", rendered._renderer)
+    object.__setattr__(result, "_ordinary_codec", rendered._ordinary_codec)
+    return result
+
+
 class GlmTokenizer:
     """The checkpoint's tokenizer (the Mac's), its chat template read through ``thinking_off`` when thinking is off
     and given ``clear_thinking`` (``clear_thinking()``) when the call leaves it unset."""
@@ -47,17 +83,13 @@ class GlmTokenizer:
 
     def render_prompt_literals(self, messages, **kwargs):
         """Preserve the native wrapper's post-render transformation and origins."""
-        from tensorfold.server.prompt_literals import RenderedPrompt, render_hf_prompt
-        from tensorfold.server.prompt_origin import trusted
+        from tensorfold.server.prompt_literals import render_hf_prompt
 
         kwargs.setdefault("clear_thinking", self._clear)
         rendered = render_hf_prompt(self._inner, messages, **kwargs)
         if kwargs.get("enable_thinking", True) is not False:
             return rendered
-        text = rendered.origin.replace(EFFORT_LINE, "", 1)
-        if text.endswith(OPENED):
-            text += trusted("</think>")
-        return RenderedPrompt(text, rendered.literals, control_literals=rendered.control_literals)
+        return thinking_off_prompt(rendered)
 
     def apply_chat_template(self, messages: Any, *args: Any, tokenize: bool = True, **kwargs: Any) -> Any:
         kwargs.setdefault("clear_thinking", self._clear)
