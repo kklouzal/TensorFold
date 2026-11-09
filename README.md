@@ -93,6 +93,9 @@ after a startup-fixture correction; enabled full-model performance qualification
 The source-only [batched reference global normalization](docs/v100-adaptive-validation.md#batched-reference-global-normalization-source-candidate)
 passed 169 pinned-runtime CPU checks; 15 SM70 GPU controls matched the unchanged
 scalar oracle. Installed-model, performance and default-release gates remain open.
+The separate [reference-query packing source candidate](docs/benchmarking.md#reference-query-packing-source-candidate)
+passed 40 CPU and 15 strict SM70 GPU controls, with no skips. It has no new
+application image, full-model result, performance gain or default promotion.
 The private launcher can also [prepare a larger MTP verification envelope](docs/benchmarking.md#private-verification-row-envelope-trials)
 before loading; memory and throughput qualification remain required.
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)

@@ -425,6 +425,32 @@ The lifecycle finding is separate from numerical attribution. Failure gate:
 SHA256 `b49952e6b672fc2a9d7372d3373cf3f44768e7a985de459f54baa4db0f8e77d2`.
 Raw HTTP, pre-stop observations and failed retirement outcomes are preserved.
 
+## Reference-query packing source candidate
+
+This separate partial A21 increment applies only inside private reference-tile
+selection. After the first nonempty job in a chunk, it packs the active quartet's
+queries once into the unused opposite half of the already-paid query slab.
+Per-row contiguous views serve both statistics and PV. One-row chunks retain
+the original zero-copy view; all-EMPTY chunks add no copy. The active half stays
+unchanged. Same-stream ordering keeps packed rows valid through their consumers
+before the next gather overwrites the slab. Floating-point arithmetic, matrix
+shapes/strides/alignment and ordered reductions are unchanged; no new device
+buffer is allocated. Default/legacy and native/graph branches retain their old
+paths; these controls do not qualify a new whole-forward graph.
+
+The immutable source component passed 40 CPU controls and 15 strict SM70 GPU
+cases with zero skips, plus Ruff/syntax checks. Tests compare raw Half bits to
+the old per-row reshape and an integer-layout oracle at R1/2/3/5/40/160/256,
+both quartets, including all Half encodings, CUDA allocation peaks, row alignment
+and consumer/next-gather stream lifetimes. Gate:
+`reference-query-pack-v1/target-v1/reference-query-pack-source-CPU40-GPU15-gate-v1.json`,
+SHA256 `06724aa6017cfe07ae03dc87612d0a654a9a7783b178eb8303e93098c0a75872`.
+
+This is source-component evidence only: no new application build, full-model
+output, P3 gain or default release is qualified. The lifecycle-only successor
+bound to commit `1d6c5809` excludes this code; its witness and the earlier
+`f126`/`597c` results are not query-packing evidence.
+
 ## First SC117 Q4 reference
 
 The first descriptive reference used eight V100-SXM2-32GB GPUs, SC117 IQ3_S

@@ -388,6 +388,28 @@ def merge_statistics(maxima, denominators, *, status=None, layer=0):
     return safe, torch.where(denominator > 0, denominator, 1)
 
 
+def _reference_query_rows(query_all, group_start):
+    """Pack only this reference group's rows into the unused query half.
+
+    The current-stream gather has produced both halves. Only group_start's
+    quartet is consumed by this rank's reference QK/PV phases; the other half
+    is free until the next gather, which follows all queued PV consumers.
+    """
+    if (query_all.dtype != torch.float16 or query_all.ndim != 4
+            or query_all.shape[0] != 8 or query_all.shape[1] < 1
+            or query_all.shape[2:] != (3, 256) or not query_all.is_contiguous()
+            or type(group_start) is not int or group_start not in (0, 4)):
+        raise ValueError("reference query packing requires the admitted rank-major Half query slab")
+    count = query_all.shape[1]
+    active = query_all[group_start:group_start + 4]
+    if count == 1:
+        return active.view(1, 12, 256)  # Original zero-copy row, no extra copy.
+    other = 4 - group_start
+    packed = query_all[other:other + 4].view(count, 4, 3, 256)
+    packed.copy_(active.permute(1, 0, 2, 3))  # Disjoint same-storage halves.
+    return packed.view(count, 12, 256)
+
+
 def normalized_partial(query, cache, selected, visible, scale, maximum, denominator, *, tile_preparer=None):
     """PV with globally normalized FP16 probabilities, matching target rounding.
 
@@ -1017,6 +1039,7 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
             continue
         partial = owner.partial.reshape(-1)[:count * 4 * c.heads * 2].view(count, 4 * c.heads, 2)
         group_start = rank // 4 * 4
+        packed_queries = None
         jobs = []
         for state, ai, first, last, host_pos, index_owner in selected_segments:
             cache = state.mtp_kc if mtp else state.kc[ai]
@@ -1035,7 +1058,12 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                     ids = selections[index_owner, row, :n].long()
                 else:
                     ids = torch.arange(visible_end, dtype=torch.int64, device=weights.device)
-                query = query_all[group_start:group_start + 4, row].reshape(4 * c.heads, c.head_dim)
+                if reference_tiles is None:
+                    query = query_all[group_start:group_start + 4, row].reshape(4 * c.heads, c.head_dim)
+                else:
+                    if packed_queries is None:
+                        packed_queries = _reference_query_rows(query_all, group_start)
+                    query = packed_queries[row]
                 visible = ids < visible_end
                 if reference_tiles is None:
                     maximum, denominator = partial_statistics(query, cache, ids, visible, c.head_dim ** -0.5)
