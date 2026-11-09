@@ -6,6 +6,7 @@ import importlib.util
 import os
 from pathlib import Path
 import signal
+import select
 import sys
 
 import pytest
@@ -94,7 +95,8 @@ def test_tp_launcher_wires_rank_channel_and_restores_process_policy(monkeypatch)
     monkeypatch.setattr(module, "supervise", owner)
     assert module.main(["--gpus", " 0,1", "--", "model", "--context", "8192"]) == 19
     assert [env["CUDA_VISIBLE_DEVICES"] for env in captured["environments"]] == ["1", "0"]
-    assert captured["options"]["stop_on_departure"] is True
+    assert captured["options"]["shutdown_rank"] == 1
+    assert captured["options"]["shutdown_probe"]() is False
     assert [signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)] == before
     with pytest.raises(OSError):
         os.fstat(captured["options"]["pass_fds"][0])
@@ -107,13 +109,14 @@ def test_invalid_supervisor_callbacks_and_capabilities_fail_before_spawn(monkeyp
         pytest.fail("invalid control spawned a rank")
 
     monkeypatch.setattr(launcher.subprocess, "Popen", forbidden)
-    for options in ({"failure_probe": True}, {"pass_fds": (-1,)}, {"stop_on_departure": 1}):
+    for options in ({"failure_probe": True}, {"pass_fds": (-1,)}, {"stop_on_departure": 1},
+                    {"shutdown_probe": True}, {"shutdown_rank": True}, {"shutdown_rank": 1}):
         with pytest.raises(ValueError):
             supervise([["unused"]], [dict(os.environ)], **options)
 
 
 @pytest.mark.parametrize("cleanup_failure", [False, True])
-def test_tp_signal_stop_preserves_clean_zero_and_reports_cleanup_failure(monkeypatch, cleanup_failure):
+def test_tp_signal_stop_preserves_supervisor_failure_and_cleanup_failure(monkeypatch, cleanup_failure):
     path = Path(__file__).parents[1] / "tools/launch_cuda_tp.py"
     spec = importlib.util.spec_from_file_location("tp_signal_fixture", path)
     module = importlib.util.module_from_spec(spec)
@@ -123,7 +126,8 @@ def test_tp_signal_stop_preserves_clean_zero_and_reports_cleanup_failure(monkeyp
 
     def owner(*args, **kwargs):
         signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
-        assert kwargs["failure_probe"]()
+        assert kwargs["shutdown_probe"]()
+        assert not kwargs["failure_probe"]()
         if cleanup_failure:
             raise primary
         return 1
@@ -134,5 +138,144 @@ def test_tp_signal_stop_preserves_clean_zero_and_reports_cleanup_failure(monkeyp
             module.main(["--gpus", "0,1", "--", "model"])
         assert caught.value is primary
     else:
-        assert module.main(["--gpus", "0,1", "--", "model"]) == 0
+        assert module.main(["--gpus", "0,1", "--", "model"]) == 1
     assert signal.getsignal(signal.SIGTERM) is previous
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux rank session ownership")
+@pytest.mark.parametrize("ranks,stop_signal,mode", [
+    (2, signal.SIGTERM, "clean"), (8, signal.SIGINT, "clean"),
+    (2, signal.SIGTERM, "timeout"), (2, signal.SIGTERM, "fatal"),
+    (2, signal.SIGINT, "nonzero"),
+])
+def test_real_tp_operator_stop_coordinates_followers(tmp_path, ranks, stop_signal, mode):
+    """Followers have default TERM: only protocol STOP can run their finalizers."""
+    import subprocess
+    import time
+
+    worker = tmp_path / "rank.py"
+    worker.write_text('''import os, pathlib, signal, sys, time
+root = pathlib.Path(sys.argv[1])
+rank = int(sys.argv[sys.argv.index('--rank') + 1])
+mode = sys.argv[2]
+def stop(sig, frame):
+    raise KeyboardInterrupt
+if rank == 0:
+    signal.signal(signal.SIGTERM, stop)
+(root / f'ready-{rank}').write_text(str(os.getpid()))
+try:
+    if rank == 0:
+        while True: time.sleep(.01)
+    else:
+        while not (root / 'STOP').exists(): time.sleep(.01)
+        if mode == 'timeout':
+            while True: time.sleep(.01)
+        time.sleep(.15)
+        if mode == 'fatal':
+            os.write(int(os.environ['TENSORFOLD_COHORT_FAILURE_FD']), b'F')
+            while True: time.sleep(.01)
+        if mode == 'nonzero': raise SystemExit(23)
+except KeyboardInterrupt:
+    (root / 'STOP').write_text('stop')
+finally:
+    (root / f'summary-{rank}').write_text('closed')
+'''.replace("TENSORFOLD_COHORT_FAILURE_FD", FAILURE_FD_ENV))
+    wrapper = tmp_path / "parent.py"
+    launcher = Path(__file__).parents[1] / "tools/launch_cuda_tp.py"
+    wrapper.write_text(f'''import importlib.util, sys
+spec = importlib.util.spec_from_file_location('tp', {str(launcher)!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+original = m.supervise
+m.supervise = lambda commands, envs, **kw: original(commands, envs, **{{**kw, 'grace': .6}})
+raise SystemExit(m.main(['--gpus', {','.join(map(str, range(ranks)))!r}, '--', {str(tmp_path)!r}, {mode!r}], _command_prefix=[sys.executable, {str(worker)!r}]))
+''')
+    environment = dict(os.environ, PYTHONPATH=str(launcher.parents[1] / "src") + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    parent = subprocess.Popen([sys.executable, str(wrapper)], env=environment,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    pidfds = {}
+    try:
+        deadline = time.monotonic() + 8
+        while len(pidfds) < ranks:
+            # Pin each live ready worker before stop, including partial startup.
+            for ready in tmp_path.glob("ready-*"):
+                if ready.name not in pidfds:
+                    pidfds[ready.name] = os.pidfd_open(int(ready.read_text()))
+            assert parent.poll() is None, parent.communicate()
+            assert time.monotonic() < deadline, "rank readiness timed out"
+            time.sleep(.01)
+        parent.send_signal(stop_signal)
+        # A second operator request must not kill peers or reset grace.
+        time.sleep(.05)
+        parent.send_signal(stop_signal)
+        stdout, stderr = parent.communicate(timeout=5)
+        assert parent.returncode == (0 if mode == "clean" else 23 if mode == "nonzero" else 1), (stdout, stderr)
+        assert (tmp_path / 'summary-0').read_text() == 'closed'
+        if mode == "clean":
+            assert len(list(tmp_path.glob("summary-*"))) == ranks
+        if mode in ("timeout", "fatal"):
+            assert not (tmp_path / 'summary-1').exists()
+        assert len(select.select(list(pidfds.values()), [], [], 0)[0]) == ranks
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.communicate(timeout=3)
+        for pidfd in pidfds.values():
+            try:
+                signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            finally:
+                os.close(pidfd)
+
+
+def test_shutdown_during_spawn_retires_acquired_rank_without_spawning_peers(monkeypatch):
+    import tensorfold.cuda.expert_launch as launcher
+
+    children, pidfds = [], []
+    spawn = launcher.subprocess.Popen
+
+    def acquire(*args, **kwargs):
+        child = spawn(*args, **kwargs)
+        children.append(child)
+        pidfds.append(os.pidfd_open(child.pid))
+        return child
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", acquire)
+    try:
+        with pytest.raises(RuntimeError, match="startup cancelled"):
+            supervise([[sys.executable, "-c", "import time; time.sleep(60)"]] * 8,
+                      [dict(os.environ)] * 8, grace=.05, shutdown_probe=lambda: bool(children))
+        assert len(children) == 1 and children[0].returncode is not None
+        assert select.select(pidfds, [], [], 0)[0] == pidfds
+    finally:
+        for fd in pidfds:
+            os.close(fd)
+
+
+def test_spawn_keyboard_interrupt_preserves_cancellation_and_retires_rank(monkeypatch):
+    import tensorfold.cuda.expert_launch as launcher
+
+    children, pidfds = [], []
+    spawn = launcher.subprocess.Popen
+    cancellation = KeyboardInterrupt("cancel rank acquisition")
+
+    def acquire(*args, **kwargs):
+        if children:
+            raise cancellation
+        child = spawn(*args, **kwargs)
+        children.append(child)
+        pidfds.append(os.pidfd_open(child.pid))
+        return child
+
+    monkeypatch.setattr(launcher.subprocess, "Popen", acquire)
+    try:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            supervise([[sys.executable, "-c", "import time; time.sleep(60)"]] * 2,
+                      [dict(os.environ)] * 2, grace=.05)
+        assert caught.value is cancellation
+        assert len(children) == 1 and children[0].returncode is not None
+        assert select.select(pidfds, [], [], 0)[0] == pidfds
+    finally:
+        for fd in pidfds:
+            os.close(fd)

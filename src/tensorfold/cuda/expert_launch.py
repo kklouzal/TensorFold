@@ -92,14 +92,25 @@ def _retire(process, deadline):
         time.sleep(.01)
 
 
-def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fds=(), stop_on_departure=False):
-    """Exclusively own direct-child waits and Linux rank sessions through group retirement."""
+def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fds=(), stop_on_departure=False,
+              shutdown_probe=None, shutdown_rank=0):
+    """Own unreaped rank sessions through retirement.
+
+    An optional normal-stop probe signals only shutdown_rank once, then waits
+    for every rank to exit zero within grace. Failure probes/nonzero exits still
+    terminate the cohort. The same deadline bounds escalation after normal stop;
+    repeated requests never renew it. Other callers retain their departure policy.
+    """
     if len(commands) != len(environments) or not commands:
         raise ValueError("one environment per expert-rank command is required")
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not math.isfinite(grace) or grace < 0:
         raise ValueError("expert rank retirement grace must be a finite nonnegative duration")
     if failure_probe is not None and not callable(failure_probe):
         raise ValueError("rank failure probe must be callable")
+    if shutdown_probe is not None and not callable(shutdown_probe):
+        raise ValueError("rank shutdown probe must be callable")
+    if type(shutdown_rank) is not int or not 0 <= shutdown_rank < len(commands):
+        raise ValueError("shutdown rank must index an owned rank command")
     if type(stop_on_departure) is not bool:
         raise ValueError("rank departure policy must be a boolean")
     if (not isinstance(pass_fds, tuple) or any(type(fd) is not int or fd < 0 for fd in pass_fds)
@@ -115,6 +126,7 @@ def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fd
     cleanup_errors = [None] * (3 * len(commands))
     unresolved = [False] * len(commands)
     primary, result = None, 1
+    shutdown_deadline = None
 
     def retain_unresolved(index, child, failure):
         # Publish the authoritative failure first. If diagnostic construction
@@ -128,6 +140,8 @@ def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fd
 
     try:
         for index, (command, environment) in enumerate(zip(commands, environments)):
+            if shutdown_probe is not None and shutdown_probe():
+                raise RuntimeError("rank startup cancelled before cohort acquisition completed")
             inherited = {"pass_fds": pass_fds} if pass_fds else {}
             children[index] = subprocess.Popen(command, env=environment, start_new_session=True, **inherited)
         departure = None
@@ -139,20 +153,32 @@ def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fd
             if any(code not in (None, 0) for code in statuses):
                 result = abs(next(code for code in statuses if code not in (None, 0)))
                 break
+            if shutdown_deadline is not None and time.monotonic() >= shutdown_deadline:
+                break  # completion must be observed within the existing grace
             if all(code == 0 for code in statuses):
                 result = 0
                 break
-            if stop_on_departure and any(code is not None for code in statuses):
+            if shutdown_deadline is None and shutdown_probe is not None and shutdown_probe():
+                shutdown_deadline = min(departure, time.monotonic() + grace) if departure is not None else time.monotonic() + grace
+                # _exited above reserves the unreaped coordinator identity.
+                if statuses[shutdown_rank] is None:
+                    try:
+                        os.killpg(children[shutdown_rank].pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass  # coordinator departed after the unreaped status observation
+            if shutdown_deadline is not None and time.monotonic() >= shutdown_deadline:
+                break  # incomplete normal stop is failure, never a forced zero
+            if shutdown_deadline is None and stop_on_departure and any(code is not None for code in statuses):
                 result = 0
                 break
-            if any(code is not None for code in statuses):
+            if shutdown_deadline is None and any(code is not None for code in statuses):
                 departure = departure or time.monotonic() + grace
                 if time.monotonic() >= departure:
                     break  # a successful follower departure cannot leave an idle leader indefinitely
             time.sleep(.05)
     except BaseException as error:  # noqa: BLE001 - cleanup preserves primary cancellation/spawn failure
         primary = error
-    deadline = time.monotonic() + grace
+    deadline = shutdown_deadline if shutdown_deadline is not None else time.monotonic() + grace
     for index, child in enumerate(children):
         if child is None:
             continue

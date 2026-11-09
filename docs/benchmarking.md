@@ -403,11 +403,24 @@ No normalization numerical failure or cause waiver is inferred from the
 missing summaries.
 
 The audited shutdown path gives rank0 a TERM handler in `cuda/http.serve`, while
-followers skip that server path. The TP parent signals all worker groups;
+followers skip that server path. The failed launcher signaled all worker groups;
 early stop-on-departure killing and a forced parent-zero outcome can bypass
-follower cleanup and summary publication. A bounded leader-first shutdown
-correction is being implemented and is **not yet qualified**. That lifecycle
-finding is separate from numerical attribution. Failure gate:
+follower cleanup and summary publication. The source correction now sends TERM
+only to rank0 for an operator stop and waits for every rank to exit zero within
+the existing 30-second graceful-stop deadline. Owned sessions are then retired
+through the existing bounded escalation path. Nonzero rank
+exit, a fatal notification or an expired shutdown deadline cannot be forced to
+a zero result. Its 26 dependency-free CPU controls passed, including real
+two-/eight-rank subprocess fixtures and failure cleanup. The full cohort,
+expert-control and qualification modules also passed all 286 pinned-source CPU
+checks with zero skips on f126; four-file Ruff and syntax checks passed, with
+CUDA uninitialized. These are source controls, not installed-model shutdown
+qualification. That
+qualification remains **pending**, and this does not complete the failed parity
+proof. The 26 controls are a subset of the 286, not an additional total. Source
+gate: `tp-graceful-shutdown-v1/target-v1/tp-graceful-shutdown-source-CPU286-gate-v1.json`,
+SHA256 `aa44782e61dfe43aeaf66c75d0d815c241ef41a8abb128edecc4c451df68d116`.
+The lifecycle finding is separate from numerical attribution. Failure gate:
 `normalization-parity-model-v1/normalization-parity-live-failure-gate-v1.json`,
 SHA256 `b49952e6b672fc2a9d7372d3373cf3f44768e7a985de459f54baa4db0f8e77d2`.
 Raw HTTP, pre-stop observations and failed retirement outcomes are preserved.

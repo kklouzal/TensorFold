@@ -135,7 +135,7 @@ def test_parent_delegates_eight_ranks_and_borrows_supervised_pipe(monkeypatch, t
             assert command.index("--execution-rows") < command.index("--")
         assert command[command.index("--tp") + 1] == "8"
         assert command[command.index("--") + 1] == "model"
-    assert captured["options"]["stop_on_departure"] is True
+    assert captured["options"]["shutdown_rank"] == 7
     with pytest.raises(OSError):
         os.fstat(captured["options"]["pass_fds"][0])
 

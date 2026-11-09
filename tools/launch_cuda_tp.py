@@ -58,8 +58,6 @@ def main(argv=None, *, _command_prefix=None) -> int:
             environments.append(env)
 
         def failed():
-            if stopping:
-                return True
             try:
                 return bool(os.read(read_fd, 1))
             except BlockingIOError:
@@ -73,9 +71,8 @@ def main(argv=None, *, _command_prefix=None) -> int:
             previous[index] = signal.getsignal(signum)
             signal.signal(signum, stop)
         result = supervise(commands, environments, grace=30.0, failure_probe=failed,
-                           pass_fds=(write_fd,), stop_on_departure=True)
-        if stopping:
-            result = 0  # preserve the launcher's ordinary signal-stop status after successful retirement
+                           pass_fds=(write_fd,), shutdown_probe=lambda: stopping,
+                           shutdown_rank=len(commands) - 1)
     except BaseException as error:
         primary = error
     for index, signum in enumerate((signal.SIGINT, signal.SIGTERM)):
