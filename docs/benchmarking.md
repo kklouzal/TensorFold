@@ -988,3 +988,44 @@ Use a fresh output directory. Historical `5fadb028` DATA and its 82 case files
 remain unchanged. Tokenization equivalence, sparse-QSA execution, teacher
 vectors, maximum live capacity, media gold and full-model quality keep their
 separate actual-target gates; no older codec-profile margins are inherited.
+
+### First actual reference teacher capture
+
+The first closed operation used committed operator `30dd2f19`, genuine App
+`d736ab78` and isolated verification image `efb4cb8f`. All eight V100 ranks
+materialized 24 Q8 (`int8`) States with a 262,144-row logical window and
+262,145-row physical capacity/limit, including the anchor. The method was NONE,
+with no MTP banks, Torch-reference attention, no graphs and 256-row prefill
+pieces. This is one active request with idle full-window residents, not a
+24-concurrent-request or populated-full-history qualification.
+
+Exactly one cold `/v1/completions` POST returned HTTP200 and text `372`, equal
+to the frozen first arithmetic oracle. It used 52 input IDs, zero cached tokens
+and a maximum 64-frame budget; valid EOS ended after four actual frames/IDs:
+`[18,22,17,248046]`. Four raw finite Float32 vectors each cover all 248,320
+vocabulary entries. Their raw argmax agrees with each original selected ID.
+This was capture through the original sampler, not forced-prefix replay.
+
+The genuine current frontend key is `61ea346c`; normal CPU preparation and an
+independent read-only cache-hit proof preserved all four semantic files,
+template and 52 IDs. The earlier copied `77634fe5` cache metadata referred to
+old file identities and remains preserved as an unlaunched failed binding.
+No ready/key rewrite or extra model-weight copy was used.
+
+All eight startup/profile and closed/nonfailed summaries, eight child VMA-FD
+records and four full-vector hashes were verified. The parent remained CUDA-
+uninitialized; nine held asset checks completed, all rank/CLI/typed operation
+and outer Host gates returned0, and retirement left no GPU contexts, OOM,
+cleanup errors or source/health drift. HTTP instance identity matches rank0;
+followers correctly have their own process instances. Nine c10d socket
+EAFNOSUPPORT97 warnings were retained and were nonfatal in this run; no direct
+transport-family claim or warning suppression follows.
+
+The reference authority SHA256 is
+`4a7197c49e803ddf371c8e9d571d12feb88c605e2853dcb1dd4ef1773b7e97f4`;
+the complete actual receipt is
+`e22054dbdb11ff24699a628065ff95edfc292f48c44c8226a8d9f539f9541c84`.
+This makes bounded reference DATA available. Replay, broad task/media and MTP
+quality, worst-case resources, NativeRN/C06 adoption and matched per-count
+performance keep separate gates. Copying, synchronization and recording make
+all timings diagnostic; no token/s result is published from this operation.

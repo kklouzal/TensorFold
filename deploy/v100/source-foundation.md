@@ -994,3 +994,13 @@ roots and native unittest subtests change JUnit aggregates. No origin/count
 guard was relaxed and no real module registry was cleared to obtain a pass.
 These unit results do not execute a model or qualify actual asset/cache paths,
 physical C24 capacity, model quality, capture/replay, throughput or deployment.
+
+The first actual reference capture subsequently passed the closed operation on
+all eight V100s using operator `30dd2f19`, App `d736ab78`, verification derivative
+`efb4cb8f` and genuine current frontend `61ea346c`. All 24 States per rank had
+262,144-row logical windows plus physical anchor storage. One 52-ID cold NONE/
+reference request returned `372` and four frames including EOS; all eight
+startup/native/closure, parent no-CUDA, asset/cache, CLI and outer Host gates
+passed with normal retirement. See the [receipt and strict scope](../../docs/benchmarking.md#first-actual-reference-teacher-capture).
+This qualifies that short capture operation, not replay, 24 active requests,
+long-context quality, physical worst-case bounds or performance.

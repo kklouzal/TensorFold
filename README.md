@@ -53,12 +53,14 @@ The isolated C06 preparation candidate passed 163 installed CPU and 50 SM70
 cases against unchanged indexed references. It is not applied canonically;
 full-method/context/resource, model-quality and performance gates remain open.
 The [private teacher diagnostic](docs/benchmarking.md#private-reference-first-teacher-diagnostics)
-has 284 passing x86 CPU controls. Actual model capture/replay is still unrun;
-its first region supports none/greedy text only, with MTP4 explicitly unsupported.
+has 284 passing x86 CPU controls. Its first region supports NONE/greedy text
+only, with MTP4 explicitly unsupported; actual capture evidence follows below.
 The [closed teacher-model operation](deploy/v100/source-foundation.md#closed-owned-teacher-model-operation)
 now has 358 x86 unit controls: 115 standalone synthetic protocol tests and 243
-canonical runtime controls. Its single-request client, eight-rank shutdown and
-host contracts are implemented; actual model capture/replay remains unrun.
+canonical runtime controls. Its first actual reference capture returned `372`, matching the frozen
+arithmetic gold, and sealed four full-vocabulary FP32 frames with all eight
+workers closed. All 24 logical 262,144-row windows were materialized; only one
+short request ran. Replay, broader quality and performance remain unqualified.
 The offline quality-DATA producer is now maintained in `tools/v100_quality_data.py`.
 Its 29 local CPU controls cover immutable inputs, independent gold, bounded
 publication and current frontend provenance. Historical DATA is preserved;

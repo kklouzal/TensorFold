@@ -91,6 +91,18 @@ or performance gate is inferred from these repaired CPU controls. See
 | Prepared plans and no-restart control | Fixed maximum envelope, ready-work/prepared-plan selection, FIFO/prefix/tiered state and supported in-process administration | [adaptive controller](../../src/tensorfold/families/qwen4_exp/cuda/adaptive_controller.py), [serving profiles](../../src/tensorfold/families/qwen4_exp/cuda/serving_profiles.py), [profile runtime](../../src/tensorfold/families/qwen4_exp/cuda/serving_runtime.py), retained catalog/host storage | Software tests and bounded source mechanisms exist. Actual burst/load/fairness/backpressure/recovery/resource and no-restart target gates remain required. Online fits, graph replacement during ordinary adaptation and live migration are not assumed requirements. | Only previously admitted profiles retain their effective controls; no new target transition is certified. |
 | Follow-on models/formats/devices | Complete concrete family/recipe/backend/API/state qualification after the SC117 priority, while preserving selected profiles | Existing family implementations and [recipes](../recipes/README.md) are starting points | User-requested labels are not verified artifact identities. No universal model/format/quantization support, inherited SC117 geometry or new-device qualification is claimed. | No new model/format/device profile is activated by this handoff. |
 
+## First reference teacher capture
+
+The canonical owned-model operation now has one actual SC117/V100 reference
+capture: all eight ranks materialized 24 Q8 States with logical capacity 262,144 and the
+physical anchor, NONE/reference/no graphs. One cold 52-ID completion returned
+`372` against fixed independent gold and sealed four complete finite FP32
+vocabulary frames. All eight startup/native/positive closure plus CLI/Host,
+asset/cache, parent no-CUDA and retirement checks passed. The [actual receipt](../benchmarking.md#first-actual-reference-teacher-capture)
+retains exact source/image/input/native identities and limitations. Replay,
+MTP/media/full-history quality, all-active capacity, resources and P3 remain
+open; no production or candidate-family default is selected by this capture.
+
 ## Ordinary HTTP accounting checkpoint
 
 The source binds a narrowly eligible plain-ByteLevel/FIFO HTTP payload region
