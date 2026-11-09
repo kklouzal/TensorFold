@@ -181,6 +181,47 @@ SC117 model quality/capacity, affected-region P3 or a new default. The earlier
 `grouped-gate-up-assessment-v1/private-selector-bridge-v1/target-v1/private-gup-bridge-source-CPU459-gate-v1.json`,
 SHA256 `577bea0cc87facf9a359334363aae7987cb145c15a85ff61915f1d313f7b8d2c`.
 
+### Prepared feature retirement receipts
+
+Add `--prepared-feature-receipts` to the private qualifier **before** `--`, with
+`--benchmark-plan`. It excludes normalization parity, scheduler tracing, router
+capture and history capture. Select Graph arithmetic and/or grouped gate/up
+through their existing controls; this receipt mode changes no arithmetic,
+backend or kernel selection.
+
+Before listener publication, each rank writes
+`prepared-features-rank-N/prepared.json` and a startup marker binding source IDs,
+requested/actual gate/up rows, preparation charges, budget, before/after memory
+and pool accounting. The fixed JSON bound is **36,864 bytes per receipt**; the
+pinned policy charges **86,389,272 host bytes across eight ranks** for the observer.
+Graph device preparation retains its separate explicit admission budget.
+After original Engine close proves normal, nonaborted retirement, the observer
+restores the close attribute and writes `summary.json`. Every configured Graph
+role must be closed, nonfailed, with positive statistics/probability/PV counters
+and unchanged preparation/source/budget facts. Graph-off/gate-up-on records
+explicit null Graph roles with the typed row marker. The observer adds no HOT
+hooks, CUDA probes or additional CUDA synchronization/profiler work.
+
+Runtime image `30fd5e0b`, source `66b86f7e`, passed **690 installed CPU controls
+across 15 modules and 84 GPU cases across three modules, zero skips**, with
+explicit `/canonical` pytest root and module-identity guards. The installed
+runtime inventory remained exact; only the owned qualifier/test sources were
+overlaid. Final gate:
+`grouped-gate-up-assessment-v1/prepared-feature-receipts-v1/combined-installed-final-CPU690-GPU84-gate-v1.json`,
+SHA256 `00f7a3c17a980b93375de4e0fb246784c569867cd550673f9e1ca83fac27c903`.
+The separate tool-source checkpoint passed 280 CPU controls; these are separate
+verification scopes, not an added total. Its gate is
+`grouped-gate-up-assessment-v1/prepared-feature-receipts-v1/prepared-feature-receipts-source-CPU280-gate-v1.json`,
+SHA256 `c9152b5164ef7887d119271071191a203c911025f69dba8cd7604880bd5ef968`.
+
+The older 658-CPU `/dev`-root coverage is historical and superseded by the
+correct-root 690/84 gate. The earlier 200-pass/80-failure attempt remains
+preserved: collapsed module identities leaked a module-local fixture into
+other modules. Correcting pytest root and guarding collection restored fixture
+scope; runtime behavior and test assertions were unchanged. These gates do not
+prove live eight-rank summaries, all three roles' deployment budget, SC117 model
+quality, affected-region P3 or a new default; those gates remain pending.
+
 ## Private verification-row envelope trials
 
 The supervised qualification launcher accepts `--execution-rows N` before its

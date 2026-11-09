@@ -379,6 +379,238 @@ def prepare_router_rows(engine, prepared, output):
     return resources
 
 
+def _prepared_feature_resources():
+    # Three fixed role records of at most eight 1KiB schema units each, plus
+    # fixed identity/grant headers. Pay both retained intent and final trees.
+    base = _history_resources(32, 4096)
+    source_bytes = Path(__file__).stat().st_size
+    per_rank = 2 * base["per_rank_payload_bytes"] + source_bytes
+    return {**base, "per_rank_payload_bytes": per_rank,
+            "global_host_obligation_bytes": 8 * per_rank, "maximum_roles": 3,
+            "observer_source_bytes": source_bytes, "additional_device_bytes": 0,
+            "scope": "private fixed metadata/close observer; existing Graph counters only"}
+
+
+def _feature_integer(value, name, *, optional=False):
+    if optional and value is None:
+        return None
+    if type(value) is not int or not 0 <= value <= 2**63 - 1:
+        raise ValueError("prepared feature metadata has invalid " + name)
+    return value
+
+
+def _feature_memory(value, keys):
+    if type(value) is not dict or set(value) != set(keys):
+        raise ValueError("prepared feature memory snapshot differs from its fixed schema")
+    return {key: _feature_integer(value[key], key) for key in keys}
+
+
+def _feature_digest(value):
+    if type(value) is not str or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise ValueError("prepared feature source requires SHA256")
+    return value
+
+
+class _PreparedFeatures:
+    """Keep at most three already-owned Graph references through normal close.
+
+    No request callback, CUDA probe or extra fence: Graph owners supply their
+    existing counters and preparation records. Unresolved close keeps this
+    journal and every reference; this observer never retries Engine.close.
+    """
+    def __init__(self, engine, output, resources, grouped_gate_up):
+        if type(engine.rank) is not int or not 0 <= engine.rank < 8:
+            raise ValueError("prepared feature receipts require an actual TP8 rank")
+        self.engine, self.resources = engine, resources
+        self.original_close = engine.close
+        self.had_close = "close" in vars(engine)
+        self.old_close_attribute = vars(engine).get("close")
+        self.attempted = self.closed = False
+        self.failure = None
+        self.graphs = {}
+        self.directory = Path(output) / f"prepared-features-rank-{engine.rank}"
+        self.grouped_gate_up = _grouped_gate_up_receipt(engine, grouped_gate_up)
+        preparation = getattr(engine, "_owner_preparation", None)
+        request = None if preparation is None else preparation.reference_arithmetic_request
+        source = None
+        if request is not None:
+            source = _feature_digest(preparation.reference_arithmetic_source)
+            expected = {"decode": engine.multi.buf, "prefill": engine.multi.pbuf}
+            if engine.w.mtp is not None:
+                expected["mtp"] = engine.multi.mbuf
+            if set(preparation.reference_arithmetic) != set(expected):
+                raise ValueError("prepared feature Graph roles differ from actual buffers")
+            for role, buffers in expected.items():
+                graph = preparation.reference_arithmetic[role]
+                owner = preparation.workspaces[role]
+                if (buffers.history_owner is not owner or owner.reference_tiles.arithmetic is not graph
+                        or any(graph is other for other in self.graphs.values())):
+                    raise ValueError("prepared feature Graph lacks its exclusive journalled role")
+                self.graphs[role] = graph
+        elif preparation is not None and preparation.reference_arithmetic:
+            raise ValueError("prepared feature Graph exists without its preparation request")
+        if not self.graphs and grouped_gate_up is None:
+            raise ValueError("prepared feature receipts require Graph or grouped gate/up selection")
+        records = self._records(retired=False)
+        if any(record["source_sha256"] != source or record["policy"] != request.policy
+               for record in records.values()):
+            raise ValueError("prepared feature Graph source differs from preparation")
+        charged = sum(record["charged_preparation_bytes"] for record in records.values())
+        aggregate = None if request is None else _feature_integer(request.graph_budget_bytes, "aggregate budget")
+        if request is not None and (charged != _feature_integer(preparation.reference_arithmetic_bytes, "aggregate charge")
+                                    or charged > aggregate):
+            raise ValueError("prepared feature aggregate charge exceeds or differs from actual admission")
+        self.preparation = {"graph_budget_bytes": aggregate, "charged_preparation_bytes": charged,
+            "before": None if request is None else _feature_memory(preparation.before,
+                ("physical_free_bytes", "torch_allocated_bytes", "torch_reserved_bytes")),
+            "after": None if request is None else _feature_memory(preparation.after,
+                ("physical_free_bytes", "torch_allocated_bytes", "torch_reserved_bytes")),
+            "private_pool_spare_bytes": None if request is None else _feature_integer(
+                preparation.private_spare_bytes, "preparation pool spare", optional=True),
+            "source_sha256": source}
+        self.marker = {"schema": "tensorfold.prepared-features-v1", "rank": engine.rank,
+            "directory": self.directory.name, "expected_roles": list(self.graphs),
+            "grouped_gate_up": self.grouped_gate_up, "preparation": self.preparation,
+            "roles": records if self.graphs else None, "resources": dict(resources),
+            "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        self._encoded(self.marker)
+
+    def _encoded(self, value):
+        data = json.dumps(value, sort_keys=True, ensure_ascii=True, allow_nan=False, indent=1).encode()
+        if len(data) > self.resources["receipt_bytes_limit"]:
+            raise ValueError("prepared feature receipt exceeds its paid JSON schema bound")
+        return data
+
+    def _records(self, *, retired):
+        records = {}
+        if len(self.graphs) > 3:
+            raise ValueError("prepared feature Graph role bound exceeded")
+        for role, graph in self.graphs.items():
+            if (graph.prepared is not True or graph.closed is not retired or graph.failure is not None):
+                raise RuntimeError("prepared feature Graph failed or did not prove retirement") from graph.failure
+            record = graph.record()
+            policy = record["policy"]
+            if type(policy) is not str or not 0 < len(policy) <= 128:
+                raise ValueError("prepared feature policy exceeds its schema")
+            counts = record["replays"]
+            if type(counts) is not dict or set(counts) != {"stats", "probability", "pv"}:
+                raise ValueError("prepared feature Graph counter schema differs")
+            counts = {key: _feature_integer(value, key) for key, value in counts.items()}
+            if retired and any(value == 0 for value in counts.values()):
+                raise RuntimeError("prepared feature Graph role lacks stats/probability/PV replay")
+            result = {"policy": policy, "prepared": True, "closed": retired, "failed": False,
+                "replays": counts, "source_sha256": _feature_digest(record["source_sha256"]),
+                "before": _feature_memory(record["before"], ("free", "allocated", "reserved")),
+                "after": _feature_memory(record["after"], ("free", "allocated", "reserved"))}
+            for name in ("graph_budget_bytes", "charged_preparation_bytes", "retained_tensor_payload_bytes",
+                         "private_pool_spare_bytes"):
+                result[name] = _feature_integer(record[name], name, optional=name == "private_pool_spare_bytes")
+            if result["charged_preparation_bytes"] > result["graph_budget_bytes"]:
+                raise ValueError("prepared feature role exceeds its actual budget")
+            records[role] = result
+        return records
+
+    def _restore(self):
+        if self.engine.close != self.close_binding:
+            raise RuntimeError("prepared feature close binding changed before retirement")
+        if self.had_close:
+            self.engine.close = self.old_close_attribute
+        else:
+            delattr(self.engine, "close")
+
+    def _fail(self, primary, errors=()):
+        self.failure = primary
+        failures = list(errors)
+        try:
+            _observer_failure(self.engine, primary)
+        except BaseException as notification:
+            if notification is not primary:
+                failures.append(notification)
+        raise_failures(primary, failures)
+
+    def close(self, *args, **kwargs):
+        if self.attempted:
+            if self.failure is not None:
+                raise self.failure
+            raise RuntimeError("prepared feature close observer already retired")
+        self.attempted = True
+        try:
+            result = self.original_close(*args, **kwargs)
+            if self.engine._closed is not True:
+                raise RuntimeError("prepared feature Engine close did not prove retirement")
+            if self.engine._abort_comm is not False:
+                raise RuntimeError("prepared feature Engine retired with an aborted cohort")
+        except BaseException as primary:
+            self._fail(primary)  # Binding/Graph refs remain with unresolved owners.
+        primary, errors, summary = None, [], None
+        try:
+            roles = self._records(retired=True)
+            if any({key: value for key, value in record.items() if key not in ("closed", "replays")}
+                   != {key: value for key, value in self.marker["roles"][role].items() if key not in ("closed", "replays")}
+                   for role, record in roles.items()):
+                raise ValueError("prepared feature Graph preparation/source changed during execution")
+            summary = {"schema": self.marker["schema"], "rank": self.marker["rank"],
+                "closed": True, "failed": False, "preparation": self.preparation,
+                "grouped_gate_up": self.grouped_gate_up, "roles": roles if self.graphs else None,
+                "tool_sha256": self.marker["tool_sha256"],
+                "prepared_marker_sha256": hashlib.sha256(self._encoded(self.marker)).hexdigest()}
+            self._encoded(summary)
+        except BaseException as error:
+            primary = error
+        try:
+            self._restore()
+        except BaseException as error:
+            errors.append(error)
+        if primary is not None or errors:
+            if primary is None:
+                primary = errors.pop(0)
+            self._fail(primary, errors)
+        try:
+            target = self.directory / "summary.json"
+            if target.exists() or target.is_symlink():
+                raise ValueError("prepared feature summary already exists")
+            write_json(target, summary)
+        except BaseException as primary:
+            self._fail(primary)
+        self.closed = True
+        self.graphs.clear()
+        self.engine = self.original_close = self.old_close_attribute = self.close_binding = None
+        return result
+
+    def install(self):
+        self.directory.mkdir(mode=0o700)  # Exclusive namespace, never adopt an existing run.
+        write_json(self.directory / "prepared.json", self.marker)
+        directory = os.open(self.directory.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        except BaseException as primary:
+            rollback(directory, primary, lambda: os.close(directory))
+        else:
+            os.close(directory)
+        self.close_binding = self.close
+        try:
+            self.engine.close = self.close_binding
+        except BaseException as primary:
+            errors = []
+            try:
+                if self.had_close:
+                    self.engine.close = self.old_close_attribute
+                else:
+                    vars(self.engine).pop("close", None)
+            except BaseException as cleanup:
+                errors.append(cleanup)
+            self._fail(primary, errors)
+        return self.marker
+
+
+def prepare_prepared_features(engine, resources, output, grouped_gate_up):
+    if (engine._owned_qualification_host != (resources["total_global_host_obligation_bytes"], resources["input_sha256"])
+            or engine.retention_catalog.host_resources.baseline_host_bytes < resources["total_global_host_obligation_bytes"]):
+        raise ValueError("prepared feature observer is absent from original host admission")
+    observer = _PreparedFeatures(engine, output, resources, grouped_gate_up)
+    return observer.install()
+
+
 def _normalization_resources(output):
     # OwnerBuffers.from_text caps every prepared role at min(rows,256).
     rows = 256
@@ -1337,11 +1569,13 @@ def _grouped_gate_up_receipt(engine, requested):
 
 
 def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
-                    execution_rows=None, reference_tiles=False, normalization_parity=None, grouped_gate_up=None):
+                    execution_rows=None, reference_tiles=False, normalization_parity=None, grouped_gate_up=None, prepared_features=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
         receipt["grouped_gate_up"] = _grouped_gate_up_receipt(engine, grouped_gate_up)
+        if prepared_features is not None:
+            receipt["prepared_features"] = prepared_features
         receipt["reference_tile_preparation"] = _reference_tile_receipt(engine, reference_tiles)
         if normalization_parity is not None:
             receipt["normalization_parity"] = normalization_parity
@@ -1406,6 +1640,8 @@ def worker(argv):
     parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
                         help="private prepared grouped gate/up trial; requires grouped down")
     parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
+    parser.add_argument("--prepared-feature-receipts", action="store_true",
+                        help="private bounded post-close Graph/Plan receipts; requires benchmark")
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
@@ -1413,10 +1649,13 @@ def worker(argv):
             or selected.scheduler_trace is not None or selected.router_row_input is not None
             or selected.history_input is not None):
         raise ValueError("normalization parity requires benchmark/reference-tiles and excludes other captures")
+    if selected.prepared_feature_receipts and (selected.benchmark_plan is None or selected.normalization_parity
+            or selected.scheduler_trace is not None or selected.router_row_input is not None or selected.history_input is not None):
+        raise ValueError("prepared feature receipts require benchmark and exclude other captures")
     tail = selected.serve_args[1:] if selected.serve_args[:1] == ["--"] else selected.serve_args
     receipt_failed = False
     prepared = router_prepared = None
-    benchmark = benchmark_resources = parity_resources = None
+    benchmark = benchmark_resources = parity_resources = feature_resources = None
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
     router_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS")
     empty_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX")
@@ -1455,11 +1694,20 @@ def worker(argv):
                 except BaseException as primary:
                     _observer_failure(engine, primary)
                     raise
+            feature_receipt = None
+            if feature_resources is not None:
+                try:
+                    feature_receipt = prepare_prepared_features(engine, feature_resources, selected.out,
+                                                               selected.grouped_gate_up_rows)
+                except BaseException as primary:
+                    _observer_failure(engine, primary)
+                    raise
             publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation,
                             half_request=half_request, router_request=router_request, empty_request=empty_request,
                             execution_rows=selected.execution_rows, reference_tiles=selected.reference_tiles,
                             **({"grouped_gate_up": selected.grouped_gate_up_rows} if selected.grouped_gate_up_rows is not None else {}),
-                            **({"normalization_parity": parity_receipt} if parity_receipt is not None else {}))
+                            **({"normalization_parity": parity_receipt} if parity_receipt is not None else {}),
+                            **({"prepared_features": feature_receipt} if feature_receipt is not None else {}))
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
@@ -1488,6 +1736,14 @@ def worker(argv):
                     benchmark_resources["global_host_obligation_bytes"] + parity_resources["global_host_obligation_bytes"],
                     "per_rank_payload_bytes": benchmark_resources["per_rank_payload_bytes"] + parity_resources["per_rank_payload_bytes"]}
                 parity_resources = {**parity_resources,
+                    "total_global_host_obligation_bytes": benchmark_resources["global_host_obligation_bytes"],
+                    "input_sha256": hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest()}
+            if selected.prepared_feature_receipts:
+                feature_resources = _prepared_feature_resources()
+                benchmark_resources = {**benchmark_resources, "global_host_obligation_bytes":
+                    benchmark_resources["global_host_obligation_bytes"] + feature_resources["global_host_obligation_bytes"],
+                    "per_rank_payload_bytes": benchmark_resources["per_rank_payload_bytes"] + feature_resources["per_rank_payload_bytes"]}
+                feature_resources = {**feature_resources,
                     "total_global_host_obligation_bytes": benchmark_resources["global_host_obligation_bytes"],
                     "input_sha256": hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest()}
         if selected.history_input is not None:
@@ -1666,6 +1922,8 @@ def main(argv=None):
     parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
                         help="private prepared grouped gate/up trial; requires grouped down")
     parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
+    parser.add_argument("--prepared-feature-receipts", action="store_true",
+                        help="private bounded post-close Graph/Plan receipts; requires benchmark")
     parser.add_argument("--execution-rows", type=int, help="private prepared MTP row envelope; requires explicit depth/parallel")
     parser.add_argument("--router-row-input", type=Path, help="private four-row layer0 capture DATA; diagnostic overhead only")
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
@@ -1674,6 +1932,9 @@ def main(argv=None):
     if args.normalization_parity and (args.benchmark_plan is None or not args.reference_tiles
             or args.scheduler_trace is not None or args.router_row_input is not None or args.history_input is not None):
         parser.error("normalization parity requires benchmark/reference-tiles and excludes other captures")
+    if args.prepared_feature_receipts and (args.benchmark_plan is None or args.normalization_parity
+            or args.scheduler_trace is not None or args.router_row_input is not None or args.history_input is not None):
+        parser.error("prepared feature receipts require benchmark and exclude other captures")
     if args.execution_rows is not None and not 1 <= args.execution_rows <= 65535:
         parser.error("private execution rows must be in 1..65535")
     if args.router_row_input is not None and (args.history_input is not None or args.benchmark_plan is not None):
@@ -1702,6 +1963,8 @@ def main(argv=None):
         prefix += ["--grouped-gate-up-rows", str(args.grouped_gate_up_rows)]
     if args.normalization_parity:
         prefix += ["--normalization-parity"]
+    if args.prepared_feature_receipts:
+        prefix += ["--prepared-feature-receipts"]
     if args.execution_rows is not None:
         prefix += ["--execution-rows", str(args.execution_rows)]
     if args.benchmark_plan is not None:

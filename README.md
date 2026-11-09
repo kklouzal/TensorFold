@@ -96,8 +96,10 @@ passed 388 pinned CPU controls and 49 strict paired cases on one SM70 GPU, with
 zero skips. Its typed two-/four-row trial retains the incumbent default;
 full-model quality, capacity and performance qualification remain pending.
 The [private qualification selector bridge](docs/benchmarking.md#private-qualification-selector-bridge)
-separately passed 459 pinned source CPU checks with zero skips. Activation in a
-new installed application and live eight-rank/model qualification remain pending.
+separately passed 459 pinned source CPU checks with zero skips. The later
+[installed combined and receipt checkpoint](docs/benchmarking.md#prepared-feature-retirement-receipts)
+passed 690 CPU controls and 84 SM70 GPU cases, with zero skips. Live prepared-feature
+receipts, three-role device budgeting, model quality and P3 remain pending.
 The [batched reference global normalization](docs/v100-adaptive-validation.md#batched-reference-global-normalization-source-candidate) component
 passed 169 pinned-runtime CPU checks; 15 SM70 GPU controls matched the unchanged
 scalar oracle. Broader model-quality, performance and default-release gates remain open.
