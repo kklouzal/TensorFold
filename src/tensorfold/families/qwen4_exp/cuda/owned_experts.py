@@ -22,6 +22,7 @@ class Plan:
     rows: int
     prefill_rows: int
     mtp: bool
+    _gate_up: object = None
 
     def __post_init__(self):
         p = self.partition
@@ -34,6 +35,11 @@ class Plan:
             raise ValueError("owned native preparation exceeds its 65535-pair envelope")
         if _GROUPED_DOWN == "grouped-v1" and (self.hidden != 2560 or p.experts != 512):
             raise ValueError("grouped owned down160 requires the admitted SC117 hidden/global expert geometry")
+        if self._gate_up is not None:
+            from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+
+            if type(self._gate_up) is not _GroupedGateUp or _GROUPED_DOWN != "grouped-v1":
+                raise ValueError("private grouped gate/up requires its typed selector and prepared grouped down")
         self.resources(self.rows)
 
     @property
@@ -41,7 +47,8 @@ class Plan:
         p = self.partition
         original = (POLICY, p.world, p.etp, p.experts, p.full_width, self.hidden,
                     self.slots, self.rows, self.prefill_rows, self.mtp)
-        return original if _GROUPED_DOWN == "inherit" else original + (_GROUPED_DOWN,)
+        identity = original if _GROUPED_DOWN == "inherit" else original + (_GROUPED_DOWN,)
+        return identity if self._gate_up is None else identity + ("grouped-gate-up", self._gate_up.rows)
 
     def resources(self, rows):
         if type(rows) is not int or not 0 < rows <= self.rows:
@@ -57,7 +64,8 @@ class Plan:
                            + grouped_workspace_words(self.prefill_rows * self.slots, self.partition.count))
         if local + grouped > reserve:
             raise MemoryError("owned arenas exceed the paid reference routing reservation")
-        return {"policy": POLICY, "exclusive_provider": True, "local_arena_bytes": local,
+        experiment = {} if self._gate_up is None else {"grouped_gate_up_rows": self._gate_up.rows}
+        return {**experiment, "policy": POLICY, "exclusive_provider": True, "local_arena_bytes": local,
                 "grouped_down": _GROUPED_DOWN, "grouping_arena_bytes": grouped,
                 "contained_routing_reserve_bytes": reserve, "additional_device_bytes": 0,
                 "activation_storage": "existing-moe-act", "output_storage": "existing-moe-y",
@@ -151,4 +159,4 @@ class Arena:
         words = grouped_workspace_words(rows * picks.shape[1], self.plan.partition.count)
         return bank.forward_partitioned_native_candidate(x, picks,
             local=self.local[:rows], activation=self.activation[:rows].view(-1, 160), out=out,
-            grouping=self.grouping[:words])
+            grouping=self.grouping[:words], _gate_up=self.plan._gate_up)

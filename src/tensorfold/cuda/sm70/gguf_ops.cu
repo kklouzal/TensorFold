@@ -1205,6 +1205,60 @@ __global__ void group_owned_scatter(const int64_t* local, int count, OwnedGroupi
     }
 }
 
+// The incumbent writes half NaN for every non-owned local slot. Preserve that
+// scratch contract without reading any bank, including on changing graph routes.
+__global__ void initialize_unowned_gate_up(const int64_t* local, __half* activation, int pairs) {
+    for (int at = blockIdx.x * blockDim.x + threadIdx.x; at < pairs * 160; at += gridDim.x * blockDim.x)
+        if (local[at / 160] < 0)
+            activation[at] = __float2half_rn(__int_as_float(0x7fffffff));
+}
+
+// Each row retains the incumbent's lane-strided FMA sequence and shuffle tree.
+// Only coefficient decoding is shared: no arithmetic reduction spans queries.
+template <int Rows>
+__global__ void expert_gate_up_grouped(const __half* x, PackedView gate, PackedView up,
+                                     int slots, OwnedGrouping group, __half* activation) {
+    const int tile = blockIdx.y;
+    if (tile >= *group.total) return;
+    const int expert = group.tiles[3 * tile], begin = group.tiles[3 * tile + 1];
+    const int count = group.tiles[3 * tile + 2];
+    const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    const int output = blockIdx.x * EXPERT_WARPS + warp;
+    const int64_t source = int64_t(expert) * 160 + output;
+    for (int start = 0; start < count; start += Rows) {
+        int pairs[Rows];
+        float g[Rows] = {}, u[Rows] = {};
+        #pragma unroll
+        for (int row = 0; row < Rows; ++row)
+            if (start + row < count) pairs[row] = group.pairs[begin + start + row];
+        for (int k = lane; k < 2560; k += 32) {
+            const float gv = coefficient(gate, source, k);
+            const float uv = coefficient(up, source, k);
+            #pragma unroll
+            for (int row = 0; row < Rows; ++row) {
+                if (start + row < count) {
+                    const float xv = __half2float(x[int64_t(pairs[row] / slots) * 2560 + k]);
+                    g[row] = fmaf(xv, gv, g[row]);
+                    u[row] = fmaf(xv, uv, u[row]);
+                }
+            }
+        }
+        #pragma unroll
+        for (int row = 0; row < Rows; ++row) {
+            if (start + row < count) {
+                for (int offset = 16; offset; offset /= 2) {
+                    g[row] += __shfl_down_sync(0xffffffff, g[row], offset);
+                    u[row] += __shfl_down_sync(0xffffffff, u[row], offset);
+                }
+                if (lane == 0) {
+                    const float result = (g[row] / (1.0f + expf(-g[row]))) * u[row];
+                    activation[int64_t(pairs[row]) * 160 + output] = __float2half_rn(result);
+                }
+            }
+        }
+    }
+}
+
 template <bool F32, int Kind = -1>
 __global__ void expert_down160_grouped(const __half* activation, PackedView down,
                                       int dims, OwnedGrouping group, void* output) {
@@ -1252,7 +1306,10 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     const at::Tensor& up, int64_t up_kind, int64_t up_offset,
     const at::Tensor& down, int64_t down_kind, int64_t down_offset,
     int64_t width, int64_t first, int64_t global_experts, const at::Tensor& shared,
-    at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping) {
+    at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping, int64_t gate_up_rows = 0) {
+    TORCH_CHECK(gate_up_rows == 0 || gate_up_rows == 2 || gate_up_rows == 4,
+                "private grouped gate/up requires exactly 2 or 4 rows");
+    TORCH_CHECK(gate_up_rows == 0 || grouping.defined(), "private grouped gate/up requires grouping scratch");
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2 && x.is_contiguous()
                 && x.size(1) > 0 && x.size(1) <= std::numeric_limits<int>::max(),
                 "owned experts require contiguous FP16 CUDA [rows,hidden] inputs");
@@ -1330,8 +1387,22 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     // No mapped ID equals experts, so shared pointers are never dereferenced.
     // Existing FP16 input storage supplies a valid pointer without a dummy bank.
-    run_experts<int64_t>(x, local, g, u, d, x, x, x, output, activation,
-                         dims, int(width), int(picks.size(1)), experts, true, true, dims == 2560, grouping.defined());
+    if (gate_up_rows) {
+        auto act = reinterpret_cast<__half*>(activation.data_ptr());
+        const int init_blocks = std::min((pairs * 160 + 127) / 128, 65535);
+        initialize_unowned_gate_up<<<init_blocks, 128, 0, stream>>>(local.data_ptr<int64_t>(), act, pairs);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        const dim3 grid(160 / EXPERT_WARPS, group.max_tiles);
+        auto input = reinterpret_cast<const __half*>(x.data_ptr());
+        if (gate_up_rows == 2)
+            expert_gate_up_grouped<2><<<grid, EXPERT_WARPS * 32, 0, stream>>>(input, g, u, int(picks.size(1)), group, act);
+        else
+            expert_gate_up_grouped<4><<<grid, EXPERT_WARPS * 32, 0, stream>>>(input, g, u, int(picks.size(1)), group, act);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+    } else {
+        run_experts<int64_t>(x, local, g, u, d, x, x, x, output, activation,
+                             dims, int(width), int(picks.size(1)), experts, true, true, dims == 2560, grouping.defined());
+    }
     if (grouping.defined()) {
         const dim3 grid(dims / 16, group.max_tiles);
         auto act = reinterpret_cast<const __half*>(activation.data_ptr());
@@ -1382,4 +1453,16 @@ void gguf_experts_owned_grouped(const at::Tensor& x, const at::Tensor& picks,
     at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping) {
     gguf_experts_owned_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
         down, down_kind, down_offset, width, first, global_experts, shared, local, activation, output, grouping);
+}
+
+// Private explicit candidate entrypoint; ordinary owned/grouped APIs are intact.
+void gguf_experts_owned_grouped_gate_up(const at::Tensor& x, const at::Tensor& picks,
+    const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
+    const at::Tensor& up, int64_t up_kind, int64_t up_offset,
+    const at::Tensor& down, int64_t down_kind, int64_t down_offset,
+    int64_t width, int64_t first, int64_t global_experts, const at::Tensor& shared,
+    at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping, int64_t rows) {
+    TORCH_CHECK(rows == 2 || rows == 4, "private grouped gate/up requires exactly 2 or 4 rows");
+    gguf_experts_owned_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
+        down, down_kind, down_offset, width, first, global_experts, shared, local, activation, output, grouping, rows);
 }

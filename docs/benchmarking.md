@@ -130,6 +130,33 @@ from source availability or strict component passes. Compare only after normal
 readiness/resource admission, with matched recorded inputs and controls;
 retain failures and existing baseline reproducibility limits.
 
+## Private grouped gate/up source component
+
+An explicit private typed Plan selector requests two or four rows only in the
+already-grouped SC117 TP8/ETP4 path. The gate/up incumbent remains the default;
+there is no public serving flag or automatic crossover. Both candidates reuse
+existing expert-group metadata and activation/output scratch, with no new bank
+or application device buffer. A separate bounded kernel preserves foreign,
+shared and invalid activation Half-NaN values; its launch and traffic must be
+included in complete-chain measurements.
+
+Pinned source composition passed **388 CPU controls and 49 strict paired SM70
+GPU cases, with zero skips**, plus Ruff and syntax checks. The GPU cases used
+original-format synthetic fixtures on one SM70 device, comparing raw local-ID,
+activation and slot-output bits across admitted reader combinations, ragged
+rows, changed-route replay and finite Half extremes through ±65504. The frozen
+grouped incumbent ELF `71327e0d` was loaded before candidate compilation; the
+candidate ELF is `e88563f0`. Source and health checks matched, with normal
+zero-status retirement and no OOM.
+
+Static resource reports for both variants show `REG56/STACK64/LOCAL0`; SASS
+contains `LDL` and `STL` instructions. These reports do not establish zero stack
+traffic, spill-free execution, runtime occupancy or a performance gain. The
+source results do not qualify a genuine candidate application, an SC117
+full-model run, resident capacity, affected-region P3 or a new default. Gate:
+`grouped-gate-up-assessment-v1/grouped-gate-up-source-CPU388-GPU49-gate-v1.json`,
+SHA256 `e5005541cad0ebbd3fd160064fc7c79942dfc9e3a8768447f9a8f97959ab559a`.
+
 ## Private verification-row envelope trials
 
 The supervised qualification launcher accepts `--execution-rows N` before its

@@ -1,5 +1,6 @@
 """Volta-safe operators for original GGML bytes, independent of vLLM registrations."""
 
+from dataclasses import dataclass
 from functools import lru_cache
 import hashlib
 import os
@@ -129,7 +130,18 @@ def grouped_workspace_words(pairs, resident_experts):
     return 2 * pairs + 2 * resident_experts + 3 * tiles + 2
 
 
-def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, local, activation, out, grouping=None):
+@dataclass(frozen=True)
+class _GroupedGateUp:
+    """Explicit unselected SIMT experiment; never an automatic shape dispatch."""
+    rows: int
+
+    def __post_init__(self):
+        if type(self.rows) is not int or self.rows not in (2, 4):
+            raise ValueError("private grouped gate/up requires exactly 2 or 4 rows")
+
+
+def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, local, activation, out,
+                  grouping=None, _gate_up=None):
     """Explicit unselected ETP4 candidate, with caller-owned fixed native scratch.
 
     Foreign global slots become zero; invalid global IDs become NaN without any
@@ -144,9 +156,16 @@ def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, lo
         raise ValueError("owned expert range requires native integer global placement")
     if grouping is not None and (experts != 512 or x.shape[1] != 2560):
         raise ValueError("grouped owned down160 requires SC117 hidden/global expert geometry")
+    if _gate_up is not None and (type(_gate_up) is not _GroupedGateUp or grouping is None
+                                or experts != 512 or x.shape[1] != 2560):
+        raise ValueError("private grouped gate/up requires its typed selector and prepared SC117 grouping")
     native = extension()
     execute = native.experts_owned if grouping is None else native.experts_owned_grouped
+    if _gate_up is not None:
+        execute = native._experts_owned_grouped_gate_up
     extra = () if grouping is None else (grouping,)
+    if _gate_up is not None:
+        extra += (_gate_up.rows,)
     execute(x, picks, gate.data, gate.ggml_type, gate.column_offset,
         up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
         width, first, experts, shared, local, activation, out, *extra)

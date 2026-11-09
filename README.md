@@ -91,9 +91,13 @@ results and memory accounting remain separate from installed-model quality,
 performance selection and deployment defaults.
 The combined application image also passed 744 distinct installed CPU controls
 after a startup-fixture correction; enabled full-model performance qualification remains pending.
-The source-only [batched reference global normalization](docs/v100-adaptive-validation.md#batched-reference-global-normalization-source-candidate)
+A separate [private grouped gate/up source component](docs/benchmarking.md#private-grouped-gateup-source-component)
+passed 388 pinned CPU controls and 49 strict paired cases on one SM70 GPU, with
+zero skips. Its typed two-/four-row trial retains the incumbent default;
+full-model quality, capacity and performance qualification remain pending.
+The [batched reference global normalization](docs/v100-adaptive-validation.md#batched-reference-global-normalization-source-candidate) component
 passed 169 pinned-runtime CPU checks; 15 SM70 GPU controls matched the unchanged
-scalar oracle. Installed-model, performance and default-release gates remain open.
+scalar oracle. Broader model-quality, performance and default-release gates remain open.
 The separate [reference-query packing source candidate](docs/benchmarking.md#reference-query-packing-source-candidate)
 passed 40 CPU and 15 strict SM70 GPU controls, with no skips. It has no new
 application image, full-model result, performance gain or default promotion.
