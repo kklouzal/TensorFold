@@ -33,7 +33,7 @@ def inner(mode="cuda"):
 
 def document(spec, state=None):
     r = spec["resources"]
-    return {"Id": CID, "Name": "/" + spec["name"], "Image": spec["image_id"],
+    value = {"Id": CID, "Name": "/" + spec["name"], "Image": spec["image_id"],
             "Config": {"User": "1000:1000", "Env": [k + "=" + v for k, v in spec["environment"].items()],
                        "Entrypoint": [spec["entrypoint"]], "Cmd": spec["argv"], "WorkingDir": "/canonical",
                        "Labels": {"org.tensorfold.native-contract": host.ownership_label(spec)}},
@@ -47,6 +47,34 @@ def document(spec, state=None):
             "Mounts": [{"Type": "bind", "Source": m["source"], "Destination": m["target"], "RW": not m["read_only"]}
                        for m in spec["mounts"]],
             "State": state or {"Status": "created", "Running": False, "Pid": 0, "ExitCode": 0, "OOMKilled": False}}
+    if "verification_launcher" in spec:
+        value["HostConfig"].update(CapAdd=["CAP_CHECKPOINT_RESTORE"], CapDrop=["ALL"])
+        value["NetworkSettings"] = {"Networks": {"none": {}}}
+    return value
+
+
+def verification_data(spec):
+    contract = spec["verification_launcher"]
+    expected = host.validate_data(spec)
+    return {"schema": "tensorfold.verification-launcher-preflight-v1", "mode": host.VERIFICATION_MODE,
+            "image_id": spec["image_id"], "source_commit": expected["source_commit"],
+            "verification_launcher": copy.deepcopy(contract), "PID": 1, "uids": [1000]*4, "gids": [1000]*4,
+            "caps": {name: host.VERIFICATION_CAP for name in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")},
+            "NoNewPrivs": "0", "loader_environment": {"LD_LIBRARY_PATH": None},
+            "launcher": {**{k: contract["launcher"][k] for k in ("path", "bytes", "sha256", "file_capability_hex")},
+                         "mode": 0o555, "uid": 0, "source": {"path": host.VERIFICATION_SOURCE,
+                         "bytes": contract["launcher"]["source_bytes"], "sha256": contract["launcher"]["source_sha256"],
+                         "mode": 0o444, "uid": 0}},
+            "python": {**contract["python"], "resolved_path": "/usr/bin/python3.12", "mode": 0o755, "uid": 0},
+            "runtime": expected["runtime"], "providers": {"schema": "tensorfold.native-elf-observation-v3",
+                "identity_method": "kernel-vma-backed-fd-v1", "PID": 1, "missing_required_provider_paths": [],
+                "required_providers": contract["providers"], "mapped_elfs": [
+                    {"path": path, **record} for path, record in contract["providers"].items()]}}
+
+
+def status_text():
+    return "Uid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nNoNewPrivs:\t0\n"+"".join(
+        name+":\t"+host.VERIFICATION_CAP+"\n" for name in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
 
 
 def state(running=False):
@@ -85,6 +113,7 @@ class FakeSystem:
         self.mid_error = self.close_error = self.after_error = self.bind_error = None
         self.bad_create = None
         self.cancel_at_create = False
+        self.write_verification, self.bad_verification, self.verification_error = True, None, None
 
     def command(self, argv, timeout=30):
         self.calls.append(argv)
@@ -106,7 +135,15 @@ class FakeSystem:
 
     def start(self, _cid, _log):
         self.started = True
-        (self.output / "named-suite-result.json").write_text(json.dumps(inner("cuda" if self.spec["uuids"] else "cpu")))
+        result = inner("cuda" if self.spec["uuids"] else "cpu")
+        if "verification_launcher" in self.spec:
+            result["image_id_declared"] = self.spec["image_id"]
+            if self.write_verification:
+                receipt = verification_data(self.spec)
+                if self.bad_verification:
+                    self.bad_verification(receipt)
+                (self.output / "verification-launcher-preflight.json").write_text(json.dumps(receipt))
+        (self.output / "named-suite-result.json").write_text(json.dumps(result))
         return self.process
 
     def snapshot(self, _spec):
@@ -124,6 +161,11 @@ class FakeSystem:
         if self.bind_error:
             raise self.bind_error
         return {"owned": self.group}
+
+    def verification_process(self, _cid, _spec):
+        if self.verification_error:
+            raise self.verification_error
+        return {"host_PID": 42, "status": host.verification_status(status_text())}
 
     def sample(self, _spec):
         return {"owned": self.group}
@@ -182,6 +224,240 @@ class Contracts(unittest.TestCase):
                      "timeouts": {"run": 30, "poll": .01, "monitor": 1, "retire": 1},
                      "disk_bytes": {"start": 0, "running": 0},
                      "diagnostics": {"sample_limit": 128, "process_limit": 16, "read_limit_bytes": 4096}}
+
+    def verification_spec(self):
+        spec = copy.deepcopy(self.spec)
+        spec["image_id"] = "sha256:"+"f"*64
+        spec["entrypoint"] = host.VERIFICATION_ENTRY
+        spec["verification_launcher"] = {"mode": host.VERIFICATION_MODE, "base_image_id": self.spec["image_id"],
+            "launcher": {"path": host.VERIFICATION_ENTRY, "bytes": 16976, "sha256": "1"*64,
+                         "source_bytes": 8000, "source_sha256": "2"*64, "file_capability_hex": host.VERIFICATION_XATTR},
+            "python": {"path": host.VERIFICATION_PYTHON, "bytes": 8020928, "sha256": "3"*64},
+            "providers": {"/opt/venv/lib/python3.12/site-packages/torch/_C.cpython-312-x86_64-linux-gnu.so": {"bytes": 1024, "sha256": "4"*64},
+                          "/opt/venv/lib/python3.12/site-packages/tensorfold/_fd_owner.abi3.so": {"bytes": 37936, "sha256": "7"*64}}}
+        path = self.operator/"spec.json"
+        data = json.loads(path.read_text())
+        data.update(image_id=spec["image_id"], verification_launcher=copy.deepcopy(spec["verification_launcher"]),
+                    app_root="/opt/venv/lib/python3.12/site-packages/tensorfold",
+                    expected_app={"__init__.py": {"bytes": 10, "sha256": "5"*64, "mode": 0o644}},
+                    sdk_manifest={"path": "/opt/tensorfold-pins/v100-source-foundation.json", "sha256": "6"*64},
+                    fd={"sha256": "7"*64, "source_sha256": "8"*64},
+                    torch={"git_version": "9"*40, "cuda": "12.9"})
+        path.write_text(json.dumps(data))
+        record = file_record(path)
+        spec["inputs"][1] = record
+        spec["argv"][5], spec["argv"][7] = record["sha256"], str(record["bytes"])
+        return spec
+
+    def test_regular_json_and_cap0_route_remain_unchanged(self):
+        original = copy.deepcopy(self.spec)
+        self.assertIs(host.validate_spec(self.spec), self.spec)
+        self.assertEqual(self.spec, original)
+        self.assertNotIn("--cap-add", host.create_argv(self.spec, self.output))
+        self.assertNotIn("--cap-drop", host.create_argv(self.spec, self.output))
+        host.admit(document(self.spec), self.spec, CID)
+
+    def test_explicit_verification_create_and_actual_admission(self):
+        spec = self.verification_spec()
+        host.validate_spec(spec)
+        self.assertEqual(host.source_inventory(spec)[1]["base_app_image"], self.spec["image_id"])
+        self.assertEqual(host.validate_data(spec)["image_id"], spec["image_id"])
+        argv = host.create_argv(spec, self.output)
+        self.assertEqual(argv[argv.index("--cap-add")+1], "CHECKPOINT_RESTORE")
+        self.assertEqual(argv[argv.index("--cap-drop")+1], "ALL")
+        host.admit(document(spec), spec, CID)
+
+    def test_verification_schema_refuses_unknown_injected_or_unowned_inputs(self):
+        spec = self.verification_spec()
+        changes = [lambda d: d.update(verification_launcher=None),
+                   lambda d: d["verification_launcher"].update(mode="service"),
+                   lambda d: d["verification_launcher"]["launcher"].update(file_capability_hex="00"),
+                   lambda d: d["verification_launcher"]["python"].update(path="/usr/bin/python3"),
+                   lambda d: d["verification_launcher"].update(providers={}),
+                   lambda d: d.update(entrypoint=host.VERIFICATION_PYTHON),
+                   lambda d: d["environment"].update(PYTHONPATH=""),
+                   lambda d: d["environment"].update(LD_PRELOAD="/tmp/evil.so"),
+                   lambda d: d["environment"].update(PYTHONOPTIMIZE="1")]
+        for change in changes:
+            bad = copy.deepcopy(spec)
+            change(bad)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                host.validate_spec(bad)
+        for target in ("/proc", "/proc/self/status", "/opt/qualification", "/usr/bin/python3.12", "/tmp"):
+            bad = copy.deepcopy(spec)
+            bad["mounts"].append({"source": str(self.cache), "target": target, "read_only": True})
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, "shadows"):
+                host.validate_spec(bad)
+
+    def test_verification_inspect_refuses_extra_privilege_or_changed_isolation(self):
+        spec = self.verification_spec()
+        changes = [lambda d: d["HostConfig"].update(CapAdd=["CAP_SYS_ADMIN"]),
+                   lambda d: d["HostConfig"].update(CapAdd=["CAP_CHECKPOINT_RESTORE", "CAP_SYS_ADMIN"]),
+                   lambda d: d["HostConfig"].update(CapDrop=[]),
+                   lambda d: d["HostConfig"].update(Privileged=True),
+                   lambda d: d["HostConfig"].update(PidMode="host"),
+                   lambda d: d["HostConfig"].update(ReadonlyRootfs=False),
+                   lambda d: d["Config"].update(User="0:0"),
+                   lambda d: d["HostConfig"].update(GroupAdd=["0"]),
+                   lambda d: d["HostConfig"].update(Init=True),
+                   lambda d: d["NetworkSettings"]["Networks"].update(bridge={}),
+                   lambda d: d["Config"]["Env"].append("PYTHONPATH=/unmanaged")]
+        for change in changes:
+            doc = document(spec)
+            change(doc)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                host.admit(doc, spec, CID)
+
+    def test_verification_operator_closure_is_frozen_bound_and_has_no_unmanaged_python(self):
+        spec = self.verification_spec()
+        for path in self.operator.iterdir():
+            path.chmod(0o444)
+        self.operator.chmod(0o555)
+        try:
+            self.assertEqual(set(host.verification_operator(spec)), {"source.json", "spec.json", "v100_native_contract_driver.py"})
+            self.operator.chmod(0o755)
+            (self.operator/"json.py").write_text("raise RuntimeError('unmanaged')")
+            (self.operator/"json.py").chmod(0o444)
+            self.operator.chmod(0o555)
+            with self.assertRaisesRegex(ValueError, "unmanaged"):
+                host.verification_operator(spec)
+        finally:
+            self.operator.chmod(0o755)
+            for path in self.operator.iterdir():
+                path.chmod(0o644)
+
+    def test_verification_lineage_is_exact_base_derivative(self):
+        spec = self.verification_spec()
+        base = {"Id": spec["verification_launcher"]["base_image_id"], "RootFS": {"Layers": ["sha256:"+"1"*64]}}
+        candidate = {"Id": spec["image_id"], "RootFS": {"Layers": [*base["RootFS"]["Layers"], "sha256:"+"2"*64]}}
+        self.assertEqual(host.verification_image(candidate, base, spec)["base_image_id"], base["Id"])
+        candidate["RootFS"]["Layers"][0] = "sha256:"+"3"*64
+        with self.assertRaises(ValueError):
+            host.verification_image(candidate, base, spec)
+
+    def test_real_snapshot_binds_verification_lineage_and_operator_without_rewriting_fixture(self):
+        spec = self.verification_spec()
+        system = object.__new__(host.System)
+        system.spec_identity = None
+        layers = ["sha256:"+"1"*64]
+        def command(argv, *_args):
+            if argv[argv.index("--format")+1] == "{{.Id}}":
+                return spec["image_id"]
+            image = argv[-1]
+            return json.dumps({"Id": image, "RootFS": {"Layers": layers+(["sha256:"+"2"*64] if image == spec["image_id"] else [])}})
+        system.command = command
+        for path in self.operator.iterdir():
+            path.chmod(0o444)
+        self.operator.chmod(0o555)
+        try:
+            snapshot = system.snapshot(spec)
+            self.assertEqual(snapshot["source_fixture"]["base_app_image"], self.spec["image_id"])
+            self.assertEqual(snapshot["verification_image"]["base_layers"], layers)
+            self.assertIn("v100_native_contract_driver.py", snapshot["verification_operator"])
+        finally:
+            self.operator.chmod(0o755)
+            for path in self.operator.iterdir():
+                path.chmod(0o644)
+
+    def test_prequalification_receipt_binds_all_declared_identity_and_provider_facts(self):
+        spec = self.verification_spec()
+        expected = host.validate_data(spec)
+        raw = verification_data(spec)
+        host.verification_receipt(raw, spec, expected)
+        changes = [lambda r: r.update(PID=True), lambda r: r.update(uids=[0]*4),
+                   lambda r: r["caps"].update(CapBnd="0"*16),
+                   lambda r: r.update(loader_environment={"LD_LIBRARY_PATH": ""}),
+                   lambda r: r["launcher"]["source"].update(sha256="f"*64),
+                   lambda r: r["python"].update(resolved_path="/unmanaged/python"),
+                   lambda r: r["runtime"].update(sdk_sha256="f"*64),
+                   lambda r: r["providers"].update(missing_required_provider_paths=["missing"]),
+                   lambda r: r["providers"]["mapped_elfs"][0].update(sha256="f"*64)]
+        for change in changes:
+            bad = copy.deepcopy(raw)
+            change(bad)
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                host.verification_receipt(bad, spec, expected)
+
+    def test_actual_proc_status_requires_uid_gid_only_cap40_and_no_new_privileges_zero(self):
+        host.verification_status(status_text())
+        for bad in (status_text().replace("CapEff:", "unexpected:"),
+                    status_text().replace(host.VERIFICATION_CAP, "0"*16),
+                    status_text()+"Uid: 1000 1000 1000 1000\n",
+                    status_text().replace("NoNewPrivs:\t0", "NoNewPrivs:\t1")):
+            with self.assertRaises(ValueError):
+                host.verification_status(bad)
+
+    def test_live_verification_status_stays_bound_to_original_pidfd_and_cgroup(self):
+        spec = self.verification_spec()
+        system = object.__new__(host.System)
+        system.pidfd, system.init_pid = 99, 42
+        system.group = "/system.slice/docker-"+CID+".scope"
+        system.inspect = lambda _cid: document(spec, state(True))
+        answers = [status_text().encode(), ("0::"+system.group+"\n").encode()]
+        with patch.object(host.select, "select", return_value=([], [], [])), patch.object(host, "read_kernel", side_effect=answers):
+            self.assertEqual(system.verification_process(CID, spec)["host_PID"], 42)
+        with patch.object(host.select, "select", return_value=([], [], [])), patch.object(host, "read_kernel", side_effect=PermissionError("nondumpable")):
+            with self.assertRaises(PermissionError):
+                system.verification_process(CID, spec)
+        changed = document(spec, state(True))
+        changed["State"]["Pid"] = 43
+        system.inspect = lambda _cid: changed
+        with patch.object(host.select, "select", return_value=([], [], [])):
+            with self.assertRaisesRegex(ValueError, "pinned PID"):
+                system.verification_process(CID, spec)
+
+    def test_verification_fast_terminal_still_requires_prequal_receipt(self):
+        spec = self.verification_spec()
+        result = host.run(spec, self.output, FakeSystem(spec, self.output))
+        self.assertEqual(result["verification_preflight"]["verification_launcher"], spec["verification_launcher"])
+        self.assertEqual(result["container"]["State"]["Pid"], 0)
+
+    def test_missing_prequal_receipt_fails_even_if_pytest_result_passed(self):
+        spec = self.verification_spec()
+        system = FakeSystem(spec, self.output)
+        system.write_verification = False
+        with self.assertRaises(FileNotFoundError) as missing:
+            host.run(spec, self.output, system)
+        self.assertEqual(Path(missing.exception.filename), self.output/"verification-launcher-preflight.json")
+        report = json.loads((self.output/"host-result.json").read_text())
+        self.assertIn("FileNotFoundError", report["primary_error"])
+        self.assertEqual(report["container"]["State"]["Pid"], 0)
+
+    def test_nondumpable_status_denial_is_not_bypassed(self):
+        spec = self.verification_spec()
+        system = FakeSystem(spec, self.output, [state(True), state()])
+        system.verification_error = PermissionError("owned proc status denied")
+        with self.assertRaises(PermissionError):
+            host.run(spec, self.output, system)
+        report = json.loads((self.output/"host-result.json").read_text())
+        self.assertIn("owned proc status denied", report["primary_error"])
+        self.assertEqual(report["container"]["State"]["Pid"], 0)
+
+    def test_invalid_verification_receipt_preserves_cleanup_failure(self):
+        spec = self.verification_spec()
+        system = FakeSystem(spec, self.output)
+        system.bad_verification = lambda r: r["caps"].update(CapEff="0"*16)
+        system.close_error = RuntimeError("owned observer close failed")
+        with self.assertRaisesRegex(ValueError, "capabilities") as caught:
+            host.run(spec, self.output, system)
+        self.assertIs(caught.exception.__cause__, system.close_error)
+        report = json.loads((self.output/"host-result.json").read_text())
+        self.assertIn("capabilities", report["primary_error"])
+        self.assertTrue(any("owned observer close failed" in value for value in report["cleanup_errors"]))
+        self.assertEqual(report["container"]["State"]["Pid"], 0)
+
+    def test_verification_receipt_changed_after_prequalification_is_rejected(self):
+        spec = self.verification_spec()
+        system = FakeSystem(spec, self.output, [state(True), state()])
+        def mutate(_cid, _spec):
+            path = self.output/"verification-launcher-preflight.json"
+            raw = json.loads(path.read_text())
+            raw["loader_environment"] = {"LD_LIBRARY_PATH": "/restored"}
+            path.write_text(json.dumps(raw))
+            return {"phase": None, "compiler_processes": []}
+        system.observe = mutate
+        with self.assertRaisesRegex(ValueError, "loader environment"):
+            host.run(spec, self.output, system)
 
     def test_multi_uuid_and_cpu_create_admission(self):
         for cpu in (False, True):

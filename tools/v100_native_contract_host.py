@@ -8,6 +8,13 @@ launch, then use --out SAME_DIRECTORY --cancel-token RETAINED_TOKEN. Never
 precheck/kill a numeric controller PID. The request is generation-bound and
 idempotent; host-result.json, not request publication, proves retirement.
 Empty uuids selects a CPU-only runc worker; it never qualifies native CUDA.
+
+Regular JSON remains capability-zero. An explicit verification_launcher contract
+selects ONLY the owned file-capability launcher image/envelope, drops ALL Docker
+capabilities and declares CHECKPOINT_RESTORE alone. The trusted inner must prove
+UID/GID/caps, immutable Python/launcher and mapped providers BEFORE qualification;
+the host validates that receipt without restoring loader environment or granting
+capabilities itself. This opt-in is verification-only, never a serving default.
 """
 from __future__ import annotations
 
@@ -38,6 +45,13 @@ SCHEMA = "tensorfold.native-contract-host-v1"
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 UUID = re.compile(r"GPU-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 LIMIT = 8 << 20
+VERIFICATION_MODE = "map-files-cap40-v1"
+VERIFICATION_ENTRY = "/opt/qualification/bin/native-mapfile-cap-launcher"
+VERIFICATION_SOURCE = "/opt/qualification/native_mapfile_cap_launcher.c"
+VERIFICATION_PYTHON = "/opt/venv/bin/python3"
+VERIFICATION_XATTR = "0100000200000000000000000001000000000000"
+VERIFICATION_CAP = "0000010000000000"
+_INJECTION_ENV = ("LD_PRELOAD", "LD_AUDIT", "PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONINSPECT")
 
 
 def require(condition, message):
@@ -136,10 +150,43 @@ def _path(value):
     return value
 
 
+
+def _verification_contract(value, image):
+    require(type(value) is dict and set(value) == {"mode", "base_image_id", "launcher", "python", "providers"}
+            and value["mode"] == VERIFICATION_MODE, "invalid explicit verification launcher mode")
+    require(type(value["base_image_id"]) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", value["base_image_id"])
+            and value["base_image_id"] != image, "distinct exact verification base image required")
+    launcher = value["launcher"]
+    require(type(launcher) is dict and set(launcher) == {"path", "bytes", "sha256", "source_bytes", "source_sha256", "file_capability_hex"}
+            and launcher["path"] == VERIFICATION_ENTRY and launcher["file_capability_hex"] == VERIFICATION_XATTR,
+            "owned file-capability launcher identity required")
+    file_identity({key: launcher[key] for key in ("path", "bytes", "sha256")})
+    file_identity({"path": VERIFICATION_SOURCE, "bytes": launcher["source_bytes"], "sha256": launcher["source_sha256"]})
+    require(type(value["python"]) is dict and set(value["python"]) == {"path", "bytes", "sha256"}
+            and value["python"]["path"] == VERIFICATION_PYTHON, "fixed protected Python identity required")
+    file_identity(value["python"])
+    require(launcher["bytes"] > 0 and launcher["source_bytes"] > 0 and value["python"]["bytes"] > 0,
+            "nonempty verification executables/source required")
+    providers = value["providers"]
+    require(type(providers) is dict and providers, "nonempty explicit provider identities required")
+    for path, identity in providers.items():
+        require(type(identity) is dict and set(identity) == {"bytes", "sha256"}, "invalid provider identity")
+        _path(path)
+        require(".so" in Path(path).name, "mapped shared-library provider required")
+        file_identity({"path": path, **identity})
+        require(identity["bytes"] > 0, "nonempty mapped provider required")
+    return value
+
+
+def _verification_environment(env):
+    require(all(key not in env for key in _INJECTION_ENV), "verification cannot inject Python or loader code")
+    require(env.get("PYTHONOPTIMIZE") in (None, "", "0"), "verification must retain Python assertions")
+
+
 def validate_spec(raw):
     required = {"schema", "name", "image_id", "uuids", "source", "inputs", "mounts", "environment",
                 "entrypoint", "argv", "resources", "health_baseline", "timeouts", "disk_bytes", "diagnostics"}
-    require(type(raw) is dict and set(raw) == required and raw["schema"] == SCHEMA, "invalid native host schema/fields")
+    require(type(raw) is dict and set(raw) in (required, required | {"verification_launcher"}) and raw["schema"] == SCHEMA, "invalid native host schema/fields")
     require(type(raw["name"]) is str and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", raw["name"]), "invalid attempt name")
     require(type(raw["image_id"]) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", raw["image_id"]), "immutable image required")
     ids = raw["uuids"]
@@ -175,6 +222,13 @@ def validate_spec(raw):
     if ids:
         require(env.get("NVIDIA_DRIVER_CAPABILITIES") == "compute,utility", "compute/utility capabilities required")
     _path(raw["entrypoint"])
+    if "verification_launcher" in raw:
+        _verification_contract(raw["verification_launcher"], raw["image_id"])
+        require(raw["entrypoint"] == VERIFICATION_ENTRY, "verification must use the exact owned launcher entrypoint")
+        _verification_environment(env)
+        protected = ("/proc", "/sys", "/dev", "/opt", "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/tmp")
+        require(all(not (Path(target).is_relative_to(root) or Path(root).is_relative_to(target))
+                    for target in targets for root in protected), "verification mount shadows protected process/image paths")
     require(type(raw["argv"]) is list and len(raw["argv"]) == 12
             and all(type(s) is str and len(s) <= 4096 and "\x00" not in s for s in raw["argv"]), "invalid inner argv")
     argv = raw["argv"]
@@ -232,7 +286,7 @@ def validate_spec(raw):
 def source_inventory(spec):
     raw = object_json(bound_file(spec["source"]["manifest"]))
     require(raw.get("schema") == "tensorfold.reviewed-test-only-input-fixture-v1"
-            and raw.get("snapshot_clean_commit") is False and raw.get("base_app_image") == spec["image_id"]
+            and raw.get("snapshot_clean_commit") is False and raw.get("base_app_image") == spec.get("verification_launcher", {}).get("base_image_id", spec["image_id"])
             and raw.get("source_host") == spec["source"]["root"]
             and type(raw.get("base_commit")) is str and re.fullmatch(r"[0-9a-f]{40}", raw["base_commit"])
             and type(raw.get("archive_sha256")) is str and SHA.fullmatch(raw["archive_sha256"]),
@@ -267,7 +321,17 @@ def validate_data(spec):
     require(inner.get("schema") == "tensorfold.v100-native-contract.v1" and inner.get("mode") == mode
             and inner.get("UUIDs") == spec["uuids"] and inner.get("SM") == ([7, 0] if spec["uuids"] else [])
             and inner.get("image_id") == spec["image_id"], "host/inner mode, devices or image differ")
-    return {key: inner[key] for key in ("mode", "source_commit", "image_id", "modules")}
+    require(("verification_launcher" in inner) == ("verification_launcher" in spec)
+            and inner.get("verification_launcher") == spec.get("verification_launcher"), "host/inner verification mode differs")
+    result = {key: inner[key] for key in ("mode", "source_commit", "image_id", "modules")}
+    if "verification_launcher" in spec:
+        require(all(key in inner for key in ("app_root", "expected_app", "sdk_manifest", "fd", "torch")),
+                "verification runtime identity fields required")
+        result["runtime"] = {"app_root": inner["app_root"], "app_file_count": len(inner["expected_app"]),
+            "app_inventory_sha256": hashlib.sha256(json.dumps(inner["expected_app"], sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "sdk_sha256": inner["sdk_manifest"]["sha256"], "fd_sha256": inner["fd"]["sha256"],
+            "fd_source_sha256": inner["fd"]["source_sha256"], "torch_git": inner["torch"]["git_version"], "torch_cuda": inner["torch"]["cuda"]}
+    return result
 
 
 def _cpu_arg(nano):
@@ -288,6 +352,8 @@ def create_argv(spec, output):
             *(["--gpus", '"device=' + ",".join(spec["uuids"]) + '"'] if spec["uuids"] else []),
             "--ipc", r["ipc"], "--network", "none", "--read-only", "--user", "1000:1000",
             "--cpus", _cpu_arg(r["nano_cpus"]), "--memory", str(r["memory_bytes"]), "--memory-swap", str(r["memory_swap_bytes"])]
+    if "verification_launcher" in spec:
+        argv.extend(("--cap-drop", "ALL", "--cap-add", "CHECKPOINT_RESTORE"))
     for key, value in sorted(r["tmpfs"].items()):
         argv.extend(("--tmpfs", key + ":" + value))
     for item in r["ulimits"]:
@@ -308,13 +374,20 @@ def admit(document, spec, cid):
     require(owns_container(document, spec, cid), "created container ownership differs")
     h, c = document["HostConfig"], document["Config"]
     r = spec["resources"]
+    verification = "verification_launcher" in spec
     require(document["Image"] == spec["image_id"] and h["Runtime"] == ("nvidia" if spec["uuids"] else "runc")
             and h["NetworkMode"] == "none" and h["ReadonlyRootfs"] is True and h["Privileged"] is False
-            and not h.get("Devices") and not h.get("CapAdd") and not h.get("CapDrop")
+            and not h.get("Devices")
+            and (h.get("CapAdd") == ["CAP_CHECKPOINT_RESTORE"] and h.get("CapDrop") == ["ALL"]
+                 if verification else not h.get("CapAdd") and not h.get("CapDrop"))
             and h.get("SecurityOpt") in (None, [], *([["label=disable"]] if r["ipc"] == "host" else []))
             and not h.get("DeviceCgroupRules") and not h.get("PidMode") and not h.get("AutoRemove")
             and c["User"] == "1000:1000" and c["Entrypoint"] == [spec["entrypoint"]]
             and c["Cmd"] == spec["argv"] and c["WorkingDir"] == "/canonical", "image/command/isolation admission differs")
+    if verification:
+        require(not h.get("GroupAdd") and not h.get("Init")
+                and set(document.get("NetworkSettings", {}).get("Networks", {})) == {"none"},
+                "verification requires private init/group/network envelope")
     requests = h.get("DeviceRequests")
     if spec["uuids"]:
         require(type(requests) is list and len(requests) == 1 and requests[0]["DeviceIDs"] == spec["uuids"]
@@ -330,6 +403,8 @@ def admit(document, spec, cid):
     env = dict(x.split("=", 1) for x in c["Env"])
     require(not env.get("PYTEST_ADDOPTS"), "inherited pytest options cannot narrow the complete module contract")
     require(all(env.get(k) == v for k, v in spec["environment"].items()), "environment admission differs")
+    if verification:
+        _verification_environment(env)
     actual = []
     for m in document["Mounts"]:
         if m["Type"] == "tmpfs":
@@ -338,6 +413,98 @@ def admit(document, spec, cid):
             require(m["Type"] == "bind" and type(m["RW"]) is bool, "unrequested/invalid mount type")
             actual.append({"source": m["Source"], "target": m["Destination"], "read_only": not m["RW"]})
     require(sorted(actual, key=lambda x: x["target"]) == sorted(spec["mounts"], key=lambda x: x["target"]), "mount identity differs")
+
+
+
+
+def verification_operator(spec, spec_identity=None):
+    """No unbound Python neighbour may run before the trusted PREQUAL gate."""
+    root = Path(next(m["source"] for m in spec["mounts"] if m["target"] == "/operator"))
+    allowed = {Path(item["path"]).name: item for item in
+               [*spec["inputs"], spec["source"]["manifest"], *([spec_identity] if spec_identity else [])]
+               if Path(item["path"]).parent == root}
+    require(not root.is_symlink() and root.is_dir() and root.stat().st_uid == 1000
+            and not stat.S_IMODE(root.stat().st_mode) & 0o222, "verification operator directory must be frozen/owned")
+    actual = set()
+    for path in root.iterdir():
+        require(path.name in allowed and not path.is_symlink() and path.is_file()
+                and path.stat().st_uid == 1000 and not stat.S_IMODE(path.stat().st_mode) & 0o222,
+                "unmanaged or writable verification operator input")
+        check_raw_file(allowed[path.name])
+        actual.add(path.name)
+    require(actual == set(allowed), "verification operator closure missing")
+    return {name: allowed[name] for name in sorted(actual)}
+
+
+def verification_image(candidate, base, spec):
+    """Verify purpose-image lineage without changing/resealing its SDK."""
+    require(candidate.get("Id") == spec["image_id"]
+            and base.get("Id") == spec["verification_launcher"]["base_image_id"], "verification image IDs differ")
+    layers, original = candidate.get("RootFS", {}).get("Layers"), base.get("RootFS", {}).get("Layers")
+    require(type(layers) is list and type(original) is list and 0 < len(original) < len(layers) <= 4096
+            and all(type(v) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", v) for v in layers)
+            and layers[:len(original)] == original, "verification image is not the exact declared base derivative")
+    return {"image_id": candidate["Id"], "base_image_id": base["Id"], "base_layers": original, "purpose_layers": layers}
+
+
+def verification_receipt(raw, spec, expected):
+    """Bind trusted inner PREQUAL evidence, never a substitute provider loader."""
+    fields = {"schema", "mode", "image_id", "source_commit", "verification_launcher", "PID", "uids", "gids", "caps",
+              "launcher", "python", "providers", "runtime", "loader_environment", "NoNewPrivs"}
+    require(type(raw) is dict and set(raw) == fields and raw["schema"] == "tensorfold.verification-launcher-preflight-v1"
+            and raw["mode"] == VERIFICATION_MODE and raw["verification_launcher"] == spec["verification_launcher"]
+            and raw["image_id"] == spec["image_id"] and raw["source_commit"] == expected["source_commit"],
+            "verification prequalification receipt identity/schema differs")
+    require(type(raw["PID"]) is int and raw["PID"] == 1
+            and all(type(raw[k]) is list and len(raw[k]) == 4 and all(type(v) is int and v == 1000 for v in raw[k])
+                    for k in ("uids", "gids"))
+            and raw["caps"] == {k: VERIFICATION_CAP for k in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb")}
+            and raw["NoNewPrivs"] == "0" and raw["loader_environment"] == {"LD_LIBRARY_PATH": None},
+            "actual verification UID/GID/capabilities/loader environment differs")
+    contract, launcher, python = spec["verification_launcher"], raw["launcher"], raw["python"]
+    require(type(launcher) is dict and set(launcher) == {"path", "bytes", "sha256", "mode", "uid", "source", "file_capability_hex"}
+            and {k: launcher[k] for k in ("path", "bytes", "sha256")} == {k: contract["launcher"][k] for k in ("path", "bytes", "sha256")}
+            and type(launcher["mode"]) is int and launcher["mode"] == 0o555
+            and type(launcher["uid"]) is int and launcher["uid"] == 0
+            and launcher["file_capability_hex"] == VERIFICATION_XATTR
+            and launcher["source"] == {"path": VERIFICATION_SOURCE, "bytes": contract["launcher"]["source_bytes"],
+                "sha256": contract["launcher"]["source_sha256"], "mode": 0o444, "uid": 0},
+            "actual owned launcher/source/xattr differs")
+    require(type(python) is dict and set(python) == {"path", "resolved_path", "bytes", "sha256", "mode", "uid"}
+            and {k: python[k] for k in ("path", "bytes", "sha256")} == contract["python"]
+            and python["resolved_path"] == "/usr/bin/python3.12"
+            and type(python["mode"]) is int and python["mode"] == 0o755
+            and type(python["uid"]) is int and python["uid"] == 0, "actual protected Python differs")
+    require(type(launcher["source"]) is dict and type(launcher["source"].get("uid")) is int
+            and type(launcher["source"].get("mode")) is int, "launcher source identity types differ")
+    require(raw["runtime"] == expected["runtime"], "prequalification installed App/SDK/FD/Torch differs")
+    providers = raw["providers"]
+    require(type(providers) is dict and providers.get("schema") == "tensorfold.native-elf-observation-v3"
+            and providers.get("identity_method") == "kernel-vma-backed-fd-v1" and type(providers.get("PID")) is int
+            and providers["PID"] == 1 and providers.get("missing_required_provider_paths") == []
+            and providers.get("required_providers") == contract["providers"], "provider FD proof summary differs")
+    rows = providers.get("mapped_elfs")
+    require(type(rows) is list and rows and all(type(row) is dict for row in rows), "mapped provider FD rows required")
+    for path, identity in contract["providers"].items():
+        require(any(row.get("path") == path and type(row.get("bytes")) is int and row["bytes"] == identity["bytes"]
+                    and row.get("sha256") == identity["sha256"] for row in rows), "required provider backing identity missing")
+    return raw
+
+
+def verification_status(text):
+    """Host-side live status only after PREQUAL; EPERM is an owning failure."""
+    wanted = {"Uid", "Gid", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs"}
+    fields = {}
+    for line in text.splitlines():
+        name, separator, value = line.partition(":")
+        if separator and name in wanted:
+            require(name not in fields, "duplicate verification process status field")
+            fields[name] = value.split()
+    require(set(fields) == wanted
+            and all(fields[k] == ["1000"]*4 for k in ("Uid", "Gid"))
+            and all(fields[k] == [VERIFICATION_CAP] for k in wanted - {"Uid", "Gid", "NoNewPrivs"})
+            and fields["NoNewPrivs"] == ["0"], "running verification identity/caps differs")
+    return fields
 
 
 def cgroup_entry(text):
@@ -385,7 +552,7 @@ class System:
         else:
             from gb10_controller import Host
         self.host, self.output = Host(output), output
-        self.pidfd, self.group = None, None
+        self.pidfd, self.group, self.init_pid = None, None, None
         self.spec_identity = spec_identity
 
     def command(self, argv, timeout=30):
@@ -419,8 +586,14 @@ class System:
             bound_file(self.spec_identity)
         image = self.command(["docker", "image", "inspect", "--format", "{{.Id}}", spec["image_id"]]).strip()
         require(image == spec["image_id"], "image identity changed")
-        return {"source_manifest": spec["source"]["manifest"]["sha256"], "source_fixture": fixture, "source": actual,
-                "inputs": spec["inputs"], "image_id": image}
+        result = {"source_manifest": spec["source"]["manifest"]["sha256"], "source_fixture": fixture, "source": actual,
+                  "inputs": spec["inputs"], "image_id": image}
+        if "verification_launcher" in spec:
+            result["verification_operator"] = verification_operator(spec, self.spec_identity)
+            candidate = object_json(self.command(["docker", "image", "inspect", "--format", "{{json .}}", image]))
+            base = object_json(self.command(["docker", "image", "inspect", "--format", "{{json .}}", spec["verification_launcher"]["base_image_id"]]))
+            result["verification_image"] = verification_image(candidate, base, spec)
+        return result
 
     def start(self, cid, log):
         return subprocess.Popen(["docker", "start", "--attach", cid], stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -453,6 +626,7 @@ class System:
         require(state["Running"] and type(state["Pid"]) is int and state["Pid"] > 0, "running init PID required")
         pid = state["Pid"]
         self.pidfd = os.pidfd_open(pid)
+        self.init_pid = pid
         if select.select([self.pidfd], [], [], 0)[0]:
             raise ProcessDeparted("container init already exited")
         group = cgroup_entry(read_kernel(Path("/proc") / str(pid) / "cgroup", 65536).decode())
@@ -463,6 +637,20 @@ class System:
             raise ProcessDeparted("container exited during startup binding")
         require(current["State"]["Pid"] == pid and not select.select([self.pidfd], [], [], 0)[0], "startup PID changed")
         return self.sample(spec)
+
+    def verification_process(self, cid, spec):
+        document = self.inspect(cid)
+        require(owns_container(document, spec, cid), "verification process container identity differs")
+        if terminal(document):
+            raise ProcessDeparted("verification process already retired")
+        require(self.pidfd is not None and not select.select([self.pidfd], [], [], 0)[0], "verification PID owner departed")
+        pid = document["State"]["Pid"]
+        require(pid == self.init_pid, "verification init differs from pinned PID owner")
+        status = verification_status(read_kernel(Path("/proc") / str(pid) / "status", 65536).decode())
+        process_group_allowed(read_kernel(Path("/proc") / str(pid) / "cgroup", 65536).decode(), self.group)
+        current = self.inspect(cid)
+        require(current["State"]["Pid"] == pid and not select.select([self.pidfd], [], [], 0)[0], "verification PID changed")
+        return {"host_PID": pid, "status": status}
 
     def sample(self, spec):
         require(self.group is not None, "owned cgroup not bound")
@@ -719,6 +907,17 @@ def run(spec, output, system=None, *, spec_identity=None):
                         raise
                     final = raced
                     break
+            if bound and "verification_launcher" in spec and "verification_preflight" not in outcome:
+                try:
+                    receipt = object_json(read_bytes(output / "verification-launcher-preflight.json", LIMIT))
+                except FileNotFoundError:
+                    pass  # Trusted inner refuses CUDA/tests until it publishes this verified receipt.
+                else:
+                    outcome["verification_preflight"] = verification_receipt(receipt, spec, expected_inner)
+                    try:
+                        outcome["verification_process"] = system.verification_process(cid, spec)
+                    except (FileNotFoundError, ProcessLookupError, ProcessDeparted):
+                        require(terminal(system.inspect(cid)), "verification process disappeared while still running")
             if process.poll() is not None:
                 # The attach client alone does not prove container retirement.
                 require(terminal(system.inspect(cid)), "attach exited while container is not terminal")
@@ -744,6 +943,12 @@ def run(spec, output, system=None, *, spec_identity=None):
         outcome["startup"] = {"cgroup_binding_observed": bound, "terminal_before_binding": not bound}
         code = process.wait(timeout=spec["timeouts"]["retire"])
         require(code == 0 and terminal(final) and final["State"]["ExitCode"] == 0 and not final["State"]["OOMKilled"], "native container failed")
+        if "verification_launcher" in spec:
+            receipt = object_json(read_bytes(output / "verification-launcher-preflight.json", LIMIT))
+            verified = verification_receipt(receipt, spec, expected_inner)
+            require("verification_preflight" not in outcome or outcome["verification_preflight"] == verified,
+                    "verification prequalification receipt changed")
+            outcome["verification_preflight"] = verified
         outcome["inner"] = object_json(read_bytes(output / "named-suite-result.json", LIMIT))
         suite_result(outcome["inner"], expected_inner["mode"])
         require(outcome["inner"]["source_commit"] == expected_inner["source_commit"]

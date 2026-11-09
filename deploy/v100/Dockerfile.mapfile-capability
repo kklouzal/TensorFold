@@ -1,0 +1,19 @@
+# Qualification-only derivative of an exact pre-existing verified image.
+# No SDK/Python/App/vendor package changes; capability belongs ONLY to this tool.
+ARG QUALIFICATION_BASE_IMAGE
+FROM ${QUALIFICATION_BASE_IMAGE}
+USER 0:0
+RUN --network=none test ! -e /opt/qualification && mkdir -p /opt/qualification/bin
+COPY --chmod=0444 tools/native_mapfile_cap_launcher.c /opt/qualification/native_mapfile_cap_launcher.c
+RUN --network=none /usr/bin/cc -std=c11 -O2 -Wall -Wextra -Werror -Wconversion -Wshadow -pedantic \
+       -fPIE -pie -fstack-protector-strong -D_FORTIFY_SOURCE=3 \
+       -Wl,-z,relro,-z,now,-z,noexecstack \
+       /opt/qualification/native_mapfile_cap_launcher.c \
+       -o /opt/qualification/bin/native-mapfile-cap-launcher \
+    && chmod 0555 /opt/qualification/bin/native-mapfile-cap-launcher \
+    && python3 -c 'import hashlib,json,os,pathlib,struct,subprocess; p=pathlib.Path("/opt/qualification/bin/native-mapfile-cap-launcher"); s=pathlib.Path("/opt/qualification/native_mapfile_cap_launcher.c"); x=struct.pack("<5I",0x02000001,0,0,256,0); os.setxattr(p,"security.capability",x); assert os.getxattr(p,"security.capability")==x; pathlib.Path("/opt/qualification/mapfile-launcher-build.json").write_text(json.dumps({"schema":"tensorfold.mapfile-cap-launcher-build-v1","source_sha256":hashlib.sha256(s.read_bytes()).hexdigest(),"binary_sha256":hashlib.sha256(p.read_bytes()).hexdigest(),"file_capability_hex":x.hex(),"compiler":subprocess.check_output(["/usr/bin/cc","--version"],text=True)},sort_keys=True)+"\n")' \
+    && chmod 0444 /opt/qualification/mapfile-launcher-build.json \
+    && chmod 0555 /opt/qualification /opt/qualification/bin
+USER 1000:1000
+ENTRYPOINT ["/opt/qualification/bin/native-mapfile-cap-launcher"]
+CMD []

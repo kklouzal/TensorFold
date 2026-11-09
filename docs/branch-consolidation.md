@@ -124,9 +124,8 @@ not GPU vision, model quality, MLX or serving performance.
 The original prepared run retains 39 passes and four fixture failures. The
 initial reviewed applicability repairs were exercised in the subsequent run
 below, preserving strict numerical/state assertions and real MTP
-multirow/truncated-prefix coverage. Newer API/growth repairs still require
-their own actual-target checks; strict numerical qualification remains open
-despite the separate diagnostic below.
+multirow/truncated-prefix coverage. The newer API/growth repairs passed the
+current-image run described below; strict numerical qualification remains open.
 Owner-graph orchestration failures and the subsequent unresolved participant
 timeout at its unchanged 600-second deadline remain in the evidence. The other
 cohort case was interrupted after preserving that failure. No cohort pass is
@@ -170,6 +169,15 @@ changes four retained FP16 attention outputs. The original prestate was not
 proved identical to this instrumented rerun. These observations neither
 establish the first arithmetic cause nor qualify numerical quality or speed.
 The original zero-tolerance assertions remain unchanged.
+
+The complete current `18e37982` installed prepared/bound-graph run then executed
+57 cases: 53 passed, four failed numerically, and none skipped. All four repaired
+callback/growth cases passed. Correct cache setup allowed the world-4 and
+world-8 cases to reach strict numerical comparisons, where they also failed.
+Together with prepared-int8 and six-slot MTP failures, four numerical gates
+remain open. The parent native mapping is verified; distributed child mappings
+were not independently recorded, so full cohort provenance remains open. The
+failed run retired cleanly without OOM or residual GPU contexts.
 
 | Open item | Remaining action |
 | --- | --- |

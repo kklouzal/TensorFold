@@ -26,7 +26,8 @@ CHILD_EVIDENCE_ENV = 'TENSORFOLD_NATIVE_CONTRACT_CHILD_EVIDENCE'
 CONTEXT_FATAL = ('illegal memory access', 'device-side assert triggered', 'unspecified launch failure')
 OUTPUTS = ('installed-SDK-source-origin.json', 'collection-identities.json', 'first-failure.json',
            'named-suite.xml', 'sampled-allocation-process-cgroup.json', 'actual-native-ELF.json',
-           'source-after.json', 'named-suite-result.json', 'phase.json', 'child-native-ELF')
+           'source-after.json', 'named-suite-result.json', 'phase.json', 'child-native-ELF',
+           'verification-launcher-preflight.json')
 
 
 def _sha(value, length=64):
@@ -63,7 +64,8 @@ def normal_uuid(value):
 def validate_spec(spec):
     fields = ('schema', 'mode', 'image_id', 'source_commit', 'app_root', 'expected_app', 'sdk_manifest',
               'fd', 'torch', 'UUIDs', 'SM', 'modules', 'test_files', 'diagnostics', 'required_native_elf_prefixes')
-    if not _keys(spec, fields) or spec['schema'] != SCHEMA:
+    if (type(spec) is not dict or set(spec) not in (set(fields), set(fields) | {'verification_launcher'})
+            or spec['schema'] != SCHEMA):
         raise ValueError('unsupported or incomplete native-contract spec schema')
     if spec['mode'] not in ('cpu', 'cuda'):
         raise ValueError('an explicit CPU or CUDA qualification route is required')
@@ -113,7 +115,33 @@ def validate_spec(spec):
             or not all(c.isascii() and (c.isalnum() or c == '_') for c in p) for p in prefixes)
             or len(set(prefixes)) != len(prefixes)):
         raise ValueError('required parent ELF prefixes must name distinct owned tf_ modules')
+    if 'verification_launcher' in spec:
+        _verification_contract(spec['verification_launcher'])
     return spec
+
+
+def _verification_contract(value):
+    if (not _keys(value, ('mode', 'base_image_id', 'launcher', 'python', 'providers'))
+            or value['mode'] != 'map-files-cap40-v1'
+            or type(value['base_image_id']) is not str or not value['base_image_id'].startswith('sha256:')
+            or not _sha(value['base_image_id'][7:])):
+        raise ValueError('closed qualification-only launcher contract required')
+    launch, python = value['launcher'], value['python']
+    if (not _keys(launch, ('path', 'bytes', 'sha256', 'source_bytes', 'source_sha256', 'file_capability_hex'))
+            or launch['path'] != '/opt/qualification/bin/native-mapfile-cap-launcher'
+            or not _positive(launch['bytes']) or not _positive(launch['source_bytes'])
+            or not _sha(launch['sha256']) or not _sha(launch['source_sha256'])
+            or launch['file_capability_hex'] != '0100000200000000000000000001000000000000'
+            or not _keys(python, ('path', 'bytes', 'sha256')) or python['path'] != '/opt/venv/bin/python3'
+            or not _positive(python['bytes']) or not _sha(python['sha256'])):
+        raise ValueError('exact owned launcher/source and protected Python identities required')
+    providers = value['providers']
+    if type(providers) is not dict or not providers:
+        raise ValueError('nonempty actual required-provider identity set required')
+    for path, identity in providers.items():
+        if (not _absolute(path) or not _keys(identity, ('bytes', 'sha256'))
+                or not _positive(identity['bytes']) or not _sha(identity['sha256'])):
+            raise ValueError('exact absolute mapped-provider identities required')
 
 
 def load_spec(path, *, expected_sha, expected_bytes):
@@ -338,8 +366,13 @@ def _admit_runtime(spec, runtime):
     torch = runtime.torch
     if torch.version.git_version != spec['torch']['git_version'] or torch.version.cuda != spec['torch']['cuda']:
         raise RuntimeError('installed Torch revision or CUDA version differs')
+    return root
+
+
+def _visible_devices(spec, runtime):
     if spec['mode'] == 'cpu':
-        return root, []
+        return []
+    torch = runtime.torch
     if torch.cuda.device_count() != len(spec['UUIDs']):
         raise RuntimeError('visible device count differs')
     devices = [{'index': i, 'UUID': str(torch.cuda.get_device_properties(i).uuid),
@@ -347,7 +380,7 @@ def _admit_runtime(spec, runtime):
     if ([normal_uuid(device['UUID']) for device in devices] != [normal_uuid(value) for value in spec['UUIDs']]
             or any(device['SM'] != spec['SM'] for device in devices)):
         raise RuntimeError('visible device UUID order or SM differs')
-    return root, devices
+    return devices
 
 
 def _read_native_maps():
@@ -355,28 +388,37 @@ def _read_native_maps():
     return _read_text('/proc/self/maps', 16 << 20)
 
 
-def _native_map_rows(text):
+def _native_map_rows(text, provider_paths=()):
     rows = {}
     for line in text.splitlines():
         fields = line.split(None, 5)
         if len(fields) != 6:
             continue
-        _, permissions, _, device, inode, encoded = fields
+        extent, permissions, offset, device, inode, encoded = fields
         path = re.sub(r'\\([0-7]{3})', lambda match: chr(int(match[1], 8)), encoded)
         deleted = path.endswith(' (deleted)')
         if deleted:
             path = path[:-10]
         name = Path(path).name
-        if not (name.startswith('tf_') and name.endswith('.so') and 'x' in permissions):
+        if not ('x' in permissions and ((name.startswith('tf_') and name.endswith('.so')) or path in provider_paths)):
             continue
         if deleted or not Path(path).is_absolute():
             raise ValueError('mapped native ELF has no stable ordinary pathname')
+        start, end = (int(value, 16) for value in extent.split('-'))
+        if not 0 < start < end:
+            raise ValueError('mapped native ELF has an invalid VMA range')
         major, minor = device.split(':')
         key = (int(major, 16), int(minor, 16), int(inode), path)
         if key[2] <= 0:
             raise ValueError('mapped native ELF has no file inode')
-        rows[key] = name[:-3]
+        row = rows.setdefault(key, {'name': name.removesuffix('.so'), 'segments': []})
+        segment = (start, end, permissions, int(offset, 16))
+        if segment not in row['segments']:
+            row['segments'].append(segment)
+    for row in rows.values():
+        row['segments'].sort()
     return rows
+
 
 
 @contextmanager
@@ -397,53 +439,224 @@ def _owned_descriptor(path, flags, mode=0o777, *, dir_fd=None):
         os.close(descriptor)
 
 
-def _mapped_elf_identity(key):
-    major, minor, inode, path = key
-    with _owned_descriptor(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW) as descriptor:
-        before = os.fstat(descriptor)
-        if (not stat.S_ISREG(before.st_mode)
-                or (os.major(before.st_dev), os.minor(before.st_dev), before.st_ino) != (major, minor, inode)):
-            raise RuntimeError('mapped native ELF device/inode differs from its opened file')
-        digest = hashlib.sha256()
-        header = b''
-        while len(header) < 4:
-            block = os.read(descriptor, 4 - len(header))
-            if not block:
-                raise ValueError('mapped native file is not ELF')
-            header += block
-        if header != b'\x7fELF':
+class _FailureSlots:
+    """Preallocated error references projected to the neutral helper sequence."""
+    def __init__(self, count):
+        self.values = [None] * count
+
+    def __bool__(self):
+        for error in self.values:
+            if error is not None:
+                return True
+        return False
+
+    def __getitem__(self, index):
+        if index != 0:
+            raise IndexError('only first-error projection is supported')
+        for error in self.values:
+            if error is not None:
+                return error
+        raise IndexError(index)
+
+    def __iter__(self):
+        return (error for error in self.values if error is not None)
+
+
+class _MappingFDs:
+    """Journal all FD slots BEFORE open; hold all mapped objects through recheck."""
+    def __init__(self, capacity):
+        _, self.transport = _helpers()
+        self.descriptors = [None] * capacity
+        self.failures = _FailureSlots(capacity + 1)
+        self.diagnostic = _FailureSlots(1)
+        self.indices = tuple(range(capacity))
+
+    def open(self, path, flags):
+        for index in self.indices:
+            if self.descriptors[index] is None:
+                descriptor = os.open(path, flags)
+                self.descriptors[index] = descriptor
+                return descriptor
+        raise RuntimeError('mapped FD journal capacity was not prepaid')
+
+    def close(self, primary):
+        try:
+            for index in self.indices:
+                descriptor = self.descriptors[index]
+                if descriptor is not None:
+                    self.descriptors[index] = None  # Linux close consumes; never retry.
+                    try:
+                        os.close(descriptor)
+                    except BaseException as error:
+                        self.failures.values[index] = error
+        except BaseException as error:
+            # Remaining descriptors stay journal-owned for terminal containment.
+            self.failures.values[-1] = error
+        self.transport(primary, self.failures)
+
+
+@contextmanager
+def _mapping_fds(capacity):
+    owner = _MappingFDs(capacity)
+    primary = None
+    try:
+        yield owner
+    except BaseException as error:
+        primary = error
+    finally:
+        owner.close(primary)
+
+
+def _mapfile_access_precondition():
+    fields = {}
+    for line in _read_text('/proc/thread-self/status', 65536).splitlines():
+        key, separator, value = line.partition(':')
+        if separator:
+            fields[key] = value.strip()
+    uids = [int(value) for value in fields['Uid'].split()]
+    gids = [int(value) for value in fields['Gid'].split()]
+    caps = {key: fields[key] for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')}
+    if (uids != [1000] * 4 or gids != [1000] * 4
+            or any(value != '0000010000000000' for value in caps.values())
+            or fields.get('NoNewPrivs') != '0'):
+        raise RuntimeError('kernel VMA FD observation requires UID/GID1000 and ONLY E/P/I/A/B checkpoint capability')
+    return {'uids': uids, 'gids': gids, 'caps': caps, 'NoNewPrivs': fields['NoNewPrivs']}
+
+
+def _file_stat(descriptor):
+    value = os.fstat(descriptor)
+    if not stat.S_ISREG(value.st_mode):
+        raise ValueError('kernel VMA backing object must be an ordinary file')
+    return {'device': value.st_dev, 'device_major': os.major(value.st_dev), 'device_minor': os.minor(value.st_dev),
+            'inode': value.st_ino, 'bytes': value.st_size, 'mode': stat.S_IMODE(value.st_mode),
+            'mtime_ns': value.st_mtime_ns, 'ctime_ns': value.st_ctime_ns}
+
+
+def _mount_table():
+    rows = {}
+    for line in _read_text('/proc/thread-self/mountinfo', 1 << 20).splitlines():
+        left, separator, right = line.partition(' - ')
+        fields, filesystem = left.split(), right.split()
+        if not separator or len(fields) < 6 or not filesystem:
+            raise ValueError('invalid current mount-namespace record')
+        rows[int(fields[0])] = {'mount_id': int(fields[0]), 'parent_id': int(fields[1]),
+            'device': fields[2], 'root': fields[3], 'mountpoint': fields[4], 'filesystem': filesystem[0]}
+    return rows
+
+
+def _fd_mount(descriptor, table):
+    fields = dict(line.split(':', 1) for line in _read_text('/proc/self/fdinfo/' + str(descriptor), 65536).splitlines()
+                  if ':' in line)
+    mount = int(fields['mnt_id'])
+    if mount not in table:
+        raise RuntimeError('held mapped FD mount is absent from current namespace')
+    return table[mount]
+
+
+def _namespace_stat(descriptor):
+    value = os.fstat(descriptor)
+    return (value.st_dev, value.st_ino)
+
+
+def _hash_held_elf(descriptor):
+    digest = hashlib.sha256()
+    header = b''
+    while len(header) < 4:
+        block = os.read(descriptor, 4 - len(header))
+        if not block:
             raise ValueError('mapped native file is not ELF')
-        digest.update(header)
-        while True:
-            block = os.read(descriptor, 1 << 20)
-            if not block:
-                break
-            digest.update(block)
-        after = os.fstat(descriptor)
-        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
-        if any(getattr(before, field) != getattr(after, field) for field in fields):
-            raise RuntimeError('mapped native ELF changed while hashed')
-        pathname = os.stat(path, follow_symlinks=False)
-        if any(getattr(after, field) != getattr(pathname, field) for field in fields):
-            raise RuntimeError('mapped native ELF pathname changed while hashed')
-        return {'path': path, 'device_major': major, 'device_minor': minor, 'inode': inode,
-                'bytes': after.st_size, 'mode': stat.S_IMODE(after.st_mode), 'sha256': digest.hexdigest()}
+        header += block
+    if header != b'\x7fELF':
+        raise ValueError('mapped native file is not ELF')
+    digest.update(header)
+    while True:
+        block = os.read(descriptor, 1 << 20)
+        if not block:
+            break
+        digest.update(block)
+    return digest.hexdigest()
 
 
-def observe_native_elfs(required):
-    """Observe current-process executable file mappings; never load an extension.
+def _same_mapped_object(owner, expected, actual, label):
+    if actual != expected:
+        primary = RuntimeError('kernel VMA backing object changed or differs: ' + label)
+        try:
+            note = ('VMA_FD_IDENTITY expected=' + json.dumps(expected, sort_keys=True)
+                    + ' actual=' + json.dumps(actual, sort_keys=True))
+            if len(note) > 12000:
+                raise ValueError('VMA identity context exceeds 12000 characters')
+            primary.add_note(note)
+        except BaseException as error:
+            owner.diagnostic.values[0] = error
+            owner.transport(primary, owner.diagnostic)
+        raise primary
 
-    A Python registry entry alone is not mapping evidence. Mapped-file evidence
-    does not establish which kernel executed or describe another process.
+
+def observe_native_elfs(required, *, provider_paths=()):
+    """Bind EVERY selected executable VMA to its kernel-held backing object.
+
+    Requires the qualification-only checkpoint envelope when mappings exist.
+    No raw-map-device equality, inode-only, registry or content-hash fallback.
+    No extension load or CUDA API. Caller owns loader/consumer quiescence.
     """
     if (type(required) is not list or any(type(prefix) is not str or not prefix.startswith('tf_')
             or not all(c.isascii() and (c.isalnum() or c == '_') for c in prefix) for prefix in required)
             or len(set(required)) != len(required)):
         raise ValueError('distinct owned native prefixes required')
-    before = _native_map_rows(_read_native_maps())
-    mapped = [{**_mapped_elf_identity(key), 'name': name} for key, name in sorted(before.items())]
-    after = _native_map_rows(_read_native_maps())
-    if before != after:
+    if any(not _absolute(path) for path in provider_paths):
+        raise ValueError('absolute declared provider paths required')
+    before = _native_map_rows(_read_native_maps(), provider_paths)
+    mapped, access, namespace = [], None, None
+    if before:
+        access = _mapfile_access_precondition()  # Before any backing/path FD acquisition.
+        count = 1 + sum(2 + 2 * len(row['segments']) for row in before.values())
+        with _mapping_fds(count) as owner:
+            ns_fd = owner.open('/proc/thread-self/ns/mnt', os.O_RDONLY | os.O_CLOEXEC)
+            namespace = {'identity': _namespace_stat(ns_fd), 'link': os.readlink('/proc/thread-self/ns/mnt')}
+            mounts = _mount_table()
+            pending = []
+            for key, row in sorted(before.items()):
+                _, _, _, path = key
+                backings = []
+                for start, end, permissions, offset in row['segments']:
+                    link = '/proc/self/map_files/' + format(start, 'x') + '-' + format(end, 'x')
+                    # Deliberately follow ONLY this kernel VMA magic link.
+                    backing = owner.open(link, os.O_RDONLY | os.O_CLOEXEC)
+                    backings.append((link, backing))
+                identity, mount = _file_stat(backings[0][1]), _fd_mount(backings[0][1], mounts)
+                for _, backing in backings[1:]:
+                    _same_mapped_object(owner, identity, _file_stat(backing), 'other executable VMA FD')
+                    _same_mapped_object(owner, mount, _fd_mount(backing, mounts), 'other executable VMA mount')
+                path_fd = owner.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+                _same_mapped_object(owner, identity, _file_stat(path_fd), 'pathname versus VMA FD')
+                _same_mapped_object(owner, mount, _fd_mount(path_fd, mounts), 'pathname versus VMA mount')
+                digest = _hash_held_elf(backings[0][1])
+                pending.append((key, row, path_fd, identity, mount, backings, digest))
+            # All original VMA/path/namespace FDs remain held through all
+            # backing-object reopens and the final global namespace/maps check.
+            for key, row, path_fd, identity, mount, backings, digest in pending:
+                reopened = owner.open(key[3], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+                _same_mapped_object(owner, identity, _file_stat(path_fd), 'retained pathname metadata')
+                _same_mapped_object(owner, identity, _file_stat(reopened), 'reopened pathname FD')
+                _same_mapped_object(owner, mount, _fd_mount(reopened, mounts), 'reopened pathname mount')
+                for link, backing in backings:
+                    _same_mapped_object(owner, identity, _file_stat(backing), 'retained VMA metadata')
+                    second = owner.open(link, os.O_RDONLY | os.O_CLOEXEC)
+                    _same_mapped_object(owner, identity, _file_stat(second), 'reopened VMA FD')
+                    _same_mapped_object(owner, mount, _fd_mount(second, mounts), 'reopened VMA mount')
+                mapped.append({'name': row['name'], 'path': key[3], **identity, 'sha256': digest,
+                    'raw_map_device': [key[0], key[1]], 'raw_map_inode': key[2], 'mount': mount,
+                    'vmas': [{'start': start, 'end': end, 'permissions': permissions, 'offset': offset}
+                             for start, end, permissions, offset in row['segments']]})
+            if before != _native_map_rows(_read_native_maps(), provider_paths):
+                raise RuntimeError('native ELF mappings changed during observation')
+            if mounts != _mount_table():
+                raise RuntimeError('mount namespace changed during native observation')
+            current_namespace = os.stat('/proc/thread-self/ns/mnt')
+            _same_mapped_object(owner, namespace['identity'],
+                (current_namespace.st_dev, current_namespace.st_ino), 'mount namespace')
+            _same_mapped_object(owner, access, _mapfile_access_precondition(), 'access capabilities')
+    elif before != _native_map_rows(_read_native_maps(), provider_paths):
         raise RuntimeError('native ELF mappings changed during observation')
     registry = {}
     for name, module in tuple(sys.modules.items()):
@@ -452,10 +665,11 @@ def observe_native_elfs(required):
             if type(value) is str and value.endswith('.so'):
                 registry[name] = value
     missing = [prefix for prefix in required if not any(row['name'].startswith(prefix) for row in mapped)]
-    return {'schema': 'tensorfold.native-elf-observation-v2', 'PID': os.getpid(),
-            'mapped_elfs': mapped, 'python_registry': registry,
-            'missing_required_prefixes': missing,
-            'scope': 'Current process executable mappings only; no forced load, kernel-use or child inference.'}
+    return {'schema': 'tensorfold.native-elf-observation-v3', 'identity_method': 'kernel-vma-backed-fd-v1',
+            'PID': os.getpid(), 'access_precondition': access, 'mount_namespace': namespace,
+            'mapped_elfs': mapped, 'python_registry': registry, 'missing_required_prefixes': missing,
+            'missing_required_provider_paths': [path for path in provider_paths if not any(row['path'] == path for row in mapped)],
+            'scope': 'Current-process observed VMA backing objects at quiescent boundaries; no forced load, continuous-execution or child inference.'}
 
 
 def _native_elfs(required):
@@ -500,6 +714,67 @@ def record_native_elfs(required, *, rank, tag, evidence_dir):
     return report
 
 
+def _verification_process(spec):
+    contract = spec['verification_launcher']
+    process = _mapfile_access_precondition()
+    if os.getpid() != 1:
+        raise RuntimeError('qualified driver must be the private PID namespace init')
+    unsafe = ('PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'PYTHONINSPECT', 'LD_PRELOAD', 'LD_AUDIT')
+    if any(name in os.environ for name in unsafe) or 'LD_LIBRARY_PATH' in os.environ:
+        raise RuntimeError('secureexec loader/Python environment must be absent; restoration is forbidden')
+    def identity(path, expected, *, resolved=False):
+        requested = Path(path)
+        actual = requested.resolve(strict=True) if resolved else requested
+        result = file_identity(actual)
+        info = actual.stat()
+        if info.st_uid != 0 or result['mode'] & 0o022 or info.st_mode & (stat.S_ISUID | stat.S_ISGID):
+            raise RuntimeError('qualification executable/source ownership differs')
+        if any(result[key] != expected[key] for key in ('bytes', 'sha256')):
+            raise RuntimeError('qualification executable/source identity differs: ' + str(requested))
+        return {'path': str(requested), **result, 'uid': info.st_uid, **({'resolved_path': str(actual)} if resolved else {})}
+    launch = identity(contract['launcher']['path'], contract['launcher'])
+    launch['source'] = identity('/opt/qualification/native_mapfile_cap_launcher.c',
+        {'bytes': contract['launcher']['source_bytes'], 'sha256': contract['launcher']['source_sha256']})
+    launch['file_capability_hex'] = os.getxattr(launch['path'], 'security.capability').hex()
+    if launch['mode'] != 0o555 or launch['source']['mode'] != 0o444 or launch['file_capability_hex'] != contract['launcher']['file_capability_hex']:
+        raise RuntimeError('qualification launcher mode or ONLY40 file capability differs')
+    python = identity(contract['python']['path'], contract['python'], resolved=True)
+    if sys.executable != contract['python']['path'] or Path(sys.executable).resolve() != Path(python['resolved_path']):
+        raise RuntimeError('executing Python differs from protected declared interpreter')
+    if 'security.capability' in os.listxattr(python['resolved_path']):
+        raise RuntimeError('protected Python must never carry file capabilities')
+    return process, launch, python
+
+
+def _verification_receipt(spec, runtime, root, initial):
+    process, launch, python = initial
+    contract = spec['verification_launcher']
+    required = contract['providers']
+    mandatory = {str(Path(runtime.fd.__file__).resolve()), str(Path(runtime.torch._C.__file__).resolve())}
+    if not mandatory <= set(required):
+        raise RuntimeError('declared provider set must include actual native FD and Torch C core')
+    providers = observe_native_elfs([], provider_paths=required)
+    if providers['missing_required_provider_paths']:
+        raise RuntimeError('required provider was not actually mapped before qualification')
+    facts = {row['path']: {'bytes': row['bytes'], 'sha256': row['sha256']} for row in providers['mapped_elfs']}
+    if any(facts[path] != expected for path, expected in required.items()):
+        raise RuntimeError('actual mapped required provider identity differs')
+    providers['required_providers'] = {path: facts[path] for path in required}
+    current = _mapfile_access_precondition()
+    if current != process or any(name in os.environ for name in
+            ('PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'PYTHONINSPECT', 'LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH')):
+        raise RuntimeError('qualification access/environment changed during provider admission')
+    return {'schema': 'tensorfold.verification-launcher-preflight-v1', 'mode': contract['mode'],
+        'image_id': spec['image_id'], 'source_commit': spec['source_commit'], 'verification_launcher': contract,
+        'PID': os.getpid(), **current, 'launcher': launch, 'python': python, 'providers': providers,
+        'loader_environment': {'LD_LIBRARY_PATH': None},
+        'runtime': {'app_root': str(root), 'app_file_count': len(spec['expected_app']),
+            'app_inventory_sha256': hashlib.sha256(json.dumps(spec['expected_app'], sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+            'sdk_sha256': spec['sdk_manifest']['sha256'], 'fd_sha256': spec['fd']['sha256'],
+            'fd_source_sha256': runtime.fd._source_sha256, 'torch_git': runtime.torch.version.git_version,
+            'torch_cuda': runtime.torch.version.cuda}}
+
+
 def _junit(path, collected):
     suites = list(ET.parse(path).getroot().iter('testsuite'))
     if len(suites) != 1:
@@ -537,9 +812,13 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
             raise ValueError('application source overlay is forbidden')
         check_tests(source, spec['test_files'])
         sys.path[:0] = [str(source), str(source / 'tests'), str(source / 'tests/cuda')]
+        launch_admission = _verification_process(spec) if 'verification_launcher' in spec else None
         runtime = runtime_loader()
-        root, devices = _admit_runtime(spec, runtime)
+        root = _admit_runtime(spec, runtime)
         origins = _installed_origins(root)
+        if launch_admission is not None:
+            output.save('verification-launcher-preflight.json', _verification_receipt(spec, runtime, root, launch_admission))
+        devices = _visible_devices(spec, runtime)
         output.save('installed-SDK-source-origin.json', {'app_origin': str(root), 'runtime_members': spec['expected_app'],
             'source_commit': spec['source_commit'], 'image_id_declared': spec['image_id'],
             'Torch': runtime.torch.__version__, 'Torch_git': runtime.torch.version.git_version,

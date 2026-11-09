@@ -784,19 +784,32 @@ CUDA-context-fatal results stop remaining affected work. The CPU
 route never queries CUDA and cannot qualify a native case. Sampled resource
 observations are separate from allocator/admission bounds and serving timings.
 Import, `__mp_main__` and `--help` have no runtime/spec/evidence side effects.
-The 37 standard-library controls cover these contracts, including real spawn;
-actual target integration of the newer mapped-ELF observer and updated fixtures
-remains required. Earlier complete-pair results are scoped separately below.
+The current driver has 46 standard-library source controls, including real
+spawn; the paired host has 47. Source controls, actual CPU integration and each
+native cohort remain separate evidence.
 
-Native origin evidence comes from executable process mappings and stable
-regular-file device/inode/hash checks. Python's module registry is supplementary:
-Torch JIT extensions need not register there. The observer never loads an
-extension to manufacture evidence. Parent requirements describe parent mappings;
-spawned workers must separately emit anchored rank/PID/tag/observer-source
-records after actual native use. Stage the one exact driver at
-`/operator/v100_native_contract_driver.py` so those workers import the same
-inert observer. CUDA pytest execution owns and restores the private child-evidence
-directory setting; completed records do not replace numerical assertions.
+Native origin evidence uses the kernel's VMA-backed file descriptors, not just
+pathnames or Python's module registry. On the observed Btrfs subvolume, the raw
+device number in `/proc/self/maps` differed from pathname `fstat` even for the
+same object. The observer retains those raw facts but does not equate them to
+FD identity. It opens each observed VMA backing through
+`/proc/self/map_files`, reopens the namespace-visible pathname, and
+compares the opened objects' metadata, mount identity and hashes in the same
+FD domain. Mapping, mount-namespace and access changes or unreadable backing
+objects fail; there is no guessed device alias or copied-file substitute.
+
+Python's registry is supplementary: Torch JIT extensions need not register
+there. The observer never loads an extension to manufacture evidence. Parent
+requirements describe only parent mappings. Spawned workers must call
+`record_native_elfs` after their own native use and emit exclusive durable
+rank/PID/tag/observer-source records. Stage the exact driver at
+`/operator/v100_native_contract_driver.py` so workers import the same inert
+observer. The controlled CUDA driver owns and restores its fresh child-evidence
+setting. Acceptance must check every required cohort/tag/rank record, not infer
+children from the parent or a subset: both eight-rank owner-graph cases require
+16 records, eight per tag. A record proves that process's mappings at its call
+site, not continuous execution, another rank's use or numerical correctness.
+Keep the original numerical, status, lifecycle and graph assertions.
 
 ### Host controller and cancellation
 
@@ -840,8 +853,84 @@ python -B -m tools.v100_native_contract_host \
 
 Request publication is not retirement. Inspect the owning `host-result.json`,
 container terminal state, descendant/GPU observations, source/health comparisons
-and all primary/cleanup errors. The 32 standard-library host controls passed on
-the actual Python 3.14.4 V100 host. The pair also completed the 16-case lifetime
-run and preserved real frontend failures and interrupted diagnostics. Those are
-workflow/component results; they do not qualify complete admission, models or
-serving performance.
+and all primary/cleanup errors. Earlier regular-mode evidence includes 32
+standard-library host controls on the Python 3.14.4 V100 host and the 16-case
+lifetime run. Those historical counts do not replace the current 47-host /
+46-driver source controls or qualify later source and cohorts. Real frontend
+failures and interrupted diagnostics remain preserved.
+
+### Isolated VMA-FD verification mode
+
+Ordinary workers, service deployments and specs without `verification_launcher`
+retain the existing capability-zero route. The explicit
+`map-files-cap40-v1` mode is solely for isolated native-origin verification.
+It does not select production privileges, another numerical profile or a
+performance optimization.
+
+Build its dedicated launcher derivative from an exact already-verified
+application image reference by digest using the maintained
+[`Dockerfile.mapfile-capability`](Dockerfile.mapfile-capability) and
+[`native_mapfile_cap_launcher.c`](../../tools/native_mapfile_cap_launcher.c):
+
+```bash
+docker build --pull=false --network=none \
+  --build-arg "QUALIFICATION_BASE_IMAGE=${TF_QUALIFICATION_BASE_IMAGE:?Supply the verified immutable base reference}" \
+  -f deploy/v100/Dockerfile.mapfile-capability \
+  --iidfile "${TF_QUALIFICATION_IIDFILE:?Supply a fresh owned output path}" \
+  -t "${TF_QUALIFICATION_TAG:?Supply a fresh verification-only tag}" .
+```
+
+This builds only the owned launcher, not Torch, Python, SDK providers or the
+application. Record the actual image ID and launcher source/binary/build/xattr
+facts. Never place file capabilities on protected Python or patch installed
+packages. Use the paired controller above; a standalone privileged `docker run`
+is not the qualification procedure.
+
+Host and inner JSON must carry the **identical** optional closed
+`verification_launcher` object. Their current `validate_spec` functions are
+the schema authority:
+
+| Field | Required binding |
+| --- | --- |
+| `mode` | Exactly `map-files-cap40-v1` |
+| `base_image_id` | Exact genuine application base; the host checks the purpose image's RootFS layer prefix |
+| `launcher` | Fixed `/opt/qualification/bin/native-mapfile-cap-launcher`, binary bytes/SHA, source bytes/SHA and exact cap-40 xattr |
+| `python` | Fixed `/opt/venv/bin/python3`, unchanged bytes/SHA and protected resolved origin |
+| `providers` | Actual required mapped `.so` paths and bytes/SHA, including native FD and Torch C cores; no forced load to satisfy this list |
+
+The reviewed source pair is host `91e641d3` / driver `a2358590`. The host's
+container contract drops **ALL** capabilities and adds **only
+CAP_CHECKPOINT_RESTORE (40)**, with UID/GID 1000, a private PID namespace,
+read-only root, `Privileged=false`, no extra network or groups, and the declared
+resource/IPC envelope. IPC may remain the declared host profile needed by
+NCCL; this mode does not silently change it. Root, SYS_ADMIN, host PID,
+unconfined isolation and writable protected-image mounts are not substitutes.
+The root-owned read-only launcher validates its file capability and unchanged
+Python before carrying only cap 40 through exec; it performs no UID transition.
+
+Keep the operator directory and its exact hash-bound flat input closure frozen
+read-only. Unmanaged Python neighbours, protected-path shadow mounts and unsafe
+Python/loader startup variables are refused. The source fixture stays bound to
+its genuine base application; the purpose image is bound separately. Do not
+rewrite an old manifest or reseal the SDK to make the derivative pass.
+
+Before any CUDA query or pytest execution, the trusted inner validates current
+UID/GID, E/P/I/A/B cap-40-only state, launcher/Python origins, installed App/SDK /
+FD/Torch identities and actual provider VMA-FD records, then rechecks access and
+publishes `verification-launcher-preflight.json`. The host validates that exact
+receipt and, while live, checks its pidfd-bound init's status and cgroup.
+Missing/changed evidence, denied active-process access or incompatible providers
+are owning failures, not reasons to bypass PID guards. File-capability execution
+strips loader environment: actual `LD_LIBRARY_PATH` must be absent. Do not
+restore it or inject code to manufacture provider compatibility. Cancellation,
+resource, source/health and primary/cleanup gates remain unchanged.
+
+The isolated mode has actually passed the 29-case CPU integration with the
+reviewed pair, unchanged protected SDK/FD/App origins and no CUDA query. The
+full-TP8 owner-graph case (`head4=False`) also passed on eight V100s with all
+eight matching child records. The separate head-communicator case
+(`head4=True`) failed its graph-budget gate; its funding/source review and fresh
+execution remain pending. Eight successful records do not satisfy both
+cohorts' 16-record obligation. These are scoped workflow/component results,
+not regular cap-zero equivalence, complete native/model/quality admission,
+serving readiness, performance or a deployment-default release.

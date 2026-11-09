@@ -25,15 +25,18 @@ The repository default is now `python-0.6`; all 69 reviewed ancestral branch
 names have been retired with archive recovery and exact-SHA guards. The 537
 divergent names remain pending their separate recovery and retirement gates.
 The maintained [installed-contract driver](deploy/v100/source-foundation.md#installed-contract-driver)
-has 37 passing standard-library controls, including inert multiprocessing
-imports and a CPU route that never queries CUDA. The paired controller passed
-32 controls on the real V100 host. The complete pair ran the 16-case CUDA/host
-lifetime module successfully and preserved real frontend failures and
-generation-bound diagnostic cancellations. The newer qualification-only
+has 46 passing standard-library controls, including inert multiprocessing
+imports and a CPU route that never queries CUDA. The paired controller has
+47 passing CPU controls; its earlier version passed 32 controls on the real
+V100 host. The pair ran the 16-case CUDA/host lifetime module successfully
+and preserved real frontend failures and generation-bound cancellations. The newer qualification-only
 mapped-ELF observer passed its installed CPU check and the eight-rank owner
 case without the extra head communicator. The extra-head case stops at its
 64 MiB test preparation guard; complete model, resource and numerical gates
-remain separate.
+remain separate. The current installed Q03 prepared/graph run passed 53 of
+57 cases with zero skips; four strict numerical failures remain open. The
+callback/growth repairs passed, and distributed cases now reach their numerical
+checks. Parent native-origin proof does not establish distributed-child origins.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
 The current source also preserves origin through Unicode capitalization and

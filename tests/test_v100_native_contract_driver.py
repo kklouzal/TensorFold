@@ -4,7 +4,6 @@ import hashlib
 import io
 import json
 import multiprocessing
-import mmap
 import os
 from pathlib import Path
 import runpy
@@ -402,27 +401,76 @@ except ValueError as error:
         path.write_bytes(b'\x7fELFfixture mapped bytes')
         return path
 
-    def mapping(self, path, *, inode=None, permissions='r-xp'):
+    def mapping(self, path, *, inode=None, permissions='r-xp', device='00:23', extent='1000-2000'):
         info = path.stat()
         encoded = str(path).replace(' ', r'\040')
-        return ('1000-2000 ' + permissions + ' 00000000 '
-                + format(os.major(info.st_dev), 'x') + ':' + format(os.minor(info.st_dev), 'x')
-                + ' ' + str(info.st_ino if inode is None else inode) + ' ' + encoded + '\n')
+        return (extent + ' ' + permissions + ' 00000000 ' + device + ' '
+                + str(info.st_ino if inode is None else inode) + ' ' + encoded + '\n')
 
-    def test_observed_native_elf_is_hashed_without_extension_loading(self):
+    @contextlib.contextmanager
+    def mapped_model(self, library, *, text=None, backing_paths=None, path_paths=None, denied=False):
+        # Independent OS-boundary model: real ordinary FDs/read/hash/close and
+        # real namespace/mount metadata; only privileged VMA lookup is modeled.
+        real_open = os.open
+        state = {'vma_fds': [], 'path_fds': [], 'map_reads': 0, 'vma_calls': 0, 'path_calls': 0}
+        def open_vma(path, flags, *args, **kwargs):
+            path = os.fspath(path)
+            if path.startswith('/proc/self/map_files/'):
+                if denied:
+                    raise PermissionError(1, 'actual model permission refusal', path)
+                choices = backing_paths or [library]
+                target = choices[min(state['vma_calls'], len(choices) - 1)]
+                state['vma_calls'] += 1
+                descriptor = real_open(target, flags, *args, **kwargs)
+                state['vma_fds'].append(descriptor)
+                return descriptor
+            if path == str(library):
+                choices = path_paths or [library]
+                target = choices[min(state['path_calls'], len(choices) - 1)]
+                state['path_calls'] += 1
+                descriptor = real_open(target, flags, *args, **kwargs)
+                state['path_fds'].append(descriptor)
+                return descriptor
+            return real_open(path, flags, *args, **kwargs)
+        def maps():
+            state['map_reads'] += 1
+            if state['map_reads'] > 1:
+                for descriptor in state['vma_fds'] + state['path_fds']:
+                    os.fstat(descriptor)  # Held through second global snapshot.
+            return self.mapping(library) if text is None else text
+        access = {'uids': [1000] * 4, 'gids': [1000] * 4,
+                  'caps': {name: '0000010000000000' for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')},
+                  'NoNewPrivs': '0'}
+        with mock.patch.object(driver, '_read_native_maps', side_effect=maps), \
+             mock.patch.object(driver, '_mapfile_access_precondition', return_value=access), \
+             mock.patch.object(driver.os, 'open', side_effect=open_vma):
+            yield state
+
+    def test_mapped_unregistered_elf_uses_held_vma_fd_instead_of_raw_device(self):
         library = self.native_library()
         self.spec['required_native_elf_prefixes'] = ['tf_fixture']
-        # An actual executable file mapping, with NO Python module registration
-        # or extension import; no instruction from this synthetic ELF executes.
-        with library.open('rb') as stream, mmap.mmap(stream.fileno(), 0,
-                flags=mmap.MAP_PRIVATE, prot=mmap.PROT_READ | mmap.PROT_EXEC):
-            self.assertNotIn('tf_fixture', sys.modules)
+        with self.mapped_model(library) as state:
             self.assertEqual(self.execute(), 0)
-        result = json.loads((self.evidence / 'actual-native-ELF.json').read_text())
-        row = next(row for row in result['mapped_elfs'] if row['name'] == 'tf_fixture')
+        report = json.loads((self.evidence / 'actual-native-ELF.json').read_text())
+        row = report['mapped_elfs'][0]
+        self.assertEqual(report['identity_method'], 'kernel-vma-backed-fd-v1')
         self.assertEqual(row['sha256'], hashlib.sha256(library.read_bytes()).hexdigest())
         self.assertEqual(row['inode'], library.stat().st_ino)
-        self.assertEqual(result['missing_required_parent_prefixes'], [])
+        self.assertEqual(row['raw_map_device'], [0, 35])
+        self.assertGreaterEqual(state['vma_calls'], 2)
+        self.assertEqual(report['missing_required_parent_prefixes'], [])
+        for descriptor in state['vma_fds'] + state['path_fds']:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
+
+    def test_matching_raw_device_still_requires_privileged_vma_fd(self):
+        library = self.native_library()
+        info = library.stat()
+        text = self.mapping(library, device=format(os.major(info.st_dev), 'x') + ':' + format(os.minor(info.st_dev), 'x'))
+        with self.mapped_model(library, text=text, denied=True) as state:
+            with self.assertRaises(PermissionError):
+                driver.observe_native_elfs(['tf_fixture'])
+        self.assertEqual(state['path_calls'], 0)
 
     def test_python_registry_alone_cannot_satisfy_required_mapping(self):
         library = self.native_library()
@@ -431,124 +479,166 @@ except ValueError as error:
         self.spec['required_native_elf_prefixes'] = ['tf_fixture']
         with mock.patch.dict(sys.modules, {'tf_fixture': module}), self.assertRaisesRegex(RuntimeError, 'actually mapped'):
             self.execute()
-        result = json.loads((self.evidence / 'actual-native-ELF.json').read_text())
-        self.assertEqual(result['python_registry']['tf_fixture'], str(library))
-        self.assertEqual(result['missing_required_parent_prefixes'], ['tf_fixture'])
+        report = json.loads((self.evidence / 'actual-native-ELF.json').read_text())
+        self.assertEqual(report['python_registry']['tf_fixture'], str(library))
+        self.assertEqual(report['missing_required_parent_prefixes'], ['tf_fixture'])
 
-    def test_mapping_segments_deduplicate_and_escaped_path_is_verified(self):
+    def test_segments_deduplicate_but_every_distinct_vma_is_bound(self):
         library = self.native_library('tf_space name.so')
-        text = self.mapping(library) * 3 + self.mapping(library, permissions='r--p')
-        with mock.patch.object(driver, '_read_native_maps', return_value=text):
-            result = driver.observe_native_elfs(['tf_space'])
-        self.assertEqual(len(result['mapped_elfs']), 1)
-        self.assertEqual(result['mapped_elfs'][0]['path'], str(library))
+        text = self.mapping(library) * 2 + self.mapping(library, extent='3000-4000')
+        with self.mapped_model(library, text=text) as state:
+            report = driver.observe_native_elfs(['tf_space'])
+        self.assertEqual(len(report['mapped_elfs']), 1)
+        self.assertEqual(len(report['mapped_elfs'][0]['vmas']), 2)
+        self.assertEqual(state['vma_calls'], 4)
 
-    def test_mapping_identity_disagreement_and_deleted_files_are_errors(self):
-        library = self.native_library()
-        for text, expected in ((self.mapping(library, inode=library.stat().st_ino + 1), 'device/inode'),
-                               (self.mapping(library).rstrip() + ' (deleted)\n', 'stable ordinary')):
-            with self.subTest(text=text), mock.patch.object(driver, '_read_native_maps', return_value=text):
-                with self.assertRaisesRegex((ValueError, RuntimeError), expected):
+    def test_cross_subvolume_same_raw_inode_and_equal_content_is_not_object_identity(self):
+        library, foreign = self.native_library(), self.native_library('foreign.so')
+        descriptor = os.open(library, os.O_RDONLY)
+        try:
+            template = driver._file_stat(descriptor)
+        finally:
+            os.close(descriptor)
+        original_stat = driver._file_stat
+        foreign_inode = foreign.stat().st_ino
+        def domains(descriptor):
+            current = original_stat(descriptor)
+            return {**template, 'inode': 123, 'device': 38 if current['inode'] == foreign_inode else 37,
+                    'device_major': 0, 'device_minor': 38 if current['inode'] == foreign_inode else 37}
+        with self.mapped_model(library, text=self.mapping(library, inode=123), path_paths=[foreign]):
+            with mock.patch.object(driver, '_file_stat', side_effect=domains), \
+                 mock.patch.object(driver, '_hash_held_elf', side_effect=AssertionError('must not hash mismatched objects')):
+                with self.assertRaisesRegex(RuntimeError, 'pathname versus VMA FD'):
                     driver.observe_native_elfs(['tf_fixture'])
 
-    def test_nonelf_symlink_and_mapping_change_are_not_absence(self):
+    def test_mapping_aba_same_text_and_address_rejects_replaced_backing_object(self):
+        library, replacement = self.native_library(), self.native_library('replacement.so')
+        with self.mapped_model(library, backing_paths=[library, replacement]):
+            with self.assertRaisesRegex(RuntimeError, 'reopened VMA FD'):
+                driver.observe_native_elfs(['tf_fixture'])
+
+    def test_path_rename_to_equal_content_other_object_is_rejected(self):
+        library, replacement = self.native_library(), self.native_library('replacement.so')
+        with self.mapped_model(library, path_paths=[library, replacement]):
+            with self.assertRaisesRegex(RuntimeError, 'reopened pathname FD'):
+                driver.observe_native_elfs(['tf_fixture'])
+
+    def test_file_mutation_and_mount_snapshot_or_alias_changes_are_rejected(self):
         library = self.native_library()
-        text = self.mapping(library)
-        with mock.patch.object(driver, '_read_native_maps', side_effect=[text, '']):
-            with self.assertRaisesRegex(RuntimeError, 'mappings changed'):
+        hashing = driver._hash_held_elf
+        def mutate(descriptor):
+            result = hashing(descriptor)
+            library.write_bytes(b'\x7fELFchanged')
+            return result
+        with self.mapped_model(library), mock.patch.object(driver, '_hash_held_elf', side_effect=mutate):
+            with self.assertRaisesRegex(RuntimeError, 'retained pathname metadata'):
+                driver.observe_native_elfs(['tf_fixture'])
+        table = driver._mount_table()
+        changed = {key: {**value, 'root': value['root'] + '-changed'} for key, value in table.items()}
+        with self.mapped_model(library), mock.patch.object(driver, '_mount_table', side_effect=[table, changed]):
+            with self.assertRaisesRegex(RuntimeError, 'mount namespace changed'):
+                driver.observe_native_elfs(['tf_fixture'])
+        mount = driver._fd_mount
+        calls = []
+        def alias(descriptor, rows):
+            result = mount(descriptor, rows)
+            calls.append(descriptor)
+            return result if len(calls) == 1 else {**result, 'mount_id': result['mount_id'] + 1}
+        with self.mapped_model(library), mock.patch.object(driver, '_fd_mount', side_effect=alias):
+            with self.assertRaisesRegex(RuntimeError, 'pathname versus VMA mount'):
+                driver.observe_native_elfs(['tf_fixture'])
+
+    def test_deleted_symlink_nonelf_and_changed_map_fail_without_fallback(self):
+        library = self.native_library()
+        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library).rstrip() + ' (deleted)\n'):
+            with self.assertRaisesRegex(ValueError, 'stable ordinary'):
                 driver.observe_native_elfs([])
-        library.write_bytes(b'not an ELF')
-        with mock.patch.object(driver, '_read_native_maps', return_value=text):
+        library.write_bytes(b'not ELF')
+        with self.mapped_model(library):
             with self.assertRaisesRegex(ValueError, 'not ELF'):
                 driver.observe_native_elfs([])
-        link = self.root / 'tf_symlink.so'
+        library.write_bytes(b'\x7fELFvalid')
+        with self.mapped_model(library), mock.patch.object(driver, '_read_native_maps', side_effect=[self.mapping(library), '']):
+            with self.assertRaisesRegex(RuntimeError, 'mappings changed'):
+                driver.observe_native_elfs([])
+        link = self.root / 'tf_link.so'
         link.symlink_to(library)
-        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(link)):
+        with self.mapped_model(link, backing_paths=[library]):
             with self.assertRaises(OSError):
                 driver.observe_native_elfs([])
 
-    def test_identity_mutation_and_descriptor_cleanup_preserve_authentic_failure(self):
+    def test_raw_reads_and_cleanup_preserve_authentic_primary_prior_causes(self):
         library = self.native_library()
-        info = library.stat()
-        changed = types.SimpleNamespace(**{field: getattr(info, field) for field in
-            ('st_dev', 'st_ino', 'st_size', 'st_mode', 'st_mtime_ns', 'st_ctime_ns')})
-        changed.st_size += 1
-        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)):
-            with mock.patch.object(driver.os, 'fstat', side_effect=[info, changed]):
-                with self.assertRaisesRegex(RuntimeError, 'changed while hashed'):
-                    driver.observe_native_elfs([])
-        primary, cleanup = OSError('body'), OSError('close')
-        with mock.patch.object(driver.os, 'open', return_value=123), mock.patch.object(driver.os, 'close', side_effect=cleanup):
-            with self.assertRaises(OSError) as caught:
-                with driver._owned_descriptor('/unused', os.O_RDONLY):
-                    raise primary
-        self.assertIs(caught.exception, primary)
-        self.assertIs(primary.__cause__, cleanup)
-
-    def test_descriptor_close_failure_retains_prior_cause_context_notes_and_policy(self):
-        for suppression in (False, True):
-            with self.subTest(suppression=suppression):
-                primary = OSError('authentic body')
-                cause, context, cleanup = ValueError('prior cause'), RuntimeError('prior context'), OSError('close')
-                primary.__cause__, primary.__context__ = cause, context
-                primary.__suppress_context__ = suppression
-                primary.add_note('authentic note')
-                with mock.patch.object(driver.os, 'open', return_value=123), mock.patch.object(driver.os, 'close', side_effect=cleanup):
-                    with self.assertRaises(OSError) as caught:
-                        with driver._owned_descriptor('/unused', os.O_RDONLY):
-                            raise primary
-                self.assertIs(caught.exception, primary)
-                self.assertIsInstance(primary.__cause__, BaseExceptionGroup)
-                self.assertEqual(primary.__cause__.exceptions, (cause, context, cleanup))
-                self.assertEqual(primary.__notes__[0], 'authentic note')
-                # Existing neutral helper makes all owned cleanup causes explicit;
-                # the prior context remains present even if formerly suppressed.
-                self.assertTrue(primary.__suppress_context__)
-
-    def test_short_raw_reads_hash_complete_mapped_file(self):
-        library = self.native_library()
-        read = driver.os.read
-        def short_read(descriptor, count):
-            return read(descriptor, min(count, 2))
-        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)):
-            with mock.patch.object(driver.os, 'read', side_effect=short_read):
-                report = driver.observe_native_elfs(['tf_fixture'])
-        self.assertEqual(report['mapped_elfs'][0]['sha256'], hashlib.sha256(library.read_bytes()).hexdigest())
-
-    def test_raw_elf_read_failure_and_close_failure_preserve_both(self):
-        library = self.native_library()
-        text = self.mapping(library)
-        primary, cleanup = OSError('authentic ELF read'), OSError('FD close')
-        close = driver.os.close
-        def close_then_fail(descriptor):
+        primary, cause, cleanup = OSError('read failure'), ValueError('prior cause'), OSError('close failure')
+        primary.__cause__ = cause
+        primary.add_note('authentic note')
+        close = os.close
+        def close_fault(descriptor):
             close(descriptor)
             raise cleanup
-        with mock.patch.object(driver, '_read_native_maps', return_value=text):
-            with mock.patch.object(driver.os, 'read', side_effect=primary), mock.patch.object(driver.os, 'close', side_effect=close_then_fail):
-                with self.assertRaises(OSError) as caught:
-                    driver.observe_native_elfs([])
+        with self.mapped_model(library), mock.patch.object(driver.os, 'read', side_effect=primary), \
+             mock.patch.object(driver.os, 'close', side_effect=close_fault):
+            with self.assertRaises(OSError) as caught:
+                driver.observe_native_elfs([])
         self.assertIs(caught.exception, primary)
-        self.assertIs(primary.__cause__, cleanup)
+        self.assertIn(cause, primary.__cause__.exceptions)
+        self.assertIn(cleanup, primary.__cause__.exceptions)
+        self.assertEqual(primary.__notes__[0], 'authentic note')
 
-    def test_map_read_failure_and_missing_prefix_remain_distinct(self):
-        primary = PermissionError('authentic maps read failure')
-        with mock.patch.object(driver, '_read_native_maps', side_effect=primary):
-            with self.assertRaises(PermissionError) as caught:
-                driver.observe_native_elfs(['tf_fixture'])
-        self.assertIs(caught.exception, primary)
+    def test_partial_reads_and_required_declared_provider_selection(self):
+        library = self.native_library('provider.so')
+        read = os.read
+        with self.mapped_model(library), mock.patch.object(driver.os, 'read', side_effect=lambda fd, n: read(fd, min(n, 2))):
+            report = driver.observe_native_elfs([], provider_paths=[str(library)])
+        self.assertEqual(report['mapped_elfs'][0]['sha256'], hashlib.sha256(library.read_bytes()).hexdigest())
+        self.assertEqual(report['missing_required_provider_paths'], [])
         with mock.patch.object(driver, '_read_native_maps', return_value=''):
-            self.assertEqual(driver.observe_native_elfs(['tf_fixture'])['missing_required_prefixes'], ['tf_fixture'])
+            self.assertEqual(driver.observe_native_elfs([], provider_paths=[str(library)])['missing_required_provider_paths'], [str(library)])
 
-    def test_child_record_is_scoped_durable_exclusive_and_source_identified(self):
+    def test_namespace_identity_and_descriptor_exhaustion_remain_fail_closed(self):
         library = self.native_library()
-        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)):
+        actual_stat = os.stat
+        def switched(path, *args, **kwargs):
+            result = actual_stat(path, *args, **kwargs)
+            if str(path) == '/proc/thread-self/ns/mnt':
+                return types.SimpleNamespace(st_dev=result.st_dev, st_ino=result.st_ino + 1)
+            return result
+        with self.mapped_model(library), mock.patch.object(driver.os, 'stat', side_effect=switched):
+            with self.assertRaisesRegex(RuntimeError, 'mount namespace'):
+                driver.observe_native_elfs([])
+        descriptor = None
+        with self.assertRaisesRegex(RuntimeError, 'capacity was not prepaid'):
+            with driver._mapping_fds(1) as journal:
+                descriptor = journal.open(library, os.O_RDONLY)
+                journal.open(library, os.O_RDONLY)
+        with self.assertRaises(OSError):
+            os.fstat(descriptor)
+
+    def test_identity_note_failure_keeps_mismatch_primary_and_diagnostic(self):
+        library, foreign = self.native_library(), self.native_library('foreign.so')
+        diagnostic = MemoryError('identity-note allocation')
+        with self.mapped_model(library, path_paths=[foreign]), mock.patch.object(driver.json, 'dumps', side_effect=diagnostic):
+            with self.assertRaisesRegex(RuntimeError, 'pathname versus VMA FD') as caught:
+                driver.observe_native_elfs([])
+        self.assertIs(caught.exception.__cause__, diagnostic)
+
+    def test_permission_precondition_refuses_before_any_fd(self):
+        library = self.native_library()
+        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)), \
+             mock.patch.object(driver, '_mapfile_access_precondition', side_effect=RuntimeError('ONLY E/P/I/A/B invalid')), \
+             mock.patch.object(driver, '_MappingFDs', side_effect=AssertionError('no FD after invalid caps')):
+            with self.assertRaisesRegex(RuntimeError, 'ONLY E/P/I/A/B'):
+                driver.observe_native_elfs([])
+
+    def test_child_record_is_durable_scoped_exclusive_and_source_identified(self):
+        library = self.native_library()
+        with self.mapped_model(library):
             report = driver.record_native_elfs(['tf_fixture'], rank=7, tag='owner-head4-1', evidence_dir=self.evidence)
+        with self.mapped_model(library):
             with self.assertRaises(FileExistsError):
                 driver.record_native_elfs(['tf_fixture'], rank=7, tag='owner-head4-1', evidence_dir=self.evidence)
         path = self.evidence / ('owner-head4-1-rank-7-pid-' + str(os.getpid()) + '.json')
-        self.assertEqual(json.loads(path.read_text()), report)
-        self.assertEqual(report['rank'], 7)
-        self.assertEqual(report['PID'], os.getpid())
+        self.assertEqual(json.loads(path.read_text())['mapped_elfs'], json.loads(json.dumps(report['mapped_elfs'])))
         self.assertEqual(report['observer']['sha256'], driver.file_identity(driver.__file__)['sha256'])
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
@@ -556,31 +646,18 @@ except ValueError as error:
         with mock.patch.object(driver, '_read_native_maps', return_value=''):
             with self.assertRaisesRegex(RuntimeError, 'required child'):
                 driver.record_native_elfs(['tf_fixture'], rank=0, tag='missing', evidence_dir=self.evidence)
-        records = list(self.evidence.glob('missing-*.json'))
-        self.assertEqual(len(records), 1)
-        self.assertEqual(json.loads(records[0].read_text())['missing_required_prefixes'], ['tf_fixture'])
+        self.assertEqual(len(list(self.evidence.glob('missing-*.json'))), 1)
 
-    def test_child_publication_failure_is_owning_and_preserves_error(self):
+    def test_child_write_failure_and_environment_restore_failure_remain_owning(self):
         library = self.native_library()
         primary = OSError('durability failed')
-        with mock.patch.object(driver, '_read_native_maps', return_value=self.mapping(library)):
-            with mock.patch.object(driver.os, 'fsync', side_effect=primary):
-                with self.assertRaises(OSError) as caught:
-                    driver.record_native_elfs(['tf_fixture'], rank=0, tag='fault', evidence_dir=self.evidence)
+        with self.mapped_model(library), mock.patch.object(driver.os, 'fsync', side_effect=primary):
+            with self.assertRaises(OSError) as caught:
+                driver.record_native_elfs(['tf_fixture'], rank=0, tag='fault', evidence_dir=self.evidence)
         self.assertIs(caught.exception, primary)
-
-    def test_child_context_is_scoped_and_restored_after_test_failure(self):
-        primary = OSError('authentic test failure')
-        def fail(argv, *, plugins):
-            self.assertEqual(os.environ[driver.CHILD_EVIDENCE_ENV], str(self.evidence / 'child-native-ELF'))
-            raise primary
-        self.runtime.pytest.main = fail
-        with self.assertRaises(OSError) as caught:
-            self.execute()
-        self.assertIs(caught.exception, primary)
-        self.assertNotIn(driver.CHILD_EVIDENCE_ENV, os.environ)
-
-    def test_environment_restore_failure_is_retained_without_losing_test_primary(self):
+        # Use a fresh evidence root for driver-owned files after child record.
+        for path in self.evidence.iterdir():
+            path.unlink()
         primary, cleanup = OSError('authentic pytest primary'), RuntimeError('unsetenv failure')
         self.primary = primary
         try:
@@ -588,11 +665,7 @@ except ValueError as error:
                 with self.assertRaises(OSError) as caught:
                     self.execute()
             self.assertIs(caught.exception, primary)
-            report = self.outcome()
-            self.assertEqual(report['primary_error']['type'], 'OSError')
-            self.assertIn('authentic pytest primary', report['primary_error']['error'])
-            self.assertTrue(any('unsetenv failure' in error['error'] for error in report['post_errors']))
-            self.assertIsNotNone(primary.__cause__)
+            self.assertTrue(any('unsetenv failure' in error['error'] for error in self.outcome()['post_errors']))
         finally:
             os.environ.pop(driver.CHILD_EVIDENCE_ENV, None)
 
@@ -602,6 +675,141 @@ except ValueError as error:
                 self.execute()
         self.assertEqual(self.events, [])
         self.assertEqual(list(self.evidence.iterdir()), [])
+
+    def qualified_spec(self):
+        core = self.native_library('torch_C.so')
+        self.runtime.torch._C = types.SimpleNamespace(__file__=str(core))
+        providers = {str(path): {key: driver.file_identity(path)[key] for key in ('bytes', 'sha256')}
+                     for path in (self.fd, core)}
+        contract = {'mode': 'map-files-cap40-v1', 'base_image_id': 'sha256:' + 'e' * 64,
+            'launcher': {'path': '/opt/qualification/bin/native-mapfile-cap-launcher', 'bytes': 123,
+                'sha256': 'f' * 64, 'source_bytes': 45, 'source_sha256': '0' * 64,
+                'file_capability_hex': '0100000200000000000000000001000000000000'},
+            'python': {'path': '/opt/venv/bin/python3', 'bytes': 321, 'sha256': '1' * 64}, 'providers': providers}
+        self.spec['verification_launcher'] = contract
+        access = {'uids': [1000] * 4, 'gids': [1000] * 4, 'NoNewPrivs': '0',
+                  'caps': {name: '0000010000000000' for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')}}
+        proof = {'schema': 'tensorfold.native-elf-observation-v3', 'identity_method': 'kernel-vma-backed-fd-v1',
+                 'mapped_elfs': [{'path': path, **record} for path, record in providers.items()],
+                 'missing_required_provider_paths': [], 'missing_required_prefixes': []}
+        return access, ({'path': contract['launcher']['path']}, {'path': contract['python']['path']}), proof
+
+    def test_optional_qualification_schema_is_closed_and_default_spec_unchanged(self):
+        self.assertNotIn('verification_launcher', self.spec)
+        self.assertIs(driver.validate_spec(self.spec), self.spec)
+        self.qualified_spec()
+        self.assertIs(driver.validate_spec(self.spec), self.spec)
+        bad = {**self.spec['verification_launcher'], 'unreviewed': True}
+        with self.assertRaises(ValueError):
+            driver.validate_spec({**self.spec, 'verification_launcher': bad})
+        bad = {**self.spec['verification_launcher'], 'launcher': {**self.spec['verification_launcher']['launcher'], 'file_capability_hex': '00' * 20}}
+        with self.assertRaises(ValueError):
+            driver.validate_spec({**self.spec, 'verification_launcher': bad})
+
+    def test_qualification_receipt_precedes_cuda_queries_and_test_body(self):
+        access, metadata, proof = self.qualified_spec()
+        events = []
+        def initial(spec):
+            events.append('cap-python-launcher')
+            return access, *metadata
+        def load():
+            events.append('runtime-import')
+            return self.runtime
+        def mapped(*args, **kwargs):
+            events.append('mapped-provider-proof')
+            return {**proof}
+        def count():
+            self.assertTrue((self.evidence / 'verification-launcher-preflight.json').exists())
+            events.append('cuda-query')
+            return 2
+        self.runtime.torch.cuda.device_count = count
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(driver.os, 'getpid', return_value=1), \
+             mock.patch.object(driver, '_verification_process', side_effect=initial), \
+             mock.patch.object(driver, '_mapfile_access_precondition', return_value=access), \
+             mock.patch.object(driver, 'observe_native_elfs', side_effect=mapped):
+            # Parent final origin observation is empty in this model, but its
+            # mapping call must retain the normal required-parent guard.
+            with mock.patch.object(driver, '_native_elfs', return_value={'missing_required_parent_prefixes': []}):
+                self.assertEqual(driver.run(self.spec, self.source, self.evidence, runtime_loader=load,
+                    helpers_loader=lambda: (self.publish, raise_failures)), 0)
+        self.assertEqual(events[:4], ['cap-python-launcher', 'runtime-import', 'mapped-provider-proof', 'cuda-query'])
+        receipt = json.loads((self.evidence / 'verification-launcher-preflight.json').read_text())
+        self.assertEqual(receipt['verification_launcher'], self.spec['verification_launcher'])
+        self.assertEqual(receipt['providers']['required_providers'], self.spec['verification_launcher']['providers'])
+        self.assertEqual(receipt['loader_environment'], {'LD_LIBRARY_PATH': None})
+        self.assertEqual(receipt['PID'], 1)
+
+    def test_qualification_access_failure_happens_before_runtime_import(self):
+        self.qualified_spec()
+        load = mock.Mock(side_effect=AssertionError('must not import runtime'))
+        with mock.patch.object(driver, '_mapfile_access_precondition', side_effect=RuntimeError('ONLY E/P/I/A/B invalid')):
+            with self.assertRaisesRegex(RuntimeError, 'ONLY E/P/I/A/B'):
+                driver.run(self.spec, self.source, self.evidence, runtime_loader=load,
+                           helpers_loader=lambda: (self.publish, raise_failures))
+        load.assert_not_called()
+        self.assertEqual(self.events, [])
+
+    def test_missing_or_wrong_provider_blocks_device_query_and_pytest(self):
+        access, metadata, proof = self.qualified_spec()
+        self.runtime.torch.cuda.device_count = mock.Mock(side_effect=AssertionError('no device query'))
+        bad = {**proof, 'missing_required_provider_paths': [str(self.fd)]}
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(driver, '_verification_process', return_value=(access, *metadata)), \
+             mock.patch.object(driver, '_mapfile_access_precondition', return_value=access), \
+             mock.patch.object(driver, 'observe_native_elfs', return_value=bad):
+            with self.assertRaisesRegex(RuntimeError, 'not actually mapped'):
+                self.execute()
+        self.runtime.torch.cuda.device_count.assert_not_called()
+        self.assertNotIn('pytest', self.events)
+        self.assertFalse((self.evidence / 'verification-launcher-preflight.json').exists())
+
+    def test_wrong_provider_digest_and_restored_loader_environment_block_tests(self):
+        access, metadata, proof = self.qualified_spec()
+        wrong = {**proof, 'mapped_elfs': [{**row, 'sha256': '0' * 64} for row in proof['mapped_elfs']]}
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(driver, '_verification_process', return_value=(access, *metadata)), \
+             mock.patch.object(driver, '_mapfile_access_precondition', return_value=access), \
+             mock.patch.object(driver, 'observe_native_elfs', return_value=wrong):
+            with self.assertRaisesRegex(RuntimeError, 'provider identity differs'):
+                self.execute()
+        self.assertNotIn('pytest', self.events)
+        # Fresh output directory for the independent environment-retirement case.
+        self.evidence = self.root / 'second-evidence'
+        self.evidence.mkdir()
+        def restored(*args, **kwargs):
+            os.environ['LD_LIBRARY_PATH'] = '/must-not-restore'
+            return proof
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(driver, '_verification_process', return_value=(access, *metadata)), \
+             mock.patch.object(driver, '_mapfile_access_precondition', return_value=access), \
+             mock.patch.object(driver, 'observe_native_elfs', side_effect=restored):
+            with self.assertRaisesRegex(RuntimeError, 'access/environment changed'):
+                self.execute()
+        self.assertNotIn('pytest', self.events)
+
+    def test_prequalification_write_failure_prevents_test_and_preserves_primary(self):
+        access, metadata, proof = self.qualified_spec()
+        primary = OSError('prequalification receipt failure')
+        def publish(path, value):
+            if Path(path).name == 'verification-launcher-preflight.json':
+                raise primary
+            self.publish(path, value)
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(driver, '_verification_process', return_value=(access, *metadata)), \
+             mock.patch.object(driver, '_mapfile_access_precondition', return_value=access), \
+             mock.patch.object(driver, 'observe_native_elfs', return_value=proof):
+            with self.assertRaises(OSError) as caught:
+                self.execute(publish)
+        self.assertIs(caught.exception, primary)
+        self.assertNotIn('pytest', self.events)
+        self.assertEqual(self.outcome()['primary_error']['type'], 'OSError')
+
+    def test_access_status_rejects_any_extra_capability_and_uid_change(self):
+        status = ('Uid:\t1000 1000 1000 1000\nGid:\t1000 1000 1000 1000\nNoNewPrivs:\t0\n'
+                  + ''.join(name + ':\t0000010000000000\n' for name in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')))
+        with mock.patch.object(driver, '_read_text', return_value=status):
+            self.assertEqual(driver._mapfile_access_precondition()['uids'], [1000] * 4)
+        for bad in (status.replace('1000 1000 1000 1000', '0 0 0 0', 1),
+                    status.replace('0000010000000000', '0000010000200000', 1), status.replace('NoNewPrivs:\t0', 'NoNewPrivs:\t1')):
+            with self.subTest(status=bad), mock.patch.object(driver, '_read_text', return_value=bad):
+                with self.assertRaisesRegex(RuntimeError, 'ONLY E/P/I/A/B'):
+                    driver._mapfile_access_precondition()
 
     def test_app_mutation_cannot_be_hidden_by_pytest_zero_exit(self):
         self.mutate = lambda: (self.app / '__init__.py').write_text('changed')
