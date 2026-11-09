@@ -891,3 +891,58 @@ NPY files are created without overwriting, flushed/fsynced, made read-only and
 recorded with shape/dtype/stat/SHA. Failed rounds never publish successful
 capture records. This observer adds blocking copies and file I/O: its runs are
 numerical diagnostics, never performance measurements or numerical acceptance.
+
+## Private reference-first teacher diagnostics
+
+`tools/v100_owned_qualification.py --teacher-plan PLAN.json` is a separate,
+default-off diagnostic over the existing owned Engine and ordinary completions
+route. It does not enable a public serving mode or run the old 714-step quality
+worker. The current four-file implementation passed 284 pinned x86 CPU controls
+with zero skips; actual model capture/replay, physical residency and quality
+acceptance remain unrun gates.
+
+The first region is SC117 TP8/ETP4/PP1, reference SM70 profile, explicit
+`--draft-method none`, no loaded MTP, `--no-graphs` and fixed parallelism of at
+least nine. Admit one exact cold greedy text request, without constraints,
+penalties, media, retention, background work or other diagnostic procedures.
+MTP4 and other regions reject explicitly. GET readiness is allowed; do not run
+an unrelated arithmetic POST before the single planned request.
+
+```bash
+python tools/v100_owned_qualification.py --gpus "$TF_RANK_GPUS" \
+  --out "$TF_TEACHER_FRESH_OUTPUT" --teacher-plan "$TF_TEACHER_PLAN" \
+  -- "${serve_args[@]}"
+```
+
+Bind `serve_args` to the actual immutable model, frontend, numerical profile,
+context, method and complete resource envelope before launch. The plan is the
+closed `tensorfold.owned-teacher-plan-v1` schema defined by
+`owned_teacher_plan`: capture/replay mode, actual full vocabulary and context,
+frozen rendered input IDs, maximum frame count, declared case/run/model/frontend/
+profile identities, reference descriptor and explicit `read_timeout_s`. Derive
+that operational I/O budget from the outer preparation deadline. Chunk checks
+are cooperative; blocking storage calls and whole-job cancellation remain with
+the outer owner. Model/frontend/profile SHA declarations alone do not prove the
+actual loaded pairing.
+
+Capture copies raw Float32 vocabulary shards before the original sampler runs
+once. It borrows an idle, disjoint, already-paid target-logit tail; collective
+and CPU-copy completion precede reuse. This adds no project CUDA data buffer,
+but native-library/allocator residency still requires actual measurement. Host
+parse/tree/frame/writer obligations use the existing selected resource policy;
+full vector input/output is bounded and streamed rather than materialized again.
+
+After the existing launcher returns successfully, the parent verifies eight
+matching positive worker-retirement summaries, eight normal startup bindings,
+actual State/profile/source identities and rank0 vector hashes before publishing
+`teacher-authority.json`. A published file alone is insufficient: require the
+owning parent/CLI **and outer host run** to complete successfully before using
+it. Publication failures can leave a partial or complete file. Replay accepts
+a sealed successful capture authority, not a single rank's local summary, and
+verifies all referenced receipts/vectors before deriving teacher IDs.
+
+Replay advances the same frozen teacher prefixes after measuring candidate
+logits. Its returned text is forced reference text, not candidate free-generation
+quality. Transfer/fence/writer overhead invalidates P3 timings. Preserve separate
+capture/replay cohorts and actual output-quality, state, sampling and resource
+gates; do not borrow the old 8192-context/714-step profile or its margins.

@@ -1602,3 +1602,41 @@ def test_scheduler_trace_labels_actual_attention_work_and_dynamic_half_glue_bind
                       'HC.writeback', 'HC.normed', 'HC.act', 'HC.mix']
     assert multiplications == ['attention.partial_statistics', 'attention.normalized_partial', 'attention.normalized_partial']
     assert not stack and torch.cuda.is_initialized() is before_cuda
+
+
+@pytest.mark.parametrize('launch_exit', [0, 7])
+def test_teacher_parent_only_seals_after_existing_positive_launch(tmp_path, monkeypatch, launch_exit):
+    from types import SimpleNamespace as NS
+    events, output = [], tmp_path / 'fresh-teacher'
+    prepared = {'data': 'pure data marker'}
+    def load(path):
+        assert not output.exists()
+        events.append(('validated', path))
+        return prepared
+    def seal(directory, selected, result):
+        assert selected is prepared and result == 0
+        events.append(('sealed', directory))
+    monkeypatch.setattr(owned, '_teacher_module', lambda: NS(owned_teacher_plan=load, seal_owned_teacher=seal))
+    def launch(argv, **kwargs):
+        assert output.is_dir()
+        prefix = kwargs['_command_prefix']
+        index = prefix.index('--teacher-plan')
+        assert prefix[index + 1] == str((tmp_path / 'plan.json').absolute())
+        events.append(('launched', argv))
+        return launch_exit
+    monkeypatch.setattr(launcher, 'main', launch)
+    result = owned.main(['--gpus', '0,1,2,3,4,5,6,7', '--out', str(output),
+                         '--teacher-plan', str(tmp_path / 'plan.json'), '--', 'model'])
+    assert result == launch_exit
+    assert [event[0] for event in events] == (['validated', 'launched', 'sealed'] if launch_exit == 0 else ['validated', 'launched'])
+
+
+def test_teacher_obligation_refuses_before_observer_setup(tmp_path, monkeypatch):
+    engine = NS(_owned_qualification_host=(99, 'a' * 64))
+    prepared = {'resources': {'global_host_obligation_bytes': 100}, 'input_sha256': 'a' * 64}
+    def forbidden():
+        raise AssertionError('observer import/setup before admitted obligation')
+    monkeypatch.setattr(owned, '_teacher_module', forbidden)
+    with pytest.raises(ValueError, match='admitted baseline'):
+        owned.prepare_owned_teacher(engine, prepared, tmp_path)
+    assert not hasattr(engine, '_owned_teacher_frames')

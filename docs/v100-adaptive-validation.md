@@ -2492,3 +2492,38 @@ frozen teacher comparisons, sparse-QSA model execution, media, complete physical
 resource bounds and matched per-count performance remain unqualified. No
 production cutover, token/s gain or waiver for the four Q03 strict numerical
 failures follows from these component results.
+
+## C06 isolated preparation component checkpoint
+
+The exact C06-only packet SHA256 is
+`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`.
+Applying only its seven paths in an isolated `4b35d447` snapshot changes one
+runtime file (`compact_indexer.py`) and adds six tests/oracles. The other eight
+sections of the supplied mixed patch are excluded. The independent indexed
+Tail/Pool references match the original implementation; reduction, Half cast,
+RMS16 padding, rotary, error order, status and publication contracts remain
+unchanged. Typed slice preparation retains required generic/error behavior.
+
+The genuine candidate image is
+`sha256:76024bcfb8f0e6136fb01df919b1f07c6c288820ea7d6e7ab6c0fcb25f5045f2`,
+built from the current Native baseline `d736ab78`. Its 786 installed runtime
+files have only the expected compact-indexer change; protected Torch `04cf2557`,
+SDK `491f93da`, FD and installed package origins remain intact. Its manifest
+records the uncommitted qualification snapshot rather than claiming a clean
+commit or an installed overlay.
+
+Five installed CPU modules passed 163 cases without skips: tail72, pool13,
+indexer38, positions29 and coordinate-resource11. Three actual SM70 suites then
+passed 50 cases without skips: two tail tests, 45 pool tests and the three
+maintained compact-indexer tests. The authored controls preserve raw payloads,
+malformed/generic behavior, stream/read retirement, stale generations and
+original indexed numerical comparisons. Actual provider prequalification and
+three mapped native objects were verified. Both runs retired normally without
+OOM, residual GPU contexts or source/health changes.
+
+This is the default SM70 device with eight devices visible, not an eight-rank
+serving cohort. Direct Cache MTP cases do not qualify an actual MTP4 model.
+Maximum admitted activity, full histories, complete physical peaks, media/state
+continuation and matched quality/performance require their separate gates.
+The canonical preparation is unchanged: C06 is not adopted, no runtime switch
+or profile ladder is added, and these component results claim no token/s gain.

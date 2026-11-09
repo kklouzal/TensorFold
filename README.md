@@ -49,6 +49,12 @@ and 42 owner-fixture cases, including four eight-rank GPU cases and all 32
 child origins, with zero skips. This bounded RN-H1/toy-Q8 graph evidence does
 not establish full-model quality, full-window capacity or throughput. The trial remains unselected and existing defaults are unchanged;
 the four Q03 numerical failures receive no waiver.
+The isolated C06 preparation candidate passed 163 installed CPU and 50 SM70
+cases against unchanged indexed references. It is not applied canonically;
+full-method/context/resource, model-quality and performance gates remain open.
+The [private teacher diagnostic](docs/benchmarking.md#private-reference-first-teacher-diagnostics)
+has 284 passing x86 CPU controls. Actual model capture/replay is still unrun;
+its first region supports none/greedy text only, with MTP4 explicitly unsupported.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
 The current source also preserves origin through Unicode capitalization and

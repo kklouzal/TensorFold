@@ -1405,6 +1405,29 @@ def prepare_benchmark(engine, plan, trace_output=None):
         _SchedulerTrace(engine, trace_output).install(observer)
 
 
+def _teacher_module():
+    if __package__:
+        from . import v100_rotorquant_quality
+    else:
+        import v100_rotorquant_quality
+    return v100_rotorquant_quality
+
+
+def prepare_owned_teacher(engine, prepared, output):
+    """Install only after original immutable loading/serving admission paid it."""
+    expected = (prepared['resources']['global_host_obligation_bytes'], prepared['input_sha256'])
+    if engine._owned_qualification_host != expected:
+        raise ValueError('teacher staging obligation differs from original admitted baseline')
+    observer = object.__new__(_teacher_module().OwnedTeacherFrames)
+    engine._owned_teacher_frames = observer  # Journal before setup/host allocation.
+    observer.__init__(engine, prepared, Path(output) / f'teacher-rank{engine.rank}',
+                      fail=_observer_failure, profile=bound_receipt(engine))
+    observer.setup()
+    receipt = observer.install()
+    write_json(observer.directory / 'setup.json', receipt)
+    return receipt
+
+
 def bound_receipt(engine):
     import torch
     from tensorfold.families.qwen4_exp.cuda.owned_experts import Plan, POLICY
@@ -1569,10 +1592,13 @@ def _grouped_gate_up_receipt(engine, requested):
 
 
 def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
-                    execution_rows=None, reference_tiles=False, normalization_parity=None, grouped_gate_up=None, prepared_features=None):
+                    execution_rows=None, reference_tiles=False, normalization_parity=None, grouped_gate_up=None, prepared_features=None,
+                    teacher_profile=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
+        if teacher_profile is not None:
+            receipt['teacher_profile'] = teacher_profile
         receipt["grouped_gate_up"] = _grouped_gate_up_receipt(engine, grouped_gate_up)
         if prepared_features is not None:
             receipt["prepared_features"] = prepared_features
@@ -1634,6 +1660,7 @@ def worker(argv):
     parser.add_argument("--history-input", type=Path)
     parser.add_argument("--history-run-id")
     parser.add_argument("--benchmark-plan", type=Path)
+    parser.add_argument("--teacher-plan", type=Path)
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
@@ -1645,6 +1672,9 @@ def worker(argv):
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
+    if selected.teacher_plan is not None and any((selected.benchmark_plan, selected.scheduler_trace,
+            selected.router_row_input, selected.history_input, selected.normalization_parity, selected.prepared_feature_receipts)):
+        raise ValueError('teacher capture/replay is a separate controlled diagnostic')
     if selected.normalization_parity and (selected.benchmark_plan is None or not selected.reference_tiles
             or selected.scheduler_trace is not None or selected.router_row_input is not None
             or selected.history_input is not None):
@@ -1656,6 +1686,7 @@ def worker(argv):
     receipt_failed = False
     prepared = router_prepared = None
     benchmark = benchmark_resources = parity_resources = feature_resources = None
+    teacher = None
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
     router_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS")
     empty_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX")
@@ -1663,6 +1694,13 @@ def worker(argv):
     def before_listener(engine):
         nonlocal receipt_failed
         try:
+            teacher_profile = None
+            if teacher is not None:
+                try:
+                    teacher_profile = prepare_owned_teacher(engine, teacher, selected.out)['actual_profile']
+                except BaseException as primary:
+                    _observer_failure(engine, primary)
+                    raise
             if router_prepared is not None:
                 try:
                     prepare_router_rows(engine, router_prepared, selected.out)
@@ -1707,6 +1745,7 @@ def worker(argv):
                             execution_rows=selected.execution_rows, reference_tiles=selected.reference_tiles,
                             **({"grouped_gate_up": selected.grouped_gate_up_rows} if selected.grouped_gate_up_rows is not None else {}),
                             **({"normalization_parity": parity_receipt} if parity_receipt is not None else {}),
+                            **({'teacher_profile': teacher_profile} if teacher_profile is not None else {}),
                             **({"prepared_features": feature_receipt} if feature_receipt is not None else {}))
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
@@ -1752,10 +1791,16 @@ def worker(argv):
                 raise ValueError("history worker requires its fresh parent execution identity")
             data, input_sha, input_limit = _history_input(selected.history_input)
             prepared = (data, input_sha, _history_resources(data["C"], input_limit))
+        if selected.teacher_plan is not None:
+            teacher = _teacher_module().owned_teacher_plan(selected.teacher_plan)
         from tensorfold import cli
         args = cli.build_parser().parse_args(["serve", *tail])
         if args.tp != 8 or args.expert_tensor_parallel_size != 4 or not 0 <= args.rank < 8:
             raise ValueError("private qualification requires explicit TP8/ETP4 rank ownership")
+        if teacher is not None and (args.draft_method != 'none' or not args.no_graphs
+                or args.context != teacher['data']['context']
+                or str(args.parallel).lower() == 'auto' or cli._parallel(args.parallel) < 9):
+            raise ValueError('teacher first region requires explicit none/no-graphs/context and at least nine fixed slots')
         if selected.execution_rows is not None:
             # Keep this experiment explicit: resolve no model-dependent draft
             # defaults and pay its complete envelope before engine construction.
@@ -1779,6 +1824,8 @@ def worker(argv):
         if benchmark_resources is not None:
             obligation = (benchmark_resources["global_host_obligation_bytes"],
                           hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
+        if teacher is not None:
+            obligation = (teacher['resources']['global_host_obligation_bytes'], teacher['input_sha256'])
         capability = _grouped_gate_up_capability(cli, selected.grouped_gate_up_rows)
         if selected.execution_rows is not None:
             if "execution_rows" not in cli._OwnedExpertQualification.__dataclass_fields__:
@@ -1916,6 +1963,7 @@ def main(argv=None):
     parser.add_argument("--master-port", type=int, default=29551)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--benchmark-plan", type=Path)
+    parser.add_argument("--teacher-plan", type=Path, help="private none/greedy raw full-vocabulary capture or frozen-prefix replay DATA; never P3")
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
@@ -1929,6 +1977,12 @@ def main(argv=None):
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    teacher = None
+    if args.teacher_plan is not None:
+        if any((args.benchmark_plan, args.scheduler_trace, args.router_row_input, args.history_input,
+                args.normalization_parity, args.prepared_feature_receipts)):
+            parser.error('teacher capture/replay excludes other diagnostic procedures')
+        teacher = _teacher_module().owned_teacher_plan(args.teacher_plan)  # Pure bounded validation before parent effects.
     if args.normalization_parity and (args.benchmark_plan is None or not args.reference_tiles
             or args.scheduler_trace is not None or args.router_row_input is not None or args.history_input is not None):
         parser.error("normalization parity requires benchmark/reference-tiles and excludes other captures")
@@ -1951,6 +2005,8 @@ def main(argv=None):
     output = args.out.absolute()
     output.mkdir(mode=0o700)  # Fresh, caller-owned output; never reuse another qualification's receipts.
     prefix = [sys.executable, str(Path(__file__).resolve()), "--worker", "--out", str(output)]
+    if args.teacher_plan is not None:
+        prefix += ['--teacher-plan', str(args.teacher_plan.absolute())]
     if args.router_row_input is not None:
         prefix += ["--router-row-input", str(args.router_row_input.absolute())]
     if args.history_input is not None:
@@ -1974,8 +2030,11 @@ def main(argv=None):
         trace_output.mkdir(mode=0o700)
         prefix += ["--scheduler-trace", str(trace_output)]
     prefix += ["--"]
-    return launch_cuda_tp.main(["--gpus", args.gpus, "--master-port", str(args.master_port), *args.serve_args],
-                               _command_prefix=prefix)
+    result = launch_cuda_tp.main(["--gpus", args.gpus, "--master-port", str(args.master_port), *args.serve_args],
+                                _command_prefix=prefix)
+    if teacher is not None and result == 0:
+        _teacher_module().seal_owned_teacher(output, teacher, result)
+    return result
 
 
 if __name__ == "__main__":

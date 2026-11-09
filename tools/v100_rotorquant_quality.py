@@ -280,6 +280,803 @@ def teacher_frames(case, first_logits, advance):
         yield step, token, current
 
 
+def _owned_teacher_read(path, maximum):
+    if __package__:
+        from .gb10_io import owned_descriptor, borrowed_stream, stamp
+    else:
+        from gb10_io import owned_descriptor, borrowed_stream, stamp
+    with owned_descriptor(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC) as fd:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= maximum:
+            raise ValueError('bounded immutable teacher input required')
+        with borrowed_stream(fd) as stream:
+            raw = stream.read(before.st_size)
+        if (len(raw) != before.st_size or stamp(os.fstat(fd)) != stamp(before)
+                or stamp(os.stat(path, follow_symlinks=False)) != stamp(before)):
+            raise ValueError('teacher input changed while reading')
+    return raw
+
+
+def _owned_teacher_hash(path, expected, maximum, control=None):
+    """Verify declared immutable raw extent; do not materialize a vocab vector."""
+    if type(expected) is not int or not 0 < expected <= maximum:
+        raise ValueError('bounded declared reference vector extent required')
+    if __package__:
+        from .gb10_io import owned_descriptor, borrowed_stream, stamp
+    else:
+        from gb10_io import owned_descriptor, borrowed_stream, stamp
+    digest = hashlib.sha256()
+    if control is not None:
+        control.check()
+    with owned_descriptor(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC) as fd:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size != expected:
+            raise ValueError('reference vector extent/type differs')
+        with borrowed_stream(fd) as stream:
+            remaining = expected
+            while remaining:
+                if control is not None:
+                    control.check()
+                chunk = stream.read(min(65536, remaining))
+                if control is not None:
+                    control.check()
+                if not chunk:
+                    raise ValueError('truncated reference vector')
+                digest.update(chunk)
+                remaining -= len(chunk)
+        if stamp(os.fstat(fd)) != stamp(before) or stamp(os.stat(path, follow_symlinks=False)) != stamp(before):
+            raise ValueError('reference vector changed while hashing')
+    return digest.hexdigest()
+
+
+def _owned_teacher_json(path, value, maximum, control=None):
+    """Exclusive bounded JSON publication with existing primary-safe IO owners."""
+    if __package__:
+        from .gb10_io import opened_file, owned_descriptor
+    else:
+        from gb10_io import opened_file, owned_descriptor
+    written = 0
+    with opened_file(path, 'x', encoding='utf-8') as stream:
+        for text in json.JSONEncoder(indent=1, ensure_ascii=True, allow_nan=False).iterencode(value):
+            if control is not None:
+                control.check()
+            if len(text) > maximum - written:
+                raise ValueError('teacher JSON exceeds its prepaid schema bound')
+            if stream.write(text) != len(text):
+                raise OSError('short teacher JSON write')
+            written += len(text)
+            if control is not None:
+                control.check()
+        stream.flush()
+        os.fsync(stream.fileno())
+        if control is not None:
+            control.check()
+    with owned_descriptor(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC) as directory:
+        os.fsync(directory)
+        if control is not None:
+            control.check()
+
+
+def owned_teacher_resources(input_bytes, reference_bytes, vocab, frames, *, policy=None):
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import (
+        _json_payload_policy, _json_parse_payload, _json_tree_payload,
+        _python_layout, _streamed_json_encoding_payload,
+    )
+    policy = _json_payload_policy() if policy is None else policy
+    # Same selected-parser/tree policy as the existing private qualification
+    # input. A second tree pays object_pairs_hook pair-list/tuple plus partial
+    # result-dict overlap; the parsed lists/values are borrowed, not deepcopied.
+    inputs = sum(_json_parse_payload(size, policy)['total_bytes'] + _json_tree_payload(size, policy)
+                 for size in (input_bytes, reference_bytes) if size)
+    receipt = 262144 + 2 * input_bytes + 4096 * frames
+    authority = receipt + 16384
+    if authority > 8 << 20:
+        raise ValueError('teacher receipts exceed the existing bounded structured JSON envelope')
+    vector = 4 * vocab
+    per_rank = (inputs + _json_tree_payload(receipt, policy)
+                + _streamed_json_encoding_payload(receipt, _python_layout())['total_bytes']
+                + policy.frame_work + 3 * vector + 262144)
+    # Parent retains the DATA and first rank while processing one other rank
+    # at a time, then publishes its authority after all workers have retired.
+    parent = (inputs + _json_parse_payload(receipt, policy)['total_bytes']
+              + 3 * _json_tree_payload(receipt, policy)
+              + _streamed_json_encoding_payload(authority, _python_layout())['total_bytes']
+              + policy.frame_work + 262144)
+    if 8 * per_rank + parent > sys.maxsize:
+        raise ValueError('teacher host obligation exceeds the selected size domain')
+    return {'global_host_obligation_bytes': 8 * per_rank + parent, 'per_rank_payload_bytes': per_rank,
+            'parent_payload_bytes': parent, 'authority_bytes_limit': authority,
+            'runtime_policy': policy.identity, 'input_bytes': input_bytes, 'reference_bytes': reference_bytes,
+            'receipt_bytes_limit': receipt, 'frame_payload_bytes': vector, 'max_frame_file_bytes': vector + 4096,
+            'max_total_frame_file_bytes': frames * (vector + 4096), 'additional_project_device_bytes': 0,
+            'scope': 'source/object/copy/writer payload; allocator/RSS distinct; diagnostic timings invalid P3'}
+
+
+def _owned_runtime_sources(engine):
+    names = {'engine': type(engine).__module__, 'multi': 'tensorfold.families.qwen4_exp.cuda.multi',
+             'decode': 'tensorfold.families.qwen4_exp.cuda.decode', 'sampling': 'tensorfold.cuda.sampling',
+             'teacher': __name__}
+    result = {}
+    for role, name in names.items():
+        path = Path(sys.modules[name].__file__)
+        size = path.stat().st_size
+        result[role] = _owned_teacher_hash(path, size, size)
+    return result
+
+
+def _owned_teacher_object(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('duplicate teacher JSON key')
+            result[key] = value
+        return result
+    def finite(value):
+        result = float(value)
+        if not math.isfinite(result):
+            raise ValueError('nonfinite teacher JSON')
+        return result
+    result = json.loads(raw, object_pairs_hook=pairs, parse_float=finite,
+                        parse_constant=lambda value: (_ for _ in ()).throw(ValueError('nonfinite teacher JSON')))
+    if type(result) is not dict:
+        raise ValueError('teacher JSON must be an object')
+    return result
+
+
+def seal_owned_teacher(output, prepared, launch_exit):
+    """Only the existing supervisor's positive all-rank retirement permits this seal."""
+    if type(launch_exit) is not int or launch_exit != 0:
+        raise ValueError('teacher authority requires successful existing cohort retirement')
+    root, first, receipts, startup_receipts = Path(output), None, [], []
+    data, limits = prepared['data'], prepared['resources']
+    control = _teacher_read_control(data['read_timeout_s'])
+    for rank in range(8):
+        control.check()
+        name = f'teacher-rank{rank}/summary.json'
+        raw = _owned_teacher_read(root / name, limits['receipt_bytes_limit'])
+        record = _owned_teacher_object(raw)
+        control.check()
+        if (record.get('schema') != 'tensorfold.owned-teacher-result-v1' or type(record.get('rank')) is not int
+                or record['rank'] != rank or record.get('mode') != data['mode'] or record.get('method') != 'none'
+                or record.get('closed') is not True or record.get('finished') is not True or record.get('failed') is not False
+                or record.get('input_sha256') != prepared['input_sha256'] or record.get('declared_identity') != data['identity']
+                or record.get('input_ids') != data['input_ids'] or record.get('vocab') != data['vocab']
+                or record.get('qualification') is not False or record.get('P3_valid') is not False):
+            raise ValueError('teacher rank is incomplete or differs from the declared run')
+        profile = record.get('actual_owned_profile', {})
+        if (any(type(profile.get(key)) is not int for key in ('rank', 'world', 'target_banks', 'mtp_banks'))
+                or profile.get('rank') != rank or profile.get('world') != 8 or profile.get('target_banks') != 48
+                or profile.get('mtp_banks') != 0 or profile.get('capability') != [7, 0]):
+            raise ValueError('teacher rank lacks its actual SC117 none/TP8 profile binding')
+        semantic = profile.get('teacher_semantics')
+        if (type(semantic) is not dict or set(semantic) != {'state_kv_identity', 'context', 'cache_slots', 'prefill_rows',
+                'target_rows', 'vocab_widths', 'sm70_profile', 'prepared_execution'}
+                or type(semantic['context']) is not int or semantic['context'] != data['context']
+                or type(semantic['cache_slots']) is not int or semantic['cache_slots'] < data['context']
+                or type(semantic['target_rows']) is not int or semantic['target_rows'] < 9
+                or type(semantic['prefill_rows']) is not int or semantic['prefill_rows'] <= 0
+                or semantic['sm70_profile'] != 'reference' or semantic['vocab_widths'] != record.get('widths')
+                or semantic['prepared_execution'] != record.get('owner_family')
+                or type(semantic['state_kv_identity']) is not list
+                or ['logical-context-v1', data['context']] not in semantic['state_kv_identity']
+                or ['coordinate-profile-v1', profile.get('coordinate_profile_identity')] not in semantic['state_kv_identity']):
+            raise ValueError('teacher actual KV/context/position/execution semantic binding differs')
+        ids, frames, widths, sources = (record.get(key) for key in ('teacher_ids', 'frames', 'widths', 'runtime_sources'))
+        if (type(ids) is not list or not 0 < len(ids) <= data['max_frames']
+                or any(type(token) is not int or not 0 <= token < data['vocab'] for token in ids)
+                or type(frames) is not list or len(frames) != len(ids)
+                or type(widths) is not list or len(widths) != 8 or any(type(n) is not int or n <= 0 for n in widths)
+                or sum(widths) != data['vocab'] or type(sources) is not dict
+                or set(sources) != {'engine', 'multi', 'decode', 'sampling', 'teacher'}
+                or any(type(value) is not str or not SHA.fullmatch(value) for value in sources.values())):
+            raise ValueError('teacher rank vocabulary/frames/source schema differs')
+        if data['mode'] == 'replay' and ids != prepared['teacher_ids']:
+            raise ValueError('replay cohort did not consume exactly its frozen teacher sequence')
+        for index, frame in enumerate(frames):
+            if (frame.get('step') != index or frame.get('position') != len(data['input_ids']) + index
+                    or frame.get('teacher_id') != ids[index] or frame.get('full_vocab') != data['vocab']):
+                raise ValueError('teacher frame does not describe its frozen prefix')
+        if first is None:
+            first = record
+        if (record['teacher_ids'] != first['teacher_ids'] or record['widths'] != first['widths']
+                or record['runtime_sources'] != first['runtime_sources'] or record['owner_family'] != first['owner_family']
+                or profile.get('teacher_semantics') != first['actual_owned_profile'].get('teacher_semantics')
+                or len(record['frames']) != len(first['frames']) or not record['frames']):
+            raise ValueError('teacher ranks disagree on prefix/profile/source/frame identities')
+        for frame, expected in zip(record['frames'], first['frames']):
+            if any(frame[key] != expected[key] for key in ('step', 'position', 'teacher_id', 'selected_original', 'full_vocab',
+                                                          'state_pos', 'slot_generation', 'history_slot', 'role', 'execution_family')):
+                raise ValueError('teacher rank frame differs from the completed reference')
+        receipts.append({'rank': rank, 'file': name, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()})
+        del raw
+        startup_name = f'rank-{rank}.json'
+        startup_raw = _owned_teacher_read(root / startup_name, limits['receipt_bytes_limit'])
+        startup = _owned_teacher_object(startup_raw)
+        control.check()
+        if (startup.get('schema') != 'tensorfold.private-owned-qualification-v1' or type(startup.get('rank')) is not int
+                or startup.get('rank') != rank
+                or startup.get('world') != 8 or startup.get('mtp_banks') != 0
+                or startup.get('history_host_obligation') != {
+                    'global_bytes': limits['global_host_obligation_bytes'], 'input_sha256': prepared['input_sha256']}):
+            raise ValueError('teacher startup binding differs from original admitted input/profile')
+        if startup.get('teacher_profile') != profile:
+            raise ValueError('teacher actual profile differs from its immutable startup binding')
+        # These are immutable producer/selection identities, not per-rank
+        # allocation/free-memory, timings or local partition observations.
+        producer = {key: startup.get(key) for key in ('tool_sha256', 'runtime_cli_sha256', 'dense_implementation',
+                    'half_partial_policy', 'private_router_policy', 'empty_prefix_policy', 'grouped_gate_up')}
+        producer['reference_tiles_requested'] = startup.get('reference_tile_preparation', {}).get('requested')
+        if rank == 0:
+            producer_identity = producer
+        elif producer != producer_identity:
+            raise ValueError('teacher immutable producer/execution selection differs across ranks')
+        startup_receipts.append({'rank': rank, 'file': startup_name, 'bytes': len(startup_raw),
+                                 'sha256': hashlib.sha256(startup_raw).hexdigest()})
+        del record, startup, startup_raw  # Rank0 plus only ONE other rank's records.
+    frames = []
+    for source in first['frames']:
+        vector = source['vector']
+        name = f"teacher-rank0/{vector['file']}"
+        if (vector['file'] != f"frame-{source['step']:06d}.npy" or vector['dtype'] != '<f4'
+                or vector['shape'] != [data['vocab']]
+                or _owned_teacher_hash(root / name, vector['bytes'], limits['max_frame_file_bytes'], control) != vector['sha256']):
+            raise ValueError('teacher rank0 vocabulary frame differs')
+        frames.append({**source, 'vector': {**vector, 'file': name}})
+    authority = {**first, 'schema': 'tensorfold.owned-teacher-authority-v1', 'launch_exit': launch_exit,
+                 'cohort_complete': True, 'rank_receipts': receipts, 'startup_receipts': startup_receipts, 'frames': frames}
+    authority.pop('rank')
+    _owned_teacher_json(root / 'teacher-authority.json', authority, limits['authority_bytes_limit'], control)
+    return authority
+
+
+def owned_teacher_plan(path):
+    """A separate one-request authority; never inherits the old714 gates.
+
+    The immutable input plan pays its parsed tree before Engine loading. Replay
+    consumes IDs from a positively closed reference capture, not candidate IDs.
+    Profile/model/frontend hashes are operator declarations, recorded as such;
+    actual Engine/State/source evidence remains a separate required binding.
+    """
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import _json_payload_policy
+    policy = _json_payload_policy()  # Prove the parser/object domain before parsing DATA.
+    raw = _owned_teacher_read(path, 8 << 20)
+    data = _owned_teacher_object(raw)
+    fields = {'schema', 'mode', 'vocab', 'context', 'input_ids', 'max_frames', 'identity', 'reference', 'read_timeout_s'}
+    if type(data) is not dict or set(data) != fields or data['schema'] != 'tensorfold.owned-teacher-plan-v1':
+        raise ValueError('exact owned teacher DATA schema required')
+    if (data['mode'] not in ('capture', 'replay') or type(data['vocab']) is not int or not 0 < data['vocab'] < 2**31
+            or type(data['context']) is not int or not 0 < data['context'] < 2**31
+            or type(data['max_frames']) is not int or data['max_frames'] <= 0
+            or type(data['read_timeout_s']) not in (int, float)
+            or not 0 < data['read_timeout_s'] <= sys.maxsize or not math.isfinite(data['read_timeout_s'])
+            or type(data['input_ids']) is not list or not data['input_ids']
+            or any(type(token) is not int or not 0 <= token < data['vocab'] for token in data['input_ids'])
+            or len(data['input_ids']) + data['max_frames'] > data['context']):
+        raise ValueError('invalid bounded teacher geometry/IDs')
+    identity = data['identity']
+    if (type(identity) is not dict or set(identity) != {'run_id', 'case_id', 'model_sha256', 'frontend_sha256', 'profile_sha256'}
+            or any(type(identity[k]) is not str or not SHA.fullmatch(identity[k]) for k in ('model_sha256', 'frontend_sha256', 'profile_sha256'))
+            or any(type(identity[k]) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', identity[k]) for k in ('run_id', 'case_id'))):
+        raise ValueError('explicit teacher case/run/model/frontend/profile authority required')
+    teacher_ids, reference_sha, reference_bytes, reference_file_bytes, resources = [], None, 0, 0, None
+    if data['mode'] == 'capture':
+        if data['reference'] is not None:
+            raise ValueError('capture cannot import a candidate/reference token sequence')
+    else:
+        ref = data['reference']
+        if (type(ref) is not dict or set(ref) != {'path', 'sha256'}
+                or type(ref['path']) is not str or not Path(ref['path']).is_absolute()
+                or type(ref['sha256']) is not str or not SHA.fullmatch(ref['sha256'])):
+            raise ValueError('replay requires a frozen reference capture')
+        reference_raw = _owned_teacher_read(ref['path'], 8 << 20)
+        reference_bytes = len(reference_raw)
+        reference_sha = hashlib.sha256(reference_raw).hexdigest()
+        if reference_sha != ref['sha256']:
+            raise ValueError('reference capture SHA differs')
+        reference = _owned_teacher_object(reference_raw)
+        teacher_ids = reference.get('teacher_ids')
+        if (reference.get('schema') != 'tensorfold.owned-teacher-authority-v1' or reference.get('mode') != 'capture'
+                or reference.get('cohort_complete') is not True or type(reference.get('launch_exit')) is not int
+                or reference.get('launch_exit') != 0
+                or type(reference.get('rank_receipts')) is not list or len(reference['rank_receipts']) != 8
+                or type(reference.get('startup_receipts')) is not list or len(reference['startup_receipts']) != 8
+                or reference.get('closed') is not True or reference.get('failed') is not False
+                or reference.get('finished') is not True or reference.get('method') != 'none'
+                or reference.get('input_ids') != data['input_ids']
+                or reference.get('vocab') != data['vocab'] or type(teacher_ids) is not list
+                or len(teacher_ids) != data['max_frames']
+                or any(type(token) is not int or not 0 <= token < data['vocab'] for token in teacher_ids)):
+            raise ValueError('reference is incomplete or differs from the frozen teacher prefix')
+        frames = reference.get('frames')
+        if type(frames) is not list or len(frames) != len(teacher_ids):
+            raise ValueError('reference full-vocabulary frame list is incomplete')
+        if any(reference.get('declared_identity', {}).get(key) != identity[key]
+               for key in ('case_id', 'model_sha256', 'frontend_sha256')):
+            raise ValueError('replay reference case/model/frontend declarations differ')
+        for step, frame in enumerate(frames):
+            vector = frame.get('vector', {})
+            name = vector.get('file')
+            if (frame.get('step') != step or frame.get('teacher_id') != teacher_ids[step]
+                    or frame.get('position') != len(data['input_ids']) + step
+                    or type(name) is not str or name != f'teacher-rank0/frame-{step:06d}.npy'
+                    or type(vector.get('bytes')) is not int
+                    or not 0 < vector['bytes'] <= 4 * data['vocab'] + 4096
+                    or type(vector.get('sha256')) is not str or not SHA.fullmatch(vector['sha256'])
+                    or vector.get('dtype') != '<f4' or vector.get('shape') != [data['vocab']]):
+                raise ValueError('reference frame/token/vocabulary identity differs')
+            reference_file_bytes += vector['bytes']
+        # All declared cardinality/extent work is checked BEFORE payload I/O.
+        if reference_file_bytes > data['max_frames'] * (4 * data['vocab'] + 4096):
+            raise ValueError('reference file aggregate exceeds declared frame obligation')
+        resources = owned_teacher_resources(len(raw), reference_bytes, data['vocab'], data['max_frames'], policy=policy)
+        control = _teacher_read_control(data['read_timeout_s'])
+        rank_file_bytes = 0
+        for records, pattern in ((reference['rank_receipts'], 'teacher-rank{rank}/summary.json'),
+                                 (reference['startup_receipts'], 'rank-{rank}.json')):
+            for rank, receipt in enumerate(records):
+                if (type(receipt) is not dict or receipt.get('file') != pattern.format(rank=rank) or receipt.get('rank') != rank
+                        or type(receipt.get('sha256')) is not str or not SHA.fullmatch(receipt['sha256'])
+                        or type(receipt.get('bytes')) is not int or not 0 < receipt['bytes'] <= resources['receipt_bytes_limit']):
+                    raise ValueError('reference rank receipt list differs')
+                rank_file_bytes += receipt['bytes']
+        if rank_file_bytes + reference_file_bytes > 16 * resources['receipt_bytes_limit'] + resources['max_total_frame_file_bytes']:
+            raise ValueError('cumulative reference I/O exceeds the declared obligation')
+        for receipt in (*reference['rank_receipts'], *reference['startup_receipts']):
+            name = receipt['file']
+            digest = _owned_teacher_hash(Path(ref['path']).parent / name, receipt.get('bytes'),
+                                         resources['receipt_bytes_limit'], control)
+            if digest != receipt['sha256']:
+                raise ValueError('reference rank receipt differs from successful cohort authority')
+        for frame in frames:
+            vector = frame['vector']
+            digest = _owned_teacher_hash(Path(ref['path']).parent / vector['file'], vector['bytes'],
+                                         4 * data['vocab'] + 4096, control)
+            if digest != vector.get('sha256'):
+                raise ValueError('frozen reference vocabulary file differs')
+    if resources is None:
+        resources = owned_teacher_resources(len(raw), reference_bytes, data['vocab'], data['max_frames'], policy=policy)
+    resources['reference_file_bytes'] = reference_file_bytes + (rank_file_bytes if data['mode'] == 'replay' else 0)
+    resources['reference_file_count'] = len(teacher_ids) + (16 if data['mode'] == 'replay' else 0)
+    return {'data': data, 'input_sha256': hashlib.sha256(raw).hexdigest(), 'teacher_ids': teacher_ids,
+            'reference_sha256': reference_sha, 'resources': resources}
+
+
+def _teacher_read_control(seconds, cancelled=None):
+    if __package__:
+        from .v100_rotorquant_live import ReadControl
+    else:
+        from v100_rotorquant_live import ReadControl
+    # Cooperative before/after chunk checks; an in-flight storage read/write
+    # or fsync is not interruptible here. The outer owned controller still owns
+    # cancellation and whole-job retirement; this is not a hard wall promise.
+    return ReadControl(time.monotonic() + seconds, cancelled)
+
+
+class OwnedTeacherFrames:
+    """Private none/greedy observer on the real MultiDecoder worker.
+
+    This process handles ONE declared request. Module aliases are replaced only
+    during its round and restored before returning. Full logits are copied
+    before delegating the original sampler once; replay alone replaces the
+    returned token with the frozen reference ID. All GPU data storage is an
+    explicitly idle, already-paid target-logit tail, never a new allocation.
+    """
+    def __init__(self, engine, prepared, directory, *, fail, profile):
+        import threading
+        import torch
+        from tensorfold.cleanup import raise_failures
+        from tensorfold.families.qwen4_exp.cuda import decode, multi
+        self.raise_failures = raise_failures  # Resolve before observer/hook effects, never on the failure path.
+        self.engine, self.decoder, self.prepared = engine, engine.multi, prepared
+        self.torch, self.fail = torch, fail
+        self.directory, self.profile = Path(directory), profile
+        self.runtime_sources = _owned_runtime_sources(engine)
+        preparation = getattr(engine, '_owner_preparation', None)
+        self.owner_family = ({'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'} if preparation is None
+                             else dict(preparation.specification))
+        self.original = {name: getattr(self.decoder, name) for name in ('admit', 'round', 'finish')}
+        self.restore_records = tuple((name, self.original[name], name in vars(self.decoder))
+                                     for name in ('admit', 'round', 'finish'))
+        self.close_status = [None] * 7
+        self.alias_status = [None] * 4
+        self.install_status = [None] * 3
+        self.abort_status = [None] * 2
+        alias_records = []
+        for module in (decode, multi):
+            for name in ('choose_gathered', 'tp_sample_rows'):
+                original = getattr(module, name)
+                def sampled(*args, _original=original, _gathered=name == 'choose_gathered', **kwargs):
+                    try:
+                        return self.sample(_original, args, kwargs, gathered=_gathered)
+                    except BaseException as primary:
+                        self.abort(primary)
+                        raise
+                alias_records.append((module, name, original, sampled))
+        self.alias_records = tuple(alias_records)
+        self.old_close = engine.close
+        self.stream = self.state = self.thread = None
+        self.delegating = self.finished = self.closed = self.close_attempted = False
+        self.failed = None
+        self.frames, self.tokens = [], []
+        self.thread_id = threading.get_ident
+        data, buf, plan = prepared['data'], self.decoder.buf, self.decoder._sample_plan
+        preparation = getattr(engine, '_owner_preparation', None)
+        widths = [int(value) for value in plan.widths]
+        width = widths[engine.rank]
+        if (getattr(engine, '_lifecycle', None) is None or getattr(engine, '_closed', None) is not False
+                or engine.tp != 8 or engine.w.comm is not engine.comm or engine.w.mtp is not None
+                or engine.sm70_profile != 'reference'
+                or self.decoder.graphs is not None or data['context'] != engine.context_window
+                or preparation is not None and (preparation.graphs or preparation.reference_arithmetic)
+                or len(widths) != 8 or len(set(widths)) != 1 or sum(widths) != data['vocab']
+                or plan.mapping is not None or plan.offset != sum(widths[:engine.rank])
+                or engine.w.meta['vocab_offset'] != plan.offset
+                or not buf.logits.is_cuda or buf.logits.requires_grad or buf.logits.dtype != torch.float32 or not buf.logits.is_contiguous()
+                or tuple(buf.logits.shape)[1:] != (width,) or buf.logits.shape[0] < 9):
+            raise ValueError('teacher requires actual TP8 contiguous vocabulary and idle nine-row Float32 target buffer; no graphs')
+        self.width, self.widths = width, widths
+        states = self.decoder.states
+        if (not states or not states[0].kv_identity or any(state.kv_identity != states[0].kv_identity for state in states)
+                or states[0].kv_identity[0] != engine.kv_pair.identity
+                or ('logical-context-v1', engine.context_window) not in states[0].kv_identity
+                or ('position-profile-v1', engine.position_profile.identity, engine.position_profile.epoch)
+                   not in states[0].kv_identity
+                or ('coordinate-profile-v1', profile['coordinate_profile_identity']) not in states[0].kv_identity):
+            raise ValueError('teacher actual State numerical profiles disagree before capture')
+        # State.kv_identity is the existing canonical semantic owner: ordered
+        # codec/working policy, logical context, position/coordinate identities,
+        # unique history/indexer and rank-independent native-expert plan. Keep
+        # rank-local device/partition/resource observations outside this key.
+        self.semantic_profile = {'state_kv_identity': states[0].kv_identity,
+                                 'context': engine.context_window, 'cache_slots': self.decoder.capacity,
+                                 'prefill_rows': self.decoder.prefill_rows, 'target_rows': buf.rows,
+                                 'vocab_widths': widths, 'sm70_profile': engine.sm70_profile,
+                                 'prepared_execution': self.owner_family}
+        self.profile = {**profile, 'teacher_semantics': self.semantic_profile}
+        self.gathered = buf.logits[1:9].reshape(-1)
+        # The owning before_listener caller journals self before setup allocates
+        # this paid host vector or creates the fresh evidence directory.
+        self.cpu = None
+
+    def setup(self):
+        self.directory.mkdir(mode=0o700)
+        if self.engine.rank == 0:
+            self.cpu = self.torch.empty((self.prepared['data']['vocab'],), dtype=self.torch.float32, device='cpu')
+
+    def abort(self, primary):
+        if self.failed is primary:
+            return
+        if self.failed is not None and self.failed is not primary:
+            self.abort_status[0] = primary
+            try:
+                self._transport_status(self.failed, self.abort_status)
+            except BaseException as failure:
+                if failure is self.failed:
+                    raise
+                raise self.failed from failure
+        self.failed = primary
+        try:
+            self.fail(self.engine, primary)
+        except BaseException as error:
+            if error is not primary:
+                self.abort_status[1] = error
+                try:
+                    self._transport_status(primary, self.abort_status)
+                except BaseException as failure:
+                    if failure is primary:
+                        raise
+                    raise primary from failure
+            raise
+
+    def _transport_status(self, primary, status):
+        """No list growth/shrink: neutral transport ignores primary duplicates.
+
+        Status and owner records already belong to this operation. Callers
+        guard even preparation/entry failure so the authentic primary remains
+        the propagated object; every secondary stays rooted in fixed slots.
+        """
+        if primary is None:
+            return
+        index = 0
+        while index < len(status):
+            if status[index] is None:
+                status[index] = primary
+            index += 1
+        self.raise_failures(primary, status)
+
+    def sample(self, original, args, kwargs, *, gathered):
+        w = args[0] if args else kwargs['w']
+        if self.thread != self.thread_id() or w is not self.engine.w or self.delegating:
+            return original(*args, **kwargs)
+        logits = kwargs.get('logits') if gathered else args[1]
+        positions = args[3] if gathered else args[2]
+        sampling = args[4] if gathered else (args[3] if len(args) > 3 else kwargs.get('sampling'))
+        data, step = self.prepared['data'], len(self.frames)
+        if (self.stream is None or step >= data['max_frames'] or list(positions) != [len(data['input_ids']) + step]
+                or self.stream.cancel is not None and self.stream.cancel.is_set()
+                or kwargs.get('plan') is not self.decoder._sample_plan or sampling is not self.stream.sampling
+                or sampling is not None and sampling.temperature != 0
+                or kwargs.get('with_prob', False) or logits is None or logits.dtype != self.torch.float32
+                or not logits.is_cuda or logits.requires_grad or tuple(logits.shape) != (1, self.width) or not logits.is_contiguous()
+                or logits.device != self.gathered.device):
+            raise ValueError('teacher requires exactly one unmodified greedy target row at its frozen prefix')
+        state = self.stream.st
+        if (state is not self.state or list(self.stream.out) != self.tokens
+                or (state.history_slot, state.slot_generation, state.kv_identity) != self.state_identity
+                or state.pos != len(data['input_ids']) + max(0, step - 1)):
+            raise ValueError('teacher State generation/committed prefix differs from the frozen trajectory')
+        source = logits[0]
+        if step and source.data_ptr() != self.decoder.buf.logits.data_ptr():
+            raise ValueError('teacher decode source is not the selected target row0 owner')
+        begin, end = source.data_ptr(), source.data_ptr() + source.numel() * source.element_size()
+        other, other_end = self.gathered.data_ptr(), self.gathered.data_ptr() + self.gathered.numel() * self.gathered.element_size()
+        if begin < other_end and other < end:
+            raise ValueError('teacher full-vocabulary destination aliases the borrowed source')
+        self.engine.comm.all_gather(source, self.gathered)
+        if self.cpu is not None:
+            self.cpu.copy_(self.gathered)
+        self.torch.cuda.current_stream(self.gathered.device).synchronize()  # All ranks: positive collective/source retirement.
+        vector = None
+        if self.engine.rank == 0:
+            vector = self.write_vector(step)
+        self.delegating = True
+        try:
+            result = original(*args, **kwargs)
+        finally:
+            self.delegating = False
+        if type(result) is not list or len(result) != 1 or type(result[0]) is not int or not 0 <= result[0] < data['vocab']:
+            raise ValueError('original teacher sampler returned an unsupported outcome')
+        token = result[0] if data['mode'] == 'capture' else self.prepared['teacher_ids'][step]
+        frame = {'step': step, 'position': list(positions)[0], 'selected_original': result[0],
+                            'teacher_id': token, 'full_vocab': data['vocab'], 'vector': vector,
+                            'state_pos': self.stream.st.pos, 'slot_generation': self.stream.st.slot_generation,
+                            'history_slot': self.stream.st.history_slot, 'kv_identity': self.stream.st.kv_identity}
+        role = 'prefill' if step == 0 else 'decode'
+        buffers = self.decoder.pbuf if step == 0 else self.decoder.buf
+        frame['role'] = role
+        frame['execution_family'] = {'kernel_family': buffers.owner_kernel_family,
+                                     'graph_family': buffers.owner_graph_family}
+        if len(json.dumps(frame, allow_nan=False).encode()) > 4096:
+            raise ValueError('teacher frame metadata exceeds its prepaid bound')
+        self.frames.append(frame)
+        self.tokens.append(token)
+        return result if data['mode'] == 'capture' else [token]
+
+    def write_vector(self, step):
+        import numpy as np
+        if __package__:
+            from .gb10_io import opened_file, write_all
+        else:
+            from gb10_io import opened_file, write_all
+        values = self.cpu.numpy()
+        if values.dtype.str != '<f4' or not np.isfinite(values).all():
+            raise ValueError('raw full-vocabulary teacher logits must be finite before sampling')
+        target = self.directory / f'frame-{step:06d}.npy'
+        control = _teacher_read_control(self.prepared['data']['read_timeout_s'], self.stream.cancel)
+        control.check()
+        with opened_file(target, 'xb') as stream:
+            class BoundedWriter:
+                def __init__(self, limit):
+                    self.limit, self.written = limit, 0
+                def write(self, chunk):
+                    control.check()
+                    if len(chunk) > self.limit - self.written:
+                        raise ValueError('teacher vector serialization exceeds its declared extent')
+                    view = memoryview(chunk).cast('B')
+                    for start in range(0, len(view), 65536):
+                        control.check()
+                        write_all(stream, view[start:start + 65536])
+                        control.check()
+                    self.written += len(view)
+                    control.check()
+                    return len(view)
+            writer = BoundedWriter(self.prepared['resources']['max_frame_file_bytes'])
+            # Use NumPy's owned format header, then stream the already-owned
+            # contiguous CPU buffer. Avoid np.save's non-file nditer buffer and
+            # a whole-array tobytes allocation in an adapter.
+            np.lib.format.write_array_header_1_0(writer, np.lib.format.header_data_from_array_1_0(values))
+            writer.write(memoryview(values).cast('B'))
+            stream.flush()
+            os.fsync(stream.fileno())
+            control.check()
+        actual_bytes = target.stat().st_size
+        return {'file': target.name, 'bytes': actual_bytes,
+                'sha256': _owned_teacher_hash(target, actual_bytes, self.prepared['resources']['max_frame_file_bytes'], control),
+                'dtype': '<f4', 'shape': [self.prepared['data']['vocab']]}
+
+    def install(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def aliases():
+            primary, cleanup = None, self.alias_status
+            try:
+                index = 0
+                while index < 4:
+                    module, name, original, sampled = self.alias_records[index]
+                    if getattr(module, name) is not original:
+                        raise ValueError('teacher sampling alias changed outside its owned round')
+                    setattr(module, name, sampled)
+                    index += 1
+                yield
+            except BaseException as error:
+                primary = error
+            index = 3
+            while index >= 0:
+                module, name, original, _sampled = self.alias_records[index]
+                try:
+                    setattr(module, name, original)
+                except BaseException as error:
+                    cleanup[index] = error
+                    if primary is None:
+                        primary = error
+                index -= 1
+            try:
+                self._transport_status(primary, cleanup)
+            except BaseException as failure:
+                if primary is None or failure is primary:
+                    raise
+                raise primary from failure
+
+        def guarded(operation):
+            try:
+                return operation()
+            except BaseException as primary:
+                self.abort(primary)  # Before _joined can turn an Exception into a local Stream.error.
+                raise
+
+        def admitted(stream):
+            data = self.prepared['data']
+            if (self.stream is not None or self.decoder.streams or self.decoder.filling
+                    or stream.draft or stream.vision is not None or stream.constraint is not None
+                    or stream.penalties is not None or stream.probabilities is not None
+                    or stream.carry is not None or stream.owed or stream.background
+                    or getattr(stream, 'retention_request', None) is not None
+                    or getattr(stream, 'retention_window', None) is not None or stream.count != data['max_frames']
+                    or len(stream.prompt) != len(data['input_ids'])
+                    or any(int(a) != b for a, b in zip(stream.prompt, data['input_ids']))
+                    or stream.sampling is not None and stream.sampling.temperature != 0):
+                raise ValueError('teacher admits one exact cold none/greedy text request only')
+            result = self.original['admit'](stream)
+            if (stream.cached != 0 or stream.st is None
+                    or stream.st.kv_identity != self.semantic_profile['state_kv_identity']):
+                raise ValueError('teacher prefix reuse/retained admission is unsupported')
+            self.stream = stream
+            self.state = stream.st
+            self.state_identity = (stream.st.history_slot, stream.st.slot_generation, stream.st.kv_identity)
+            return result
+
+        def rounded():
+            if self.failed is not None:
+                raise self.failed
+            if self.thread is not None:
+                raise ValueError('teacher decoder round is reentrant')
+            self.thread = self.thread_id()
+            try:
+                with aliases():
+                    return self.original['round']()
+            finally:
+                self.thread = None
+
+        def finished(done):
+            if any(stream is self.stream for stream in done):
+                if (self.stream.error is not None or list(self.stream.out) != self.tokens or not self.frames
+                        or self.stream.cancel is not None and self.stream.cancel.is_set()
+                        or len(self.frames) < self.prepared['data']['max_frames']
+                        and self.tokens[-1] not in self.decoder._ends(self.stream)
+                        or self.prepared['data']['mode'] == 'replay'
+                        and len(self.frames) != len(self.prepared['teacher_ids'])):
+                    raise ValueError('teacher request ended without its complete frozen prefix')
+                self.finished = True
+            return self.original['finish'](done)
+
+        def closed():
+            if self.close_attempted:
+                raise RuntimeError('teacher Engine.close already attempted; uncertain owners retained')
+            self.close_attempted = True
+            primary = self.failed
+            errors = self.close_status
+            retired = False
+            try:
+                self.old_close()
+                with self.engine._lifecycle:
+                    if self.engine._closed is not True:
+                        raise RuntimeError('teacher Engine.close returned without positive lifecycle retirement')
+                retired = True
+            except BaseException as error:
+                if primary is None:
+                    primary = error
+                elif error is not primary:
+                    errors[0] = error
+            if retired:
+                self.closed = True
+                index = 0
+                while index < 3:
+                    name, original, owned = self.restore_records[index]
+                    try:
+                        if owned:
+                            setattr(self.decoder, name, original)
+                        else:
+                            delattr(self.decoder, name)
+                    except BaseException as error:
+                        errors[index + 1] = error
+                        if primary is None:
+                            primary = error
+                    index += 1
+            try:
+                if not self.finished or self.failed is not None or not retired:
+                    raise RuntimeError('teacher capture lacks positive request/Engine retirement')
+            except BaseException as error:
+                errors[4] = error
+                if primary is None:
+                    primary = error
+            try:
+                _owned_teacher_json(self.directory / 'summary.json', {
+                    'schema': 'tensorfold.owned-teacher-result-v1', 'mode': self.prepared['data']['mode'],
+                    'method': 'none', 'closed': retired, 'finished': self.finished,
+                    'failed': primary is not None, 'qualification': False, 'P3_valid': False,
+                    'input_sha256': self.prepared['input_sha256'], 'reference_sha256': self.prepared['reference_sha256'],
+                    'declared_identity': self.prepared['data']['identity'], 'actual_owned_profile': self.profile,
+                    'runtime_sources': self.runtime_sources, 'owner_family': self.owner_family,
+                    'rank': self.engine.rank, 'vocab': self.prepared['data']['vocab'], 'widths': self.widths,
+                    'input_ids': self.prepared['data']['input_ids'], 'teacher_ids': self.tokens, 'frames': self.frames,
+                    'resources': self.prepared['resources'],
+                    'scope': 'raw pre-sampler Float32 teacher data; replay is forced-prefix, not free-generation quality or acceptance'},
+                    self.prepared['resources']['receipt_bytes_limit'])
+            except BaseException as error:
+                errors[5] = error
+                if primary is None:
+                    primary = error
+            if retired:
+                # No captured GPU/source owner survives positive Engine.close
+                # solely through this observer. Uncertain retirement keeps all.
+                try:
+                    self.gathered = self.cpu = None
+                    self.stream = self.state = self.decoder = self.engine = None
+                    self.original.clear()
+                    self.restore_records = ()
+                    self.old_close = None
+                except BaseException as error:
+                    errors[6] = error
+                    if primary is None:
+                        primary = error
+            try:
+                self._transport_status(primary, errors)
+            except BaseException as failure:
+                if primary is None or failure is primary:
+                    raise
+                raise primary from failure
+        try:
+            self.decoder.admit = lambda stream: guarded(lambda: admitted(stream))
+            self.decoder.round = lambda: guarded(rounded)
+            self.decoder.finish = lambda done: guarded(lambda: finished(done))
+            self.engine.close = closed
+        except BaseException as primary:
+            errors = self.install_status
+            index = 0
+            while index < 3:
+                name, original, owned = self.restore_records[index]
+                try:
+                    if owned:
+                        setattr(self.decoder, name, original)
+                    elif name in vars(self.decoder):
+                        delattr(self.decoder, name)
+                except BaseException as error:
+                    errors[index] = error
+                index += 1
+            try:
+                self._transport_status(primary, errors)
+            except BaseException as failure:
+                if failure is primary:
+                    raise
+                raise primary from failure
+        return {'mode': self.prepared['data']['mode'], 'method': 'none',
+                'actual_profile': self.profile,
+                'input_sha256': self.prepared['input_sha256'], 'vocab': self.prepared['data']['vocab'],
+                'borrow': 'idle target-logit rows1..8; one active target row; no added project tensor storage; native/allocator reserve separate',
+                'resources': self.prepared['resources'], 'qualification': False, 'P3_valid': False}
+
 def write_json(path, data):
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp")
