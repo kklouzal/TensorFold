@@ -915,7 +915,9 @@ and drained before authority publication. The shared closed
 `tensorfold.owned-teacher-client-v1` schema binds the plan SHA, literal loopback
 base/model, actual expected service profile, readiness/whole/socket deadlines
 and response bound. This is not an arbitrary warmup or benchmark client.
-The new client/host integration passed 358 x86 unit controls, not a model run.
+The initial client/host integration passed 358 x86 unit controls. Its first
+actual reference capture is recorded below; those unit counts alone are not
+model evidence.
 
 The [closed host operation](../deploy/v100/source-foundation.md#closed-owned-teacher-model-operation)
 is the maintained model launch boundary. Existing CPU/CUDA pytest specs remain
@@ -1029,3 +1031,31 @@ This makes bounded reference DATA available. Replay, broad task/media and MTP
 quality, worst-case resources, NativeRN/C06 adoption and matched per-count
 performance keep separate gates. Copying, synchronization and recording make
 all timings diagnostic; no token/s result is published from this operation.
+
+
+### Offline matched teacher comparison
+
+The maintained quality tool has a separate `--compare-owned-teacher` selector.
+It accepts a SHA-bound closed comparison input containing `reference`, `replay`
+and an explicit read deadline. Each side binds its raw Host result and external
+completion receipt, then validates the original authority, rank/startup and
+vector references. This path does not use the historical 714-model corpus,
+summary groups or quality margins.
+
+Pairing requires the same immutable image and recorded native-module identities,
+model/frontend/execution declaration, input IDs, vocabulary, frozen output
+sequence and installed math-source identities.
+Capture and replay retain their distinct mode, operator and observer source
+identities. Appending this offline comparator changes the quality tool's whole
+file hash; carry-forward of existing teacher behavior requires structural
+verification rather than relabeling the old hash as current.
+
+The report includes uint32 bit equality (including signed zero), each full
+vocabulary vector's raw argmax and ties, original selection versus the frozen
+teacher ID, and diagnostic KL, NLL change and maximum absolute logit difference.
+A forced matching answer is not evidence that its underlying logits agree.
+Nonexact control repeats remain observed variability requiring analysis, not an
+automatic quality pass or an invented numerical tolerance. The comparator
+passed 115 x86 CPU controls with no skips. The 27 prior helpers and classes
+retain their ASTs; the legacy main body follows the new explicit offline
+selector unchanged. Actual replay and comparison execution remain pending.

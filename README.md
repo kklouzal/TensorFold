@@ -64,6 +64,10 @@ short request ran. Replay, broader quality and performance remain unqualified.
 The closed operation also implements matched reference replay with read-only
 capture inputs and positive outer-controller completion evidence. The adapter
 passed 125 x86 protocol checks; actual replay verification remains pending.
+The offline matched-control comparator reports full-logit bit differences, raw
+token choices and diagnostic error metrics without inherited quality margins.
+Its 115 x86 CPU controls and independent source review passed; the paired
+model comparison remains pending.
 The offline quality-DATA producer is now maintained in `tools/v100_quality_data.py`.
 Its 29 local CPU controls cover immutable inputs, independent gold, bounded
 publication and current frontend provenance. Historical DATA is preserved;

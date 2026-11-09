@@ -271,6 +271,254 @@ def summarize(authority, rows):
     }
 
 
+
+def _owned_comparison_contract():
+    if __package__:
+        from . import v100_owned_model_contract
+    else:
+        import v100_owned_model_contract
+    return v100_owned_model_contract
+
+
+def _owned_comparison_file(root, reference, control, *, maximum=8 << 20, parsed=True):
+    contract = _owned_comparison_contract()
+    contract.identity(reference, key='file', rank='rank' in reference)
+    path = root / reference['file']
+    if not path.resolve(strict=True).is_relative_to(root.resolve(strict=True)):
+        raise ValueError('owned comparison reference escapes its evidence root')
+    if reference['bytes'] > maximum:
+        raise ValueError('owned comparison reference exceeds its bounded extent')
+    digest = _owned_teacher_hash(path, reference['bytes'], maximum, control)
+    if digest != reference['sha256']:
+        raise ValueError('owned comparison referenced SHA differs')
+    if not parsed:
+        return path
+    raw = _owned_teacher_read(path, reference['bytes'])
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError('owned comparison reference changed before parsing')
+    control.check()
+    return _owned_teacher_object(raw)
+
+
+def _owned_comparison_vector(path, vector, vocab, control):
+    """Preflight the actual NPY header on the same held, verified payload.
+
+    NumPy owns the header grammar. Its parser reads the declared header before
+    checking max_header_size, so cap each header read before it can allocate.
+    No native/vector allocation occurs until shape/dtype/order/extent agree.
+    """
+    import numpy as np
+    raw = _owned_teacher_read(path, vector['bytes'])
+    if hashlib.sha256(raw).hexdigest() != vector['sha256']:
+        raise ValueError('owned comparison vector changed before header preflight')
+    class Header:
+        def __init__(self):
+            self.stream = io.BytesIO(raw)
+        def read(self, size):
+            if type(size) is not int or not 0 <= size <= 4096:
+                raise ValueError('owned comparison NPY header exceeds its declared header allowance')
+            return self.stream.read(size)
+        def tell(self):
+            return self.stream.tell()
+    header = Header()
+    version = np.lib.format.read_magic(header)
+    readers = {(1, 0): np.lib.format.read_array_header_1_0, (2, 0): np.lib.format.read_array_header_2_0}
+    if version not in readers:
+        raise ValueError('owned comparison requires supported bounded NPY1/2 header')
+    shape, fortran, dtype = readers[version](header, max_header_size=4096)
+    if (shape != (vocab,) or dtype.str != '<f4' or fortran is not False
+            or header.tell() + 4 * vocab != len(raw)):
+        raise ValueError('owned comparison actual NPY header/payload extent differs from full Float32 vocabulary')
+    control.check()
+    stream = io.BytesIO(raw)
+    array = np.load(stream, allow_pickle=False, max_header_size=4096)
+    if (not isinstance(array, np.ndarray) or array.dtype.str != '<f4' or array.shape != (vocab,)
+            or stream.tell() != len(raw) or not np.isfinite(array).all()):
+        raise ValueError('owned comparison requires complete finite Float32 vectors')
+    control.check()
+    return array
+
+
+def _owned_comparison_side(selected, mode, control):
+    """Consume successful owner records; never rerun or reinterpret a launcher."""
+    contract = _owned_comparison_contract()
+    if (type(selected) is not dict or set(selected) != {'root', 'host_result', 'completion'}
+            or not contract.absolute(selected['root'])):
+        raise ValueError('closed owned comparison side required')
+    root = Path(selected['root'])
+    host = _owned_comparison_file(root, selected['host_result'], control)
+    inner = host.get('inner') or {}
+    model = contract.validate_model_result(inner.get('model_result'))
+    authority_ref = model['teacher_authority']
+    authority = _owned_comparison_file(root, authority_ref, control)
+    contract.validate_completed_teacher_host(host, authority_sha256=authority_ref['sha256'],
+                                             authority_bytes=authority_ref['bytes'])
+    completion_ref = selected['completion']
+    contract.identity(completion_ref)
+    if completion_ref['bytes'] > 8 << 20 or _owned_teacher_hash(completion_ref['path'], completion_ref['bytes'], 8 << 20, control) != completion_ref['sha256']:
+        raise ValueError('owned comparison external completion SHA/extent differs')
+    completion_raw = _owned_teacher_read(completion_ref['path'], completion_ref['bytes'])
+    if hashlib.sha256(completion_raw).hexdigest() != completion_ref['sha256']:
+        raise ValueError('external completion changed before parsing')
+    completion = _owned_teacher_object(completion_raw)
+    contract.validate_teacher_completion(completion, host_result_sha256=selected['host_result']['sha256'],
+                                           authority_sha256=authority_ref['sha256'])
+    inner_copy = _owned_teacher_object(_owned_teacher_read(root / 'owned-teacher-operation-result.json', 8 << 20))
+    if inner_copy != inner:
+        raise ValueError('owned comparison outer/inner operation records differ')
+    client = _owned_comparison_file(root, model['client_report'], control)
+    if (client.get('complete') is not True or client.get('client_protocol_passed') is not True
+            or client.get('post_attempts') != 1 or client.get('mode') != mode
+            or client.get('token_ids') != authority.get('teacher_ids')
+            or client.get('teacher_plan_sha256') != model['teacher_plan_sha256']
+            or client.get('teacher_client_sha256') != model['teacher_client_sha256']
+            or client.get('cached_tokens') != 0 or client.get('drafts') is not False
+            or client.get('drafted') != 0 or client.get('accepted') != 0):
+        raise ValueError('owned comparison client/prefix completion differs')
+    if (authority.get('schema') != 'tensorfold.owned-teacher-authority-v1' or authority.get('mode') != mode
+            or authority.get('cohort_complete') is not True or authority.get('closed') is not True
+            or authority.get('finished') is not True or authority.get('failed') is not False
+            or type(authority.get('launch_exit')) is not int or authority['launch_exit'] != 0
+            or authority.get('method') != 'none' or authority.get('input_sha256') != model['teacher_plan_sha256']):
+        raise ValueError('owned comparison authority is not a completed none cohort')
+    frames, ids, vocab = (authority.get(key) for key in ('frames', 'teacher_ids', 'vocab'))
+    if (type(ids) is not list or not 0 < len(ids) <= 64 or type(vocab) is not int or not 0 < vocab <= (64 << 20) // 4 - 1024
+            or any(type(token) is not int or not 0 <= token < vocab for token in ids)
+            or type(frames) is not list or len(frames) != len(ids)):
+        raise ValueError('owned comparison requires bounded complete full-vocabulary frames')
+    # All metadata/cardinalities are checked before loading any NPY payload.
+    for step, frame in enumerate(frames):
+        vector = frame.get('vector', {})
+        if (frame.get('step') != step or frame.get('position') != len(authority['input_ids']) + step
+                or frame.get('teacher_id') != ids[step] or frame.get('full_vocab') != vocab
+                or type(frame.get('selected_original')) is not int or not 0 <= frame['selected_original'] < vocab
+                or mode == 'capture' and frame['selected_original'] != ids[step]
+                or vector.get('file') != f'teacher-rank0/frame-{step:06d}.npy'
+                or vector.get('dtype') != '<f4' or vector.get('shape') != [vocab]
+                or type(vector.get('bytes')) is not int or not 0 < vector['bytes'] <= 4 * vocab + 4096):
+            raise ValueError('owned comparison frame/position/vector identity differs')
+    for collection in ('rank_receipts', 'startup_receipts'):
+        expected = authority.get(collection)
+        if type(expected) is not list or len(expected) != 8:
+            raise ValueError('owned comparison authority rank receipt list differs')
+        for rank, (saved, bound) in enumerate(zip(expected, model[collection])):
+            if bound != {**saved, 'file': 'teacher/' + saved.get('file', '')} or saved.get('rank') != rank:
+                raise ValueError('owned comparison authority/model receipt binding differs')
+    native_sets = []
+    for collection in ('rank_receipts', 'startup_receipts', 'child_native_records'):
+        for rank, reference in enumerate(model[collection]):
+            record = _owned_comparison_file(root, reference, control)
+            if record.get('rank') != rank:
+                raise ValueError('owned comparison rank record order differs')
+            if collection == 'child_native_records':
+                mapped = record.get('mapped_elfs')
+                if (type(mapped) is not list or not 0 < len(mapped) <= 64
+                        or any(type(item) is not dict or type(item.get('name')) is not str
+                            or not item['name'] or type(item.get('sha256')) is not str
+                            or not SHA.fullmatch(item['sha256']) for item in mapped)):
+                    raise ValueError('owned comparison lacks actual bounded native name/SHA identity')
+                native_sets.append(sorted({(item['name'], item['sha256']) for item in mapped}))
+            if collection == 'rank_receipts' and (record.get('closed') is not True or record.get('finished') is not True
+                    or record.get('failed') is not False or record.get('mode') != mode
+                    or record.get('teacher_ids') != ids or record.get('runtime_sources') != authority.get('runtime_sources')):
+                raise ValueError('owned comparison rank did not finish the declared prefix/source')
+    content = _owned_comparison_file(root, inner['content_binding'], control)
+    if content.get('completed') is not True:
+        raise ValueError('owned comparison model content was not completed')
+    return {'root': root, 'inner': inner, 'authority': authority, 'authority_ref': authority_ref, 'native_sets': native_sets}
+
+
+def compare_owned_teacher(reference, replay, *, read_timeout_s):
+    """Offline matched-control diagnostics; no old714 margin or quality pass."""
+    if (type(read_timeout_s) not in (int, float) or not 0 < read_timeout_s <= sys.maxsize
+            or not math.isfinite(read_timeout_s)):
+        raise ValueError('owned comparison requires positive finite numeric read_timeout_s excluding bool')
+    import numpy as np
+    control = _teacher_read_control(read_timeout_s)
+    first = _owned_comparison_side(reference, 'capture', control)
+    second = _owned_comparison_side(replay, 'replay', control)
+    a, b = first['authority'], second['authority']
+    if first['inner']['image_id_declared'] != second['inner']['image_id_declared']:
+        raise ValueError('matched reference control requires the same immutable image')
+    if first['native_sets'] != second['native_sets']:
+        raise ValueError('matched reference control actual native name/SHA sets differ')
+    if b.get('reference_sha256') != first['authority_ref']['sha256']:
+        raise ValueError('replay does not name this successful capture authority')
+    for key in ('model_assets', 'frontend_assets', 'frontend_root', 'model_entrypoint', 'execution_manifest'):
+        if first['inner'].get('operation', {}).get(key) != second['inner'].get('operation', {}).get(key):
+            raise ValueError('owned comparison actual bound model/frontend/execution differs: ' + key)
+    for key in ('input_ids', 'vocab', 'widths', 'teacher_ids', 'owner_family'):
+        if a.get(key) != b.get(key):
+            raise ValueError('owned comparison changed frozen ' + key)
+    for key in ('case_id', 'model_sha256', 'frontend_sha256', 'profile_sha256'):
+        if a.get('declared_identity', {}).get(key) != b.get('declared_identity', {}).get(key):
+            raise ValueError('owned comparison declared semantic identity differs: ' + key)
+    for key in ('teacher_semantics', 'coordinate_profile_identity', 'plan_identity', 'policy', 'target_banks', 'mtp_banks', 'state_count', 'capability'):
+        if a.get('actual_owned_profile', {}).get(key) != b.get('actual_owned_profile', {}).get(key):
+            raise ValueError('owned comparison actual semantic profile differs: ' + key)
+    for key in ('engine', 'multi', 'decode', 'sampling'):
+        value = a.get('runtime_sources', {}).get(key)
+        if not isinstance(value, str) or not SHA.fullmatch(value) or value != b.get('runtime_sources', {}).get(key):
+            raise ValueError('owned comparison installed runtime source differs: ' + key)
+    rows = []
+    for index, (old, current) in enumerate(zip(a['frames'], b['frames'])):
+        for key in ('step', 'position', 'teacher_id', 'full_vocab', 'role', 'execution_family', 'kv_identity'):
+            if old.get(key) != current.get(key):
+                raise ValueError('owned comparison frame pairing differs: ' + key)
+        vectors = []
+        for side, frame in ((first, old), (second, current)):
+            vector = frame['vector']
+            ref = {key: vector[key] for key in ('file', 'bytes', 'sha256')}
+            path = _owned_comparison_file(side['root'] / 'teacher', ref, control, maximum=4*a['vocab']+4096, parsed=False)
+            vectors.append(_owned_comparison_vector(path, vector, a['vocab'], control))
+            control.check()
+        left, right = vectors
+        unequal = left.view('<u4') != right.view('<u4')
+        metrics = compare_logits(left, right, old['teacher_id'])
+        rows.append({'step': index, 'position': old['position'], 'teacher_id': old['teacher_id'],
+            'reference_original_selected': old['selected_original'], 'replay_original_selected': current['selected_original'],
+            'reference_forced_id': old['teacher_id'], 'replay_forced_id': current['teacher_id'],
+            'exact_uint32_bits': not bool(unequal.any()), 'different_uint32_values': int(unequal.sum()),
+            'reference_raw_top1_ties': int(np.count_nonzero(left == left.max())),
+            'replay_raw_top1_ties': int(np.count_nonzero(right == right.max())),
+            'finite': True, **metrics})
+        del vectors, left, right, unequal
+    exact = all(row['exact_uint32_bits'] for row in rows)
+    selections = all(row['reference_original_selected'] == row['replay_original_selected'] for row in rows)
+    source = Path(__file__)
+    producer_sha = _owned_teacher_hash(source, source.stat().st_size, 8 << 20, control)
+    return {'schema': 'tensorfold.owned-teacher-comparison-v1', 'complete': True,
+        'comparison_tool_sha256': producer_sha,
+        'status': 'EXACT_MATCHED_CONTROL' if exact and selections else 'NONEXACT_MATCHED_CONTROL_VARIABILITY_REQUIRES_ANALYSIS',
+        'exact_uint32_all_frames': exact, 'original_selection_agreement_all_frames': selections,
+        'qualification': False, 'quality_acceptance': False, 'P3_valid': False,
+        'reference': reference, 'replay': replay, 'frames': rows,
+        'image_id': first['inner']['image_id_declared'], 'native_sets_by_rank': first['native_sets'],
+        'runtime_sources': {key: a['runtime_sources'][key] for key in ('engine', 'multi', 'decode', 'sampling')},
+        'teacher_sources': [a['runtime_sources'].get('teacher'), b['runtime_sources'].get('teacher')],
+        'operator_commits': [first['inner'].get('source_commit'), second['inner'].get('source_commit')],
+        'scope': 'one matched forced-prefix control; no tolerance, broad quality, free-generation or analytical acceptance'}
+
+
+def _compare_owned_teacher_main(argv):
+    parser = argparse.ArgumentParser(description='Offline owned capture/replay control comparison; no quality margins')
+    parser.add_argument('--comparison-input', type=Path, required=True)
+    parser.add_argument('--expected-input-sha', required=True)
+    parser.add_argument('--output-dir', type=Path, required=True)
+    args = parser.parse_args(argv)
+    raw = _owned_teacher_read(args.comparison_input, 8 << 20)
+    if not SHA.fullmatch(args.expected_input_sha) or hashlib.sha256(raw).hexdigest() != args.expected_input_sha:
+        raise ValueError('owned comparison input SHA differs')
+    data = _owned_teacher_object(raw)
+    if type(data) is not dict or set(data) != {'schema', 'reference', 'replay', 'read_timeout_s'} or data['schema'] != 'tensorfold.owned-teacher-comparison-input-v1':
+        raise ValueError('closed owned comparison input required')
+    report = compare_owned_teacher(data['reference'], data['replay'], read_timeout_s=data['read_timeout_s'])
+    report['comparison_input_sha256'] = args.expected_input_sha
+    args.output_dir.mkdir(mode=0o700)
+    _owned_teacher_json(args.output_dir / 'comparison.json', report, 8 << 20, _teacher_read_control(data['read_timeout_s']))
+    return 0  # Nonexact results are preserved diagnostics, not acceptance or a hidden tolerance.
+
+
 def teacher_frames(case, first_logits, advance):
     """Consume the frozen previous teacher token, never the candidate's choice."""
     current = first_logits
@@ -1491,6 +1739,9 @@ def stop_children(children):
 
 
 def main(argv=None):
+    selected = sys.argv[1:] if argv is None else argv
+    if selected[:1] == ['--compare-owned-teacher']:
+        return _compare_owned_teacher_main(selected[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", type=Path)
     parser.add_argument("--baseline-manifest", type=Path, required=True)
