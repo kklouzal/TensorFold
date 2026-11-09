@@ -1262,3 +1262,49 @@ CPU/CUDA diagnostic is needed; the existing first-prefill trace cannot be
 represented as a trace of this operation. This timeout closes no long-input,
 sparse-QSA, method/media, full-activity, quality, performance or candidate
 adoption gate, and grants no waiver for the four open Q03 numerical failures.
+
+
+### Bounded late-prefill trace selector
+
+The existing private benchmark scheduler trace accepts
+`--scheduler-trace-prefill-start N` alongside `--scheduler-trace` and
+`--benchmark-plan`, before the serve-argument separator. Omitting the selector
+retains the first-prefill behavior. It binds the first non-warmup C1 cohort and
+its prompt hash, requires `0 <= N < input_tokens`, and preserves C8-only default
+plans. Teacher capture still rejects benchmark/trace combinations; appending
+these flags to a teacher operation is not an admitted diagnostic.
+
+Selection reads the decoder's committed host prefill cursor at the existing
+rank0 adapter-round boundary. It performs no GPU readback, repeated `_pieces`
+or `freeze_execution`, or per-round trace IO. Once selected, the existing
+prepare callback supplies actual start/count, wire, slot/generation and state
+position. The prepare callback must return after one positive prepared pass;
+the receipt also records the prefix operation. The receipt
+retains requested threshold versus actual prepared geometry; a cursor jump
+need not land exactly on N. Maintenance, cancellation, missing/foreign owners,
+no positive pass or an unreached trigger cannot claim an observed prefill.
+The initial selection receipt is explicitly `UNSUPPORTED_NOT_OBSERVED`;
+`SELECTED_UNVERIFIED`, `OBSERVED` and `FAILED` remain distinct outcomes.
+
+The single prefill window replaces the initial prefill window rather than
+adding a sixth capture. The existing maximum is five finite rank0 calls:
+one prefill, two warmed C1 decode and two warmed C8 decode. Other ranks remain
+untraced. Original callbacks are called once, on the scheduler thread, and
+source-owned profiler retirement preserves the original failure even when
+stop, export, geometry verification, clock or receipt publication also fail.
+Profiler ownership is journaled before entry; cleanup status is prepaid and
+keeps chronological failure priority.
+
+The exact two-file source hold `2f7b9fb4` passed all 275 pinned x86 CPU controls
+with zero skips, no outer diagnostic errors and positive CLI/Host/container
+retirement. The earlier held version passed its pytest assertions but failed
+the outer route because a test patched the shared clock; that failure remains
+preserved. The correction scopes the fake clock to the tested module and does
+not suppress or relax the outer diagnostic.
+
+These are source/CPU collector results, not actual profiler execution or model
+qualification. Capture count alone does not bound Kineto/CUPTI allocator or
+export-file costs; operator RAM, device headroom, disk and deadline admission
+remain required. All trace timing is `P3_valid=false`. A closed benchmark
+client/shutdown/native-origin/result workflow must be admitted before an actual
+late-prefill diagnostic is released; no new GPU run follows from this selector.

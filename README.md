@@ -52,6 +52,9 @@ the four Q03 numerical failures receive no waiver.
 The isolated C06 preparation candidate passed 163 installed CPU and 50 SM70
 cases against unchanged indexed references. It is not applied canonically;
 full-method/context/resource, model-quality and performance gates remain open.
+The existing private benchmark trace can now select a late C1 prefill cursor
+and verify the actual prepared geometry. Its 275 x86 CPU controls pass; no
+late profiler or model activation is qualified by those controls.
 The [private teacher diagnostic](docs/benchmarking.md#private-reference-first-teacher-diagnostics)
 has 284 passing x86 CPU controls. Its first region supports NONE/greedy text
 only, with MTP4 explicitly unsupported; actual capture evidence follows below.

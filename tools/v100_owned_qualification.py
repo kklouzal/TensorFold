@@ -1013,28 +1013,105 @@ class _HistoryAttestation:
 
 
 
+def _trace_prefill_selection(plan, start):
+    if type(start) is not int or not 0 <= start <= sys.maxsize:
+        raise ValueError('scheduler trace prefill start must be a nonnegative integer')
+    cohort = next((c for c in plan['cohorts'] if not c['warmup'] and c['level'] == 1), None)
+    if cohort is None:
+        if start:
+            raise ValueError('late scheduler trace requires a nonwarmup C1 cohort')
+        return None  # Preserve existing C8-only diagnostic plans.
+    if start >= cohort['input_tokens']:
+        raise ValueError('scheduler trace prefill start must precede the designated prompt end')
+    request = cohort['requests'][0]
+    return {'run_identity': plan['run_identity'], 'cohort_id': cohort['id'],
+            'prompt_sha256': request['prompt_sha256'], 'input_tokens': cohort['input_tokens'],
+            'requested_start': start, 'status': 'UNSUPPORTED_NOT_OBSERVED', 'reason': None, 'P3_valid': False,
+            'boundary_start': None, 'actual_start': None, 'actual_count': None,
+            'slot': None, 'slot_generation': None, 'state_pos': None, 'actual_state_pos': None, 'wire': None,
+            'prefix_operation': None, 'prepared_calls': 0, 'prepared_returned': False,
+            'scope': 'one rank0 TP adapter round; logical host geometry, diagnostic and P3-invalid'}
+
+
 class _SchedulerTrace:
     """Five finite rank-zero scheduler calls, never a live cross-call profiler."""
-    def __init__(self, engine, output, *, factory=None):
+    def __init__(self, engine, output, *, factory=None, prefill_start=0, selection=None):
+        if type(prefill_start) is not int or not 0 <= prefill_start <= sys.maxsize:
+            raise ValueError('scheduler trace prefill start must be a nonnegative integer')
         self.engine, self.output, self.factory = engine, Path(output), factory
         self.counts, self.active = {}, False
+        self.prefill_start, self.selection = prefill_start, selection
+        self.plan_bound = selection is not None
+        self.prefill_owner = self.prefill_state = self.profiler = self.failed = None
+        self.capture_errors = [None] * 7  # Acquired before profiler/hook effects.
+        self.capture_error_order = (0, 1, 2, 3, 6, 4, 5)  # Geometry precedes receipt/publication.
+        self.notification_errors = [None] * 2
+        self.transport = raise_failures
 
     def label(self, observer):
         if observer.current is None:
             return None
-        cohort = next(c for c in observer.plan["cohorts"] if c["id"] == observer.current)
-        if cohort["warmup"] or cohort["level"] not in (1, 8):
+        if not self.plan_bound:
+            self.selection = _trace_prefill_selection(observer.plan, self.prefill_start)
+            self.plan_bound = True
+        cohort = next(c for c in observer.plan['cohorts'] if c['id'] == observer.current)
+        if cohort['warmup'] or cohort['level'] not in (1, 8):
             return None
         live = [s for s in observer.decoder.streams.values() if not s.done and s.st is not None]
-        if cohort["level"] == 1 and observer.decoder.filling and not self.counts.get("prefill"):
-            self.counts["prefill"] = 1
-            return "c1-cold-prefill-containing-round"
-        key = str(cohort["level"])
-        if (not observer.decoder.filling and len(live) == cohort["level"]
+        selection = self.selection
+        if (selection is not None and cohort['id'] == selection['cohort_id']
+                and observer.decoder.filling and not self.counts.get('prefill')):
+            filling = [s for s in observer.decoder.filling if not s.done]
+            if len(filling) != 1 or live and any(s is not filling[0] for s in live):
+                selection['reason'] = 'not_one_filling_owner'
+                return None
+            stream = filling[0]
+            fill = observer.decoder.fills.get(stream.sid)
+            state = stream.st
+            wire = self.engine.tp_decoder.wires.get(id(stream))
+            identity = observer.identities.get(wire)
+            if (state is None or fill is None or len(fill) < 3 or type(fill[2]) is not int
+                    or type(wire) is not int or identity is None or identity[0]['id'] != selection['cohort_id']
+                    or identity[1]['prompt_sha256'] != selection['prompt_sha256']):
+                selection['reason'] = 'missing_or_foreign_owner'
+                return None
+            cancel = getattr(stream, 'cancel', None)
+            if cancel is not None and cancel.is_set():
+                selection['reason'] = 'cancelled_before_selection'
+                return None
+            cursor = fill[2]
+            if not self.prefill_start <= cursor < selection['input_tokens']:
+                return None
+            self.counts['prefill'] = 1
+            self.prefill_owner, self.prefill_state = stream, state
+            selection.update(status='SELECTED_UNVERIFIED', reason=None, boundary_start=cursor,
+                slot=state.history_slot, slot_generation=state.slot_generation, state_pos=state.pos, wire=wire)
+            return ('c1-cold-prefill-containing-round' if self.prefill_start == 0 else
+                    f'c1-prefill-start-ge-{self.prefill_start}-round')
+        key = str(cohort['level'])
+        if (not observer.decoder.filling and len(live) == cohort['level']
                 and all(len(s.out) > 1 for s in live) and self.counts.get(key, 0) < 2):
             self.counts[key] = self.counts.get(key, 0) + 1
-            return f"c{key}-warmed-decode-round-{self.counts[key]}"
+            return f'c{key}-warmed-decode-round-{self.counts[key]}'
         return None
+
+    def note_prepare(self, pieces):
+        if self.prefill_owner is None:
+            return
+        selection = self.selection
+        selection['prepared_calls'] += 1
+        if len(pieces) != 1:
+            selection['reason'] = 'not_one_actual_prefill_piece'
+            return
+        stream, start, count = pieces[0]
+        if (stream is not self.prefill_owner or type(start) is not int or type(count) is not int or count <= 0
+                or start != selection['boundary_start'] or start + count > selection['input_tokens']
+                or stream.st is not self.prefill_state or stream.st.history_slot != selection['slot']
+                or stream.st.slot_generation != selection['slot_generation']):
+            selection['reason'] = 'actual_prefill_geometry_differed'
+            return
+        selection['actual_start'], selection['actual_count'] = start, count
+        selection['actual_state_pos'] = stream.st.pos
 
     @staticmethod
     def process():
@@ -1044,7 +1121,14 @@ class _SchedulerTrace:
 
     def capture(self, label, callback):
         if threading.current_thread() is not self.engine.scheduler.thread:
-            raise RuntimeError("profiler must be owned by the actual scheduler thread")
+            raise RuntimeError('profiler must be owned by the actual scheduler thread')
+        if self.failed is not None:
+            raise self.failed  # No retry after uncertain profiler retirement.
+        if self.active:
+            raise RuntimeError('scheduler profiler capture is reentrant')
+        errors = self.capture_errors
+        for index in range(len(errors)):
+            errors[index] = None
         if self.factory is None:
             import torch
             profiler = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
@@ -1052,9 +1136,13 @@ class _SchedulerTrace:
                 with_stack=False)
         else:
             profiler = self.factory()
-        before, started = self.process(), time.monotonic()
-        primary, errors, entered, result = None, [], False, None
+        self.profiler = profiler  # Journal before the foreign profiler can become active.
+        primary, entered, result = None, False, None
+        before = started = entered_at = work_end = stopped = None
+        trace_bytes = None
+        prefill = self.prefill_owner is not None
         try:
+            before, started = self.process(), time.monotonic()
             profiler.__enter__()
             entered = True
             self.active = True
@@ -1064,38 +1152,85 @@ class _SchedulerTrace:
             primary = error
         finally:
             self.active = False
-            work_end = time.monotonic()
+            try:
+                work_end = time.monotonic()
+            except BaseException as error:
+                errors[0] = error
             if entered:
                 try:
-                    profiler.__exit__(type(primary) if primary else None, primary,
-                                      primary.__traceback__ if primary else None)
+                    profiler.__exit__(type(primary) if primary is not None else None, primary,
+                                      primary.__traceback__ if primary is not None else None)
                 except BaseException as error:
-                    errors.append(error)
-                stopped = time.monotonic()
-                trace_bytes = None
+                    errors[1] = error
                 try:
-                    trace = self.output / (label + ".json")
+                    stopped = time.monotonic()
+                except BaseException as error:
+                    errors[2] = error
+                try:
+                    trace = self.output / (label + '.json')
                     profiler.export_chrome_trace(str(trace))
                     trace_bytes = trace.stat().st_size
                 except BaseException as error:
-                    errors.append(error)
+                    errors[3] = error
+                if prefill:
+                    selection = self.selection
+                    try:
+                        cancel = getattr(self.prefill_owner, 'cancel', None)
+                        if cancel is not None and cancel.is_set():
+                            selection['reason'] = 'cancelled_during_selected_round'
+                        observed = (primary is None and selection['prepared_calls'] == 1
+                            and selection['prepared_returned'] and selection['actual_count'] is not None
+                            and selection['reason'] is None and errors[0] is None and errors[1] is None
+                            and errors[2] is None and errors[3] is None)
+                        selection['status'] = ('FAILED' if primary is not None or errors[0] is not None
+                            or errors[1] is not None or errors[2] is not None or errors[3] is not None else
+                            'OBSERVED' if observed else 'UNSUPPORTED_NOT_OBSERVED')
+                        selection['prefix_operation'] = getattr(self.engine.tp_decoder, 'prefix_operation', None)
+                    except BaseException as error:
+                        errors[6] = error
+                        selection['status'] = 'FAILED'
                 try:
-                    write_json(self.output / (label + "-receipt.json"), {
-                        "rank": self.engine.rank, "thread": threading.current_thread().name,
-                        "thread_ident": threading.get_ident(), "label": label,
-                        "profiler_enter_seconds": entered_at - started,
-                        "work_call_seconds": work_end - entered_at,
-                        "profiler_stop_seconds": stopped - work_end,
-                        "export_seconds": time.monotonic() - stopped,
-                        "process_before": before, "process_after": self.process(),
-                        "primary": None if primary is None else repr(primary),
-                        "post_errors": [repr(error) for error in errors],
-                        "exported_trace_bytes": trace_bytes,
-                        "resource_scope": "source bounds capture count to five calls; operator owns profiler memory and filesystem containment",
-                        "scope": "rank0 TP adapter round; inclusive prefill/decode/control, diagnostic only; peers untraced"})
+                    write_json(self.output / (label + '-receipt.json'), {
+                        'rank': self.engine.rank, 'thread': threading.current_thread().name,
+                        'thread_ident': threading.get_ident(), 'label': label,
+                        'profiler_enter_seconds': None if entered_at is None or started is None else entered_at - started,
+                        'work_call_seconds': None if work_end is None or entered_at is None else work_end - entered_at,
+                        'profiler_stop_seconds': None if stopped is None or work_end is None else stopped - work_end,
+                        'export_seconds': None if stopped is None else time.monotonic() - stopped,
+                        'process_before': before, 'process_after': self.process(),
+                        'primary': None if primary is None else type.__dict__['__name__'].__get__(type(primary)),
+                        'post_errors': [type.__dict__['__name__'].__get__(type(error)) for error in errors if error is not None],
+                        'exported_trace_bytes': trace_bytes,
+                        'prefill_selection': self.selection if prefill else None, 'P3_valid': False,
+                        'resource_scope': 'source bounds capture count to five calls; operator owns profiler memory and filesystem containment',
+                        'scope': 'rank0 TP adapter round; inclusive prefill/decode/control, diagnostic and P3-invalid; peers untraced'})
                 except BaseException as error:
-                    errors.append(error)
-        raise_failures(primary, errors)
+                    errors[4] = error
+            if prefill:
+                if not entered:
+                    self.selection['status'] = 'FAILED' if primary is not None else 'UNSUPPORTED_NOT_OBSERVED'
+                try:
+                    write_json(self.output / 'prefill-selection.json', self.selection)
+                except BaseException as error:
+                    errors[5] = error
+        index = 0
+        while primary is None and index < len(self.capture_error_order):
+            primary = errors[self.capture_error_order[index]]
+            index += 1
+        if primary is not None:
+            self.failed = primary  # Retain profiler/engine/borrowed owner on uncertainty.
+            index = 0
+            while index < len(errors):
+                if errors[index] is None:
+                    errors[index] = primary
+                index += 1
+            try:
+                self.transport(primary, errors)
+            except BaseException as failure:
+                if failure is primary:
+                    raise
+                raise primary from failure
+        self.profiler = self.prefill_owner = self.prefill_state = None
         return result
 
     def wrap(self, owner, name, label):
@@ -1115,7 +1250,6 @@ class _SchedulerTrace:
         adapter, decoder = self.engine.tp_decoder, observer.decoder
         for owner, name, label in ((adapter, "_invoke", "TP.publish_execute_vote_retire"),
                 (adapter, "_execute", "TP.local_dispatch"),
-                (decoder, "_prepare_pass", "PLE.prepare_frame_stage"),
                 (decoder, "_read_ahead", "PLE.read_ahead"),
                 (self.engine.w.meta["input_preparation_context"], "prepare", "input_prepare.agree_vote_retire"),
                 # These regular functions consume the tile generator inside the
@@ -1130,16 +1264,47 @@ class _SchedulerTrace:
                 (family_ops, "hc_act", "HC.act"),
                 (family_ops, "hc_mix", "HC.mix")):
             self.wrap(owner, name, label)
+        prepare = decoder._prepare_pass
+        def preparing(*args, **kwargs):
+            if not self.active:
+                return prepare(*args, **kwargs)
+            import torch
+            with torch.profiler.record_function('PLE.prepare_frame_stage'):
+                self.note_prepare(args[0] if args else kwargs['pieces'])
+                result = prepare(*args, **kwargs)
+                if self.prefill_owner is not None:
+                    self.selection['prepared_returned'] = True
+                return result
+        decoder._prepare_pass = preparing
+        if self.selection is not None:
+            write_json(self.output / 'prefill-selection.json', self.selection)
         original = adapter.round
+        def failure(primary):
+            self.failed = primary
+            try:
+                _observer_failure(self.engine, primary)
+            except BaseException as notification:
+                if notification is primary:
+                    raise
+                self.notification_errors[0], self.notification_errors[1] = notification, primary
+                try:
+                    self.transport(primary, self.notification_errors)
+                except BaseException as failure:
+                    if failure is primary:
+                        raise
+                    raise primary from failure
+            raise primary
         def rounded():
-            label = self.label(observer)
+            try:
+                label = self.label(observer)
+            except BaseException as primary:
+                failure(primary)
             if label is None:
                 return original()
             try:
                 return self.capture(label, original)
             except BaseException as primary:
-                _observer_failure(self.engine, primary)
-                raise
+                failure(primary)
         adapter.round = rounded
 
 
@@ -1392,17 +1557,18 @@ class _BenchmarkObserver:
         observations.target, observations.record = targeted, recorded
 
 
-def prepare_benchmark(engine, plan, trace_output=None):
+def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0):
     if engine.rank != 0:
         return
     path = Path(engine.model_dir) / "tokenizer.json"
     if hashlib.sha256(path.read_bytes()).hexdigest() != plan["tokenizer_sha256"]:
         raise ValueError("benchmark tokenizer differs from the actual prepared frontend")
+    selection = None if trace_output is None else _trace_prefill_selection(plan, trace_prefill_start)
     observer = _BenchmarkObserver(engine, plan)
     observer.install()
     if trace_output is not None:
         _trace_inventory(engine, trace_output)
-        _SchedulerTrace(engine, trace_output).install(observer)
+        _SchedulerTrace(engine, trace_output, prefill_start=trace_prefill_start, selection=selection).install(observer)
 
 
 def _teacher_module():
@@ -1936,6 +2102,7 @@ def worker(argv):
     parser.add_argument("--teacher-plan", type=Path)
     parser.add_argument('--teacher-client-bytes', type=int)
     parser.add_argument("--scheduler-trace", type=Path)
+    parser.add_argument("--scheduler-trace-prefill-start", type=int, help="private committed C1 prefill cursor threshold; default0 with trace")
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
     parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
@@ -1946,6 +2113,9 @@ def worker(argv):
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
+    if selected.scheduler_trace_prefill_start is not None and (selected.scheduler_trace is None or selected.benchmark_plan is None
+            or not 0 <= selected.scheduler_trace_prefill_start <= sys.maxsize):
+        raise ValueError('late scheduler trace requires trace+benchmark and a nonnegative prefill start')
     if selected.teacher_client_bytes is not None and selected.teacher_plan is None:
         raise ValueError('private client credit requires its teacher plan')
     if selected.teacher_plan is not None and any((selected.benchmark_plan, selected.scheduler_trace,
@@ -1962,6 +2132,7 @@ def worker(argv):
     receipt_failed = False
     prepared = router_prepared = None
     benchmark = benchmark_resources = parity_resources = feature_resources = None
+    benchmark_setup_errors = [None] * 2  # Before listener/setup hooks can fail.
     teacher = model_observer = None
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
     router_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS")
@@ -1999,9 +2170,21 @@ def worker(argv):
                     if selected.scheduler_trace is None:
                         prepare_benchmark(engine, benchmark)
                     else:
-                        prepare_benchmark(engine, benchmark, selected.scheduler_trace)
+                        prepare_benchmark(engine, benchmark, selected.scheduler_trace,
+                            trace_prefill_start=selected.scheduler_trace_prefill_start or 0)
                 except BaseException as primary:
-                    _observer_failure(engine, primary)
+                    try:
+                        _observer_failure(engine, primary)
+                    except BaseException as notification:
+                        if notification is primary:
+                            raise
+                        benchmark_setup_errors[0], benchmark_setup_errors[1] = notification, primary
+                        try:
+                            raise_failures(primary, benchmark_setup_errors)
+                        except BaseException as failure:
+                            if failure is primary:
+                                raise
+                            raise primary from failure
                     raise
             parity_receipt = None
             if parity_resources is not None:
@@ -2045,6 +2228,8 @@ def worker(argv):
             else:
                 from bench_concurrent import load_matrix
             benchmark = load_matrix(selected.benchmark_plan)
+            if selected.scheduler_trace is not None:
+                _trace_prefill_selection(benchmark, selected.scheduler_trace_prefill_start or 0)  # Before Engine/admission.
             size = selected.benchmark_plan.stat().st_size
             benchmark_resources = _history_resources(sum(c["level"] for c in benchmark["cohorts"]), size)
             if selected.normalization_parity:
@@ -2247,6 +2432,7 @@ def main(argv=None):
     parser.add_argument("--teacher-plan", type=Path, help="private none/greedy raw full-vocabulary capture or frozen-prefix replay DATA; never P3")
     parser.add_argument('--teacher-client', type=Path, help='closed one-request client DATA; normal shutdown only after validated completion')
     parser.add_argument("--scheduler-trace", type=Path)
+    parser.add_argument("--scheduler-trace-prefill-start", type=int, help="private committed C1 prefill cursor threshold; default0 with trace")
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
     parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
@@ -2260,6 +2446,9 @@ def main(argv=None):
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     teacher = selected_client = model_observer = None
+    if args.scheduler_trace_prefill_start is not None and (args.scheduler_trace is None or args.benchmark_plan is None
+            or not 0 <= args.scheduler_trace_prefill_start <= sys.maxsize):
+        parser.error('late scheduler trace requires trace+benchmark and a nonnegative prefill start')
     if args.teacher_client is not None and args.teacher_plan is None:
         parser.error('teacher client requires its frozen teacher plan')
     if args.teacher_plan is not None:
@@ -2319,6 +2508,8 @@ def main(argv=None):
         trace_output = args.scheduler_trace.absolute()
         trace_output.mkdir(mode=0o700)
         prefix += ["--scheduler-trace", str(trace_output)]
+        if args.scheduler_trace_prefill_start is not None:
+            prefix += ["--scheduler-trace-prefill-start", str(args.scheduler_trace_prefill_start)]
     prefix += ["--"]
     command = ["--gpus", args.gpus, "--master-port", str(args.master_port), *args.serve_args]
     if selected_client is None:

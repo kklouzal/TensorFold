@@ -17,14 +17,16 @@ from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_
 
 def test_scheduler_trace_selects_only_five_finite_nonwarmup_calls(tmp_path):
     import threading
-    engine = NS(scheduler=NS(thread=threading.current_thread()))
+    state = NS(history_slot=0, slot_generation=1, pos=0)
+    stream = NS(sid=0, done=False, st=state, out=[1, 2])
+    engine = NS(scheduler=NS(thread=threading.current_thread()), tp_decoder=NS(wires={id(stream): 17}))
     tracer = owned._SchedulerTrace(engine, tmp_path)
-    stream = NS(done=False, st=object(), out=[1, 2])
-    observer = NS(current=0, plan={"cohorts": [
-        {"id": 0, "level": 1, "warmup": True},
-        {"id": 1, "level": 1, "warmup": False},
-        {"id": 2, "level": 8, "warmup": False}]},
-        decoder=NS(streams={0: stream}, filling=[stream]))
+    cohorts = [{'id': index, 'level': level, 'warmup': warmup, 'input_tokens': 64,
+                'requests': [{'prompt_sha256': 'b' * 64}]} for index, level, warmup in
+               ((0, 1, True), (1, 1, False), (2, 8, False))]
+    observer = NS(current=0, plan={'run_identity': 'a' * 32, 'cohorts': cohorts},
+        identities={17: (cohorts[1], cohorts[1]['requests'][0])},
+        decoder=NS(streams={0: stream}, filling=[stream], fills={0: [None, None, 0]}))
     assert tracer.label(observer) is None
     observer.current = 1
     assert tracer.label(observer) == "c1-cold-prefill-containing-round"
@@ -2011,3 +2013,378 @@ def test_teacher_native_observer_preserves_primary_when_failure_transport_fails(
     with pytest.raises(RuntimeError) as caught:
         engine._close_resources()
     assert caught.value is primary and primary.__cause__ is secondary
+
+
+def _late_trace_fixture(tmp_path, *, start=128, cursor=0, factory=None):
+    import threading
+    cohorts = [{'id': index, 'level': level, 'warmup': warmup, 'input_tokens': 1024,
+                'requests': [{'prompt_sha256': str(index) * 64}]} for index, level, warmup in
+               ((0, 1, True), (1, 1, False), (2, 8, False), (3, 1, False))]
+    plan = {'run_identity': 'a' * 32, 'cohorts': cohorts}
+    state = NS(history_slot=4, slot_generation=7, pos=cursor)
+    stream = NS(sid=19, done=False, st=state, out=[])
+    adapter = NS(wires={id(stream): 23}, prefix_operation=51)
+    engine = NS(rank=0, scheduler=NS(thread=threading.current_thread()), tp_decoder=adapter)
+    decoder = NS(streams={}, filling=[stream], fills={19: [None, None, cursor]})
+    observer = NS(current=1, plan=plan, decoder=decoder, identities={23: (cohorts[1], cohorts[1]['requests'][0])})
+    tracer = owned._SchedulerTrace(engine, tmp_path, factory=factory, prefill_start=start,
+                                  selection=owned._trace_prefill_selection(plan, start))
+    return tracer, observer, stream
+
+
+@pytest.mark.parametrize('value', [-1, True, False, None, 1.0, sys.maxsize + 1])
+def test_late_trace_selector_rejects_invalid_domain_before_effects(value):
+    with pytest.raises(ValueError, match='nonnegative integer'):
+        owned._trace_prefill_selection({'cohorts': []}, value)
+
+
+def test_late_trace_selection_is_bound_to_first_nonwarmup_c1_and_prompt_end(tmp_path):
+    tracer, observer, stream = _late_trace_fixture(tmp_path, start=128, cursor=0)
+    assert tracer.label(observer) is None
+    observer.decoder.fills[stream.sid][2] = 160
+    stream.st.pos = 160
+    observer.current = 0
+    assert tracer.label(observer) is None  # Warmup cannot consume the selected window.
+    observer.current = 3
+    assert tracer.label(observer) is None  # A later C1 repetition cannot substitute.
+    observer.current = 1
+    assert tracer.label(observer) == 'c1-prefill-start-ge-128-round'
+    assert tracer.selection['boundary_start'] == 160
+    assert tracer.selection['prompt_sha256'] == '1' * 64
+    assert tracer.label(observer) is None
+    assert tracer.counts['prefill'] == 1
+    with pytest.raises(ValueError, match='prompt end'):
+        owned._trace_prefill_selection(observer.plan, 1024)
+    no_c1 = {'cohorts': [{'id': 2, 'level': 8, 'warmup': False}]}
+    assert owned._trace_prefill_selection(no_c1, 0) is None
+    with pytest.raises(ValueError, match='nonwarmup C1'):
+        owned._trace_prefill_selection(no_c1, 1)
+
+
+@pytest.mark.parametrize('fault', ['state', 'wire', 'foreign', 'cursor', 'owner-count', 'finished'])
+def test_late_trace_does_not_profile_missing_or_unqualified_owner(tmp_path, fault):
+    tracer, observer, stream = _late_trace_fixture(tmp_path, start=128, cursor=160)
+    if fault == 'state':
+        stream.st = None
+    elif fault == 'wire':
+        tracer.engine.tp_decoder.wires.clear()
+    elif fault == 'foreign':
+        observer.identities[23] = (observer.plan['cohorts'][3], {'prompt_sha256': '3' * 64})
+    elif fault == 'cursor':
+        observer.decoder.fills[stream.sid][2] = 1024
+    elif fault == 'owner-count':
+        observer.decoder.filling.append(NS(done=False, st=object()))
+    else:
+        stream.done = True
+    assert tracer.label(observer) is None and not tracer.counts
+    assert tracer.selection['status'] == 'UNSUPPORTED_NOT_OBSERVED'
+
+
+@pytest.mark.parametrize('actual', ['positive', 'empty', 'wrong-cursor', 'wrong-owner', 'multiple', 'cancelled'])
+def test_late_trace_receipt_distinguishes_requested_boundary_from_actual_prefill(tmp_path, actual):
+    class Profiler:
+        def __enter__(self):
+            pass
+        def __exit__(self, *args):
+            pass
+        def export_chrome_trace(self, path):
+            Path(path).write_text('{}')
+    tracer, observer, stream = _late_trace_fixture(tmp_path, cursor=160, factory=Profiler)
+    label = tracer.label(observer)
+    result, calls = object(), []
+    def round_():
+        calls.append(True)
+        if actual == 'positive':
+            tracer.note_prepare([(stream, 160, 64)])
+            tracer.selection['prepared_returned'] = True
+        elif actual == 'wrong-cursor':
+            tracer.note_prepare([(stream, 128, 64)])
+            tracer.selection['prepared_returned'] = True
+        elif actual == 'wrong-owner':
+            tracer.note_prepare([(NS(), 160, 64)])
+            tracer.selection['prepared_returned'] = True
+        elif actual == 'multiple':
+            tracer.note_prepare([(stream, 160, 64)])
+            tracer.note_prepare([(stream, 160, 64)])
+            tracer.selection['prepared_returned'] = True
+        elif actual == 'cancelled':
+            stream.done = True
+        return result
+    assert tracer.capture(label, round_) is result and calls == [True]
+    receipt = json.loads((tmp_path / (label + '-receipt.json')).read_text())
+    selection = receipt['prefill_selection']
+    assert selection['requested_start'] == 128 and selection['boundary_start'] == 160
+    assert selection['slot'] == 4 and selection['slot_generation'] == 7 and selection['wire'] == 23
+    assert selection['prefix_operation'] == 51 and receipt['P3_valid'] is False
+    if actual == 'positive':
+        assert selection['status'] == 'OBSERVED'
+        assert selection['actual_start'] == 160 and selection['actual_count'] == 64
+    else:
+        assert selection['status'] == 'UNSUPPORTED_NOT_OBSERVED'
+    assert tracer.profiler is tracer.prefill_owner is None
+
+
+def test_trace_failure_with_false_exception_and_failed_rendering_preserves_primary(tmp_path, monkeypatch):
+    import threading
+    class FalseError(RuntimeError):
+        def __bool__(self):
+            raise AssertionError('truthiness must not be used')
+        def __repr__(self):
+            raise AssertionError('unsafe error rendering')
+    primary, receipt = FalseError('actual round'), MemoryError('receipt allocation')
+    events = []
+    class Profiler:
+        def __enter__(self):
+            events.append('enter')
+        def __exit__(self, kind, error, tb):
+            assert kind is FalseError and error is primary and tb is not None
+            events.append('stop')
+        def export_chrome_trace(self, path):
+            events.append('export')
+            Path(path).write_text('{}')
+    tracer = owned._SchedulerTrace(NS(rank=0, scheduler=NS(thread=threading.current_thread())), tmp_path, factory=Profiler)
+    monkeypatch.setattr(owned, 'write_json', lambda *args: (_ for _ in ()).throw(receipt))
+    def round_():
+        events.append('round')
+        raise primary
+    with pytest.raises(FalseError) as caught:
+        tracer.capture('one', round_)
+    assert caught.value is primary and primary.__cause__ is receipt
+    assert events == ['enter', 'round', 'stop', 'export']
+    assert tracer.failed is primary and tracer.profiler is not None
+    with pytest.raises(FalseError) as again:
+        tracer.capture('two', lambda: pytest.fail('retry after uncertain retirement'))
+    assert again.value is primary
+
+
+def test_trace_retirement_and_export_continue_after_cleanup_clock_failure(tmp_path, monkeypatch):
+    import threading
+    primary, clock = RuntimeError('round'), MemoryError('clock')
+    ticks, events = iter([1., 2., clock, 3., 4.]), []
+    def monotonic():
+        value = next(ticks)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+    class Profiler:
+        def __enter__(self):
+            events.append('enter')
+        def __exit__(self, *args):
+            events.append('stop')
+        def export_chrome_trace(self, path):
+            events.append('export')
+            Path(path).write_text('{}')
+    tracer = owned._SchedulerTrace(NS(rank=0, scheduler=NS(thread=threading.current_thread())), tmp_path, factory=Profiler)
+    import time as process_time
+    original_clock = process_time.monotonic
+    monkeypatch.setattr(owned, 'time', NS(monotonic=monotonic))
+    assert process_time.monotonic is original_clock  # Outer diagnostic hooks retain the real process clock.
+    with pytest.raises(RuntimeError) as caught:
+        tracer.capture('clock', lambda: (_ for _ in ()).throw(primary))
+    assert caught.value is primary and primary.__cause__ is clock
+    assert events == ['enter', 'stop', 'export']
+
+
+@pytest.mark.parametrize('tail', [[], ['--scheduler-trace', 'trace'], ['--benchmark-plan', 'plan']])
+def test_late_trace_cli_requires_both_owners_before_parent_output(tmp_path, tail):
+    output = tmp_path / 'uncreated'
+    with pytest.raises(SystemExit):
+        owned.main(['--gpus', '0,1,2,3,4,5,6,7', '--out', str(output),
+                    '--scheduler-trace-prefill-start', '128', *tail, '--', 'model'])
+    assert not output.exists()
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_late_trace_install_observes_the_actual_prepare_binding_without_gpu_readback(tmp_path, monkeypatch, failure):
+    import torch
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+    from tensorfold.cuda.sm70 import family_ops
+    names = [(history_owner, name) for name in ('partial_statistics', 'merge_statistics', 'normalized_partial')]
+    names += [(family_ops, name) for name in ('hc_writeback', 'hc_normed', 'hc_act', 'hc_mix')]
+    for owner, name in names:
+        monkeypatch.setattr(owner, name, getattr(owner, name))
+    labels, entered, calls = [], [], []
+    class Record:
+        def __init__(self, label):
+            self.label = label
+        def __enter__(self):
+            labels.append(self.label)
+        def __exit__(self, *args):
+            pass
+    class Profiler:
+        def __enter__(self):
+            entered.append(True)
+        def __exit__(self, *args):
+            pass
+        def export_chrome_trace(self, path):
+            Path(path).write_text('{}')
+    monkeypatch.setattr(torch.profiler, 'record_function', Record)
+    before_cuda = torch.cuda.is_initialized()
+    tracer, observer, stream = _late_trace_fixture(tmp_path, cursor=0, factory=Profiler)
+    result = object()
+    primary, notification = RuntimeError('prepare'), MemoryError('notification')
+    def prepare(pieces):
+        calls.append(('prepare', pieces))
+        if failure and pieces[0][1] >= 128:
+            raise primary
+        return result
+    def notify(*args):
+        raise notification
+    if failure:
+        monkeypatch.setattr(owned, '_observer_failure', notify)
+    decoder, adapter = observer.decoder, tracer.engine.tp_decoder
+    decoder._prepare_pass, decoder._read_ahead = prepare, lambda pieces: None
+    adapter._invoke = adapter._execute = lambda *args, **kwargs: None
+    def round_():
+        adapter.prefix_operation += 1
+        return decoder._prepare_pass([(stream, decoder.fills[stream.sid][2], 64)])
+    adapter.round = round_
+    tracer.engine.w = NS(meta={'input_preparation_context': NS(prepare=lambda: None)})
+    tracer.install(observer)
+    assert json.loads((tmp_path / 'prefill-selection.json').read_text())['status'] == 'UNSUPPORTED_NOT_OBSERVED'
+    assert adapter.round() is result  # Early cursor delegates without profiler/labels.
+    assert len(calls) == 1 and entered == labels == []
+    decoder.fills[stream.sid][2] = stream.st.pos = 160
+    if failure:
+        with pytest.raises(RuntimeError) as caught:
+            adapter.round()
+        assert caught.value is primary and primary.__cause__ is notification
+    else:
+        assert adapter.round() is result
+    assert len(calls) == 2 and entered == [True] and labels == ['PLE.prepare_frame_stage']
+    saved = json.loads((tmp_path / 'prefill-selection.json').read_text())
+    assert saved['status'] == ('FAILED' if failure else 'OBSERVED') and saved['prefix_operation'] == 53
+    assert saved['actual_start'] == saved['actual_state_pos'] == 160 and saved['actual_count'] == 64
+    if failure:
+        assert tracer.prefill_owner is stream and tracer.profiler is not None
+    else:
+        assert tracer.prefill_owner is tracer.prefill_state is None
+    assert torch.cuda.is_initialized() is before_cuda
+
+
+def test_trace_primary_survives_neutral_transport_exhaustion(tmp_path, monkeypatch):
+    import threading
+    primary, cleanup, exhausted = RuntimeError('round'), RuntimeError('stop'), MemoryError('neutral transport')
+    class Profiler:
+        def __enter__(self):
+            pass
+        def __exit__(self, *args):
+            raise cleanup
+        def export_chrome_trace(self, path):
+            Path(path).write_text('{}')
+    tracer = owned._SchedulerTrace(NS(rank=0, scheduler=NS(thread=threading.current_thread())), tmp_path, factory=Profiler)
+    def transport(actual, statuses):
+        assert actual is primary and cleanup in statuses
+        raise exhausted
+    tracer.transport = transport
+    with pytest.raises(RuntimeError) as caught:
+        tracer.capture('one', lambda: (_ for _ in ()).throw(primary))
+    assert caught.value is primary and primary.__cause__ is exhausted
+    assert cleanup in tracer.capture_errors and tracer.profiler is not None
+
+
+def test_late_trace_parent_forwards_explicit_selector_without_new_runner(tmp_path, monkeypatch):
+    output, trace = tmp_path / 'out', tmp_path / 'trace'
+    def launch(argv, **kwargs):
+        prefix = kwargs['_command_prefix']
+        assert prefix[prefix.index('--scheduler-trace-prefill-start') + 1] == '128'
+        assert prefix[prefix.index('--scheduler-trace') + 1] == str(trace)
+        assert prefix[prefix.index('--benchmark-plan') + 1] == str((tmp_path / 'plan.json').absolute())
+        return 0
+    monkeypatch.setattr(launcher, 'main', launch)
+    assert owned.main(['--gpus', '0,1,2,3,4,5,6,7', '--out', str(output), '--benchmark-plan', str(tmp_path / 'plan.json'),
+                       '--scheduler-trace', str(trace), '--scheduler-trace-prefill-start', '128', '--', 'model']) == 0
+
+
+def test_late_trace_cancelled_selected_round_does_not_claim_prefill_observation(tmp_path):
+    import threading
+    class Profiler:
+        def __enter__(self):
+            pass
+        def __exit__(self, *args):
+            pass
+        def export_chrome_trace(self, path):
+            Path(path).write_text('{}')
+    tracer, observer, stream = _late_trace_fixture(tmp_path, cursor=160, factory=Profiler)
+    stream.cancel = threading.Event()
+    label = tracer.label(observer)
+    def round_():
+        tracer.note_prepare([(stream, 160, 64)])
+        tracer.selection['prepared_returned'] = True
+        stream.cancel.set()
+        return 'cancelled callback result'
+    assert tracer.capture(label, round_) == 'cancelled callback result'
+    selection = json.loads((tmp_path / 'prefill-selection.json').read_text())
+    assert selection['status'] == 'UNSUPPORTED_NOT_OBSERVED'
+    assert selection['reason'] == 'cancelled_during_selected_round'
+
+
+@pytest.mark.parametrize('receipt_failure', [False, True])
+def test_late_trace_cancellation_metadata_failure_still_retires_profiler(tmp_path, monkeypatch, receipt_failure):
+    primary, events = MemoryError('cancel metadata'), []
+    class Cancel:
+        def is_set(self):
+            raise primary
+    class Profiler:
+        def __enter__(self):
+            events.append('enter')
+        def __exit__(self, *args):
+            events.append('stop')
+        def export_chrome_trace(self, path):
+            events.append('export')
+            Path(path).write_text('{}')
+    tracer, observer, stream = _late_trace_fixture(tmp_path, cursor=160, factory=Profiler)
+    label = tracer.label(observer)
+    receipt_error = OSError('later receipt failure')
+    if receipt_failure:
+        monkeypatch.setattr(owned, 'write_json', lambda *args: (_ for _ in ()).throw(receipt_error))
+    def round_():
+        tracer.note_prepare([(stream, 160, 64)])
+        tracer.selection['prepared_returned'] = True
+        stream.cancel = Cancel()
+    with pytest.raises(MemoryError) as caught:
+        tracer.capture(label, round_)
+    assert caught.value is primary and events == ['enter', 'stop', 'export']
+    if receipt_failure:
+        assert primary.__cause__ is receipt_error
+    assert tracer.failed is primary and tracer.profiler is not None
+
+
+def test_initial_trace_selection_write_failure_survives_failed_setup_notification(channel, tmp_path, monkeypatch):
+    from tools import bench_concurrent
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+    from tensorfold.cuda.sm70 import family_ops
+    names = [(history_owner, name) for name in ('partial_statistics', 'merge_statistics', 'normalized_partial')]
+    names += [(family_ops, name) for name in ('hc_writeback', 'hc_normed', 'hc_act', 'hc_mix')]
+    for owner, name in names:
+        monkeypatch.setattr(owner, name, getattr(owner, name))
+    primary, notification = OSError('initial selection write'), MemoryError('notify')
+    tracer, observer, stream = _late_trace_fixture(tmp_path, cursor=0)
+    decoder, engine = observer.decoder, tracer.engine
+    engine.w = NS(meta={'input_preparation_context': NS(prepare=lambda: None)})
+    decoder._prepare_pass = decoder._read_ahead = lambda *args, **kwargs: None
+    engine.tp_decoder._invoke = engine.tp_decoder._execute = engine.tp_decoder.round = lambda: None
+    source = tmp_path / 'plan.json'
+    source.write_text('{}')
+    monkeypatch.setattr(bench_concurrent, 'load_matrix', lambda path: observer.plan)
+    monkeypatch.setattr(owned, '_history_resources', lambda *args: {'global_host_obligation_bytes': 1000})
+    def write(path, value):
+        assert path.name == 'prefill-selection.json'
+        raise primary
+    def prepare(current, plan, output, **kwargs):
+        assert current is engine and plan is observer.plan
+        tracer.install(observer)
+    def notify(current, error):
+        assert current is engine and error is primary
+        raise notification
+    monkeypatch.setattr(owned, 'write_json', write)
+    monkeypatch.setattr(owned, 'prepare_benchmark', prepare)
+    monkeypatch.setattr(owned, '_observer_failure', notify)
+    monkeypatch.setattr(cli, 'cmd_serve', lambda args: args._owned_expert_qualification.before_listener(engine))
+    argv = worker_args(tmp_path)
+    argv[argv.index('--rank') + 1] = '0'
+    with pytest.raises(OSError) as caught:
+        owned.worker(['--benchmark-plan', str(source), '--scheduler-trace', str(tmp_path),
+                      '--scheduler-trace-prefill-start', '128', *argv])
+    assert caught.value is primary and primary.__cause__ is notification
+    assert tracer.profiler is None  # Setup failed before any profiler acquisition.
