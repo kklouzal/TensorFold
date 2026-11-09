@@ -219,8 +219,10 @@ correct-root 690/84 gate. The earlier 200-pass/80-failure attempt remains
 preserved: collapsed module identities leaked a module-local fixture into
 other modules. Correcting pytest root and guarding collection restored fixture
 scope; runtime behavior and test assertions were unchanged. These gates do not
-prove live eight-rank summaries, all three roles' deployment budget, SC117 model
-quality, affected-region P3 or a new default; those gates remain pending.
+prove live eight-rank summaries or deployment quality by themselves. The later
+[combined short curve](#combined-graph-islands-and-grouped-gateup-short-curve) records
+actual all-role trial charges and retirement separately; full quality, matched
+resource/P3 selection and a new default remain pending.
 
 ## Private verification-row envelope trials
 
@@ -388,6 +390,75 @@ are retained in `combined-core-model-899934-v1/live-matrix.json` and
 `combined-core-model-899934-v1/combined-core-full7-actual-gate-v1.json`, SHA256
 `5507eaf035687779d093fe716c9d544a2e3fc386d4e0cb02fbda81393400f3ea`.
 
+
+## Combined Graph islands and grouped gate/up short curve
+
+Runtime image `30fd5e0b`, source `66b86f7e`, with qualifier/tools `0b31aed5`,
+completed one full seven-level trial. The SC117 TP8/PP1/ETP4 profile retained
+262,144 context, 32 materialized full-window States per rank, ISO4 KV, shared-Q8
+MTP depth 4, prefill rows 256 and execution rows 160. Grouped down and gate/up
+rows 2, reference Tile128 and the three-island reference ATen Graph policy were
+enabled. Dense/Concat remained reference; native-owner attention was off and
+Half/Router/EMPTY overrides were absent. This is the recorded private profile,
+not a deployment-default selection or NativeFP32 qualification.
+
+All **87 measured requests** completed with 64 uncached input IDs, 128 output
+IDs and zero cached tokens. Each requested active-owner peak from 1 through 32
+was observed. There was **one repetition**, without a matched control. Plan
+`d70b92e8` preserves the original measured request bodies but changes the excluded
+warmup to 4,096 input / 16 output IDs; that warmup took **219.129 seconds**.
+The two separate smoke requests are also excluded.
+
+| Concurrent requests | Prefill envelope token/s | Aggregate decode envelope token/s |
+| ---: | ---: | ---: |
+| 1 | 27.7748876 | 3.7499138 |
+| 2 | 28.2364306 | 5.7710176 |
+| 4 | 33.7870883 | 6.8524109 |
+| 8 | 33.5397453 | 8.8983587 |
+| 16 | 29.7983826 | 9.9919026 |
+| 24 | 27.0128457 | 10.7278308 |
+| 32 | 26.0115412 | 10.8023203 |
+
+The [declared denominators](#denominators-and-actual-overlap) apply: rank0's
+inclusive CUDA-stream envelopes include submission/communication gaps and carry
+no TP8 multiplier. These instrumented short-workload observations have no
+matched repetitions, uncertainty estimate or accepted speedup. They remain far
+below the 4,500 prefill / 450 aggregate decode token/s objectives; allocated
+full windows do not establish populated near-full-history quality or sustained
+occupancy throughout every interval.
+
+All eight ranks published final prepared-feature summaries after normal close.
+Canonical-object digests and unchanged source, preparation and budget facts
+matched the startup markers; every configured role was closed and nonfailed.
+For **each rank and each of statistics/probability/PV**, post-readiness replay
+increases were decode **82,896**, prefill **625,856** and MTP **9,131**.
+Counter deltas cover the post-readiness window, including excluded warmup/smokes,
+rather than only the 87 measured requests; they are Graph calls, not distinct tokens.
+Gate/up rows 2 was bound by the requested/actual Plan marker; no GPU gate/up call
+count is inferred. The three Graph capture charges totaled **113,246,208 bytes
+per rank / 905,969,664 across eight ranks**, under the explicit **352,321,536-byte
+per-rank trial allowance**. These are gross capture-preparation charges, not a
+matched net VRAM increase or the whole Engine footprint. The allowance is a
+provisional test-profile setting, not a production default. Per-role and whole
+preparation snapshots/pool accounting remain in the receipts.
+
+**Historical output differences remain unresolved.** Prompt SHA values align,
+but warmups do not: the historical `597c`/`f126` curves used 64-input warmup,
+versus 4,096 here. Exact token-ID plus choice equality held for **73/87** requests
+against `597c` and **69/87** against `f126`; equality of `(rounds, drafted,
+accepted)` held for **72/87** and **68/87**, respectively. These are unmatched
+historical diagnostics, not a causal attribution, quality acceptance or gain.
+Baseline variability and strict component passes do not waive the differences.
+Comparison: `combined-graph-gup-model-v1/reviewer-actual-full7-all8-v1.json`,
+SHA256 `253aa5c24a1ccaba014ed808de926612b2142b9231d9bf0338ac457712d18e71`.
+
+Client, launcher and container exited zero; the container PID was zero, with no OOM, unchanged
+source/health and retired GPU contexts. This proves the observed request,
+owner-overlap and prepared-feature retirement protocol for this trial. Full
+quality, matched resource/P3 comparisons, NativeFP32 work and default selection
+remain pending; older failures and component gates retain their own scope.
+Actual gate: `combined-graph-gup-model-v1/combined-graph-gup-full7-all8-actual-gate-v1.json`,
+SHA256 `ac084bc1373602510cc432c484379bd11d0b41e071446c92ce63e5811eaf0793`.
 
 ## Batched global-normalization trial: selection held
 

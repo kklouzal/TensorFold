@@ -98,8 +98,14 @@ full-model quality, capacity and performance qualification remain pending.
 The [private qualification selector bridge](docs/benchmarking.md#private-qualification-selector-bridge)
 separately passed 459 pinned source CPU checks with zero skips. The later
 [installed combined and receipt checkpoint](docs/benchmarking.md#prepared-feature-retirement-receipts)
-passed 690 CPU controls and 84 SM70 GPU cases, with zero skips. Live prepared-feature
-receipts, three-role device budgeting, model quality and P3 remain pending.
+passed 690 CPU controls and 84 SM70 GPU cases, with zero skips.
+The [first combined Graph/gate-up short curve](docs/benchmarking.md#combined-graph-islands-and-grouped-gateup-short-curve)
+completed all 87 requests and seven levels through 32 active owners, with all eight
+ranks' three Graph roles exercised and closed under the provisional trial budget.
+C32 recorded 26.0115 prefill and 10.8023 aggregate decode token/s. This is one
+descriptive run, far below 4,500/450 objectives; historical prompt-aligned outputs
+still differ, and unmatched warmups prevent a controlled comparison. Quality,
+matched resource/performance selection and default promotion remain pending.
 The [batched reference global normalization](docs/v100-adaptive-validation.md#batched-reference-global-normalization-source-candidate) component
 passed 169 pinned-runtime CPU checks; 15 SM70 GPU controls matched the unchanged
 scalar oracle. Broader model-quality, performance and default-release gates remain open.

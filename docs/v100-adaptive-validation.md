@@ -685,6 +685,33 @@ selection remain separate. Omitting the private
 option and retaining `inherit` preserve the original reference/native selection
 and existing EMPTY behavior; no public/admin or broader native promotion is made.
 
+## Combined Graph islands and gate/up model checkpoint
+
+The private image `30fd5e0b` / runtime source `66b86f7e` and tools `0b31aed5`
+completed one short SC117 TP8/PP1/ETP4, ISO4, full-262,144-context trial with
+32 materialized States per rank, MTP4, grouped gate/up rows 2 and three-role
+reference ATen Graph islands. All 87 uncached 64-input/128-output requests and
+seven active-owner peaks through 32 completed. All eight final summaries proved
+normal closed/nonfailed roles, positive post-readiness statistics/probability/PV
+replays, static source/budget identity and requested/actual gate/up binding;
+container retirement was exit 0/PID 0 without OOM and with unchanged source/health.
+
+Graph capture-preparation charges were 113,246,208 bytes per rank, 905,969,664
+across all eight, within the provisional 352,321,536-byte/rank trial allowance.
+This gross charge is neither matched net VRAM overhead nor the whole Engine
+footprint. The [full table and scope](benchmarking.md#combined-graph-islands-and-grouped-gateup-short-curve)
+retain the excluded 4,096-input warmup and one-repetition descriptive timings.
+Prompt-SHA-aligned historical comparisons still differ: exact IDs/choices are
+73/87 versus `597c` and 69/87 versus `f126`; proposal-work equality is 72/87 and
+68/87. Historical 64-input warmups are unmatched. No causal exoneration,
+model-quality acceptance, P3 gain, NativeFP32 or default promotion follows;
+those gates remain pending and prior failures remain preserved.
+
+Actual gate: `combined-graph-gup-model-v1/combined-graph-gup-full7-all8-actual-gate-v1.json`,
+SHA256 `ac084bc1373602510cc432c484379bd11d0b41e071446c92ce63e5811eaf0793`.
+Comparison: `combined-graph-gup-model-v1/reviewer-actual-full7-all8-v1.json`,
+SHA256 `253aa5c24a1ccaba014ed808de926612b2142b9231d9bf0338ac457712d18e71`.
+
 ## Batched reference global normalization source candidate
 
 This partial A21 / Design Sections 10 and 15 increment batches independent
