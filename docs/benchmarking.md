@@ -997,7 +997,7 @@ client-plus-tail funding. The old 3,900/300 short control needs 4,200. These are
 predeclared operational allowances; the observed 52-token control supplies no
 64K completion guarantee. The updated driver passed 76 x86 controls with no
 skips, including refusal after phase publication consumes the remaining
-allowance. The long model operation remains pending.
+allowance. The first long model operation timed out as recorded below.
 
 ### Reproducing independent quality inputs
 
@@ -1223,3 +1223,42 @@ and `P3_valid=false`: this is one short matched reference control. Broader
 quality/capacity/history/method/media and candidate/performance gates remain
 open. The earlier pre-metrics activation-identity refusal remains preserved in
 the audit evidence; the corrected comparator did not rerun either model.
+
+
+### First 64K reference capture: preserved timeout
+
+The first current long-input reference attempt used clean operator `cd2d0251`,
+application `d736ab78` and verification image `efb4cb8f`. Its independently
+preselected `sparse64k-000000` case supplied 65,472 validated prompt IDs, a
+64-frame reply ceiling and three fixed retrieval keys in order 2,0,1. The
+profile retained Q8 KV, 24 full native 262,144-row windows, NONE speculation,
+Torch-reference attention and no decode graphs. This was one active request;
+other materialized windows were idle.
+
+All eight startup/setup bindings and readiness checks passed before exactly
+one completion-request attempt. The canonical client then raised `TimeoutError`
+while acquiring the nonstream HTTP response status/header under the predeclared
+3,000-second socket inactivity interval. No response body, teacher logit frame,
+closed-rank summary, native-child record or usable teacher authority was
+published. Gold is **ungradable**, not a wrong-answer observation. No completed
+prefill or decode rate is inferred from this failed, instrumented operation.
+
+The original CLI and container exited 1; the container retired with PID 0 and
+`OOMKilled=false`. All owned GPU compute contexts were gone afterward. Source, operator
+inputs, model stamps and recorded health remained unchanged. The run was not
+restarted and its deadline, prompt, precision, method and runtime were not
+altered. The actual failure gate SHA256 is
+`bc8622e3350804feff6e160ae129cdc9e00ef2e08094c4becd2fdfd94783996a`,
+with independent failure/retirement review
+`a46c3af5de8a9f6b797a453dac617f3a0260191cf4d9dfb46842f0c17ead4f6a`.
+Its raw logs, client failure and partial evidence remain preserved.
+
+A source-only assessment identifies per-query two-pass tiled attention,
+repeated query materialization, full pooled-domain QSA scoring/sorting and
+chunk-boundary status synchronization as hypotheses. It also confirms that
+teacher frames need not exist until the final prompt piece. Neither fact
+attributes the live delay or proves a hang. A separate bounded late-prefill
+CPU/CUDA diagnostic is needed; the existing first-prefill trace cannot be
+represented as a trace of this operation. This timeout closes no long-input,
+sparse-QSA, method/media, full-activity, quality, performance or candidate
+adoption gate, and grants no waiver for the four open Q03 numerical failures.

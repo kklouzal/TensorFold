@@ -72,8 +72,10 @@ logits bit-for-bit across four steps, with identical original token selections.
 This short reference check does not qualify broader quality or performance.
 The private qualification client can admit longer socket intervals only when
 its whole timeout plus an in-flight socket tail fit the actual remaining
-outer work budget. Its 76 x86 driver controls pass; the longer-input model
-capture remains pending.
+outer work budget. Its 76 x86 driver controls pass. The first 65,472-input
+reference capture timed out waiting for response headers after the declared
+3,000-second socket interval, with no answer or logit frames. Long-input
+quality and performance gates remain open.
 The maintained `tools/v100_quality_data.py` producer can capture a distinct
 current frontend identity and verifies all 27 preserved long-request token
 counts and hashes before publication. Its 42 x86 CPU controls pass. Genuine
