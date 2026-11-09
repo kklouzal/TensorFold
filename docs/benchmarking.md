@@ -157,6 +157,30 @@ full-model run, resident capacity, affected-region P3 or a new default. Gate:
 `grouped-gate-up-assessment-v1/grouped-gate-up-source-CPU388-GPU49-gate-v1.json`,
 SHA256 `e5005541cad0ebbd3fd160064fc7c79942dfc9e3a8768447f9a8f97959ab559a`.
 
+### Private qualification selector bridge
+
+In a new immutable application containing the bridge, pass
+`--grouped-gate-up-rows 2` or `--grouped-gate-up-rows 4` to
+`tools/v100_owned_qualification.py` **before** its existing `--` separator.
+This private qualifier option requires the already-grouped SC117 TP8/ETP4
+preparation above; it does not enable grouped down, add a public serve or
+environment flag, or change the incumbent default.
+
+The typed capability passes through CLI, family factory and Engine before
+construction, joins early eight-rank mode agreement, and binds the prepared
+Plan. Each rank's `grouped_gate_up` receipt marker checks requested versus
+actual rows before publication/readiness. An application missing the private
+CLI field or Engine parameter is refused before construction; use a newly
+built application rather than an installed-code patch.
+
+This separate bridge source composition passed **459 pinned CPU controls with
+zero skips**, plus seven-file Ruff/syntax checks, with CUDA uninitialized.
+It does not qualify a new installed application, live eight-rank activation,
+SC117 model quality/capacity, affected-region P3 or a new default. The earlier
+388 CPU / 49 GPU component checkpoint remains separate evidence. Source gate:
+`grouped-gate-up-assessment-v1/private-selector-bridge-v1/target-v1/private-gup-bridge-source-CPU459-gate-v1.json`,
+SHA256 `577bea0cc87facf9a359334363aae7987cb145c15a85ff61915f1d313f7b8d2c`.
+
 ## Private verification-row envelope trials
 
 The supervised qualification launcher accepts `--execution-rows N` before its

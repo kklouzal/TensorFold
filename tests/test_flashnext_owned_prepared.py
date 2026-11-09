@@ -173,7 +173,7 @@ def test_private_optin_is_literal_boolean_before_initialization(value, monkeypat
         FlashNextEngine("unused", _owned_expert_native=value)
 
 
-def startup_policy_probe(*, dflash=False, dspark=False):
+def startup_policy_probe(*, dflash=False, dspark=False, hidden=256):
     """Execute the actual contiguous common-mode/private-check statements only.
 
     As in maintained host settings tests, isolate source without CUDA startup;
@@ -192,16 +192,18 @@ def startup_policy_probe(*, dflash=False, dspark=False):
                        and node.name == "prepare_owned_experts")
     # The partial initializer must retain this real defaulting statement;
     # constructor-created engines already carry the explicitly selected flag.
-    reference_default = next(node for node in method.body if isinstance(node, ast.Assign)
-                             and any(ast.unparse(target) == "self._reference_owner_tiles_requested"
-                                     for target in node.targets))
-    probe.body = copy.deepcopy([reference_default, preparation, *method.body[start:start + 3]])
+    private_defaults = [node for node in method.body if isinstance(node, ast.Assign)
+                        and any(ast.unparse(target) in ("self._reference_owner_tiles_requested",
+                                                       "self._owned_expert_gate_up_requested")
+                                for target in node.targets)]
+    assert len(private_defaults) == 2
+    probe.body = copy.deepcopy([*private_defaults, preparation, *method.body[start:start + 3]])
     from tensorfold.families.qwen4_exp.cuda import engine as engine_module
     namespace = dict(__name__=engine_module.__name__, __package__=engine_module.__package__,
                      sm70=True, indexer_history="gpu", adaptive_sessions=True, session_ceiling=None,
                      execution_rows=None, source_is_gguf=True, tp=8, expert_tensor_parallel_size=4,
                      dspark_model_dir="draft" if dspark else None, dflash2_model_dir="draft" if dflash else None,
-                     text={"hidden_size": 256, "num_experts_per_tok": 10},
+                     text={"hidden_size": hidden, "num_experts_per_tok": 10},
                      chunk=64, PREFILL_ROWS=2048, stock_mtp=False)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[probe], type_ignores=[])), str(path), "exec"), namespace)
     return namespace["probe"]
@@ -233,7 +235,7 @@ def test_each_private_mode_field_joins_and_refuses_independently(field):
              _reference_owner_tiles_requested=False, expert_partition=ExpertPartition(8, 0, 512, 640, 4))
     calls = []
     def gather(values):
-        assert values == [0, 1, -1, -1, 4, 512, 640, 1, 0, 0]
+        assert values == [0, 1, -1, -1, 4, 512, 640, 0, 1, 0, 0]
         peer = values.copy()
         peer[field] = 1 - peer[field]
         assert [i for i, (a, b) in enumerate(zip(values, peer)) if a != b] == [len(values) + field]
@@ -407,3 +409,35 @@ def test_private_prepare_allows_dense_dflash_without_weakening_dspark_refusal(df
     else:
         probe(owner, lambda values: [values] * 8, runtime)
         assert owner._owned_expert_plan.mtp is False
+
+
+@pytest.mark.parametrize("rows,peer_rows", [(2, 0), (2, 4), (4, 2)])
+def test_grouped_gate_up_modes_refuse_independent_peer_mismatch_before_preparation(rows, peer_rows):
+    from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+
+    probe = startup_policy_probe()
+    obj = NS(_owned_expert_requested=True, _owned_expert_admin_requested=False, _owned_expert_plan=None,
+             _owned_expert_gate_up_requested=_GroupedGateUp(rows), expert_partition=ExpertPartition(8, 0, 512, 640, 4))
+    def gather(values):
+        assert len(values) == 11 and values[-4:] == [rows, 1, 0, 0]
+        peer = values.copy()
+        peer[-4] = peer_rows
+        return [values] * 7 + [peer]
+    with pytest.raises(RuntimeError, match="different history/session"):
+        probe(obj, gather, None)
+    assert obj._owned_expert_plan is None
+
+
+@pytest.mark.parametrize("rows", [2, 4])
+def test_uniform_grouped_gate_up_mode_reaches_actual_plan_before_loading(monkeypatch, rows):
+    from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+    from tensorfold.families.qwen4_exp.cuda import owned_experts
+
+    monkeypatch.setattr(owned_experts, "_GROUPED_DOWN", "grouped-v1")
+    selection = _GroupedGateUp(rows)
+    obj = NS(_owned_expert_requested=True, _owned_expert_admin_requested=False, _owned_expert_plan=None,
+             _owned_expert_gate_up_requested=selection, expert_partition=ExpertPartition(8, 0, 512, 640, 4))
+    runtime = NS(cuda=NS(get_device_capability=lambda: (7, 0), get_arch_list=lambda: ["sm_70"]))
+    startup_policy_probe(hidden=2560)(obj, lambda values: [values] * 8, runtime)
+    assert obj._owned_expert_plan._gate_up is selection
+    assert obj._owned_expert_plan.identity[-2:] == ("grouped-gate-up", rows)

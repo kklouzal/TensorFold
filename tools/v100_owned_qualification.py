@@ -1304,11 +1304,44 @@ def _reference_tile_receipt(engine, requested):
         records[role] = owner.reference_tiles.verify(owner.partials, identity)
     return {"requested": True, "configured": True, "prebudget_preparation": identity, "roles": records}
 
+def _grouped_gate_up_capability(cli, rows):
+    if rows is None:
+        return {}
+    if "grouped_gate_up" not in cli._OwnedExpertQualification.__dataclass_fields__:
+        raise ValueError("installed application lacks private grouped gate/up preparation")
+    import inspect
+    from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+
+    if "_owned_expert_gate_up" not in inspect.signature(FlashNextEngine.__init__).parameters:
+        raise ValueError("installed application lacks private grouped gate/up preparation")
+    return {"grouped_gate_up": _GroupedGateUp(rows)}
+
+
+def _grouped_gate_up_receipt(engine, requested):
+    selection = getattr(engine, "_owned_expert_gate_up_requested", None)
+    plan = getattr(engine, "_owned_expert_plan", None)
+    actual = getattr(plan, "_gate_up", None)
+    if requested is None:
+        if selection is not None or actual is not None:
+            raise ValueError("unrequested grouped gate/up is active in actual Engine")
+    else:
+        from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+        from tensorfold.families.qwen4_exp.cuda.owned_experts import Plan
+
+        if (type(requested) is not int or requested not in (2, 4)
+                or type(selection) is not _GroupedGateUp or selection.rows != requested
+                or type(plan) is not Plan or actual is not selection):
+            raise ValueError("requested grouped gate/up differs from actual Engine/Plan")
+    return {"requested_rows": requested, "actual_rows": None if actual is None else actual.rows}
+
+
 def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
-                    execution_rows=None, reference_tiles=False, normalization_parity=None):
+                    execution_rows=None, reference_tiles=False, normalization_parity=None, grouped_gate_up=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
+        receipt["grouped_gate_up"] = _grouped_gate_up_receipt(engine, grouped_gate_up)
         receipt["reference_tile_preparation"] = _reference_tile_receipt(engine, reference_tiles)
         if normalization_parity is not None:
             receipt["normalization_parity"] = normalization_parity
@@ -1370,6 +1403,8 @@ def worker(argv):
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
+    parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
+                        help="private prepared grouped gate/up trial; requires grouped down")
     parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
@@ -1423,6 +1458,7 @@ def worker(argv):
             publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation,
                             half_request=half_request, router_request=router_request, empty_request=empty_request,
                             execution_rows=selected.execution_rows, reference_tiles=selected.reference_tiles,
+                            **({"grouped_gate_up": selected.grouped_gate_up_rows} if selected.grouped_gate_up_rows is not None else {}),
                             **({"normalization_parity": parity_receipt} if parity_receipt is not None else {}))
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
@@ -1487,7 +1523,7 @@ def worker(argv):
         if benchmark_resources is not None:
             obligation = (benchmark_resources["global_host_obligation_bytes"],
                           hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
-        capability = {}
+        capability = _grouped_gate_up_capability(cli, selected.grouped_gate_up_rows)
         if selected.execution_rows is not None:
             if "execution_rows" not in cli._OwnedExpertQualification.__dataclass_fields__:
                 raise ValueError("installed CLI lacks private execution-row preparation")
@@ -1627,6 +1663,8 @@ def main(argv=None):
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
+    parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
+                        help="private prepared grouped gate/up trial; requires grouped down")
     parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
     parser.add_argument("--execution-rows", type=int, help="private prepared MTP row envelope; requires explicit depth/parallel")
     parser.add_argument("--router-row-input", type=Path, help="private four-row layer0 capture DATA; diagnostic overhead only")
@@ -1660,6 +1698,8 @@ def main(argv=None):
         prefix += ["--dense-implementation", args.dense_implementation]
     if args.reference_tiles:
         prefix += ["--reference-tiles"]
+    if args.grouped_gate_up_rows is not None:
+        prefix += ["--grouped-gate-up-rows", str(args.grouped_gate_up_rows)]
     if args.normalization_parity:
         prefix += ["--normalization-parity"]
     if args.execution_rows is not None:

@@ -381,9 +381,9 @@ def test_public_parser_cannot_select_native_and_untyped_marker_fails_closed(tmp_
         cli.cmd_serve(args)
 
 
-@pytest.mark.parametrize("private,rows,reference", [(False, None, False), (True, None, False), (True, 40, False),
-                                                  (True, None, True)])
-def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch, tmp_path, request, private, rows, reference):
+@pytest.mark.parametrize("private,rows,reference,gate_up", [(False, None, False, None), (True, None, False, None),
+    (True, 40, False, None), (True, None, True, None), (True, None, False, 2), (True, None, False, 4)])
+def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch, tmp_path, request, private, rows, reference, gate_up):
     import tensorfold.cuda.server as server
     (tmp_path / "config.json").write_text('{"max_position_embeddings":128}')
     calls, options = [], []
@@ -392,11 +392,18 @@ def test_shared_cuda_factory_gets_private_bool_only_with_capability(monkeypatch,
     monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=128))
     install_cli_server(monkeypatch, request, server, on_serve=lambda _app: calls.append("serve"))
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
+    selection = None
+    if gate_up is not None:
+        from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+        selection = _GroupedGateUp(gate_up)
     if private:
         args._owned_expert_qualification = cli._OwnedExpertQualification(
             lambda selected: calls.append("receipt") if selected is engine else pytest.fail("different engine"),
-            execution_rows=rows, reference_tiles=reference)
+            execution_rows=rows, reference_tiles=reference, grouped_gate_up=selection)
     assert cli._serve_cuda(args, family, tmp_path, 128) == 0
+    assert options[0].get("_owned_expert_gate_up") is selection
+    if selection is None:
+        assert "_owned_expert_gate_up" not in options[0]
     assert options[0].get("_owned_expert_native", False) is private
     if not private:
         assert "_owned_expert_native" not in options[0]
@@ -439,6 +446,12 @@ def test_family_wrapper_preserves_private_request_and_normal_default(monkeypatch
     assert made[-1]["_owned_expert_native"] is True and made[-1]["adaptive_sessions"] is True
     qwen4_exp.cuda_engine(path, **options, _owned_expert_native=True, _reference_owner_tiles=True)
     assert made[-1]["_reference_owner_tiles"] is True
+    from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+    selection = _GroupedGateUp(2)
+    qwen4_exp.cuda_engine(path, **options, _owned_expert_native=True, _owned_expert_gate_up=selection)
+    assert made[-1]["_owned_expert_gate_up"] is selection
+    with pytest.raises(TypeError, match="typed owned"):
+        qwen4_exp.cuda_engine(path, **options, _owned_expert_gate_up=selection)
     with pytest.raises(TypeError, match="trusted owned"):
         qwen4_exp.cuda_engine(path, **options, _reference_owner_tiles=True)
     with pytest.raises(TypeError, match="literal boolean"):

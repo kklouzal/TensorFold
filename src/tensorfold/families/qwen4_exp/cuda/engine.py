@@ -60,7 +60,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=()) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _owned_expert_gate_up=None, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=()) -> None:
         if type(_owned_expert_native) is not bool:
             raise ValueError("private owned expert selection must be a literal boolean")
         if (type(_owned_qualification_host) is not tuple or _owned_qualification_host and (not _owned_expert_native
@@ -72,6 +72,12 @@ class FlashNextEngine:
         if type(_reference_owner_tiles) is not bool or _reference_owner_tiles and (not _owned_expert_native
                 or execution_profile_manifest is None):
             raise ValueError("reference tiles require the private owned preparation lifecycle")
+        if _owned_expert_gate_up is not None:
+            from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+
+            if type(_owned_expert_gate_up) is not _GroupedGateUp or not _owned_expert_native:
+                raise ValueError("private grouped gate/up requires typed owned expert preparation")
+        self._owned_expert_gate_up_requested = _owned_expert_gate_up
         self._reference_owner_tiles_requested = _reference_owner_tiles
         self._owned_qualification_host = _owned_qualification_host
         self._owned_expert_requested = _owned_expert_native
@@ -89,6 +95,8 @@ class FlashNextEngine:
         profile_options.pop("serving_profile_root")
         profile_options.pop("_reference_owner_tiles")
         profile_options.pop("_owned_expert_native")
+        profile_options.pop("_owned_expert_gate_up")
+        profile_options.pop("_GroupedGateUp", None)
         profile_options.pop("_owned_qualification_host")
         profile_options.pop("_prepared_family_plan")  # private startup cache is never an administrator option
         self._profile_build = None
@@ -175,6 +183,7 @@ class FlashNextEngine:
             retention_policy.validate_world(tp)
         self.retention_policy = retention_policy
 
+        self._owned_expert_gate_up_requested = getattr(self, "_owned_expert_gate_up_requested", None)
         self._reference_owner_tiles_requested = getattr(self, "_reference_owner_tiles_requested", False)
         self._owned_expert_requested = getattr(self, "_owned_expert_requested", False)
         self._owned_expert_admin_requested = getattr(self, "_owned_expert_admin_requested", False)
@@ -523,7 +532,8 @@ class FlashNextEngine:
             from .owned_experts import Plan
 
             return Plan(self.expert_partition, int(text["hidden_size"]), int(text["num_experts_per_tok"]) + 1,
-                        execution_rows if execution_rows is not None else 32, chunk or PREFILL_ROWS, bool(stock_mtp))
+                        execution_rows if execution_rows is not None else 32, chunk or PREFILL_ROWS, bool(stock_mtp),
+                        _gate_up=self._owned_expert_gate_up_requested)
 
         owner_specification = None
         owner_preparation = None
@@ -648,6 +658,7 @@ class FlashNextEngine:
                             -1 if session_ceiling is None else session_ceiling,
                             -1 if execution_rows is None else execution_rows,
                             *(self.expert_partition.agreement() if self.expert_partition is not None else (0, 0, 0)),
+                            0 if self._owned_expert_gate_up_requested is None else self._owned_expert_gate_up_requested.rows,
                             int(self._owned_expert_requested),
                             int(self._owned_expert_requested and self._owned_expert_admin_requested),
                             int(self._reference_owner_tiles_requested)])

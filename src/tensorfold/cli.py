@@ -35,6 +35,7 @@ class _OwnedExpertQualification:
     host_obligation: tuple = ()
     execution_rows: int | None = None
     reference_tiles: bool = False
+    grouped_gate_up: object = None
 
     def __post_init__(self):
         if self.host_obligation and (type(self.host_obligation) is not tuple or len(self.host_obligation) != 2
@@ -46,6 +47,11 @@ class _OwnedExpertQualification:
             raise TypeError("private qualification host obligation must be a tuple")
         if not callable(self.before_listener):
             raise TypeError("private qualification requires its receipt/containment owner")
+        if self.grouped_gate_up is not None:
+            from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+
+            if type(self.grouped_gate_up) is not _GroupedGateUp:
+                raise TypeError("private grouped gate/up requires its typed preparation selector")
         if type(self.reference_tiles) is not bool:
             raise TypeError("private reference tile preparation must be a literal boolean")
         if self.execution_rows is not None and (
@@ -404,6 +410,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     }
     if qualification is not None:
         options["_owned_expert_native"] = True
+        if qualification.grouped_gate_up is not None:
+            options["_owned_expert_gate_up"] = qualification.grouped_gate_up
         if qualification.reference_tiles:
             options["_reference_owner_tiles"] = True
         if qualification.host_obligation:
