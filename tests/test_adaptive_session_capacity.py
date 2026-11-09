@@ -257,7 +257,9 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     monkeypatch.setattr(comm, "open_comm", open_cpu_comm)
     def gather_profile(t, g, values, world=2):
         peers = [list(values) for _ in range(world)]
-        if etp == "mismatch" and len(values) == 9:
+        if etp == "mismatch":
+            assert len(values) == 11
+            assert values[4:7] == [8, 512, 640]
             peers[-1][4] = 4  # Local default8 differs from one peer before model admission.
         return peers
 
@@ -317,6 +319,7 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     owner._startup_store = owner._owner_preparation = owner._dflash_pairing = None
     owner._startup_store_origin = owner._store_use_libuv = None
     owner._profile_build = None  # __init__ normally establishes this lifecycle before _initialize.
+    owner._owned_qualification_host = ()  # Match __init__'s ordinary, non-observer default.
     owner._startup_reads = []
     expected = (pytest.raises(Inspected) if reserve_gib >= 4 else pytest.raises(ValueError, match="at least 4 GiB"))
     if etp == "mismatch" and reserve_gib >= 4:

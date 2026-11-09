@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from tensorfold.cuda.server import App, PreparedRequest, RequestError
-from tensorfold.families.glm5_next.prompts import clear_thinking, thinking_off
+from tensorfold.families.glm5_next.prompts import clear_thinking, thinking_off_prompt
 from tensorfold.server.errors import CONTEXT_LIMIT
+from tensorfold.server.prompt_literals import MAX_RENDER_BYTES, PromptEncodingError
 
 
 class ThinkingOffTemplate:
@@ -19,10 +20,26 @@ class ThinkingOffTemplate:
         self.efforts = getattr(inner, "efforts", frozenset())
         self.clear = clear_thinking() if clear is None else clear
 
-    def render(self, messages, *, tools, enable_thinking, extra=None) -> str:
-        extra = {"clear_thinking": self.clear, **(extra or {})}       # a request's own value wins
-        text = self.inner.render(messages, tools=tools, enable_thinking=enable_thinking, extra=extra)
-        return text if enable_thinking else thinking_off(text)
+    def render(self, messages, *, tools, enable_thinking, extra=None, allow_images=False, allow_audio=False,
+               max_render_bytes=MAX_RENDER_BYTES, add_generation_prompt=True, render_credit=None) -> str:
+        if extra is None or isinstance(extra, dict):
+            extra = {"clear_thinking": self.clear, **(extra or {})}   # a request's own value wins
+        rendered = self.inner.render(messages, tools=tools, enable_thinking=enable_thinking, extra=extra,
+                                     allow_images=allow_images, allow_audio=allow_audio,
+                                     max_render_bytes=max_render_bytes, add_generation_prompt=add_generation_prompt,
+                                     render_credit=render_credit)
+        if enable_thinking:
+            return rendered
+        try:
+            return thinking_off_prompt(rendered, max_render_bytes=max_render_bytes, render_credit=render_credit)
+        except (PromptEncodingError, UnicodeError) as exc:
+            from jinja2.exceptions import TemplateError
+
+            raise TemplateError(str(exc)) from exc
+
+    def encode(self, tokenizer, text, *, segments=None, ids_credit=None, cache_credit=None):
+        return self.inner.encode(tokenizer, text, segments=segments,
+                                 ids_credit=ids_credit, cache_credit=cache_credit)
 
     def selected(self, *, tools=False):
         return self.inner.selected(tools=tools)

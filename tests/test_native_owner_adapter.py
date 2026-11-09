@@ -40,7 +40,8 @@ def test_header_only_native_workspace_has_exact_bytes_and_safe_inactive_views():
     workspace.prepare_native(pair=get_pair("int8"))
     expected = native_owner_workspace_bytes(7)
     assert workspace.nbytes - before == expected["device_bytes"] == 228 * 7 + 4
-    assert workspace.descriptors_host.nbytes == expected["host_staging_bytes"] == 128 * 7
+    assert workspace.descriptors_host.nbytes == 128 * 7
+    assert expected["host_staging_bytes"] == 128 * 7 + expected["host_metadata_bytes"]
     assert workspace.native_states is None
     workspace.clear_native_inputs(7)
     views = workspace.native_views(7)

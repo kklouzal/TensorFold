@@ -10,6 +10,7 @@ from __future__ import annotations
 from copy import copy
 from dataclasses import dataclass
 import os
+import sys
 import traceback
 from types import SimpleNamespace
 
@@ -460,6 +461,7 @@ class OwnerBuffers:
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.reference_tiles = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
+        self.descriptor_host_words = None
         self.descriptor_upload = self.native_done = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
         self.native_comm = self.native_collective = None
@@ -562,7 +564,9 @@ class OwnerBuffers:
                 "rank": self.rank, "device": str(self.device), "complete": self._base_ready,
                 "device_tensor_bytes": self.nbytes,
                 "communication_tensor_bytes": self.nbytes - extras,
-                "native_tensor_bytes": extras, "host_staging_bytes": native["host_descriptor_bytes"],
+                "native_tensor_bytes": extras,
+                "host_staging_bytes": native["host_descriptor_bytes"] + native["host_metadata_bytes"],
+                "host_metadata_bytes": native["host_metadata_bytes"],
                 "pinned_host_staging_bytes": native["pinned_descriptor_bytes"],
                 "collective_family": native["collective_family"], "attention_members": native["attention_members"],
                 "qualification": "construction extents; not physical allocator or execution qualification"}
@@ -612,6 +616,9 @@ class OwnerBuffers:
             self.descriptors = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64, device=device)
             self.descriptors_host = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64,
                                                 pin_memory=self.queries.is_cuda)
+            # The view and its base Tensor retain this same pinned payload.
+            # Their Python headers are charged separately from the DMA bytes.
+            self.descriptor_host_words = self.descriptors_host.numpy()
             self.global_stats = torch.empty((self.rows, 12, 2), dtype=torch.float32, device=device)
             if self.reference_tiles is not None:
                 self.reference_tiles.bind_global_statistics(self.partial, self.global_stats)
@@ -744,7 +751,7 @@ class OwnerBuffers:
                          cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
                          position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
                          state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner)
-                host[row - base].copy_(torch.tensor(words, dtype=torch.int64))
+                self.descriptor_host_words[row - base] = words
         self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
         if self.descriptor_upload is not None:
             self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
@@ -916,6 +923,7 @@ class OwnerBuffers:
         self.reference_tiles = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
+        self.descriptor_host_words = None
         self.descriptor_upload = self.native_done = None
         self.native_comm = None
         self.closed, self._base_ready = True, False
@@ -933,6 +941,9 @@ class OwnerBuffers:
                 "lane_control_bytes": 0 if self.lane_rows is None else self.lane_rows.nbytes,
                 "layer_control_bytes": 0 if self.native_layer is None else self.native_layer.nbytes,
                 "host_descriptor_bytes": 0 if self.descriptors_host is None else self.descriptors_host.nbytes,
+                "host_metadata_bytes": (0 if self.descriptor_host_words is None else
+                                        sys.getsizeof(self.descriptor_host_words)
+                                        + sys.getsizeof(self.descriptor_host_words.base)),
                 "pinned_descriptor_bytes": (self.descriptors_host.nbytes if self.descriptors_host is not None
                                              and self.descriptors_host.is_pinned() else 0)}
 

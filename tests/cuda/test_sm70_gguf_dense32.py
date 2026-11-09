@@ -6,7 +6,8 @@ import torch
 from tensorfold.cuda.sm70.gguf_ops import dense32
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
 
-pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (7, 0), reason="SM70 dense32 staging")
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
+                                reason="SM70 dense32 staging")
 
 
 @pytest.mark.parametrize("rows", [0, 1, 3, 18, 32, 33])
@@ -91,6 +92,31 @@ def _aligned(shape, dtype, *, sentinel=0):
     return owner[offset:offset + elements].view(shape), owner, offset
 
 
+@pytest.mark.parametrize("rows", [3, 32])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
+@pytest.mark.parametrize("layout", ["contiguous", "strided", "misaligned"])
+def test_native_wrapper_publishes_output_mutation_once(rows, dtype, layout):
+    torch.manual_seed(725)
+    linear = GGUFDense(torch.randn((80, 256), device="cuda", dtype=torch.float16) * .02)
+    linear.implementation = "native32"
+    x = torch.randn((rows, 512), device="cuda", dtype=torch.float16)[:, ::2]
+    shape = (rows * 80 + 1,) if layout == "misaligned" else (rows, 86 if layout == "strided" else 80)
+    backing, owner, offset = _aligned(shape, dtype, sentinel=-437)
+    out = (backing[1:].view(rows, 80) if layout == "misaligned" else
+           backing[:, 3:83] if layout == "strided" else backing)
+    expected = _frozen_m32(linear, x, dtype)
+    version = owner._version
+    assert linear.matmul(x, out=out) is out
+    assert out._version == owner._version == version + 1
+    bits = torch.int16 if dtype == torch.float16 else torch.int32
+    assert torch.equal(out.contiguous().view(bits), expected.view(bits))
+    assert torch.all(owner[:offset] == -437) and torch.all(owner[offset + backing.numel():] == -437)
+    if layout == "strided":
+        assert torch.all(backing[:, :3] == -437) and torch.all(backing[:, 83:] == -437)
+    elif layout == "misaligned":
+        assert backing[0] == -437
+
+
 @pytest.mark.parametrize("rows", [1, 31, 32, 33, 63, 64, 65, 256])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("columns,outputs", [(2560, 80), (80, 2560), (320, 10240),
@@ -124,12 +150,13 @@ def test_native32_multitile_fallback_views_preserve_bits_and_neighbors(dtype):
     assert torch.all(owner[:, :3] == -931) and torch.all(owner[:, 84:] == -931)
 
 
-def test_native32_multitile_graph_replays_changed_inputs_without_replacing_output():
+@pytest.mark.parametrize("rows", [3, 32, 65])
+def test_native32_multitile_graph_replays_changed_inputs_without_replacing_output(rows):
     torch.manual_seed(724)
     linear = GGUFDense(torch.randn((80, 2560), device="cuda", dtype=torch.float16) * .02)
     linear.implementation = "native32"
-    x, _, _ = _aligned((65, 2560), torch.float16)
-    out, _, _ = _aligned((65, 80), torch.float32)
+    x, _, _ = _aligned((rows, 2560), torch.float16)
+    out, _, _ = _aligned((rows, 80), torch.float32)
     x.normal_()
     linear.matmul(x, out=out)
     graph = torch.cuda.CUDAGraph()
