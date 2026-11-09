@@ -42,8 +42,8 @@ A private [same-input normalization witness](docs/benchmarking.md#private-same-i
 is available for diagnosis; its comparison fences invalidate all performance
 timings. Its first actual run completed all 87 HTTP requests but produced none
 of the eight mandatory retirement summaries. The parity proof is incomplete,
-and selection remains held. A source-only leader-first shutdown correction has
-passed CPU controls; installed/model shutdown qualification remains pending.
+and selection remains held. The leader-first shutdown correction has passed
+source and installed CPU controls; live eight-rank shutdown qualification remains pending.
 Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
 capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.

@@ -420,6 +420,12 @@ qualification remains **pending**, and this does not complete the failed parity
 proof. The 26 controls are a subset of the 286, not an additional total. Source
 gate: `tp-graceful-shutdown-v1/target-v1/tp-graceful-shutdown-source-CPU286-gate-v1.json`,
 SHA256 `aa44782e61dfe43aeaf66c75d0d815c241ef41a8abb128edecc4c451df68d116`.
+The genuine lifecycle-only image `cd52d838` from commit `1d6c5809` also passed
+all 286 installed CPU checks with zero skips (18.840 seconds). Its 785 installed
+runtime files match the expected inventory; only the shutdown supervisor differs
+from `f126`. Gate: `lifecycle-app-1d6c580-v1/genuine-lifecycle-installed-gate-v1.json`,
+SHA256 `02b54981fcb8074d539f117eb3a52d14ca3c6f79264f4702a5a42f9f36b2529d`.
+These checks still do not prove live eight-rank shutdown or complete the witness.
 The lifecycle finding is separate from numerical attribution. Failure gate:
 `normalization-parity-model-v1/normalization-parity-live-failure-gate-v1.json`,
 SHA256 `b49952e6b672fc2a9d7372d3373cf3f44768e7a985de459f54baa4db0f8e77d2`.
