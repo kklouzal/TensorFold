@@ -1004,9 +1004,13 @@ assert 'torch' not in sys.modules
                  'startup_receipts': [ref(f'teacher/rank-{i}.json', i) for i in range(8)],
                  'child_native_records': [ref(f'child-native/teacher-closed-rank-{i}-pid-{i+2}.json', i) for i in range(8)]}
         assets = expected['operation']
+        identities = [*assets['model_assets'], *assets['frontend_assets'], assets['teacher_plan'], assets['teacher_client']]
+        if 'reference' in assets:
+            reference = assets['reference']
+            identities += [{'path': reference['root']+'/'+name, **reference['files'][name]} for name in sorted(reference['files'])]
+            identities += [reference['host_result'], reference['completion']]
         binding = {'schema': 'tensorfold.owned-model-content-binding-v1', 'completed': True,
-                   'assets': [{'identity': item, 'stat': [1, 2, 3, item['bytes'], 4, 5]} for item in
-                              [*assets['model_assets'], *assets['frontend_assets'], assets['teacher_plan'], assets['teacher_client']]]}
+                   'assets': [{'identity': item, 'stat': [1, 2, 3, item['bytes'], 4, 5]} for item in identities]}
         record = self.output/'model-content-binding.json'
         record.write_text(json.dumps(binding))
         return {'schema': c.HOST_RESULT_SCHEMA, 'mode': c.MODE, 'source_commit': expected['source_commit'],
@@ -1079,6 +1083,83 @@ assert 'torch' not in sys.modules
         self.assertEqual(outcome['inner']['model_result']['launch_exit'], 0)
         self.assertEqual(outcome['container']['State']['Pid'], 0)
         self.assertIn(['close'], system.calls)
+
+
+    def replay_host_spec(self):
+        spec, data = self.model_spec()
+        names = ['teacher/teacher-authority.json', *[f'teacher/rank-{i}.json' for i in range(8)],
+                 *[f'teacher/teacher-rank{i}/summary.json' for i in range(8)],
+                 *[f'teacher/teacher-rank0/frame-{i:06d}.npy' for i in range(4)]]
+        reference = {'root': '/reference', 'authority': {'path': '/reference/teacher/teacher-authority.json', 'bytes': 1, 'sha256': 'b'*64},
+                     'files': {name: {'bytes': 1, 'sha256': 'b'*64} for name in names},
+                     'host_result': {'path': '/reference/host-result.json', 'bytes': 1, 'sha256': 'c'*64},
+                     'completion': {'path': '/operator/reference-capture-completion.json', 'bytes': 1, 'sha256': 'd'*64}}
+        path = self.operator/'reference-capture-completion.json'
+        path.write_text('{}')
+        record = file_record(path)
+        reference['completion'].update({key: record[key] for key in ('bytes', 'sha256')})
+        spec['inputs'].append(record)
+        data['operation']['reference'] = reference
+        spec['mounts'].append({'source': str(self.root/'readonly-reference'), 'target': '/reference', 'read_only': True})
+        path = self.operator/'spec.json'
+        path.write_text(json.dumps(data))
+        record = file_record(path)
+        spec['inputs'][1] = record
+        spec['argv'][5], spec['argv'][7] = record['sha256'], str(record['bytes'])
+        return spec, data
+
+    def test_replay_reference_bind_rejects_writable_or_source_aliases(self):
+        spec, data = self.replay_host_spec()
+        host.validate_spec(spec)
+        host.validate_data(spec)
+        for kind in ('writable', 'alias', 'ancestor', 'missing'):
+            changed = copy.deepcopy(spec)
+            if kind == 'writable':
+                changed['mounts'][-1]['read_only'] = False
+            elif kind == 'alias':
+                changed['mounts'][3]['source'] = changed['mounts'][-1]['source']
+            elif kind == 'ancestor':
+                changed['mounts'][3]['source'] = str(self.root)
+            else:
+                changed['mounts'].pop()
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                host.model_contract.validate_host_operation(changed, data)
+
+    def test_replay_host_receipt_requires_the_entire_32_file_owned_content_pass(self):
+        spec, _ = self.replay_host_spec()
+        system = FakeSystem(spec, self.output)
+        original = system.start
+        def start(cid, log):
+            process = original(cid, log)
+            expected = host.validate_data(spec)
+            (self.output/'owned-teacher-operation-result.json').write_text(json.dumps(self.model_outcome(expected)))
+            return process
+        system.start = start
+        result = host.run(spec, self.output, system=system)
+        binding = json.loads((self.output/'model-content-binding.json').read_text())
+        self.assertEqual(len(binding['assets']), 32)
+        self.assertEqual(len({row['identity']['path'] for row in binding['assets']}), 32)
+        self.assertEqual(result['container']['State']['Pid'], 0)
+
+    def test_positive_raw_host_closure_and_external_cli_completion_are_separate(self):
+        spec, _ = self.model_spec()
+        expected = host.validate_data(spec)
+        self.output.mkdir()
+        inner_result = self.model_outcome(expected)
+        closure = {'schema': 'tensorfold.native-contract-host-result-v1', 'report_complete': True,
+                   'source_match': True, 'health_match': True, 'primary_error': None, 'cleanup_errors': [],
+                   'attach_exit': 0, 'container': document(spec, state()), 'inner': inner_result}
+        c = host.model_contract
+        self.assertIs(c.validate_completed_teacher_host(closure, authority_sha256='a'*64, authority_bytes=1), inner_result)
+        for change in ({'report_complete': False}, {'primary_error': 'failure'}, {'cleanup_errors': ['failure']},
+                       {'attach_exit': False}, {'container': {**closure['container'], 'State': {**state(), 'Pid': 123}}}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                c.validate_completed_teacher_host({**closure, **change}, authority_sha256='a'*64, authority_bytes=1)
+        with self.assertRaises(ValueError):
+            c.validate_completed_teacher_host(closure, authority_sha256='b'*64, authority_bytes=1)
+        # A raw Host/attach success cannot substitute for actual external CLI0.
+        with self.assertRaises(ValueError):
+            c.validate_teacher_completion(closure, host_result_sha256='c'*64, authority_sha256='a'*64)
 
 
 if __name__ == "__main__":

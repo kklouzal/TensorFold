@@ -58,7 +58,7 @@ def identity(value, *, key='path', rank=False):
 def validate_operation(value):
     fields = {'teacher_plan', 'teacher_client', 'model_entrypoint', 'model_assets',
               'frontend_root', 'frontend_assets', 'execution_manifest'}
-    require(type(value) is dict and set(value) == fields, 'closed owned teacher operation required')
+    require(type(value) is dict and set(value) in (fields, fields | {'reference'}), 'closed owned teacher operation required')
     for name in ('teacher_plan', 'teacher_client'):
         identity(value[name])
         require(PurePosixPath(value[name]['path']).parent == PurePosixPath('/operator'), 'teacher DATA must be flat operator input')
@@ -86,7 +86,81 @@ def validate_operation(value):
         require(PurePosixPath(item['path']).parent == PurePosixPath(value['frontend_root']), 'frontend asset outside prepared directory')
     require(sum(item['bytes'] for item in assets) <= 64 << 20, 'prepared frontend closure exceeds first operation limit')
     require({PurePosixPath(item['path']).name for item in assets} == FRONTEND_NAMES, 'frontend filenames differ')
+    if 'reference' in value:
+        validate_reference(value['reference'])
     return value
+
+
+def validate_reference(value):
+    require(type(value) is dict and set(value) == {'root', 'authority', 'files', 'host_result', 'completion'}
+            and value['root'] == '/reference', 'closed readonly replay reference required')
+    identity(value['authority'])
+    for key, path in (('host_result', '/reference/host-result.json'),
+                      ('completion', '/operator/reference-capture-completion.json')):
+        identity(value[key])
+        require(value[key]['path'] == path and value[key]['bytes'] <= 8 << 20, 'fixed bounded external capture proof required')
+    require(value['authority']['path'] == '/reference/teacher/teacher-authority.json', 'original capture authority layout required')
+    files = value['files']
+    require(type(files) is dict and 18 <= len(files) <= 81, 'bounded complete captured teacher closure required')
+    fixed = {'teacher/teacher-authority.json'} | {f'teacher/rank-{rank}.json' for rank in range(8)} | {
+        f'teacher/teacher-rank{rank}/summary.json' for rank in range(8)}
+    frames = len(files) - len(fixed)
+    require(set(files) == fixed | {f'teacher/teacher-rank0/frame-{index:06d}.npy' for index in range(frames)},
+            'reference closure contains missing, unknown or noncontiguous files')
+    for name, record in files.items():
+        require(type(record) is dict and set(record) == {'bytes', 'sha256'}, 'closed reference file identity required')
+        identity({'path': value['root'] + '/' + name, **record})
+        require(record['bytes'] <= 8 << 20, 'reference file exceeds existing structured teacher envelope')
+    require(sum(row['bytes'] for row in files.values()) <= 256 << 20, 'cumulative teacher reference extent exceeds region')
+    require(files['teacher/teacher-authority.json'] == {key: value['authority'][key] for key in ('bytes', 'sha256')},
+            'reference authority differs from complete closure')
+    return value
+
+
+def operation_assets(value):
+    # Already-validated immutable DATA; one ordering governs driver and Host.
+    result = [*value['model_assets'], *value['frontend_assets'], value['teacher_plan'], value['teacher_client']]
+    if 'reference' in value:
+        reference = value['reference']
+        result.extend({'path': reference['root'] + '/' + name, **reference['files'][name]}
+                      for name in sorted(reference['files']))
+        result.extend((reference['host_result'], reference['completion']))
+    return result
+
+
+def validate_teacher_operation_plan(operation, plan, client, *, prepared=None, reference=None):
+    require(client['teacher_plan_sha256'] == operation['teacher_plan']['sha256'] and plan.get('context') == 262144,
+            'cold teacher plan/client binding differs')
+    if plan.get('mode') == 'capture':
+        require('reference' not in operation and plan.get('max_frames') == 64,
+                'capture keeps its exact64-frame ceiling and cannot import reference DATA')
+        return {'mode': 'capture', 'reference_sha256': None, 'teacher_ids': None}
+    require(plan.get('mode') == 'replay' and 'reference' in operation, 'replay requires an explicit owned reference closure')
+    authority = operation['reference']['authority']
+    require(type(prepared) is dict and prepared.get('data') == plan
+            and prepared.get('input_sha256') == operation['teacher_plan']['sha256']
+            and prepared.get('reference_sha256') == authority['sha256']
+            and plan.get('reference') == {'path': authority['path'], 'sha256': authority['sha256']},
+            'replay must use the canonical positively verified teacher preparation')
+    ids = prepared.get('teacher_ids')
+    require(type(ids) is list and 0 < len(ids) <= 64 and type(plan.get('max_frames')) is int
+            and plan['max_frames'] == len(ids) and len(plan.get('input_ids', [])) == 52,
+            'matched replay requires52 original input IDs and the exact finite frozen teacher count')
+    # owned_teacher_plan verifies positive capture/IDs/case/model/frontend and
+    # every original file. This narrower reference-only operation additionally
+    # forbids a different declared execution profile or manifest closure.
+    require(type(reference) is dict and reference.get('teacher_ids') == ids
+            and reference.get('declared_identity', {}).get('profile_sha256') == plan['identity']['profile_sha256'],
+            'matched reference replay cannot change the captured profile declaration')
+    expected = {'teacher/teacher-authority.json': {key: authority[key] for key in ('bytes', 'sha256')}}
+    for rows in (reference['rank_receipts'], reference['startup_receipts']):
+        for row in rows:
+            expected['teacher/' + row['file']] = {key: row[key] for key in ('bytes', 'sha256')}
+    for frame in reference['frames']:
+        row = frame['vector']
+        expected['teacher/' + row['file']] = {key: row[key] for key in ('bytes', 'sha256')}
+    require(expected == operation['reference']['files'], 'declared replay closure differs from the actual consumed capture')
+    return {'mode': 'replay', 'reference_sha256': authority['sha256'], 'teacher_ids': tuple(ids)}
 
 
 def validate_sources(value):
@@ -138,6 +212,45 @@ def validate_model_result(value):
                 'teacher result artifact role/rank path differs')
         require(len({row['file'] for row in rows}) == 8, 'teacher result files must be distinct')
     return value
+
+
+def validate_teacher_completion(value, *, host_result_sha256, authority_sha256):
+    """Bind externally observed CLI retirement, never infer it from attach0.
+
+    The caller pins these DATA bytes from reviewed operator evidence; hashes
+    are provenance bindings, not signatures or authentication of arbitrary DATA.
+    """
+    fields = {'schema', 'host_result_sha256', 'authority_sha256', 'host_cli_exit',
+              'operation_gate_sha256', 'review_sha256', 'terminal_observation_sha256'}
+    require(type(value) is dict and set(value) == fields and value['schema'] == 'tensorfold.owned-teacher-completion-v1'
+            and type(value['host_cli_exit']) is int and value['host_cli_exit'] == 0
+            and all(sha(value[key]) for key in fields - {'schema', 'host_cli_exit'})
+            and value['host_result_sha256'] == host_result_sha256 and value['authority_sha256'] == authority_sha256,
+            'positive external Host CLI completion must bind the exact Host result and teacher authority')
+    return value
+
+
+def validate_completed_teacher_host(value, *, authority_sha256, authority_bytes, image_id=None):
+    """Validate the positive raw Host/inner closure; external CLI is separate."""
+    require(type(value) is dict and value.get('schema') == 'tensorfold.native-contract-host-result-v1'
+            and value.get('report_complete') is True and value.get('source_match') is True
+            and value.get('health_match') is True and value.get('primary_error') is None
+            and value.get('cleanup_errors') == [] and type(value.get('attach_exit')) is int and value['attach_exit'] == 0,
+            'original teacher Host operation did not complete positively')
+    state = value.get('container', {}).get('State', {})
+    require(state.get('Status') in ('exited', 'dead') and state.get('Running') is False
+            and type(state.get('Pid')) is int and state['Pid'] == 0
+            and type(state.get('ExitCode')) is int and state['ExitCode'] == 0 and state.get('OOMKilled') is False,
+            'original teacher container lacks positive actual retirement')
+    inner = value.get('inner')
+    require(type(inner) is dict and value['container'].get('Image') == inner.get('image_id_declared')
+            and (image_id is None or inner.get('image_id_declared') == image_id),
+            'original teacher image differs')
+    validate_host_result(inner, {'operation': inner['operation'], 'source_commit': inner['source_commit'],
+                                'image_id': inner['image_id_declared']})
+    require(inner['model_result']['teacher_authority'] == {'file': 'teacher/teacher-authority.json',
+            'bytes': authority_bytes, 'sha256': authority_sha256}, 'positive Host result binds a different teacher authority')
+    return inner
 
 
 SERVICE = {'context_tokens': 262144, 'resident_capacity': 24, 'configured_ceiling': 24,
@@ -209,6 +322,20 @@ def validate_host_operation(host, inner):
     for item in assets:
         owners = [m for m in mounts if PurePosixPath(item['path']).is_relative_to(PurePosixPath(m['target']))]
         require(len(owners) == 1 and owners[0]['read_only'] is True, 'model/frontend asset lacks unique readonly bind owner')
+    if 'reference' in inner['operation']:
+        reference = inner['operation']['reference']
+        owners = [m for m in mounts if m['target'] == reference['root']]
+        require(len(owners) == 1 and owners[0]['read_only'] is True, 'separate readonly capture reference bind required')
+        source = PurePosixPath(owners[0]['source'])
+        for mount in mounts:
+            if not mount['read_only']:
+                writable = PurePosixPath(mount['source'])
+                require(not source.is_relative_to(writable) and not writable.is_relative_to(source),
+                        'capture reference cannot have a writable source alias')
+        for item in operation_assets(inner['operation']):
+            if item['path'].startswith('/reference/'):
+                covered = [m for m in mounts if PurePosixPath(item['path']).is_relative_to(PurePosixPath(m['target']))]
+                require(len(covered) == 1 and covered[0] is owners[0], 'every consumed reference file must share the exact RO bind')
     for key in ('TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL', 'TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS',
                 'TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX', 'TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN'):
         require(host['environment'].get(key) in (None, 'inherit'), 'first teacher operation must inherit default selectors')

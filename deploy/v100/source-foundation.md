@@ -959,6 +959,28 @@ admission must succeed; neither queued requests nor a smaller context/capacity
 can substitute. This operation does not make NativeRN effective merely because
 its code is present in the application.
 
+Matched replay retains that same reference-only region. Add the optional
+`reference` object in the operation DATA: fixed read-only `/reference`, the
+original teacher authority and its complete bounded rank/startup/vector file
+manifest, the original `host-result.json`, and separately pinned
+`/operator/reference-capture-completion.json`. The completion DATA binds the
+externally observed Host CLI exit to that exact Host result and authority;
+container or attach success alone does not prove CLI completion. These hashes
+bind reviewed operator evidence and are not signatures for arbitrary inputs.
+The shared contract rejects declared writable source-path aliases of the
+reference tree; resolved or indirect aliases retain their separate DATA-admission
+check. All consumed reference and completion files join the parent's held
+content pass.
+
+The existing canonical teacher-plan loader validates the original capture.
+Replay must preserve its profile, 52 rendered input IDs and finite frozen
+output sequence; `max_frames` equals that sequence's actual length (four for
+the first control). Capture retains its separate 64-frame ceiling and cannot
+import a replay reference. Neither branch enables a candidate kernel family.
+The replay adapter passed 125 x86 protocol controls (71 Driver and 54 Host),
+with no skips. Source and protocol checks alone do not qualify actual replay
+or performance.
+
 Model/front assets are separately read-only and hash-bound. The parent streams
 one full descriptor content pass before launching ranks, retains source handles,
 then validates path/stat identity and closes them before marking content binding

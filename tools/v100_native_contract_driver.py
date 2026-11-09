@@ -1094,10 +1094,20 @@ def _call_owned_model(argv):
     return v100_owned_qualification.main(argv)
 
 
-def _accept_teacher_result(root, spec, source):
+def _prepare_replay_plan(operation):
+    if __package__:
+        from . import v100_rotorquant_quality
+    else:
+        import v100_rotorquant_quality
+    return v100_rotorquant_quality.owned_teacher_plan(operation['teacher_plan']['path'])
+
+
+def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
     contract = model_contract
     result = contract.validate_model_result(_bound_model_json(root / 'teacher/teacher-model-result.json'))
     operation = spec['operation']
+    teacher_binding = ({'mode': 'capture', 'reference_sha256': None, 'teacher_ids': None}
+                       if teacher_binding is None else teacher_binding)
     if (result['teacher_plan_sha256'] != operation['teacher_plan']['sha256']
             or result['teacher_client_sha256'] != operation['teacher_client']['sha256']):
         raise RuntimeError('teacher result input binding differs')
@@ -1111,7 +1121,10 @@ def _accept_teacher_result(root, spec, source):
         if any(actual[key] != item[key] for key in ('bytes', 'sha256')):
             raise RuntimeError('teacher result referenced file differs')
     authority = _bound_model_json(root / result['teacher_authority']['file'])
-    if (authority.get('schema') != 'tensorfold.owned-teacher-authority-v1'
+    if (authority.get('mode') != teacher_binding['mode']
+            or authority.get('reference_sha256') != teacher_binding['reference_sha256']
+            or teacher_binding['mode'] == 'replay' and tuple(authority.get('teacher_ids', [])) != teacher_binding['teacher_ids']
+            or authority.get('schema') != 'tensorfold.owned-teacher-authority-v1'
             or authority.get('launch_exit') != 0 or authority.get('cohort_complete') is not True
             or authority.get('rank_receipts') != [{**row, 'file': row['file'].removeprefix('teacher/')} for row in result['rank_receipts']]
             or authority.get('startup_receipts') != [{**row, 'file': row['file'].removeprefix('teacher/')} for row in result['startup_receipts']]):
@@ -1120,7 +1133,7 @@ def _accept_teacher_result(root, spec, source):
     if (any(type(client.get(key)) is not int for key in
             ('post_attempts', 'cached_tokens', 'drafted', 'accepted', 'completion_tokens', 'prompt_tokens'))
             or type(client.get('token_ids')) is not list or any(type(value) is not int for value in client['token_ids'])
-            or client.get('mode') != 'capture'
+            or client.get('mode') != teacher_binding['mode']
             or client.get('schema') != 'tensorfold.owned-teacher-client-report-v1' or client.get('complete') is not True
             or client.get('post_attempts') != 1 or client.get('client_protocol_passed') is not True
             or client.get('quality_acceptance') is not False or client.get('P3_valid') is not False
@@ -1210,14 +1223,30 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
             'CUDA': runtime.torch.version.cuda, 'FD_SHA': spec['fd']['sha256'], 'FD_C': spec['fd']['source_sha256'],
             'module_origins': origins, 'parent_cuda': before_cuda, 'devices_visible': None,
             'scope': 'Parent CPU/runtime/provider prequalification; actual GPU proof belongs to eight children.'})
-        assets = [*operation['model_assets'], *operation['frontend_assets'], operation['teacher_plan'], operation['teacher_client']]
+        assets = model_contract.operation_assets(operation)
         output.phase('model-content-binding')
         with _held_model_assets(assets, deadline, content):
             plan = _bound_model_json(operation['teacher_plan']['path'])
             client = model_contract.validate_teacher_client(_bound_model_json(operation['teacher_client']['path']))
-            if (client['teacher_plan_sha256'] != operation['teacher_plan']['sha256'] or plan.get('mode') != 'capture'
-                    or plan.get('context') != 262144 or plan.get('max_frames') != 64):
-                raise ValueError('first cold teacher plan/client binding differs')
+            verified = reference = None
+            if plan.get('mode') == 'replay' and 'reference' in operation:
+                verified = _prepare_replay_plan(operation)
+                reference = _bound_model_json(operation['reference']['authority']['path'])
+                proof = operation['reference']
+                capture_host = _bound_model_json(proof['host_result']['path'])
+                capture_inner = model_contract.validate_completed_teacher_host(capture_host,
+                    authority_sha256=proof['authority']['sha256'], authority_bytes=proof['authority']['bytes'],
+                    image_id=spec['image_id'])
+                model_contract.validate_teacher_completion(_bound_model_json(proof['completion']['path']),
+                    host_result_sha256=proof['host_result']['sha256'], authority_sha256=proof['authority']['sha256'])
+                if 'reference' in capture_inner['operation']:
+                    raise ValueError('matched replay requires an original capture, not a replay chain')
+                for key in ('model_assets', 'model_entrypoint', 'frontend_assets', 'frontend_root', 'execution_manifest'):
+                    if capture_inner['operation'][key] != operation[key]:
+                        raise ValueError('matched reference replay model/frontend inputs differ from the capture')
+
+            teacher_binding = model_contract.validate_teacher_operation_plan(
+                operation, plan, client, prepared=verified, reference=reference)
             if os.environ.get('TF_GGUF_ASSETS_DIR') != '/frontend':
                 raise ValueError('model operation requires separate readonly prepared frontend')
             prepared = _prepare_model_frontend(operation)
@@ -1238,7 +1267,7 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                 raise TimeoutError('owned teacher operation exceeded total declared work deadline')
             if type(code) is not int or code != 0:
                 raise RuntimeError('owned teacher launcher/model operation failed')
-            model_result = _accept_teacher_result(evidence, spec, source)
+            model_result = _accept_teacher_result(evidence, spec, source, teacher_binding=teacher_binding)
             _parent_cuda_flag(runtime)
         content_complete = True
     except BaseException as error:

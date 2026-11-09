@@ -1188,7 +1188,7 @@ except ValueError as error:
                 'observer': spec['source_files']['tools/v100_native_contract_driver.py'], 'access_precondition': access,
                 'missing_required_prefixes': [], 'mapped_elfs': [{'name': 'tf_gguf_fixture'}]}, rank))
         authority = publish('teacher/teacher-authority.json', {'schema': 'tensorfold.owned-teacher-authority-v1',
-            'launch_exit': 0, 'cohort_complete': True, 'teacher_ids': [7, 8],
+            'launch_exit': 0, 'cohort_complete': True, 'mode': 'capture', 'reference_sha256': None, 'teacher_ids': [7, 8],
             'rank_receipts': [{**row, 'file': row['file'].removeprefix('teacher/')} for row in ranks],
             'startup_receipts': [{**row, 'file': row['file'].removeprefix('teacher/')} for row in startups]})
         report = publish('teacher/teacher-client-report.json', {'schema': 'tensorfold.owned-teacher-client-report-v1',
@@ -1221,6 +1221,167 @@ except ValueError as error:
                 target.write_text(json.dumps({**expected, **change}))
                 with self.assertRaises((ValueError, RuntimeError)):
                     driver._accept_teacher_result(self.evidence, self.spec, self.source)
+
+
+    def replay_fixture(self):
+        operation = self.model_operation()
+        def row(name, rank=None):
+            return {'file': name, 'bytes': 1, 'sha256': 'a'*64, **({} if rank is None else {'rank': rank})}
+        authority = {'teacher_ids': [18, 22, 17, 248046], 'declared_identity': {'profile_sha256': 'b'*64},
+                     'rank_receipts': [row(f'teacher-rank{rank}/summary.json', rank) for rank in range(8)],
+                     'startup_receipts': [row(f'rank-{rank}.json', rank) for rank in range(8)],
+                     'frames': [{'vector': row(f'teacher-rank0/frame-{index:06d}.npy')} for index in range(4)]}
+        files = {'teacher/teacher-authority.json': {'bytes': 1, 'sha256': 'a'*64}}
+        for item in (*authority['rank_receipts'], *authority['startup_receipts'],
+                     *(frame['vector'] for frame in authority['frames'])):
+            files['teacher/'+item['file']] = {key: item[key] for key in ('bytes', 'sha256')}
+        operation['reference'] = {'root': '/reference', 'authority': {'path': '/reference/teacher/teacher-authority.json',
+            'bytes': 1, 'sha256': 'a'*64}, 'files': files,
+            'host_result': {'path': '/reference/host-result.json', 'bytes': 1, 'sha256': 'c'*64},
+            'completion': {'path': '/operator/reference-capture-completion.json', 'bytes': 1, 'sha256': 'd'*64}}
+        plan = {'mode': 'replay', 'context': 262144, 'max_frames': 4, 'input_ids': list(range(52)),
+                'reference': {'path': operation['reference']['authority']['path'], 'sha256': 'a'*64},
+                'identity': {'profile_sha256': 'b'*64}}
+        prepared = {'data': plan, 'input_sha256': operation['teacher_plan']['sha256'],
+                    'reference_sha256': 'a'*64, 'teacher_ids': authority['teacher_ids']}
+        completion = {'schema': 'tensorfold.owned-teacher-completion-v1', 'host_result_sha256': 'c'*64,
+                      'authority_sha256': 'a'*64, 'host_cli_exit': 0, 'operation_gate_sha256': 'e'*64,
+                      'review_sha256': 'f'*64, 'terminal_observation_sha256': '0'*64}
+        return operation, plan, prepared, authority, completion
+
+    def test_capture_guard_64_and_no_reference_are_unchanged(self):
+        c = driver.model_contract
+        operation = self.model_operation()
+        plan = {'mode': 'capture', 'context': 262144, 'max_frames': 64}
+        self.assertEqual(c.validate_teacher_operation_plan(operation, plan, self.teacher_client())['mode'], 'capture')
+        with self.assertRaises(ValueError):
+            c.validate_teacher_operation_plan(operation, {**plan, 'max_frames': 4}, self.teacher_client())
+        replay = self.replay_fixture()[0]
+        with self.assertRaises(ValueError):
+            c.validate_teacher_operation_plan(replay, plan, self.teacher_client())
+        with self.assertRaises(ValueError):
+            c.validate_operation({**operation, 'reference': None})
+
+    def test_replay_requires_exact_verified_reference_profile_prefix_and_closure(self):
+        c = driver.model_contract
+        operation, plan, prepared, authority, _ = self.replay_fixture()
+        c.validate_operation(operation)
+        result = c.validate_teacher_operation_plan(operation, plan, self.teacher_client(), prepared=prepared, reference=authority)
+        self.assertEqual(result, {'mode': 'replay', 'reference_sha256': 'a'*64, 'teacher_ids': (18, 22, 17, 248046)})
+        for candidate in (None, {**prepared, 'reference_sha256': 'e'*64},
+                          {**prepared, 'input_sha256': 'e'*64}, {**prepared, 'teacher_ids': []},
+                          {**prepared, 'teacher_ids': [18, 22, 17]}):
+            with self.subTest(prepared=candidate), self.assertRaises(ValueError):
+                c.validate_teacher_operation_plan(operation, plan, self.teacher_client(), prepared=candidate, reference=authority)
+        for change in ({'max_frames': 64}, {'input_ids': list(range(51))},
+                       {'reference': {'path': '/reference/other.json', 'sha256': 'a'*64}},
+                       {'identity': {'profile_sha256': 'e'*64}}):
+            changed = {**plan, **change}
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                c.validate_teacher_operation_plan(operation, changed, self.teacher_client(),
+                    prepared={**prepared, 'data': changed}, reference=authority)
+        with self.assertRaises(ValueError):
+            c.validate_teacher_operation_plan(self.model_operation(), plan, self.teacher_client(), prepared=prepared, reference=authority)
+
+    def test_replay_asset_closure_is_32_distinct_and_authority_not_hashed_twice(self):
+        c = driver.model_contract
+        operation = self.replay_fixture()[0]
+        assets = c.operation_assets(operation)
+        self.assertEqual(len(assets), 32)
+        self.assertEqual(len({item['path'] for item in assets}), 32)
+        self.assertEqual(assets[:9], c.operation_assets(self.model_operation()))
+        reference = operation['reference']
+        for change in ({'files': {name: row for name, row in reference['files'].items() if 'frame-000003' not in name}},
+                       {'files': {**reference['files'], '../escape': {'bytes': 1, 'sha256': 'a'*64}}},
+                       {'host_result': {**reference['host_result'], 'path': '/cache/host-result.json'}},
+                       {'completion': {**reference['completion'], 'path': '/reference/completion.json'}}):
+            if 'files' in change and len(change['files']) == 20:
+                # A smaller complete closure is valid DATA, but must disagree
+                # with the actual four-frame verified capture at plan binding.
+                small = {**operation, 'reference': {**reference, **change}}
+                _, plan, prepared, authority, _ = self.replay_fixture()
+                with self.assertRaises(ValueError):
+                    c.validate_teacher_operation_plan(small, plan, self.teacher_client(), prepared=prepared, reference=authority)
+            else:
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    c.validate_operation({**operation, 'reference': {**reference, **change}})
+
+    def test_external_cli_completion_is_exact_bound_and_not_inferred_from_attach(self):
+        c = driver.model_contract
+        completion = self.replay_fixture()[4]
+        self.assertIs(c.validate_teacher_completion(completion, host_result_sha256='c'*64, authority_sha256='a'*64), completion)
+        for change in ({'host_cli_exit': 1}, {'host_cli_exit': False}, {'host_result_sha256': 'e'*64},
+                       {'authority_sha256': 'e'*64}, {'terminal_observation_sha256': None}, {'attach_exit': 0}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                c.validate_teacher_completion({**completion, **change}, host_result_sha256='c'*64, authority_sha256='a'*64)
+
+    def test_replay_result_mode_reference_and_frozen_ids_are_independently_bound(self):
+        expected = self.teacher_result_fixture()
+        result_path = self.evidence/'teacher/teacher-model-result.json'
+        def change(item, updates):
+            path = self.evidence/item['file']
+            data = json.loads(path.read_text())
+            data.update(updates)
+            path.write_text(json.dumps(data))
+            item.update({key: driver.file_identity(path)[key] for key in ('bytes', 'sha256')})
+        change(expected['teacher_authority'], {'mode': 'replay', 'reference_sha256': 'e'*64})
+        change(expected['client_report'], {'mode': 'replay'})
+        result_path.write_text(json.dumps(expected))
+        binding = {'mode': 'replay', 'reference_sha256': 'e'*64, 'teacher_ids': (7, 8)}
+        self.assertEqual(driver._accept_teacher_result(self.evidence, self.spec, self.source, teacher_binding=binding), expected)
+        for changed in ({**binding, 'reference_sha256': 'f'*64}, {**binding, 'teacher_ids': (7, 9)}):
+            with self.assertRaisesRegex(RuntimeError, 'all-rank authority'):
+                driver._accept_teacher_result(self.evidence, self.spec, self.source, teacher_binding=changed)
+        change(expected['client_report'], {'mode': 'capture'})
+        result_path.write_text(json.dumps(expected))
+        with self.assertRaisesRegex(RuntimeError, 'cold teacher client'):
+            driver._accept_teacher_result(self.evidence, self.spec, self.source, teacher_binding=binding)
+
+    def test_replay_canonical_preparation_refusal_stops_before_any_model_launch(self):
+        calls = self.model_run_controls()
+        operation, plan, _, _, _ = self.replay_fixture()
+        self.spec['operation'] = operation
+        client = self.teacher_client()
+        def data(path, *args, **kwargs):
+            return client if str(path).endswith('teacher-client.json') else plan
+        with mock.patch.object(driver, '_bound_model_json', side_effect=data), \
+                mock.patch.object(driver, '_prepare_replay_plan', side_effect=ValueError('capture is not positively closed')):
+            with self.assertRaisesRegex(ValueError, 'not positively closed'):
+                self.execute()
+        self.assertEqual(calls, [])
+
+
+    def test_replay_positive_driver_path_verifies_before_launch_and_passes_mode_binding(self):
+        calls = self.model_run_controls()
+        operation, plan, prepared, authority, completion = self.replay_fixture()
+        self.spec['operation'] = operation
+        client = self.teacher_client()
+        def data(path, *args, **kwargs):
+            name = str(path)
+            if name.endswith('teacher-client.json'):
+                return client
+            if name == operation['reference']['authority']['path']:
+                return authority
+            if name == operation['reference']['completion']['path']:
+                return completion
+            if name == operation['reference']['host_result']['path']:
+                return {'originalHost': 'separately validated boundary fixture'}
+            return plan
+        events = []
+        def verify(_operation):
+            self.assertEqual(calls, [])
+            events.append('verified-original-capture')
+            return prepared
+        with mock.patch.object(driver, '_bound_model_json', side_effect=data), \
+                mock.patch.object(driver, '_prepare_replay_plan', side_effect=verify), \
+                mock.patch.object(driver.model_contract, 'validate_completed_teacher_host', return_value={'operation': self.model_operation()}) as positive_host, \
+                mock.patch.object(driver, '_accept_teacher_result', return_value={'typed': True}) as accept:
+            self.assertEqual(self.execute(), 0)
+        self.assertEqual(events, ['verified-original-capture'])
+        self.assertEqual(calls, [['fixed-argv']])
+        positive_host.assert_called_once()
+        self.assertEqual(accept.call_args.kwargs['teacher_binding'], {
+            'mode': 'replay', 'reference_sha256': 'a'*64, 'teacher_ids': (18, 22, 17, 248046)})
 
 
 if __name__ == '__main__':

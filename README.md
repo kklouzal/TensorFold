@@ -61,6 +61,9 @@ canonical runtime controls. Its first actual reference capture returned `372`, m
 arithmetic gold, and sealed four full-vocabulary FP32 frames with all eight
 workers closed. All 24 logical 262,144-row windows were materialized; only one
 short request ran. Replay, broader quality and performance remain unqualified.
+The closed operation also implements matched reference replay with read-only
+capture inputs and positive outer-controller completion evidence. The adapter
+passed 125 x86 protocol checks; actual replay verification remains pending.
 The offline quality-DATA producer is now maintained in `tools/v100_quality_data.py`.
 Its 29 local CPU controls cover immutable inputs, independent gold, bounded
 publication and current frontend provenance. Historical DATA is preserved;

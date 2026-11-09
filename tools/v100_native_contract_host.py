@@ -979,7 +979,7 @@ def run(spec, output, system=None, *, spec_identity=None):
             assets = expected_inner['operation']
             require(binding.get('schema') == 'tensorfold.owned-model-content-binding-v1' and binding.get('completed') is True
                     and [row.get('identity') for row in binding.get('assets', [])] ==
-                    [*assets['model_assets'], *assets['frontend_assets'], assets['teacher_plan'], assets['teacher_client']],
+                    model_contract.operation_assets(assets),
                     'model content binding is incomplete or different from admitted assets')
         else:
             outcome["inner"] = object_json(read_bytes(output / "named-suite-result.json", LIMIT))
