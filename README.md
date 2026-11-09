@@ -73,8 +73,12 @@ qualify a complete sweep or 32 simultaneously active requests. See the
 A later [complete grouped/reference short curve](docs/benchmarking.md#complete-grouped-and-reference-tile-short-curve)
 completed all seven levels with matching backend-owner peaks. At 32 requests it
 observed 19.9860 prefill and 8.6503 aggregate decode token/s (HTTP-wall 8.6590).
-This single short-prompt run remains far below the 4,500/450 objectives; it is
+This single short-prompt run remains far below the earlier interim 4,500/450 goals; it is
 not a matched gain, populated-long-history, quality or deployment-default qualification.
+The [governing performance targets](docs/benchmarking.md#governing-performance-targets)
+separately require over 250 C1 and over 600 C24 aggregate decode tokens/s with
+Q8/native context, plus over 3,500 prefill tokens/s under a bound workload.
+These short Q4 results do not qualify those workloads.
 
 A subsequent [batched-normalization trial](docs/benchmarking.md#batched-global-normalization-trial-selection-held)
 observed higher rates at all seven levels, but selection is held: only 74/87
@@ -145,7 +149,7 @@ The [first combined Graph/gate-up short curve](docs/benchmarking.md#combined-gra
 completed all 87 requests and seven levels through 32 active owners, with all eight
 ranks' three Graph roles exercised and closed under the provisional trial budget.
 C32 recorded 26.0115 prefill and 10.8023 aggregate decode token/s. This is one
-descriptive run, far below 4,500/450 objectives; historical prompt-aligned outputs
+descriptive run, far below the earlier interim 4,500/450 goals; historical prompt-aligned outputs
 still differ, and unmatched warmups prevent a controlled comparison. Quality,
 matched resource/performance selection and default promotion remain pending.
 The [batched reference global normalization](docs/v100-adaptive-validation.md#batched-reference-global-normalization-source-candidate) component

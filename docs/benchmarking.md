@@ -24,6 +24,25 @@ ceiling and residency. Insufficient actual residency is unsupported, never
 relabelled as successful concurrency. Q4 component tests alone do not qualify
 32-way model capacity, output quality or performance.
 
+## Governing performance targets
+
+[The governing design, Section 5](../ProviderOne%20Implementation%20Docs/ProviderOne_V100_Adaptive_Inference_Design.md#verified-hardware-targets-and-milestone-policy)
+binds the following qualification objectives on the eight-V100 server:
+
+| Workload | Required objective | Profile binding |
+| --- | --- | --- |
+| One active request | Greater than 250 committed decode tokens/s | Q8 KV, native 262,144-row context |
+| 24 simultaneously active requests | Greater than 600 aggregate committed decode tokens/s | Q8 KV, native 262,144-row context per request |
+| Prefill | Greater than 3,500 processed prompt tokens/s | Bind reference workload, concurrency and cache conditions before comparing |
+
+These are unachieved qualification gates, not measured rates or capacity caps.
+Preserve the C1/2/4/8/16/24 milestone comparisons, the actual integer capacity
+sweep, one active request with idle residents, and near-full-history/full-active
+gates. Allocated windows and queued requests do not prove these workloads.
+The earlier interim 4,500/450 goals remain identified in the historical records
+below; their unspecified workload bindings do not equate short Q4 curves with
+the governing Q8/native-context objectives.
+
 ## Prepare once, load once, run the complete short matrix
 
 Run preparation in the existing application environment containing tokenizers,
@@ -378,7 +397,7 @@ variance estimate, gain/winner selection, output-quality acceptance or
 deployment-default release. Full-window allocation and owner peaks do not prove
 populated near-full histories, sustained 32-owner occupancy throughout every
 interval, or the longer-input matrix. The observed rates remain far below the
-4,500 prefill / 450 aggregate decode token/s objectives. The earlier partial
+earlier interim 4,500 prefill / 450 aggregate decode token/s objectives. The earlier partial
 reference below remains historical; different output budgets and execution
 settings prevent interpreting these tables as a controlled speedup comparison.
 
@@ -423,7 +442,7 @@ The [declared denominators](#denominators-and-actual-overlap) apply: rank0's
 inclusive CUDA-stream envelopes include submission/communication gaps and carry
 no TP8 multiplier. These instrumented short-workload observations have no
 matched repetitions, uncertainty estimate or accepted speedup. They remain far
-below the 4,500 prefill / 450 aggregate decode token/s objectives; allocated
+below the earlier interim 4,500 prefill / 450 aggregate decode token/s objectives; allocated
 full windows do not establish populated near-full-history quality or sustained
 occupancy throughout every interval.
 
@@ -498,7 +517,8 @@ run-order drift, establishes neither a repeatable gain nor equivalence. The
 [inclusive, overlapping envelope definitions](#denominators-and-actual-overlap)
 still apply; these are not kernel-only rates. No general output-quality,
 populated long-history, deployment-default or target-achievement claim follows.
-The 4,500/450 objectives remain unmet.
+The earlier interim 4,500/450 objectives remain unmet; this curve also does not
+qualify the separately bound [governing workloads](#governing-performance-targets).
 
 Both runs retired normally without OOM or cleanup errors and with unchanged
 recorded source/health. Full-precision rates, separate HTTP/client latency and
@@ -710,9 +730,10 @@ retained. Private provenance is
 `tp8-etp4-standard-iso4-c32-v1/intentional-partial-baseline-gate-v1.json`, SHA256
 `e557283e1862927794c5e0e96cd2b4972c906075d13fb224ed71fc84e47cb4ca`.
 Q8 and longer-input performance, broader output quality and full-window activity
-remain unqualified. The current objectives are 4,500 prefill and 450 aggregate
-decode token/s, with shared implementation work preceding topology tuning;
-these objectives are not measured results or hardware ceilings.
+remain unqualified. This historical run used interim objectives of 4,500 prefill
+and 450 aggregate decode token/s. Current qualification uses the separately
+bound [governing workloads](#governing-performance-targets); neither set of
+objectives is a measured result or hardware ceiling.
 
 ## Matched owner-attention pilot
 
