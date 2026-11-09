@@ -414,10 +414,8 @@ a zero result. Its 26 dependency-free CPU controls passed, including real
 two-/eight-rank subprocess fixtures and failure cleanup. The full cohort,
 expert-control and qualification modules also passed all 286 pinned-source CPU
 checks with zero skips on f126; four-file Ruff and syntax checks passed, with
-CUDA uninitialized. These are source controls, not installed-model shutdown
-qualification. That
-qualification remains **pending**, and this does not complete the failed parity
-proof. The 26 controls are a subset of the 286, not an additional total. Source
+CUDA uninitialized. These are source controls, separate from the subsequent
+live rerun below. The 26 controls are a subset of the 286, not an additional total. Source
 gate: `tp-graceful-shutdown-v1/target-v1/tp-graceful-shutdown-source-CPU286-gate-v1.json`,
 SHA256 `aa44782e61dfe43aeaf66c75d0d815c241ef41a8abb128edecc4c451df68d116`.
 The genuine lifecycle-only image `cd52d838` from commit `1d6c5809` also passed
@@ -425,11 +423,32 @@ all 286 installed CPU checks with zero skips (18.840 seconds). Its 785 installed
 runtime files match the expected inventory; only the shutdown supervisor differs
 from `f126`. Gate: `lifecycle-app-1d6c580-v1/genuine-lifecycle-installed-gate-v1.json`,
 SHA256 `02b54981fcb8074d539f117eb3a52d14ca3c6f79264f4702a5a42f9f36b2529d`.
-These checks still do not prove live eight-rank shutdown or complete the witness.
+Those installed checks alone did not prove live eight-rank shutdown or complete
+the witness.
 The lifecycle finding is separate from numerical attribution. Failure gate:
 `normalization-parity-model-v1/normalization-parity-live-failure-gate-v1.json`,
 SHA256 `b49952e6b672fc2a9d7372d3373cf3f44768e7a985de459f54baa4db0f8e77d2`.
 Raw HTTP, pre-stop observations and failed retirement outcomes are preserved.
+
+The separate **successful lifecycle rerun** used source `1d6c5809` and image
+`cd52d838` with the same full original e18f plan and profile. All seven levels
+and 87 HTTP requests passed. All eight mandatory summaries report
+`closed: true`, `failed: false` and zero actual-input, FP32-result or status-bit
+mismatches: each rank observed 5,984 calls and 247,863 summed per-layer query
+rows, totaling **47,872 calls / 1,982,904 rows** across ranks. Per rank, coverage
+was prefill 415 calls / 74,427 rows, MTP 1,477 / 17,892 and decode 4,092 / 155,544;
+observed helper row ranges were respectively 51–256, 1–144 and 1–148.
+These row totals count layer/helper work, not distinct tokens.
+
+Client, launcher and container exited zero; PID was zero, no OOM occurred, and
+recorded source/health remained unchanged. This proves the observed same-input
+bit/status comparisons and coordinated eight-rank retirement for this
+instrumented workload. It does **not** explain the prior 13 output differences,
+prove universal quality or 64K sparse-QSA behavior, or select normalization.
+Selection remains held; **all diagnostic P3 timings are invalid**. The failed
+b499 run above remains separate historical evidence. Success gate:
+`normalization-parity-model-lifecycle-v1/normalization-all8-live-parity-success-gate-v1.json`,
+SHA256 `b536f85e3f1bee2a47d0a153e3775fb306491e94b9cc14106cd02bc41b97e4a5`.
 
 ## Reference-query packing source candidate
 

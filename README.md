@@ -40,10 +40,11 @@ outputs and 72/87 proposal-work records match the baseline. The cause is
 unresolved; this is not an accepted gain, quality result or default promotion.
 A private [same-input normalization witness](docs/benchmarking.md#private-same-input-normalization-parity-witness)
 is available for diagnosis; its comparison fences invalidate all performance
-timings. Its first actual run completed all 87 HTTP requests but produced none
-of the eight mandatory retirement summaries. The parity proof is incomplete,
-and selection remains held. The leader-first shutdown correction has passed
-source and installed CPU controls; live eight-rank shutdown qualification remains pending.
+timings. After the first run failed retirement verification, a leader-first
+shutdown rerun passed all 87 HTTP requests and produced all eight closed,
+nonfailed summaries with zero same-input/result/status mismatches across
+47,872 helper calls. This observed parity does not explain the prior 13 output
+differences; selection remains held.
 Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
 capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.

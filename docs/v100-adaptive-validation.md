@@ -738,6 +738,16 @@ near-full-history or default-promotion results, and the objectives remain unmet.
 Gate: `global-normalization-model-v1/global-normalization-full7-actual-gate-v1.json`,
 SHA256 `95fb86c8b4627fa8a25ab7d6946115751c06a3d34c3f28d9144207a82d5c39b3`.
 
+The later [same-input witness lifecycle rerun](benchmarking.md#private-same-input-normalization-parity-witness)
+on source `1d6c5809` / image `cd52d838` passed all 87 HTTP requests and retired
+all eight ranks with closed, nonfailed summaries: 47,872 helper calls and
+1,982,904 summed per-layer rows had zero input/result/status mismatches.
+This is observed-workload parity, not an explanation of the earlier 13 output
+differences or universal/64K-QSA quality proof. Selection stays held and every
+diagnostic P3 timing is invalid. The earlier failed-retirement run is retained.
+Gate: `normalization-parity-model-lifecycle-v1/normalization-all8-live-parity-success-gate-v1.json`,
+SHA256 `b536f85e3f1bee2a47d0a153e3775fb306491e94b9cc14106cd02bc41b97e4a5`.
+
 ## Unchanged baseline reproducibility
 
 One unchanged `0a13de3c` instance completed all 28 preserved-request exchanges
