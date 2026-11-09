@@ -8,6 +8,7 @@ the real serving buffers, never allocated a second time by their geometry.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
 from functools import partial
 from tensorfold.cleanup import finish, raise_failures
 from .owner_execution import FULL_COLLECTIVE, HEAD_COLLECTIVE, GRAPH_FAMILY, KERNEL_FAMILY, UNCAPTURED, row_buckets
@@ -16,12 +17,34 @@ _ROLES = frozenset({"decode", "mtp", "prefill"})
 _CHANNEL = "tensorfold/owner-preparation/v1"
 
 
+ARITHMETIC_POLICY = 'reference-aten128-three-islands-v1'
+
+
+@dataclass(frozen=True)
+class ArithmeticRequest:
+    graph_budget_bytes: int
+    policy: str = ARITHMETIC_POLICY
+
+    def __post_init__(self):
+        if (self.policy != ARITHMETIC_POLICY or type(self.graph_budget_bytes) is not int
+                or not 0 < self.graph_budget_bytes < 2**63):
+            raise ValueError('reference arithmetic requires its exact policy and explicit positive graph budget')
+
+    @classmethod
+    def parse(cls, value):
+        if value is None:
+            return None
+        if type(value) is not dict or set(value) != {'policy', 'graph_budget_bytes'}:
+            raise ValueError('reference arithmetic preparation requires policy and graph_budget_bytes')
+        return cls(value['graph_budget_bytes'], value['policy'])
+
+
 def parse_preparation(value):
     if value is None:
         return None
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
-            or set(value).difference(required | {"row_buckets", "collective_family"})
+            or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or value["kernel_family"] != KERNEL_FAMILY
             or value["graph_family"] not in (UNCAPTURED, GRAPH_FAMILY)
@@ -36,10 +59,13 @@ def parse_preparation(value):
         if not isinstance(rows, list) or not rows:
             raise ValueError("a native execution role requires a nonempty bounded bucket list")
         row_buckets(rows[-1], rows)
+    request = ArithmeticRequest.parse(value.get("reference_arithmetic"))
     return {"kernel_family": value["kernel_family"], "graph_family": value["graph_family"],
             "graph_budget_bytes": value["graph_budget_bytes"], "trial": value["trial"],
             "collective_family": value.get("collective_family", FULL_COLLECTIVE),
-            "row_buckets": deepcopy(buckets)}
+            "row_buckets": deepcopy(buckets),
+            **({"reference_arithmetic": {"policy": request.policy, "graph_budget_bytes": request.graph_budget_bytes}}
+               if request is not None else {})}
 
 
 class OwnerPreparation:
@@ -53,8 +79,13 @@ class OwnerPreparation:
                 self.specification["trial"] or self.specification["graph_family"] != UNCAPTURED
                 or self.specification["collective_family"] != FULL_COLLECTIVE):
             raise ValueError("reference tile preparation requires the uncaptured full-TP8 reference policy")
+        self.reference_arithmetic_request = ArithmeticRequest.parse(self.specification.get("reference_arithmetic"))
+        if self.reference_arithmetic_request is not None and not reference_tiles:
+            raise ValueError("reference arithmetic requires the existing trusted private reference tile capability")
+        self.reference_arithmetic, self.reference_arithmetic_bytes = {}, 0
         self.reference_tiles_requested = reference_tiles
         self.reference_preparation = None
+        self.reference_arithmetic_source = None
         self.role_rows = {role: role_rows[role] for role in ("decode", "mtp", "prefill") if role in role_rows}
         self.buckets = {role: row_buckets(rows, self.specification["row_buckets"].get(role))
                         for role, rows in self.role_rows.items()}
@@ -112,7 +143,14 @@ class OwnerPreparation:
                 if self.reference_tiles_requested:
                     from tensorfold.cuda.sm70.reference_owner_tiles import prepare
                     self.reference_preparation = prepare()
-                return {**contract, "source_foundation": self.source_foundation,
+                arithmetic_source = {}
+                if self.reference_arithmetic_request is not None:
+                    from . import reference_arithmetic
+                    import hashlib
+                    from pathlib import Path
+                    self.reference_arithmetic_source = hashlib.sha256(Path(reference_arithmetic.__file__).read_bytes()).hexdigest()
+                    arithmetic_source["reference_arithmetic_source_sha256"] = self.reference_arithmetic_source
+                return {**contract, **arithmetic_source, "source_foundation": self.source_foundation,
                         **({"reference_tile_preparation": self.reference_preparation}
                            if self.reference_tiles_requested else {})}
 
@@ -172,6 +210,22 @@ class OwnerPreparation:
                     return {"full8_reference_rows": owner.rows}
 
                 self._phase(engine, "reference-wire-" + role, reference_wire, may_refuse=False)
+                if self.reference_arithmetic_request is not None:
+                    def arithmetic_owner(role=role, owner=owner):
+                        from .reference_arithmetic import ReferenceArithmetic
+                        remaining = self.reference_arithmetic_request.graph_budget_bytes - self.reference_arithmetic_bytes
+                        if remaining <= 0:
+                            raise ValueError("reference arithmetic roles exhausted their explicit aggregate budget")
+                        graph = object.__new__(ReferenceArithmetic)
+                        self.reference_arithmetic[role] = graph  # Journal before any capture/allocation.
+                        graph.__init__(owner.reference_tiles, budget_bytes=remaining)
+                        owner.reference_tiles.arithmetic = graph
+                        graph.prepare(quiescent=lambda: engine.multi is None and not engine._calls)
+                        self.reference_arithmetic_bytes += graph.charged_bytes
+                        if self.reference_arithmetic_bytes > self.reference_arithmetic_request.graph_budget_bytes:
+                            raise ValueError("reference arithmetic aggregate preparation exceeds its explicit budget")
+                        return graph.record()
+                    self._phase(engine, "reference-arithmetic-" + role, arithmetic_owner, may_refuse=False)
                 if self.specification["graph_family"] == GRAPH_FAMILY:
                     remaining = self.specification["graph_budget_bytes"] - self.graph_physical_bytes
                     before_graph = self._memory(torch, device)
@@ -224,7 +278,8 @@ class OwnerPreparation:
                 return {"proved_nonreusable_bytes": committed, "absolute_cap_bytes": limit}
 
             self._phase(engine, "commitment", commitment)
-            private = [graph.private_spare_bytes for graph in self.graphs.values()]
+            private = [graph.private_spare_bytes for graph in
+                       (*self.graphs.values(), *self.reference_arithmetic.values())]
             self.private_spare_bytes = None if any(value is None for value in private) else sum(private)
             committed = self.committed_bytes()
             if committed is not None:
@@ -253,7 +308,7 @@ class OwnerPreparation:
 
         if selected_identity() != self.source_foundation:
             raise ValueError("selected source foundation differs from native preparation")
-        for graphs in self.graphs.values():
+        for graphs in (*self.graphs.values(), *self.reference_arithmetic.values()):
             graphs.validate_adoption()
         for owner in self.workspaces.values():
             owner.bind_native_states(decoder.states)
@@ -275,7 +330,8 @@ class OwnerPreparation:
         """Settled nonreusable preallocation, excluding ordinary reusable cache."""
         if self.after is None:
             return None
-        if any(graph.private_spare_bytes is None for graph in self.graphs.values()):
+        captures = (*self.graphs.values(), *self.reference_arithmetic.values())
+        if any(graph.private_spare_bytes is None for graph in captures):
             return None
         active = self.after["torch_allocated_bytes"] - self.before["torch_allocated_bytes"]
         reserved = self.after["torch_reserved_bytes"] - self.before["torch_reserved_bytes"]
@@ -283,7 +339,7 @@ class OwnerPreparation:
         outside = physical - reserved
         if active < 0 or outside < 0:
             return None  # Competing/freeing activity cannot establish a positive owner charge.
-        return active + outside + sum(graph.private_spare_bytes for graph in self.graphs.values())
+        return active + outside + sum(graph.private_spare_bytes for graph in captures)
 
     def live_bytes(self):
         """Credit ordinary spare only after excluding proved private-pool ownership."""
@@ -309,6 +365,8 @@ class OwnerPreparation:
         return {"specification": {name: deepcopy(value) for name, value in self.specification.items() if name != "trial"},
                 "source_foundation_headers": deepcopy(self.source_foundation),
                 "roles": dict(self.role_rows),
+                **({"reference_arithmetic_source_sha256": self.reference_arithmetic_source}
+                   if self.reference_arithmetic_request is not None else {}),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
                 "allocator_accounting": "exclude-proved-private-spare; physical-only-when-unavailable",
@@ -327,6 +385,7 @@ class OwnerPreparation:
                 "private_pool_spare_bytes": self.private_spare_bytes,
                 "outside_active_torch_commitment_bytes": self.outside_active_bytes,
                 "graphs": {role: graph.record() for role, graph in self.graphs.items()},
+                "reference_arithmetic": {role: graph.record() for role, graph in self.reference_arithmetic.items()},
                 "qualification_trial": self.specification["trial"],
                 "included_in_physical_free_baseline": True, "future_owner_persistent_bytes": 0,
                 "qualification": "UNQUALIFIED: source-built foundation and real SM70 model/quality/performance gates required"}
@@ -337,7 +396,7 @@ class OwnerPreparation:
         construction = None if self.comm is None else getattr(self.comm, "_profile_construction", None)
         if construction is not None:
             construction.retire_bindings(self)
-        finish((graph.close for graph in self.graphs.values()))
+        finish((graph.close for graph in (*self.graphs.values(), *self.reference_arithmetic.values())))
         finish((owner.close for owner in self.workspaces.values()))
         if self.head_comm is not None:
             if construction is not None:
@@ -345,5 +404,5 @@ class OwnerPreparation:
             self.head_comm.close()
             self.head_comm = None
         self.comm = self._open_head = None
-        self.graphs, self.workspaces = {}, {}
+        self.graphs, self.workspaces, self.reference_arithmetic = {}, {}, {}
         self.closed = True

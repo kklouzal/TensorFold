@@ -503,6 +503,45 @@ output, P3 gain or default release is qualified. The lifecycle-only successor
 bound to commit `1d6c5809` excludes this code; its witness and the earlier
 `f126`/`597c` results are not query-packing evidence.
 
+## Private reference ATen arithmetic islands: source component
+
+This default-off partial A21 / Design §10,15 candidate requires the existing
+private reference-tile capability and an explicit positive per-rank graph budget
+across prepared roles. Three prepared graphs retain the original ATen operation, cast and
+reduction order: statistics; normalized QK to Half probabilities; PV plus ordered
+result. Only full 128-entry tiles replay; ragged tails retain eager shapes.
+Native K decode precedes probability replay, then native V decode overwrites the
+same Half slab before PV replay. There is no new V slab, bank/history mirror or
+whole-forward serving capture. New persistent arithmetic tensors and graph pools
+are additional memory, measured before admission. A nonblocking operation lease
+covers staging through copies into caller-paid statistics/PV destinations;
+retirement fences graphs before releasing borrowed views.
+
+The exact source component passed **330 pinned CPU controls and 35 SM70 GPU
+cases, zero skips** (18 new cases including one-byte budget refusal, 17 existing
+reference-tile controls; GPU 1.948 s). Synthetic Q8/ISO4 cases compare raw FP32
+statistics/PV and status bits to unchanged eager arithmetic, including full/tail
+lengths, changed inputs, stale generations, empty/nonfinite inputs and signed
+zero. Each graph replayed 94 times, and owners retired closed. These counts are
+this milestone only, not a sum with earlier results. Gate:
+`reference-arithmetic-islands-v1/reference-arithmetic-source-CPU330-GPU35-gate-v1.json`,
+SHA256 `4ff3225e2c6ee72fc397bf599b7a8f34439d2f1c051e0929d2606d8a72333dc2`.
+
+The cold one-byte refusal measured **117,440,512 B** charged preparation; the
+warmed nominal fixture measured **27,262,976 B**, with **34,080 B** retained tensor
+payload and **6,275,072 B** private-pool spare. These are distinct one-owner
+fixture observations, not a complete three-role/eight-rank deployment budget.
+The nominal allowance, **33,624,162,304 B**, came from actual test-device free
+physical memory and is **test only**, not a production default. The earlier
+64 MiB fixture refused before numerical comparisons; its setup refusal and
+separate observer publication failure remain in
+`reference-arithmetic-islands-v1/target-v2/GPU-actual/console-v1.log` and
+`dense-result.json`. That attempt supports no numerical conclusion.
+
+No new application image, full-model quality/capacity result, P3 gain or default
+promotion is qualified. All-role application budgeting and model/performance
+selection remain open; historical installed-image curves are separate evidence.
+
 ## First SC117 Q4 reference
 
 The first descriptive reference used eight V100-SXM2-32GB GPUs, SC117 IQ3_S

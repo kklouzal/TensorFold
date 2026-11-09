@@ -75,6 +75,7 @@ class ReferenceTiles:
         self.closed = False
         self.workspace = self.mask = self.indices = self.half = None
         self.normalization_workspace = self.normalization_output = None
+        self.arithmetic = None
         if (workspace.dtype != torch.float32 or not workspace.is_contiguous()
                 or workspace.numel() * workspace.element_size() < WORKSPACE_BYTES
                 or workspace.data_ptr() % 512):
@@ -96,6 +97,8 @@ class ReferenceTiles:
         if not self._lease.acquire(blocking=False):
             raise RuntimeError("cannot retire a borrowed reference tile receive slab")
         try:
+            if self.arithmetic is not None:
+                self.arithmetic.close()  # Fails rather than interrupting an active operation.
             self.closed = True  # Stop new leases before the owner's existing device fence.
         finally:
             self._lease.release()
@@ -106,6 +109,7 @@ class ReferenceTiles:
             raise RuntimeError("reference tile views require proven owner retirement")
         self.workspace = self.mask = self.indices = self.half = None
         self.normalization_workspace = self.normalization_output = None
+        self.arithmetic = None
 
     def bind_global_statistics(self, workspace, output):
         """Bind existing local/global slabs once, after native owner preparation."""
@@ -124,6 +128,7 @@ class ReferenceTiles:
         return {"policy": "reference-owner-tile128-preparation-v1", "borrowed_device_bytes": WORKSPACE_BYTES,
                 "additional_device_bytes": 0, "module_code_residency": "separate-unmeasured", "source": "already-paid owner.partials receive slab",
                 "tile": TILE, "head_dim": DIM, "attention_arithmetic": "unchanged-ATen-reference",
+                "reference_arithmetic": None if self.arithmetic is None else self.arithmetic.record(),
                 "global_normalization": {
                     "policy": "scalar-reductions-batched-pointwise-v1",
                     "prepared": self.normalization_workspace is not None,
@@ -148,6 +153,10 @@ class ReferenceTiles:
 
 
 class _Context:
+    @property
+    def arithmetic(self):
+        return self.owner.arithmetic
+
     def __init__(self, owner, status, generations, slot, generation, layer):
         if (any(type(v) is not int or not 0 <= v < 2**63 for v in (slot, generation))
                 or type(layer) is not int or not 0 <= layer < 2**31):

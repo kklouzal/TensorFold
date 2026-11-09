@@ -101,6 +101,10 @@ scalar oracle. Broader model-quality, performance and default-release gates rema
 The separate [reference-query packing source candidate](docs/benchmarking.md#reference-query-packing-source-candidate)
 passed 40 CPU and 15 strict SM70 GPU controls, with no skips. It has no new
 application image, full-model result, performance gain or default promotion.
+The default-off [reference ATen arithmetic islands](docs/benchmarking.md#private-reference-aten-arithmetic-islands-source-component)
+passed 330 pinned CPU checks and 35 SM70 GPU cases with no skips. These synthetic
+component results do not qualify an application image, deployment memory budget,
+full-model quality, performance gain or default release.
 The private launcher can also [prepare a larger MTP verification envelope](docs/benchmarking.md#private-verification-row-envelope-trials)
 before loading; memory and throughput qualification remain required.
 An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)

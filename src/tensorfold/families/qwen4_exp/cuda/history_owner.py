@@ -348,12 +348,21 @@ def _attention_tiles(query, cache, selected, visible, scale, *, values=False, ti
         yield score, mask, value
 
 
-def partial_statistics(query, cache, selected, visible, scale, *, tile_preparer=None):
+def partial_statistics(query, cache, selected, visible, scale, *, tile_preparer=None, out=None):
     """A shard's unnormalized FP32 maximum and denominator; no PV rounding."""
+    arithmetic = None if tile_preparer is None else tile_preparer.arithmetic
+    if arithmetic is not None:
+        captured = arithmetic.statistics(query, cache, selected, visible, scale, tile_preparer, out=out)
+        if captured is not None:
+            return captured
     heads = query.shape[0]
     maximum = torch.full((heads,), -torch.inf, dtype=torch.float32, device=query.device)
     denominator = torch.zeros_like(maximum)
     if not cache.capacity:
+        if out is not None:
+            out[0].copy_(maximum)
+            out[1].copy_(denominator)
+            return out
         return maximum, denominator
     for score, mask, _ in _attention_tiles(query, cache, selected, visible, scale, tile_preparer=tile_preparer):
         tile_max = score.amax(-1)
@@ -364,6 +373,10 @@ def partial_statistics(query, cache, selected, visible, scale, *, tile_preparer=
         probabilities = torch.where(mask[None], torch.exp(score - safe_max[:, None]), 0)
         denominator = denominator * alpha + probabilities.sum(-1)
         maximum = next_max
+    if out is not None:
+        out[0].copy_(maximum)
+        out[1].copy_(denominator)
+        return out
     return maximum, denominator
 
 
@@ -410,20 +423,31 @@ def _reference_query_rows(query_all, group_start):
     return packed.view(count, 12, 256)
 
 
-def normalized_partial(query, cache, selected, visible, scale, maximum, denominator, *, tile_preparer=None):
+def normalized_partial(query, cache, selected, visible, scale, maximum, denominator, *, tile_preparer=None, out=None):
     """PV with globally normalized FP16 probabilities, matching target rounding.
 
     A local unnormalized numerator cannot be rescaled after casting its
     probabilities to FP16. Re-reading bounded packed tiles preserves that
     rounding boundary without retaining a full FP16 history mirror.
     """
+    arithmetic = None if tile_preparer is None else tile_preparer.arithmetic
+    if arithmetic is not None:
+        captured = arithmetic.normalized(query, cache, selected, visible, scale, maximum, denominator, tile_preparer, out=out)
+        if captured is not None:
+            return captured
     result = torch.zeros(query.shape, dtype=torch.float32, device=query.device)
     if not cache.capacity:
+        if out is not None:
+            out.copy_(result)
+            return out
         return result
     for score, mask, value in _attention_tiles(query, cache, selected, visible, scale, values=True,
                                                tile_preparer=tile_preparer):
         probability = torch.where(mask[None], torch.exp(score - maximum[:, None]) / denominator[:, None], 0).half()
         result = result + ops._matmul32(probability, value)
+    if out is not None:
+        out.copy_(result)
+        return out
     return result
 
 
@@ -1065,13 +1089,18 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                         packed_queries = _reference_query_rows(query_all, group_start)
                     query = packed_queries[row]
                 visible = ids < visible_end
+                statistics_target = None
                 if reference_tiles is None:
                     maximum, denominator = partial_statistics(query, cache, ids, visible, c.head_dim ** -0.5)
                 else:
+                    context = owner.reference_tile_context(state, layer.index)
+                    if context.arithmetic is not None:
+                        statistics_target = (partial[row, :, 0], partial[row, :, 1])
                     maximum, denominator = partial_statistics(query, cache, ids, visible, c.head_dim ** -0.5,
-                        tile_preparer=owner.reference_tile_context(state, layer.index))
-                partial[row, :, 0].copy_(maximum)
-                partial[row, :, 1].copy_(denominator)
+                        tile_preparer=context, **({"out": statistics_target} if statistics_target is not None else {}))
+                if statistics_target is None:
+                    partial[row, :, 0].copy_(maximum)
+                    partial[row, :, 1].copy_(denominator)
                 jobs.append((state, cache, row, query, ids, visible))
         partials = owner.partials.reshape(-1)[:8 * partial.numel()].view(8, *partial.shape)
         comm.all_gather(partial, partials)
@@ -1100,8 +1129,13 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                     value_part[row].copy_(normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
                                                              maximum, denominator))
                 else:
-                    value_part[row].copy_(normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
-                        maximum, denominator, tile_preparer=owner.reference_tile_context(state, layer.index)))
+                    context = owner.reference_tile_context(state, layer.index)
+                    if context.arithmetic is None:
+                        value_part[row].copy_(normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
+                            maximum, denominator, tile_preparer=context))
+                    else:
+                        normalized_partial(query, cache, ids, visible, c.head_dim ** -0.5,
+                            maximum, denominator, tile_preparer=context, out=value_part[row])
         value_parts = owner.partials.reshape(-1)[:8 * value_part.numel()].view(8, *value_part.shape)
         comm.all_gather(value_part, value_parts)
         local_heads = slice((rank % 4) * c.heads, (rank % 4 + 1) * c.heads)
