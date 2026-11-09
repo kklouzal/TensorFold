@@ -21,6 +21,9 @@ zero skips. Its Dense native32, pinned descriptor, paged-attention, query-pack
 and reference-arithmetic component checks also passed on V100. Prepared/graph,
 physical-resource and model gates remain open; see the
 [remaining consolidation work](docs/branch-consolidation.md#remaining-work).
+The repository default is now `python-0.6`; all 69 reviewed ancestral branch
+names have been retired with archive recovery and exact-SHA guards. The 537
+divergent names remain pending their separate recovery and retirement gates.
 The maintained [installed-contract driver](deploy/v100/source-foundation.md#installed-contract-driver)
 has 37 passing standard-library controls, including inert multiprocessing
 imports and a CPU route that never queries CUDA. The paired controller passed

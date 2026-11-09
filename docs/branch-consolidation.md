@@ -177,13 +177,13 @@ The original zero-tolerance assertions remain unchanged.
 | Q05 | Complete corrected eight-rank graph tests, release-image identity checks, physical allocation/admission and repeated-lifecycle checks, and the actual native-owner model/performance gates. The 16-case lifetime module passed on the bound image; Python header sizes still do not bound native metadata, allocator pages or RSS. |
 | Q06 | Obtain and verify the exact seven-path C06-only packet (`3ce6e830bed4db18b9fe33123330bf45229ac2dcbe9a363ed80712b86887aee7`), then use an isolated qualification source/image for unchanged references, actual capacity/quality/resource/serving gates. No adoption or extra runtime switch is selected. |
 | Q-GLM | Preserve legacy raw-tokenizer compatibility, as explicitly selected by the user, and complete actual model/context/stop serving checks for available platform/checkpoint pairs. The capitalization/complete-header frontend repairs passed the bound installed 253-test verification; full checkpoint CUDA and applicable MLX inference remain unqualified without their actual inputs. |
-| B1 | The user will change default `main` to `python-0.6`; verify the actual change before retiring `main`. The authenticated CLI account has repository admin role, but its token's Administration request returned HTTP403; the default is still `main`. The connected source/ref interface exposes no default-change operation. |
-| B2/B3 | Use the user-approved fresh recovery bundle, reviewed exact queue and restore receipt. Reverify restore availability, ancestry and current expected SHAs before B2 retirement. B3 additionally requires the unselected C06 source/tests and evidence to remain recoverable; C06 adoption is a separate gate. Delete only reviewed unchanged refs with expected-SHA guards; deleting `main` must follow B1. Stop on new or advanced refs. |
+| B3 | Reverify the user-approved recovery bundle, exact queue, current tips and unselected C06 source/tests/evidence recoverability, then retire only reviewed unchanged divergent refs with expected-SHA guards. The exact C06 qualification packet is still unavailable; reconstructed variants have different hashes. C06 adoption remains separate. Stop on new or advanced refs. |
 | B4 | Verify only `python-0.6` remains, it is the actual default and contains the execution basis plus authorized changes, and independent recovery remains usable. |
 
 The bounded accessible-path search did not locate the supplied personal-library
 recovery artifacts or C06 packet. Their local paths are required; this is not a
-claim of global absence. No branch deletion or default change has been performed.
+claim of global absence. The user-approved replacement archive closes the
+original recovery-set access decision; the exact C06 packet remains open.
 
 A supplemental current-head bundle (`ecdc578cdfd119241169658160a66ad7afd9a59fe5b3decb7cd32ad336f14ea8`)
 independently restores all 607 original branch names and exact captured tips,
@@ -191,6 +191,10 @@ without alternates, and passes strict integrity checks. A separate parser of the
 actual user message verifies all 606 queued names/full SHAs, 69 ancestral and
 537 divergent entries, with no drift in the captured fresh remote read. This is
 the user-approved replacement for the inaccessible personal-library recovery
-set. C06 availability, the actual default change and fresh expected-SHA
-retirement checks remain open. Legacy raw-tokenizer compatibility is retained
+set. The user changed the default to `python-0.6`, verified through the live
+GitHub API. All 69 ancestral names, including `main` last, were then retired
+serially with exact-SHA guards and live full-ref checks before and after each
+deletion. The verified final set contains 538 heads: the retained target and
+537 divergent names. The archive remains available for restoration; B3 and
+final B4 closure remain open. Legacy raw-tokenizer compatibility is retained
 by explicit user decision, without a protected-interface qualification claim.
