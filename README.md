@@ -72,9 +72,11 @@ logits bit-for-bit across four steps, with identical original token selections.
 This short reference check does not qualify broader quality or performance.
 The maintained `tools/v100_quality_data.py` producer can capture a distinct
 current frontend identity and verifies all 27 preserved long-request token
-counts and hashes before publication. Its 42 x86 CPU controls pass; current
-identity capture and DATA generation remain pending. Historical DATA and
-independent gold are preserved; model-quality qualification remains separate.
+counts and hashes before publication. Its 42 x86 CPU controls pass. Genuine
+x86 capture/generation also passed without Torch: all 27 original long-prompt
+token counts/hashes matched, and all 82 request/gold payloads reproduce the
+historical bytes.
+Historical DATA is preserved; model-quality qualification remains separate.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
 The current source also preserves origin through Unicode capitalization and

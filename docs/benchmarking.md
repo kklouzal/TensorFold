@@ -973,8 +973,9 @@ gates; do not borrow the old 8192-context/714-step profile or its margins.
 independently labelled near-full histories, three fixed 64K multi-key/order
 cases and the seven short cases. The dependent-history short case stays in
 its original contract rather than an invented standalone request. Its 42 x86
-CPU controls passed with no skips; current identity capture and new DATA
-generation remain pending. This is not inference or a model-quality pass. The archived original
+CPU controls passed with no skips. Genuine current identity capture and DATA
+generation subsequently passed as recorded below. This is not inference or a
+model-quality pass. The archived original
 generator is provenance input, not executable code required by this producer.
 
 Capture a distinct identity in the intended owned image and normal frontend
@@ -1022,6 +1023,48 @@ Historical `5fadb028` DATA and its 82 case files remain unchanged.
 Tokenization equivalence, sparse-QSA execution, teacher
 vectors, maximum live capacity, media gold and full-model quality keep their
 separate actual-target gates; no older codec-profile margins are inherited.
+
+
+### Actual current frontend DATA reproduction
+
+The maintained producer executed in two fresh x86 CPU processes on application
+`d736ab78`, using immutable operator source `47bdb515` plus the exact two-file
+hold whose producer bytes are committed at `04bc3861`. The first captured the
+current frontend identity; after its positive CLI/observer/container retirement,
+an independent read-only copy and its actual hash bound the second generation
+process. The fixed audit delegate invokes only the canonical producer. It
+records actual NoTorch and installed TensorFold origin without importing or
+replacing either module. Both processes exited successfully, with no OOM,
+Torch absent before/after, and the expected installed raw/resolved origin.
+
+Current identity SHA256 is
+`95d713b14069390e2129ef871b7c3e0469f177d9237dcae0db723023cb861d9c`;
+current manifest SHA256 is
+`b94ff3c3c99188e77752daa2eb5c664c8d86c4b05ba199f5ef7f8a8109667b1d`.
+Its 38 TensorFold modules were actually loaded by normal frontend/publisher
+initialization; no historical module list was forced. Both processes matched
+the native tokenizer, dependency/platform, source-closure and five-file frontend
+bindings. Target/MTP checkpoint fields remain declared-only base authority;
+this CPU operation mounted or loaded no weights.
+
+All 27 preserved long requests matched 262,080 whole-template tokens and their
+original compact token-ID hashes before publication. The fresh output has 85
+files: 82 request/oracle payloads plus three controls. All 82 payloads are
+byte-equal to their historical counterparts, and all 85 historical files remain
+unchanged. The catalogue retains 24 Q8 cases, 32 ISO4 cases, three 64K cases and
+seven short cases. The six static short bodies/gold are preserved, but their
+ID/count export is not provided by this manifest; no new alignment result for
+all six is inferred. The dependent-history case still requires its actual
+prior assistant response. Codec labels do not establish codec execution.
+
+All source, input, frontend and output hashes were stable after execution; the
+new identity and corpus have independent read-only copies. The actual gate is
+`217d8ef8ac33c102b9547c99ee37bcd22e922ccacd2a5ea1e99f7a47832ab8ca`,
+with independent actual review
+`4a6fd359dc1c9bc45df4af41d6f7c315851b307a28c816134ff7fbfbbc740f7c`.
+This closes the current CPU DATA reproduction/alignment gate. It does not
+qualify current MTP availability, sparse-QSA execution, model answers, full
+activity/capacity, media, physical worst-case resources or performance.
 
 ### First actual reference teacher capture
 
