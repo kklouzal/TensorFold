@@ -897,9 +897,10 @@ numerical diagnostics, never performance measurements or numerical acceptance.
 `tools/v100_owned_qualification.py --teacher-plan PLAN.json` is a separate,
 default-off diagnostic over the existing owned Engine and ordinary completions
 route. It does not enable a public serving mode or run the old 714-step quality
-worker. The current four-file implementation passed 284 pinned x86 CPU controls
-with zero skips; actual model capture/replay, physical residency and quality
-acceptance remain unrun gates.
+worker. The initial four-file implementation passed 284 pinned x86 CPU controls
+with zero skips. Actual short reference capture/replay and full-vector control
+results are recorded below; broader residency, quality and performance gates
+remain open.
 
 The first region is SC117 TP8/ETP4/PP1, reference SM70 profile, explicit
 `--draft-method none`, no loaded MTP, `--no-graphs` and fixed parallelism of at
@@ -922,8 +923,10 @@ model evidence.
 The [closed host operation](../deploy/v100/source-foundation.md#closed-owned-teacher-model-operation)
 is the maintained model launch boundary. Existing CPU/CUDA pytest specs remain
 component suites; do not substitute model argv or infer a model pass from a
-JUnit count. Actual model DATA, assets/cache binding, physical C24 admission,
-client request and complete all-rank/host retirement still require execution.
+JUnit count. Each model operation requires actual DATA and assets/cache
+binding, physical C24 admission, its client request and complete all-rank/host
+retirement. The bounded completed controls below do not replace those gates
+for other workloads or profiles.
 
 ```bash
 python tools/v100_owned_qualification.py --gpus "$TF_RANK_GPUS" \
@@ -969,10 +972,33 @@ gates; do not borrow the old 8192-context/714-step profile or its margins.
 `tools/v100_quality_data.py` preserves the original 27 C27 bodies, adds five
 independently labelled near-full histories, three fixed 64K multi-key/order
 cases and the seven short cases. The dependent-history short case stays in
-its original contract rather than an invented standalone request. Its 29 local
-CPU controls passed; this is not
-inference, new DATA generation or a model-quality pass. The archived original
+its original contract rather than an invented standalone request. Its 42 x86
+CPU controls passed with no skips; current identity capture and new DATA
+generation remain pending. This is not inference or a model-quality pass. The archived original
 generator is provenance input, not executable code required by this producer.
+
+Capture a distinct identity in the intended owned image and normal frontend
+namespace before generation. The explicit first selector has only four
+arguments; its output is a fresh identity **file** with an existing owned parent:
+
+```bash
+python -m tools.v100_quality_data --capture-identity \
+  --input-identity "$TF_QUALITY_BASE_IDENTITY" \
+  --input-identity-sha "$TF_QUALITY_BASE_IDENTITY_SHA" \
+  --frontend "$TF_MODEL_FRONTEND_DIR" --output "$TF_QUALITY_IDENTITY_FILE"
+```
+
+This preserves the pinned base target/MTP declarations as declared history; it
+does not read, load or physically qualify checkpoint weights. It records the
+actual five normal frontend assets, template, native tokenizer, dependency
+versions, machine and loaded Python closure after the same normal
+frontend/publisher initialization used by generation. No historical module
+list is forced into the process. Publication refuses existing output and
+fsyncs the file and directory. Use the new identity only after its CLI exits
+successfully; a complete-looking file can survive a later failure.
+
+Bind `TF_INPUT_IDENTITY` and its SHA below to that new file. Normal mode keeps
+its existing six required arguments and writes a fresh corpus **directory**:
 
 ```bash
 python -m tools.v100_quality_data \
@@ -986,8 +1012,14 @@ current frontend identity. Asset bytes, actual loaded source closure and its
 aggregate hash, native tokenizer binary, dependency versions and machine must
 match before publication and sealing. A stale historical identity is refused;
 do not rewrite it or force-import its old modules to manufacture a match.
-Use a fresh output directory. Historical `5fadb028` DATA and its 82 case files
-remain unchanged. Tokenization equivalence, sparse-QSA execution, teacher
+Use a fresh output directory. Before creating it, the producer reopens each
+original C27 request through its pinned hash, renders/encodes the full template,
+and requires the original 262,080-token count and compact-JSON token-ID hash.
+Only one case's token list is retained at a time. A mismatch refuses publication;
+the producer does not silently rewrite old token metadata or gold. Frontend
+assets and the loaded closure are checked again through generation and sealing.
+Historical `5fadb028` DATA and its 82 case files remain unchanged.
+Tokenization equivalence, sparse-QSA execution, teacher
 vectors, maximum live capacity, media gold and full-model quality keep their
 separate actual-target gates; no older codec-profile margins are inherited.
 

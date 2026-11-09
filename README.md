@@ -70,10 +70,11 @@ token choices and diagnostic error metrics without inherited quality margins.
 Its 132 x86 CPU controls passed. The actual paired control matched all 993,280
 logits bit-for-bit across four steps, with identical original token selections.
 This short reference check does not qualify broader quality or performance.
-The offline quality-DATA producer is now maintained in `tools/v100_quality_data.py`.
-Its 29 local CPU controls cover immutable inputs, independent gold, bounded
-publication and current frontend provenance. Historical DATA is preserved;
-new generation and model-quality qualification remain separate.
+The maintained `tools/v100_quality_data.py` producer can capture a distinct
+current frontend identity and verifies all 27 preserved long-request token
+counts and hashes before publication. Its 42 x86 CPU controls pass; current
+identity capture and DATA generation remain pending. Historical DATA and
+independent gold are preserved; model-quality qualification remains separate.
 GLM prompt adapters forward the current encoding/render-credit interface and
 preserve caller literal origins in thinking-off transformations on CUDA and HF.
 The current source also preserves origin through Unicode capitalization and

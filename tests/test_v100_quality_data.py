@@ -24,7 +24,8 @@ def sources(tmp_path, monkeypatch):
     cases = []
     for i in range(27):
         name = f"history-{i:06d}"
-        case = {"id": name, "prompt_token_ids_sha256": hashlib.sha256(str(i).encode()).hexdigest()}
+        case = {"id": name, "prompt_tokens": 262080,
+                "prompt_token_ids_sha256": data.digest(json.dumps([i] * 262080, separators=(",", ":")).encode())}
         for kind, value in (("request", {"messages": [i]}), ("oracle", {"expected_text": f"gold{i}"})):
             case[kind] = f"{kind}s/{name}.json"
             raw = data.canonical(value)
@@ -62,6 +63,10 @@ def sources(tmp_path, monkeypatch):
     return corpus, short, identity, sha
 
 
+def original_frontend(messages):
+    return [messages[0]] * 262080
+
+
 def fake_binding():
     return {'schema': 'tensorfold.quality-frontend-execution-binding-v1', 'scope': 'test-only fake; not actual frontend proof'}
 
@@ -75,7 +80,7 @@ def fake_fit(frontend, index, target, model, reply, *, multi=False):
 
 def test_build_preserves24_and27_bytes_and_versions32_without_rewriting_gold(sources, tmp_path, monkeypatch):
     monkeypatch.setattr(data, "fit", fake_fit)
-    result = data.build(*sources, tmp_path / "new", lambda _: pytest.fail("no model"), gold_encoder=lambda _: [1], frontend_guard=fake_binding)
+    result = data.build(*sources, tmp_path / "new", original_frontend, gold_encoder=lambda _: [1], frontend_guard=fake_binding)
     old = json.loads((sources[0] / "manifest.json").read_text())
     assert result["profiles"]["Q8"]["name"] == "C24-first24-canonical-v1"
     assert result["profiles"]["Q8"]["cases"] == old["cases"][:24]
@@ -90,9 +95,11 @@ def test_build_preserves24_and27_bytes_and_versions32_without_rewriting_gold(sou
     assert "messages" not in result["short7"][-1]  # actual assistant not fabricated from gold
     assert (tmp_path / "new/short-contract.json").read_bytes() == sources[1].read_bytes()
     assert result["teacher"]["status"] == "UNRUN_REFERENCE_FIRST_REQUIRED"
+    assert result['original_c27_alignment'] == {'cases': 27, 'prompt_tokens': 262080,
+        'status': 'MATCHED_ORIGINAL_COUNTS_AND_COMPACT_JSON_ID_SHA256'}
     assert result["media"]["no_motion_answer_invented"]
     with pytest.raises(FileExistsError):
-        data.build(*sources, tmp_path / "new", lambda _: [], gold_encoder=lambda _: [1], frontend_guard=fake_binding)
+        data.build(*sources, tmp_path / "new", original_frontend, gold_encoder=lambda _: [1], frontend_guard=fake_binding)
 
 
 def test_seeded_gold_is_deterministic_distinct_and_occurs_once():
@@ -139,7 +146,7 @@ def test_original_input_refuses_before_output(sources, tmp_path, bad, monkeypatc
         old["cases"][0]["request"] = "../escape"
         monkeypatch.setattr(data, "C27_SHA", write(corpus / "manifest.json", old))
     with pytest.raises((ValueError, OSError)):
-        data.build(corpus, short, identity, sha, tmp_path / "new", lambda _: [], gold_encoder=lambda _: [1], frontend_guard=fake_binding)
+        data.build(corpus, short, identity, sha, tmp_path / "new", original_frontend, gold_encoder=lambda _: [1], frontend_guard=fake_binding)
     assert not (tmp_path / "new").exists()
 
 
@@ -150,7 +157,7 @@ def test_actual_identity_required_before_publication(sources, tmp_path, field):
     del value[field]
     sha = write(identity, value)
     with pytest.raises(ValueError):
-        data.build(corpus, short, identity, sha, tmp_path / "new", lambda _: [], gold_encoder=lambda _: [1], frontend_guard=fake_binding)
+        data.build(corpus, short, identity, sha, tmp_path / "new", original_frontend, gold_encoder=lambda _: [1], frontend_guard=fake_binding)
     assert not (tmp_path / "new").exists()
 
 
@@ -175,7 +182,7 @@ def test_publisher_enforces_cumulative_budget(tmp_path, monkeypatch):
 def test_gold_cardinality_refuses_before_publishing_new_case(sources, tmp_path, monkeypatch):
     monkeypatch.setattr(data, "fit", fake_fit)
     with pytest.raises(ValueError, match="reply allowance"):
-        data.build(*sources, tmp_path / "new", lambda _: [], gold_encoder=lambda _: [1] * 64, frontend_guard=fake_binding)
+        data.build(*sources, tmp_path / "new", original_frontend, gold_encoder=lambda _: [1] * 64, frontend_guard=fake_binding)
     assert not (tmp_path / "new/requests/history-000027.json").exists()
 
 
@@ -266,14 +273,14 @@ def test_declared_but_unloaded_module_is_not_force_imported(frontend_binding, mo
 def test_source_binding_required_before_publication_and_changed_binding_does_not_seal(sources, tmp_path, monkeypatch):
     monkeypatch.setattr(data, 'fit', fake_fit)
     with pytest.raises(ValueError, match='binding guard'):
-        data.build(*sources, tmp_path / 'missing', lambda _: [], gold_encoder=lambda _: [1])
+        data.build(*sources, tmp_path / 'missing', original_frontend, gold_encoder=lambda _: [1])
     assert not (tmp_path / 'missing').exists()
     calls = []
     def guard():
         calls.append(True)
-        return {**fake_binding(), 'source': 'before' if len(calls) == 1 else 'changed'}
+        return {**fake_binding(), 'source': 'before' if len(calls) <= 2 else 'changed'}
     with pytest.raises(ValueError, match='changed during DATA'):
-        data.build(*sources, tmp_path / 'changed', lambda _: [], gold_encoder=lambda _: [1], frontend_guard=guard)
+        data.build(*sources, tmp_path / 'changed', original_frontend, gold_encoder=lambda _: [1], frontend_guard=guard)
     assert not (tmp_path / 'changed/manifest.json').exists()
     # Publication failure never rewrites the frozen original.
     assert data.digest((sources[0] / 'manifest.json').read_bytes()) == data.C27_SHA
@@ -314,3 +321,127 @@ def test_directory_retirement_preserves_primary_and_close_under_exhaustion(monke
     assert calls == [('sync', 123), ('close', 123)]
     if sync_fails and close_fails:
         assert caught.value.__cause__ is (exhaustion if transport_fails else cleanup)
+
+
+def test_capture_identity_measures_current_binding_without_touching_base(frontend_binding, tmp_path):
+    from tensorfold.offline_quantization.text_corpus import _write_new
+    expected, _, _, _ = frontend_binding
+    assets = tmp_path / 'assets'
+    assets.mkdir()
+    for name in data.FRONTEND_FILES:
+        (assets / name).write_bytes(b'current namespace ready')
+    base = {'target': {'declared': 'not loaded'}, 'mtp': {'declared': 'not loaded'},
+            'frontend': {'files': [{'file': name, 'sha256': 'historical', 'bytes': 1} for name in sorted(data.FRONTEND_FILES)]}}
+    before = data.canonical(base)
+    template = types.SimpleNamespace(provenance=lambda: {'sha256': 'current template'})
+    output = tmp_path / 'identity.json'
+    result = data.capture_identity(base, 'a' * 64, assets, output, template, _write_new)
+    assert result['frontend']['native_binary_sha256'] == expected['native_binary_sha256']
+    assert result['frontend']['loaded_source_modules'] == expected['loaded_source_modules']
+    assert result['frontend']['files'][0]['sha256'] == data.digest(b'current namespace ready')
+    assert result['target'] == base['target'] and result['mtp'] == base['mtp']
+    assert 'no weights loaded' in result['checkpoint_scope']
+    assert data.canonical(base) == before
+    assert output.read_bytes() == data.canonical(result)
+    with pytest.raises(FileExistsError):
+        data.capture_identity(base, 'a' * 64, assets, output, template, _write_new)
+    alias = tmp_path / 'alias.json'
+    alias.symlink_to(output)
+    with pytest.raises(FileExistsError):
+        data.capture_identity(base, 'a' * 64, assets, alias, template, _write_new)
+    assert output.read_bytes() == data.canonical(result)
+
+
+@pytest.mark.parametrize('fault', ['asset', 'binding', 'missing-native'])
+def test_capture_drift_or_missing_native_cannot_publish(frontend_binding, tmp_path, monkeypatch, fault):
+    expected, modules, _, _ = frontend_binding
+    assets = tmp_path / 'assets'
+    assets.mkdir()
+    ready = assets / 'ready.json'
+    for name in data.FRONTEND_FILES:
+        (assets / name).write_bytes(b'before')
+    base = {'target': {}, 'mtp': {}, 'frontend': {'files': [{'file': name} for name in sorted(data.FRONTEND_FILES)]}}
+    calls = []
+    original = data.measure_frontend_binding
+    def measure():
+        calls.append(True)
+        if fault == 'asset':
+            ready.write_bytes(b'changed')
+        result = original()
+        if fault == 'binding' and len(calls) > 1:
+            result['machine'] = 'changed'
+        return result
+    monkeypatch.setattr(data, 'measure_frontend_binding', measure)
+    if fault == 'missing-native':
+        del modules['tokenizers.tokenizers']
+    with pytest.raises(ValueError):
+        data.capture_identity(base, 'a' * 64, assets, tmp_path / 'output',
+                              types.SimpleNamespace(provenance=lambda: {}),
+                              lambda *args: pytest.fail('must not publish'))
+
+
+@pytest.mark.parametrize('fault', ['count', 'hash', 'invalid'])
+def test_original_token_misalignment_fails_before_output(sources, tmp_path, monkeypatch, fault):
+    monkeypatch.setattr(data, 'fit', fake_fit)
+    def bad(messages):
+        if messages[0] != 0:
+            return original_frontend(messages)
+        return [0] if fault == 'count' else ([1] * 262080 if fault == 'hash' else [False] * 262080)
+    output = tmp_path / 'refused'
+    before = (sources[0] / 'manifest.json').read_bytes()
+    with pytest.raises(ValueError, match='original C27 whole-template token alignment'):
+        data.build(*sources, output, bad, gold_encoder=lambda _: [1], frontend_guard=fake_binding)
+    assert not output.exists()
+    assert (sources[0] / 'manifest.json').read_bytes() == before
+
+
+def test_capture_cli_needs_only_its_inputs_and_normal_cli_keeps_requirements(monkeypatch, tmp_path):
+    base = {'frontend': {'files': [{'file': 'ready.json'}]}}
+    monkeypatch.setattr(data, 'authority', lambda *args: (base, b'base'))
+    monkeypatch.setattr(data, 'frontend_files', lambda *args: [])
+    monkeypatch.setattr(data, 'prepare_frontend', lambda *args: (None, None, None, None))
+    seen = []
+    monkeypatch.setattr(data, 'capture_identity', lambda *args: seen.append(args))
+    args = ['--input-identity', 'base.json', '--input-identity-sha', 'a' * 64,
+            '--frontend', 'frontend', '--output', str(tmp_path / 'identity.json')]
+    data.main(['--capture-identity', *args])
+    assert len(seen) == 1 and seen[0][0] is base
+    with pytest.raises(SystemExit) as caught:
+        data.main(args)
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize('names', [['ready.json'], ['ready.json'] * 5,
+                                 ['../config.json', 'generation_config.json', 'ready.json', 'tokenizer.json', 'tokenizer_config.json']])
+def test_capture_asset_catalogue_rejects_missing_duplicate_or_escaping_files(tmp_path, names):
+    for name in data.FRONTEND_FILES:
+        (tmp_path / name).write_bytes(b'asset')
+    with pytest.raises(ValueError):
+        data.frontend_files(tmp_path, [{'file': name} for name in names])
+
+
+def test_capture_refuses_asset_change_across_actual_initialization(monkeypatch, tmp_path):
+    base = {'frontend': {'files': []}}
+    monkeypatch.setattr(data, 'authority', lambda *args: (base, b'base'))
+    state = {'version': 'before'}
+    monkeypatch.setattr(data, 'frontend_files', lambda *args: [state['version']])
+    def initialize(*args):
+        state['version'] = 'changed'
+        return None, None, None, None
+    monkeypatch.setattr(data, 'prepare_frontend', initialize)
+    monkeypatch.setattr(data, 'capture_identity', lambda *args: pytest.fail('changed assets must not publish'))
+    with pytest.raises(ValueError, match='changed during normal initialization'):
+        data.main(['--capture-identity', '--input-identity', 'base.json', '--input-identity-sha', 'a' * 64,
+                   '--frontend', 'frontend', '--output', str(tmp_path / 'identity.json')])
+
+
+def test_original_request_reopen_checks_pinned_bytes_before_tokenization(sources, tmp_path):
+    changed = sources[0] / 'requests/history-000000.json'
+    def guard():
+        changed.write_bytes(data.canonical({'messages': ['changed after preflight']}))
+        return fake_binding()
+    output = tmp_path / 'must-not-publish'
+    with pytest.raises(ValueError, match='authority SHA differs'):
+        data.build(*sources, output, lambda _: pytest.fail('changed body must not be tokenized'),
+                   gold_encoder=lambda _: [1], frontend_guard=guard)
+    assert not output.exists()

@@ -29,6 +29,7 @@ GENERATOR = "long-retrieval-corpus-v1/generate_corpus.py"
 GENERATOR_SHA = "f8d7d23cc615b0b6b045921d6912a271f005f4ce0c98c1bfb2903824c312ea02"
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 MAX_BODY, MAX_OUTPUT = 8 << 20, 128 << 20
+FRONTEND_FILES = frozenset(('config.json', 'generation_config.json', 'ready.json', 'tokenizer.json', 'tokenizer_config.json'))
 
 
 def canonical(value):
@@ -81,17 +82,13 @@ def authority(path, expected):
     return value, data
 
 
-def validate_frontend_binding(expected):
+def measure_frontend_binding():
     """Validate actual normal-frontend execution, never manufacture imports.
 
     Whole-tree before/after hashes remain operator capture provenance; only the
     actually loaded Python closure and native/dependency identities are checked.
     """
     import tensorfold
-    required = ('loaded_source_modules', 'loaded_frontend_source_sha256', 'native_binary_sha256',
-                'tokenizers', 'jinja2', 'markupsafe', 'platform', 'machine')
-    if type(expected) is not dict or any(name not in expected for name in required):
-        raise ValueError('current frontend execution authority is incomplete')
     package_root = Path(tensorfold.__file__).resolve().parent
     root = package_root.parent
     modules = {}
@@ -105,13 +102,10 @@ def validate_frontend_binding(expected):
         path.relative_to(package_root)
         relative = path.relative_to(root).as_posix()
         modules[name] = {'file': relative, 'sha256': digest(read_regular(path, MAX_BODY))}
-    declared = expected['loaded_source_modules']
-    if type(declared) is not dict or not declared or modules != declared:
-        raise ValueError('actually loaded frontend source closure differs; supply a distinct current identity')
+    if not modules:
+        raise ValueError('actually loaded frontend source closure is empty')
     by_path = {row['file']: row['sha256'] for row in modules.values()}
     aggregate = digest(canonical(by_path))
-    if aggregate != expected['loaded_frontend_source_sha256']:
-        raise ValueError('loaded frontend aggregate differs from declared path-to-SHA authority')
     native = sys.modules.get('tokenizers.tokenizers')
     if not isinstance(native, types.ModuleType) or type(native.__dict__.get('__file__')) is not str:
         raise ValueError('native tokenizer must already be loaded by the normal frontend')
@@ -121,9 +115,17 @@ def validate_frontend_binding(expected):
         'native_binary_sha256': native_sha, 'platform': sys.platform, 'machine': platform.machine()}
     for package in ('tokenizers', 'jinja2', 'markupsafe'):
         actual[package] = importlib.metadata.version(package)
-    if any(actual[name] != expected[name] for name in
-           ('native_binary_sha256', 'platform', 'machine', 'tokenizers', 'jinja2', 'markupsafe')):
-        raise ValueError('actual frontend native/dependency/platform identity differs')
+    return actual
+
+
+def validate_frontend_binding(expected):
+    actual = measure_frontend_binding()
+    if type(expected) is not dict or any(name not in expected for name in actual if name != 'schema'):
+        raise ValueError('current frontend execution authority is incomplete')
+    if actual['loaded_source_modules'] != expected['loaded_source_modules']:
+        raise ValueError('actually loaded frontend source closure differs; supply a distinct current identity')
+    if any(actual[name] != expected[name] for name in actual if name != 'schema'):
+        raise ValueError('actual frontend source/native/dependency/platform identity differs')
     return actual
 
 
@@ -297,6 +299,17 @@ def build(corpus, short_contract, identity, identity_sha, output, frontend, *, g
     binding = frontend_guard()
     if type(binding) is not dict or binding.get('schema') != 'tensorfold.quality-frontend-execution-binding-v1':
         raise ValueError('validated current frontend binding required')
+    for case in cases:
+        request, _ = object_file(corpus / case['request'], case['request_identity']['sha256'], MAX_BODY)
+        ids = frontend(request['messages'])
+        if (type(ids) is not list or len(ids) != original['N']
+                or case.get('prompt_tokens') != original['N']
+                or any(type(token) is not int or token < 0 for token in ids)
+                or digest(json.dumps(ids, separators=(',', ':')).encode()) != case['prompt_token_ids_sha256']):
+            raise ValueError('original C27 whole-template token alignment differs: ' + case['id'])
+        del ids
+    if frontend_guard() != binding:
+        raise ValueError('frontend execution binding changed during original alignment')
     pub = Publisher(output)
     pub.put("input-identity.json", actual_bytes)
     preserved, added, sparse, shorts = [], [], [], []
@@ -396,6 +409,8 @@ def build(corpus, short_contract, identity, identity_sha, output, frontend, *, g
         },
         "generator_sha256": digest(Path(__file__).read_bytes()),
         "original_c27_sha256": C27_SHA,
+        "original_c27_alignment": {"cases": len(cases), "prompt_tokens": original['N'],
+                                   "status": "MATCHED_ORIGINAL_COUNTS_AND_COMPACT_JSON_ID_SHA256"},
         "short_contract_sha256": SHORT_SHA,
         "actual_input_identity_sha256": identity_sha,
         "actual_input_identity": actual,
@@ -425,49 +440,86 @@ def build(corpus, short_contract, identity, identity_sha, output, frontend, *, g
     return result
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    for name in ("corpus", "short-contract", "input-identity", "frontend", "output"):
-        p.add_argument("--" + name, type=Path, required=True)
-    p.add_argument("--input-identity-sha", required=True)
-    args = p.parse_args(argv)
-    actual, _ = authority(args.input_identity, args.input_identity_sha)
-    for row in actual["frontend"]["files"]:
-        if Path(row["file"]).name != row["file"]:
-            raise ValueError("frontend file must be a local basename")
-        raw = read_regular(args.frontend / row["file"], 64 << 20)
-        if digest(raw) != row["sha256"] or len(raw) != row["bytes"]:
-            raise ValueError("actual frontend bytes differ")
+def frontend_files(directory, declared):
+    if type(declared) is not list or len(declared) != len(FRONTEND_FILES):
+        raise ValueError('complete SC117 frontend asset catalogue required')
+    rows, seen = [], set()
+    for row in declared:
+        name = row['file']
+        if type(name) is not str or not name or Path(name).name != name or name in seen:
+            raise ValueError('frontend file must be a unique local basename')
+        seen.add(name)
+        raw = read_regular(directory / name, 64 << 20)
+        rows.append({'file': name, 'bytes': len(raw), 'sha256': digest(raw)})
+    if seen != FRONTEND_FILES:
+        raise ValueError('complete SC117 frontend asset catalogue required')
+    return rows
+
+
+def prepare_frontend(directory):
+    # Both modes initialize exactly this normal frontend/publisher closure.
     from tensorfold.token_metadata import load_tokenizer
     from tensorfold.cuda.chat_template import ChatTemplate
-    __import__("tensorfold.offline_quantization.text_corpus", fromlist=["_write_new"])
-
-    for package in ("tokenizers", "jinja2", "markupsafe"):
-        if importlib.metadata.version(package) != actual["frontend"][package]:
-            raise ValueError("captured frontend dependency version differs: " + package)
-    tokenizer, template = load_tokenizer(args.frontend), ChatTemplate(args.frontend)
-    if template.provenance() != actual["frontend"]["template"]:
-        raise ValueError("actual template provenance differs")
-
+    from tensorfold.offline_quantization.text_corpus import _write_new
+    tokenizer, template = load_tokenizer(directory), ChatTemplate(directory)
     def frontend(messages):
         return template.encode(tokenizer, template.render(messages, tools=None, enable_thinking=False))
-
-    # A bounded normal render/encode initializes its genuinely used lazy Python
-    # helpers, not the historical38-module list. It is never inference or gold.
     frontend([{'role': 'user', 'content': 'frontend execution binding'}])
+    return tokenizer, template, frontend, _write_new
+
+
+def capture_identity(base, base_sha, directory, output, template, write_new):
+    # No checkpoint payload is read: these remain SHA-bound declarations.
+    rows = frontend_files(directory, base['frontend']['files'])
+    binding = measure_frontend_binding()
+    current = {'schema': 'tensorfold.sc117-quality-input-identity-v1',
+               'target': base['target'], 'mtp': base['mtp'],
+               'base_identity_sha256': base_sha,
+               'checkpoint_scope': 'Target/MTP declarations inherited from pinned base; no weights loaded or physically verified.',
+               'frontend': {**binding, 'files': rows, 'template': template.provenance(),
+                            'enable_thinking': False,
+                            'normal_frontend_apis': 'load_tokenizer + ChatTemplate.render/encode; post-publisher initialization'}}
+    if rows != frontend_files(directory, base['frontend']['files']) or binding != measure_frontend_binding():
+        raise ValueError('frontend changed during identity capture')
+    # Existing no-clobber publisher fsyncs the file; persist its directory too.
+    write_new(Path(output), canonical(current))
+    sync_directory(Path(output).parent)
+    return current
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    capture = bool(argv and argv[0] == '--capture-identity')
+    if capture:
+        argv = argv[1:]
+    p = argparse.ArgumentParser(description=__doc__)
+    if capture:
+        p.description = 'DATA-only --capture-identity: --output is a fresh identity FILE; checkpoint declarations come from pinned --input-identity.'
+    for name in (('input-identity', 'frontend', 'output') if capture else
+                 ('corpus', 'short-contract', 'input-identity', 'frontend', 'output')):
+        p.add_argument('--' + name, type=Path, required=True)
+    p.add_argument('--input-identity-sha', required=True)
+    args = p.parse_args(argv)
+    actual, _ = authority(args.input_identity, args.input_identity_sha)
+    rows = frontend_files(args.frontend, actual['frontend']['files'])
+    if not capture and rows != actual['frontend']['files']:
+        raise ValueError('actual frontend bytes differ')
+    tokenizer, template, frontend, write_new = prepare_frontend(args.frontend)
+    if rows != frontend_files(args.frontend, actual['frontend']['files']):
+        raise ValueError('frontend assets changed during normal initialization')
+    if capture:
+        capture_identity(actual, args.input_identity_sha, args.frontend, args.output, template, write_new)
+        return
+    if template.provenance() != actual['frontend']['template']:
+        raise ValueError('actual template provenance differs')
     def guard():
+        if frontend_files(args.frontend, actual['frontend']['files']) != actual['frontend']['files']:
+            raise ValueError('frontend assets changed during DATA generation')
         return validate_frontend_binding(actual['frontend'])
-    build(
-        args.corpus,
-        args.short_contract,
-        args.input_identity,
-        args.input_identity_sha,
-        args.output,
-        frontend,
-        gold_encoder=lambda text: tokenizer.encode(text, add_special_tokens=False).ids,
-        frontend_guard=guard,
-    )
+    build(args.corpus, args.short_contract, args.input_identity, args.input_identity_sha,
+          args.output, frontend, gold_encoder=lambda text: tokenizer.encode(text, add_special_tokens=False).ids,
+          frontend_guard=guard)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
