@@ -63,6 +63,14 @@ launch while preserving the generic route. Its CPU controls and 13 strict SM70
 cases pass. A 52-input/four-step model replay matched all 993,280 FP32 logit
 values bit-for-bit against the RN-H12 control; broader quality, performance
 qualification and production adoption remain pending.
+An unselected C1/R1 HC readout graph candidate captures the existing M32 readout
+program at startup. It requires joint graph funding without reducing full-State
+admission and honors `--no-graphs`. Its selected-target checks passed 546 CPU
+tests and two SM70 graph tests; full-State serving resources, model and
+performance qualification remain pending.
+The [balanced C1 grouped-expert/R4096 trial](docs/benchmarking.md#grouped-expert-and-larger-prefill-c1-comparison)
+recorded 3.06 times the control's prefill rate on 1,024/32 requests. Decode
+remained uncertain near two tokens/s; quality and deployment gates remain open.
 The isolated C06 preparation candidate passed 163 installed CPU and 50 SM70
 cases against unchanged indexed references. It is not applied canonically;
 full-method/context/resource, model-quality and performance gates remain open.

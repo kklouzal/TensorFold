@@ -1382,3 +1382,47 @@ component failures remain preserved rather than relabelled as passes. No new
 model or profiler operation is released by this documentation. Accepted CPU
 plan DATA and source/CPU controls do not replace actual runtime, resource,
 trace, native-origin and all-rank closure gates.
+
+## Grouped expert and larger-prefill C1 comparison
+
+An eight-V100 SXM2 32GB comparison used the SC117 IQ3_S target shards at
+revision `90a3350cd800ec1fe0d1660a38414ad9e985782f`, source-built
+Torch `04cf2557`/CUDA12.9, and App
+`sha256:32d79bf177aefca987aaf09a81c215f1627b9263dd294dfd7a7a2787f0cd883b`.
+Its curated source UID is
+`ce5eca6e5640dbb4b34f303cf969468703ea69e5e7ec323777f37a6cb352ea52`;
+it is the recorded pre-commit snapshot, not a rebuilt clean `91ef9427` image.
+Both arms retained TP8/ETP4/PP1, RN-H12 uncaptured attention, Q8 KV,
+24 materialized full 262,144-token States, NONE, FP16 activations and no graphs.
+
+The control used 256-row prefill and inherited expert dispatch. The candidate
+used 4,096-row prefill, grouped-down and gate/up grouping of four. This is a
+comparison of the complete three-setting change, not attribution to one kernel.
+The canonical frozen plan SHA256 was
+`be16ff1c554a13ec765d3a53f2a6a444827cfaf85675b82247352c07cb7a8a6a`:
+one excluded 1,024/16 warmup followed by two C1 1,024/32 requests per process.
+Four fresh processes ran candidate–control–control–candidate, producing four
+measured repetitions per arm. All requests completed fixed work with zero
+cached tokens; no profiler or forced-token witness ran. Each process first
+passed a separate unforced 52-input arithmetic smoke and retired successfully
+with unchanged source/device health and no remaining CUDA compute contexts.
+
+Rates below divide total completed work by the corresponding total interval;
+they are not arithmetic means of rates. Decode excludes each request's first
+token and uses the maintained inclusive phase envelopes.
+
+| Arm | Prefill tokens/s | Decode tokens/s | HTTP-wall output tokens/s |
+| --- | ---: | ---: | ---: |
+| Control | 87.7630 | 1.95446 | 1.15742 |
+| Grouped/R4096 | 268.5302 | 1.96368 | 1.62241 |
+
+Observed prefill and complete-request ratios were 3.0597 and 1.4017. The small
+decode difference remains uncertain; these dependent within-process samples
+provide no invented equivalence margin or confidence claim. Both measured
+32-token trajectories matched across all four processes. The excluded warmup
+trajectory differed between profiles and remains preserved. This does not
+establish full-model quality, other request sizes, maximum-active throughput,
+long-history performance or deployment selection. The governing performance
+targets remain unmet. The local evidence ledger retains the four raw runs and
+`grouped-balanced-comparison-v1/paired-receipt.json` under the
+`providerone-alignment-20261106` audit root.
