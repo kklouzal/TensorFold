@@ -12,6 +12,11 @@ TensorFold modifications: E256 global-ID remapping; distinct-ID validation;
 independent shared/foreign slots; C1..32 via bounded8-token panels; no Q8_1;
 separate original1Cat earlyHalf and TensorFold FP32 activation epilogues;
 owned typed/extent/alias/device boundaries and startup native preparation.
-The other new adapters/tests are TensorFold-owned. No upstream NOTICE file
+onecat_moe_packing.py adapts upstream gguf_moe_planes.py (Git blob
+a799ab3425af40527ed289d5535bb01da09c9ff4) and gguf_dmv_formats.py
+(Git blob fd0580f8ffc1311ad43640836efc0f7a577732de), with owned E256/lane160
+validation, bounded expert staging, existing project codebooks and IQ4_XS
+plane preparation. The remaining wrappers/tests are TensorFold-owned.
+No upstream NOTICE file
 applies to these paths at the pinned revision (complete tree audit).
 See onecat_LICENSE.txt for the complete Apache License2.0.

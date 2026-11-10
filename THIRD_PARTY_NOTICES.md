@@ -7,6 +7,9 @@ from [1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM/tree/1b57260a834d40f
 revision `1b57260a834d40faa32bfc6ac18f050414a8f042`.
 `onecat_moe_gu.cu` adapts its grouped expert kernel with owned expert-ID
 remapping, bounded panels and two explicitly selected activation epilogues.
+`onecat_moe_packing.py` adapts the pinned `gguf_moe_planes.py` and
+`gguf_dmv_formats.py` producers with owned input/output validation, bounded
+expert staging, project codebooks and an IQ4_XS plane layout.
 These files retain the upstream Apache-2.0 SPDX and copyright notices.
 The bundled [license](src/tensorfold/cuda/sm70/onecat_LICENSE.txt) and
 [provenance notice](src/tensorfold/cuda/sm70/onecat_NOTICE.txt) accompany the
