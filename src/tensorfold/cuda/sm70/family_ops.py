@@ -881,6 +881,83 @@ def _fused(tensor, *, half=True):
     return None
 
 
+
+class PreparedHCWriteback:
+    """Resident operator capability, bound only to actual owned no-graph buffers.
+
+    Generic APIs retain their original dispatch. Buffer adoption establishes
+    disjoint storages and source prefixes once; only changing row/mode/operands
+    and autograd/subclass/view domains are checked at the existing callsites.
+    """
+    def __init__(self, module, device):
+        self.module, self.device = module, torch.device(device)
+        self.writeback = module.writeback
+
+    def bind(self, buffers):
+        tensors = (buffers.h, buffers.streams, buffers.pss, buffers.inj_a, buffers.inj_m,
+                   buffers.g_branch, buffers.g_moe)
+        if (not 0 < buffers.rows <= 256 or any(type(t) is not torch.Tensor or not t.is_contiguous()
+                or t.device != self.device or t.requires_grad or t.is_conj() or t.is_neg() for t in tensors)
+                or buffers.h.dtype != torch.float16 or buffers.h.shape != (buffers.rows, 10240)
+                or buffers.streams.shape != buffers.h.shape or buffers.streams.dtype != torch.float16
+                or buffers.pss.dtype != torch.float32 or buffers.pss.shape != (buffers.rows, 10, 4)
+                or any(t.dtype != torch.float16 or t.shape != (buffers.rows, 4) for t in (buffers.inj_a, buffers.inj_m))
+                or any(t.dtype != torch.float32 or t.numel() != 8 * buffers.rows * 2560 for t in (buffers.g_branch, buffers.g_moe))):
+            raise ValueError('prepared HC writeback differs from actual HC4/D2560/TP8 buffers')
+        spans = [(t.data_ptr(), t.data_ptr() + t.numel() * t.element_size()) for t in tensors]
+        if any(a < d and c < b for index, (a, b) in enumerate(spans) for c, d in spans[index + 1:]):
+            raise ValueError('prepared HC writeback construction requires disjoint owner buffers')
+        return _OwnedHCWriteback(self, tensors, buffers.rows)
+
+
+class _OwnedHCWriteback:
+    def __init__(self, prepared, tensors, rows):
+        self.prepared, self.owners, self.rows = prepared, tensors, rows
+        h, streams, pss, inj_a, inj_m, branch, moe = tensors
+        self.residuals = (h.data_ptr(), streams.data_ptr())
+        self.pss = pss.data_ptr()
+        self.injections = (inj_a.data_ptr(), inj_m.data_ptr())
+        self.branches = (branch.data_ptr(), moe.data_ptr())
+
+    def run(self, h, hout, pss, streams, mode, branch=None, inject=None, y=None, wts=None, block=256):
+        if (type(mode) is not int or mode not in (0, 3) or type(streams) is not int or streams != 4
+                or type(block) is not int or block != 256 or y is not None or wts is not None
+                or mode == 0 and (branch is not None or inject is not None)
+                or type(h) is not torch.Tensor or type(hout) is not torch.Tensor or type(pss) is not torch.Tensor
+                or h.ndim != 2 or not 0 < h.shape[0] <= self.rows or h.shape[1] != 10240
+                or hout.shape != h.shape or pss.shape != (h.shape[0], 10, 4)
+                or h.dtype != torch.float16 or hout.dtype != torch.float16 or pss.dtype != torch.float32
+                or any(t.device != self.prepared.device or not t.is_contiguous() or t.requires_grad
+                       or t.is_conj() or t.is_neg() for t in (h, hout, pss))
+                or h.data_ptr() not in self.residuals or hout.data_ptr() != h.data_ptr() or pss.data_ptr() != self.pss):
+            return False
+        if mode == 3 and (type(branch) is not torch.Tensor or type(inject) is not torch.Tensor
+                or branch.dtype != torch.float32 or branch.shape != (8, h.shape[0], 2560)
+                or inject.dtype != torch.float16 or inject.shape != (h.shape[0], 4)
+                or any(t.device != self.prepared.device or not t.is_contiguous() or t.requires_grad
+                       or t.is_conj() or t.is_neg() for t in (branch, inject))
+                or branch.data_ptr() not in self.branches or inject.data_ptr() not in self.injections):
+            return False
+        # Raw kernels do not publish Tensor mutation metadata. Match each
+        # reference copy_ exactly once, including exact h/hout alias counters.
+        self.prepared.writeback(h, hout, pss, streams, mode, branch, inject, y, wts)
+        if not hout.is_inference():
+            torch.autograd.graph.increment_version(hout)
+        if not pss.is_inference():
+            torch.autograd.graph.increment_version(pss)
+        return True
+
+
+def prepare_owned_hc_writeback(device):
+    device = torch.device(device)
+    if device.type != 'cuda' or torch.cuda.get_device_capability(device) != (7, 0):
+        raise ValueError('owned HC writeback requires actual SM70 preparation')
+    from .family_native import extension
+    module = extension()
+    module.prepare_writeback()  # Force this function's residency BEFORE physical admission.
+    return PreparedHCWriteback(module, device)
+
+
 def hc_writeback(h, hout, pss, streams, mode, branch=None, inject=None, y=None, wts=None, block=256):
     native = _fused(h) if block == 256 else None
     if native is not None:

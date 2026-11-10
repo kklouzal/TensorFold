@@ -65,6 +65,16 @@ def _embed(w: Weights, ids: torch.Tensor, copies: int, out: torch.Tensor) -> tor
     return glue.embed(ids, *w.embed, w.cfg.hidden, copies=copies, out=out)
 
 
+def _hc_writeback(b, h, hout, pss, streams, mode, branch=None, inject=None, y=None, wts=None):
+    # No CUDA capture/capability query on the hot path: the existing execution
+    # owner publishes graph policy, and split is the captured-forward boundary.
+    prepared = getattr(b, 'hc_writeback', None)
+    if (prepared is not None and b.owner_graph_family == 'uncaptured' and b.split is None
+            and prepared.run(h, hout, pss, streams, mode, branch, inject, y, wts)):
+        return
+    return glue.hc_writeback(h, hout, pss, streams, mode, branch=branch, inject=inject, y=y, wts=wts)
+
+
 def hc_block(hc: HC, b: Buffers, R: int, eps: float, streams: int, low: int, mode: int, inject_prev,
              inject_out, h: torch.Tensor, branch=None, y=None, wts=None) -> None:
     """Write the pending branch back into the streams h (in place), then the hyper-connection's read-out: b.mixed [R, D] (+ group sums), and its inject gates into ``inject_out``."""
@@ -76,7 +86,7 @@ def hc_block(hc: HC, b: Buffers, R: int, eps: float, streams: int, low: int, mod
                   branch=branch, inject=inject_prev, y=y, wts=wts)
             _readout_plain(hc, b, h, R, eps, streams, low, inject_out[:R] if hc.inject else None, normed=True)
             return
-    glue.hc_writeback(h[:R], h[:R], b.pss[:R], streams, mode, branch=branch, inject=inject_prev, y=y, wts=wts)
+    _hc_writeback(b, h[:R], h[:R], b.pss[:R], streams, mode, branch=branch, inject=inject_prev, y=y, wts=wts)
     _readout(hc, b, h, R, eps, streams, low, inject_out[:R] if hc.inject else None)
 
 
@@ -525,9 +535,9 @@ def _writeback(h: torch.Tensor, b: Buffers, R: int, c, pending, *, pss=None) -> 
     mode, a, wts, inj = pending
     pss = b.pss[:R] if pss is None else pss
     if mode == 2:
-        glue.hc_writeback(h[:R], h[:R], pss, c.streams, 2, inject=inj[:R], y=a, wts=wts)
+        _hc_writeback(b, h[:R], h[:R], pss, c.streams, 2, inject=inj[:R], y=a, wts=wts)
     else:
-        glue.hc_writeback(h[:R], h[:R], pss, c.streams, mode, branch=a, inject=inj[:R])
+        _hc_writeback(b, h[:R], h[:R], pss, c.streams, mode, branch=a, inject=inj[:R])
 
 
 def _pre_moe(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int, pending, *, mtp: bool = False,

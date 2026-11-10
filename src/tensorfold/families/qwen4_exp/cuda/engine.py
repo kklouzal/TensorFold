@@ -651,6 +651,11 @@ class FlashNextEngine:
                              if self._retention_native_runtime is not None else 0)
         gather = ((lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else
                   (lambda values: gather_ints(torch, self.comm.all_gather, values, world=tp))) if tp > 1 else None
+        hc_writeback_eligible = (self._owned_expert_requested and graphs is False and dspark_model_dir is None
+            and dflash2_model_dir is None and self.sm70_profile == 'reference'
+            and (owner_specification is None or owner_specification['graph_family'] == 'uncaptured'
+                 and owner_specification.get('reference_arithmetic') is None)
+            and int(text.get('hc_count', 4)) == 4 and int(text['hidden_size']) == 2560)
         if sm70 and gather is not None:
             # RAM placement adds collectives before final capacity agreement.
             # All GGUF ranks must agree on that schedule before taking a branch.
@@ -661,7 +666,7 @@ class FlashNextEngine:
                             0 if self._owned_expert_gate_up_requested is None else self._owned_expert_gate_up_requested.rows,
                             int(self._owned_expert_requested),
                             int(self._owned_expert_requested and self._owned_expert_admin_requested),
-                            int(self._reference_owner_tiles_requested)])
+                            int(self._reference_owner_tiles_requested), int(hc_writeback_eligible)])
             if any(row != modes[0] for row in modes[1:]):
                 raise RuntimeError("tensor-parallel ranks selected different history/session or expert placement policies")
         if self._owned_expert_requested and self._owned_expert_plan is None:
@@ -671,6 +676,29 @@ class FlashNextEngine:
             raise ValueError("private owned qualification requires actual SM70 and a Volta-enabled PyTorch build")
         if execution_rows is not None and (type(execution_rows) is not int or execution_rows < each):
             raise ValueError("execution rows must fit one complete speculative verification window")
+
+        # A candidate operator island, not a family/profile switch. Resolve and
+        # force function residency before the ordinary physical admission sees
+        # free memory. Other models/methods/graphs retain their original route.
+        hc_writeback_prepared = None
+        if hc_writeback_eligible:
+            from tensorfold.cuda.sm70.family_ops import prepare_owned_hc_writeback
+            from .execution_identity import _phase, _retire_store, _fatal
+            channel = 'tensorfold/flashnext/hc-writeback'
+            def prepare_writeback():
+                nonlocal hc_writeback_prepared
+                hc_writeback_prepared = prepare_owned_hc_writeback(torch.device('cuda', torch.cuda.current_device()))
+                return {'module': hc_writeback_prepared.module.__name__, 'operation': 'writeback'}
+            hc_prepared_rows = _phase(self, channel, 'prepare', prepare_writeback, may_refuse=False)
+            if any(row != hc_prepared_rows[0] for row in hc_prepared_rows):
+                error = RuntimeError('owned HC writeback preparation differs across ranks')
+                _fatal(self, error)
+                raise error
+            try:
+                _retire_store(self, channel, stages=('prepare',))
+            except BaseException as error:
+                _fatal(self, error)
+                raise
 
         def row_envelope(count):
             return min(count * each, execution_rows if execution_rows is not None else 32) if adaptive_sessions else (
@@ -1436,6 +1464,8 @@ class FlashNextEngine:
             }
         if self._owned_expert_plan is not None:
             self._owned_expert_plan.bind(w)
+            if hc_writeback_prepared is not None:
+                w.meta['hc_writeback_prepared'] = hc_writeback_prepared
             self.capacity_plan["expert_parallel"]["implementation"] = w.meta["owned_expert_plan"].identity[0]
         if self.position_profile is not None:
             from ..position_profile import bind_position_profile

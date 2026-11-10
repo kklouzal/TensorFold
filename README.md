@@ -54,6 +54,15 @@ and 42 owner-fixture cases, including four eight-rank GPU cases and all 32
 child origins, with zero skips. This bounded RN-H1/toy-Q8 graph evidence does
 not establish full-model quality, full-window capacity or throughput. The trial remains unselected and existing defaults are unchanged;
 the four Q03 numerical failures receive no waiver.
+An isolated SM70 top-512 selector candidate adapts 1Cat's integer radix selection
+to existing FP32 scores, retaining numeric tie order and ascending logical IDs.
+Its 24 SM70 cases pass. It is not connected to serving dispatch; integrated
+serving and performance qualification remain pending.
+An owned SM70 HC writeback/PSS candidate combines that operation into one native
+launch while preserving the generic route. Its CPU controls and 13 strict SM70
+cases pass. A 52-input/four-step model replay matched all 993,280 FP32 logit
+values bit-for-bit against the RN-H12 control; broader quality, performance
+qualification and production adoption remain pending.
 The isolated C06 preparation candidate passed 163 installed CPU and 50 SM70
 cases against unchanged indexed references. It is not applied canonically;
 full-method/context/resource, model-quality and performance gates remain open.

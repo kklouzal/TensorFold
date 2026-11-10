@@ -212,6 +212,12 @@ class Buffers:
                     raise ValueError("prepared owner workspace differs from the actual model/rank execution envelope")
                 self.history_owner = workspace
 
+        self.hc_writeback = None
+        prepared_writeback = w.meta.get('hc_writeback_prepared')
+        if (prepared_writeback is not None and bf == torch.float16 and c.streams == 4
+                and c.hidden == 2560 and 0 < rows <= 256 and world == 8):
+            self.hc_writeback = prepared_writeback.bind(self)
+
 
 def _rows(t: torch.Tensor, rows: int, keep: int) -> torch.Tensor:
     """``t`` reallocated with ``rows`` rows, its first ``keep`` copied."""

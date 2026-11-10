@@ -12,6 +12,8 @@ pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (7, 0), re
 
 
 def invoke(name, native, *args, **kwargs):
+    if name == 'hc_writeback' and not native:
+        return ops._reference['hc_writeback'](*args, **kwargs)
     with patch.object(ops, "_NATIVE_FAMILY", native):
         return getattr(ops, name)(*args, **kwargs)
 

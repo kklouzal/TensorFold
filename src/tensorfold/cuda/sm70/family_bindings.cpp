@@ -7,10 +7,12 @@
 #include <optional>
 #include <algorithm>
 #include <limits>
+#include <cstdint>
 
 using T = at::Tensor;
 using O = std::optional<T>;
 
+void family_writeback_prepare_cuda();
 void family_writeback_cuda(const T&, T&, T&, int, int, const O&, const O&, const O&, const O&);
 void family_normed_cuda(const T&, const T&, const T&, T&, T&, int, float);
 void family_act_cuda(const T&, T&, T&, const O&, int, int);
@@ -35,6 +37,7 @@ void family_pool_cuda(const T&, T&, const T&, const T&, const T&, const O&, int,
 void family_pool_staged_cuda(const T&, const T&, T&, const T&, const T&, const T&, const O&,
                              int, int, int, float, float, const O&, const O&, int, const O&);
 void family_ring_publish_cuda(const T&, T&, const T&, int, int, const O&, const O&, int, const O&);
+void family_qsa_select512_cuda(const T&, const T&, T&, T&);
 void family_qsa_dense_cuda(const T&, T&, T&, int);
 void family_qsa_rows_cuda(const T&, const T&, const T&, T&, T&, T&, T&, int, int, int, int);
 
@@ -88,6 +91,20 @@ void writeback(const T& h, T hout, T pss, int streams, int mode, O branch, O inj
             TORCH_CHECK((mode == 1 && branch->sizes() == at::IntArrayRef({rows, dims}))
                         || (mode >= 3 && branch->dim() == 3 && branch->size(1) == rows && branch->size(2) == dims
                             && branch->size(0) > 0), "HC branch geometry");
+        }
+    }
+    // Exact residual alias is supported; partial aliases and parallel writes
+    // overlapping a source/PSS are not a valid native program.
+    at::assert_no_partial_overlap(hout, h);
+    at::assert_no_overlap(pss, h);
+    at::assert_no_overlap(pss, hout);
+    if (mode) {
+        at::assert_no_overlap(hout, *inject); at::assert_no_overlap(pss, *inject);
+        if (mode == 2) {
+            at::assert_no_overlap(hout, *y); at::assert_no_overlap(hout, *wts);
+            at::assert_no_overlap(pss, *y); at::assert_no_overlap(pss, *wts);
+        } else {
+            at::assert_no_overlap(hout, *branch); at::assert_no_overlap(pss, *branch);
         }
     }
     c10::cuda::CUDAGuard guard(h.device()); family_writeback_cuda(h, hout, pss, streams, mode, branch, inject, y, wts);
@@ -427,7 +444,58 @@ void qsa_rows(const T& query, const T& pooled, const T& position, T sparse, T co
     family_qsa_rows_cuda(query, pooled, position, sparse, counts, ids, scores, rows, ratio, budget, blocks);
 }
 
+// Candidate-only complete-score selection. Callers own preallocated, disjoint
+// operands through current-stream/graph completion; no score calculation here.
+namespace {
+struct SelectionSpan { uintptr_t begin, end; };
+SelectionSpan selection_span(const T& tensor, int64_t elements) {
+    TORCH_CHECK(tensor.storage_offset() >= 0 && elements >= 0, "QSA selection storage offset/extent");
+    const uint64_t stored = tensor.storage().nbytes() / tensor.element_size();
+    const uint64_t offset = uint64_t(tensor.storage_offset());
+    TORCH_CHECK(offset <= stored && uint64_t(elements) <= stored - offset, "QSA selection backing storage too small");
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(tensor.data_ptr());
+    TORCH_CHECK(uint64_t(elements) <= (std::numeric_limits<uintptr_t>::max() - begin) / tensor.element_size(),
+                "QSA selection address extent overflow");
+    return {begin, begin + uintptr_t(elements) * tensor.element_size()};
+}
+int64_t selection_matrix_extent(const T& tensor, int64_t rows, int64_t columns) {
+    TORCH_CHECK(tensor.stride(1) == 1 && tensor.stride(0) >= columns
+                && tensor.stride(0) <= std::numeric_limits<int64_t>::max() / std::max<int64_t>(rows, 1),
+                "QSA selection requires nonoverlapping positive row/contiguous column strides");
+    return rows ? (rows - 1) * tensor.stride(0) + columns : 0;
+}
+bool selection_overlap(SelectionSpan a, SelectionSpan b) {
+    return a.begin < a.end && b.begin < b.end && a.begin < b.end && b.begin < a.end;
+}
+}
+void qsa_select512(const T& scores, const T& lengths, T output, T status) {
+    TORCH_CHECK(scores.is_cuda() && scores.scalar_type() == at::kFloat && scores.layout() == at::kStrided
+                && scores.dim() == 2 && !scores.requires_grad(), "QSA selection requires CUDA Float32 score rows");
+    const int64_t rows = scores.size(0), columns = scores.size(1);
+    TORCH_CHECK(rows <= 256 && columns > 0 && columns <= 65537,
+                "QSA selection supports the candidate owner envelope R0..256/1..65537 pooled columns (full context plus anchor)");
+    for (const auto* tensor : std::initializer_list<const T*>{&scores, &lengths, &output, &status})
+        TORCH_CHECK(tensor->is_cuda() && tensor->device() == scores.device() && tensor->layout() == at::kStrided
+                    && !tensor->is_conj() && !tensor->is_neg(), "QSA selection device/plain-view contract");
+    TORCH_CHECK(lengths.scalar_type() == at::kInt && lengths.dim() == 1 && lengths.size(0) == rows && lengths.is_contiguous()
+                && status.scalar_type() == at::kInt && status.dim() == 1 && status.size(0) == rows && status.is_contiguous()
+                && output.scalar_type() == at::kInt && output.dim() == 2 && output.size(0) == rows && output.size(1) == 512,
+                "QSA selection lengths/status/output geometry or dtype");
+    const auto a = selection_span(scores, selection_matrix_extent(scores, rows, columns));
+    const auto b = selection_span(lengths, rows);
+    const auto c = selection_span(output, selection_matrix_extent(output, rows, 512));
+    const auto d = selection_span(status, rows);
+    TORCH_CHECK(!selection_overlap(a, c) && !selection_overlap(a, d) && !selection_overlap(b, c)
+                && !selection_overlap(b, d) && !selection_overlap(c, d), "QSA selection read/write spans must be disjoint");
+    c10::cuda::CUDAGuard guard(scores.device());
+    const auto* prop = at::cuda::getDeviceProperties(scores.get_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0 && prop->maxThreadsPerBlock >= 1024,
+                "QSA selection candidate requires SM70/1024-thread blocks");
+    family_qsa_select512_cuda(scores, lengths, output, status);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("prepare_writeback", &family_writeback_prepare_cuda);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
     m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);
@@ -435,4 +503,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("pool", &pool); m.def("pool_staged", &pool_staged); m.def("ring_publish", &ring_publish);
     m.def("qsa_dense", &qsa_dense);
     m.def("qsa_rows", &qsa_rows);
+    m.def("qsa_select512", &qsa_select512);
 }

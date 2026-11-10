@@ -166,6 +166,18 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## SM70 QSA selection
+
+`src/tensorfold/cuda/sm70/qsa_select512.cuh` adapts the general 1024-thread
+lexicographic selection kernel from
+[1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM/blob/1b57260a834d40faa32bfc6ac18f050414a8f042/csrc/qsa_lexicographic_topk.cuh),
+revision `1b57260a834d40faa32bfc6ac18f050414a8f042`, Apache License 2.0,
+Copyright contributors to the vLLM project. TensorFold fixes the selection size
+at 512, supports padded output rows, validates causal lengths, and reports
+invalid lengths or nonfinite valid-prefix scores through a device status.
+The header records the modifications; the license is in
+`LICENSES/Apache-2.0.txt`.
+
 ## Flash Next CUDA image integration
 
 The multimodal rotary and image-feature integration is adapted from MiaAI-Lab's

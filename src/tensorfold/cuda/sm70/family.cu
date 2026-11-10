@@ -10,6 +10,7 @@
 #include <cub/block/block_radix_sort.cuh>
 #include "torch_reduce.cuh"
 #include "rotorquant_q4.cuh"
+#include "qsa_select512.cuh"
 
 using T = at::Tensor;
 using O = std::optional<T>;
@@ -72,8 +73,12 @@ __global__ void writeback_kernel(const __half* h, __half* out, float* pss, int r
     const int row = blockIdx.x / ((dims / 256) * streams);
     const int col = chunk * 256 + threadIdx.x;
     const int64_t at = int64_t(row) * streams * dims + stream * dims + col;
-    float value = __half2float(h[at]);
-    if (mode) {
+    // Mode0 is copy_, not a Half->Float->Half conversion: preserve every
+    // residual bit, including signed zero and signaling-NaN payloads.
+    float value = 0.f;
+    if (!mode) out[at] = __ushort_as_half(__half_as_ushort(h[at]));
+    else {
+        value = __half2float(h[at]);
         float update = 0.f;
         if (mode == 1) update = read(branch, bf, int64_t(row) * dims + col);
         else if (mode == 2) {
@@ -86,8 +91,8 @@ __global__ void writeback_kernel(const __half* h, __half* out, float* pss, int r
         }
         float addition = half_round(half_round(update) * __half2float(inject[row * streams + stream]));
         value = half_round(value + addition);
+        out[at] = __float2half_rn(value);
     }
-    out[at] = __float2half_rn(value);
     __syncthreads();
     const int64_t group_base = int64_t(row) * streams * dims + stream * dims + chunk * 256;
     float sum = torch_sum(HalfSquareReader{out + group_base}, 256, rows * streams * (dims / 256), shared);
@@ -692,6 +697,10 @@ const void* optional_ptr(const O& x) { return x ? x->data_ptr() : nullptr; }
 int blocks(int64_t count) { return int(std::min<int64_t>((count + THREADS - 1) / THREADS, 65535)); }
 }  // namespace
 
+void family_writeback_prepare_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, writeback_kernel));
+}
 void family_writeback_cuda(const T& h, T& out, T& pss, int streams, int mode,
                            const O& branch, const O& inject, const O& y, const O& weights) {
     int rows = h.size(0), dims = h.size(1) / streams;
@@ -881,4 +890,13 @@ void family_qsa_rows_cuda(const T& query, const T& pooled, const T& position, T&
         else launch(qsa_rows_kernel<16>);
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void family_qsa_select512_cuda(const T& scores, const T& lengths, T& output, T& status) {
+    if (scores.size(0)) {
+        tensorfold::sm70::qsa_select512::kernel<<<scores.size(0), 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+            scores.data_ptr<float>(), lengths.data_ptr<int32_t>(), output.data_ptr<int32_t>(), status.data_ptr<int32_t>(),
+            uint32_t(scores.size(1)), uint64_t(scores.stride(0)), uint64_t(output.stride(0)));
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+    }
 }
