@@ -1,0 +1,17 @@
+1CatAI/1Cat-vLLM source reuse, Apache-2.0
+Commit 1b57260a834d40faa32bfc6ac18f050414a8f042
+Copyright contributors to the vLLM project (original SPDX preserved).
+
+onecat_dmv13_core.cuh is byte-identical to upstream
+csrc/sm70_turbomind/ops/gguf_dmv13_core.cuh (Git blob
+30d368ccc7f5cb3c94972494fb5130af524511ab).
+onecat_moe_gu.cu derives its expert-grouped kernel from upstream
+csrc/sm70_turbomind/ops/gguf_moe_gu_sm70.cu (Git blob
+a4a83d36dfe790956f427d517e7b7d0f2ca046f2).
+TensorFold modifications: E256 global-ID remapping; distinct-ID validation;
+independent shared/foreign slots; C1..32 via bounded8-token panels; no Q8_1;
+separate original1Cat earlyHalf and TensorFold FP32 activation epilogues;
+owned typed/extent/alias/device boundaries and startup native preparation.
+The other new adapters/tests are TensorFold-owned. No upstream NOTICE file
+applies to these paths at the pinned revision (complete tree audit).
+See onecat_LICENSE.txt for the complete Apache License2.0.

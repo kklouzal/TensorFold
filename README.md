@@ -2361,6 +2361,10 @@ Add the remote only once; merge `upstream/python-0.6`; upstream `main` is a diff
 
 TensorFold is Apache-2.0 from 0.6.0; see [LICENSE](LICENSE), [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md). Earlier code retains its [MIT notice](LICENSES/MIT.txt). Model weights, draft models and third-party components keep their own license terms.
 
+The 1Cat SM70 expert component includes its Apache-2.0 license and provenance
+notice in package data alongside the native sources. Preserve these notices
+when redistributing that component; inclusion does not select a serving path.
+
 ## Contributors
 
 Thank you to everyone who has sent TensorFold a pull request, a measurement or a bug report:

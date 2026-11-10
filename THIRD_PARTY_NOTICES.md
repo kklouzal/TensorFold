@@ -1,5 +1,17 @@
 # Third-party notices
 
+## 1Cat SM70 GGUF expert component
+
+`src/tensorfold/cuda/sm70/onecat_dmv13_core.cuh` retains the original header
+from [1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM/tree/1b57260a834d40faa32bfc6ac18f050414a8f042),
+revision `1b57260a834d40faa32bfc6ac18f050414a8f042`.
+`onecat_moe_gu.cu` adapts its grouped expert kernel with owned expert-ID
+remapping, bounded panels and two explicitly selected activation epilogues.
+These files retain the upstream Apache-2.0 SPDX and copyright notices.
+The bundled [license](src/tensorfold/cuda/sm70/onecat_LICENSE.txt) and
+[provenance notice](src/tensorfold/cuda/sm70/onecat_NOTICE.txt) accompany the
+component in package data. Inclusion does not qualify or select a serving path.
+
 TensorFold uses [MLX](https://github.com/ml-explore/mlx) and
 [mlx-lm](https://github.com/ml-explore/mlx-lm), MIT License, Copyright © 2023 Apple Inc.
 They are installed as dependencies.
