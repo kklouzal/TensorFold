@@ -71,6 +71,8 @@ class DriverTests(unittest.TestCase):
         self.sync_error = None
         self.root_override = None
         self.module_id = self.spec['modules'][0]
+        self.subreports = []
+        self.extra_xml_tests = 0
         self.session = types.SimpleNamespace(shouldstop=None)
         cuda = types.SimpleNamespace(device_count=lambda: 2,
             get_device_properties=lambda i: types.SimpleNamespace(uuid=self.spec['UUIDs'][i]),
@@ -92,18 +94,71 @@ class DriverTests(unittest.TestCase):
         self.events.append('pytest')
         guard = plugins[0]
         module = types.SimpleNamespace(path=self.test, nodeid=self.module_id)
-        item = types.SimpleNamespace(getparent=lambda kind: module)
+        item = types.SimpleNamespace(getparent=lambda kind: module, nodeid=self.module_id + '::test_contract')
         guard.pytest_collection_modifyitems(self.session, types.SimpleNamespace(rootpath=self.root_override or self.source), [item])
         if self.primary is not None:
             raise self.primary
+        for report in self.subreports:
+            guard.pytest_runtest_logreport(report)
         if self.failure is not None:
             guard.pytest_runtest_logreport(types.SimpleNamespace(failed=True, nodeid=self.module_id + '::test_contract',
                                                                 when='call', longrepr=self.failure))
         if self.mutate is not None:
             self.mutate()
-        suite = ET.Element('testsuite', tests='1', errors='0', failures=str(int(self.code != 0)), skipped=str(self.skips))
+        suite = ET.Element('testsuite', tests=str(1 + len(self.subreports) + self.extra_xml_tests),
+                           errors='0', failures=str(int(self.code != 0)), skipped=str(self.skips))
+        ET.SubElement(suite, 'testcase', name='test_contract')
         ET.ElementTree(suite).write(self.evidence / 'named-suite.xml')
         return self.code
+
+    def test_typed_subtests_reconcile_reports_collection_and_junit_without_extra_items(self):
+        class SubtestReport(types.SimpleNamespace):
+            pass
+        self.subreports = [SubtestReport(failed=False, nodeid=self.module_id + '::test_contract', when='call')
+                           for _ in range(2)]
+        with mock.patch.dict(sys.modules, {'_pytest.subtests': types.SimpleNamespace(SubtestReport=SubtestReport)}):
+            self.assertEqual(self.execute(), 0)
+        result = self.outcome()
+        self.assertEqual(result['collected_items'], 1)
+        self.assertEqual(result['reported_subtests'], 2)
+        self.assertEqual(result['JUnit']['tests'], '3')
+
+    def test_unobserved_extra_xml_count_is_still_rejected(self):
+        self.extra_xml_tests = 1
+        with self.assertRaisesRegex(RuntimeError, 'JUnit test count'):
+            self.execute()
+
+    def test_failed_subtest_cannot_be_overruled_by_zero_exit_or_junit(self):
+        class SubtestReport(types.SimpleNamespace):
+            pass
+        self.subreports = [SubtestReport(failed=True, nodeid=self.module_id + '::test_contract',
+                                        when='call', longrepr='owning subtest failure')]
+        with mock.patch.dict(sys.modules, {'_pytest.subtests': types.SimpleNamespace(SubtestReport=SubtestReport)}):
+            self.assertEqual(self.execute(), 1)
+        self.assertTrue(self.outcome()['first_failure_observed'])
+
+    def test_subtest_must_belong_to_a_collected_call(self):
+        class SubtestReport(types.SimpleNamespace):
+            pass
+        for nodeid, when in [('uncollected::test', 'call'), (self.module_id + '::test_contract', 'setup')]:
+            with self.subTest(nodeid=nodeid, when=when):
+                guard = driver.Guard(self.spec, self.source, types.SimpleNamespace(), self.runtime.torch,
+                                     self.runtime.pytest)
+                guard.collected_nodeids = {self.module_id + '::test_contract'}
+                with mock.patch.dict(sys.modules, {'_pytest.subtests': types.SimpleNamespace(SubtestReport=SubtestReport)}):
+                    with self.assertRaisesRegex(RuntimeError, 'owning collected call'):
+                        guard.pytest_runtest_logreport(SubtestReport(nodeid=nodeid, when=when, failed=False))
+                self.assertEqual(guard.reported_subtests, 0)
+
+    def test_junit_actual_case_membership_count_must_match_collection(self):
+        path = self.evidence / 'counts.xml'
+        for count in (0, 2):
+            suite = ET.Element('testsuite', tests='2', errors='0', failures='0', skipped='0')
+            for _ in range(count):
+                ET.SubElement(suite, 'testcase')
+            ET.ElementTree(suite).write(path)
+            with self.assertRaisesRegex(RuntimeError, 'JUnit test count'):
+                driver._junit(path, 1, 1)
 
     def publish(self, path, value):
         Path(path).write_text(json.dumps(value))

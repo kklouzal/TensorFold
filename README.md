@@ -2518,6 +2518,11 @@ the original framework/media bytes and build receipts; see the
 Software identity, actual V100 execution and compiler/model qualification remain
 separate gates.
 
+The installed-component verifier reconciles pytest 9's JUnit totals with actual
+typed subtest reports and separately checks the collected testcase count.
+Subtest failures and skips remain qualification failures; an unexplained count
+difference is rejected. This reporting support does not qualify model performance.
+
 The source audit classifies the observed non-executable shared-anonymous
 `/dev/zero` backing as runtime data. Code/provider/source artifact retirement
 remains a fatal software-integrity failure; the

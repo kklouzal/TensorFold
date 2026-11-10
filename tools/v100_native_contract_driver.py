@@ -277,6 +277,8 @@ class Guard:
         self.session = None
         self.first_report = None
         self.collected = 0
+        self.collected_nodeids = set()
+        self.reported_subtests = 0
 
     def sample(self, label):
         if self.sampling_failed or self.context_fatal:
@@ -323,9 +325,19 @@ class Guard:
         if set(modules) != set(self.spec['modules']) or not items:
             raise RuntimeError('pytest collected a different named module set or no tests')
         self.collected = len(items)
+        self.collected_nodeids = {item.nodeid for item in items}
         self.evidence.save('collection-identities.json', {'root': str(config.rootpath), 'count': len(items), 'modules': modules})
 
     def pytest_runtest_logreport(self, report):
+        # Pytest 9's builtin subtests emit additional call reports. Its JUnit
+        # counter includes them, while retaining one testcase per collected
+        # item. Count actual typed reports, never an inferred XML difference.
+        module = sys.modules.get('_pytest.subtests')
+        subtest_type = getattr(module, 'SubtestReport', None)
+        if subtest_type is not None and isinstance(report, subtest_type):
+            if report.when != 'call' or report.nodeid not in self.collected_nodeids:
+                raise RuntimeError('subtest report has no owning collected call')
+            self.reported_subtests += 1
         if report.failed:
             first = not self.failed
             if first:
@@ -828,7 +840,7 @@ def _verification_receipt(spec, runtime, root, initial):
             'torch_cuda': runtime.torch.version.cuda}}
 
 
-def _junit(path, collected):
+def _junit(path, collected, reported_subtests=0):
     suites = list(ET.parse(path).getroot().iter('testsuite'))
     if len(suites) != 1:
         raise RuntimeError('exactly one owning pytest suite is required')
@@ -836,7 +848,9 @@ def _junit(path, collected):
     for key in ('tests', 'errors', 'failures', 'skipped'):
         if not suite.get(key, '').isdecimal():
             raise ValueError('JUnit counter is absent or invalid: ' + key)
-    if int(suite['tests']) != collected or collected <= 0:
+    if (type(reported_subtests) is not int or reported_subtests < 0
+            or int(suite['tests']) != collected + reported_subtests or collected <= 0
+            or len(list(suites[0].iter('testcase'))) != collected):
         raise RuntimeError('JUnit test count differs from actual collection')
     return suite
 
@@ -949,7 +963,7 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
             except BaseException as error:
                 errors.append(error)
             try:
-                suite = _junit(evidence / 'named-suite.xml', guard.collected)
+                suite = _junit(evidence / 'named-suite.xml', guard.collected, guard.reported_subtests)
             except BaseException as error:
                 errors.append(error)
         sys.path[:] = old_path
@@ -967,6 +981,8 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
                   'post_errors': [_error('post-check', error) for error in errors], 'diagnostic_errors': diagnostic_errors,
                   'context_fatal': bool(guard is not None and guard.context_fatal),
                   'first_failure_observed': bool(guard is not None and guard.failed),
+                  'collected_items': None if guard is None else guard.collected,
+                  'reported_subtests': None if guard is None else guard.reported_subtests,
                   'source_after_match': source_after_match,
                   'source_commit': spec['source_commit'], 'image_id_declared': spec['image_id'], 'modules': spec['modules'],
                   'scope': 'Installed named components only; no full admission/model/quality/P3 qualification.'}
