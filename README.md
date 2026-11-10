@@ -6,6 +6,11 @@ SC117/V100 is the immediate delivery priority while selected existing profiles,
 including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
 separates requested, source-implemented, qualified and effective behavior.
 
+The [short V100 diagnostic lifecycle helper](tools/v100_short_container.py)
+retains the owned container ID before logging and retires clients before
+reporting failures. Its 11 CPU fault controls pass; this does not qualify model
+quality or serving performance.
+
 The [branch consolidation](docs/branch-consolidation.md) hardens benchmark
 publication, new tool-definition validation and optional segment-cache failure
 accounting, removes an unused normal-round FIFO snapshot, and adds a separate
