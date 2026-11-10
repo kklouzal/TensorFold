@@ -17,6 +17,14 @@ a799ab3425af40527ed289d5535bb01da09c9ff4) and gguf_dmv_formats.py
 (Git blob fd0580f8ffc1311ad43640836efc0f7a577732de), with owned E256/lane160
 validation, bounded expert staging, existing project codebooks and IQ4_XS
 plane preparation. The remaining wrappers/tests are TensorFold-owned.
+onecat_gpu_packing.cu implements that pinned GU plane representation for
+active E256 experts with unique writers and caller-owned GPU frame storage;
+the original CPU producer is retained as an independent wire-layout oracle.
+onecat_moe_down.cu adapts upstream gguf_dp4a_sm70.cu, gguf_q8_1.cuh and
+gguf_dp4a.cuh at the same pinned revision for explicit Q8_1/integer-dot
+methods, owned E256 routing, bounded scratch and separate reduction contracts.
+The integer-dot formulas and Q8_1 layout follow GGML/llama.cpp (MIT);
+the complete notice is retained in LICENSES/GGML-MIT.txt.
 No upstream NOTICE file
 applies to these paths at the pinned revision (complete tree audit).
 See onecat_LICENSE.txt for the complete Apache License2.0.

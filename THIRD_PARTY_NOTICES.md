@@ -10,6 +10,13 @@ remapping, bounded panels and two explicitly selected activation epilogues.
 `onecat_moe_packing.py` adapts the pinned `gguf_moe_planes.py` and
 `gguf_dmv_formats.py` producers with owned input/output validation, bounded
 expert staging, project codebooks and an IQ4_XS plane layout.
+`onecat_gpu_packing.cu` implements the same pinned plane representation for
+active owned experts on the GPU, with caller-owned reusable storage; its
+CPU producer remains the independent wire-layout reference.
+`onecat_moe_down.cu` adapts the pinned `gguf_dp4a_sm70.cu`, `gguf_q8_1.cuh`
+and `gguf_dp4a.cuh` Q8_1 and integer-dot path with owned E256 routing,
+scratch and explicit reduction methods. Its GGML/llama.cpp integer formulas
+retain the [GGML MIT notice](LICENSES/GGML-MIT.txt).
 These files retain the upstream Apache-2.0 SPDX and copyright notices.
 The bundled [license](src/tensorfold/cuda/sm70/onecat_LICENSE.txt) and
 [provenance notice](src/tensorfold/cuda/sm70/onecat_NOTICE.txt) accompany the
