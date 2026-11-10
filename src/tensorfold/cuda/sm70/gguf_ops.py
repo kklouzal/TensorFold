@@ -170,3 +170,48 @@ def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, lo
         up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
         width, first, experts, shared, local, activation, out, *extra)
     return out
+
+
+@dataclass(frozen=True)
+class _OwnedDownFromActivation:
+    """Cold-resolved down/publication callable; never computes routed GU.
+
+    Activation is exclusively prepared GU scratch, with slot10's first Half
+    reserved as immutable +0/poison row status. It is a read operand here.
+    The caller computes the independent original shared output after GU init,
+    retains every input/scratch/output through current-stream completion and
+    graph replay, and serializes access. Failed work is not reusable before
+    positive retirement; this helper neither retries nor rolls back GPU writes.
+    """
+    module: object
+    device: object
+
+    def run(self, x, picks, gate, up, down, *, first, shared, local, activation, out, grouping):
+        operands = (x, picks, gate.data, up.data, down.data, shared, local, activation, out, grouping)
+        if any(type(t) is not torch.Tensor for t in operands):
+            raise TypeError("supplied GU requires plain Tensor operands")
+        if x.device != self.device:
+            raise ValueError("supplied GU device differs from cold preparation")
+        if type(first) is not int or first not in (0, 256):
+            raise ValueError("supplied GU requires E256 groupfirst0 or256")
+        self.module.experts_owned_from_activation(x, picks,
+            gate.data, gate.ggml_type, gate.column_offset,
+            up.data, up.ggml_type, up.column_offset,
+            down.data, down.ggml_type, down.column_offset,
+            160, first, 512, shared, local, activation, out, grouping)
+        # Three writable arenas; activation/weights are read-only in this call.
+        torch.autograd.graph.increment_version((local, grouping, out))
+        return out
+
+
+def prepare_owned_from_activation(device):
+    """Resolve all current grouped-down/publication functions before admission."""
+    device = torch.device(device)
+    if device.type != "cuda" or device.index is None:
+        raise ValueError("explicit indexed CUDA device required")
+    with torch.cuda.device(device):
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("supplied GU preparation requires an uncaptured stream")
+        module = extension()
+        module.prepare_owned_from_activation()
+    return _OwnedDownFromActivation(module, device)

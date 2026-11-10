@@ -5,6 +5,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
+#include <c10/core/InferenceMode.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <mma.h>
@@ -1163,6 +1164,22 @@ __global__ void publish_owned(const Index* global, const int64_t* local, const f
     }
 }
 
+// Private supplied-GU activation ABI reserves shared slot10 as immutable row
+// status (+0 valid, any other representation poisoned). Old shared/down/publish
+// arithmetic is unchanged; publish the failure even for all-foreign rows.
+template <bool F32>
+__global__ void publish_activation_status(const __half* activation, void* output, int64_t count) {
+    for (int64_t at=int64_t(blockIdx.x)*blockDim.x+threadIdx.x; at<count;
+         at+=int64_t(gridDim.x)*blockDim.x) {
+        const int64_t row=at/(11*2560);
+        if (__half_as_ushort(activation[(row*11+10)*160]) != 0) {
+            const float value=__int_as_float(0x7fffffff);
+            if constexpr(F32) static_cast<float*>(output)[at]=value;
+            else static_cast<__half*>(output)[at]=__float2half_rn(value);
+        }
+    }
+}
+
 // GPU-only bounded counting/grouping. Atomic arrival order chooses columns,
 // never slot order or any arithmetic reduction; every pair scatters back alone.
 struct OwnedGrouping {
@@ -1306,7 +1323,8 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     const at::Tensor& up, int64_t up_kind, int64_t up_offset,
     const at::Tensor& down, int64_t down_kind, int64_t down_offset,
     int64_t width, int64_t first, int64_t global_experts, const at::Tensor& shared,
-    at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping, int64_t gate_up_rows = 0) {
+    at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping, int64_t gate_up_rows = 0,
+    bool supplied_activation = false) {
     TORCH_CHECK(gate_up_rows == 0 || gate_up_rows == 2 || gate_up_rows == 4,
                 "private grouped gate/up requires exactly 2 or 4 rows");
     TORCH_CHECK(gate_up_rows == 0 || grouping.defined(), "private grouped gate/up requires grouping scratch");
@@ -1367,6 +1385,19 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
         group.total = ptr;
         group.max_tiles = tiles;
     }
+    if (supplied_activation) {
+        TORCH_CHECK(grouping.defined() && !gate_up_rows && dims==2560 && global_experts==512
+                    && experts==256 && (first==0 || first==256) && picks.size(1)==11
+                    && x.size(0)>=1 && x.size(0)<=32,
+                    "supplied GU requires grouped SC117 C1..32/TP8/ETP4 E256/top10+shared");
+        const at::Tensor* operands[] = {&x,&picks,&gate,&up,&down,&shared,&local,&activation,&output,&grouping};
+        for (const auto* tensor : operands)
+            TORCH_CHECK(!tensor->requires_grad() && !tensor->is_neg() && !tensor->is_conj(),
+                        "supplied GU requires plain non-autograd tensors");
+        for (const auto* tensor : {&local,&output,&grouping})
+            TORCH_CHECK(!tensor->is_inference() || c10::InferenceMode::is_enabled(),
+                        "inference output mutation outside inference mode");
+    }
     if (!picks.numel()) return;
     auto stream = at::cuda::getCurrentCUDAStream();
     const int blocks = int((picks.numel() + 127) / 128);
@@ -1387,6 +1418,7 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     // No mapped ID equals experts, so shared pointers are never dereferenced.
     // Existing FP16 input storage supplies a valid pointer without a dummy bank.
+    if (!supplied_activation) {
     if (gate_up_rows) {
         auto act = reinterpret_cast<__half*>(activation.data_ptr());
         const int init_blocks = std::min((pairs * 160 + 127) / 128, 65535);
@@ -1402,6 +1434,7 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     } else {
         run_experts<int64_t>(x, local, g, u, d, x, x, x, output, activation,
                              dims, int(width), int(picks.size(1)), experts, true, true, dims == 2560, grouping.defined());
+    }
     }
     if (grouping.defined()) {
         const dim3 grid(dims / 16, group.max_tiles);
@@ -1433,6 +1466,13 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     }
     #undef PUBLISH_OWNED
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+    if (supplied_activation) {
+        auto input=reinterpret_cast<const __half*>(activation.data_ptr());
+        if (output.scalar_type()==at::kFloat)
+            publish_activation_status<true><<<publish_blocks,128,0,stream>>>(input,output.data_ptr(),count);
+        else publish_activation_status<false><<<publish_blocks,128,0,stream>>>(input,output.data_ptr(),count);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+    }
 }
 
 void gguf_experts_owned(const at::Tensor& x, const at::Tensor& picks,
@@ -1465,4 +1505,29 @@ void gguf_experts_owned_grouped_gate_up(const at::Tensor& x, const at::Tensor& p
     TORCH_CHECK(rows == 2 || rows == 4, "private grouped gate/up requires exactly 2 or 4 rows");
     gguf_experts_owned_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
         down, down_kind, down_offset, width, first, global_experts, shared, local, activation, output, grouping, rows);
+}
+
+// Explicit bridge: only routed GU is supplied. Exact current grouped down,
+// independently computed shared result and original publication remain owners.
+void gguf_experts_owned_from_activation(const at::Tensor& x, const at::Tensor& picks,
+    const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
+    const at::Tensor& up, int64_t up_kind, int64_t up_offset,
+    const at::Tensor& down, int64_t down_kind, int64_t down_offset,
+    int64_t width, int64_t first, int64_t global_experts, const at::Tensor& shared,
+    at::Tensor local, at::Tensor activation, at::Tensor output, at::Tensor grouping) {
+    gguf_experts_owned_impl(x,picks,gate,gate_kind,gate_offset,up,up_kind,up_offset,
+        down,down_kind,down_offset,width,first,global_experts,shared,local,activation,output,grouping,0,true);
+}
+
+void gguf_prepare_owned_from_activation() {
+    cudaFuncAttributes attributes{};
+#define RESIDENT(...) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,__VA_ARGS__))
+    RESIDENT(group_owned_routes<int32_t>); RESIDENT(group_owned_routes<int64_t>);
+    RESIDENT(group_owned_prefix); RESIDENT(group_owned_scatter);
+    RESIDENT(expert_down160_grouped<true,7>); RESIDENT(expert_down160_grouped<true,-1>);
+    RESIDENT(expert_down160_grouped<false,7>); RESIDENT(expert_down160_grouped<false,-1>);
+    RESIDENT(publish_owned<int32_t,true>); RESIDENT(publish_owned<int32_t,false>);
+    RESIDENT(publish_owned<int64_t,true>); RESIDENT(publish_owned<int64_t,false>);
+    RESIDENT(publish_activation_status<true>); RESIDENT(publish_activation_status<false>);
+#undef RESIDENT
 }

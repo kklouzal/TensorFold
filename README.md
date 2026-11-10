@@ -11,6 +11,11 @@ retains the owned container ID before logging and retires clients before
 reporting failures. Its 11 CPU fault controls pass; this does not qualify model
 quality or serving performance.
 
+An internal SM70 expert entry point accepts caller-prepared gate/up activations
+and reuses the existing grouped down-projection and shared-output publication.
+Serving dispatch is unchanged; model qualification remains separate from the
+component contract checks.
+
 The [branch consolidation](docs/branch-consolidation.md) hardens benchmark
 publication, new tool-definition validation and optional segment-cache failure
 accounting, removes an unused normal-round FIFO snapshot, and adds a separate
