@@ -59,7 +59,15 @@ torchvision)
     # No CUDA op, NVJPEG or alternate backend is selected by this profile.
     export CUDA_VISIBLE_DEVICES=-1 FORCE_CUDA=0 TORCHVISION_USE_NVJPEG=0
     export TORCHVISION_USE_PNG=1 TORCHVISION_USE_JPEG=1 TORCHVISION_USE_WEBP=1
-    export BUILD_VERSION=0.29.1+tfcpu
+    export BUILD_VERSION
+    BUILD_VERSION=$(python - "$tf_project/deploy/v100/media-pins.json" <<'PY_VERSION'
+import json
+from pathlib import Path
+import sys
+pins = json.loads(Path(sys.argv[1]).read_text())
+print(next(row["version"] for row in pins["artifacts"] if row["name"] == "torchvision") + "+tfcpu")
+PY_VERSION
+    )
     python -m pip wheel --no-build-isolation --no-deps "$tf_media/sources/torchvision" \
         --wheel-dir "$tf_media/wheels"
     ;;

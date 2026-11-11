@@ -16,6 +16,8 @@ SPEC = importlib.util.spec_from_file_location("v100_source_install", ROOT / "dep
 SOURCE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SOURCE)
 
+RUNTIME_PINS = {"targets": {"pytorch": "2.14.1", "cuda": "12.9.2", "nccl": "2.32.3"}}
+
 
 def runtime():
     return {"torch": "2.14.1+tfcu129sm70", "distribution": "2.14.1+tfcu129sm70", "cuda": "12.9",
@@ -33,7 +35,7 @@ def test_old_or_different_native_providers_cannot_qualify_as_source_stack(field,
     identity = runtime()
     identity[field] = value
     with pytest.raises(ValueError):
-        SOURCE.validate_runtime(identity)
+        SOURCE.validate_runtime(identity, RUNTIME_PINS)
 
 
 @pytest.mark.parametrize("changed", ["nccl", "wheel-cublas", "missing-cudnn"])
@@ -46,16 +48,16 @@ def test_actual_mapped_provider_ownership_is_required(changed):
     else:
         identity["mapped_libraries"].pop(1)
     with pytest.raises(ValueError, match="mapped provider escaped"):
-        SOURCE.validate_runtime(identity)
+        SOURCE.validate_runtime(identity, RUNTIME_PINS)
 
 
 def test_source_cpu_consumer_extensions_remain_separate_from_bundled_accelerator_providers():
     identity = runtime()
     identity["mapped_libraries"].append("/opt/venv/lib/python3.12/site-packages/torchvision/_C.abi3.so")
-    SOURCE.validate_runtime(identity)
+    SOURCE.validate_runtime(identity, RUNTIME_PINS)
     identity["mapped_libraries"].append("/opt/venv/lib/python3.12/site-packages/torchvision.libs/libcudart.fake.so")
     with pytest.raises(ValueError, match="binary-wheel accelerator"):
-        SOURCE.validate_runtime(identity)
+        SOURCE.validate_runtime(identity, RUNTIME_PINS)
 
 
 @pytest.mark.parametrize("mapping_policy", ["shared-anonymous-data-v1", SOURCE.MAPPING_POLICY])
@@ -89,9 +91,10 @@ def test_audit_policy_revision_preserves_and_checks_original_build_bytes(tmp_pat
     previous.write_text(json.dumps(manifest))
     old_manifest_bytes = previous.read_bytes()
     monkeypatch.setattr(SOURCE, "__file__", str(current))
-    monkeypatch.setattr(SOURCE, "runtime_identity", lambda: identity)
-    monkeypatch.setattr(SOURCE, "validate_runtime", lambda value: None)
-    monkeypatch.setattr(SOURCE, "application_nccl_identity", lambda: {"path": str(library), "version": 23203})
+    monkeypatch.setattr(SOURCE, "verify_pristine_base", lambda expected=None: {})
+    monkeypatch.setattr(SOURCE, "runtime_identity", lambda pins: identity)
+    monkeypatch.setattr(SOURCE, "validate_runtime", lambda value, pins: None)
+    monkeypatch.setattr(SOURCE, "application_nccl_identity", lambda pins: {"path": str(library), "version": 23203})
     if change == "old-producer":
         original.write_bytes(b"substituted history")
     elif change == "sealed-library":
@@ -160,8 +163,9 @@ def test_audit_binds_actual_native_bytes_and_never_claims_release_qualification(
     payload.write_bytes(b"native source-built artifact")
     pins = {"immutable": "selected source pins"}
     identity = {"torch_path": str(payload), "mapped_libraries": [str(payload)], "actual": "source-built"}
-    monkeypatch.setattr(SOURCE, "runtime_identity", lambda: copy.deepcopy(identity))
-    monkeypatch.setattr(SOURCE, "validate_runtime", lambda value: None)
+    monkeypatch.setattr(SOURCE, "verify_pristine_base", lambda expected=None: {})
+    monkeypatch.setattr(SOURCE, "runtime_identity", lambda pins: copy.deepcopy(identity))
+    monkeypatch.setattr(SOURCE, "validate_runtime", lambda value, pins: None)
     manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
                 "runtime_policy": SOURCE.RUNTIME_POLICY, "mapping_policy": SOURCE.MAPPING_POLICY,
                 "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
@@ -195,9 +199,10 @@ def process_fixture(tmp_path, monkeypatch):
                 "build_receipt": {"path": str(library)},
                 "artifacts": [{"path": str(library), **SOURCE.file_identity(library)}],
                 "pending_gates": ["compiler-6111901"]}
-    monkeypatch.setattr(SOURCE, "runtime_identity", lambda: copy.deepcopy(identity))
-    monkeypatch.setattr(SOURCE, "validate_runtime", lambda value: None)
-    monkeypatch.setattr(SOURCE, "application_nccl_identity", lambda: {"path": str(library), "version": 23203})
+    monkeypatch.setattr(SOURCE, "verify_pristine_base", lambda expected=None: {})
+    monkeypatch.setattr(SOURCE, "runtime_identity", lambda pins: copy.deepcopy(identity))
+    monkeypatch.setattr(SOURCE, "validate_runtime", lambda value, pins: None)
+    monkeypatch.setattr(SOURCE, "application_nccl_identity", lambda pins: {"path": str(library), "version": 23203})
     return pins, manifest, identity
 
 
@@ -246,6 +251,9 @@ def test_generated_image_recipes_use_only_hash_verified_offline_source_artifacts
         assert "apt-get update" not in content
         assert "sha256sum --strict --check" in content
         assert "--network=none" in content and "source_artifacts" in content
+        assert "dpkg --purge" not in content
+        assert content.index("foundation_sdk.sh capture") < content.index("dpkg -i")
+        assert content.index("dpkg -i") < content.index("foundation_sdk.sh check")
     assert "requirements-foundation-amd64.lock" not in generated["Dockerfile"]
     assert "capture-install" in generated["Dockerfile"] and "source_foundation.py audit" in generated["Dockerfile"]
     policy = generated["Dockerfile.audit-policy"]
@@ -303,9 +311,40 @@ def test_apt_bundle_rejects_extra_packages_and_binds_real_deb_bytes(tmp_path):
         SOURCE.capture_apt(bundle, pins, expected)
 
 
-def test_completed_framework_receipt_refuses_cached_legacy_nccl_configuration(tmp_path):
+def test_completed_framework_receipt_refuses_cached_legacy_nccl_configuration(tmp_path, monkeypatch):
+    monkeypatch.setattr(SOURCE, "verify_pristine_base", lambda: {})
     cache = tmp_path / "sources/pytorch/build/CMakeCache.txt"
     cache.parent.mkdir(parents=True)
     cache.write_text("CMAKE_CUDA_ARCHITECTURES:STRING=70\nNCCL_VERSION:STRING=2.27.3-1\n")
     with pytest.raises(ValueError, match="different CMake provider"):
-        SOURCE.capture_build({}, tmp_path, ROOT)
+        SOURCE.capture_build(RUNTIME_PINS, tmp_path, ROOT)
+
+
+def test_new_selected_framework_and_nccl_are_validated_without_admitting_old_providers():
+    pins = {"targets": {"pytorch": "2.16.0.dev20261111", "cuda": "12.9.2", "nccl": "2.32.6"}}
+    identity = runtime()
+    identity.update(torch="2.16.0.dev20261111+tfcu129sm70", distribution="2.16.0.dev20261111+tfcu129sm70",
+                    nccl=23206, framework_nccl=[2, 32, 6])
+    identity["mapped_libraries"][-1] = "/opt/tensorfold-native/nccl-2.32.6/lib/libnccl.so.2.32.6"
+    SOURCE.validate_runtime(identity, pins)
+    identity["mapped_libraries"][-1] = "/opt/tensorfold-native/nccl-2.32.3/lib/libnccl.so.2.32.3"
+    with pytest.raises(ValueError, match="mapped provider escaped"):
+        SOURCE.validate_runtime(identity, pins)
+    pins["targets"]["cuda"] = "13.4.3"
+    with pytest.raises(ValueError, match="Volta source foundation requires CUDA12"):
+        SOURCE.selected_stack(pins)
+
+
+def test_pristine_capture_bytes_bind_before_audit_process(tmp_path, monkeypatch):
+    for name in SOURCE.BASE_CAPTURE_FILES:
+        (tmp_path / name).write_bytes(b"independently sealed base capture " + name.encode())
+    expected = {name: SOURCE.file_identity(tmp_path / name) for name in SOURCE.BASE_CAPTURE_FILES}
+    commands = []
+    monkeypatch.setattr(SOURCE.subprocess, "run", lambda command, **kwargs: commands.append((command, kwargs)))
+    assert SOURCE.verify_pristine_base(expected, directory=tmp_path) == expected
+    assert commands == [(["sh", str(tmp_path / "foundation_sdk.sh"), "check", str(tmp_path),
+                          str(tmp_path / "foundation-sdk-pattern.txt")], {"check": True})]
+    (tmp_path / "base-sdk.sha256").write_bytes(b"changed capture")
+    with pytest.raises(ValueError, match="pristine native base capture differs"):
+        SOURCE.verify_pristine_base(expected, directory=tmp_path)
+    assert len(commands) == 1

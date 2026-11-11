@@ -84,6 +84,10 @@ with open(os.environ["TF_TEST_COMMAND_LOG"], "a") as log:
                          "parallel": {{name: os.environ.get(name) for name in
                              ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")}}}}) + "\\n")
 if args[0].endswith("source_foundation.py"):
+    if args[1] == "source-configuration":
+        print("tf_torch_wheel_version=2.14.1+tfcu129sm70")
+        print("tf_nccl_version=2.32.3")
+        sys.exit(0)
     if args[1] == "verify-bootstrap-sources":
         (Path(os.environ["TF_SOURCE_STATE"]) / "receipts/bootstrap-sources.json").write_text(
             '{{"phase":"precommit-build-inputs"}}\\n')
@@ -130,7 +134,7 @@ else:
     assert "--no-build-isolation" in pip[0]["args"] and "--no-deps" in pip[0]["args"]
     assert all(row["arch"] == "7.0" and row["nccl"] == str(prefix / "nccl-2.32.3/lib") for row in pip)
     assert all(row["parallel"] == expected_parallel for row in pip)
-    assert commands[0]["args"][1] == "verify-ninja"
+    assert [row["args"][1] for row in commands[:3]] == ["source-configuration", "verify-pristine-base", "verify-ninja"]
     assert all(any(arg.startswith("--config-settings=cmake.define.CMAKE_MAKE_PROGRAM=") for arg in row["args"])
                for row in pip)
     expected = {

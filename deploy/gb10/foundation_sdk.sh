@@ -36,9 +36,16 @@ capture)
     ;;
 check)
     # shellcheck disable=SC2016 # dpkg expands its own format fields.
-    xargs -r dpkg-query -W -f='${binary:Package}\t${Version}\n' < "$output/base-sdk-packages.txt" > "$output/current-sdk-versions.raw"
-    sort "$output/current-sdk-versions.raw" > "$output/current-sdk-versions.tsv"
-    cmp "$output/base-sdk-versions.tsv" "$output/current-sdk-versions.tsv"
+    # Capture the bounded, sealed package list in memory so startup audits do
+    # not write into their protected/read-only prefix. Check the producer's
+    # status separately; a failed dpkg query must not be hidden by sorting.
+    current_versions=$(xargs -r dpkg-query -W -f='${binary:Package}\t${Version}\n' < "$output/base-sdk-packages.txt")
+    sorted_versions=$(printf '%s\n' "$current_versions" | sort)
+    expected_versions=$(cat "$output/base-sdk-versions.tsv")
+    if test "$sorted_versions" != "$expected_versions"; then
+        echo 'protected base SDK/compiler package versions changed' >&2
+        exit 1
+    fi
     sha256sum --check --status "$output/base-sdk.sha256"
     while IFS="$(printf '\t')" read -r file target; do
         test -L "$file"

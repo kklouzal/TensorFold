@@ -813,6 +813,8 @@ def test_pristine_compiler_baseline_rejects_preseal_mutation(guard, tmp_path, mu
                str(source / "foundation-sdk-pattern.txt")]
     environment = dict(os.environ, PATH=str(tmp_path) + os.pathsep + os.environ["PATH"])
     subprocess.run(command, env=environment, capture_output=True, text=True, check=True)
+    assert not (baseline / "current-sdk-versions.raw").exists()
+    assert not (baseline / "current-sdk-versions.tsv").exists()
     if mutation == "version":
         versions.write_text("libstdc++6:arm64\t14.3\n")
     elif mutation == "content":

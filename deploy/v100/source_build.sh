@@ -12,6 +12,10 @@ if ! [[ "$tf_jobs" =~ ^([1-9]|1[0-9]|2[0-4])$ ]]; then
 fi
 export MAX_JOBS="$tf_jobs" CMAKE_BUILD_PARALLEL_LEVEL="$tf_jobs" OMP_NUM_THREADS="$tf_jobs"
 export PATH="$tf_state/venv/bin:$PATH"
+tf_configuration=$(python "$tf_project/deploy/v100/source_foundation.py" source-configuration \
+    --pins "$tf_project/deploy/v100/source-pins.json")
+eval "$tf_configuration"
+python "$tf_project/deploy/v100/source_foundation.py" verify-pristine-base
 export UV_CACHE_DIR="$tf_state/lint-cache/uv" UV_PYTHON_INSTALL_DIR="$tf_state/lint-python"
 mkdir -p "$tf_state/build" "$tf_state/logs" "$tf_state/receipts" "$tf_state/wheels"
 
@@ -78,7 +82,7 @@ nccl|nccl-bootstrap)
     make -C "$tf_state/sources/nccl" -j"$tf_jobs" src.build \
         BUILDDIR="$tf_state/build/nccl" CUDA_HOME=/usr/local/cuda \
         NVCC_GENCODE='-gencode=arch=compute_70,code=sm_70'
-    /usr/local/cuda/bin/cuobjdump --list-elf "$tf_state/build/nccl/lib/libnccl.so.2.32.3" \
+    /usr/local/cuda/bin/cuobjdump --list-elf "$tf_state/build/nccl/lib/libnccl.so.$tf_nccl_version" \
         > "$tf_state/receipts/nccl-cubins.txt"
     ;;
 probes)
@@ -89,8 +93,8 @@ probes)
         -o "$tf_state/build/cccl-primitives" > "$tf_state/logs/cccl-primitives-build.log" 2>&1
     "$tf_nvcc" -std=c++17 -O3 --fmad=false --expt-relaxed-constexpr -arch=sm_70 \
         -I"$tf_prefix/cccl-3.5.0/include" -I"$tf_prefix/cutlass-4.8.1/include" \
-        -I"$tf_prefix/nccl-2.32.3/include" "$tf_probe_source/libraries.cu" \
-        -L"$tf_prefix/nccl-2.32.3/lib" -Xlinker -rpath -Xlinker "$tf_prefix/nccl-2.32.3/lib" \
+        -I"$tf_prefix/nccl-$tf_nccl_version/include" "$tf_probe_source/libraries.cu" \
+        -L"$tf_prefix/nccl-$tf_nccl_version/lib" -Xlinker -rpath -Xlinker "$tf_prefix/nccl-$tf_nccl_version/lib" \
         -lcublas -lcublasLt -lcudnn -lnccl -o "$tf_state/build/libraries-probe" \
         > "$tf_state/logs/libraries-probe-build.log" 2>&1
     "$tf_nvcc" -std=c++17 -O3 --fmad=false -arch=sm_70 "$tf_probe_source/reconvergence_6111901.cu" \
@@ -131,16 +135,16 @@ framework|framework-bootstrap)
     tf_capture_sources "$1"
     tf_framework_phase=$1
     test -f "$tf_prefix/cccl-3.5.0/include/cub/version.cuh"
-    test -f "$tf_state/build/nccl/lib/libnccl.so.2.32.3"
-    mkdir -p "$tf_prefix/nccl-2.32.3/include" "$tf_prefix/nccl-2.32.3/lib" "$tf_state/wheels"
-    cp -a "$tf_state/build/nccl/include/." "$tf_prefix/nccl-2.32.3/include/"
-    cp -a "$tf_state/build/nccl/lib/"libnccl.so* "$tf_prefix/nccl-2.32.3/lib/"
+    test -f "$tf_state/build/nccl/lib/libnccl.so.$tf_nccl_version"
+    mkdir -p "$tf_prefix/nccl-$tf_nccl_version/include" "$tf_prefix/nccl-$tf_nccl_version/lib" "$tf_state/wheels"
+    cp -a "$tf_state/build/nccl/include/." "$tf_prefix/nccl-$tf_nccl_version/include/"
+    cp -a "$tf_state/build/nccl/lib/"libnccl.so* "$tf_prefix/nccl-$tf_nccl_version/lib/"
     export USE_CUDA=1 USE_CUDNN=1 USE_DISTRIBUTED=1 USE_NCCL=1 USE_SYSTEM_NCCL=1 USE_STATIC_NCCL=0
     export USE_FLASH_ATTENTION=0 USE_XPU=0 USE_NVSHMEM=0 USE_CUDSS=0 USE_CUSPARSELT=0 USE_MSLK=0 BUILD_TEST=0
     export CUDA_HOME=/usr/local/cuda CUDNN_ROOT=/usr TORCH_CUDA_ARCH_LIST=7.0
-    export NCCL_INCLUDE_DIR="$tf_prefix/nccl-2.32.3/include" NCCL_LIB_DIR="$tf_prefix/nccl-2.32.3/lib"
-    export NCCL_VERSION=2.32.3
-    export PYTORCH_BUILD_VERSION=2.14.1+tfcu129sm70 PYTORCH_BUILD_NUMBER=1 PYTORCH_EXTRA_INSTALL_REQUIREMENTS=""
+    export NCCL_INCLUDE_DIR="$tf_prefix/nccl-$tf_nccl_version/include" NCCL_LIB_DIR="$tf_prefix/nccl-$tf_nccl_version/lib"
+    export NCCL_VERSION="$tf_nccl_version"
+    export PYTORCH_BUILD_VERSION="$tf_torch_wheel_version" PYTORCH_BUILD_NUMBER=1 PYTORCH_EXTRA_INSTALL_REQUIREMENTS=""
     # Source checkouts belong to the host UID. Trust only these pinned build
     # inputs in this disposable container, never every repository on the host.
     git config --global --fixed-value --get-all safe.directory "$tf_state/sources/pytorch" >/dev/null || \
@@ -178,12 +182,12 @@ PY
         --config-settings="cmake.define.CMAKE_CUDA_FLAGS=-I$tf_prefix/cccl-3.5.0/include"
         --config-settings="cmake.define.CMAKE_CUDA_ARCHITECTURES=70"
         --config-settings="cmake.define.CMAKE_CXX_FLAGS=-I$tf_prefix/cccl-3.5.0/include"
-        --config-settings="cmake.define.NCCL_ROOT=$tf_prefix/nccl-2.32.3"
-        --config-settings="cmake.define.NCCL_VERSION=2.32.3"
-        --config-settings="cmake.define.NCCL_INCLUDE_DIRS=$tf_prefix/nccl-2.32.3/include"
-        --config-settings="cmake.define.NCCL_LIBRARIES=$tf_prefix/nccl-2.32.3/lib/libnccl.so"
+        --config-settings="cmake.define.NCCL_ROOT=$tf_prefix/nccl-$tf_nccl_version"
+        --config-settings="cmake.define.NCCL_VERSION=$tf_nccl_version"
+        --config-settings="cmake.define.NCCL_INCLUDE_DIRS=$tf_prefix/nccl-$tf_nccl_version/include"
+        --config-settings="cmake.define.NCCL_LIBRARIES=$tf_prefix/nccl-$tf_nccl_version/lib/libnccl.so"
         --config-settings="cmake.define.CMAKE_REQUIRED_INCLUDES=/usr/local/cuda/include"
-        --config-settings="cmake.define.CMAKE_INSTALL_RPATH=$tf_prefix/nccl-2.32.3/lib;/usr/local/cuda/lib64"
+        --config-settings="cmake.define.CMAKE_INSTALL_RPATH=$tf_prefix/nccl-$tf_nccl_version/lib;/usr/local/cuda/lib64"
         --config-settings="cmake.define.BLAS=OpenBLAS"
     )
     if [[ $tf_framework_phase == framework-bootstrap ]]; then

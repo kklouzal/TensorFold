@@ -4,7 +4,7 @@
   "specification_sha256": "14fda30044e8f74b15fa7dec6dbcab3ddb71a4463a922d87e8b4ddf6b3e5c526",
   "status": "source/software build candidate; no media/device/model qualification",
   "processor": {
-    "source_commit": "50e35cc0ca18ec19b80653690de553e6decf74f5",
+    "source_commit": "6d195c6262a0ac2ef44f7b9a308617562286ff45",
     "image_class": "Qwen2VLImageProcessor",
     "image_backend": "torchvision",
     "video_class": "Qwen3VLVideoProcessor",
@@ -15,24 +15,24 @@
   "artifacts": [
     {
       "name": "torchvision",
-      "url": "https://codeload.github.com/pytorch/vision/tar.gz/1f1a920d685d46dfbe187934b785b7ecb7a182f2",
+      "url": "https://codeload.github.com/pytorch/vision/tar.gz/f12281517f1b2f6255904639b027c9436f3e5008",
       "artifact": "torchvision.tar.gz",
-      "bytes": 14447310,
-      "sha256": "5d46895e0a59baa604db29e24b93104c965acbb07f34da4890b767b3053952e0",
+      "bytes": 14452138,
+      "sha256": "8ca5408930a0c048a24df30bf7a01e5112c331ce18a60907b2c74587ded0e6bc",
       "kind": "source-archive",
-      "version": "0.29.1",
-      "commit": "1f1a920d685d46dfbe187934b785b7ecb7a182f2",
+      "version": "0.29.2",
+      "commit": "f12281517f1b2f6255904639b027c9436f3e5008",
       "extraction_max_bytes": 536870912
     },
     {
       "name": "transformers",
-      "url": "https://codeload.github.com/huggingface/transformers/tar.gz/50e35cc0ca18ec19b80653690de553e6decf74f5",
+      "url": "https://codeload.github.com/huggingface/transformers/tar.gz/6d195c6262a0ac2ef44f7b9a308617562286ff45",
       "artifact": "transformers.tar.gz",
-      "bytes": 21481974,
-      "sha256": "d9fcd57ffc97878681ff903fbc0dd01c8d44d66494a6092f33a95c805f14d7ad",
+      "bytes": 20525619,
+      "sha256": "221f8bd8cafcc2f85c891782d0333ce9016f8fecec018b9f8fbef487c05d5e41",
       "kind": "source-archive",
-      "version": "5.21.0.dev0",
-      "commit": "50e35cc0ca18ec19b80653690de553e6decf74f5",
+      "version": "5.22.2",
+      "commit": "6d195c6262a0ac2ef44f7b9a308617562286ff45",
       "extraction_max_bytes": 1610612736
     },
     {

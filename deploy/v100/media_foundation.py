@@ -127,7 +127,8 @@ def _pyav_build_ext_plan(state, jobs):
     payload = ("[build_ext]\nparallel = " + jobs + "\n").encode("ascii")
     return config, payload, {"config_path": str(config),
         "config": {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()},
-        "setuptools": "80.9.0", "effective_parallel": int(jobs)}
+        "setuptools": read_json(Path(__file__).with_name("media-build-amd64.json"))[0]["packages"]["setuptools"]["version"],
+        "effective_parallel": int(jobs)}
 
 
 def _pyav_build_ext(state, jobs, *, prepare=False, active=False):
@@ -151,7 +152,7 @@ def _pyav_build_ext(state, jobs, *, prepare=False, active=False):
     if read_document(config) != payload:
         raise ValueError("PyAV build_ext config changed after preparation")
     if importlib.metadata.version("setuptools") != expected["setuptools"]:
-        raise ValueError("PyAV build_ext requires pinned setuptools 80.9.0")
+        raise ValueError("PyAV build_ext requires its selected locked setuptools version")
     from setuptools import Distribution
 
     distribution = Distribution({"script_name": "setup.py",
@@ -319,7 +320,7 @@ def runtime_inventory():
     configuration = library.avutil_configuration().decode("utf-8")
     dav1d = ctypes.CDLL("/opt/tensorfold-media/dav1d-1.5.4/lib/libdav1d.so")
     dav1d.dav1d_version.restype = ctypes.c_char_p
-    mapped = foundation_runtime_identity()["mapped_libraries"]
+    mapped = foundation_runtime_identity(read_json(Path("/opt/tensorfold-pins/source-pins.json"))[0])["mapped_libraries"]
     providers = {}
     for stem in (*av.library_versions, "libdav1d"):
         matches = sorted(path for path in mapped if Path(path).name.startswith(stem + ".so"))
@@ -392,7 +393,9 @@ def capture_install(pins, runtime, base_runtime, metadata, wheels):
         if row["kind"] in ("processor-config", "decoder-fixture") and file_identity(metadata / row["artifact"]) != expected_identity(row):
             raise ValueError("installed official processor configuration differs from its pin")
     actual = runtime_inventory()
-    expected = {"torchvision": "0.29.1+tfcpu", "transformers": "5.21.0.dev0", "av": "19.0.2", "pillow": "13.0.0"}
+    versions = {row["name"]: row.get("version") for row in pins["artifacts"]}
+    expected = {"torchvision": versions["torchvision"] + "+tfcpu", "transformers": versions["transformers"],
+                "av": versions["pyav"], "pillow": runtime["packages"]["pillow"]["version"]}
     if (any(actual["packages"][name] != version for name, version in expected.items())
             or actual["torchvision_cuda"] != -1):
         raise ValueError("installed media providers differ from the pinned CPU source build")

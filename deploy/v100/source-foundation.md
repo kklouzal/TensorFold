@@ -60,9 +60,12 @@ remains historical evidence of the earlier incomplete source workflow.
 PyTorch 2.14.1's CUDA12 build finds external CUB; there is no CCCL gitmodule
 to patch. The source recipe explicitly selects one complete CCCL 3.5 include
 installation for CUB, Thrust and libcu++. It builds NCCL from source and binds
-both its matching headers and shared library through supported CMake inputs.
-The inherited NVIDIA image's NCCL 2.27.3 packages must be removed: hints alone
-allowed CMake to choose that different provider in the first rejected attempt.
+both its matching headers and shared library through the actual supported
+`NCCL_INCLUDE_DIRS` and `NCCL_LIBRARIES` CMake inputs. Original NVIDIA base
+NCCL2.27.3 packages remain installed, held and byte-audited; exactly one effective
+owned provider must be proved by build/link/load receipts. The earlier rejected
+attempt selected base NCCL despite hints, and its subsequent removal workaround
+is historical; the protected-base refresh does not purge those packages.
 Both CMake's CUDA architecture and Torch's architecture list select SM70.
 
 Torch's private CUTLASS 4.6.1 gitmodule remains part of the pinned upstream
