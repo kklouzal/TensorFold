@@ -91,7 +91,7 @@ def metadata(value, body):
 
     Producer: GemmaVisionProcessor.prepare under its ordinary funded metadata
     owner, then PreparedGemmaVision.token_ids/blocks/frame_identities and
-    processor_binding. identity[3] bytes are losslessly encoded as hex.
+    processor_binding. Image identity[3] stays None; video PTS bytes become hex.
     """
     shared.require(type(value) is dict and set(value)=={'schema','body_sha256','token_ids','blocks','frame_identities','media_token_ids','processor_binding'},'current prepared-media witness required')
     shared.require(value['schema']=='tensorfold.prepared-gemma-media-witness-v1'
@@ -106,8 +106,12 @@ def metadata(value, body):
         shared.require(type(identity) is list and len(identity)==10 and identity[0]=='gemma-prepared-frame-v1'
                        and identity[1] in ('image','video') and identity[5]==block[1]-block[0]
                        and identity[9]==value['processor_binding'],'real pixel/PTS/grid/processor identity required')
-        shared.require(type(identity[3]) is str and len(identity[3]) in (0,16),'PTS bytes must be lossless empty/image or binary64 hex')
-        bytes.fromhex(identity[3])
+        if identity[1]=='image':
+            shared.require(identity[3] is None,'actual image PTS identity must remain null')
+        else:
+            shared.require(type(identity[3]) is str and len(identity[3])==16,
+                           'actual video binary64 PTS requires eight-byte hex')
+            shared.require(len(bytes.fromhex(identity[3]))==8,'actual video PTS byte extent differs')
         previous = block[1]
     shared.require(type(value['media_token_ids']) is list and len(value['media_token_ids'])==2,'actual image/video token identities required')
     from tensorfold.families.gemma4.cuda.vision import media_blocks

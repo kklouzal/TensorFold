@@ -19,7 +19,7 @@ def body(responses=False):
 
 def prepared(request=None,identities=None,ids=None,blocks=None):
     request = body() if request is None else request
-    identity = ['gemma-prepared-frame-v1','image','a'*64,'',0,2,[18,768],[18,2],'c'*64,'b'*64]
+    identity = ['gemma-prepared-frame-v1','image','a'*64,None,0,2,[18,768],[18,2],'c'*64,'b'*64]
     return {'schema':'tensorfold.prepared-gemma-media-witness-v1',
             'body_sha256':hashlib.sha256(tool.semantic_bytes(request)).hexdigest(),
             'token_ids':[2,258880,258880,42] if ids is None else ids,
@@ -301,3 +301,22 @@ def test_original_chat_completion_oracle_still_owns_typed_finish():
     value['choices'][0]['finish_reason'] = 'invented'
     with pytest.raises(ValueError,match='finish reason'):
         tool.accepted_ids(value,False,128)
+
+
+def test_actual_image_null_and_video_binary64_pts_are_lossless():
+    image = prepared()
+    assert tool.metadata(image,body())['frame_identities'][0][3] is None
+    image['frame_identities'][0][3] = ''
+    with pytest.raises(ValueError,match='image PTS'):
+        tool.metadata(image,body())
+    video = prepared()
+    video['frame_identities'][0][1] = 'video'
+    video['frame_identities'][0][3] = '3ff0000000000000'
+    video['media_token_ids'][1] = video['media_token_ids'][0]
+    # Same placeholder run, with the actual video token selected explicitly.
+    video['media_token_ids'][0] = 258881
+    assert tool.metadata(video,body())['frame_identities'][0][3]=='3ff0000000000000'
+    for invalid in (None,'','00','nothex0000000000'):
+        video['frame_identities'][0][3] = invalid
+        with pytest.raises(ValueError):
+            tool.metadata(video,body())
