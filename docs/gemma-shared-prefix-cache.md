@@ -1,8 +1,12 @@
 # Gemma shared-prefix cache implementation ledger
 
-Status: implementation, installed CPU and bounded CUDA transport gates passed;
-full-model cache, quality, capacity and performance qualification is in progress. Production retains its prior four-entry snapshot cache. The
-committed 256-entry cost-aware snapshot mitigation is held and unselected.
+Status: 292 installed checks and both seven-stage serving sweeps passed for
+source `ef30337d` / runtime `d992ac68`, including media, cancellation and all eight
+native-capacity cases per arm. That revision now serves publicly; the original
+four-entry service is retained stopped for rollback. The user prioritizes full
+caching with the disclosed performance costs; two-observation regional timing
+results do not establish equivalence or whole-feature superiority. The historical
+256-entry snapshot mitigation remains unselected.
 This task refines the shared-state contracts of the canonical ProviderOne
 design; it is not a second full engine design or a new serving stack.
 
@@ -414,3 +418,30 @@ statistical equivalence, or prove whole-feature superiority. The exact public
 cutover and rollback plan still requires final bound inspection/configuration
 review and Root's concrete execution release. The original container
 and persistent configuration remain preserved for rollback.
+
+## Public cutover
+
+The reviewed cutover completed with runtime `d992ac68` / source `ef30337d` on
+the existing public service name and port 8888. Two identical bounded arithmetic
+requests returned `4` with ordinary stop; the second reused all 23 prompt tokens.
+At the verified idle snapshot, pins, pending work, temporary credit and metadata
+owners were settled, and charged storage was 6,326,816 bytes within the unchanged
+12,667,846,656-byte allowance. Context remains 262144 with no entry ceiling.
+The persistent compose file selects the qualified image/profile. The original
+container remains stopped under its rollback name, and the safely rejected
+first candidate remains retained. No recovery container was deleted.
+
+The first cutover attempt stopped before candidate model startup because Docker
+reported `HostConfig.OomKillDisable=false` at creation while older started
+containers reported null. Pinned Docker 29.6.2/Moby source and cgroup-v2
+capability evidence established the create/start representation transition.
+The final operator compares only that field's effective false value; true,
+absence, invalid types and every other configuration field remain distinct.
+Original raw inspections, the first failure and its successful rollback remain
+preserved. This adapter correction changed no model, cache allowance or OOM
+configuration flag.
+
+The user-approved feature priority and all reported serving-cost limitations
+continue to apply. Public deployment is not a claim of whole-feature performance
+superiority, statistical equivalence, reboot testing or qualification of every
+manually configured positive cache budget.

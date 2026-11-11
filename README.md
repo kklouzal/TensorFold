@@ -37,8 +37,8 @@ Seventeen of eighteen descriptive two-observation HTTP median groups remained
 slower than the old snapshot service; replay-seed and complete-cell costs are
 reported separately. The user prioritizes full caching and accepts the observed
 small cold-request delay; this is not an equivalence or whole-feature speedup
-claim. Public cutover still requires the exact reviewed execution plan; production
-currently retains the original four-entry snapshot service. The prior 256-entry
+claim. The public service now uses this qualified runtime and fixed profile; the
+original container is retained stopped for rollback. The prior 256-entry
 snapshot mitigation remains an unselected historical checkpoint.
 
 The replacement reuses compatible partial prefixes, retains separate conversation
