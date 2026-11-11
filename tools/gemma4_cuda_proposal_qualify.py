@@ -259,10 +259,10 @@ def _attempt(engine, prepared, row, report, destination, *, audit=None):
     try:
         try:
             row["hot_wait_s"] = HotGate.wait()
-            engine.drain()
             if row["phase"] == "cold":
-                with engine._prefix_lock:
-                    engine._prefixes.clear()
+                engine.clear_prefix_cache()
+            else:
+                engine.drain()
             row["host_before"] = host_snapshot()
             began = time.perf_counter()
             stats = engine.generate(prepared.prompt, prepared.max_tokens, prepared.sampling, receive,

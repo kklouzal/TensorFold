@@ -6,7 +6,6 @@ import hashlib
 import importlib.util
 import json
 import sys
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -134,7 +133,10 @@ def runtime_fixture(monkeypatch, tmp_path, *, fault=None, kind="screen"):
             states["constructed"] += 1
             self.w, self.max_rows, self.graphs, self.head = SimpleNamespace(numerics="ct_nvfp4"), 5, object(), object()
             self.context_window = 262144
-            self._prefix_lock, self._prefixes = threading.Lock(), []
+            self._prefixes = []
+        def clear_prefix_cache(self):
+            self.drain()
+            self._prefixes.clear()
         def drain(self):
             pass
         def generate(self, prompt, count, policy, receive, *, draft, stop_eos, penalties):

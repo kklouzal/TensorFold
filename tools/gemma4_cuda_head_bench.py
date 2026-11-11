@@ -215,13 +215,13 @@ def _bind_head(engine, head, *, preserve_exact_prefix=False):
     if engine.w.embed is head:
         return {"changed": False, "seconds": 0., "prepared_graphs": len(engine.graphs.graphs)}
     started = time.perf_counter()
-    engine.drain()  # all consumers and graph outputs have completed before retirement
+    if preserve_exact_prefix:
+        engine.drain()
+    else:
+        engine.clear_prefix_cache()  # settles consumers before invalidating retained state
     span = engine.graphs.span
     engine.graphs = None  # no other bank/pool owner is retained across preparation
     engine.w.embed = head
-    if not preserve_exact_prefix:
-        with engine._prefix_lock:
-            engine._prefixes.clear()  # other heads have no shared-prefix proof
     # All initialization and serving use this same stream. The final drain
     # settles graph side-stream capture/replay before publishing readiness.
     with torch.cuda.stream(engine._stream), torch.inference_mode():
@@ -325,8 +325,8 @@ def _pair_requests(engine, heads, items, args, sampling):
         initial_binding = _bind_head(engine, heads["reference"], preserve_exact_prefix=True)
         expected, inputs, warm = _capture(engine, prompt, limit, sampling, stop_eos=False,
                                           terminal_on_failure=True)
-        prefix = engine._find_prefix(prompt, ())
-        if (prefix is None or prefix.position != len(prompt) or prefix.logits is None
+        prefix = engine.prefix_cache_identity(prompt)
+        if (prefix is None or prefix.position != len(prompt)
                 or warm["dflash"]["cached"] != len(prompt)):
             raise RuntimeError("initial proof did not create the declared complete prefix")
         if _proposal_identity(engine) != proposal:
@@ -334,7 +334,7 @@ def _pair_requests(engine, heads, items, args, sampling):
         _record(args.out, {"kind": "pair_warmup", "workload": item["name"], "prompt_ids": prompt,
                            "ids_sha256": item["ids_sha256"], "reference_ids": expected,
                            "stats": warm, "initial_binding": initial_binding,
-                           "prefix_object": id(prefix), "proposal_identity": proposal, "memory": _memory()})
+                           "prefix_identity": {"position": prefix.position, "backing": prefix.backing}, "proposal_identity": proposal, "memory": _memory()})
         # FP8 DFlash does not execute the target BF16 head on its own hidden
         # rows. Screen only the actual target inputs, separately for each tail.
         hidden = inputs["target"]
@@ -348,14 +348,14 @@ def _pair_requests(engine, heads, items, args, sampling):
             for name in order:
                 started = time.perf_counter()
                 binding = _bind_head(engine, heads[name], preserve_exact_prefix=True)
-                if engine._find_prefix(prompt, ()) is not prefix or _proposal_identity(engine) != proposal:
+                if engine.prefix_cache_identity(prompt) != prefix or _proposal_identity(engine) != proposal:
                     raise RuntimeError("head transition replaced the prefix or private FP8 proposal head")
                 output, preparation = _run(engine, prompt, limit, sampling, True, stop_eos=False)
                 _check_pair_request(output, preparation, expected["dflash"], warm["dflash"], len(prompt), limit)
                 _record(args.out, {"kind": "pair_preparation", "workload": item["name"], "head": name,
                                    "block": order_index // 2, "order_index": order_index, "order": order,
                                    "binding": binding, "warm_stats": preparation, "warm_ids": output,
-                                   "seconds": time.perf_counter() - started, "prefix_object": id(prefix),
+                                   "seconds": time.perf_counter() - started, "prefix_identity": {"position": prefix.position, "backing": prefix.backing},
                                    "proposal_identity": proposal, "memory": _memory()})
                 output, stats = _run(engine, prompt, limit, sampling, True, stop_eos=False)
                 _check_pair_request(output, stats, expected["dflash"], warm["dflash"], len(prompt), limit)
@@ -363,10 +363,10 @@ def _pair_requests(engine, heads, items, args, sampling):
                                    "block": order_index // 2, "order_index": order_index, "order": order,
                                    "reference_ids": expected["dflash"], "output_ids": output,
                                    "same_reference_ids": True, **stats, "memory": _memory()})
-        if engine._find_prefix(prompt, ()) is not prefix or _proposal_identity(engine) != proposal:
+        if engine.prefix_cache_identity(prompt) != prefix or _proposal_identity(engine) != proposal:
             raise RuntimeError("integrated requests changed authoritative prefix or FP8 proposal identity")
-        # No detached checkpoint borrow may cross the next workload's warmup,
-        # where byte pressure is allowed to evict this published entry.
+        # The fingerprint retains no cache payload; the next workload may evict
+        # its backing owners. Each comparison above queries current residency.
         del prefix
 
 

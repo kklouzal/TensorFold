@@ -4,7 +4,6 @@ import argparse
 import importlib.util
 import json
 import sys
-import threading
 import weakref
 from collections import Counter
 from contextlib import contextmanager, nullcontext
@@ -142,20 +141,23 @@ def test_pair_request_rejects_output_cache_and_proposal_counter_drift(corrupt):
         bench._check_pair_request(output, stats, expected, reference, 65536, 2)
 
 
-@pytest.mark.parametrize('prefix_fault', [None, 'boundary-only', 'missing-logits', 'replaced-checkpoint'])
+@pytest.mark.parametrize('prefix_fault', [None, 'boundary-only', 'missing-hidden', 'replaced-checkpoint'])
 def test_pair_protocol_is_balanced_target_only_and_reuses_exact_prefix(monkeypatch, tmp_path, prefix_fault):
-    prefix, proposal = SimpleNamespace(position=65536, logits=object()), {"head": "same-private-FP8"}
+    prefix, proposal = SimpleNamespace(position=65536, hidden=object()), {"head": "same-private-FP8"}
     if prefix_fault == 'boundary-only':
         prefix.position -= 1
-    elif prefix_fault == 'missing-logits':
-        prefix.logits = None
+    elif prefix_fault == 'missing-hidden':
+        prefix.hidden = None
     reference, candidate = object(), object()
     heads = {"reference": reference, "reuse8": candidate}
     engine = SimpleNamespace(w=SimpleNamespace(embed=reference), _prefixes=[prefix])
-    def find_prefix(ids, media):
-        assert media == () and len(ids) == 65536
-        return engine._prefixes[-1]
-    engine._find_prefix = find_prefix
+    def prefix_identity(ids):
+        assert len(ids) == 65536
+        current = engine._prefixes[-1]
+        if current.position != len(ids) or current.hidden is None:
+            return None
+        return SimpleNamespace(position=current.position, backing=(id(current.hidden),))
+    engine.prefix_cache_identity = prefix_identity
     prompt, output = [7] * 65536, [9] * 256
     stats = {"cached": 65536, "drafts": True, "rounds": 100, "drafted": 400,
              "accepted": 155, "min_rows": 5, "decode_s": 2.0}
@@ -171,7 +173,7 @@ def test_pair_protocol_is_balanced_target_only_and_reuses_exact_prefix(monkeypat
         assert preserve_exact_prefix and engine._prefixes == [prefix]
         engine.w.embed = head
         if prefix_fault == 'replaced-checkpoint' and head is candidate:
-            engine._prefixes = [SimpleNamespace(position=65536, logits=object())]
+            engine._prefixes = [SimpleNamespace(position=65536, hidden=object())]
         return {"changed": True}
 
     def run(engine, ids, tokens, sampling, draft, *, stop_eos):
@@ -485,7 +487,6 @@ def _main_fixture(monkeypatch, tmp_path, *, corrupt=None):
             self.closed = False
             self._state, self._draft = State(), State()
             self._stream = SimpleNamespace(owner=self)
-            self._prefix_lock = threading.Lock()
             self._prefixes = ["stale logits"]
             self.head = object()
             self.bank_refs = []
@@ -495,6 +496,9 @@ def _main_fixture(monkeypatch, tmp_path, *, corrupt=None):
             engines.append(self)
         def drain(self):
             self.pending_initialization = False
+        def clear_prefix_cache(self):
+            self.drain()
+            self._prefixes.clear()
         def close(self):
             self.closed = True
 

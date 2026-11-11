@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import json
-import threading
 import traceback
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -135,8 +134,11 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
             self.w = NS(numerics="ct_nvfp4", embed=Head(Plain(), 16))
             self.head, self.vision, self.graphs = NS(bits=bits), object(), object()
             self.capacity_plan = {"context_window": 262144, "cpu_fixture": True}
-            self._prefixes, self._prefix_lock, self.closed = [], threading.Lock(), False
+            self._prefixes, self.closed = [], False
             states["engines"].append(self)
+        def clear_prefix_cache(self):
+            self.drain()
+            self._prefixes.clear()
         def drain(self):
             if fault == "drain":
                 raise RuntimeError("native drain failure")
@@ -200,7 +202,7 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
         changed = engine.w.embed is not head
         engine.w.embed = head
         if changed:
-            engine._prefixes.clear()
+            engine.clear_prefix_cache()
         return {"changed": changed, "seconds": 0., "prepared_graphs": 2}
     @contextmanager
     def inputs(engine):

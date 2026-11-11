@@ -79,3 +79,20 @@ identifies distinct full/sliding-window residency requirements;
 [SGLang radix cache](https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/mem_cache/radix_cache.py)
 is a structural comparison candidate. These are architectural references, not
 proof that the current TensorFold kernels support their layouts unchanged.
+
+## Maintenance integration checkpoint
+
+The three Gemma launch/proposal/head qualification tools now use the engine's
+synchronous `clear_prefix_cache()` ownership boundary. Exact head-pair checks use
+`prefix_cache_identity(tokens, media=())`, an immutable position/backing-owner
+fingerprint, rather than a borrowed snapshot or processed logits. The agreed
+runtime implementation must return no identity unless target, canonical drafter
+and endpoint hidden state are all resident. Generations may not be reused.
+
+The six affected utility/test files passed 118 source CPU controls in the owned
+AMD64 source-unit image `11c89e2c` with zero skips, after final fixture cleanup.
+A dedicated review found no component blocker. These controls exercise the
+maintenance protocol through doubles; installed/native cache implementation and
+full-model qualification remain pending. The exact command, six file hashes and
+full log are retained in the remote task artifact `maintenance-tools-cpu.json`
+and `maintenance-tools-cpu.log` under `audit-artifacts/gemma-shared-prefix-design-v1`.
