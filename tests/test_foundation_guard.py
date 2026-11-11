@@ -279,6 +279,14 @@ def test_compiler_inventory_includes_versioned_runtime_packages_only(guard):
     raw = "".join(f"{name}\t{version}\n" for name, version in expected.items())
     raw += "libstdc++unrelated\t1\nlibcublas-13-4\t13.4\nnsight-compute-2026.3.1\t2026.3.1\n"
     assert guard.sdk_versions(raw, guard.COMPILER_PACKAGES) == expected
+    pristine_pattern = (Path(__file__).resolve().parents[1] / "deploy/gb10/foundation-sdk-pattern.txt").read_text().strip()
+    assert expected.items() <= guard.sdk_versions(raw, pristine_pattern).items()
+    # Capture uses awk ERE; sealing uses Python re. Both must protect the same
+    # compiler names, including literal plus signs and architecture suffixes.
+    selected = subprocess.run(["awk", "-v", "pattern=" + pristine_pattern,
+                               "$1 ~ pattern { print $1 }"], input=raw,
+                              text=True, capture_output=True, check=True)
+    assert set(selected.stdout.splitlines()) == set(guard.sdk_versions(raw, pristine_pattern))
 
 
 def test_cache_namespace_includes_complete_sealed_state(guard, sealed, monkeypatch):
@@ -781,3 +789,36 @@ def test_bootstrap_preloads_only_final_consumer_interpreter(tmp_path, script, ar
     result = subprocess.run([str(application / "bin/python"), str(target), *arguments], env=env,
                             check=True, capture_output=True, text=True)
     assert result.stdout.splitlines() == (["1", "2"] if activated else ["no", "0"])
+
+
+@pytest.mark.parametrize("mutation", ["version", "content", "symlink"])
+def test_pristine_compiler_baseline_rejects_preseal_mutation(guard, tmp_path, mutation):
+    source = Path(__file__).resolve().parents[1] / "deploy/gb10"
+    baseline = tmp_path / "baseline"
+    baseline.mkdir()
+    runtime = tmp_path / "libstdc++.so.6.0.33"
+    runtime.write_bytes(b"pristine compiler runtime")
+    alias = tmp_path / "libstdc++.so.6"
+    alias.symlink_to(runtime.name)
+    versions = tmp_path / "versions.tsv"
+    versions.write_text("libstdc++6:arm64\t14.2\n")
+    (baseline / "base-sdk-packages.txt").write_text("libstdc++6:arm64\n")
+    (baseline / "base-sdk-versions.tsv").write_bytes(versions.read_bytes())
+    (baseline / "base-sdk.sha256").write_text(f"{guard.digest(runtime)}  {runtime}\n")
+    (baseline / "base-sdk-links.tsv").write_text(f"{alias}\t{runtime.name}\n")
+    executable = tmp_path / "dpkg-query"
+    executable.write_text(f"#!/bin/sh\ncat '{versions}'\n")
+    executable.chmod(0o755)
+    command = ["sh", str(source / "foundation_sdk.sh"), "check", str(baseline),
+               str(source / "foundation-sdk-pattern.txt")]
+    environment = dict(os.environ, PATH=str(tmp_path) + os.pathsep + os.environ["PATH"])
+    subprocess.run(command, env=environment, capture_output=True, text=True, check=True)
+    if mutation == "version":
+        versions.write_text("libstdc++6:arm64\t14.3\n")
+    elif mutation == "content":
+        runtime.write_bytes(b"changed compiler runtime")
+    else:
+        alias.unlink()
+        alias.symlink_to("different-runtime")
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+    assert result.returncode != 0

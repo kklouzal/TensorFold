@@ -175,8 +175,11 @@ docker compose -f deploy/discrete-gpu/compose.yaml \
 ```
 
 Before any apt/Python preparation, the image records the original native SDK
-package versions, file SHA256s and symlink targets, and holds those packages.
-The builder checks this baseline after native add-ons and dependency installation.
+and compiler/runtime package versions, file SHA256s and symlink targets, and
+holds those packages. Nonheld OS packages are upgraded before Python preparation;
+the pristine baseline is checked immediately afterward and again after native
+add-ons and dependency installation. Held packages are never unheld to satisfy
+a new dependency closure.
 It seals protected Python files, native providers, compiler dependencies and
 artifact identities. App and test installers accept only their disjoint generated
 locks, install with hashes and `--no-deps`, and perform full before/after content

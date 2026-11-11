@@ -1,6 +1,6 @@
 #!/bin/sh
 # Pristine-base capture and subsequent verification need no Python. Hold only
-# native SDK packages; unrelated Python/compiler tools may be added afterward.
+# native SDK and compiler/runtime packages; unrelated tools may be added afterward.
 set -eu
 mode=$1
 output=$2

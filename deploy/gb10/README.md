@@ -1,5 +1,13 @@
 # GB10 Flash Next deployment
 
+The [2026-11-11 foundation refresh ledger](foundation-refresh-20261111.md)
+records the active dependency upgrade and its pending image/native/model gates.
+The refresh uses the NGC CUDA development base with protected original SDK and
+compiler/runtime packages. It preserves the selected production Gemma model and
+profile; this historical Flash Next Compose example is not the live Gemma
+deployment configuration.
+
+
 This guide separates the current selected image inputs and source-specific
 checkpoint validation from the dated deployment records below. The build uses NGC
 CUDA **13.4.3 cuDNN development**, CPython 3.12 and genuine official nightlies:

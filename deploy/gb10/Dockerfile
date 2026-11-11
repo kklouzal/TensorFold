@@ -8,8 +8,10 @@ ARG DEBIAN_FRONTEND=noninteractive
 COPY deploy/gb10/foundation-sdk-pattern.txt deploy/gb10/foundation_sdk.sh /opt/tensorfold-pins/
 RUN sh /opt/tensorfold-pins/foundation_sdk.sh capture /opt/tensorfold-pins /opt/tensorfold-pins/foundation-sdk-pattern.txt \
     && apt-get update \
+    && apt-get full-upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends python3.12 python3.12-dev python3.12-venv ca-certificates ninja-build \
     && rm -rf /var/lib/apt/lists/* \
+    && sh /opt/tensorfold-pins/foundation_sdk.sh check /opt/tensorfold-pins /opt/tensorfold-pins/foundation-sdk-pattern.txt \
     && python3.12 -m venv /opt/tensorfold-foundation \
     && python3.12 -m venv --without-pip /opt/tensorfold-venv
 ENV PATH=/opt/tensorfold-venv/bin:${PATH} \

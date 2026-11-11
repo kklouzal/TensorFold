@@ -1421,6 +1421,14 @@ The CUDA backend defaults to a compute-capability floor of **8.9** and refuses u
 
 ### Pinned container stack
 
+The [2026-11-11 foundation refresh ledger](deploy/gb10/foundation-refresh-20261111.md)
+records the current upgrade, candidate discovery and remaining gates. Original
+NGC CUDA SDK and compiler/runtime packages are captured and held before OS
+dependency updates; application installers retain their protected-prefix
+contract. Candidate discovery and source changes do not qualify a new image
+or replace the recorded production runtime.
+
+
 The GB10 Compose profile uses the shared local model store at `HF_CACHE=/models/hf`.
 It mounts the existing private token separately through `HF_TOKEN_FILE`, read-only,
 with host-path creation disabled. Override both variables for a different host
