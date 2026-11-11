@@ -96,3 +96,21 @@ maintenance protocol through doubles; installed/native cache implementation and
 full-model qualification remain pending. The exact command, six file hashes and
 full log are retained in the remote task artifact `maintenance-tools-cpu.json`
 and `maintenance-tools-cpu.log` under `audit-artifacts/gemma-shared-prefix-design-v1`.
+
+## State transport checkpoint
+
+The target State and DFlash State now expose typed range byte counts, detached
+row export and in-place range import. The target stays poisoned until pair-level
+restore publication. Their original snapshot, restore and inference arithmetic
+method bodies are unchanged; DFlash construction additionally retains immutable
+layer-type metadata for these range maps.
+
+Six source CPU cases passed with explicit canonical module origins, checking
+unique BF16/FP32 words, ring wrap, interior offsets, source detachment, guard
+regions, fixed addresses, byte counts, invalid frontiers and partial-copy failure.
+Dedicated component review is clear. The first attempt loaded old installed
+classes before pytest configured the source path; its six failures remain in
+`state-ranges-cpu-v1.log` and are excluded. The corrected source run and three
+file hashes are in `state-ranges-cpu-v2.json`; the frozen source packet is
+`state-range-component-v1/hold-v1.json`. These are source transport checks, not
+GPU/full-model/archive coverage or permission to publish an incomplete restore.

@@ -277,6 +277,7 @@ class DraftState:
                      for n in self.rings]
         self.values = [torch.empty_like(k) for k in self.keys]
         self.rows, self.length = rows, 0
+        self.layer_types = tuple(cfg.layer_types)
         self.pos = torch.zeros((1,), dtype=torch.int32, device=device)
 
     def reset(self) -> None:
@@ -301,6 +302,50 @@ class DraftState:
             self.keys[i].index_copy_(0, index, k)
             self.values[i].index_copy_(0, index, v)
         self.length = length
+
+    def cache_group_bytes(self, rows: int) -> dict[str, int]:
+        import math
+        if type(rows) is not int or not 0 < rows <= self.rows:
+            raise ValueError('DFlash cache rows exceed the admitted append')
+        return {group: rows * sum(math.prod(t.shape[1:]) * t.element_size()
+                                 for i, kind in enumerate(self.layer_types) if (kind == 'sliding_attention') == sliding
+                                 for t in (self.keys[i], self.values[i]))
+                for group, sliding in (('draft_full', False), ('draft_window', True))}
+
+    def cache_export_rows(self, start: int, stop: int) -> dict:
+        if (type(start) is not int or type(stop) is not int or not 0 <= start < stop <= self.length
+                or stop - start > self.rows
+                or any(start < max(0, self.length - ring) for ring in self.rings)):
+            raise ValueError('DFlash archive rows lack committed canonical append authority')
+        groups = {'draft_full': [], 'draft_window': []}
+        for i, kind in enumerate(self.layer_types):
+            group = 'draft_window' if kind == 'sliding_attention' else 'draft_full'
+            if group == 'draft_full':
+                groups[group].extend((self.keys[i][start:stop].clone(), self.values[i][start:stop].clone()))
+            else:
+                index = torch.arange(start, stop, device=self.pos.device) % self.rings[i]
+                groups[group].extend((self.keys[i].index_select(0, index), self.values[i].index_select(0, index)))
+        return {group: tuple(values) for group, values in groups.items()}
+
+    def cache_import_rows(self, group: str, start: int, tensors: tuple, offset: int, rows: int) -> None:
+        if (group not in ('draft_full', 'draft_window')
+                or any(type(n) is not int for n in (start, offset, rows))
+                or not 0 <= start < start + rows <= max(self.rings) or offset < 0):
+            raise ValueError('DFlash archive import range differs')
+        layers = [i for i, kind in enumerate(self.layer_types)
+                  if (kind == 'sliding_attention') == (group == 'draft_window')]
+        if len(tensors) != 2 * len(layers):
+            raise ValueError('DFlash archive layer inventory differs')
+        for ordinal, i in enumerate(layers):
+            for destination, source in ((self.keys[i], tensors[2 * ordinal]),
+                                        (self.values[i], tensors[2 * ordinal + 1])):
+                value = source[offset:offset + rows]
+                if group == 'draft_full':
+                    destination[start:start + rows].copy_(value)
+                else:
+                    index = torch.arange(start, start + rows, device=self.pos.device) % self.rings[i]
+                    destination.index_copy_(0, index, value)
+
 
 
 class DFlash:

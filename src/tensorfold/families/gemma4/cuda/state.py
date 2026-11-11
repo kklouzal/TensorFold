@@ -176,6 +176,57 @@ class State:
         self.global_cache_ready = self.global_cache == "none" or p == 0
         self.poisoned = False
 
+    def cache_group_bytes(self, rows: int) -> dict[str, int]:
+        """Exact detached row payload; page/archive metadata is owned separately."""
+        import math
+        if type(rows) is not int or not 0 < rows <= self.rows:
+            raise ValueError('Gemma cache export rows exceed the admitted forward')
+        return {
+            'target_full': rows * sum(t.shape[0] * math.prod(t.shape[2:]) * t.element_size()
+                                      for t in (self.raw, self.inv)),
+            'target_window': rows * sum(t.shape[0] * math.prod(t.shape[2:]) * t.element_size()
+                                        for t in (self.keys, self.values)),
+        }
+
+    def cache_export_rows(self, start: int, stop: int) -> dict:
+        """Clone only freshly committed canonical rows, before the ring wraps.
+
+        The archive must reserve these exact payloads and index temporaries
+        before calling. All copies execute on the caller's existing stream.
+        """
+        import torch
+        if (self.poisoned or type(start) is not int or type(stop) is not int
+                or not max(0, self.high_water - self.ring) <= start < stop <= self.position
+                or stop - start > self.rows):
+            raise ValueError('Gemma cache rows are not committed retained authority')
+        index = torch.arange(start, stop, device=self.device) % self.ring
+        return {'target_full': (self.raw[:, start:stop].clone(), self.inv[:, start:stop].clone()),
+                'target_window': (self.keys.index_select(1, index), self.values.index_select(1, index))}
+
+    def cache_import_rows(self, group: str, start: int, tensors: tuple, offset: int, rows: int) -> None:
+        """Import an archive lease into this graph-bound State; no pointer swap."""
+        import torch
+        if (not self.poisoned or group not in ('target_full', 'target_window')
+                or any(type(n) is not int for n in (start, offset, rows))
+                or not 0 <= start < start + rows <= self.context or offset < 0 or len(tensors) != 2):
+            raise ValueError('Gemma cache import requires a poisoned valid destination/range')
+        left, right = tensors
+        if group == 'target_full':
+            self.raw[:, start:start + rows].copy_(left[:, offset:offset + rows])
+            self.inv[:, start:start + rows].copy_(right[:, offset:offset + rows])
+        else:
+            index = torch.arange(start, start + rows, device=self.device) % self.ring
+            self.keys.index_copy_(1, index, left[:, offset:offset + rows])
+            self.values.index_copy_(1, index, right[:, offset:offset + rows])
+
+    def cache_finish_restore(self, position: int) -> None:
+        """Publish only after every target and companion import was enqueued."""
+        if type(position) is not int or not 0 <= position <= self.context or not self.poisoned:
+            raise ValueError('Gemma cache restore frontier differs')
+        self.position = self.high_water = position
+        self.global_cache_ready = self.global_cache == 'none' or position == 0
+        self.poisoned = False
+
     def advance(self, rows: int) -> None:
         """Commit a completed forward's rows (callers roll back rejected suffixes)."""
         self.position += rows
