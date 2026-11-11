@@ -8,6 +8,10 @@ architecture-specific whole-wheel hashes and explicit resolver metadata. The
 [refresh ledger](foundation-refresh-20261111.md) records the current resolver,
 build and qualification status. Earlier native ARM/model results retain their
 recorded inputs and do not qualify this refreshed foundation.
+The declared native additions select cuSPARSELt0.10.0.12-1 and NVSHMEM3.8.0-1
+as latest compatible candidates outside the original base package inventory.
+Their documented/source ABI admission and the upstream Python distribution
+metadata remain separate from actual native/provider/model qualification.
 The base supplies the CUDA
 headers, compiler, tools, cuDNN and NCCL. The selected nightly Torch/Triton and
 all their Python dependency versions belong to a separate protected prefix,

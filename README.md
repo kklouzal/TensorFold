@@ -1443,7 +1443,8 @@ The [Dockerfile](deploy/gb10/Dockerfile) uses the selected CUDA **13.4.3 cuDNN d
 | ARM64 | `2.16.0.dev20261111+cu134` | `0.30.0.dev20261111+cu134` | `3.9.0+gitb7ddcf86` | [ARM64 pins](deploy/gb10/nightly-pins.json) |
 
 The selected foundation also protects the pinned pip 26.3 installer and its full
-transitive closure. Native ARM64 resolution and explicitly cross-resolved AMD64
+transitive closure. Declared native add-ons are cuSPARSELt0.10.0.12-1
+and NVSHMEM3.8.0-1; their new-image/native qualification remains pending. Native ARM64 resolution and explicitly cross-resolved AMD64
 metadata remain distinct from new-image/native/model qualification; the
 [refresh ledger](deploy/gb10/foundation-refresh-20261111.md) records their current scope.
 

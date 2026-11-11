@@ -1,7 +1,7 @@
 {
   "base": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:b3f64e4fec7d0825e05bf685e628e7e112afd7d63bc5906e2f71fd1f56cce336",
   "base_index": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9",
-  "cache_key": "cu1343-torch216-dev20261111-tv030-dev20261111-triton39-b7ddcf86-pip263-native",
+  "cache_key": "cu1343-torch216-dev20261111-tv030-dev20261111-triton39-b7ddcf86-pip263-cslt010-nvshmem38-native",
   "cross_report": true,
   "cuda": "13.4.3",
   "foundation_roots": [
@@ -12,18 +12,18 @@
   ],
   "native_addons": [
     {
-      "artifact": "libcusparselt0-cuda-13_0.8.1.1-1_amd64.deb",
+      "artifact": "libcusparselt0-cuda-13_0.10.0.12-1_amd64.deb",
       "package": "libcusparselt0-cuda-13",
-      "sha256": "71959e401720b56ff00652ff69a1fb070c219aa6e8574902e497a5c2fb67476f",
-      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcusparselt0-cuda-13_0.8.1.1-1_amd64.deb",
-      "version": "0.8.1.1-1"
+      "sha256": "a5bc64f4aeff9f0ff0d4bd0cdb4e46605284f4a7e8d59ffca5e8f2334e63e9a9",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcusparselt0-cuda-13_0.10.0.12-1_amd64.deb",
+      "version": "0.10.0.12-1"
     },
     {
-      "artifact": "libnvshmem3-cuda-13_3.7.2-1_amd64.deb",
+      "artifact": "libnvshmem3-cuda-13_3.8.0-1_amd64.deb",
       "package": "libnvshmem3-cuda-13",
-      "sha256": "4810db788855de9014bb82f3941ec2866653761e653e1576a8f6ce0ab3e18e74",
-      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnvshmem3-cuda-13_3.7.2-1_amd64.deb",
-      "version": "3.7.2-1"
+      "sha256": "d4f1e22c8274c0133e88e0e55fc61c920450346ddba2857df4865be6f6eedd22",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnvshmem3-cuda-13_3.8.0-1_amd64.deb",
+      "version": "3.8.0-1"
     }
   ],
   "nccl_provider": "native",

@@ -6,7 +6,7 @@
   "base": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:e57a21d3cf1398462f74efe1b57603cb968ee750088c6160ea89458b4f64dcfc",
   "base_index": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9",
   "cuda": "13.4.3",
-  "cache_key": "cu1343-torch216-dev20261111-tv030-dev20261111-triton39-b7ddcf86-pip263-native",
+  "cache_key": "cu1343-torch216-dev20261111-tv030-dev20261111-triton39-b7ddcf86-pip263-cslt010-nvshmem38-native",
   "foundation_roots": [
     "torch==2.16.0.dev20261111+cu134",
     "triton==3.9.0+gitb7ddcf86",
@@ -33,18 +33,18 @@
   "nccl_provider": "native",
   "native_addons": [
     {
-      "artifact": "libcusparselt0-cuda-13_0.8.1.1-1_arm64.deb",
-      "sha256": "ffd98cc3f95f8918300e40637c7c99e1652d16dddc622020352ceb965be83cf0",
+      "artifact": "libcusparselt0-cuda-13_0.10.0.12-1_arm64.deb",
+      "sha256": "5c73e28b63ec2a6647c559e9ebf002b2b02245be426d1101982ff195585526d4",
       "package": "libcusparselt0-cuda-13",
-      "version": "0.8.1.1-1",
-      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libcusparselt0-cuda-13_0.8.1.1-1_arm64.deb"
+      "version": "0.10.0.12-1",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libcusparselt0-cuda-13_0.10.0.12-1_arm64.deb"
     },
     {
-      "artifact": "libnvshmem3-cuda-13_3.7.2-1_arm64.deb",
-      "sha256": "ea0449dca0d08b05b2b2987162cb0ea018613473ec800dcd1942b2d40542f714",
+      "artifact": "libnvshmem3-cuda-13_3.8.0-1_arm64.deb",
+      "sha256": "198132781b40643ed58f3df0e4ffe4330e2cf393ba8c7e33ce05b0d9ec578bb8",
       "package": "libnvshmem3-cuda-13",
-      "version": "3.7.2-1",
-      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libnvshmem3-cuda-13_3.7.2-1_arm64.deb"
+      "version": "3.8.0-1",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libnvshmem3-cuda-13_3.8.0-1_arm64.deb"
     }
   ]
 }
