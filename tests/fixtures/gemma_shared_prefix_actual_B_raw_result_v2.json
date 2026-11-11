@@ -1,0 +1,63 @@
+{
+ "name": "raw-A-first",
+ "prompt_tokens": 24000,
+ "output_tokens": 6,
+ "cached_tokens": 4,
+ "uncached_original_input_tokens": 23996,
+ "timing": {
+  "arrival_monotonic": 1053970.276045385,
+  "first_byte_s": 7.763926618965343,
+  "first_sse_data_s": null,
+  "first_visible_s": null,
+  "last_visible_s": null,
+  "terminal_s": null,
+  "full_wall_s": 7.764033420011401,
+  "last_visible_to_terminal_s": null
+ },
+ "server": {
+  "stats_version": 2,
+  "request_id": "req-9936c24317094c8b9c574a32b16f9dc4",
+  "prefill_s": 6.6511,
+  "decode_s": 0.4511,
+  "queue_s": 0.0001,
+  "cached": 4,
+  "drafts": true,
+  "rounds": 2,
+  "drafted": 8,
+  "accepted": 3,
+  "min_rows": 5,
+  "prepare_s": 0.0504,
+  "ttft_s": 6.7026,
+  "decode_tps": 11.08,
+  "cache_publication": {
+   "schema": "tensorfold.gemma-canonical-publication-v1",
+   "mode": "raw_ids",
+   "status": "published",
+   "complete": true,
+   "requested_tokens": 24006,
+   "matched_tokens": 24000,
+   "computed_tokens": 6,
+   "materialized_tokens": 24006,
+   "context_tokens": 262144,
+   "publication_s": 0.6062054699286819
+  },
+  "frontend_settlement_s": 0.6075970779638737,
+  "request_wall_s": 7.761441245907918,
+  "token_sha": "096ea0422602",
+  "token_ids": [
+   14937,
+   680,
+   1083,
+   3397,
+   236783,
+   106
+  ]
+ },
+ "message": {
+  "role": "assistant",
+  "content": "{\"ok\":true}",
+  "reasoning_content": "",
+  "tool_calls": []
+ },
+ "finish": "stop"
+}
