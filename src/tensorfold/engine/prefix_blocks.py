@@ -17,9 +17,20 @@ import sys
 from bisect import bisect_right, bisect_left
 from tensorfold.cleanup import raise_failures
 
-EVICTION_POLICY = "dependent-prefix-work-aging-bytes-tiebreak-v1"
+EVICTION_POLICY = "complete-prefix-availability-aging-bytes-tiebreak-v2"
 
 _BASE, _NODE, _TOKEN, _VIEW, _RECORD, _GROUP, _LEASE, _SPAN = 18432, 1024, 48, 256, 512, 512, 512, 512
+
+
+def validate_prefix_budget(budget_bytes):
+    """Validate the existing positive store domain without allocating a store.
+
+    Zero disables an archive at its owning admission boundary; it is not a
+    constructible empty-index budget. This single rule governs all callers.
+    """
+    if type(budget_bytes) is not int or budget_bytes <= _BASE + _NODE:
+        raise ValueError('positive budget must fund the empty index metadata')
+    return budget_bytes
 
 
 @dataclass(slots=True)
@@ -340,8 +351,7 @@ class PrefixBlocks:
     """
 
     def __init__(self, budget_bytes, block_tokens=64):
-        if type(budget_bytes) is not int or budget_bytes <= _BASE + _NODE:
-            raise ValueError('positive budget must fund the empty index metadata')
+        validate_prefix_budget(budget_bytes)
         if type(block_tokens) is not int or block_tokens <= 0:
             raise ValueError('positive native block token bound required')
         self.budget_bytes, self.block_tokens = budget_bytes, block_tokens
@@ -549,7 +559,7 @@ class PrefixBlocks:
                 self._serial += 1
                 record.groups[name] = _Group(name, nbytes, self._serial, used=self._clock,
                                              window=name == "window" or name.endswith("_window"),
-                                             benefit=1 if name == "hidden" else stop)
+                                             benefit=stop)
             cleanup_errors = [None, None]
             cleanup_view = filter(lambda value: value is not None, cleanup_errors)
             writer = WriteLease(self, record)
@@ -811,7 +821,7 @@ class PrefixBlocks:
                     for group,count in zip(groups,new_pins):
                         group.pins = count
                         group.used = self._clock
-                        group.benefit = max(group.benefit,1 if group.name == 'hidden' else length)
+                        group.benefit = max(group.benefit,length)
                     return lease
                 except BaseException as primary:
                     self._poison(primary)

@@ -44,7 +44,11 @@ def test_admission_retains_one_bf16_tied_head_and_original_native_payloads(tmp_p
         return {"context_window": context}
 
     monkeypatch.setattr(common, "admit", admitted)
-    assert capacity.admit(tmp_path, 128, True) == {"context_window": 128, "logit_bias_workspace": bias}
+    from tensorfold.families.gemma4.cuda.state import capacity_bytes, widest_forward
+    expected_archive = capacity_bytes(Config.from_dict(raw),128,widest_forward(16))
+    assert capacity.admit(tmp_path, 128, True) == {
+        "context_window":128,"logit_bias_workspace":bias,
+        "prefix_cache_bytes":expected_archive,"prefix_cache_default_bytes":expected_archive}
     # All original fields are consumed, with no duplicated tied output head,
     # float expansion of the native experts, or affine scales/biases invented.
     original = sum(math.prod(v["shape"]) * common.SIZES[v["dtype"]]

@@ -50,7 +50,8 @@ def test_admission_accounts_for_largest_declared_processor_pool(component, tmp_p
         assert device_workspace_bytes == 76 * vocab  # R16 bias map copies/gather; no rejection q/p owners
         assert host_workspace_bytes >= 12 * vocab
         weights, _ = weight_estimator(directory)
-        return {"weights": weights, "geometry": geometry}
+        return {"weights": weights, "geometry": geometry,
+                "context_window": context if context is not None else (raw.get("text_config") or raw)["max_position_embeddings"]}
 
     monkeypatch.setattr(common, "admit", admitted)
     small_plan = capacity.admit(tmp_path, 128, True, vision=True)
@@ -96,7 +97,8 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
     def admitted(directory, context, explicit, torch, geometry, rule, *, weight_estimator,
                  device_workspace_bytes, host_workspace_bytes):
         runtime_workspace.append((device_workspace_bytes, host_workspace_bytes))
-        return {"weights": weight_estimator(directory)[0], "geometry": geometry}
+        return {"weights": weight_estimator(directory)[0], "geometry": geometry,
+                "context_window": context if context is not None else (raw.get("text_config") or raw)["max_position_embeddings"]}
 
     monkeypatch.setattr(common, "admit", admitted)
 

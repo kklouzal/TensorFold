@@ -2,7 +2,7 @@
 import gc
 import unittest
 from unittest.mock import patch
-from tensorfold.engine.prefix_blocks import PrefixBlocks, PrefixCapacity
+from tensorfold.engine.prefix_blocks import PrefixBlocks, PrefixCapacity, validate_prefix_budget
 
 
 class PrefixBlockTests(unittest.TestCase):
@@ -292,7 +292,7 @@ class PrefixBlockTests(unittest.TestCase):
         self.assertTrue(all(set(row)=={'component','start','stop','bytes','reason'} for row in history))
         self.assertGreater(store.stats['chunks'],0)
         self.assertNotIn('records',store.stats)
-        self.assertEqual(store.stats['eviction_policy'],'dependent-prefix-work-aging-bytes-tiebreak-v1')
+        self.assertEqual(store.stats['eviction_policy'],'complete-prefix-availability-aging-bytes-tiebreak-v2')
         self.assertGreater(store.stats['indexed_unique_tokens'],0)
         self.assertLessEqual(store.stats['charged_bytes'],store.budget_bytes)
 
@@ -513,6 +513,67 @@ class PrefixBlockTests(unittest.TestCase):
         self.assertTrue(store.stats['poisoned'])
         with self.assertRaises(RuntimeError):
             store.reserve_temporary(1)
+        store.close()
+
+    def test_deployed_byte_ratio_long_complete_endpoint_survives_six_and_ten_shorts(self):
+        # GPU-shape byte-policy sentinels: no giant Tensor/GPU allocation or
+        # physical-RSS claim. Ratios derive independently from deployed BF16
+        # target25SWA/5global+inverse,DFlash4SWA/1global, hidden2816.
+        per_row = {'target_full':5*2*(512*2+4),
+                   'target_window':25*2*8*256*2,
+                   'draft_full':2*8*128*2,
+                   'draft_window':4*2*8*128*2,
+                   'hidden':2816*2}
+        target_live = 25*2048*8*256*4+5*262144*2*(512*2+4)
+        draft_live = 4*2112*8*128*4+262144*8*128*4
+        credit = 3*(target_live+draft_live)
+        self.assertEqual(credit,12667846656)
+        for short_count in (6,10):
+            with self.subTest(short_count=short_count):
+                store = PrefixBlocks(credit)
+                long = tuple(range(40000))
+                def capture(tokens):
+                    for start in range(0,len(tokens),1024):
+                        stop = min(start+1024,len(tokens))
+                        writer = store.begin(tokens,start,stop,{g:(stop-start)*b for g,b in per_row.items()})
+                        writer.commit({g:(g,start,stop) for g in per_row})
+                        writer.finish()
+                capture(long)
+                windows = {'target_full':None,'target_window':2048,'draft_full':None,'draft_window':2112}
+                warm = store.match(long,windows)
+                self.assertEqual(warm.length,40000)
+                warm.close()
+                for n in range(short_count):
+                    length = 2200+400*n
+                    capture(tuple(range(100000+10000*n,100000+10000*n+length)))
+                # Complete closure fits original credit; no budget increase or
+                # approximation of39999 is accepted as full40000 endpoint.
+                complete = store.match(long,windows)
+                self.assertIsNotNone(complete)
+                self.assertEqual(complete.length,40000)
+                hidden = complete.spans('hidden',39999,40000)
+                self.assertEqual(sum(count for _data,_offset,count in hidden),1)
+                hidden = None
+                complete.close()
+                self.assertIsNotNone(store.identity(long,windows))
+                self.assertLessEqual(store.stats['charged_bytes'],credit)
+                store.close()
+
+    def test_authoritative_positive_budget_helper_matches_constructor_without_allocation(self):
+        import tensorfold.engine.prefix_blocks as blocks
+        empty = PrefixBlocks(100_000)
+        minimum = empty.stats['charged_bytes']
+        empty.close()
+        for value in (False,True,-1,0,1,minimum-1,minimum):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    validate_prefix_budget(value)
+                with self.assertRaises(ValueError):
+                    PrefixBlocks(value)
+        with patch.object(blocks,'_Node',side_effect=AssertionError('allocated index')):
+            self.assertEqual(validate_prefix_budget(minimum+1),minimum+1)
+        store = PrefixBlocks(minimum+1)
+        self.assertEqual(store.stats['charged_bytes'],minimum)
         store.close()
 
 

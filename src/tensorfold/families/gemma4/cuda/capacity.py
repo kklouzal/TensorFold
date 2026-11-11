@@ -7,6 +7,7 @@ system MemAvailable and its configured host floor govern the single pool.
 from __future__ import annotations
 
 import math
+import sys
 from pathlib import Path
 
 
@@ -163,7 +164,12 @@ def companion_kind(directory):
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False, dflash_graph=False, dflash_head_native_a8=False, dflash_head_w4a16=False):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False, dflash_graph=False, dflash_head_native_a8=False, dflash_head_w4a16=False, prefix_cache_bytes=None):
+    if prefix_cache_bytes is not None and (type(prefix_cache_bytes) is not int or not 0 <= prefix_cache_bytes <= sys.maxsize):
+        raise ValueError("prefix_cache_bytes must be native nonnegative bytes within the host size range")
+    if prefix_cache_bytes is not None and prefix_cache_bytes > 0:
+        from tensorfold.engine.prefix_blocks import validate_prefix_budget
+        validate_prefix_budget(prefix_cache_bytes)
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -442,27 +448,27 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             scratch += 16 * patches * (v['hidden_size'] + v['intermediate_size']) * 4
         return scratch
 
-    def geometry(slots):
-        target = capacity_bytes(cfg, min(slots, cfg.max_position), rows)
+    def state_bytes(slots):
+        target = capacity_bytes(cfg,min(slots,cfg.max_position),rows)
         companion = 0
         if draft is not None:
-            # DraftState K and V (the engine's proposal block is at most max_rows).
-            companion = sum(companion_rings(draft.layer_types, draft.sliding_window, max_rows, rows,
-                                            min(slots, cfg.max_position))) * draft.kv_heads * draft.head_dim * 4
-        # One fixed target scratch pair: not multiplied by prefix owners.
+            companion = sum(companion_rings(draft.layer_types,draft.sliding_window,max_rows,rows,
+                                            min(slots,cfg.max_position))) * draft.kv_heads * draft.head_dim * 4
+        spark_live = spark.state_bytes(min(slots,spark.max_position)) if spark is not None else 0
+        spark_snapshot = spark.snapshot_bytes(min(slots,spark.max_position)) if spark is not None else 0
+        return target+companion,spark_live,spark_snapshot
+
+    def geometry(slots):
+        live,spark_live,spark_snapshot = state_bytes(slots)
+        # Working states are shared once per live stream. Archive credit is
+        # separate and replaces, rather than adds to, the legacy snapshots.
+        archive = keep*(live+spark_snapshot) if prefix_cache_bytes is None else prefix_cache_bytes
+        retained = streams*(live+spark_live)+archive
         prepared = (slots * cfg.global_kv_heads * cfg.global_head_dim * 4
                     if prepare_global_prompt else 0)
-        retained = (streams + keep) * (target + companion)
-        if spark is not None:
-            # Derived full KV belongs only to the live bridge, never snapshots.
-            retained += (streams * spark.state_bytes(min(slots, spark.max_position))
-                         + keep * spark.snapshot_bytes(min(slots, spark.max_position)))
-        # One immutable FP32 cos/sin pair, shared by global layers and all
-        # retained prefixes. This is target residency, never per-State storage.
         trig = slots * ROTATED * 8 if global_trig else 0
-        # Raw snapshots retain no derived tensors. Only live States own them.
-        derived = streams * derived_capacity_bytes(cfg, min(slots, cfg.max_position), global_cache)
-        return retained + streams * workspace(slots) + prepared + trig + derived
+        derived = streams * derived_capacity_bytes(cfg,min(slots,cfg.max_position),global_cache)
+        return retained+streams*workspace(slots)+prepared+trig+derived
 
     if bounds is None and spark is None:
         host_staging = max(host_staging, staging) if delta4_head else staging
@@ -471,13 +477,24 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         # after later companion staging is known. Host accounting retains its
         # independent CPU bound rather than importing that UMA sum again.
         staging += delta4_cpu_peak
-    result = common(model_dir, context, context_explicit, torch, Geometry(geometry, 0, maximum_slots=131072 if spark_global_gqa else None),
+    # Selecting explicit archive bytes also selects a fixed logical window:
+    # an oversized cache grant must reject, never buy room by shrinking it.
+    admitted_context = context
+    if prefix_cache_bytes is not None and (context is None or context == 0):
+        # The shared planner treats zero as native, but its explicit nonfit
+        # check needs the resolved positive native window rather than zero.
+        admitted_context = cfg.max_position
+    admitted_explicit = context_explicit if prefix_cache_bytes is None else True
+    result = common(model_dir, admitted_context, admitted_explicit, torch, Geometry(geometry, 0, maximum_slots=131072 if spark_global_gqa else None),
                   lambda name, info: (0, 0),
                   weight_estimator=lambda _: (Weights(resident, staging), host_staging),
                   device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"]
                                          + q_extra["device_bytes"] + bias["device_bytes"],
                   host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"]
                                        + q_extra["host_bytes"] + retained_q + bias["host_bytes"])
+    live,_spark_live,spark_snapshot = state_bytes(result['context_window'])
+    result['prefix_cache_default_bytes'] = keep*(live+spark_snapshot)
+    result['prefix_cache_bytes'] = result['prefix_cache_default_bytes'] if prefix_cache_bytes is None else prefix_cache_bytes
     result['logit_bias_workspace'] = bias
     if head_w4_work is not None:
         result['dflash_head_w4a16'] = {'memory': head_w4_work, 'owning_logits_dtype': 'float32',

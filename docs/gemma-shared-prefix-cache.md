@@ -161,3 +161,25 @@ public count were removed. The last removal is independently AST-equivalent;
 its final hold is `cf6c7616` and source SHA starts `d4301c9d`. These controls prove
 only the source index/ownership contracts; GPU copies, application integration,
 physical resources, full-model quality and serving performance remain open.
+
+## Byte admission and endpoint-retention successor
+
+An integrated 40K retention control exposed that all KV groups could remain
+resident while the final hidden row was evicted. The preserved 73-pass/2-failure
+run was remedied by valuing complete-prefix availability for that component.
+The exact original byte allowance and strict 40,000-token endpoint assertions
+remain unchanged. The new policy is
+`complete-prefix-availability-aging-bytes-tiebreak-v2`; it is an availability
+proxy with aging and a bytes tie-break, not measured marginal recompute time.
+The full 75-case Engine/archive cohort then passed without skips.
+
+Explicit archive byte credit now replaces the old allowance exactly once in
+capacity planning. None retains the existing default algebra; zero disables.
+An explicit allowance pins the requested or native context rather than silently
+shortening it to fit. Core, capacity and Engine preflight share the same minimum
+constructible index-budget check, before Torch/header effects for explicit
+invalid credit. All 78 source CPU tests plus 22 subtests passed in CPython 3.12;
+review verified unchanged workspace/math and the original constructor boundary.
+Eleven style diagnostics in an unmodified old test helper are baseline-proven;
+there are no new static findings. These are source admission/retention gates,
+not installed-image, GPU/model, physical capacity or performance qualification.

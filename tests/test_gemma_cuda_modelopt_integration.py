@@ -56,6 +56,7 @@ def _capacity_boundary(monkeypatch, *, uma):
     def admitted(directory, context, explicit, runtime, geometry, rule, **kwargs):
         weight, host = kwargs['weight_estimator'](directory)
         return dict(weight=weight, host=host, geometry=geometry,
+                    context_window=context if context is not None else cfg.max_position,
                     sampling=(kwargs['device_workspace_bytes'], kwargs['host_workspace_bytes']))
     monkeypatch.setattr(common, 'admit', admitted)
     return observed
@@ -73,6 +74,9 @@ def test_mixed_storage_bounds_and_no_double_uma_host_charge(monkeypatch, tmp_pat
     assert result['sampling'][0] == 16 * vocab  # R1 bias copies/gather; no rejection q/p owners
     assert result['sampling'][1] >= 12 * vocab
     assert result['geometry'].needed(128) > 12345
+    from tensorfold.families.gemma4.cuda.state import capacity_bytes, widest_forward
+    expected_archive = capacity_bytes(Config.from_dict(raw_modelopt()),128,widest_forward(1))
+    assert result['prefix_cache_bytes']==result['prefix_cache_default_bytes']==expected_archive
 
 
 def test_host_cgroup_refusal_precedes_device_admission(monkeypatch, tmp_path):
