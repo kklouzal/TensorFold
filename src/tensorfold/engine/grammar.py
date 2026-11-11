@@ -512,6 +512,18 @@ class AnswerBoundary:
                 from tensorfold.markup_lex import markup_regions
                 text = self.decode([*self._thinking_tokens, *path, token], skip_special_tokens=False)
                 point = len(text) - len(self.think_closer)
+                if self.think_closer == "<channel|>":
+                    # Gemma channel controls are literal only inside actual
+                    # quoted tool values, independent of permitted call names.
+                    # An unquoted close in malformed call markup is structural.
+                    for region in markup_regions(text):
+                        if region.kind != "call" or not region.start <= point < region.end:
+                            continue
+                        body = region.payload_start
+                        if any(value.kind == "string" and body + value.start <= point < body + value.end
+                               for value in markup_regions(text[body:region.payload_end])):
+                            return _BoundaryStep(False)
+                    return _BoundaryStep(True)
                 if not any(r.kind == "call" and r.start <= point < r.end
                            for r in markup_regions(text, call_headers=self.answer_headers)):
                     return _BoundaryStep(True)

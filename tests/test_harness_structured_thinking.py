@@ -107,7 +107,8 @@ def test_native_gemma_framing_only_callbacks_never_leak_or_slice_reasoning(tmp_p
     from tensorfold.cuda import server
     from tensorfold.engine.grammar import AnswerBoundary, Spec
 
-    pieces = {100: '<|channel>', 45518: 'thought', 107: '\n', 818: 'The', 2430: ' user',
+    pieces = {3: '<|channel>thought\n' if ending == 'omitted' else 'prompt',
+              100: '<|channel>', 45518: 'thought', 107: '\n', 818: 'The', 2430: ' user',
               563: ' is', 10980: ' asking', 101: '<channel|>', 200: '{"ok":true}', 106: '<eos>',
               201: 'The character ` starts code.', 202: 'The answer.'}
     class Tok:
@@ -152,8 +153,12 @@ def test_native_gemma_framing_only_callbacks_never_leak_or_slice_reasoning(tmp_p
     for streaming in (False, True):
         app = _app(tmp_path, Engine(streaming), Grammars())
         app.tok = Tok()
+        # Omitted response framing is valid when the actual prompt already
+        # opened the channel. Mirror prepare()'s prompt-derived metadata.
+        from tensorfold.server.gemma_values import prompt_opens_thought
         prepared = server.PreparedRequest([3], len(ids)+1, [], True, None,
-                                         grammar=(Spec('regex', 'presentation-only'), object()))
+                                         grammar=(Spec('regex', 'presentation-only'), object()),
+                                         thought_open=prompt_opens_thought(app.tok.decode([3])))
         emitted = []
         result = app.run({'stream': streaming, 'return_token_ids': True}, True,
                          lambda delta: emitted.append(delta) or True, prepared=prepared)

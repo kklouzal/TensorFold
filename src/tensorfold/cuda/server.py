@@ -900,7 +900,7 @@ class App:
             sent = {"reasoning": 0, "content": 0}
             stopped = {"client": False, "stop": False}
             failed: list[Exception | None] = [None]  # preallocated callback failure cell; no append on exhaustion
-            stream = StreamDecoder(self.tok, ends)
+            stream = StreamDecoder(self.tok, ends, literal=gemma and split_reasoning)
             # streamed calls go out as argument deltas while written (as on the Mac); one-call requests keep the end parser
             strict = prepared.calls
             calls_stream = ((strict.reader() if strict is not None else ToolCallStreamer(tools))
@@ -917,7 +917,7 @@ class App:
                     answer_headers=tuple("<|tool_call>call:" + tool_spec_name(t) + "{" for t in tools))
             forced_close = [None]  # at most one explicit budget event in this logical reply
             answer_stream = (StreamDecoder(self.tok, ends, literal=prepared.grammar is not None)
-                             if prepared.grammar is not None or gemma else None)
+                             if not (gemma and split_reasoning) and (prepared.grammar is not None or gemma) else None)
             answer_fed = [0]
 
             def normal_tool_end() -> bool:
@@ -927,7 +927,24 @@ class App:
                 raw = stream.final() if finished else stream.text
                 # stop strings match the generated text, reasoning included, before it is split (as on the Mac)
                 raw = stops.visible(raw, partial=not finished) if stops.strings else raw
-                if grammar_state[0] is not None:
+                if gemma and split_reasoning:
+                    from tensorfold.server.gemma_values import split_gemma_thinking
+                    boundary = grammar_state[0]
+                    call_start = None
+                    if (tools and boundary is not None and boundary.answer_offset is not None
+                            and boundary.thinking_close_offset is None):
+                        # The matcher can prove a native call even when its
+                        # preceding thought omitted the close. Keep that intent
+                        # without independently parsing/rejoining text phases.
+                        call_start = len(self.tok.decode(
+                            [token for token in out[:boundary.answer_offset] if token not in ends],
+                            skip_special_tokens=False))
+                        if call_start > len(raw):
+                            call_start = None  # a user stop cut precedes that intent
+                    reasoning, answer = split_gemma_thinking(raw, finished=finished,
+                        opened=prepared.thought_open, expect_thinking=thinking,
+                        allow_tool_calls=bool(tools), answer_start=call_start)
+                elif grammar_state[0] is not None:
                     from tensorfold.token_metadata import decode_presentation
                     offset = grammar_state[0].answer_offset
                     if offset is None:
@@ -950,31 +967,19 @@ class App:
                         answer_stream.add(out[offset + answer_fed[0]:])
                         answer_fed[0] = max(0, len(out) - offset)
                         answer = answer_stream.final() if finished else answer_stream.text
-                    if gemma and prepared.grammar is None and answer:
+                    if gemma and not split_reasoning and prepared.grammar is None and answer:
                         from tensorfold.server.gemma_values import _clean_controls
                         answer = _clean_controls(answer, finished=finished)
                     if split_reasoning:
-                        if gemma:
-                            from tensorfold.server.gemma_values import split_gemma_thinking
-                            reasoning = split_gemma_thinking(prefix, finished=finished,
-                                opened=prepared.thought_open, expect_thinking=thinking, reasoning_only=True)[0]
-                        else:
-                            reasoning = split_thinking(prefix, finished=finished, markers=markers)[0]
-                        # Gemma's known-phase cleaner already retains unframed
-                        # reasoning. Empty can be framing-only: never reinsert
-                        # raw headers or poison cumulative streamed-field lengths.
-                        if not gemma and offset is None and not reasoning:
+                        reasoning = split_thinking(prefix, finished=finished, markers=markers)[0]
+                        # Preserve the legacy unframed prefix for other model
+                        # families; Gemma is routed as one complete text above.
+                        if offset is None and not reasoning:
                             reasoning = prefix
                     else:
                         reasoning = ""
                 elif split_reasoning:
-                    if gemma:
-                        from tensorfold.server.gemma_values import split_gemma_thinking
-
-                        reasoning, answer = split_gemma_thinking(raw, finished=finished, opened=prepared.thought_open,
-                                                                 expect_thinking=thinking)
-                    else:
-                        reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
+                    reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
                     if finished and tools and not gemma and not answer:
                         # the end parser's split (below): a call missing only its closer, in a block that never closed,
                         # ends the reasoning where it starts, so its markup is the call and never reasoning_content
@@ -1284,20 +1289,18 @@ class App:
                         final["reasoning_content"] = reasoning[sent["reasoning"]:]
                     from tensorfold.token_metadata import decode_presentation
 
-                    raw_text = decode_presentation(self.tok, [t for t in out if t not in ends])
+                    raw_text = (stream.final() if gemma and split_reasoning else
+                                decode_presentation(self.tok, [t for t in out if t not in ends]))
                     text = stops.visible(raw_text)
                     calls_complete = True
                     if strict is not None:          # a strict reply's calls follow its grammar exactly: read as written
-                        raw_answer = answer_raw[0] if prepared.grammar is not None else text
+                        raw_answer = answer_raw[0] if prepared.grammar is not None or (gemma and split_reasoning) else text
                         content, calls, calls_complete = strict.parse_finished(raw_answer, max_calls=policy.max_calls)
                     elif tools and prepared.grammar is None:
                         if not gemma:
                             text = normalize_qwen_tool_markup(text, finished=normal_tool_end())
                         if split_reasoning and gemma:
-                            from tensorfold.server.gemma_values import split_gemma_thinking
-
-                            raw_answer = split_gemma_thinking(text, finished=True, opened=prepared.thought_open,
-                                                              expect_thinking=thinking)[1]
+                            raw_answer = answer_raw[0]
                         else:
                             raw_answer = split_thinking(text, finished=True, markers=markers)[1] if split_reasoning else text
                         parse = parse_tool_calls_from_content if gemma else parse_tool_calls

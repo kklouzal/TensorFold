@@ -26,12 +26,14 @@ def _partial_tag(text: str, tag: str) -> int:
 
 
 def split_thinking(text: str, *, finished: bool, markers: tuple[str, str] = THINK_MARKERS,
-                   expect_thinking: bool = False) -> tuple[str, str]:
+                   expect_thinking: bool = False, opened: bool = False,
+                   allow_tool_calls: bool = True, answer_start: int | None = None) -> tuple[str, str]:
     """(reasoning, answer) of a thinking reply; while it streams, a tail that could begin a marker is held back."""
 
     if markers == CHANNEL_MARKERS:
         from tensorfold.server.gemma_values import split_gemma_thinking
-        return split_gemma_thinking(text, finished=finished, expect_thinking=expect_thinking)
+        return split_gemma_thinking(text, finished=finished, opened=opened, expect_thinking=expect_thinking,
+                                    allow_tool_calls=allow_tool_calls, answer_start=answer_start)
     # Gemma 4 can open its thought channel after visible text. Strip that block wherever it opens.
     opener, closer = markers
     if opener and not text.startswith(opener):

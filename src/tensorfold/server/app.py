@@ -341,6 +341,24 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             self._warm_known_blocks(snapshot_dir, model_id)
         self._startup_complete = True
 
+    def _gemma_prompt_thought_open(self, tokens: list[int]) -> bool:
+        """Inspect only the actual generation turn, never a user/history suffix."""
+        if self.think_markers != CHANNEL_MARKERS:
+            return False
+        opener = self._token_id("<|channel>")
+        if opener < 0:
+            return False
+        boundaries = {self._token_id(mark) for mark in ("<channel|>", "<|turn>", "<turn|>")}
+        for index in range(len(tokens) - 1, -1, -1):
+            token = tokens[index]
+            if token == opener:
+                from tensorfold.server.gemma_values import prompt_opens_thought
+                with self.tokenizer_lock:
+                    return prompt_opens_thought(self.tokenizer.decode(tokens[index:]))
+            if token in boundaries:
+                break
+        return False
+
     def _grow_checkpoints(self, work: int) -> None:
         """The default prompt cache takes what the weights, a whole-window request and a shared round leave idle."""
 
@@ -471,6 +489,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             thinking = False
         rendered = prepare_prompt(self, messages, tools, thinking, prompt, fields)
         prompt_ids, history_len = rendered.tokens, rendered.history_len
+        thought_open = self._gemma_prompt_thought_open(prompt_ids) if prompt is None else False
         cancellation.check()
         if not prompt_ids:
             raise RequestError("rendered prompt is empty")
@@ -616,7 +635,9 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             answer = text
             if thinking or self.think_markers == CHANNEL_MARKERS:
                 # the prompt opened a think block: reasoning streams as reasoning_content until </think>
-                reasoning_so_far, answer = split_thinking(text, finished=False, markers=self.think_markers, expect_thinking=thinking)
+                reasoning_so_far, answer = split_thinking(text, finished=False, markers=self.think_markers,
+                                                       expect_thinking=thinking, opened=thought_open,
+                                                       allow_tool_calls=bool(tools))
                 piece = reasoning_so_far[len(streamed_reasoning) :]
                 if piece:
                     streamed_reasoning = reasoning_so_far
@@ -642,10 +663,19 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             raw_text = self.tokenizer.decode(content_tokens)
             text = stops.visible(raw_text)
         if thinking or self.think_markers == CHANNEL_MARKERS:
-            reasoning_text, content = split_thinking(text, finished=True, markers=self.think_markers, expect_thinking=thinking)
+            reasoning_text, content = split_thinking(text, finished=True, markers=self.think_markers,
+                                                    expect_thinking=thinking, opened=thought_open,
+                                                    allow_tool_calls=bool(tools))
             if plan is not None and content and self.think_markers[1] not in text and not self._strict_accepts(
                     plan, content):
-                reasoning_text, content = text, ""   # a call written in a think block that never closed, ungrammatical
+                # An ungrammatical call in unclosed reasoning stays reasoning;
+                # Gemma's structural channel headers must not be reinserted.
+                if self.think_markers == CHANNEL_MARKERS:
+                    from tensorfold.server.gemma_values import split_gemma_thinking
+                    reasoning_text = split_gemma_thinking(text, finished=True, reasoning_only=True)[0]
+                else:
+                    reasoning_text = text
+                content = ""
             reasoning = reasoning_text.strip() or None
         else:
             content, reasoning = parse_harmony_output(text)

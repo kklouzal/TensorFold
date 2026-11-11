@@ -13,8 +13,9 @@ def test_channel_cardinality_matrix(name, closed, prefix):
     raw = prefix + '<|channel>' + name + '\nBody'
     if closed:
         raw += '<channel|>Answer'
-    expected = (('Body', prefix + 'Answer') if closed else
-                ('Body', prefix) if name == 'thought' else ('', prefix + 'Body'))
+    # User-authorized structural-only policy: every named/empty channel is
+    # nonfinal reasoning; an unfinished channel cannot become answer at EOS.
+    expected = ('Body', prefix + ('Answer' if closed else ''))
     assert split_gemma_thinking(raw, finished=True, expect_thinking=True) == expected
     previous = ('', '')
     # Every character cut includes partial marker/header/codepoint boundaries.
@@ -29,6 +30,18 @@ def test_channel_cardinality_matrix(name, closed, prefix):
 @pytest.mark.parametrize('quote', ['`{}`', '``{}``', '```text\n{}\n```', '~~~text\n{}\n~~~', '{{"value":"{}"}}'])
 def test_quoted_code_and_json_string_markers_are_exact_data(marker, quote):
     raw = quote.format(marker)
+    if marker in ('<|channel>', '<channel|>'):
+        # Only genuine tool-value strings quote channel controls. Markdown and
+        # ordinary JSON presentation cannot expose these native sentinels.
+        result = split_gemma_thinking(raw, finished=True)
+        assert marker not in ''.join(result)
+        previous = ('', '')
+        for end in range(len(raw)+1):
+            current = split_gemma_thinking(raw[:end], finished=False)
+            assert all(now.startswith(before) for before, now in zip(previous, current))
+            previous = current
+        assert all(final.startswith(before) for before, final in zip(previous, result))
+        return
     assert split_gemma_thinking(raw, finished=True) == ('', raw)
     known = THOUGHT_OPEN + '\n' + raw
     if marker == THOUGHT_CLOSE:
@@ -131,7 +144,8 @@ def test_stopped_initial_known_thought_name_prefix_stays_framing():
     assert split_gemma_thinking(raw, finished=True) == ('Native EOS reason', '')
     for wrapper in ('`{}`', '"{}"', '```text\n{}\n```'):
         literal = wrapper.format('<|channel>tho')
-        assert split_gemma_thinking(literal, finished=True) == ('', literal)
+        result = split_gemma_thinking(literal, finished=True)
+        assert '<|channel>' not in ''.join(result)
 
 
 @pytest.mark.parametrize('opener,header', [
@@ -169,13 +183,14 @@ def test_native_close_ends_opened_thought_despite_prose_quotes_without_touching_
     answer = ('<|tool_call>call:echo{text:<|"|>literal `<channel|>` and "quotes"<|"|>}<tool_call|>' if tool
               else 'The answer. ```json\n{"literal":"<channel|>"}\n```')
     raw = ('' if opened else THOUGHT_OPEN + '\n') + thought + THOUGHT_CLOSE + answer
-    assert split_gemma_thinking(raw, finished=True, opened=opened, expect_thinking=True) == (thought, answer)
+    visible_answer = answer if tool else answer.replace(THOUGHT_CLOSE, '')
+    assert split_gemma_thinking(raw, finished=True, opened=opened, expect_thinking=True) == (thought, visible_answer)
     previous = ('', '')
     for end in range(len(raw) + 1):
         current = split_gemma_thinking(raw[:end], finished=False, opened=opened, expect_thinking=True)
         assert all(now.startswith(before) for before, now in zip(previous, current))
         previous = current
-    assert all(final.startswith(before) for final, before in zip((thought, answer), previous))
+    assert all(final.startswith(before) for final, before in zip((thought, visible_answer), previous))
     if tool:
         tools = [{'type': 'function', 'function': {'name': 'echo', 'parameters': {
             'type': 'object', 'properties': {'text': {'type': 'string'}}}}}]
@@ -189,7 +204,7 @@ def test_native_close_ends_opened_thought_despite_prose_quotes_without_touching_
 
 def test_close_spelling_in_never_opened_answer_code_remains_literal_content():
     raw = 'Answer with `<channel|>` and ```json\n{"x":"<channel|>"}\n```'
-    assert split_gemma_thinking(raw, finished=True, expect_thinking=True) == ('', raw)
+    assert split_gemma_thinking(raw, finished=True, expect_thinking=True) == ('', raw.replace(THOUGHT_CLOSE, ''))
 
 
 def test_nameless_json_after_bare_call_opener_cannot_shield_real_thought_close():

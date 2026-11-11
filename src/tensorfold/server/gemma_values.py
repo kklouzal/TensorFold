@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from bisect import bisect_right
 from dataclasses import replace
 import math
@@ -118,9 +119,23 @@ def hide_gemma_calls(text: str, *, finished: bool) -> str:
 
 
 def prompt_opens_thought(prompt: str) -> bool:
-    """Only a prompt's own literal thought suffix opens the response channel."""
-    return prompt.rstrip().endswith(THOUGHT_OPEN)
+    """Recognize only a trusted generation suffix consisting of a native header.
 
+    Every name (including empty/unknown) is nonfinal in the Gemma template.
+    Callers establish the generation-turn boundary; this helper does not infer
+    state from history, a thinking flag, or body text following an old opener.
+    """
+    start = prompt.rfind('<|channel>')
+    if start < 0:
+        return False
+    suffix = prompt[start + len('<|channel>'):]
+    if any(marker in suffix for marker in _CONTROL):
+        return False
+    return re.fullmatch(r'[ \t]*[^\s]*\s*', suffix) is not None
+
+
+_LOGGER = logging.getLogger(__name__)
+_CHANNEL = re.compile(r'<\|channel>|<channel\|>')
 
 _CONTROL = ('<|channel>', '<channel|>', '<|turn>', '<turn|>', '<|think|>')
 
@@ -182,21 +197,24 @@ def _clean_plain(text):
 
 
 def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
-                         expect_thinking: bool = False, reasoning_only: bool = False) -> tuple[str, str]:
-    """Partition presentation without touching quoted code or native tool data.
+                         expect_thinking: bool = False, reasoning_only: bool = False,
+                         allow_tool_calls: bool = True, answer_start: int | None = None) -> tuple[str, str]:
+    """Route structural channels while preserving genuine quoted tool data.
 
-    Known unclosed reasoning remains reasoning, including native EOS. Unknown
-    malformed channels and unframed expected-thinking prefixes are withheld
-    while ambiguous, never emitted then retroactively moved between fields.
+    Native headers select nonfinal reasoning; only native close or allowed
+    tool recovery/known intent selects answer. A foreign Qwen close cannot end
+    an active native channel. No named final channel is invented.
+    Unknown/empty names and headers in Markdown/ordinary quotes are structural.
+    Genuine tool quoted values alone preserve literal channel bytes. Ambiguous
+    headers are withheld rather than published then retracted during streaming.
     ``reasoning_only`` is a caller-proved phase, not an invented prompt opener.
     """
-    # A stopped initial thought-name prefix is framing, not an unknown answer.
-    # This applies only before any non-whitespace data; opaque code/tool values
-    # and noninitial invalid answers retain their independent lexical treatment.
-    initial = text.lstrip()
-    if (finished and not opened and not reasoning_only and initial.startswith('<|channel>')
-            and THOUGHT_OPEN.startswith(initial)):
-        return '', text[:len(text) - len(initial)]
+    if answer_start is not None and (type(answer_start) is not int or not 0 <= answer_start <= len(text)):
+        raise ValueError('Gemma answer_start must be a character offset within the current literal text')
+    if answer_start is not None and (not allow_tool_calls or reasoning_only):
+        raise ValueError('Gemma answer_start requires caller-proved tool intent in an answer-capable phase')
+    answer_started = False
+
     def call_payload(region):
         if region.kind != 'call':
             return None
@@ -254,33 +272,93 @@ def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
         regions = [replace(region, start=region.start + start, end=region.end + start,
                            payload_start=region.payload_start + start, payload_end=region.payload_end + start)
                    for region in markup_regions(text[start:], finished=finished)]
-        # Ordinary quotes/Markdown in a proved thought cannot consume native101.
-        # Real call payloads retain their independent quoted-data boundaries.
-        payloads = [payload for region in regions if (payload := call_payload(region)) is not None]
-        closes = [match.start() for match in re.finditer(re.escape(THOUGHT_CLOSE), text[start:])]
-        closes = [position + start for position in closes
-                  if not any(left <= position + start < right for left, right in payloads)]
-        return {region.start: region for region in regions}, closes
+        # Channel tokens are structural even in ordinary Markdown/JSON quotes.
+        # Only genuine tool-frame quoted data keeps these bytes literal.
+        protected = []
+        for region in regions:
+            if region.kind != 'call' or call_payload(region) is None:
+                continue
+            body = region.payload_start
+            for quote in markup_regions(text[body:region.payload_end], finished=finished):
+                if quote.kind == 'string':
+                    protected.append((body + quote.start, body + quote.end))
+        channels = [match.start() for match in _CHANNEL.finditer(text, start)
+                    if not any(left <= match.start() < right for left, right in protected)]
+        closes = [at for at in channels if text.startswith(THOUGHT_CLOSE, at)]
+        return regions, [region.start for region in regions], channels, closes, protected
 
-    starts, closes = scan(0)
+    regions, region_starts, channels, closes, protected = scan(0)
+    unknown, suppressed = set(), False
+
+    def header(start):
+        # Horizontal padding belongs to the header; an immediate line break
+        # is the empty-name header. Body indentation after a resolved name is
+        # framing whitespace, not a reason to leak an undecided name.
+        limit = answer_start if answer_start is not None and not answer_started and start <= answer_start else len(text)
+        name_start = start
+        while name_start < limit and text[name_start] in ' \t':
+            name_start += 1
+        end = name_start
+        while end < limit and not text[end].isspace() and not _CHANNEL.match(text, end):
+            end += 1
+        if end == len(text) and end != answer_start and not finished:
+            return None
+        name = text[name_start:end]
+        while end < limit and text[end].isspace():
+            end += 1
+        return name, end
+
+    def unknown_channel(name):
+        nonlocal suppressed
+        if not finished or name == 'thought' or name in unknown:
+            return
+        if len(unknown) < 8:
+            unknown.add(name)
+            _LOGGER.warning('Unknown Gemma channel %r treated as reasoning', name[:80])
+        elif not suppressed:
+            suppressed = True
+            _LOGGER.warning('Further unknown Gemma channel names suppressed')
+
     reason, answer, pending = [], [], []
     mode = 'reason' if opened or reasoning_only else 'answer'
+    native_active = opened
     unframed = expect_thinking and mode == 'answer'
     at = 0
     def emit(piece):
         if reasoning_only or mode == 'reason':
             reason.append((piece, at, at + len(piece)))
-        elif mode == 'unknown' or unframed:
+        elif unframed:
             pending.append((piece, at, at + len(piece)))
         else:
             answer.append((piece, at, at + len(piece)))
     while at < len(text):
-        region = starts.get(at)
+        if answer_start is not None and not answer_started and at == answer_start:
+            if unframed:
+                reason.extend(pending)
+                pending.clear()
+            mode, unframed, answer_started = 'answer', False, True
+            native_active = False
+            # A trusted token boundary starts an independent call phase even
+            # when earlier thought prose left Markdown or a quote unfinished.
+            regions, region_starts, channels, closes, protected = scan(at)
+        index = bisect_right(region_starts, at) - 1
+        region = regions[index] if index >= 0 and at < regions[index].end else None
         if region is not None:
-            if mode == 'reason':
+            boundary_index = bisect_right(channels, at - 1)
+            boundary = channels[boundary_index] if boundary_index < len(channels) else len(text)
+            if answer_start is not None and not answer_started and at < answer_start:
+                boundary = min(boundary, answer_start)
+            if boundary < region.end:
+                if boundary > at:
+                    emit(text[at:boundary])
+                    at = boundary
+                    continue
+                region = None  # Structural channel beats ordinary quoted/code framing.
+        if region is not None:
+            if mode == 'reason' and at == region.start:
                 payload = call_payload(region)
                 close = text.find(THOUGHT_CLOSE, at, region.end)
-                while close >= 0 and payload is not None and payload[0] <= close < payload[1]:
+                while close >= 0 and any(left <= close < right for left, right in protected):
                     close = text.find(THOUGHT_CLOSE, close + len(THOUGHT_CLOSE), region.end)
                 if close >= 0:
                     emit(text[at:close])
@@ -293,64 +371,57 @@ def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
                     if held:
                         break
                     continue
-            if region.kind == 'call' and not reasoning_only and (mode != 'answer' or unframed):
+            if region.kind == 'call' and at == region.start and not reasoning_only and (mode != 'answer' or unframed):
                 later_close = any(position >= region.end for position in closes)
-                if not later_close and finished and region.complete:
+                if (not later_close and finished and region.complete and allow_tool_calls
+                        and (answer_start is None or answer_started)):
                     if pending:
                         reason.extend(pending)
                         pending.clear()
                     mode, unframed = 'answer', False
-                elif not later_close and not finished:
+                    native_active = False  # Existing allowed-tool recovery exited this phase.
+                elif not later_close and not finished and (answer_start is None or answer_started):
                     # A later real thought close can still make this a mention.
                     break
-            emit(text[region.start:region.end])
+            emit(text[at:region.end])
             at = region.end
             continue
         if text.startswith('<|channel>', at):
-            body = at + len('<|channel>')
-            # A repeated header can still change its name as deltas arrive.
-            # Never publish that name as reasoning and retract it at newline.
-            if not finished and text.find('\n', body) < 0 and text.find(THOUGHT_CLOSE, body) < 0:
-                break
-            known = text.startswith('thought', body)
-            if known:
-                body += len('thought')
-                while body < len(text) and text[body] in '\r\n':
-                    body += 1
-            else:
-                newline = text.find('\n', body)
-                closer = text.find(THOUGHT_CLOSE, body)
-                if newline >= 0 and (closer < 0 or newline < closer):
-                    body = newline + 1
+            parsed = header(at + len('<|channel>'))
+            if parsed is None:
+                break  # Hold the entire undecided header, including its name.
+            name, body = parsed
+            unknown_channel(name)
             if mode == 'answer' and pending:
                 answer.extend(pending)
                 pending.clear()
-            if mode == 'unknown' and known:
-                reason.extend(pending)
-                pending.clear()
-            mode = 'reason' if reasoning_only or mode == 'reason' or known else 'unknown'
-            unframed = False
+            mode, unframed = 'reason', False
+            native_active = True
             at = body
             continue
         if text.startswith(THOUGHT_CLOSE, at):
-            if mode == 'unknown' or unframed:
-                reason.extend(pending)
+            if unframed:
+                # A requested mode is not proof the prompt opened a channel.
+                # Without an actual opener this is stray framing, not authority
+                # to move previously visible/ordinary text into reasoning.
+                answer.extend(pending)
                 pending.clear()
             mode, unframed = ('reason' if reasoning_only else 'answer'), False
+            native_active = False
             at += len(THOUGHT_CLOSE)
             while at < len(text) and text[at] in '\r\n':
                 at += 1
             # Thought Markdown/quotes do not carry into the answer's own
             # independent lexical phase after a real native close.
-            starts, closes = scan(at)
+            regions, region_starts, channels, closes, protected = scan(at)
             continue
-        if text.startswith('</think>', at):
+        if not native_active and text.startswith('</think>', at):
             line = text.rfind('\n', 0, at) + 1
             end = text.find('\n', at)
             complete_line = end >= 0 or finished
             end = len(text) if end < 0 else end
             if complete_line and text[line:end].strip() == '</think>':
-                if mode == 'unknown' or unframed:
+                if unframed:
                     reason.extend(pending)
                     pending.clear()
                 mode, unframed = ('reason' if reasoning_only else 'answer'), False
@@ -371,10 +442,27 @@ def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
             continue
         emit(text[at])
         at += 1
+    if answer_start is not None and not answer_started and at == answer_start:
+        if unframed:
+            reason.extend(pending)
+            pending.clear()
+        mode, unframed, answer_started = 'answer', False, True
+        native_active = False
     if finished and pending:
         (reason if reasoning_only else answer).extend(pending)
-    r = _clean_controls(_safe_join(reason), finished=finished)
-    a = '' if reasoning_only else _clean_controls(_safe_join(answer), finished=finished)
+    def presentation(parts):
+        joined = _safe_join(parts)
+        if not finished and parts:
+            # Markdown/ordinary quotes do not expose partial channel tokens.
+            # A genuine tool string remains byte-for-byte data at every cut.
+            held = max(_partial_tag(joined, '<|channel>'), _partial_tag(joined, THOUGHT_CLOSE))
+            end = parts[-1][2]
+            if held and not any(left <= end - held < right for left, right in protected):
+                joined = joined[:-held]
+        return _clean_controls(joined, finished=finished)
+
+    r = presentation(reason)
+    a = '' if reasoning_only else presentation(answer)
     return r, a
 
 

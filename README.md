@@ -16,6 +16,11 @@ and reuses the existing grouped down-projection and shared-output publication.
 Serving dispatch is unchanged; model qualification remains separate from the
 component contract checks.
 
+Gemma chat presentation routes repeated, nested and unknown channel blocks to
+reasoning and holds incomplete control markers while streaming. Channel controls
+stay out of visible content; native quoted tool arguments retain their literal
+values. CUDA and non-CUDA servers share this channel parser.
+
 The [branch consolidation](docs/branch-consolidation.md) hardens benchmark
 publication, new tool-definition validation and optional segment-cache failure
 accounting, removes an unused normal-round FIFO snapshot, and adds a separate
