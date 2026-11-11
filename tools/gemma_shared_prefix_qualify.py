@@ -322,10 +322,18 @@ class Client:
         return json.loads(raw)
 
     def tokens(self, name, body):
-        reply = self.json(name, "/v1/tokenize", body)
+        # The preserved Harness owns /v1/tokenize: open chat counting with
+        # explicit ID inspection. Raw text and closed-history inspection use
+        # the separately declared native public alias, which honors those flags.
+        # This is operation binding, never response-triggered retry/fallback.
+        route = ("/v1/tokenize" if "messages" in body and body.get("add_generation_prompt", True) is True
+                 else "/tokenize")
+        inspection = {**body, "return_tokens": True}
+        reply = self.json(name, route, inspection)
+        require(type(reply) is dict and "tokens" in reply, "served native token IDs missing despite explicit inspection")
         ids = reply["tokens"]
         require(type(ids) is list and all(type(token) is int and token >= 0 for token in ids)
-                and reply["count"] == len(ids), "tokenizer count/IDs disagree")
+                and integer(reply["count"], "tokenizer count") == len(ids), "tokenizer count/IDs disagree")
         return ids
 
     def stats(self, name):

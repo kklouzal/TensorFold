@@ -324,3 +324,56 @@ def test_first_cleanup_survives_error_transport_exhaustion(monkeypatch):
         trace = trace.tb_next
     assert any(frame.f_locals.get("errors") is statuses and frame.f_locals.get("native_context") is context
                for frame in frames)
+
+
+def test_harness_token_ids_require_explicit_opt_in_without_mutating_input(tmp_path, monkeypatch):
+    client = q.Client("http://127.0.0.1:1", q.Evidence(tmp_path / "out"), "baseline")
+    original = {"model": "fixture", "messages": [{"role": "user", "content": "public"}]}
+    observed = []
+    def harness(name, route, body):
+        observed.append((route, body))
+        reply = {"count": 2, "harness_tokenizer_version": 1, "provenance": {"source": "fixture"}}
+        if body.get("return_tokens") is True:
+            reply["tokens"] = [11, 12]
+        return reply
+    monkeypatch.setattr(client, "json", harness)
+    assert client.tokens("open", original) == [11, 12]
+    assert observed[0][0] == "/v1/tokenize" and observed[0][1]["return_tokens"] is True
+    assert "return_tokens" not in original
+
+
+@pytest.mark.parametrize("body", [
+    {"model": "fixture", "prompt": "ordinary", "add_special_tokens": False},
+    {"model": "fixture", "messages": [{"role": "user", "content": "public"}], "add_generation_prompt": False},
+])
+def test_raw_and_closed_inspection_bind_declared_native_alias(tmp_path, monkeypatch, body):
+    client = q.Client("http://127.0.0.1:1", q.Evidence(tmp_path / "out"), "baseline")
+    seen = []
+    def native(name, route, inspection):
+        assert route == "/tokenize"  # Harness is chat-only and always generation-open.
+        seen.append(inspection)
+        return {"count": 2, "tokens": [21, 22], "max_model_len": 262144}
+    monkeypatch.setattr(client, "json", native)
+    assert client.tokens("native", body) == [21, 22]
+    assert seen[0]["return_tokens"] is True
+    for key, value in body.items():
+        assert seen[0][key] == value
+
+
+def test_missing_id_array_remains_a_failure_without_local_or_count_fallback(tmp_path, monkeypatch):
+    client = q.Client("http://127.0.0.1:1", q.Evidence(tmp_path / "out"), "baseline")
+    attempts = []
+    def count_only(*args):
+        attempts.append(args)
+        return {"count": 40000, "harness_tokenizer_version": 1}
+    monkeypatch.setattr(client, "json", count_only)
+    with pytest.raises(ValueError, match="native token IDs missing"):
+        client.tokens("unsupported", {"messages": [{"role": "user", "content": "public"}]})
+    assert len(attempts) == 1
+
+
+def test_boolean_tokenizer_count_cannot_masquerade_as_one_id(tmp_path, monkeypatch):
+    client = q.Client("http://127.0.0.1:1", q.Evidence(tmp_path / "out"), "baseline")
+    monkeypatch.setattr(client, "json", lambda *args: {"count": True, "tokens": [1]})
+    with pytest.raises(ValueError, match="tokenizer count"):
+        client.tokens("bad", {"messages": [{"role": "user", "content": "public"}]})
