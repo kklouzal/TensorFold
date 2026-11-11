@@ -348,7 +348,7 @@ elif name == "python" and args[0].endswith("media_foundation.py") and args[1] ==
 
 
 @pytest.mark.parametrize("stage", ["torchvision", "transformers", "dav1d", "ffmpeg", "pyav"])
-@pytest.mark.parametrize("jobs", [None, "", "4", "24"])
+@pytest.mark.parametrize("jobs", [None, "", "4", "24", "64"])
 def test_media_driver_propagates_actual_controls_and_records_success(media_driver, stage, jobs):
     import json
 
@@ -409,7 +409,7 @@ def test_media_failure_cannot_relabel_an_old_completed_stage(media_driver, stage
         assert not any(row["tool"] == "meson" and row["args"][0] == "install" for row in commands[last + 1:])
 
 
-@pytest.mark.parametrize("jobs", ["0", "-1", "25", "2147483648", "9" * 1000, "04", " 4", "4.0", "4;false"])
+@pytest.mark.parametrize("jobs", ["0", "-1", "65", "2147483648", "9" * 1000, "04", " 4", "4.0", "4;false"])
 def test_media_jobs_reject_before_acquisition_or_state_creation(tmp_path, jobs):
     import os
 
@@ -418,7 +418,7 @@ def test_media_jobs_reject_before_acquisition_or_state_creation(tmp_path, jobs):
                    "TF_PROJECT_ROOT": str(tmp_path / "missing-project")}
     result = subprocess.run(["bash", str(ROOT / "deploy/v100/media_build.sh"), "torchvision"],
                             env=environment, capture_output=True, text=True)
-    assert result.returncode == 2 and "MAX_JOBS must be 1..24" in result.stderr
+    assert result.returncode == 2 and "MAX_JOBS must be 1..64" in result.stderr
     assert not state.exists() and not prefix.exists()
 
 

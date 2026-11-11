@@ -2,7 +2,8 @@
 
 This additive image supplies the required official processor backend against the
 [selected source Torch stack](source-foundation.md). It builds TorchVision
-0.29.1 on CPU, Transformers at `50e35cc0ca18ec19b80653690de553e6decf74f5`,
+published0.30.0.dev20261111 source8d995a1694b18f6944da14f4a45865d0277f8b20
+on CPU, Transformers5.22.2 at `6d195c6262a0ac2ef44f7b9a308617562286ff45`,
 PyAV 19.0.2, FFmpeg 9.0.2 and dav1d 1.5.4 from their exact archived sources. Pillow 13.0.0
 and the remaining Python support wheels have generated hash locks. The
 [input manifest](media-pins.json) pins both official processor configuration
@@ -15,7 +16,9 @@ The eventual FP16 vision encoder remains a separate GPU/model integration.
 PyAV uses the owned CPU FFmpeg prefix, with dav1d for CPU AV1. FFmpeg retains its built-in CPU decoders
 and demuxers, with external auto-detection, hardware acceleration, encoders,
 muxers and devices disabled. No CUDA/NPP or additional encoder dependency is
-introduced. The source Torch, CUDA and NCCL libraries are preserved.
+introduced. The source Torch, CUDA and NCCL libraries are preserved. The refreshed source-media
+candidate requires its own source-wheel/CPU-origin and installed native/model
+qualification; historical receipts below retain their original inputs.
 
 ## Independent input acquisition checkpoint
 
@@ -64,6 +67,10 @@ the captured applicable source instructions again before the future build;
 input readiness does not waive them or the exact SDK/audit boundary.
 
 ## Reproduce the source build
+
+The command block below is the historical04cf SDK example, not a qualified
+refreshed-image recipe. The refresh must bind its newly completed exact SDK/base
+identity before reusing the stage order with the latest pins.
 
 Use the exact base from `Dockerfile.media`, a Linux AMD64 CPython 3.12 container,
 and an owned external state directory. These CPU build/semantic controls used
@@ -119,7 +126,7 @@ media output or a completed SDK. Do not edit generated locks or installed tools.
 
 ## Build resource contract
 
-Future media producers accept explicit canonical `MAX_JOBS` values 1..24 and
+Refreshed media producers accept explicit canonical `MAX_JOBS` values 1..64 and
 retain 4 when unset or empty. The same value is exported as
 `CMAKE_BUILD_PARALLEL_LEVEL` and `OMP_NUM_THREADS`, including Python/PyTorch/
 CMake child builds such as TorchVision. FFmpeg/PyAV Make and dav1d Ninja receive

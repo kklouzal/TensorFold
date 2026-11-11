@@ -430,9 +430,10 @@ See [the resident allocation result](docs/v100-adaptive-validation.md#automatic-
 The V100 source-build workflow can now reacquire its frozen APT/Python inputs
 with verified hashes, durable cache reuse, an explicit Ubuntu snapshot option
 and a staging byte cap.
-All 197 declared inputs have been staged and verified with the maintained CLI.
-The offline source-builder image also builds successfully. These are dependency
-preparation results; they do not qualify the SDK or native model
+The earlier197-input acquisition and offline source-builder success retain their
+dated receipts. The refresh's191-DEB bundle and newly generated Python closures
+have separate build/integrity evidence in the shared refresh ledger. These are
+dependency preparation results; they do not qualify the SDK or native model
 execution. See [input staging](deploy/v100/source-foundation.md#reacquire-the-frozen-build-inputs).
 
 The V100 model recipe now matches the governing design's first packed MTP
@@ -441,7 +442,7 @@ weights with explicit QSA 4/2048. This corrects a stale guide reference to a
 different SC117 companion; it does not select a qualified model or drafter
 winner. See [artifact identities](deploy/v100/README.md).
 
-The V100 source and CPU media producers support explicit `MAX_JOBS=1..24`,
+The V100 source and CPU media producers support explicit `MAX_JOBS=1..64`,
 preserving default 4 and matching CMake/OMP limits. Larger target builds require recorded container
 CPU/memory budgets and a fresh producer/environment receipt; this does not
 change source pins or imply a measured build-speed gain. See the
@@ -1503,9 +1504,8 @@ that envelope.
 
 For x86 V100, use the separate `volta-sm70` [source-foundation
 workflow](deploy/v100/source-foundation.md), including its verified offline
-artifact staging and owned framework/NCCL build stages. The incumbent producer
-entry point below is historical and is not ready for this refresh until its
-protected-base changes pass; do not run it as the refreshed producer yet:
+artifact staging and owned framework/NCCL build stages. After verified local
+artifact staging, build the candidate source producer with:
 
 ```bash
 docker build --network=none \

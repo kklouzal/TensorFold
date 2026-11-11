@@ -6,8 +6,8 @@ tf_state=${TF_SOURCE_STATE:-/work}
 tf_project=${TF_PROJECT_ROOT:-/src}
 tf_prefix=${TF_SOURCE_PREFIX:-/opt/tensorfold-native}
 tf_jobs=${MAX_JOBS:-4}
-if ! [[ "$tf_jobs" =~ ^([1-9]|1[0-9]|2[0-4])$ ]]; then
-    echo "source foundation MAX_JOBS must be 1..24" >&2
+if ! [[ "$tf_jobs" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]]; then
+    echo "source foundation MAX_JOBS must be 1..64" >&2
     exit 2
 fi
 export MAX_JOBS="$tf_jobs" CMAKE_BUILD_PARALLEL_LEVEL="$tf_jobs" OMP_NUM_THREADS="$tf_jobs"
@@ -36,7 +36,7 @@ lint-prepare)
     /opt/source-venv/bin/python -m pip --python "$tf_state/lint-venv" install --no-index \
         --find-links "$tf_state/release/lint-wheels" --require-hashes \
         -r "$tf_project/deploy/v100/requirements-source-lint-offline-amd64.lock"
-    "$tf_state/lint-venv/bin/uv" python install 3.10.20
+    "$tf_state/lint-venv/bin/uv" python install "$tf_lint_python_version"
     ;;
 acquire|acquire-bootstrap)
     tf_acquire_args=()

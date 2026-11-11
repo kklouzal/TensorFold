@@ -1,16 +1,16 @@
 {
   "schema": "tensorfold.v100-source-foundation",
   "version": 1,
-  "as_of": "2026-10-25",
+  "as_of": "2026-11-11",
   "specification_sha256": "479727e5e112995c3f4edff88747365efc33da2fe676d4e58dd7faf32b31991a",
   "base": "nvcr.io/nvidia/cuda:12.9.2-devel-ubuntu24.04@sha256:420850a3fd665171b3f1fd08946c51d50468d732a46d6c42345ea04444755048",
   "targets": {
     "cuda": "12.9.2",
     "nvcc": "12.9.86",
     "cublas": "12.9.2.10",
-    "pytorch": "2.14.1",
+    "pytorch": "2.16.0.dev20261111",
     "cccl": "3.5.0",
-    "nccl": "2.32.3",
+    "nccl": "2.32.6",
     "cutlass": "4.8.1",
     "cudnn": "9.10.2.21",
     "nsight_compute": "2025.2.1.3",
@@ -20,19 +20,20 @@
   "sources": {
     "pytorch": {
       "repository": "https://github.com/pytorch/pytorch.git",
-      "tag": "v2.14.1",
-      "commit": "5c4886908584029761b579af026dcfb627c84070",
-      "source_inventory_sha256": "7a44b2fe45b25ea967f869bd94abc7c18d218f4575b6c031d008dee4fb6d4112",
-      "effective_commit": "04cf2557f315a350e7eea7ab064288def65db75a",
-      "fork_date": "1793049855 +0000",
-      "fork_message": "Fix c10d socket diagnostics after hostname lookup failure\n\nThe numeric fallback cast the address of its local sockaddr pointer instead\nof the pointed-to socket address and emitted network-order port integers.\nUse the actual const socket address and convert ports to host order. Replace\nthe process-wide unsynchronized DNS-disable bool with a relaxed atomic flag;\nthis flag publishes no other data. Use each successful call's local lookup\nresult directly so another thread's failure cannot select its fallback.\n\nRetain the preceding relocatable ATen CMake package correction. The isolated\nowned replacement fork starts at upstream v2.14.1 and preserves the original\n5ab14ac candidate separately. Normal DNS behavior and all transport defaults\nare unchanged.\n\nTest Plan:\n```bash\nexport PATH=/work/lint-venv/bin:$PATH UV_CACHE_DIR=/work/lint-cache/uv UV_PYTHON_INSTALL_DIR=/work/lint-python UV_OFFLINE=1\ncd /work/sources/pytorch\nspin quicklint -- -a torch/csrc/distributed/c10d/socket.cpp test/cpp/c10d/SocketTest.cpp test/cpp/c10d/CMakeLists.txt\n/work/venv/bin/python /work/sources/pytorch/agent_space/run_socket_test.py\n```\n\nPrepared with an AI assistant. No upstream publication.\n",
+      "commit": "09b29f3a97e07864066a2d574ffe03a852de9463",
+      "source_inventory_sha256": "b514eb8070374c2d9dc33e1f529500bf7a078b22bf6a94b199cdf3a89390bf2f",
+      "effective_commit": "05adb434bd30d298eb408a72420b0496ee05f8e3",
+      "fork_date": "1794382533 +0000",
+      "fork_message": "Preserve relocatable ATen and correct c10d socket diagnostics\n\nRebase the owned ATen CMake relocation and socket diagnostic corrections onto\nthe source for the official 2026-11-11 PyTorch nightly. Keep the synchronous\nTCPStore backend and all upstream allocation and transport contracts intact.\nUse the actual socket address and host-order port for numeric diagnostics,\nand a relaxed atomic DNS policy flag with local successful lookup results.\n\nTest Plan:\n```bash\ngit apply --check /canonical/deploy/v100/framework-patches/0001-owned-aten-and-socket-corrections.patch\ngit diff --check\n```\n\nPrepared with an AI assistant. No upstream publication.\n",
       "owned_patches": [
         {
           "artifact": "0001-owned-aten-and-socket-corrections.patch",
           "bytes": 8491,
           "sha256": "c0df744ff743241e57bb6d1163e4e50ce19f8a8b183b8f8204cbf5a4d01fc1e2"
         }
-      ]
+      ],
+      "nightly_version": "2.16.0.dev20261111",
+      "upstream_version": "2.16.0a0"
     },
     "cccl": {
       "repository": "https://github.com/NVIDIA/cccl.git",
@@ -42,9 +43,9 @@
     },
     "nccl": {
       "repository": "https://github.com/NVIDIA/nccl.git",
-      "tag": "v2.32.3-1",
-      "commit": "12df1a11afad322be5a204a2db890161cbf8131d",
-      "source_inventory_sha256": "eb46c85928c7118979f60137e23c8f1dbc771b7d785f562a321d8ad78d1cf1c1"
+      "tag": "v2.32.6-1",
+      "commit": "ad2d192c1f279aefcaf340f67e07880b65a1116b",
+      "source_inventory_sha256": "3104159f4ead038c7217c37e5b581ef512af3503393a10adade3c113c435266c"
     },
     "cutlass": {
       "repository": "https://github.com/NVIDIA/cutlass.git",
@@ -87,7 +88,7 @@
       "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/nsight-systems-2025.3.2_2025.3.2.474-1_amd64.deb"
     }
   ],
-  "status": "source-build-candidate; native-device/model qualification unrun",
+  "status": "source-build-candidate; owned fork finalization and native-device/model qualification unrun",
   "host_driver_candidate": {
     "version": "580.196.07",
     "kernel_module": "proprietary",
@@ -95,12 +96,12 @@
     "release_notes": "https://docs.nvidia.com/datacenter/tesla/tesla-release-notes-580-196-07/index.html",
     "kernel_support": "https://download.nvidia.com/XFree86/Linux-x86_64/580.196.07/README/kernel_open.html"
   },
-  "source_apt_bundle_sha256": "6c3bbf073321ad6076b8d8ccb2045253cc3ea30ce23aea35bee1bcc086afbd0d",
+  "source_apt_bundle_sha256": "33d03bf304a9c340bb1b4d909537564eabd198926a529bd98c85a34a1d7aa634",
   "lint_python": {
-    "version": "3.10.20",
-    "build": "20260510",
-    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.10.20%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-    "bytes": 29324796,
-    "sha256": "dc734bdd388975c0b093fe730b272af741a2e192475d38bc6845a687b6405922"
+    "version": "3.11.18",
+    "build": "20261110",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "bytes": 30783322,
+    "sha256": "3288c54cea3db350052019b3f8b558dd8a3da8afa6fda573f5fd2bcb37635b4a"
   }
 }

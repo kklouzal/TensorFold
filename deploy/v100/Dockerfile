@@ -6,8 +6,14 @@ RUN sh /opt/tensorfold-pins/foundation_sdk.sh capture /opt/tensorfold-pins /opt/
 COPY deploy/v100/source-apt-amd64.sha256 /opt/tensorfold-pins/source-apt-amd64.sha256
 RUN --network=none --mount=from=source_artifacts,source=/build-debs,target=/debs \
     cd /debs && sha256sum --strict --check /opt/tensorfold-pins/source-apt-amd64.sha256 \
-    && awk '{print $2}' /opt/tensorfold-pins/source-apt-amd64.sha256 > /tmp/source-apt-files \
-    && xargs -a /tmp/source-apt-files dpkg -i \
+    && awk '{print "/debs/"$2}' /opt/tensorfold-pins/source-apt-amd64.sha256 > /tmp/source-apt-files \
+    && mkdir -p /tmp/source-apt/sources.list.d /tmp/source-apt/lists/partial \
+    && : > /tmp/source-apt/sources.list \
+    && xargs -a /tmp/source-apt-files apt-get \
+         -o Dir::Etc::sourcelist=/tmp/source-apt/sources.list \
+         -o Dir::Etc::sourceparts=/tmp/source-apt/sources.list.d \
+         -o Dir::State::lists=/tmp/source-apt/lists \
+         --yes --no-install-recommends install \
     && sh /opt/tensorfold-pins/foundation_sdk.sh check /opt/tensorfold-pins /opt/tensorfold-pins/foundation-sdk-pattern.txt
 COPY deploy/v100/requirements-source-bootstrap-offline-amd64.lock /opt/source-bootstrap.lock
 RUN --network=none --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \
@@ -15,7 +21,7 @@ RUN --network=none --mount=from=source_artifacts,source=/python-wheels,target=/p
     && /opt/source-venv/bin/python -m pip install --no-cache-dir --no-index --find-links=/python-wheels \
        --require-hashes -r /opt/source-bootstrap.lock
 ENV PATH="/opt/source-venv/bin:${PATH}" CUDA_HOME=/usr/local/cuda \
-    TORCH_CUDA_ARCH_LIST=7.0 NCCL_VERSION=2.32.3 MAX_JOBS=4 CMAKE_BUILD_PARALLEL_LEVEL=4 OMP_NUM_THREADS=4
+    TORCH_CUDA_ARCH_LIST=7.0 NCCL_VERSION=2.32.6 MAX_JOBS=4 CMAKE_BUILD_PARALLEL_LEVEL=4 OMP_NUM_THREADS=4
 WORKDIR /work
 ENTRYPOINT ["/opt/source-venv/bin/python"]
 
@@ -29,9 +35,9 @@ RUN --network=none --mount=from=source_artifacts,source=/python-wheels,target=/p
     && /opt/source-venv/bin/python -m pip --python /opt/venv install --no-cache-dir --no-index \
        --find-links=/python-wheels --require-hashes -r /locks/requirements-source-runtime.lock
 ENV PATH="/opt/venv/bin:${PATH}" \
-    TF_NCCL_LIB=/opt/tensorfold-native/nccl-2.32.3/lib/libnccl.so.2 \
+    TF_NCCL_LIB=/opt/tensorfold-native/nccl-2.32.6/lib/libnccl.so.2 \
     TF_FOUNDATION_PROFILE=volta-sm70 \
-    TORCH_EXTENSIONS_DIR=/cache/volta-sm70-source-fec5e842de63b6f7c6997637a1104e25cc25f1061461702a8fdde66697ef1297
+    TORCH_EXTENSIONS_DIR=/cache/volta-sm70-source-0e4505e92692a6828ef9f9dda5e64c5f0295b427aa62da3a286c7a6a4768b1ce
 COPY --from=source_artifacts /native /opt/tensorfold-native
 COPY --from=source_artifacts /probes /opt/tensorfold-probes
 COPY --from=source_artifacts /build-inputs /opt/tensorfold-pins/build-inputs

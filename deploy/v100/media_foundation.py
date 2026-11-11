@@ -174,9 +174,9 @@ def begin_build_environment(state, stage, script):
     """No build effects may begin before both file and directory sync succeed."""
     pending = state / "receipts" / ("build-environment-" + stage + ".pending")
     controls = {name: os.environ[name] for name in ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")}
-    if (controls["MAX_JOBS"] not in tuple(map(str, range(1, 25)))
+    if (controls["MAX_JOBS"] not in tuple(map(str, range(1, 65)))
             or any(value != controls["MAX_JOBS"] for value in controls.values())):
-        raise ValueError("media build controls require matching canonical jobs 1..24")
+        raise ValueError("media build controls require matching canonical jobs 1..64")
     values = {"schema": "tensorfold.v100-media-build-environment", "version": 2 if stage == "pyav" else 1, "stage": stage,
               "producer_script_sha256": file_identity(script)["sha256"],
               "producer_helper_sha256": file_identity(Path(__file__))["sha256"], **controls}
@@ -253,7 +253,7 @@ def build_environments(state, sources, script_sha256, helper_sha256):
                 or type(value["version"]) is not int or value["version"] != (2 if stage == "pyav" else 1) or value["stage"] != stage
                 or value["producer_script_sha256"] != script_sha256 or value["producer_helper_sha256"] != helper_sha256
                 or value["source_receipt_sha256"] != source["sha256"]
-                or value["MAX_JOBS"] not in tuple(map(str, range(1, 25)))
+                or value["MAX_JOBS"] not in tuple(map(str, range(1, 65)))
                 or any(value[name] != value["MAX_JOBS"] for name in controls)):
             raise ValueError("media build environment differs from its actual stage/source/policy: " + stage)
         if stage == "pyav" and canonical(_pyav_build_ext(state, value["MAX_JOBS"])) != canonical(value["pyav_build_ext"]):

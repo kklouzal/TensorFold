@@ -15,14 +15,15 @@
   "artifacts": [
     {
       "name": "torchvision",
-      "url": "https://codeload.github.com/pytorch/vision/tar.gz/f12281517f1b2f6255904639b027c9436f3e5008",
+      "url": "https://codeload.github.com/pytorch/vision/tar.gz/8d995a1694b18f6944da14f4a45865d0277f8b20",
       "artifact": "torchvision.tar.gz",
-      "bytes": 14452138,
-      "sha256": "8ca5408930a0c048a24df30bf7a01e5112c331ce18a60907b2c74587ded0e6bc",
+      "bytes": 14452711,
+      "sha256": "7706f60de937235bbe3ddc4d7d32c93f325dc24f4d07b63c32ad343a194d18dc",
       "kind": "source-archive",
-      "version": "0.29.2",
-      "commit": "f12281517f1b2f6255904639b027c9436f3e5008",
-      "extraction_max_bytes": 536870912
+      "version": "0.30.0.dev20261111",
+      "commit": "8d995a1694b18f6944da14f4a45865d0277f8b20",
+      "extraction_max_bytes": 536870912,
+      "upstream_version": "0.30.0a0"
     },
     {
       "name": "transformers",

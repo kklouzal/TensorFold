@@ -25,7 +25,7 @@ capture)
     done < "$output/base-sdk-paths.txt" > "$output/base-sdk.sha256"
     test -s "$output/base-sdk.sha256"
     cp "$output/base-sdk-paths.txt" "$output/base-sdk-aliases.raw"
-    printf '%s\n' /usr/local/cuda /etc/alternatives/cuda /etc/alternatives/cuda-13 >> "$output/base-sdk-aliases.raw"
+    printf '%s\n' /usr/local/cuda /usr/local/cuda-[0-9]* /etc/alternatives/cuda /etc/alternatives/cuda-[0-9]* >> "$output/base-sdk-aliases.raw"
     sort -u "$output/base-sdk-aliases.raw" > "$output/base-sdk-aliases.txt"
     while IFS= read -r file; do
         if test -L "$file"; then

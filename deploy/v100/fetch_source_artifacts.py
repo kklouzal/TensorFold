@@ -80,7 +80,7 @@ def read_bytes(path):
         return raw
 
 
-def parse_document(raw, schema):
+def parse_document(raw, schema, *, versions=(1,)):
     def pairs(items):
         result = {}
         for key, value in items:
@@ -92,7 +92,7 @@ def parse_document(raw, schema):
         raise ValueError('nonfinite metadata')
     doc = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs, parse_constant=constant)
     if (type(doc) is not dict or doc.get('schema') != schema
-            or type(doc.get('version')) is not int or doc['version'] != 1):
+            or type(doc.get('version')) is not int or doc['version'] not in versions):
         raise ValueError('unsupported frozen metadata schema/version')
     return doc
 
@@ -138,7 +138,8 @@ def load_plan(directory):
     if hashlib.sha256(apt_raw).hexdigest() != sha(pins['source_apt_bundle_sha256']):
         raise ValueError('APT receipt differs from source pins')
     apt = parse_document(apt_raw, 'tensorfold.v100-source-apt-bundle')
-    if apt['base'] != pins['base'] or type(apt['packages']) is not list or len(apt['packages']) != 124:
+    if (apt['base'] != pins['base'] or type(apt['packages']) is not list
+            or not 0 < len(apt['packages']) <= MAX_ARTIFACTS):
         raise ValueError('wrong frozen APT target/count')
     items = []
     for package in apt['packages']:
@@ -146,14 +147,31 @@ def load_plan(directory):
             raise ValueError('invalid APT artifact fields')
         items.append(dict(folder='build-debs', name=package['artifact'], url=package['url'],
                           sha256=package['sha256'], bytes=positive(package['bytes'])))
+    by_package = {package['package']: package for package in apt['packages']}
+    if len(by_package) != len(apt['packages']):
+        raise ValueError('duplicate native APT package')
+    for required in pins['native_packages']:
+        selected = by_package.get(required['package'], {})
+        if any(selected.get(key) != value for key, value in required.items()):
+            raise ValueError('APT bundle omitted or changed a selected native package')
     for stem, schema, folder in (
         ('build', 'build-tools', 'python-wheels'), ('runtime', 'runtime', 'python-wheels'),
         ('lint', 'lint-tools', 'lint-wheels')):
-        doc = parse_document(raw('source-' + schema + '-amd64.json'), 'tensorfold.v100-source-' + schema)
+        doc = parse_document(raw('source-' + schema + '-amd64.json'), 'tensorfold.v100-source-' + schema,
+                             versions=(1, 2) if stem == 'runtime' else (1,))
         lock = raw('requirements-source-' + stem + '-amd64.lock')
         if hashlib.sha256(lock).hexdigest() != sha(doc['lock_sha256']):
             raise ValueError('Python lock differs from receipt')
-        if set(doc) != {'environment', 'lock_sha256', 'packages', 'resolver_report_sha256', 'schema', 'version'}:
+        fields = {'environment', 'lock_sha256', 'packages', 'resolver_report_sha256', 'schema', 'version'}
+        if stem == 'runtime' and doc['version'] == 2:
+            fields |= {'source_distributions', 'triton_execution'}
+            sources = doc.get('source_distributions', {})
+            if (set(sources) != {'torch', 'tensorfold'}
+                    or sources['torch'].get('source_commit') != pins['sources']['pytorch'].get(
+                        'effective_commit', pins['sources']['pytorch']['commit'])
+                    or doc.get('triton_execution') != 'import-only; no SM70 compiler/backend execution contract'):
+                raise ValueError('runtime source identities differ from the selected source foundation')
+        if set(doc) != fields:
             raise ValueError('invalid Python receipt fields')
         environment = doc['environment']
         if any(environment.get(k) != v for k, v in {
@@ -181,8 +199,15 @@ def load_plan(directory):
         if lines != expected:
             raise ValueError('Python lock package set differs from receipt')
     lint = pins['lint_python']
-    if set(lint) != {'version', 'build', 'url', 'bytes', 'sha256'} or (lint['version'], lint['build']) != ('3.10.20', '20260510'):
+    if (set(lint) != {'version', 'build', 'url', 'bytes', 'sha256'}
+            or re.fullmatch(r'3\.(?:10|11)\.[0-9]+', lint['version']) is None
+            or re.fullmatch(r'[0-9]{8}', lint['build']) is None):
         raise ValueError('unexpected lint interpreter identity')
+    expected_lint_url = ('https://github.com/astral-sh/python-build-standalone/releases/download/'
+        + lint['build'] + '/cpython-' + lint['version'] + '%2B' + lint['build']
+        + '-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz')
+    if lint['url'] != expected_lint_url:
+        raise ValueError('lint interpreter must use its selected official version/build artifact')
     items.append(dict(folder='lint-python', name=urlsplit(lint['url']).path.rsplit('/', 1)[-1],
                       url=lint['url'], sha256=lint['sha256'], bytes=positive(lint['bytes'])))
     return validate_plan(items), inputs

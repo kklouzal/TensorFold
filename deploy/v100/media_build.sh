@@ -6,8 +6,8 @@ tf_media=${TF_MEDIA_STATE:-/media}
 tf_project=${TF_PROJECT_ROOT:-/src}
 tf_media_prefix=${TF_MEDIA_PREFIX:-/opt/tensorfold-media}
 tf_jobs=${MAX_JOBS:-4}
-if ! [[ "$tf_jobs" =~ ^([1-9]|1[0-9]|2[0-4])$ ]]; then
-    echo "media source MAX_JOBS must be 1..24" >&2
+if ! [[ "$tf_jobs" =~ ^([1-9]|[1-5][0-9]|6[0-4])$ ]]; then
+    echo "media source MAX_JOBS must be 1..64" >&2
     exit 2
 fi
 export MAX_JOBS="$tf_jobs" CMAKE_BUILD_PARALLEL_LEVEL="$tf_jobs" OMP_NUM_THREADS="$tf_jobs"

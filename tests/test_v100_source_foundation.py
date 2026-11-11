@@ -47,7 +47,7 @@ def test_precommit_framework_outputs_cannot_be_exported(tmp_path):
 
 @pytest.mark.parametrize("jobs,final_outcome", [
     (jobs, outcome) for jobs in ("4", "24") for outcome in ("success", "pip-failure", "source-rejection", "tool-rejection")
-] + [(jobs, "success") for jobs in (None, "", "1", "9", "10", "19", "20")])
+] + [(jobs, "success") for jobs in (None, "", "1", "9", "10", "19", "20", "64")])
 def test_framework_driver_keeps_native_configuration_and_bootstrap_export_barrier(tmp_path, jobs, final_outcome):
     # Substitute only the external producer/pip boundaries to observe the real
     # shell driver's argument vectors and failures; no SDK build is claimed.
@@ -153,7 +153,7 @@ else:
         assert bootstrap_settings == [arg for arg in pip[1]["args"] if arg.startswith("--config-settings=")]
 
 
-@pytest.mark.parametrize("jobs", ["0", "-1", "25", "2147483648", "9" * 1000, "1.5", "04", " 4", "4;false"])
+@pytest.mark.parametrize("jobs", ["0", "-1", "65", "2147483648", "9" * 1000, "1.5", "04", " 4", "4;false"])
 def test_framework_jobs_refuse_outside_supported_policy_before_side_effects(tmp_path, jobs):
     state, prefix = tmp_path / "state", tmp_path / "prefix"
     environment = {**os.environ, "MAX_JOBS": jobs, "TF_SOURCE_STATE": str(state),
@@ -161,7 +161,7 @@ def test_framework_jobs_refuse_outside_supported_policy_before_side_effects(tmp_
     result = subprocess.run(["bash", str(ROOT / "deploy/v100/source_build.sh"), "framework"],
                             env=environment, capture_output=True, text=True)
     assert result.returncode == 2
-    assert "MAX_JOBS must be 1..24" in result.stderr
+    assert "MAX_JOBS must be 1..64" in result.stderr
     assert not state.exists() and not prefix.exists()
 
 
@@ -235,11 +235,13 @@ def test_source_metadata_fifo_is_refused_before_blocking(tmp_path):
 def test_recorded_source_stack_is_distinct_from_the_historical_cu126_wheel_recipe():
     pins = json.loads((ROOT / "deploy/v100/source-pins.json").read_text())
     assert pins["targets"] == {"cuda": "12.9.2", "nvcc": "12.9.86", "cublas": "12.9.2.10",
-        "pytorch": "2.14.1", "cccl": "3.5.0", "nccl": "2.32.3", "cutlass": "4.8.1",
+        "pytorch": "2.16.0.dev20261111", "cccl": "3.5.0", "nccl": "2.32.6", "cutlass": "4.8.1",
         "cudnn": "9.10.2.21", "nsight_compute": "2025.2.1.3", "nsight_systems": "2025.3.2.474",
         "compute_sanitizer_package": "12.9.79"}
     assert "ubuntu24.04@sha256:" in pins["base"]
     assert all(len(source["commit"]) == 40 for source in pins["sources"].values())
+    assert pins["sources"]["pytorch"]["commit"] == "09b29f3a97e07864066a2d574ffe03a852de9463"
+    assert pins["sources"]["pytorch"]["effective_commit"] == "05adb434bd30d298eb408a72420b0496ee05f8e3"
     assert "candidate" in pins["status"] and "unrun" in pins["status"]
 
 
@@ -336,3 +338,50 @@ def test_native_report_regeneration_changes_only_ninja_and_retains_bootstrap(tmp
     assert {name: row for name, row in before[0]["packages"].items() if name != "ninja"} == {
         name: row for name, row in after[0]["packages"].items() if name != "ninja"}
     assert after[0]["packages"]["ninja"]["version"] == "1.13.2"
+
+
+def runtime_report():
+    data = report()
+    names = {row["metadata"]["name"] for row in data["install"]}
+    for name in ("huggingface-hub", "tokenizers", "safetensors", "pytest", "ruff", "xgrammar", "triton"):
+        if name not in names:
+            version = "3.9.0" if name == "triton" else "1.0"
+            data["install"].append({"metadata": {"name": name, "version": version}, "download_info": {
+                "url": f"https://files.pythonhosted.org/packages/{name.replace('-', '_')}-{version}-py3-none-any.whl",
+                "archive_info": {"hashes": {"sha256": "a" * 64}}}})
+    for name, version in (("torch", "2.16.0.dev20261111+tfcu129sm70"), ("tensorfold", "0.6.6")):
+        data["install"].append({"metadata": {"name": name, "version": version,
+                                             "requires_dist": ["typing-extensions>=1"]},
+                                "download_info": {"url": "file:///owned/" + name, "dir_info": {}},
+                                "is_direct": True, "requested": True})
+    pins = {"targets": {"pytorch": "2.16.0.dev20261111", "cuda": "12.9.2", "nccl": "2.32.6"},
+            "sources": {"pytorch": {"commit": "a" * 40, "effective_commit": "b" * 40}}}
+    return data, pins
+
+
+def test_runtime_source_metadata_is_preserved_and_source_packages_are_installed_separately():
+    data, pins = runtime_report()
+    lock, receipt = SOURCE.render_build_report(data, "c" * 64, runtime=True, pins=pins)
+    assert "torch @" not in lock and "tensorfold @" not in lock
+    assert "triton @" in lock and receipt["packages"]["triton"]["version"] == "3.9.0"
+    assert receipt["version"] == 2
+    assert receipt["source_distributions"]["torch"] == {
+        "version": "2.16.0.dev20261111+tfcu129sm70", "source_url": "file:///owned/torch",
+        "requires_dist": ["typing-extensions>=1"], "requested_extras": [], "source_commit": "b" * 40}
+    assert receipt["triton_execution"] == "import-only; no SM70 compiler/backend execution contract"
+
+
+@pytest.mark.parametrize("change", ["missing-source", "wrong-source-version", "remote-source", "editable-source"])
+def test_runtime_report_requires_actual_declared_owned_source_metadata(change):
+    data, pins = runtime_report()
+    source = data["install"][-2]
+    if change == "missing-source":
+        data["install"].pop()
+    elif change == "wrong-source-version":
+        source["metadata"]["version"] = "2.16.0+cu134"
+    elif change == "remote-source":
+        source["download_info"]["url"] = "https://example.invalid/torch"
+    else:
+        source["download_info"]["dir_info"] = {"editable": True}
+    with pytest.raises(ValueError, match="source"):
+        SOURCE.render_build_report(data, "c" * 64, runtime=True, pins=pins)

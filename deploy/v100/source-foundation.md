@@ -20,7 +20,7 @@ SM70 object coverage and device/model qualification are separate evidence.
 No old cu126 wheel result qualifies this combination.
 
 The target is native Linux AMD64 Ubuntu 24.04, CPython 3.12 and eight V100 SXM2
-GPUs. The separate Blackwell/GB10 image and dependency inputs remain unchanged.
+GPUs. The modern CUDA13 GB10/discrete pipeline has separate inputs and qualification.
 The development container uses the existing pinned CUDA 12.9.2 Ubuntu 24.04 child
 image. It already includes nvcc 12.9.86, cudart 12.9.79, cuBLAS/Lt 12.9.2.10,
 Nsight Compute 2025.2.1.3 and Compute Sanitizer 12.9.79. Selected additional packages
@@ -28,38 +28,45 @@ and source revisions are recorded in [source-pins.json](source-pins.json).
 
 | Component | Selected candidate |
 | --- | --- |
-| PyTorch | Source tag v2.14.1, commit 5c4886908584029761b579af026dcfb627c84070 |
-| NCCL | Source v2.32.3-1, commit 12df1a11afad322be5a204a2db890161cbf8131d |
+| PyTorch | Official published nightly2.16.0.dev20261111 source, commit 09b29f3a97e07864066a2d574ffe03a852de9463; owned rebase/finalization gates below |
+| NCCL | Source v2.32.6-1, commit ad2d192c1f279aefcaf340f67e07880b65a1116b; base2.27.3 retained and ineffective |
 | CCCL/CUB/Thrust/libcu++ | Source v3.5.0, commit 28101b07413743e1dcca8ca8af1cfc63e8cff2d1 |
 | Application CUTLASS C++ | Source v4.8.1, commit 2c85f497547eb441f0fe80bfb0fb2e6f9add1719 |
 | cuDNN | CUDA 12 package 9.10.2.21 |
 | Nsight Systems | Package 2025.3.2.474 |
-| Host driver candidate | R580.196.07, proprietary kernel module for Volta; no host installation performed |
+| Host driver, observed | R580.178.04 on the V100 host; unchanged by this container/SDK refresh |
 
-The owned downstream Torch source commit is
-`04cf2557f315a350e7eea7ab064288def65db75a`, on top of the listed upstream
-release. Its single [recorded aggregate patch](framework-patches/0001-owned-aten-and-socket-corrections.patch)
-retains the ATen CMake relocation correction and fixes c10d socket diagnostics
-after `getnameinfo` failure. The formatter now uses the actual socket address,
-converts numeric ports to host order and uses a one-way relaxed atomic DNS
-policy flag; each successful lookup consumes its own local result. The preceding
-`5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1` candidate and its failure evidence
-remain historical; the adaptive native-payload guard rejects that old revision.
-Only `socket.cpp` and its native test/CMake wiring differ from that predecessor.
-Public headers, tensor/Store layouts, allocation equations, transport defaults
-and CUDA/NCCL/kernel sources are unchanged. This is structural ABI reuse, not
-device or rebuilt-application qualification. Neither correction addresses
-compiler issue 6111901.
-The producer pins the original/effective commits, exact patch bytes, deterministic
-fork metadata and complete effective source inventory. A sparse fixture replay
-reproduced the original candidate commit. The selected replacement records actual
-precommit Spin/lintrunner checks and a fenced Test Plan while retaining detached
-HEAD. No installed wheel or vendored library was patched. The BF65 candidate
-remains historical evidence of the earlier incomplete source workflow.
+The earlier R580.196.07 driver was an investigated historical candidate, not a
+selected host update or a claim of the latest driver. No host driver installation
+is part of this refresh.
 
-PyTorch 2.14.1's CUDA12 build finds external CUB; there is no CCCL gitmodule
-to patch. The source recipe explicitly selects one complete CCCL 3.5 include
-installation for CUB, Thrust and libcu++. It builds NCCL from source and binds
+The new owned source candidate is
+`05adb434bd30d298eb408a72420b0496ee05f8e3`, rebasing the recorded
+[owned ATen/socket corrections](framework-patches/0001-owned-aten-and-socket-corrections.patch)
+onto the exact published nightly source. This is a predicted source binding until
+the required real bootstrap compilation graph, lint and owned finalization
+complete. Arbitrary later main380126 is not selected: it removes the required
+synchronous TCPStore backend. The selected published09b29 retains that backend.
+Genuine upstream dependency metadata, including six, remains intact.
+
+The corrections preserve relocatable ATen CMake installation and use the actual
+socket address/host-order port, local lookup results and a relaxed atomic DNS
+policy flag for diagnostics. They do not address compiler issue6111901. New
+framework/native resources, actual loaded providers and selected model behavior
+still require their own source/runtime/device evidence; changing a version
+string is not ABI qualification.
+
+The previous owned `04cf2557f315a350e7eea7ab064288def65db75a` over upstream
+v2.14.1 remains the historical installed-SDK control. Earlier `5ab14ac` and BF65
+candidates and their rejected socket/source-workflow evidence remain preserved.
+The [shared refresh ledger](../gb10/foundation-refresh-20261111.md) binds exact
+source comparisons, fork/patch inventories, failures and current gates.
+
+The selected PyTorch CUDA12 source finds external CUB; there is no CCCL gitmodule
+to patch. The source recipe selects one complete CCCL3.5 include installation for CUB,
+Thrust and libcu++. Upstream3.5's regular architecture support starts atSM75;
+CUDA12/SM70 is an owned candidate requiring actual used-primitive and
+framework qualification, not a vendor-supported Volta claim. It builds NCCL from source and binds
 both its matching headers and shared library through the actual supported
 `NCCL_INCLUDE_DIRS` and `NCCL_LIBRARIES` CMake inputs. Original NVIDIA base
 NCCL2.27.3 packages remain installed, held and byte-audited; exactly one effective
@@ -68,7 +75,7 @@ attempt selected base NCCL despite hints, and its subsequent removal workaround
 is historical; the protected-base refresh does not purge those packages.
 Both CMake's CUDA architecture and Torch's architecture list select SM70.
 
-Torch's private CUTLASS 4.6.1 gitmodule remains part of the pinned upstream
+Torch09b29's private CUTLASS4.8.0 gitmodule remains part of the pinned upstream
 framework source. Application CUTLASS 4.8.1 is a separate header input for owned
 SM70 kernels and its qualification probe. No CUTLASS classes cross this binary
 boundary. Each role's actual source identity must appear in the build receipt;
@@ -88,13 +95,15 @@ whole artifact hashes and CPU/device receipts remain required release inputs.
 The Python build lock is generated by `source_foundation.py render-build-tools`
 from an actual native pip report. Its bootstrap lock comes from that same report.
 Binary Torch/TorchVision/Triton/NVIDIA wheel providers are rejected from this
-source-build tool closure. The separate runtime closure retains Triton 3.8.0
-for existing import dependencies, with no SM70 Triton execution claim. It has
+source-build tool closure. The separate refreshed runtime closure selects
+Triton3.9 for existing import dependencies, with no SM70 Triton execution claim. It has
 no binary Torch/TorchVision or NVIDIA/CUDA provider wheels. The framework wheel
 is produced from canonical source with the selected native providers. The text
 profile does not require TorchVision; its old CUDA 12.6 provider is not imported.
 
-Lint tooling has a separate pinned environment. Spin 0.18 requires Click below
+Lint tooling has a separate pinned environment. The historical SDK used the
+following tooling; the refresh's Python3.11.18/tool-lock selection and actual lint
+execution remain separately recorded in the shared ledger. Historical Spin0.18 requires Click below
 8.4, whereas the application's HF Hub requires at least 8.4.2. The lint environment
 uses Spin 0.18, UV 0.11.15, lintrunner 0.12.7, cmakelint 1.4.1 and the pinned host
 codegen prerequisites. The supported `spin quicklint -- -a <paths>` dispatches
@@ -109,7 +118,7 @@ instruction clarification is retained as history, not a current permission
 blocker. Source pins, lint/checks, artifact publication and final SDK
 qualification gates remain; authorization does not establish a completed build.
 
-The final builder installs 124 exact Debian artifacts from the recorded bundle,
+The refreshed builder installs 191 exact Debian artifacts from its recorded bundle,
 including cuDNN, Nsight Systems and their Ubuntu 24.04 dependencies. The base
 image owns its other packages. [source-apt-amd64.json](source-apt-amd64.json)
 records each added artifact's version, origin, bytes and SHA256; its companion
@@ -131,14 +140,13 @@ and a private, single-writer state directory mounted at `/work`:
 python3 -I -B /src/deploy/v100/fetch_source_artifacts.py \
   --source-directory /src/deploy/v100 \
   --destination /work/release \
-  --ubuntu-snapshot 20261025T000000Z \
   --max-total-bytes "${TF_SOURCE_INPUT_BYTE_CAP:?Set a positive logical input-byte cap}" \
   --timeout-seconds 60 --total-seconds 7200 > /work/artifact-staging.json
 ```
 
-The byte cap includes cache hits and repeated destination paths. The current
-plan has 197 destinations: 124 Debian packages, 41 build/runtime wheels, 31 lint
-wheels and the pinned lint interpreter archive. Each payload verifies its full
+The byte cap includes cache hits and repeated destination paths. The refreshed
+plan is derived from its actual191-DEB inventory and selected Python/lint locks;
+the earlier197-destination plan belonged to the dated acquisition below. Each payload verifies its full
 SHA256 before durable, no-overwrite publication; identical verified payloads
 share storage where the filesystem permits it. Cache hits are fully rehashed
 and synced. Existing conflicting files and unsafe paths refuse staging.
@@ -152,13 +160,15 @@ deadline and verify retirement before reusing its destination. This follows the
 [Python signal contract](https://docs.python.org/3.12/library/signal.html#execution-of-python-signal-handlers).
 The stager needs canonical `src/tensorfold/cleanup.py` but no installed project,
 Packaging, Torch, native extension or GPU. Staging proves input bytes, not SDK
-build success or device/model qualification. Original producers, pins, locks and
-historical receipts remain unchanged.
+build success or device/model qualification. Historical receipts retain their
+original producer/pin/lock identities; they do not qualify refreshed inputs.
 
-The example explicitly selects Ubuntu's 25 October 2026 snapshot because a live
-archive URL in this frozen bundle now returns 404. `--ubuntu-snapshot` changes
-only Ubuntu APT acquisition URLs; names, byte counts and hashes stay pinned.
-NVIDIA and Python inputs retain their recorded URLs. The receipt records each
+The historical acquisition below explicitly used Ubuntu's25 October2026 snapshot
+because an original live archive URL returned404. The refreshed recipe uses the
+actual selected manifest URLs; an older snapshot cannot supply newer packages.
+When needed, an explicit `--ubuntu-snapshot` changes only Ubuntu APT acquisition
+URLs while preserving names, byte counts and hashes. NVIDIA and Python inputs
+retain their recorded URLs. The receipt records each
 original/effective URL and timestamp, including which artifacts were cache hits.
 There is no automatic source or version substitution. See the
 [official snapshot service](https://snapshot.ubuntu.com/) for its UTC URL format.
@@ -246,11 +256,11 @@ symlinks remain within the inventoried closure. CCCL's single IDE-only compile
 commands link is separately declared metadata. Malformed tracked FIFOs refuse
 before blocking. A changed input tree or wrong provider cannot inherit old pins.
 Keep source clones, downloads and object caches outside the project/Docker
-context. The producer accepts explicit `MAX_JOBS` values 1..24 and retains 4
+context. The producer accepts explicit `MAX_JOBS` values 1..64 and retains 4
 when unset or empty. It propagates the same value to
 `CMAKE_BUILD_PARALLEL_LEVEL` and `OMP_NUM_THREADS`; generated image defaults
-remain 4. The 24-job setting is the supported Supermicro build-resource policy,
-not a universal hardware limit or measured speed result. Select its container
+remain 4. The refreshed64-job ceiling follows the explicit target build
+requirement; it is not a universal hardware limit or measured speed result. Select its container
 CPU/memory limits from actual host and build-memory evidence before launch.
 The earlier development prototype used 4 CPU cores and 36 GiB RAM; that historical
 resource envelope does not constrain the larger target. Changing these controls

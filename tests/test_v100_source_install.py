@@ -249,11 +249,17 @@ def test_generated_image_recipes_use_only_hash_verified_offline_source_artifacts
         content = generated[name]
         assert content == (ROOT / "deploy/v100" / name).read_text()
         assert "apt-get update" not in content
+        assert "--no-download" not in content  # Local file acquisition must run under network isolation.
+        assert "Dir::Etc::sourcelist=/tmp/source-apt/sources.list" in content
+        assert "Dir::Etc::sourceparts=/tmp/source-apt/sources.list.d" in content
+        assert "Dir::State::lists=/tmp/source-apt/lists" in content
+        assert "--yes --no-install-recommends install" in content
+        assert 'awk \'{print "/debs/"$2}\'' in content
         assert "sha256sum --strict --check" in content
         assert "--network=none" in content and "source_artifacts" in content
         assert "dpkg --purge" not in content
-        assert content.index("foundation_sdk.sh capture") < content.index("dpkg -i")
-        assert content.index("dpkg -i") < content.index("foundation_sdk.sh check")
+        assert content.index("foundation_sdk.sh capture") < content.index("xargs -a /tmp/source-apt-files apt-get")
+        assert content.index("xargs -a /tmp/source-apt-files apt-get") < content.index("foundation_sdk.sh check")
     assert "requirements-foundation-amd64.lock" not in generated["Dockerfile"]
     assert "capture-install" in generated["Dockerfile"] and "source_foundation.py audit" in generated["Dockerfile"]
     policy = generated["Dockerfile.audit-policy"]
@@ -281,7 +287,10 @@ def test_offline_locks_preserve_exact_resolved_artifact_hashes():
 
 def test_runtime_closure_retains_import_only_triton_without_binary_cuda_providers():
     receipt = SOURCE.read_json(ROOT / "deploy/v100/source-runtime-amd64.json")[0]
-    assert receipt["packages"]["triton"]["version"] == "3.8.0"
+    assert receipt["packages"]["triton"]["version"] == "3.9.0"
+    assert receipt["version"] == 2
+    assert receipt["triton_execution"] == "import-only; no SM70 compiler/backend execution contract"
+    assert receipt["source_distributions"]["torch"]["source_commit"] == "05adb434bd30d298eb408a72420b0496ee05f8e3"
     assert not {"torch", "torchvision"} & receipt["packages"].keys()
     assert not any(name.startswith(("nvidia-", "cuda-")) for name in receipt["packages"])
 

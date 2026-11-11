@@ -6,8 +6,14 @@ RUN sh /opt/tensorfold-pins/foundation_sdk.sh capture /opt/tensorfold-pins /opt/
 COPY deploy/v100/source-apt-amd64.sha256 /opt/tensorfold-pins/source-apt-amd64.sha256
 RUN --network=none --mount=from=source_artifacts,source=/build-debs,target=/debs \
     cd /debs && sha256sum --strict --check /opt/tensorfold-pins/source-apt-amd64.sha256 \
-    && awk '{print $2}' /opt/tensorfold-pins/source-apt-amd64.sha256 > /tmp/source-apt-files \
-    && xargs -a /tmp/source-apt-files dpkg -i \
+    && awk '{print "/debs/"$2}' /opt/tensorfold-pins/source-apt-amd64.sha256 > /tmp/source-apt-files \
+    && mkdir -p /tmp/source-apt/sources.list.d /tmp/source-apt/lists/partial \
+    && : > /tmp/source-apt/sources.list \
+    && xargs -a /tmp/source-apt-files apt-get \
+         -o Dir::Etc::sourcelist=/tmp/source-apt/sources.list \
+         -o Dir::Etc::sourceparts=/tmp/source-apt/sources.list.d \
+         -o Dir::State::lists=/tmp/source-apt/lists \
+         --yes --no-install-recommends install \
     && sh /opt/tensorfold-pins/foundation_sdk.sh check /opt/tensorfold-pins /opt/tensorfold-pins/foundation-sdk-pattern.txt
 COPY deploy/v100/requirements-source-bootstrap-offline-amd64.lock /opt/source-bootstrap.lock
 RUN --network=none --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \
@@ -15,6 +21,6 @@ RUN --network=none --mount=from=source_artifacts,source=/python-wheels,target=/p
     && /opt/source-venv/bin/python -m pip install --no-cache-dir --no-index --find-links=/python-wheels \
        --require-hashes -r /opt/source-bootstrap.lock
 ENV PATH="/opt/source-venv/bin:${PATH}" CUDA_HOME=/usr/local/cuda \
-    TORCH_CUDA_ARCH_LIST=7.0 NCCL_VERSION=2.32.3 MAX_JOBS=4 CMAKE_BUILD_PARALLEL_LEVEL=4 OMP_NUM_THREADS=4
+    TORCH_CUDA_ARCH_LIST=7.0 NCCL_VERSION=2.32.6 MAX_JOBS=4 CMAKE_BUILD_PARALLEL_LEVEL=4 OMP_NUM_THREADS=4
 WORKDIR /work
 ENTRYPOINT ["/opt/source-venv/bin/python"]
