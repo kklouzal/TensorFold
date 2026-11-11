@@ -188,20 +188,28 @@ class State:
                                         for t in (self.keys, self.values)),
         }
 
-    def cache_export_rows(self, start: int, stop: int) -> dict:
+    def cache_export_rows(self, start: int, stop: int, *, groups=None) -> dict:
         """Clone only freshly committed canonical rows, before the ring wraps.
 
         The archive must reserve these exact payloads and index temporaries
         before calling. All copies execute on the caller's existing stream.
         """
         import torch
+        selected = ('target_full', 'target_window') if groups is None else tuple(groups)
+        if (not selected or len(set(selected)) != len(selected)
+                or any(group not in ('target_full', 'target_window') for group in selected)):
+            raise ValueError('explicit supported target archive groups required')
         if (self.poisoned or type(start) is not int or type(stop) is not int
-                or not max(0, self.high_water - self.ring) <= start < stop <= self.position
-                or stop - start > self.rows):
+                or not 0 <= start < stop <= self.position or stop - start > self.rows
+                or 'target_window' in selected and start < max(0, self.high_water - self.ring)):
             raise ValueError('Gemma cache rows are not committed retained authority')
-        index = torch.arange(start, stop, device=self.device) % self.ring
-        return {'target_full': (self.raw[:, start:stop].clone(), self.inv[:, start:stop].clone()),
-                'target_window': (self.keys.index_select(1, index), self.values.index_select(1, index))}
+        result = {}
+        if 'target_full' in selected:
+            result['target_full'] = (self.raw[:, start:stop].clone(), self.inv[:, start:stop].clone())
+        if 'target_window' in selected:
+            index = torch.arange(start, stop, device=self.device) % self.ring
+            result['target_window'] = (self.keys.index_select(1, index), self.values.index_select(1, index))
+        return result
 
     def cache_import_rows(self, group: str, start: int, tensors: tuple, offset: int, rows: int) -> None:
         """Import an archive lease into this graph-bound State; no pointer swap."""

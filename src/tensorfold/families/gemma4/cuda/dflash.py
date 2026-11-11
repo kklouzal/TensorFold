@@ -312,20 +312,27 @@ class DraftState:
                                  for t in (self.keys[i], self.values[i]))
                 for group, sliding in (('draft_full', False), ('draft_window', True))}
 
-    def cache_export_rows(self, start: int, stop: int) -> dict:
+    def cache_export_rows(self, start: int, stop: int, *, groups=None) -> dict:
+        selected = ('draft_full', 'draft_window') if groups is None else tuple(groups)
+        if (not selected or len(set(selected)) != len(selected)
+                or any(group not in ('draft_full', 'draft_window') for group in selected)):
+            raise ValueError('explicit supported companion archive groups required')
         if (type(start) is not int or type(stop) is not int or not 0 <= start < stop <= self.length
                 or stop - start > self.rows
-                or any(start < max(0, self.length - ring) for ring in self.rings)):
+                or 'draft_window' in selected and any(start < max(0, self.length - ring)
+                    for ring, kind in zip(self.rings, self.layer_types) if kind == 'sliding_attention')):
             raise ValueError('DFlash archive rows lack committed canonical append authority')
-        groups = {'draft_full': [], 'draft_window': []}
+        result = {group: [] for group in selected}
         for i, kind in enumerate(self.layer_types):
             group = 'draft_window' if kind == 'sliding_attention' else 'draft_full'
+            if group not in result:
+                continue
             if group == 'draft_full':
-                groups[group].extend((self.keys[i][start:stop].clone(), self.values[i][start:stop].clone()))
+                result[group].extend((self.keys[i][start:stop].clone(), self.values[i][start:stop].clone()))
             else:
                 index = torch.arange(start, stop, device=self.pos.device) % self.rings[i]
-                groups[group].extend((self.keys[i].index_select(0, index), self.values[i].index_select(0, index)))
-        return {group: tuple(values) for group, values in groups.items()}
+                result[group].extend((self.keys[i].index_select(0, index), self.values[i].index_select(0, index)))
+        return {group: tuple(values) for group, values in result.items()}
 
     def cache_import_rows(self, group: str, start: int, tensors: tuple, offset: int, rows: int) -> None:
         if (group not in ('draft_full', 'draft_window')

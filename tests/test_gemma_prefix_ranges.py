@@ -44,7 +44,10 @@ def test_target_interior_range_wrap_detached_bytes_and_fixed_addresses(mode):
             assert all(tensor.untyped_storage().data_ptr() != live.untyped_storage().data_ptr()
                        for live in (source.raw, source.inv, source.keys, source.values))
     # Source mutation cannot change the immutable archive payload.
-    source.raw.zero_(); source.inv.zero_(); source.keys.zero_(); source.values.zero_()
+    source.raw.zero_()
+    source.inv.zero_()
+    source.keys.zero_()
+    source.values.zero_()
     arrays = (dest.raw, dest.inv, dest.keys, dest.values)
     for value in arrays:
         value.fill_(-777)
@@ -146,3 +149,53 @@ def test_draft_interior_range_wrap_independent_rows_and_payload_bytes():
     for start, stop in ((0, 16), (132, 134), (116, 133)):
         with pytest.raises(ValueError):
             source.cache_export_rows(start, stop)
+
+
+@pytest.mark.parametrize("family", ["target", "draft"])
+def test_full_only_exports_retained_old_global_rows_without_window_work(family, monkeypatch):
+    state = target() if family == "target" else draft()
+    if family == "target":
+        fill_target(state, 133)
+        full, window = "target_full", "target_window"
+    else:
+        state.length = 133
+        for row in range(133):
+            state.keys[1][row].view(torch.int16).fill_(0x3F00 + row)
+            state.values[1][row].view(torch.int16).fill_(0xBF00 + row - 65536)
+        full, window = "draft_full", "draft_window"
+    def no_window(*args, **kwargs):
+        pytest.fail("full-only export allocated or gathered a sliding-window index")
+    monkeypatch.setattr(torch, "arange", no_window)
+    monkeypatch.setattr(torch.Tensor, "index_select", no_window)
+    saved = state.cache_export_rows(0, 16, groups=(full,))
+    assert tuple(saved) == (full,)
+    for row in range(16):
+        actual = saved[full][0][:, row] if family == "target" else saved[full][0][row]
+        expected = torch.tensor([0x3F00 + row, 0x3F00 + row + 1024], dtype=torch.int16) if family == "target" else 0x3F00 + row
+        if family == "target":
+            assert torch.equal(actual.view(torch.int16).reshape(2, -1)[:, 0], expected)
+        else:
+            assert torch.all(actual.view(torch.int16) == expected)
+    with pytest.raises(ValueError):
+        state.cache_export_rows(0, 16, groups=(window,))
+
+
+@pytest.mark.parametrize("family", ["target", "draft"])
+def test_window_only_does_not_clone_unrequested_full_payload(family, monkeypatch):
+    state = target() if family == "target" else draft()
+    if family == "target":
+        fill_target(state, 133)
+        window = "target_window"
+    else:
+        state.length = 133
+        for value in (*state.keys, *state.values):
+            value.fill_(3)
+        window = "draft_window"
+    def no_full_clone(*args, **kwargs):
+        pytest.fail("window-only export cloned a redundant full-attention payload")
+    monkeypatch.setattr(torch.Tensor, "clone", no_full_clone)
+    saved = state.cache_export_rows(117, 133, groups=(window,))
+    assert tuple(saved) == (window,)
+    for invalid in ((), (window, window), ("unknown",)):
+        with pytest.raises(ValueError):
+            state.cache_export_rows(117, 133, groups=invalid)

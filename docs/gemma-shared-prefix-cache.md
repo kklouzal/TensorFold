@@ -114,3 +114,13 @@ classes before pytest configured the source path; its six failures remain in
 file hashes are in `state-ranges-cpu-v2.json`; the frozen source packet is
 `state-range-component-v1/hold-v1.json`. These are source transport checks, not
 GPU/full-model/archive coverage or permission to publish an incomplete restore.
+
+A subsequent range-export increment accepts explicit full/window group selection
+so an existing resident component need not be cloned when another component is
+missing. Full-only export can recover older committed global rows without
+claiming that overwritten sliding rows exist. All ten source CPU controls passed
+with unchanged canonical origins; four added cases prohibit unrequested gather,
+index and clone work and validate selectors. Dedicated V3 review is clear.
+The test-only semicolon formatting cleanup is AST-identical, recorded separately;
+Ruff also passes. This is a resource-work-elimination contract, not a measured
+serving gain or a complete partial-hit qualification.
