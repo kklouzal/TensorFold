@@ -26,6 +26,12 @@ reasoning and holds incomplete control markers while streaming. Channel controls
 stay out of visible content; native quoted tool arguments retain their literal
 values. CUDA and non-CUDA servers share this channel parser.
 
+A [shared-prefix cache replacement](docs/gemma-shared-prefix-cache.md) is in
+progress: partial-prefix branches and canonical response reuse are required,
+with byte-funded storage instead of an entry ceiling. It is not deployed or
+target-qualified. The following snapshot mitigation is committed but held;
+production remains on its previous four-entry snapshot cache.
+
 The Gemma CUDA prefix cache retains entries under its snapshot byte allowance,
 with a secondary ceiling of 256 entries. Space-driven eviction weighs prompt
 rebuild tokens per charged byte together with recency rank, protecting expensive
