@@ -1,6 +1,16 @@
 # GPU foundation refresh — 2026-11-11
 
-Status: discovery and implementation in progress; no new image, native result, performance result or promotion is qualified by this ledger.
+Status: qualification remains in progress. Completed input, producer-image, CPU and bounded native-component milestones are recorded below; complete target/model/performance admission and promotion require their separate gates.
+
+## Current checkpoint
+
+This table reflects the recorded22:42UTC builder events; later entries retain exact outcomes and corrections.
+
+| Profile | Current candidate/evidence | Still required |
+| --- | --- | --- |
+| GB10 ARM64 modern-cuda13 | CUDA13.4.3, published Torch/TorchVision20261111, Tritonb7ddcf86; current app CPU gates pass and native cuSPARSELt0.10 math passes. Model/timing operationv3 is running; no promotion. | Complete selected-model/native/provider/resource/quality/performance outcomes and operator restoration/promotion receipts. NVSHMEM distributed execution remains outside the selected single-GPU qualification. |
+| x86 modern-cuda13 | Coherent distinct AMD64 official wheel hashes/closure generated via explicit cross-report; existing Ada/Hopper/Blackwell contracts preserved. | Native x86 current-image/GPU evidence is unrun and cannot inherit GB10 results. |
+| x86 volta-sm70 | CUDA12.9.2 current official base; published Torch09b/owned05adb candidate, NCCL2.32.6, latest published CPU TorchVision8d995. Protected producer image f537bee2 completed;64-CPU/256GiB bootstrap started. | Bootstrap, actual lint/final owned commit and metadata rebuild, final SDK/media export/audits, SM70 native/collective/model/resource/performance gates. |
 
 ## Authority, scope and ownership
 
@@ -244,3 +254,9 @@ Optional weak symbol closed: actual ELF nvshmem_init is unversioned WEAK UND and
 Adequate current V100 producer checkpoint cleared by D13: reviewer independently matched all23 canonical input byte counts/hashes against receipts/source-author-checkpoint-inputs-v4.json SHA256 0602a8cb9c7fac88e4e23f59a03852ad051750f16950cda0599fbacd74173231, zero mismatches. Actual full191 local-file APT stage completed in119.1s including original SDK post-install check; pip26.3/packaging26.3 completed. Six remediated nodes passed in5.84s, two runtime/updated-recipe nodes in0.44s, and seven shared SDK controls passed in0.94s. The194 proved-unaffected earlier passes remain valid for unchanged inputs. No broad repeat is needed under Q6. Image export/framework/native/model are not inferred from these stage passes.
 
 The current offline recipe only solves manifest-listed absolute /debs paths with all APT source/list namespaces empty and Docker RUN network-none. No force, ignored dependency, unhold, purge or alternate network provider is introduced. Documentation now reflects64-job current bounds, actual191-APT current versus197-input historical records, exact09b/05adb/NCCL2.32.6/TV8d995 choices, current driver and source-supported scope. The newly defined media stack remains candidate-only pending the new exact SDK and its own source/media qualification. Private CUTLASS-derived receipt, lint UV registry and finalization work remain explicit separate increments; compilation continues independently using the immutable v4 snapshot.
+
+V100 fresh v4 source-builder COMPLETED at22:42:10UTC with exit0 and immutable image sha256:f537bee2f1a468693ad7ee188f6a944862d4949837bca2b69ffbd240ffe1e245. The automated64-CPU/256GiB build container started at22:42:17UTC; prepare-bootstrap completed its22-package closure and proceeds through inventory. Artifacts ...-v1/receipts/source-builder-build-result-v4.json and bootstrap64-start-v1.json bind actual outcome/input snapshot.
+
+OCI export took approximately eight minutes. Captured daemon/transport health text remains an advisory with uncertain cause, not an actual export failure: completed command exit0 and immutable image identity are observed. No cancellation, retry, Docker daemon restart or host restart was performed. Any earlier conditional retry authority is inapplicable after this observed successful completion. Torch/NCCL bootstrap, final owned-source lint/build/export and native/model qualification remain open.
+
+Exact retained source-checkpoint log hashes now supplied by executor: logs/seven-remediation-tests-v3.log SHA256 f2a692e112915c013800b6c8aee52726829214ebe95608b0b1b36788f8eaa20e (six passes/5.84s); logs/source-install-remediation-v3.log SHA256 a59a22b5b57ec82d1e76d5ccbc41fea46fef3eb57ed165b411fe49c7efa2fecd (two passes/0.44s); logs/sdk-alias-tests-v2.log SHA256 9169996bedecb1e69a54f1f8c4614d8a687e45e7b75c75086fd27ae1b0db6eb1 (seven passes/0.94s). These validate the composite d68dee7e checkpoint without implying a broad repeated201 run. Actual64-job prepare completed and NCCL build is active. New lint report/render outputs are ready for separate author publication and did not block preparation/NCCL.
