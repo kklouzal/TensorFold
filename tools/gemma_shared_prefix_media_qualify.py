@@ -33,7 +33,7 @@ AST_AUTHORITY = {
     'vision': {'warm':'d4fb09a8e7c003140da5df14f9fd9c54689f6a93ba0fffe675fd4e9f7f953499',
                'encode':'fc07781afe741a7439ab6393373d4abdb151097e9e526028e079d49a61a00f27',
                'encode_suffix':'b720bb3e657ac4e4b34e749229ccbed38b82311b81a4552d66d4637b5904eedc'}}
-DYNAMIC = frozenset(('request_id','prefill_s','decode_s','queue_s','prepare_s','ttft_s','decode_tps','cache_publication','cached'))
+DYNAMIC = frozenset(('request_id','prefill_s','decode_s','queue_s','prepare_s','ttft_s','decode_tps','frontend_settlement_s','request_wall_s','cache_publication','cached'))
 HISTORICAL_PROFILE_COUNTERS = frozenset(('stats_version','rounds','drafts','drafted','accepted','min_rows'))
 
 

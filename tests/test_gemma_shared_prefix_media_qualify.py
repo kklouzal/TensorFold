@@ -320,3 +320,26 @@ def test_actual_image_null_and_video_binary64_pts_are_lossless():
         video['frame_identities'][0][3] = invalid
         with pytest.raises(ValueError):
             tool.metadata(video,body())
+
+
+@pytest.mark.parametrize('historical',[False,True])
+def test_added_duration_telemetry_does_not_change_semantic_equality(historical):
+    gold = response()
+    actual = copy.deepcopy(gold)
+    actual['tensorfold'].update(frontend_settlement_s=2.493845500983298,
+                               request_wall_s=18.65398689196445)
+    raw_actual = copy.deepcopy(actual)
+    tool.compare(gold,actual,True,historical=historical)
+    assert actual==raw_actual  # Raw timing evidence is never stripped/mutated.
+    assert actual['tensorfold']['frontend_settlement_s']==2.493845500983298
+    assert actual['tensorfold']['request_wall_s']==18.65398689196445
+    for kind in ('content','ids','noncached-usage'):
+        changed = copy.deepcopy(actual)
+        if kind=='content':
+            changed['output'][0]['content'][0]['text'] = 'different semantic result'
+        elif kind=='ids':
+            changed['tensorfold']['token_ids'][0] += 1
+        else:
+            changed['usage']['input_tokens'] += 1
+        with pytest.raises(ValueError):
+            tool.compare(gold,changed,True,historical=historical)
