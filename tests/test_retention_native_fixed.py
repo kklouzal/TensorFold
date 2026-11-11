@@ -19,12 +19,14 @@ def test_fixed_rows_cover_actual_sdk_layout_and_each_protocol_owner():
     assert receipt["stored_key_bound"] == 56
     terms = receipt["terms"]
     # The sealed C++20 SDK measured node72, string32, vector24, Store216,
-    # TCPClient8, daemon288 and shared TCPServer control block32.
+    # TCPClient8, daemon288, shared TCPServer control block32 and the
+    # independently observed GCC13 member-function thread-state allocation32.
+    # The daemon already embeds the8-byte std::thread handle.
     assert terms["stored_key_chars_and_nodes"] == 56 * (8193 + 72)
     assert terms["client_and_handler_string_objects"] == 32 * 32
     assert terms["client_and_handler_vector_objects"] == 29 * 24
     assert terms["current_tcpstore_and_client_objects"] == 8 * 224
-    assert terms["daemon_and_poll_vector_objects"] == 352
+    assert terms["daemon_and_poll_vector_objects"] == 376
     assert receipt["global_native_fixed_payload_bytes"] == sum(terms.values())
 
 

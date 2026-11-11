@@ -348,9 +348,11 @@ def native_sync_fixed_payload(*, world, ram, slots, fd_limit=None, host_bytes=0)
         "waiting_key_chars_and_nodes": batch_keys * (key_chars + 72),
         "waiting_socket_vector_storage": 4 * (batch_keys * socket_capacity + socket_capacity // 2),
         "current_tcpstore_and_client_objects": clients * (216 + 8),
-        # Actual private SDK layout: daemon288 includes its four maps,
-        # Socket/vector/base/pipe fields; the loop owns another vector24.
-        "daemon_and_poll_vector_objects": 288 + 24 + 8 + 32,
+        # The daemon288 includes its std::thread handle, maps and pipe fields;
+        # the loop owns vector24 and make_shared<TCPServer> owns32. The
+        # separate GCC13 thread state for {&BackgroundThread::run, this}
+        # requests32 heap bytes (vptr8 + member-function pointer16 + this8).
+        "daemon_and_poll_vector_objects": 288 + 24 + 32 + 32,
         # Default load_factor1; no project reserve/rehash. Runtime14 grows
         # only with live n>=old buckets, to P(max(n+1,2*old)). Its selected
         # prime table has next<=2*previous+211 (maximum211 verified in the
