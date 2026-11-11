@@ -491,3 +491,47 @@ def test_partial_final_radix_label_preserves_both_sibling_endpoints_under_pressu
     assert cache.stats['charged_bytes'] <= cache.budget_bytes
     temporary.close()
     cache.close()
+
+
+@pytest.mark.parametrize('case', ['fresh1024', 'gap64', 'dual_split64', 'fork24_1024'])
+def test_public_begin_exact_credit_funds_all_index_mutations(case):
+    if case == 'fresh1024':
+        old, tape, start, stop, expected_nodes = None, list(range(1024)), 0, 1024, 17
+    elif case == 'gap64':
+        old, tape, start, stop, expected_nodes = None, list(range(64)), 1, 64, 3
+    elif case == 'dual_split64':
+        old = list(range(64))
+        tape, start, stop, expected_nodes = old, 8, 24, 4
+    else:
+        old = list(range(38))
+        tape = old[:24] + list(range(1000, 2024))
+        start, stop, expected_nodes = 24, 1048, 19
+    def create(budget):
+        cache = PrefixBlocks(budget)
+        if old is not None:
+            writer = cache.begin(old, 0, len(old), {'full': 17})
+            writer.commit({'full': bytes(17)})
+            writer.finish()
+        return cache
+    # Independent oracle is the authoritative mutation's charged delta in a
+    # roomy public begin, not a second implementation of the forecast formula.
+    roomy = create(2_000_000)
+    before = roomy.stats['charged_bytes']
+    forecast = roomy._write_charge(tape, start, stop, {'full': 17}, 0)
+    if case == 'fresh1024':
+        assert roomy._write_charge(tape, start, stop, {'full': 17}, 0,
+                                   frontier_cursor=roomy._root) == forecast
+    writer = roomy.begin(tape, start, stop, {'full': 17})
+    actual = roomy.stats['charged_bytes'] - before
+    assert roomy.stats['nodes'] == expected_nodes
+    assert forecast == actual  # these shapes need no existing-dict bound slack
+    writer.abort()
+    roomy.close()
+    # Recreate the same prestate at precisely its admitted obligation. The old
+    # implementation overran this public reservation by2176/960/704 bytes.
+    tight = create(before + forecast)
+    writer = tight.begin(tape, start, stop, {'full': 17})
+    assert tight.stats['charged_bytes'] <= tight.budget_bytes
+    assert tight.stats['nodes'] == expected_nodes
+    writer.abort()
+    tight.close()

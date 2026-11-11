@@ -21,6 +21,10 @@ from tensorfold.cleanup import raise_failures
 EVICTION_POLICY = "complete-frontier-surplus-aging-bytes-v3"
 
 _FRONTIER = 2048
+_CHILD_DICT_EMPTY = sys.getsizeof({})
+_CHILD_DICT_ONE = sys.getsizeof({0: None})
+_CHILD_DICT_GROWTH = _CHILD_DICT_ONE - _CHILD_DICT_EMPTY
+_CHILD_DICT_SECOND = sys.getsizeof({0: None, 1: None}) - _CHILD_DICT_ONE
 
 _BASE, _NODE, _TOKEN, _VIEW, _RECORD, _GROUP, _LEASE, _SPAN = 18432, 1024, 48, 256, 512, 512, 512, 512
 
@@ -812,6 +816,20 @@ class PrefixBlocks:
             node, at = child, child.depth
         return node
 
+    @staticmethod
+    def _child_dict_growth(children):
+        """Bound one new integer-key insertion in the supported CPython map.
+
+        Empty/one-child tables are measured in this runtime. For nonempty
+        combined integer-key dictionaries CPython's used*3 resize rule grows
+        capacity at most twice; including index-width changes, final storage
+        is below three times its old size. Thus growth is at most twice it.
+        """
+        size = sys.getsizeof(children)
+        if not children:
+            return max(0, _CHILD_DICT_ONE - size)
+        return 2 * size
+
     def _write_charge(self, tokens, start, stop, group_bytes, tag_bytes, *, frontier_cursor=None):
         fixed = _RECORD+_LEASE+tag_bytes+sum(_GROUP+4*len(k)+v for k,v in group_bytes.items())
         cursor = frontier_cursor if frontier_cursor is not None else self._cursor
@@ -819,16 +837,45 @@ class PrefixBlocks:
                 and cursor is not None and cursor.alive and cursor.depth == start
                 and not cursor.children.get(tokens[start])):
             nodes = (stop-start+self.block_tokens-1)//self.block_tokens
-            return fixed+_TOKEN*(stop-start)+nodes*(_NODE+_VIEW)+2*sys.getsizeof(cursor.children)+256
+            dictionaries = self._child_dict_growth(cursor.children) + (nodes-1)*_CHILD_DICT_GROWTH
+            return fixed+_TOKEN*(stop-start)+nodes*(_NODE+_VIEW)+dictionaries
         path,longest = self._path(tokens,stop)
-        missing = max(0,stop-longest)
-        nodes = (missing+self.block_tokens-1)//self.block_tokens
-        splits = [node for node,matched in path if node.parent.depth < start < node.depth
-                  or node.parent.depth < stop < node.depth or matched < node.depth]
-        existing = sum(node.parent.depth < stop and matched > start for node,matched in path)
-        return (fixed+_TOKEN*missing+nodes*(_NODE+_VIEW)+len(splits)*(_NODE+2*_VIEW)
-                +_VIEW*(existing+sum(len(node.views) for node in splits))
-                +2*max((sys.getsizeof(node.children) for node,_matched in path),default=64)+256)
+        # begin inserts the start boundary first, then the stop boundary.
+        # Separately rounded chains can contain one more node than rounding
+        # their combined length (e.g. an empty tree and interval [1,64)).
+        gap = max(0,start-longest)
+        suffix = max(0,stop-max(start,longest))
+        left = (gap+self.block_tokens-1)//self.block_tokens
+        right = (suffix+self.block_tokens-1)//self.block_tokens
+        nodes = left+right
+        splits = []
+        for node,matched in path:
+            if node.parent.depth < start < node.depth and start < matched:
+                splits.append((node,start))
+            if node.parent.depth < matched < node.depth:
+                splits.append((node,matched))
+        # Two distinct points inside one old label create two middle nodes.
+        # A view crossing both points is correspondingly duplicated twice.
+        split_views = sum(lo < point < hi for node,point in splits
+                          for _record,lo,hi in node.views)
+        writer_views = right + sum(max(node.parent.depth,start) < min(matched,stop)
+                                   for node,matched in path)
+        dictionaries = len(splits)*_CHILD_DICT_GROWTH
+        chains = bool(left)+bool(right)
+        if nodes:
+            dictionaries += (nodes-chains)*_CHILD_DICT_GROWTH
+            if path and path[-1][1] < path[-1][0].depth:
+                # The fork middle already owns its old child; its second
+                # child has the measured one-to-two-entry table growth.
+                dictionaries += _CHILD_DICT_SECOND
+            else:
+                parent = path[-1][0] if path else self._root
+                dictionaries += self._child_dict_growth(parent.children)
+            if left and right:
+                # The second chain starts at the fresh first-chain endpoint.
+                dictionaries += _CHILD_DICT_GROWTH
+        return (fixed+_TOKEN*max(0,stop-longest)+(nodes+len(splits))*_NODE
+                +(writer_views+split_views)*_VIEW+dictionaries)
 
     def begin(self, tokens, start, stop, group_bytes, *, tags=(), retain_frontier=False):
         with self._lock:
