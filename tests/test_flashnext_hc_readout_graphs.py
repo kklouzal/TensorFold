@@ -117,7 +117,7 @@ class Dense:
             self.n, self.k = k.shape
         else:
             self.k, self.n, self.weight = k, n, Tensor((n, k))
-        self.implementation = 'reference' 
+        self.implementation = 'reference'
 
 
 class Concat:
