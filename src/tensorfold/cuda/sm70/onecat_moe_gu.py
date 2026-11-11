@@ -103,3 +103,71 @@ def prepare(device):
                             extra_cuda_cflags=["-O3", "--fmad=false"])
         module.prepare()
     return Prepared(module, device)
+
+
+def _raw_iq2_region(rows, first):
+    if type(rows) is not int or not 1 <= rows <= 32 or type(first) is not int or first not in (0, 256):
+        raise ValueError('raw IQ2 GU requires R1..32/owned first0|256')
+
+
+def raw_iq2_layout(rows, first):
+    _raw_iq2_region(rows, first)
+    return {'original_kind': 22, 'local_raw_shape': (256, 160, 820), 'table_bytes': 8192,
+            'activation_shape': (rows*11, 160), 'activation_bytes': rows*11*160*2,
+            'plane_bytes': 0, 'device_scratch_bytes': 0,
+            'panels': tuple((start, min(8, rows-start)) for start in range(0, rows, 8))}
+
+
+@dataclass(frozen=True)
+class RawIQ2Prepared:
+    """Unselected raw→Ld experiment, no intermediate planes or hidden owners.
+
+    Caller retains raw/picks/activation/table and provides exclusive current-
+    stream/capture lifetime. Math/epilogues stay the pinned GU implementations.
+    """
+    module: object
+    device: object
+
+    def gate_up_raw_iq2(self, x, picks, gate_raw, up_raw, table, out, *, first, method,
+                        gate_column_offset=0, up_column_offset=0):
+        import torch
+        if any(type(t) is not torch.Tensor for t in (x, picks, gate_raw, up_raw, table, out)):
+            raise TypeError('plain Tensor raw GU operands required')
+        _raw_iq2_region(x.shape[0], first)
+        if type(method) is not str or method not in METHODS:
+            raise ValueError('explicit existing GU epilogue method required')
+        for offset in (gate_column_offset, up_column_offset):
+            if type(offset) is not int or offset < 0 or offset%256:
+                raise ValueError('raw IQ2 complete256 input offset required')
+        if x.device != self.device:
+            raise ValueError('raw GU prepared device differs')
+        if out.is_inference() and not torch.is_inference_mode_enabled():
+            raise RuntimeError('inference output mutation outside inference mode')
+        self.module.gate_up_raw_iq2(x, picks, gate_raw, up_raw, table, out, first,
+                                   method == METHODS[1], gate_column_offset, up_column_offset)
+        torch.autograd.graph.increment_version(out)
+        return out
+
+    def register_words(self, raw, out, *, expert, tile, group, column_offset=0):
+        """Bounded component diagnostic: defined Ld.c/sc words only, not serving."""
+        import torch
+        if type(raw) is not torch.Tensor or type(out) is not torch.Tensor:
+            raise TypeError('plain Tensor word probe operands required')
+        if any(type(v) is not int for v in (expert, tile, group, column_offset)):
+            raise ValueError('integer raw IQ2 diagnostic coordinates required')
+        if out.device != self.device:
+            raise ValueError('raw IQ2 diagnostic device differs')
+        if out.is_inference() and not torch.is_inference_mode_enabled():
+            raise RuntimeError('inference output mutation outside inference mode')
+        self.module.raw_iq2_words(raw, out, expert, tile, group, column_offset)
+        torch.autograd.graph.increment_version(out)
+        return out
+
+
+def prepare_raw_iq2(device):
+    """Explicit cold capability; never installed into any serving dispatcher."""
+    import torch
+    original = prepare(device)  # Preserve the packed control's preparation.
+    with torch.cuda.device(original.device):
+        original.module.prepare_raw_iq2()
+    return RawIQ2Prepared(original.module, original.device)

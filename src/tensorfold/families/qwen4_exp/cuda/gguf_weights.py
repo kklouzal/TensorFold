@@ -555,12 +555,16 @@ class GGUFExperts:
         part = self.partition
         if part is None or part.etp != 4 or part.width != 160 or part.world != 8:
             raise ValueError("owned native candidate requires an explicit TP8/ETP4 bank")
-        gate, up, down = self.shared
-        shared = down.matmul((torch.nn.functional.silu(gate.matmul(x, f32=True))
-                              * up.matmul(x, f32=True)).half(), f32=True)
+        shared = self.owned_shared_result(x)
         return gguf_ops.experts_owned(x, picks, self.gate, self.up, self.down,
             first=part.first, experts=part.experts, width=self.width,
             shared=shared, local=local, activation=activation, out=out, grouping=grouping, _gate_up=_gate_up)
+
+    def owned_shared_result(self, x):
+        """Original independent shared Dense program, including its Half boundary."""
+        gate, up, down = self.shared
+        return down.matmul((torch.nn.functional.silu(gate.matmul(x, f32=True))
+                            * up.matmul(x, f32=True)).half(), f32=True)
 
     def forward_partitioned_reference(self, x, picks, out=None, *, _pairs=None):
         """Only owned global assignments enter the resident bank; all peers still gather.
@@ -618,7 +622,9 @@ class GGUFExperts:
         return out
 
     def device_tensors(self):
-        return tuple(t for p in (self.gate, self.up, self.down, *self.shared) for t in p.device_tensors())
+        original = tuple(t for p in (self.gate, self.up, self.down, *self.shared) for t in p.device_tensors())
+        provider = getattr(self, "_onecat_provider", None)
+        return original if provider is None else original + provider.device_tensors()
 
     def bytes_per_expert(self):
         return self.width * (self.gate.data.shape[1] + self.up.data.shape[1]) + self.dims * self.down.data.shape[1]
@@ -954,7 +960,7 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
 
 def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=None, prefill_plan=None,
                      position_profile=None, mtp_model_dir=None, expert_tensor_parallel_size=None,
-                     routing_rows=MATMUL_ROWS, _pipeline_stage=None):
+                     routing_rows=MATMUL_ROWS, _pipeline_stage=None, _onecat_owner=None):
     # Separate stock-MTP admission is added by the common engine admission path.
     prototype, planner = model_plan(path, tp, mtp=mtp, draft_vocab=draft_vocab, draft_ids=draft_ids,
         mtp_model_dir=mtp_model_dir,
@@ -962,7 +968,10 @@ def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=No
         **({"expert_tensor_parallel_size": expert_tensor_parallel_size} if expert_tensor_parallel_size is not None else {}),
         **({"position_profile": position_profile, "rope": position_profile.target.rope}
            if position_profile is not None else {}))
+    onecat = None if _onecat_owner is None else _onecat_owner.forecast(prototype, STAGING_BYTES)
     resident = sum(m.resident_bytes for m in planner.matrices) + sum(a.resident_bytes for a in planner.arrays)
+    if onecat is not None:
+        resident += onecat["additional_device_bytes"]
     draft_id_bytes = 0 if prototype.draft_ids is None else prototype.draft_ids.nbytes
     draft_filter_bytes = 0 if prototype.draft_filter is None else prototype.draft_filter.nbytes
     resident += draft_id_bytes + draft_filter_bytes
@@ -996,7 +1005,8 @@ def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=No
             "workspace_bytes": workspace,
             "host_resident_bytes": sum(t.source.nbytes for t in planner.tables),
             "host_staging_bytes": max(3 * STAGING_BYTES, router_host) + prefetch_host
-                                  + prototype.meta["draft_host_id_bytes"],
+                                  + prototype.meta["draft_host_id_bytes"]
+                                  + (0 if onecat is None else onecat["global_host_credit_bytes"]),
             "router_resident_bytes": sum(a.resident_bytes for a in router_parts),
             "router_host_staging_bytes": router_host,
             "draft_head_bytes": 0 if prototype.draft_head is None else prototype.draft_head.resident_bytes,
@@ -1008,10 +1018,15 @@ def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=No
                 "owned_global_layer_ids": list(_pipeline_stage.layer_ids)} if _pipeline_stage is not None else {})}
 
 
-def _packed(plan, reader, device):
+def _packed(plan, reader, device, *, _onecat_owner=None):
     result = torch.empty((plan.n, plan.row_bytes), dtype=torch.uint8, device=device)
     destination = 0
     max_rows = max(1, STAGING_BYTES // plan.source.row_bytes)
+    sink = None if _onecat_owner is None else _onecat_owner.sink(plan)
+    if sink is not None:
+        max_rows = min(max_rows // 160 * 160, sink.max_rows)
+        if max_rows < 160:
+            raise MemoryError("cold GU chunk cannot hold a complete expert")
     runs = []
     for first, count in plan.row_ranges:
         for start in range(first, first + count, max_rows):
@@ -1034,6 +1049,8 @@ def _packed(plan, reader, device):
                                dtype=torch.int64)
         parts = [raw[:, begin:begin + length].index_select(0, indices) for begin, length in plan.byte_segments]
         selected = parts[0].contiguous() if len(parts) == 1 else torch.cat(parts, dim=1)
+        if sink is not None:
+            sink.consume(selected, destination)
         result[destination:destination + indices.numel()].copy_(selected.to(device))
         destination += indices.numel()
     return GGUFPacked(result, plan.source.ggml_type, plan.n, plan.k, plan.column_offset)
@@ -1108,7 +1125,7 @@ def _array(plan, reader, device):
     return torch.from_numpy(np.ascontiguousarray(converted)).to(device)
 
 
-def materializer(reader, device, *, dense_loader=None, prepare_experts=None, load_table=None):
+def materializer(reader, device, *, dense_loader=None, prepare_experts=None, load_table=None, _onecat_owner=None):
     """One planned owner maps to one runtime owner within a single load.
 
     The caller owns Reader/table retirement. Router ArrayPlan parts are the
@@ -1131,6 +1148,8 @@ def materializer(reader, device, *, dense_loader=None, prepare_experts=None, loa
 
     def materialize_owned(value):
         if isinstance(value, MatrixPlan):
+            if value.packed and _onecat_owner is not None:
+                return _packed(value, reader, device, _onecat_owner=_onecat_owner)
             return _packed(value, reader, device) if value.packed else dense_loader(value, reader, device)
         if isinstance(value, ArrayPlan):
             return _array(value, reader, device)
@@ -1148,6 +1167,8 @@ def materializer(reader, device, *, dense_loader=None, prepare_experts=None, loa
                                width=value.width, dims=value.dims, partition=value.partition)
             if prepare_experts is not None:
                 prepare_experts(bank)
+            if _onecat_owner is not None:
+                _onecat_owner.bind_bank(value, bank)
             return bank
         if isinstance(value, TablePlan):
             if load_table is None:
@@ -1175,7 +1196,7 @@ def _bind_mtp_vocabulary(target, prototype, reader, device):
 def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_ids=None,
               table_reads=None, ple_on_ssd=False, mtp_model_dir=None, draft_vocab=None, _draft_ids=None,
               _prefill_plan=None, position_profile=None, _position_prepared=None,
-              expert_tensor_parallel_size=None, _pipeline_stage=None, **kwargs):
+              expert_tensor_parallel_size=None, _pipeline_stage=None, _onecat_owner=None, **kwargs):
     """Load original checkpoint bytes into the maintained Flash Next weight graph."""
     if _pipeline_stage is not None and (mtp or mtp_model_dir is not None or draft_vocab is not None or _draft_ids is not None):
         raise ValueError("partial pipeline imports require owner lookup/features before any method attachment")
@@ -1217,27 +1238,56 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
                                slots=prototype.cfg.top_k + 1,
                                shared_width=prototype.cfg.shared_width
                                if expert_tensor_parallel_size in (2, 4) else None)
-    reader, tables = Reader(), PLETables()
-    # Same-host TP ranks reuse the kernel's shared read cache. Reader still owns
-    # each bounded span; giant quantized banks are never materialized in full RAM.
-    reader.direct = False
+    # Prepay bounded status/resource retention before either acquisition. A
+    # native exception cause anchors this journal if publication and retirement
+    # both fail, even when a consumer later clears traceback frames.
+    cleanup_status = [None, None, None]
+    cleanup_owners = [None, None]
+    retained = RuntimeError("GGUF load retains uncertain owners and cleanup statuses")
+    retained_fields = BaseException.__dict__["__dict__"].__get__(retained)
+    retained_fields["_tensorfold_retained_owners"] = cleanup_owners
+    retained_fields["cleanup_status"] = cleanup_status
+    retained_fields["original_cause"] = None
+    retained_fields["original_context"] = None
+    retained_fields["original_suppressed"] = False
+    retained_fields["transport_error"] = None
 
-    def load_table(value):
-        table = tables.acquire(ReadAhead(GGUFPLETable(value.source)))
-        if table_reads is not None and not ple_on_ssd:
-            from tensorfold.cuda.direct_read import in_background
-            in_background(table.prefetch, tables.reads)
-            table_reads.append(tables.reads[-1])
-        return table
+    def retire_device():
+        torch.cuda.synchronize(device)
 
-    prepare_experts = None
-    if _prefill_plan is not None:
-        def prepare_experts(bank):
-            bank.prepare_prefill(_prefill_plan)
+    if _onecat_owner is not None:
+        from .onecat_experts import OneCatOwner
+        from .onecat_frame_experts import OneCatFrameOwner
 
-    materialize = materializer(reader, device, prepare_experts=prepare_experts, load_table=load_table)
-
+        if type(_onecat_owner) not in (OneCatOwner, OneCatFrameOwner) or mtp or _pipeline_stage is not None:
+            raise ValueError("typed NONE/PP1 cold GU owner required")
+        _onecat_owner.begin_load(prototype, STAGING_BYTES)
+    reader = tables = None
     try:
+        reader = Reader()
+        cleanup_owners[0] = reader
+        tables = PLETables()
+        cleanup_owners[1] = tables
+        # Same-host TP ranks reuse the kernel's shared read cache. Reader still owns
+        # each bounded span; giant quantized banks are never materialized in full RAM.
+        reader.direct = False
+
+        def load_table(value):
+            table = tables.acquire(ReadAhead(GGUFPLETable(value.source)))
+            if table_reads is not None and not ple_on_ssd:
+                from tensorfold.cuda.direct_read import in_background
+                in_background(table.prefetch, tables.reads)
+                table_reads.append(tables.reads[-1])
+            return table
+
+        prepare_experts = None
+        if _prefill_plan is not None:
+            def prepare_experts(bank):
+                bank.prepare_prefill(_prefill_plan)
+
+        materialize = materializer(reader, device, prepare_experts=prepare_experts, load_table=load_table,
+                                  **({"_onecat_owner": _onecat_owner} if _onecat_owner is not None else {}))
+
         embedding = None if prototype.embed is None else (GGUFEmbedding(materialize(prototype.embed[0])),)
         layers = [materialize(layer) for layer in prototype.layers]
         result = Weights(prototype.cfg, embedding, layers, materialize(prototype.mixer),
@@ -1255,14 +1305,54 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
             vocabulary_started = time.monotonic()
             _bind_mtp_vocabulary(result, prototype, reader, device)
             result.meta["mtp_vocabulary_bind_seconds"] = time.monotonic() - vocabulary_started
+        if _onecat_owner is not None:
+            _onecat_owner.finish_load()
+            result.meta["onecat_experts"] = _onecat_owner
         reader.close()
         return result
     except BaseException as primary:
-        _retain_failure(primary, "ple_tables", tables)
-        failures = []
-        for cleanup in (reader.close, lambda: tables.close(lambda: torch.cuda.synchronize(device))):
-            try:
-                cleanup()
-            except BaseException as error:
-                failures.append(error)
-        raise_failures(primary, failures)
+        retained_fields["original_cause"] = BaseException.__cause__.__get__(primary)
+        retained_fields["original_context"] = BaseException.__context__.__get__(primary)
+        retained_fields["original_suppressed"] = BaseException.__suppress_context__.__get__(primary)
+        try:
+            if tables is not None:
+                _retain_failure(primary, "ple_tables", tables)
+        except BaseException as publication:
+            cause = BaseException.__cause__.__get__(primary)
+            cleanup_status[0] = cause if publication is primary and cause is not None else publication
+        # _retain_failure may re-raise primary-from-publication. Preserve the
+        # incoming native links before required independent retirement attempts.
+        BaseException.__cause__.__set__(primary, retained_fields["original_cause"])
+        BaseException.__context__.__set__(primary, retained_fields["original_context"])
+        BaseException.__suppress_context__.__set__(primary, retained_fields["original_suppressed"])
+        try:
+            if reader is not None:
+                reader.close()
+        except BaseException as error:
+            cleanup_status[1] = error
+        try:
+            if tables is not None:
+                tables.close(retire_device)
+        except BaseException as error:
+            cleanup_status[2] = error
+        uncertain = cleanup_status[1] is not None or cleanup_status[2] is not None
+        if cleanup_status[0] is None:
+            cleanup_status[0] = primary
+        if cleanup_status[1] is None:
+            cleanup_status[1] = primary
+        if cleanup_status[2] is None:
+            cleanup_status[2] = primary
+        try:
+            raise_failures(primary, cleanup_status)
+        except BaseException as outcome:
+            if uncertain or outcome is not primary:
+                # No post-fault owner publication/dict growth is needed. The
+                # preallocated carrier keeps both owners and all status slots;
+                # its native cause retains neutral transport diagnostics too.
+                if outcome is not primary:
+                    retained_fields["transport_error"] = outcome
+                cause = outcome if outcome is not primary else BaseException.__cause__.__get__(primary)
+                if cause is not primary and cause is not retained:
+                    BaseException.__cause__.__set__(retained, cause)
+                raise primary from retained
+            raise

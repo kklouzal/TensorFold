@@ -1,4 +1,5 @@
-// Stable 32-bit radix keys preserve FP32 order, including NaNs and signed zero.
+// Match the pinned Torch512 medium radix path, not its small-sort NaN
+// comparator. Signed zeros tie; other FP32 payloads retain radix ordering.
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -9,6 +10,13 @@
 #include <math_constants.h>
 
 namespace {
+__device__ __forceinline__ uint32_t selection_key(float value) {
+    uint32_t bits = __float_as_uint(value);
+    const uint32_t magnitude = bits & 0x7fffffffu;
+    if (magnitude == 0) bits = 0;
+    return (bits & 0x80000000u) ? ~bits : bits ^ 0x80000000u;
+}
+
 __global__ void select512(const float* logits, int64_t stride, int64_t* indices, int count) {
     using Sort = cub::BlockRadixSort<uint32_t, 128, 4, uint32_t>;
     __shared__ typename Sort::TempStorage storage;
@@ -17,9 +25,7 @@ __global__ void select512(const float* logits, int64_t stride, int64_t* indices,
     for (int item = 0; item < 4; ++item) {
         const uint32_t index = threadIdx.x * 4 + item;
         const float value = logits[int64_t(blockIdx.x) * stride + index];
-        const uint32_t bits = value == 0.f ? 0u : __float_as_uint(value);
-        const uint32_t ordered = (bits & 0x80000000u) ? ~bits : bits ^ 0x80000000u;
-        keys[item] = ordered;
+        keys[item] = selection_key(value);
         ids[item] = index;
     }
     // CUB BlockRadixSort is stable: the original blocked order is ascending ID.
@@ -44,8 +50,7 @@ __global__ void route512(const float* logits, int64_t stride, int* picks,
     for (int item = 0; item < 4; ++item) {
         const uint32_t index = threadIdx.x * 4 + item;
         const float value = logits[int64_t(row) * stride + index];
-        const uint32_t bits = value == 0.f ? 0u : __float_as_uint(value);
-        keys[item] = (bits & 0x80000000u) ? ~bits : bits ^ 0x80000000u;
+        keys[item] = selection_key(value);
         ids[item] = index;
     }
     Sort(storage).SortDescending(keys, ids);
@@ -68,7 +73,10 @@ __global__ void route512(const float* logits, int64_t stride, int* picks,
             maximum = maximum < other ? other : maximum;
         }
         const float numerator = expf(value - maximum);
-        float sum = numerator;
+        // Pinned PersistentSoftmax initializes its accumulator before adding
+        // the one exp element/lane; retain that operation for exceptional bits.
+        float sum = 0.0f;
+        sum += numerator;
         for (int offset = warp_width / 2; offset; offset /= 2)
             sum += __shfl_xor_sync(mask, sum, offset, warp_width);
         if (lane < count)
@@ -82,6 +90,11 @@ __global__ void route512(const float* logits, int64_t stride, int* picks,
     }
 }
 }  // namespace
+
+void routing_prepare_route_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, route512));
+}
 
 void routing_select_cuda(const at::Tensor& logits, at::Tensor& indices) {
     if (!logits.size(0)) return;

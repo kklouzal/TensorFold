@@ -168,10 +168,24 @@ class MoEBuffers:
         self.logits = torch.empty((rows, cfg.num_experts + 1), dtype=torch.float32, device=device)
         self.pick = torch.empty((rows, slots), dtype=torch.int32, device=device)
         self.wts = torch.empty((rows, slots), dtype=torch.float32, device=device)
+        self.selection = None  # Only pre-admitted owned preparation may bind a resident callable.
         self.plan = grouped.Plan(rows, slots, cfg.num_experts + 1, device, prefill=prefill)
         self.act = torch.empty((rows, slots, cfg.moe_intermediate_size), dtype=dtype, device=device)
         self.y = torch.empty((rows, slots, cfg.hidden_size), dtype=dtype if prefill else torch.float32,
                              device=device)
+
+
+def _torch_select_rows(logits, buf, top_k, experts, *, indices=None):
+    """Explicit original Half reference; independent of native family dispatch."""
+    rows = logits.shape[0]
+    if indices is None:
+        indices = logits[:, :experts].argsort(dim=-1, descending=True, stable=True)[:, :top_k]
+    selected = logits[:, :experts].gather(1, indices)
+    weights = selected.softmax(-1).half().float()
+    buf.pick[:rows, :top_k].copy_(indices)
+    buf.pick[:rows, top_k].fill_(experts)
+    buf.wts[:rows, :top_k].copy_(weights)
+    buf.wts[:rows, top_k].copy_(logits[:, experts].half().float().sigmoid().half().float())
 
 
 def select_rows(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int) -> None:
@@ -181,6 +195,11 @@ def select_rows(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int)
     if buf.act.dtype == torch.float16:
         if logits.shape[1] != experts + 1 or not 1 <= top_k <= experts:
             raise ValueError("FP16 expert selection geometry is invalid")
+        prepared = getattr(buf, 'selection', None)
+        if prepared is not None and logits.is_cuda:
+            from tensorfold.cuda.sm70.routing_native import _OwnedMoESelection
+            if type(prepared) is _OwnedMoESelection and prepared.run(logits, buf, top_k, experts):
+                return
         from tensorfold.cuda.sm70 import family_ops
 
         if family_ops._NATIVE_FAMILY and logits.is_cuda and experts == 512 and top_k <= 32:
@@ -194,14 +213,8 @@ def select_rows(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int)
                 return
             indices = stable_indices(logits, top_k)
         else:
-            indices = logits[:, :experts].argsort(dim=-1, descending=True, stable=True)[:, :top_k]
-        selected = logits[:, :experts].gather(1, indices)
-        weights = selected.softmax(-1).half().float()
-        buf.pick[:rows, :top_k].copy_(indices)
-        buf.pick[:rows, top_k].fill_(experts)
-        buf.wts[:rows, :top_k].copy_(weights)
-        buf.wts[:rows, top_k].copy_(logits[:, experts].half().float().sigmoid().half().float())
-        return
+            indices = None
+        return _torch_select_rows(logits, buf, top_k, experts, indices=indices)
     _topk_rows[(rows,)](logits, buf.pick, buf.wts, NE=experts, NL=logits.shape[1], TOPK=top_k, SLOTS=top_k + 1,
                         BLOCK=triton.next_power_of_2(experts + 1), SLOTP=triton.next_power_of_2(top_k + 1), num_warps=4,
                         PDL=pdl.ON, launch_pdl=pdl.ON)

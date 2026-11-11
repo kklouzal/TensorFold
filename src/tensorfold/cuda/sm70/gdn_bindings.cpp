@@ -14,6 +14,10 @@ void sm70_gdn_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&
 void sm70_gdn_replay_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
                           const at::Tensor&, int64_t, at::Tensor&);
 
+void sm70_gdn_prepare_batch_cuda(int64_t);
+void sm70_gdn_batch_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
+        const at::Tensor&, double, const at::Tensor&, const at::Tensor&, at::Tensor&, at::Tensor&, bool);
+
 namespace {
 void check(const at::Tensor& value, at::ScalarType kind, const at::Device& device, const char* name) {
     TORCH_CHECK(value.is_cuda() && value.device() == device && value.scalar_type() == kind && value.is_contiguous(),
@@ -96,6 +100,49 @@ void chain(const at::Tensor& projection, const at::Tensor& conv, const at::Tenso
                          final, keys, values, decay, beta, keep_rows, negative_decay);
 }
 
+// Private descriptor ABI: NativeTables owns and validates every pointee/span
+// before its ordered H2D publication. Never accept user-issued GPU addresses.
+void batch_chain(const at::Tensor& projection, const at::Tensor& weight,
+        const at::Tensor& decay, const at::Tensor& bias, const at::Tensor& norm, double eps,
+        const at::Tensor& pointers, const at::Tensor& starts, at::Tensor output, at::Tensor sums,
+        bool negative_decay) {
+    const auto device = projection.device();
+    check(projection, at::kHalf, device, "batch projection");
+    check(weight, at::kHalf, device, "batch convolution weights");
+    check(norm, at::kHalf, device, "batch normalization weights");
+    check(decay, at::kFloat, device, "batch decay");
+    check(bias, at::kFloat, device, "batch bias");
+    check(starts, at::kInt, device, "batch starts");
+    check(output, at::kHalf, device, "batch output");
+    check(sums, at::kFloat, device, "batch sums");
+    const auto* prop = at::cuda::getDeviceProperties(projection.get_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "native GDN batch requires SM70");
+    const int64_t nv = decay.numel(), nk = nv / 3;
+    TORCH_CHECK(decay.dim() == 1 && (nv == 6 || nv == 12 || nv == 24 || nv == 48), "batch GDN head geometry");
+    const int64_t channels = (2 * nk + nv) * 128;
+    TORCH_CHECK(projection.dim() == 2 && projection.size(0) > 0
+        && projection.size(0) <= std::numeric_limits<int>::max()
+        && projection.size(1) == channels + nv * 128 + 2 * nv, "batch projection geometry");
+    TORCH_CHECK(weight.sizes() == at::IntArrayRef({channels, 4}) && bias.sizes() == decay.sizes()
+        && norm.dim() == 1 && norm.numel() == 128, "batch GDN weights");
+    TORCH_CHECK(pointers.is_cuda() && pointers.device() == device && pointers.scalar_type() == at::kLong
+        && pointers.dim() == 2 && pointers.size(0) == 8 && pointers.size(1) > 0
+        && pointers.size(1) <= prop->maxGridSize[1] && pointers.stride(1) == 1
+        && pointers.stride(0) >= pointers.size(1), "owned batch pointer layout");
+    TORCH_CHECK(pointers.stride(0) <= (std::numeric_limits<int64_t>::max()-pointers.size(1))/7,
+                "batch descriptor span overflow");
+    TORCH_CHECK(starts.dim() == 1 && starts.numel() == pointers.size(1) + 1, "owned batch starts layout");
+    TORCH_CHECK(output.sizes() == at::IntArrayRef({projection.size(0), nv * 128})
+        && sums.sizes() == at::IntArrayRef({projection.size(0), nv * 4}), "batch outputs");
+    TORCH_CHECK(std::isfinite(eps) && eps > 0 && std::isfinite(float(eps)) && float(eps) > 0, "batch epsilon");
+    tensorfold::check_disjoint(output, {&projection, &weight, &decay, &bias, &norm, &pointers, &starts, &sums},
+        "batch output aliases an active operand");
+    tensorfold::check_disjoint(sums, {&projection, &weight, &decay, &bias, &norm, &pointers, &starts},
+        "batch sums alias an active operand");
+    c10::cuda::CUDAGuard guard(device);
+    sm70_gdn_batch_chain_cuda(projection, weight, decay, bias, norm, eps, pointers, starts, output, sums, negative_decay);
+}
+
 void replay(const at::Tensor& initial, const at::Tensor& keys, const at::Tensor& values,
             const at::Tensor& decay, const at::Tensor& beta, int64_t rows, at::Tensor final) {
     state_check(initial, initial.device());
@@ -111,4 +158,6 @@ void replay(const at::Tensor& initial, const at::Tensor& keys, const at::Tensor&
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("chain", &chain);
     module.def("replay", &replay);
+    module.def("batch_chain", &batch_chain);
+    module.def("prepare_batch", &sm70_gdn_prepare_batch_cuda);
 }

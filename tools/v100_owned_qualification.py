@@ -611,6 +611,442 @@ def prepare_prepared_features(engine, resources, output, grouped_gate_up):
     return observer.install()
 
 
+def _gdn_batch_preflight(args, cli):
+    if (args.draft_method != 'none' or str(args.parallel).lower() == 'auto'
+            or cli._parallel(args.parallel) != 24):
+        raise ValueError('GDN parity requires explicit NONE and24 fixed resident slots before construction')
+
+
+def _gdn_batch_resources(plan, output):
+    from tensorfold.cuda.sm70 import gdn_native
+    if not all(callable(getattr(gdn_native, name, None)) for name in ('batch_chain', 'chain')):
+        raise ValueError('installed runtime lacks GDN batch/scalar witness before construction')
+    if not any(c['level'] == 24 and not c['warmup'] for c in plan['cohorts']):
+        raise ValueError('GDN witness requires an actual C24 benchmark cohort')
+    input_rows = sum(c['level']*c['input_tokens'] for c in plan['cohorts'])
+    output_rows = sum(c['level']*c['tokens'] for c in plan['cohorts'])
+    journal_rows = 2*input_rows + output_rows
+    base = _history_resources(2*journal_rows + 48 + 64, 4096)
+    shapes = {'pre_rec': ((24, 6, 128, 128), 4), 'pre_conv': ((24, 3, 1280), 2),
+              'pre_projection': ((24, 2060), 2), 'pre_keep': ((24,), 4),
+              'pre_descriptor': ((8*48*24,), 8), 'pre_starts': ((25,), 4),
+              'actual_input_rec': ((24, 6, 128, 128), 4), 'actual_conv': ((24, 3, 1280), 2),
+              'actual_projection': ((24, 2060), 2)}
+    for phase in ('expected', 'actual'):
+        shapes.update({phase+'_rec': ((24, 6, 128, 128), 4), phase+'_k': ((24, 1, 2, 128), 4),
+            phase+'_v': ((24, 1, 6, 128), 2), phase+'_g': ((24, 1, 6), 4),
+            phase+'_b': ((24, 1, 6), 4), phase+'_out': ((24, 768), 2), phase+'_sums': ((24, 24), 4)})
+    payload = sum(math.prod(shape)*width for shape, width in shapes.values())
+    # Two actual/published bounded JSON trees and serializer are prepaid by
+    # base; pinned tensors, native wrappers/streaming IO are additional.
+    source_bytes = sum(Path(x).stat().st_size for x in (__file__, gdn_native.__file__))
+    per_rank = base['per_rank_payload_bytes'] + payload + source_bytes + 2*65536 + len(shapes)*4096
+    if 8*per_rank > sys.maxsize:
+        raise ValueError('GDN witness host obligation exceeds size domain')
+    return {**base, 'per_rank_payload_bytes': per_rank, 'global_host_obligation_bytes': 8*per_rank,
+            'slabs': shapes, 'pinned_tensor_payload_bytes': payload, 'maximum_segment_rows': journal_rows,
+            'maximum_segment_events': journal_rows, 'maximum_calls': 48*output_rows,
+            'additional_device_bytes': 0, 'diagnostic_only': True, 'P3_valid': False}
+
+
+def _gdn_witness_region(engine):
+    import torch
+    dec = engine.multi
+    if (engine.w.device.type != 'cuda' or engine.w.mtp is not None or dec.speculation.method != 'none'
+            or dec.speculation.maximum_proposals != 0 or len(dec.states) != 24 or not dec.full_resident
+            or dec.buf.h.dtype != torch.float16 or (engine.w.cfg.nk, engine.w.cfg.nv) != (2, 6)
+            or not dec.round_tables.native_half or dec.round_tables.slots != 24 or not 0 < dec.gdn.lin <= 48 or dec.held
+            or engine.capacity_plan.get('native_gdn_batch', {}).get('enabled') is not True):
+        raise ValueError('GDN witness requires the actual C24 Half/NONE native batch region')
+    return dec
+
+
+def _write_gdn_host_tensor(path, tensor):
+    import numpy as np
+    if __package__:
+        from .gb10_io import opened_file, write_all
+    else:
+        from gb10_io import opened_file, write_all
+    values = tensor.numpy()
+    with opened_file(path, 'xb') as stream:
+        np.lib.format.write_array_header_1_0(stream, np.lib.format.header_data_from_array_1_0(values))
+        view = memoryview(values).cast('B')
+        for begin in range(0, len(view), 65536):
+            write_all(stream, view[begin:begin+65536])
+        stream.flush()
+        os.fsync(stream.fileno())
+    size = path.stat().st_size
+    return {'file': path.name, 'bytes': size, 'sha256': _source_sha(path, size)}
+
+
+class _GDNBatchParity:
+    """Current scalar BEFORE batch on identical live inputs; not a math oracle."""
+    def __init__(self, engine, resources, output, *, module=None, allocator=None, writer=None):
+        import torch
+        from types import SimpleNamespace
+        from tensorfold.cuda.sm70 import gdn_native
+        self.engine, self.resources, self.rank = engine, resources, engine.rank
+        self.module = gdn_native if module is None else module
+        self.original, self.scalar = self.module.batch_chain, self.module.chain
+        self.original_close = engine.close
+        self.had_close, self.old_close = 'close' in vars(engine), vars(engine).get('close')
+        self.status, self.transport = [None]*8, [None]
+        self.status_order = (0, 1, 2, 3, 5, 7, 4, 6)  # Actual body/cleanup chronology.
+        self.active = self.closed = self.failed = self.installed = False
+        self.primary = None
+        self.observer = None
+        self.prefill_pending = None
+        self.counts = [{'calls': 0, 'rows': 0, 'matched': 0} for _ in range(48)]
+        self.calls = self.segment_rows = self.segment_count = self.maximum_states = 0
+        self.segments = [None]*resources['maximum_segment_events']
+        self.slabs = {}
+        self.writer = _write_gdn_host_tensor if writer is None else writer
+        self.decoder = _gdn_witness_region(engine)
+        shared = self.decoder.gdn
+        for value, dtype in ((shared.k, torch.float32), (shared.v, torch.float16), (shared.q, torch.float32),
+                             (shared.g, torch.float32), (shared.beta, torch.float32)):
+            if not value.is_contiguous() or value.device != engine.w.device or value.dtype != dtype:
+                raise ValueError('GDN witness needs contiguous unused Half sharedscratch')
+        if shared.k.numel() < 6*128*128 or shared.q.numel() < 2*128+24 or shared.v.numel() < 2*6*128:
+            raise ValueError('GDN witness exceeds existing unused sharedscratch')
+        self.final = shared.k.view(-1)[:6*128*128].view(6, 128, 128)
+        self.shadow = SimpleNamespace(k=shared.q.view(-1)[:256].view(1, 2, 128),
+            v=shared.v.view(-1)[:768].view(1, 6, 128),
+            g=shared.g.view(-1)[:6].view(1, 6), b=shared.beta.view(-1)[:6].view(1, 6))
+        self.out = shared.v.view(-1)[768:1536].view(1, 768)
+        self.sums = shared.q.view(-1)[256:280].view(1, 24)
+        allocate = torch.empty if allocator is None else allocator
+        for name, (shape, width) in resources['slabs'].items():
+            dtype = torch.int64 if width == 8 else torch.int32 if name in ('pre_keep', 'pre_starts') else torch.float32 if width == 4 else torch.float16
+            self.slabs[name] = allocate(tuple(shape), dtype=dtype, device='cpu', pin_memory=True)
+        self.sources = {name: _source_sha(path, Path(path).stat().st_size) for name, path in
+                        [('tool', __file__), ('scalar_and_batch_wrapper', self.module.__file__)]}
+        if module is None:
+            native = self.module.extension()  # Already resident under actual enabled startup preparation.
+            self.sources['native_module'] = native.__name__
+            self.sources['native_elf'] = _source_sha(native.__file__, Path(native.__file__).stat().st_size)
+        self.directory = Path(output)/f'gdn-batch-parity-rank-{engine.rank}'
+        self.directory.mkdir(mode=0o700)
+        self._publish()
+
+    def _publish(self):
+        self.published = {'schema': 'tensorfold.gdn-batch-parity-v1', 'rank': self.rank,
+            'closed': self.closed, 'failed': self.failed, 'calls': self.calls, 'maximum_states': self.maximum_states,
+            'counts': [dict(x) for x in self.counts], 'segment_count': self.segment_count,
+            'segment_rows': self.segment_rows, 'sources': dict(self.sources),
+            'scope': 'same-module scalar-vs-batch live-input witness; not independent mathematics/fullquality',
+            'benchmark_plan_sha256': self.resources.get('input_sha256'),
+            'diagnostic_only': True, 'P3_valid': False, 'saved_rows_compared_per_state': 1}
+
+    def _first_failure(self, primary=None):
+        index = 0
+        while primary is None and index < 8:
+            primary = self.status[self.status_order[index]]
+            index += 1
+        return primary
+
+    def _raise(self, primary):
+        primary = self._first_failure(primary)
+        try:
+            errors = [x for x in self.status if x is not None and x is not primary]
+        except BaseException as error:
+            self.transport[0] = error
+            raise_failures(primary, self.transport)
+        raise_failures(primary, errors)
+
+    def release_prefill(self):
+        self.prefill_pending = None
+
+    def _segment_authority(self, state, stream):
+        if stream is None or stream.st is not state or self.observer is None:
+            raise ValueError('GDN segment lost benchmark request authority')
+        cohort, request = self.observer._identity(stream)
+        wire = self.engine.tp_decoder.wires.get(id(stream))
+        if type(wire) is not int:
+            raise ValueError('GDN segment lost its stable TP wire')
+        return wire, cohort['id'], request['index'], request['prompt_sha256']
+
+    def segment(self, kind, segments, pieces=None):
+        if self.closed:
+            raise RuntimeError('GDN segment journal retired')
+        try:
+            if not 0 < len(segments) <= 24:
+                raise ValueError('GDN segment count exceeds actual State envelope')
+            rows, pending = [], None
+            if kind == 'prepare-prefill':
+                if pieces is None or len(pieces) != len(segments) or self.prefill_pending is not None:
+                    raise ValueError('GDN prefill authority is missing, mismatched or unconsumed')
+                bound = []
+                for index, ((state, begin, end), (stream, start, count)) in enumerate(zip(segments, pieces)):
+                    if (type(start) is not int or type(count) is not int or start < 0 or count <= 0
+                            or end-begin != count or start+count > len(stream.prompt)
+                            or begin != (0 if index == 0 else segments[index-1][2])
+                            or any(previous[0] is state for previous in bound)):
+                        raise ValueError('GDN prepare segment differs from authoritative piece/order')
+                    authority = self._segment_authority(state, stream)
+                    generation = (state.history_slot, state.slot_generation, state.history_generation)
+                    bound.append((state, stream, authority, start, count, begin, end, generation))
+                pending = tuple(bound)  # Strong ownership, bounded to this single prepare pass.
+                entries = pending
+            elif kind == 'target-prefill':
+                pending, self.prefill_pending = self.prefill_pending, None
+                if pieces is not None or pending is None or len(pending) != len(segments):
+                    raise ValueError('GDN target prefill has no matching prepared authority')
+                for (state, begin, end), entry in zip(segments, pending):
+                    prior, stream, authority, start, count, first, last, generation = entry
+                    if (state is not prior or begin != first or end != last or end-begin != count
+                            or (state.history_slot, state.slot_generation, state.history_generation) != generation
+                            or self._segment_authority(state, stream) != authority):
+                        raise ValueError('GDN target prefill changed State/generation/request/span/order')
+                entries = pending
+            elif kind in ('target-decode', 'mismatch-decode'):
+                if pieces is not None:
+                    raise ValueError('GDN decode cannot borrow prefill authority')
+                entries = []
+                for state, begin, end in segments:
+                    matches = [s for s in self.decoder.streams.values() if s.st is state]
+                    if len(matches) != 1 or end <= begin:
+                        raise ValueError('GDN decode lost unique active-stream authority')
+                    stream = matches[0]
+                    authority = self._segment_authority(state, stream)
+                    entries.append((state, stream, authority, state.pos, end-begin, begin, end,
+                                    (state.history_slot, state.slot_generation, state.history_generation)))
+            else:
+                raise ValueError('unknown GDN segment journal transition')
+            for state, stream, authority, start, count, begin, end, generation in entries:
+                wire, cohort, request, prompt_sha = authority
+                # pos is the actual observed position at this callback. The
+                # input start/count are retained from prepare, not inferred
+                # from a mutable State position after GPU work.
+                rows.append([wire, cohort, request, *generation, state.pos, begin, end, start, prompt_sha])
+            if (self.segment_count >= len(self.segments)
+                    or self.segment_rows+len(rows) > self.resources['maximum_segment_rows']):
+                raise ValueError('GDN segment journal exceeds finite planned work')
+            self.segments[self.segment_count] = {'kind': kind, 'rows': rows}
+            self.segment_count += 1
+            self.segment_rows += len(rows)
+            if kind == 'prepare-prefill':
+                self.prefill_pending = pending
+        except BaseException:
+            self.release_prefill()
+            raise
+
+    def prefill_joined(self, pieces):
+        if self.prefill_pending is not None:
+            self.release_prefill()
+            raise ValueError('GDN prefill joined before its target transition')
+
+    def __call__(self, p, weight, decay, bias, norm, eps, tables, layer, output, sums, *, negative_decay=False):
+        import torch
+        if self.closed:
+            raise RuntimeError('GDN parity callback retired')
+        if self.active or self.failed:
+            raise RuntimeError('GDN parity callback is active or failed')
+        engine = self.engine
+        self.active = True
+        mismatch = None
+        try:
+            segs = tables.segs
+            n = len(segs)
+            if (tables.buffers is not self.decoder.buf or not 1 < n <= 24 or p.shape != (n, 2060)
+                    or tables.rows != n or not 0 <= layer < min(48, self.decoder.gdn.lin)
+                    or any(end-begin != 1 for _, begin, end in segs)
+                    or self.calls >= self.resources['maximum_calls'] or self.decoder.held
+                    or torch.cuda.is_current_stream_capturing()):
+                raise ValueError('GDN parity call differs from admitted live NONE frame')
+            self.calls += 1
+            self.maximum_states = max(self.maximum_states, n)
+            self.counts[layer]['calls'] += 1
+            self.counts[layer]['rows'] += n
+            parities = [state.cur[layer] for state, _, _ in segs]
+            c = self.slabs
+            c['pre_projection'][:n].copy_(p, non_blocking=True)
+            descriptor_size = tables.static.i64.numel()
+            c['pre_descriptor'][:descriptor_size].copy_(tables.static.i64, non_blocking=True)
+            c['pre_starts'][:n+1].copy_(tables.starts, non_blocking=True)
+            for i, (state, begin, end) in enumerate(segs):
+                cur = state.cur[layer]
+                scratch = state.scratch[layer]
+                c['pre_rec'][i].copy_(state.rec[cur, layer], non_blocking=True)
+                c['pre_conv'][i].copy_(state.conv[layer], non_blocking=True)
+                keep = getattr(scratch, 'keep_rows', None)
+                if keep is None:
+                    c['pre_keep'][i] = -1
+                else:
+                    c['pre_keep'][i:i+1].copy_(keep, non_blocking=True)
+                self.shadow.keep_rows = keep
+                self.scalar(p[begin:end], state.conv[layer], weight, state.rec[cur, layer], decay,
+                    bias, norm, eps, 1, self.shadow, self.final, self.out, self.sums,
+                    negative_decay=negative_decay)
+                c['expected_rec'][i].copy_(self.final, non_blocking=True)
+                for name in ('k', 'v', 'g', 'b'):
+                    c['expected_'+name][i].copy_(getattr(self.shadow, name), non_blocking=True)
+                c['expected_out'][i].copy_(self.out[0], non_blocking=True)
+                c['expected_sums'][i].copy_(self.sums[0], non_blocking=True)
+            # Preserve actual candidate args, return value and real State writes.
+            result = self.original(p, weight, decay, bias, norm, eps, tables, layer, output, sums,
+                                   negative_decay=negative_decay)
+            for i, (state, _, _) in enumerate(segs):
+                c['actual_rec'][i].copy_(state.rec[1-parities[i], layer], non_blocking=True)
+                c['actual_input_rec'][i].copy_(state.rec[parities[i], layer], non_blocking=True)
+                c['actual_conv'][i].copy_(state.conv[layer], non_blocking=True)
+                for name in ('k', 'v', 'g', 'b'):
+                    c['actual_'+name][i].copy_(getattr(state.scratch[layer], name)[:1], non_blocking=True)
+            c['actual_projection'][:n].copy_(p, non_blocking=True)
+            c['actual_out'][:n].copy_(output, non_blocking=True)
+            c['actual_sums'][:n].copy_(sums, non_blocking=True)
+            torch.cuda.current_stream(engine.w.device).synchronize()  # One diagnostic fence; no new event/payload.
+            if any(state.cur[layer] != parity for (state, _, _), parity in zip(segs, parities)):
+                mismatch = RuntimeError('GDN batch changed input parity metadata')
+            for name, actual_name, expected_name in (
+                    ('rec', 'actual_rec', 'expected_rec'), ('k', 'actual_k', 'expected_k'),
+                    ('v', 'actual_v', 'expected_v'), ('g', 'actual_g', 'expected_g'),
+                    ('b', 'actual_b', 'expected_b'), ('out', 'actual_out', 'expected_out'),
+                    ('sums', 'actual_sums', 'expected_sums'), ('input_rec', 'actual_input_rec', 'pre_rec'),
+                    ('conv', 'actual_conv', 'pre_conv'), ('projection', 'actual_projection', 'pre_projection')):
+                if mismatch is not None:
+                    break
+                a, b = c[actual_name][:n], c[expected_name][:n]
+                if not torch.equal(a.view(torch.uint8), b.view(torch.uint8)):
+                    mismatch = RuntimeError('GDN batch/scalar raw-bit mismatch: '+name)
+                    break
+            if mismatch is not None:
+                # Construct numerical primary BEFORE any fallible metadata/IO.
+                try:
+                    files = {name: self.writer(self.directory/(name+'.npy'),
+                        value[:descriptor_size] if name == 'pre_descriptor' else value[:n+1] if name == 'pre_starts' else value[:n])
+                        for name, value in c.items()}
+                    self.segment('mismatch-decode', segs)
+                    target = self.directory/'mismatch.json'
+                    if target.exists() or target.is_symlink():
+                        raise ValueError('GDN mismatch evidence already exists')
+                    write_json(target, {'layer': layer, 'rows': n,
+                        'benchmark_segments': self.segments[self.segment_count-1],
+                        'sources': self.sources, 'files': files, 'negative_decay': negative_decay,
+                        'states': [[s.history_slot, s.slot_generation, s.history_generation, s.pos, s.cur[layer], a, z]
+                                   for s, a, z in segs],
+                        'keep_present': [getattr(s.scratch[layer], 'keep_rows', None) is not None for s, _, _ in segs]})
+                except BaseException as error:
+                    self.status[0] = error
+                self._raise(mismatch)
+            self.counts[layer]['matched'] += n
+            self._publish()
+            return result
+        except BaseException as primary:
+            if mismatch is not None and primary is not mismatch:
+                self.status[7] = primary
+                primary = mismatch
+            self.failed = True
+            self.release_prefill()
+            if self.primary is None:
+                self.primary = primary
+            try:
+                self._publish()
+            except BaseException as error:
+                self.status[1] = error
+            try:
+                _observer_failure(engine, primary)
+            except BaseException as error:
+                if error is not primary:
+                    self.status[2] = error
+            self._raise(primary)
+        finally:
+            self.active = False
+
+    def install(self):
+        def close(*args, **kwargs):
+            if self.closed:
+                raise RuntimeError('GDN parity close callback retired')
+            engine = self.engine
+            try:
+                result = self.original_close(*args, **kwargs)
+                if engine._closed is not True or self.active:
+                    raise RuntimeError('GDN parity owner callbacks not retired')
+                self.release_prefill()
+            except BaseException as primary:
+                try:
+                    _observer_failure(engine, primary)
+                except BaseException as notification:
+                    if notification is not primary:
+                        self.status[6] = notification
+                self._raise(primary)
+            try:
+                if self.module.batch_chain is not self:
+                    raise RuntimeError('GDN parity module binding changed')
+                self.module.batch_chain = self.original
+            except BaseException as error:
+                self.status[3] = error
+            try:
+                if self.had_close:
+                    engine.close = self.old_close
+                else:
+                    delattr(engine, 'close')
+            except BaseException as error:
+                self.status[5] = error
+            self.failed = self.failed or getattr(engine, '_abort_comm', False) or self._first_failure() is not None
+            if not self.failed:
+                complete = self.maximum_states == 24 and self.observer is not None and self.observer.finished
+                for layer in range(self.decoder.gdn.lin):
+                    count = self.counts[layer]
+                    complete = complete and count['calls'] > 0 and count['matched'] == count['rows']
+                if not complete:
+                    self.status[7] = ValueError('GDN parity lacks actual24-State/layer coverage or finite plan completion')
+                    self.failed = True
+            self.closed = True
+            try:
+                self._publish()
+                target = self.directory/'summary.json'
+                if target.exists() or target.is_symlink():
+                    raise ValueError('GDN summary already exists')
+                write_json(target, {**self.published,
+                    'segments': self.segments[:self.segment_count]})
+            except BaseException as error:
+                self.status[4] = error
+            self.slabs.clear()
+            self.final = self.shadow = self.out = self.sums = None
+            self.engine = self.decoder = self.observer = self.original_close = self.old_close = None
+            self.original = self.scalar = self.writer = self.module = self.close_binding = None
+            primary = self._first_failure(self.primary)
+            if primary is not None:
+                try:
+                    _observer_failure(engine, primary)
+                except BaseException as error:
+                    if error is not primary:
+                        self.status[6] = error
+            self._raise(primary)
+            return result
+        self.close_binding = close
+        try:
+            self.module.batch_chain = self
+            self.engine.close = close
+            self.installed = True
+        except BaseException as primary:
+            try:
+                self.module.batch_chain = self.original
+            except BaseException as error:
+                self.status[5] = error
+            try:
+                if self.had_close:
+                    self.engine.close = self.old_close
+                else:
+                    vars(self.engine).pop('close', None)
+            except BaseException as error:
+                self.status[6] = error
+            self._raise(primary)
+
+
+
+def prepare_gdn_batch_parity(engine, resources, output):
+    if (engine._owned_qualification_host != (resources['total_global_host_obligation_bytes'], resources['input_sha256'])
+            or engine.retention_catalog.host_resources.baseline_host_bytes < resources['total_global_host_obligation_bytes']):
+        raise ValueError('GDN parity obligation is absent from original admission')
+    observer = object.__new__(_GDNBatchParity)
+    engine._gdn_batch_parity = observer
+    observer.__init__(engine, resources, output)
+    observer.install()
+    return observer
+
+
 def _normalization_resources(output):
     # OwnerBuffers.from_text caps every prepared role at min(rows,256).
     rows = 256
@@ -631,6 +1067,375 @@ def _normalization_resources(output):
             'global_host_obligation_bytes': 8 * per_rank, 'maximum_rows': rows,
             'maximum_layer': 48, 'additional_device_bytes': 0,
             'diagnostic_only': True, 'comparison_fence_per_call': 1}
+
+
+def _q8_parity_resources(plan, output):
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+    if not callable(getattr(history_owner, '_prepare_reference', None)):
+        raise ValueError('installed Q8 witness lacks the retained reference before construction')
+    cohort = next((c for c in plan['cohorts'] if not c['warmup'] and c['level'] == 24), None)
+    if plan['profile'] != 'q8' or cohort is None or cohort['tokens'] < 4:
+        raise ValueError('Q8 witness requires its finite Q8/C24 cohort and at least four outputs')
+    fields = {'q': ((1, 3, 256), 'float16'), 'iq': ((1, 4, 128), 'float16'),
+              'k': ((1, 1, 256), 'int8'), 'v': ((1, 1, 256), 'int8'),
+              'ks': ((1, 1, 8), 'float16'), 'vs': ((1, 1, 8), 'float16'), 'status': ((2,), 'int32')}
+    slabs = {'projection': ((1, 2688), 'float16'), 'coordinates': ((1, 3), 'int64'),
+             'q_scale': ((256,), 'float32'), 'k_scale': ((256,), 'float32'),
+             'iq_scale': ((128,), 'float32'), 'frequency': ((64,), 'float32'),
+             'initial_status': ((2,), 'int32'), 'generations': ((2,), 'int64'), 'flags': ((7,), 'bool')}
+    slabs.update({side+'_'+key: value for side in ('expected', 'actual') for key, value in fields.items()})
+    widths = {'float16': 2, 'float32': 4, 'int32': 4, 'int64': 8, 'int8': 1, 'bool': 1}
+    payload = sum(math.prod(shape)*widths[dtype] for shape, dtype in slabs.values())
+    base = _history_resources(288 + 24 + 48, 4096)
+    source_bytes = Path(__file__).stat().st_size + Path(history_owner.__file__).stat().st_size
+    per_rank = base['per_rank_payload_bytes'] + payload + source_bytes + len(slabs)*4096
+    if 8*per_rank > sys.maxsize:
+        raise ValueError('Q8 witness host obligation exceeds size domain')
+    return {**base, 'per_rank_payload_bytes': per_rank, 'global_host_obligation_bytes': 8*per_rank,
+            'slabs': slabs, 'fields': fields, 'pinned_tensor_payload_bytes': payload,
+            'maximum_calls': 288, 'maximum_rounds': 1, 'cohort_id': cohort['id'],
+            'additional_device_bytes': 0, 'diagnostic_only': True, 'P3_valid': False,
+            'device_scope': 'borrow unused native-Half GDN q slab; original single-row reference temporaries use unchanged runtime workspace policy'}
+
+
+def _q8_witness_region(engine):
+    import torch
+    decoder = engine.multi
+    if (_owned_q8_preparation_receipt(engine) is None or engine.w.device.type != 'cuda'
+            or engine.w.mtp is not None or decoder.speculation.method != 'none'
+            or decoder.speculation.maximum_proposals != 0 or len(decoder.states) != 24
+            or not decoder.full_resident or not decoder.round_tables.native_half
+            or decoder.buf.h.dtype != torch.float16 or decoder.held
+            or (engine.w.cfg.heads, engine.w.cfg.head_dim, engine.w.cfg.index_heads,
+                engine.w.cfg.index_dim) != (3, 256, 4, 128)):
+        raise ValueError('Q8 witness requires actual full24/NONE/Half owned-Q8 decode')
+    return decoder
+
+
+class _Q8PreparationParity:
+    """Retained Torch writer oracle BEFORE one warmed24-State native round."""
+    def _first_failure(self, primary=None):
+        index = 0
+        while primary is None and index < len(self.status_order):
+            primary = self.status[self.status_order[index]]
+            index += 1
+        return primary
+
+    _raise = _GDNBatchParity._raise
+
+    def __init__(self, engine, resources, output, *, module=None, reference=None, allocator=None, fence=None):
+        import torch
+        from tensorfold.cuda.sm70 import family_ops
+        from tensorfold.families.qwen4_exp.cuda import history_owner
+        self.engine, self.resources, self.rank = engine, resources, engine.rank
+        self.decoder = _q8_witness_region(engine)
+        self.module = family_ops if module is None else module
+        self.original = self.module.owned_q8_prepare
+        if isinstance(self.original, _Q8PreparationParity):
+            raise ValueError('Q8 writer already has an owned diagnostic binding')
+        self.reference = history_owner._prepare_reference if reference is None else reference
+        self.original_close = engine.close
+        self.had_close, self.old_close = 'close' in vars(engine), vars(engine).get('close')
+        self.status, self.transport = [None]*10, [None]
+        self.status_order = (0, 1, 2, 3, 7, 4, 5, 6, 8, 9)
+        self.primary = self.observer = self.call_owners = self.round_thread = None
+        self.in_call = False
+        self.concurrent_error = RuntimeError('Q8 witness is outside its owned round thread or is reentrant')
+        self.active = self.selected = self.completed = self.closed = self.failed = self.installed = False
+        self.notification_attempted = self.evidence_attempted = self.close_attempted = False
+        self.retired_error = RuntimeError('Q8 witness is retired or close was already attempted')
+        self.calls, self.matches = 0, 0
+        self.counts = [0]*48
+        self.seen, self.bindings = set(), ()
+        self.mismatch = RuntimeError('Q8 preparation same-input raw-bit mismatch')
+        self.layers = tuple(layer.index for layer in engine.w.layers if layer.attn is not None)
+        if len(self.layers) != 12:
+            raise ValueError('Q8 witness requires actual12 attention layers')
+        self.workspace = self.decoder.gdn.q
+        if (self.workspace.dtype != torch.float32 or not self.workspace.is_contiguous()
+                or self.workspace.device != engine.w.device):
+            raise ValueError('Q8 witness requires its unused native-Half shared q slab')
+        self.views, self.slabs = {}, {}
+        raw, cursor = self.workspace.view(torch.uint8).view(-1), 0
+        layout = dict(resources['fields'])
+        layout.update(initial_status=((2,), 'int32'), flags=((7,), 'bool'))
+        for name, (shape, dtype) in layout.items():
+            cursor = (cursor + 7)//8*8
+            size = math.prod(shape)*torch.empty((), dtype=getattr(torch, dtype)).element_size()
+            if size > raw.numel() - cursor:
+                raise ValueError('Q8 witness exceeds its prepaid unused shared q slab')
+            self.views[name] = raw[cursor:cursor+size].view(getattr(torch, dtype)).view(shape)
+            cursor += size
+        self.device_borrow_bytes = cursor
+        allocate = torch.empty if allocator is None else allocator
+        for name, (shape, dtype) in resources['slabs'].items():
+            self.slabs[name] = allocate(shape, dtype=getattr(torch, dtype), device='cpu', pin_memory=True)
+        self.fence = (lambda: torch.cuda.current_stream(engine.w.device).synchronize()) if fence is None else fence
+        self.sources = {name: _source_sha(path, Path(path).stat().st_size) for name, path in
+                        [('tool', __file__), ('reference_prepare', history_owner.__file__), ('writer_wrapper', self.module.__file__)]}
+        native = self.decoder.buf.history_owner.owned_q8_preparation
+        self.sources['native_module'] = native.__name__
+        self.sources['native_elf'] = _source_sha(native.__file__, Path(native.__file__).stat().st_size)
+        self.directory = Path(output)/f'q8-preparation-parity-rank-{self.rank}'
+        self.directory.mkdir(mode=0o700)
+        self._publish()
+
+    def _publish(self):
+        self.published = {'schema': 'tensorfold.q8-preparation-parity-v1', 'rank': self.rank,
+            'selected': self.selected, 'completed': self.completed, 'closed': self.closed, 'failed': self.failed,
+            'calls': self.calls, 'matched': self.matches, 'counts': list(self.counts),
+            'cohort_id': self.resources['cohort_id'], 'benchmark_plan_sha256': self.resources.get('input_sha256'),
+            'device_borrow_bytes': self.device_borrow_bytes, 'sources': dict(self.sources),
+            'scope': 'retained Torch same-input preparation math/writer witness; skips shadow compact side effects; not reader/pool/physical-store/fullquality proof',
+            'diagnostic_only': True, 'P3_valid': False}
+
+    def begin_round(self, observer):
+        if self.closed or self.active:
+            raise RuntimeError('Q8 witness round ownership is retired/reentrant')
+        if self.selected or observer.current != self.resources['cohort_id'] or self.decoder.filling:
+            return
+        streams = [s for s in self.decoder.streams.values() if not s.done and s.st is not None]
+        if len(streams) != 24 or any(len(s.out) <= 1 for s in streams):
+            return
+        bindings = []
+        for stream in streams:
+            cohort, request = observer._identity(stream)
+            state = stream.st
+            wire = self.engine.tp_decoder.wires.get(id(stream))
+            if (cohort['id'] != self.resources['cohort_id'] or type(wire) is not int
+                    or any(row[0] is state for row in bindings)):
+                raise ValueError('Q8 witness lost current24-State request authority')
+            bindings.append((state, stream, wire, request['index'], request['prompt_sha256'],
+                             state.slot_generation, state.history_generation, state.pos))
+        self.bindings, self.observer = tuple(bindings), observer
+        self.round_thread = threading.current_thread()
+        self.selected = self.active = True
+
+    def end_round(self, primary=None):
+        if not self.active:
+            return
+        self.active = False
+        if primary is not None:
+            self.failed = True
+            if self.primary is None:
+                self.primary = primary
+            return
+        if self.calls != 288 or self.matches != 288 or any(self.counts[index] != 24 for index in self.layers):
+            self._fail(ValueError('Q8 witness did not execute all24 States/all12 layers in its selected round'))
+        self.completed = True
+        self._publish()
+
+    def _fail(self, primary):
+        self.failed = True
+        if self.primary is None:
+            self.primary = primary
+        if self.observer is not None:
+            self.observer.failed = self.primary
+        if not self.notification_attempted:
+            self.notification_attempted = True
+            try:
+                _observer_failure(self.engine, primary)
+            except BaseException as error:
+                if error is not primary:
+                    self.status[2] = error
+        self._raise(self.primary)
+
+    def _evidence(self, metadata, inputs, actual):
+        if self.evidence_attempted:
+            raise RuntimeError('Q8 mismatch evidence already attempted')
+        self.evidence_attempted = True
+        for name, value in inputs.items():
+            self.slabs[name].copy_(value, non_blocking=True)
+        for name, value in self.views.items():
+            if name in self.resources['fields']:
+                self.slabs['expected_'+name].copy_(value, non_blocking=True)
+        for name, value in actual.items():
+            self.slabs['actual_'+name].copy_(value, non_blocking=True)
+        self.fence()
+        names = [*inputs, *('expected_'+name for name in self.resources['fields']),
+                 *('actual_'+name for name in actual), 'flags']
+        rows = {name: _write_gdn_host_tensor(self.directory/(name+'.npy'), self.slabs[name]) for name in names}
+        write_json(self.directory/'first-mismatch.json', {**metadata, 'files': rows, 'sources': self.sources,
+            'scope': self.published['scope'], 'P3_valid': False})
+
+    def __call__(self, module, projection, coordinates, weights, cache, state, layer, query, iq, *,
+                 frequency, sections, amplitude, start):
+        if self.closed:
+            raise self.retired_error
+        if not self.active:
+            return self.original(module, projection, coordinates, weights, cache, state, layer, query, iq,
+                                 frequency=frequency, sections=sections, amplitude=amplitude, start=start)
+        import torch
+        from types import SimpleNamespace as NS
+        if threading.current_thread() is not self.round_thread or self.in_call:
+            self._fail(self.concurrent_error)
+        self.in_call = True
+        try:
+            binding = next((row for row in self.bindings if row[0] is state), None)
+            tables = self.decoder.buf.gdn_tables
+            row = next(((begin, end) for st, begin, end in tables.segs if st is state), None)
+            if (binding is None or binding[1].st is not state or binding[1].done
+                    or self.engine.tp_decoder.wires.get(id(binding[1])) != binding[2]
+                    or (state.slot_generation, state.history_generation, state.pos) != binding[5:]
+                    or row is None or row[1]-row[0] != 1 or layer.index not in self.layers
+                    or weights is not self.engine.w or start != state.pos or self.calls >= 288
+                    or (id(state), layer.index) in self.seen
+                    or projection.data_ptr() != self.decoder.buf.pa[row[0]:row[1]].data_ptr()
+                    or coordinates.data_ptr() != self.decoder.buf.target_indexer_coordinates[row[0]:row[1]].data_ptr()):
+                raise ValueError('Q8 witness input is not its current issued State/layer/row')
+            self.call_owners = (projection, coordinates, query, iq, cache.k, cache.v, cache.ks, cache.vs,
+                                state.kv_status, state.history_generations, frequency, layer.attn)
+            self.views['initial_status'].copy_(state.kv_status)
+            self.views['status'].copy_(state.kv_status)
+            appended = [False]
+            def append(position, k, v, ks, vs):
+                if position != start or appended[0]:
+                    raise ValueError('shadow reference changed its single writer span')
+                for name, value in (('k', k), ('v', v), ('ks', ks), ('vs', vs)):
+                    self.views[name].copy_(value)
+                appended[0] = True
+            shadow_cache = NS(key_format=cache.key_format, value_format=cache.value_format, append=append)
+            shadow_state = NS(pos=start, att_index={layer.index: 0}, kc=[shadow_cache],
+                kv_status=self.views['status'], compact_indexer=object(), history_slot=state.history_slot,
+                history_rank=state.history_rank,
+                history_placement=NS(indexer_owner=lambda *a, **k: (state.history_rank+1)%8))
+            shadow_buffers = NS(prefill=False, target_indexer_coordinates=coordinates,
+                target_indexer_position=NS(inv_freq=frequency, sections=sections, amplitude=amplitude),
+                q=self.views['q'], iq=self.views['iq'])
+            self.reference(projection, shadow_state, layer, weights, shadow_buffers, 0, 1, mtp=False)
+            if not appended[0]:
+                raise ValueError('Q8 shadow reference failed to publish its encoded row')
+            result = self.original(module, projection, coordinates, weights, cache, state, layer, query, iq,
+                                   frequency=frequency, sections=sections, amplitude=amplitude, start=start)
+            if result is None:
+                raise ValueError('Q8 witness candidate declined its selected live row')
+            physical = cache.offsets[start//cache.placement.page_tokens]
+            actual = {'q': query, 'iq': iq, 'status': state.kv_status}
+            if physical >= 0:
+                physical += start % cache.placement.page_tokens
+                actual.update({name: getattr(cache, name)[physical:physical+1] for name in ('k', 'v', 'ks', 'vs')})
+            for index, name in enumerate(self.resources['fields']):
+                if name not in actual:
+                    self.views['flags'][index].fill_(True)
+                else:
+                    self.views['flags'][index].copy_(torch.eq(actual[name].view(torch.uint8),
+                                                              self.views[name].view(torch.uint8)).all())
+            self.slabs['flags'].copy_(self.views['flags'], non_blocking=True)
+            self.fence()
+            if not bool(self.slabs['flags'].all()):
+                self.primary = self.mismatch  # Recognized numeric primary BEFORE fallible evidence/metadata.
+                try:
+                    metadata = {'rank': self.rank, 'layer': layer.index, 'slot': state.history_slot,
+                        'generation': list(binding[5:7]), 'position': start, 'wire': binding[2],
+                        'request_index': binding[3], 'prompt_sha256': binding[4], 'owned': physical >= 0,
+                        'cohort_id': self.resources['cohort_id']}
+                    inputs = {'projection': projection, 'coordinates': coordinates,
+                        'q_scale': layer.attn.q_scale, 'k_scale': layer.attn.k_scale, 'iq_scale': layer.attn.iq_scale,
+                        'frequency': frequency, 'initial_status': self.views['initial_status'],
+                        'generations': state.history_generations}
+                    self._evidence(metadata, inputs, actual)
+                except BaseException as error:
+                    self.status[1] = error
+                self._fail(self.mismatch)
+            self.seen.add((id(state), layer.index))
+            self.calls += 1
+            self.matches += 1
+            self.counts[layer.index] += 1
+            self.call_owners = None  # Comparison fence positively retired this borrow.
+            return result
+        except BaseException as primary:
+            self._fail(primary)
+        finally:
+            self.in_call = False
+
+    def install(self):
+        def close(*args, **kwargs):
+            if self.close_attempted:
+                if self.primary is not None:
+                    self._raise(self.primary)
+                raise self.retired_error
+            self.close_attempted = True
+            engine = self.engine
+            try:
+                result = self.original_close(*args, **kwargs)
+            except BaseException as primary:
+                self.status[3] = primary
+                self._fail(self.primary if self.primary is not None else primary)
+            if not getattr(engine, '_closed', False) or self.active:
+                self._fail(RuntimeError('Q8 witness lacks positive owner retirement'))
+            if not self.failed and (not self.completed or self.observer is None or not self.observer.finished):
+                self.status[7] = ValueError('Q8 witness lacks selected round/full finite benchmark completion')
+                self.failed = True
+            try:
+                if self.module.owned_q8_prepare is not self:
+                    raise RuntimeError('Q8 witness module binding changed')
+                self.module.owned_q8_prepare = self.original
+            except BaseException as error:
+                self.status[4] = error
+            try:
+                if self.had_close:
+                    engine.close = self.old_close
+                else:
+                    vars(engine).pop('close', None)
+            except BaseException as error:
+                self.status[5] = error
+            self.failed = self.failed or any(error is not None for error in self.status)
+            self.closed = True
+            try:
+                self._publish()
+                target = self.directory/'summary.json'
+                if target.exists() or target.is_symlink():
+                    raise ValueError('Q8 witness summary already exists')
+                write_json(target, self.published)
+            except BaseException as error:
+                self.status[6] = error
+            # Positive original retirement precedes all view release. Attempt
+            # both independent releases even if one diagnostic cleanup fails.
+            try:
+                self.call_owners = self.bindings = self.workspace = None
+                self.views.clear()
+            except BaseException as error:
+                self.status[8] = error
+            try:
+                self.slabs.clear()
+            except BaseException as error:
+                self.status[9] = error
+            primary = self._first_failure(self.primary)
+            if primary is not None:
+                self._fail(primary)
+            self.engine = self.decoder = self.observer = self.original_close = self.old_close = None
+            self.module = self.original = self.reference = self.fence = None
+            return result
+        try:
+            self.module.owned_q8_prepare = self
+            self.engine.close = close
+            self.installed = True
+        except BaseException as primary:
+            try:
+                if self.module.owned_q8_prepare is self:
+                    self.module.owned_q8_prepare = self.original
+            except BaseException as error:
+                self.status[4] = error
+            try:
+                if self.had_close:
+                    self.engine.close = self.old_close
+                else:
+                    vars(self.engine).pop('close', None)
+            except BaseException as error:
+                self.status[5] = error
+            self._fail(primary)
+        return self.published
+
+
+def prepare_q8_preparation_parity(engine, resources, output):
+    if (engine._owned_qualification_host != (resources['total_global_host_obligation_bytes'], resources['input_sha256'])
+            or engine.retention_catalog.host_resources.baseline_host_bytes < resources['total_global_host_obligation_bytes']):
+        raise ValueError('Q8 witness is absent from original host admission')
+    observer = object.__new__(_Q8PreparationParity)
+    engine._q8_preparation_parity = observer
+    observer.__init__(engine, resources, output)
+    observer.install()
+    return observer
 
 
 class _NormalizationParity:
@@ -1013,9 +1818,34 @@ class _HistoryAttestation:
 
 
 
+def _trace_c24_only(plan):
+    """Additional region checks AFTER canonical load_matrix validation."""
+    cohorts = plan['cohorts']
+    if not cohorts or any(c['level'] != 24 for c in cohorts):
+        return False  # Mixed matrices retain ONLY the incumbent C1/C8 schedule.
+    if (plan.get('profile') != 'q8' or plan.get('admin_cap') != 24
+            or plan.get('context') != 262144
+            or not any(not c['warmup'] for c in cohorts)
+            or any(type(c['warmup']) is not bool or len(c['requests']) != 24
+                   or (not c['warmup'] and c['tokens'] < 4) for c in cohorts)):
+        raise ValueError('C24 trace requires a canonical Q8/full24 plan and at least four measured outputs')
+    return True
+
+
+def _trace_c24_preflight(args, cli):
+    if (args.draft_method != 'none' or str(args.parallel).lower() == 'auto'
+            or cli._parallel(args.parallel) != 24 or args.context != 262144
+            or args.kv_dtype != 'int8'):
+        raise ValueError('C24 trace requires explicit NONE/Q8/full24/context262144 before construction')
+
+
 def _trace_prefill_selection(plan, start):
     if type(start) is not int or not 0 <= start <= sys.maxsize:
         raise ValueError('scheduler trace prefill start must be a nonnegative integer')
+    if _trace_c24_only(plan):
+        if start:
+            raise ValueError('C24-only trace excludes a prefill selector')
+        return None
     cohort = next((c for c in plan['cohorts'] if not c['warmup'] and c['level'] == 1), None)
     if cohort is None:
         if start:
@@ -1034,12 +1864,13 @@ def _trace_prefill_selection(plan, start):
 
 
 class _SchedulerTrace:
-    """Five finite rank-zero scheduler calls, never a live cross-call profiler."""
+    """At most five incumbent calls OR two C24-only decode calls, rank zero."""
     def __init__(self, engine, output, *, factory=None, prefill_start=0, selection=None):
         if type(prefill_start) is not int or not 0 <= prefill_start <= sys.maxsize:
             raise ValueError('scheduler trace prefill start must be a nonnegative integer')
         self.engine, self.output, self.factory = engine, Path(output), factory
         self.counts, self.active = {}, False
+        self.c24_only, self.region_bound, self.capture_limit = False, False, 5
         self.prefill_start, self.selection = prefill_start, selection
         self.plan_bound = selection is not None
         self.prefill_owner = self.prefill_state = self.profiler = self.failed = None
@@ -1052,13 +1883,24 @@ class _SchedulerTrace:
     def label(self, observer):
         if observer.current is None:
             return None
+        if not self.region_bound:
+            self.c24_only = _trace_c24_only(observer.plan)
+            self.capture_limit = 2 if self.c24_only else 5
+            self.region_bound = True
         if not self.plan_bound:
             self.selection = _trace_prefill_selection(observer.plan, self.prefill_start)
             self.plan_bound = True
         cohort = next(c for c in observer.plan['cohorts'] if c['id'] == observer.current)
-        if cohort['warmup'] or cohort['level'] not in (1, 8):
+        if cohort['warmup'] or cohort['level'] not in ((24,) if self.c24_only else (1, 8)):
             return None
         live = [s for s in observer.decoder.streams.values() if not s.done and s.st is not None]
+        if self.c24_only:
+            # A count alone cannot identify the current cohort's actual streams.
+            for stream in live:
+                wire = self.engine.tp_decoder.wires.get(id(stream))
+                identity = observer.identities.get(wire)
+                if identity is None or identity[0]['id'] != cohort['id']:
+                    return None
         selection = self.selection
         if (selection is not None and cohort['id'] == selection['cohort_id']
                 and observer.decoder.filling and not self.counts.get('prefill')):
@@ -1205,7 +2047,9 @@ class _SchedulerTrace:
                         'post_errors': [type.__dict__['__name__'].__get__(type(error)) for error in errors if error is not None],
                         'exported_trace_bytes': trace_bytes,
                         'prefill_selection': self.selection if prefill else None, 'P3_valid': False,
-                        'resource_scope': 'source bounds capture count to five calls; operator owns profiler memory and filesystem containment',
+                        'trace_region': 'c24-only' if self.c24_only else 'incumbent-c1-c8',
+                        'capture_limit': self.capture_limit,
+                        'resource_scope': f'source bounds capture count to {self.capture_limit} calls; operator owns profiler memory and filesystem containment',
                         'scope': 'rank0 TP adapter round; inclusive prefill/decode/control, diagnostic and P3-invalid; peers untraced'})
                 except BaseException as error:
                     errors[4] = error
@@ -1372,13 +2216,15 @@ def _trace_inventory(engine, output):
 
 class _BenchmarkObserver:
     """Private current-stream inclusive envelopes; four events reused per cohort."""
-    def __init__(self, engine, plan, *, events=None, timed=True, strict=False):
+    def __init__(self, engine, plan, *, events=None, timed=True, strict=False, segment_journal=None, preparation_witness=None):
         import torch
         from tensorfold.server.stats import INSTANCE_ID
         self.server_instance_id = INSTANCE_ID
         self.engine, self.plan = engine, plan
         self.decoder, self.observations = engine.multi, engine.multi.controller.work_observations
         self.timed, self.strict = timed, strict
+        self.segment_journal = segment_journal
+        self.preparation_witness = preparation_witness
         self.finished, self.failed = False, None
         self.seen = set()
         self.failure_status = [None] * 2
@@ -1485,12 +2331,26 @@ class _BenchmarkObserver:
         self.published = {"schema": "tensorfold.private-benchmark-v1", "run_identity": self.plan["run_identity"],
                           "server_instance_id": self.server_instance_id,
                           "clock": "rank0 actual CUDA current stream; overlapping inclusive envelopes/host gaps, no TP token multiplier", "cohorts": rows}
+        if self.segment_journal is not None:
+            self.published.update(P3_valid=False, diagnostic_only=True,
+                scope='GDN parity fences invalidate all performance timings')
+        elif self.preparation_witness is not None:
+            self.published.update(P3_valid=False, diagnostic_only=True,
+                scope='Q8 preparation parity fences invalidate all performance timings')
 
     def install(self):
         decoder, observations = self.decoder, self.observations
         admit, prepare, joined, take, round_, finish = (getattr(decoder, name) for name in
                                                        ("admit", "_prepare_pass", "_joined", "_take", "round", "finish"))
         target, record = observations.target, observations.record
+        incomplete = getattr(observations, 'incomplete', None)
+        if self.segment_journal is not None:
+            if not callable(incomplete):
+                raise ValueError('GDN segment journal lacks existing incomplete-frame authority')
+            def incomplete_frame(primary):
+                self.segment_journal.release_prefill()
+                return incomplete(primary)
+            observations.incomplete = incomplete_frame
         def admitted(stream):
             self._identity(stream)
             result = admit(stream)
@@ -1506,8 +2366,13 @@ class _BenchmarkObserver:
                 state["hashes"].add(request["prompt_sha256"])
                 if count and not state["started"][0]:
                     self._record(0)
-            return prepare(pieces)
+            result = prepare(pieces)
+            if self.segment_journal is not None:
+                self.segment_journal.segment('prepare-prefill', result[1], pieces)
+            return result
         def joining(pieces, *args):
+            if self.segment_journal is not None:
+                self.segment_journal.prefill_joined(pieces)
             for stream, start, count in pieces:
                 identity = self._cohort(stream)
                 if identity is None:
@@ -1535,13 +2400,25 @@ class _BenchmarkObserver:
             return result
         def targeted(segments, **kwargs):
             result = target(segments, **kwargs)
+            if self.segment_journal is not None:
+                self.segment_journal.segment('target-prefill' if kwargs.get('prefill', False) else 'target-decode', segments)
             if self.current is not None:
                 name = "prefill_batch_highwater" if kwargs.get("prefill", False) else "decode_batch_highwater"
                 self.records[self.current][name] = max(self.records[self.current][name],
                     len({id(state) for state, first, last in segments if last > first}))
             return result
         def rounded():
-            result = round_()
+            witness = self.preparation_witness
+            if witness is not None:
+                witness.begin_round(self)
+            try:
+                result = round_()
+            except BaseException as primary:
+                if witness is not None:
+                    witness.end_round(primary)
+                raise
+            if witness is not None:
+                witness.end_round()
             self._observe()
             return result
         def finished(streams):
@@ -1585,6 +2462,16 @@ class _BenchmarkObserver:
             published = self.published
             if credit is not None:
                 credit(published)
+            if self.segment_journal is not None:
+                parity = self.segment_journal.published
+                if credit is not None:
+                    credit(parity)
+                return {**result, "benchmark": published, 'gdn_batch_parity': parity}
+            if self.preparation_witness is not None:
+                witness = self.preparation_witness.published
+                if credit is not None:
+                    credit(witness)
+                return {**result, 'benchmark': published, 'q8_preparation_parity': witness}
             return {**result, "benchmark": published}
         # The private before-listener capability is the only selector. Default
         # instances/class implementations retain their original methods.
@@ -1595,6 +2482,8 @@ class _BenchmarkObserver:
                 try:
                     return callback(*args, **kwargs)
                 except BaseException as primary:
+                    if self.segment_journal is not None:
+                        self.segment_journal.release_prefill()
                     if self.failed is primary:
                         raise
                     self.failed = primary
@@ -1605,17 +2494,29 @@ class _BenchmarkObserver:
         observations.target, observations.record = guarded(targeted), guarded(recorded)
 
 
-def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0, closed=None):
-    if engine.rank != 0 and closed is None:
+def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0, closed=None, segment_journal=None, preparation_witness=None):
+    if trace_output is not None and _trace_c24_only(plan):
+        decoder = engine.multi
+        if (engine.w.mtp is not None or decoder.speculation.method != 'none'
+                or decoder.speculation.maximum_proposals != 0 or len(decoder.states) != 24
+                or engine.context_window != 262144):
+            raise ValueError('C24 trace differs from actual NONE/full24/context262144 owner')
+    if engine.rank != 0 and closed is None and segment_journal is None and preparation_witness is None:
         return
     path = Path(engine.model_dir) / "tokenizer.json"
     if hashlib.sha256(path.read_bytes()).hexdigest() != plan["tokenizer_sha256"]:
         raise ValueError("benchmark tokenizer differs from the actual prepared frontend")
     selection = None if trace_output is None else _trace_prefill_selection(plan, trace_prefill_start)
-    observer = _BenchmarkObserver(engine, plan, timed=engine.rank == 0, strict=closed is not None)
+    observer = _BenchmarkObserver(engine, plan, timed=engine.rank == 0,
+                                  strict=closed is not None or segment_journal is not None or preparation_witness is not None,
+                                  segment_journal=segment_journal, preparation_witness=preparation_witness)
     if closed is not None:
         engine._owned_benchmark = observer  # Journal before callback installation.
         _prepare_closed_benchmark(engine, observer, closed)
+    if segment_journal is not None:
+        segment_journal.observer = observer
+    if preparation_witness is not None:
+        preparation_witness.observer = observer
     observer.install()
     if trace_output is not None and engine.rank == 0:
         _trace_inventory(engine, trace_output)
@@ -2255,7 +3156,21 @@ def _benchmark_model_result(output, prepared):
     return result
 
 
-def prepare_owned_teacher(engine, prepared, output):
+def _teacher_preflight(args, teacher, cli):
+    if (args.draft_method != 'none' or args.context != teacher['data']['context']
+            or str(args.parallel).lower() == 'auto' or cli._parallel(args.parallel) < 9):
+        raise ValueError('teacher requires explicit none/context and at least nine fixed slots')
+    if not args.no_graphs:
+        # This admits intent only. The typed, funded HC catalogue is mandatory
+        # after construction and before any teacher hook can be installed.
+        from tensorfold.cuda.sm70.execution_policy import PROFILE_ENV
+        if (getattr(args, 'indexer_history', 'gpu') != 'gpu'
+                or getattr(args, 'vram_experts', None) is not None
+                or os.environ.get(PROFILE_ENV, 'reference') != 'reference'):
+            raise ValueError('teacher graph intent requires the private owned reference GPU-history region')
+
+
+def prepare_owned_teacher(engine, prepared, output, *, hc_graphs=False):
     """Install only after original immutable loading/serving admission paid it."""
     expected = (prepared['resources']['global_host_obligation_bytes'], prepared['input_sha256'])
     if engine._owned_qualification_host != expected:
@@ -2263,7 +3178,7 @@ def prepare_owned_teacher(engine, prepared, output):
     observer = object.__new__(_teacher_module().OwnedTeacherFrames)
     engine._owned_teacher_frames = observer  # Journal before setup/host allocation.
     observer.__init__(engine, prepared, Path(output) / f'teacher-rank{engine.rank}',
-                      fail=_observer_failure, profile=bound_receipt(engine))
+                      fail=_observer_failure, profile=bound_receipt(engine), hc_graphs=hc_graphs)
     observer.setup()
     receipt = observer.install()
     write_json(observer.directory / 'setup.json', receipt)
@@ -2401,6 +3316,30 @@ def _reference_tile_receipt(engine, requested):
         records[role] = owner.reference_tiles.verify(owner.partials, identity)
     return {"requested": True, "configured": True, "prebudget_preparation": identity, "roles": records}
 
+def _onecat_qualification_module():
+    if __package__:
+        from . import v100_onecat_qualification as module
+    else:
+        import v100_onecat_qualification as module
+    return module
+
+
+def _onecat_capability_from_args(args):
+    """Cold private-trial selector; no public serving flag or automatic credit."""
+    method = args.onecat_gu_method
+    device, host = args.onecat_device_budget_bytes, args.onecat_global_host_bytes
+    if method is None:
+        if device is not None or host is not None:
+            raise ValueError("1Cat credits require an explicit private method")
+        return None
+    if args.grouped_gate_up_rows is not None:
+        raise ValueError("1Cat carries its fixed Grouped4 reference; selectors are exclusive")
+    if args.prepared_feature_receipts:
+        raise ValueError("1Cat has a distinct cold receipt; prepared-feature intersection is unqualified")
+    return _onecat_qualification_module().create_capability(
+        method, device_budget_bytes=device, global_host_bytes=host)
+
+
 def _grouped_gate_up_capability(cli, rows):
     if rows is None:
         return {}
@@ -2433,12 +3372,58 @@ def _grouped_gate_up_receipt(engine, requested):
     return {"requested_rows": requested, "actual_rows": None if actual is None else actual.rows}
 
 
+def _owned_q8_preparation_receipt(engine):
+    """Cold retained-capability evidence; never an invocation counter or loader."""
+    decoder = getattr(engine, 'multi', None)
+    buffers = getattr(decoder, 'buf', None)
+    owner = getattr(buffers, 'history_owner', None)
+    module = getattr(owner, 'owned_q8_preparation', None)
+    if module is None:
+        return None  # Baseline profiles retain their existing receipt shape.
+    from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
+    preparation = getattr(engine, '_owner_preparation', None)
+    states = decoder.states
+    if (type(owner) is not OwnerBuffers or owner.closed or owner.prefill or buffers.prefill
+            or owner.native_pair is None
+            or (owner.native_pair.key.bits, owner.native_pair.key.codec,
+                owner.native_pair.value.bits, owner.native_pair.value.codec) != (8, 0, 8, 0)
+            or preparation is None
+            or not preparation.prepared or preparation.closed
+            or preparation.workspaces.get('decode') is not owner
+            or buffers.owner_kernel_family != 'sm70-paged-owner-rn-ex2-p2051-v1'
+            or buffers.owner_graph_family != 'uncaptured'
+            or owner.native_states is None or not states
+            or len(owner.native_states) != len(states)
+            or any(owner.native_states.get(id(state), (None,))[0] is not state for state in states)):
+        raise ValueError('owned Q8 capability differs from its actual prepared decode owner')
+    record = owner.native_record()
+    policy = record.get('owned_q8_preparation')
+    name, path = getattr(module, '__name__', None), getattr(module, '__file__', None)
+    if (not record.get('prepared') or record.get('bound_states') != len(states)
+            or record.get('kernel_family') != buffers.owner_kernel_family
+            or policy != {'policy': 'owned-q8-decode-preparation-v1', 'module': name,
+                          'rows_per_call': 1, 'qualified': False}
+            or type(name) is not str or not name.startswith('tf_sm70_family_')
+            or type(path) is not str or not Path(path).is_absolute()
+            or not callable(getattr(module, 'owned_q8_prepare', None))):
+        raise ValueError('owned Q8 native policy/module metadata differs from its retained capability')
+    return {'schema': 'tensorfold.owned-q8-preparation-selection-v1',
+            'policy': policy, 'state_count': len(states), 'row_capacity': owner.rows,
+            'kernel_family': buffers.owner_kernel_family, 'graph_family': buffers.owner_graph_family,
+            'native_module': {'name': name, 'path': path},
+            'scope': 'cold prepared/selection evidence only; target decode one issued Q8 row under no-grad; not kernel invocation evidence',
+            'invocation_evidence': False, 'P3_valid': False}
+
+
 def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
-                    execution_rows=None, reference_tiles=False, normalization_parity=None, grouped_gate_up=None, prepared_features=None,
+                    execution_rows=None, reference_tiles=False, normalization_parity=None, gdn_batch_parity=None, q8_preparation_parity=None, grouped_gate_up=None, onecat_gu=None, prepared_features=None,
                     teacher_profile=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
+        q8_preparation = _owned_q8_preparation_receipt(engine)
+        if q8_preparation is not None:
+            receipt['owned_q8_preparation'] = q8_preparation
         if teacher_profile is not None:
             receipt.update(_owned_model_startup_fields(engine, teacher_profile,
                 getattr(engine, '_teacher_native_observer', None), 'teacher'))
@@ -2448,12 +3433,19 @@ def publish_receipt(engine, output, *, dense_implementation=None, half_request=N
                 getattr(engine, '_benchmark_native_observer', None), 'benchmark'))
             receipt['benchmark_resources'] = benchmark.prepared['resources']
             receipt['benchmark_headroom'] = benchmark.headroom
-        receipt["grouped_gate_up"] = _grouped_gate_up_receipt(engine, grouped_gate_up)
+        if onecat_gu is None:
+            receipt["grouped_gate_up"] = _grouped_gate_up_receipt(engine, grouped_gate_up)
+        else:
+            receipt["onecat_experts"] = _onecat_qualification_module().bound_receipt(engine, onecat_gu)
         if prepared_features is not None:
             receipt["prepared_features"] = prepared_features
         receipt["reference_tile_preparation"] = _reference_tile_receipt(engine, reference_tiles)
         if normalization_parity is not None:
             receipt["normalization_parity"] = normalization_parity
+        if gdn_batch_parity is not None:
+            receipt['gdn_batch_parity'] = gdn_batch_parity
+        if q8_preparation_parity is not None:
+            receipt['q8_preparation_parity'] = q8_preparation_parity
         receipt["half_partial_policy"] = _half_policy(half_request)
         receipt["private_router_policy"] = _router_policy(router_request)
         receipt["empty_prefix_policy"] = _empty_prefix_policy(empty_request)
@@ -2519,14 +3511,20 @@ def worker(argv):
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
     parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
                         help="private prepared grouped gate/up trial; requires grouped down")
+    parser.add_argument("--onecat-gu-method", help="private typed 1Cat GU trial; explicit credits required")
+    parser.add_argument("--onecat-device-budget-bytes", type=int, help="explicit per-rank additional plane credit")
+    parser.add_argument("--onecat-global-host-bytes", type=int, help="explicit global cold packing host credit")
+    parser.add_argument("--gdn-batch-parity", action="store_true", help="diagnostic live batch-vs-scalar GDN and ordered segments; P3 invalid")
+    parser.add_argument("--q8-preparation-parity", action="store_true", help="diagnostic one warmed C24 round same-input Q8 writer witness; P3 invalid")
     parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
     parser.add_argument("--prepared-feature-receipts", action="store_true",
                         help="private bounded post-close Graph/Plan receipts; requires benchmark")
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
+    onecat_gu = _onecat_capability_from_args(selected)
     if selected.benchmark_client is not None and (selected.benchmark_plan is None or selected.scheduler_trace is None
-            or selected.benchmark_trace_data is None or selected.teacher_plan is not None):
+            or selected.benchmark_trace_data is None or selected.teacher_plan is not None or selected.gdn_batch_parity):
         raise ValueError('closed benchmark client requires benchmark/trace and trusted trace DATA only')
     if selected.benchmark_trace_data is not None and selected.benchmark_client is None:
         raise ValueError('internal trace DATA requires its closed benchmark client')
@@ -2543,8 +3541,17 @@ def worker(argv):
     if selected.teacher_client_bytes is not None and selected.teacher_plan is None:
         raise ValueError('private client credit requires its teacher plan')
     if selected.teacher_plan is not None and any((selected.benchmark_plan, selected.scheduler_trace,
-            selected.router_row_input, selected.history_input, selected.normalization_parity, selected.prepared_feature_receipts)):
+            selected.router_row_input, selected.history_input, selected.normalization_parity, selected.prepared_feature_receipts, selected.gdn_batch_parity, selected.q8_preparation_parity)):
         raise ValueError('teacher capture/replay is a separate controlled diagnostic')
+    if selected.gdn_batch_parity and (selected.benchmark_plan is None or any((selected.normalization_parity,
+            selected.prepared_feature_receipts, selected.scheduler_trace, selected.router_row_input,
+            selected.history_input, selected.teacher_plan, selected.benchmark_client))):
+        raise ValueError('GDN parity requires only its finite benchmark plan and excludes other captures')
+    if selected.q8_preparation_parity and (selected.benchmark_plan is None or any((
+            selected.gdn_batch_parity, selected.normalization_parity, selected.prepared_feature_receipts,
+            selected.scheduler_trace, selected.router_row_input, selected.history_input,
+            selected.teacher_plan, selected.benchmark_client))):
+        raise ValueError('Q8 preparation parity requires only its finite benchmark plan and excludes other captures')
     if selected.normalization_parity and (selected.benchmark_plan is None or not selected.reference_tiles
             or selected.scheduler_trace is not None or selected.router_row_input is not None
             or selected.history_input is not None):
@@ -2555,8 +3562,8 @@ def worker(argv):
     tail = selected.serve_args[1:] if selected.serve_args[:1] == ["--"] else selected.serve_args
     receipt_failed = False
     prepared = router_prepared = None
-    benchmark = benchmark_resources = parity_resources = feature_resources = None
-    benchmark_setup_errors = [None] * 2  # Before listener/setup hooks can fail.
+    benchmark = benchmark_resources = parity_resources = feature_resources = gdn_resources = q8_resources = None
+    model_setup_errors = [None] * 2  # Teacher/benchmark are exclusive; prepaid before either setup hook.
     teacher = model_observer = closed_benchmark = None
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
     router_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS")
@@ -2566,14 +3573,15 @@ def worker(argv):
         nonlocal receipt_failed
         try:
             teacher_profile = None
+            gdn_receipt = q8_receipt = None
             if teacher is not None:
                 try:
-                    teacher_profile = prepare_owned_teacher(engine, teacher, selected.out)['actual_profile']
+                    teacher_profile = prepare_owned_teacher(engine, teacher, selected.out,
+                        hc_graphs=not args.no_graphs)['actual_profile']
                     if model_observer is not None:
                         _attach_teacher_native_observer(engine, model_observer)
                 except BaseException as primary:
-                    _observer_failure(engine, primary)
-                    raise
+                    _owned_model_failure(engine, primary, model_setup_errors)
             if router_prepared is not None:
                 try:
                     prepare_router_rows(engine, router_prepared, selected.out)
@@ -2592,25 +3600,19 @@ def worker(argv):
             if benchmark is not None:
                 try:
                     if selected.scheduler_trace is None:
-                        prepare_benchmark(engine, benchmark)
+                        gdn_witness = prepare_gdn_batch_parity(engine, gdn_resources, selected.out) if gdn_resources is not None else None
+                        q8_witness = prepare_q8_preparation_parity(engine, q8_resources, selected.out) if q8_resources is not None else None
+                        prepare_benchmark(engine, benchmark,
+                            **({'segment_journal': gdn_witness} if gdn_witness is not None else {}),
+                            **({'preparation_witness': q8_witness} if q8_witness is not None else {}))
+                        q8_receipt = None if q8_witness is None else q8_witness.published
+                        gdn_receipt = None if gdn_witness is None else gdn_witness.published
                     else:
                         prepare_benchmark(engine, benchmark, selected.scheduler_trace,
                             trace_prefill_start=selected.scheduler_trace_prefill_start or 0,
                             **({'closed': closed_benchmark} if closed_benchmark is not None else {}))
                 except BaseException as primary:
-                    try:
-                        _observer_failure(engine, primary)
-                    except BaseException as notification:
-                        if notification is primary:
-                            raise
-                        benchmark_setup_errors[0], benchmark_setup_errors[1] = notification, primary
-                        try:
-                            raise_failures(primary, benchmark_setup_errors)
-                        except BaseException as failure:
-                            if failure is primary:
-                                raise
-                            raise primary from failure
-                    raise
+                    _owned_model_failure(engine, primary, model_setup_errors)
             parity_receipt = None
             if parity_resources is not None:
                 try:
@@ -2630,7 +3632,10 @@ def worker(argv):
                             half_request=half_request, router_request=router_request, empty_request=empty_request,
                             execution_rows=selected.execution_rows, reference_tiles=selected.reference_tiles,
                             **({"grouped_gate_up": selected.grouped_gate_up_rows} if selected.grouped_gate_up_rows is not None else {}),
+                            **({"onecat_gu": onecat_gu} if onecat_gu is not None else {}),
                             **({"normalization_parity": parity_receipt} if parity_receipt is not None else {}),
+                            **({'gdn_batch_parity': gdn_receipt} if gdn_receipt is not None else {}),
+                            **({'q8_preparation_parity': q8_receipt} if q8_receipt is not None else {}),
                             **({'teacher_profile': teacher_profile} if teacher_profile is not None else {}),
                             **({"prepared_features": feature_receipt} if feature_receipt is not None else {}))
         except BaseException:
@@ -2665,6 +3670,20 @@ def worker(argv):
                 benchmark_resources = _benchmark_resources(benchmark, size, client_input, trace_data, model_observer['resources'])
                 closed_benchmark = {'plan': benchmark, 'plan_sha256': plan_sha, 'client': client_input,
                     'trace': trace_data, 'native': model_observer, 'resources': benchmark_resources, 'output': selected.out}
+            if selected.gdn_batch_parity:
+                gdn_resources = _gdn_batch_resources(benchmark, selected.out)
+                benchmark_resources = {**benchmark_resources, "global_host_obligation_bytes":
+                    benchmark_resources["global_host_obligation_bytes"] + gdn_resources["global_host_obligation_bytes"],
+                    "per_rank_payload_bytes": benchmark_resources["per_rank_payload_bytes"] + gdn_resources["per_rank_payload_bytes"]}
+                gdn_resources = {**gdn_resources, "total_global_host_obligation_bytes": benchmark_resources["global_host_obligation_bytes"],
+                    "input_sha256": hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest()}
+            if selected.q8_preparation_parity:
+                q8_resources = _q8_parity_resources(benchmark, selected.out)
+                benchmark_resources = {**benchmark_resources, 'global_host_obligation_bytes':
+                    benchmark_resources['global_host_obligation_bytes'] + q8_resources['global_host_obligation_bytes'],
+                    'per_rank_payload_bytes': benchmark_resources['per_rank_payload_bytes'] + q8_resources['per_rank_payload_bytes']}
+                q8_resources = {**q8_resources, 'total_global_host_obligation_bytes': benchmark_resources['global_host_obligation_bytes'],
+                    'input_sha256': _source_sha(selected.benchmark_plan)}
             if selected.normalization_parity:
                 parity_resources = _normalization_resources(selected.out)
                 benchmark_resources = {**benchmark_resources, "global_host_obligation_bytes":
@@ -2694,12 +3713,16 @@ def worker(argv):
                 _teacher_operation_credit(teacher, selected.teacher_client_bytes, model_observer)
         from tensorfold import cli
         args = cli.build_parser().parse_args(["serve", *tail])
+        if selected.scheduler_trace is not None and _trace_c24_only(benchmark):
+            _trace_c24_preflight(args, cli)
+        if selected.q8_preparation_parity:
+            _trace_c24_preflight(args, cli)
+        if selected.gdn_batch_parity:
+            _gdn_batch_preflight(args, cli)
         if args.tp != 8 or args.expert_tensor_parallel_size != 4 or not 0 <= args.rank < 8:
             raise ValueError("private qualification requires explicit TP8/ETP4 rank ownership")
-        if teacher is not None and (args.draft_method != 'none' or not args.no_graphs
-                or args.context != teacher['data']['context']
-                or str(args.parallel).lower() == 'auto' or cli._parallel(args.parallel) < 9):
-            raise ValueError('teacher first region requires explicit none/no-graphs/context and at least nine fixed slots')
+        if teacher is not None:
+            _teacher_preflight(args, teacher, cli)
         if selected.execution_rows is not None:
             # Keep this experiment explicit: resolve no model-dependent draft
             # defaults and pay its complete envelope before engine construction.
@@ -2725,7 +3748,8 @@ def worker(argv):
                           hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
         if teacher is not None:
             obligation = (teacher['resources']['global_host_obligation_bytes'], teacher['input_sha256'])
-        capability = _grouped_gate_up_capability(cli, selected.grouped_gate_up_rows)
+        capability = ({"grouped_gate_up": onecat_gu} if onecat_gu is not None else
+                      _grouped_gate_up_capability(cli, selected.grouped_gate_up_rows))
         if selected.execution_rows is not None:
             if "execution_rows" not in cli._OwnedExpertQualification.__dataclass_fields__:
                 raise ValueError("installed CLI lacks private execution-row preparation")
@@ -2953,6 +3977,11 @@ def main(argv=None, *, _benchmark_operation=None):
     parser.add_argument("--reference-tiles", action="store_true", help="private pre-budget reference attention preparation")
     parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
                         help="private prepared grouped gate/up trial; requires grouped down")
+    parser.add_argument("--onecat-gu-method", help="private typed 1Cat GU trial; explicit credits required")
+    parser.add_argument("--onecat-device-budget-bytes", type=int, help="explicit per-rank additional plane credit")
+    parser.add_argument("--onecat-global-host-bytes", type=int, help="explicit global cold packing host credit")
+    parser.add_argument("--gdn-batch-parity", action="store_true", help="diagnostic live batch-vs-scalar GDN and ordered segments; P3 invalid")
+    parser.add_argument("--q8-preparation-parity", action="store_true", help="diagnostic one warmed C24 round same-input Q8 writer witness; P3 invalid")
     parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
     parser.add_argument("--prepared-feature-receipts", action="store_true",
                         help="private bounded post-close Graph/Plan receipts; requires benchmark")
@@ -2961,11 +3990,12 @@ def main(argv=None, *, _benchmark_operation=None):
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    _onecat_capability_from_args(args)  # Validate before spawning any rank.
     teacher = selected_client = model_observer = None
     closed_benchmark = None
     if args.benchmark_client is not None:
         if (args.benchmark_plan is None or args.scheduler_trace is None or args.teacher_plan is not None
-                or _benchmark_operation is None or args.normalization_parity or args.prepared_feature_receipts
+                or _benchmark_operation is None or args.normalization_parity or args.prepared_feature_receipts or args.gdn_batch_parity
                 or args.router_row_input is not None or args.history_input is not None):
             parser.error('benchmark client requires the trusted closed benchmark/trace operation')
         from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
@@ -2995,13 +4025,22 @@ def main(argv=None, *, _benchmark_operation=None):
         parser.error('teacher client requires its frozen teacher plan')
     if args.teacher_plan is not None:
         if any((args.benchmark_plan, args.scheduler_trace, args.router_row_input, args.history_input,
-                args.normalization_parity, args.prepared_feature_receipts)):
+                args.normalization_parity, args.prepared_feature_receipts, args.gdn_batch_parity, args.q8_preparation_parity)):
             parser.error('teacher capture/replay excludes other diagnostic procedures')
         teacher = _teacher_module().owned_teacher_plan(args.teacher_plan)  # Pure bounded validation before parent effects.
         if args.teacher_client is not None:
             selected_client = _teacher_client_input(args.teacher_client, teacher)
             model_observer = _teacher_model_observer(args.out)
             _teacher_operation_credit(teacher, selected_client['bytes'], model_observer)
+    if args.gdn_batch_parity and (args.benchmark_plan is None or any((args.normalization_parity,
+            args.prepared_feature_receipts, args.scheduler_trace, args.router_row_input,
+            args.history_input, args.teacher_plan, args.benchmark_client))):
+        parser.error('GDN parity requires only its finite benchmark plan and excludes other captures')
+    if args.q8_preparation_parity and (args.benchmark_plan is None or any((
+            args.gdn_batch_parity, args.normalization_parity, args.prepared_feature_receipts,
+            args.scheduler_trace, args.router_row_input, args.history_input,
+            args.teacher_plan, args.benchmark_client))):
+        raise ValueError('Q8 preparation parity requires only its finite benchmark plan and excludes other captures')
     if args.normalization_parity and (args.benchmark_plan is None or not args.reference_tiles
             or args.scheduler_trace is not None or args.router_row_input is not None or args.history_input is not None):
         parser.error("normalization parity requires benchmark/reference-tiles and excludes other captures")
@@ -3038,6 +4077,14 @@ def main(argv=None, *, _benchmark_operation=None):
         prefix += ["--reference-tiles"]
     if args.grouped_gate_up_rows is not None:
         prefix += ["--grouped-gate-up-rows", str(args.grouped_gate_up_rows)]
+    if args.onecat_gu_method is not None:
+        prefix += ["--onecat-gu-method", args.onecat_gu_method,
+                   "--onecat-device-budget-bytes", str(args.onecat_device_budget_bytes),
+                   "--onecat-global-host-bytes", str(args.onecat_global_host_bytes)]
+    if args.gdn_batch_parity:
+        prefix += ["--gdn-batch-parity"]
+    if args.q8_preparation_parity:
+        prefix += ["--q8-preparation-parity"]
     if args.normalization_parity:
         prefix += ["--normalization-parity"]
     if args.prepared_feature_receipts:

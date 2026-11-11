@@ -49,8 +49,9 @@ class _OwnedExpertQualification:
             raise TypeError("private qualification requires its receipt/containment owner")
         if self.grouped_gate_up is not None:
             from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+            from tensorfold.families.qwen4_exp.cuda.onecat_experts import OneCatGU
 
-            if type(self.grouped_gate_up) is not _GroupedGateUp:
+            if type(self.grouped_gate_up) not in (_GroupedGateUp, OneCatGU):
                 raise TypeError("private grouped gate/up requires its typed preparation selector")
         if type(self.reference_tiles) is not bool:
             raise TypeError("private reference tile preparation must be a literal boolean")

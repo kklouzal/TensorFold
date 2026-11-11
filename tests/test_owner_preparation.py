@@ -318,3 +318,33 @@ def test_journalled_owner_constructor_attaches_prepared_borrower_without_late_mo
     owner = history_owner.OwnerBuffers.from_text(text, rows=8, prefill=True, idw=12, world=8, rank=0,
         device="cpu", comm=NS(world=8, rank=0), register=journal.append, reference_preparation=identity)
     assert owner is journal[0] and owner.reference_tiles.workspace is owner.partials
+
+
+@pytest.mark.parametrize('limit,outside,extra,mapped,expected', [
+    (None, None, 70, 20, 100),
+    (200, 48, 70, 20, 30),
+    (200, None, 70, 20, 0),
+    (100, 48, 70, 20, 0),
+    (500, 48, 70, 20, 100),
+])
+def test_graph_physical_reader_charges_native_mapped_and_new_nonreusable_only_in_cap(
+        monkeypatch, limit, outside, extra, mapped, expected):
+    import torch
+    from tensorfold.cuda import capacity, kv_arena
+    owner = OwnerPreparation(specification(), role_rows={'decode': 4, 'prefill': 8}, manifest_sha256='a'*64)
+    owner.private_spare_bytes, owner.outside_active_bytes = 16, outside
+    monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda: 32)
+    monkeypatch.setattr(torch.cuda, 'memory_reserved', lambda: 99999)
+    monkeypatch.setattr(capacity, 'available_bytes', lambda runtime: 100)
+    monkeypatch.setattr(capacity, 'cuda_limit_bytes', lambda: limit)
+    monkeypatch.setattr(kv_arena, 'mapped_bytes', lambda: mapped)
+    assert owner.graph_live_bytes(additional_outside_active_bytes=extra) == expected
+
+
+@pytest.mark.parametrize('invalid', [True, -1, 1.5, None])
+def test_graph_reader_refuses_invalid_charge_before_device_queries(monkeypatch, invalid):
+    import torch
+    owner = OwnerPreparation(specification(), role_rows={'decode': 4, 'prefill': 8}, manifest_sha256='a'*64)
+    monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda: pytest.fail('premature CUDA query'))
+    with pytest.raises(ValueError, match='integer bytes'):
+        owner.graph_live_bytes(additional_outside_active_bytes=invalid)

@@ -31,3 +31,20 @@ def chain(p, conv, weight, initial, decay_parameter, bias, norm, eps, rows, scra
 
 def replay(initial, scratch, rows, final):
     return extension().replay(initial, scratch.k, scratch.v, scratch.g, scratch.b, rows, final)
+
+
+def batch_chain(p, weight, decay, bias, norm, eps, tables, layer, output, sums, *, negative_decay=False):
+    """One unchanged chain body per independent(State,value-head) CTA."""
+    from tensorfold.families.qwen4_exp.cuda.gdn_multi import NativeTables
+
+    if type(tables) is not NativeTables:
+        raise TypeError("native GDN batch requires the current owned frame")
+    pointers, starts = tables.operands(layer, p, output, sums)
+    return extension().batch_chain(p, weight, decay, bias, norm, eps, pointers, starts, output, sums, negative_decay)
+
+
+def prepare_batch(device, value_heads):
+    """Resolve the exact kernel functions before physical startup admission."""
+    import torch
+    with torch.cuda.device(device):
+        extension().prepare_batch(value_heads)

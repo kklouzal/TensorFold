@@ -204,7 +204,7 @@ def startup_policy_probe(*, dflash=False, dspark=False, hidden=256):
                      execution_rows=None, source_is_gguf=True, tp=8, expert_tensor_parallel_size=4,
                      dspark_model_dir="draft" if dspark else None, dflash2_model_dir="draft" if dflash else None,
                      text={"hidden_size": hidden, "num_experts_per_tok": 10},
-                     chunk=64, PREFILL_ROWS=2048, stock_mtp=False)
+                     chunk=64, PREFILL_ROWS=2048, stock_mtp=False, hc_writeback_eligible=False)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[probe], type_ignores=[])), str(path), "exec"), namespace)
     return namespace["probe"]
 
@@ -218,9 +218,9 @@ def test_mixed_private_flags_with_admin_root_all_join_and_refuse_before_private_
     def gather(values):
         calls.append(values)
         peer = values.copy()
-        assert values[-3:] == [int(enabled), int(enabled), 0]
-        peer[-3], peer[-2] = int(not enabled), int(not enabled)
-        assert peer[-3:] == [int(not enabled), int(not enabled), 0]
+        assert values[-4:] == [int(enabled), int(enabled), 0, 0]
+        peer[-4], peer[-3] = int(not enabled), int(not enabled)
+        assert peer[-4:] == [int(not enabled), int(not enabled), 0, 0]
         return [values, peer]
     # No CUDA runtime object: reaching a capability check before agreement fails.
     with pytest.raises(RuntimeError, match="different history/session"):
@@ -228,14 +228,14 @@ def test_mixed_private_flags_with_admin_root_all_join_and_refuse_before_private_
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("field", [-3, -2, -1], ids=["owned", "administrator", "reference-tiles"])
+@pytest.mark.parametrize("field", [-4, -3, -2, -1], ids=["owned", "administrator", "reference-tiles", "hc-writeback"])
 def test_each_private_mode_field_joins_and_refuses_independently(field):
     probe = startup_policy_probe()
     obj = NS(_owned_expert_requested=True, _owned_expert_admin_requested=False, _owned_expert_plan=None,
              _reference_owner_tiles_requested=False, expert_partition=ExpertPartition(8, 0, 512, 640, 4))
     calls = []
     def gather(values):
-        assert values == [0, 1, -1, -1, 4, 512, 640, 0, 1, 0, 0]
+        assert values == [0, 1, -1, -1, 4, 512, 640, 0, 1, 0, 0, 0]
         peer = values.copy()
         peer[field] = 1 - peer[field]
         assert [i for i, (a, b) in enumerate(zip(values, peer)) if a != b] == [len(values) + field]
@@ -419,9 +419,9 @@ def test_grouped_gate_up_modes_refuse_independent_peer_mismatch_before_preparati
     obj = NS(_owned_expert_requested=True, _owned_expert_admin_requested=False, _owned_expert_plan=None,
              _owned_expert_gate_up_requested=_GroupedGateUp(rows), expert_partition=ExpertPartition(8, 0, 512, 640, 4))
     def gather(values):
-        assert len(values) == 11 and values[-4:] == [rows, 1, 0, 0]
+        assert len(values) == 12 and values[-5:] == [rows, 1, 0, 0, 0]
         peer = values.copy()
-        peer[-4] = peer_rows
+        peer[-5] = peer_rows
         return [values] * 7 + [peer]
     with pytest.raises(RuntimeError, match="different history/session"):
         probe(obj, gather, None)

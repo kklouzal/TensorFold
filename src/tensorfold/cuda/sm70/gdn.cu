@@ -51,7 +51,7 @@ __device__ __forceinline__ void update(float (&s)[4][4], const float (&kk)[4], c
 }
 
 template <int NK, int NV, bool NegativeDecay>
-__global__ void __launch_bounds__(1024) chain_kernel(
+__device__ __forceinline__ void chain_body(
         const __half* __restrict__ P, const __half* __restrict__ cs,
         const __half* __restrict__ cw, const float* __restrict__ state_in,
         const float* __restrict__ decay_parameter, const float* __restrict__ dt_bias,
@@ -163,6 +163,42 @@ __global__ void __launch_bounds__(1024) chain_kernel(
     }
 }
 
+template<int NK, int NV, bool NegativeDecay>
+__global__ void __launch_bounds__(1024) chain_kernel(
+        const __half* __restrict__ P, const __half* __restrict__ cs,
+        const __half* __restrict__ cw, const float* __restrict__ state_in,
+        const float* __restrict__ decay_parameter, const float* __restrict__ dt_bias,
+        const __half* __restrict__ norm_w, float eps, int rows,
+        __half* __restrict__ out, float* __restrict__ xs, float* __restrict__ state_out,
+        float* __restrict__ k_save, __half* __restrict__ v_save, float* __restrict__ g_save,
+        float* __restrict__ b_save, const int* __restrict__ keep_rows) {
+    chain_body<NK, NV, NegativeDecay>(P, cs, cw, state_in, decay_parameter, dt_bias, norm_w, eps, rows,
+        out, xs, state_out, k_save, v_save, g_save, b_save, keep_rows);
+}
+
+template<int NK, int NV, bool NegativeDecay>
+__global__ void __launch_bounds__(1024) batch_chain_kernel(
+        const __half* __restrict__ P, const __half* __restrict__ cw,
+        const float* __restrict__ decay_parameter, const float* __restrict__ dt_bias,
+        const __half* __restrict__ norm_w, float eps,
+        const int64_t* __restrict__ pointers, int64_t field_stride,
+        const int* __restrict__ starts, __half* __restrict__ out, float* __restrict__ xs) {
+    constexpr int C = 2 * NK * DK + NV * DV;
+    constexpr int PW = C + NV * DV + 2 * NV;
+    const int slot = blockIdx.y, begin = starts[slot], rows = starts[slot + 1] - begin;
+    chain_body<NK, NV, NegativeDecay>(P + (size_t)begin * PW,
+        reinterpret_cast<const __half*>(pointers[slot]), cw,
+        reinterpret_cast<const float*>(pointers[field_stride + slot]),
+        decay_parameter, dt_bias, norm_w, eps, rows,
+        out + (size_t)begin * NV * DV, xs + (size_t)begin * NV * 4,
+        reinterpret_cast<float*>(pointers[2 * field_stride + slot]),
+        reinterpret_cast<float*>(pointers[3 * field_stride + slot]),
+        reinterpret_cast<__half*>(pointers[4 * field_stride + slot]),
+        reinterpret_cast<float*>(pointers[5 * field_stride + slot]),
+        reinterpret_cast<float*>(pointers[6 * field_stride + slot]),
+        reinterpret_cast<const int*>(pointers[7 * field_stride + slot]));
+}
+
 template <int NK, int NV>
 __global__ void __launch_bounds__(1024) replay_kernel(
         const float* __restrict__ state_in, const float* __restrict__ k_save,
@@ -222,6 +258,42 @@ void sm70_gdn_chain_cuda(const at::Tensor& P, const at::Tensor& cs, const at::Te
     if (negative_decay) dispatch(std::true_type{});
     else dispatch(std::false_type{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_gdn_batch_chain_cuda(const at::Tensor& P, const at::Tensor& cw,
+        const at::Tensor& decay, const at::Tensor& bias, const at::Tensor& norm, double eps,
+        const at::Tensor& pointers, const at::Tensor& starts, at::Tensor& out, at::Tensor& sums,
+        bool negative_decay) {
+    auto stream = at::cuda::getCurrentCUDAStream();
+    const int nv = (int)decay.numel(), slots = (int)pointers.size(1);
+    auto launch = [&](auto kernel) {
+        kernel<<<dim3(nv, slots), 1024, 0, stream>>>(ptr<__half>(P), ptr<__half>(cw), ptr<float>(decay),
+            ptr<float>(bias), ptr<__half>(norm), (float)eps, ptr<int64_t>(pointers), pointers.stride(0),
+            ptr<int>(starts), ptr<__half>(out), ptr<float>(sums));
+    };
+    auto dispatch = [&](auto negative) {
+        constexpr bool direct = decltype(negative)::value;
+        if (nv == 48) launch(batch_chain_kernel<16, 48, direct>);
+        else if (nv == 24) launch(batch_chain_kernel<8, 24, direct>);
+        else if (nv == 12) launch(batch_chain_kernel<4, 12, direct>);
+        else if (nv == 6) launch(batch_chain_kernel<2, 6, direct>);
+        else TORCH_CHECK(false, "gdn batch: unsupported value heads");
+    };
+    if (negative_decay) dispatch(std::true_type{}); else dispatch(std::false_type{});
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_gdn_prepare_batch_cuda(int64_t nv) {
+    auto prepare = [&](auto positive, auto negative) {
+        cudaFuncAttributes attributes;
+        C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, positive));
+        C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, negative));
+    };
+    if (nv == 6) prepare(batch_chain_kernel<2, 6, false>, batch_chain_kernel<2, 6, true>);
+    else if (nv == 12) prepare(batch_chain_kernel<4, 12, false>, batch_chain_kernel<4, 12, true>);
+    else if (nv == 24) prepare(batch_chain_kernel<8, 24, false>, batch_chain_kernel<8, 24, true>);
+    else if (nv == 48) prepare(batch_chain_kernel<16, 48, false>, batch_chain_kernel<16, 48, true>);
+    else TORCH_CHECK(false, "GDN batch preparation head geometry");
 }
 
 void sm70_gdn_replay_cuda(const at::Tensor& state_in, const at::Tensor& k_save, const at::Tensor& v_save,

@@ -127,3 +127,24 @@ def test_both_actual_writeback_calls_use_buffer_capability_and_preparation_prece
     engine = (root / 'engine.py').read_text()
     assert engine.index('hc_prepared_rows = _phase') < engine.index('self.capacity_plan = admit(')
     assert engine.index("w.meta['hc_writeback_prepared']") < engine.index('self.multi = MultiDecoder(')
+
+
+@pytest.mark.parametrize('mode', [0, 3])
+@pytest.mark.parametrize('inference_outputs', ['h', 'pss', 'both'])
+def test_outside_inference_mode_keeps_reference_output_refusal(mode, inference_outputs):
+    b, calls = buffers(), []
+    b.g_branch.zero_()
+    with torch.inference_mode():
+        if inference_outputs in ('h', 'both'):
+            b.h = b.h.clone()
+        if inference_outputs in ('pss', 'both'):
+            b.pss = b.pss.clone()
+    cap = prepared(b, calls)
+    branch = b.g_branch.view(8, 3, 2560) if mode else None
+    inject = b.inj_a if mode else None
+    assert cap.run(b.h, b.h, b.pss, 4, mode, branch=branch, inject=inject) is False
+    assert calls == []
+    # The original adapter performs required copy_ updates; refusal is kept,
+    # including its original partial-update semantics when only PSS is inference.
+    with pytest.raises(RuntimeError, match='[Ii]nference'):
+        ops._reference['hc_writeback'](b.h, b.h, b.pss, 4, mode, branch=branch, inject=inject)

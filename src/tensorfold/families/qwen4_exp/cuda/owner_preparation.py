@@ -377,6 +377,29 @@ class OwnerPreparation:
             return 0
         return max(0, min(free, limit - active - mapped_bytes() - self.outside_active_bytes))
 
+    def graph_live_bytes(self, *, additional_outside_active_bytes):
+        """Physical-only HC caller view, retaining this owner's absolute-cap proof.
+
+        The additional settled charge includes private inactive graph storage
+        and driver residency outside Torch's active counter. Physical free
+        already excludes both; subtract it only in the absolute-cap domain.
+        """
+        if type(additional_outside_active_bytes) is not int or additional_outside_active_bytes < 0:
+            raise ValueError("additional graph residency must be nonnegative integer bytes")
+        import torch
+        from tensorfold.cuda.capacity import available_bytes, cuda_limit_bytes
+        from tensorfold.cuda.kv_arena import mapped_bytes
+
+        free = int(available_bytes(torch))  # No ordinary or private spare credit.
+        limit = cuda_limit_bytes()
+        if limit is None:
+            return free
+        if self.outside_active_bytes is None:
+            return 0
+        active = int(torch.cuda.memory_allocated())
+        return max(0, min(free, limit - active - mapped_bytes() - self.outside_active_bytes
+                          - additional_outside_active_bytes))
+
     def identity(self):
         # The explicit trial switch selects a candidate for measurement; it
         # changes neither representation nor resources. Excluding it permits

@@ -579,6 +579,332 @@ def _compare_owned_teacher_main(argv):
     return 0  # Nonexact results are preserved diagnostics, not acceptance or a hidden tolerance.
 
 
+def _candidate_teacher_side(selected, mode, control):
+    """Read the normal RN controller's actual records, not closed-client fiction.
+
+    The caller binds this finite evidence set and the externally observed CLI
+    completion. Maps evidence is path/inode/hash observation, not VMA-FD proof.
+    """
+    required = {'authority', 'host', 'inspect', 'seal', 'source_after', 'origins',
+                'post', 'exchange', 'before', 'after', 'plan', 'runtime', 'request', 'completion', 'toolmap'}
+    contract = _owned_comparison_contract()
+    if (type(selected) is not dict or set(selected) != {'root', 'files'}
+            or not contract.absolute(selected['root']) or type(selected['files']) is not dict
+            or set(selected['files']) != required):
+        raise ValueError('closed standalone candidate evidence set required')
+    root = Path(selected['root'])
+    files = selected['files']
+    records = {key: _owned_comparison_file(root, files[key], control) for key in sorted(required)}
+    a, host, seal = records['authority'], records['host'], records['seal']
+    contract.validate_teacher_completion(records['completion'], host_result_sha256=files['host']['sha256'],
+                                       authority_sha256=files['authority']['sha256'])
+    def retired(state):
+        return (type(state) is dict and state.get('Status') == 'exited' and state.get('Running') is False
+                and type(state.get('Pid')) is int and state['Pid'] == 0
+                and type(state.get('ExitCode')) is int and state['ExitCode'] == 0
+                and state.get('OOMKilled') is False)
+    inspect_rows = records['inspect']
+    if (host.get('primary') is not None or type(host.get('exit')) is not int or host['exit'] != 0
+            or any(type(host.get(k)) is not list or any(e is not None for e in host[k])
+                   for k in ('cleanup', 'post_errors', 'capture_errors'))
+            or not retired(host.get('state')) or type(inspect_rows) is not list or len(inspect_rows) != 1
+            or not retired(inspect_rows[0].get('State')) or inspect_rows[0].get('Id') != host.get('cid')
+            or inspect_rows[0].get('Image') != seal.get('App')):
+        raise ValueError('standalone owning Host/CLI retirement is not positive')
+    source = records['source_after']
+    if (source.get('all_match') is not True or type(source.get('files')) is not dict or not source['files']
+            or source['files'] != records['toolmap'].get('files')
+            or records['toolmap'].get('files') is None):
+        raise ValueError('standalone source-after closure missing')
+    for identity in source['files'].values():
+        if (type(identity) is not dict or set(identity) != {'bytes', 'sha256'}
+                or type(identity['bytes']) is not int or not 0 < identity['bytes'] <= 8 << 20
+                or type(identity['sha256']) is not str or not SHA.fullmatch(identity['sha256'])):
+            raise ValueError('standalone source-after identity malformed')
+    plan = records['plan']
+    if (plan.get('schema') != 'tensorfold.owned-teacher-plan-v1' or plan.get('mode') != mode
+            or a.get('schema') != 'tensorfold.owned-teacher-authority-v1' or a.get('mode') != mode
+            or a.get('method') != 'none' or a.get('cohort_complete') is not True
+            or a.get('closed') is not True or a.get('finished') is not True or a.get('failed') is not False
+            or type(a.get('launch_exit')) is not int or a['launch_exit'] != 0
+            or a.get('input_sha256') != files['plan']['sha256']
+            or seal.get('teacher_plan_sha256') != files['plan']['sha256']
+            or a.get('input_ids') != plan.get('input_ids') or a.get('declared_identity') != plan.get('identity')):
+        raise ValueError('standalone completed authority/actual plan differs')
+    ids, frames, vocab = a.get('teacher_ids'), a.get('frames'), a.get('vocab')
+    if (type(ids) is not list or not 0 < len(ids) <= 64 or type(frames) is not list or len(frames) != len(ids)
+            or type(vocab) is not int or not 0 < vocab <= (64 << 20) // 4 - 1024
+            or vocab != plan.get('vocab') or any(type(x) is not int or not 0 <= x < vocab for x in ids)
+            or type(plan.get('max_frames')) is not int or not len(ids) <= plan['max_frames'] <= 64
+            or mode == 'replay' and plan['max_frames'] != len(ids)):
+        raise ValueError('standalone bounded full-vocabulary prefix missing')
+    profile = a.get('actual_owned_profile', {})
+    activation = profile.get('coordinate_profile_identity')
+    if type(activation) is not str or not SHA.fullmatch(activation):
+        raise ValueError('standalone activation missing')
+    semantics = _owned_coordinate_semantics(profile, activation)
+    rn = {'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1', 'graph_family': 'uncaptured'}
+    prepared = semantics.get('prepared_execution', {})
+    runtime = records['runtime']
+    family = runtime.get('execution', {}).get('execution_families', {})
+    if (semantics.get('context') != 262144 or semantics.get('prefill_rows') != 4096
+            or semantics.get('target_rows') != 24 or semantics.get('sm70_profile') != 'reference'
+            or any(prepared.get(k) != v for k, v in rn.items()) or prepared.get('trial') is not True
+            or prepared.get('rn_heads_per_block') != 12 or family.get('effective') != rn
+            or family.get('trial') != rn or family.get('native_prepared') is not True
+            or family.get('graph_rows') != 0 or runtime.get('context_tokens') != 262144
+            or runtime.get('sessions', {}).get('allocated_slots') != 24):
+        raise ValueError('standalone actual RN12/Q8/full24 profile differs')
+    instance = records['before'].get('server', {}).get('instance_id')
+    for stats in (records['before'], records['after']):
+        if (not instance or stats.get('server', {}).get('instance_id') != instance
+                or stats.get('model', {}).get('kv_dtype') != 'int8'
+                or any(type(stats.get('load', {}).get(k)) is not int or stats['load'][k] != 0
+                       for k in ('requests_in_flight', 'requests_running', 'requests_waiting'))):
+            raise ValueError('standalone same-instance idle Q8 client evidence differs')
+    post, exchange, request = records['post'], records['exchange'], records['request']
+    body = request.get('body', {})
+    tensor = post.get('tensorfold', {})
+    if (exchange.get('complete') is not True or exchange.get('cancelled_by_client') is not False
+            or exchange.get('status') != 200 or request.get('method') != 'POST'
+            or not request.get('url', '').endswith('/v1/completions')
+            or body.get('prompt') != a['input_ids'] or body.get('max_tokens') != plan['max_frames']
+            or body.get('temperature') != 0 or body.get('draft') is not False or body.get('stream') is not False
+            or tensor.get('token_ids') != ids or tensor.get('drafts') is not False
+            or any(type(tensor.get(k)) is not int or tensor[k] != 0 for k in ('drafted', 'accepted', 'cached'))
+            or post.get('usage', {}).get('prompt_tokens') != len(a['input_ids'])
+            or post.get('usage', {}).get('completion_tokens') != len(ids)):
+        raise ValueError('standalone one cold NONE POST/prefix differs')
+    origins = records['origins']
+    workers, libraries = origins.get('workers'), origins.get('libraries')
+    if (type(workers) is not list or len(workers) != 8 or type(libraries) is not dict
+            or not 0 < len(libraries) <= 64 or {w.get('rank') for w in workers} != set(range(8))):
+        raise ValueError('standalone actual all8 mapped native evidence missing')
+    startups = []
+    for collection in ('startup_receipts', 'rank_receipts'):
+        refs = a.get(collection)
+        if type(refs) is not list or len(refs) != 8:
+            raise ValueError('standalone all8 receipt closure missing')
+        for rank, ref in enumerate(refs):
+            if ref.get('rank') != rank:
+                raise ValueError('standalone receipt ordering differs')
+            record = _owned_comparison_file(root / Path(files['authority']['file']).parent, ref, control)
+            p = record.get('teacher_profile') if collection == 'startup_receipts' else record.get('actual_owned_profile')
+            if (type(p) is not dict or record.get('rank') != rank or p.get('rank') != rank or p.get('world') != 8
+                    or p.get('target_banks') != 48 or p.get('mtp_banks') != 0 or p.get('capability') != [7, 0]
+                    or _owned_coordinate_semantics(p, activation) != semantics):
+                raise ValueError('standalone all8 same-run profile differs')
+            if collection == 'startup_receipts':
+                if record.get('teacher_server_instance_id') != instance and rank == 0:
+                    raise ValueError('standalone rank0 server instance differs')
+                startups.append(record)
+            elif (record.get('closed') is not True or record.get('finished') is not True
+                    or record.get('failed') is not False or record.get('teacher_ids') != ids
+                    or record.get('runtime_sources') != a.get('runtime_sources')
+                    or len(record.get('frames', [])) != len(frames)
+                    or any(f.get('kv_identity') != profile['teacher_semantics']['state_kv_identity']
+                           for f in record['frames'])):
+                raise ValueError('standalone all8 summary/source/frame closure differs')
+    for index, frame in enumerate(frames):
+        vector = frame.get('vector', {})
+        if (frame.get('step') != index or frame.get('position') != len(a['input_ids']) + index
+                or frame.get('teacher_id') != ids[index] or frame.get('full_vocab') != vocab
+                or frame.get('kv_identity') != profile['teacher_semantics']['state_kv_identity']
+                or frame.get('execution_family') != a.get('owner_family')
+                or mode == 'capture' and frame.get('selected_original') != ids[index]
+                or type(frame.get('selected_original')) is not int or not 0 <= frame['selected_original'] < vocab
+                or vector.get('dtype') != '<f4' or vector.get('shape') != [vocab]
+                or vector.get('file') != f'teacher-rank0/frame-{index:06d}.npy'
+                or type(vector.get('bytes')) is not int or not 0 < vector['bytes'] <= 4 * vocab + 4096):
+            raise ValueError('standalone frame geometry/identity differs')
+    native = []
+    for rank in range(8):
+        worker = next(w for w in workers if w['rank'] == rank)
+        paths = worker.get('family_paths')
+        if (type(worker.get('PID')) is not int or worker['PID'] <= 0 or type(paths) is not list
+                or not paths or len(paths) > 64 or type(worker.get('maps')) is not str):
+            raise ValueError('standalone worker native maps incomplete')
+        mapped = {}
+        for path in paths:
+            item = libraries.get(path, {})
+            if (path not in worker['maps'] or type(item.get('bytes')) is not int or item['bytes'] <= 0
+                    or type(item.get('sha256')) is not str or not SHA.fullmatch(item['sha256'])):
+                raise ValueError('standalone mapped path/hash evidence differs')
+            mapped[Path(path).name] = item['sha256']
+        native.append(mapped)
+    return {'root': root, 'records': records, 'authority': a, 'startups': startups,
+            'semantics': semantics, 'activation': activation, 'native': native,
+            'teacher_root': root / Path(files['authority']['file']).parent}
+
+
+def _candidate_plan_identity(plan, method):
+    base = ['owned-etp4-native-slots-v1', 8, 4, 512, 640, 2560, 11, 32, 4096, False, 'grouped-v1']
+    suffix = (['grouped-gate-up', 4] if method is None else
+              ['owned-onecat-active-frame-current-down-v1',
+               ['owned-onecat-gu-current-down-v1', method, 117976064, 67108864, 'reference-grouped4']])
+    if plan != base + suffix:
+        raise ValueError('candidate comparison unexpected owned Plan delta')
+    return base + ['<explicit-GU-method>']
+
+
+def _candidate_semantics(side, method):
+    semantic = {**side['semantics']}
+    kv = list(semantic['state_kv_identity'])
+    markers = [i for i, item in enumerate(kv) if type(item) is list and item and item[0] == 'owned-expert-native']
+    if len(markers) != 1 or len(kv[markers[0]]) != 2:
+        raise ValueError('candidate comparison requires one exact owned expert KV marker')
+    identity = side['authority']['actual_owned_profile'].get('plan_identity')
+    if kv[markers[0]][1] != identity:
+        raise ValueError('candidate State/Plan identity linkage differs')
+    kv[markers[0]] = ['owned-expert-native', _candidate_plan_identity(identity, method)]
+    semantic['state_kv_identity'] = kv
+    # AUTO HC funding changes with the explicit 117976064-byte resident frame.
+    # Preserve every HC semantic field except that independently recorded grant.
+    if 'hc_readout_graphs' in semantic:
+        hc = dict(semantic['hc_readout_graphs'])
+        if type(hc.get('graph_budget_bytes')) is not int or hc['graph_budget_bytes'] <= 0:
+            raise ValueError('candidate positive HC grant missing')
+        hc['graph_budget_bytes'] = '<actual-positive-AUTO-grant>'
+        semantic['hc_readout_graphs'] = hc
+    return semantic
+
+
+def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeout_s):
+    """Explicit OneCat GU forced-prefix diagnostic, never matched-control acceptance."""
+    if method not in ('tensorfold-fp32-epilogue', 'onecat-half-epilogue'):
+        raise ValueError('explicit OneCat GU comparison method required')
+    if (type(read_timeout_s) not in (int, float) or not 0 < read_timeout_s <= sys.maxsize
+            or not math.isfinite(read_timeout_s)):
+        raise ValueError('candidate comparison requires positive finite read_timeout_s excluding bool')
+    import numpy as np
+    control = _teacher_read_control(read_timeout_s)
+    left = _candidate_teacher_side(reference, 'capture', control)
+    right = _candidate_teacher_side(candidate, 'replay', control)
+    a, b = left['authority'], right['authority']
+    if b.get('reference_sha256') != reference['files']['authority']['sha256']:
+        raise ValueError('candidate replay does not name this capture')
+    for key in ('App', 'source_uid'):
+        if not left['records']['seal'].get(key) or left['records']['seal'][key] != right['records']['seal'].get(key):
+            raise ValueError('candidate immutable App/source differs: ' + key)
+    for key in ('input_ids', 'vocab', 'widths', 'teacher_ids', 'owner_family'):
+        if a.get(key) != b.get(key):
+            raise ValueError('candidate frozen teacher pairing differs: ' + key)
+    for key in ('Mounts',):
+        def assets(side):
+            return sorted((m.get('Source'), m.get('Destination'), m.get('RW'))
+                          for m in side['records']['inspect'][0].get(key, [])
+                          if m.get('Destination', '').startswith(('/models/', '/frontend')))
+        if not assets(left) or assets(left) != assets(right):
+            raise ValueError('candidate actual model/frontend mounts differ')
+    for field in ('identity', 'manifest_sha256', 'verified_input_files', 'verified_input_bytes'):
+        x = left['records']['runtime'].get('capacity_plan', {}).get('execution_profile_binding', {}).get(field)
+        y = right['records']['runtime'].get('capacity_plan', {}).get('execution_profile_binding', {}).get(field)
+        if x is None or x != y:
+            raise ValueError('candidate actual content/profile binding differs: ' + field)
+    for side in (left, right):
+        bound = side['records']['runtime'].get('capacity_plan', {}).get('execution_profile_binding', {})
+        if bound.get('content_passes') != 1 or bound.get('hashes_reused_this_binding') != 0:
+            raise ValueError('candidate fresh full content pass missing')
+    for key in ('case_id', 'model_sha256', 'frontend_sha256'):
+        if not a.get('declared_identity', {}).get(key) or a['declared_identity'][key] != b.get('declared_identity', {}).get(key):
+            raise ValueError('candidate declared model/frontend/case differs: ' + key)
+    for key in ('engine', 'multi', 'decode', 'sampling'):
+        value = a.get('runtime_sources', {}).get(key)
+        if type(value) is not str or not SHA.fullmatch(value) or value != b.get('runtime_sources', {}).get(key):
+            raise ValueError('candidate installed math source differs: ' + key)
+    if _candidate_semantics(left, None) != _candidate_semantics(right, method):
+        raise ValueError('candidate unrelated actual State/RN/HC semantics differ')
+    producers = ('runtime_cli_sha256', 'dense_implementation', 'half_partial_policy', 'private_router_policy', 'empty_prefix_policy')
+    for side, selected_method in ((left, None), (right, method)):
+        first = side['startups'][0]
+        for rank, startup in enumerate(side['startups']):
+            _candidate_plan_identity(startup.get('plan_identity'), selected_method)
+            if any(startup.get(k) != first.get(k) for k in producers):
+                raise ValueError('candidate all8 producer selection differs')
+            if selected_method is None:
+                if 'onecat_experts' in startup or startup.get('grouped_gate_up') != {'requested_rows': 4, 'actual_rows': 4}:
+                    raise ValueError('candidate reference is not actual Grouped4')
+            else:
+                binding = startup.get('onecat_experts', {})
+                record = binding.get('record', {})
+                p = record.get('profile', {})
+                if (binding.get('schema') != 'tensorfold.private-onecat-frame-binding-v1'
+                        or binding.get('rank') != rank or binding.get('world') != 8
+                        or binding.get('status') != 'prepared-execution-eligible'
+                        or record.get('schema') != 'tensorfold.onecat-active-frame-owner-v1'
+                        or record.get('enabled') is not True or record.get('closed') is not False
+                        or p.get('policy') != 'owned-onecat-active-frame-current-down-v1' or p.get('method') != method
+                        or p.get('banks') != 48 or p.get('additional_device_bytes') != 117976064
+                        or p.get('frame_slab_bytes') != 117964800 or p.get('shared_lookup_bytes') != 11264
+                        or p.get('packer_workspace_bytes') != 0 or p.get('original_raw_retained') is not True
+                        or p.get('baseline_grouped_gate_up_rows') != 4 or len(record.get('raw_bindings', [])) != 48):
+                    raise ValueError('candidate explicit funded active-frame GU binding missing')
+                for field in ('gate_up', 'packer'):
+                    path = binding.get('origins', {}).get(field, {}).get('path', '')
+                    if not path or Path(path).name not in side['native'][rank]:
+                        raise ValueError('candidate native GU/packer not observed in actual worker maps')
+    if any(left['startups'][0].get(k) != right['startups'][0].get(k) for k in producers):
+        raise ValueError('candidate unrelated producer selection differs')
+    for old, new in zip(left['native'], right['native']):
+        if any(new.get(name) != digest for name, digest in old.items()):
+            raise ValueError('candidate changed incumbent native dependency')
+        if any(not name.startswith(('tf_onecat_gu_', 'tf_onecat_pack_')) for name in new.keys() - old.keys()):
+            raise ValueError('candidate unexpected native dependency delta')
+    rows = []
+    for old, new in zip(a['frames'], b['frames']):
+        if any(old.get(k) != new.get(k) for k in ('step', 'position', 'teacher_id', 'full_vocab', 'role', 'execution_family')):
+            raise ValueError('candidate frame pairing differs')
+        arrays = []
+        for side, frame in ((left, old), (right, new)):
+            vector = frame['vector']
+            ref = {k: vector[k] for k in ('file', 'bytes', 'sha256')}
+            path = _owned_comparison_file(side['teacher_root'], ref, control, maximum=4*a['vocab']+4096, parsed=False)
+            arrays.append(_owned_comparison_vector(path, vector, a['vocab'], control))
+        x, y = arrays
+        unequal = x.view('<u4') != y.view('<u4')
+        rows.append({'step': old['step'], 'position': old['position'], 'teacher_id': old['teacher_id'],
+                     'reference_original_selected': old['selected_original'], 'candidate_original_selected': new['selected_original'],
+                     'reference_forced_id': old['teacher_id'], 'candidate_forced_id': new['teacher_id'],
+                     'exact_uint32_bits': not bool(unequal.any()), 'different_uint32_values': int(unequal.sum()),
+                     'reference_raw_top1_ties': int(np.count_nonzero(x == x.max())),
+                     'candidate_raw_top1_ties': int(np.count_nonzero(y == y.max())), 'finite': True,
+                     **compare_logits(x, y, old['teacher_id'])})
+        del arrays, x, y, unequal
+    return {'schema': 'tensorfold.owned-candidate-teacher-comparison-v1', 'complete': True,
+            'status': 'DIAGNOSTIC_ONLY_REQUIRES_ANALYTICAL_AND_FULL_MODEL_QUALITY_REVIEW',
+            'qualification': False, 'quality_acceptance': False, 'P3_valid': False, 'method': method,
+            'reference': reference, 'candidate': candidate, 'frames': rows,
+            'image_id': left['records']['seal']['App'], 'runtime_sources': [a['runtime_sources'], b['runtime_sources']],
+            'coordinate_activations': [left['activation'], right['activation']],
+            'actual_profiles': [a['actual_owned_profile'], b['actual_owned_profile']],
+            'native_sets_by_rank': [left['native'], right['native']],
+            'coverage': {'frames': len(rows), 'vocab': a['vocab'], 'case_id': a['declared_identity']['case_id'],
+                         'forced_prefix_only': True, 'free_generation_quality': False, 'analytical_bound_proved': False},
+            'scope': 'same-App RN12 control versus explicit GU-only method; no tolerance, acceptance or timing claim'}
+
+
+def _compare_owned_candidate_teacher_main(argv):
+    parser = argparse.ArgumentParser(description='Offline RN/OneCat GU diagnostics; no acceptance margins')
+    parser.add_argument('--comparison-input', type=Path, required=True)
+    parser.add_argument('--expected-input-sha', required=True)
+    parser.add_argument('--output-dir', type=Path, required=True)
+    args = parser.parse_args(argv)
+    raw = _owned_teacher_read(args.comparison_input, 8 << 20)
+    if not SHA.fullmatch(args.expected_input_sha) or hashlib.sha256(raw).hexdigest() != args.expected_input_sha:
+        raise ValueError('candidate comparison input SHA differs')
+    data = _owned_teacher_object(raw)
+    if (type(data) is not dict or set(data) != {'schema', 'reference', 'candidate', 'method', 'read_timeout_s'}
+            or data['schema'] != 'tensorfold.owned-candidate-teacher-comparison-input-v1'):
+        raise ValueError('closed candidate comparison input required')
+    report = compare_owned_candidate_teacher(data['reference'], data['candidate'], method=data['method'],
+                                              read_timeout_s=data['read_timeout_s'])
+    report['comparison_input_sha256'] = args.expected_input_sha
+    args.output_dir.mkdir(mode=0o700)
+    _owned_teacher_json(args.output_dir / 'comparison.json', report, 8 << 20,
+                        _teacher_read_control(data['read_timeout_s']))
+    return 0  # Valid diagnostics, including nonexact results, are not qualification.
+
+
 def teacher_frames(case, first_logits, advance):
     """Consume the frozen previous teacher token, never the candidate's choice."""
     current = first_logits
@@ -758,8 +1084,9 @@ def seal_owned_teacher(output, prepared, launch_exit):
                 or profile.get('mtp_banks') != 0 or profile.get('capability') != [7, 0]):
             raise ValueError('teacher rank lacks its actual SC117 none/TP8 profile binding')
         semantic = profile.get('teacher_semantics')
-        if (type(semantic) is not dict or set(semantic) != {'state_kv_identity', 'context', 'cache_slots', 'prefill_rows',
-                'target_rows', 'vocab_widths', 'sm70_profile', 'prepared_execution'}
+        semantic_keys = {'state_kv_identity', 'context', 'cache_slots', 'prefill_rows',
+                         'target_rows', 'vocab_widths', 'sm70_profile', 'prepared_execution'}
+        if (type(semantic) is not dict or set(semantic) not in (semantic_keys, semantic_keys | {'hc_readout_graphs'})
                 or type(semantic['context']) is not int or semantic['context'] != data['context']
                 or type(semantic['cache_slots']) is not int or semantic['cache_slots'] < data['context']
                 or type(semantic['target_rows']) is not int or semantic['target_rows'] < 9
@@ -770,6 +1097,19 @@ def seal_owned_teacher(output, prepared, launch_exit):
                 or ['logical-context-v1', data['context']] not in semantic['state_kv_identity']
                 or ['coordinate-profile-v1', profile.get('coordinate_profile_identity')] not in semantic['state_kv_identity']):
             raise ValueError('teacher actual KV/context/position/execution semantic binding differs')
+        if 'hc_readout_graphs' in semantic:
+            hc, hc_record = semantic['hc_readout_graphs'], profile.get('hc_readout_graph_record', {})
+            geometry = _hc_graph_geometry(hc, semantic['target_rows'])
+            if (set(hc) != {'policy', 'catalogue_keys', 'sources', 'graph_budget_bytes'} | set(geometry)
+                    or hc['catalogue_keys'] != 97
+                    or type(hc['graph_budget_bytes']) is not int or hc['graph_budget_bytes'] <= 0
+                    or type(hc['sources']) is not dict or set(hc['sources']) != {'hc_readout_graphs', 'hc_plans'}
+                    or any(type(value) is not str or not SHA.fullmatch(value) for value in hc['sources'].values())
+                    or hc_record.get('captured') is not True or hc_record.get('captured_keys') != 97
+                    or hc_record.get('policy') != hc['policy']
+                    or any(hc_record.get(key) != value for key, value in geometry.items())
+                    or hc_record.get('graph_budget_bytes') != hc['graph_budget_bytes']):
+                raise ValueError('teacher HC readout graph policy lacks its actual source/admission record')
         ids, frames, widths, sources = (record.get(key) for key in ('teacher_ids', 'frames', 'widths', 'runtime_sources'))
         if (type(ids) is not list or not 0 < len(ids) <= data['max_frames']
                 or any(type(token) is not int or not 0 <= token < data['vocab'] for token in ids)
@@ -961,6 +1301,110 @@ def _teacher_read_control(seconds, cancelled=None):
     return ReadControl(time.monotonic() + seconds, cancelled)
 
 
+def _hc_graph_geometry(record, target_rows):
+    """Keep historical R1 receipts distinct from owned physical-M32 receipts."""
+    if type(record) is not dict or type(target_rows) is not int or target_rows <= 0:
+        raise ValueError('teacher HC graph row/workspace geometry differs')
+    policy = record.get('policy')
+    if policy == 'sm70-gguf-hc-readout-r1-aten-graph-v1':
+        geometry = {'rows': [1]}
+    elif policy in ('sm70-gguf-hc-readout-m32-aten-graph-v2',
+                    'sm70-gguf-hc-readout-m32-weight-templates-v3',
+                    'sm70-gguf-hc-readout-r1-direct-m32-templates-v4'):
+        workspace, budget = record.get('workspace_tensor_bytes'), record.get('graph_budget_bytes')
+        if (type(record.get('physical_rows')) is not int or record['physical_rows'] != 32
+                or type(workspace) is not int or type(budget) is not int or not 0 < workspace <= budget):
+            raise ValueError('teacher HC graph row/workspace geometry differs')
+        geometry = {'rows': list(range(1, min(24, target_rows) + 1)),
+                    'physical_rows': 32, 'workspace_tensor_bytes': workspace}
+        if policy in ('sm70-gguf-hc-readout-m32-weight-templates-v3',
+                      'sm70-gguf-hc-readout-r1-direct-m32-templates-v4'):
+            bank, templates = record.get('bank_tensor_bytes'), record.get('template_count')
+            if (type(bank) is not int or not 0 < bank or workspace + bank > budget
+                    or type(templates) is not int or not 0 < templates <= 97
+                    or type(record.get('captured_templates')) is not int
+                    or record['captured_templates'] != templates
+                    or type(record.get('covered_keys')) is not int or record['covered_keys'] != 97):
+                raise ValueError('teacher HC graph template/bank geometry differs')
+            geometry.update(bank_tensor_bytes=bank, template_count=templates,
+                            captured_templates=templates, covered_keys=97)
+            if policy == 'sm70-gguf-hc-readout-r1-direct-m32-templates-v4':
+                direct = {'r1_graph_count': 97, 'captured_r1_graphs': 97,
+                          'captured_graphs': 97 + templates}
+                groups, template_rows = record.get('bank_group_count'), record.get('template_rows')
+                if (any(type(record.get(key)) is not int or record[key] != value
+                        for key, value in direct.items())
+                        or type(groups) is not int or not 0 < groups <= templates
+                        or type(template_rows) is not list or any(type(row) is not int for row in template_rows)
+                        or template_rows != list(range(2, min(24, target_rows) + 1))):
+                    raise ValueError('teacher HC graph direct/template coverage differs')
+                geometry.update(direct, bank_group_count=groups, template_rows=template_rows)
+    else:
+        raise ValueError('teacher HC graph row/workspace geometry differs')
+    rows = record.get('rows')
+    if (type(rows) is not list or any(type(row) is not int for row in rows)
+            or rows != geometry['rows']):
+        raise ValueError('teacher HC graph row/workspace geometry differs')
+    return geometry
+
+
+def _owned_teacher_hc_graphs(engine, requested):
+    """Verify the local readout-only owner; never waive whole-round graphs."""
+    if type(requested) is not bool:
+        raise TypeError('teacher HC graph intent must be bool')
+    decoder = engine.multi
+    plans = getattr(decoder, 'hc_graphs', None)
+    if not requested:
+        if plans is not None or getattr(decoder, 'hc_graphs_requested', False):
+            raise ValueError('no-graphs teacher cannot enroll a local HC graph owner')
+        return None
+    from tensorfold.families.qwen4_exp.cuda.hc_readout_graphs import HCReadoutGraphs, POLICY
+    admission = engine.capacity_plan.get('multi_graphs', {})
+    record = decoder.hc_graph_record
+    if (type(plans) is not HCReadoutGraphs or plans is not decoder.buf.hc_plans
+            or plans._w is not engine.w or plans._b is not decoder.buf
+            or getattr(engine, 'graphs_requested', None) is not True
+            or getattr(engine, 'graphs_enabled', None) is not False
+            or decoder.graphs is not None or getattr(decoder, '_failed_graphs', None) is not None
+            or getattr(decoder, '_failed_hc_graphs', None) is not None
+            or decoder.hc_graphs_requested is not True or not plans.enabled
+            or plans.prepared is not True or plans.closed is not False
+            or plans.failure is not None or plans.retirement_failure is not None
+            or admission.get('original_requested') is not True
+            or admission.get('whole_round_requested') is not False or admission.get('captured') is not False
+            or admission.get('local_hc') != record or record.get('captured') is not True
+            or not decoder.full_resident or len(decoder.states) != 24 or decoder.full_windows != 24
+            or any(st.capacity < engine.context_window or st.limit < engine.context_window
+                   or st.logical_context != engine.context_window for st in decoder.states)):
+        raise ValueError('teacher HC graphs lack their actual readout-only joint full-State admission')
+    live = plans.record()
+    geometry = _hc_graph_geometry(live, decoder.buf.rows)
+    if (live.get('policy') != POLICY or live.get('prepared') is not True or live.get('closed') is not False
+            or live.get('catalogue_keys') != 97 or live.get('captured_keys') != 97
+            or record.get('policy') != POLICY or record.get('captured_keys') != 97
+            or any(record.get(key) != value for key, value in geometry.items())
+            or type(live.get('graph_budget_bytes')) is not int or live['graph_budget_bytes'] <= 0
+            or live['graph_budget_bytes'] != admission.get('planned_bytes')
+            or live['graph_budget_bytes'] != decoder.graph_budget
+            or record.get('materialized_full_windows', {}).get('slots') != len(decoder.states)
+            or record.get('materialized_full_windows', {}).get('capacities') != [st.capacity for st in decoder.states]):
+        raise ValueError('teacher HC graph catalogue or admitted budget differs')
+    votes = record.get('capture_results')
+    if (type(votes) is not list or len(votes) != 8
+            or any(type(row) is not list or len(row) != 5
+                or any(type(n) is not int or n < 0 for n in row)
+                or row[:2] != [1, 0] or row[3] < row[4] for row in votes)):
+        raise ValueError('teacher HC graph peers did not preserve their future-service grant')
+    plans.validate_adoption()
+    sources = {}
+    for name in ('hc_readout_graphs', 'hc_plans'):
+        module = sys.modules['tensorfold.families.qwen4_exp.cuda.' + name]
+        path = Path(module.__file__)
+        sources[name] = _owned_teacher_hash(path, path.stat().st_size, 8 << 20)
+    return {'policy': POLICY, **geometry, 'catalogue_keys': 97, 'sources': sources,
+            'graph_budget_bytes': live['graph_budget_bytes']}
+
+
 class OwnedTeacherFrames:
     """Private none/greedy observer on the real MultiDecoder worker.
 
@@ -970,7 +1414,7 @@ class OwnedTeacherFrames:
     returned token with the frozen reference ID. All GPU data storage is an
     explicitly idle, already-paid target-logit tail, never a new allocation.
     """
-    def __init__(self, engine, prepared, directory, *, fail, profile):
+    def __init__(self, engine, prepared, directory, *, fail, profile, hc_graphs=False):
         import threading
         import torch
         from tensorfold.cleanup import raise_failures
@@ -1041,7 +1485,12 @@ class OwnedTeacherFrames:
                                  'prefill_rows': self.decoder.prefill_rows, 'target_rows': buf.rows,
                                  'vocab_widths': widths, 'sm70_profile': engine.sm70_profile,
                                  'prepared_execution': self.owner_family}
+        hc_policy = _owned_teacher_hc_graphs(engine, hc_graphs)
+        if hc_policy is not None:
+            self.semantic_profile['hc_readout_graphs'] = hc_policy
         self.profile = {**profile, 'teacher_semantics': self.semantic_profile}
+        if hc_policy is not None:
+            self.profile['hc_readout_graph_record'] = self.decoder.hc_graph_record
         self.gathered = buf.logits[1:9].reshape(-1)
         # The owning before_listener caller journals self before setup allocates
         # this paid host vector or creates the fresh evidence directory.
@@ -1800,6 +2249,8 @@ def stop_children(children):
 
 def main(argv=None):
     selected = sys.argv[1:] if argv is None else argv
+    if selected[:1] == ['--compare-owned-candidate-teacher']:
+        return _compare_owned_candidate_teacher_main(selected[1:])
     if selected[:1] == ['--compare-owned-teacher']:
         return _compare_owned_teacher_main(selected[1:])
     parser = argparse.ArgumentParser(description=__doc__)

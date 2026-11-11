@@ -6,6 +6,7 @@
 void routing_select_cuda(const at::Tensor&, at::Tensor&);
 void routing_route_cuda(const at::Tensor&, at::Tensor&, at::Tensor&);
 void routing_logits_cuda(const at::Tensor&, const at::Tensor&, at::Tensor&);
+void routing_prepare_route_cuda();
 
 void select_experts(const at::Tensor& logits, at::Tensor indices) {
     TORCH_CHECK(logits.is_cuda() && logits.scalar_type() == at::kFloat && logits.dim() == 2
@@ -59,6 +60,7 @@ void router_logits(const at::Tensor& x, const at::Tensor& weight, at::Tensor out
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+    module.def("prepare_route", &routing_prepare_route_cuda, "Resolve routing function residency before physical admission");
     module.def("logits", &router_logits, "FP16 decode rows with the qualified serial FP32 GEMV arithmetic");
     module.def("route", &route_experts, "Stable selection and Torch-rounded FP16 routing weights");
     module.def("select", &select_experts, "Stable integer-key top-k selection for 512 SM70 experts");

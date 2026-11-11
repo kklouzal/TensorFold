@@ -466,7 +466,7 @@ def _capture(files, before, expected, *, reuse=None):
     receipt = capture_model_identity(files, runtime_identity={"schema": SCHEMA, "version": VERSION},
         authorize=lambda name, path: path.resolve(strict=True),
         max_file_bytes=max(v["stat"][2] for v in before.values()), max_total_bytes=total,
-        reuse=reuse, reuse_is_immutable=reuse is not None)
+        reuse=reuse, reuse_is_immutable=reuse is not None, hash_workers=2)
     contents = {f.logical_name: {"size": f.size, "sha256": f.sha256} for f in receipt.files}
     if any(contents[name] != record for name, record in expected.items()):
         raise ValueError("execution profile checkpoint content differs from its declared SHA256")

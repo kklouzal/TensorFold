@@ -74,10 +74,18 @@ class MultiDecoder:
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False,
                  graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0,
                  full_windows: int | None = None, execution_rows: int | None = None, memory_live=None,
-                 logical_context: int | None = None) -> None:
+                 logical_context: int | None = None, hc_graphs: bool = False, graph_memory_live=None, native_gdn_batch: bool = False) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
-        budget = (multi_graphs.budget_bytes() if graphs else 0) if graph_budget is ... else graph_budget
+        if type(hc_graphs) is not bool:
+            raise ValueError("local HC graph request must be boolean")
+        if hc_graphs and graphs:
+            raise ValueError("local HC graphs require whole-round capture to be declined")
+        if type(native_gdn_batch) is not bool or native_gdn_batch and (depth != 0 or w.mtp is not None):
+            raise ValueError("native GDN batch initially requires independent NONE windows")
+        budget = (multi_graphs.budget_bytes() if graphs or hc_graphs else 0) if graph_budget is ... else graph_budget
+        if hc_graphs and not callable(graph_memory_live):
+            raise ValueError("local HC graphs require the existing prepared owner's physical live-reader factory")
         if budget is not None and (type(budget) is not int or budget < 0):
             raise ValueError("captured-round budget must be nonnegative integer bytes or automatic")
         if full_windows is not None and (type(full_windows) is not int or full_windows < 1):
@@ -156,7 +164,7 @@ class MultiDecoder:
 
             self.kv_cohort = KVStatusCohort(slots, w.comm, w.device)
         # every step's tables at fixed addresses and its kernels at a fixed geometry, so captured forwards replay
-        self.round_tables = gdn_multi.RoundTables(w, self.gdn, slots, depth + 1)
+        self.round_tables = gdn_multi.RoundTables(w, self.gdn, slots, depth + 1, native_half=native_gdn_batch)
         self.step_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=False)
         self.mtp_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=True) if w.mtp is not None else None
         # captured rounds (multi_graphs; ``capture_graphs`` at warm-up): None until then, or when not captured
@@ -171,8 +179,17 @@ class MultiDecoder:
             reason = "DFlash2 target feature capture runs eagerly"
         elif graphs:
             reason = multi_graphs.capturable(w)
+        self.hc_graphs_requested = bool(hc_graphs and budget != 0)
+        self._graph_memory_live = graph_memory_live
+        self._hc_notification_errors = [None]
+        self.hc_graphs = self._failed_hc_graphs = None
+        self._hc_capture_started = False
+        self.hc_graph_record = {"captured": False, "reason":
+            f"{multi_graphs.ENV}=0" if hc_graphs and budget == 0 else "not requested"}
+        if hc_graphs and not graphs:
+            reason = multi_graphs.capturable(w) or "whole-round graphs not selected"
         self.graph_request = budget
-        self.graph_budget = (budget or 0) if reason is None else 0
+        self.graph_budget = (budget or 0) if reason is None or self.hc_graphs_requested else 0
         self.graph_header_room = graph_header_room
         self.graph_floor = FIRST
         self.graph_floor_extra_bytes = 0
@@ -191,6 +208,8 @@ class MultiDecoder:
                            logical_context=logical_context)
                      for slot in range(slots)]
         self.states = tuple(self.free)
+        if native_gdn_batch:
+            self.round_tables.bind_native(self.states, self.buf)
         self._migration_cursor = 0
         # Prepared serving owns one fixed map. Migration mechanisms remain
         # isolated research helpers, never enabled by ordinary initialization.
@@ -924,20 +943,8 @@ class MultiDecoder:
             self.graph_header_room -= extra
         return True
 
-    @torch.no_grad()
-    def capture_graphs(self) -> None:
-        """Capture the rounds' verify forwards and MTP steps on the idle slots (``multi_graphs``) and take their
-        measured memory (``room_bytes``) from the stream caches' room. Before any request: every slot must be free."""
-
-        if self.streams or self.filling or self.kept or len(self.free) != self.round_tables.slots:
-            raise RuntimeError("graphs are captured on idle slots, before any request")
-        if self.graphs is not None or self._failed_graphs is not None:
-            raise RuntimeError("captured-round pools are immutable until this decoder retires")
-        if self.graph_record["reason"] is not None:
-            return
-        if getattr(self.w, "meta", {}).get("execution_provider") == "sm70" and not self._prepare_graph_floor():
-            return
-        multi_graphs.prepare_capture()
+    def _resolve_graph_admission(self, *, live=None):
+        """Existing joint remaining-service proof, after materialized State/workspaces."""
         slots = len(self.free)
         # The legacy resident policy promises one full native window. Explicit
         # full windows also protect every selected slot's target/draft caches.
@@ -948,7 +955,7 @@ class MultiDecoder:
                                 growth_bytes=growth, vision_workspace_bytes=self.vision_workspace_bytes,
                                 minimum_workspace_bytes=self.memory_gate.reserve,
                                 copy_overlap_bytes=promise["copy_overlap_bytes"])
-        live = multi_graphs.live_bytes
+        live = multi_graphs.live_bytes if live is None else live
         automatic = self.graph_request is None
         observed = (automatic and getattr(self, "full_resident", False)
                     and getattr(self.w, "meta", {}).get("execution_provider") == "sm70"
@@ -998,6 +1005,23 @@ class MultiDecoder:
                 "cache_bytes": sum(st.cache_bytes() for st in self.free)}
         if getattr(self.w, "meta", {}).get("execution_provider") == "sm70":
             resolution.update(floor_tokens=self.graph_floor, floor_extra_bytes=self.graph_floor_extra_bytes)
+        return live, future, resolution
+
+    @torch.no_grad()
+    def capture_graphs(self) -> None:
+        """Capture the rounds' verify forwards and MTP steps on the idle slots (``multi_graphs``) and take their
+        measured memory (``room_bytes``) from the stream caches' room. Before any request: every slot must be free."""
+
+        if self.streams or self.filling or self.kept or len(self.free) != self.round_tables.slots:
+            raise RuntimeError("graphs are captured on idle slots, before any request")
+        if self.graphs is not None or self._failed_graphs is not None:
+            raise RuntimeError("captured-round pools are immutable until this decoder retires")
+        if self.graph_record["reason"] is not None:
+            return
+        if getattr(self.w, "meta", {}).get("execution_provider") == "sm70" and not self._prepare_graph_floor():
+            return
+        multi_graphs.prepare_capture()
+        live, future, resolution = self._resolve_graph_admission()
         if not self.graph_budget:
             if getattr(self, "graph_floor_extra_bytes", 0):
                 released = self.graph_floor_extra_bytes
@@ -1030,6 +1054,154 @@ class MultiDecoder:
                 self._memory_error = primary
             raise
         self._publish_graphs(graphs, resolution, captured=True)
+
+    @torch.no_grad()
+    def capture_hc_graphs(self):
+        """Poison the existing cohort before any unexpected startup rollback."""
+        if not self.hc_graphs_requested:
+            return
+        notification = self._hc_notification_errors
+        try:
+            if not callable(self.poison_control):
+                raise RuntimeError("local HC startup requires the existing cohort failure callback")
+            return self._capture_hc_graphs()
+        except BaseException as primary:
+            self._memory_error = primary
+            try:
+                if self.poison_control is not None:
+                    self.poison_control(primary)
+            except BaseException as error:
+                if error is primary:
+                    raise
+                notification[0] = error
+                raise_failures(primary, notification)
+            raise
+
+    def _capture_hc_graphs(self):
+        """One pre-listener local catalogue under the same joint graph reservation."""
+        from .hc_plans import readout_graphs
+        from .hc_readout_graphs import HCGraphBudgetExceeded
+        from .owner_preparation import OwnerPreparation
+
+        if not self.hc_graphs_requested:
+            return
+        if (self.streams or self.filling or self.kept or len(self.free) != self.round_tables.slots
+                or not self.full_resident or self.full_windows != len(self.free)):
+            raise RuntimeError("HC graphs require every full State idle and materialized before requests")
+        if self._hc_capture_started or self.hc_graphs is not None or self._failed_hc_graphs is not None:
+            raise RuntimeError("local HC graph catalogue is immutable until decoder retirement")
+        self._hc_capture_started = True
+        multi_graphs.prepare_capture()
+        before = OwnerPreparation._memory(torch, self.w.device)
+        live, future, resolution = self._resolve_graph_admission(live=self._graph_memory_live(0))
+        available = automatic_graph_bytes(resolution["initial_live_bytes"], future["future_bytes"])
+        grant = self.graph_budget
+        world = self.w.comm.world
+        def vote(packet):
+            rows = gather_ints(torch, self.w.comm.all_gather, packet, world=world)
+            if (len(rows) != world or any(len(row) != len(packet)
+                    or any(type(n) is not int or n < 0 for n in row) for row in rows)):
+                raise RuntimeError("invalid all-rank local HC graph admission packet")
+            return rows
+        def settled_live(*, check_grant=True):
+            multi_graphs.prepare_capture()  # Drain and discard only ordinary cache, never private spare.
+            after = OwnerPreparation._memory(torch, self.w.device)
+            physical = before["physical_free_bytes"] - after["physical_free_bytes"]
+            active = after["torch_allocated_bytes"] - before["torch_allocated_bytes"]
+            if physical < 0 or active < 0 or physical < active or check_grant and max(physical, active) > grant:
+                raise RuntimeError("HC phase residency is unattributable or exceeds its joint grant")
+            extra = physical - active
+            return self._graph_memory_live(extra), extra, after, max(physical, active)
+        observations = vote([int(grant > 0 and grant <= available), grant, available])
+        if any(row[0] not in (0, 1) for row in observations):
+            raise RuntimeError("invalid all-rank local HC graph grant status")
+        if any(row[0] != 1 for row in observations):
+            live, extra, phase_after, phase_charge = settled_live(check_grant=False)
+            if live() < future["future_bytes"]:
+                raise RuntimeError("HC admission control consumed promised future service room")
+            self.memory_gate.live = live
+            self.hc_graph_record = {"captured": False, "reason": "joint graph grant leaves insufficient future service room",
+                "observations": observations, "additional_outside_active_bytes": extra,
+                "phase_before": before, "phase_after": phase_after,
+                "reservation_retained_after_control": self.graph_budget, **resolution}
+            return
+        if resolution["automatic"]:
+            grant = self.graph_budget = min(row[1] for row in observations)
+        if any(row[1] != grant for row in observations) and not resolution["automatic"]:
+            raise RuntimeError("local HC graph grant differs across ranks")
+        if live() < future["future_bytes"] + grant:
+            raise MemoryError("joint HC graph room changed after the completed all-rank grant")
+        plans = readout_graphs(self.w, self.buf, budget_bytes=grant)
+        self._failed_hc_graphs = plans  # Own every partial capture before CUDA effects.
+        declined, secondary = None, [None]
+        try:
+            record = plans.prepare(quiescent=lambda: not self.streams and not self.filling
+                                   and not self.kept and len(self.free) == self.round_tables.slots)
+        except HCGraphBudgetExceeded as primary:
+            declined = primary
+            try:
+                if not plans.budget_declined:
+                    raise
+                record = plans.record()
+            except BaseException as error:
+                if error is primary:
+                    raise
+                secondary[0] = error
+                raise_failures(primary, secondary)
+        try:
+            live, extra, phase_after, phase_charge = settled_live()
+            results = vote([int(declined is None), int(plans.closed), plans.settled_bytes,
+                            live(), future["future_bytes"]])
+            if any(row[0] not in (0, 1) or row[1] not in (0, 1) or row[0] == 0 and row[1] != 1
+                   for row in results):
+                raise RuntimeError("invalid local HC capture/retirement status")
+            if any(row[0] == 0 for row in results):
+                # Even ranks that fitted retire before the coordinated eager
+                # decline is published. Unexpected close/allocator errors stay fatal.
+                plans.close()
+                retired = vote([int(plans.closed and plans.retirement_failure is None)])
+                if any(row != [1] for row in retired):
+                    raise RuntimeError("a peer could not retire its declined local HC graph owner")
+                live, extra, phase_after, phase_charge = settled_live()
+                after = vote([live(), future["future_bytes"], extra])
+                if any(row[0] < row[1] for row in after):
+                    raise RuntimeError("retired HC capture no longer leaves the promised future service")
+                live, extra, phase_after, phase_charge = settled_live()
+                if live() < future["future_bytes"]:
+                    raise RuntimeError("declined HC residual consumed the promised future service")
+                # A retired pool need not unload process-resident driver code.
+                # Retain the admitted ceiling after an attempt; report the measured
+                # residual separately, without inferring backend release/equivalence.
+                self.graph_budget = grant
+                self.memory_gate.live = live
+                self._failed_hc_graphs = None
+                self.hc_graph_record = {"captured": False, "reason": "observed HC catalogue exceeds joint graph grant; all ranks retired",
+                    "capture_results": results, "retirement": retired, "after_retirement": after,
+                    "local_attempt": record, "additional_outside_active_bytes": extra,
+                    "phase_before": before, "phase_after": phase_after,
+                    "reservation_retained_after_attempt": self.graph_budget, **resolution}
+                return
+            if any(row[1] != 0 or row[3] < row[4] for row in results):
+                raise RuntimeError("local HC pools consumed the jointly promised State/service room")
+            live, extra, phase_after, phase_charge = settled_live()
+            plans.validate_adoption()
+            published = {"captured": True, "reason": None, "capture_results": results, **resolution, **record,
+                "scope": "startup snapshot; live replay counts are decoder.hc_graphs.record()",
+                "additional_outside_active_bytes": extra, "caller_settled_charge_bytes": phase_charge,
+                "phase_before": before, "phase_after": phase_after, "live_policy": "prepared-owner-physical-only-v1"}
+            if self.memory_gate.held + live() < self.memory_gate.room:
+                raise RuntimeError("local HC pool consumed promised full windows or workspace")
+            # Physical-only admission: no private-pool spare credit and no second
+            # debit of already materialized State or owner workspaces.
+            self.memory_gate.live = live
+            self.hc_graph_record = published
+            self.buf.hc_plans = self.hc_graphs = plans
+            self._failed_hc_graphs = None
+        except BaseException as error:
+            if declined is not None and error is not declined:
+                secondary[0] = error
+                raise_failures(declined, secondary)
+            raise
 
     def _publish_graphs(self, graphs, resolution, *, captured):
         """Prepare fallible metadata before publishing one accounted pool; interrupted publication poisons reuse."""
@@ -2051,7 +2223,7 @@ class MultiDecoder:
         held = [self.held.pop(s.sid, []) for s in live]
         half = self.buf.h.dtype == torch.float16
         tables = None if half else gdn_multi.Tables(self.gdn, segs, held, static=self.round_tables)
-        self.buf.gdn_tables = tables
+        self.buf.gdn_tables = self.round_tables.native_frame(segs, self.buf) if half and getattr(getattr(self, "round_tables", None), "native_half", False) else tables
         self.buf.attn_step = (None if half else attn_multi.Step(
             self.w, segs, mtp=False, tables=self.step_tables, rotor_lookup=self.buf.rotor_lookup))
         try:

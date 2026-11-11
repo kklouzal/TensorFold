@@ -121,8 +121,9 @@ def _readout_plain(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, stre
     """The norm, the down projection with SiLU and the inject gates, the up projection, the mix: separate kernels."""
 
     if b.hc_plans is not None and b.hc_plans.enabled:
-        b.hc_plans(hc, h, R, eps, streams, low, inject, normed=normed)
-        return
+        handled = b.hc_plans(hc, h, R, eps, streams, low, inject, normed=normed)
+        if handled is not False:  # Legacy F16 plans return None after handling.
+            return
     if not normed:
         glue.hc_normed(h[:R], b.pss[:R], hc.scale, b.normed[:R], b.xs_normed[:R], streams, eps)
     _down_act(hc, b, R, streams, low, inject)
@@ -183,6 +184,14 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     _mm(b.mixed[:R], g.proj, b.xs_mixed[:R], b.proj[li, :R], b)
     tables = getattr(b, "gdn_tables", None)           # a concurrent round: every stream in one launch a step
+    if tables is not None and b.h.dtype == torch.float16:
+        from tensorfold.cuda.sm70.gdn_native import batch_chain
+
+        if (g.a_log is None) == (g.a_neg is None):
+            raise ValueError("GDN requires exactly one declared decay representation")
+        batch_chain(b.proj[li, :R], g.conv, g.a_log if g.a_neg is None else g.a_neg,
+                    g.dt_bias, g.norm, c.eps, tables, li, b.gout[:R], b.gxs[:R], negative_decay=g.a_neg is not None)
+        return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     if tables is not None and b.h.dtype != torch.float16:
         gdn_multi.block(g, li, tables, b.proj[li, :R], c.eps, b.gout[:R], b.gxs[:R], c.nk)
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)

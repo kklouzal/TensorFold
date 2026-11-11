@@ -140,3 +140,13 @@ def enroll(w, b, *, mtp=False):
            or hc.down.k % (hc.down.sk * 64) or hc.up.k % 64 for hc in hcs):
         return                      # HC geometry outside the qualified fixed-view F16 region
     b.hc_plans = _HCPlans(w, b, hcs)
+
+
+def readout_graphs(w, b, *, budget_bytes):
+    """Construct only; caller journals this owner before its funded preparation."""
+    from .forward import _readout_plain
+    from .hc_readout_graphs import HCReadoutGraphs
+
+    if b.hc_plans is not None:
+        raise RuntimeError('HC graph enrollment cannot replace a live readout plan')
+    return HCReadoutGraphs(w, b, _readout_plain, budget_bytes=budget_bytes)

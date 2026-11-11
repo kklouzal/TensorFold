@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Sequence
+import weakref
 
 import numpy as np
 import torch
@@ -34,17 +35,19 @@ class RoundTables:
     one copy each on the current stream before the forward; the mirror is rewritten only after that copy completes.
     Pointees are the decoder's States: a resize or drop frees their storage through the same stream's allocator."""
 
-    def __init__(self, w, scratch: Scratch, slots: int, width: int) -> None:
+    def __init__(self, w, scratch: Scratch, slots: int, width: int, *, native_half=False) -> None:
         dev, pin = w.device, torch.cuda.is_available()
         self.slots, self.width, self.rows, self.lin = slots, width, slots * width, scratch.lin
+        self.native_half, self.native_states, self.native_current = native_half, (), None
+        self.pointer_fields = 8 if native_half else 2
         rows = self.rows
         self.at = {"sid": 0, "win": rows, "entries": 5 * rows, "starts": 8 * rows, "held": 8 * rows + slots + 1,
                    "counts": 8 * rows + slots + 1 + slots * width}
         size = self.at["counts"] + slots
         self.i32 = torch.zeros((size,), dtype=torch.int32, device=dev)
         self.h32 = torch.zeros((size,), dtype=torch.int32, pin_memory=pin)
-        self.i64 = torch.zeros((2 * self.lin * slots,), dtype=torch.int64, device=dev)
-        self.h64 = torch.zeros((2 * self.lin * slots,), dtype=torch.int64, pin_memory=pin)
+        self.i64 = torch.zeros((self.pointer_fields * self.lin * slots,), dtype=torch.int64, device=dev)
+        self.h64 = torch.zeros((self.pointer_fields * self.lin * slots,), dtype=torch.int64, pin_memory=pin)
         self.copied = torch.cuda.Event() if pin else None
         self.queued = False
 
@@ -85,6 +88,130 @@ class RoundTables:
         if self.copied is not None:
             self.copied.record()
             self.queued = True
+
+
+    def bind_native(self, states, b):
+        """Cold registration of immutable recurrent/scratch storage, before warmup.
+
+        State.reset/resize/restore keep these allocations. Clones/replacements
+        are different objects and retain the old scalar path; current parity is
+        selected afresh at each frame. Strong tensor owners outlive queued work.
+        """
+        if not self.native_half:
+            return
+        if len(states) != self.slots or b.h.dtype != torch.float16:
+            raise ValueError("native GDN registration requires its complete Half State envelope")
+        records, spans = [], []
+        def tensor(value, dtype, shape, writable):
+            if (value.device != b.h.device or value.dtype != dtype or tuple(value.shape) != tuple(shape)
+                    or not value.is_contiguous() or value.requires_grad or value.is_neg() or value.is_conj()):
+                raise ValueError("native GDN pointee representation differs from State construction")
+            begin = value.data_ptr()
+            spans.append((begin, begin + value.numel()*value.element_size(), writable))
+            return value
+        nv = b.gout.shape[1] // 128
+        nk, channels = nv // 3, (2 * (nv // 3) + nv) * 128
+        if nv not in (6, 12, 24, 48):
+            raise ValueError("native GDN registration head geometry")
+        tensor(b.proj, torch.float16, (self.lin, b.rows, channels + nv*128 + 2*nv), False)
+        tensor(b.gout, torch.float16, (b.rows, nv*128), True)
+        tensor(b.gxs, torch.float32, (b.rows, nv*4), True)
+        for state in states:
+            conv = tensor(state.conv, torch.float16, (self.lin, 3, channels), False)
+            rec = tensor(state.rec, torch.float32, (2, self.lin, nv, 128, 128), True)
+            if len(state.scratch) != self.lin:
+                raise ValueError("native GDN scratch layer count")
+            saved, pointers = [], []
+            for li, scratch in enumerate(state.scratch):
+                count = scratch.k.shape[0]
+                if count < self.width:
+                    raise ValueError("native GDN saved window is smaller than the declared frame")
+                k = tensor(scratch.k, torch.float32, (count, nk, 128), True)
+                v = tensor(scratch.v, torch.float16, (count, nv, 128), True)
+                g = tensor(scratch.g, torch.float32, (count, nv), True)
+                beta = tensor(scratch.b, torch.float32, (count, nv), True)
+                keep = getattr(scratch, "keep_rows", None)
+                if keep is not None:
+                    tensor(keep, torch.int32, (1,), False)
+                saved.append((scratch, k, v, g, beta, keep))
+                pointers.append((conv.data_ptr() + li*conv.stride(0)*conv.element_size(),
+                    rec.data_ptr() + li*rec.stride(1)*rec.element_size(),
+                    rec.stride(0)*rec.element_size(), k.data_ptr(), v.data_ptr(), g.data_ptr(), beta.data_ptr(),
+                    0 if keep is None else keep.data_ptr()))
+            records.append((state, conv, rec, state.scratch, tuple(saved), tuple(pointers)))
+        # Inputs may share readonly storage; no mutable recurrent/save/output
+        # byte may alias another operand. This work is cold, not per layer.
+        end_any = end_write = 0
+        for begin, end, writable in sorted(spans):
+            if begin < end_write or writable and begin < end_any:
+                raise ValueError("native GDN registered storage overlaps a mutable operand")
+            end_any = max(end_any, end)
+            if writable:
+                end_write = max(end_write, end)
+        self.native_states, self.native_buffers = tuple(records), b
+
+    def native_frame(self, segs, b):
+        """Stage before compute/capture; C1 and unregistered storage stay scalar."""
+        if (not self.native_half or len(segs) <= 1 or b.prefill or b.split is not None
+                or b.owner_graph_family != "uncaptured"):
+            return None
+        selected = []
+        for state, begin, end in segs:
+            record = next((row for row in self.native_states if row[0] is state), None)
+            if (record is None or state.conv is not record[1] or state.rec is not record[2]
+                    or state.scratch is not record[3]):
+                return None
+            selected.append(record)
+        return NativeTables(self, segs, b, selected)
+
+
+class NativeTables:
+    """One owned Half frame; eight pointer planes use the existing DMA journal.
+
+    Preparation is outside capture on the actor's ordered current stream.
+    Kernel submission itself has no host wait and may be captured separately.
+    Registered State storage is immutable; numeric contents/generation/parity
+    remain live. The static owner and State pool retain every pointee.
+    """
+    def __init__(self, static, segs, b, records):
+        n, rows = len(segs), segs[-1][2]
+        if (n > static.slots or rows > b.rows or len({id(state) for state, _, _ in segs}) != n
+                or segs[0][1] != 0 or any(end <= begin or end-begin > static.width
+                    or i and begin != segs[i-1][2] for i, (_, begin, end) in enumerate(segs))):
+            raise ValueError("native GDN requires disjoint contiguous bounded State windows")
+        static.native_current = None  # Failed staging must never leave a stale frame submit-capable.
+        if static.queued:
+            static.copied.synchronize()  # Previous pinned-mirror DMA, not a device-wide fence.
+        h = static.h64.numpy().reshape(8, static.lin, static.slots)
+        for slot, ((state, _, _), record) in enumerate(zip(segs, records)):
+            for li, (conv, rec, stride, k, v, g, beta, keep) in enumerate(record[5]):
+                parity = state.cur[li]
+                if type(parity) is not int or parity not in (0, 1):
+                    raise ValueError("native GDN current parity must be zero or one")
+                h[:, li, slot] = (conv, rec+parity*stride, rec+(1-parity)*stride, k, v, g, beta, keep)
+        at = static.at["starts"]
+        starts = static.h32.numpy()[at:at+n+1]
+        starts[:] = [begin for _, begin, _ in segs] + [rows]
+        self.static, self.buffers, self.segs, self.rows = static, b, tuple(segs), rows
+        self.stream = torch.cuda.current_stream(b.h.device)
+        self.pointers = static.i64.view(8, static.lin, static.slots)[:, :, :n]
+        self.starts = static.i32[at:at+n+1]
+        static.i64.copy_(static.h64, non_blocking=True)
+        self.starts.copy_(static.h32[at:at+n+1], non_blocking=True)
+        if static.copied is not None:
+            static.copied.record()
+            static.queued = True
+        static.native_current = weakref.ref(self)
+
+    def operands(self, layer, p, output, sums):
+        b = self.buffers
+        if (self.static.native_current is None or self.static.native_current() is not self
+                or torch.cuda.current_stream(b.h.device) != self.stream or not 0 <= layer < self.static.lin
+                or p.data_ptr() != b.proj.data_ptr()+layer*b.proj.stride(0)*b.proj.element_size()
+                or p.shape != (self.rows, b.proj.shape[2]) or output.data_ptr() != b.gout.data_ptr()
+                or sums.data_ptr() != b.gxs.data_ptr()):
+            raise ValueError("native GDN submission is not the current owned layer/frame")
+        return self.pointers[:, layer, :], self.starts
 
 
 class Tables:

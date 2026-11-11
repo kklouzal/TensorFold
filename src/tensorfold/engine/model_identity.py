@@ -254,23 +254,203 @@ def _issue_identity(runtime, contents, *, bytes_read, hashes_reused, started):
                          bytes_read, hashes_reused, time.perf_counter() - started, _ISSUED)
 
 
+class _HashWork:
+    """Two-slot callback journal; the same start/cancel gate as owned Task.
+
+    Runtime foundations cannot import the command-line tools.worker_lifetime
+    module. This smaller record applies its completion contract to executor
+    callbacks; a cancelled queued callback can no longer borrow its input FD.
+    """
+    __slots__ = ('gate', 'done', 'job', 'entered', 'cancelled', 'result', 'error')
+
+    def __init__(self, job):
+        import threading
+        self.gate, self.done = threading.Lock(), threading.Event()
+        self.job, self.entered, self.cancelled = job, False, False
+        self.result = self.error = None
+
+    def cancel_unstarted(self):
+        with self.gate:
+            if not self.entered:
+                self.cancelled, self.job = True, None
+                self.done.set()
+
+    def run(self):
+        job = None
+        try:
+            with self.gate:
+                if self.cancelled:
+                    return
+                self.entered, job = True, self.job
+            self.result = _hash_descriptor(job[2], job[3][2])
+        except BaseException as error:
+            self.error = error
+        finally:
+            self.job = job = None
+            self.done.set()
+
+
+def _hash_pair(jobs):
+    """At most two borrowed FDs, independently journalled before submission.
+
+    Callback quiescence, rather than Thread.join state, authorizes FD close.
+    A failed submit may already have queued work; the start/cancel gate covers
+    both that callback and a queued callback which will never be scheduled.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from tensorfold.cleanup import raise_failures
+
+    works = tuple(_HashWork(job) for job in jobs)
+    submissions, results = [None] * len(jobs), [None] * len(jobs)
+    statuses = [None] * (2 * len(jobs) + 3)
+    control, transport = [None], [None] * 2
+
+    def interrupted(error):
+        if control[0] is None:
+            control[0] = error
+            return
+        transport[0], transport[1] = error, control[0]
+        try:
+            raise_failures(control[0], transport)
+        except BaseException as retained:
+            control[0] = retained
+
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='model-content')
+    refused = False
+    try:
+        for index in range(len(works)):
+            try:
+                pool.submit(works[index].run)
+            except BaseException as error:
+                submissions[index], refused = error, True
+                break
+    except BaseException as error:
+        refused = True
+        interrupted(error)
+    finally:
+        index = 0
+        while index < len(works):
+            try:
+                work = works[index]
+                if refused:
+                    work.cancel_unstarted()
+                while not work.done.is_set():
+                    work.done.wait()
+                index += 1
+            except BaseException as error:
+                refused = True
+                interrupted(error)
+        while True:
+            try:
+                # CPython join interruption may corrupt its thread bookkeeping.
+                # Every callback already completed or lost FD access above.
+                pool.shutdown(wait=True)
+                break
+            except BaseException as error:
+                interrupted(error)
+    # No tuple/comprehension or error-list allocation after a file failure.
+    first = works[0].error
+    if first is None:
+        first = submissions[0]
+    if first is None and len(works) == 2:
+        first = works[1].error
+        if first is None:
+            first = submissions[1]
+    if first is None:
+        first = control[0]
+    if first is not None:
+        prior_cause = BaseException.__cause__.__get__(first)
+        prior_context = BaseException.__context__.__get__(first)
+        try:
+            index = 0
+            while index < len(works):
+                statuses[2 * index] = first if works[index].error is None else works[index].error
+                statuses[2 * index + 1] = first if submissions[index] is None else submissions[index]
+                index += 1
+            statuses[-3] = first if control[0] is None else control[0]
+            statuses[-2] = first if prior_cause is None else prior_cause
+            statuses[-1] = first if prior_context is None else prior_context
+            raise_failures(first, statuses)
+        except BaseException as failure:
+            if failure is first:
+                raise
+            # Worker/FD quiescence already holds; these native roots and the
+            # prepaid status journal remain traceback-owned on transport OOM.
+            raise first from failure
+    index = 0
+    while index < len(works):
+        results[index] = works[index].result
+        index += 1
+    return results
+
+
+def _capture_paired(files, runtime, previous, authorize, max_file_bytes, max_total_bytes, started):
+    contents, total, read_bytes, reused = [], 0, 0, 0
+    names = sorted(files)
+    for offset in range(0, len(names), 2):
+        scope, primary = FileStreams(max_files=2), None
+        opened, pending = [], []
+        try:
+            # Authorize/open/admit in canonical order BEFORE submitting this
+            # batch. No later file is opened while these two owners are live.
+            for name in names[offset:offset + 2]:
+                path = authorize(name, files[name])
+                if not isinstance(path, Path) or not path.is_absolute():
+                    raise ValueError('input authorization must return an absolute resolved path')
+                fd, info = _open_regular(path, max_file_bytes, scope)
+                total += info.st_size
+                if total > max_total_bytes:
+                    raise ValueError('model execution inputs exceed total byte budget')
+                item = (name, path, fd, _identity(info))
+                opened.append(item)
+                old = previous.get(name)
+                if old is None or old.path != str(path) or old.stat_identity != item[3]:
+                    pending.append(item)
+            hashed = iter(_hash_pair(pending)) if pending else iter(())
+            for name, path, fd, before in opened:
+                old = previous.get(name)
+                if old is not None and old.path == str(path) and old.stat_identity == before:
+                    sha = old.sha256
+                    reused += 1
+                else:
+                    sha, read = next(hashed)
+                    read_bytes += read
+                if _identity(os.fstat(fd)) != before or _identity(path.stat(follow_symlinks=False)) != before:
+                    raise ValueError('model execution input changed during identity capture')
+                contents.append(FileContent(name, str(path), sha, before[2], before))
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            _close(scope, primary)
+    receipt = _issue_identity(runtime, contents, bytes_read=read_bytes, hashes_reused=reused, started=started)
+    receipt.verify_unchanged()
+    return receipt
+
+
 def capture_model_identity(files: dict[str, Path], *, runtime_identity, authorize,
                            max_file_bytes: int, max_total_bytes: int,
                            reuse: ModelIdentity | None = None, reuse_is_immutable: bool = False,
-                           max_files: int = 65536, max_name_bytes: int = 4096) -> ModelIdentity:
+                           max_files: int = 65536, max_name_bytes: int = 4096,
+                           hash_workers: int = 1) -> ModelIdentity:
     """Hash a complete caller-selected, authorized execution input closure.
 
     Byte budgets are explicit owner policy, not hardware/model-size defaults.
     Names and content affect identity; resolved host paths only bind lifetime
     checks. Reuse requires identical runtime/input/stat identities and a caller
     guarantee that inputs have stayed immutable since the prior capture.
+    ``hash_workers=2`` authorizes two startup-only managed threads and at most
+    two descriptor owners. Each unchanged reader retains up to two 1MiB byte
+    blocks across os.read assignment (4MiB total, 2MiB extra versus serial).
+    Thread/allocator RSS and I/O contention require actual owner measurements;
+    these payload extents are not physical process-memory bounds.
     """
     started = time.perf_counter()
     if (type(files) is not dict or not files
             or any(type(n) is not int or n < 0 for n in (max_file_bytes, max_total_bytes))
             or any(type(n) is not int or n <= 0 for n in (max_files, max_name_bytes))
             or len(files) > max_files
-            or type(reuse_is_immutable) is not bool):
+            or type(reuse_is_immutable) is not bool or type(hash_workers) is not int or hash_workers not in (1, 2)):
         raise ValueError("explicit model input closure and byte budgets required")
     for name, path in files.items():
         if (type(name) is not str or not name or len(name) > max_name_bytes
@@ -287,6 +467,8 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
     if reuse is not None:
         if reuse.runtime_json == runtime and {f.logical_name for f in reuse.files} == set(files):
             previous = {f.logical_name: f for f in reuse.files}
+    if hash_workers == 2:
+        return _capture_paired(files, runtime, previous, authorize, max_file_bytes, max_total_bytes, started)
     contents = []
     total = read_bytes = reused = 0
     for name in sorted(files):

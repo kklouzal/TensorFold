@@ -927,6 +927,7 @@ class _OwnedHCWriteback:
                 or h.ndim != 2 or not 0 < h.shape[0] <= self.rows or h.shape[1] != 10240
                 or hout.shape != h.shape or pss.shape != (h.shape[0], 10, 4)
                 or h.dtype != torch.float16 or hout.dtype != torch.float16 or pss.dtype != torch.float32
+                or (not torch.is_inference_mode_enabled() and (hout.is_inference() or pss.is_inference()))
                 or any(t.device != self.prepared.device or not t.is_contiguous() or t.requires_grad
                        or t.is_conj() or t.is_neg() for t in (h, hout, pss))
                 or h.data_ptr() not in self.residuals or hout.data_ptr() != h.data_ptr() or pss.data_ptr() != self.pss):
@@ -1045,14 +1046,42 @@ def add_streams(e, hs, out, streams):
     return _reference["add_streams"](e, hs, out, streams)
 
 
+def prepare_half_moe_partial(device):
+    """Make the selected private function resident before physical admission."""
+    if _PRIVATE_HALF_PARTIAL != "native-half-v1":
+        return None
+    device = torch.device(device)
+    if device.type != "cuda" or torch.cuda.get_device_capability(device) != (7, 0):
+        raise ValueError("private Half MoE partial requires actual SM70 preparation")
+    from .family_native import extension
+
+    with torch.cuda.device(device):
+        module = extension()
+        module.prepare_partial()
+    return module
+
+
 def moe_partial(y, wts, out, rows):
     if (_PRIVATE_HALF_PARTIAL == "native-half-v1" and y.is_cuda and y.dtype == torch.float16
             and torch.cuda.get_device_capability(y.device) == (7, 0)):
+        operands = (y, wts, out)
+        if (any(type(t) is not torch.Tensor or t.requires_grad or not t.is_contiguous()
+                or t.is_neg() or t.is_conj() for t in operands)
+                or (out.is_inference() and not torch.is_inference_mode_enabled())
+                or torch._C._overlaps(out, y) or torch._C._overlaps(out, wts)):
+            # The Torch temporary preserves generic/autograd/view and alias
+            # semantics; the owned raw kernel borrows disjoint plain storage.
+            return _reference["moe_partial"](y, wts, out, rows)
         from .family_native import extension
 
         # Existing ABI validates contiguous same-device Half/FP32 operands,
         # geometry and live row bounds before the allocation-free launch.
-        return extension().partial(y, wts, out, rows)
+        result = extension().partial(y, wts, out, rows)
+        # The retained Torch oracle publishes one copy_, including an empty
+        # prefix. Raw extension writes do not publish Tensor mutation metadata.
+        if not out.is_inference():
+            torch.autograd.graph.increment_version(out)
+        return result
     native = _fused(out, half=False)
     if native is not None:
         return native.partial(y, wts, out, rows)
@@ -1064,3 +1093,44 @@ def shift_windows(old, new, keep, channels):
     if native is not None:
         return native.shift(old, new, keep, channels)
     return _reference["shift_windows"](old, new, keep, channels)
+
+
+def prepare_owned_q8(device):
+    """Resolve only the owned-Q8 decode operator during voted owner preparation."""
+    if torch.device(device).type != 'cuda' or torch.cuda.get_device_capability(device) != (7, 0):
+        raise ValueError('owned Q8 preparation requires its admitted SM70 owner')
+    from .family_native import extension
+    with torch.cuda.device(device):
+        module = extension()
+        module.prepare_owned_q8()
+    return module
+
+
+def owned_q8_prepare(module, projection, coordinates, weights, cache, state, layer, query, iq, *,
+                     frequency, sections, amplitude, start):
+    """Existing caller lease owns inputs/outputs through current-stream completion.
+
+    The caller selects only one issued target decode row. Raw IK transactions
+    stay with compact_indexer; this operation does not acquire/release that span.
+    """
+    outputs = (query, iq, cache.k, cache.v, cache.ks, cache.vs, state.kv_status)
+    if (torch.is_grad_enabled() or any(t.requires_grad for t in (projection, *outputs))
+            or (not torch.is_inference_mode_enabled() and any(t.is_inference() for t in outputs))):
+        return None
+    c, a = weights.cfg, layer.attn
+    if any(t.requires_grad for t in (a.q_scale, a.k_scale, a.iq_scale, frequency)):
+        return None
+    at = 2 * c.heads * c.head_dim + 2 * c.head_dim + c.index_heads * c.index_dim
+    ik = _guard(projection[:, at:at + c.index_dim], state.kv_status, 16, layer.index)
+    module.owned_q8_prepare(projection, coordinates, a.q_scale, a.k_scale, a.iq_scale, frequency,
+        query, iq, cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets,
+        state.history_generations, state.kv_status, state.slot_generation, state.history_generation,
+        start, cache.logical_capacity, cache.capacity, cache.placement.page_tokens, layer.index,
+        c.heads, c.index_heads, c.index_dim, c.eps, amplitude, sections[1], sections[2])
+    # Match incumbent copy_/sticky-status publication counters. Aliased cache
+    # bases intentionally advance once per owned append; inference has no counter.
+    mutations = (query, iq) + (state.kv_status,) * 18
+    if cache.offsets[start // cache.placement.page_tokens] >= 0:
+        mutations += (cache.k, cache.v, cache.ks, cache.vs)
+    torch.autograd.graph.increment_version(tuple(t for t in mutations if not t.is_inference()))
+    return ik

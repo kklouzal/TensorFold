@@ -13,6 +13,7 @@ using T = at::Tensor;
 using O = std::optional<T>;
 
 void family_writeback_prepare_cuda();
+void family_partial_prepare_cuda();
 void family_writeback_cuda(const T&, T&, T&, int, int, const O&, const O&, const O&, const O&);
 void family_normed_cuda(const T&, const T&, const T&, T&, T&, int, float);
 void family_act_cuda(const T&, T&, T&, const O&, int, int);
@@ -40,6 +41,11 @@ void family_ring_publish_cuda(const T&, T&, const T&, int, int, const O&, const 
 void family_qsa_select512_cuda(const T&, const T&, T&, T&);
 void family_qsa_dense_cuda(const T&, T&, T&, int);
 void family_qsa_rows_cuda(const T&, const T&, const T&, T&, T&, T&, T&, int, int, int, int);
+
+void family_owned_q8_prepare_resident_cuda();
+void family_owned_q8_prepare_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&,
+    T&, T&, T&, T&, const T&, const T&, T&, int64_t, int64_t, int64_t, int64_t, int64_t,
+    int, int, int, int, int, float, float, int, int);
 
 namespace {
 void check(const T& tensor, const T& owner, at::ScalarType dtype, const char* name) {
@@ -207,6 +213,45 @@ void shift(T old, const T& rows, int keep, int channels) {
     TORCH_CHECK(old.dim() == 3 && rows.dim() == 3 && old.size(0) == rows.size(0) && old.size(2) == channels
                 && rows.size(2) >= channels && old.size(1) <= 16 && keep >= 0 && keep <= rows.size(1), "conv shift geometry");
     c10::cuda::CUDAGuard guard(old.device()); family_shift_cuda(old, rows, keep, channels);
+}
+
+void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
+        const T& freq, T q, T iq, T k, T v, T ks, T vs, const T& offsets,
+        const T& generations, T status, int64_t slot, int64_t owner, int64_t start,
+        int64_t logical, int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
+        int index_dim, double eps, double amplitude, int section1, int section2) {
+    check_half(p); epsilon(eps);
+    TORCH_CHECK(p.dim() == 2 && p.size(0) == 1 && qheads == 3 && index_heads > 0 && index_heads <= 256
+        && index_dim > 0 && index_dim <= 256 && index_dim % 32 == 0
+        && p.size(1) == 2 * qheads * 256 + 512 + (index_heads + 1) * index_dim, "owned Q8 projection geometry");
+    for (const auto* x : {&q, &iq, &ks, &vs}) same_half(*x, p);
+    for (const auto* x : {&qw, &kw, &iw, &freq}) check(*x, p, at::kFloat, "owned Q8 weights");
+    for (const auto* x : {&axes, &offsets, &generations}) check(*x, p, at::kLong, "owned Q8 metadata");
+    for (const auto* x : {&k, &v}) check(*x, p, at::kChar, "owned Q8 payload");
+    check(status, p, at::kInt, "owned Q8 status");
+    TORCH_CHECK(q.numel() == qheads * 256 && iq.numel() == index_heads * index_dim && axes.dim() == 2 && axes.size(0) == 1 && axes.size(1) == 3
+        && qw.numel() == 256 && kw.numel() == 256 && iw.numel() == index_dim && freq.dim() == 1
+        && freq.numel() > 0 && freq.numel() * 2 <= std::min(256, index_dim)
+        && generations.numel() == 2 && status.numel() == 2, "owned Q8 output/control geometry");
+    TORCH_CHECK(slot >= 0 && owner >= 0 && logical > 0 && logical <= INT32_MAX && physical >= 0 && physical <= INT32_MAX
+        && start >= 0 && start < logical && page_tokens > 0 && page_tokens % 4 == 0
+        && offsets.dim() == 1 && offsets.numel() == (logical + page_tokens - 1) / page_tokens
+        && k.numel() >= physical * 256 && v.numel() >= physical * 256 && ks.numel() >= physical * 8
+        && vs.numel() >= physical * 8 && layer >= 0 && section1 >= 0 && section2 >= 0
+        && section1 <= 256 && section2 <= 256 && std::isfinite(amplitude) && amplitude > 0
+        && std::isfinite(float(amplitude)), "owned Q8 page/domain geometry");
+    // The outputs and the status word are separately owned. No user-supplied
+    // alias may race input reads, including the two sticky status words.
+    const T* writes[] = {&q, &iq, &k, &v, &ks, &vs, &status};
+    const T* reads[] = {&p, &axes, &qw, &kw, &iw, &freq, &offsets, &generations};
+    for (int i = 0; i < 7; ++i) {
+        for (const auto* read : reads) at::assert_no_overlap(*writes[i], *read);
+        for (int j = 0; j < i; ++j) at::assert_no_overlap(*writes[i], *writes[j]);
+    }
+    c10::cuda::CUDAGuard guard(p.device());
+    family_owned_q8_prepare_cuda(p, axes, qw, kw, iw, freq, q, iq, k, v, ks, vs, offsets, generations,
+        status, slot, owner, start, logical, physical, page_tokens, layer, qheads, index_heads, index_dim,
+        float(eps), float(amplitude), section1, section2);
 }
 
 void prep(const T& projection, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
@@ -496,6 +541,9 @@ void qsa_select512(const T& scores, const T& lengths, T output, T status) {
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("prepare_writeback", &family_writeback_prepare_cuda);
+    m.def("prepare_partial", &family_partial_prepare_cuda);
+    m.def("prepare_owned_q8", &family_owned_q8_prepare_resident_cuda);
+    m.def("owned_q8_prepare", &owned_q8_prepare);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
     m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);

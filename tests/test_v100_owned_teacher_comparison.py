@@ -385,3 +385,155 @@ def test_actual_activation_identity_requires_sha256_before_normalization(tmp_pat
     first, second = _pair(tmp_path, activation=activation)
     with pytest.raises(ValueError, match='actual activation SHA'):
         quality.compare_owned_teacher(first, second, read_timeout_s=10)
+
+
+# Normal RN controller evidence is deliberately independent of closed-client
+# fixtures above: no teacher-client/model-result/typed Host files are supplied.
+def _standalone(root, mode, reference=None, method=None, fault=None, arrays=None):
+    original = _side(root, mode, reference, arrays=arrays)
+    authority_path = root / 'teacher/teacher-authority.json'
+    a = json.loads(authority_path.read_text())
+    base = ['owned-etp4-native-slots-v1', 8, 4, 512, 640, 2560, 11, 32, 4096, False, 'grouped-v1']
+    plan_id = base + (['grouped-gate-up', 4] if method is None else
+                     ['owned-onecat-active-frame-current-down-v1',
+                      ['owned-onecat-gu-current-down-v1', method, 117976064, 67108864, 'reference-grouped4']])
+    family = {'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1', 'graph_family': 'uncaptured',
+              'trial': True, 'rn_heads_per_block': 12}
+    profile = a['actual_owned_profile']
+    profile.update(plan_identity=plan_id, rank=0, world=8, target_banks=48, mtp_banks=0, capability=[7, 0])
+    semantic = profile['teacher_semantics']
+    semantic.update(context=262144, prefill_rows=4096, target_rows=24, sm70_profile='reference', prepared_execution=family)
+    semantic['state_kv_identity'].append(['owned-expert-native', plan_id])
+    a['owner_family'] = family
+    a['widths'] = [1] * 8
+    a['vocab'] = 4  # Tiny fixture preserves full-vector validation without model work.
+    for f in a['frames']:
+        f['execution_family'] = family
+        f['kv_identity'] = copy.deepcopy(semantic['state_kv_identity'])
+    plan = {'schema': 'tensorfold.owned-teacher-plan-v1', 'mode': mode, 'vocab': 4,
+            'context': 262144, 'input_ids': a['input_ids'], 'identity': a['declared_identity'],
+            'max_frames': 4, 'reference': None, 'read_timeout_s': 30}
+    plan_ref = _write(root, 'operator/teacher-plan.json', plan)
+    a['input_sha256'] = plan_ref['sha256']
+    worker_rows, libraries = [], {}
+    for rank in range(8):
+        p = copy.deepcopy(profile)
+        p['rank'] = rank
+        startup = {'rank': rank, 'teacher_profile': p, 'plan_identity': plan_id,
+                   'teacher_server_instance_id': 'instance', 'runtime_cli_sha256': '1' * 64,
+                   'coordinate_profile_identity': profile['coordinate_profile_identity']}
+        paths = ['/cache/tf_gguf_fixture.so']
+        if method is None:
+            startup['grouped_gate_up'] = {'requested_rows': 4, 'actual_rows': 4}
+        else:
+            paths += ['/cache/tf_onecat_gu_fixture.so', '/cache/tf_onecat_pack_fixture.so']
+            startup['onecat_experts'] = {'schema': 'tensorfold.private-onecat-frame-binding-v1', 'rank': rank, 'world': 8,
+                'status': 'prepared-execution-eligible', 'record': {
+                    'schema': 'tensorfold.onecat-active-frame-owner-v1', 'enabled': True, 'closed': False,
+                    'profile': {'policy': 'owned-onecat-active-frame-current-down-v1', 'method': method,
+                                'banks': 48, 'additional_device_bytes': 117976064, 'frame_slab_bytes': 117964800,
+                                'shared_lookup_bytes': 11264, 'packer_workspace_bytes': 0,
+                                'original_raw_retained': True, 'baseline_grouped_gate_up_rows': 4},
+                    'raw_bindings': list(range(48))},
+                'origins': {'gate_up': {'path': paths[1]}, 'packer': {'path': paths[2]}}}
+        summary = {'rank': rank, 'actual_owned_profile': p, 'closed': True, 'finished': True, 'failed': False,
+                   'teacher_ids': a['teacher_ids'], 'runtime_sources': a['runtime_sources'], 'frames': copy.deepcopy(a['frames'])}
+        if fault:
+            fault('startup', rank, startup)
+            fault('summary', rank, summary)
+        a['startup_receipts'][rank] = {**_write(root, f'teacher/rank-{rank}.json', startup), 'rank': rank}
+        a['startup_receipts'][rank]['file'] = f'rank-{rank}.json'
+        a['rank_receipts'][rank] = {**_write(root, f'teacher/teacher-rank{rank}/summary.json', summary), 'rank': rank}
+        a['rank_receipts'][rank]['file'] = f'teacher-rank{rank}/summary.json'
+        worker_rows.append({'rank': rank, 'PID': 100 + rank, 'family_paths': paths, 'maps': '\n'.join(paths)})
+        libraries.update({path: {'bytes': 42, 'sha256': '7' * 64} for path in paths})
+    authority = _write(root, 'teacher/teacher-authority.json', a)
+    state = {'Status': 'exited', 'Running': False, 'Pid': 0, 'ExitCode': 0, 'OOMKilled': False}
+    host = {'primary': None, 'exit': 0, 'cleanup': [None] * 6, 'post_errors': [None] * 4,
+            'capture_errors': [None] * 8, 'state': state, 'cid': 'c' * 64}
+    image = 'sha256:' + '3' * 64
+    runtime = {'execution': {'execution_families': {'effective': {k: family[k] for k in ('kernel_family', 'graph_family')},
+                'trial': {k: family[k] for k in ('kernel_family', 'graph_family')}, 'native_prepared': True, 'graph_rows': 0}},
+               'context_tokens': 262144, 'sessions': {'allocated_slots': 24},
+               'capacity_plan': {'execution_profile_binding': {'identity': 'bound-content', 'manifest_sha256': 'f' * 64,
+                   'verified_input_files': 2, 'verified_input_bytes': 42, 'content_passes': 1, 'hashes_reused_this_binding': 0}}}
+    stats = {'server': {'instance_id': 'instance'}, 'model': {'kv_dtype': 'int8'},
+             'load': {k: 0 for k in ('requests_in_flight', 'requests_running', 'requests_waiting')}}
+    body = {'prompt': a['input_ids'], 'max_tokens': 4, 'temperature': 0, 'draft': False, 'stream': False}
+    toolmap = {'files': {'tools/v100_rotorquant_quality.py': {'bytes': 42, 'sha256': '6' * 64}}}
+    records = {'authority': authority, 'plan': plan_ref,
+        'host': _write(root, 'trial-execution-result.json', host),
+        'inspect': _write(root, 'trial-terminal-inspect.json', [{'State': state, 'Id': host['cid'], 'Image': image,
+            'Mounts': [{'Source': '/models/same', 'Destination': '/models/same', 'RW': False},
+                       {'Source': '/frontend/same', 'Destination': '/frontend', 'RW': False}]}]),
+        'seal': _write(root, 'input-seal-readback.json', {'App': image, 'source_uid': 'a' * 64, 'teacher_plan_sha256': plan_ref['sha256']}),
+        'source_after': _write(root, 'trial-tools-source-after.json', {**toolmap, 'all_match': True}),
+        'toolmap': _write(root, 'tool-source-map.json', toolmap),
+        'origins': _write(root, 'all8-mapped-HC-family.json', {'workers': worker_rows, 'libraries': libraries}),
+        'runtime': _write(root, 'client/readiness-0/result.json', runtime),
+        'before': _write(root, 'client/stats-before/result.json', stats),
+        'after': _write(root, 'client/stats-after/result.json', stats),
+        'request': _write(root, 'client/one-short/request.json', {'method': 'POST', 'url': 'http://localhost/v1/completions', 'body': body}),
+        'exchange': _write(root, 'client/one-short/exchange.json', {'complete': True, 'cancelled_by_client': False, 'status': 200}),
+        'post': _write(root, 'client/one-short/result.json', {'tensorfold': {'token_ids': a['teacher_ids'], 'drafts': False,
+                 'drafted': 0, 'accepted': 0, 'cached': 0}, 'usage': {'prompt_tokens': 2, 'completion_tokens': 4}})}
+    records['completion'] = _write(root, 'completion.json', {'schema': 'tensorfold.owned-teacher-completion-v1',
+        'host_result_sha256': records['host']['sha256'], 'authority_sha256': authority['sha256'], 'host_cli_exit': 0,
+        'operation_gate_sha256': '4' * 64, 'review_sha256': '5' * 64, 'terminal_observation_sha256': '6' * 64})
+    return {'root': str(root), 'files': records}
+
+
+@pytest.mark.parametrize('method', ['tensorfold-fp32-epilogue', 'onecat-half-epilogue'])
+def test_standalone_candidate_diagnostic_uses_real_normal_controller_artifacts(tmp_path, method):
+    a = _standalone(tmp_path / 'ref', 'capture')
+    b = _standalone(tmp_path / 'candidate', 'replay', a['files']['authority']['sha256'], method)
+    report = quality.compare_owned_candidate_teacher(a, b, method=method, read_timeout_s=30)
+    assert report['complete'] is True and len(report['frames']) == 4
+    assert all(row['exact_uint32_bits'] for row in report['frames'])
+    assert report['quality_acceptance'] is report['qualification'] is report['P3_valid'] is False
+
+
+@pytest.mark.parametrize('key,change', [
+    ('host', lambda x: x.update(exit=1)),
+    ('completion', lambda x: x.update(host_cli_exit=1)),
+    ('seal', lambda x: x.update(App='sha256:' + '9' * 64)),
+    ('source_after', lambda x: x.update(all_match=False)),
+    ('post', lambda x: x['tensorfold'].update(cached=1)),
+    ('after', lambda x: x['server'].update(instance_id='replacement')),
+    ('origins', lambda x: x.update(workers=x['workers'][:-1])),
+    ('runtime', lambda x: x['capacity_plan']['execution_profile_binding'].update(identity='other-model')),
+])
+def test_standalone_candidate_rejects_incomplete_or_unrelated_evidence_before_npy(tmp_path, monkeypatch, key, change):
+    a = _standalone(tmp_path / 'ref', 'capture')
+    method = 'tensorfold-fp32-epilogue'
+    b = _standalone(tmp_path / 'candidate', 'replay', a['files']['authority']['sha256'], method)
+    path = Path(b['root']) / b['files'][key]['file']
+    value = json.loads(path.read_text())
+    change(value)
+    b['files'][key] = _write(Path(b['root']), b['files'][key]['file'], value)
+    monkeypatch.setattr(quality, '_owned_comparison_vector', lambda *a, **k: pytest.fail('invalid pair reached NPY'))
+    with pytest.raises(ValueError):
+        quality.compare_owned_candidate_teacher(a, b, method=method, read_timeout_s=30)
+
+
+@pytest.mark.parametrize('fault', ['method', 'missing', 'rank-semantic', 'producer', 'plan'])
+def test_standalone_candidate_explicit_delta_and_all_rank_linkage(tmp_path, monkeypatch, fault):
+    method = 'tensorfold-fp32-epilogue'
+    def mutate(kind, rank, value):
+        if kind != 'startup' or rank != 7:
+            return
+        if fault == 'method':
+            value['onecat_experts']['record']['profile']['method'] = 'onecat-half-epilogue'
+        elif fault == 'missing':
+            value.pop('onecat_experts')
+        elif fault == 'rank-semantic':
+            value['teacher_profile']['teacher_semantics']['context'] = 8192
+        elif fault == 'producer':
+            value['runtime_cli_sha256'] = '9' * 64
+        else:
+            value['plan_identity'] = ['not-the-owned-plan']
+    a = _standalone(tmp_path / 'ref', 'capture')
+    b = _standalone(tmp_path / 'candidate', 'replay', a['files']['authority']['sha256'], method, fault=mutate)
+    monkeypatch.setattr(quality, '_owned_comparison_vector', lambda *a, **k: pytest.fail('invalid pair reached NPY'))
+    with pytest.raises(ValueError):
+        quality.compare_owned_candidate_teacher(a, b, method=method, read_timeout_s=30)

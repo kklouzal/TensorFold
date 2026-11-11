@@ -243,6 +243,42 @@ def _encode(value, format, status, layer, *, error):
 
 
 def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
+    """Operation-owned Q8 single-row target decode; every other path is original."""
+    owner = getattr(buffers, 'history_owner', None)
+    if (not mtp and not buffers.prefill and stop - start == 1
+            and getattr(buffers, 'owner_kernel_family', None) == 'sm70-paged-owner-rn-ex2-p2051-v1'
+            and getattr(buffers, 'owner_graph_family', None) == 'uncaptured'
+            and owner is not None and getattr(owner, 'owned_q8_preparation', None) is not None
+            and buffers.target_indexer_coordinates is not None
+            and state.compact_indexer is not None):
+        c, a = weights.cfg, layer.attn
+        ai = state.att_index[layer.index]
+        cache = state.kc[ai]
+        if (type(cache) is OwnedKVCache and
+                (cache.key_format.bits, cache.key_format.codec, cache.value_format.bits, cache.value_format.codec) == (8, 0, 8, 0)):
+            coordinates = buffers.target_indexer_coordinates[start:stop]
+            position = buffers.target_indexer_position
+            if position is None:
+                raise ValueError('owned Q8 preparation requires its issued position profile')
+            # This guard and raw-index transaction deliberately stay incumbent.
+            ik = ops.owned_q8_prepare(owner.owned_q8_preparation, projection[start:stop], coordinates,
+                    weights, cache, state, layer, buffers.q[start:stop], buffers.iq[start:stop],
+                    frequency=position.inv_freq, sections=position.sections,
+                    amplitude=position.amplitude, start=state.pos)
+            if ik is not None:
+                if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
+                        include_mtp=hasattr(state, 'mtp_kc')):
+                    entry = state.compact_indexer.append(ai, state.pos, ik.half(), coordinates,
+                        buffers.compact_indexer_stage, start, stop, mtp=False,
+                        expected=(state.slot_generation, state.history_generation))
+                    entry.pool(state.pooled[ai], a.ik_scale, position.inv_freq, c.eps,
+                               position.sections, position.amplitude)
+                state.target_tentative_length = state.pos + 1
+                return
+    return _prepare_reference(projection, state, layer, weights, buffers, start, stop, mtp=mtp)
+
+
+def _prepare_reference(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Prepare one bounded frame; only owners publish persistent rows."""
     c, a = weights.cfg, layer.attn
     ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
@@ -459,7 +495,7 @@ class OwnerBuffers:
         self.rows = self.heads = self.head_dim = self.idw = self.rank = self.device = self.prefill = self.comm = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
-        self.reference_tiles = None
+        self.reference_tiles = self.owned_q8_preparation = None
         self.native_kernel_family, self.native_heads_per_block = "sm70-paged-owner-q8-compact-v1", None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_host_words = None
@@ -772,6 +808,10 @@ class OwnerBuffers:
             if (self.partials.numel() * self.partials.element_size() < rn_probability_bytes(self.rows)
                     or torch._C._overlaps(self.partials, self.partial)):
                 raise ValueError("RN Half-P requires its fully paid disjoint PV receive slab")
+        if (family == RN_KERNEL_FAMILY and not self.prefill and self.native_pair is not None
+                and (self.native_pair.key.bits, self.native_pair.key.codec,
+                     self.native_pair.value.bits, self.native_pair.value.codec) == (8, 0, 8, 0)):
+            self.owned_q8_preparation = ops.prepare_owned_q8(self.device)
         self.native_kernel_family, self.native_heads_per_block = family, heads_per_block
         self._native_family_configured = True
 
@@ -966,7 +1006,7 @@ class OwnerBuffers:
         self.retire_native()
         if self.reference_tiles is not None:
             self.reference_tiles.release_views()
-        self.reference_tiles = None
+        self.reference_tiles = self.owned_q8_preparation = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_host_words = None
@@ -976,6 +1016,9 @@ class OwnerBuffers:
 
     def native_record(self):
         return {"prepared": self.descriptors is not None,
+                "owned_q8_preparation": (None if self.owned_q8_preparation is None else {
+                    "policy": "owned-q8-decode-preparation-v1", "module": self.owned_q8_preparation.__name__,
+                    "rows_per_call": 1, "qualified": False}),
                 "collective_family": self.native_collective,
                 **({"kernel_family": self.native_kernel_family, "rn_heads_per_block": self.native_heads_per_block,
                     "rn_probability_borrow_bytes": self.rows * 12 * 2051 * 2,

@@ -4,11 +4,12 @@ from tensorfold.cuda.capacity import Weights
 
 
 def capacity_options(model_dir, rank, world, mtp=False, mtp_model_dir=None, draft_ids=None, prefill_plan=None,
-                     position_profile=None, expert_tensor_parallel_size=None, routing_rows=None):
+                     position_profile=None, expert_tensor_parallel_size=None, routing_rows=None, _onecat_owner=None):
     from .gguf_weights import model_plan, weight_byte_plan
 
     plan = weight_byte_plan(model_dir, tp=(rank, world), mtp=mtp, draft_ids=draft_ids,
                             mtp_model_dir=mtp_model_dir,
+                            **({"_onecat_owner": _onecat_owner} if _onecat_owner is not None else {}),
                             **({"expert_tensor_parallel_size": expert_tensor_parallel_size} if expert_tensor_parallel_size is not None else {}),
                             **({"routing_rows": routing_rows} if routing_rows is not None else {}),
                             **({"prefill_plan": prefill_plan} if prefill_plan is not None else {}),

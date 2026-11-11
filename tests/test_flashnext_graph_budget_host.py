@@ -202,7 +202,7 @@ def decoder(request=None, live_bytes=5000, header=1000):
 
         def record(self):
             return {"budget_bytes": self.budget, "bytes": 300, "room_bytes": 300}
-    cls = source_class("multi.py", "MultiDecoder", {"capture_graphs", "_publish_graphs"},
+    cls = source_class("multi.py", "MultiDecoder", {"capture_graphs", "_publish_graphs", "_resolve_graph_admission"},
                        {"multi_graphs": NS(RoundGraphs=Graphs, prepare_capture=lambda: None,
                                            live_bytes=lambda: live[0], service_live_bytes=lambda pool: lambda: live[0]),
                         "POINTS": 4,

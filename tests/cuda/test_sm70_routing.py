@@ -39,7 +39,7 @@ def test_router_weights_and_dynamic_graph_replay_are_exact(monkeypatch):
     logits = torch.randn(3, 513, device="cuda")
     reference, candidate = buffer(3), buffer(3)
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
-    moe.select_rows(logits, reference, 10, 512)
+    moe._torch_select_rows(logits, reference, 10, 512)
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", True)
     moe.select_rows(logits, candidate, 10, 512)
     assert torch.equal(candidate.pick, reference.pick)
@@ -50,7 +50,7 @@ def test_router_weights_and_dynamic_graph_replay_are_exact(monkeypatch):
     for seed in (3, 11, 45):
         logits.copy_(torch.randn(logits.shape, device="cuda", generator=torch.Generator(device="cuda").manual_seed(seed)))
         monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
-        moe.select_rows(logits, reference, 10, 512)
+        moe._torch_select_rows(logits, reference, 10, 512)
         monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", True)
         graph.replay()
         assert torch.equal(candidate.pick, reference.pick)

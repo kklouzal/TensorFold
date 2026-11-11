@@ -39,20 +39,22 @@ def multi_graph_bytes() -> int:
     return multi_graph_request() or 0
 
 
-def multi_static_bytes(t: dict, streams: int, each: int, mtp: bool) -> int:
+def multi_static_bytes(t: dict, streams: int, each: int, mtp: bool, *, gdn_pointer_fields: int = 2) -> int:
     """Flash Next's concurrent decoder's static round tables, each a device array and its pinned mirror
     (``gdn_multi.RoundTables``; ``attn_multi.StepTables`` for the verify and, with ``mtp``, the MTP steps), and its
     pinned codec status words (``MultiDecoder.kv_host``), in bytes."""
 
-    device, host = multi_static_domains(t, streams, each, mtp)
+    device, host = multi_static_domains(t, streams, each, mtp, gdn_pointer_fields=gdn_pointer_fields)
     return device + host
 
 
-def multi_static_domains(t: dict, streams: int, each: int, mtp: bool) -> tuple[int, int]:
+def multi_static_domains(t: dict, streams: int, each: int, mtp: bool, *, gdn_pointer_fields: int = 2) -> tuple[int, int]:
     """Actual device slabs and pinned host mirrors; neither is an extra copy of the other domain."""
+    if type(gdn_pointer_fields) is not int or gdn_pointer_fields not in (2, 8):
+        raise ValueError("GDN pointer fields must select the ordinary or native-Half ABI")
     linear, attention = layer_counts(t)
     rows = streams * each
-    tables = ((8 * rows + 2 * streams + 1 + rows) * 4 + 2 * linear * streams * 8
+    tables = ((8 * rows + 2 * streams + 1 + rows) * 4 + gdn_pointer_fields * linear * streams * 8
               + (1 + mtp) * (2 * rows + 2 * streams) * 4 + (attention * 6 + 4 + mtp * 10) * streams * 8)
     return tables, tables + 8 * streams
 
@@ -553,7 +555,7 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             full_windows: int | None = None, workspace_bytes: int = 0,
                             indexer_raw_device_bytes: int | None = None,
                             execution_rows: int | None = None, history_placement=None, rank: int = 0,
-                            device_metadata_only: bool = False, expert_tensor_parallel_size=None) -> Geometry:
+                            device_metadata_only: bool = False, expert_tensor_parallel_size=None, gdn_pointer_fields: int = 2) -> Geometry:
     """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
     the ``points`` each stream's prompt piece copies out before they are kept), its rounds' static tables and the
     budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs).
@@ -596,8 +598,8 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
         # Each State owns two local words and, with TP, an independent peer
         # packet. The cohort's send/receive/host arrays are charged separately.
         fixed += 8 * streams * (1 + (world if world > 1 else 0))
-    static_bytes = (multi_static_domains(t, streams, each, mtp)[0] if device_metadata_only else
-                    multi_static_bytes(t, streams, each, mtp))
+    static_bytes = (multi_static_domains(t, streams, each, mtp, gdn_pointer_fields=gdn_pointer_fields)[0] if device_metadata_only else
+                    multi_static_bytes(t, streams, each, mtp, gdn_pointer_fields=gdn_pointer_fields))
     fixed += static_bytes + graph_bytes     # slot metadata still covers every resident slot
     count = attention + int(mtp)
     if history_placement is not None:

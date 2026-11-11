@@ -384,6 +384,91 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
     else ikc[cache_row * index_dim + col] = __float2half_rn(value);
 }
 
+// Operation-owned unique-history Q8 decode. One State row; explicit issued
+// coordinates and a current owned-page table, never contiguous logical KV.
+__global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordinates,
+        const float* qw, const float* kw, const float* iw, const float* freq,
+        __half* queries, __half* iq, int8_t* kc, int8_t* vc, __half* ks, __half* vs,
+        const int64_t* offsets, const int64_t* generations, int* status,
+        int64_t expected_slot, int64_t expected_owner, int64_t start, int64_t logical,
+        int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
+        int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
+    __shared__ float shared[512], normalized[256];
+    __shared__ int64_t destination;
+    const int unit = blockIdx.x, col = threadIdx.x;
+    if (!col) {
+        destination = -2;
+        if (generations[0] != expected_slot || generations[1] != expected_owner
+                || start < 0 || start >= logical) {
+            atomicOr(status, 32); atomicCAS(status + 1, -2, layer);
+        } else {
+            const int64_t offset = offsets[start / page_tokens];
+            const int64_t within = start % page_tokens;
+            if (offset == -1) destination = -1;
+            else if (offset < -1 || within >= physical || offset > physical - 1 - within) {
+                atomicOr(status, 32); atomicCAS(status + 1, -2, layer);
+            } else destination = offset + within;
+        }
+    }
+    __syncthreads();
+    if (destination == -2) return;  // Full CTA, including every shuffle lane.
+    int kind, head, width, begin, flag;
+    if (unit < qheads) { kind = 0; head = unit; width = 256; begin = 2 * head * 256; flag = 1; }
+    else if (unit == qheads) { kind = 1; head = 0; width = 256; begin = 2 * qheads * 256; flag = 2; }
+    else if (unit == qheads + 1) { kind = 2; head = 0; width = 256; begin = 2 * qheads * 256 + 256; flag = 4; }
+    else { kind = 3; head = unit - qheads - 2; width = index_dim;
+        begin = 2 * qheads * 256 + 512 + head * index_dim; flag = 16; }
+    float value = col < width ? guarded(__half2float(p[begin + col]), status, flag, layer, 0, nullptr) : 0.f;
+    if (kind != 2) {
+        normalized[col] = value;
+        __syncthreads();
+        const int outputs = kind == 0 ? qheads : kind == 1 ? 1 : index_heads;
+        const float total = torch_sum(FloatSquareReader{normalized}, width, outputs, shared);
+        const float inv = rsqrtf(__fadd_rn(__fmul_rn(total, 1.f / float(width)), eps));
+        const float* gamma = kind == 0 ? qw : kind == 1 ? kw : iw;
+        normalized[col] = col < width ? half_round(__fmul_rn(__fmul_rn(value, inv), gamma[col])) : 0.f;
+        __syncthreads();
+        value = normalized[col];
+        if (col < 2 * rotary_half) {
+            const int pair = col % rotary_half;
+            const int axis = pair % 3 == 1 && pair < 3 * section1 ? 1
+                : pair % 3 == 2 && pair < 3 * section2 ? 2 : 0;
+            const float angle = __fmul_rn(float(coordinates[axis]), freq[pair]);
+            const float sine = __fmul_rn(sinf(angle), rope_scale);
+            const float cosine = __fmul_rn(cosf(angle), rope_scale);
+            const float cross = normalized[col < rotary_half ? col + rotary_half : col - rotary_half];
+            value = half_round(col < rotary_half
+                ? __fsub_rn(__fmul_rn(value, cosine), __fmul_rn(cross, sine))
+                : __fadd_rn(__fmul_rn(value, cosine), __fmul_rn(cross, sine)));
+        }
+        value = guarded(value, status, flag, layer, 0, nullptr);
+    }
+    if (col >= width) return;  // Widths are complete warps.
+    if (kind == 0) queries[head * 256 + col] = __float2half_rn(hadamard(value));
+    else if (kind == 3) iq[head * index_dim + col] = __float2half_rn(value);
+    else {
+        // Foreign owners still validate every input and scale, as the old
+        // transform/encode-before-owned-append path did. Stores alone are masked.
+        value = hadamard(value);
+        float scale = fabsf(value);
+        #pragma unroll
+        for (int offset = 16; offset; offset >>= 1)
+            scale = fmaxf(scale, __shfl_xor_sync(0xffffffffu, scale, offset));
+        scale = __fadd_rn(scale, 1e-10f);
+        float stored = half_round(scale);
+        if (!isfinite(stored) || stored < 0.f) {
+            if (!(col & 31)) { atomicOr(status, 8); atomicCAS(status + 1, -2, layer); }
+            stored = 0.f;
+        }
+        float code = __fadd_rn(floorf(__fmul_rn(__fmul_rn(value, __fdiv_rn(1.f, scale)), 128.f)), 128.f);
+        code = fminf(255.f, fmaxf(0.f, code));
+        if (destination >= 0) {
+            (kind == 1 ? kc : vc)[destination * 256 + col] = static_cast<int8_t>(int(code) - 128);
+            if (!(col & 31)) (kind == 1 ? ks : vs)[destination * 8 + col / 32] = __float2half_rn(stored);
+        }
+    }
+}
+
 // Keep the qualified raw/INT8 prep_kernel above intact. This separate Q4
 // specialization preserves its stored Half boundaries without adding branches
 // or codec registers to the existing launch. The codec owns its staged basis,
@@ -701,6 +786,10 @@ void family_writeback_prepare_cuda() {
     cudaFuncAttributes attributes;
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, writeback_kernel));
 }
+void family_partial_prepare_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, partial_kernel));
+}
 void family_writeback_cuda(const T& h, T& out, T& pss, int streams, int mode,
                            const O& branch, const O& inject, const O& y, const O& weights) {
     int rows = h.size(0), dims = h.size(1) / streams;
@@ -899,4 +988,23 @@ void family_qsa_select512_cuda(const T& scores, const T& lengths, T& output, T& 
             uint32_t(scores.size(1)), uint64_t(scores.stride(0)), uint64_t(output.stride(0)));
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
+}
+
+void family_owned_q8_prepare_resident_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel));
+}
+
+void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
+        const T& freq, T& q, T& iq, T& k, T& v, T& ks, T& vs, const T& offsets,
+        const T& generations, T& status, int64_t slot, int64_t owner, int64_t start,
+        int64_t logical, int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
+        int index_dim, float eps, float amplitude, int section1, int section2) {
+    owned_q8_prepare_kernel<<<qheads + 2 + index_heads, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        ptr<__half>(p), axes.data_ptr<int64_t>(), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(freq),
+        ptr<__half>(q), ptr<__half>(iq), k.data_ptr<int8_t>(), v.data_ptr<int8_t>(), ptr<__half>(ks), ptr<__half>(vs),
+        offsets.data_ptr<int64_t>(), generations.data_ptr<int64_t>(), status.data_ptr<int>(), slot, owner, start,
+        logical, physical, page_tokens, layer, qheads, index_heads, index_dim, freq.numel(), eps, amplitude,
+        section1, section2);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

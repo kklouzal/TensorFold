@@ -958,3 +958,175 @@ def test_owned_teacher_alias_restore_keeps_sampler_primary_under_aggregation_exh
     with pytest.raises(RuntimeError) as second:
         engine.multi.round()
     assert second.value is sampler
+
+
+def hc_teacher_engine(monkeypatch, *, rows=9, policy=None):
+    """Typed owner without CUDA effects; validates adapter admission only."""
+    from types import SimpleNamespace as NS
+    from tensorfold.families.qwen4_exp.cuda import hc_readout_graphs, hc_plans
+    if policy is not None:
+        monkeypatch.setattr(hc_readout_graphs, 'POLICY', policy)
+    plans = object.__new__(hc_readout_graphs.HCReadoutGraphs)
+    budget = 2048 << 20
+    live = dict(policy=hc_readout_graphs.POLICY, prepared=True, closed=False,
+                rows=list(range(1, min(24, rows) + 1)), physical_rows=32, workspace_tensor_bytes=4096,
+                catalogue_keys=97, captured_keys=97, graph_budget_bytes=budget)
+    if hc_readout_graphs.POLICY == 'sm70-gguf-hc-readout-r1-aten-graph-v1':
+        live['rows'] = [1]
+        del live['physical_rows'], live['workspace_tensor_bytes']
+    elif hc_readout_graphs.POLICY in ('sm70-gguf-hc-readout-m32-weight-templates-v3',
+                                     'sm70-gguf-hc-readout-r1-direct-m32-templates-v4'):
+        live.update(bank_tensor_bytes=8192, template_count=3, captured_templates=3, covered_keys=97)
+        if hc_readout_graphs.POLICY == 'sm70-gguf-hc-readout-r1-direct-m32-templates-v4':
+            live.update(r1_graph_count=97, captured_r1_graphs=97, captured_graphs=100,
+                        bank_group_count=2, template_rows=list(range(2, min(24, rows) + 1)))
+    states = [NS(capacity=262145, limit=262145, logical_context=262144) for _ in range(24)]
+    record = {**live, 'captured': True, 'materialized_full_windows': {'slots': 24, 'capacities': [262145] * 24},
+              'capture_results': [[1, 0, 100, 200, 100] for _ in range(8)]}
+    buf, weights = NS(hc_plans=plans, rows=rows), NS()
+    plans._b, plans._w = buf, weights
+    plans.prepared, plans.closed, plans.failure, plans.retirement_failure = True, False, None, None
+    plans.record = lambda: dict(live)
+    validated = []
+    plans.validate_adoption = lambda: validated.append(True)
+    decoder = NS(hc_graphs=plans, hc_graphs_requested=True, buf=buf, graphs=None,
+                 _failed_graphs=None, _failed_hc_graphs=None, hc_graph_record=record,
+                 full_resident=True, full_windows=24, states=states, graph_budget=budget)
+    engine = NS(multi=decoder, w=weights, context_window=262144, graphs_requested=True, graphs_enabled=False,
+                capacity_plan={'multi_graphs': {'original_requested': True, 'whole_round_requested': False,
+                    'captured': False, 'local_hc': record, 'planned_bytes': budget}})
+    monkeypatch.setattr(quality, '_owned_teacher_hash', lambda *_: 'a' * 64)
+    assert hc_plans is not None
+    return engine, plans, live, validated
+
+
+@pytest.mark.parametrize('rows', [9, 24, 48])
+def test_teacher_hc_only_actual_owner_and_funding_binding(monkeypatch, rows):
+    engine, plans, live, validated = hc_teacher_engine(monkeypatch, rows=rows)
+    result = quality._owned_teacher_hc_graphs(engine, True)
+    assert result == {'policy': live['policy'], 'rows': list(range(1, min(24, rows) + 1)),
+                      'physical_rows': 32, 'workspace_tensor_bytes': 4096, 'catalogue_keys': 97,
+                      'bank_tensor_bytes': 8192, 'template_count': 3, 'captured_templates': 3, 'covered_keys': 97,
+                      'r1_graph_count': 97, 'captured_r1_graphs': 97, 'captured_graphs': 100,
+                      'bank_group_count': 2, 'template_rows': list(range(2, min(24, rows) + 1)),
+                      'sources': {'hc_readout_graphs': 'a' * 64, 'hc_plans': 'a' * 64},
+                      'graph_budget_bytes': engine.multi.graph_budget}
+    assert validated == [True]
+    with pytest.raises(ValueError, match='no-graphs'):
+        quality._owned_teacher_hc_graphs(engine, False)
+
+
+def test_teacher_hc_legacy_r1_policy_remains_distinct(monkeypatch):
+    engine, _, live, _ = hc_teacher_engine(monkeypatch, policy='sm70-gguf-hc-readout-r1-aten-graph-v1')
+    result = quality._owned_teacher_hc_graphs(engine, True)
+    assert result['policy'] == live['policy'] and result['rows'] == [1]
+    assert 'physical_rows' not in result and 'workspace_tensor_bytes' not in result
+
+
+@pytest.mark.parametrize('fault', ['rows', 'bool-row', 'physical', 'zero-workspace',
+                                  'bool-workspace', 'unfunded-workspace', 'stale-record',
+                                  'bank-zero', 'bank-unfunded', 'template-bool', 'template-incomplete', 'covered',
+                                  'r1-incomplete', 'graph-total', 'group-zero', 'group-excess', 'template-rows'])
+def test_teacher_m32_geometry_refuses_before_adoption(monkeypatch, fault):
+    engine, _, live, validated = hc_teacher_engine(monkeypatch)
+    if fault == 'rows':
+        live['rows'] = [1]
+    elif fault == 'bool-row':
+        live['rows'][0] = True
+    elif fault == 'physical':
+        live['physical_rows'] = 24
+    elif fault == 'zero-workspace':
+        live['workspace_tensor_bytes'] = 0
+    elif fault == 'bool-workspace':
+        live['workspace_tensor_bytes'] = True
+    elif fault == 'unfunded-workspace':
+        live['workspace_tensor_bytes'] = live['graph_budget_bytes'] + 1
+    elif fault == 'bank-zero':
+        live['bank_tensor_bytes'] = 0
+    elif fault == 'bank-unfunded':
+        live['bank_tensor_bytes'] = live['graph_budget_bytes']
+    elif fault == 'template-bool':
+        live['template_count'] = True
+    elif fault == 'template-incomplete':
+        live['captured_templates'] = 2
+    elif fault == 'covered':
+        live['covered_keys'] = 96
+    elif fault == 'r1-incomplete':
+        live['captured_r1_graphs'] = 96
+    elif fault == 'graph-total':
+        live['captured_graphs'] = 99
+    elif fault == 'group-zero':
+        live['bank_group_count'] = 0
+    elif fault == 'group-excess':
+        live['bank_group_count'] = 4
+    elif fault == 'template-rows':
+        live['template_rows'] = [1, *live['template_rows']]
+    else:
+        engine.multi.hc_graph_record['physical_rows'] = 24
+    with pytest.raises(ValueError, match='HC graph'):
+        quality._owned_teacher_hc_graphs(engine, True)
+    assert validated == []
+
+
+@pytest.mark.parametrize('fault', ['whole-graphs', 'wrong-type', 'closed', 'keys', 'unfunded',
+                                  'foreign-buffer', 'partial-states', 'peer-future', 'whole-request'])
+def test_teacher_hc_graph_refusals_precede_adoption(monkeypatch, fault):
+    from types import SimpleNamespace as NS
+    engine, plans, live, validated = hc_teacher_engine(monkeypatch)
+    if fault == 'whole-graphs':
+        engine.multi.graphs = object()
+    elif fault == 'wrong-type':
+        engine.multi.hc_graphs = NS()
+    elif fault == 'closed':
+        plans.closed = True
+    elif fault == 'keys':
+        live['captured_keys'] = 96
+    elif fault == 'unfunded':
+        engine.capacity_plan['multi_graphs']['planned_bytes'] = 0
+    elif fault == 'foreign-buffer':
+        engine.multi.buf.hc_plans = object()
+    elif fault == 'partial-states':
+        engine.multi.states[3].capacity = 10
+    elif fault == 'peer-future':
+        engine.multi.hc_graph_record['capture_results'][7][3] = 99
+    else:
+        engine.capacity_plan['multi_graphs']['whole_round_requested'] = True
+    with pytest.raises(ValueError):
+        quality._owned_teacher_hc_graphs(engine, True)
+    assert validated == []
+
+
+def test_teacher_hc_policy_is_recorded_only_for_explicit_enrollment(tmp_path, monkeypatch):
+    prepared = load_owned_plan(tmp_path, monkeypatch, owned_plan_data())
+    engine, prior, *_ = teacher_fixture(tmp_path, monkeypatch, prepared)
+    hc_engine, _plans, live, _validated = hc_teacher_engine(monkeypatch)
+    policy = quality._owned_teacher_hc_graphs(hc_engine, True)
+    monkeypatch.setattr(quality, '_owned_teacher_hc_graphs', lambda _engine, requested: policy if requested else None)
+    engine.multi.hc_graph_record = hc_engine.multi.hc_graph_record
+    observer = quality.OwnedTeacherFrames(engine, prepared, tmp_path / 'unused', fail=lambda *_: None,
+                                          profile=prior.profile, hc_graphs=True)
+    assert observer.semantic_profile['hc_readout_graphs']['policy'] == live['policy']
+    assert observer.profile['hc_readout_graph_record'] is engine.multi.hc_graph_record
+    assert prior.semantic_profile.get('hc_readout_graphs') is None
+
+
+@pytest.mark.parametrize('policy', ['sm70-gguf-hc-readout-r1-aten-graph-v1',
+                                   'sm70-gguf-hc-readout-m32-aten-graph-v2',
+                                   'sm70-gguf-hc-readout-m32-weight-templates-v3',
+                                   'sm70-gguf-hc-readout-r1-direct-m32-templates-v4'])
+def test_teacher_hc_optional_policy_survives_all_rank_retirement_seal(tmp_path, monkeypatch, policy):
+    prepared = load_owned_plan(tmp_path, monkeypatch, owned_plan_data())
+    engine, observer, stream, *_ = teacher_fixture(tmp_path, monkeypatch, prepared)
+    original_hash = quality._owned_teacher_hash
+    hc_engine, *_ = hc_teacher_engine(monkeypatch, policy=policy)
+    policy = quality._owned_teacher_hc_graphs(hc_engine, True)
+    monkeypatch.setattr(quality, '_owned_teacher_hash', original_hash)
+    observer.semantic_profile['hc_readout_graphs'] = policy
+    observer.profile['hc_readout_graph_record'] = hc_engine.multi.hc_graph_record
+    engine.multi.admit(stream)
+    engine.multi.round()
+    engine.multi.finish(engine.multi.round())
+    engine.close()
+    spy_teacher_rank_records(observer, prepared)
+    authority = quality.seal_owned_teacher(observer.directory.parent, prepared, 0)
+    assert authority['actual_owned_profile']['teacher_semantics']['hc_readout_graphs'] == policy

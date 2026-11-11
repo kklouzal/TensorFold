@@ -7,6 +7,7 @@ import threading
 import time
 from copy import deepcopy
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -74,15 +75,21 @@ class FlashNextEngine:
             raise ValueError("reference tiles require the private owned preparation lifecycle")
         if _owned_expert_gate_up is not None:
             from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+            from .onecat_experts import OneCatGU
 
-            if type(_owned_expert_gate_up) is not _GroupedGateUp or not _owned_expert_native:
-                raise ValueError("private grouped gate/up requires typed owned expert preparation")
+            if type(_owned_expert_gate_up) not in (_GroupedGateUp, OneCatGU) or not _owned_expert_native:
+                raise ValueError("private gate/up requires typed owned expert preparation")
+            if type(_owned_expert_gate_up) is OneCatGU and (type(depth) is not int or depth != 0
+                    or tp != 8 or expert_tensor_parallel_size != 4 or not adaptive_sessions
+                    or execution_profile_manifest is None or serving_profile_root is not None):
+                raise ValueError("1Cat GU qualification requires explicit NONE/adaptive TP8/ETP4 owner preparation")
         self._owned_expert_gate_up_requested = _owned_expert_gate_up
         self._reference_owner_tiles_requested = _reference_owner_tiles
         self._owned_qualification_host = _owned_qualification_host
         self._owned_expert_requested = _owned_expert_native
         self._owned_expert_admin_requested = serving_profile_root is not None
         self._owned_expert_plan = None
+        self._onecat_owner = None
         if serving_profile_root is not None:
             from .serving_profiles import profile_root
 
@@ -166,6 +173,8 @@ class FlashNextEngine:
                  retention_policy: RetentionPolicy | None = None,
                  expert_tensor_parallel_size: int | None = None) -> None:
         initialize_started = time.perf_counter()
+        requested_graphs = bool(graphs)  # Preserve user intent when whole-round qualification declines.
+        self.graphs_requested = requested_graphs
         from tensorfold.cuda.chat_template import prepare_chat_template
 
         from ..ram_experts import check_kv_full_windows
@@ -188,6 +197,7 @@ class FlashNextEngine:
         self._owned_expert_requested = getattr(self, "_owned_expert_requested", False)
         self._owned_expert_admin_requested = getattr(self, "_owned_expert_admin_requested", False)
         self._owned_expert_plan = None
+        self._onecat_owner = None
         self.position_profile = self.position_method_binding = self._position_prepared = None
         self.coordinate_profile_binding = None
         self._media_inputs_enabled = False  # Only the admitted media-profile parser may enable this.
@@ -656,6 +666,18 @@ class FlashNextEngine:
             and (owner_specification is None or owner_specification['graph_family'] == 'uncaptured'
                  and owner_specification.get('reference_arithmetic') is None)
             and int(text.get('hc_count', 4)) == 4 and int(text['hidden_size']) == 2560)
+        native_gdn_batch = (concurrent and self._owned_expert_requested and not managed
+            and not self._owned_expert_admin_requested and source_is_gguf and tp == 8 and int(depth) == 0
+            and history_placement is not None and self.sm70_profile == "reference"
+            and int(text["linear_num_key_heads"]) // tp == 2
+            and int(text["linear_num_value_heads"]) // tp == 6
+            and int(text["linear_key_head_dim"]) == int(text["linear_value_head_dim"]) == 128
+            and int(text["linear_conv_kernel_dim"]) == 4
+            and (owner_specification is None or owner_specification["graph_family"] == "uncaptured"))
+        moe_selection_eligible = (self._owned_expert_requested and not managed and source_is_gguf and tp == 8
+            and self.sm70_profile == "reference" and int(text["num_experts"]) == 512
+            and int(text["num_experts_per_tok"]) == 10
+            and (owner_specification is None or owner_specification["graph_family"] == "uncaptured"))
         if sm70 and gather is not None:
             # RAM placement adds collectives before final capacity agreement.
             # All GGUF ranks must agree on that schedule before taking a branch.
@@ -699,6 +721,55 @@ class FlashNextEngine:
             except BaseException as error:
                 _fatal(self, error)
                 raise
+
+        if self._owned_expert_plan is not None and self._owned_expert_plan._onecat:
+            from .onecat_frame_experts import OneCatFrameOwner
+
+            if (managed or not concurrent or not source_is_gguf or self.sm70_profile != "reference"
+                    or owner_specification is None or owner_specification["graph_family"] != "uncaptured"):
+                raise ValueError("1Cat GU trial requires the existing uncaptured owned reference region")
+            self._onecat_owner = OneCatFrameOwner(self._owned_expert_gate_up_requested,
+                                            torch.device("cuda", torch.cuda.current_device()))
+        moe_selection_prepared = half_partial_prepared = None
+        if self._owned_expert_requested:
+            from .execution_identity import _phase, _retire_store, _fatal
+            channel = 'tensorfold/flashnext/native-runtime-operators'
+            def prepare_runtime_operators():
+                nonlocal moe_selection_prepared, half_partial_prepared
+                result = {"gdn_batch": None, "moe_selection": None, "half_partial": None}
+                from tensorfold.cuda.sm70.family_ops import prepare_half_moe_partial
+
+                half_partial_prepared = prepare_half_moe_partial(torch.device("cuda", torch.cuda.current_device()))
+                if half_partial_prepared is not None:
+                    result["half_partial"] = {"module": half_partial_prepared.__name__, "operation": "partial",
+                                               "policy": "native-half-v1"}
+                if native_gdn_batch:
+                    from tensorfold.cuda.sm70 import gdn_native
+
+                    gdn_native.prepare_batch(torch.device("cuda", torch.cuda.current_device()), 6)
+                    result["gdn_batch"] = {"module": gdn_native.extension().__name__, "heads": 6,
+                                           "operation": "batch_chain"}
+                if moe_selection_eligible:
+                    from tensorfold.cuda.sm70.routing_native import prepare_owned_selection
+
+                    moe_selection_prepared = prepare_owned_selection(torch.device("cuda", torch.cuda.current_device()))
+                    result["moe_selection"] = {"module": moe_selection_prepared.module.__name__, "operation": "route512"}
+                if self._onecat_owner is not None:
+                    result["onecat_gu"] = self._onecat_owner.prepare_native()
+                return result
+            if self._onecat_owner is not None:
+                self._onecat_owner.prepare_cohort(self, channel, prepare_runtime_operators)
+            else:
+                prepared_rows = _phase(self, channel, 'prepare', prepare_runtime_operators, may_refuse=False)
+                if any(row != prepared_rows[0] for row in prepared_rows):
+                    error = RuntimeError('native runtime operator preparation differs across ranks')
+                    _fatal(self, error)
+                    raise error
+                try:
+                    _retire_store(self, channel, stages=('prepare',))
+                except BaseException as error:
+                    _fatal(self, error)
+                    raise
 
         def row_envelope(count):
             return min(count * each, execution_rows if execution_rows is not None else 32) if adaptive_sessions else (
@@ -823,14 +894,27 @@ class FlashNextEngine:
                     workers=signature(ReadAhead).parameters["threads"].default, alignment=ALIGN)
         # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
         # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
-        graph_request = multi_graph_request() if concurrent and graphs else 0
+        hc_graphs = (requested_graphs and concurrent and self._owned_expert_requested
+            and not managed and not self._owned_expert_admin_requested and owner_preparation is not None
+            and source_is_gguf and sm70 and tp == 8 and int(depth) == 0 and history_placement is not None
+            and indexer_history == "gpu" and vram_experts is None and not vision
+            and dspark_model_dir is None and dflash2_model_dir is None
+            and self.sm70_profile == "reference"
+            and (owner_specification is None or owner_specification["graph_family"] == "uncaptured")
+            and int(text["hidden_size"]) == 2560 and int(text["num_hidden_layers"]) == 48
+            and int(text.get("hc_count", 4)) == 4 and int(text.get("hc_lowrank", 320)) == 320)
+        if hc_graphs:
+            from .gguf_weights import GGUFDense, GGUFConcat
+
+            hc_graphs = GGUFDense.implementation == GGUFConcat.implementation == "reference"
+        graph_request = multi_graph_request() if concurrent and (graphs or hc_graphs) else 0
         self._graph_request = graph_request
         graph_bytes = (graph_request or 0) if vram_experts is None else 0
         def target_geometry(text, count=streams):
             if concurrent:
                 return indexed_stream_geometry(text, count, each, KEEP, mtp=mtp, points=POINTS,
                     kv_pair=kv_geometry, graph_bytes=graph_bytes, prefill_rows=rows0,
-                    kv_status=kv_status, world=tp,
+                    kv_status=kv_status, world=tp, gdn_pointer_fields=8 if native_gdn_batch else 2,
                     full_windows=count if adaptive_sessions else resident_windows,
                     workspace_bytes=2 * 2**30 if adaptive_sessions or resident_windows is not None else 0,
                     **({"execution_rows": row_envelope(count)} if adaptive_sessions or execution_rows is not None else {}),
@@ -1040,6 +1124,7 @@ class FlashNextEngine:
                 prefill_plan = prefill_expert_plan(text, rows=rows0, world=tp, **expert_geometry)
                 self._gguf_prefill_receipt = prefill_plan.receipt() if prefill_plan is not None else None
                 options = capacity_options(model_dir, rank=rank, world=tp, mtp=mtp,
+                                           **({"_onecat_owner": self._onecat_owner} if getattr(self, "_onecat_owner", None) is not None else {}),
                                            **({**expert_geometry, "routing_rows": max(rows0, row_envelope(streams))}
                                               if partitioned_experts and not adaptive_sessions else
                                               {**expert_geometry, "routing_rows": rows0} if partitioned_experts else {}),
@@ -1227,7 +1312,7 @@ class FlashNextEngine:
             def session_host_workspace(count):
                 from tensorfold.cuda.geometry import multi_static_domains
 
-                total = tp * multi_static_domains(text, count, each, mtp)[1]
+                total = tp * multi_static_domains(text, count, each, mtp, gdn_pointer_fields=8 if native_gdn_batch else 2)[1]
                 total += tp * status_workspace(count, tp)[1] if tp > 1 else 0
                 if self.position_profile is not None:
                     from .history_placement import coordinate_source_host_bytes
@@ -1295,7 +1380,10 @@ class FlashNextEngine:
             self.capacity_plan["sm70_weight_manifest"] = self._sm70_weight_manifest_identity
             self.capacity_plan["sm70_weight_plan"] = self._sm70_weight_plan
         if adaptive_sessions:
-            streams = self.capacity_plan["session_capacity"]["resident_capacity"]
+            resolved_streams = self.capacity_plan["session_capacity"]["resident_capacity"]
+            if hc_graphs and resolved_streams < streams:
+                raise MemoryError("HC graph reservation cannot reduce the requested full-resident State envelope")
+            streams = resolved_streams
             resident_windows = streams
             self.streams = self.kv_full_windows = streams
             if self._retention_native_runtime is not None:
@@ -1444,6 +1532,7 @@ class FlashNextEngine:
                  **({"position_profile": self.position_profile, "_position_prepared": self._position_prepared}
                     if self.position_profile is not None else {}),
                  **({"_prefill_plan": prefill_plan} if prefill_plan is not None else {}),
+                 **({"_onecat_owner": self._onecat_owner} if getattr(self, "_onecat_owner", None) is not None else {}),
                  **({"_draft_ids": ids} if sm70 and ids is not None else {}),
                  **({"mtp_model_dir": self.mtp_model_dir} if self.mtp_model_dir is not None else {}),
                  **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
@@ -1452,6 +1541,8 @@ class FlashNextEngine:
                  **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
                     if vram_experts_pin != "off" else {}))
         self.w = w  # Preserve the original ownership handoff before fallible diagnostics.
+        w.meta["moe_selection_prepared"] = moe_selection_prepared
+        w.meta["half_moe_partial_prepared"] = half_partial_prepared
         if source_is_gguf:
             weights_finished = time.perf_counter()
             # Diagnostics only: never constructor options, admission or numerical identity.
@@ -1464,6 +1555,8 @@ class FlashNextEngine:
             }
         if self._owned_expert_plan is not None:
             self._owned_expert_plan.bind(w)
+            if self._onecat_owner is not None:
+                self.capacity_plan["onecat_gu_weights"] = self._onecat_owner.profile()
             if hc_writeback_prepared is not None:
                 w.meta['hc_writeback_prepared'] = hc_writeback_prepared
             self.capacity_plan["expert_parallel"]["implementation"] = w.meta["owned_expert_plan"].identity[0]
@@ -1605,13 +1698,18 @@ class FlashNextEngine:
                                       confidence=self.confidence, keep=KEEP, points=self.points,
                                       kv_pair=self.kv_pair, share=share, vision=self.vision,
                                       prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace,
-                                      graphs=graphs, graph_budget=graph_request,
+                                      graphs=graphs, graph_budget=graph_request, hc_graphs=hc_graphs, native_gdn_batch=native_gdn_batch,
+                                      graph_memory_live=(lambda extra: partial(owner_preparation.graph_live_bytes,
+                                          additional_outside_active_bytes=extra)) if hc_graphs else None,
                                       graph_header_room=max(0, self.capacity_plan["budget_bytes"]
                                                             - self.capacity_plan["serving_peak_bytes_estimate"]),
                                       vision_workspace_bytes=workspace,
                                       **({"execution_rows": execution_rows} if execution_rows is not None else {}),
                                       **({"memory_live": owner_preparation.live_bytes} if owner_preparation is not None else {}),
                                       **({"full_windows": resident_windows} if resident_windows is not None else {}))
+            self.capacity_plan["native_gdn_batch"] = {"enabled": native_gdn_batch,
+                "implementation": "sm70-gdn-state-batch-v1", "pointer_fields": 8 if native_gdn_batch else 2,
+                "scalar_C1": True, "qualification": "candidate; pinned binary/model/performance gates pending"}
             if dflash_plan is not None:
                 planned = self.capacity_plan["dflash2"]["resources"]
                 windows = sum(state.dflash2.nbytes for state in self.multi.states)
@@ -1771,8 +1869,11 @@ class FlashNextEngine:
             if managed:
                 self._profile_build.phase("warming")
             self.multi.warm()                            # and captures its rounds' graphs
+            if self.multi.hc_graphs_requested:
+                self.multi.capture_hc_graphs()
             if (graph_bytes and not self.multi.graph_budget and self.multi.graphs is None
-                    and self.multi._failed_graphs is None):
+                    and self.multi._failed_graphs is None and self.multi.hc_graphs is None
+                    and self.multi._failed_hc_graphs is None):
                 from .service_memory import release_uncaptured_graph_plan
 
                 release_uncaptured_graph_plan(self.capacity_plan, graph_bytes)
@@ -1792,7 +1893,9 @@ class FlashNextEngine:
                 reserve_graph_plan(self.capacity_plan, floor_extra)
             if self.multi.graph_budget != graph_bytes or self.capacity_plan["total_bytes_estimate"] > self.capacity_plan["budget_bytes"]:
                 raise RuntimeError("resolved captured-round budget differs from its admitted service plan")
-            self.capacity_plan["multi_graphs"] = {"planned_bytes": graph_bytes, **self.multi.graph_record}
+            self.capacity_plan["multi_graphs"] = {"planned_bytes": graph_bytes,
+                "original_requested": requested_graphs, "whole_round_requested": bool(graphs), **self.multi.graph_record,
+                "local_hc": self.multi.hc_graph_record}
         else:
             from .decode import warm
 
@@ -1817,6 +1920,10 @@ class FlashNextEngine:
             graphs_note = (f"{record['verify_keys']} verify and {record['mtp_keys']} MTP step graphs captured "
                            f"({record['bytes'] / 2**20:.0f} MiB of {record['budget_bytes'] / 2**20:.0f}, "
                            f"{record['capture_s']:.1f}s)" if record["captured"] else f"eager ({record['reason']})")
+            hc_record = self.multi.hc_graph_record
+            if hc_record["captured"]:
+                graphs_note += (f"; local HC {hc_record['captured_keys']} keys "
+                                f"({hc_record['settled_charge_bytes'] / 2**20:.0f} MiB settled)")
             if record.get("stopped"):
                 graphs_note += f"; capture stopped: {record['stopped']}"
         where = (f"up to {streams} streams, each growing to {self.context_window} prompt/reply tokens while memory "
@@ -2636,7 +2743,7 @@ class FlashNextEngine:
         self._position_prepared = None
         seen_graphs = set()
         for decoder in (getattr(self, "multi", None), getattr(self, "e", None), getattr(self, "serial", None)):
-            for name in ("graphs", "_failed_graphs"):
+            for name in ("graphs", "_failed_graphs", "hc_graphs", "_failed_hc_graphs"):
                 graphs = getattr(decoder, name, None)
                 if graphs is not None and id(graphs) not in seen_graphs:
                     graphs.close()
@@ -2672,6 +2779,9 @@ class FlashNextEngine:
         if weights is not None:
             import torch
             torch.cuda.synchronize(weights.device)
+        onecat = getattr(self, "_onecat_owner", None)
+        if onecat is not None:
+            onecat.close()
         vision = getattr(self, "vision", None)
         if getattr(vision, "is_media_runtime", False):
             vision.close()
@@ -2707,7 +2817,7 @@ class FlashNextEngine:
             # releasing each live window, then the draft weight owner.
             dflash.retire_after_fence(fenced=True)
             dflash.close()
-        seen = set()
+        seen = seen_graphs
         for decoder in (getattr(self, 'multi', None), getattr(self, 'e', None), getattr(self, 'serial', None)):
             for name in ('buf', 'mbuf'):
                 buffer = getattr(decoder, name, None)

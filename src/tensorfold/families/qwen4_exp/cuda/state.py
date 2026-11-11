@@ -126,6 +126,9 @@ class Buffers:
         # the experts' prefill arithmetic for decode windows too (``moe_prefill``): their rows can share a pass's launch
         self.moe = moe_mod.MoEBuffers(rows, _MoECfg(c), dev, prefill=prefill if moe_prefill is None else moe_prefill,
                                       tile=grouped.PREFILL_TILE if prefill else (8 if bf == torch.float16 else grouped.window_tile(dev)))
+        selection = w.meta.get("moe_selection_prepared")
+        if selection is not None and rows <= 256 and c.experts == 512 and c.top_k == 10 and bf == torch.float16:
+            self.moe.selection = selection.bind(self.moe)
         owned = w.meta.get("owned_expert_plan")
         self.owned_experts = owned.arena(self) if owned is not None else None
         # DeltaNet projections and outputs and attention outputs; ``commit`` reads the projections' conv channels

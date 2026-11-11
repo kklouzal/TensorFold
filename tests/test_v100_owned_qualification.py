@@ -2821,3 +2821,337 @@ def test_benchmark_actual_aggregate_refuses_rebound_single_rank_semantic_or_sele
     with pytest.raises(ValueError, match='semantics differ across ranks'):
         owned._benchmark_model_result(output, prepared)
     assert not (output / 'benchmark-model-result.json').exists()
+
+
+@pytest.mark.parametrize('no_graphs', [True, False])
+def test_teacher_preflight_keeps_none_context_slots_and_explicit_graph_intent(monkeypatch, no_graphs):
+    from tensorfold.cuda.sm70.execution_policy import PROFILE_ENV
+    monkeypatch.delenv(PROFILE_ENV, raising=False)
+    args = NS(draft_method='none', no_graphs=no_graphs, context=262144, parallel='24',
+              indexer_history='gpu', vram_experts=None)
+    prepared = {'data': {'context': 262144}}
+    owned._teacher_preflight(args, prepared, cli)
+    for key, value in [('draft_method', 'mtp'), ('context', 8192), ('parallel', '8')]:
+        old = getattr(args, key)
+        setattr(args, key, value)
+        with pytest.raises(ValueError):
+            owned._teacher_preflight(args, prepared, cli)
+        setattr(args, key, old)
+    if not no_graphs:
+        args.indexer_history = 'ram'
+        with pytest.raises(ValueError, match='graph intent'):
+            owned._teacher_preflight(args, prepared, cli)
+
+
+def test_teacher_graph_postcondition_precedes_setup_or_hook_effects(tmp_path, monkeypatch):
+    events = []
+    primary = ValueError('not an actual admitted HC graph owner')
+    class Refuse:
+        def __init__(self, engine, prepared, directory, *, fail, profile, hc_graphs=False):
+            events.append(('validate', hc_graphs))
+            raise primary
+        def setup(self):
+            events.append('setup')
+        def install(self):
+            events.append('install')
+    engine = NS(_owned_qualification_host=(123, 'a' * 64), rank=0)
+    prepared = {'resources': {'global_host_obligation_bytes': 123}, 'input_sha256': 'a' * 64}
+    monkeypatch.setattr(owned, '_teacher_module', lambda: NS(OwnedTeacherFrames=Refuse))
+    monkeypatch.setattr(owned, 'bound_receipt', lambda _: {})
+    with pytest.raises(ValueError) as caught:
+        owned.prepare_owned_teacher(engine, prepared, tmp_path, hc_graphs=True)
+    assert caught.value is primary
+    assert events == [('validate', True)]
+    assert type(engine._owned_teacher_frames) is Refuse
+
+
+@pytest.mark.parametrize('prior_links', [False, True])
+def test_teacher_graph_setup_primary_survives_notification_failure(channel, tmp_path, monkeypatch, prior_links):
+    primary, secondary = ValueError('HC enrollment proof'), MemoryError('notification grouping')
+    cause, context = RuntimeError('original producer cause'), LookupError('original producer context')
+    if prior_links:
+        primary.__cause__, primary.__context__ = cause, context
+    teacher = {'data': {'context': 64}, 'resources': {'global_host_obligation_bytes': 123}, 'input_sha256': 'a' * 64}
+    monkeypatch.setattr(owned, '_teacher_module', lambda: NS(owned_teacher_plan=lambda _: teacher))
+    def prepare(*args, **kwargs):
+        assert kwargs == {'hc_graphs': True}
+        raise primary
+    def notify(engine, error):
+        assert error is primary
+        raise secondary
+    monkeypatch.setattr(owned, 'prepare_owned_teacher', prepare)
+    monkeypatch.setattr(owned, '_observer_failure', notify)
+    monkeypatch.setattr(cli, 'cmd_serve', lambda args: args._owned_expert_qualification.before_listener(NS()))
+    argv = worker_args(tmp_path) + ['--draft-method', 'none', '--context', '64', '--parallel', '24']
+    with pytest.raises(ValueError) as caught:
+        owned.worker(['--teacher-plan', str(tmp_path / 'plan.json'), *argv])
+    assert caught.value is primary
+    def retained(error, seen=None):
+        seen = set() if seen is None else seen
+        if error is None or id(error) in seen:
+            return []
+        seen.add(id(error))
+        return [error, *retained(error.__cause__, seen), *retained(error.__context__, seen),
+                *(item for child in getattr(error, 'exceptions', ()) for item in retained(child, seen))]
+    failures = retained(primary)
+    assert secondary in failures
+    if prior_links:
+        assert cause in failures and context in failures
+
+
+def _c24_trace_fixture(tmp_path):
+    import threading
+    requests = [{'prompt_sha256': f'{i:064x}'} for i in range(24)]
+    cohorts = [{'id': n, 'level': 24, 'warmup': warm, 'input_tokens': 64,
+                'tokens': 8, 'requests': requests} for n, warm in ((0, True), (1, False), (2, False))]
+    plan = {'run_identity': 'a' * 32, 'profile': 'q8', 'admin_cap': 24,
+            'context': 262144, 'cohorts': cohorts}
+    streams = {i: NS(done=False, st=object(), out=[1, 2]) for i in range(24)}
+    wires = {id(s): i for i, s in streams.items()}
+    engine = NS(rank=0, scheduler=NS(thread=threading.current_thread()), tp_decoder=NS(wires=wires))
+    observer = NS(current=1, plan=plan, decoder=NS(streams=streams, filling=[]),
+                  identities={i: (cohorts[1], requests[i]) for i in range(24)})
+    return owned._SchedulerTrace(engine, tmp_path), observer
+
+
+def test_c24_trace_only_two_warmed_actual_calls_across_cohorts(tmp_path):
+    tracer, observer = _c24_trace_fixture(tmp_path)
+    observer.current = 0
+    assert tracer.label(observer) is None
+    observer.current = 1
+    observer.decoder.filling = [object()]
+    assert tracer.label(observer) is None
+    observer.decoder.filling = []
+    stream = observer.decoder.streams.pop(23)
+    assert tracer.label(observer) is None
+    observer.decoder.streams[23] = stream
+    stream.out = [1]
+    assert tracer.label(observer) is None
+    stream.out = [1, 2]
+    assert tracer.label(observer) == 'c24-warmed-decode-round-1'
+    observer.current = 2
+    observer.identities = {i: (observer.plan['cohorts'][2], row)
+                           for i, row in enumerate(observer.plan['cohorts'][2]['requests'])}
+    assert tracer.label(observer) == 'c24-warmed-decode-round-2'
+    assert tracer.label(observer) is None
+    assert tracer.counts == {'24': 2} and tracer.capture_limit == 2
+
+
+@pytest.mark.parametrize('fault', ['done', 'state', 'wire', 'foreign'])
+def test_c24_trace_requires_current_live_cohort_authority(tmp_path, fault):
+    tracer, observer = _c24_trace_fixture(tmp_path)
+    stream = observer.decoder.streams[3]
+    if fault == 'done':
+        stream.done = True
+    elif fault == 'state':
+        stream.st = None
+    elif fault == 'wire':
+        del tracer.engine.tp_decoder.wires[id(stream)]
+    else:
+        observer.identities[3] = (observer.plan['cohorts'][0], {})
+    assert tracer.label(observer) is None
+    assert tracer.counts == {}
+
+
+@pytest.mark.parametrize('fault', ['profile', 'cap', 'context', 'outputs', 'requests', 'warmup', 'only-warmup'])
+def test_c24_trace_plan_refuses_unsupported_region_before_capture(tmp_path, fault):
+    tracer, observer = _c24_trace_fixture(tmp_path)
+    plan = observer.plan
+    if fault == 'profile':
+        plan['profile'] = 'q4'
+    elif fault == 'cap':
+        plan['admin_cap'] = 32
+    elif fault == 'context':
+        plan['context'] = 8192
+    elif fault == 'outputs':
+        plan['cohorts'][1]['tokens'] = 3
+    elif fault == 'requests':
+        plan['cohorts'][1]['requests'] = []
+    elif fault == 'warmup':
+        plan['cohorts'][1]['warmup'] = 0
+    else:
+        plan['cohorts'] = plan['cohorts'][:1]
+    with pytest.raises(ValueError, match='C24 trace'):
+        owned._trace_prefill_selection(plan, 0)
+    assert tracer.counts == {} and not tracer.active
+
+
+def test_c24_trace_excludes_prefill_and_does_not_add_captures_to_mixed_plan(tmp_path):
+    tracer, observer = _c24_trace_fixture(tmp_path)
+    with pytest.raises(ValueError, match='excludes a prefill selector'):
+        owned._trace_prefill_selection(observer.plan, 1)
+    observer.plan['cohorts'].append({'id': 3, 'level': 8, 'warmup': False})
+    assert tracer.label(observer) is None
+    assert not tracer.c24_only and tracer.capture_limit == 5
+
+
+@pytest.mark.parametrize('field,value', [('draft_method', 'mtp'), ('parallel', 'auto'),
+                                        ('parallel', '8'), ('context', 8192), ('kv_dtype', 'float16')])
+def test_c24_trace_preconstructor_region_checks(field, value):
+    args = cli.build_parser().parse_args(['serve', '/unloaded/model.gguf', '--draft-method', 'none',
+                                         '--parallel', '24', '--context', '262144', '--kv-dtype', 'int8'])
+    owned._trace_c24_preflight(args, cli)
+    setattr(args, field, value)
+    with pytest.raises(ValueError, match='before construction'):
+        owned._trace_c24_preflight(args, cli)
+
+
+def test_c24_trace_capture_receipt_and_existing_failure_transport(tmp_path, monkeypatch):
+    tracer, observer = _c24_trace_fixture(tmp_path)
+    class Profiler:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def export_chrome_trace(self, path):
+            Path(path).write_text('{}')
+    tracer.factory = Profiler
+    tracer.process = lambda: {'bounded': True}
+    label = tracer.label(observer)
+    marker = object()
+    assert tracer.capture(label, lambda: marker) is marker
+    receipt = json.loads((tmp_path / (label + '-receipt.json')).read_text())
+    assert receipt['trace_region'] == 'c24-only' and receipt['capture_limit'] == 2
+    assert not receipt['P3_valid'] and receipt['prefill_selection'] is None
+    primary = RuntimeError('actual round failed')
+    def fail():
+        raise primary
+    with pytest.raises(RuntimeError) as caught:
+        tracer.capture(tracer.label(observer), fail)
+    assert caught.value is primary
+
+
+@pytest.mark.parametrize('fault', ['mtp', 'method', 'proposals', 'slots', 'context'])
+def test_c24_trace_actual_owner_refuses_before_tokenizer_or_observer(tmp_path, monkeypatch, fault):
+    _, observer = _c24_trace_fixture(tmp_path)
+    engine = NS(rank=0, context_window=262144, w=NS(mtp=None),
+                multi=NS(states=[object()] * 24, speculation=NS(method='none', maximum_proposals=0)))
+    if fault == 'mtp':
+        engine.w.mtp = object()
+    elif fault == 'method':
+        engine.multi.speculation.method = 'mtp'
+    elif fault == 'proposals':
+        engine.multi.speculation.maximum_proposals = 1
+    elif fault == 'slots':
+        engine.multi.states.pop()
+    else:
+        engine.context_window = 8192
+    monkeypatch.setattr(owned, '_BenchmarkObserver', lambda *a, **k: pytest.fail('observer installed'))
+    with pytest.raises(ValueError, match='actual NONE/full24'):
+        owned.prepare_benchmark(engine, observer.plan, tmp_path)
+
+
+def _cold_q8_receipt_fixture():
+    from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+    owner = object.__new__(OwnerBuffers)
+    owner._empty_resources()
+    owner.rows, owner.prefill = 24, False
+    owner.native_pair = get_pair('int8')
+    module = NS(__name__='tf_sm70_family_actual', __file__='/actual/cache/tf_sm70_family_actual.so',
+                owned_q8_prepare=lambda *args: pytest.fail('cold receipt invoked native work'))
+    owner.owned_q8_preparation = module
+    states = [object() for _ in range(24)]
+    owner.native_states = {id(state): (state, 'signature') for state in states}
+    record = {'prepared': True, 'bound_states': 24, 'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1',
+              'owned_q8_preparation': {'policy': 'owned-q8-decode-preparation-v1', 'module': module.__name__,
+                                       'rows_per_call': 1, 'qualified': False}}
+    owner.native_record = lambda: record
+    buffers = NS(prefill=False, history_owner=owner, owner_kernel_family=record['kernel_family'],
+                 owner_graph_family='uncaptured')
+    engine = NS(multi=NS(buf=buffers, states=states),
+                _owner_preparation=NS(prepared=True, closed=False, workspaces={'decode': owner}))
+    return engine, owner, record
+
+
+def test_cold_q8_receipt_reads_retained_owner_without_loading_or_invoking(monkeypatch):
+    from tensorfold.cuda.sm70 import family_native
+    engine, owner, _ = _cold_q8_receipt_fixture()
+    monkeypatch.setattr(family_native, 'extension', lambda: pytest.fail('forced native load'))
+    receipt = owned._owned_q8_preparation_receipt(engine)
+    assert receipt['state_count'] == 24 and receipt['row_capacity'] == 24
+    assert receipt['native_module'] == {'name': owner.owned_q8_preparation.__name__,
+                                         'path': owner.owned_q8_preparation.__file__}
+    assert receipt['policy']['rows_per_call'] == 1
+    assert receipt['invocation_evidence'] is False
+    assert 'not kernel invocation evidence' in receipt['scope']
+
+
+@pytest.mark.parametrize('fault', ['missing-engine', 'missing-owner', 'baseline-module'])
+def test_cold_q8_baseline_omits_evidence_without_probing(fault):
+    engine, owner, _ = _cold_q8_receipt_fixture()
+    owner.native_record = lambda: pytest.fail('baseline probed native metadata')
+    if fault == 'missing-engine':
+        engine = NS()
+    elif fault == 'missing-owner':
+        engine.multi.buf.history_owner = None
+    else:
+        owner.owned_q8_preparation = None
+    assert owned._owned_q8_preparation_receipt(engine) is None
+
+
+@pytest.mark.parametrize('fault', ['closed', 'prefill', 'wrong-workspace', 'not-prepared', 'wrong-state',
+                                  'state-count', 'family', 'graph', 'Q4', 'policy', 'module', 'path', 'callable'])
+def test_cold_q8_receipt_refuses_unbound_or_inconsistent_metadata(fault):
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+    engine, owner, record = _cold_q8_receipt_fixture()
+    if fault == 'closed':
+        owner.closed = True
+    elif fault == 'prefill':
+        engine.multi.buf.prefill = True
+    elif fault == 'wrong-workspace':
+        engine._owner_preparation.workspaces['decode'] = object()
+    elif fault == 'not-prepared':
+        engine._owner_preparation.prepared = False
+    elif fault == 'wrong-state':
+        state = engine.multi.states[0]
+        owner.native_states[id(state)] = (object(), 'signature')
+    elif fault == 'state-count':
+        record['bound_states'] = 23
+    elif fault == 'family':
+        engine.multi.buf.owner_kernel_family = 'torch-reference'
+    elif fault == 'graph':
+        engine.multi.buf.owner_graph_family = 'captured'
+    elif fault == 'Q4':
+        owner.native_pair = get_pair('rotorquant-iso4-sm70-v1')
+    elif fault == 'policy':
+        record['owned_q8_preparation']['rows_per_call'] = 24
+    elif fault == 'module':
+        owner.owned_q8_preparation.__name__ = 'unowned_module'
+    elif fault == 'path':
+        owner.owned_q8_preparation.__file__ = 'relative.so'
+    else:
+        owner.owned_q8_preparation.owned_q8_prepare = None
+    with pytest.raises(ValueError, match='owned Q8'):
+        owned._owned_q8_preparation_receipt(engine)
+
+
+def test_allrank_existing_publication_carries_cold_Q8_evidence(channel, monkeypatch, tmp_path):
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat
+    monkeypatch.setattr(owned, 'bound_receipt', lambda engine: {'rank': engine.rank})
+    monkeypatch.setattr(owned, '_grouped_gate_up_receipt', lambda *args: {})
+    monkeypatch.setattr(owned, '_reference_tile_receipt', lambda *args: {})
+    monkeypatch.setattr(GGUFDense, 'implementation', 'reference')
+    monkeypatch.setattr(GGUFConcat, 'implementation', 'reference')
+    calls = []
+    for rank in range(8):
+        engine, _, _ = _cold_q8_receipt_fixture()
+        engine.rank, engine.w = rank, NS(meta={'sm70_profile': 'reference'})
+        engine.comm = NS(ready=lambda phase, rank=rank: calls.append((rank, phase)))
+        owned.publish_receipt(engine, tmp_path)
+        result = json.loads((tmp_path / f'rank-{rank}.json').read_text())
+        assert result['owned_q8_preparation']['state_count'] == 24
+        assert not result['owned_q8_preparation']['invocation_evidence']
+    assert len(calls) == 8
+
+
+def test_cold_Q8_mismatch_uses_existing_failure_notification_before_ready(channel, monkeypatch, tmp_path):
+    engine, _, record = _cold_q8_receipt_fixture()
+    engine.rank, engine._abort_comm = 0, False
+    engine.comm = NS(ready=lambda phase: pytest.fail('mismatch reached ready'))
+    record['bound_states'] = 0
+    monkeypatch.setattr(owned, 'bound_receipt', lambda engine: {})
+    with pytest.raises(ValueError, match='owned Q8'):
+        owned.publish_receipt(engine, tmp_path)
+    assert engine._abort_comm and os.read(channel[0], 8) == b'F'
+    assert not (tmp_path / 'rank-0.json').exists()
