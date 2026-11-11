@@ -26,11 +26,13 @@ reasoning and holds incomplete control markers while streaming. Channel controls
 stay out of visible content; native quoted tool arguments retain their literal
 values. CUDA and non-CUDA servers share this channel parser.
 
-The Gemma CUDA prefix cache can retain up to four prompt entries within its
-snapshot byte allowance. It evicts older entries before allocating snapshots
-when space is needed, while model weights remain shared. `/stats` reports the
-entry count, capacity and retained bytes; streamed replies report cached prompt
-tokens when `stream_options.include_usage` is enabled.
+The Gemma CUDA prefix cache retains entries under its snapshot byte allowance,
+with a secondary ceiling of 256 entries. Space-driven eviction weighs prompt
+rebuild tokens per charged byte together with recency rank, protecting expensive
+conversation prefixes from small intervening requests. Model weights remain
+shared. `/stats` reports cache bytes, eviction counts and the last 32 evicted
+prompt lengths; streamed replies report cached prompt tokens when
+`stream_options.include_usage` is enabled.
 
 The [branch consolidation](docs/branch-consolidation.md) hardens benchmark
 publication, new tool-definition validation and optional segment-cache failure

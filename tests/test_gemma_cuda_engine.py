@@ -161,6 +161,9 @@ def _engine(monkeypatch, *, with_head=True):
     engine.vision = None
     engine._closed, engine._owner, engine._turn = False, None, None
     engine._prefixes, engine._prefix_failed_bytes, engine._prefix_error = [], 0, None
+    engine._prefix_evictions = 0
+    engine._prefix_evictions_by_reason = {'byte_budget': 0, 'entry_cap': 0}
+    engine._prefix_evicted_tokens = [0] * 32
     engine._prefix_budget_bytes, engine._prefix_draft_kind = 1 << 20, 'dflash'
     engine._state.ring = 400
     engine._state.keys = torch.empty((1, 400, 1, 1))
@@ -649,6 +652,8 @@ def test_gate_continuation_preserves_original_prompt_checkpoints(monkeypatch):
 
 
 def test_prefix_lru_keeps_four_distinct_prompts_and_touches_hits(monkeypatch):
+    from tensorfold.families.gemma4.cuda import engine as module
+    monkeypatch.setattr(module, 'PREFIX_ENTRIES', 4)  # equal-cost secondary-cap tie still respects MRU
     engine = _engine(monkeypatch)
     prompts = [[i, 1, 2] for i in range(4)]
     for p in prompts:
@@ -683,7 +688,7 @@ def test_prefix_evicts_before_boundary_and_full_tensor_allocations(monkeypatch):
         engine._prefill(p, None, None, time.perf_counter())
     # Make the grant fit the new complete entry and its construction indices,
     # but not all old entries. Observe at the actual snapshot allocation seam.
-    engine._prefix_budget_bytes = 1700
+    engine._prefix_budget_bytes = 1700 + engine._prefix_policy_bytes()
     original = engine._state.snapshot
     observed = []
     def snapshot():
@@ -697,7 +702,7 @@ def test_prefix_evicts_before_boundary_and_full_tensor_allocations(monkeypatch):
     engine._prefill([6, 6, 11, 7, 7], None, None, time.perf_counter())
     assert [p for p, _ in observed] == [2, 5]
     assert observed[-1][1] < 4
-    assert engine.prefix_cache_stats()['charged_bytes'] <= 1700
+    assert engine.prefix_cache_stats()['charged_bytes'] <= engine._prefix_budget_bytes
 
 
 def test_prefix_snapshot_failure_keeps_charge_and_never_publishes_partial(monkeypatch):
@@ -804,6 +809,8 @@ def test_prefix_restore_keeps_selected_checkpoint_charged_until_both_owners_fini
 
 
 def test_prefix_post_eviction_append_failure_does_not_pin_old_lru_in_traceback(monkeypatch):
+    from tensorfold.families.gemma4.cuda import engine as module
+    monkeypatch.setattr(module, 'PREFIX_ENTRIES', 4)
     import weakref
     engine = _engine(monkeypatch)
     for token in range(4):
@@ -947,3 +954,147 @@ def test_prefix_close_retires_latched_traceback_owners_only_after_positive_drain
         gc.collect()
         assert engine._prefix_error is None and not engine._prefixes and engine._prefix_failed_bytes == 0
         assert logits_ref() is None
+
+
+
+def _native_metadata_cache(monkeypatch):
+    """Actual deployed State/DFlash snapshot shapes on Torch meta, no model/GPU.
+
+    The cache and snapshot implementations are real. Meta replaces only tensor
+    data, so this checks logical allocation/ownership without claiming physical
+    CUDA allocator peaks or model output correctness.
+    """
+    import json
+    from pathlib import Path
+    import torch
+    from tensorfold.families.gemma4.cuda.state import State, capacity_bytes, PREFILL_ROWS
+    from tensorfold.families.gemma4.cuda.weights import Config
+    from tensorfold.families.gemma4.cuda.dflash import DraftState
+    cfg = Config.from_dict(json.loads((Path(__file__).parent / 'fixtures/gemma26b_modelopt_metadata.json').read_text())['raw'])
+    engine = _engine(monkeypatch)
+    engine.context_window = 262144
+    engine._state = State(cfg, 'meta', engine.context_window, rows=PREFILL_ROWS)
+    draft_cfg = SimpleNamespace(layer_types=['sliding_attention'] * 4 + ['full_attention'],
+                                sliding_window=2048, kv_heads=8, head_dim=128)
+    engine._draft = DraftState(draft_cfg, 'meta', engine.context_window, rows=PREFILL_ROWS, block=5)
+    engine._prefix_budget_bytes = 3 * (capacity_bytes(cfg, engine.context_window, PREFILL_ROWS)
+        + sum(t.numel() * t.element_size() for t in (*engine._draft.keys, *engine._draft.values)))
+    class Target:
+        config, device = cfg, torch.device('meta')
+        def forward(self, ids, state, **kwargs):
+            state.position += len(ids)
+            state.high_water = state.position
+            return SimpleNamespace(hidden=torch.empty((1, 1), device='meta'))
+        def project_logits(self, hidden):
+            return torch.empty((1, cfg.vocab), dtype=torch.bfloat16, device='meta')
+    engine.target = Target()
+    engine._append_head = lambda draft, result, ids, **kwargs: setattr(draft, 'length', draft.length + len(ids))
+    engine._turn = 11
+    return engine
+
+
+@pytest.mark.parametrize('short_count', [6, 10])
+def test_native_40k_conversation_survives_short_interleaving_when_byte_budget_allows(monkeypatch, short_count):
+    engine = _native_metadata_cache(monkeypatch)
+    voice = [3] * 39992 + [11] + [4] * 7
+    engine._prefill(voice, None, None, time.perf_counter())
+    long_checkpoint = engine._find_prefix(voice, ())
+    assert long_checkpoint.position == 40000 and long_checkpoint.logits is not None
+    for index in range(short_count):
+        length = 2200 + index * 400
+        prompt = [20 + index] + [5] * (length - 1)
+        engine._prefill(prompt, None, None, time.perf_counter())
+        stats = engine.prefix_cache_stats()
+        assert stats['charged_bytes'] + stats['failed_snapshot_bytes'] <= stats['byte_budget']
+    assert engine._find_prefix(voice, ()) is long_checkpoint
+    _, _, cached = engine._prefill(voice, None, None, time.perf_counter())
+    assert cached == 40000
+    stats = engine.prefix_cache_stats()
+    assert stats['capacity'] == stats['max_entries'] == 256
+    assert stats['entries'] == short_count + 1 and stats['evictions'] == 0
+    assert stats['last_evicted_tokens'] is None and stats['recent_evicted_tokens'] == []
+    # Repeating the same long version reuses rather than duplicates snapshots.
+    assert sum(e.tokens == tuple(voice) for e in engine._prefixes) == 1
+
+
+def test_cost_aware_real_byte_pressure_evicts_cheap_recent_entry_before_expensive_older_voice(monkeypatch):
+    engine = _native_metadata_cache(monkeypatch)
+    voice = [3] * 39992 + [11] + [4] * 7
+    short = [20] + [5] * 2199
+    engine._prefill(voice, None, None, time.perf_counter())
+    engine._prefill(short, None, None, time.perf_counter())
+    assert len(engine._prefixes) == 2
+    # Both retention cost and recency enter the actual comparator. At this
+    # geometry the older40K entry has greater saved-token value than short2.2K.
+    old, recent = engine._prefixes
+    old_bytes = old.metadata_bytes + sum(c.nbytes for c in old.checkpoints)
+    recent_bytes = recent.metadata_bytes + sum(c.nbytes for c in recent.checkpoints)
+    assert len(old.tokens) * recent_bytes > len(recent.tokens) * old_bytes * 2
+    with engine._prefix_lock:
+        assert engine._prefix_victim() == 1
+    engine._prefix_room(engine._prefix_budget_bytes - engine.prefix_cache_stats()['charged_bytes'] + 1)
+    assert [len(e.tokens) for e in engine._prefixes] == [40000]
+    stats = engine.prefix_cache_stats()
+    assert stats['evictions'] == 1 and stats['last_evicted_tokens'] == 2200
+    assert stats['recent_evicted_tokens'] == [2200]
+    assert stats['evictions_by_reason'] == {'byte_budget': 1, 'entry_cap': 0}
+
+
+def test_equal_cost_recency_and_deterministic_eviction_are_not_plain_size_selection(monkeypatch):
+    engine = _engine(monkeypatch)
+    for token in (1, 2, 3):
+        engine._prefill([token, 4, 5], None, None, time.perf_counter())
+    with engine._prefix_lock:
+        assert engine._prefix_victim() == 0
+    chosen = engine._find_prefix([1, 4, 5], ())
+    assert chosen.position == 3
+    with engine._prefix_lock:
+        assert engine._prefix_victim() == 0 and engine._prefixes[0].tokens[0] == 2
+
+
+def test_eviction_history_is_bounded_chronological_lengths_and_reason_counts(monkeypatch):
+    from tensorfold.families.gemma4.cuda import engine as module
+    monkeypatch.setattr(module, 'PREFIX_ENTRIES', 1)
+    engine = _engine(monkeypatch)
+    for length in range(1, 41):
+        engine._prefill([length % 19] * length, None, None, time.perf_counter())
+    stats = engine.prefix_cache_stats()
+    assert stats['evictions'] == 39 and stats['last_evicted_tokens'] == 39
+    assert stats['recent_evicted_tokens'] == list(range(8, 40))
+    assert stats['eviction_history_capacity'] == 32
+    assert stats['evictions_by_reason'] == {'byte_budget': 0, 'entry_cap': 39}
+    assert stats['policy_metadata_bytes'] > 0
+    assert stats['metadata_bytes'] >= stats['policy_metadata_bytes']
+    assert stats['charged_bytes'] <= stats['byte_budget']
+
+
+@pytest.mark.parametrize('failure_site', ['victim-score', 'counter-preparation'])
+def test_cost_eviction_helper_failure_latches_owner_and_refuses_later_pressure(monkeypatch, failure_site):
+    from tensorfold.families.gemma4.cuda import engine as module
+    engine = _engine(monkeypatch)
+    for prompt in ([1, 2, 3], [4, 5, 6]):
+        engine._prefill(prompt, None, None, time.perf_counter())
+    owners = list(engine._prefixes)
+    primary, cause = MemoryError('new eviction helper preparation'), RuntimeError('prior native cause')
+    primary.__cause__ = cause
+    if failure_site == 'victim-score':
+        def failed_sum(values):
+            raise primary
+        monkeypatch.setattr(module, 'sum', failed_sum, raising=False)
+        with pytest.raises(MemoryError) as caught, engine._prefix_lock:
+            engine._prefix_victim()
+    else:
+        class FailedCounter(dict):
+            def __getitem__(self, key):
+                raise primary
+        engine._prefix_evictions_by_reason = FailedCounter(engine._prefix_evictions_by_reason)
+        with pytest.raises(MemoryError) as caught, engine._prefix_lock:
+            engine._evict_prefix(0, 'byte_budget')
+    assert caught.value is primary and caught.value.__cause__ is cause
+    assert engine._prefix_error is primary and engine._prefix_evictions == 0
+    assert all(a is b for a, b in zip(engine._prefixes, owners))
+    state_before = list(engine._state.tokens)
+    with pytest.raises(RuntimeError, match='prefix cache is unusable') as refused:
+        engine._prefill([7, 8, 9], None, None, time.perf_counter())
+    assert refused.value.__cause__ is primary and engine._state.tokens == state_before
+    assert all(a is b for a, b in zip(engine._prefixes, owners))

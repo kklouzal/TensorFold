@@ -1,7 +1,7 @@
 """Gemma 4 requests with exact target-verified DFlash chains.
 
 The single request lane owns persistent target and companion caches, reset or
-restored per request. A single CUDA stream owns all requests. Up to four LRU prefix entries
+restored per request. A single CUDA stream owns all requests. Each byte-bounded prefix entry
 includes the visual input identity and holds detached snapshots at prefill
 positions (row-invariant forwards make a snapshot at any position equal to a
 fresh prefill of that prefix): one at the whole prompt (with its next-token
@@ -23,7 +23,9 @@ from typing import Any, Callable
 from .state import PREFILL_ROWS, widest_forward
 
 PREFIX_SNAPSHOTS = 3     # unchanged admission: three full target+companion snapshot payloads
-PREFIX_ENTRIES = 4       # byte-limited LRU, not four full-context reservations
+PREFIX_ENTRIES = 256     # secondary metadata ceiling; the unchanged byte allowance is primary
+PREFIX_EVICTION_HISTORY = 32
+PREFIX_EVICTION_POLICY = 'token-rebuild-per-byte-age-v1'
 TURN_MARKER = "<|turn>"
 
 
@@ -312,6 +314,9 @@ class Gemma4Engine:
             # Keep its prepaid extent charged until positive engine retirement.
             self._prefix_failed_bytes = 0
             self._prefix_error = None
+            self._prefix_evictions = 0
+            self._prefix_evictions_by_reason = {'byte_budget': 0, 'entry_cap': 0}
+            self._prefix_evicted_tokens = [0] * PREFIX_EVICTION_HISTORY
             self._run_lock = threading.Lock()
             self._closed_lock = threading.Lock()
             self._closed = False
@@ -429,16 +434,79 @@ class Gemma4Engine:
     def _append_head(self, state, result, input_ids, count=None, *, prompt=False):
         self.head.append(state, self._taps(result, count), prompt=prompt)
 
+    def _prefix_policy_bytes(self):
+        """Bounded history and counter metadata, paid inside the old3F grant.
+
+        Reserve all32 token-length integers even while the ring is empty, plus
+        counter preparation scratch. This is a Python storage bound, not CUDA
+        allocator/RSS evidence; neither tokens nor Tensor data are copied.
+        """
+        counters = (self._prefix_evictions, *self._prefix_evictions_by_reason.values())
+        return (sys.getsizeof(self._prefix_evicted_tokens)
+                + PREFIX_EVICTION_HISTORY * sys.getsizeof(self.context_window)
+                + sys.getsizeof(self._prefix_evictions_by_reason)
+                + sum(sys.getsizeof(k) for k in self._prefix_evictions_by_reason)
+                + sum(sys.getsizeof(v) for v in counters)
+                + 3 * (max(sys.getsizeof(v) for v in counters) + sys.getsizeof(0)))
+
     def prefix_cache_stats(self):
-        """Bounded payload telemetry, not an allocator/RSS or GPU completion proof."""
+        """Bounded payload/eviction telemetry; no prompt content or device work."""
         with self._prefix_lock:
+            policy_bytes = self._prefix_policy_bytes()
+            recent = [self._prefix_evicted_tokens[i % PREFIX_EVICTION_HISTORY]
+                      for i in range(max(0, self._prefix_evictions - PREFIX_EVICTION_HISTORY), self._prefix_evictions)]
             return {'entries': len(self._prefixes), 'max_entries': PREFIX_ENTRIES, 'capacity': PREFIX_ENTRIES,
                     'tokens': sum(len(e.tokens) for e in self._prefixes), 'slots': None,
                     'bytes': sum(c.nbytes for e in self._prefixes for c in e.checkpoints),
-                    'charged_bytes': sum(e.metadata_bytes + sum(c.nbytes for c in e.checkpoints) for e in self._prefixes),
-                    'metadata_bytes': sum(e.metadata_bytes for e in self._prefixes),
+                    'charged_bytes': policy_bytes + sum(e.metadata_bytes + sum(c.nbytes for c in e.checkpoints) for e in self._prefixes),
+                    'metadata_bytes': policy_bytes + sum(e.metadata_bytes for e in self._prefixes),
+                    'policy_metadata_bytes': policy_bytes,
                     'byte_budget': self._prefix_budget_bytes, 'failed_snapshot_bytes': self._prefix_failed_bytes,
-                    'scope': 'Tensor payload and conservative token/media metadata; construction indices reserved before allocation; allocator/RSS not inferred'}
+                    'eviction_policy': PREFIX_EVICTION_POLICY, 'evictions': self._prefix_evictions,
+                    'last_evicted_tokens': recent[-1] if recent else None,
+                    'recent_evicted_tokens': recent, 'eviction_history_capacity': PREFIX_EVICTION_HISTORY,
+                    'evictions_by_reason': dict(self._prefix_evictions_by_reason),
+                    'scope': 'Tensor payload and conservative token/media/policy metadata; construction indices reserved before allocation; allocator/RSS not inferred'}
+
+    def _prefix_victim(self, protected=None):
+        """Lowest saved-prefill-token value per byte, discounted by MRU distance.
+
+        len(tokens) is an explicit rebuild-cost proxy, NOT a measured latency.
+        Distance=1+more-recent distinct entries; all scores are compared by exact
+        integer products. Equal scores choose the older entry. No clocks,
+        counters on decode, copies, synchronization or floating-point ranking.
+        Caller holds _prefix_lock. Failure freezes ownership just like lookup.
+        """
+        try:
+            victim, best_tokens, best_denominator = None, 0, 1
+            count = len(self._prefixes)
+            for index, entry in enumerate(self._prefixes):
+                if protected is not None and any(c is protected for c in entry.checkpoints):
+                    continue
+                denominator = (entry.metadata_bytes + sum(c.nbytes for c in entry.checkpoints)) * (count - index)
+                tokens = len(entry.tokens)
+                if victim is None or tokens * best_denominator < best_tokens * denominator:
+                    victim, best_tokens, best_denominator = index, tokens, denominator
+            return victim
+        except BaseException as primary:
+            self._prefix_error = primary
+            raise
+
+    def _evict_prefix(self, index, reason):
+        """Prepare all telemetry before removing an owner; caller holds lock."""
+        try:
+            tokens = len(self._prefixes[index].tokens)
+            slot = self._prefix_evictions % PREFIX_EVICTION_HISTORY
+            count = self._prefix_evictions + 1
+            reason_count = self._prefix_evictions_by_reason[reason] + 1
+            # No evicted entry object is borrowed by the post-removal journal.
+            del self._prefixes[index]
+            self._prefix_evicted_tokens[slot] = tokens
+            self._prefix_evictions_by_reason[reason] = reason_count
+            self._prefix_evictions = count
+        except BaseException as primary:
+            self._prefix_error = primary
+            raise
 
     def _prefix_room(self, extra, *, unpublished=0, protected=None):
         """Evict before allocating. The exclusive lane owns all stream consumers.
@@ -447,16 +515,19 @@ class Gemma4Engine:
         borrow remains during allocation; same-stream allocator ordering retires
         old reads before reusing their storage, without a host/device transfer.
         """
-        with self._prefix_lock:
-            while True:
-                retained = sum(e.metadata_bytes + sum(c.nbytes for c in e.checkpoints) for e in self._prefixes)
-                if retained + self._prefix_failed_bytes + unpublished + extra <= self._prefix_budget_bytes:
-                    return
-                at = next((i for i, e in enumerate(self._prefixes)
-                           if protected is None or all(c is not protected for c in e.checkpoints)), None)
-                if at is None:
-                    raise MemoryError('Gemma4 prefix snapshot exceeds its existing byte allowance')
-                del self._prefixes[at]
+        try:
+            with self._prefix_lock:
+                while True:
+                    retained = self._prefix_policy_bytes() + sum(e.metadata_bytes + sum(c.nbytes for c in e.checkpoints) for e in self._prefixes)
+                    if retained + self._prefix_failed_bytes + unpublished + extra <= self._prefix_budget_bytes:
+                        return
+                    at = self._prefix_victim(protected)
+                    if at is None:
+                        raise MemoryError('Gemma4 prefix snapshot exceeds its existing byte allowance')
+                    self._evict_prefix(at, 'byte_budget')
+        except BaseException as primary:
+            self._prefix_error = primary
+            raise
 
     def _find_prefix(self, prompt, media):
         """Longest eligible exact token/media checkpoint, most-recent on a tie."""
@@ -650,14 +721,15 @@ class Gemma4Engine:
                 self._prefix_failed_bytes = previous_failed + sum(c.nbytes for c in kept) + metadata
                 entry = _Prefix(tuple(prompt), media, tuple(kept), metadata)
                 with self._prefix_lock:
-                    # Replace an identical prompt/media entry, then enforce LRU4.
+                    # Coalesce exact duplicates; nonidentical conversations
+                    # retain their own eligible checkpoints until real pressure.
                     for index in range(len(self._prefixes) - 1, -1, -1):
                         old = self._prefixes[index]
                         if old.tokens == entry.tokens and old.media == entry.media:
                             del self._prefixes[index]
                     old = None  # no evicted entry may survive in a failed append traceback
                     if len(self._prefixes) == PREFIX_ENTRIES:
-                        del self._prefixes[0]
+                        self._evict_prefix(self._prefix_victim(), 'entry_cap')
                     self._prefixes.append(entry)
                     self._prefix_failed_bytes = previous_failed
             except BaseException:

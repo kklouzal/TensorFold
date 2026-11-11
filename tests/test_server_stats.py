@@ -48,6 +48,23 @@ def test_serial_engine_publishes_its_prefix_cache_without_a_decoder(tmp_path):
     assert reading['prefix_cache']['entries'] == 2  # published reading remains a snapshot
 
 
+def test_serial_evictions_are_visible_on_v1_stats(tmp_path):
+    app = app_for(tmp_path)
+    cache = {'entries': 11, 'capacity': 256, 'tokens': 80000, 'max_entries': 256,
+             'bytes': 4096, 'byte_budget': 8192, 'evictions': 2,
+             'last_evicted_tokens': 2200, 'recent_evicted_tokens': [5800, 2200],
+             'evictions_by_reason': {'byte_budget': 2, 'entry_cap': 0}}
+    app.engine.prefix_cache_stats = lambda: dict(cache)
+    with http_server(app) as port:
+        status, _, body = get_json(port, '/v1/stats')
+    assert status == 200
+    assert body['limits']['prefix_cache_entries'] == 256
+    assert body['prefix_cache']['evictions'] == 2
+    assert body['prefix_cache']['last_evicted_tokens'] == 2200
+    assert body['prefix_cache']['recent_evicted_tokens'] == [5800, 2200]
+    assert body['prefix_cache']['evictions_by_reason'] == {'byte_budget': 2, 'entry_cap': 0}
+
+
 def test_serial_prefix_cache_read_failure_is_not_silently_reported_as_no_cache(tmp_path):
     app = app_for(tmp_path)
     def failed():
@@ -880,6 +897,10 @@ def test_the_api_reference_documents_every_stats_field_and_no_other(tmp_path):
     native = Gemma4Engine.__new__(Gemma4Engine)
     native._prefix_lock = threading.Lock()
     native._prefixes, native._prefix_budget_bytes, native._prefix_failed_bytes = [], 8192, 0
+    native.context_window = 262144
+    native._prefix_evictions = 0
+    native._prefix_evictions_by_reason = {'byte_budget': 0, 'entry_cap': 0}
+    native._prefix_evicted_tokens = [0] * 32
     serial = app_for(tmp_path)
     serial.engine.prefix_cache_stats = native.prefix_cache_stats
     gemma = field_paths(stats.snapshot(serial))

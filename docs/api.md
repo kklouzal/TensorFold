@@ -692,6 +692,8 @@ Times are seconds, sizes bytes.
 | `kv.bytes_per_token`, `kv.free_tokens_estimate` | Cache bytes a token takes; the context the budget less the running requests' share would hold (host memory and the resize copy can still refuse it) |
 | `prefix_cache.entries`, `.capacity`, `.slots`, `.tokens` | Kept prompt points, the most it keeps, the slots holding them, and the distinct prompt tokens their states hold |
 | `prefix_cache.max_entries`, `.bytes`, `.charged_bytes`, `.metadata_bytes`, `.byte_budget`, `.failed_snapshot_bytes`, `.scope` | Gemma's entry limit, retained tensor payload, conservative total and metadata charges, snapshot allowance, uncertain failed-snapshot charge, and accounting scope. These are not physical allocator or process-memory measurements |
+| `prefix_cache.eviction_policy`, `.evictions`, `.last_evicted_tokens`, `.recent_evicted_tokens`, `.eviction_history_capacity`, `.policy_metadata_bytes` | Gemma's cost/recency policy identifier, cumulative space/count evictions, most recent evicted prompt length, bounded chronological length history (last 32), history capacity and charged policy metadata. No prompt text is exposed |
+| `prefix_cache.evictions_by_reason.{byte_budget,entry_cap}` | Gemma eviction counts separated by byte pressure and the secondary entry ceiling |
 | `totals.requests`, `totals.finished.{stop,length,tool_calls}`, `totals.cancelled`, `totals.failed` | Finished requests, by finish reason, client gone, or failed |
 | `totals.prompt_tokens`, `totals.cached_prompt_tokens`, `totals.generated_tokens` | Of finished requests |
 | `totals.generated_tokens_live` | The same with the running replies' tokens so far (CUDA) |
