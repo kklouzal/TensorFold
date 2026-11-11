@@ -1,5 +1,15 @@
 # Native V100 source foundation
 
+The active [2026-11-11 GPU foundation refresh](../gb10/foundation-refresh-20261111.md)
+now includes this `volta-sm70` CUDA12.x source pipeline. It is separate from the
+`modern-cuda13` GB10/discrete workflow even when both hosts are AMD64.
+New source/SDK candidates and pristine-base protection changes remain pending
+their own build/native/model qualification; the historical receipts below retain
+their original identities. Preserve original base SDK/compiler bytes during the
+refresh rather than applying the older NCCL-removal step without its replacement
+provider/capture contract.
+
+
 The original foundation research and producer pins recorded specification SHA256
 `479727e5e112995c3f4edff88747365efc33da2fe676d4e58dd7faf32b31991a`.
 The corrected rebind follows the [current adaptive-inference specification](../../docs/v100-adaptive-inference-design.md):

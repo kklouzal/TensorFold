@@ -1422,7 +1422,9 @@ The CUDA backend defaults to a compute-capability floor of **8.9** and refuses u
 ### Pinned container stack
 
 The [2026-11-11 foundation refresh ledger](deploy/gb10/foundation-refresh-20261111.md)
-records the current upgrade, candidate discovery and remaining gates. Original
+records the current upgrade, candidate discovery and remaining gates for GB10,
+x86 Blackwell and x86 V100. The CUDA13.4.3 pins below belong to Blackwell; the
+expanded V100 refresh must retain a separately supported CUDA12.x/SM70 stack. Original
 NGC CUDA SDK and compiler/runtime packages are captured and held before OS
 dependency updates; application installers retain their protected-prefix
 contract. Candidate discovery and source changes do not qualify a new image
@@ -1461,6 +1463,61 @@ The recorded **2026-10-06** stack is CUDA **13.4.1**, CPython **3.12**, PyTorch 
 The image includes the extension build toolchain and isolates compiler caches by architecture and CUDA/Torch/Triton identity. It contains no model weights. Install [Docker Engine](https://docs.docker.com/engine/install/), a compatible NVIDIA host driver, and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) first. The Toolkit guide covers `nvidia-ctk runtime configure --runtime=docker` and restarting the host Docker daemon; do that host setup before building or running the service. The compatibility launcher validates the effective driver/runtime environment. Forward compatibility on a tested GB10 driver does not establish support for every desktop driver.
 
 ## Build and run the NVIDIA container
+
+Choose the pipeline from the GPU's supported runtime, then select the CPU
+architecture. Both pipelines support native AMD64; that architecture alone does
+not select CUDA13 or establish V100 support. The labels below describe the
+existing workflows and are not new CLI flags.
+
+For GB10 ARM64, use the `modern-cuda13` input preparation with
+`TF_BUILD_ARCH=arm64`, then:
+
+```bash
+docker buildx build --platform linux/arm64 --load --target runtime \
+  --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
+  --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
+  --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
+  --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
+  -f deploy/gb10/Dockerfile -t tensorfold-gb10:candidate .
+```
+
+For x86 Blackwell, use the same `modern-cuda13` preparation with
+`TF_BUILD_ARCH=amd64`, then:
+
+```bash
+docker buildx build --platform linux/amd64 --load --target runtime \
+  --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
+  --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
+  --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
+  --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
+  -f deploy/gb10/Dockerfile -t tensorfold-x86-modern:candidate .
+```
+
+Existing supported Ada/Hopper paths retain their own capability and qualification
+contracts within this modern workflow; the x86 Blackwell example does not narrow
+that envelope.
+
+For x86 V100, use the separate `volta-sm70` [source-foundation
+workflow](deploy/v100/source-foundation.md), including its verified offline
+artifact staging and owned framework/NCCL build stages. The incumbent producer
+entry point below is historical and is not ready for this refresh until its
+protected-base changes pass; do not run it as the refreshed producer yet:
+
+```bash
+docker build --network=none \
+  --build-context source_artifacts=/path/to/foundation-state/release \
+  -f deploy/v100/Dockerfile.source-builder \
+  -t tensorfold-v100:source-builder-cu1292 .
+```
+
+That command builds the source producer, not a serving image. Complete the
+source workflow's framework build/export, installed audit and native/model gates
+before deployment. CUDA13 official wheels do not provide V100 qualification.
+The current refresh's three profile statuses remain in the
+[shared ledger](deploy/gb10/foundation-refresh-20261111.md).
+
 
 For a persistent service targeting the full native 262,144-token window on a discrete GPU, use the [discrete-GPU Compose guide](deploy/discrete-gpu/README.md). It supplies service-owned writable storage, health checks, bounded RAM and logs, and automatic restart. Its configuration and measured deployment results are recorded separately from the shorter-context example below.
 
