@@ -432,7 +432,17 @@ def _frame(pixels, positions, config: dict, kind: str) -> VisionFrame:
 
 
 def _video_batch(pixels: np.ndarray, positions: np.ndarray, counts: Sequence[int]):
-    """Flatten pinned5.17 [video, frame, patch, channel] output after shape proof."""
+    """Validate frame order/counts for supported standard-processor layouts.
+
+    Transformers5.22 concatenates videos in input order along the frame axis;
+    earlier supported processors stack equal-length clips on a video axis.
+    Both representations must describe exactly the requested sampled frames.
+    """
+    if pixels.ndim == 3 and positions.ndim == 3:
+        if (pixels.shape[:2] != positions.shape[:2] or positions.shape[2] != 2
+                or pixels.shape[0] != sum(counts)):
+            raise ValueError("Gemma processor video batch does not match the declared video/frame counts")
+        return pixels, positions
     if (pixels.ndim != 4 or positions.ndim != 4 or pixels.shape[:2] != positions.shape[:2]
             or pixels.shape[0] != len(counts) or any(count != pixels.shape[1] for count in counts)
             or pixels.shape[2] != positions.shape[2] or positions.shape[3] != 2):
@@ -616,8 +626,8 @@ class GemmaVisionProcessor:
             count = h * w // (self.config["patch_size"] * self.config["pooling_kernel_size"])**2
             video_counts.append((len(video.indices), count))
         if len({frames for frames, _ in video_counts}) > 1:
-            # Pinned5.17 stacks clips along a video axis. The initial native
-            # trial admits that declared region and never pads or drops frames.
+            # Equal sampled lengths remain the declared native region across
+            # standard processor layouts; never pad or drop requested frames.
             raise ValueError("Gemma video requests require clips with the same sampled frame count")
         if sum(image_counts) + sum(n * count for n, count in video_counts) > max_visual_tokens:
             raise ValueError("Gemma processed media exceeds the visual-token budget")

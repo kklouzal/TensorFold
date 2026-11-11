@@ -55,6 +55,9 @@ def spark_admission(monkeypatch):
     from tensorfold.families.gemma4.cuda import modelopt_weights
     from tensorfold.families.gemma4.cuda.weights import Config
     raw = json.loads((Path(__file__).parent / 'fixtures/gemma26b_modelopt_metadata.json').read_text())['raw']
+    # These CPU controls model the previously qualified workspace profile.
+    # They do not qualify the interpreter's installed Torch allocator/backend.
+    monkeypatch.setattr(torch.version, 'git_version', sparkulator_metadata.GLOBAL_GQA_TORCH_GIT)
     cfg = Config.from_dict(raw)
     spark = SparkulatorConfig.from_dict(json.loads(FIXTURE.read_text()))
     monkeypatch.setattr(checkpoint_metadata, 'read_config', lambda _: raw)
@@ -140,6 +143,9 @@ def _factory(monkeypatch, tmp_path, *, fail=False, global_gqa=False, sampled_q=F
             events.append('main-state')
             return state
     monkeypatch.setattr(forward, 'Gemma4Target', Target)
+    if global_gqa:
+        from tensorfold.families.gemma4.sparkulator_metadata import GLOBAL_GQA_TORCH_GIT
+        monkeypatch.setattr(torch.version, 'git_version', GLOBAL_GQA_TORCH_GIT)
     selected_gqa, selected_sampled = global_gqa, sampled_q
     primary = RuntimeError('synthetic unsafe head upload')
     partial = object()

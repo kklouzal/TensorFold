@@ -205,7 +205,25 @@ def test_pinned_video_batch_shape_is_proved_before_flattening_declared_frames():
         with pytest.raises(ValueError, match="declared video/frame"):
             _video_batch(pixels, positions, counts)
     with pytest.raises(ValueError, match="declared video/frame"):
-        _video_batch(pixels.reshape(6, 16, 12), positions.reshape(6, 16, 2), [3, 3])
+        _video_batch(pixels.reshape(6, 16, 12), positions.reshape(6, 16, 2), [3, 2])
+
+
+def test_concatenated_video_frame_axis_preserves_exact_order_and_rejects_inconsistent_shapes():
+    # The current standard processor concatenates each video's frames in input
+    # order. This independent array proves the same logical frame sequence as
+    # the earlier stacked representation, including the second clip boundary.
+    stacked = np.arange(2 * 3 * 16 * 12, dtype=np.float32).reshape(2, 3, 16, 12)
+    positions = np.zeros((2, 3, 16, 2), dtype=np.int64)
+    pixels, xy = stacked.reshape(6, 16, 12), positions.reshape(6, 16, 2)
+    flat, flat_xy = _video_batch(pixels, xy, [3, 3])
+    assert flat is pixels and flat_xy is xy
+    np.testing.assert_array_equal(flat, np.concatenate([stacked[0], stacked[1]], axis=0))
+    np.testing.assert_array_equal(flat[3], stacked[1, 0])
+    for bad_pixels, bad_positions in ((pixels[:-1], xy[:-1]), (pixels, xy[:, :-1]),
+                                      (pixels, np.zeros((6, 16, 3), dtype=np.int64)),
+                                      (pixels, positions)):
+        with pytest.raises(ValueError, match="declared video/frame"):
+            _video_batch(bad_pixels, bad_positions, [3, 3])
 
 
 def test_processor_geometry_uses_checkpoint_fields_then_pinned_class_defaults_without_torch(tmp_path):

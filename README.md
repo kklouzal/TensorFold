@@ -52,7 +52,9 @@ cuts after their state is evicted. Dense Gemma and other backends retain their
 separately scoped cache contracts.
 
 The archive statistics distinguish published payload, reserved/uncertain bytes,
-metadata obligations and indexed tokens from safely restorable matches. Legacy
+metadata obligations and indexed tokens from safely restorable matches. Retained
+frontier, complete-input checkpoint and provisional-media counts remain separate;
+selected payload bytes count shared retained groups once. Legacy
 point counts without a valid equivalent are null; Prometheus omits those gauges.
 Bounded component eviction history exposes token ranges, byte counts and reason,
 without prompt text or token IDs. These source capabilities are not a deployment
