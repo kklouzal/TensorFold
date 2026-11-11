@@ -262,7 +262,7 @@ def _attempt(engine, prepared, row, report, destination, *, audit=None):
             engine.drain()
             if row["phase"] == "cold":
                 with engine._prefix_lock:
-                    engine._prefix = None
+                    engine._prefixes.clear()
             row["host_before"] = host_snapshot()
             began = time.perf_counter()
             stats = engine.generate(prepared.prompt, prepared.max_tokens, prepared.sampling, receive,

@@ -187,7 +187,8 @@ def test_head_close_only_after_successful_main_stream_retirement():
     engine = object.__new__(Gemma4Engine)
     engine._owner, engine._head_kind = None, 'sparkulator'
     engine._closed_lock, engine._prefix_lock = threading.Lock(), threading.Lock()
-    engine._prefix, engine._draft = object(), object()
+    engine._prefixes, engine._draft = [object()], object()
+    engine._prefix_failed_bytes = 0
     events = []
     engine.drain = lambda: events.append('drain')
     engine.head = SimpleNamespace(close=lambda: events.append('head-close'))

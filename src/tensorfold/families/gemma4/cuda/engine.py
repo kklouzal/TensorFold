@@ -1,7 +1,7 @@
 """Gemma 4 requests with exact target-verified DFlash chains.
 
 The single request lane owns persistent target and companion caches, reset or
-restored per request. A single CUDA stream owns all requests. The prefix entry
+restored per request. A single CUDA stream owns all requests. Up to four LRU prefix entries
 includes the visual input identity and holds detached snapshots at prefill
 positions (row-invariant forwards make a snapshot at any position equal to a
 fresh prefill of that prefix): one at the whole prompt (with its next-token
@@ -14,29 +14,34 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+import math
 import threading
+import sys
 import time
 from typing import Any, Callable
 
 from .state import PREFILL_ROWS, widest_forward
 
-PREFIX_SNAPSHOTS = 3     # resident prefix snapshots at most: an entry's two checkpoints + the next prompt's boundary
+PREFIX_SNAPSHOTS = 3     # unchanged admission: three full target+companion snapshot payloads
+PREFIX_ENTRIES = 4       # byte-limited LRU, not four full-context reservations
 TURN_MARKER = "<|turn>"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Checkpoint:
     position: int
     state: Any                  # detached target Snapshot at ``position``
     companion: Any              # detached DraftState snapshot, or None without a drafter
     logits: Any                 # next-token logits when ``position`` is the whole prompt, else None
+    nbytes: int                 # detached Tensor payload; no shared weights/workspace
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _Prefix:
     tokens: tuple[int, ...]
     media: tuple
     checkpoints: tuple[_Checkpoint, ...]   # ascending positions; the last covers the whole prompt
+    metadata_bytes: int                   # conservative retained token/media Python storage
 
 
 def _prompt_ids(prompt, vocab: int) -> list[int]:
@@ -292,8 +297,21 @@ class Gemma4Engine:
             self.graphs.prepare(taps=(False, True) if self.head is not None and self._tap_features else (False,))
             # Absent from a tokenizer: only whole-prompt checkpoints are kept.
             self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
-            self._prefix = None
+            self._prefixes = []
             self._prefix_lock = threading.Lock()
+            self._prefix_draft_kind = kind
+            # The same raw-only geometry is used by capacity.admit(keep=3).
+            # Derived caches/shared weights are deliberately not cache credit.
+            from .state import capacity_bytes
+            target_snapshot = capacity_bytes(self.target.config, self.context_window, forward_rows)
+            companion_snapshot = (0 if self._draft is None else
+                                  spark_cfg.snapshot_bytes(self.context_window) if kind == 'sparkulator' else
+                                  sum(t.numel() * t.element_size() for t in (*self._draft.keys, *self._draft.values)))
+            self._prefix_budget_bytes = PREFIX_SNAPSHOTS * (target_snapshot + companion_snapshot)
+            # A failed snapshot may retain partial tensors in its native traceback.
+            # Keep its prepaid extent charged until positive engine retirement.
+            self._prefix_failed_bytes = 0
+            self._prefix_error = None
             self._run_lock = threading.Lock()
             self._closed_lock = threading.Lock()
             self._closed = False
@@ -382,7 +400,9 @@ class Gemma4Engine:
             self._closed = True
         self.drain()
         with self._prefix_lock:
-            self._prefix = None
+            self._prefixes.clear()
+            self._prefix_failed_bytes = 0
+            self._prefix_error = None  # release traceback borrows only after positive stream retirement
         if getattr(self, '_head_kind', None) == 'sparkulator' and self.head is not None:
             # The stream is known retired. Native head close owns no retry or
             # main-cache mutation; derived bridge storage may now be released.
@@ -395,6 +415,8 @@ class Gemma4Engine:
         with self._closed_lock:
             if self._closed:
                 raise RuntimeError("Gemma4 engine is closed")
+        if self._prefix_error is not None:
+            raise RuntimeError("Gemma4 prefix cache is unusable after an ownership failure") from self._prefix_error
         if self._dflash_graph:
             self.head._logits_graph.check_live()
 
@@ -407,23 +429,108 @@ class Gemma4Engine:
     def _append_head(self, state, result, input_ids, count=None, *, prompt=False):
         self.head.append(state, self._taps(result, count), prompt=prompt)
 
-    def _find_prefix(self, prompt, media):
-        """The longest checkpoint whose tokens prefix this prompt and leaves a forward or exact logits."""
+    def prefix_cache_stats(self):
+        """Bounded payload telemetry, not an allocator/RSS or GPU completion proof."""
         with self._prefix_lock:
-            hit = self._prefix
-            if hit is None or hit.media != media:
-                return None
-            for checkpoint in reversed(hit.checkpoints):
-                p = checkpoint.position
-                if (p < len(prompt) or (p == len(prompt) and checkpoint.logits is not None)) \
-                        and tuple(prompt[:p]) == hit.tokens[:p]:
-                    return checkpoint
-            return None
+            return {'entries': len(self._prefixes), 'max_entries': PREFIX_ENTRIES, 'capacity': PREFIX_ENTRIES,
+                    'tokens': sum(len(e.tokens) for e in self._prefixes), 'slots': None,
+                    'bytes': sum(c.nbytes for e in self._prefixes for c in e.checkpoints),
+                    'charged_bytes': sum(e.metadata_bytes + sum(c.nbytes for c in e.checkpoints) for e in self._prefixes),
+                    'metadata_bytes': sum(e.metadata_bytes for e in self._prefixes),
+                    'byte_budget': self._prefix_budget_bytes, 'failed_snapshot_bytes': self._prefix_failed_bytes,
+                    'scope': 'Tensor payload and conservative token/media metadata; construction indices reserved before allocation; allocator/RSS not inferred'}
 
-    def _checkpoint(self, state, logits=None):
-        return _Checkpoint(state.position, state.snapshot(),
-                           self._draft.snapshot() if self._draft is not None else None,
-                           None if logits is None else logits.clone())
+    def _prefix_room(self, extra, *, unpublished=0, protected=None):
+        """Evict before allocating. The exclusive lane owns all stream consumers.
+
+        A selected hit stays published through restore. Afterwards no checkpoint
+        borrow remains during allocation; same-stream allocator ordering retires
+        old reads before reusing their storage, without a host/device transfer.
+        """
+        with self._prefix_lock:
+            while True:
+                retained = sum(e.metadata_bytes + sum(c.nbytes for c in e.checkpoints) for e in self._prefixes)
+                if retained + self._prefix_failed_bytes + unpublished + extra <= self._prefix_budget_bytes:
+                    return
+                at = next((i for i, e in enumerate(self._prefixes)
+                           if protected is None or all(c is not protected for c in e.checkpoints)), None)
+                if at is None:
+                    raise MemoryError('Gemma4 prefix snapshot exceeds its existing byte allowance')
+                del self._prefixes[at]
+
+    def _find_prefix(self, prompt, media):
+        """Longest eligible exact token/media checkpoint, most-recent on a tie."""
+        with self._prefix_lock:
+            best, owner = None, None
+            for index in range(len(self._prefixes) - 1, -1, -1):
+                entry = self._prefixes[index]
+                if entry.media != media:
+                    continue
+                for checkpoint in reversed(entry.checkpoints):
+                    p = checkpoint.position
+                    if ((best is None or p > best.position)
+                            and (p < len(prompt) or p == len(prompt) and checkpoint.logits is not None)
+                            and tuple(prompt[:p]) == entry.tokens[:p]):
+                        best, owner = checkpoint, index
+                        break
+            if owner is not None:
+                # Build before publication: an exhausted list allocation must
+                # not remove the selected owner while its traceback borrows it.
+                entry = self._prefixes[owner]
+                self._prefixes = self._prefixes[:owner] + self._prefixes[owner + 1:] + [entry]
+            return best
+
+    def _prefix_plan(self, position, logits=None):
+        """Actual snapshot shapes from the already admitted live owners.
+
+        State/DraftState each materialize arange then remainder for their ring
+        index. Bound both simultaneous int64 index owners, and every detached
+        target/companion tensor, before snapshot() can allocate. Spark's raw KV
+        is shared with the target; only its last hidden row is snapshotted.
+        """
+        state = self._state
+        ring = min(position, state.ring)
+        payload = sum(t.shape[0] * ring * t.shape[2] * t.shape[3] * t.element_size()
+                      for t in (state.keys, state.values))
+        payload += sum(t.shape[0] * position * math.prod(t.shape[2:]) * t.element_size()
+                       for t in (state.raw, state.inv))
+        indices = 2 * ring * 8
+        if self._draft is not None:
+            if self._prefix_draft_kind == 'sparkulator':
+                companion = self.head.cfg.snapshot_bytes(self.context_window) if position else 0
+                payload += companion
+                indices = max(indices, companion)  # restore clones its live last_hidden before replacement
+            else:
+                draft = self._draft
+                payload += sum(min(position, n) * math.prod(t.shape[1:]) * t.element_size()
+                               for tensors in (draft.keys, draft.values) for n, t in zip(draft.rings, tensors))
+                # The previous layer's index remains bound while _index makes
+                # the next arange/remainder pair: at most THREE index owners.
+                indices = max(indices, 3 * max((min(position, n) for n in draft.rings), default=0) * 8)
+        if logits is not None:
+            payload += logits.numel() * logits.element_size()
+        return payload, indices
+
+    def _checkpoint(self, state, logits=None, *, unpublished=0):
+        payload, indices = self._prefix_plan(state.position, logits)
+        self._prefix_room(payload + indices, unpublished=unpublished)
+        target = companion = saved_logits = None
+        previous_failed = self._prefix_failed_bytes
+        # Prepay before a native effect: even exhaustion while transporting a
+        # later error cannot prevent accounting for its retained traceback.
+        self._prefix_failed_bytes = previous_failed + payload + indices
+        try:
+            target = state.snapshot()
+            companion = self._draft.snapshot() if self._draft is not None else None
+            saved_logits = None if logits is None else logits.clone()
+            checkpoint = _Checkpoint(state.position, target, companion, saved_logits, payload)
+            self._prefix_failed_bytes = previous_failed
+            return checkpoint
+        except BaseException:
+            # Partial snapshot owners can survive in a callee's traceback. This
+            # charge is deliberately sticky; neither a retry nor GC is proof.
+            target = companion = saved_logits = None
+            raise
 
     def _turn_boundary(self, prompt, cached: int, blocks) -> int:
         """Position of the prompt's last turn marker when a checkpoint there can serve the next turn, else 0."""
@@ -435,20 +542,42 @@ class Gemma4Engine:
 
     def _prefill(self, prompt, vision, progress, started, *, cache_prompt=True):
         import torch
-        media = _media_key(vision)
-        hit = self._find_prefix(prompt, media)
-        state = self._state
-        cached = hit.position if hit is not None else 0
-        logits = None
-        if hit is not None:
-            state.restore(hit.state)
-            if self._draft is not None:
-                self._draft.restore(hit.companion)
-            logits = hit.logits
-        else:
-            state.reset()
-            if self._draft is not None:
-                self._draft.reset()
+        if self._prefix_error is not None:
+            raise RuntimeError("Gemma4 prefix cache is unusable after an ownership failure") from self._prefix_error
+        # Lookup, token matching, LRU reorder and protected-room preparation
+        # can allocate Python objects while borrowing detached tensors. An
+        # unexpected failure permanently stops cache/request work, retaining
+        # published owners until positive engine retirement. This also covers
+        # callee/generator tracebacks without pretending their borrows retired.
+        try:
+            media = _media_key(vision)
+            hit = self._find_prefix(prompt, media)
+            state = self._state
+            cached = hit.position if hit is not None else 0
+            logits = None
+            if hit is not None:
+                _, restore_indices = self._prefix_plan(cached)
+                self._prefix_room(restore_indices, protected=hit)
+                previous_failed = self._prefix_failed_bytes
+                # The selected detached owner stays published. Only the extra
+                # restore index/hidden-clone extent needs a sticky charge if
+                # either callee raises and its traceback retains that work.
+                self._prefix_failed_bytes = previous_failed + restore_indices
+                state.restore(hit.state)
+                if self._draft is not None:
+                    self._draft.restore(hit.companion)
+                self._prefix_failed_bytes = previous_failed
+                # An extension computes its own final logits; no old logit
+                # borrow crosses allocation of new evictable checkpoints.
+                logits = hit.logits if cached == len(prompt) else None
+                hit = None
+            else:
+                state.reset()
+                if self._draft is not None:
+                    self._draft.reset()
+        except BaseException as primary:
+            self._prefix_error = primary
+            raise
         encoded = None
         if vision is not None and cached < len(prompt):
             if self.vision is None:
@@ -482,7 +611,7 @@ class Gemma4Engine:
                 if end == len(prompt):
                     logits = self.target.project_logits(result.hidden[-1:])
                 elif end == boundary and cache_prompt:
-                    kept.append(self._checkpoint(state))
+                    kept.append(self._checkpoint(state, unpublished=sum(c.nbytes for c in kept)))
                 start = end
                 if progress is not None and progress(len(prompt), cached, start,
                                                      (time.perf_counter() - started) * 1000):
@@ -496,14 +625,45 @@ class Gemma4Engine:
         if logits is None:
             raise RuntimeError("Gemma4 prefill produced no next-token logits")
         if cached < len(prompt) and cache_prompt:
-            # All reads of the old entry have been issued on the same stream. Admission
-            # reserves PREFIX_SNAPSHOTS: the old entry's two plus this prompt's boundary
-            # checkpoint; evicting first keeps the whole-prompt snapshot within them.
-            hit = None
-            with self._prefix_lock:
-                self._prefix = None
-                kept.append(self._checkpoint(state, logits))
-                self._prefix = _Prefix(tuple(prompt), media, tuple(kept))
+            # Reserve before allocation, including unpublished turn-boundary
+            # payload. Entries may be evicted even if subsequent publication
+            # fails; incomplete entries are never visible to lookup.
+            try:
+                # Charge token references plus their bounded integer objects;
+                # media consists only of hash strings and integer block tuples.
+                pointer = sys.getsizeof((None,)) - sys.getsizeof(())
+                metadata = sys.getsizeof(()) + len(prompt) * (pointer + sys.getsizeof(self.target.config.vocab - 1))
+                metadata += sys.getsizeof(_Prefix((), (), (), 0)) + sys.getsizeof(()) + 2 * pointer
+                metadata += 2 * (sys.getsizeof(_Checkpoint(0, None, None, None, 0))
+                                 + 2 * sys.getsizeof(self._prefix_budget_bytes))
+                metadata += sys.getsizeof(media)
+                for group in media:
+                    metadata += sys.getsizeof(group)
+                    for value in group:
+                        metadata += sys.getsizeof(value)
+                        if type(value) is tuple:
+                            metadata += sum(sys.getsizeof(item) for item in value)
+                kept.append(self._checkpoint(state, logits, unpublished=sum(c.nbytes for c in kept) + metadata))
+                previous_failed = self._prefix_failed_bytes
+                # Publication itself can fail while its Python traceback still
+                # borrows the completed checkpoints. Prepay that ownership too.
+                self._prefix_failed_bytes = previous_failed + sum(c.nbytes for c in kept) + metadata
+                entry = _Prefix(tuple(prompt), media, tuple(kept), metadata)
+                with self._prefix_lock:
+                    # Replace an identical prompt/media entry, then enforce LRU4.
+                    for index in range(len(self._prefixes) - 1, -1, -1):
+                        old = self._prefixes[index]
+                        if old.tokens == entry.tokens and old.media == entry.media:
+                            del self._prefixes[index]
+                    old = None  # no evicted entry may survive in a failed append traceback
+                    if len(self._prefixes) == PREFIX_ENTRIES:
+                        del self._prefixes[0]
+                    self._prefixes.append(entry)
+                    self._prefix_failed_bytes = previous_failed
+            except BaseException:
+                entry = None  # do not retain an unpublished entry in the traceback
+                kept.clear()
+                raise
         return state, logits, cached
 
     def generate(self, prompt: list[int], max_tokens: int, sampling,

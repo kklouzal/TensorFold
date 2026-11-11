@@ -85,6 +85,7 @@ def state(length=17):
 
 def engine_for(runtime, *, enabled=True):
     engine = Gemma4Engine.__new__(Gemma4Engine)
+    engine._prefix_error = None
     engine._dflash_graph, engine._closed, engine._owner = enabled, False, None
     engine._closed_lock, engine._run_lock = threading.Lock(), threading.Lock()
     engine._stream, engine.head = runtime.current, NS(_logits_graph=runtime.owner)

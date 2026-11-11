@@ -218,7 +218,7 @@ def _attempt(engine, request, row, report, destination, *, audit=None):
             engine.drain()
             if row["phase"] == "cold":
                 with engine._prefix_lock:
-                    engine._prefix = None
+                    engine._prefixes.clear()
             row["host_before"] = proposal.host_snapshot()
             row["allocator_before"] = {"allocated": torch.cuda.memory_allocated(), "reserved": torch.cuda.memory_reserved()}
             torch.cuda.reset_peak_memory_stats()

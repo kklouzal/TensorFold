@@ -159,7 +159,18 @@ def _engine(monkeypatch, *, with_head=True):
     engine._draft = engine.head.make_state() if with_head else None
     engine.context_window, engine.max_rows, engine.eos = 400, 8, (18,)
     engine.vision = None
-    engine._closed, engine._prefix, engine._owner, engine._turn = False, None, None, None
+    engine._closed, engine._owner, engine._turn = False, None, None
+    engine._prefixes, engine._prefix_failed_bytes, engine._prefix_error = [], 0, None
+    engine._prefix_budget_bytes, engine._prefix_draft_kind = 1 << 20, 'dflash'
+    engine._state.ring = 400
+    engine._state.keys = torch.empty((1, 400, 1, 1))
+    engine._state.values = torch.empty_like(engine._state.keys)
+    engine._state.raw = torch.empty((1, 400, 1, 1))
+    engine._state.inv = torch.empty((1, 400, 1))
+    if engine._draft is not None:
+        engine._draft.rings = (400,)
+        engine._draft.keys = [torch.empty((400, 1, 1))]
+        engine._draft.values = [torch.empty((400, 1, 1))]
     engine._run_lock, engine._closed_lock, engine._prefix_lock = threading.Lock(), threading.Lock(), threading.Lock()
     engine._stream = SimpleNamespace(synchronize=lambda: None)
     monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
@@ -202,7 +213,7 @@ def test_prefill_progress_includes_cached_tokens(monkeypatch, with_head, cached,
     assert all(item[:2] == (total, cached) and item[3] >= 0 for item in reports)
     assert all(a[3] <= b[3] for a, b in pairwise(reports))
     assert engine._state.position == total
-    assert engine._prefix.tokens == tuple(prompt)
+    assert engine._prefixes[-1].tokens == tuple(prompt)
     if reports:
         assert reports[-1][2] == total
 
@@ -226,13 +237,13 @@ def test_cached_prefill_progress_cancellation_keeps_the_published_prefix(monkeyp
 
     assert reports == [(15, 5, 9)]
     assert engine._state.position == 9
-    assert engine._prefix.tokens == tuple(prefix)
+    assert engine._prefixes[-1].tokens == tuple(prefix)
     resumed = []
     engine._prefill(prompt, None, lambda total, cached, held, elapsed: resumed.append(held),
                     time.perf_counter())
     assert resumed == [9, 13, 15]
     assert engine._state.position == 15
-    assert engine._prefix.tokens == tuple(prompt)
+    assert engine._prefixes[-1].tokens == tuple(prompt)
 
 
 def test_companion_prompt_role_covers_tiny_turn_suffix_and_cached_extension(monkeypatch):
@@ -272,7 +283,7 @@ def test_dflash_rejections_and_prompt_resume_keep_request_contract(monkeypatch, 
                           draft=sampled, stop_eos=False)
     assert resumed == fresh
     assert resumed_stats["cached"] == 5
-    assert engine._prefix.tokens == (3, 1, 4, 1, 5, 9, 2)
+    assert engine._prefixes[-1].tokens == (3, 1, 4, 1, 5, 9, 2)
     for e in (engine, fresh_engine):
         _assert_prompt_path(e, [3, 1, 4, 1, 5, 9, 2])
     assert engine._state.tokens == fresh_engine._state.tokens
@@ -368,7 +379,7 @@ def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch)
     seen = []
     engine.generate(prompt, 35, None, lambda tokens: seen.extend(tokens) or True)
     assert len(seen) == 1
-    assert engine._prefix.checkpoints[-1].state == (tuple(prompt), (True,) * len(prompt))
+    assert engine._prefixes[-1].checkpoints[-1].state == (tuple(prompt), (True,) * len(prompt))
     with pytest.raises(RuntimeError, match="callback failed"):
         engine.generate(prompt, 35, None, lambda tokens: (_ for _ in ()).throw(RuntimeError("callback failed")))
     assert engine._owner is None
@@ -386,15 +397,15 @@ def test_cancelled_prefill_does_not_replace_previous_prefix(monkeypatch, turn):
     engine = _engine(monkeypatch)
     engine._turn = turn
     engine.generate([1, 2], 1, None, lambda tokens: None)
-    before = engine._prefix
+    before = engine._prefixes[-1]
     taken, checkpoint = [], engine._checkpoint
-    engine._checkpoint = lambda state, logits=None: taken.append(state.position) or checkpoint(state, logits)
+    engine._checkpoint = lambda state, logits=None, **kwargs: taken.append(state.position) or checkpoint(state, logits, **kwargs)
     from tensorfold.server.cancellation import RequestCancelled
     with pytest.raises(RequestCancelled) as cancelled:
         engine.generate([3] * 5 + [11] + [3] * 254, 1, None, lambda tokens: None,
                         progress=lambda total, cached, done, ms: done > 5)
     assert taken == ([] if turn is None else [5])
-    assert engine._prefix is before
+    assert engine._prefixes[-1] is before
     # The live traceback keeps the prefill frame: it must no longer hold the unpublished checkpoint.
     tb = cancelled.value.__traceback__
     while tb.tb_frame.f_code.co_name != "_prefill":
@@ -439,13 +450,13 @@ def test_constraint_masks_accepted_chain_without_mutating_cached_logits(monkeypa
 
     prompt = [1, 3, 5]
     engine.generate(prompt, 1, None, lambda tokens: None)
-    before = engine._prefix.checkpoints[-1].logits.clone()
+    before = engine._prefixes[-1].checkpoints[-1].logits.clone()
     output = []
     from tensorfold.engine.exact_sampling import Sampling
     sampling = Sampling(seed=5, temperature=.7, top_k=7, top_p=.9) if sampled else None
     engine.generate(prompt, 11, sampling, lambda tokens: output.extend(tokens), constraint=Constraint(), stop_eos=False)
     assert output == [6] * 11
-    assert torch.equal(engine._prefix.checkpoints[-1].logits, before)
+    assert torch.equal(engine._prefixes[-1].checkpoints[-1].logits, before)
 
 
 @pytest.mark.parametrize("sampled", [False, True])
@@ -460,18 +471,18 @@ def test_next_turn_resumes_at_the_last_turn_marker_and_equals_a_fresh_prefill(mo
     engine = _engine(monkeypatch)
     engine._turn = turn
     engine.generate(first, 6, sampling, lambda t: None, stop_eos=False)
-    assert [c.position for c in engine._prefix.checkpoints] == [3, 7]
+    assert [c.position for c in engine._prefixes[-1].checkpoints] == [3, 7]
     warm = []
     stats = engine.generate(second, 9, sampling, lambda t: warm.extend(t), stop_eos=False)
     assert stats["cached"] == 3
-    assert [c.position for c in engine._prefix.checkpoints] == [8, 12]
+    assert [c.position for c in engine._prefixes[-1].checkpoints] == [8, 12]
     cold_engine = _engine(monkeypatch)
     cold_engine._turn = turn
     cold = []
     assert cold_engine.generate(second, 9, sampling, lambda t: cold.extend(t), stop_eos=False)["cached"] == 0
     assert warm == cold
     # Checkpoints hold prompt rows only, at prefill positions; resumed and cold positions ran the same path.
-    assert [c.state for c in engine._prefix.checkpoints] == [(tuple(second[:p]), (True,) * p) for p in (8, 12)]
+    assert [c.state for c in engine._prefixes[-1].checkpoints] == [(tuple(second[:p]), (True,) * p) for p in (8, 12)]
     for e in (engine, cold_engine):
         _assert_prompt_path(e, second)
     assert engine._state.tokens == cold_engine._state.tokens
@@ -537,7 +548,7 @@ def test_sampled_terminal_eos_or_residual_stays_pending_outside_committed_taps(m
     engine.generate(prompt, 20, Sampling(seed=41, temperature=.7, top_k=7), lambda t: output.extend(t))
     assert output == [1, 6]
     assert engine._draft.taps == engine._state.tokens == prompt + [1]
-    assert engine._prefix.tokens == tuple(prompt)
+    assert engine._prefixes[-1].tokens == tuple(prompt)
 
 
 def test_sampled_probability_failure_never_publishes_speculative_context(monkeypatch):
@@ -554,7 +565,7 @@ def test_sampled_probability_failure_never_publishes_speculative_context(monkeyp
     monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", failed)
     with pytest.raises(ValueError, match="invalid effective probability"):
         engine.generate(prompt, 17, policy, lambda t: output.extend(t), stop_eos=False)
-    assert len(output) == 1 and engine._owner is None and engine._prefix.tokens == tuple(prompt)
+    assert len(output) == 1 and engine._owner is None and engine._prefixes[-1].tokens == tuple(prompt)
     monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", _effective_cpu)
     resumed, fresh = [], []
     engine.generate(prompt, 17, policy, lambda t: resumed.extend(t), stop_eos=False)
@@ -628,10 +639,311 @@ def test_gate_continuation_preserves_original_prompt_checkpoints(monkeypatch):
     engine = _engine(monkeypatch)
     prompt = [3, 5, 8, 2]
     engine.generate(prompt, 3, None, lambda _: False)
-    original = engine._prefix
+    original = engine._prefixes[-1]
     assert original.tokens == tuple(prompt)
     continued = [*prompt, 4, 6, 9]
     engine.generate(continued, 2, None, lambda _: False, cache_prompt=False)
-    assert engine._prefix is original and engine._prefix.tokens == tuple(prompt)
+    assert engine._prefixes[-1] is original and engine._prefixes[-1].tokens == tuple(prompt)
     result = engine.generate(prompt, 1, None, lambda _: False)
     assert result['cached'] == len(prompt)
+
+
+def test_prefix_lru_keeps_four_distinct_prompts_and_touches_hits(monkeypatch):
+    engine = _engine(monkeypatch)
+    prompts = [[i, 1, 2] for i in range(4)]
+    for p in prompts:
+        engine._prefill(p, None, None, time.perf_counter())
+    assert len(engine._prefixes) == 4
+    assert engine._prefill(prompts[0], None, None, time.perf_counter())[2] == 3
+    engine._prefill([5, 1, 2], None, None, time.perf_counter())
+    assert [e.tokens[0] for e in engine._prefixes] == [2, 3, 0, 5]
+    assert engine._find_prefix(prompts[1], ()) is None
+    stats = engine.prefix_cache_stats()
+    assert stats['entries'] == stats['capacity'] == stats['max_entries'] == 4
+    assert stats['slots'] is None
+    assert stats['tokens'] == 12 and stats['charged_bytes'] <= stats['byte_budget']
+    assert 'prompt' not in stats
+
+
+def test_prefix_longest_across_entries_media_and_companion_are_exact(monkeypatch):
+    engine = _engine(monkeypatch)
+    for p in ([1, 2], [1, 2, 3, 4], [8, 9]):
+        engine._prefill(p, None, None, time.perf_counter())
+    state, _, cached = engine._prefill([1, 2, 3, 4, 5], None, None, time.perf_counter())
+    assert cached == 4 and state.tokens == engine._draft.taps == [1, 2, 3, 4, 5]
+    assert engine._find_prefix([1, 2, 3, 4, 5], (('different-image',), (), ())) is None
+    assert engine._find_prefix([1, 2, 3, 4, 5], ((), ('different-video',), ())) is None
+    assert engine._find_prefix([1, 2, 3, 4, 5], ((), (), ((0, 5),))) is None
+
+
+def test_prefix_evicts_before_boundary_and_full_tensor_allocations(monkeypatch):
+    engine = _engine(monkeypatch)
+    engine._turn = 11
+    for p in ([1, 1], [2, 2], [3, 3], [4, 4]):
+        engine._prefill(p, None, None, time.perf_counter())
+    # Make the grant fit the new complete entry and its construction indices,
+    # but not all old entries. Observe at the actual snapshot allocation seam.
+    engine._prefix_budget_bytes = 1700
+    original = engine._state.snapshot
+    observed = []
+    def snapshot():
+        payload, temporary = engine._prefix_plan(engine._state.position)
+        stats = engine.prefix_cache_stats()
+        observed.append((engine._state.position, stats['entries']))
+        assert stats['charged_bytes'] + stats['failed_snapshot_bytes'] <= stats['byte_budget']
+        assert stats['bytes'] + payload + temporary <= stats['byte_budget']
+        return original()
+    engine._state.snapshot = snapshot
+    engine._prefill([6, 6, 11, 7, 7], None, None, time.perf_counter())
+    assert [p for p, _ in observed] == [2, 5]
+    assert observed[-1][1] < 4
+    assert engine.prefix_cache_stats()['charged_bytes'] <= 1700
+
+
+def test_prefix_snapshot_failure_keeps_charge_and_never_publishes_partial(monkeypatch):
+    engine = _engine(monkeypatch)
+    engine._prefill([1, 2], None, None, time.perf_counter())
+    old = tuple(engine._prefixes)
+    primary = RuntimeError('partial target snapshot')
+    def failed():
+        raise primary
+    engine._state.snapshot = failed
+    with pytest.raises(RuntimeError) as caught:
+        engine._prefill([3, 4], None, None, time.perf_counter())
+    assert caught.value is primary and tuple(engine._prefixes) == old
+    charged = engine._prefix_failed_bytes
+    assert charged > 0
+    engine._prefix_budget_bytes = charged
+    with pytest.raises(MemoryError):
+        engine._prefill([5, 6], None, None, time.perf_counter())
+    assert engine._prefix_failed_bytes == charged and not engine._prefixes
+
+
+def test_prefix_checkpoint_plan_matches_real_target_and_draft_snapshot_tensors(monkeypatch):
+    import torch
+    import json
+    from pathlib import Path
+    from tensorfold.families.gemma4.cuda.state import State, capacity_bytes
+    from tensorfold.families.gemma4.cuda.weights import Config
+    from tensorfold.families.gemma4.cuda.dflash import DraftState
+    engine = _engine(monkeypatch)
+    cfg = Config.from_dict(json.loads((Path(__file__).parent / "fixtures/gemma26b_modelopt_metadata.json").read_text())["raw"])
+    engine._state = State(cfg, 'cpu', 32, rows=4)
+    dcfg = SimpleNamespace(layer_types=['sliding_attention', 'full_attention'], sliding_window=5,
+                           kv_heads=1, head_dim=4)
+    engine._draft = DraftState(dcfg, 'cpu', 32, rows=4, block=4)
+    for tensor in (engine._state.keys, engine._state.values, engine._state.raw, engine._state.inv,
+                   *engine._draft.keys, *engine._draft.values):
+        tensor.zero_()
+    engine._prefix_budget_bytes = 3 * (capacity_bytes(cfg, 32, 4) + sum(
+        t.numel() * t.element_size() for t in (*engine._draft.keys, *engine._draft.values)))
+    engine._state.position = engine._state.high_water = engine._draft.length = 13
+    logits = torch.zeros((1, 19))
+    payload, temporary = engine._prefix_plan(13, logits)
+    checkpoint = engine._checkpoint(engine._state, logits)
+    actual = sum(t.numel() * t.element_size() for t in checkpoint.state._layers)
+    actual += sum(t.numel() * t.element_size() for pair in checkpoint.companion[1] for t in pair)
+    actual += checkpoint.logits.numel() * checkpoint.logits.element_size()
+    assert actual == payload == checkpoint.nbytes
+    assert temporary == max(16 * min(13, engine._state.ring), 24 * max(min(13, n) for n in engine._draft.rings))
+
+
+def test_prefix_close_releases_only_after_positive_stream_retirement(monkeypatch):
+    engine = _engine(monkeypatch, with_head=False)
+    engine._prefill([1, 2], None, None, time.perf_counter())
+    before = tuple(engine._prefixes)
+    primary = RuntimeError('stream unresolved')
+    engine._stream.synchronize = lambda: (_ for _ in ()).throw(primary)
+    with pytest.raises(RuntimeError) as caught:
+        engine.close()
+    assert caught.value is primary and tuple(engine._prefixes) == before
+
+
+def test_prefix_failed_publication_retains_prepaid_checkpoint_charge_and_primary(monkeypatch):
+    from tensorfold.families.gemma4.cuda import engine as module
+    engine = _engine(monkeypatch)
+    engine._prefill([1, 2], None, None, time.perf_counter())
+    old = tuple(engine._prefixes)
+    actual = module._Prefix
+    primary, cause = MemoryError('prefix publication'), RuntimeError('prior cause')
+    primary.__cause__ = cause
+    def fail(tokens, media, checkpoints, metadata):
+        if tokens:
+            raise primary
+        return actual(tokens, media, checkpoints, metadata)
+    monkeypatch.setattr(module, '_Prefix', fail)
+    with pytest.raises(MemoryError) as caught:
+        engine._prefill([3, 4], None, None, time.perf_counter())
+    assert caught.value is primary and caught.value.__cause__ is cause
+    assert tuple(engine._prefixes) == old and engine._prefix_failed_bytes > 0
+    tb = caught.value.__traceback__
+    while tb.tb_frame.f_code.co_name != '_prefill':
+        tb = tb.tb_next
+    assert tb.tb_frame.f_locals['kept'] == [] and tb.tb_frame.f_locals['entry'] is None
+
+
+def test_prefix_restore_keeps_selected_checkpoint_charged_until_both_owners_finish(monkeypatch):
+    engine = _engine(monkeypatch)
+    engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    selected = engine._prefixes[-1]
+    engine._prefill([4, 5, 6], None, None, time.perf_counter())
+    events = []
+    target_restore, draft_restore = engine._state.restore, engine._draft.restore
+    def restore_target(value):
+        assert any(e is selected for e in engine._prefixes)
+        events.append('target')
+        target_restore(value)
+    def restore_draft(value):
+        assert any(e is selected for e in engine._prefixes)
+        events.append('draft')
+        draft_restore(value)
+    engine._state.restore, engine._draft.restore = restore_target, restore_draft
+    _, _, cached = engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    assert events == ['target', 'draft'] and cached == 3
+    assert engine._prefixes[-1] is selected
+
+
+def test_prefix_post_eviction_append_failure_does_not_pin_old_lru_in_traceback(monkeypatch):
+    import weakref
+    engine = _engine(monkeypatch)
+    for token in range(4):
+        engine._prefill([token, 1, 2], None, None, time.perf_counter())
+    retired_logits = weakref.ref(engine._prefixes[0].checkpoints[-1].logits)
+    primary = MemoryError('append after LRU removal')
+    class FailingAppend(list):
+        def append(self, value):
+            assert len(self) == 3  # the actual LRU has already been evicted
+            raise primary
+    engine._prefixes = FailingAppend(engine._prefixes)
+    with pytest.raises(MemoryError) as caught:
+        engine._prefill([5, 1, 2], None, None, time.perf_counter())
+    assert caught.value is primary and len(engine._prefixes) == 3
+    assert retired_logits() is None
+    tb = caught.value.__traceback__
+    while tb.tb_frame.f_code.co_name != '_prefill':
+        tb = tb.tb_next
+    assert tb.tb_frame.f_locals['old'] is None
+    assert engine._prefix_failed_bytes > 0
+    stats = engine.prefix_cache_stats()
+    assert stats['charged_bytes'] + stats['failed_snapshot_bytes'] <= stats['byte_budget']
+
+
+@pytest.mark.parametrize('owner', ['target', 'companion'])
+def test_prefix_restore_failure_retains_owners_and_indices_and_refuses_later_pressure(monkeypatch, owner):
+    import torch
+    engine = _engine(monkeypatch)
+    for prompt in ([1, 2, 3], [4, 5, 6]):
+        engine._prefill(prompt, None, None, time.perf_counter())
+    published = engine.prefix_cache_stats()['charged_bytes']
+    indices = engine._prefix_plan(3)[1]
+    primary, cause = RuntimeError('restore failed with borrowed state'), RuntimeError('authentic cause')
+    primary.__cause__ = cause
+    def fail(snapshot):
+        index = torch.arange(3)  # a callee-owned index kept by the error traceback
+        assert index.numel() == 3 and snapshot is not None
+        raise primary
+    if owner == 'target':
+        engine._state.restore = fail
+    else:
+        engine._draft.restore = fail
+    with pytest.raises(RuntimeError) as caught:
+        engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    assert caught.value is primary and caught.value.__cause__ is cause
+    assert engine.prefix_cache_stats()['charged_bytes'] == published
+    assert engine._prefix_failed_bytes == indices and engine._prefix_error is primary
+    # Keep the authentic traceback alive while a different miss applies pressure.
+    # Fatal ownership failure forbids later eviction or state/cache work.
+    engine._prefix_budget_bytes = published + indices
+    with pytest.raises(RuntimeError, match='prefix cache is unusable') as refused:
+        engine._prefill([7, 8, 9], None, None, time.perf_counter())
+    assert refused.value.__cause__ is primary
+    assert engine._prefix_failed_bytes == indices and len(engine._prefixes) == 2
+    assert caught.value.__traceback__ is not None
+
+
+@pytest.mark.parametrize('stage', ['token-match', 'lru-reorder'])
+def test_prefix_lookup_allocation_failure_retains_published_borrows_and_is_fatal(monkeypatch, stage):
+    from tensorfold.families.gemma4.cuda import engine as module
+    engine = _engine(monkeypatch)
+    engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    engine._prefill([4, 5, 6], None, None, time.perf_counter())
+    published = list(engine._prefixes)
+    primary = MemoryError('lookup allocation fault')
+    if stage == 'token-match':
+        def failed_tuple(*args):
+            raise primary
+        monkeypatch.setattr(module, 'tuple', failed_tuple, raising=False)
+    else:
+        class FailedReorder(list):
+            def __getitem__(self, key):
+                if isinstance(key, slice):
+                    raise primary
+                return super().__getitem__(key)
+        engine._prefixes = FailedReorder(engine._prefixes)
+    with pytest.raises(MemoryError) as caught:
+        engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    assert caught.value is primary and engine._prefix_error is primary
+    assert all(a is b for a, b in zip(engine._prefixes, published))
+    state_before = list(engine._state.tokens)
+    with pytest.raises(RuntimeError, match='prefix cache is unusable') as refused:
+        engine._prefill([7, 8, 9], None, None, time.perf_counter())
+    assert refused.value.__cause__ is primary and engine._state.tokens == state_before
+    assert all(a is b for a, b in zip(engine._prefixes, published))
+    assert caught.value.__traceback__ is not None
+    with pytest.raises(RuntimeError, match='prefix cache is unusable') as generation:
+        engine.generate([7, 8, 9], 1, None, lambda tokens: pytest.fail('callback after fatal cache failure'))
+    assert generation.value.__cause__ is primary and engine._state.tokens == state_before
+    # Fatal generation must not prevent the owning drain/close retirement path.
+    engine.close()
+    assert engine._closed is True and not engine._prefixes
+
+
+def test_prefix_protected_room_refusal_with_existing_debt_retains_hit_and_is_fatal(monkeypatch):
+    engine = _engine(monkeypatch)
+    engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    published = engine._prefixes[0]
+    charge = engine.prefix_cache_stats()['charged_bytes']
+    engine._prefix_failed_bytes = engine._prefix_budget_bytes - charge
+    with pytest.raises(MemoryError, match='byte allowance') as caught:
+        engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    assert engine._prefix_error is caught.value and engine._prefixes == [published]
+    with pytest.raises(RuntimeError, match='prefix cache is unusable') as refused:
+        engine._prefill([4, 5, 6], None, None, time.perf_counter())
+    assert refused.value.__cause__ is caught.value and engine._prefixes == [published]
+    assert engine.prefix_cache_stats()['charged_bytes'] + engine._prefix_failed_bytes == engine._prefix_budget_bytes
+
+
+@pytest.mark.parametrize('retirement_fails', [False, True])
+def test_prefix_close_retires_latched_traceback_owners_only_after_positive_drain(monkeypatch, retirement_fails):
+    import gc
+    import weakref
+    engine = _engine(monkeypatch)
+    engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    logits_ref = weakref.ref(engine._prefixes[0].checkpoints[-1].logits)
+    failure_cell = [RuntimeError('restore keeps detached hit in traceback')]
+    def failed(snapshot):
+        assert snapshot is not None
+        raise failure_cell[0]
+    engine._state.restore = failed
+    with pytest.raises(RuntimeError) as caught:
+        engine._prefill([1, 2, 3], None, None, time.perf_counter())
+    assert caught.value is failure_cell[0] and engine._prefix_error is failure_cell[0]
+    original_id = id(failure_cell[0])
+    failure_cell.clear()
+    del caught  # the engine now owns the only error/traceback reference
+    gc.collect()
+    assert logits_ref() is not None
+    if retirement_fails:
+        retirement = RuntimeError('stream completion remains unknown')
+        def failed_drain():
+            raise retirement
+        engine._stream.synchronize = failed_drain
+        with pytest.raises(RuntimeError) as closing:
+            engine.close()
+        assert closing.value is retirement and id(engine._prefix_error) == original_id
+        assert logits_ref() is not None and engine._prefixes and engine._prefix_failed_bytes > 0
+    else:
+        engine.close()
+        gc.collect()
+        assert engine._prefix_error is None and not engine._prefixes and engine._prefix_failed_bytes == 0
+        assert logits_ref() is None

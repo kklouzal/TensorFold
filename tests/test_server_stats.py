@@ -32,6 +32,31 @@ TOTALS = {"requests", "finished", "cancelled", "failed", "prompt_tokens", "cache
 SAMPLE = re.compile(r'[a-zA-Z_:][a-zA-Z0-9_:]*(\{([a-zA-Z_][a-zA-Z0-9_]*="([^"\\]|\\.)*",?)*\})? -?[0-9.e+]+')
 
 
+def test_serial_engine_publishes_its_prefix_cache_without_a_decoder(tmp_path):
+    app = app_for(tmp_path)
+    cache = {'entries': 2, 'capacity': 4, 'tokens': 123, 'max_entries': 4,
+             'bytes': 4096, 'byte_budget': 8192}
+    app.engine.prefix_cache_stats = lambda: dict(cache)
+    reading = stats.snapshot(app)
+    assert reading['prefix_cache'] == cache
+    assert reading['limits']['prefix_cache_entries'] == 4
+    scrape = metrics.render(app)
+    assert f'{metrics.PREFIX}prefix_cache_entries 2' in scrape
+    assert f'{metrics.PREFIX}prefix_cache_capacity 4' in scrape
+    assert f'{metrics.PREFIX}prefix_cache_tokens 123' in scrape
+    cache['entries'] = 3
+    assert reading['prefix_cache']['entries'] == 2  # published reading remains a snapshot
+
+
+def test_serial_prefix_cache_read_failure_is_not_silently_reported_as_no_cache(tmp_path):
+    app = app_for(tmp_path)
+    def failed():
+        raise RuntimeError('prefix snapshot unavailable')
+    app.engine.prefix_cache_stats = failed
+    with pytest.raises(RuntimeError, match='prefix snapshot unavailable'):
+        stats.snapshot(app)
+
+
 def get_json(port, path):
     status, headers, text = exchange(port, "GET", path)
     return status, headers, json.loads(text)
@@ -851,11 +876,18 @@ def test_the_api_reference_documents_every_stats_field_and_no_other(tmp_path):
     app.scheduler = SimpleNamespace(active=1, waiting=0, filling=[], cancelled=0, preemptions=0)
     with mac_server(app) as port:
         mac = field_paths(get_json(port, "/stats")[2])
+    from tensorfold.families.gemma4.cuda.engine import Gemma4Engine
+    native = Gemma4Engine.__new__(Gemma4Engine)
+    native._prefix_lock = threading.Lock()
+    native._prefixes, native._prefix_budget_bytes, native._prefix_failed_bytes = [], 8192, 0
+    serial = app_for(tmp_path)
+    serial.engine.prefix_cache_stats = native.prefix_cache_stats
+    gemma = field_paths(stats.snapshot(serial))
     documented = documented_fields()
-    observed = set(cuda) | set(mac) | set(adaptive)
+    observed = set(cuda) | set(mac) | set(adaptive) | set(gemma)
     assert documented <= observed, documented - observed
     assert "runtime" not in cuda and "runtime" in adaptive
-    for path in (*cuda, *mac, *adaptive):  # include capability-specific sections without weakening legacy schema
+    for path in (*cuda, *mac, *adaptive, *gemma):  # capability sections retain the same documentation oracle
         assert any(path == name or path.startswith(name + ".") or name.startswith(path + ".")
                    for name in documented), f"/stats field {path} is not in docs/api.md"
 

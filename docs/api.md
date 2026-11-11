@@ -691,6 +691,7 @@ Times are seconds, sizes bytes.
 | `kv.active_bytes`, `kv.usage_ratio` | What the running requests' slots hold beyond their first rows, and its share of the budget (vLLM's KV usage: kept entries count as free, as a request that needs room evicts them; one stream alone may pass 1) |
 | `kv.bytes_per_token`, `kv.free_tokens_estimate` | Cache bytes a token takes; the context the budget less the running requests' share would hold (host memory and the resize copy can still refuse it) |
 | `prefix_cache.entries`, `.capacity`, `.slots`, `.tokens` | Kept prompt points, the most it keeps, the slots holding them, and the distinct prompt tokens their states hold |
+| `prefix_cache.max_entries`, `.bytes`, `.charged_bytes`, `.metadata_bytes`, `.byte_budget`, `.failed_snapshot_bytes`, `.scope` | Gemma's entry limit, retained tensor payload, conservative total and metadata charges, snapshot allowance, uncertain failed-snapshot charge, and accounting scope. These are not physical allocator or process-memory measurements |
 | `totals.requests`, `totals.finished.{stop,length,tool_calls}`, `totals.cancelled`, `totals.failed` | Finished requests, by finish reason, client gone, or failed |
 | `totals.prompt_tokens`, `totals.cached_prompt_tokens`, `totals.generated_tokens` | Of finished requests |
 | `totals.generated_tokens_live` | The same with the running replies' tokens so far (CUDA) |
@@ -700,8 +701,9 @@ Times are seconds, sizes bytes.
 | `totals.memory_waits`, `totals.memory_stops` | Rounds a stream sat out for memory; streams stopped when memory ran out |
 | `mlx` (Mac only) | `memory` (as `/health`'s, without a peak reset) and `live` (connections, waiting, decode and prefill tokens a second) |
 
-On CUDA, `kv`, `prefix_cache`, `lanes.memory_wait`, `memory_waits` and `memory_stops` come from Flash Next's
-concurrent engine (`--parallel N`); other engines leave them null. The Mac fills `load` from its scheduler and leaves
+On CUDA, `kv`, `lanes.memory_wait`, `memory_waits` and `memory_stops` come from Flash Next's
+concurrent engine (`--parallel N`). Gemma also publishes its bounded prefix-cache accounting; other serial
+engines may leave `prefix_cache` null. The Mac fills `load` from its scheduler and leaves
 `kv` and `prefix_cache` null. Requests are counted when they finish, those whose client left (abort) or that failed
 included.
 

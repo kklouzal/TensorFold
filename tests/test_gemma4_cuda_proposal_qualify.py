@@ -134,17 +134,21 @@ def runtime_fixture(monkeypatch, tmp_path, *, fault=None, kind="screen"):
             states["constructed"] += 1
             self.w, self.max_rows, self.graphs, self.head = SimpleNamespace(numerics="ct_nvfp4"), 5, object(), object()
             self.context_window = 262144
-            self._prefix_lock, self._prefix = threading.Lock(), None
+            self._prefix_lock, self._prefixes = threading.Lock(), []
         def drain(self):
             pass
         def generate(self, prompt, count, policy, receive, *, draft, stop_eos, penalties):
             assert not stop_eos and penalties is None
             current = next(row for row in json.loads(report_path.read_text())["records"] if row["status"] == "RUNNING")
+            if current["phase"] == "cold":
+                assert not self._prefixes  # every published entry must be cleared before cold work
             if current["phase"] in {"warm", "timed"}:
                 assert Chains.sample is original_sample
                 assert speculative.canonical_candidates is canonical and sampling.canonical_candidates is canonical
-            cached = len(prompt) if self._prefix == tuple(prompt) else 0
-            self._prefix = tuple(prompt)
+            cached = len(prompt) if tuple(prompt) in self._prefixes else 0
+            if not cached:
+                self._prefixes.append(tuple(prompt))
+                self._prefixes[:] = self._prefixes[-4:]
             if fault == "timed-cache" and current["phase"] == "timed" and current["seed"] == 31:
                 cached = 0
             if draft:

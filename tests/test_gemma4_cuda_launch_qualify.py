@@ -135,7 +135,7 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
             self.w = NS(numerics="ct_nvfp4", embed=Head(Plain(), 16))
             self.head, self.vision, self.graphs = NS(bits=bits), object(), object()
             self.capacity_plan = {"context_window": 262144, "cpu_fixture": True}
-            self._prefix, self._prefix_lock, self.closed = None, threading.Lock(), False
+            self._prefixes, self._prefix_lock, self.closed = [], threading.Lock(), False
             states["engines"].append(self)
         def drain(self):
             if fault == "drain":
@@ -154,8 +154,10 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
                 output = list(range(64)) if greedy else list(range(100, 164))
                 if fault == "serial-drift" and self.max_rows == 5:
                     output[-1] += 1
-            cached = len(prompt) if self._prefix == tuple(prompt) else 0
-            self._prefix = tuple(prompt)
+            cached = len(prompt) if tuple(prompt) in self._prefixes else 0
+            if not cached:
+                self._prefixes.append(tuple(prompt))
+                self._prefixes[:] = self._prefixes[-4:]
             if fault == "short":
                 output.pop()
             if fault == "cache" and self.w.embed.reuse_rows == 8:
@@ -198,7 +200,7 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
         changed = engine.w.embed is not head
         engine.w.embed = head
         if changed:
-            engine._prefix = None
+            engine._prefixes.clear()
         return {"changed": changed, "seconds": 0., "prepared_graphs": 2}
     @contextmanager
     def inputs(engine):

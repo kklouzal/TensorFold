@@ -78,6 +78,11 @@ def snapshot(app: Any, *, server: Any = None,
     limits = dict(fixed["limits"])
     limits["http_connections"] = transport["limit"] if transport is not None else None
     memory = usage or {}
+    prefix_cache = memory.get("prefix_cache")
+    prefix_reading = getattr(engine, "prefix_cache_stats", None)
+    if prefix_cache is None and callable(prefix_reading):
+        prefix_cache = prefix_reading()
+        limits["prefix_cache_entries"] = prefix_cache["max_entries"]
     result = {
         "object": "tensorfold.stats", "schema_version": SCHEMA_VERSION,
         "time": {"unix_s": round(time.time(), 3), "uptime_s": round(time.monotonic() - STARTED_MONOTONIC, 3)},
@@ -91,7 +96,7 @@ def snapshot(app: Any, *, server: Any = None,
                  "stream_tokens": metrics.stream_tokens(app)},
         "capacity_plan": deepcopy(plan),
         "kv": memory.get("kv"),
-        "prefix_cache": memory.get("prefix_cache"),
+        "prefix_cache": prefix_cache,
         "totals": {"requests": reading.requests,
                    "finished": {reason: reading.outcomes[reason] for reason in ("stop", "length", "tool_calls")},
                    "cancelled": reading.outcomes["abort"], "failed": reading.outcomes["error"],

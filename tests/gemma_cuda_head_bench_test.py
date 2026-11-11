@@ -95,8 +95,8 @@ def test_exact_pair_rebind_preserves_detached_prefix_and_retires_old_graphs(monk
     incumbent, weight = object(), object()
     reference, candidate = Rows(incumbent, weight, 16), Rows(incumbent, weight, 8)
     snapshot = ("detached target KV", "detached companion KV", "singleton logits")
-    prefix = SimpleNamespace(snapshot=snapshot)
-    engine = SimpleNamespace(w=SimpleNamespace(embed=reference), _prefix=prefix,
+    prefix = SimpleNamespace(snapshot=snapshot, position=65536, logits=object())
+    engine = SimpleNamespace(w=SimpleNamespace(embed=reference), _prefixes=[prefix],
                              _state=SimpleNamespace(reset=lambda: None), _draft=SimpleNamespace(reset=lambda: None),
                              _stream=object(), max_rows=5, head=object(), target=object(), drain=lambda: None)
 
@@ -110,7 +110,7 @@ def test_exact_pair_rebind_preserves_detached_prefix_and_retires_old_graphs(monk
     class Graphs:
         def __init__(self, target, state, *, max_rows, span):
             assert old() is None
-            assert engine._prefix is prefix and prefix.snapshot is snapshot
+            assert engine._prefixes == [prefix] and prefix.snapshot is snapshot
 
         def prepare(self, *, taps):
             assert taps == (False, True)
@@ -122,7 +122,7 @@ def test_exact_pair_rebind_preserves_detached_prefix_and_retires_old_graphs(monk
                         cuda=SimpleNamespace(stream=lambda _: nullcontext())))
     result = bench._bind_head(engine, candidate, preserve_exact_prefix=True)
     assert result["changed"] and result["prepared_graphs"] == 10
-    assert engine.w.embed is candidate and engine._prefix is prefix and prefix.snapshot is snapshot
+    assert engine.w.embed is candidate and engine._prefixes == [prefix] and prefix.snapshot is snapshot
 
 
 @pytest.mark.parametrize("corrupt", ["ids", "cached", "rounds", "drafted", "accepted", "min_rows", "drafts"])
@@ -142,11 +142,20 @@ def test_pair_request_rejects_output_cache_and_proposal_counter_drift(corrupt):
         bench._check_pair_request(output, stats, expected, reference, 65536, 2)
 
 
-def test_pair_protocol_is_balanced_target_only_and_reuses_exact_prefix(monkeypatch, tmp_path):
-    prefix, proposal = object(), {"head": "same-private-FP8"}
+@pytest.mark.parametrize('prefix_fault', [None, 'boundary-only', 'missing-logits', 'replaced-checkpoint'])
+def test_pair_protocol_is_balanced_target_only_and_reuses_exact_prefix(monkeypatch, tmp_path, prefix_fault):
+    prefix, proposal = SimpleNamespace(position=65536, logits=object()), {"head": "same-private-FP8"}
+    if prefix_fault == 'boundary-only':
+        prefix.position -= 1
+    elif prefix_fault == 'missing-logits':
+        prefix.logits = None
     reference, candidate = object(), object()
     heads = {"reference": reference, "reuse8": candidate}
-    engine = SimpleNamespace(w=SimpleNamespace(embed=reference), _prefix=prefix)
+    engine = SimpleNamespace(w=SimpleNamespace(embed=reference), _prefixes=[prefix])
+    def find_prefix(ids, media):
+        assert media == () and len(ids) == 65536
+        return engine._prefixes[-1]
+    engine._find_prefix = find_prefix
     prompt, output = [7] * 65536, [9] * 256
     stats = {"cached": 65536, "drafts": True, "rounds": 100, "drafted": 400,
              "accepted": 155, "min_rows": 5, "decode_s": 2.0}
@@ -159,13 +168,15 @@ def test_pair_protocol_is_balanced_target_only_and_reuses_exact_prefix(monkeypat
             return rows.stop
 
     def bind(engine, head, *, preserve_exact_prefix):
-        assert preserve_exact_prefix and engine._prefix is prefix
+        assert preserve_exact_prefix and engine._prefixes == [prefix]
         engine.w.embed = head
+        if prefix_fault == 'replaced-checkpoint' and head is candidate:
+            engine._prefixes = [SimpleNamespace(position=65536, logits=object())]
         return {"changed": True}
 
     def run(engine, ids, tokens, sampling, draft, *, stop_eos):
         assert ids is prompt and tokens == 256 and draft and not stop_eos
-        assert engine._prefix is prefix
+        assert engine._prefixes == [prefix]
         return list(output), dict(stats)
 
     def capture(engine, ids, tokens, sampling, *, stop_eos, terminal_on_failure):
@@ -187,14 +198,21 @@ def test_pair_protocol_is_balanced_target_only_and_reuses_exact_prefix(monkeypat
     monkeypatch.setattr(bench, "_record", lambda path, value: records.append(value))
     args = SimpleNamespace(code_tokens=256, chat_tokens=256, head_pairs=2, head_loops=2,
                            request_pairs=6, out=tmp_path / "evidence.jsonl")
-    bench._pair_requests(engine, heads, [{"name": "code64k", "ids": prompt, "ids_sha256": "fixture"}], args, None)
+    items = [{"name": "code64k", "ids": prompt, "ids_sha256": "fixture"}]
+    if prefix_fault:
+        message = 'initial proof' if prefix_fault != 'replaced-checkpoint' else 'head transition replaced'
+        with pytest.raises(RuntimeError, match=message):
+            bench._pair_requests(engine, heads, items, args, None)
+        assert not [r for r in records if r.get('kind') == 'pair_integrated' and r.get('head') == 'reuse8']
+        return
+    bench._pair_requests(engine, heads, items, args, None)
     measured = [record for record in records if record["kind"] == "pair_integrated"]
     assert len(measured) == 24 and screens == [1, 2, 3, 4, 5]
     for block in range(6):
         names = [record["head"] for record in measured if record["block"] == block]
         assert names == (["reference", "reuse8", "reuse8", "reference"] if block % 2 == 0 else
                          ["reuse8", "reference", "reference", "reuse8"])
-    assert engine._prefix is prefix
+    assert engine._prefixes == [prefix]
 
 
 def test_pair_cli_refuses_missing_pins_before_engine_import(tmp_path):
@@ -441,7 +459,7 @@ def _main_fixture(monkeypatch, tmp_path, *, corrupt=None):
         def prepare(self, *, taps):
             owner = self.target.owner
             assert owner.in_stream and self.state.position == 0 and owner._draft.position == 0
-            assert owner._prefix is None and self.bound_head is owner.w.embed
+            assert not owner._prefixes and self.bound_head is owner.w.embed
             assert taps == (False, True)
             owner.pending_initialization = True
             self.graphs["captured"] = self.bound_head
@@ -468,7 +486,7 @@ def _main_fixture(monkeypatch, tmp_path, *, corrupt=None):
             self._state, self._draft = State(), State()
             self._stream = SimpleNamespace(owner=self)
             self._prefix_lock = threading.Lock()
-            self._prefix = "stale logits"
+            self._prefixes = ["stale logits"]
             self.head = object()
             self.bank_refs = []
             self.target = SimpleNamespace(owner=self, weights=self.w)
@@ -495,8 +513,10 @@ def _main_fixture(monkeypatch, tmp_path, *, corrupt=None):
             output[-1] += 1
         if corrupt == "sampled-replay" and name == "reuse8" and engine.calls[key] >= 4:
             output[-1] += 1
-        cached = len(prompt) if engine._prefix == tuple(prompt) else 0
-        engine._prefix = tuple(prompt)
+        cached = len(prompt) if tuple(prompt) in engine._prefixes else 0
+        if not cached:
+            engine._prefixes.append(tuple(prompt))
+            engine._prefixes[:] = engine._prefixes[-4:]
         if corrupt == "timed-cache" and name == "reuse8" and engine.calls[key] >= 4:
             cached = 0
         return output, {"cached": cached, "decode_s": 1., "wall_s": 2.}
