@@ -1,7 +1,7 @@
 # Gemma shared-prefix cache implementation ledger
 
-Status: implementation in progress; no new cache deployment or performance
-qualification. Production retains its prior four-entry snapshot cache. The
+Status: implementation, installed CPU and bounded CUDA transport gates passed;
+full-model cache, quality, capacity and performance qualification is in progress. Production retains its prior four-entry snapshot cache. The
 committed 256-entry cost-aware snapshot mitigation is held and unselected.
 This task refines the shared-state contracts of the canonical ProviderOne
 design; it is not a second full engine design or a new serving stack.
@@ -209,3 +209,66 @@ installed-origin checks, GB10 state/graph/media checks, full-model A/B/A cache a
 canonical-history checks, physical-resource admission and complete serving
 measurements remain required before replacing production. Production is still
 on its previous four-entry snapshot image.
+
+
+## Installed and actual CUDA transport checkpoints, 11 November 2026
+
+The production-backed assembly was built as a genuine offline application wheel
+with the existing qualified SDK and native inputs. Runtime image `bcb8d744` and
+verification image `9bf137ec` contain the unchanged `e9701a8f` application source.
+The wheel SHA256 is
+`3faf3210d701931b1d583d674baf3bd6570b80dbb5c0c88d99bbb0df731214c3`.
+Installed-origin controls passed 644 tests with five explicitly unavailable
+optional OpenAI client-SDK cases skipped. All four required xgrammar cases and
+five qualified-Torch GQA cases passed. Exact 783-member application, FD, SDK,
+source and NoCUDA guards passed before and after execution. The installed
+production tokenizer configuration also qualified the incremental encoder.
+A first fixture-only collection failure remains preserved; adding its exact
+read-only tool dependencies changed neither package nor assertions.
+
+Twelve actual GB10 SM121 controls then passed against the installed candidate:
+interior and wrapped paired state rows, fixed graph addresses and replay,
+delayed-event pins, partial-copy failure retention, and native-262144 tail
+transport. No checkpoint or model was loaded. All source/origin/resource guards
+and retirement checks passed, with zero skips, no OOM and final allocator usage
+zero. Observed maximum allocated/reserved bytes were 154941952/167772160 under
+the separate 2 GiB allocator allowance; these observations are not physical
+worst-case or full-model admission bounds. Production remained running during
+the successful twelve-case run.
+
+Earlier operator-only failures occurred before pytest: unsupported Docker
+runtime binding, an invalid fraction-order allocator check, and a diagnostic
+NameError. They remain recoverable and were not counted as runtime failures or
+passes. Each maintenance attempt restored the original production container.
+The corrected whole operator passed static checks and a complete no-array
+preflight before the successful target suite. Its allocator guard derives the
+unique enforced integer-byte bound from the exact pinned SDK set/get rounding
+contract, without an epsilon or increased allowance.
+
+Reviewed receipts on GB10 are `built-installedCPU-receipt.json` and
+`reviewer-built-installedCPU-binding-clear.json` under
+`gemma-shared-prefix-production-assembly-20261111-v1`, and
+`actual-tiny12-receipt.json` plus
+`reviewer-actual-tiny12-and-whole-preflight-binding-clear.json` under
+`gemma-shared-prefix-tiny-GPU-20261111-v1` in the audit-artifacts directory.
+These gates establish installed integration and synthetic state ownership;
+full-model quality, media, context, serving latency and deployment remain open.
+
+## Bounded serving qualification procedure
+
+`tools/gemma_shared_prefix_qualify.py` supplies raw 24K/12K branches sharing 4K,
+actual accepted-output continuation, canonical Chat/tool/Responses histories,
+and strict 40K retention across six and ten short requests. It uses the actual
+served tokenizer, public HTTP/SSE data and frozen input identities. Baseline
+arms record unavailable new cache features; candidate arms require them.
+Common quality, usage, protocol and resource assertions apply to all arms.
+External timing includes complete HTTP settlement; it does not silently treat
+a server decode interval as complete request latency or establish a P3 gain.
+
+The client and focused boundary controls passed 24 CPU tests and static checks;
+its historical EOF failure and corrected cleanup-failure controls are retained.
+The exact client source and 24 frozen input references were independently
+reviewed. The authorized model order is baseline A1, candidate B, baseline A2,
+with one model/context at a time and unchanged native context, winning DFlash
+profile, byte allowance and host/GPU limits. Actual results must close these
+model gates before public candidate promotion.
