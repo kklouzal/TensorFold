@@ -27,9 +27,9 @@ CAP = 6 << 20
 HISTORICAL_HELPER = 'd68f002b9d4019411bfd6d83b764ae4291b80e53b2789ab434d77acf46718134'
 CLIENT_SHA = '3c92fba4cf2ed06e666f5bea7f5281e30446b99b441e5655b4b3ccdec263ac02'
 AST_AUTHORITY = {
-    'engine': {'_prefill':'6b840e2c0b35abd1b45eb810f315236da587f6b417e9525c9e26a346f61be361',
-               '_publish_canonical_locked':'ddfe4822e64b8f0e0b2b47fdbba3d1476e388926476080317c287f6713ea70dc',
-               'generate':'8707b85ab63f01efd8f3c5ec3b81231e3e74dff53638d34c65405c5e7a2dd7f3'},
+    'engine': {'_prefill':'e1a86637fef44460dee2c1951949ec5b325de62c72038fcc62575ac1eafaba42',
+               '_publish_canonical_locked':'c1579a3b2ff63f4928fb73a4a99b2825d7f2f1239618e6782754b0a6a85da117',
+               'generate':'6299ca3b7a590a8e9a268c95b1e39712347d9d2f2d7d139a5b35be4d8064d52b'},
     'vision': {'warm':'d4fb09a8e7c003140da5df14f9fd9c54689f6a93ba0fffe675fd4e9f7f953499',
                'encode':'fc07781afe741a7439ab6393373d4abdb151097e9e526028e079d49a61a00f27',
                'encode_suffix':'b720bb3e657ac4e4b34e749229ccbed38b82311b81a4552d66d4637b5904eedc'}}
