@@ -655,10 +655,11 @@ class PrefixBlocks:
                 for group,_lo,_hi in rows:
                     group.retained += 1
                     self._frontier_work += 1
-            path_nodes = {n for n,_matched in path}
+            # A mismatching final label is a sibling, not an ancestor.
+            # Supersede only cuts fully covered by this tape's actual match.
+            matched_depths = {node:matched for node,matched in path if node.depth <= matched}
             for previous in tuple(self._frontiers):
-                if (previous is not frontier and not previous.pending and previous.node in path_nodes
-                        and previous.cut <= stop and _tags_equal(previous.tags,_tag_prefix(tags,previous.cut))):
+                if (previous is not frontier and not previous.pending and previous.cut <= matched_depths.get(previous.node,-1) and _tags_equal(previous.tags,_tag_prefix(tags,previous.cut))):
                     self._release_frontier(previous)
             self._ensure(0)
             return frontier,required

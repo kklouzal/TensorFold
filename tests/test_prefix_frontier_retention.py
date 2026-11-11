@@ -446,3 +446,48 @@ def test_interrupted_atomic_provisional_yields_to_useful_complete_branch():
             exact(cache, newcomer, windows)
         cache.close()
     assert outcomes[0] < len(useful) and outcomes[1] == len(useful)
+
+
+def test_partial_final_radix_label_preserves_both_sibling_endpoints_under_pressure():
+    windows = {'full': None, 'window': 2048}
+    cache = PrefixBlocks(12_000_000)  # 64-token radix labels, not one-token nodes.
+    cache.configure_retention(windows)
+    original = tuple(range(945))
+    canonical = original[:941] + tuple(range(1000000, 1000005))
+    publish(cache, original, 0, 4, {'full': 4, 'window': 4, 'hidden': 4})
+    publish(cache, original, 4, 945,
+            {'full': 941*1024, 'window': 941*1024, 'hidden': 941*5632})
+    original_frontier = cache._frontiers[0]
+    original_hidden = original_frontier.groups['hidden'][-1][0]
+    path, matched = cache._path(canonical, len(canonical))
+    assert matched == 941
+    assert path[-1][0] is original_frontier.node
+    assert (path[-1][0].depth, path[-1][1]) == (945, 941)
+    publish(cache, canonical, 941, 946, {'full': 5*1024, 'window': 5*1024, 'hidden': 5*5632})
+    assert sorted(frontier.cut for frontier in cache._frontiers) == [945, 946]
+    assert original_frontier in cache._frontiers and original_hidden.retained == 1
+    # Independent historical endpoint payload has no selected continuation.
+    # Its newer score makes the broken policy evict original_hidden first;
+    # the correct policy must reclaim this surplus while retaining both cuts.
+    surplus_tape = tuple(range(2000000, 2001000))
+    writer = cache.begin(surplus_tape, 0, 1000, {'hidden': 3_000_000})
+    writer.commit({'hidden': bytes(3_000_000)})
+    writer.finish()
+    selected_payload = sum(group.nbytes for record in cache._records
+                           for group in record.groups.values() if group.retained)
+    assert selected_payload + 3_000_000 + 512 < cache.budget_bytes
+    assert cache.stats['charged_bytes'] + 3_000_000 + 512 > cache.budget_bytes
+    temporary = cache.reserve_temporary(3_000_000)
+    assert cache.stats['evictions'] > 0
+    assert sorted(frontier.cut for frontier in cache._frontiers) == [945, 946]
+    exact(cache, original, windows)
+    exact(cache, canonical, windows)
+    old = cache.match(original, windows)
+    new = cache.match(canonical, windows)
+    assert sum(count for _owner,_offset,count in old.spans('hidden',944,945)) == 1
+    assert sum(count for _owner,_offset,count in new.spans('hidden',945,946)) == 1
+    old.close()
+    new.close()
+    assert cache.stats['charged_bytes'] <= cache.budget_bytes
+    temporary.close()
+    cache.close()
