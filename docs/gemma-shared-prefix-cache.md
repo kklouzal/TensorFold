@@ -388,3 +388,29 @@ for example, 20 MiB can pass metadata admission but cannot hold a planned
 1024-row window group, which the capture caller currently misclassifies as a
 fatal value error. That separate caller-classification follow-up is deferred;
 this ledger makes no claim that all positive configured budgets are qualified.
+
+The checkpoint/publication revision is source `ef30337d`, runtime `d992ac68`,
+verification image `b452563c`. Its installed cohort passed 292 tests with zero
+skips or failures, including the actual installed media source-contract check.
+Fresh B and A2 execution then completed all seven stages per arm, including all
+36 measured fixed-output cells and all eight native-capacity cells. Exact
+primary inputs and output tapes matched across arms. Both timing windows used
+the same prospective timing-before-native order.
+
+All repeated 64K seed inputs on B now fully reused 65536 tokens in 1.63–2.23
+seconds; the prior roughly 33-second replay misses were removed. First-seen code
+and prose seeds still cost 32.96/33.36 seconds and remain in the record. However,
+17 of 18 descriptive two-observation primary HTTP median groups remained slower
+on B, up to a ratio of 1.15936; short T0 warm was about 0.9924. The code T1
+complete-cell gain reflects an A2 replay-seed miss, not novel growth. All costs,
+including new canonical output materialization, remain visible. The original
+snapshot cache lacks that new output-publication contract, so this comparison
+is not proof of a same-contract whole-feature winner or equivalence.
+
+The user explicitly prioritizes the complete new cache and considers an added
+0.3–0.5 seconds on cold requests likely acceptable. This clarifies feature and
+performance acceptance; it does not erase the cached-region costs, establish
+statistical equivalence, or prove whole-feature superiority. The exact public
+cutover and rollback plan still requires final bound inspection/configuration
+review and Root's concrete execution release. The original container
+and persistent configuration remain preserved for rollback.
