@@ -98,13 +98,29 @@ def test_native_data_extra_bounds_selected_vector_growth_without_repaying_python
 def test_native_payload_bound_verifies_actual_selected_abi_and_rejects_other_torch(monkeypatch):
     torch = pytest.importorskip("torch")
     result = require_native_payload_runtime()
-    assert result["torch_git"] == "04cf2557f315a350e7eea7ab064288def65db75a"
+    assert result["torch_git"] == torch.version.git_version
+    assert result["torch_git"] in ("04cf2557f315a350e7eea7ab064288def65db75a",
+                                    "05adb434bd30d298eb408a72420b0496ee05f8e3")
     assert result["libstdcxx_sha256"] == "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11"
     assert result["python_implementation"] == "cpython" and result["python_version"] == [3, 12, 3]
-    for revision in ("5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1", "other-native-build"):
+    # The published upstream nightly lacks the owned socket correction.
+    for revision in ("5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1",
+                     "09b29f3a97e07864066a2d574ffe03a852de9463", "other-native-build"):
         monkeypatch.setattr(torch.version, "git_version", revision)
         with pytest.raises(ValueError, match="selected Torch"):
             require_native_payload_runtime()
+
+
+@pytest.mark.parametrize("revision", ["04cf2557f315a350e7eea7ab064288def65db75a",
+                                      "05adb434bd30d298eb408a72420b0496ee05f8e3"])
+def test_native_payload_source_identity_dispatch_keeps_actual_runtime_proof(monkeypatch, revision):
+    # CPU dispatch control only: actual per-revision source/layout and installed
+    # image checks remain separate qualification inputs, never this monkeypatch.
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "git_version", revision)
+    result = require_native_payload_runtime()
+    assert result["torch_git"] == revision
+    assert result["libstdcxx_sha256"] == "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11"
 
 
 def test_native_payload_bound_rejects_different_actual_runtime_content(monkeypatch, tmp_path):
