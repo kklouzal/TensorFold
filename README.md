@@ -27,13 +27,19 @@ stay out of visible content; native quoted tool arguments retain their literal
 values. CUDA and non-CUDA servers share this channel parser.
 
 A [shared-prefix cache replacement](docs/gemma-shared-prefix-cache.md) for Gemma 4
-MoE on CUDA is in progress. The byte-funded shared index and State/DFlash range
-transport have passed their source CPU and review gates. The immutable
-production-backed source integration passed 512 controls; five unavailable
-optional client-SDK cases remain unqualified. Installed-image and GPU/model
-qualification remain pending; production still
-uses its previous four-entry snapshot cache. The prior 256-entry snapshot
-mitigation is preserved as an unselected checkpoint.
+MoE on CUDA now has a byte-funded shared index, State/DFlash range transport,
+request-input checkpoints and canonical accepted-output publication. On GB10,
+source `ef30337d` / runtime `d992ac68` passed 292 installed CPU checks and both
+seven-stage serving sweeps at native context 262144, a 12,667,846,656-byte cache,
+40 GiB CUDA allocator cap and 16 GiB host reserve, using the pinned AEON W4/DFlash
+profile. Matching fixed-output and native-capacity requests preserved output IDs.
+Seventeen of eighteen descriptive two-observation HTTP median groups remained
+slower than the old snapshot service; replay-seed and complete-cell costs are
+reported separately. The user prioritizes full caching and accepts the observed
+small cold-request delay; this is not an equivalence or whole-feature speedup
+claim. Public cutover still requires the exact reviewed execution plan; production
+currently retains the original four-entry snapshot service. The prior 256-entry
+snapshot mitigation remains an unselected historical checkpoint.
 
 The replacement reuses compatible partial prefixes, retains separate conversation
 branches and publishes the actual completed conversation through its renderer.
