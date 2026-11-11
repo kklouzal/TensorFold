@@ -1439,8 +1439,13 @@ The [Dockerfile](deploy/gb10/Dockerfile) uses the selected CUDA **13.4.3 cuDNN d
 
 | Target | Torch | TorchVision | Triton | Selected inputs |
 | --- | --- | --- | --- | --- |
-| AMD64 | `2.16.0.dev20261017+cu134` | `0.30.0.dev20261007+cu134` | `3.9.0+gitfc8d31a5` | [AMD64 pins](deploy/gb10/nightly-pins-amd64.json) |
-| ARM64 | `2.16.0.dev20261014+cu134` | `0.30.0.dev20261006+cu134` | `3.9.0+gitfc8d31a5` | [ARM64 pins](deploy/gb10/nightly-pins.json) |
+| AMD64 | `2.16.0.dev20261111+cu134` | `0.30.0.dev20261111+cu134` | `3.9.0+gitb7ddcf86` | [AMD64 pins](deploy/gb10/nightly-pins-amd64.json) |
+| ARM64 | `2.16.0.dev20261111+cu134` | `0.30.0.dev20261111+cu134` | `3.9.0+gitb7ddcf86` | [ARM64 pins](deploy/gb10/nightly-pins.json) |
+
+The selected foundation also protects the pinned pip 26.3 installer and its full
+transitive closure. Native ARM64 resolution and explicitly cross-resolved AMD64
+metadata remain distinct from new-image/native/model qualification; the
+[refresh ledger](deploy/gb10/foundation-refresh-20261111.md) records their current scope.
 
 A fresh checkout can [stage the six tracked inputs and acquire the two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Native ARM images and the [GB10 checkpoint protocols](docs/gb10-nvfp4-validation.md) passed at their recorded bd1 source; final composed-source qualification remains separate. Older deployment profiles and measured rates retain their own identities.
 

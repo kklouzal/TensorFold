@@ -11,12 +11,14 @@ deployment configuration.
 This guide separates the current selected image inputs and source-specific
 checkpoint validation from the dated deployment records below. The build uses NGC
 CUDA **13.4.3 cuDNN development**, CPython 3.12 and genuine official nightlies:
-ARM64 Torch `2.16.0.dev20261014+cu134` / TorchVision
-`0.30.0.dev20261006+cu134`, or AMD64 Torch `2.16.0.dev20261017+cu134` /
-TorchVision `0.30.0.dev20261007+cu134`; both use Triton
-`3.9.0+gitfc8d31a5`. [ARM64 pins](nightly-pins.json) and
-[AMD64 pins](nightly-pins-amd64.json) contain the authoritative child/index
-references and whole-wheel hashes.
+Torch `2.16.0.dev20261111+cu134`, TorchVision
+`0.30.0.dev20261111+cu134` and Triton `3.9.0+gitb7ddcf86` on both maintained
+architectures. The protected installer is pip 26.3. [ARM64 pins](nightly-pins.json)
+and [AMD64 pins](nightly-pins-amd64.json) contain their separate authoritative
+child/index references and whole-wheel hashes. The cu134 wheel tag identifies a
+CUDA minor line; actual compiler and loaded-provider evidence establishes the
+selected toolkit patch. New-image/native/model qualification remains pending
+until recorded in the refresh ledger.
 
 Use the [fresh-checkout input preparation](foundation.md#prepare-the-tracked-selected-inputs)
 to stage the six tracked files and fetch the two native runtime addons from

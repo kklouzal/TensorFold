@@ -267,9 +267,9 @@ def test_real_pip_conflict_cannot_replace_separate_foundation(guard, tmp_path):
 
 def test_sdk_selector_preserves_sdk_without_catching_os_libraries(guard):
     pattern = (Path(__file__).resolve().parents[1] / "deploy/gb10/foundation-sdk-pattern.txt").read_text().strip()
-    raw = "cuda-nvcc-13-4\t13.4.92\nlibnccl2\t2.32.3\nlibcudnn9-cuda-13\t9.27\nlibcurl4t64\t1\nlibnvme1\t1\n"
+    raw = "cuda-nvcc-13-4\t13.4.92\nlibnccl2\t2.32.3\nlibcudnn9-cuda-13\t9.27\nlibnvvm-13-4\t13.4.92-1\nlibcurl4t64\t1\nlibnvme1\t1\n"
     assert guard.sdk_versions(raw, pattern) == {"cuda-nvcc-13-4": "13.4.92", "libnccl2": "2.32.3",
-                                               "libcudnn9-cuda-13": "9.27"}
+                                               "libcudnn9-cuda-13": "9.27", "libnvvm-13-4": "13.4.92-1"}
 
 
 def test_compiler_inventory_includes_versioned_runtime_packages_only(guard):
