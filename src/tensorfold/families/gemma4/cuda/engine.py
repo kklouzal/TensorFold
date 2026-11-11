@@ -353,7 +353,7 @@ class Gemma4Engine:
                     # mutable GPU lane. Normal cooperative cancellation remains
                     # recoverable; an unexpected operation/readback fault may
                     # be the first observation of an asynchronous CUDA failure.
-                    if not isinstance(primary, RequestCancelled):
+                    if not isinstance(primary, (RequestCancelled, GeneratorExit)):
                         graph = self.head._logits_graph
                         if graph.failure is None:
                             graph.failure = primary
@@ -388,6 +388,12 @@ class Gemma4Engine:
                     if self._prefix_archive.failure is None:
                         self._prefix_archive.failure = primary
                 raise
+            if self._prefix_archive is not None:
+                try:
+                    self._prefix_archive.reap(positive_retirement=True)
+                except BaseException as primary:
+                    self._prefix_error = primary
+                    raise
 
     def close(self) -> None:
         if self._owner == threading.get_ident():

@@ -1,6 +1,8 @@
 """OpenAI server for the CUDA engines: a family's ``cuda_engine`` gives ``eos``, ``generate`` and ``follow``."""
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import functools
 import hashlib
 import inspect
@@ -1360,8 +1362,8 @@ class App:
         # Prepay status/transport storage before internal preparation can own
         # optional metadata. A caller-supplied Prepared is still caller-owned
         # if admission fails before this operation begins.
-        cleanup_errors = [None, None, None, None, None, None]
-        cleanup_order = (2, 4, 5, 0, 1, 3)
+        cleanup_errors = [None, None, None, None, None, None, None]
+        cleanup_order = (6, 2, 4, 5, 0, 1, 3)
         _media_primary = None
         publication_intent = None
         canonical_capture = None
@@ -1682,8 +1684,10 @@ class App:
             reports = ((progress is not None or cancelled is not None or body.get("stream"))
                        and "progress" in inspect.signature(self.engine.generate).parameters)
 
+            generation_started = False
+
             def generate(ids: list[int], count: int, feed: Callable[[list[int]], bool]) -> Any:
-                nonlocal released
+                nonlocal released, generation_started
                 if yielding and cached:                 # a run after a cut: foreground requests waiting go first
                     release()
                     waited = time.perf_counter()
@@ -1754,6 +1758,7 @@ class App:
                     extra["progress"] = filled
                 if prepared.penalties is not None:      # a gate's continuation re-reads reply tokens as prompt: count them
                     extra["penalties"] = replace(prepared.penalties, prompt_length=len(prompt))
+                generation_started = True
                 stats = self.engine.generate(ids, count, sampling, feed, **extra)
                 if not cached:
                     cached.append(int((stats or {}).get("cached") or 0))
@@ -1779,9 +1784,24 @@ class App:
                     released = True
                     turns.give()
 
+            @contextmanager
+            def retire_cancelled_native():
+                try:
+                    yield
+                except (RequestCancelled, GeneratorExit):
+                    # generate_gated is synchronous: the producer has stopped.
+                    # Retire before Health/Turns/metadata lose request ownership,
+                    # including a consumer close during final reply processing.
+                    if generation_started and getattr(self.engine, "supports_canonical_prefix_archive", False) is True:
+                        try:
+                            self.engine.drain()
+                        except BaseException as retirement:
+                            cleanup_errors[6] = retirement
+                    raise
+
             try:
                 # running until its reply is made, then counted with how it ended; /health reads ``out``; rounds never call in
-                with health.of(self).running(len(prompt), out, arrived) as request:
+                with health.of(self).running(len(prompt), out, arrived) as request, retire_cancelled_native():
                     generation_primary = None
                     try:
                         if cancelled is not None and cancelled():            # the client left while this request waited
@@ -1820,12 +1840,17 @@ class App:
                         if cache_frontend:
                             settlement_started = time.perf_counter()
                         callback_primary = failed[0] if failed[0] is not None else generation_primary
+                        if stopped["client"] and callback_primary is None:
+                            callback_primary = RequestCancelled("the client left during the reply")
                         _callback_native_cause = (BaseException.__cause__.__get__(callback_primary)
                                                   if callback_primary is not None else None)
                         _callback_native_context = (BaseException.__context__.__get__(callback_primary)
                                                     if callback_primary is not None else None)
                         try:
-                            if publication_intent is None:
+                            cancel_pending = (generation_started
+                                and getattr(self.engine, "supports_canonical_prefix_archive", False) is True
+                                and isinstance(callback_primary, (RequestCancelled, GeneratorExit)))
+                            if publication_intent is None and not cancel_pending:
                                 release()
                             request.stats = {**(request.stats or {}),
                                              **timings(request.stats or {}, len(out), queued[0], prepare_s, arrived,
@@ -1837,7 +1862,7 @@ class App:
                     if failed[0] is not None:
                         raise failed[0]
                     if stopped["client"]:                                        # as the Mac server: nothing more is written
-                        raise RequestCancelled("the client left during the reply")
+                        raise callback_primary
                     reasoning, answer = visible(True)
                     if calls_stream is not None and strict is None and normal_tool_end():
                         # Only a normal actual terminal resolves malformed-JSON
@@ -1997,7 +2022,7 @@ class App:
         except BaseException as error:
             _media_primary = error
             capture = canonical_capture if canonical_capture is not None else getattr(prepared, "canonical", None)
-            if not isinstance(error, (RequestError, RequestCancelled)):
+            if not isinstance(error, (RequestError, RequestCancelled, GeneratorExit)):
                 if capture is not None and isinstance(capture.credit, _CanonicalCredits) and not capture.credit.retained:
                     try:
                         capture.credit.fail(error)
@@ -2015,7 +2040,7 @@ class App:
             # Rebound views and canonical native/Python IDs have no consumers
             # after synchronous publication/containment; drop before refund.
             tokens = media = capture = _canonical_projection = None
-            if _media_primary is None or isinstance(_media_primary, (RequestError, RequestCancelled)):
+            if _media_primary is None or isinstance(_media_primary, (RequestError, RequestCancelled, GeneratorExit)):
                 wire_calls = wire_text = None
             # Status slots and neutral transport are resolved before generation.
             # Both independent owners are retired even if one callback fails.

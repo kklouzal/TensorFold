@@ -19,6 +19,10 @@ class PublishingEngine(PacedEngine):
         self.metadata_leases = []
         self.metadata_failure = None
         self.registrations = []
+        self.drains = 0
+
+    def drain(self):
+        self.drains += 1
 
     def register_cache_metadata_owner(self, owner):
         from types import SimpleNamespace
