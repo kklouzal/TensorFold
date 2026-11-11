@@ -362,6 +362,10 @@ def host_stream_bytes() -> int | None:
     return max(0, memory["MemAvailable"] - reserve)
 
 
+class HostCommitmentCapacityError(ValueError):
+    """Valid physical authority, but insufficient currently usable host bytes."""
+
+
 def admit_host_commitment(total_commitment_bytes: int, *, materialized_owned_bytes: int = 0) -> dict:
     """Check one GLOBAL host commitment against remaining physical authority.
 
@@ -391,7 +395,7 @@ def admit_host_commitment(total_commitment_bytes: int, *, materialized_owned_byt
     if not 0 <= start <= end <= 2**63 - 1 or not 0 <= observed_at <= 2**63 - 1:
         raise RuntimeError("host baseline timestamps exceed the receipt's signed64 clock domain")
     if remaining > usable:
-        raise ValueError(f"remaining host commitment needs {remaining} bytes, but only {usable} bytes are available "
+        raise HostCommitmentCapacityError(f"remaining host commitment needs {remaining} bytes, but only {usable} bytes are available "
                          "after the existing OS reserve and cgroup allowance")
     return {"schema": "tensorfold.host-commitment-admission", "version": 1,
             "scope": "global-host-phase-correct-commitment", "observed_at_unix_ns": observed_at,

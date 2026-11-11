@@ -124,3 +124,21 @@ index and clone work and validate selectors. Dedicated V3 review is clear.
 The test-only semicolon formatting cleanup is AST-identical, recorded separately;
 Ruff also passes. This is a resource-work-elimination contract, not a measured
 serving gain or a complete partial-hit qualification.
+
+## Host admission classification checkpoint
+
+The existing shared physical-host commitment check now distinguishes a valid
+but insufficient observed allowance with `HostCommitmentCapacityError`, a
+`ValueError` subclass. The sole refusal branch changes exception classification;
+its calculations, budgets and diagnostic text remain unchanged. Invalid inputs,
+missing or inconsistent physical authority, unreadable cgroups and unexpected
+allocation failures retain their original failure contracts. This lets optional
+cache metadata decline honestly without hiding a failed physical observation.
+
+All 22 affected source CPU controls and both-file Ruff checks passed in the
+owned CPython 3.12 container. Dedicated component review verified the narrow
+change. These controls mock the observation boundary: they do not establish an
+actual host allocation reservation or full-model resource qualification. The
+metadata adapter must still supply the complete outstanding host commitment and
+catch only the expected typed decline. Receipts are
+`host-admission-type-cpu-v2.json` and `reviewer-host-admission-type-clear.json`.

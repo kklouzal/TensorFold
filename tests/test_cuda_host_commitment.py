@@ -43,15 +43,17 @@ def test_one_global_sample_credits_only_materialized_ownership_not_physical_free
 @pytest.mark.parametrize("cgroup", [0, 7 * GIB])
 def test_the_smallest_actual_remaining_authority_refuses_an_unfitted_claim(physical, monkeypatch, cgroup):
     monkeypatch.setattr(capacity, "host_cgroup_bytes", lambda **_kwargs: cgroup)
-    with pytest.raises(ValueError, match="remaining host commitment"):
+    with pytest.raises(capacity.HostCommitmentCapacityError, match="remaining host commitment") as caught:
         capacity.admit_host_commitment(12 * GIB, materialized_owned_bytes=4 * GIB)
+    assert isinstance(caught.value, ValueError)
     assert physical["memory"] == 1
 
 
 def test_physical_headroom_still_limits_an_unlimited_cgroup(physical, monkeypatch):
     monkeypatch.setattr(capacity, "host_cgroup_bytes", lambda **_kwargs: None)
-    with pytest.raises(ValueError, match="remaining host commitment"):
+    with pytest.raises(capacity.HostCommitmentCapacityError, match="remaining host commitment") as caught:
         capacity.admit_host_commitment(9 * GIB)
+    assert isinstance(caught.value, ValueError)
 
 
 def test_no_exposed_cgroup_controller_uses_physical_authority(physical, monkeypatch):
@@ -70,14 +72,16 @@ def test_existing_explicit_host_reserve_is_consumed_without_another_knob(physica
                                          (8, -1), (8, True), (8, 1.0), (8, 9)])
 def test_invalid_commitment_domains_refuse_before_physical_io(monkeypatch, total, credit):
     monkeypatch.setattr(capacity, "_meminfo", lambda: pytest.fail("invalid claim sampled memory"))
-    with pytest.raises(ValueError, match="host commitment"):
+    with pytest.raises(ValueError, match="host commitment") as caught:
         capacity.admit_host_commitment(total, materialized_owned_bytes=credit)
+    assert type(caught.value) is ValueError
 
 
 def test_missing_physical_authority_is_not_fabricated_from_a_cgroup(physical, monkeypatch):
     monkeypatch.setattr(capacity, "_meminfo", lambda: None)
-    with pytest.raises(ValueError, match="actual physical memory availability"):
+    with pytest.raises(ValueError, match="actual physical memory availability") as caught:
         capacity.admit_host_commitment(1)
+    assert type(caught.value) is ValueError
     assert physical["cgroup"] == 0
 
 
@@ -85,13 +89,15 @@ def test_missing_physical_authority_is_not_fabricated_from_a_cgroup(physical, mo
                                    {"MemTotal": 0, "MemAvailable": 0}])
 def test_invalid_physical_counter_contract_is_not_clamped(physical, monkeypatch, memory):
     monkeypatch.setattr(capacity, "_meminfo", lambda: memory)
-    with pytest.raises(ValueError, match="observation is inconsistent"):
+    with pytest.raises(ValueError, match="observation is inconsistent") as caught:
         capacity.admit_host_commitment(1)
+    assert type(caught.value) is ValueError
 
 
 def test_materialized_credit_cannot_exceed_actual_physical_memory(physical):
-    with pytest.raises(ValueError, match="observation is inconsistent"):
+    with pytest.raises(ValueError, match="observation is inconsistent") as caught:
         capacity.admit_host_commitment(66 * GIB, materialized_owned_bytes=65 * GIB)
+    assert type(caught.value) is ValueError
 
 
 def test_unreadable_cgroup_authority_preserves_the_original_failure(physical, monkeypatch):
