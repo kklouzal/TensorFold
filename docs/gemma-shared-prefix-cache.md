@@ -328,3 +328,63 @@ unchanged. The exact runtime image starts `6619cadc` and verification image
 `0eda4b55`. Installed checks and a fresh full affected model sweep must qualify
 this revision. Earlier core/protocol/media/cancellation passes remain bound to
 their own images. Production still uses the original four-entry snapshot image.
+
+## Completed serving comparison and input checkpoints
+
+Later target execution exposed two additional defects, both preserved with their
+original failures. A partially matched radix label was incorrectly treated as a
+fully covered ancestor, allowing the original conversation endpoint to lose its
+hidden row. Requiring matched-depth ancestry restored the unchanged 945/945
+conversation-reuse check after the full core pressure sequence. Structural
+metadata pricing also omitted some new child dictionaries, separately rounded
+insertion chains and two splits within one label. Tight public-API controls now
+price those allocations before mutation; the reservation guard and byte budget
+remain unchanged.
+
+Revision `dd06c137`, runtime `f3e502b0`, completed all seven stages on candidate B
+and the original-image A2 control: core, protocol, media, both cancellation
+phases, fixed-output timing and native capacity. All 36 measured primary request
+and output-ID tapes matched across arms; all eight native output-ID tapes also
+matched. Publication reused 262128 already computed prompt rows and computed
+only the two canonical output rows, rather than replaying the entire prompt.
+Both private models retired with positive context closure and the original
+service was restored healthy. This completes the exercised functional suite for
+that revision, not performance acceptance or public promotion.
+
+Every one of the 18 two-observation HTTP median groups was slower on B, with
+ratios from 1.00738 to 1.13657. Replayed 64K Chat seed requests frequently missed
+on B and took about 33 seconds, while A2 usually reused them in about two
+seconds. These seed costs remain included in complete-cell results. Repeated
+input hashes are labelled as replays within the timing chronology; they are not
+all novel-context growth. Raw completion wire first/last-visible timestamps are
+unavailable and remain null; server timing is not substituted for client wire
+TTFT or token pacing. No equivalence margin or retention benefit cancels these
+regional losses.
+
+The next source increment retains actual request-input and canonical endpoints
+as separately funded, soft checkpoints. Intermediate capture progress remains
+replaceable. The seed input is a true token ancestor of its completed history,
+but later template rendering clears thinking history; token ancestry alone does
+not preserve the older window and endpoint state needed to replay that input.
+Checkpoint touches use radix path and media identity, including fresh equivalent
+list tapes, without duplicating owners or permanently pinning entries.
+
+For an already complete canonical entry, publication checks metadata, performs
+the existing completion fence and positive reap, retains the boundary, then
+rechecks complete identity. Only that final authoritative check permits a cached
+publication result without importing payload into private working state. An
+entry lost during funding falls through to the existing prefill path. Fatal
+cleanup and cancellation behavior remain intact.
+
+The combined source controls cover 216 unique passing tests and 22 subtests:
+215 unchanged passes from the combined run plus a targeted passing correction
+to one new test's expected error wording. This is carried coverage, not a claim
+that a final 216-test cohort was rerun. Final Core/Archive and Engine source holds
+are immutable; installed-image and fresh paired serving checks remain required.
+
+This release targets the fixed 12,667,846,656-byte cache and 40 GiB GPU/16 GiB
+host-reserve profile. Very small manually configured budgets are unqualified:
+for example, 20 MiB can pass metadata admission but cannot hold a planned
+1024-row window group, which the capture caller currently misclassifies as a
+fatal value error. That separate caller-classification follow-up is deferred;
+this ledger makes no claim that all positive configured budgets are qualified.

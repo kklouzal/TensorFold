@@ -525,7 +525,7 @@ class Gemma4Engine:
             if self._prefix_archive is not None:
                 self._prefix_archive.clear()
 
-    def _prefill(self, prompt, vision, progress, started, *, cache_prompt=True, _need_logits=True):
+    def _prefill(self, prompt, vision, progress, started, *, cache_prompt=True, _need_logits=True, _input_checkpoint=False):
         import torch
         archive = self._prefix_archive
         use_cache = (cache_prompt and archive is not None and archive.metadata_failure is None
@@ -533,7 +533,7 @@ class Gemma4Engine:
         state = self._state
         try:
             if use_cache:
-                cached, logits = archive.restore(prompt, vision, project_logits=_need_logits)
+                cached, logits = archive.restore(prompt, vision, project_logits=_need_logits, checkpoint_input=_input_checkpoint)
             else:
                 state.reset()
                 if self._draft is not None:
@@ -569,7 +569,8 @@ class Gemma4Engine:
             if self.head is not None:
                 self._append_head(self._draft, result, ids, prompt=True)
             if use_cache:
-                archive.capture(prompt, start, end, result.hidden, vision)
+                archive.capture(prompt, start, end, result.hidden, vision,
+                                checkpoint_input=_input_checkpoint and end == len(prompt))
             if _need_logits and end == len(prompt):
                 logits = self.target.project_logits(result.hidden[-1:])
             start = end
@@ -607,7 +608,26 @@ class Gemma4Engine:
             return cancelled is not None and cancelled()
         retirement_errors = [None]  # prepaid before any canonical producer
         try:
-            _state, _logits, cached = self._prefill(tokens, prepared_media, progress, started, _need_logits=False)
+            identity = archive.identity(tokens, prepared_media)
+            if identity is not None and identity.position == len(tokens):
+                # Metadata identifies an existing complete canonical entry; it
+                # carries no payload borrow. Retire accepted work before the
+                # authoritative recheck, since releasing pins permits eviction.
+                identity = None
+                self._stream.synchronize()
+                archive.reap(positive_retirement=True)
+                if archive.metadata_failure is not None:
+                    record['status'] = 'metadata_failed'
+                    record['publication_s'] = time.perf_counter() - started
+                    return record
+                checkpointed = archive.checkpoint(tokens, prepared_media)
+                identity = archive.identity(tokens, prepared_media)
+                if checkpointed and identity is not None and identity.position == len(tokens):
+                    record.update(matched_tokens=len(tokens), materialized_tokens=len(tokens),
+                                  complete=True, status='published')
+                    record['publication_s'] = time.perf_counter() - started
+                    return record
+            _state, _logits, cached = self._prefill(tokens, prepared_media, progress, started, _need_logits=False, _input_checkpoint=True)
             record['matched_tokens'] = cached
             record['computed_tokens'] = len(tokens) - cached
             record['materialized_tokens'] = self._state.position
@@ -683,7 +703,7 @@ class Gemma4Engine:
             queued = time.perf_counter()
             with self._lane(background) as stream, torch.cuda.stream(stream), torch.inference_mode():
                 started = time.perf_counter()
-                state, logits, cached = self._prefill(prompt, vision, progress, started,
+                state, logits, cached = self._prefill(prompt, vision, progress, started, _input_checkpoint=True,
                                                       **({"cache_prompt": False} if not cache_prompt else {}))
                 # Grammar masking is in place; immutable prefix logits are never
                 # handed to it, including an exact full-prompt cache hit.

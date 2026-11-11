@@ -481,9 +481,13 @@ class GemmaPrefixArchive:
         # live while the next two indices are constructed. No full-prefix index.
         return 3 * rows * 8 + (self.hidden_width * 2 if self.spark else 0)
 
-    def capture(self, tokens, start, stop, hidden, prepared_media=None):
+    def capture(self, tokens, start, stop, hidden, prepared_media=None, *, checkpoint_input=False):
         """Export native prefill batches;64 is index granularity, not model M."""
         self.check_live()
+        if type(checkpoint_input) is not bool:
+            raise TypeError('checkpoint_input must be a bool')
+        if checkpoint_input and stop != len(tokens):
+            raise ValueError('input checkpoint requires complete native tape EOF')
         if self.metadata_failure is not None or not self.metadata_complete(prepared_media):
             return False
         if (type(start) is not int or type(stop) is not int or not 0 <= start < stop <= len(tokens)
@@ -519,10 +523,14 @@ class GemmaPrefixArchive:
                             slot += 1
                             del missing[group]
                     if not missing:
-                        self.store.retain_frontier(tokens, end, tags=tags)
+                        if checkpoint_input and end == stop:
+                            complete = self.checkpoint(tokens,prepared_media) and complete
+                        else:
+                            self.store.retain_frontier(tokens, end, tags=tags)
                         continue
                     writer = self._credit(lambda: self.store.begin(tokens, begin, end, missing, tags=tags,
-                                                                 retain_frontier=True))
+                                                                 retain_frontier=True,
+                                                                 checkpoint=checkpoint_input and end == stop))
                 except PrefixCapacity as primary:
                     self._capacity_declined(primary)
                     complete = False
@@ -550,9 +558,27 @@ class GemmaPrefixArchive:
                 self.failure = error
             raise
 
-    def restore(self, tokens, prepared_media=None, *, project_logits=True):
+    def checkpoint(self, tokens, prepared_media=None):
+        """Metadata-only complete-tape boundary; no model/import/projection/wait.
+
+        Funding may evict retired inactive payload. False is an honest metadata,
+        availability or capacity decline; terminal ownership failures propagate.
+        Callers must recheck authoritative identity after this operation.
+        """
+        self.check_live()
+        if self.metadata_failure is not None or not self.metadata_complete(prepared_media):
+            return False
+        try:
+            return self.store.retain_frontier(tokens,len(tokens),tags=self.tags(prepared_media),checkpoint=True)
+        except PrefixCapacity as primary:
+            self._capacity_declined(primary)
+            return False
+
+    def restore(self, tokens, prepared_media=None, *, project_logits=True, checkpoint_input=False):
         """Return (actual restored rows, optional raw exact-end logits)."""
         self.check_live()
+        if type(checkpoint_input) is not bool:
+            raise TypeError('checkpoint_input must be a bool')
         self._last = {'requested_tokens': len(tokens), 'matched_tokens': 0, 'materialized_tokens': 0}
         self.reap()
         if self.metadata_failure is not None or not self.metadata_complete(prepared_media):
@@ -590,6 +616,14 @@ class GemmaPrefixArchive:
                 return 0, None
             pending.leases[1] = read
             cut = read.length
+            if checkpoint_input and cut == len(tokens) and not self.checkpoint(tokens,prepared_media):
+                # No GPU consumer has started. Retire this actual CPU read pin
+                # before declining the optional funded restore boundary.
+                self._no_effects(pending)
+                self.state.reset()
+                if self.draft is not None:
+                    self.draft.reset()
+                return 0, None
             selected_last = {'requested_tokens': len(tokens), 'matched_tokens': cut, 'materialized_tokens': cut}
             pending.effects = True
             self.state.poisoned = True
@@ -633,7 +667,11 @@ class GemmaPrefixArchive:
 
     def identity(self, tokens, media=None):
         self.check_live()
-        found = self.store.identity(tokens, self.windows, tags=self.tags(media))
+        try:
+            found = self.store.identity(tokens, self.windows, tags=self.tags(media))
+        except PrefixCapacity as primary:
+            self._capacity_declined(primary)
+            return None
         return None if found is None else PrefixIdentity(found[0], found[1])
 
     def clear(self):
@@ -668,6 +706,10 @@ class GemmaPrefixArchive:
                 'store_schema': 'gemma-canonical-block-archive-v1', 'groups': data['groups'],
                 'pins': data['pins'], 'pending_batches': len(self.pending), 'evictions': data['evictions'],
                 'eviction_policy': data['eviction_policy'],
+                'retained_frontiers': data['retained_frontiers'],
+                'checkpoint_frontiers': data['checkpoint_frontiers'],
+                'provisional_frontiers': data['provisional_frontiers'],
+                'selected_payload_bytes': data['selected_payload_bytes'],
                 'eviction_history': data['eviction_history'], 'eviction_history_capacity': 32,
                 'last_lookup': dict(self._last),
                 'metadata_status': 'failed' if self.metadata_failure is not None else 'ready',

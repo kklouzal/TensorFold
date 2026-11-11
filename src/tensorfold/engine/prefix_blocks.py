@@ -18,7 +18,7 @@ from collections import deque
 from bisect import bisect_right, bisect_left
 from tensorfold.cleanup import raise_failures
 
-EVICTION_POLICY = "complete-frontier-surplus-aging-bytes-v3"
+EVICTION_POLICY = "complete-frontier-checkpoints-surplus-aging-bytes-v4"
 
 _FRONTIER = 2048
 _CHILD_DICT_EMPTY = sys.getsizeof({})
@@ -112,6 +112,7 @@ class _Frontier:
     used: int
     pending: bool = True
     provisional: bool = False
+    checkpoint: bool = False
 
 
 def _identity_charge(value, budget):
@@ -570,7 +571,7 @@ class PrefixBlocks:
                       and prefix_path[-1][0].depth == start else None)
         old = next((f for f in self._frontiers if not f.pending and f.node is cursor
                     and f.cut == start and _tags_equal(f.tags,_tag_prefix(tags,start))),None) if cursor is not None else None
-        if old is not None and all(n in incoming for n in required):
+        if old is not None and not old.checkpoint and all(n in incoming for n in required):
             old.pending = True
             for name,window in required.items():
                 rows = old.groups[name]
@@ -663,7 +664,8 @@ class PrefixBlocks:
             # Supersede only cuts fully covered by this tape's actual match.
             matched_depths = {node:matched for node,matched in path if node.depth <= matched}
             for previous in tuple(self._frontiers):
-                if (previous is not frontier and not previous.pending and previous.cut <= matched_depths.get(previous.node,-1) and _tags_equal(previous.tags,_tag_prefix(tags,previous.cut))):
+                if (previous is not frontier and not previous.pending and not previous.checkpoint
+                        and previous.cut <= matched_depths.get(previous.node,-1) and _tags_equal(previous.tags,_tag_prefix(tags,previous.cut))):
                     self._release_frontier(previous)
             self._ensure(0)
             return frontier,required
@@ -676,11 +678,13 @@ class PrefixBlocks:
             raise
 
 
-    def retain_frontier(self, tokens, stop, *, tags=()):
-        """Retain resident policy dependencies; return legal-cut availability.
+    def retain_frontier(self, tokens, stop, *, tags=(), checkpoint=False):
+        """Retain policy dependencies; optionally preserve a complete tape EOF.
 
-        Atomic-interior dependencies may be provisionally protected, but False
-        is returned and lookup continues to forbid restoration at that cut.
+        Checkpoints are soft, byte-funded and pressure-evictable. They prevent
+        token-prefix extension from discarding a real request/canonical EOF's
+        different window and hidden dependencies. Atomic-interior progress is
+        provisional and never an available complete checkpoint.
         """
         with self._lock:
             self._healthy()
@@ -688,25 +692,33 @@ class PrefixBlocks:
             _tags(tags,len(tokens),self.budget_bytes)
             if type(stop) is not int or not 0 < stop <= len(tokens):
                 raise ValueError('bounded positive frontier required')
-            for existing in self._frontiers:
-                if (not existing.pending and existing.cut == stop
-                        and existing.node is self._cursor and _tags_equal(existing.tags,_tag_prefix(tags,stop))):
-                    existing.used = self._clock
-                    return not existing.provisional
+            if type(checkpoint) is not bool:
+                raise TypeError('checkpoint must be a bool')
+            if checkpoint and stop != len(tokens):
+                raise ValueError('checkpoint requires the complete native tape EOF')
             frontier = None
             try:
+                path,matched = self._path(tokens,stop)
+                anchor = (path[-1][0] if path and path[-1][0].depth == stop
+                          and matched == stop else None)
+                for existing in self._frontiers:
+                    if (not existing.pending and existing.cut == stop and existing.node is anchor
+                            and _tags_equal(existing.tags,_tag_prefix(tags,stop))):
+                        existing.used = self._clock
+                        if checkpoint and not existing.provisional:
+                            existing.checkpoint = True
+                        return not existing.provisional
                 frontier,_required = self._prepare_frontier(tokens,stop,stop,{},tags)
                 if frontier is None:
                     return False
                 path,_longest = self._path(tokens,stop)
                 frontier.node = next((n for n,_matched in reversed(path) if n.depth == stop),None)
                 if frontier.node is None:
-                    # An interior resident cut may require a radix split.
-                    # Price that structural mutation before changing the tree.
                     self._ensure(self._write_charge(tokens,stop-1,stop,{},0))
                     frontier.node = self._insert(tokens,stop)
                 frontier.pending = False
                 frontier.used = self._clock
+                frontier.checkpoint = checkpoint and not frontier.provisional
                 return not frontier.provisional
             except PrefixCapacity as primary:
                 if frontier is not None:
@@ -877,7 +889,7 @@ class PrefixBlocks:
         return (fixed+_TOKEN*max(0,stop-longest)+(nodes+len(splits))*_NODE
                 +(writer_views+split_views)*_VIEW+dictionaries)
 
-    def begin(self, tokens, start, stop, group_bytes, *, tags=(), retain_frontier=False):
+    def begin(self, tokens, start, stop, group_bytes, *, tags=(), retain_frontier=False, checkpoint=False):
         with self._lock:
             self._healthy()
             self._validate_tokens(tokens)
@@ -891,8 +903,14 @@ class PrefixBlocks:
                 raise PrefixCapacity('process-local payload generation exhausted')
             if type(retain_frontier) is not bool:
                 raise TypeError('retain_frontier must be a bool')
+            if type(checkpoint) is not bool:
+                raise TypeError('checkpoint must be a bool')
+            if checkpoint and (not retain_frontier or stop != len(tokens)):
+                raise ValueError('checkpoint requires retained complete native tape EOF')
             frontier,requirements = (self._prepare_frontier(tokens,start,stop,group_bytes,tags)
                                      if retain_frontier else (None,None))
+            if frontier is not None and checkpoint:
+                frontier.checkpoint = True
             # Recompute after eviction: pruning may change the new-label
             # obligation. No producer effects are possible before begin returns.
             try:
@@ -1322,6 +1340,8 @@ class PrefixBlocks:
                         'eviction_policy': (EVICTION_POLICY if self._retention_windows is not None
                                             else 'complete-prefix-availability-aging-bytes-tiebreak-v2'),
                         'retained_frontiers': len(self._frontiers),
+                        'checkpoint_frontiers': sum(f.checkpoint for f in self._frontiers),
+                        'selected_payload_bytes': sum(g.nbytes for g in groups if g.retained and g.published),
                         'provisional_frontiers': sum(f.provisional for f in self._frontiers),
                         'frontier_membership_work': self._frontier_work,
                         'payload_bytes': sum(g.nbytes for g in groups if g.published),
