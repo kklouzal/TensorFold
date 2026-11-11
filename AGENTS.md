@@ -1,6 +1,6 @@
 # Repository maintenance
 
-Read [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md), and the affected
+Read [README.md](README.md), [CONTRIBUTING.md](CONTRIBUTING.md), 'ProviderOne Implementation Docs',  and the affected
 model or deployment guide before making changes. Applicable parent instructions
 continue to govern this repository.
 
