@@ -142,3 +142,22 @@ actual host allocation reservation or full-model resource qualification. The
 metadata adapter must still supply the complete outstanding host commitment and
 catch only the expected typed decline. Receipts are
 `host-admission-type-cpu-v2.json` and `reviewer-host-admission-type-clear.json`.
+
+## Shared index checkpoint
+
+The Torch-free shared-prefix index is implemented with immutable, shared payload
+spans, arbitrary interior cuts, independently resident required groups and
+explicit read/write/temporary leases. Token and media identity determine the
+prefix; actual group coverage determines the reusable cut. Capacity is byte
+credit, including index/lease metadata, with no prompt-entry ceiling. Eviction
+uses dependent-prefix work plus aging; freed bytes are a tie-break, not a
+work-per-byte ratio. Component history is bounded to 32 events.
+
+Actual CPython 3.12 container controls passed 26 tests plus 13 subtests with no
+Torch import, alongside Ruff and syntax checks. Dedicated review's writer
+registration, borrowed-planning and cleanup-bookkeeping failure findings were
+remediated with preserved reproducers. The final unused helper and duplicate
+public count were removed. The last removal is independently AST-equivalent;
+its final hold is `cf6c7616` and source SHA starts `d4301c9d`. These controls prove
+only the source index/ownership contracts; GPU copies, application integration,
+physical resources, full-model quality and serving performance remain open.
