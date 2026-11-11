@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import hashlib
+import json
+import struct
+import sys
 import math
 from pathlib import Path
 import threading
@@ -167,16 +170,161 @@ class VisionFrame:
 
 
 @dataclass(frozen=True, slots=True)
+class _CacheData:
+    media_token_ids: tuple[int, ...]
+    frame_identities: tuple[tuple, ...]
+    image_replacements: tuple[str, ...]
+    video_replacements: tuple[str, ...]
+    processor_binding: str
+    processor_owner: Any
+
+
+class _CacheMetadata:
+    """One optional payload owner shared by all immutable prepared descriptors.
+
+    Registered CPU consumption retires before normal close. Engine containment
+    calls the same close only after positive GPU/CPU retirement. Data clears
+    before refund; an uncertain raw close is sticky and is never retried.
+    """
+    __slots__ = ("data", "credit", "nbytes", "registration", "failed_callback", "closed",
+                 "failure", "close_error", "_lock")
+
+    def __init__(self, credit, nbytes, failed_callback):
+        self.data, self.credit, self.nbytes = None, credit, nbytes
+        self.registration, self.failed_callback = None, failed_callback
+        self.closed, self.failure, self.close_error = False, None, None
+        self._lock = threading.Lock()
+
+    def close(self):
+        with self._lock:
+            if self.closed:
+                if self.registration is not None and self.registration.retiring:
+                    self.registration = self.failed_callback = None
+                return
+            if self.close_error is not None:
+                raise self.close_error
+            # Every Prepared alias reads through this pointer. No base generation
+            # token, frame, block or hash owner is changed by optional retirement.
+            self.data = None
+            self.failure = "metadata_retired"
+            if self.registration is not None and self.registration.retiring:
+                # Containment owns the registration handle on its stack.
+                self.registration = self.failed_callback = None
+            try:
+                self.credit.close()
+            except BaseException as error:
+                self.failure, self.close_error = "metadata_close_failed", error
+                raise
+            self.credit, self.nbytes, self.closed = None, 0, True
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedGemmaVision:
     token_ids: tuple[int, ...]
     frames: tuple[VisionFrame, ...]              # prompt order, including one entry per video frame
     blocks: tuple[tuple[int, int], ...]
     image_hashes: tuple[str, ...]
     video_hashes: tuple[str, ...]
+    _cache_metadata: _CacheMetadata | None = None
+    _cache_failure: str | None = "metadata_unfunded"
+
+    def _cache_value(self, field, default):
+        data = None if self._cache_metadata is None else self._cache_metadata.data
+        return default if data is None else getattr(data, field)
+
+    @property
+    def media_token_ids(self):
+        return self._cache_value("media_token_ids", ())
+
+    @property
+    def frame_identities(self):
+        return self._cache_value("frame_identities", ())
+
+    @property
+    def image_replacements(self):
+        return self._cache_value("image_replacements", ())
+
+    @property
+    def video_replacements(self):
+        return self._cache_value("video_replacements", ())
+
+    @property
+    def processor_binding(self):
+        return self._cache_value("processor_binding", None)
+
+    @property
+    def processor_owner(self):
+        return self._cache_value("processor_owner", None)
+
+    @property
+    def cache_metadata_owner(self):
+        return self._cache_metadata
+
+    @property
+    def cache_metadata_registration(self):
+        return None if self._cache_metadata is None else self._cache_metadata.registration
+
+    @property
+    def cache_metadata_complete(self):
+        owner = self._cache_metadata
+        registration = None if owner is None else owner.registration
+        return (owner is not None and owner.data is not None and not owner.closed
+                and registration is not None and not registration.failed and not registration.retiring)
+
+    @property
+    def cache_metadata_failure(self):
+        owner = self._cache_metadata
+        if owner is None:
+            return self._cache_failure
+        if owner.failure is not None:
+            return owner.failure
+        return None if self.cache_metadata_complete else "metadata_unavailable"
+
+    @property
+    def cache_metadata_bytes(self):
+        return 0 if self._cache_metadata is None else self._cache_metadata.nbytes
 
     @property
     def visual_tokens(self) -> int:
         return sum(end - start for start, end in self.blocks)
+
+
+def retire_cache_metadata(prepared: PreparedGemmaVision):
+    """Idempotently retire only shared optional provenance after media is done.
+
+    The original prepared plan remains generation-valid, including old aliases.
+    Failed owners remain funded for the existing engine containment protocol.
+    """
+    from tensorfold.cleanup import raise_failures
+
+    owner = prepared.cache_metadata_owner
+    if owner is None:
+        return
+    registration, failed = owner.registration, owner.failed_callback
+    if registration is not None and (registration.failed or registration.retiring):
+        registration.close()
+        return
+    primary, errors = None, [None, None]
+    error_view = filter(lambda error: error is not None, errors)
+    try:
+        owner.close()
+    except BaseException as error:
+        primary = error
+        if registration is not None:
+            try:
+                failed(primary, owner, close_failed=True)
+            except BaseException as cleanup:
+                errors[0] = cleanup
+    if registration is not None:
+        try:
+            registration.close()
+        except BaseException as cleanup:
+            errors[1] = cleanup
+    if primary is None:
+        primary = errors[0] if errors[0] is not None else errors[1]
+    if primary is not None:
+        raise_failures(primary, error_view)
+    owner.registration = owner.failed_callback = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +343,42 @@ def continued(prepared: PreparedGemmaVision, tokens: Sequence[int], config: dict
            for token in tokens[len(prepared.token_ids):]):
         raise ValueError("a continued Gemma media prompt may add text only")
     return replace(prepared, token_ids=tokens)
+
+
+def rebind_prepared(prepared: PreparedGemmaVision, tokens: Sequence[int]) -> PreparedGemmaVision:
+    """Rebind immutable prepared frames to canonical positions; no media owner is acquired.
+
+    The frontend must retain the original request media owner through synchronous
+    publication. This descriptor only borrows the exact same frame objects.
+    """
+    tokens = tuple(tokens)
+    if (type(prepared) is not PreparedGemmaVision or prepared.cache_metadata_complete is not True
+            or len(prepared.media_token_ids) != 2
+            or len(prepared.frame_identities) != len(prepared.frames)
+            or any(type(token) is not int or token < 0 for token in tokens)):
+        raise ValueError("canonical Gemma media requires bound processor/token/frame authority")
+    counts = [(f.kind, f.soft_tokens) for f in prepared.frames]
+    if media_blocks(prepared.token_ids, *prepared.media_token_ids, counts) != prepared.blocks:
+        raise ValueError("canonical Gemma media has inconsistent original block authority")
+    for frame, identity in zip(prepared.frames, prepared.frame_identities):
+        if (type(identity) is not tuple or len(identity) != 10
+                or identity[0] != "gemma-prepared-frame-v1" or identity[1] != frame.kind
+                or identity[5] != frame.soft_tokens or identity[6] != frame.pixels.shape
+                or identity[7] != frame.positions.shape or identity[9] != prepared.processor_binding):
+            raise ValueError("canonical Gemma media has inconsistent per-frame identity")
+    blocks = media_blocks(tokens, *prepared.media_token_ids, counts)
+    return replace(prepared, token_ids=tokens, blocks=blocks)
+
+
+def prefix_media_tags(prepared: PreparedGemmaVision) -> tuple[tuple, ...]:
+    """Atomic contextual tags; future frames never enter an earlier block identity."""
+    if (prepared.cache_metadata_complete is not True or len(prepared.frame_identities) != len(prepared.frames)
+            or len(prepared.blocks) != len(prepared.frames) or not prepared.processor_binding):
+        raise ValueError("Gemma cache media lacks its per-frame preparation identity")
+    rebound = rebind_prepared(prepared, prepared.token_ids)
+    if rebound.blocks != prepared.blocks:
+        raise ValueError("Gemma cache media has inconsistent block positions")
+    return tuple((start, end, identity) for (start, end), identity in zip(prepared.blocks, prepared.frame_identities))
 
 
 def media_blocks(tokens: Sequence[int], image_token: int, video_token: int,
@@ -221,7 +405,7 @@ def media_blocks(tokens: Sequence[int], image_token: int, video_token: int,
 
 def _frame(pixels, positions, config: dict, kind: str) -> VisionFrame:
     """Own and validate standard-processor output before accelerator allocation."""
-    p, xy = np.array(pixels, copy=True), np.array(positions, copy=True)
+    p, xy = np.array(pixels, copy=True, order="C"), np.array(positions, copy=True, order="C")
     k, patch = config["pooling_kernel_size"], config["patch_size"]
     if (p.ndim != 2 or p.shape[1] != 3 * patch**2 or p.shape[0] == 0 or p.shape[0] % k**2
             or p.dtype != np.float32 or xy.shape != (p.shape[0], 2)
@@ -265,6 +449,49 @@ def _video_identity(video):
     return digest.hexdigest()
 
 
+def _frame_content_hash(frame):
+    """Logical RGB order, with at most one prepaid noncontiguous row copy."""
+    digest = hashlib.sha256(np.asarray(frame.shape, dtype=">u8").tobytes())
+    if frame.flags.c_contiguous:
+        digest.update(memoryview(frame).cast("B"))
+    else:
+        for row in frame:
+            digest.update(memoryview(np.ascontiguousarray(row)).cast("B"))
+    return digest.hexdigest()
+
+
+def _cache_metadata_bound(offsets, frames, row_copy_bytes):
+    """Additional owned Python payload, excluding existing frame/pixel owners.
+
+    The standard processor already constructs these replacement strings and
+    offset records. Fund their additional retention and derived frame/tag/rebind
+    headers before those owners are constructed. Allocator/RSS is not inferred.
+    """
+    source = sys.getsizeof(offsets)
+    for item in offsets:
+        source += sys.getsizeof(item)
+        for value in item.values():
+            source += sys.getsizeof(value)
+            if type(value) is tuple:
+                source += sum(sys.getsizeof(n) for n in value)
+    pointer = struct.calcsize("P")
+    tuple_header = sys.getsizeof(())
+    integer = sys.getsizeof(sys.maxsize)
+    frame = (tuple_header + 10 * pointer + 2 * (tuple_header + 2 * pointer)
+             + 6 * integer + 2 * sys.getsizeof("0" * 64) + sys.getsizeof(b"0" * 8)
+             + sys.getsizeof("gemma-prepared-frame-v1") + sys.getsizeof("video"))
+    # Identities, tags and rebound blocks coexist, but immutable frame arrays,
+    # token tuples, strings and the credit lease are shared, never double copied.
+    containers = (3 * (tuple_header + frames * pointer)
+                  + frames * (frame + tuple_header + 3 * pointer + 2 * integer
+                              + tuple_header + 2 * pointer + 2 * integer))
+    replacements = 2 * (tuple_header + len(offsets) * pointer)
+    descriptor = 2 * (PreparedGemmaVision.__basicsize__ + tuple_header)
+    shared = (_CacheMetadata.__basicsize__ + _CacheData.__basicsize__ + 2 * tuple_header
+              + sys.getsizeof(threading.Lock()))
+    return source + containers + replacements + descriptor + shared + row_copy_bytes
+
+
 class GemmaVisionProcessor:
     """Local standard Transformers processor; decoding and resource limits stay external."""
 
@@ -302,6 +529,10 @@ class GemmaVisionProcessor:
         if geometry is not None and actual != geometry:
             raise ValueError("Gemma instantiated processor geometry differs from the admitted checkpoint metadata")
         self.geometry = actual
+        self._binding = hashlib.sha256(json.dumps(
+            {"vision": self.config, "geometry": [actual.image_soft_tokens, actual.video_soft_tokens,
+             actual.patch_size, actual.pooling_kernel_size], "tokens": [self.image_token, self.video_token]},
+            sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
     @classmethod
     def from_directory(cls, model_dir: str | Path):
@@ -357,7 +588,8 @@ class GemmaVisionProcessor:
 
     def prepare(self, rendered_prompt: str, images: Sequence[Any], *, videos: Sequence[Any] = (),
                 max_prompt_tokens: int | None, max_visual_tokens: int = 4096,
-                max_image_tokens: int | None = None) -> PreparedGemmaVision:
+                max_image_tokens: int | None = None, metadata_credit=None,
+                metadata_register=None, metadata_failed=None) -> PreparedGemmaVision:
         from tensorfold.server.prompt_literals import RenderedPrompt, repair_media_tokens, trusted_prompt_text
 
         logical_prompt = rendered_prompt
@@ -390,7 +622,7 @@ class GemmaVisionProcessor:
         if sum(image_counts) + sum(n * count for n, count in video_counts) > max_visual_tokens:
             raise ValueError("Gemma processed media exceeds the visual-token budget")
         kwargs = dict(text=rendered_prompt, return_tensors="np", add_special_tokens=False,
-                      padding=False, truncation=False)
+                      padding=False, truncation=False, return_text_replacement_offsets=True)
         if images:
             kwargs["images"] = [[image.to_pil() for image in images]]
         if videos:
@@ -456,8 +688,121 @@ class GemmaVisionProcessor:
         if any(next(queue, None) is not None for queue in queues.values()):
             raise ValueError("Gemma processed images/frames have no matching prompt placeholders")
         blocks = media_blocks(tokens, self.image_token, self.video_token, [(f.kind, f.soft_tokens) for f in frames])
-        return PreparedGemmaVision(tokens, tuple(frames), blocks, tuple(i.content_hash for i in images),
+        base = PreparedGemmaVision(tokens, tuple(frames), blocks, tuple(i.content_hash for i in images),
                                    tuple(_video_identity(v) for v in videos))
+        offsets = result.get("text_replacement_offsets")
+        if (not isinstance(offsets, list) or len(offsets) != 1
+                or len(offsets[0]) != len(images) + len(videos)
+                or any(type(item) is not dict or item.get("type") not in ("image", "video")
+                       or type(item.get("replacement")) is not str for item in offsets[0])):
+            return replace(base, _cache_failure="processor_expansion_unavailable")
+        offsets = offsets[0]
+        from tensorfold.server.host_payload import current
+        from tensorfold.server.errors import CapacityError
+        from tensorfold.cleanup import rollback, raise_failures
+
+        row_copy = max((video.frames.shape[2] * video.frames.shape[3] * video.frames.itemsize
+                        for video in videos if not video.frames.flags.c_contiguous), default=0)
+        amount, lease, owner = _cache_metadata_bound(offsets, len(frames), row_copy), None, current()
+        registration = cache_owner = None
+        errors = [None, None]
+        error_view = filter(lambda error: error is not None, errors)
+        previous = 0 if owner is None else owner.claims.get("canonical-media", 0)
+        if not all(callable(callback) for callback in (metadata_register, metadata_failed)):
+            return replace(base, _cache_failure="metadata_containment_unavailable")
+        try:
+            if owner is not None:
+                owner.set("canonical-media", previous + amount, allow_wait=False)
+                lease = owner.borrow()  # Same paid claim; request close cannot retire this CPU borrower.
+            elif all(callable(callback) for callback in (metadata_credit, metadata_register, metadata_failed)):
+                lease = metadata_credit(amount)
+                if lease is None or not callable(getattr(lease, "close", None)):
+                    raise TypeError("Gemma metadata credit requires its owned close lease")
+            else:
+                return replace(base, _cache_failure="metadata_credit_unavailable")
+            cache_owner = _CacheMetadata(lease, amount, metadata_failed)
+            registration = metadata_register(cache_owner)
+            cache_owner.registration = registration
+            if registration is None or not callable(getattr(registration, "close", None)):
+                raise TypeError("Gemma metadata capture requires its pre-effect registration")
+        except (CapacityError, MemoryError) as primary:
+            if lease is not None:
+                try:
+                    lease.close()
+                except BaseException as cleanup:
+                    errors[0] = cleanup
+                    raise_failures(primary, error_view)
+            if owner is not None:
+                try:
+                    owner.set("canonical-media", previous, allow_wait=False)
+                except BaseException as cleanup:
+                    errors[0] = cleanup
+                    raise_failures(primary, error_view)
+            return base
+        except BaseException as primary:
+            if lease is not None:
+                rollback(lease, primary, lease.close)
+            raise
+        try:
+            image_replacements = tuple(item["replacement"] for item in offsets if item["type"] == "image")
+            video_replacements = tuple(item["replacement"] for item in offsets if item["type"] == "video")
+            origins = {"image": iter((image.content_hash, None, ordinal)
+                                      for ordinal, image in enumerate(images)), "video": iter(
+                (_frame_content_hash(video.frames[ordinal]),
+                 struct.pack(">d", float(video.timestamp_seconds[ordinal] if video.timestamp_seconds is not None
+                                          else video.indices[ordinal] / video.fps)), int(video.indices[ordinal]))
+                for video in videos for ordinal in range(len(video.indices)))}
+            identities = []
+            for frame in frames:
+                content, pts, ordinal = next(origins[frame.kind])
+                digest = hashlib.sha256(memoryview(frame.pixels).cast("B"))
+                digest.update(memoryview(frame.positions).cast("B"))
+                identities.append(("gemma-prepared-frame-v1", frame.kind, content, pts, int(ordinal),
+                                   int(frame.soft_tokens), tuple(int(n) for n in frame.pixels.shape),
+                                   tuple(int(n) for n in frame.positions.shape), digest.hexdigest(), self._binding))
+            cache_owner.data = _CacheData((self.image_token, self.video_token), tuple(identities),
+                                          image_replacements, video_replacements, self._binding, self.processor)
+            return replace(base, _cache_metadata=cache_owner, _cache_failure=None)
+        except BaseException as primary:
+            if registration is not None:
+                try:
+                    metadata_failed(primary, cache_owner)
+                except BaseException as cleanup:
+                    errors[0] = cleanup
+                try:
+                    registration.close()
+                except BaseException as cleanup:
+                    errors[1] = cleanup
+                raise_failures(primary, error_view)
+            elif owner is not None:
+                rollback(owner, primary, lambda: owner.set("canonical-media", previous, allow_wait=False))
+            raise
+
+    def canonical_tokens(self, prepared: PreparedGemmaVision, rendered_prompt: str) -> tuple[int, ...]:
+        """Token-only standard expansion of the same prepared media; no processor pixels/refetch."""
+        from tensorfold.server.prompt_literals import RenderedPrompt, repair_media_tokens, trusted_prompt_text
+
+        text = trusted_prompt_text(rendered_prompt)
+        if (prepared.cache_metadata_complete is not True or prepared.processor_owner is not self.processor
+                or prepared.processor_binding != self._binding
+                or text.count(self.processor.image_token) != len(prepared.image_replacements)
+                or text.count(self.processor.video_token) != len(prepared.video_replacements)
+                or not callable(getattr(self.processor, "get_text_with_replacements", None))):
+            raise ValueError("Gemma canonical media requires its original processor expansion authority")
+        with self._processor_lock:
+            expanded, _ = self.processor.get_text_with_replacements(
+                [text], images_replacements=list(prepared.image_replacements),
+                videos_replacements=list(prepared.video_replacements))
+            result = self.processor.tokenizer(expanded, add_special_tokens=False, padding=False,
+                                              truncation=False, return_tensors="np")
+        ids = np.asarray(result["input_ids"])
+        if ids.ndim != 2 or ids.shape[0] != 1 or not np.issubdtype(ids.dtype, np.integer):
+            raise ValueError("Gemma canonical tokenizer returned invalid token IDs")
+        tokens = tuple(int(i) for i in ids[0])
+        if isinstance(rendered_prompt, RenderedPrompt):
+            tokens = tuple(repair_media_tokens(rendered_prompt, self.processor.tokenizer.backend_tokenizer, tokens))
+        rebind_prepared(prepared, tokens)  # Prove all retained media survived canonical tokenization.
+        return tokens
 
 
 def _norm(x, weight, eps: float):
@@ -533,10 +878,23 @@ class GemmaCudaVision:
     def prepare(self, *args, **kwargs):
         if self.frontend is None:
             raise ValueError("Gemma vision CPU processor is not configured")
+        for name in ("metadata_credit", "metadata_register", "metadata_failed"):
+            kwargs.setdefault(name, getattr(self, name, None))
         return self.frontend.prepare(*args, **kwargs)
 
     def continued(self, prepared: PreparedGemmaVision, tokens: Sequence[int]) -> PreparedGemmaVision:
         return continued(prepared, tokens, self.raw_config)
+
+    def canonical_tokens(self, prepared: PreparedGemmaVision, rendered_prompt: str) -> tuple[int, ...]:
+        if self.frontend is None:
+            raise ValueError("Gemma vision CPU processor is not configured")
+        return self.frontend.canonical_tokens(prepared, rendered_prompt)
+
+    def rebind_prepared(self, prepared: PreparedGemmaVision, tokens: Sequence[int]) -> PreparedGemmaVision:
+        return rebind_prepared(prepared, tokens)
+
+    def retire_cache_metadata(self, prepared: PreparedGemmaVision):
+        return retire_cache_metadata(prepared)
 
     def video_size(self, *args):
         if self.frontend is None:
@@ -617,21 +975,30 @@ class GemmaCudaVision:
         return pooled.to(self.dtype)
 
     def encode(self, prepared: PreparedGemmaVision, prompt: Sequence[int]) -> EncodedGemmaVision:
-        import torch
+        return self.encode_suffix(prepared, prompt, 0)
 
+    def encode_suffix(self, prepared: PreparedGemmaVision, prompt: Sequence[int], start: int) -> EncodedGemmaVision:
+        """Encode only complete uncached blocks, retaining absolute language positions."""
         if tuple(prompt) != prepared.token_ids or len(prepared.frames) != len(prepared.blocks):
             raise ValueError("Gemma prepared vision belongs to different prompt tokens")
         blocks = media_blocks(prompt, self.image_token, self.video_token,
                               [(f.kind, f.soft_tokens) for f in prepared.frames])
         if blocks != prepared.blocks:
             raise ValueError("Gemma prepared vision has inconsistent visual blocks")
+        if (type(start) is not int or not 0 <= start <= len(prompt)
+                or any(begin < start < end for begin, end in blocks)):
+            raise ValueError("Gemma cached cut must preserve whole bidirectional visual blocks")
+        pending = [(frame, block) for frame, block in zip(prepared.frames, blocks) if block[0] >= start]
+        if not pending:
+            return EncodedGemmaVision((), None, ())
+        import torch
+
         with torch.inference_mode():
-            # One image/frame a call bounds attention scratch independently of
-            # image/video count. Features from separate requests never alias.
-            parts = [self._features(frame) for frame in prepared.frames]
+            parts = [self._features(frame) for frame, _ in pending]
             if any(tuple(part.shape) != (frame.soft_tokens, self.hidden_size)
-                   for part, frame in zip(parts, prepared.frames)):
+                   for part, (frame, _) in zip(parts, pending)):
                 raise ValueError("Gemma tower output does not match its image/frame placeholders")
             features = torch.cat(parts, dim=0).contiguous()
-        rows = tuple(i for start, end in blocks for i in range(start, end))
-        return EncodedGemmaVision(rows, features, blocks)
+        suffix_blocks = tuple(block for _, block in pending)
+        rows = tuple(i for begin, end in suffix_blocks for i in range(begin, end))
+        return EncodedGemmaVision(rows, features, suffix_blocks)

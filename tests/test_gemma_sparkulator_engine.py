@@ -104,7 +104,7 @@ def test_unsafe_spark_constructor_retains_external_status_without_cuda_cleanup(m
     _factory(monkeypatch, tmp_path, fail=True)
 
 
-def _factory(monkeypatch, tmp_path, *, fail=False, global_gqa=False, sampled_q=False):
+def _factory(monkeypatch, tmp_path, *, fail=False, global_gqa=False, sampled_q=False, cache_bytes=None):
     from tensorfold import checkpoint_metadata, token_metadata
     from tensorfold.cuda import chat_template, precision
     from tensorfold.families.gemma4.cuda import forward, graphs, modelopt_weights, sparkulator
@@ -116,18 +116,23 @@ def _factory(monkeypatch, tmp_path, *, fail=False, global_gqa=False, sampled_q=F
     monkeypatch.setattr(checkpoint_metadata, 'read_config', lambda path: native if Path(path) == draft_dir else main)
     monkeypatch.setattr(precision, 'mode', lambda: precision.CHECKPOINT)
     events = []
+    from tensorfold.families.gemma4.cuda.state import State, capacity_bytes
+    default_credit = 3 * (capacity_bytes(cfg, 65536, 1024) + SparkulatorConfig.from_dict(native).snapshot_bytes(65536))
     def admit(*args, **kwargs):
+        assert (kwargs.get('prefix_cache_bytes') if cache_bytes is not None else None) == cache_bytes
+        assert ('prefix_cache_bytes' in kwargs) is (cache_bytes is not None)
         assert kwargs['max_rows'] == 7 and kwargs['drafter_bits'] == 16
         assert kwargs.get('spark_global_gqa', False) is global_gqa
         assert kwargs.get('spark_sampled_q', False) is sampled_q
-        return {'context_window': 65536}
+        return {'context_window': 65536, 'prefix_cache_bytes': default_credit if cache_bytes is None else cache_bytes,
+                'prefix_cache_default_bytes': default_credit}
     monkeypatch.setattr(capacity, 'admit', admit)
     monkeypatch.setattr(torch.cuda, 'set_device', lambda _: None)
     monkeypatch.setattr(chat_template, 'prepare_chat_template', lambda *a, **k: object())
     monkeypatch.setattr(token_metadata, 'resolve_eos', lambda *a, **k: (1, 106, 50))
     monkeypatch.setattr(token_metadata, 'load_tokenizer', lambda _: SimpleNamespace(token_to_id=lambda _: None))
     monkeypatch.setattr(modelopt_weights, 'load', lambda *a, **k: SimpleNamespace(config=cfg))
-    state = object()
+    state = State(cfg, 'meta', 65536, rows=1024)
     class Target:
         def __init__(self, weights):
             self.device, self.config = torch.device('cpu'), cfg
@@ -170,25 +175,35 @@ def _factory(monkeypatch, tmp_path, *, fail=False, global_gqa=False, sampled_q=F
         with pytest.raises(RuntimeError) as caught:
             Gemma4Engine(tmp_path, drafter=str(draft_dir), context=65536,
                          **({'spark_global_gqa': True} if global_gqa else {}),
-                         **({'spark_sampled_q': True} if sampled_q else {}))
+                         **({'spark_sampled_q': True} if sampled_q else {}),
+                         **({'prefix_cache_bytes': cache_bytes} if cache_bytes is not None else {}))
         assert caught.value is primary and events == ['main-state', 'head']
         retained = primary._tensorfold_retained_owners
         assert any(owner._spark_load_status.model is partial for owner in retained if isinstance(owner, Gemma4Engine))
     else:
         engine = Gemma4Engine(tmp_path, drafter=str(draft_dir), context=65536,
                          **({'spark_global_gqa': True} if global_gqa else {}),
-                         **({'spark_sampled_q': True} if sampled_q else {}))
+                         **({'spark_sampled_q': True} if sampled_q else {}),
+                         **({'prefix_cache_bytes': cache_bytes} if cache_bytes is not None else {}))
         assert events == ['main-state', 'head', 'bind', 'head-state', 'graphs', 'no-taps', 'empty']
         assert engine.max_rows == 7 and not engine._tap_features
+        assert engine._prefix_funded_bytes == (default_credit if cache_bytes is None else cache_bytes)
+        assert engine._prefix_default_bytes == default_credit
+        if cache_bytes == 0:
+            assert engine._prefix_archive is None
+        else:
+            assert engine._prefix_archive.store.budget_bytes == engine._prefix_funded_bytes
+        return engine
 
 
 def test_head_close_only_after_successful_main_stream_retirement():
     import threading
     engine = object.__new__(Gemma4Engine)
     engine._owner, engine._head_kind = None, 'sparkulator'
-    engine._closed_lock, engine._prefix_lock = threading.Lock(), threading.Lock()
-    engine._prefixes, engine._draft = [object()], object()
-    engine._prefix_failed_bytes = 0
+    engine._closed_lock = threading.Lock()
+    engine._prefix_archive, engine._prefix_error, engine.vision = None, None, None
+    engine._native_retirement_error = None
+    engine._draft = object()
     events = []
     engine.drain = lambda: events.append('drain')
     engine.head = SimpleNamespace(close=lambda: events.append('head-close'))
@@ -327,3 +342,29 @@ def test_gqa_geometry_plans_requested_window_with_larger_native(monkeypatch, tmp
     assert plan.native == 262144
     baseline = capacity.admit(tmp_path, 131072, True, max_rows=7, drafter_dir=tmp_path/'spark')
     assert baseline['geometry'].maximum_slots is None
+
+
+@pytest.mark.parametrize('credit', [None, 0, 1 << 50])
+def test_engine_consumes_actual_admitted_archive_credit_without_legacy_ceiling(monkeypatch, tmp_path, credit):
+    # Admission owns physical fit; this boundary fixture supplies its returned
+    # authority and proves Engine does not reconstruct/clamp legacy3F credit.
+    engine = _factory(monkeypatch, tmp_path, cache_bytes=credit)
+    assert engine._prefix_budget_bytes == engine.capacity_plan['prefix_cache_bytes']
+
+
+
+def test_constructed_zero_cache_engine_retains_native_failure_without_refence(monkeypatch, tmp_path):
+    engine = _factory(monkeypatch, tmp_path, cache_bytes=0)
+    assert engine._prefix_archive is None and engine._native_retirement_error is None
+    state_owner, draft_owner = engine._state, engine._draft
+    primary, calls = RuntimeError('zero-cache native synchronization failed'), []
+    def failed():
+        calls.append('synchronize')
+        raise primary
+    engine._stream.synchronize = failed
+    for retire in (engine.drain, engine.close, engine.close):
+        with pytest.raises(RuntimeError) as caught:
+            retire()
+        assert caught.value is primary
+    assert calls == ['synchronize'] and engine._native_retirement_error is primary
+    assert engine._state is state_owner and engine._draft is draft_owner

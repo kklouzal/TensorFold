@@ -119,7 +119,7 @@ def test_canonical_prefill_chunks_preserve_every_turn_boundary():
 
 
 def test_prefix_rejects_old_final_partial_and_keeps_identical_turn_geometry():
-    from tensorfold.families.gemma4.cuda.engine import _Prefix
+    from tensorfold.families.gemma4.cuda.e2b_engine import _Prefix
     engine = object.__new__(e2b_engine.E2BEngine)
     engine._turn = 99
     engine._prefix_lock = threading.Lock()

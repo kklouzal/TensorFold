@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import math
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -385,6 +386,15 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             and not getattr(family.package, "CUDA_DRAFTER_BITS", False):
         raise ValueError(f"--drafter-bits: {family.title} on CUDA runs its draft model at one fixed precision; drop "
                          "the flag")
+    cache_bytes = getattr(args, "prefix_cache_bytes", None)
+    if cache_bytes is not None:
+        if type(cache_bytes) is not int or not 0 <= cache_bytes <= sys.maxsize:
+            raise ValueError("--prefix-cache-bytes must be a nonnegative native byte count")
+        if backend != "cuda" or not getattr(family.package, "CUDA_PREFIX_CACHE_BYTES", False):
+            raise ValueError("--prefix-cache-bytes requires Gemma 4 MoE on CUDA")
+        from tensorfold.families import read_config
+        cache_config = read_config(config_dir if config_dir is not None else args.model)
+        family.package.check_cuda_prefix_cache_metadata(cache_config)
     head_config = None
     for option, capability in (("lossless_head", "CUDA_LOSSLESS_HEAD"),
                                ("delta4_head", "CUDA_DELTA4_HEAD"),

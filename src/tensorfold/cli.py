@@ -431,6 +431,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
                                ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
         if getattr(args, option, False) and getattr(family.package, capability, False):
             options[option] = True
+    if getattr(args, "prefix_cache_bytes", None) is not None:
+        options["prefix_cache_bytes"] = args.prefix_cache_bytes
     if getattr(family.package, "CUDA_DRAFTER_BITS", False) and getattr(args, "drafter_bits", None) is not None:
         options["drafter_bits"] = args.drafter_bits
     if getattr(args, "draft_rows", None) is not None:

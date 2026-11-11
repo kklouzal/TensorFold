@@ -392,7 +392,23 @@ def render(app: Any, *, server: Any = None) -> str:
         for name, key, help_text in (("prefix_cache_entries", "entries", "Kept prompt points the prefix cache holds."),
                                      ("prefix_cache_capacity", "capacity", "Kept prompt points the prefix cache may hold."),
                                      ("prefix_cache_tokens", "tokens", "Distinct prompt tokens the kept points' states hold.")):
-            _family(lines, name, "gauge", help_text, [f"{PREFIX}{name} {prefix[key]}"])
+            value = prefix[key]
+            if value is not None:
+                _family(lines, name, "gauge", help_text, [f"{PREFIX}{name} {value}"])
+        for name, key, help_text in (
+                ("prefix_cache_blocks", "chunks", "Retained cache chunks, not a count of conversations."),
+                ("prefix_cache_indexed_tokens", "indexed_tokens", "Tokens indexed by cache metadata; not proof of reusable state."),
+                ("prefix_cache_payload_bytes", "bytes", "Logical bytes of published owned cache tensor payload."),
+                ("prefix_cache_reserved_payload_bytes", "reserved_payload_bytes", "Funded cache payload bytes not yet published."),
+                ("prefix_cache_charged_bytes", "charged_bytes", "Cache byte obligations including metadata and temporaries."),
+                ("prefix_cache_byte_budget", "byte_budget", "Total byte credit governing cache retention.")):
+            value = prefix.get(key)
+            if value is not None:
+                _family(lines, name, "gauge", help_text, [f"{PREFIX}{name} {value}"])
+        evictions = prefix.get("evictions")
+        if evictions is not None:
+            _family(lines, "prefix_cache_evictions_total", "counter", "Cache eviction events reported by this backend.",
+                    [f"{PREFIX}prefix_cache_evictions_total {evictions}"])
     if kv is not None:
         for name, key, help_text in (
                 ("kv_memory_budget_bytes", "budget_bytes", "Bytes the stream caches may grow into (less the reserve)."),

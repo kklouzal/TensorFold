@@ -83,7 +83,7 @@ class ChatTemplate:
     def render(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None,
                enable_thinking: bool, extra: dict[str, Any] | None = None, allow_images: bool = False,
                allow_audio: bool = False, max_render_bytes: int = MAX_RENDER_BYTES,
-               add_generation_prompt: bool = True, render_credit=None) -> str:
+               add_generation_prompt: bool = True, render_credit=None, render_time: datetime | None = None) -> str:
         active = self.selected(tools=tools)
         messages = _normalize_tool_call_arguments(normalize_messages(messages, late_system=active.late_system,
                                                                      allow_images=allow_images,
@@ -101,6 +101,10 @@ class ChatTemplate:
             kwargs = dict({key: trusted(value) for key, value in self.specials.items()},
                           messages=trust_message_roles(values["messages"]), tools=values["tools"],
                           add_generation_prompt=add_generation_prompt, enable_thinking=enable_thinking)
+            if render_time is not None:
+                if type(render_time) is not datetime:
+                    raise PromptEncodingError("prepared template time must be a datetime")
+                kwargs["strftime_now"] = render_time.strftime
             kwargs.update(values["extra"])
             trust_policy_strings(kwargs)
             text = bounded_render(active.template, kwargs, max_render_bytes,

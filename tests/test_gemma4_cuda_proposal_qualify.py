@@ -140,6 +140,7 @@ def runtime_fixture(monkeypatch, tmp_path, *, fault=None, kind="screen"):
         def drain(self):
             pass
         def generate(self, prompt, count, policy, receive, *, draft, stop_eos, penalties):
+            assert states.get("metadata_pending", 0) == 0
             assert not stop_eos and penalties is None
             current = next(row for row in json.loads(report_path.read_text())["records"] if row["status"] == "RUNNING")
             if current["phase"] == "cold":
@@ -183,9 +184,16 @@ def runtime_fixture(monkeypatch, tmp_path, *, fault=None, kind="screen"):
             policy = None if body["temperature"] == 0 else SimpleNamespace(
                 seed=body["seed"], temperature=1., top_k=64, top_p=.95, min_p=0.)
             count = tool.WORKLOADS[body["messages"][0]["content"]] + (1 if fault == "prepared-count" else 0)
-            return SimpleNamespace(prompt=[1] * count,
-                                   max_tokens=body["max_tokens"], sampling=policy, thinking=False, ignore_eos=True,
-                                   grammar=None, vision=None, penalties=None)
+            states["metadata_pending"] = states.get("metadata_pending", 0) + 1
+            request = SimpleNamespace(prompt=[1] * count,
+                                      max_tokens=body["max_tokens"], sampling=policy, thinking=False, ignore_eos=True,
+                                      grammar=None, vision=None, penalties=None, metadata_retired=False)
+            def retire():
+                if not request.metadata_retired:
+                    request.metadata_retired = True
+                    states["metadata_pending"] -= 1
+            request.retire_canonical_cache = retire
+            return request
 
     def with_app(args, port, work):
         app = App()

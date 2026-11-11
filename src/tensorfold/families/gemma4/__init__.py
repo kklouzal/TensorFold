@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from typing import Any
 
 MLX_MODEL_FILE = True
@@ -13,6 +14,7 @@ LANES = True
 MODELS = ("mlx-community/gemma-4-26b-a4b-it-4bit",)
 CUDA_DRAFTER = "z-lab/gemma-4-26B-A4B-it-DFlash"
 CUDA_DRAFTER_BITS = True
+CUDA_PREFIX_CACHE_BYTES = True
 CUDA_LOSSLESS_HEAD = True
 CUDA_DELTA4_HEAD = True
 CUDA_PREPARE_GLOBAL_PROMPT = True
@@ -157,6 +159,15 @@ def check_cuda_clipped_verification_metadata(config: dict, *, flag: str) -> None
         raise ValueError(f'{flag} requires Gemma 4 MoE on CUDA with enabled DFlash')
 
 
+def check_cuda_prefix_cache_metadata(config, *, flag="--prefix-cache-bytes"):
+    """The shared archive belongs to the MoE engine, not the dense E2B route."""
+    from .cuda.e2b_metadata import is_dense_gemma
+    text = config.get("text_config") or config
+    if (config.get("model_type") not in MODEL_TYPES or not isinstance(text, dict)
+            or text.get("enable_moe_block") is not True or is_dense_gemma(config)):
+        raise ValueError(f"{flag} requires Gemma 4 MoE on CUDA")
+
+
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0,
                 master: str = "", master_port: int = 29551, no_drafts: bool = False,
                 context: int | None = None, **options: Any):
@@ -166,10 +177,13 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("Gemma4 CUDA currently runs on one GPU; use --tp 1 --rank 0")
     allowed = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "vision", "vision_urls",
                "vision_offload", "eos_token_ids", "chat_template_file", "chat_template_name", "lossless_head",
-               "spark_global_gqa", "spark_sampled_q", "delta4_head", "prepare_global_prompt", "dflash_head_w4a16", "clip_sampled_verification"}
+               "spark_global_gqa", "spark_sampled_q", "delta4_head", "prepare_global_prompt", "dflash_head_w4a16", "clip_sampled_verification", "prefix_cache_bytes"}
     unsupported = sorted(set(options) - allowed)
     if unsupported:
         raise ValueError("Gemma4 CUDA does not implement: " + ", ".join(unsupported))
+    cache_bytes = options.get("prefix_cache_bytes")
+    if cache_bytes is not None and (type(cache_bytes) is not int or not 0 <= cache_bytes <= sys.maxsize):
+        raise ValueError("prefix_cache_bytes must be a nonnegative native byte count")
     if options.get("vision_offload"):
         raise ValueError("Gemma4's vision tower stays resident; drop --vision-offload")
     clip_sampled_verification = options.get('clip_sampled_verification', False)
@@ -195,6 +209,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     from tensorfold.families import read_config
     raw = read_config(model_dir)
     head_options = {}
+    if cache_bytes is not None:
+        check_cuda_prefix_cache_metadata(raw)
+        head_options["prefix_cache_bytes"] = cache_bytes
     if clip_sampled_verification:
         check_cuda_clipped_verification_metadata(raw, flag="--clip-sampled-verification")
         head_options["clip_sampled_verification"] = True
@@ -241,9 +258,11 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
 
 
 def load(model_dir: Path, *, lane_kernels: str = "auto", drafter: str = "", drafter_bits: int = 8,
-         trust_model_code: bool = False, **_: Any) -> tuple[Any, Any]:
+         trust_model_code: bool = False, prefix_cache_bytes: int | None = None, **_: Any) -> tuple[Any, Any]:
     """MLX's qmv loop a row by default; ``lane_kernels`` "on": the lane matmul; ``drafter``: a DFlash model's chains."""
 
+    if prefix_cache_bytes is not None:
+        raise ValueError("prefix_cache_bytes requires Gemma 4 MoE on CUDA")
     from tensorfold.families import read_config
     from .cuda.e2b_metadata import is_dense_gemma
     if is_dense_gemma(read_config(model_dir)):

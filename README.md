@@ -26,19 +26,31 @@ reasoning and holds incomplete control markers while streaming. Channel controls
 stay out of visible content; native quoted tool arguments retain their literal
 values. CUDA and non-CUDA servers share this channel parser.
 
-A [shared-prefix cache replacement](docs/gemma-shared-prefix-cache.md) is in
-progress: partial-prefix branches and canonical response reuse are required,
-with byte-funded storage instead of an entry ceiling. It is not deployed or
-target-qualified. The following snapshot mitigation is committed but held;
-production remains on its previous four-entry snapshot cache.
+A [shared-prefix cache replacement](docs/gemma-shared-prefix-cache.md) for Gemma 4
+MoE on CUDA is in progress. The byte-funded shared index and State/DFlash range
+transport have passed their source CPU and review gates. The immutable
+production-backed source integration passed 512 controls; five unavailable
+optional client-SDK cases remain unqualified. Installed-image and GPU/model
+qualification remain pending; production still
+uses its previous four-entry snapshot cache. The prior 256-entry snapshot
+mitigation is preserved as an unselected checkpoint.
 
-The Gemma CUDA prefix cache retains entries under its snapshot byte allowance,
-with a secondary ceiling of 256 entries. Space-driven eviction weighs prompt
-rebuild tokens per charged byte together with recency rank, protecting expensive
-conversation prefixes from small intervening requests. Model weights remain
-shared. `/stats` reports cache bytes, eviction counts and the last 32 evicted
-prompt lengths; streamed replies report cached prompt tokens when
-`stream_options.include_usage` is enabled.
+The replacement reuses compatible partial prefixes, retains separate conversation
+branches and publishes the actual completed conversation through its renderer.
+Its storage allowance includes payload and metadata, with no prompt-entry
+ceiling. `--prefix-cache-bytes` selects an explicit allowance (zero disables),
+subject to full memory admission while preserving the requested or native
+context. The default remains context-derived. Changing cache capacity does not
+extend the model's per-request context or promise arbitrary old sliding-window
+cuts after their state is evicted. Dense Gemma and other backends retain their
+separately scoped cache contracts.
+
+The archive statistics distinguish published payload, reserved/uncertain bytes,
+metadata obligations and indexed tokens from safely restorable matches. Legacy
+point counts without a valid equivalent are null; Prometheus omits those gauges.
+Bounded component eviction history exposes token ranges, byte counts and reason,
+without prompt text or token IDs. These source capabilities are not a deployment
+or measured performance claim.
 
 The [branch consolidation](docs/branch-consolidation.md) hardens benchmark
 publication, new tool-definition validation and optional segment-cache failure

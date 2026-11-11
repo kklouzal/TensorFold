@@ -159,6 +159,57 @@ def messages(items: list[Any], *, allow_video=False, allow_audio=False) -> list[
     return out
 
 
+
+def needs_empty_output_message(items, finish):
+    """Exact Reply.finish rule, including the vacuous all-reasoning empty list."""
+    return finish != "length" and all(item["type"] == "reasoning" for item in items)
+
+
+def canonical_output_messages(message, finish, *, output_items=None, credit=None):
+    """Project actual Responses output through the same stored-history adapter.
+
+    Streaming callers pass the actual Reply.items to preserve chronology and
+    call_id; item UUIDs are never call IDs. No new IDs or wire JSON are produced.
+    Nonstream projection follows Reply.delta's reasoning/content/calls order.
+    Optional derived ownership is funded before constructing items/messages.
+    """
+    if output_items is not None and type(output_items) is not list:
+        raise RequestError("canonical Responses output must use actual Reply.items")
+    if message is not None and type(message) is not dict:
+        raise RequestError("canonical Responses assistant message must be an object or null")
+    if credit is not None:
+        credit.render_input(output_items if output_items is not None else message)
+    if output_items is None:
+        source = {} if message is None else message
+        items = []
+        thought, text = source.get("reasoning_content"), source.get("content")
+        if thought is not None and type(thought) is not str or text is not None and type(text) is not str:
+            raise RequestError("canonical Responses assistant text/reasoning must be strings or null")
+        if thought:
+            items.append({"type": "reasoning", "content": [{"type": "reasoning_text", "text": thought}]})
+        if text:
+            items.append({"type": "message", "role": "assistant",
+                          "content": [{"type": "output_text", "text": text}]})
+        calls = source.get("tool_calls")
+        if calls is not None and type(calls) is not list:
+            raise RequestError("canonical Responses tool calls must be the actual list")
+        for call in calls or ():
+            function = call.get("function") if type(call) is dict else None
+            if (type(function) is not dict or type(call.get("id")) is not str or not call["id"]
+                    or function.get("name") is not None and type(function["name"]) is not str
+                    or function.get("arguments") is not None and type(function["arguments"]) is not str):
+                raise RequestError("canonical Responses tool calls require actual call IDs and string fields")
+            items.append({"type": "function_call", "call_id": call["id"],
+                          "name": function.get("name") or "", "arguments": function.get("arguments") or ""})
+    else:
+        items = output_items
+    if needs_empty_output_message(items, finish):
+        # Do not mutate an emitted item's list or retain a second replay owner.
+        items = [*items, {"type": "message", "role": "assistant",
+                         "content": [{"type": "output_text", "text": ""}]}]
+    return messages(items)
+
+
 def _tools(tools: Any) -> list[dict[str, Any]] | None:
     if tools is None:
         return None
@@ -417,7 +468,7 @@ class Reply:
         """The reply ended (``reason`` is the chat finish_reason): its last item closes and the Response is final."""
 
         status = "incomplete" if reason == "length" else "completed"
-        if status == "completed" and all(item["type"] == "reasoning" for item in self.items):
+        if needs_empty_output_message(self.items, reason):
             self._open("message")                          # an empty answer is still a message
         self._close(status)
         final = {**self.base, "status": status, "output": self.items, "usage": usage(chat_usage),

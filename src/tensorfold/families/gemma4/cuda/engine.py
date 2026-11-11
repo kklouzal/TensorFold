@@ -1,20 +1,17 @@
-"""Gemma 4 requests with exact target-verified DFlash chains.
+"""Gemma4 single-lane requests with an immutable canonical block archive.
 
-The single request lane owns persistent target and companion caches, reset or
-restored per request. A single CUDA stream owns all requests. Each byte-bounded prefix entry
-includes the visual input identity and holds detached snapshots at prefill
-positions (row-invariant forwards make a snapshot at any position equal to a
-fresh prefill of that prefix): one at the whole prompt (with its next-token
-logits) and one before the prompt's last turn marker, where the next chat turn's
-history rendering departs from this turn's generation prompt.
+One graph-bound target/companion State performs model work. Shared GPU blocks
+retain canonical prompt-role rows and hidden endpoints under admitted byte
+credit. Reuse imports the longest actually resident coupled token/media cut;
+no fixed prompt entries, turn-marker anchors or whole-prompt snapshot copies.
+Raw SDK responses canonicalize once after delivery. Frontends explicitly defer
+that pass and publish their actual re-rendered completed history instead.
 """
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-import math
 import threading
 import sys
 import time
@@ -22,28 +19,7 @@ from typing import Any, Callable
 
 from .state import PREFILL_ROWS, widest_forward
 
-PREFIX_SNAPSHOTS = 3     # unchanged admission: three full target+companion snapshot payloads
-PREFIX_ENTRIES = 256     # secondary metadata ceiling; the unchanged byte allowance is primary
-PREFIX_EVICTION_HISTORY = 32
-PREFIX_EVICTION_POLICY = 'token-rebuild-per-byte-age-v1'
-TURN_MARKER = "<|turn>"
-
-
-@dataclass(frozen=True, slots=True)
-class _Checkpoint:
-    position: int
-    state: Any                  # detached target Snapshot at ``position``
-    companion: Any              # detached DraftState snapshot, or None without a drafter
-    logits: Any                 # next-token logits when ``position`` is the whole prompt, else None
-    nbytes: int                 # detached Tensor payload; no shared weights/workspace
-
-
-@dataclass(frozen=True, slots=True)
-class _Prefix:
-    tokens: tuple[int, ...]
-    media: tuple
-    checkpoints: tuple[_Checkpoint, ...]   # ascending positions; the last covers the whole prompt
-    metadata_bytes: int                   # conservative retained token/media Python storage
+PREFIX_SNAPSHOTS = 3  # unchanged funded byte credit; no prompt-entry/snapshot count policy
 
 
 def _prompt_ids(prompt, vocab: int) -> list[int]:
@@ -89,6 +65,7 @@ class Gemma4Engine:
     stream."""
 
     tp = 1
+    supports_canonical_prefix_archive = True
     graphs = None          # text decode/verify CUDA graph runner (None: every forward eager)
     _clip_sampled_verification_to_room = False
     _tap_features = True
@@ -101,7 +78,12 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
                  spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
-                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False) -> None:
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False, prefix_cache_bytes: int | None = None) -> None:
+        if prefix_cache_bytes is not None and (type(prefix_cache_bytes) is not int or not 0 <= prefix_cache_bytes <= sys.maxsize):
+            raise ValueError('prefix_cache_bytes must be a nonnegative native integer or None')
+        if prefix_cache_bytes:
+            from tensorfold.engine.prefix_blocks import validate_prefix_budget
+            validate_prefix_budget(prefix_cache_bytes)
         if type(clip_sampled_verification) is not bool:
             raise ValueError('clip_sampled_verification must be a bool')
         if clip_sampled_verification and (not drafter or no_drafts):
@@ -150,7 +132,7 @@ class Gemma4Engine:
 
         import torch
         from tensorfold.cuda.chat_template import prepare_chat_template
-        from tensorfold.token_metadata import load_tokenizer, resolve_eos
+        from tensorfold.token_metadata import resolve_eos
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.families import quant_method
         from .capacity import admit, check_dflash_graph, check_dflash_head_a8, check_dflash_head_w4a16, companion_kind
@@ -212,6 +194,7 @@ class Gemma4Engine:
         self.capacity_plan = admit(model_dir, context, context_explicit, drafter_dir=draft_dir,
                                    vision=vision, max_rows=self.max_rows, streams=streams, keep=PREFIX_SNAPSHOTS,
                                    drafter_bits=drafter_bits,
+                                   **({'prefix_cache_bytes': prefix_cache_bytes} if prefix_cache_bytes is not None else {}),
                                    **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
                                    **({"global_trig": True} if global_trig else {}),
                                    **({"global_cache": global_cache, "global_cache_prompt": global_cache_prompt}
@@ -297,30 +280,25 @@ class Gemma4Engine:
             # Larger attention grids capture on first use; their outputs and pool are covered by admission.
             self.graphs = Graphs(self.target, self._state, max_rows=self.max_rows)
             self.graphs.prepare(taps=(False, True) if self.head is not None and self._tap_features else (False,))
-            # Absent from a tokenizer: only whole-prompt checkpoints are kept.
-            self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
-            self._prefixes = []
-            self._prefix_lock = threading.Lock()
             self._prefix_draft_kind = kind
-            # The same raw-only geometry is used by capacity.admit(keep=3).
-            # Derived caches/shared weights are deliberately not cache credit.
-            from .state import capacity_bytes
-            target_snapshot = capacity_bytes(self.target.config, self.context_window, forward_rows)
-            companion_snapshot = (0 if self._draft is None else
-                                  spark_cfg.snapshot_bytes(self.context_window) if kind == 'sparkulator' else
-                                  sum(t.numel() * t.element_size() for t in (*self._draft.keys, *self._draft.values)))
-            self._prefix_budget_bytes = PREFIX_SNAPSHOTS * (target_snapshot + companion_snapshot)
-            # A failed snapshot may retain partial tensors in its native traceback.
-            # Keep its prepaid extent charged until positive engine retirement.
-            self._prefix_failed_bytes = 0
-            self._prefix_error = None
-            self._prefix_evictions = 0
-            self._prefix_evictions_by_reason = {'byte_budget': 0, 'entry_cap': 0}
-            self._prefix_evicted_tokens = [0] * PREFIX_EVICTION_HISTORY
+            # The header admission is the single byte-credit authority.
+            # Explicit allowances may exceed legacy3F only when the unchanged
+            # complete GPU/host/context geometry actually admitted them.
+            self._prefix_funded_bytes = self.capacity_plan['prefix_cache_bytes']
+            self._prefix_default_bytes = self.capacity_plan['prefix_cache_default_bytes']
+            budget = self._prefix_funded_bytes
+            self._prefix_budget_bytes, self._prefix_error = budget, None
+            from .prefix_archive import GemmaPrefixArchive
+            self._prefix_archive = GemmaPrefixArchive(self, budget) if budget else None
+            if self.vision is not None:
+                self.vision.metadata_credit = self.reserve_cache_metadata
+                self.vision.metadata_register = self.register_cache_metadata_owner
+                self.vision.metadata_failed = self.cache_metadata_failed
             self._run_lock = threading.Lock()
             self._closed_lock = threading.Lock()
             self._closed = False
             self._owner = None
+            self._native_retirement_error = None
             self._stream = torch.cuda.Stream(device=self.target.device)
             self.concurrent = False
             self.scheduler = None
@@ -366,6 +344,8 @@ class Gemma4Engine:
                 from tensorfold.server.cancellation import RequestCancelled
             self._owner = threading.get_ident()
             try:
+                if self.supports_canonical_prefix_archive and self._prefix_archive is not None:
+                    self._prefix_archive.reap()
                 yield self._stream
             except BaseException as primary:
                 if self._dflash_graph:
@@ -389,13 +369,24 @@ class Gemma4Engine:
             graph = self.head._logits_graph if self._dflash_graph else None
             if graph is not None and (not graph.closed or graph.failure is not None):
                 graph.check_live()
+            # Pre-effect graph refusal above is not a failed native fence. A
+            # real synchronization failure below is terminal even with C=0.
+            if self._native_retirement_error is not None:
+                raise self._native_retirement_error
+            if self._prefix_archive is not None and self._prefix_error is not None:
+                raise self._prefix_error
             try:
                 self._stream.synchronize()
             except BaseException as primary:
                 # Final appends can fault after the last sampling readback.
                 # Never retry retirement after its first failed observation.
+                self._native_retirement_error = primary
                 if graph is not None and graph.failure is None:
                     graph.failure = primary
+                if self.supports_canonical_prefix_archive and self._prefix_archive is not None:
+                    self._prefix_error = primary
+                    if self._prefix_archive.failure is None:
+                        self._prefix_archive.failure = primary
                 raise
 
     def close(self) -> None:
@@ -404,10 +395,12 @@ class Gemma4Engine:
         with self._closed_lock:
             self._closed = True
         self.drain()
-        with self._prefix_lock:
-            self._prefixes.clear()
-            self._prefix_failed_bytes = 0
-            self._prefix_error = None  # release traceback borrows only after positive stream retirement
+        if self.supports_canonical_prefix_archive:
+            if self._prefix_archive is not None:
+                self._prefix_archive.close()
+            self._prefix_error = None
+            if self.vision is not None:
+                self.vision.metadata_credit = self.vision.metadata_register = self.vision.metadata_failed = None
         if getattr(self, '_head_kind', None) == 'sparkulator' and self.head is not None:
             # The stream is known retired. Native head close owns no retry or
             # main-cache mutation; derived bridge storage may now be released.
@@ -420,10 +413,15 @@ class Gemma4Engine:
         with self._closed_lock:
             if self._closed:
                 raise RuntimeError("Gemma4 engine is closed")
-        if self._prefix_error is not None:
-            raise RuntimeError("Gemma4 prefix cache is unusable after an ownership failure") from self._prefix_error
+        if self.supports_canonical_prefix_archive:
+            if self._prefix_error is not None:
+                raise RuntimeError("Gemma4 prefix cache is unusable after an ownership failure") from self._prefix_error
+            if self._prefix_archive is not None:
+                self._prefix_archive.check_live()
         if self._dflash_graph:
             self.head._logits_graph.check_live()
+        if self.supports_canonical_prefix_archive and self._native_retirement_error is not None:
+            raise RuntimeError('Gemma4 native retirement failed; retain its owners') from self._native_retirement_error
 
     def _taps(self, result, count=None):
         if getattr(self.head, 'feature_source', 'taps') == 'final_hidden':
@@ -434,316 +432,226 @@ class Gemma4Engine:
     def _append_head(self, state, result, input_ids, count=None, *, prompt=False):
         self.head.append(state, self._taps(result, count), prompt=prompt)
 
-    def _prefix_policy_bytes(self):
-        """Bounded history and counter metadata, paid inside the old3F grant.
-
-        Reserve all32 token-length integers even while the ring is empty, plus
-        counter preparation scratch. This is a Python storage bound, not CUDA
-        allocator/RSS evidence; neither tokens nor Tensor data are copied.
-        """
-        counters = (self._prefix_evictions, *self._prefix_evictions_by_reason.values())
-        return (sys.getsizeof(self._prefix_evicted_tokens)
-                + PREFIX_EVICTION_HISTORY * sys.getsizeof(self.context_window)
-                + sys.getsizeof(self._prefix_evictions_by_reason)
-                + sum(sys.getsizeof(k) for k in self._prefix_evictions_by_reason)
-                + sum(sys.getsizeof(v) for v in counters)
-                + 3 * (max(sys.getsizeof(v) for v in counters) + sys.getsizeof(0)))
-
     def prefix_cache_stats(self):
-        """Bounded payload/eviction telemetry; no prompt content or device work."""
-        with self._prefix_lock:
-            policy_bytes = self._prefix_policy_bytes()
-            recent = [self._prefix_evicted_tokens[i % PREFIX_EVICTION_HISTORY]
-                      for i in range(max(0, self._prefix_evictions - PREFIX_EVICTION_HISTORY), self._prefix_evictions)]
-            return {'entries': len(self._prefixes), 'max_entries': PREFIX_ENTRIES, 'capacity': PREFIX_ENTRIES,
-                    'tokens': sum(len(e.tokens) for e in self._prefixes), 'slots': None,
-                    'bytes': sum(c.nbytes for e in self._prefixes for c in e.checkpoints),
-                    'charged_bytes': policy_bytes + sum(e.metadata_bytes + sum(c.nbytes for c in e.checkpoints) for e in self._prefixes),
-                    'metadata_bytes': policy_bytes + sum(e.metadata_bytes for e in self._prefixes),
-                    'policy_metadata_bytes': policy_bytes,
-                    'byte_budget': self._prefix_budget_bytes, 'failed_snapshot_bytes': self._prefix_failed_bytes,
-                    'eviction_policy': PREFIX_EVICTION_POLICY, 'evictions': self._prefix_evictions,
-                    'last_evicted_tokens': recent[-1] if recent else None,
-                    'recent_evicted_tokens': recent, 'eviction_history_capacity': PREFIX_EVICTION_HISTORY,
-                    'evictions_by_reason': dict(self._prefix_evictions_by_reason),
-                    'scope': 'Tensor payload and conservative token/media/policy metadata; construction indices reserved before allocation; allocator/RSS not inferred'}
+        archive = self._prefix_archive
+        if archive is None:
+            return {'entries': None, 'max_entries': None, 'capacity': None, 'tokens': None, 'slots': None,
+                    'nodes': 0, 'chunks': 0, 'indexed_tokens': 0,
+                    'bytes': 0, 'charged_bytes': 0, 'byte_budget': 0,
+                    'store_schema': 'gemma-canonical-block-archive-v1', 'metadata_status': 'disabled'}
+        return archive.stats()
 
-    def _prefix_victim(self, protected=None):
-        """Lowest saved-prefill-token value per byte, discounted by MRU distance.
+    def reserve_cache_metadata(self, nbytes):
+        if not self.supports_canonical_prefix_archive:
+            raise ValueError('this backend retains its own qualified cache contract')
+        if self._prefix_archive is None:
+            from tensorfold.engine.prefix_blocks import PrefixCapacity
+            raise PrefixCapacity('canonical cache disabled by explicit byte allowance')
+        return self._prefix_archive.reserve_metadata(nbytes)
 
-        len(tokens) is an explicit rebuild-cost proxy, NOT a measured latency.
-        Distance=1+more-recent distinct entries; all scores are compared by exact
-        integer products. Equal scores choose the older entry. No clocks,
-        counters on decode, copies, synchronization or floating-point ranking.
-        Caller holds _prefix_lock. Failure freezes ownership just like lookup.
-        """
-        try:
-            victim, best_tokens, best_denominator = None, 0, 1
-            count = len(self._prefixes)
-            for index, entry in enumerate(self._prefixes):
-                if protected is not None and any(c is protected for c in entry.checkpoints):
-                    continue
-                denominator = (entry.metadata_bytes + sum(c.nbytes for c in entry.checkpoints)) * (count - index)
-                tokens = len(entry.tokens)
-                if victim is None or tokens * best_denominator < best_tokens * denominator:
-                    victim, best_tokens, best_denominator = index, tokens, denominator
-            return victim
-        except BaseException as primary:
-            self._prefix_error = primary
-            raise
+    def register_cache_metadata_owner(self, owner):
+        if not self.supports_canonical_prefix_archive:
+            raise ValueError('this backend retains its own qualified cache contract')
+        if self._prefix_archive is None:
+            from tensorfold.engine.prefix_blocks import PrefixCapacity
+            raise PrefixCapacity('canonical cache disabled by explicit byte allowance')
+        return self._prefix_archive.register_metadata_owner(owner)
 
-    def _evict_prefix(self, index, reason):
-        """Prepare all telemetry before removing an owner; caller holds lock."""
-        try:
-            tokens = len(self._prefixes[index].tokens)
-            slot = self._prefix_evictions % PREFIX_EVICTION_HISTORY
-            count = self._prefix_evictions + 1
-            reason_count = self._prefix_evictions_by_reason[reason] + 1
-            # No evicted entry object is borrowed by the post-removal journal.
-            del self._prefixes[index]
-            self._prefix_evicted_tokens[slot] = tokens
-            self._prefix_evictions_by_reason[reason] = reason_count
-            self._prefix_evictions = count
-        except BaseException as primary:
-            self._prefix_error = primary
-            raise
+    def cache_metadata_failed(self, primary, owner, *, close_failed=False):
+        if not self.supports_canonical_prefix_archive:
+            raise ValueError('this backend retains its own qualified cache contract')
+        if self._prefix_archive is None:
+            raise RuntimeError('metadata owner belongs to a disabled archive') from primary
+        self._prefix_archive.metadata_failed(primary, owner, close_failed=close_failed)
 
-    def _prefix_room(self, extra, *, unpublished=0, protected=None):
-        """Evict before allocating. The exclusive lane owns all stream consumers.
+    def cache_publication_intent(self, mode):
+        if not self.supports_canonical_prefix_archive:
+            raise ValueError('this backend retains its own qualified cache contract')
+        from .prefix_archive import PublicationIntent
+        if type(mode) is not str or mode not in ('raw_ids', 'frontend'):
+            raise ValueError('explicit raw_ids/frontend publication mode required')
+        return PublicationIntent(self._prefix_archive if self._prefix_archive is not None else self, mode)
 
-        A selected hit stays published through restore. Afterwards no checkpoint
-        borrow remains during allocation; same-stream allocator ordering retires
-        old reads before reusing their storage, without a host/device transfer.
-        """
-        try:
-            with self._prefix_lock:
-                while True:
-                    retained = self._prefix_policy_bytes() + sum(e.metadata_bytes + sum(c.nbytes for c in e.checkpoints) for e in self._prefixes)
-                    if retained + self._prefix_failed_bytes + unpublished + extra <= self._prefix_budget_bytes:
-                        return
-                    at = self._prefix_victim(protected)
-                    if at is None:
-                        raise MemoryError('Gemma4 prefix snapshot exceeds its existing byte allowance')
-                    self._evict_prefix(at, 'byte_budget')
-        except BaseException as primary:
-            self._prefix_error = primary
-            raise
+    def _check_publication_intent(self, intent, *, allow_closed=False):
+        if not self.supports_canonical_prefix_archive:
+            raise ValueError('this backend retains its own qualified cache contract')
+        from .prefix_archive import PublicationIntent
+        expected = self._prefix_archive if self._prefix_archive is not None else self
+        if type(intent) is not PublicationIntent or intent.owner is not expected:
+            raise ValueError('canonical publication intent belongs to a different engine')
+        if intent.closed and not allow_closed:
+            raise RuntimeError('canonical publication intent was already consumed')
 
-    def _find_prefix(self, prompt, media):
-        """Longest eligible exact token/media checkpoint, most-recent on a tie."""
-        with self._prefix_lock:
-            best, owner = None, None
-            for index in range(len(self._prefixes) - 1, -1, -1):
-                entry = self._prefixes[index]
-                if entry.media != media:
-                    continue
-                for checkpoint in reversed(entry.checkpoints):
-                    p = checkpoint.position
-                    if ((best is None or p > best.position)
-                            and (p < len(prompt) or p == len(prompt) and checkpoint.logits is not None)
-                            and tuple(prompt[:p]) == entry.tokens[:p]):
-                        best, owner = checkpoint, index
-                        break
-            if owner is not None:
-                # Build before publication: an exhausted list allocation must
-                # not remove the selected owner while its traceback borrows it.
-                entry = self._prefixes[owner]
-                self._prefixes = self._prefixes[:owner] + self._prefixes[owner + 1:] + [entry]
-            return best
+    def cancel_cache_publication(self, intent):
+        self._check_publication_intent(intent, allow_closed=True)
+        intent.closed = True
 
-    def _prefix_plan(self, position, logits=None):
-        """Actual snapshot shapes from the already admitted live owners.
+    def prefix_cache_identity(self, tokens, media=()):
+        if not self.supports_canonical_prefix_archive:
+            raise ValueError('this backend retains its own qualified cache contract')
+        if self._owner == threading.get_ident():
+            raise RuntimeError('cannot inspect cache identity from an active request callback')
+        tokens = _prompt_ids(tokens, self.target.config.vocab)
+        with self._run_lock:
+            self._check_open()
+            if self._prefix_archive is None or self._prefix_archive.metadata_failure is not None:
+                return None
+            return self._prefix_archive.identity(tokens, media)
 
-        State/DraftState each materialize arange then remainder for their ring
-        index. Bound both simultaneous int64 index owners, and every detached
-        target/companion tensor, before snapshot() can allocate. Spark's raw KV
-        is shared with the target; only its last hidden row is snapshotted.
-        """
-        state = self._state
-        ring = min(position, state.ring)
-        payload = sum(t.shape[0] * ring * t.shape[2] * t.shape[3] * t.element_size()
-                      for t in (state.keys, state.values))
-        payload += sum(t.shape[0] * position * math.prod(t.shape[2:]) * t.element_size()
-                       for t in (state.raw, state.inv))
-        indices = 2 * ring * 8
-        if self._draft is not None:
-            if self._prefix_draft_kind == 'sparkulator':
-                companion = self.head.cfg.snapshot_bytes(self.context_window) if position else 0
-                payload += companion
-                indices = max(indices, companion)  # restore clones its live last_hidden before replacement
-            else:
-                draft = self._draft
-                payload += sum(min(position, n) * math.prod(t.shape[1:]) * t.element_size()
-                               for tensors in (draft.keys, draft.values) for n, t in zip(draft.rings, tensors))
-                # The previous layer's index remains bound while _index makes
-                # the next arange/remainder pair: at most THREE index owners.
-                indices = max(indices, 3 * max((min(position, n) for n in draft.rings), default=0) * 8)
-        if logits is not None:
-            payload += logits.numel() * logits.element_size()
-        return payload, indices
+    def clear_prefix_cache(self):
+        if not self.supports_canonical_prefix_archive:
+            raise ValueError('this backend retains its own qualified cache contract')
+        if self._owner == threading.get_ident():
+            raise RuntimeError('cannot clear cache from its active request callback')
+        with self._run_lock:
+            self._check_open()
+            try:
+                self._stream.synchronize()
+            except BaseException as primary:
+                self._prefix_error = primary
+                if self._prefix_archive is not None and self._prefix_archive.failure is None:
+                    self._prefix_archive.failure = primary
+                raise
+            if self._prefix_archive is not None:
+                self._prefix_archive.clear()
 
-    def _checkpoint(self, state, logits=None, *, unpublished=0):
-        payload, indices = self._prefix_plan(state.position, logits)
-        self._prefix_room(payload + indices, unpublished=unpublished)
-        target = companion = saved_logits = None
-        previous_failed = self._prefix_failed_bytes
-        # Prepay before a native effect: even exhaustion while transporting a
-        # later error cannot prevent accounting for its retained traceback.
-        self._prefix_failed_bytes = previous_failed + payload + indices
-        try:
-            target = state.snapshot()
-            companion = self._draft.snapshot() if self._draft is not None else None
-            saved_logits = None if logits is None else logits.clone()
-            checkpoint = _Checkpoint(state.position, target, companion, saved_logits, payload)
-            self._prefix_failed_bytes = previous_failed
-            return checkpoint
-        except BaseException:
-            # Partial snapshot owners can survive in a callee's traceback. This
-            # charge is deliberately sticky; neither a retry nor GC is proof.
-            target = companion = saved_logits = None
-            raise
-
-    def _turn_boundary(self, prompt, cached: int, blocks) -> int:
-        """Position of the prompt's last turn marker when a checkpoint there can serve the next turn, else 0."""
-        if self._turn is None:
-            return 0
-        # From the end down to the cached prefix only: the last marker is normally a few tokens back.
-        at = next((i for i in range(len(prompt) - 1, cached, -1) if prompt[i] == self._turn), 0)
-        return 0 if any(begin < at < stop for begin, stop in blocks) else at
-
-    def _prefill(self, prompt, vision, progress, started, *, cache_prompt=True):
+    def _prefill(self, prompt, vision, progress, started, *, cache_prompt=True, _need_logits=True):
         import torch
-        if self._prefix_error is not None:
-            raise RuntimeError("Gemma4 prefix cache is unusable after an ownership failure") from self._prefix_error
-        # Lookup, token matching, LRU reorder and protected-room preparation
-        # can allocate Python objects while borrowing detached tensors. An
-        # unexpected failure permanently stops cache/request work, retaining
-        # published owners until positive engine retirement. This also covers
-        # callee/generator tracebacks without pretending their borrows retired.
+        archive = self._prefix_archive
+        use_cache = (cache_prompt and archive is not None and archive.metadata_failure is None
+                     and archive.metadata_complete(vision))
+        state = self._state
         try:
-            media = _media_key(vision)
-            hit = self._find_prefix(prompt, media)
-            state = self._state
-            cached = hit.position if hit is not None else 0
-            logits = None
-            if hit is not None:
-                _, restore_indices = self._prefix_plan(cached)
-                self._prefix_room(restore_indices, protected=hit)
-                previous_failed = self._prefix_failed_bytes
-                # The selected detached owner stays published. Only the extra
-                # restore index/hidden-clone extent needs a sticky charge if
-                # either callee raises and its traceback retains that work.
-                self._prefix_failed_bytes = previous_failed + restore_indices
-                state.restore(hit.state)
-                if self._draft is not None:
-                    self._draft.restore(hit.companion)
-                self._prefix_failed_bytes = previous_failed
-                # An extension computes its own final logits; no old logit
-                # borrow crosses allocation of new evictable checkpoints.
-                logits = hit.logits if cached == len(prompt) else None
-                hit = None
+            if use_cache:
+                cached, logits = archive.restore(prompt, vision, project_logits=_need_logits)
             else:
                 state.reset()
                 if self._draft is not None:
                     self._draft.reset()
+                cached, logits = 0, None
         except BaseException as primary:
             self._prefix_error = primary
             raise
         encoded = None
         if vision is not None and cached < len(prompt):
             if self.vision is None:
-                raise ValueError("Gemma4 image/video input requires --vision")
-            encoded = self.vision.encode(vision, prompt)
+                raise ValueError('Gemma4 image/video input requires vision support')
+            encoded = (self.vision.encode_suffix(vision, prompt, cached) if use_cache
+                       else self.vision.encode(vision, prompt))
         blocks = () if encoded is None else encoded.blocks
-        boundary = self._turn_boundary(prompt, cached, blocks)
-        kept = []
         start = cached
-        try:
-            while start < len(prompt):
-                self._check_open()
-                end = _prefill_end(start, len(prompt), PREFILL_ROWS, blocks)
-                if start < boundary < end:
-                    end = boundary
-                ids = prompt[start:end]
-                embeddings = None
-                if encoded is not None:
-                    visual = [(row, i) for i, row in enumerate(encoded.rows) if start <= row < end]
-                    if visual:
-                        tokens = torch.tensor(ids, dtype=torch.int64, device=self.target.device)
-                        embeddings = self.target.embed_tokens(tokens)
-                        at = torch.tensor([row - start for row, _ in visual], device=self.target.device)
-                        take = torch.tensor([i for _, i in visual], device=self.target.device)
-                        embeddings.index_copy_(0, at, encoded.features.index_select(0, take))
-                result = self.target.forward(ids, state, embeddings=embeddings, vision_blocks=blocks,
-                                             output_logits=False, output_taps=self.head is not None and self._tap_features,
-                                             trusted_tokens=True, prompt=True)
-                if self.head is not None:
-                    self._append_head(self._draft, result, ids, prompt=True)
-                if end == len(prompt):
-                    logits = self.target.project_logits(result.hidden[-1:])
-                elif end == boundary and cache_prompt:
-                    kept.append(self._checkpoint(state, unpublished=sum(c.nbytes for c in kept)))
-                start = end
-                if progress is not None and progress(len(prompt), cached, start,
-                                                     (time.perf_counter() - started) * 1000):
-                    from tensorfold.server.cancellation import RequestCancelled
-                    raise RequestCancelled("request cancelled during Gemma4 prefill")
-        except BaseException:
-            # Nothing is published, and a traceback keeps this frame alive: release the unpublished
-            # checkpoint so it never coexists with the next prefill's beyond PREFIX_SNAPSHOTS.
-            kept.clear()
-            raise
-        if logits is None:
-            raise RuntimeError("Gemma4 prefill produced no next-token logits")
-        if cached < len(prompt) and cache_prompt:
-            # Reserve before allocation, including unpublished turn-boundary
-            # payload. Entries may be evicted even if subsequent publication
-            # fails; incomplete entries are never visible to lookup.
-            try:
-                # Charge token references plus their bounded integer objects;
-                # media consists only of hash strings and integer block tuples.
-                pointer = sys.getsizeof((None,)) - sys.getsizeof(())
-                metadata = sys.getsizeof(()) + len(prompt) * (pointer + sys.getsizeof(self.target.config.vocab - 1))
-                metadata += sys.getsizeof(_Prefix((), (), (), 0)) + sys.getsizeof(()) + 2 * pointer
-                metadata += 2 * (sys.getsizeof(_Checkpoint(0, None, None, None, 0))
-                                 + 2 * sys.getsizeof(self._prefix_budget_bytes))
-                metadata += sys.getsizeof(media)
-                for group in media:
-                    metadata += sys.getsizeof(group)
-                    for value in group:
-                        metadata += sys.getsizeof(value)
-                        if type(value) is tuple:
-                            metadata += sum(sys.getsizeof(item) for item in value)
-                kept.append(self._checkpoint(state, logits, unpublished=sum(c.nbytes for c in kept) + metadata))
-                previous_failed = self._prefix_failed_bytes
-                # Publication itself can fail while its Python traceback still
-                # borrows the completed checkpoints. Prepay that ownership too.
-                self._prefix_failed_bytes = previous_failed + sum(c.nbytes for c in kept) + metadata
-                entry = _Prefix(tuple(prompt), media, tuple(kept), metadata)
-                with self._prefix_lock:
-                    # Coalesce exact duplicates; nonidentical conversations
-                    # retain their own eligible checkpoints until real pressure.
-                    for index in range(len(self._prefixes) - 1, -1, -1):
-                        old = self._prefixes[index]
-                        if old.tokens == entry.tokens and old.media == entry.media:
-                            del self._prefixes[index]
-                    old = None  # no evicted entry may survive in a failed append traceback
-                    if len(self._prefixes) == PREFIX_ENTRIES:
-                        self._evict_prefix(self._prefix_victim(), 'entry_cap')
-                    self._prefixes.append(entry)
-                    self._prefix_failed_bytes = previous_failed
-            except BaseException:
-                entry = None  # do not retain an unpublished entry in the traceback
-                kept.clear()
-                raise
+        while start < len(prompt):
+            self._check_open()
+            end = _prefill_end(start, len(prompt), PREFILL_ROWS, blocks)
+            ids = prompt[start:end]
+            embeddings = None
+            if encoded is not None:
+                visual = [(row, i) for i, row in enumerate(encoded.rows) if start <= row < end]
+                if visual:
+                    tokens = torch.tensor(ids, dtype=torch.int64, device=self.target.device)
+                    embeddings = self.target.embed_tokens(tokens)
+                    at = torch.tensor([row - start for row, _ in visual], device=self.target.device)
+                    take = torch.tensor([i for _, i in visual], device=self.target.device)
+                    embeddings.index_copy_(0, at, encoded.features.index_select(0, take))
+            result = self.target.forward(ids, state, embeddings=embeddings, vision_blocks=blocks,
+                                         output_logits=False, output_taps=self.head is not None and self._tap_features,
+                                         trusted_tokens=True, prompt=True)
+            if self.head is not None:
+                self._append_head(self._draft, result, ids, prompt=True)
+            if use_cache:
+                archive.capture(prompt, start, end, result.hidden, vision)
+            if _need_logits and end == len(prompt):
+                logits = self.target.project_logits(result.hidden[-1:])
+            start = end
+            if progress is not None and progress(len(prompt), cached, start,
+                                                 (time.perf_counter() - started) * 1000):
+                from tensorfold.server.cancellation import RequestCancelled
+                raise RequestCancelled('request cancelled during Gemma4 prefill')
+        if _need_logits and logits is None:
+            raise RuntimeError('Gemma4 prefill produced no next-token logits')
         return state, logits, cached
+
+    def _publish_canonical_locked(self, tokens, prepared_media, mode, cancelled):
+        from tensorfold.server.cancellation import RequestCancelled
+        started = time.perf_counter()
+        archive = self._prefix_archive
+        record = {'schema': 'tensorfold.gemma-canonical-publication-v1', 'mode': mode,
+                  'status': 'disabled', 'complete': False, 'requested_tokens': len(tokens),
+                  'matched_tokens': 0, 'computed_tokens': 0, 'materialized_tokens': 0,
+                  'context_tokens': self.context_window, 'publication_s': 0.0}
+        if archive is None:
+            return record
+        if archive.metadata_failure is not None:
+            record['status'] = 'metadata_failed'
+            return record
+        if not archive.metadata_complete(prepared_media):
+            record['status'] = 'media_metadata_unfunded'
+            return record
+        if len(tokens) > self.context_window:
+            record['status'] = 'context_limit'
+            return record
+        if cancelled is not None and cancelled():
+            record['status'] = 'cancelled'
+            return record
+        def progress(_total, _cached, _done, _elapsed):
+            return cancelled is not None and cancelled()
+        retirement_errors = [None]  # prepaid before any canonical producer
+        try:
+            _state, _logits, cached = self._prefill(tokens, prepared_media, progress, started, _need_logits=False)
+            record['matched_tokens'] = cached
+            record['computed_tokens'] = len(tokens) - cached
+            record['materialized_tokens'] = self._state.position
+            self._stream.synchronize()
+            archive.reap(positive_retirement=True)
+            if archive.metadata_failure is not None:
+                record['status'] = 'metadata_failed'
+                record['publication_s'] = time.perf_counter() - started
+                return record
+            identity = archive.identity(tokens, prepared_media)
+            record['complete'] = identity is not None and identity.position == len(tokens)
+            record['status'] = 'published' if record['complete'] else 'partial'
+        except RequestCancelled as primary:
+            # Preserve cancellation AND any retirement failure. Native failure
+            # separately poisons the archive/engine even though HTTP knows the
+            # original cancellation type.
+            try:
+                self._stream.synchronize()
+                archive.reap(positive_retirement=True)
+            except BaseException as secondary:
+                retirement_errors[0] = secondary
+                if archive.failure is None:
+                    archive.failure = secondary
+                self._prefix_error = secondary
+                archive._raise_failures(primary, retirement_errors)
+            record['status'] = 'cancelled'
+            record['materialized_tokens'] = self._state.position
+        except BaseException as primary:
+            if archive.failure is None:
+                archive.failure = primary
+            self._prefix_error = primary
+            raise
+        record['publication_s'] = time.perf_counter() - started
+        return record
+
+    def publish_canonical(self, tokens, prepared_media=None, *, intent, cancelled=None):
+        self._check_publication_intent(intent)
+        tokens = _prompt_ids(tokens, self.target.config.vocab)
+        if cancelled is not None and not callable(cancelled):
+            raise TypeError('canonical cancellation predicate must be callable')
+        intent.closed = True
+        import torch
+        with self._lane(False), torch.inference_mode(), torch.cuda.stream(self._stream):
+            return self._publish_canonical_locked(tokens, prepared_media, intent.mode, cancelled)
 
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True,
                  stop_eos: bool = True, *, vision=None, constraint=None,
-                 background: bool = False, progress=None, penalties=None, cache_prompt: bool = True) -> dict[str, Any]:
+                 background: bool = False, progress=None, penalties=None, cache_prompt: bool = True,
+                 _cache_publication=None) -> dict[str, Any]:
         if type(cache_prompt) is not bool:
             raise ValueError("cache_prompt must be a bool")
+        if _cache_publication is not None:
+            self._check_publication_intent(_cache_publication)
         import torch
         from tensorfold.cuda.sampling import effective_rows, sample_rows
         from tensorfold.engine.penalties import History
@@ -756,104 +664,144 @@ class Gemma4Engine:
             raise ValueError(f"Gemma4 prompt and reply exceed the {self.context_window}-token admitted context")
         if vision is not None and tuple(prompt[:len(vision.token_ids)]) != tuple(vision.token_ids):
             raise ValueError("Gemma4 prepared media does not belong to this prompt")
-        history = History(penalties, prompt) if penalties is not None and penalties.active else None
-        queued = time.perf_counter()
-        with self._lane(background) as stream, torch.cuda.stream(stream), torch.inference_mode():
-            started = time.perf_counter()
-            state, logits, cached = self._prefill(prompt, vision, progress, started,
-                                                  **({"cache_prompt": False} if not cache_prompt else {}))
-            # Grammar masking is in place; immutable prefix logits are never
-            # handed to it, including an exact full-prompt cache hit.
-            logits = logits.clone() if constraint is not None else logits
-            if constraint is not None:
-                constraint.mask(logits)
-            if history is not None:              # never in place on the immutable prefix entry's logits
-                logits = history.apply(logits, copy=constraint is None)
-            first = sample_rows(logits, [len(prompt)], sampling)[0]
-            if constraint is not None:
-                constraint.advance([first])
-            if history is not None:
-                history.extend([first])
-            prefill_s = time.perf_counter() - started
-            decoded = time.perf_counter()
-            out = [first]
-            rounds = drafted = accepted = 0
-            min_rows = 0
-            eos = self.eos if stop_eos else ()
-            stopped = bool(on_tokens([first]))
-            active_drafts = bool(draft and self.head is not None)
-            collect_taps = active_drafts and self._tap_features
-            stochastic = active_drafts and sampling is not None and sampling.temperature > 0
-            while not stopped and len(out) < max_tokens and out[-1] not in eos \
-                    and not (constraint is not None and constraint.finished):
-                self._check_open()
-                room = max_tokens - len(out)
-                inputs = [out[-1]]
-                packet = None
-                if active_drafts and (stochastic or room > 1):
-                    # Sampled noncausal proposal geometry belongs to this request's deployment, never its
-                    # remaining output room. Even the final emitted slot tests the same full q packet.
-                    limit = self.max_rows - 1 if stochastic else min(self.max_rows - 1, room - 1)
-                    if stochastic:
-                        chains = self.head.propose(self._draft, inputs[0], limit, history, sampled=True,
-                                                   sampling=sampling)
-                        first_position = state.position + 1
-                        packet = (chains.sample(0, limit, sampling, first_position, history) if chains is not None
-                                  else ChainPacket((), (), first_position))
-                        guesses = packet.tokens
-                    else:
-                        chains = self.head.propose(self._draft, inputs[0], limit, history)
-                        guesses = chains.finish(0, limit, history)[0] if chains is not None else []
-                    chains = None  # synchronous packet readback completed; retire decoded launch staging now
-                    if len(guesses) > limit or any(type(t) is not int or not 0 <= t < self.target.config.vocab
-                                                   for t in guesses):
-                        raise RuntimeError("Gemma4 DFlash returned an invalid proposal")
-                    inputs.extend(guesses)
-                if stochastic and self._clip_sampled_verification_to_room:
-                    # E2B owns only the logical context. Unreachable target
-                    # rows need no cache/RoPE capacity; the full q packet above
-                    # remains unchanged, including its noncausal geometry.
-                    inputs = inputs[:room]
-                window = None
+        raw_work = None
+        if (self.supports_canonical_prefix_archive and _cache_publication is None and cache_prompt
+                and self._prefix_archive is not None and self._prefix_archive.metadata_complete(vision)):
+            raw_work = self._prefix_archive.prepare_raw_response(prompt, max_tokens)
+        with (raw_work if raw_work is not None else nullcontext()):
+            history = History(penalties, prompt) if penalties is not None and penalties.active else None
+            queued = time.perf_counter()
+            with self._lane(background) as stream, torch.cuda.stream(stream), torch.inference_mode():
+                started = time.perf_counter()
+                state, logits, cached = self._prefill(prompt, vision, progress, started,
+                                                      **({"cache_prompt": False} if not cache_prompt else {}))
+                # Grammar masking is in place; immutable prefix logits are never
+                # handed to it, including an exact full-prompt cache hit.
+                logits = logits.clone() if constraint is not None else logits
                 if constraint is not None:
-                    window = constraint.window(inputs, [-1, *range(len(inputs) - 1)])
-                    inputs = window.tokens
-                position = state.position
-                if self.graphs is not None:
-                    result = self.graphs.forward(inputs, state, output_taps=collect_taps)
-                else:
-                    result = self.target.forward(inputs, state, output_taps=collect_taps,
-                                                 trusted_tokens=True)
-                logits = result.logits
+                    constraint.mask(logits)
+                if history is not None:              # never in place on the immutable prefix entry's logits
+                    logits = history.apply(logits, copy=constraint is None)
+                first = sample_rows(logits, [len(prompt)], sampling)[0]
                 if constraint is not None:
-                    constraint.mask(logits, window)
-                if history is not None:          # row r follows the reply and the drafts inputs[1..r]
-                    logits = history.apply(logits, inputs)
-                if stochastic:
-                    # A linear grammar window retains a prefix. Only the unreachable original suffix is absent;
-                    # a rejected/terminated proposal is tested under its parent's masked effective p row.
-                    probabilities = effective_rows(logits, sampling)
-                    probabilities.extend([None] * (len(packet.tokens) + 1 - len(inputs)))
-                    path, terminal = verify(packet, probabilities, sampling.seed, room=room, eos=eos)
-                    chosen = [inputs[row] for row in path[1:]] + [terminal]
-                    del probabilities
-                    packet = None
-                else:
-                    sampled = sample_rows(logits, list(range(position + 1, position + len(inputs) + 1)), sampling)
-                    chosen = _accepted(sampled, inputs, room, eos)
+                    constraint.advance([first])
                 if history is not None:
-                    history.extend(chosen)
-                state.rollback(position + len(chosen))
-                if active_drafts:
-                    self._append_head(self._draft, result, inputs, len(chosen))
-                if constraint is not None:
-                    constraint.advance(chosen)
-                rounds += 1
-                drafted += len(inputs) - 1
-                accepted += len(chosen) - 1
-                min_rows = len(inputs) if not min_rows else min(min_rows, len(inputs))
-                out.extend(chosen)
-                stopped = bool(on_tokens(chosen))
-            return {"prefill_s": round(prefill_s, 4), "decode_s": round(time.perf_counter() - decoded, 4),
-                    "queue_s": round(started - queued, 4), "cached": cached, "drafts": active_drafts,
-                    "rounds": rounds, "drafted": drafted, "accepted": accepted, "min_rows": min_rows}
+                    history.extend([first])
+                prefill_s = time.perf_counter() - started
+                decoded = time.perf_counter()
+                out = [first]
+                rounds = drafted = accepted = 0
+                min_rows = 0
+                eos = self.eos if stop_eos else ()
+                stopped = bool(on_tokens([first]))
+                active_drafts = bool(draft and self.head is not None)
+                collect_taps = active_drafts and self._tap_features
+                stochastic = active_drafts and sampling is not None and sampling.temperature > 0
+                while not stopped and len(out) < max_tokens and out[-1] not in eos \
+                        and not (constraint is not None and constraint.finished):
+                    self._check_open()
+                    room = max_tokens - len(out)
+                    inputs = [out[-1]]
+                    packet = None
+                    if active_drafts and (stochastic or room > 1):
+                        # Sampled noncausal proposal geometry belongs to this request's deployment, never its
+                        # remaining output room. Even the final emitted slot tests the same full q packet.
+                        limit = self.max_rows - 1 if stochastic else min(self.max_rows - 1, room - 1)
+                        if stochastic:
+                            chains = self.head.propose(self._draft, inputs[0], limit, history, sampled=True,
+                                                       sampling=sampling)
+                            first_position = state.position + 1
+                            packet = (chains.sample(0, limit, sampling, first_position, history) if chains is not None
+                                      else ChainPacket((), (), first_position))
+                            guesses = packet.tokens
+                        else:
+                            chains = self.head.propose(self._draft, inputs[0], limit, history)
+                            guesses = chains.finish(0, limit, history)[0] if chains is not None else []
+                        chains = None  # synchronous packet readback completed; retire decoded launch staging now
+                        if len(guesses) > limit or any(type(t) is not int or not 0 <= t < self.target.config.vocab
+                                                       for t in guesses):
+                            raise RuntimeError("Gemma4 DFlash returned an invalid proposal")
+                        inputs.extend(guesses)
+                    if stochastic and self._clip_sampled_verification_to_room:
+                        # E2B owns only the logical context. Unreachable target
+                        # rows need no cache/RoPE capacity; the full q packet above
+                        # remains unchanged, including its noncausal geometry.
+                        inputs = inputs[:room]
+                    window = None
+                    if constraint is not None:
+                        window = constraint.window(inputs, [-1, *range(len(inputs) - 1)])
+                        inputs = window.tokens
+                    position = state.position
+                    if self.graphs is not None:
+                        result = self.graphs.forward(inputs, state, output_taps=collect_taps)
+                    else:
+                        result = self.target.forward(inputs, state, output_taps=collect_taps,
+                                                     trusted_tokens=True)
+                    logits = result.logits
+                    if constraint is not None:
+                        constraint.mask(logits, window)
+                    if history is not None:          # row r follows the reply and the drafts inputs[1..r]
+                        logits = history.apply(logits, inputs)
+                    if stochastic:
+                        # A linear grammar window retains a prefix. Only the unreachable original suffix is absent;
+                        # a rejected/terminated proposal is tested under its parent's masked effective p row.
+                        probabilities = effective_rows(logits, sampling)
+                        probabilities.extend([None] * (len(packet.tokens) + 1 - len(inputs)))
+                        path, terminal = verify(packet, probabilities, sampling.seed, room=room, eos=eos)
+                        chosen = [inputs[row] for row in path[1:]] + [terminal]
+                        del probabilities
+                        packet = None
+                    else:
+                        sampled = sample_rows(logits, list(range(position + 1, position + len(inputs) + 1)), sampling)
+                        chosen = _accepted(sampled, inputs, room, eos)
+                    if history is not None:
+                        history.extend(chosen)
+                    state.rollback(position + len(chosen))
+                    if active_drafts:
+                        self._append_head(self._draft, result, inputs, len(chosen))
+                    if constraint is not None:
+                        constraint.advance(chosen)
+                    rounds += 1
+                    drafted += len(inputs) - 1
+                    accepted += len(chosen) - 1
+                    min_rows = len(inputs) if not min_rows else min(min_rows, len(inputs))
+                    out.extend(chosen)
+                    stopped = bool(on_tokens(chosen))
+                decoded_s = time.perf_counter() - decoded
+                publication = None
+                if self.supports_canonical_prefix_archive and _cache_publication is None and cache_prompt:
+                    archive = self._prefix_archive
+                    if archive is None or archive.metadata_failure is not None or not archive.metadata_complete(vision):
+                        status = ('disabled' if archive is None else 'metadata_failed'
+                                  if archive.metadata_failure is not None else 'media_metadata_unfunded')
+                        publication = {'schema': 'tensorfold.gemma-canonical-publication-v1', 'mode': 'raw_ids',
+                            'status': status, 'complete': False, 'requested_tokens': len(prompt) + len(out),
+                            'matched_tokens': 0, 'computed_tokens': 0, 'materialized_tokens': 0,
+                            'context_tokens': self.context_window, 'publication_s': 0.0}
+                    elif raw_work is None:
+                        publication = {'schema': 'tensorfold.gemma-canonical-publication-v1', 'mode': 'raw_ids',
+                            'status': 'metadata_unfunded', 'complete': False, 'requested_tokens': len(prompt) + len(out),
+                            'matched_tokens': 0, 'computed_tokens': 0, 'materialized_tokens': 0,
+                            'context_tokens': self.context_window, 'publication_s': 0.0}
+                    elif vision is not None and any(token in vision.media_token_ids for token in out):
+                        # A generated marker has no prepared frame authority;
+                        # valid delivered output remains valid, but cannot be
+                        # published as either prepared-media or text-only KV.
+                        publication = {'schema': 'tensorfold.gemma-canonical-publication-v1', 'mode': 'raw_ids',
+                            'status': 'generated_media_unprepared', 'complete': False, 'requested_tokens': len(prompt) + len(out),
+                            'matched_tokens': 0, 'computed_tokens': 0, 'materialized_tokens': 0,
+                            'context_tokens': self.context_window, 'publication_s': 0.0}
+                    else:
+                        raw = raw_work.tokens(out)
+                        canonical_media = vision
+                        if vision is not None and self.vision is not None:
+                            canonical_media = self.vision.rebind_prepared(vision, raw)
+                        raw_work.publish_started = True
+                        try:
+                            publication = self._publish_canonical_locked(raw, canonical_media, 'raw_ids', None)
+                        finally:
+                            raw = canonical_media = None
+                return {**({'cache_publication': publication} if publication is not None else {}),
+                        "prefill_s": round(prefill_s, 4), "decode_s": round(decoded_s, 4),
+                        "queue_s": round(started - queued, 4), "cached": cached, "drafts": active_drafts,
+                        "rounds": rounds, "drafted": drafted, "accepted": accepted, "min_rows": min_rows}

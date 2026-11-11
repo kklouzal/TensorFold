@@ -188,6 +188,7 @@ def make_handler(app: App):
                     _log_error(exc)
                     return self._json(400, {"error": invalid_request(_error_message(exc))})
                 return self._json(200, reply)
+            projection = getattr(self, "_canonical_projection", None)
             field = "messages" if chat else "prompt"            # the field an error's code names (OpenAI's param)
             try:
                 if defer_headers:
@@ -195,7 +196,8 @@ def make_handler(app: App):
                         raise RequestError("the request body must be a JSON object")
                     prepared = None  # the configured App.run owner admits before preparation
                 else:
-                    prepared = app.prepare(body, chat)
+                    prepared = app.prepare(body, chat,
+                        **({"_canonical_projection": projection} if projection is not None else {}))
             except RequestError as exc:
                 return self._refuse(exc, field)
             except Exception as exc:        # any other failure to read the request is refused too, as on MLX
@@ -280,6 +282,7 @@ def make_handler(app: App):
 
                 try:
                     result = app.run(body, chat, emit, prepared=prepared, cancelled=cancelled,
+                                     **({"_canonical_projection": projection} if projection is not None else {}),
                                      request_id=self.request_id, arrived=self.arrived,
                                      **({"progress": show_progress} if progress else {}))
                 except RequestCancelled:
@@ -329,6 +332,7 @@ def make_handler(app: App):
                 return
             try:
                 result = app.run(body, chat, lambda delta: True, prepared=prepared, cancelled=cancelled,
+                                 **({"_canonical_projection": projection} if projection is not None else {}),
                                  request_id=self.request_id, arrived=self.arrived)
             except RequestCancelled:
                 self.close_connection = True

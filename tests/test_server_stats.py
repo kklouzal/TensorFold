@@ -65,6 +65,48 @@ def test_serial_evictions_are_visible_on_v1_stats(tmp_path):
     assert body['prefix_cache']['evictions_by_reason'] == {'byte_budget': 2, 'entry_cap': 0}
 
 
+
+def test_byte_budget_archive_omits_unknown_legacy_metrics_and_reports_real_units(tmp_path):
+    app = app_for(tmp_path)
+    cache = {"entries": None, "capacity": None, "tokens": None, "max_entries": None,
+             "chunks": 7, "indexed_tokens": 50000, "bytes": 4096,
+             "reserved_payload_bytes": 1024, "charged_bytes": 6144, "byte_budget": 8192,
+             "evictions": 2, "store_schema": "gemma-canonical-block-archive-v1",
+             "last_lookup": {"requested_tokens": 50000, "matched_tokens": 20000,
+                             "materialized_tokens": 50000},
+             "eviction_history": [{"component": "target_window", "start": 0, "stop": 1024,
+                                    "bytes": 2048, "reason": "byte_budget"}]}
+    app.engine.prefix_cache_stats = lambda: dict(cache)
+    reading = stats.snapshot(app)
+    assert reading["limits"]["prefix_cache_entries"] is None
+    assert reading["prefix_cache"]["last_lookup"]["matched_tokens"] == 20000
+    scrape = metrics.render(app)
+    families = prometheus_families(scrape)
+    for legacy in ("prefix_cache_entries", "prefix_cache_capacity", "prefix_cache_tokens"):
+        assert metrics.PREFIX + legacy not in families
+    expected = {"prefix_cache_blocks": 7, "prefix_cache_indexed_tokens": 50000,
+                "prefix_cache_payload_bytes": 4096, "prefix_cache_reserved_payload_bytes": 1024,
+                "prefix_cache_charged_bytes": 6144, "prefix_cache_byte_budget": 8192,
+                "prefix_cache_evictions_total": 2}
+    for name, amount in expected.items():
+        assert f"{metrics.PREFIX}{name} {amount}" in scrape
+        assert families[metrics.PREFIX + name] == ("counter" if name.endswith("_total") else "gauge")
+
+
+def test_byte_budget_archive_zero_values_are_reported_as_zero_not_missing(tmp_path):
+    app = app_for(tmp_path)
+    cache = {"entries": None, "capacity": None, "tokens": None, "max_entries": None,
+             "chunks": 0, "indexed_tokens": 0, "bytes": 0, "reserved_payload_bytes": 0,
+             "charged_bytes": 0, "byte_budget": 0, "evictions": 0}
+    app.engine.prefix_cache_stats = lambda: dict(cache)
+    scrape = metrics.render(app)
+    families = prometheus_families(scrape)
+    assert f"{metrics.PREFIX}prefix_cache_payload_bytes 0" in scrape
+    assert f"{metrics.PREFIX}prefix_cache_blocks 0" in scrape
+    assert f"{metrics.PREFIX}prefix_cache_byte_budget 0" in scrape
+    assert f"{metrics.PREFIX}prefix_cache_evictions_total 0" in scrape
+    assert metrics.PREFIX + "prefix_cache_tokens" not in families
+
 def test_serial_prefix_cache_read_failure_is_not_silently_reported_as_no_cache(tmp_path):
     app = app_for(tmp_path)
     def failed():
@@ -879,7 +921,7 @@ def field_paths(value, prefix=""):
     return found
 
 
-def test_the_api_reference_documents_every_stats_field_and_no_other(tmp_path):
+def test_the_api_reference_documents_every_stats_field_and_no_other(tmp_path, request):
     concurrent = concurrent_app(tmp_path)
     cuda = field_paths(stats.snapshot(concurrent))     # kv and prefix_cache filled (usage's keys)
     from tensorfold.families.qwen4_exp.cuda.adaptive_controller import AdaptiveController
@@ -895,12 +937,10 @@ def test_the_api_reference_documents_every_stats_field_and_no_other(tmp_path):
         mac = field_paths(get_json(port, "/stats")[2])
     from tensorfold.families.gemma4.cuda.engine import Gemma4Engine
     native = Gemma4Engine.__new__(Gemma4Engine)
-    native._prefix_lock = threading.Lock()
-    native._prefixes, native._prefix_budget_bytes, native._prefix_failed_bytes = [], 8192, 0
+    from test_gemma_prefix_archive import archive
+    _, native._prefix_archive = archive()  # real CPU archive schema, no model or CUDA
+    request.addfinalizer(native._prefix_archive.close)
     native.context_window = 262144
-    native._prefix_evictions = 0
-    native._prefix_evictions_by_reason = {'byte_budget': 0, 'entry_cap': 0}
-    native._prefix_evicted_tokens = [0] * 32
     serial = app_for(tmp_path)
     serial.engine.prefix_cache_stats = native.prefix_cache_stats
     gemma = field_paths(stats.snapshot(serial))

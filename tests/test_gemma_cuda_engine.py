@@ -53,11 +53,18 @@ def _engine(monkeypatch, *, with_head=True):
     class State:
         def __init__(self):
             self.tokens = []
+            self.high_water, self.poisoned, self.global_cache = 0, False, 'none'
+            self.device, self.context, self.rows = torch.device('cpu'), 400, 400
             self.prompt_rows = []       # per position: computed by a prompt (prefill) forward
 
         @property
         def position(self):
             return len(self.tokens)
+
+        @position.setter
+        def position(self, value):
+            self.tokens = self.raw[0, :value, 0, 0].int().tolist()
+            self.prompt_rows = self.inv[0, :value, 0].bool().tolist()
 
         def rollback(self, position):
             del self.tokens[position:]
@@ -71,6 +78,11 @@ def _engine(monkeypatch, *, with_head=True):
 
         def reset(self):
             self.tokens, self.prompt_rows = [], []
+            self.high_water, self.poisoned = 0, False
+
+    from tensorfold.families.gemma4.cuda.state import State as CacheState
+    for name in ('cache_group_bytes', 'cache_export_rows', 'cache_import_rows', 'cache_finish_restore'):
+        setattr(State, name, getattr(CacheState, name))
 
     def scores(total):
         # A unique top, multiple plausible sampled choices, no accidental EOS.
@@ -79,7 +91,7 @@ def _engine(monkeypatch, *, with_head=True):
         return result
 
     class Target:
-        config = SimpleNamespace(vocab=19)
+        config = SimpleNamespace(vocab=19, hidden=2)
         device = torch.device("cpu")
 
         def make_state(self, *args, **kwargs):
@@ -91,8 +103,14 @@ def _engine(monkeypatch, *, with_head=True):
         def forward(self, tokens, state, *, output_logits=True, prompt=False, **kwargs):
             rows = []
             for token in tokens:
+                position = state.position
+                state.raw[0, position, 0, 0] = token
+                state.inv[0, position, 0] = prompt
+                state.keys[0, position % state.ring, 0, 0] = token
+                state.values[0, position % state.ring, 0, 0] = prompt
                 state.tokens.append(token)
                 state.prompt_rows.append(prompt)
+                state.high_water = max(state.high_water, state.position)
                 rows.append([token, sum(state.tokens)])
             hidden = torch.tensor(rows, dtype=torch.bfloat16)
             return SimpleNamespace(hidden=hidden, logits=self.project_logits(hidden) if output_logits else None,
@@ -102,6 +120,14 @@ def _engine(monkeypatch, *, with_head=True):
         def __init__(self):
             self.taps = []
 
+        @property
+        def length(self):
+            return len(self.taps)
+
+        @length.setter
+        def length(self, value):
+            self.taps = self.keys[0][:value, 0, 0].int().tolist()
+
         def reset(self):
             self.taps = []
 
@@ -110,6 +136,10 @@ def _engine(monkeypatch, *, with_head=True):
 
         def restore(self, snap):
             self.taps = list(snap)
+
+    from tensorfold.families.gemma4.cuda.dflash import DraftState as CacheDraft
+    for name in ('cache_group_bytes', 'cache_export_rows', 'cache_import_rows'):
+        setattr(Draft, name, getattr(CacheDraft, name))
 
     class Head:
         tap_layers = (1,)
@@ -122,7 +152,10 @@ def _engine(monkeypatch, *, with_head=True):
 
         def append(self, draft, taps, *, prompt=False):
             self.append_roles.append((len(taps), prompt))
-            draft.taps.extend(int(v) for v in taps[:, 0])
+            for value in taps[:, 0]:
+                draft.keys[0][len(draft.taps)].fill_(int(value))
+                draft.values[0][len(draft.taps)].fill_(int(value))
+                draft.taps.append(int(value))
 
         def propose(self, draft, anchor, limit, history=None, *, sampled=False, sampling=None):
             if not draft.taps:
@@ -159,26 +192,42 @@ def _engine(monkeypatch, *, with_head=True):
     engine._draft = engine.head.make_state() if with_head else None
     engine.context_window, engine.max_rows, engine.eos = 400, 8, (18,)
     engine.vision = None
-    engine._closed, engine._owner, engine._turn = False, None, None
-    engine._prefixes, engine._prefix_failed_bytes, engine._prefix_error = [], 0, None
-    engine._prefix_evictions = 0
-    engine._prefix_evictions_by_reason = {'byte_budget': 0, 'entry_cap': 0}
-    engine._prefix_evicted_tokens = [0] * 32
+    engine._closed, engine._owner, engine._prefix_error = False, None, None
+    engine._native_retirement_error = None
     engine._prefix_budget_bytes, engine._prefix_draft_kind = 1 << 20, 'dflash'
     engine._state.ring = 400
-    engine._state.keys = torch.empty((1, 400, 1, 1))
+    engine._state.keys = torch.empty((1, 400, 1, 1), dtype=torch.bfloat16)
     engine._state.values = torch.empty_like(engine._state.keys)
-    engine._state.raw = torch.empty((1, 400, 1, 1))
+    engine._state.raw = torch.empty((1, 400, 1, 1), dtype=torch.bfloat16)
     engine._state.inv = torch.empty((1, 400, 1))
     if engine._draft is not None:
+        engine._draft.rows, engine._draft.layer_types = 400, ('full_attention',)
+        engine._draft.pos = torch.zeros(1, dtype=torch.int32)
         engine._draft.rings = (400,)
-        engine._draft.keys = [torch.empty((400, 1, 1))]
-        engine._draft.values = [torch.empty((400, 1, 1))]
-    engine._run_lock, engine._closed_lock, engine._prefix_lock = threading.Lock(), threading.Lock(), threading.Lock()
+        engine._draft.keys = [torch.empty((400, 1, 1), dtype=torch.bfloat16)]
+        engine._draft.values = [torch.empty((400, 1, 1), dtype=torch.bfloat16)]
+    engine._run_lock, engine._closed_lock = threading.Lock(), threading.Lock()
     engine._stream = SimpleNamespace(synchronize=lambda: None)
+    from tensorfold.families.gemma4.cuda.prefix_archive import GemmaPrefixArchive
+    engine._prefix_archive = GemmaPrefixArchive(engine, engine._prefix_budget_bytes)
     monkeypatch.setattr(torch.cuda, "stream", lambda stream: nullcontext())
     monkeypatch.setattr("tensorfold.cuda.sampling.sample_rows", sample)
     monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", _effective_cpu)
+    # Delivery math oracle follows the real frontend-deferral route. Each
+    # logical test request owns/cancels its own intent; no response postpass
+    # can hide a decode/rollback bug. Dedicated integration controls test raw
+    # publication separately with the original bound method.
+    generate = engine.generate
+    engine._delivery_generate = generate
+    def request(*args, **kwargs):
+        if '_cache_publication' in kwargs:
+            return generate(*args, **kwargs)
+        intent = engine.cache_publication_intent('frontend')
+        try:
+            return generate(*args, _cache_publication=intent, **kwargs)
+        finally:
+            engine.cancel_cache_publication(intent)
+    engine.generate = request
     return engine
 
 
@@ -216,7 +265,7 @@ def test_prefill_progress_includes_cached_tokens(monkeypatch, with_head, cached,
     assert all(item[:2] == (total, cached) and item[3] >= 0 for item in reports)
     assert all(a[3] <= b[3] for a, b in pairwise(reports))
     assert engine._state.position == total
-    assert engine._prefixes[-1].tokens == tuple(prompt)
+    assert engine.prefix_cache_identity(prompt).position == len(prompt)
     if reports:
         assert reports[-1][2] == total
 
@@ -240,19 +289,19 @@ def test_cached_prefill_progress_cancellation_keeps_the_published_prefix(monkeyp
 
     assert reports == [(15, 5, 9)]
     assert engine._state.position == 9
-    assert engine._prefixes[-1].tokens == tuple(prefix)
+    assert engine.prefix_cache_identity(prefix).position == len(prefix)
     resumed = []
-    engine._prefill(prompt, None, lambda total, cached, held, elapsed: resumed.append(held),
+    engine._prefill(prompt, None, lambda total, cached, held, elapsed: resumed.append((cached, held)),
                     time.perf_counter())
-    assert resumed == [9, 13, 15]
+    assert resumed == [(9, 13), (9, 15)]  # committed cancelled input is reusable, not just the old point
     assert engine._state.position == 15
-    assert engine._prefixes[-1].tokens == tuple(prompt)
+    assert engine.prefix_cache_identity(prompt).position == len(prompt)
 
 
 def test_companion_prompt_role_covers_tiny_turn_suffix_and_cached_extension(monkeypatch):
     engine = _engine(monkeypatch)
-    engine._turn = 17
     prompt = [3] * 20 + [17, 1, 2]
+    engine.generate(prompt[:20], 1, None, lambda tokens: None, stop_eos=False)
     engine.generate(prompt, 1, None, lambda tokens: None, stop_eos=False)
     assert engine.head.append_roles == [(20, True), (3, True)]
     engine.head.append_roles.clear()
@@ -286,7 +335,7 @@ def test_dflash_rejections_and_prompt_resume_keep_request_contract(monkeypatch, 
                           draft=sampled, stop_eos=False)
     assert resumed == fresh
     assert resumed_stats["cached"] == 5
-    assert engine._prefixes[-1].tokens == (3, 1, 4, 1, 5, 9, 2)
+    assert engine.prefix_cache_identity([3, 1, 4, 1, 5, 9, 2]).position == 7
     for e in (engine, fresh_engine):
         _assert_prompt_path(e, [3, 1, 4, 1, 5, 9, 2])
     assert engine._state.tokens == fresh_engine._state.tokens
@@ -316,9 +365,16 @@ def test_exact_drafter_preserves_greedy_and_accepts_sampled_target_law(monkeypat
     def forward(tokens, state, *, output_logits=True, **kwargs):
         rows = []
         for token in tokens:
-            rows.append([token, len(state.tokens)])
+            position = state.position
+            state.raw[0, position, 0, 0] = token
+            state.inv[0, position, 0] = kwargs.get('prompt', False)
+            state.keys[0, position % state.ring, 0, 0] = token
+            state.values[0, position % state.ring, 0, 0] = kwargs.get('prompt', False)
+            rows.append([token, position])
             state.tokens.append(token)
-        hidden = torch.tensor(rows, dtype=torch.float32)
+            state.prompt_rows.append(kwargs.get('prompt', False))
+            state.high_water = max(state.high_water, state.position)
+        hidden = torch.tensor(rows, dtype=torch.bfloat16)
         return SimpleNamespace(hidden=hidden, logits=project(hidden) if output_logits else None, taps={1: hidden})
 
     def project(hidden):
@@ -382,7 +438,9 @@ def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch)
     seen = []
     engine.generate(prompt, 35, None, lambda tokens: seen.extend(tokens) or True)
     assert len(seen) == 1
-    assert engine._prefixes[-1].checkpoints[-1].state == (tuple(prompt), (True,) * len(prompt))
+    assert engine.prefix_cache_identity(prompt).position == len(prompt)
+    assert engine._prefill(prompt, None, None, time.perf_counter())[2] == len(prompt)
+    assert engine._state.tokens == prompt and all(engine._state.prompt_rows)
     with pytest.raises(RuntimeError, match="callback failed"):
         engine.generate(prompt, 35, None, lambda tokens: (_ for _ in ()).throw(RuntimeError("callback failed")))
     assert engine._owner is None
@@ -394,26 +452,6 @@ def test_callback_stop_and_failure_do_not_publish_generated_context(monkeypatch)
         engine.generate(prompt, 3, None, lambda tokens: None)
 
 
-@pytest.mark.parametrize("turn", [None, 11])
-def test_cancelled_prefill_does_not_replace_previous_prefix(monkeypatch, turn):
-    """Cancelled before or after this prompt's turn-marker checkpoint was taken: the previous entry stays."""
-    engine = _engine(monkeypatch)
-    engine._turn = turn
-    engine.generate([1, 2], 1, None, lambda tokens: None)
-    before = engine._prefixes[-1]
-    taken, checkpoint = [], engine._checkpoint
-    engine._checkpoint = lambda state, logits=None, **kwargs: taken.append(state.position) or checkpoint(state, logits, **kwargs)
-    from tensorfold.server.cancellation import RequestCancelled
-    with pytest.raises(RequestCancelled) as cancelled:
-        engine.generate([3] * 5 + [11] + [3] * 254, 1, None, lambda tokens: None,
-                        progress=lambda total, cached, done, ms: done > 5)
-    assert taken == ([] if turn is None else [5])
-    assert engine._prefixes[-1] is before
-    # The live traceback keeps the prefill frame: it must no longer hold the unpublished checkpoint.
-    tb = cancelled.value.__traceback__
-    while tb.tb_frame.f_code.co_name != "_prefill":
-        tb = tb.tb_next
-    assert tb.tb_frame.f_locals["kept"] == []
 
 
 def test_reentrant_callback_is_rejected_without_stranding_engine(monkeypatch):
@@ -453,17 +491,17 @@ def test_constraint_masks_accepted_chain_without_mutating_cached_logits(monkeypa
 
     prompt = [1, 3, 5]
     engine.generate(prompt, 1, None, lambda tokens: None)
-    before = engine._prefixes[-1].checkpoints[-1].logits.clone()
+    before = engine._prefill(prompt, None, None, time.perf_counter())[1].clone()
     output = []
     from tensorfold.engine.exact_sampling import Sampling
     sampling = Sampling(seed=5, temperature=.7, top_k=7, top_p=.9) if sampled else None
     engine.generate(prompt, 11, sampling, lambda tokens: output.extend(tokens), constraint=Constraint(), stop_eos=False)
     assert output == [6] * 11
-    assert torch.equal(engine._prefixes[-1].checkpoints[-1].logits, before)
+    assert torch.equal(engine._prefill(prompt, None, None, time.perf_counter())[1], before)
 
 
 @pytest.mark.parametrize("sampled", [False, True])
-def test_next_turn_resumes_at_the_last_turn_marker_and_equals_a_fresh_prefill(monkeypatch, sampled):
+def test_arbitrary_interior_next_turn_lcp_equals_fresh_prefill(monkeypatch, sampled):
     """A chat next turn re-renders the previous reply without the generation prompt's suffix: the shared prefix
     ends at the last turn marker, where a checkpoint resumes; replies equal a cold engine's."""
     from tensorfold.engine.exact_sampling import Sampling
@@ -472,20 +510,18 @@ def test_next_turn_resumes_at_the_last_turn_marker_and_equals_a_fresh_prefill(mo
     first = [3, 1, 4, turn, 1, 5, 9]            # ... <|turn> model <generation suffix>
     second = first[:4] + [1, 2, 6, 5, turn, 1, 5, 9]   # history re-rendered differently after the marker
     engine = _engine(monkeypatch)
-    engine._turn = turn
     engine.generate(first, 6, sampling, lambda t: None, stop_eos=False)
-    assert [c.position for c in engine._prefixes[-1].checkpoints] == [3, 7]
+    assert engine.prefix_cache_identity(first).position == len(first)
     warm = []
     stats = engine.generate(second, 9, sampling, lambda t: warm.extend(t), stop_eos=False)
-    assert stats["cached"] == 3
-    assert [c.position for c in engine._prefixes[-1].checkpoints] == [8, 12]
+    assert stats["cached"] == 5  # exact token LCP, not the old last-turn checkpoint
+    assert engine.prefix_cache_identity(second).position == len(second)
     cold_engine = _engine(monkeypatch)
-    cold_engine._turn = turn
     cold = []
     assert cold_engine.generate(second, 9, sampling, lambda t: cold.extend(t), stop_eos=False)["cached"] == 0
     assert warm == cold
     # Checkpoints hold prompt rows only, at prefill positions; resumed and cold positions ran the same path.
-    assert [c.state for c in engine._prefixes[-1].checkpoints] == [(tuple(second[:p]), (True,) * p) for p in (8, 12)]
+    assert engine.prefix_cache_identity(second).position == len(second)
     for e in (engine, cold_engine):
         _assert_prompt_path(e, second)
     assert engine._state.tokens == cold_engine._state.tokens
@@ -551,7 +587,7 @@ def test_sampled_terminal_eos_or_residual_stays_pending_outside_committed_taps(m
     engine.generate(prompt, 20, Sampling(seed=41, temperature=.7, top_k=7), lambda t: output.extend(t))
     assert output == [1, 6]
     assert engine._draft.taps == engine._state.tokens == prompt + [1]
-    assert engine._prefixes[-1].tokens == tuple(prompt)
+    assert engine.prefix_cache_identity(prompt).position == len(prompt)
 
 
 def test_sampled_probability_failure_never_publishes_speculative_context(monkeypatch):
@@ -568,7 +604,7 @@ def test_sampled_probability_failure_never_publishes_speculative_context(monkeyp
     monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", failed)
     with pytest.raises(ValueError, match="invalid effective probability"):
         engine.generate(prompt, 17, policy, lambda t: output.extend(t), stop_eos=False)
-    assert len(output) == 1 and engine._owner is None and engine._prefixes[-1].tokens == tuple(prompt)
+    assert len(output) == 1 and engine._owner is None and engine.prefix_cache_identity(prompt).position == len(prompt)
     monkeypatch.setattr("tensorfold.cuda.sampling.effective_rows", _effective_cpu)
     resumed, fresh = [], []
     engine.generate(prompt, 17, policy, lambda t: resumed.extend(t), stop_eos=False)
@@ -577,17 +613,6 @@ def test_sampled_probability_failure_never_publishes_speculative_context(monkeyp
     assert resumed == fresh and engine._draft.taps == engine._state.tokens == other._state.tokens
 
 
-def test_turn_boundary_is_the_last_marker_past_the_cached_prefix_outside_visual_blocks(monkeypatch):
-    engine = _engine(monkeypatch)
-    turn = 11
-    prompt = [2, turn, 5, 5, 5, turn, 7, 7, turn, 3]
-    assert engine._turn_boundary(prompt, 0, ()) == 0            # no marker token: whole-prompt checkpoints only
-    engine._turn = turn
-    assert engine._turn_boundary(prompt, 0, ()) == 8
-    assert engine._turn_boundary(prompt, 8, ()) == 0            # nothing past the cached prefix to keep
-    assert engine._turn_boundary(prompt, 0, ((6, 10),)) == 0    # never inside a bidirectional visual block
-    assert engine._turn_boundary(prompt, 0, ((2, 8),)) == 8     # a block may end at the boundary
-    assert engine._turn_boundary([2, 5, 5], 0, ()) == 0
 
 
 @pytest.mark.parametrize("with_head", [False, True])
@@ -642,318 +667,39 @@ def test_gate_continuation_preserves_original_prompt_checkpoints(monkeypatch):
     engine = _engine(monkeypatch)
     prompt = [3, 5, 8, 2]
     engine.generate(prompt, 3, None, lambda _: False)
-    original = engine._prefixes[-1]
-    assert original.tokens == tuple(prompt)
+    original = engine.prefix_cache_identity(prompt)
+    assert original.position == len(prompt)
     continued = [*prompt, 4, 6, 9]
     engine.generate(continued, 2, None, lambda _: False, cache_prompt=False)
-    assert engine._prefixes[-1] is original and engine._prefixes[-1].tokens == tuple(prompt)
+    assert engine.prefix_cache_identity(prompt) == original
     result = engine.generate(prompt, 1, None, lambda _: False)
     assert result['cached'] == len(prompt)
 
 
-def test_prefix_lru_keeps_four_distinct_prompts_and_touches_hits(monkeypatch):
-    from tensorfold.families.gemma4.cuda import engine as module
-    monkeypatch.setattr(module, 'PREFIX_ENTRIES', 4)  # equal-cost secondary-cap tie still respects MRU
-    engine = _engine(monkeypatch)
-    prompts = [[i, 1, 2] for i in range(4)]
-    for p in prompts:
-        engine._prefill(p, None, None, time.perf_counter())
-    assert len(engine._prefixes) == 4
-    assert engine._prefill(prompts[0], None, None, time.perf_counter())[2] == 3
-    engine._prefill([5, 1, 2], None, None, time.perf_counter())
-    assert [e.tokens[0] for e in engine._prefixes] == [2, 3, 0, 5]
-    assert engine._find_prefix(prompts[1], ()) is None
-    stats = engine.prefix_cache_stats()
-    assert stats['entries'] == stats['capacity'] == stats['max_entries'] == 4
-    assert stats['slots'] is None
-    assert stats['tokens'] == 12 and stats['charged_bytes'] <= stats['byte_budget']
-    assert 'prompt' not in stats
 
 
-def test_prefix_longest_across_entries_media_and_companion_are_exact(monkeypatch):
-    engine = _engine(monkeypatch)
-    for p in ([1, 2], [1, 2, 3, 4], [8, 9]):
-        engine._prefill(p, None, None, time.perf_counter())
-    state, _, cached = engine._prefill([1, 2, 3, 4, 5], None, None, time.perf_counter())
-    assert cached == 4 and state.tokens == engine._draft.taps == [1, 2, 3, 4, 5]
-    assert engine._find_prefix([1, 2, 3, 4, 5], (('different-image',), (), ())) is None
-    assert engine._find_prefix([1, 2, 3, 4, 5], ((), ('different-video',), ())) is None
-    assert engine._find_prefix([1, 2, 3, 4, 5], ((), (), ((0, 5),))) is None
 
 
-def test_prefix_evicts_before_boundary_and_full_tensor_allocations(monkeypatch):
-    engine = _engine(monkeypatch)
-    engine._turn = 11
-    for p in ([1, 1], [2, 2], [3, 3], [4, 4]):
-        engine._prefill(p, None, None, time.perf_counter())
-    # Make the grant fit the new complete entry and its construction indices,
-    # but not all old entries. Observe at the actual snapshot allocation seam.
-    engine._prefix_budget_bytes = 1700 + engine._prefix_policy_bytes()
-    original = engine._state.snapshot
-    observed = []
-    def snapshot():
-        payload, temporary = engine._prefix_plan(engine._state.position)
-        stats = engine.prefix_cache_stats()
-        observed.append((engine._state.position, stats['entries']))
-        assert stats['charged_bytes'] + stats['failed_snapshot_bytes'] <= stats['byte_budget']
-        assert stats['bytes'] + payload + temporary <= stats['byte_budget']
-        return original()
-    engine._state.snapshot = snapshot
-    engine._prefill([6, 6, 11, 7, 7], None, None, time.perf_counter())
-    assert [p for p, _ in observed] == [2, 5]
-    assert observed[-1][1] < 4
-    assert engine.prefix_cache_stats()['charged_bytes'] <= engine._prefix_budget_bytes
 
 
-def test_prefix_snapshot_failure_keeps_charge_and_never_publishes_partial(monkeypatch):
-    engine = _engine(monkeypatch)
-    engine._prefill([1, 2], None, None, time.perf_counter())
-    old = tuple(engine._prefixes)
-    primary = RuntimeError('partial target snapshot')
-    def failed():
-        raise primary
-    engine._state.snapshot = failed
-    with pytest.raises(RuntimeError) as caught:
-        engine._prefill([3, 4], None, None, time.perf_counter())
-    assert caught.value is primary and tuple(engine._prefixes) == old
-    charged = engine._prefix_failed_bytes
-    assert charged > 0
-    engine._prefix_budget_bytes = charged
-    with pytest.raises(MemoryError):
-        engine._prefill([5, 6], None, None, time.perf_counter())
-    assert engine._prefix_failed_bytes == charged and not engine._prefixes
 
 
-def test_prefix_checkpoint_plan_matches_real_target_and_draft_snapshot_tensors(monkeypatch):
-    import torch
-    import json
-    from pathlib import Path
-    from tensorfold.families.gemma4.cuda.state import State, capacity_bytes
-    from tensorfold.families.gemma4.cuda.weights import Config
-    from tensorfold.families.gemma4.cuda.dflash import DraftState
-    engine = _engine(monkeypatch)
-    cfg = Config.from_dict(json.loads((Path(__file__).parent / "fixtures/gemma26b_modelopt_metadata.json").read_text())["raw"])
-    engine._state = State(cfg, 'cpu', 32, rows=4)
-    dcfg = SimpleNamespace(layer_types=['sliding_attention', 'full_attention'], sliding_window=5,
-                           kv_heads=1, head_dim=4)
-    engine._draft = DraftState(dcfg, 'cpu', 32, rows=4, block=4)
-    for tensor in (engine._state.keys, engine._state.values, engine._state.raw, engine._state.inv,
-                   *engine._draft.keys, *engine._draft.values):
-        tensor.zero_()
-    engine._prefix_budget_bytes = 3 * (capacity_bytes(cfg, 32, 4) + sum(
-        t.numel() * t.element_size() for t in (*engine._draft.keys, *engine._draft.values)))
-    engine._state.position = engine._state.high_water = engine._draft.length = 13
-    logits = torch.zeros((1, 19))
-    payload, temporary = engine._prefix_plan(13, logits)
-    checkpoint = engine._checkpoint(engine._state, logits)
-    actual = sum(t.numel() * t.element_size() for t in checkpoint.state._layers)
-    actual += sum(t.numel() * t.element_size() for pair in checkpoint.companion[1] for t in pair)
-    actual += checkpoint.logits.numel() * checkpoint.logits.element_size()
-    assert actual == payload == checkpoint.nbytes
-    assert temporary == max(16 * min(13, engine._state.ring), 24 * max(min(13, n) for n in engine._draft.rings))
 
 
-def test_prefix_close_releases_only_after_positive_stream_retirement(monkeypatch):
-    engine = _engine(monkeypatch, with_head=False)
-    engine._prefill([1, 2], None, None, time.perf_counter())
-    before = tuple(engine._prefixes)
-    primary = RuntimeError('stream unresolved')
-    engine._stream.synchronize = lambda: (_ for _ in ()).throw(primary)
-    with pytest.raises(RuntimeError) as caught:
-        engine.close()
-    assert caught.value is primary and tuple(engine._prefixes) == before
 
 
-def test_prefix_failed_publication_retains_prepaid_checkpoint_charge_and_primary(monkeypatch):
-    from tensorfold.families.gemma4.cuda import engine as module
-    engine = _engine(monkeypatch)
-    engine._prefill([1, 2], None, None, time.perf_counter())
-    old = tuple(engine._prefixes)
-    actual = module._Prefix
-    primary, cause = MemoryError('prefix publication'), RuntimeError('prior cause')
-    primary.__cause__ = cause
-    def fail(tokens, media, checkpoints, metadata):
-        if tokens:
-            raise primary
-        return actual(tokens, media, checkpoints, metadata)
-    monkeypatch.setattr(module, '_Prefix', fail)
-    with pytest.raises(MemoryError) as caught:
-        engine._prefill([3, 4], None, None, time.perf_counter())
-    assert caught.value is primary and caught.value.__cause__ is cause
-    assert tuple(engine._prefixes) == old and engine._prefix_failed_bytes > 0
-    tb = caught.value.__traceback__
-    while tb.tb_frame.f_code.co_name != '_prefill':
-        tb = tb.tb_next
-    assert tb.tb_frame.f_locals['kept'] == [] and tb.tb_frame.f_locals['entry'] is None
 
 
-def test_prefix_restore_keeps_selected_checkpoint_charged_until_both_owners_finish(monkeypatch):
-    engine = _engine(monkeypatch)
-    engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    selected = engine._prefixes[-1]
-    engine._prefill([4, 5, 6], None, None, time.perf_counter())
-    events = []
-    target_restore, draft_restore = engine._state.restore, engine._draft.restore
-    def restore_target(value):
-        assert any(e is selected for e in engine._prefixes)
-        events.append('target')
-        target_restore(value)
-    def restore_draft(value):
-        assert any(e is selected for e in engine._prefixes)
-        events.append('draft')
-        draft_restore(value)
-    engine._state.restore, engine._draft.restore = restore_target, restore_draft
-    _, _, cached = engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    assert events == ['target', 'draft'] and cached == 3
-    assert engine._prefixes[-1] is selected
 
 
-def test_prefix_post_eviction_append_failure_does_not_pin_old_lru_in_traceback(monkeypatch):
-    from tensorfold.families.gemma4.cuda import engine as module
-    monkeypatch.setattr(module, 'PREFIX_ENTRIES', 4)
-    import weakref
-    engine = _engine(monkeypatch)
-    for token in range(4):
-        engine._prefill([token, 1, 2], None, None, time.perf_counter())
-    retired_logits = weakref.ref(engine._prefixes[0].checkpoints[-1].logits)
-    primary = MemoryError('append after LRU removal')
-    class FailingAppend(list):
-        def append(self, value):
-            assert len(self) == 3  # the actual LRU has already been evicted
-            raise primary
-    engine._prefixes = FailingAppend(engine._prefixes)
-    with pytest.raises(MemoryError) as caught:
-        engine._prefill([5, 1, 2], None, None, time.perf_counter())
-    assert caught.value is primary and len(engine._prefixes) == 3
-    assert retired_logits() is None
-    tb = caught.value.__traceback__
-    while tb.tb_frame.f_code.co_name != '_prefill':
-        tb = tb.tb_next
-    assert tb.tb_frame.f_locals['old'] is None
-    assert engine._prefix_failed_bytes > 0
-    stats = engine.prefix_cache_stats()
-    assert stats['charged_bytes'] + stats['failed_snapshot_bytes'] <= stats['byte_budget']
 
 
-@pytest.mark.parametrize('owner', ['target', 'companion'])
-def test_prefix_restore_failure_retains_owners_and_indices_and_refuses_later_pressure(monkeypatch, owner):
-    import torch
-    engine = _engine(monkeypatch)
-    for prompt in ([1, 2, 3], [4, 5, 6]):
-        engine._prefill(prompt, None, None, time.perf_counter())
-    published = engine.prefix_cache_stats()['charged_bytes']
-    indices = engine._prefix_plan(3)[1]
-    primary, cause = RuntimeError('restore failed with borrowed state'), RuntimeError('authentic cause')
-    primary.__cause__ = cause
-    def fail(snapshot):
-        index = torch.arange(3)  # a callee-owned index kept by the error traceback
-        assert index.numel() == 3 and snapshot is not None
-        raise primary
-    if owner == 'target':
-        engine._state.restore = fail
-    else:
-        engine._draft.restore = fail
-    with pytest.raises(RuntimeError) as caught:
-        engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    assert caught.value is primary and caught.value.__cause__ is cause
-    assert engine.prefix_cache_stats()['charged_bytes'] == published
-    assert engine._prefix_failed_bytes == indices and engine._prefix_error is primary
-    # Keep the authentic traceback alive while a different miss applies pressure.
-    # Fatal ownership failure forbids later eviction or state/cache work.
-    engine._prefix_budget_bytes = published + indices
-    with pytest.raises(RuntimeError, match='prefix cache is unusable') as refused:
-        engine._prefill([7, 8, 9], None, None, time.perf_counter())
-    assert refused.value.__cause__ is primary
-    assert engine._prefix_failed_bytes == indices and len(engine._prefixes) == 2
-    assert caught.value.__traceback__ is not None
 
 
-@pytest.mark.parametrize('stage', ['token-match', 'lru-reorder'])
-def test_prefix_lookup_allocation_failure_retains_published_borrows_and_is_fatal(monkeypatch, stage):
-    from tensorfold.families.gemma4.cuda import engine as module
-    engine = _engine(monkeypatch)
-    engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    engine._prefill([4, 5, 6], None, None, time.perf_counter())
-    published = list(engine._prefixes)
-    primary = MemoryError('lookup allocation fault')
-    if stage == 'token-match':
-        def failed_tuple(*args):
-            raise primary
-        monkeypatch.setattr(module, 'tuple', failed_tuple, raising=False)
-    else:
-        class FailedReorder(list):
-            def __getitem__(self, key):
-                if isinstance(key, slice):
-                    raise primary
-                return super().__getitem__(key)
-        engine._prefixes = FailedReorder(engine._prefixes)
-    with pytest.raises(MemoryError) as caught:
-        engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    assert caught.value is primary and engine._prefix_error is primary
-    assert all(a is b for a, b in zip(engine._prefixes, published))
-    state_before = list(engine._state.tokens)
-    with pytest.raises(RuntimeError, match='prefix cache is unusable') as refused:
-        engine._prefill([7, 8, 9], None, None, time.perf_counter())
-    assert refused.value.__cause__ is primary and engine._state.tokens == state_before
-    assert all(a is b for a, b in zip(engine._prefixes, published))
-    assert caught.value.__traceback__ is not None
-    with pytest.raises(RuntimeError, match='prefix cache is unusable') as generation:
-        engine.generate([7, 8, 9], 1, None, lambda tokens: pytest.fail('callback after fatal cache failure'))
-    assert generation.value.__cause__ is primary and engine._state.tokens == state_before
-    # Fatal generation must not prevent the owning drain/close retirement path.
-    engine.close()
-    assert engine._closed is True and not engine._prefixes
 
 
-def test_prefix_protected_room_refusal_with_existing_debt_retains_hit_and_is_fatal(monkeypatch):
-    engine = _engine(monkeypatch)
-    engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    published = engine._prefixes[0]
-    charge = engine.prefix_cache_stats()['charged_bytes']
-    engine._prefix_failed_bytes = engine._prefix_budget_bytes - charge
-    with pytest.raises(MemoryError, match='byte allowance') as caught:
-        engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    assert engine._prefix_error is caught.value and engine._prefixes == [published]
-    with pytest.raises(RuntimeError, match='prefix cache is unusable') as refused:
-        engine._prefill([4, 5, 6], None, None, time.perf_counter())
-    assert refused.value.__cause__ is caught.value and engine._prefixes == [published]
-    assert engine.prefix_cache_stats()['charged_bytes'] + engine._prefix_failed_bytes == engine._prefix_budget_bytes
 
 
-@pytest.mark.parametrize('retirement_fails', [False, True])
-def test_prefix_close_retires_latched_traceback_owners_only_after_positive_drain(monkeypatch, retirement_fails):
-    import gc
-    import weakref
-    engine = _engine(monkeypatch)
-    engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    logits_ref = weakref.ref(engine._prefixes[0].checkpoints[-1].logits)
-    failure_cell = [RuntimeError('restore keeps detached hit in traceback')]
-    def failed(snapshot):
-        assert snapshot is not None
-        raise failure_cell[0]
-    engine._state.restore = failed
-    with pytest.raises(RuntimeError) as caught:
-        engine._prefill([1, 2, 3], None, None, time.perf_counter())
-    assert caught.value is failure_cell[0] and engine._prefix_error is failure_cell[0]
-    original_id = id(failure_cell[0])
-    failure_cell.clear()
-    del caught  # the engine now owns the only error/traceback reference
-    gc.collect()
-    assert logits_ref() is not None
-    if retirement_fails:
-        retirement = RuntimeError('stream completion remains unknown')
-        def failed_drain():
-            raise retirement
-        engine._stream.synchronize = failed_drain
-        with pytest.raises(RuntimeError) as closing:
-            engine.close()
-        assert closing.value is retirement and id(engine._prefix_error) == original_id
-        assert logits_ref() is not None and engine._prefixes and engine._prefix_failed_bytes > 0
-    else:
-        engine.close()
-        gc.collect()
-        assert engine._prefix_error is None and not engine._prefixes and engine._prefix_failed_bytes == 0
-        assert logits_ref() is None
 
 
 
@@ -984,12 +730,13 @@ def _native_metadata_cache(monkeypatch):
         def forward(self, ids, state, **kwargs):
             state.position += len(ids)
             state.high_water = state.position
-            return SimpleNamespace(hidden=torch.empty((1, 1), device='meta'))
+            return SimpleNamespace(hidden=torch.empty((len(ids), cfg.hidden), dtype=torch.bfloat16, device='meta'))
         def project_logits(self, hidden):
             return torch.empty((1, cfg.vocab), dtype=torch.bfloat16, device='meta')
     engine.target = Target()
     engine._append_head = lambda draft, result, ids, **kwargs: setattr(draft, 'length', draft.length + len(ids))
-    engine._turn = 11
+    from tensorfold.families.gemma4.cuda.prefix_archive import GemmaPrefixArchive
+    engine._prefix_archive = GemmaPrefixArchive(engine, engine._prefix_budget_bytes)
     return engine
 
 
@@ -998,103 +745,52 @@ def test_native_40k_conversation_survives_short_interleaving_when_byte_budget_al
     engine = _native_metadata_cache(monkeypatch)
     voice = [3] * 39992 + [11] + [4] * 7
     engine._prefill(voice, None, None, time.perf_counter())
-    long_checkpoint = engine._find_prefix(voice, ())
-    assert long_checkpoint.position == 40000 and long_checkpoint.logits is not None
+    long_checkpoint = engine.prefix_cache_identity(voice)
+    assert long_checkpoint.position == 40000
     for index in range(short_count):
         length = 2200 + index * 400
         prompt = [20 + index] + [5] * (length - 1)
         engine._prefill(prompt, None, None, time.perf_counter())
         stats = engine.prefix_cache_stats()
-        assert stats['charged_bytes'] + stats['failed_snapshot_bytes'] <= stats['byte_budget']
-    assert engine._find_prefix(voice, ()) is long_checkpoint
+        assert stats['charged_bytes'] <= stats['byte_budget']
+    assert engine.prefix_cache_identity(voice) == long_checkpoint
     _, _, cached = engine._prefill(voice, None, None, time.perf_counter())
     assert cached == 40000
     stats = engine.prefix_cache_stats()
-    assert stats['capacity'] == stats['max_entries'] == 256
-    assert stats['entries'] == short_count + 1 and stats['evictions'] == 0
-    assert stats['last_evicted_tokens'] is None and stats['recent_evicted_tokens'] == []
-    # Repeating the same long version reuses rather than duplicates snapshots.
-    assert sum(e.tokens == tuple(voice) for e in engine._prefixes) == 1
+    assert stats['capacity'] is stats['max_entries'] is stats['entries'] is None
+    assert stats['last_lookup']['matched_tokens'] == 40000
+    assert stats['indexed_tokens'] >= 40000
+    assert len(stats['eviction_history']) <= 32
 
 
-def test_cost_aware_real_byte_pressure_evicts_cheap_recent_entry_before_expensive_older_voice(monkeypatch):
-    engine = _native_metadata_cache(monkeypatch)
-    voice = [3] * 39992 + [11] + [4] * 7
-    short = [20] + [5] * 2199
-    engine._prefill(voice, None, None, time.perf_counter())
-    engine._prefill(short, None, None, time.perf_counter())
-    assert len(engine._prefixes) == 2
-    # Both retention cost and recency enter the actual comparator. At this
-    # geometry the older40K entry has greater saved-token value than short2.2K.
-    old, recent = engine._prefixes
-    old_bytes = old.metadata_bytes + sum(c.nbytes for c in old.checkpoints)
-    recent_bytes = recent.metadata_bytes + sum(c.nbytes for c in recent.checkpoints)
-    assert len(old.tokens) * recent_bytes > len(recent.tokens) * old_bytes * 2
-    with engine._prefix_lock:
-        assert engine._prefix_victim() == 1
-    engine._prefix_room(engine._prefix_budget_bytes - engine.prefix_cache_stats()['charged_bytes'] + 1)
-    assert [len(e.tokens) for e in engine._prefixes] == [40000]
-    stats = engine.prefix_cache_stats()
-    assert stats['evictions'] == 1 and stats['last_evicted_tokens'] == 2200
-    assert stats['recent_evicted_tokens'] == [2200]
-    assert stats['evictions_by_reason'] == {'byte_budget': 1, 'entry_cap': 0}
 
 
-def test_equal_cost_recency_and_deterministic_eviction_are_not_plain_size_selection(monkeypatch):
+
+
+
+
+
+
+
+def test_cancelled_prefill_preserves_prior_backing_and_only_committed_input_rows(monkeypatch):
+    from tensorfold.server.cancellation import RequestCancelled
     engine = _engine(monkeypatch)
-    for token in (1, 2, 3):
-        engine._prefill([token, 4, 5], None, None, time.perf_counter())
-    with engine._prefix_lock:
-        assert engine._prefix_victim() == 0
-    chosen = engine._find_prefix([1, 4, 5], ())
-    assert chosen.position == 3
-    with engine._prefix_lock:
-        assert engine._prefix_victim() == 0 and engine._prefixes[0].tokens[0] == 2
+    old = [1, 2]
+    engine.generate(old, 1, None, lambda tokens: None)
+    identity = engine.prefix_cache_identity(old)
+    with pytest.raises(RequestCancelled):
+        engine.generate([3] * 20, 1, None, lambda tokens: pytest.fail('output after prefillcancel'),
+                        progress=lambda total, cached, done, ms: True)
+    assert engine.prefix_cache_identity(old) == identity
+    assert engine._draft.length == engine._state.position == 20
+    assert not engine._prefix_archive.pending
+    # Complete committed input may be cached; no uncomputed response is claimed.
+    assert engine.prefix_cache_identity([3] * 20).position == 20
 
 
-def test_eviction_history_is_bounded_chronological_lengths_and_reason_counts(monkeypatch):
-    from tensorfold.families.gemma4.cuda import engine as module
-    monkeypatch.setattr(module, 'PREFIX_ENTRIES', 1)
-    engine = _engine(monkeypatch)
-    for length in range(1, 41):
-        engine._prefill([length % 19] * length, None, None, time.perf_counter())
-    stats = engine.prefix_cache_stats()
-    assert stats['evictions'] == 39 and stats['last_evicted_tokens'] == 39
-    assert stats['recent_evicted_tokens'] == list(range(8, 40))
-    assert stats['eviction_history_capacity'] == 32
-    assert stats['evictions_by_reason'] == {'byte_budget': 0, 'entry_cap': 39}
-    assert stats['policy_metadata_bytes'] > 0
-    assert stats['metadata_bytes'] >= stats['policy_metadata_bytes']
-    assert stats['charged_bytes'] <= stats['byte_budget']
 
-
-@pytest.mark.parametrize('failure_site', ['victim-score', 'counter-preparation'])
-def test_cost_eviction_helper_failure_latches_owner_and_refuses_later_pressure(monkeypatch, failure_site):
-    from tensorfold.families.gemma4.cuda import engine as module
-    engine = _engine(monkeypatch)
-    for prompt in ([1, 2, 3], [4, 5, 6]):
-        engine._prefill(prompt, None, None, time.perf_counter())
-    owners = list(engine._prefixes)
-    primary, cause = MemoryError('new eviction helper preparation'), RuntimeError('prior native cause')
-    primary.__cause__ = cause
-    if failure_site == 'victim-score':
-        def failed_sum(values):
-            raise primary
-        monkeypatch.setattr(module, 'sum', failed_sum, raising=False)
-        with pytest.raises(MemoryError) as caught, engine._prefix_lock:
-            engine._prefix_victim()
-    else:
-        class FailedCounter(dict):
-            def __getitem__(self, key):
-                raise primary
-        engine._prefix_evictions_by_reason = FailedCounter(engine._prefix_evictions_by_reason)
-        with pytest.raises(MemoryError) as caught, engine._prefix_lock:
-            engine._evict_prefix(0, 'byte_budget')
-    assert caught.value is primary and caught.value.__cause__ is cause
-    assert engine._prefix_error is primary and engine._prefix_evictions == 0
-    assert all(a is b for a, b in zip(engine._prefixes, owners))
-    state_before = list(engine._state.tokens)
-    with pytest.raises(RuntimeError, match='prefix cache is unusable') as refused:
-        engine._prefill([7, 8, 9], None, None, time.perf_counter())
-    assert refused.value.__cause__ is primary and engine._state.tokens == state_before
-    assert all(a is b for a, b in zip(engine._prefixes, owners))
+def test_positive_archive_credit_must_fund_core_index_before_runtime(tmp_path, monkeypatch):
+    import torch
+    monkeypatch.setattr(torch.cuda, 'set_device', lambda *_: pytest.fail('late cache-credit refusal'))
+    with pytest.raises(ValueError, match='empty index metadata'):
+        Gemma4Engine(tmp_path, prefix_cache_bytes=1)

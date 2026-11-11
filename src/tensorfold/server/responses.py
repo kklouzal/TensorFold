@@ -363,7 +363,16 @@ def _event_wire(handler: Any, reply: Any, *, store=None) -> Wire:
                 payload = {"error": health}
         reply.chunk(payload)
 
-    return Wire(opened, event, comment)
+    wire = Wire(opened, event, comment)
+    output_items = reply.items if reply.emit is not None else None
+
+    def canonical_projection(message, finish, credit):
+        # Keep only the actual item authority, not the whole Reply/store/body.
+        from tensorfold.server.responses_translate import canonical_output_messages
+        return canonical_output_messages(message, finish, output_items=output_items, credit=credit)
+
+    wire.canonical_projection = canonical_projection
+    return wire
 
 
 def _run_chat(handler: Any, body: dict[str, Any], wire: Wire) -> None:
@@ -372,6 +381,7 @@ def _run_chat(handler: Any, body: dict[str, Any], wire: Wire) -> None:
     data = json_output.dumps(handler, body, as_bytes=True)
     inner = type(handler).__new__(type(handler))
     inner.__dict__.update(handler.__dict__)
+    inner._canonical_projection = getattr(wire, "canonical_projection", None)
     inner.path, inner.rfile, inner.wfile, inner._headers_buffer = "/v1/chat/completions", io.BytesIO(data), wire, []
     inner.headers = http.client.HTTPMessage()
     inner.headers["Content-Type"] = "application/json"

@@ -325,6 +325,10 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                       help="Flash Next CUDA: key-cache format; overrides the key side of --kv-dtype")
     cuda.add_argument("--kv-value-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
                       help="Flash Next CUDA: value-cache format; overrides the value side of --kv-dtype")
+    cuda.add_argument("--prefix-cache-bytes", type=int, default=None,
+                      help="Gemma 4 MoE on CUDA: shared prefix-cache byte allowance (0 disables); "
+                           "default uses the context-derived allowance. Explicit bytes keep the requested "
+                           "or native context and must fit full memory admission; no entry ceiling")
     cuda.add_argument("--spark-global-gqa", action="store_true", default=False,
                       help="experimental Gemma 4 ModelOpt Sparkulator global grouped-query attention on CUDA; requires explicit --context <= 131072")
     cuda.add_argument("--spark-sampled-q", action="store_true", default=False,

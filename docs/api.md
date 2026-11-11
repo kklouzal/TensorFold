@@ -678,7 +678,7 @@ Times are seconds, sizes bytes.
 | `model.kv_dtype`, `model.mtp_drafts` | The KV cache format (`KEY/VALUE` when they differ) and drafts a round, where the engine has them |
 | `limits.lanes` | Allocated concurrent request slots (CUDA `--parallel`; 1 when one runs at a time; the Mac's batch). Adaptive resident capacity can exceed one execution microbatch; its effective admission ceiling and actual scheduled count are in `runtime` |
 | `limits.pending_requests`, `limits.engine_calls`, `limits.http_connections` | `--max-pending-requests`, `--max-engine-calls`, `--max-http-connections`, or null when unset |
-| `limits.prefix_cache_entries` | Prompt points the prefix cache keeps at most |
+| `limits.prefix_cache_entries` | Maximum kept prompt points where that backend uses an entry ceiling; null for the Gemma byte-budget archive |
 | `load.requests_in_flight` | Requests accepted and not finished (CUDA: queued ones included) |
 | `load.requests_running`, `load.requests_waiting` | In prefill or decode; queued or held for a lane or memory (as `/metrics`) |
 | `load.lanes` | `{decode, prefill, memory_wait}`: lanes decoding, prefilling, and held out of rounds until memory frees (null where not counted) |
@@ -690,10 +690,16 @@ Times are seconds, sizes bytes.
 | `kv.budget_bytes`, `kv.held_bytes` | The memory the stream caches may grow into (less the reserve) and what they hold, kept prefix-cache slots included |
 | `kv.active_bytes`, `kv.usage_ratio` | What the running requests' slots hold beyond their first rows, and its share of the budget (vLLM's KV usage: kept entries count as free, as a request that needs room evicts them; one stream alone may pass 1) |
 | `kv.bytes_per_token`, `kv.free_tokens_estimate` | Cache bytes a token takes; the context the budget less the running requests' share would hold (host memory and the resize copy can still refuse it) |
-| `prefix_cache.entries`, `.capacity`, `.slots`, `.tokens` | Kept prompt points, the most it keeps, the slots holding them, and the distinct prompt tokens their states hold |
-| `prefix_cache.max_entries`, `.bytes`, `.charged_bytes`, `.metadata_bytes`, `.byte_budget`, `.failed_snapshot_bytes`, `.scope` | Gemma's entry limit, retained tensor payload, conservative total and metadata charges, snapshot allowance, uncertain failed-snapshot charge, and accounting scope. These are not physical allocator or process-memory measurements |
-| `prefix_cache.eviction_policy`, `.evictions`, `.last_evicted_tokens`, `.recent_evicted_tokens`, `.eviction_history_capacity`, `.policy_metadata_bytes` | Gemma's cost/recency policy identifier, cumulative space/count evictions, most recent evicted prompt length, bounded chronological length history (last 32), history capacity and charged policy metadata. No prompt text is exposed |
-| `prefix_cache.evictions_by_reason.{byte_budget,entry_cap}` | Gemma eviction counts separated by byte pressure and the secondary entry ceiling |
+| `prefix_cache.entries`, `.capacity`, `.slots`, `.tokens`, `.max_entries` | Legacy kept-point/slot counts and limits where available. Gemma's block archive reports null: indexed tokens are not a count of fully reusable histories, and bytes govern retention |
+| `prefix_cache.store_schema`, `.scope` | Backend cache representation and accounting scope; `gemma-canonical-block-archive-v1` identifies independent canonical payload groups |
+| `prefix_cache.bytes`, `.reserved_payload_bytes`, `.uncertain_payload_bytes` | Published owned logical tensor payload, funded unpublished payload, and uncertain payload obligations after a native failure. These are not physical allocator/RSS measurements |
+| `prefix_cache.charged_bytes`, `.byte_budget`, `.temporary_bytes` | Complete cache byte obligations, their allowance, and active temporary credit; includes funded host metadata rather than an extra entry quota |
+| `prefix_cache.nodes`, `.chunks`, `.indexed_tokens`, `.groups` | Metadata nodes, retained capture spans (up to 1,024 rows), distinct indexed token positions, and resident payload groups. Spans are not allocator blocks or 64-token radix nodes; index coverage alone is not a cache hit |
+| `prefix_cache.pins`, `.pending_batches` | Active payload pins and producer/consumer batches awaiting actual retirement |
+| `prefix_cache.eviction_policy` | `complete-prefix-availability-aging-bytes-tiebreak-v2`: estimated complete-prefix availability plus aging, with freed bytes as a tie-break; not measured prefill time or work divided by bytes |
+| `prefix_cache.evictions`, `.eviction_history`, `.eviction_history_capacity` | Cumulative component evictions and the last 32 events, each with component, absolute start/stop token positions, logical bytes and reason. No prompt text or token IDs |
+| `prefix_cache.last_lookup.{requested_tokens,matched_tokens,materialized_tokens}` | Latest archive lookup, including canonical publication: requested length, safely restorable match and imported frontier at that lookup. All required target/drafter groups determine reuse; final publication has its own completion receipt |
+| `prefix_cache.metadata_status`, `.metadata_failure_type`, `.metadata_owners`, `.host_metadata_claim_bytes`, `.host_admission_observed` | Optional metadata state, bounded failure class, registered owners, outstanding host claims, and whether physical host admission was observed. An observation is not an OS reservation |
 | `totals.requests`, `totals.finished.{stop,length,tool_calls}`, `totals.cancelled`, `totals.failed` | Finished requests, by finish reason, client gone, or failed |
 | `totals.prompt_tokens`, `totals.cached_prompt_tokens`, `totals.generated_tokens` | Of finished requests |
 | `totals.generated_tokens_live` | The same with the running replies' tokens so far (CUDA) |
@@ -704,10 +710,32 @@ Times are seconds, sizes bytes.
 | `mlx` (Mac only) | `memory` (as `/health`'s, without a peak reset) and `live` (connections, waiting, decode and prefill tokens a second) |
 
 On CUDA, `kv`, `lanes.memory_wait`, `memory_waits` and `memory_stops` come from Flash Next's
-concurrent engine (`--parallel N`). Gemma also publishes its bounded prefix-cache accounting; other serial
+concurrent engine (`--parallel N`). Gemma publishes its byte-budget prefix archive accounting; other serial
 engines may leave `prefix_cache` null. The Mac fills `load` from its scheduler and leaves
 `kv` and `prefix_cache` null. Requests are counted when they finish, those whose client left (abort) or that failed
 included.
+
+Detailed archive fields such as pins, pending batches, eviction history and host
+metadata admission are optional when the archive is disabled. Common legacy
+count keys remain null; reported zero-byte and zero-token index fields remain
+zero rather than becoming unknown.
+
+For Gemma 4 MoE on CUDA, `--prefix-cache-bytes N` configures the archive byte
+allowance; `0` disables it. The default is computed from the admitted model and
+context. An explicit allowance must fit the configured CUDA memory cap, host
+reserve, working state and workspace without shrinking the requested (or native)
+context to pay for the cache. Other backends, including dense Gemma, reject this
+option rather than silently applying it to a different cache.
+
+The shared archive matches exact leading token and media context, including
+interior cuts. It requires the corresponding target and drafter state to be
+resident; metadata-only matches are not reported as cached tokens. Generated
+answers are published in the canonical history the client receives, and only a
+materialized legal frontier can be reused. The complete request cost includes
+rendering, copies and canonical publication. Older deployed snapshot images can
+still expose the previous entry-limited statistics until this replacement is
+qualified and rolled out; use the installed image and `store_schema` to identify
+the representation.
 
 ## Adaptive runtime control
 

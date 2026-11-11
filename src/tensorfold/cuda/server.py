@@ -5,14 +5,18 @@ import functools
 import hashlib
 import inspect
 import json
+import math
 import sys
 import threading
 import time
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
+from traceback import clear_frames
 from typing import Any, Callable
 
 from tensorfold.engine import grammar
+from tensorfold.cleanup import raise_failures as _cache_raise_failures
 from tensorfold.server import strict_tools
 from tensorfold.server.cancellation import RequestCancelled
 from tensorfold.server.errors import CONTEXT_LIMIT, RequestError, refusal
@@ -71,22 +75,421 @@ class PreparedRequest:
     _profile_use: Any = None
     _admission: Any = None
     _media_release: Any = None
+    _metadata_failed: Any = None
+    _metadata_retire: Any = None
+    _metadata_retired: bool = False
     count_only: bool = False  # Validation/count preparation never authorizes model execution.
+    canonical: Any = None  # Immutable frontend render authority; never the caller-owned body.
+    _canonical_retired: bool = False
+    _canonical_mode: str = "frontend"
 
     def release_media(self):
-        """Whole logical request owns replay across every generation subrun."""
-        if self._media_release is not None and self._media_release(self.vision):
-            self._media_release = None
+        """Retire optional metadata only after the original media owner is done.
+
+        Base native/legacy generation plans remain unchanged and reusable under
+        their existing contracts. Shared optional owners clear every alias.
+        """
+        owner = getattr(self.vision, "cache_metadata_owner", None)
+        if self._media_release is None and (owner is None or self._metadata_retired):
+            return
+        from tensorfold.cleanup import raise_failures
+        errors = [None, None]
+        registration = getattr(self.vision, "cache_metadata_registration", None)
+        metadata_attempted = False
+        try:
+            if self._media_release is not None and self._media_release(self.vision):
+                self._media_release = None
+            if self._media_release is None and owner is not None and not self._metadata_retired:
+                if self._metadata_retire is None:
+                    raise RuntimeError("prepared cache media has no owning retirement binding")
+                metadata_attempted = True
+                self._metadata_retire(self.vision)
+                self._metadata_retired = True
+                self._metadata_retire = self._metadata_failed = None
+        except BaseException as primary:
+            cause = BaseException.__cause__.__get__(primary)
+            context = BaseException.__context__.__get__(primary)
+            suppression = BaseException.__suppress_context__.__get__(primary)
+            # The shared metadata helper owns its close-failure classification
+            # (including close_failed=True) and never retries uncertain credit.
+            # This layer notifies only a preceding original replay failure.
+            if (not metadata_attempted and owner is not None and registration is not None
+                    and self._metadata_failed is not None):
+                try:
+                    self._metadata_failed(primary, owner)
+                except BaseException as error:
+                    errors[0] = error
+                try:
+                    registration.close()
+                except BaseException as error:
+                    errors[1] = error
+            BaseException.__cause__.__set__(primary, cause)
+            BaseException.__context__.__set__(primary, context)
+            BaseException.__suppress_context__.__set__(primary, suppression)
+            try:
+                cleanup = [error for error in errors if error is not None]
+            except BaseException as transport:
+                raise primary from transport
+            raise_failures(primary, cleanup)
+
+    def retire_canonical_cache(self):
+        """Retire optional input/projection metadata, preserving generation authority.
+
+        Reusing this Prepared remains valid under its original model/media
+        contract; App.run defers raw publication and reports nonpublication.
+        """
+        capture = self.canonical
+        credit = capture.credit if capture is not None else None
+        if capture is not None:
+            if capture.kind != "unfunded":
+                self._canonical_mode = "raw_ids" if capture.kind == "ids" else "frontend"
+            self._canonical_retired = True
+            capture.retire_data()
+        self.canonical = None
+        capture = None
+        if isinstance(credit, _CanonicalCredits):
+            credit.close()
 
     def close(self):
         """Retire an unused/consumed prepared model binding; safe to repeat."""
         self.release_media()
+        self.retire_canonical_cache()
         if self._profile_finalizer is not None:
             from tensorfold.cleanup import finish
 
             operations = (self.profile_binding.close,) + (() if self._admission is None else (self._admission.close,))
             finish(operations)
             self._profile_finalizer.detach()
+
+
+
+
+
+
+def _closed_json_snapshot(value):
+    """Avoid JSON roundtrip coercions in optional internal-caller snapshots."""
+    pending = [iter((value,))]
+    while pending:
+        try:
+            item = next(pending[-1])
+        except StopIteration:
+            pending.pop()
+            continue
+        kind = type(item)
+        if kind is dict:
+            if any(type(key) is not str for key in item):
+                return False
+            pending.append(iter(item.values()))
+        elif kind is list:
+            pending.append(iter(item))
+        elif kind not in (str, int, float, bool, type(None)) or kind is float and not math.isfinite(item):
+            return False
+    return True
+
+
+def _retire_cache_refusal(error):
+    """A contained optional-cache error has no future diagnostic consumer."""
+    try:
+        clear_frames(BaseException.__traceback__.__get__(error))
+        BaseException.__traceback__.__set__(error, None)
+    except BaseException as cleanup:
+        try:
+            _cache_raise_failures(error, [cleanup])
+        except BaseException as transport:
+            if transport is error:
+                raise
+            raise error from transport
+
+
+class _CanonicalCredits:
+    """Request-only logical metadata credit from the existing prefix byte budget.
+
+    These are conservative CPython charges, not allocator/RSS bounds. The
+    renderer's existing 47*chars working-set term is retained; a prefix-index
+    logical node (1024 bytes) covers each simultaneously live container/header
+    and its pointer slots. Two prefix token charges cover native IDs plus the
+    Python list/tuple handoff. Input wire, decoded tree, rendering and IDs have
+    independent high-water roles, since they can coexist.
+    """
+    def __init__(self, engine):
+        from tensorfold.cleanup import raise_failures
+        self.engine = engine
+        self.reserve = engine.reserve_cache_metadata
+        self.claims = dict.fromkeys(("canonical-input", "render-input", "render", "tokenizer-ids", "segment-cache", "canonical-wire"), 0)
+        self.entries = []
+        self.raise_failures = raise_failures
+        self.closed = False
+        self.retained = False
+        self.close_failure = None
+        self.failure_status = [None, None]
+        self.registration = None
+        self.registration = engine.register_cache_metadata_owner(self)
+
+    def fail(self, primary, *, close_failed=False):
+        # Status/control storage predates registration and data acquisition.
+        self.retained = True
+        cause = BaseException.__cause__.__get__(primary)
+        context = BaseException.__context__.__get__(primary)
+        suppression = BaseException.__suppress_context__.__get__(primary)
+        try:
+            self.engine.cache_metadata_failed(primary, self, close_failed=close_failed)
+        except BaseException as notification:
+            self.failure_status[0] = notification
+        if self.registration.failed:
+            try:
+                self.registration.close()  # CPU done; no failed-credit refund
+            except BaseException as retirement:
+                self.failure_status[1] = retirement
+        BaseException.__cause__.__set__(primary, cause)
+        BaseException.__context__.__set__(primary, context)
+        BaseException.__suppress_context__.__set__(primary, suppression)
+        try:
+            failures = [error for error in self.failure_status if error is not None]
+        except BaseException as transport:
+            raise primary from transport
+        if failures:
+            self.raise_failures(primary, failures)
+
+    @staticmethod
+    def render_bound(chars, parts):
+        from tensorfold.engine.prefix_blocks import _NODE
+        return 47 * chars + _NODE * (parts + 1)
+
+    def set(self, role, amount, *, allow_wait=False):
+        if self.closed or allow_wait:
+            raise RuntimeError("canonical metadata credit is closed or cannot wait")
+        previous = self.claims[role]
+        if amount <= previous:
+            return
+        # Journal/status storage precedes acquisition; no fallible append can
+        # lose a successful cache-byte reservation.
+        entry = [None, None]
+        self.entries.append(entry)
+        entry[0] = self.reserve(amount - previous)
+        self.claims[role] = amount
+
+    def render(self, chars, parts):
+        self.set("render", self.render_bound(chars, parts))
+
+    def render_input(self, value):
+        from tensorfold.server.host_payload import json_wire_bound
+        shape = {}
+        json_wire_bound(value, maximum=sys.maxsize, shape=shape)
+        self.set("render-input", self.render_bound(shape["string_chars"], shape["nodes"]))
+
+    def ids(self, count, *, entries=0, positions=0, metadata_chars=0, metadata_snapshot=False):
+        from tensorfold.engine.prefix_blocks import PrefixCapacity, _NODE, _TOKEN
+        if metadata_snapshot:
+            # Initial request encoding normally prepared this same tokenizer
+            # codec. Do not serialize an unmeasured new native tokenizer graph.
+            raise PrefixCapacity("canonical tokenizer metadata was not prepared")
+        self.set("tokenizer-ids", 2 * _TOKEN * (count + positions) + _NODE * entries + 47 * metadata_chars)
+
+    def segment_cache(self, limit, entries, text_chars):
+        from tensorfold.engine.prefix_blocks import _NODE
+        self.set("segment-cache", 2 * limit + 4 * _NODE * (entries + 1) + 30 * text_chars)
+
+    def close(self):
+        if self.closed:
+            return
+        if self.close_failure is not None:
+            raise self.close_failure  # no retry after uncertain owned close
+        if self.retained and not self.registration.retiring:
+            # CPU consumers are done, but failed metadata remains charged until
+            # the archive's positive terminal retirement invokes this owner.
+            self.registration.close()
+            return
+        primary = None
+        for entry in self.entries:
+            if entry[0] is not None:
+                try:
+                    entry[0].close()
+                except BaseException as error:
+                    entry[1] = error
+                    if primary is None:
+                        primary = error
+        if primary is not None:
+            self.close_failure = primary
+            self.fail(primary, close_failed=True)
+            try:
+                errors = [entry[1] for entry in self.entries if entry[1] is not None]
+            except BaseException as transport:
+                raise primary from transport
+            self.raise_failures(primary, errors)
+        try:
+            self.registration.close()
+        except BaseException as primary:
+            self.close_failure = primary
+            self.fail(primary, close_failed=True)
+            raise
+        self.closed = True
+
+
+@dataclass(frozen=True)
+class _CanonicalInput:
+    """Bounded request-owned render inputs, not a retained mutable HTTP body.
+
+    Template/tokenizer identities are held through finalization. JSON freezes
+    the normal renderer inputs before generation; literal provenance is rebuilt
+    by that same renderer, never by concatenating rendered token IDs.
+    """
+    kind: str
+    payload: str
+    template: Any
+    tokenizer: Any
+    segments: Any
+    ceiling: int
+    render_time: datetime | None
+    stream: bool
+    credit: Any
+    projection: Any = None  # trusted existing API wrapper, never request JSON
+    decline: str = "metadata_unfunded"
+    retired: bool = False
+
+    def retire_data(self):
+        """End this private snapshot's immutable lifetime before byte refund."""
+        if self.retired:
+            return
+        # Fixed existing fields: no traversal/allocation or user callbacks.
+        object.__setattr__(self, "retired", True)
+        object.__setattr__(self, "payload", "")
+        object.__setattr__(self, "projection", None)
+        object.__setattr__(self, "template", None)
+        object.__setattr__(self, "tokenizer", None)
+        object.__setattr__(self, "segments", None)
+        object.__setattr__(self, "credit", None)
+        object.__setattr__(self, "render_time", None)
+
+    @classmethod
+    def capture(cls, app, kind, value, *, stream=False):
+        from tensorfold.server.prompt_literals import MAX_RENDER_BYTES
+
+        ceiling = getattr(app, "render_budget_bytes", MAX_RENDER_BYTES)
+        from tensorfold.server.host_payload import json_wire_bound
+
+        from tensorfold.server.errors import CapacityError
+        from tensorfold.engine.prefix_blocks import PrefixCapacity
+
+        shape = {}
+        credit = app._host_credits() if getattr(app, "host_payload_pool", None) is not None else None
+        if credit is None:
+            if not callable(getattr(app.engine, "reserve_cache_metadata", None)):
+                return cls("unfunded", "", app.template, app.tok, getattr(app, "segments", None),
+                           ceiling, datetime.now(), stream, None)
+            try:
+                credit = _CanonicalCredits(app.engine)
+            except PrefixCapacity as refusal:
+                _retire_cache_refusal(refusal)
+                return cls("unfunded", "", app.template, app.tok, getattr(app, "segments", None),
+                           ceiling, datetime.now(), stream, None)
+        try:
+            # Optional metadata has its own byte funding. Omitted tools/kwargs
+            # need not fit the renderer-output ceiling to remain valid input.
+            try:
+                wire = json_wire_bound(value, maximum=(
+                    sys.maxsize if isinstance(credit, _CanonicalCredits) else
+                    credit.pool.capacity if credit is not None else ceiling), shape=shape)
+            except TypeError as unsupported:
+                _retire_cache_refusal(unsupported)
+                return cls("unfunded", "", app.template, app.tok, getattr(app, "segments", None),
+                           ceiling, datetime.now(), stream, credit, decline="snapshot_representation_unsupported")
+            if not _closed_json_snapshot(value):
+                return cls("unfunded", "", app.template, app.tok, getattr(app, "segments", None),
+                           ceiling, datetime.now(), stream, credit, decline="snapshot_representation_unsupported")
+            if isinstance(credit, _CanonicalCredits):
+                from tensorfold.engine.prefix_blocks import _NODE
+                credit.set("canonical-input", 8 * wire + _NODE * shape["nodes"])
+            elif credit is not None:
+                credit.set("canonical-input", credit.pool.render_bound(
+                    shape["string_chars"], shape["nodes"]), allow_wait=False)
+        except (CapacityError, PrefixCapacity) as refusal:
+            _retire_cache_refusal(refusal)
+            # Still defer every raw postpass. An unfunded canonical snapshot
+            # is a cache miss, never a narrower generation/input contract.
+            return cls("unfunded", "", app.template, app.tok, getattr(app, "segments", None),
+                       ceiling, datetime.now(), stream, credit)
+        except BaseException as primary:
+            if isinstance(credit, _CanonicalCredits):
+                credit.fail(primary)
+            raise
+        try:
+            payload = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            return cls(kind, payload, app.template, app.tok, getattr(app, "segments", None),
+                       ceiling, datetime.now(), stream, credit)
+        except BaseException as primary:
+            if isinstance(credit, _CanonicalCredits):
+                credit.fail(primary)
+            raise
+
+    def encode(self, app, prepared, content, calls, out, *, reasoning="", finish="length"):
+        from tensorfold.engine.prefix_blocks import PrefixCapacity
+        if self.retired:
+            raise RuntimeError("canonical input metadata has retired")
+        if app.template is not self.template or app.tok is not self.tokenizer or getattr(app, "segments", None) is not self.segments:
+            raise RuntimeError("canonical publication frontend authority changed")
+        value = json.loads(self.payload)
+        credit = self.credit
+        if self.kind == "ids":
+            if credit is not None:
+                credit.ids(len(prepared.prompt) + len(out))
+            return [*prepared.prompt, *out], None
+        if self.kind == "text":
+            if len(value["prompt"]) + len(content) > self.ceiling:
+                raise PrefixCapacity("canonical completion exceeds the admitted render budget")
+            if credit is not None:
+                credit.render(len(value["prompt"]) + len(content), 2)
+            text = value["prompt"] + content
+            if len(text.encode("utf-8")) > self.ceiling:
+                raise PrefixCapacity("canonical completion exceeds the admitted render budget")
+            encoded = self.tokenizer.encode(text, add_special_tokens=value["add_special_tokens"])
+            if credit is not None:
+                credit.ids(len(encoded))
+            return encoded.ids, None
+        assistant = {"role": "assistant", "content": content or None}
+        if reasoning:
+            assistant["reasoning_content"] = reasoning
+        if calls:
+            assistant["tool_calls"] = calls
+        # Existing API wrappers own their actual next-turn item conversion.
+        completed = ([assistant] if self.projection is None else self.projection(assistant, finish, credit))
+        # The real template decides whether its policy retains wire reasoning.
+        messages = [*value["messages"], *completed]
+        if credit is not None:
+            credit.render_input({"messages": messages, "tools": value["tools"], "extra": value["kwargs"]})
+        text = self.template.render(messages, tools=value["tools"],
+            enable_thinking=value["thinking"], extra=value["kwargs"], add_generation_prompt=False,
+            max_render_bytes=self.ceiling, render_time=self.render_time,
+            **({"render_credit": credit.render} if credit is not None else {}), **value["media"])
+        if prepared.vision is not None:
+            if getattr(prepared.vision, "cache_metadata_complete", True) is False:
+                raise PrefixCapacity("prepared media canonical metadata is unfunded")
+            tokens = app.vision.canonical_tokens(prepared.vision, text)
+            return tokens, app.vision.rebind_prepared(prepared.vision, tokens)
+        return self.template.encode(self.tokenizer, text, segments=self.segments,
+            **({"ids_credit": credit.ids, "cache_credit": credit.segment_cache} if credit is not None else {})), None
+
+
+def _accepted_tool_delta(calls, delta):
+    """Retain the IDs/argument bytes actually accepted by the stream sink."""
+    for part in delta.get("tool_calls", ()):
+        index = part["index"]
+        if type(index) is not int or index < 0 or index > len(calls):
+            raise RuntimeError("tool stream lost ordered call authority")
+        if index == len(calls):
+            if "id" not in part or "name" not in part.get("function", {}):
+                raise RuntimeError("tool stream arguments preceded their call head")
+            calls.append({"id": part["id"], "type": "function",
+                          "function": {"name": part["function"]["name"], "arguments": []}})
+        function = part.get("function", {})
+        fragment = function.get("arguments", "")
+        if fragment:
+            calls[index]["function"]["arguments"].append(fragment)
+
+
+def _finished_wire_calls(calls):
+    return [{"id": call["id"], "type": call["type"], "function": {
+        "name": call["function"]["name"], "arguments": "".join(call["function"]["arguments"])}}
+        for call in calls]
 
 
 def applies_penalties(engine: Any) -> bool:
@@ -173,6 +576,16 @@ class App:
         from tensorfold.token_metadata import load_tokenizer
 
         self.vision = getattr(engine, "vision", None)
+        if (self.vision is not None and getattr(engine, "supports_canonical_prefix_archive", False) is True
+                and callable(getattr(engine, "reserve_cache_metadata", None))):
+            for name, method in (("metadata_credit", "reserve_cache_metadata"),
+                                 ("metadata_register", "register_cache_metadata_owner"),
+                                 ("metadata_failed", "cache_metadata_failed")):
+                callback = getattr(engine, method)
+                existing = getattr(self.vision, name, None)
+                if existing is not None and existing != callback:
+                    raise ValueError("prepared media belongs to another cache metadata owner")
+                setattr(self.vision, name, callback)
         self.vision_image_tokens = vision_image_tokens
         self.image_limits = DEFAULT_LIMITS if vision_max_images is None and vision_image_tokens is None else \
             ImageLimits(**({} if vision_max_images is None else {"max_images": vision_max_images}),
@@ -463,6 +876,28 @@ class App:
 
     def _prepare(self, body: dict[str, Any], chat: bool, *, for_generation=True,
                  add_generation_prompt: bool = True) -> PreparedRequest:
+        holder = [None]
+        try:
+            return self._prepare_impl(body, chat, for_generation=for_generation,
+                                      add_generation_prompt=add_generation_prompt, _canonical_holder=holder)
+        except BaseException as primary:
+            capture = holder[0]
+            if capture is not None and isinstance(capture.credit, _CanonicalCredits):
+                if isinstance(primary, (RequestError, RequestCancelled)):
+                    credit = capture.credit
+                    capture.retire_data()
+                    holder[0] = None
+                    capture = None
+                    try:
+                        credit.close()
+                    except BaseException as cleanup:
+                        credit.raise_failures(primary, [cleanup])
+                elif not capture.credit.retained:
+                    capture.credit.fail(primary)
+            raise
+
+    def _prepare_impl(self, body: dict[str, Any], chat: bool, *, for_generation=True,
+                      add_generation_prompt: bool = True, _canonical_holder) -> PreparedRequest:
         from jinja2.exceptions import TemplateError
 
         credit = self._host_credits() if getattr(self, "host_payload_pool", None) is not None else None
@@ -519,16 +954,30 @@ class App:
                 self._probability_decoder = TokenBytes(self.tok)
         compiled = (spec, self._grammars().compile(spec)) if spec is not None and for_generation else None
         thought_open = False
+        canonical = None
+        capture = (for_generation and getattr(self.engine, "supports_canonical_prefix_archive", False) is True
+                   and callable(getattr(self.engine, "cache_publication_intent", None)))
         if chat:
             if not isinstance(body.get("messages"), list):
                 raise RequestError("messages must be a list")
             from tensorfold.server.prompts import has_images, prepare_images
 
             def render(messages: list[dict[str, Any]], **images: bool) -> str:   # text renders as it always has
-                nonlocal thought_open
+                nonlocal thought_open, canonical
+                if capture:
+                    canonical = _CanonicalInput.capture(self, "chat", {
+                        "messages": messages, "tools": tools, "thinking": thinking,
+                        "kwargs": kwargs, "media": images}, stream=bool(body.get("stream")))
+                    _canonical_holder[0] = canonical
+                # Input is caller-owned and stable for synchronous prepare.
+                # Only later publication replays the immutable snapshot.
                 try:
                     ceiling = getattr(self, "render_budget_bytes", None)
-                    text = self.template.render(messages, tools=tools, enable_thinking=thinking, extra=kwargs,
+                    text = self.template.render(messages,
+                                                tools=tools,
+                                                enable_thinking=thinking,
+                                                extra=kwargs,
+                                                **({"render_time": canonical.render_time} if canonical is not None else {}),
                                                 **({"render_credit": credit.render} if credit is not None else {}),
                                                 **({"max_render_bytes": ceiling} if ceiling is not None else {}),
                                                 **({"add_generation_prompt": False} if not add_generation_prompt else {}),
@@ -556,7 +1005,9 @@ class App:
                                            self.sampling_for(body, rendered.tokens), ignore_eos=ignore_eos, stop=stop,
                                            vision=rendered.vision, grammar=compiled, think_budget=budget, calls=calls,
                                            thought_open=thought_open, penalties=penalties, _media_release=retire,
-                                           count_only=not for_generation)
+                                           _metadata_failed=getattr(self.engine, "cache_metadata_failed", None),
+                                           _metadata_retire=getattr(self.vision, "retire_cache_metadata", None),
+                                           count_only=not for_generation, canonical=canonical)
                 except BaseException as primary:
                     if retire is not None:
                         from tensorfold.cleanup import rollback
@@ -575,10 +1026,18 @@ class App:
                 raise RequestError(f"the chat template could not encode literal content: {exc}") from exc
         elif isinstance(body.get("prompt"), list):       # token ids (vLLM's and OpenAI's form): served as given
             prompt = self.token_ids(body["prompt"])
+            if capture:
+                canonical = _CanonicalInput.capture(self, "ids", None, stream=bool(body.get("stream")))
+                _canonical_holder[0] = canonical
         else:
             text = body.get("prompt")
             if not isinstance(text, str):
                 raise RequestError("prompt must be a string or a list of token ids")
+            if capture:
+                canonical = _CanonicalInput.capture(self, "text", {
+                    "prompt": text, "add_special_tokens": flag(body, "add_special_tokens", False)},
+                    stream=bool(body.get("stream")))
+                _canonical_holder[0] = canonical
             if credit is None:
                 prompt = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", False)).ids
             else:
@@ -591,7 +1050,7 @@ class App:
         # sampling is resolved here, so a malformed control is refused before a stream opens
         return PreparedRequest(prompt, max_tokens, tools, thinking, self.sampling_for(body, prompt),
                                ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget, calls=calls,
-                               thought_open=thought_open, penalties=penalties, count_only=not for_generation)
+                               thought_open=thought_open, penalties=penalties, count_only=not for_generation, canonical=canonical)
 
     def _strict_calls(self, body: dict[str, Any], tools: list[dict[str, Any]], spec: Any,
                       policy: ToolCallPolicy, *, for_generation: bool = True) -> "strict_tools.Plan | None":
@@ -748,17 +1207,40 @@ class App:
         """Existing prompt/constraint validation without a generation-tier promise."""
         return self.prepare(body, chat, _for_generation=False)
 
-    def prepare(self, body: dict[str, Any], chat: bool, *, _for_generation=True) -> PreparedRequest:
-        from tensorfold.cleanup import rollback
+    def prepare(self, body: dict[str, Any], chat: bool, *, _for_generation=True,
+                _canonical_projection=None) -> PreparedRequest:
+        from tensorfold.cleanup import finish, rollback
 
         def release_prepared_media():
             prepared.release_media()
 
+        prepare_primary = None
+
+        def notify_prepared_failure():
+            capture = prepared.canonical
+            if (capture is not None and isinstance(capture.credit, _CanonicalCredits)
+                    and not isinstance(prepare_primary, (RequestError, RequestCancelled))):
+                capture.credit.fail(prepare_primary)
+
+        def release_prepared_canonical():
+            prepared.retire_canonical_cache()
+
+        operations = (notify_prepared_failure, release_prepared_media, release_prepared_canonical)
+
+        def retire_prepared():
+            finish(operations)
+
+        if _canonical_projection is not None and not callable(_canonical_projection):
+            raise TypeError("canonical API projection must be a trusted callable")
         problem = self._check_fields(body)
         if problem:
             raise refusal(problem)
         prepared = self._prepare(body, chat, for_generation=_for_generation)
         try:
+            if prepared.canonical is not None:
+                prepared._canonical_mode = "raw_ids" if not chat and isinstance(body.get("prompt"), list) else "frontend"
+                if _canonical_projection is not None:
+                    prepared.canonical = replace(prepared.canonical, projection=_canonical_projection)
             problem = self.check(body, prepared=prepared)
             if problem:
                 raise refusal(problem)
@@ -767,7 +1249,8 @@ class App:
                 prepared.max_tokens = min(prepared.max_tokens, limit - len(prepared.prompt))
             return prepared
         except BaseException as primary:
-            rollback(prepared, primary, release_prepared_media)
+            prepare_primary = primary
+            rollback(prepared, primary, retire_prepared)
 
     def sampling_for(self, body: dict[str, Any], prompt: list[int]):
         """Keyed sampling (the seed, else one drawn from the prompt), or None for greedy; RequestError if malformed."""
@@ -860,7 +1343,8 @@ class App:
     def run(self, body: dict[str, Any], chat: bool, emit: Callable[[dict[str, Any]], bool], *,
             prepared: PreparedRequest | None = None, cancelled: Callable[[], bool] | None = None,
             request_id: str | None = None, arrived: float | None = None,
-            progress: Callable[[dict[str, Any]], bool] | None = None) -> dict[str, Any]:
+            progress: Callable[[dict[str, Any]], bool] | None = None,
+            _canonical_projection=None) -> dict[str, Any]:
         """One reply; once ``cancelled()`` holds, a waiting request raises ``RequestCancelled`` unstarted, a running one stops at its next round and raises it after ``generate``.
 
         ``request_id`` names the request in its ``tensorfold`` block and ``done`` line (one is made if None);
@@ -870,23 +1354,72 @@ class App:
 
         if prepared is not None and getattr(prepared, "count_only", False):
             raise RequestError("count-only preparation cannot be used for generation; prepare the request for generation")
+        from tensorfold.cleanup import error_name, raise_failures
+        from jinja2.exceptions import TemplateError
+
+        # Prepay status/transport storage before internal preparation can own
+        # optional metadata. A caller-supplied Prepared is still caller-owned
+        # if admission fails before this operation begins.
+        cleanup_errors = [None, None, None, None, None, None]
+        cleanup_order = (2, 4, 5, 0, 1, 3)
+        _media_primary = None
+        publication_intent = None
+        canonical_capture = None
+        cache_frontend = False
         self._reserve_http_generation(body, prepared, cancelled)
         entered = time.perf_counter()
         request_id = request_id or new_request_id()
         arrived = entered if arrived is None else float(arrived)
-        if prepared is None:                # admitted (--max-pending-requests) before preparing: that wait is queued
-            prepared = self.prepare(body, chat)
-            prepare_s, admitted_s = time.perf_counter() - entered, entered - arrived
-        else:
-            prepare_s, admitted_s = entered - arrived, 0.0
-        _media_primary = None
         try:
+            if prepared is None:            # admitted before preparing; that wait is queued
+                prepared = self.prepare(body, chat,
+                    **({"_canonical_projection": _canonical_projection} if _canonical_projection is not None else {}))
+                prepare_s, admitted_s = time.perf_counter() - entered, entered - arrived
+            else:
+                prepare_s, admitted_s = entered - arrived, 0.0
+            cache_frontend = prepared.canonical is not None or prepared._canonical_retired
             if prepared.grammar is not None or prepared.calls is not None:
                 reason = self._retained_constraint_refusal()
                 if reason is not None:
                     raise RequestError(reason)
             prompt, max_tokens = prepared.prompt, prepared.max_tokens
             tools, thinking = prepared.tools, prepared.thinking
+            wire_capture = False
+            wire_declined = cache_frontend
+            wire_calls = wire_text = None
+            wire_chars = wire_parts = 0
+            original_emit = emit
+
+            if cache_frontend and tools:
+                from tensorfold.engine.prefix_blocks import PrefixCapacity
+                from tensorfold.server.errors import CapacityError
+
+                def emit(delta):
+                    nonlocal wire_capture, wire_declined, wire_chars, wire_parts
+                    accepted = original_emit(delta)
+                    if accepted and delta is not None and wire_capture and delta.get("tool_calls"):
+                        chars, parts = wire_chars, wire_parts
+                        for call in delta["tool_calls"]:
+                            function = call.get("function", {})
+                            chars += len(call.get("id", "")) + len(function.get("name", "")) + len(function.get("arguments", ""))
+                            parts += 8 + len(call) + len(function)
+                        credit = canonical_capture.credit
+                        bound = (_CanonicalCredits.render_bound(chars, parts) if isinstance(credit, _CanonicalCredits)
+                                 else credit.pool.render_bound(chars, parts))
+                        try:
+                            credit.set("canonical-wire", bound, allow_wait=False)
+                        except (PrefixCapacity, CapacityError) as refusal:
+                            _retire_cache_refusal(refusal)
+                            # The wire has accepted this frame, so ordinary
+                            # generation continues. No unpaid duplicate survives.
+                            wire_capture, wire_declined = False, True
+                            wire_calls.clear()
+                            wire_text["content"] = wire_text["reasoning_content"] = ""
+                        else:
+                            _accepted_tool_delta(wire_calls, delta)
+                            wire_chars, wire_parts = chars, parts
+                    return accepted
+
             markers = self.thinking_markers
             split_reasoning = chat and (thinking or markers == CHANNEL_MARKERS)
             gemma = markers == CHANNEL_MARKERS
@@ -1044,6 +1577,13 @@ class App:
                             # Callback acceptance follows canonical token commit.
                             # HTTP's callback includes write+flush, not peer receipt.
                             sent["reasoning"], sent["content"] = len(reasoning), len(answer)
+                            if wire_capture and canonical_capture.stream:
+                                # Retain existing immutable parser strings, not a
+                                # second repeatedly concatenated streaming copy.
+                                if "content" in delta:
+                                    wire_text["content"] = answer
+                                if "reasoning_content" in delta:
+                                    wire_text["reasoning_content"] = reasoning
                     if (not delta and body.get("stream")
                             and time.perf_counter() - last_ping[0] >= 1.0):
                         last_ping[0] = time.perf_counter()
@@ -1153,6 +1693,8 @@ class App:
                     finally:
                         queued[0] += time.perf_counter() - waited
                 extra = dict(options)
+                if publication_intent is not None:
+                    extra["_cache_publication"] = publication_intent
                 if cached and "cache_prompt" in inspect.signature(self.engine.generate).parameters:
                     # Budget/call continuations are the SAME logical request.
                     # Do not replace its reusable original prompt checkpoints
@@ -1229,6 +1771,7 @@ class App:
                         raise
                 queued[0] += time.perf_counter() - waited
             released = turns is None
+            settlement_started = None
 
             def release() -> None:              # the engine's turn goes back once, as soon as generation ends
                 nonlocal released
@@ -1243,6 +1786,23 @@ class App:
                     try:
                         if cancelled is not None and cancelled():            # the client left while this request waited
                             raise RequestCancelled("the client left before the request started")
+                        if cache_frontend:
+                            # Transfer optional metadata under the existing
+                            # frontend turn. A reused Prepared can still generate
+                            # but cannot borrow another run's retired snapshot.
+                            canonical_capture = prepared.canonical
+                            if canonical_capture is not None:
+                                if canonical_capture.kind != "unfunded":
+                                    prepared._canonical_mode = "raw_ids" if canonical_capture.kind == "ids" else "frontend"
+                                prepared._canonical_retired = True
+                                prepared.canonical = None
+                            canonical_eligible = canonical_capture is not None and canonical_capture.kind != "unfunded"
+                            wire_declined = not canonical_eligible
+                            wire_capture = canonical_eligible and canonical_capture.stream
+                            if wire_capture:
+                                wire_calls = [] if tools else None
+                                wire_text = {"content": "", "reasoning_content": ""}
+                            publication_intent = self.engine.cache_publication_intent(prepared._canonical_mode)
                         serving[0] = request
                         try:
                             def forced(index):
@@ -1257,13 +1817,16 @@ class App:
                         generation_primary = generation_error
                         raise
                     finally:
+                        if cache_frontend:
+                            settlement_started = time.perf_counter()
                         callback_primary = failed[0] if failed[0] is not None else generation_primary
                         _callback_native_cause = (BaseException.__cause__.__get__(callback_primary)
                                                   if callback_primary is not None else None)
                         _callback_native_context = (BaseException.__context__.__get__(callback_primary)
                                                     if callback_primary is not None else None)
                         try:
-                            release()
+                            if publication_intent is None:
+                                release()
                             request.stats = {**(request.stats or {}),
                                              **timings(request.stats or {}, len(out), queued[0], prepare_s, arrived,
                                                        request.first)}
@@ -1331,8 +1894,84 @@ class App:
                     stream_complete = calls_stream is None or strict is not None or calls_stream.complete
                     finished_calls = bool(calls or (streamed and ended)) and calls_complete and stream_complete
                     finish = request.outcome = "tool_calls" if finished_calls else ("stop" if ended else "length")
+                    if publication_intent is not None and wire_declined:
+                        request.stats = {**(request.stats or {}), "cache_publication": {
+                            "schema": "tensorfold.frontend-canonical-publication-v1",
+                            "status": "canonical_metadata_retired" if canonical_capture is None else canonical_capture.decline,
+                            "complete": False}}
+                    elif publication_intent is not None and (not tools or (calls_complete and stream_complete)):
+                        # Streamed heads/arguments already have wire identity;
+                        # never publish fresh UUIDs from the terminal parser.
+                        if canonical_capture.stream:
+                            # Flush precisely the handler's existing final deltas
+                            # before publication; return no duplicate final frame.
+                            if final and not emit(final):
+                                raise RequestCancelled("the client left during canonical finalization")
+                            for index, call in enumerate(calls or ()):
+                                if index >= streamed:
+                                    if not emit({"tool_calls": [{"index": index, **call}]}):
+                                        raise RequestCancelled("the client left during canonical tool finalization")
+                            if wire_capture:
+                                calls = _finished_wire_calls(wire_calls) if wire_calls else calls
+                            visible_content = wire_text["content"] + final.get("content", "")
+                            visible_reasoning = wire_text["reasoning_content"] + final.get("reasoning_content", "")
+                            final = {}
+                            streamed = len(calls or ())
+                        else:
+                            visible_content, visible_reasoning = content, reasoning
+                        from tensorfold.engine.prefix_blocks import PrefixCapacity
+                        from tensorfold.server.errors import CapacityError
+                        try:
+                            if wire_declined:
+                                raise PrefixCapacity("wire canonical metadata is unfunded")
+                            tokens, media = canonical_capture.encode(
+                                self, prepared, visible_content, calls, out, reasoning=visible_reasoning, finish=finish)
+                        except (PrefixCapacity, CapacityError) as refusal:
+                            _retire_cache_refusal(refusal)
+                            request.stats = {**(request.stats or {}), "cache_publication": {
+                                "schema": "tensorfold.frontend-canonical-publication-v1",
+                                "status": "metadata_unfunded", "complete": False}}
+                        except TemplateError as refusal:
+                            if (BaseException.__cause__.__get__(refusal) is not None
+                                    or BaseException.__context__.__get__(refusal) is not None):
+                                raise  # never hide a wrapped resource/native failure
+                            try:
+                                kind = error_name(refusal)
+                                _retire_cache_refusal(refusal)
+                                request.stats = {**(request.stats or {}), "cache_publication": {
+                                    "schema": "tensorfold.frontend-canonical-publication-v1",
+                                    "status": "canonical_template_refused", "error_type": kind, "complete": False}}
+                            except BaseException as cleanup:
+                                try:
+                                    raise_failures(refusal, [cleanup])
+                                except BaseException as transport:
+                                    if transport is refusal:
+                                        raise
+                                    raise refusal from transport
+                        else:
+                            publication = self.engine.publish_canonical(
+                                tokens, media, intent=publication_intent, cancelled=cancelled)
+                            publication_intent = None
+                            request.stats = {**(request.stats or {}), "cache_publication": publication}
+                    elif publication_intent is not None:
+                        request.stats = {**(request.stats or {}), "cache_publication": {
+                            "schema": "tensorfold.frontend-canonical-publication-v1",
+                            "status": "incomplete_tool_call", "complete": False}}
+
             finally:
-                release()
+                if publication_intent is not None or cache_frontend:
+                    try:
+                        release()
+                    except BaseException as error:
+                        cleanup_errors[2] = error
+                else:
+                    release()
+            if cleanup_errors[2] is not None:
+                raise cleanup_errors[2]
+            if cache_frontend:
+                request.stats = {**(request.stats or {}),
+                    "frontend_settlement_s": max(0.0, time.perf_counter() - settlement_started),
+                    "request_wall_s": max(0.0, time.perf_counter() - arrived)}
             stats = {"stats_version": STATS_VERSION, "request_id": request_id, **(request.stats or {}),
                      "token_sha": token_sha(out)}
             warning = unanswered(finish, chat and thinking, content, calls,
@@ -1357,15 +1996,69 @@ class App:
                     "stats": stats, "calls_streamed": streamed}
         except BaseException as error:
             _media_primary = error
+            capture = canonical_capture if canonical_capture is not None else getattr(prepared, "canonical", None)
+            if not isinstance(error, (RequestError, RequestCancelled)):
+                if capture is not None and isinstance(capture.credit, _CanonicalCredits) and not capture.credit.retained:
+                    try:
+                        capture.credit.fail(error)
+                    except BaseException as notification:
+                        cleanup_errors[4] = notification
+                media_owner = getattr(getattr(prepared, "vision", None), "cache_metadata_owner", None)
+                media_registration = getattr(getattr(prepared, "vision", None), "cache_metadata_registration", None)
+                if media_owner is not None and media_registration is not None and not media_registration.failed:
+                    try:
+                        self.engine.cache_metadata_failed(error, media_owner)
+                    except BaseException as notification:
+                        cleanup_errors[5] = notification
             raise
         finally:
-            if getattr(prepared, "_media_release", None) is not None:
-                if _media_primary is not None:
-                    from tensorfold.cleanup import rollback
-
-                    rollback(prepared, _media_primary, prepared.release_media)
-                else:
+            # Rebound views and canonical native/Python IDs have no consumers
+            # after synchronous publication/containment; drop before refund.
+            tokens = media = capture = _canonical_projection = None
+            if _media_primary is None or isinstance(_media_primary, (RequestError, RequestCancelled)):
+                wire_calls = wire_text = None
+            # Status slots and neutral transport are resolved before generation.
+            # Both independent owners are retired even if one callback fails.
+            if publication_intent is not None:
+                try:
+                    self.engine.cancel_cache_publication(publication_intent)
+                except BaseException as error:
+                    cleanup_errors[0] = error
+            if (getattr(prepared, "_media_release", None) is not None
+                    or getattr(getattr(prepared, "vision", None), "cache_metadata_owner", None) is not None
+                    or getattr(getattr(prepared, "vision", None), "cache_metadata_registration", None) is not None):
+                try:
                     prepared.release_media()
+                except BaseException as error:
+                    cleanup_errors[1] = error
+            try:
+                # Clear this operation's descriptor/projection before refund.
+                credit = canonical_capture.credit if canonical_capture is not None else None
+                if canonical_capture is not None:
+                    canonical_capture.retire_data()
+                canonical_capture = None
+                if isinstance(credit, _CanonicalCredits):
+                    credit.close()
+                if prepared is not None:
+                    prepared.retire_canonical_cache()
+            except BaseException as error:
+                cleanup_errors[3] = error
+            # Failed registered owners declare CPU completion but keep credit
+            # pinned until the cache's positive terminal retirement.
+            cleanup_primary = _media_primary
+            if cleanup_primary is None:
+                for index in cleanup_order:
+                    if cleanup_errors[index] is not None:
+                        cleanup_primary = cleanup_errors[index]
+                        break
+            try:
+                cleanup = [cleanup_errors[index] for index in cleanup_order if cleanup_errors[index] is not None]
+            except BaseException as transport:
+                if cleanup_primary is not None:
+                    raise cleanup_primary from transport
+                raise
+            if cleanup:
+                raise_failures(cleanup_primary, cleanup)
 
     def _ended_thinking(self, request_id: str, body: dict[str, Any], prompt: list[int], out: list[int], finish: str,
                         thinking: bool, content: str, calls: Any, reasoning: str, raw_text: str, stop_string: bool,

@@ -181,6 +181,8 @@ def _prepare(app, plan, items):
             request = app.prepare({"messages": item["messages"], "max_tokens": 64, "ignore_eos": True,
                                    "chat_template_kwargs": {"enable_thinking": False}, "temperature": 1. if sampled else 0,
                                    "top_k": 64, "top_p": .95, "min_p": 0., "seed": 7}, True)
+            # This tool calls Engine.generate directly, not frontend finalization.
+            request.retire_canonical_cache()
             digest = proposal._sha(json.dumps(request.prompt, separators=(",", ":")).encode())
             _require(len(request.prompt) == proposal.WORKLOADS[item["id"]] and digest == plan["prompt_sha256"][item["id"]]
                      and request.max_tokens == 64 and not request.thinking and request.ignore_eos

@@ -86,6 +86,8 @@ def state(length=17):
 def engine_for(runtime, *, enabled=True):
     engine = Gemma4Engine.__new__(Gemma4Engine)
     engine._prefix_error = None
+    engine._native_retirement_error = None
+    engine._prefix_archive = None  # graph-only fixture, no cache producer
     engine._dflash_graph, engine._closed, engine._owner = enabled, False, None
     engine._closed_lock, engine._run_lock = threading.Lock(), threading.Lock()
     engine._stream, engine.head = runtime.current, NS(_logits_graph=runtime.owner)
@@ -244,7 +246,7 @@ def test_routine_prompt_validation_does_not_poison_graph_owner(runtime):
     engine._check_open()
 
 
-def test_disabled_graph_keeps_existing_lane_and_drain_error_policy(runtime):
+def test_disabled_graph_preserves_lane_refusal_but_latches_native_retirement(runtime):
     engine = engine_for(runtime, enabled=False)
     primary, calls = RuntimeError('legacy operation'), []
     with pytest.raises(RuntimeError) as caught:
@@ -262,7 +264,9 @@ def test_disabled_graph_keeps_existing_lane_and_drain_error_policy(runtime):
         with pytest.raises(RuntimeError) as caught:
             engine.drain()
         assert caught.value is primary and runtime.owner.failure is None
-    assert len(calls) == 2  # this candidate does not change the default-off policy
+    assert len(calls) == 1 and engine._native_retirement_error is primary
+    with pytest.raises(RuntimeError, match='native retirement failed'):
+        engine._check_open()
 
 
 @pytest.mark.parametrize('status', ['failed', 'closed'])
@@ -377,3 +381,23 @@ def test_native_a8_head_default_off_and_eager_payload_contract():
 def test_native_a8_engine_unsupported_option_refuses_before_checkpoint_read(options):
     with pytest.raises(ValueError, match='native_a8|native A8'):
         Gemma4Engine('nonexistent-must-not-be-read', **options)
+
+
+
+def test_pre_effect_graph_capture_refusal_does_not_latch_native_fence(runtime, monkeypatch):
+    engine = engine_for(runtime)
+    primary, calls, capturing = RuntimeError('cannot drain during capture'), [], [True]
+    original = runtime.owner.check_live
+    def check():
+        if capturing[0]:
+            raise primary
+        original()
+    monkeypatch.setattr(runtime.owner, 'check_live', check)
+    engine._stream = NS(synchronize=lambda: calls.append('synchronize'))
+    with pytest.raises(RuntimeError) as caught:
+        engine.drain()
+    assert caught.value is primary and not calls
+    assert engine._native_retirement_error is runtime.owner.failure is None
+    capturing[0] = False
+    engine.drain()
+    assert calls == ['synchronize'] and engine._native_retirement_error is None

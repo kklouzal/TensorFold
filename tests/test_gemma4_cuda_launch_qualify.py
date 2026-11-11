@@ -143,6 +143,7 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
             if fault == "drain":
                 raise RuntimeError("native drain failure")
         def generate(self, prompt, count, policy, receive, *, draft, stop_eos, penalties):
+            assert states.get("metadata_pending", 0) == 0
             assert count == 64 and not stop_eos and penalties is None and speculative._PROPOSAL_GUARD == 8
             if fault == "request":
                 receive([1, 2])
@@ -184,8 +185,15 @@ def runtime(monkeypatch, tmp_path, *, fault=None):
             if fault == "prompt":
                 prompt[-1] += 1
             policy = NS(seed=7, temperature=1., top_k=64, top_p=.95, min_p=0.) if body["temperature"] else None
-            return NS(prompt=prompt, max_tokens=64, thinking=False, ignore_eos=True, grammar=None, vision=None,
-                      penalties=None, sampling=policy)
+            states["metadata_pending"] = states.get("metadata_pending", 0) + 1
+            request = NS(prompt=prompt, max_tokens=64, thinking=False, ignore_eos=True, grammar=None, vision=None,
+                         penalties=None, sampling=policy, metadata_retired=False)
+            def retire():
+                if not request.metadata_retired:
+                    request.metadata_retired = True
+                    states["metadata_pending"] -= 1
+            request.retire_canonical_cache = retire
+            return request
     modules = {name: NS() for name in tool.SOURCES}
     modules[tool.proposal.SOURCES[0]], modules[tool.proposal.SOURCES[1]] = speculative, sampling
     modules[tool.proposal.SOURCES[2]] = NS(Gemma4Engine=Engine)

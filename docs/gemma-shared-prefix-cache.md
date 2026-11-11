@@ -183,3 +183,29 @@ review verified unchanged workspace/math and the original constructor boundary.
 Eleven style diagnostics in an unmodified old test helper are baseline-proven;
 there are no new static findings. These are source admission/retention gates,
 not installed-image, GPU/model, physical capacity or performance qualification.
+
+## Integrated production-backed source checkpoint, 11 November 2026
+
+All task implementation components are source-reviewed, including the independent
+native-retirement latch when archive credit is zero. A failed native fence stays
+latched; a graph-capture refusal before any fence remains a separate contract.
+The source package was assembled over the exact deployed `9e475` parent using
+24 reviewed runtime path changes. CLI and typed host-admission patches reverse
+exactly to their parent files; 102 native source files and the FD C source remain
+unchanged. The derived source identity is
+`e9701a8f432d9f2339bed869b1bbe46d763efbc52414d7126fdaa95e954da11e`.
+
+The immutable production-backed source ran in the existing owned ARM64 SDK
+verification image with Transformers 5.17, qualified Torch and the exact FD addon:
+512 tests passed, five optional OpenAI client-SDK cases were skipped because that
+client is absent, and no tests failed. All four required xgrammar cases and five
+qualified-Torch GQA cases executed successfully. SDK, source, installed-origin
+and NoCUDA guards passed; the CPU container retired without OOM. The optional
+Python client pairing remains explicitly unqualified, not counted as a pass.
+
+This closes a source/API/dependency integration checkpoint, not deployment,
+installed-candidate, GPU or full-model qualification. Genuine whole-wheel
+installed-origin checks, GB10 state/graph/media checks, full-model A/B/A cache and
+canonical-history checks, physical-resource admission and complete serving
+measurements remain required before replacing production. Production is still
+on its previous four-entry snapshot image.

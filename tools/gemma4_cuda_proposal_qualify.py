@@ -396,6 +396,8 @@ def qualify(app, plan, items, report, outdir, modules):
                 "max_tokens": plan["tokens"], "ignore_eos": True, "temperature": 0 if key[1] == "greedy-serial"
                 or key[1] == "greedy-draft" else 1., "top_k": 64, "top_p": .95, "min_p": 0., "seed": key[2]}
         request = app.prepare(body, True)
+        # Keep generation authority; this tool never publishes a frontend turn.
+        request.retire_canonical_cache()
         if (len(request.prompt) != WORKLOADS[key[0]] or request.max_tokens != plan["tokens"]
                 or request.thinking or not request.ignore_eos or request.grammar is not None
                 or request.vision is not None or request.penalties is not None):

@@ -2,17 +2,34 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
 import math
 import threading
 import time
 from typing import Any, Callable
 
-from .engine import Gemma4Engine, _Prefix
+from .engine import Gemma4Engine
 from .e2b_metadata import E2BConfig
 from .e2b_target import E2BTarget
 
 PREFILL_ROWS = 512
 PREFIX_SNAPSHOTS = 3
+
+
+@dataclass(frozen=True, slots=True)
+class _Checkpoint:
+    position: int
+    state: Any
+    companion: Any
+    logits: Any
+
+
+@dataclass(frozen=True, slots=True)
+class _Prefix:
+    """Dense native-GEMM boundaries; not the MoE block-archive geometry."""
+    tokens: tuple[int, ...]
+    media: tuple
+    checkpoints: tuple[_Checkpoint, ...]
 
 
 def prefill_boundaries(prompt, turn, rows=PREFILL_ROWS, *, blocks=()):
@@ -209,6 +226,7 @@ def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, 
 class E2BEngine(Gemma4Engine):
     """Own one target/draft transaction lane; reuse target-law rejection and API contracts."""
 
+    supports_canonical_prefix_archive = False
     graphs = None
     prefill_rows = PREFILL_ROWS
     # Qualification candidate; enable only after an integrated P3 comparison.
@@ -362,6 +380,8 @@ class E2BEngine(Gemma4Engine):
                                           self.context_window, device=self.target.device, bits=drafter_bits)
                 self._draft = self.head.make_state()
             self._prefix = None
+            self._prefix_error = None
+            self._retirement_failure = None
             self._prefix_lock = threading.Lock()
             self._run_lock = threading.Lock()
             self._closed_lock = threading.Lock()
@@ -411,19 +431,95 @@ class E2BEngine(Gemma4Engine):
         else:
             super()._append_head(state, result, input_ids, count, prompt=prompt)
 
-    def _find_prefix(self, prompt, media, *, blocks=()):
-        boundaries = set(prefill_boundaries(prompt, self._turn, self.prefill_rows, blocks=blocks))
+    def _check_open(self):
+        super()._check_open()
+        error = getattr(self, "_retirement_failure", None)
+        if error is None:
+            error = getattr(self, "_prefix_error", None)
+        if error is not None:
+            raise RuntimeError("dense Gemma ownership failed; replace the engine") from error
+
+    def _checkpoint(self, state, logits=None):
+        """Detach this profile's actual target/companion snapshots in place."""
+        target = companion = saved_logits = None
+        try:
+            target = state.snapshot()
+            companion = self._draft.snapshot() if self._draft is not None else None
+            saved_logits = None if logits is None else logits.clone()
+            return _Checkpoint(state.position, target, companion, saved_logits)
+        except BaseException as primary:
+            # A failed producer can retain partial snapshot owners in frames.
+            # No later request may allocate against that uncertain ownership.
+            self._prefix_error = primary
+            target = companion = saved_logits = None
+            raise
+
+    def _turn_boundary(self, prompt, cached: int, blocks) -> int:
+        if self._turn is None:
+            return 0
+        at = next((i for i in range(len(prompt) - 1, cached, -1) if prompt[i] == self._turn), 0)
+        return 0 if any(begin < at < stop for begin, stop in blocks) else at
+
+    def prefix_cache_stats(self):
+        """Report real dense kept-prompt counts; no invented tensor byte bound."""
         with self._prefix_lock:
-            hit = self._prefix
-            if hit is None or hit.media != media:
+            try:
+                prefix = self._prefix
+                return {"entries": int(prefix is not None), "capacity": 1, "max_entries": 1,
+                        "tokens": 0 if prefix is None else len(prefix.tokens), "slots": None,
+                        "bytes": None, "byte_budget": None,
+                        "store_schema": "gemma-dense-turn-checkpoints-v1",
+                        "scope": "retained dense prompt checkpoints; payload/allocator bytes not reported"}
+            except BaseException as primary:
+                self._prefix_error = primary
+                raise
+
+    def _retire_dense_stream(self):
+        """Caller owns the lane; the first uncertain retirement is terminal."""
+        failure = getattr(self, "_retirement_failure", None)
+        if failure is not None:
+            raise RuntimeError("dense Gemma stream retirement is uncertain") from failure
+        try:
+            self._stream.synchronize()
+        except BaseException as primary:
+            self._retirement_failure = primary
+            raise
+
+    def drain(self):
+        if self._owner == threading.get_ident():
+            raise RuntimeError("cannot drain dense Gemma from its active request callback")
+        with self._run_lock:
+            self._retire_dense_stream()
+
+    def clear_prefix_cache(self):
+        if self._owner == threading.get_ident():
+            raise RuntimeError("cannot clear dense Gemma cache from its active request callback")
+        with self._run_lock:
+            self._check_open()
+            self._retire_dense_stream()
+            with self._prefix_lock:
+                self._prefix = None
+
+    def prefix_cache_identity(self, tokens, media=()):
+        raise ValueError("canonical block-cache identity is unavailable for the dense Gemma checkpoint profile")
+
+    def _find_prefix(self, prompt, media, *, blocks=()):
+        try:
+            boundaries = set(prefill_boundaries(prompt, self._turn, self.prefill_rows, blocks=blocks))
+            with self._prefix_lock:
+                hit = self._prefix
+                if hit is None or hit.media != media:
+                    return None
+                for checkpoint in reversed(hit.checkpoints):
+                    position = checkpoint.position
+                    if (position in boundaries and position <= len(prompt)
+                            and (position < len(prompt) or checkpoint.logits is not None)
+                            and tuple(prompt[:position]) == hit.tokens[:position]):
+                        return checkpoint
                 return None
-            for checkpoint in reversed(hit.checkpoints):
-                position = checkpoint.position
-                if (position in boundaries and position <= len(prompt)
-                        and (position < len(prompt) or checkpoint.logits is not None)
-                        and tuple(prompt[:position]) == hit.tokens[:position]):
-                    return checkpoint
-            return None
+        except BaseException as primary:
+            self._prefix_error = primary
+            raise
 
     def _prefill(self, prompt, vision, progress, started, *, cache_prompt=True):
         identity = self._media_identity(vision)
@@ -491,6 +587,9 @@ class E2BEngine(Gemma4Engine):
 
     def close(self):
         super().close()
+        with self._prefix_lock:
+            self._prefix = None
+            self._prefix_error = None
         with self._run_lock:
             if self._disposed:
                 return
