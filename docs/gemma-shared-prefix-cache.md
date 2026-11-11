@@ -272,3 +272,59 @@ reviewed. The authorized model order is baseline A1, candidate B, baseline A2,
 with one model/context at a time and unchanged native context, winning DFlash
 profile, byte allowance and host/GPU limits. Actual results must close these
 model gates before public candidate promotion.
+
+
+## Target findings and complete-frontier retention
+
+The `15893f8a` cancellation revision passed actual GB10 decode and prefill
+cancellation, consumed recovery and strict zero-obligation checks. After six
+decode tokens, and after 1024 of 65536 prefill tokens, native pins, pending
+batches, temporary credit and metadata owners reached zero. Cancellation alone
+now retires through a real fence after the producer stops; ordinary requests do
+not acquire that fence. Failed native retirement remains sticky with its pins
+retained. The original failed receipt remains recoverable.
+
+That revision completed one native-capacity cell: 262128 input tokens, `READY`,
+two accepted output tokens and ordinary EOS. It took 775.02 seconds: 385.80
+seconds of prefill and 388.61 seconds of publication. Publication reported no
+matched prefix and recomputed all 262130 canonical rows. Only one of eight
+capacity cells completed; the repeat was halted without a result, and timing
+and A2 remained unrun. This is capacity evidence for that cell, not a completed
+native gate or acceptable performance.
+
+The retained cache contained about 12.59 GB and had evicted required full-history
+groups while retaining later sliding-history groups. Independent physical-owner
+geometry showed that the latest complete frontier required about 4.45 GB under
+the unchanged 12.67 GB allowance; all historical cuts required about 63.22 GB.
+The missing current frontier was therefore a dependency-retention defect, not
+proof that its necessary state could not fit.
+
+The next revision configures the actual full/window/endpoint requirements and
+funds frontier descriptors and group memberships from byte credit. Soft
+retention is separate from active reader pins. Pressure removes surplus first,
+then relinquishes whole inactive frontiers; shared dependencies are retained
+once. A provisional frontier protects data through an atomic media span without
+making an interior cut reusable. Interrupted provisional frontiers yield before
+valuable complete ones after real pins retire. Branch, abort, failed cleanup,
+container growth and early configured-budget checks remain mandatory.
+
+Final source controls passed 191 tests and 22 subtests. Bounded CPU controls also
+preserved both the latest frontier and the original 262128-token endpoint after
+separate additions of two and sixteen rows. The original endpoint has some
+resident groups without soft retention: its immediate hit is verified, not a
+promise against arbitrary future pressure.
+
+Two paired valid CPU metadata comparisons measured incremental maintenance at
+10.93/11.08 seconds versus optimized reconstruction at 16.10/14.73 seconds with
+identical coverage, owner oracle and accounting. Final-source sanity measured
+11.53 seconds. These are CPU metadata results; they do not establish GPU,
+complete-serving or general performance superiority. Immutable reference modules
+are test evidence, not alternate shipping modes.
+
+The derived source is `2f63c731`; only the four held runtime files and declared
+test closure change over `15893f8a`. App cancellation cleanup, all 102 native
+files, SDK, checkpoint, drafter, profile, context and byte allowance remain
+unchanged. The exact runtime image starts `6619cadc` and verification image
+`0eda4b55`. Installed checks and a fresh full affected model sweep must qualify
+this revision. Earlier core/protocol/media/cancellation passes remain bound to
+their own images. Production still uses the original four-entry snapshot image.
