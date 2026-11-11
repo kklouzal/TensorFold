@@ -163,6 +163,36 @@ def companion_kind(directory):
     return 'dflash'  # existing strict DFlash metadata reader refuses other schemas
 
 
+
+def archive_retention_charge(model_dir, drafter_dir=None):
+    """Price the actual profile's group names without importing Torch.
+
+    The authoritative Core price depends on names/end-group, not window
+    extents. Unit extent1 represents a present window for pricing only; the
+    Archive configures the actual allocated ring extents once constructed.
+    """
+    from tensorfold.checkpoint_metadata import read_config
+    from tensorfold.engine.prefix_blocks import retention_config_charge
+    from .weights import Config
+    cfg = Config.from_dict(read_config(model_dir))
+    windows = {}
+    if any(not cfg.sliding(i) for i in range(cfg.layers)):
+        windows['target_full'] = None
+    if any(cfg.sliding(i) for i in range(cfg.layers)):
+        windows['target_window'] = 1
+    if drafter_dir is not None:
+        if companion_kind(drafter_dir) == 'sparkulator':
+            windows['hidden'] = 1
+        else:
+            from ..dflash_metadata import DraftConfig
+            draft = DraftConfig.from_dict(read_config(drafter_dir))
+            if 'full_attention' in draft.layer_types:
+                windows['draft_full'] = None
+            if 'sliding_attention' in draft.layer_types:
+                windows['draft_window'] = 1
+    return retention_config_charge(windows, require_end_group='hidden')
+
+
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
           max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False, dflash_graph=False, dflash_head_native_a8=False, dflash_head_w4a16=False, prefix_cache_bytes=None):
     if prefix_cache_bytes is not None and (type(prefix_cache_bytes) is not int or not 0 <= prefix_cache_bytes <= sys.maxsize):
@@ -170,6 +200,7 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     if prefix_cache_bytes is not None and prefix_cache_bytes > 0:
         from tensorfold.engine.prefix_blocks import validate_prefix_budget
         validate_prefix_budget(prefix_cache_bytes)
+        validate_prefix_budget(prefix_cache_bytes, retention_bytes=archive_retention_charge(model_dir, drafter_dir))
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method

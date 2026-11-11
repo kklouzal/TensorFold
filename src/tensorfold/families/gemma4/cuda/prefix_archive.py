@@ -196,10 +196,13 @@ class GemmaPrefixArchive:
             self.draft_bytes = {}
         if self.spark:
             self.windows['hidden'] = 1  # companion bridge needs final hidden even at a partial hit
+        self.store.configure_retention(self.windows, require_end_group='hidden')
         self.hidden_width = engine.target.config.hidden
         self._last = {'requested_tokens': 0, 'matched_tokens': 0, 'materialized_tokens': 0}
 
     def check_live(self):
+        if self.failure is None and self.store._failure is not None:
+            self.failure = self.store._failure
         if self.failure is not None:
             raise RuntimeError('Gemma shared prefix archive failed; retain its owners') from self.failure
         if self.closed:
@@ -334,7 +337,8 @@ class GemmaPrefixArchive:
         try:
             work.__init__(self, prompt, output_rows)
             return work
-        except PrefixCapacity:
+        except PrefixCapacity as primary:
+            self._capacity_declined(primary)
             if work.errors[0] is not None:
                 raise  # expected refusal cannot hide a required cleanup failure
             return None  # valid generation, explicit optional nonpublication
@@ -449,11 +453,20 @@ class GemmaPrefixArchive:
                 self.failure = primary
             raise
 
+    def _capacity_declined(self, primary):
+        # A capacity primary with failed cleanup is retained by Core poison;
+        # it must never be converted to an ordinary optional-cache miss.
+        if self.store._failure is not None:
+            if self.failure is None:
+                self.failure = self.store._failure
+            raise primary
+
     def _credit(self, acquire):
         while True:
             try:
                 return acquire()
-            except PrefixCapacity:
+            except PrefixCapacity as primary:
+                self._capacity_declined(primary)
                 # Backpressure only on this archive's actually accepted GPU
                 # consumers, never on frontend owners that need this lane.
                 if not self._wait_oldest():
@@ -482,7 +495,8 @@ class GemmaPrefixArchive:
         batches = -(-(stop - start) // limit)
         try:
             pending = self._credit(lambda: self._journal(1 + 6 * batches, self._scratch(limit)))
-        except PrefixCapacity:
+        except PrefixCapacity as primary:
+            self._capacity_declined(primary)
             return False
         complete, data, writer = True, None, None
         try:
@@ -505,9 +519,12 @@ class GemmaPrefixArchive:
                             slot += 1
                             del missing[group]
                     if not missing:
+                        self.store.retain_frontier(tokens, end, tags=tags)
                         continue
-                    writer = self._credit(lambda: self.store.begin(tokens, begin, end, missing, tags=tags))
-                except PrefixCapacity:
+                    writer = self._credit(lambda: self.store.begin(tokens, begin, end, missing, tags=tags,
+                                                                 retain_frontier=True))
+                except PrefixCapacity as primary:
+                    self._capacity_declined(primary)
                     complete = False
                     break  # no current-batch producer effects were accepted
                 pending.leases[slot] = writer
@@ -547,7 +564,8 @@ class GemmaPrefixArchive:
             # Physical producer groups may contain1024 rows even though radix
             # labels have64 rows. Fund the actual largest import index batch.
             pending = self._credit(lambda: self._journal(2, self._scratch(min(self.state.rows, 1024))))
-        except PrefixCapacity:
+        except PrefixCapacity as primary:
+            self._capacity_declined(primary)
             self.state.reset()
             if self.draft is not None:
                 self.draft.reset()
@@ -555,7 +573,8 @@ class GemmaPrefixArchive:
         try:
             try:
                 read = self.store.match(tokens, self.windows, tags=self.tags(prepared_media))
-            except PrefixCapacity:
+            except PrefixCapacity as primary:
+                self._capacity_declined(primary)
                 # Lookup metadata/read pins are optional, just like capture
                 # payload. No native restore was accepted at this boundary.
                 self._no_effects(pending)

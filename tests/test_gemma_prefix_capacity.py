@@ -24,6 +24,13 @@ def valid_credit(extra=1):
     return minimum+extra
 
 
+def profile_credit(extra=1):
+    # Configured Gemma archives additionally own their actual group-policy
+    # metadata. Keep the generic empty-store boundary tests separate below.
+    from tensorfold.engine.prefix_blocks import retention_config_charge
+    return valid_credit(0) + retention_config_charge({'target_full': None, 'target_window': 1}) + extra
+
+
 @pytest.fixture
 def scenario(monkeypatch, tmp_path):
     raw = tiny_config()
@@ -99,14 +106,14 @@ def test_explicit_small_and_above_legacy_grants_count_once_without_context_clamp
     credit = default['prefix_cache_default_bytes']*7+17
     zero = capacity.admit(path,None,False,keep=3,prefix_cache_bytes=0)
     large = capacity.admit(path,None,False,keep=3,prefix_cache_bytes=credit)
-    small = capacity.admit(path,128,False,streams=2,keep=3,prefix_cache_bytes=valid_credit(7))
+    small = capacity.admit(path,128,False,streams=2,keep=3,prefix_cache_bytes=profile_credit(7))
     small_zero = capacity.admit(path,128,False,streams=2,keep=3,prefix_cache_bytes=0)
     assert calls[0]['context'] is None and calls[0]['explicit'] is False
     assert calls[1]['context']==raw['text_config']['max_position_embeddings'] and calls[1]['explicit'] is True
     assert large['prefix_cache_bytes']==credit>large['prefix_cache_default_bytes']
     for at in (64,128,256):
         assert large['geometry'].needed(at)-zero['geometry'].needed(at)==credit
-        assert small['geometry'].needed(at)-small_zero['geometry'].needed(at)==valid_credit(7)
+        assert small['geometry'].needed(at)-small_zero['geometry'].needed(at)==profile_credit(7)
     assert large['context_window']==256 and small['context_window']==128
 
 
@@ -145,27 +152,27 @@ def test_spark_live_is_independent_and_snapshot_archive_counts_once(scenario,mon
     cfg = inventory(raw)[0]
     base = capacity.admit(path,32768,True,drafter_dir=directory,streams=2,keep=3)
     zero = capacity.admit(path,32768,True,drafter_dir=directory,streams=2,keep=3,prefix_cache_bytes=0)
-    custom = capacity.admit(path,32768,True,drafter_dir=directory,streams=2,keep=3,prefix_cache_bytes=valid_credit(1234))
+    custom = capacity.admit(path,32768,True,drafter_dir=directory,streams=2,keep=3,prefix_cache_bytes=profile_credit(1234))
     for at in (8192,32768,262144):
         expected = 3*(state.capacity_bytes(cfg,at,1024)+spark.snapshot_bytes(at))
         assert base['geometry'].needed(at)-zero['geometry'].needed(at)==expected
-        assert custom['geometry'].needed(at)-zero['geometry'].needed(at)==valid_credit(1234)
+        assert custom['geometry'].needed(at)-zero['geometry'].needed(at)==profile_credit(1234)
     assert base['prefix_cache_default_bytes']==3*(state.capacity_bytes(cfg,32768,1024)+spark.snapshot_bytes(32768))
-    assert custom['prefix_cache_bytes']==valid_credit(1234) and custom['context_window']==32768
+    assert custom['prefix_cache_bytes']==profile_credit(1234) and custom['context_window']==32768
     assert base['weights']==zero['weights']==custom['weights']
 
 
 @pytest.mark.parametrize("requested_context",[None,0])
 def test_real_common_scalar_planner_rejects_unfit_credit_instead_of_shortening(scenario,requested_context):
     _,selected,calls,path,_ = scenario
-    probe = capacity.admit(path,None,False,prefix_cache_bytes=valid_credit(1000))
+    probe = capacity.admit(path,None,False,prefix_cache_bytes=profile_credit(1000))
     call = calls[-1]
     selected['budget'] = max(call['weights'].resident+call['weights'].staging,
                             call['weights'].resident+probe['geometry'].needed(128)+call['device_workspace'])
     with pytest.raises(ValueError,match='requested context 256'):
-        capacity.admit(path,requested_context,False,prefix_cache_bytes=valid_credit(1000))
+        capacity.admit(path,requested_context,False,prefix_cache_bytes=profile_credit(1000))
     assert calls[-1]['context']==256 and calls[-1]['explicit'] is True
-    fitted = capacity.admit(path,128,False,prefix_cache_bytes=valid_credit(1000))
+    fitted = capacity.admit(path,128,False,prefix_cache_bytes=profile_credit(1000))
     assert fitted['context_window']==128
     auto = capacity.admit(path,None,False)
     assert 0<auto['context_window']<256
@@ -193,9 +200,9 @@ def test_unconstructible_positive_credit_is_refused_before_torch(monkeypatch,whi
         capacity.admit(Path('/never-open'),None,None,prefix_cache_bytes=credit)
 
 
-def test_smallest_constructible_credit_reaches_real_header_geometry(scenario):
+def test_smallest_configured_profile_credit_reaches_real_header_geometry(scenario):
     _,_,calls,path,_ = scenario
-    credit = valid_credit()
+    credit = profile_credit()
     result = capacity.admit(path,128,True,prefix_cache_bytes=credit)
     assert result['prefix_cache_bytes']==credit and result['context_window']==128
     assert calls[-1]['context']==128 and calls[-1]['explicit'] is True

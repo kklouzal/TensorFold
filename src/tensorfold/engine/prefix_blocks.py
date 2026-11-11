@@ -14,23 +14,40 @@ from dataclasses import dataclass
 import threading
 import heapq
 import sys
+from collections import deque
 from bisect import bisect_right, bisect_left
 from tensorfold.cleanup import raise_failures
 
-EVICTION_POLICY = "complete-prefix-availability-aging-bytes-tiebreak-v2"
+EVICTION_POLICY = "complete-frontier-surplus-aging-bytes-v3"
+
+_FRONTIER = 2048
 
 _BASE, _NODE, _TOKEN, _VIEW, _RECORD, _GROUP, _LEASE, _SPAN = 18432, 1024, 48, 256, 512, 512, 512, 512
 
 
-def validate_prefix_budget(budget_bytes):
+def validate_prefix_budget(budget_bytes, *, retention_bytes=0):
     """Validate the existing positive store domain without allocating a store.
 
     Zero disables an archive at its owning admission boundary; it is not a
     constructible empty-index budget. This single rule governs all callers.
     """
-    if type(budget_bytes) is not int or budget_bytes <= _BASE + _NODE:
+    if type(retention_bytes) is not int or retention_bytes < 0:
+        raise ValueError('retention configuration bytes must be nonnegative native integers')
+    if (type(budget_bytes) is not int or budget_bytes <= _BASE + _NODE
+            or budget_bytes < _BASE + _NODE + retention_bytes):
         raise ValueError('positive budget must fund the empty index metadata')
     return budget_bytes
+
+
+def retention_config_charge(windows, *, require_end_group='hidden'):
+    """Validate and price adapter requirements without importing a runtime."""
+    if (type(windows) is not dict or not windows
+            or any(type(n) is not str or not n or (w is not None and (type(w) is not int or w <= 0))
+                   for n,w in windows.items())
+            or type(require_end_group) is not str or not require_end_group
+            or require_end_group in windows and windows[require_end_group] != 1):
+        raise ValueError('explicit full/window/endpoint requirements required')
+    return _FRONTIER + sum(128+4*len(n) for n in windows) + 128+4*len(require_end_group)
 
 
 @dataclass(slots=True)
@@ -68,6 +85,7 @@ class _Group:
     window: bool = False
     benefit: int = 1
     fanout: int = 1
+    retained: int = 0
 
 
 @dataclass(slots=True, eq=False)
@@ -78,6 +96,18 @@ class _Record:
     tags: tuple
     tag_bytes: int
     node: object = None
+
+
+@dataclass(slots=True, eq=False)
+class _Frontier:
+    node: object
+    cut: int
+    tags: tuple
+    groups: dict
+    charge: int
+    used: int
+    pending: bool = True
+    provisional: bool = False
 
 
 def _identity_charge(value, budget):
@@ -188,7 +218,7 @@ class TemporaryLease:
 
 
 class WriteLease:
-    __slots__ = ('_store', '_record', '_closed', '_committed', '_incoming', '_registered', '_charged', '_retire_failure')
+    __slots__ = ('_store', '_record', '_closed', '_committed', '_incoming', '_registered', '_charged', '_retire_failure', '_frontier')
 
     def __init__(self, store, record):
         self._store, self._record = store, record
@@ -196,6 +226,7 @@ class WriteLease:
         self._incoming = None
         self._registered = self._charged = False
         self._retire_failure = None
+        self._frontier = None
 
     def commit(self, data_by_group):
         """Publish all declared groups atomically; writer ownership remains."""
@@ -214,6 +245,10 @@ class WriteLease:
                     group.data = data_by_group[name]
                 for group in self._record.groups.values():
                     group.published = True
+                if self._frontier is not None:
+                    self._frontier.pending = False
+                    self._frontier.node = self._record.node
+                    self._frontier.used = self._store._clock
                 # A full prefix component supports all current descendants;
                 # charge its value by the longest published dependent frontier.
                 node = self._record.node
@@ -250,7 +285,7 @@ class WriteLease:
                 self._store._charged = charged
                 self._registered = self._charged = False
                 self._closed = True
-                self._incoming = self._record = None
+                self._incoming = self._record = self._frontier = None
             except BaseException as primary:
                 self._retire_failure = primary
                 self._store._poison(primary)
@@ -268,6 +303,9 @@ class WriteLease:
             if any(g.pins != 1 for g in self._record.groups.values()):
                 raise RuntimeError('published writer still has live readers')
             try:
+                if not self._committed and self._frontier is not None:
+                    self._store._release_frontier(self._frontier)
+                    self._frontier = None
                 if self._charged:
                     self._store._discard(self._record)
                     self._store._charged -= _LEASE
@@ -278,7 +316,7 @@ class WriteLease:
                     self._store._writers.remove(self)
                     self._registered = False
                 self._closed = True
-                self._incoming = self._record = None
+                self._incoming = self._record = self._frontier = None
             except BaseException as primary:
                 self._retire_failure = primary
                 self._store._poison(primary)
@@ -369,6 +407,10 @@ class PrefixBlocks:
         self._cursor = None
         self._path_cache = None
         self._path_charge = 0
+        self._retention_windows = None
+        self._retention_charge = 0
+        self._frontiers = []
+        self._frontier_work = 0
 
     def _healthy(self):
         if self._closed:
@@ -423,6 +465,18 @@ class PrefixBlocks:
                 node.parent = None
 
     def _discard(self, record):
+        # A committed producer can be positively aborted after another branch
+        # has borrowed its published groups. Invalidate every affected soft
+        # closure before releasing those owners, not merely the producer's
+        # original descriptor (which a later append may already have reused).
+        index = 0
+        while index < len(self._frontiers):
+            frontier = self._frontiers[index]
+            if any(group in record.groups.values()
+                   for rows in frontier.groups.values() for group,_lo,_hi in rows):
+                self._release_frontier(frontier)
+            else:
+                index += 1
         if record in self._records:
             self._records.remove(record)
         self._charged -= _RECORD + record.tag_bytes + sum(_GROUP+4*len(n)+g.nbytes for n,g in record.groups.items())
@@ -431,6 +485,231 @@ class PrefixBlocks:
         record.groups.clear()
         record.node = None
         self._prune()
+
+    def configure_retention(self, windows, *, require_end_group='hidden'):
+        """Install the adapter's exact row requirements before any publication."""
+        with self._lock:
+            self._healthy()
+            if self._retention_windows is not None or self._records or self._writers:
+                raise RuntimeError('retention must be configured once before writes')
+            charge = retention_config_charge(windows,require_end_group=require_end_group)
+            self._ensure(charge)
+            owned = dict(windows)
+            charged = self._charged + charge
+            self._retention_windows = owned
+            self._retention_end = require_end_group
+            self._retention_charge = charge
+            self._charged = charged
+
+    def _release_frontier(self, frontier):
+        try:
+            self._release_frontier_impl(frontier)
+        except BaseException as error:
+            self._poison(error)
+            raise
+
+    def _raise_frontier_cleanup(self, primary, cleanup):
+        self._poison(primary if primary is not None else cleanup)
+        if primary is None:
+            raise cleanup
+        try:
+            raise_failures(primary, (cleanup,))
+        except BaseException as retained:
+            # Expected-capacity handlers must never swallow torn cleanup.
+            # Keep the original primary and cleanup in their native chain.
+            raise RuntimeError('prefix frontier cleanup failed; store is poisoned') from retained
+
+    def _release_after_failure(self, frontier, primary):
+        try:
+            self._release_frontier(frontier)
+        except BaseException as cleanup:
+            self._raise_frontier_cleanup(primary,cleanup)
+
+    def _release_frontier_impl(self, frontier):
+        if frontier not in self._frontiers:
+            return
+        for rows in frontier.groups.values():
+            for group,_lo,_hi in rows:
+                group.retained -= 1
+                self._frontier_work += 1
+        self._frontiers.remove(frontier)
+        self._charged -= frontier.charge
+        frontier.groups.clear()
+        frontier.node = None
+
+    def _prepare_frontier(self, tokens, start, stop, incoming, tags):
+        try:
+            return self._prepare_frontier_impl(tokens,start,stop,incoming,tags)
+        except PrefixCapacity:
+            raise
+        except BaseException as error:
+            self._poison(error)
+            raise
+
+    def _prepare_frontier_impl(self, tokens, start, stop, incoming, tags):
+        """Protect prospective existing dependencies before producer effects.
+
+        Monotonic append updates membership deques incrementally. Only forks
+        and independent range publication reconstruct authoritative coverage.
+        Aborting an advance discards its descriptor; it never resurrects an
+        old cut whose inactive payload admission may already have evicted.
+        """
+        if self._retention_windows is None:
+            raise RuntimeError('retention requires configured row requirements')
+        required = dict(self._retention_windows)
+        required[self._retention_end] = 1
+        provisional = any(begin < stop < end for begin,end,_identity in tags)
+        cursor = self._cursor if tokens is self._validated_tokens else None
+        if cursor is None or cursor.depth != start:
+            prefix_path,matched = self._path(tokens,start)
+            cursor = (prefix_path[-1][0] if prefix_path and matched == start
+                      and prefix_path[-1][0].depth == start else None)
+        old = next((f for f in self._frontiers if not f.pending and f.node is cursor
+                    and f.cut == start and _tags_equal(f.tags,_tag_prefix(tags,start))),None) if cursor is not None else None
+        if old is not None and all(n in incoming for n in required):
+            old.pending = True
+            for name,window in required.items():
+                rows = old.groups[name]
+                begin = 0 if window is None else max(0,stop-window)
+                while rows and rows[0][2] <= begin:
+                    group,_lo,_hi = rows.popleft()
+                    group.retained -= 1
+                    old.charge -= _SPAN
+                    self._charged -= _SPAN
+                    self._frontier_work += 1
+            new_tags = _tag_prefix(tags,stop)
+            tag_delta = _tags(new_tags,len(tokens),self.budget_bytes)-_tags(old.tags,len(tokens),self.budget_bytes)
+            old.cut,old.tags,old.provisional = stop,new_tags,provisional
+            try:
+                extra = _SPAN*len(required)+max(0,tag_delta)
+                self._ensure(extra)
+                old.charge += extra
+                self._charged += extra
+                return old,required
+            except PrefixCapacity as primary:
+                self._release_after_failure(old,primary)
+                raise
+            except BaseException as error:
+                self._poison(error)
+                raise
+        tag_charge = _tags(_tag_prefix(tags,stop),len(tokens),self.budget_bytes)
+        scratch = (_FRONTIER + 1024*len(required) + tag_charge
+                   + _SPAN*(len(incoming)+sum(len(r.groups) for r in self._records)
+                            + sum(len(n.views) for n in self._nodes())))
+        temporary = self.reserve_temporary(scratch)
+        primary = None
+        try:
+            return self._reconstruct_frontier(tokens,start,stop,incoming,tags,required,tag_charge,provisional)
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            try:
+                temporary.close()
+            except BaseException as cleanup:
+                self._raise_frontier_cleanup(primary,cleanup)
+
+    def _reconstruct_frontier(self, tokens, start, stop, incoming, tags, required, tag_charge, provisional):
+        """Coverage construction runs entirely under its caller's scratch owner."""
+        frontier = None
+        try:
+            path,_longest = self._path(tokens,stop)
+            groups,count = {},0
+            for name,window in required.items():
+                begin = 0 if window is None else max(0,stop-window)
+                rows = self._coverage(path,name,begin,stop,tags)
+                if name in incoming:
+                    rows = self._clip(rows,begin,max(begin,start))
+                intervals = [(lo,hi) for lo,hi,_g,_offset in rows]
+                if name in incoming:
+                    intervals.append((max(begin,start),stop))
+                merged = []
+                for lo,hi in sorted(intervals):
+                    if lo >= hi:
+                        continue
+                    if merged and lo <= merged[-1][1]:
+                        merged[-1] = merged[-1][0],max(hi,merged[-1][1])
+                    else:
+                        merged.append((lo,hi))
+                if merged != [(begin,stop)]:
+                    return None,required
+                seen,owned = set(),deque()
+                for lo,hi,group,_offset in rows:
+                    if group.generation not in seen:
+                        seen.add(group.generation)
+                        owned.append((group,lo,hi))
+                groups[name] = owned
+                count += len(owned)+(name in incoming)
+            charge = _FRONTIER + 1024*len(required) + tag_charge + _SPAN*count
+            # This store's exact validated path, same call under its RLock.
+            # A borrowed tape is stable during the call, including raw lists.
+            # Admission/pruning is followed by begin's alive/depth rechecks.
+            anchor = (path[-1][0] if path and path[-1][0].alive
+                      and path[-1][0].depth == start and path[-1][1] == start else None)
+            frontier = _Frontier(anchor,stop,_tag_prefix(tags,stop),groups,charge,self._clock,
+                                 provisional=provisional)
+            charged = self._charged + charge
+            self._charged = charged
+            self._frontiers.append(frontier)
+            for rows in groups.values():
+                for group,_lo,_hi in rows:
+                    group.retained += 1
+                    self._frontier_work += 1
+            path_nodes = {n for n,_matched in path}
+            for previous in tuple(self._frontiers):
+                if (previous is not frontier and not previous.pending and previous.node in path_nodes
+                        and previous.cut <= stop and _tags_equal(previous.tags,_tag_prefix(tags,previous.cut))):
+                    self._release_frontier(previous)
+            self._ensure(0)
+            return frontier,required
+        except PrefixCapacity as primary:
+            if frontier is not None:
+                self._release_after_failure(frontier,primary)
+            raise
+        except BaseException as error:
+            self._poison(error)
+            raise
+
+
+    def retain_frontier(self, tokens, stop, *, tags=()):
+        """Retain resident policy dependencies; return legal-cut availability.
+
+        Atomic-interior dependencies may be provisionally protected, but False
+        is returned and lookup continues to forbid restoration at that cut.
+        """
+        with self._lock:
+            self._healthy()
+            self._validate_tokens(tokens)
+            _tags(tags,len(tokens),self.budget_bytes)
+            if type(stop) is not int or not 0 < stop <= len(tokens):
+                raise ValueError('bounded positive frontier required')
+            for existing in self._frontiers:
+                if (not existing.pending and existing.cut == stop
+                        and existing.node is self._cursor and _tags_equal(existing.tags,_tag_prefix(tags,stop))):
+                    existing.used = self._clock
+                    return not existing.provisional
+            frontier = None
+            try:
+                frontier,_required = self._prepare_frontier(tokens,stop,stop,{},tags)
+                if frontier is None:
+                    return False
+                path,_longest = self._path(tokens,stop)
+                frontier.node = next((n for n,_matched in reversed(path) if n.depth == stop),None)
+                if frontier.node is None:
+                    # An interior resident cut may require a radix split.
+                    # Price that structural mutation before changing the tree.
+                    self._ensure(self._write_charge(tokens,stop-1,stop,{},0))
+                    frontier.node = self._insert(tokens,stop)
+                frontier.pending = False
+                frontier.used = self._clock
+                return not frontier.provisional
+            except PrefixCapacity as primary:
+                if frontier is not None:
+                    self._release_after_failure(frontier,primary)
+                raise
+            except BaseException as error:
+                self._poison(error)
+                raise
 
     def _ensure(self, extra):
         if type(extra) is not int or extra < 0:
@@ -449,12 +728,26 @@ class PrefixBlocks:
                 best = None
                 for record in self._records:
                     for name, group in record.groups.items():
-                        if group.published and group.pins == 0:
+                        if group.published and group.pins == 0 and group.retained == 0:
                             key = (group.used+group.benefit*group.fanout, -group.nbytes,
                                    0 if group.window else 1 if name == 'hidden' else 2, group.generation)
                             if best is None or key < best[0]:
                                 best = key, record, name
                 if best is None:
+                    frontier = min((f for f in self._frontiers if not f.pending
+                                    and any(g.pins == 0 for rows in f.groups.values() for g,_lo,_hi in rows)),
+                                   key=lambda f:(0 if f.provisional else 1,
+                                                 f.used+f.cut*max(1,len(f.node.children) if f.node is not None else 1),
+                                                 -sum(g.nbytes for rows in f.groups.values() for g,_lo,_hi in rows
+                                                      if g.retained == 1 and g.pins == 0),f.cut),default=None)
+                    if frontier is not None:
+                        # An unfinished atomic cut is not usable saved work.
+                        # Relinquish its soft policy first; actual live pins
+                        # still prevent physical owner eviction below.
+                        if not frontier.provisional:
+                            self._clock = max(self._clock,frontier.used+frontier.cut)
+                        self._release_frontier(frontier)
+                        continue
                     record = group = None
                     raise PrefixCapacity('all remaining bytes are pinned, reserved or required metadata')
                 key, record, name = best
@@ -518,10 +811,11 @@ class PrefixBlocks:
             node, at = child, child.depth
         return node
 
-    def _write_charge(self, tokens, start, stop, group_bytes, tag_bytes):
+    def _write_charge(self, tokens, start, stop, group_bytes, tag_bytes, *, frontier_cursor=None):
         fixed = _RECORD+_LEASE+tag_bytes+sum(_GROUP+4*len(k)+v for k,v in group_bytes.items())
-        cursor = self._cursor
-        if (tokens is self._validated_tokens and cursor is not None and cursor.alive and cursor.depth == start
+        cursor = frontier_cursor if frontier_cursor is not None else self._cursor
+        if ((frontier_cursor is not None or tokens is self._validated_tokens)
+                and cursor is not None and cursor.alive and cursor.depth == start
                 and not cursor.children.get(tokens[start])):
             nodes = (stop-start+self.block_tokens-1)//self.block_tokens
             return fixed+_TOKEN*(stop-start)+nodes*(_NODE+_VIEW)+2*sys.getsizeof(cursor.children)+256
@@ -535,7 +829,7 @@ class PrefixBlocks:
                 +_VIEW*(existing+sum(len(node.views) for node in splits))
                 +2*max((sys.getsizeof(node.children) for node,_matched in path),default=64)+256)
 
-    def begin(self, tokens, start, stop, group_bytes, *, tags=()):
+    def begin(self, tokens, start, stop, group_bytes, *, tags=(), retain_frontier=False):
         with self._lock:
             self._healthy()
             self._validate_tokens(tokens)
@@ -545,36 +839,62 @@ class PrefixBlocks:
                 raise ValueError('bounded nonempty writer interval/groups required')
             if any(type(k) is not str or not k or type(v) is not int or v <= 0 or v > self.budget_bytes for k, v in group_bytes.items()):
                 raise ValueError('group names and exact positive storage byte charges required')
-            # Recompute after eviction: pruning may change the new-label
-            # obligation. No producer effects are possible before begin returns.
             if self._serial > (1 << 63)-1-len(group_bytes):
                 raise PrefixCapacity('process-local payload generation exhausted')
-            while True:
-                obligation = self._write_charge(tokens,start,stop,group_bytes,tag_bytes)
-                if self._used()+obligation <= self.budget_bytes:
-                    break
-                self._ensure(obligation)
-            record = _Record(start, stop, {}, _tag_prefix(tags, stop), tag_bytes)
-            for name, nbytes in group_bytes.items():
-                self._serial += 1
-                record.groups[name] = _Group(name, nbytes, self._serial, used=self._clock,
-                                             window=name == "window" or name.endswith("_window"),
-                                             benefit=stop)
-            cleanup_errors = [None, None]
-            cleanup_view = filter(lambda value: value is not None, cleanup_errors)
-            writer = WriteLease(self, record)
-            charge = _RECORD + _LEASE + tag_bytes + sum(_GROUP+4*len(n)+g.nbytes for n,g in record.groups.items())
+            if type(retain_frontier) is not bool:
+                raise TypeError('retain_frontier must be a bool')
+            frontier,requirements = (self._prepare_frontier(tokens,start,stop,group_bytes,tags)
+                                     if retain_frontier else (None,None))
+            # Recompute after eviction: pruning may change the new-label
+            # obligation. No producer effects are possible before begin returns.
+            try:
+                while True:
+                    obligation = self._write_charge(tokens,start,stop,group_bytes,tag_bytes,
+                                                    frontier_cursor=frontier.node if frontier is not None else None)
+                    if self._used()+obligation <= self.budget_bytes:
+                        break
+                    self._ensure(obligation)
+            except BaseException as primary:
+                if frontier is not None:
+                    self._release_after_failure(frontier,primary)
+                raise
+            try:
+                record = _Record(start, stop, {}, _tag_prefix(tags, stop), tag_bytes)
+                for name, nbytes in group_bytes.items():
+                    self._serial += 1
+                    record.groups[name] = _Group(name, nbytes, self._serial, used=self._clock,
+                                                 window=name == "window" or name.endswith("_window"),
+                                                 benefit=stop)
+                cleanup_errors = [None, None]
+                cleanup_view = filter(lambda value: value is not None, cleanup_errors)
+                writer = WriteLease(self, record)
+                writer._frontier = frontier
+                charge = _RECORD + _LEASE + tag_bytes + sum(_GROUP+4*len(n)+g.nbytes for n,g in record.groups.items())
+            except BaseException as error:
+                self._poison(error)
+                raise
             try:
                 self._writers.append(writer)
                 writer._registered = True
                 self._charged += charge
                 writer._charged = True
                 self._records.append(record)
-                cursor = self._cursor
-                start_node = (cursor if tokens is self._validated_tokens and cursor is not None and cursor.alive and cursor.depth == start
+                # A prospective append descriptor validated this exact prefix
+                # in this begin call. Reuse its node for mutable tapes too;
+                # there is no cross-call trust in the tape's identity.
+                cursor = frontier.node if frontier is not None else self._cursor
+                start_node = (cursor if (frontier is not None or tokens is self._validated_tokens) and cursor is not None and cursor.alive and cursor.depth == start
                               else self._insert(tokens, start))
                 node = self._insert(tokens, stop, start_node)
                 record.node = node
+                if frontier is not None:
+                    frontier.node = node
+                    for name,window in requirements.items():
+                        if name in record.groups:
+                            group = record.groups[name]
+                            group.retained += 1
+                            frontier.groups[name].append((group,start,stop))
+                            self._frontier_work += 1
                 self._cursor = node if tokens is self._validated_tokens else None
                 while node is not self._root and node.depth > start:
                     lo = max(start, node.parent.depth)
@@ -822,6 +1142,12 @@ class PrefixBlocks:
                         group.pins = count
                         group.used = self._clock
                         group.benefit = max(group.benefit,length)
+                    if span is None and self._retention_windows is not None:
+                        for frontier in self._frontiers:
+                            endpoint = frontier.groups[self._retention_end]
+                            if (not frontier.pending and frontier.cut == length and endpoint
+                                    and endpoint[-1][0] in groups):
+                                frontier.used = self._clock
                     return lease
                 except BaseException as primary:
                     self._poison(primary)
@@ -910,6 +1236,8 @@ class PrefixBlocks:
             new_root = _Node((),0,None,{},[])
             nodes = list(self._nodes())  # Prepare before the first release.
             self._drop_path()
+            for frontier in tuple(self._frontiers):
+                self._release_frontier(frontier)
             for record in self._records:
                 for group in record.groups.values():
                     group.data = None
@@ -926,7 +1254,7 @@ class PrefixBlocks:
             for event in self._history:
                 event.component = None
             self._history_next = self._history_count = 0
-            self._charged = _BASE+_NODE+sum(_LEASE+t.nbytes for t in self._temporary)
+            self._charged = _BASE+_NODE+self._retention_charge+sum(_LEASE+t.nbytes for t in self._temporary)
 
     def close(self):
         """Positive caller retirement, final data release, never reopen."""
@@ -943,7 +1271,11 @@ class PrefixBlocks:
             try:
                 groups = [g for r in self._records for g in r.groups.values()]
                 return {'budget_bytes': self.budget_bytes, 'charged_bytes': self._used(),
-                        'eviction_policy': EVICTION_POLICY,
+                        'eviction_policy': (EVICTION_POLICY if self._retention_windows is not None
+                                            else 'complete-prefix-availability-aging-bytes-tiebreak-v2'),
+                        'retained_frontiers': len(self._frontiers),
+                        'provisional_frontiers': sum(f.provisional for f in self._frontiers),
+                        'frontier_membership_work': self._frontier_work,
                         'payload_bytes': sum(g.nbytes for g in groups if g.published),
                         'reserved_payload_bytes': sum(g.nbytes for g in groups if not g.published),
                         'chunks': len(self._records),

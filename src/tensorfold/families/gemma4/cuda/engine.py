@@ -130,6 +130,10 @@ class Gemma4Engine:
         if depth is not None and (not drafter or no_drafts):
             raise ValueError("Gemma4 draft depth requires an enabled DFlash companion")
 
+        if prefix_cache_bytes:
+            from .capacity import archive_retention_charge
+            validate_prefix_budget(prefix_cache_bytes, retention_bytes=archive_retention_charge(
+                model_dir, Path(drafter) if drafter and not no_drafts else None))
         import torch
         from tensorfold.cuda.chat_template import prepare_chat_template
         from tensorfold.token_metadata import resolve_eos
