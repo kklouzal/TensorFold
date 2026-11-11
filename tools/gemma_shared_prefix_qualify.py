@@ -464,19 +464,28 @@ def run_raw(client, spec, cases):
     return {"shared_hit": branch["cached"], "continued_hit": grown["cached"]}
 
 
+
+def prefix_length(left, right):
+    count = 0
+    while count < min(len(left), len(right)) and left[count] == right[count]:
+        count += 1
+    return count
+
+
 def run_canonical(client, spec, requests):
     body = copy.deepcopy(requests["cache-A-first"])
     first = client.generate("chat-first", "/v1/chat/completions", body)
     closed = {**body, "messages": body["messages"] + [assistant(first)], "add_generation_prompt": False}
-    closed_ids = client.tokens("chat-canonical", closed)
+    chat_closed_ids = client.tokens("chat-canonical", closed)
     following = copy.deepcopy(requests["cache-A-extended"])
     following["messages"] = closed["messages"] + [following["messages"][-1]]
     next_ids = client.tokens("chat-next-authority", following)
-    require(next_ids[:len(closed_ids)] == closed_ids, "Chat canonical history is not exact prefix")
+    require(next_ids[:len(chat_closed_ids)] == chat_closed_ids, "Chat canonical history is not exact prefix")
     hit = client.generate("chat-next", "/v1/chat/completions", following)
-    client.feature(hit["cached"] >= len(closed_ids), "complete Chat canonical history not reused")
+    client.feature(hit["cached"] >= len(chat_closed_ids), "complete Chat canonical history not reused")
     repeat = client.generate("chat-next-repeat", "/v1/chat/completions", following)
     same(hit, repeat)
+    prior_none_inputs = []
     for stream in (False, True):
         call_body = {**copy.deepcopy(requests["clock-call-stream"]), "stream": stream}
         called = client.generate("tool-call-" + str(stream), "/v1/chat/completions", call_body)
@@ -486,11 +495,31 @@ def run_canonical(client, spec, requests):
         follow["stream"] = stream
         tool = {**follow["messages"][-1], "tool_call_id": calls[0]["id"]}
         follow["messages"] = call_body["messages"] + [assistant(called), tool]
+        require(follow["tool_choice"] == "none" and follow["tools"] == call_body["tools"]
+                and len(call_body["tools"]) == 1, "frozen tool-context contract differs")
         closed_tool = {**call_body, "messages": follow["messages"][:-1], "add_generation_prompt": False}
-        wanted = len(client.tokens("tool-canonical-" + str(stream), closed_tool))
-        result = client.generate("tool-follow-" + str(stream), "/v1/chat/completions", follow)
-        require("12:34" in result["message"]["content"], "tool-result content gold failed")
-        client.feature(result["cached"] >= wanted, "actual tool-call history not reused")
+        closed_ids = client.tokens("tool-canonical-" + str(stream), closed_tool)
+        none_ids = client.tokens("tool-none-authority-" + str(stream), follow)
+        incompatible = prefix_length(closed_ids, none_ids)
+        require(incompatible < len(closed_ids), "none control did not change the rendered tool context")
+        compatible = {**copy.deepcopy(follow), "tool_choice": "auto"}
+        compatible_ids = client.tokens("tool-compatible-authority-" + str(stream), compatible)
+        require(len(closed_ids) <= len(compatible_ids) and compatible_ids[:len(closed_ids)] == closed_ids,
+                "compatible follow does not contain the exact closed canonical history")
+        expected_none = max([incompatible] + [prefix_length(previous, none_ids) for previous in prior_none_inputs])
+        proof = {"closed_tokens": len(closed_ids), "none_tokens": len(none_ids),
+                 "forced_closed_vs_none_lcp": incompatible, "expected_none_cached": expected_none,
+                 "prior_none_contexts": len(prior_none_inputs), "compatible_tokens": len(compatible_ids),
+                 "compatible_closed_prefix": True}
+        client.out.save("tool-context-proof-" + str(stream) + ".json", proof)
+        none = client.generate("tool-none-follow-" + str(stream), "/v1/chat/completions", follow)
+        require("12:34" in none["message"]["content"] and none["prompt"] == len(none_ids), "none tool-result gold/usage failed")
+        client.feature(none["cached"] == expected_none, "none control did not match its actual compatible context LCP")
+        prior_none_inputs.append(none_ids)
+        result = client.generate("tool-compatible-follow-" + str(stream), "/v1/chat/completions", compatible)
+        require("12:34" in result["message"]["content"] and result["prompt"] == len(compatible_ids),
+                "compatible tool-result gold/usage failed")
+        client.feature(result["cached"] >= len(closed_ids), "actual compatible tool-call history not reused")
     for stream in (False, True):
         response_body = {**copy.deepcopy(spec["responses_body"]), "stream": stream}
         result = client.generate("response-first-" + str(stream), "/v1/responses", response_body)
@@ -505,7 +534,7 @@ def run_canonical(client, spec, requests):
         require(result["message"]["content"].strip(), "Responses followup empty")
         client.feature(published and result["cached"] >= frontier,
                        "Responses complete materialized history was not reused")
-    return {"chat_canonical_tokens": len(closed_ids)}
+    return {"chat_canonical_tokens": len(chat_closed_ids)}
 
 
 def run_retention(client, spec, cases):

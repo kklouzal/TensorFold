@@ -241,31 +241,10 @@ def test_usage_cached_bounds_are_not_silently_coerced(tmp_path, monkeypatch):
 
 
 def test_candidate_responses_header_hit_is_not_complete_history_reuse():
-    class Canonical:
-        def tokens(self, name, body):
-            return [1] * (11 if name == "chat-next-authority" else 10)
-        def feature(self, passed, name):
-            q.require(passed, name)
-        def generate(self, name, path, body):
-            calls, content = [], "same"
-            stats = {}
-            if name.startswith("tool-call"):
-                calls = [{"id": "call_actual", "type": "function",
-                          "function": {"name": "get_time", "arguments": '{"zone":"UTC"}'}}]
-                content = ""
-            if name.startswith("tool-follow"):
-                content = "12:34"
-            if name.startswith("response-first"):
-                stats = {"cache_publication": {"mode": "frontend", "complete": True, "materialized_tokens": 100}}
-            return {"message": {"content": content, "tool_calls": calls}, "finish": "stop",
-                    "tensorfold": stats, "cached": 2 if name.startswith("response-next") else 10,
-                    "response": {"id": "resp_actual"}}
-    user = {"role": "user", "content": "public"}
-    requests = {"cache-A-first": {"messages": [user]}, "cache-A-extended": {"messages": [user]},
-                "clock-call-stream": {"messages": [user]},
-                "clock-followup-stream": {"messages": [user, {"role": "tool", "content": "12:34"}]}}
+    client, spec, requests = canonical_scenario(response_cached=2)
     with pytest.raises(ValueError, match="complete materialized"):
-        q.run_canonical(Canonical(), {"responses_body": {"input": "public"}, "responses_followup": "next"}, requests)
+        q.run_canonical(client, spec, requests)
+
 
 
 @pytest.mark.parametrize("arm", ["baseline", "candidate"])
@@ -377,3 +356,81 @@ def test_boolean_tokenizer_count_cannot_masquerade_as_one_id(tmp_path, monkeypat
     monkeypatch.setattr(client, "json", lambda *args: {"count": True, "tokens": [1]})
     with pytest.raises(ValueError, match="tokenizer count"):
         client.tokens("bad", {"messages": [{"role": "user", "content": "public"}]})
+
+
+def canonical_scenario(*, response_cached=100, bad_prefix=False, auto_cached=190):
+    tools = [{"type": "function", "function": {"name": "get_time"}}]
+    class Scenario:
+        def __init__(self):
+            self.saved, self.generated = {}, []
+            self.out = SimpleNamespace(save=lambda name, value: self.saved.__setitem__(name, value))
+        def tokens(self, name, body):
+            if name == "chat-next-authority":
+                return [1] * 11
+            if name == "chat-canonical":
+                return [1] * 10
+            if name.startswith("tool-canonical"):
+                return [10] * 190
+            if name.startswith("tool-none-authority"):
+                assert body["tool_choice"] == "none"
+                return [10] * 6 + [20] * 168
+            if name.startswith("tool-compatible-authority"):
+                assert body["tool_choice"] == "auto" and body["tools"] == tools
+                return ([99] if bad_prefix else [10]) + [10] * 189 + [30] * 26
+            raise AssertionError(name)
+        def feature(self, passed, name):
+            q.require(passed, name)
+        def generate(self, name, path, body):
+            self.generated.append((name, body))
+            calls, content, stats, prompt, cached = [], "same", {}, 11, 10
+            if name.startswith("tool-call"):
+                calls = [{"id": "call_" + str(body["stream"]), "type": "function",
+                          "function": {"name": "get_time", "arguments": '{"zone":"UTC"}'}}]
+                content = ""
+            if name.startswith("tool-none-follow"):
+                content, prompt, cached = "12:34", 174, 174 if body["stream"] else 6
+            if name.startswith("tool-compatible-follow"):
+                content, prompt, cached = "12:34", 216, auto_cached
+            if name.startswith("response-first"):
+                stats = {"cache_publication": {"mode": "frontend", "complete": True, "materialized_tokens": 100}}
+            if name.startswith("response-next"):
+                cached = response_cached
+            return {"message": {"content": content, "tool_calls": calls}, "finish": "stop",
+                    "tensorfold": stats, "cached": cached, "prompt": prompt, "response": {"id": "resp_actual"}}
+    user = {"role": "user", "content": "public"}
+    requests = {"cache-A-first": {"messages": [user]}, "cache-A-extended": {"messages": [user]},
+                "clock-call-stream": {"messages": [user], "tools": tools,
+                    "tool_choice": {"type": "function", "function": {"name": "get_time"}}},
+                "clock-followup-stream": {"messages": [user, {"role": "tool", "content": "12:34"}],
+                    "tools": tools, "tool_choice": "none"}}
+    return Scenario(), {"responses_body": {"input": "public"}, "responses_followup": "next"}, requests
+
+
+def test_tool_none_miss_and_warmed_branch_are_distinguished_from_strict_compatible_reuse():
+    client, spec, requests = canonical_scenario()
+    summary = q.run_canonical(client, spec, requests)
+    assert summary["chat_canonical_tokens"] == 10
+    first, second = client.saved["tool-context-proof-False.json"], client.saved["tool-context-proof-True.json"]
+    assert first["closed_tokens"] == second["closed_tokens"] == 190
+    assert first["forced_closed_vs_none_lcp"] == second["forced_closed_vs_none_lcp"] == 6
+    assert first["expected_none_cached"] == 6 and second["expected_none_cached"] == 174
+    assert first["compatible_tokens"] == second["compatible_tokens"] == 216
+    assert requests["clock-followup-stream"]["tool_choice"] == "none"
+    none = [body for name, body in client.generated if name.startswith("tool-none-follow")]
+    auto = [body for name, body in client.generated if name.startswith("tool-compatible-follow")]
+    assert len(none) == len(auto) == 2
+    assert all(body["tool_choice"] == "none" for body in none)
+    assert all(body["tool_choice"] == "auto" and body["tools"] == requests["clock-call-stream"]["tools"] for body in auto)
+
+
+def test_incompatible_auto_ids_stop_before_any_follow_generation():
+    client, spec, requests = canonical_scenario(bad_prefix=True)
+    with pytest.raises(ValueError, match="exact closed canonical history"):
+        q.run_canonical(client, spec, requests)
+    assert not any("follow" in name for name, _ in client.generated)
+
+
+def test_compatible_cache_cut_stays_full190_not_a_lowered_threshold():
+    client, spec, requests = canonical_scenario(auto_cached=189)
+    with pytest.raises(ValueError, match="compatible tool-call history"):
+        q.run_canonical(client, spec, requests)
