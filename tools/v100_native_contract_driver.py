@@ -78,13 +78,16 @@ def validate_spec(spec):
     fields = ('schema', 'mode', 'image_id', 'source_commit', 'app_root', 'expected_app', 'sdk_manifest',
               'fd', 'torch', 'UUIDs', 'SM', 'modules', 'test_files', 'diagnostics', 'required_native_elf_prefixes')
     benchmark = type(spec) is dict and spec.get('schema') == model_contract.BENCHMARK_SCHEMA
-    model = type(spec) is dict and spec.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA)
+    prepared_teacher = type(spec) is dict and spec.get('schema') == model_contract.PREPARED_TEACHER_SCHEMA
+    contract = model_contract.prepared_teacher_contract() if prepared_teacher else model_contract
+    model = type(spec) is dict and spec.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA,
+                                                       model_contract.PREPARED_TEACHER_SCHEMA)
     if model:
         fields = tuple(key for key in fields if key not in ('modules', 'test_files')) + ('operation', 'source_files')
     if (type(spec) is not dict or set(spec) not in (set(fields), set(fields) | {'verification_launcher'})
-            or spec['schema'] != (model_contract.BENCHMARK_SCHEMA if benchmark else model_contract.SCHEMA if model else SCHEMA)):
+            or spec['schema'] != (model_contract.BENCHMARK_SCHEMA if benchmark else contract.SCHEMA if model else SCHEMA)):
         raise ValueError('unsupported or incomplete native-contract spec schema')
-    if spec['mode'] not in ((model_contract.BENCHMARK_MODE,) if benchmark else (model_contract.MODE,) if model else ('cpu', 'cuda')):
+    if spec['mode'] not in ((model_contract.BENCHMARK_MODE,) if benchmark else (contract.MODE,) if model else ('cpu', 'cuda')):
         raise ValueError('an explicit CPU or CUDA qualification route is required')
     if (not _sha(spec['source_commit'], 40) or type(spec['image_id']) is not str
             or not spec['image_id'].startswith('sha256:') or not _sha(spec['image_id'][7:])
@@ -138,8 +141,8 @@ def validate_spec(spec):
     if model:
         if len(spec['UUIDs']) != 8 or 'verification_launcher' not in spec or prefixes != model_contract.REQUIRED_PREFIXES:
             raise ValueError('first model operation requires eight ranks and owned capability/native observer contract')
-        (model_contract.validate_benchmark_operation if benchmark else model_contract.validate_operation)(spec['operation'])
-        (model_contract.validate_benchmark_sources if benchmark else model_contract.validate_sources)(spec['source_files'])
+        (model_contract.validate_benchmark_operation if benchmark else contract.validate_operation)(spec['operation'])
+        (model_contract.validate_benchmark_sources if benchmark else contract.validate_sources)(spec['source_files'])
     return spec
 
 
@@ -858,7 +861,7 @@ def _junit(path, collected, reported_subtests=0):
 def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=_helpers):
     """Execute once. Tests may inject dependencies; production has no bypass CLI."""
     validate_spec(spec)
-    if spec['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE):
+    if spec['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE, model_contract.PREPARED_TEACHER_MODE):
         return _run_model(spec, source, evidence, runtime_loader=None if runtime_loader is _load_runtime else runtime_loader,
                           helpers_loader=helpers_loader)
     if os.environ.get(CHILD_EVIDENCE_ENV):
@@ -1102,7 +1105,7 @@ def _prepare_model_frontend(operation):
     return prepare(operation['model_entrypoint'])
 
 
-def _call_owned_model(argv, *, benchmark_operation=None):
+def _call_owned_model(argv, *, benchmark_operation=None, prepared_teacher_operation=None):
     # The source root is already bound and the installed app remains separate.
     if __package__:
         from . import v100_owned_qualification
@@ -1110,6 +1113,8 @@ def _call_owned_model(argv, *, benchmark_operation=None):
         import v100_owned_qualification
     if benchmark_operation is not None:
         return v100_owned_qualification.main(argv, _benchmark_operation=benchmark_operation)
+    if prepared_teacher_operation is not None:
+        return v100_owned_qualification.main(argv, _prepared_teacher_operation=prepared_teacher_operation)
     return v100_owned_qualification.main(argv)
 
 
@@ -1357,8 +1362,10 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
     source_after_match, content_complete = False, False
     source_files, operation = spec['source_files'], spec['operation']
     benchmark = spec['mode'] == model_contract.BENCHMARK_MODE
+    prepared_teacher = spec['mode'] == model_contract.PREPARED_TEACHER_MODE
+    contract = model_contract.prepared_teacher_contract() if prepared_teacher else model_contract
     role = 'benchmark' if benchmark else 'teacher'
-    result_schema = model_contract.BENCHMARK_HOST_RESULT_SCHEMA if benchmark else model_contract.HOST_RESULT_SCHEMA
+    result_schema = model_contract.BENCHMARK_HOST_RESULT_SCHEMA if benchmark else contract.HOST_RESULT_SCHEMA
     old_path = list(sys.path)
     env_keys = (model_contract.CHILD_ENV, model_contract.DRIVER_ENV, model_contract.DRIVER_SHA_ENV,
                 model_contract.PREFIX_ENV)
@@ -1381,6 +1388,10 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
             actual = file_identity(path)
             if any(actual[key] != source_files[name][key] for key in ('bytes', 'sha256')):
                 raise RuntimeError('executing model operator source differs')
+        if prepared_teacher:
+            actual = file_identity(contract.__file__)
+            if any(actual[key] != source_files['tools/v100_onecat_combinations.py'][key] for key in ('bytes', 'sha256')):
+                raise RuntimeError('executing prepared teacher contract differs from canonical source')
         sys.path[:0] = [str(source), str(source / 'tools')]
         launch = _verification_process(spec)
         runtime = (runtime_loader or _load_model_runtime)()
@@ -1394,7 +1405,7 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
             'CUDA': runtime.torch.version.cuda, 'FD_SHA': spec['fd']['sha256'], 'FD_C': spec['fd']['source_sha256'],
             'module_origins': origins, 'parent_cuda': before_cuda, 'devices_visible': None,
             'scope': 'Parent CPU/runtime/provider prequalification; actual GPU proof belongs to eight children.'})
-        assets = (model_contract.benchmark_operation_assets if benchmark else model_contract.operation_assets)(operation)
+        assets = (model_contract.benchmark_operation_assets if benchmark else contract.operation_assets)(operation)
         output.phase('model-content-binding')
         with _held_model_assets(assets, deadline, content):
             if benchmark:
@@ -1403,14 +1414,14 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                 benchmark_binding = model_contract.validate_benchmark_operation_plan(operation, plan, client)
             else:
                 plan = _bound_model_json(operation['teacher_plan']['path'])
-                client = model_contract.validate_teacher_client(_bound_model_json(operation['teacher_client']['path']))
+                client = contract.validate_teacher_client(_bound_model_json(operation['teacher_client']['path']))
                 verified = reference = None
                 if plan.get('mode') == 'replay' and 'reference' in operation:
                     verified = _prepare_replay_plan(operation)
                     reference = _bound_model_json(operation['reference']['authority']['path'])
                     proof = operation['reference']
                     capture_host = _bound_model_json(proof['host_result']['path'])
-                    capture_inner = model_contract.validate_completed_teacher_host(capture_host,
+                    capture_inner = contract.validate_completed_teacher_host(capture_host,
                         authority_sha256=proof['authority']['sha256'], authority_bytes=proof['authority']['bytes'],
                         image_id=spec['image_id'])
                     model_contract.validate_teacher_completion(_bound_model_json(proof['completion']['path']),
@@ -1420,9 +1431,16 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                     for key in ('model_assets', 'model_entrypoint', 'frontend_assets', 'frontend_root', 'execution_manifest'):
                         if capture_inner['operation'][key] != operation[key]:
                             raise ValueError('matched reference replay model/frontend inputs differ from the capture')
+                    if prepared_teacher and (capture_inner['operation']['selector'] != contract.selectors()[0]
+                            or any(capture_inner['operation'][key] != operation[key]
+                                   for key in ('case_authority', 'prepared_execution', 'teacher_scope'))):
+                        raise ValueError('prepared replay differs from the original incumbent case/numerics')
 
-                teacher_binding = model_contract.validate_teacher_operation_plan(
-                    operation, plan, client, prepared=verified, reference=reference)
+                extra = ({'case': _bound_model_json(operation['case_authority']['path']),
+                          'profile': _bound_model_json(operation['execution_manifest']['path'], maximum=16 << 20)}
+                         if prepared_teacher else {})
+                teacher_binding = contract.validate_teacher_operation_plan(
+                    operation, plan, client, prepared=verified, reference=reference, **extra)
             if os.environ.get('TF_GGUF_ASSETS_DIR') != '/frontend':
                 raise ValueError('model operation requires separate readonly prepared frontend')
             prepared = _prepare_model_frontend(operation)
@@ -1435,7 +1453,7 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
             os.environ[model_contract.DRIVER_ENV] = str(source / 'tools/v100_native_contract_driver.py')
             os.environ[model_contract.DRIVER_SHA_ENV] = source_files['tools/v100_native_contract_driver.py']['sha256']
             os.environ[model_contract.PREFIX_ENV] = json.dumps(spec['required_native_elf_prefixes'])
-            argv = (model_contract.benchmark_qualifier_argv if benchmark else model_contract.qualifier_argv)(
+            argv = (model_contract.benchmark_qualifier_argv if benchmark else contract.qualifier_argv)(
                 operation, client, spec['UUIDs'], str(evidence / role))
             output.phase('owned-' + role + '-model')
             # One in-flight body read may outlive cooperative cancellation by
@@ -1444,7 +1462,8 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
             # Outer containment still owns uncertain acquisition.
             if time.monotonic() + client['whole_timeout_s'] + client['socket_timeout_s'] > deadline:
                 raise TimeoutError('remaining outer model budget cannot fund client whole deadline and socket tail')
-            code = (_call_owned_model(argv, benchmark_operation=operation) if benchmark else _call_owned_model(argv))
+            code = (_call_owned_model(argv, benchmark_operation=operation) if benchmark else
+                    _call_owned_model(argv, prepared_teacher_operation=operation) if prepared_teacher else _call_owned_model(argv))
             if time.monotonic() > deadline:
                 raise TimeoutError('owned teacher operation exceeded total declared work deadline')
             if type(code) is not int or code != 0:

@@ -30,6 +30,18 @@ REQUIRED_TOOLS = {'tools/v100_owned_qualification.py', 'tools/launch_cuda_tp.py'
                   'tools/v100_native_contract_driver.py', 'tools/v100_owned_model_contract.py',
                   'tools/v100_rotorquant_quality.py', 'tools/v100_rotorquant_live.py'}
 
+PREPARED_TEACHER_SCHEMA = 'tensorfold.v100-prepared-expert-teacher-operation-v1'
+PREPARED_TEACHER_MODE = 'owned-prepared-expert-teacher-model-v1'
+
+
+def prepared_teacher_contract():
+    """One fixed extension; historical v1 validators remain unchanged."""
+    if __package__:
+        from . import v100_onecat_combinations
+    else:
+        import v100_onecat_combinations
+    return v100_onecat_combinations
+
 
 def require(condition, message):
     if not condition:

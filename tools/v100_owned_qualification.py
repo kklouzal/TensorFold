@@ -2589,12 +2589,80 @@ def _model_contract():
     return v100_owned_model_contract
 
 
-def _teacher_client_input(path, teacher):
+def _teacher_client_input(path, teacher, *, prepared=False):
     raw = _teacher_module()._owned_teacher_read(path, 8 << 20)
-    spec = _model_contract().validate_teacher_client(_teacher_module()._owned_teacher_object(raw))
+    contract = _model_contract().prepared_teacher_contract() if prepared else _model_contract()
+    spec = contract.validate_teacher_client(_teacher_module()._owned_teacher_object(raw))
     if spec['teacher_plan_sha256'] != teacher['input_sha256'] or not 1 <= teacher['data']['max_frames'] <= 64:
         raise ValueError('one planned teacher client differs from its frozen plan/MAX64 region')
     return {'data': spec, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def _prepared_teacher_input(operation, teacher, plan_path):
+    """Validate the new fixed operation without changing historical reference DATA."""
+    contract = _model_contract().prepared_teacher_contract()
+    contract.validate_operation(operation)
+    if (str(plan_path.absolute()) != operation['teacher_plan']['path']
+            or teacher['input_sha256'] != operation['teacher_plan']['sha256']
+            or teacher['resources']['input_bytes'] != operation['teacher_plan']['bytes']):
+        raise ValueError('prepared teacher actual plan differs from closed operation')
+    payloads, sizes = {}, []
+    for label, maximum in (('case_authority', 8 << 20), ('execution_manifest', 16 << 20), ('teacher_client', 8 << 20)):
+        expected = operation[label]
+        raw = _teacher_module()._owned_teacher_read(expected['path'], maximum)
+        if len(raw) != expected['bytes'] or hashlib.sha256(raw).hexdigest() != expected['sha256']:
+            raise ValueError('prepared teacher held DATA differs: ' + label)
+        payloads[label] = _teacher_module()._owned_teacher_object(raw)
+        sizes.append(len(raw))
+    reference = None
+    if teacher['data']['mode'] == 'replay':
+        expected = operation['reference']['authority']
+        raw = _teacher_module()._owned_teacher_read(expected['path'], 8 << 20)
+        if len(raw) != expected['bytes'] or hashlib.sha256(raw).hexdigest() != expected['sha256']:
+            raise ValueError('prepared teacher replay authority differs')
+        reference = _teacher_module()._owned_teacher_object(raw)
+    contract.validate_teacher_operation_plan(operation, teacher['data'], payloads['teacher_client'],
+        prepared=teacher if reference is not None else None, reference=reference,
+        case=payloads['case_authority'], profile=payloads['execution_manifest'])
+    control = json.dumps(operation, indent=1, ensure_ascii=True, allow_nan=False).encode()
+    if len(control) > 8 << 20:
+        raise ValueError('prepared teacher control exceeds bounded metadata envelope')
+    sizes.append(len(control))
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+    artifacts = payloads['execution_manifest'].get('artifacts')
+    if (type(artifacts) is not dict or not artifacts or any(type(row) is not dict
+            or type(row.get('size')) is not int or row['size'] < 0 for row in artifacts.values())):
+        raise ValueError('prepared teacher execution manifest artifact census differs')
+    return {'operation': operation, 'control': control, 'sizes': sizes,
+            'manifest_canonical_sha256': digest(payloads['execution_manifest']),
+            'manifest_artifact_files': len(artifacts),
+            'manifest_artifact_bytes': sum(row['size'] for row in artifacts.values())}
+
+
+def _prepared_teacher_credit(teacher, selected):
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import (
+        _json_parse_payload,
+        _json_payload_policy,
+        _json_tree_payload,
+    )
+    if 'prepared_teacher_input_bytes' in teacher['resources']:
+        raise ValueError('prepared teacher control cannot be prepaid twice')
+    policy = _json_payload_policy()
+    # Parent and each of the eight workers own their parsed, bounded operation,
+    # case/profile/client DATA through ordinary Engine/client retirement.
+    one = sum(_json_parse_payload(size, policy)['total_bytes'] + _json_tree_payload(size, policy)
+              for size in selected['sizes'])
+    resources = dict(teacher['resources'])
+    resources['prepared_teacher_input_bytes'] = list(selected['sizes'])
+    resources['prepared_teacher_payload_bytes'] = 9 * one
+    resources['global_host_obligation_bytes'] += 9 * one
+    if resources['global_host_obligation_bytes'] > sys.maxsize:
+        raise ValueError('prepared teacher host obligation exceeds selected size domain')
+    teacher['resources'] = resources
+
+
+def _prepared_teacher_startup(row, spec):
+    return _model_contract().prepared_teacher_contract().validate_startup(row, spec)
 
 
 _TEACHER_READINESS_ATTEMPTS = 3601
@@ -2644,7 +2712,7 @@ def _owned_model_startup_fields(engine, profile, observer, role):
     return fields
 
 
-def _owned_client_service(stats, spec, instance, role):
+def _owned_client_service(stats, spec, instance, role, *, prepared_manifest=None):
     if __package__:
         from . import v100_adaptive_qualification as qualification
     else:
@@ -2655,6 +2723,9 @@ def _owned_client_service(stats, spec, instance, role):
     expected = spec['expected_service']
     expert = stats['capacity_plan']['expert_parallel']
     families = stats['runtime']['execution']['execution_families']
+    prepared_teacher = spec.get('schema') == 'tensorfold.prepared-expert-teacher-client-v1'
+    expected_trial = ({key: expected[key] for key in ('kernel_family', 'graph_family')}
+                      if prepared_teacher else None)
     if (effective['instance_id'] != instance or effective['model']['id'] != spec['model']
             or effective['context_tokens'] != expected['context_tokens']
             or effective['resident_capacity'] != expected['resident_capacity']
@@ -2662,18 +2733,32 @@ def _owned_client_service(stats, spec, instance, role):
             or effective['model']['kv_dtype'] != expected['kv_dtype']
             or any(expert.get(key) != expected[key] for key in ('tp', 'pp', 'etp', 'ep'))
             or families['effective'] != {'kernel_family': expected['kernel_family'], 'graph_family': expected['graph_family']}
-            or families.get('trial') is not None):
+            or families.get('trial') != expected_trial):
         raise ValueError(role + ' HTTP actual profile/instance differs from the frozen control')
+    if prepared_teacher:
+        binding = stats['runtime']['capacity_plan']['execution_profile_binding']
+        if (prepared_manifest is None or binding.get('manifest_sha256') != prepared_manifest['manifest_canonical_sha256']
+                or any(type(binding.get(key)) is not int for key in
+                       ('verified_input_files', 'verified_input_bytes', 'content_passes', 'hashes_reused_this_binding'))
+                or binding.get('verified_input_files') != prepared_manifest['manifest_artifact_files']
+                or binding.get('verified_input_bytes') != prepared_manifest['manifest_artifact_bytes']
+                # Initial NONE binding has no pairing/rebind path: the issuer
+                # uses _capture and publishes literal reused=0 for this scope.
+                or binding.get('content_passes') != 1 or binding.get('hashes_reused_this_binding') != 0
+                or binding.get('shared_immutable_same_host') is not True
+                or families.get('native_prepared') is not True or families.get('graph_rows') != 0):
+            raise ValueError('prepared teacher HTTP sealed profile/native admission differs')
     return effective
 
 
 def _owned_client_open(owner, role, *, deadline=None):
     import urllib.error
     if __package__:
-        from . import v100_rotorquant_live as live, openai_protocol as protocol
+        from . import openai_protocol as protocol
+        from . import v100_rotorquant_live as live
     else:
-        import v100_rotorquant_live as live
         import openai_protocol as protocol
+        import v100_rotorquant_live as live
     spec = owner.selected['data']
     raw = owner.output / (role + '-client-raw')
     raw.mkdir(mode=0o700)
@@ -2691,6 +2776,8 @@ def _owned_client_open(owner, role, *, deadline=None):
     for rank in range(8):
         row = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(owner.output / f'rank-{rank}.json', 8 << 20))
         windows, expected = row.get(role + '_windows', {}), spec['expected_service']
+        if spec.get('schema') == 'tensorfold.prepared-expert-teacher-client-v1':
+            _prepared_teacher_startup(row, spec)
         if (row.get('rank') != rank or row.get('mtp_banks') != 0 or windows.get('full_resident') is not True
                 or windows.get('slots') != expected['resident_capacity']
                 or windows.get('capacity_min') != windows.get('capacity_max')
@@ -2722,7 +2809,10 @@ def _owned_client_open(owner, role, *, deadline=None):
                 raise
             attempt += 1
             owner.cancelled.wait(min(1., max(0., ready_deadline - time.monotonic())))
-    return client, control, _owned_client_service(initial, spec, instance, role), instance
+    prepared_manifest = owner.selected.get('prepared_manifest')
+    observed = (_owned_client_service(initial, spec, instance, role) if prepared_manifest is None else
+                _owned_client_service(initial, spec, instance, role, prepared_manifest=prepared_manifest))
+    return client, control, observed, instance
 
 
 class _TeacherClient:
@@ -2760,7 +2850,10 @@ class _TeacherClient:
                 or reply['usage']['prompt_tokens_details']['cached_tokens'] != 0):
             raise ValueError('teacher completion is not complete hashed cold NONE output')
         final = client.call('final-stats', path='/stats', object_response=True, read_control=control)
-        if _owned_client_service(final, spec, instance, 'teacher') != before:
+        prepared_manifest = self.selected.get('prepared_manifest')
+        observed = (_owned_client_service(final, spec, instance, 'teacher') if prepared_manifest is None else
+                    _owned_client_service(final, spec, instance, 'teacher', prepared_manifest=prepared_manifest))
+        if observed != before:
             raise ValueError('teacher service identity/configuration changed during its one request')
         self.result = {'schema': 'tensorfold.owned-teacher-client-report-v1', 'complete': True,
                        'post_attempts': self.post_attempts, 'teacher_plan_sha256': self.teacher['input_sha256'],
@@ -3202,10 +3295,24 @@ def _benchmark_model_result(output, prepared):
     return result
 
 
-def _teacher_preflight(args, teacher, cli):
+def _teacher_preflight(args, teacher, cli, *, prepared_operation=None, selected=None):
     if (args.draft_method != 'none' or args.context != teacher['data']['context']
             or str(args.parallel).lower() == 'auto' or cli._parallel(args.parallel) < 9):
         raise ValueError('teacher requires explicit none/context and at least nine fixed slots')
+    if prepared_operation is not None:
+        expected = prepared_operation['selector']
+        actual = {'gu': selected.onecat_gu_method or 'incumbent', 'down': selected.onecat_down_method,
+                  'iq2_source': selected.onecat_iq2_source, 'prefill_method': selected.onecat_prefill_method}
+        grouped = selected.grouped_gate_up_rows
+        if (actual != expected or grouped != (4 if expected['gu'] == 'incumbent' else None)
+                or not args.no_graphs or cli._parallel(args.parallel) != 24
+                or os.environ.get('TENSORFOLD_PREFILL_ROWS') != '256'
+                or str(args.execution_profile_manifest) != prepared_operation['execution_manifest']['path']
+                or selected.execution_rows is not None or selected.reference_tiles
+                or selected.dense_implementation is not None
+                or selected.onecat_device_budget_bytes != (None if expected['gu'] == 'incumbent' else 117976064)
+                or selected.onecat_global_host_bytes != (None if expected['gu'] == 'incumbent' else 67108864)):
+            raise ValueError('prepared teacher requires its exact expert selector and P256/E24/NONE CLI')
     if not args.no_graphs:
         # This admits intent only. The typed, funded HC catalogue is mandatory
         # after construction and before any teacher hook can be installed.
@@ -3222,9 +3329,41 @@ def prepare_owned_teacher(engine, prepared, output, *, hc_graphs=False):
     if engine._owned_qualification_host != expected:
         raise ValueError('teacher staging obligation differs from original admitted baseline')
     observer = object.__new__(_teacher_module().OwnedTeacherFrames)
-    engine._owned_teacher_frames = observer  # Journal before setup/host allocation.
+    engine._owned_teacher_frames = observer  # Journal before setup/host allocation, as in the v1 path.
+    operation = prepared.get('prepared_expert_operation')
+    if operation is not None:
+        specification = getattr(getattr(engine, '_owner_preparation', None), 'specification', None)
+        if (specification != operation['prepared_execution'] or hc_graphs
+                or engine.w.mtp is not None or engine.multi.mbuf is not None
+                or engine.multi.buf.rows != 24 or engine.multi.prefill_rows != 256
+                or not engine.multi.full_resident or len(engine.multi.states) != 24):
+            raise ValueError('prepared teacher actual full preparation/NONE geometry differs')
+    profile = bound_receipt(engine)
+    if operation is not None:
+        from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+        local = engine._execution_bind_local
+        binding = engine.capacity_plan.get('execution_profile_binding')
+        contents = {}
+        for authority in engine._execution_input_authorities:
+            authority._check_issued()
+            for item in authority.files:
+                if not item.logical_name.startswith(('source/', 'library/')):
+                    continue
+                value = {'size': item.size, 'sha256': item.sha256}
+                if item.logical_name in contents and contents[item.logical_name] != value:
+                    raise ValueError('prepared teacher issued input authorities disagree')
+                contents[item.logical_name] = value
+        if (type(binding) is not dict or binding.get('content_passes') != 1
+                or type(binding.get('hashes_reused_this_binding')) is not int or binding['hashes_reused_this_binding'] != 0
+                or binding.get('manifest_sha256') != local['manifest']
+                or any(binding.get('identity', {}).get(key) != digest({label: {
+                    name: value for name, value in contents.items() if name.startswith(prefix)}})
+                    for key, label, prefix in (('source', 'files', 'source/'), ('kernel_build', 'libraries', 'library/')))):
+            raise ValueError('prepared teacher registration differs from its issued source/native contents')
+        profile['teacher_execution_registration'] = _teacher_module()._owned_teacher_object(json.dumps({
+            'binding': binding, 'numerics': local['numerics'], 'contents': contents}, allow_nan=False))
     observer.__init__(engine, prepared, Path(output) / f'teacher-rank{engine.rank}',
-                      fail=_observer_failure, profile=bound_receipt(engine), hc_graphs=hc_graphs)
+                      fail=_observer_failure, profile=profile, hc_graphs=hc_graphs)
     observer.setup()
     receipt = observer.install()
     write_json(observer.directory / 'setup.json', receipt)
@@ -3782,6 +3921,8 @@ def worker(argv):
     parser.add_argument("--benchmark-trace-data")
     parser.add_argument("--teacher-plan", type=Path)
     parser.add_argument('--teacher-client-bytes', type=int)
+    parser.add_argument('--prepared-teacher-operation', type=Path)
+    parser.add_argument('--prepared-teacher-operation-sha')
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--scheduler-trace-prefill-start", type=int, help="private committed C1 prefill cursor threshold; default0 with trace")
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
@@ -3809,6 +3950,10 @@ def worker(argv):
     parser.add_argument("--execution-rows", type=int)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
+    if ((selected.prepared_teacher_operation is None) != (selected.prepared_teacher_operation_sha is None)
+            or selected.prepared_teacher_operation is not None
+            and (selected.teacher_plan is None or selected.teacher_client_bytes is None)):
+        raise ValueError('prepared teacher worker requires its complete closed parent binding')
     onecat_gu = _onecat_capability_from_args(selected)
     commit_spec = _commit_trace_spec(selected)
     if selected.benchmark_client is not None and (selected.benchmark_plan is None or selected.scheduler_trace is None
@@ -3852,7 +3997,7 @@ def worker(argv):
     prepared = router_prepared = None
     benchmark = benchmark_resources = parity_resources = feature_resources = gdn_resources = q8_resources = None
     model_setup_errors = [None] * 2  # Teacher/benchmark are exclusive; prepaid before either setup hook.
-    teacher = model_observer = closed_benchmark = None
+    teacher = model_observer = closed_benchmark = prepared_teacher = None
     commit_trace = commit_engine = None
     commit_finished = False
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
@@ -4022,6 +4167,17 @@ def worker(argv):
             prepared = (data, input_sha, _history_resources(data["C"], input_limit))
         if selected.teacher_plan is not None:
             teacher = _teacher_module().owned_teacher_plan(selected.teacher_plan)
+            if selected.prepared_teacher_operation is not None:
+                raw = _teacher_module()._owned_teacher_read(selected.prepared_teacher_operation, 8 << 20)
+                if (not _model_contract().sha(selected.prepared_teacher_operation_sha)
+                        or hashlib.sha256(raw).hexdigest() != selected.prepared_teacher_operation_sha):
+                    raise ValueError('prepared teacher worker control SHA differs')
+                operation = _teacher_module()._owned_teacher_object(raw)
+                if selected.teacher_client_bytes != operation.get('teacher_client', {}).get('bytes'):
+                    raise ValueError('prepared teacher worker client credit differs from its actual DATA')
+                prepared_teacher = _prepared_teacher_input(operation, teacher, selected.teacher_plan)
+                _prepared_teacher_credit(teacher, prepared_teacher)
+                teacher['prepared_expert_operation'] = operation
             if selected.teacher_client_bytes is not None:
                 model_observer = _teacher_model_observer(selected.out)
                 _teacher_operation_credit(teacher, selected.teacher_client_bytes, model_observer)
@@ -4036,7 +4192,11 @@ def worker(argv):
         if args.tp != 8 or args.expert_tensor_parallel_size != 4 or not 0 <= args.rank < 8:
             raise ValueError("private qualification requires explicit TP8/ETP4 rank ownership")
         if teacher is not None:
-            _teacher_preflight(args, teacher, cli)
+            if prepared_teacher is None:
+                _teacher_preflight(args, teacher, cli)
+            else:
+                _teacher_preflight(args, teacher, cli,
+                    prepared_operation=prepared_teacher['operation'], selected=selected)
         if selected.execution_rows is not None:
             # Keep this experiment explicit: resolve no model-dependent draft
             # defaults and pay its complete envelope before engine construction.
@@ -4204,11 +4364,11 @@ def _run_owned_client(client, command, prefix, output, *, role, plan_sha, client
     else:
         import launch_cuda_tp
     if __package__:
-        from .worker_lifetime import Task, drain
         from .v100_rotorquant_live import ReadCancelled
+        from .worker_lifetime import Task, drain
     else:
-        from worker_lifetime import Task, drain
         from v100_rotorquant_live import ReadCancelled
+        from worker_lifetime import Task, drain
     task = Task(client.run, name='owned-' + role + '-one-client')
     tasks, cleanup_status = [task], [None] * 4
     primary = None
@@ -4280,7 +4440,7 @@ def _run_owned_client(client, command, prefix, output, *, role, plan_sha, client
     return result
 
 
-def main(argv=None, *, _benchmark_operation=None):
+def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv[:1] == ["--accept-history"]:
         parser = argparse.ArgumentParser(description="Offline private history evidence intersection")
@@ -4337,7 +4497,10 @@ def main(argv=None, *, _benchmark_operation=None):
         parser.error('NUMA plan and SHA256 must be supplied together')
     _onecat_capability_from_args(args)  # Validate before spawning any rank.
     _commit_trace_spec(args)
-    teacher = selected_client = model_observer = None
+    teacher = selected_client = model_observer = prepared_teacher = None
+    if _prepared_teacher_operation is not None and (args.teacher_plan is None or args.teacher_client is None
+                                                   or _benchmark_operation is not None):
+        raise ValueError('trusted prepared teacher operation requires only its closed teacher inputs')
     closed_benchmark = None
     if args.benchmark_client is not None:
         if (args.benchmark_plan is None or args.scheduler_trace is None or args.teacher_plan is not None
@@ -4374,8 +4537,21 @@ def main(argv=None, *, _benchmark_operation=None):
                 args.normalization_parity, args.prepared_feature_receipts, args.gdn_batch_parity, args.q8_preparation_parity)):
             parser.error('teacher capture/replay excludes other diagnostic procedures')
         teacher = _teacher_module().owned_teacher_plan(args.teacher_plan)  # Pure bounded validation before parent effects.
+        if _prepared_teacher_operation is not None:
+            prepared_teacher = _prepared_teacher_input(_prepared_teacher_operation, teacher, args.teacher_plan)
+            _prepared_teacher_credit(teacher, prepared_teacher)
+            teacher['prepared_expert_operation'] = _prepared_teacher_operation
         if args.teacher_client is not None:
-            selected_client = _teacher_client_input(args.teacher_client, teacher)
+            selected_client = (_teacher_client_input(args.teacher_client, teacher) if prepared_teacher is None else
+                               _teacher_client_input(args.teacher_client, teacher, prepared=True))
+            if prepared_teacher is not None:
+                expected_client = _prepared_teacher_operation['teacher_client']
+                if (str(args.teacher_client.absolute()) != expected_client['path']
+                        or selected_client['bytes'] != expected_client['bytes']
+                        or selected_client['sha256'] != expected_client['sha256']):
+                    raise ValueError('prepared teacher actual client differs from closed operation')
+                selected_client['prepared_manifest'] = {key: prepared_teacher[key] for key in
+                    ('manifest_canonical_sha256', 'manifest_artifact_files', 'manifest_artifact_bytes')}
             model_observer = _teacher_model_observer(args.out)
             _teacher_operation_credit(teacher, selected_client['bytes'], model_observer)
     if args.gdn_batch_parity and (args.benchmark_plan is None or any((args.normalization_parity,
@@ -4413,6 +4589,14 @@ def main(argv=None, *, _benchmark_operation=None):
         prefix += ['--teacher-plan', str(args.teacher_plan.absolute())]
     if selected_client is not None and teacher is not None:
         prefix += ['--teacher-client-bytes', str(selected_client['bytes'])]
+    if prepared_teacher is not None:
+        control = output / 'prepared-teacher-operation.json'
+        _teacher_module()._owned_teacher_json(control, prepared_teacher['operation'], 8 << 20)
+        control.chmod(0o444)
+        control_sha = hashlib.sha256(prepared_teacher['control']).hexdigest()
+        if control.read_bytes() != prepared_teacher['control']:
+            raise ValueError('prepared worker control publication differs from its prepaid bytes')
+        prefix += ['--prepared-teacher-operation', str(control), '--prepared-teacher-operation-sha', control_sha]
     if args.router_row_input is not None:
         prefix += ["--router-row-input", str(args.router_row_input.absolute())]
     if args.history_input is not None:
@@ -4478,7 +4662,8 @@ def main(argv=None, *, _benchmark_operation=None):
     rank0 = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(output / 'teacher-rank0/summary.json', 8 << 20))
     if rank0.get('teacher_ids') != client.result['token_ids']:
         raise ValueError('teacher HTTP output differs from captured frozen-prefix frames')
-    expected_family = {key: selected_client['data']['expected_service'][key] for key in ('kernel_family', 'graph_family')}
+    expected_family = (selected_client['data']['prepared_execution'] if prepared_teacher is not None else
+                       {key: selected_client['data']['expected_service'][key] for key in ('kernel_family', 'graph_family')})
     if any(frame.get('execution_family') != expected_family for frame in rank0.get('frames', [])):
         raise ValueError('teacher first control did not execute its actual reference family')
     authority = _teacher_module().seal_owned_teacher(output, teacher, result)

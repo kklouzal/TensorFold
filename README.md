@@ -40,6 +40,11 @@ candidate uses explicit Q8_1 activation quantization; its output differences are
 measured separately from throughput. Stock MTP retains its original FP32 expert
 provider and defaults to depth4. Larger target verifier batches and optional
 candidate prefill use bounded32-row panels without reducing admitted concurrency.
+The private closed teacher tooling now describes all21 expert combinations and
+compares complete conditional score outputs through the guarded Host/driver
+lifecycle. Its CPU controls pass; the NUMA/CAP40 bridge and actual model quality
+runs remain pending. It defines no accepted error tolerance or held-out accuracy
+claim.
 The unique-history graph
 candidate captures expert, linear and HC GPU pieces around live attention,
 recurrent-state and PLE handoffs. The frozen source15 TensorFold reference

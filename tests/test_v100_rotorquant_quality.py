@@ -460,7 +460,7 @@ def load_owned_plan(tmp_path, monkeypatch, data):
     return quality.owned_teacher_plan(path)
 
 
-def teacher_fixture(tmp_path, monkeypatch, prepared, *, chosen=3, close_error=None):
+def teacher_fixture(tmp_path, monkeypatch, prepared, *, chosen=3, close_error=None, preparation=None):
     from types import ModuleType, SimpleNamespace as NS
     import threading
     events, notified = [], []
@@ -559,6 +559,10 @@ def teacher_fixture(tmp_path, monkeypatch, prepared, *, chosen=3, close_error=No
     engine = NS(multi=decoder, rank=0, tp=8, comm=comm, w=w, context_window=64, sm70_profile='reference', close=close,
                 kv_pair=NS(identity='pair'), position_profile=NS(identity='position-v1', epoch=0),
                 _lifecycle=threading.Condition(), _closed=False)
+    if preparation is not None:
+        engine._owner_preparation = NS(specification=preparation, graphs={}, reference_arithmetic={})
+        decoder.buf.owner_kernel_family = decoder.pbuf.owner_kernel_family = preparation['kernel_family']
+        decoder.buf.owner_graph_family = decoder.pbuf.owner_graph_family = preparation['graph_family']
     directory = tmp_path / ('cohort-' + prepared['data']['mode'])
     directory.mkdir()
     observer = quality.OwnedTeacherFrames(engine, prepared, directory / 'teacher-rank0',
@@ -572,6 +576,37 @@ def teacher_fixture(tmp_path, monkeypatch, prepared, *, chosen=3, close_error=No
                 probabilities=None, carry=None, owed=[], background=False,
                 sampling=NS(temperature=0), out=[], error=None, cancel=None)
     return engine, observer, stream, events, notified, decode, multi
+
+
+def test_prepared_teacher_frames_preserve_full_json_frozen_numeric_authority(tmp_path, monkeypatch):
+    specification = {'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1', 'graph_family': 'uncaptured',
+                     'trial': True, 'rn_heads_per_block': 12, 'graph_budget_bytes': 0,
+                     'collective_family': 'tp8-allgather-v1', 'row_buckets': {'decode': (1, 5)}}
+    expected = json.loads(json.dumps(specification))
+    prepared = load_owned_plan(tmp_path, monkeypatch, owned_plan_data())
+    engine, observer, stream, *_ = teacher_fixture(tmp_path, monkeypatch, prepared, preparation=specification)
+    specification['row_buckets']['decode'] = (9,)
+    engine.multi.admit(stream)
+    engine.multi.round()
+    engine.multi.finish(engine.multi.round())
+    assert observer.owner_family == expected
+    assert all(frame['execution_family'] == expected for frame in observer.frames)
+    assert observer.profile['teacher_semantics']['prepared_execution'] == expected
+    engine.close()
+    saved = json.loads((observer.directory / 'summary.json').read_text())
+    assert saved['owner_family'] == expected and saved['frames'][0]['execution_family'] == expected
+
+
+def test_prepared_teacher_projection_drift_refuses_before_gather_or_sampler(tmp_path, monkeypatch):
+    specification = {'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1', 'graph_family': 'uncaptured',
+                     'trial': True, 'rn_heads_per_block': 12}
+    prepared = load_owned_plan(tmp_path, monkeypatch, owned_plan_data())
+    engine, _observer, stream, events, *_ = teacher_fixture(tmp_path, monkeypatch, prepared, preparation=specification)
+    engine.multi.pbuf.owner_kernel_family = 'unrelated-family'
+    engine.multi.admit(stream)
+    with pytest.raises(ValueError, match='actual buffer family'):
+        engine.multi.round()
+    assert 'all-gather' not in events and 'original-sample' not in events
 
 
 def spy_teacher_rank_records(observer, prepared):

@@ -316,9 +316,12 @@ def validate_data(spec):
     inner_input = next(item for item in spec['inputs'] if item['path'] == inner_path)
     inner = object_json(bound_file(inner_input))
     benchmark = inner.get('schema') == model_contract.BENCHMARK_SCHEMA
-    model = inner.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA)
+    prepared = inner.get('schema') == model_contract.PREPARED_TEACHER_SCHEMA
+    contract = model_contract.prepared_teacher_contract() if prepared else model_contract
+    model = inner.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA,
+                                   model_contract.PREPARED_TEACHER_SCHEMA)
     if model:
-        (model_contract.validate_benchmark_host_operation if benchmark else model_contract.validate_host_operation)(spec, inner)
+        (model_contract.validate_benchmark_host_operation if benchmark else contract.validate_host_operation)(spec, inner)
         for name, identity in inner['source_files'].items():
             require(name in source_files and all(source_files[name][key] == identity[key] for key in ('bytes', 'sha256')),
                     'model operator differs from complete reviewed source fixture')
@@ -331,6 +334,15 @@ def validate_data(spec):
             staged = inputs.get(Path(item['path']).name)
             require(staged is not None and all(staged[key] == item[key] for key in ('bytes', 'sha256')),
                     'model DATA not bound in readonly operator closure')
+        if prepared:
+            for label in ('case_authority', 'execution_manifest'):
+                item = inner['operation'][label]
+                staged = inputs.get(Path(item['path']).name)
+                require(staged is not None and all(staged[key] == item[key] for key in ('bytes', 'sha256')),
+                        'prepared teacher case/profile lacks its sealed operator input')
+            require('v100_onecat_combinations.py' in inputs and all(
+                inputs['v100_onecat_combinations.py'][key] == inner['source_files']['tools/v100_onecat_combinations.py'][key]
+                for key in ('bytes', 'sha256')), 'prepared contract differs from canonical staged source')
         result = {key: inner[key] for key in ('mode', 'source_commit', 'image_id', 'operation')}
     else:
         mode = "cuda" if spec["uuids"] else "cpu"
@@ -971,11 +983,14 @@ def run(spec, output, system=None, *, spec_identity=None):
             require("verification_preflight" not in outcome or outcome["verification_preflight"] == verified,
                     "verification prequalification receipt changed")
             outcome["verification_preflight"] = verified
-        if expected_inner['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE):
+        if expected_inner['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE,
+                                     model_contract.PREPARED_TEACHER_MODE):
             benchmark = expected_inner['mode'] == model_contract.BENCHMARK_MODE
+            contract = (model_contract.prepared_teacher_contract()
+                        if expected_inner['mode'] == model_contract.PREPARED_TEACHER_MODE else model_contract)
             role = 'benchmark' if benchmark else 'teacher'
             outcome['inner'] = object_json(read_bytes(output / ('owned-' + role + '-operation-result.json'), LIMIT))
-            (model_contract.validate_benchmark_host_result if benchmark else model_contract.validate_host_result)(
+            (model_contract.validate_benchmark_host_result if benchmark else contract.validate_host_result)(
                 outcome['inner'], expected_inner)
             binding_record = outcome['inner']['content_binding']
             binding = object_json(bound_file({'path': str(output / binding_record['file']),
@@ -983,7 +998,7 @@ def run(spec, output, system=None, *, spec_identity=None):
             assets = expected_inner['operation']
             require(binding.get('schema') == 'tensorfold.owned-model-content-binding-v1' and binding.get('completed') is True
                     and [row.get('identity') for row in binding.get('assets', [])] ==
-                    (model_contract.benchmark_operation_assets if benchmark else model_contract.operation_assets)(assets),
+                    (model_contract.benchmark_operation_assets if benchmark else contract.operation_assets)(assets),
                     'model content binding is incomplete or different from admitted assets')
         else:
             outcome["inner"] = object_json(read_bytes(output / "named-suite-result.json", LIMIT))

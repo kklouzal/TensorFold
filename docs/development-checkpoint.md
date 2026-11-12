@@ -243,6 +243,14 @@ substituted. Model, quality and P3 checks remain pending.
 
 ## Required NUMA deployment region
 
+The closed prepared-teacher operation and comparison reader now have CPU
+coverage for the incumbent plus20 explicit expert selectors, complete frame
+specifications and full-vocabulary conditional KL/NLL/PPL diagnostics. Historical
+teacher validators and the guarded native-contract Host lifecycle remain
+independent controls. This component still requires the actual NUMA/CAP40
+permission and24-receipt bridge, sealed input cases and model execution. No
+dataset, accepted error margin, held-out accuracy or P3 result is implied.
+
 Live Source17 ranks were allowed on both CPU/memory nodes and sampled CPU and
 memory placements crossed sockets. GPUs0–3 are PCI-local to node0 and GPUs4–7
 to node1. The image already contains libnuma2.0.18; Docker's captured default

@@ -368,9 +368,9 @@ def _owned_coordinate_semantics(profile, activation):
     return {**semantic, 'state_kv_identity': _owned_coordinate_kv(semantic.get('state_kv_identity'), activation)}
 
 
-def _owned_comparison_side(selected, mode, control):
+def _owned_comparison_side(selected, mode, control, *, contract=None):
     """Consume successful owner records; never rerun or reinterpret a launcher."""
-    contract = _owned_comparison_contract()
+    contract = _owned_comparison_contract() if contract is None else contract
     if (type(selected) is not dict or set(selected) != {'root', 'host_result', 'completion'}
             or not contract.absolute(selected['root'])):
         raise ValueError('closed owned comparison side required')
@@ -478,7 +478,8 @@ def _owned_comparison_side(selected, mode, control):
     if content.get('completed') is not True:
         raise ValueError('owned comparison model content was not completed')
     return {'root': root, 'inner': inner, 'authority': authority, 'authority_ref': authority_ref,
-            'native_sets': native_sets, 'activation': activation, 'stable_semantics': stable_semantics}
+            'native_sets': native_sets, 'activation': activation, 'stable_semantics': stable_semantics,
+            'host': host, 'model': model, 'content': content}
 
 
 def compare_owned_teacher(reference, replay, *, read_timeout_s):
@@ -579,12 +580,15 @@ def _compare_owned_teacher_main(argv):
     return 0  # Nonexact results are preserved diagnostics, not acceptance or a hidden tolerance.
 
 
-def _candidate_teacher_side(selected, mode, control):
+def _candidate_teacher_side(selected, mode, control, *, teacher_scope='rn12-p4096-none-v1'):
     """Read the normal RN controller's actual records, not closed-client fiction.
 
     The caller binds this finite evidence set and the externally observed CLI
     completion. Maps evidence is path/inode/hash observation, not VMA-FD proof.
     """
+    if teacher_scope not in ('rn12-p4096-none-v1', 'rn12-p256-none-v1'):
+        raise ValueError('explicit finite RN12 NONE teacher scope required')
+    prefill_rows = 256 if teacher_scope == 'rn12-p256-none-v1' else 4096
     required = {'authority', 'host', 'inspect', 'seal', 'source_after', 'origins',
                 'post', 'exchange', 'before', 'after', 'plan', 'runtime', 'request', 'completion', 'toolmap'}
     contract = _owned_comparison_contract()
@@ -650,7 +654,7 @@ def _candidate_teacher_side(selected, mode, control):
     prepared = semantics.get('prepared_execution', {})
     runtime = records['runtime']
     family = runtime.get('execution', {}).get('execution_families', {})
-    if (semantics.get('context') != 262144 or semantics.get('prefill_rows') != 4096
+    if (semantics.get('context') != 262144 or semantics.get('prefill_rows') != prefill_rows
             or semantics.get('target_rows') != 24 or semantics.get('sm70_profile') != 'reference'
             or any(prepared.get(k) != v for k, v in rn.items()) or prepared.get('trial') is not True
             or prepared.get('rn_heads_per_block') != 12 or family.get('effective') != rn
@@ -740,8 +744,14 @@ def _candidate_teacher_side(selected, mode, control):
             'teacher_root': root / Path(files['authority']['file']).parent}
 
 
-def _candidate_plan_identity(plan, method, down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold'):
-    base = ['owned-etp4-native-slots-v1', 8, 4, 512, 640, 2560, 11, 32, 4096, False, 'grouped-v1']
+def _candidate_plan_identity(plan, method, down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold',
+                             *, teacher_scope='rn12-p4096-none-v1'):
+    if teacher_scope not in ('rn12-p4096-none-v1', 'rn12-p256-none-v1'):
+        raise ValueError('explicit finite RN12 NONE teacher scope required')
+    # NONE's decoder owns24 rows; its expert preparation retains the existing
+    #32-row default because the execution-row override is MTP-only.
+    rows, prefill_rows = (32, 256) if teacher_scope == 'rn12-p256-none-v1' else (32, 4096)
+    base = ['owned-etp4-native-slots-v1', 8, 4, 512, 640, 2560, 11, rows, prefill_rows, False, 'grouped-v1']
     selector = ['owned-onecat-gu-current-down-v1', method, 117976064, 67108864, 'reference-grouped4']
     if down_method != 'tensorfold':
         selector += ['down', down_method]
@@ -756,7 +766,8 @@ def _candidate_plan_identity(plan, method, down_method='tensorfold', iq2_source=
     return base + ['<explicit-GU-method>']
 
 
-def _candidate_semantics(side, method, down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold'):
+def _candidate_semantics(side, method, down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold',
+                         *, teacher_scope='rn12-p4096-none-v1'):
     semantic = {**side['semantics']}
     kv = list(semantic['state_kv_identity'])
     markers = [i for i, item in enumerate(kv) if type(item) is list and item and item[0] == 'owned-expert-native']
@@ -765,7 +776,8 @@ def _candidate_semantics(side, method, down_method='tensorfold', iq2_source='act
     identity = side['authority']['actual_owned_profile'].get('plan_identity')
     if kv[markers[0]][1] != identity:
         raise ValueError('candidate State/Plan identity linkage differs')
-    kv[markers[0]] = ['owned-expert-native', _candidate_plan_identity(identity, method, down_method, iq2_source, prefill_method)]
+    kv[markers[0]] = ['owned-expert-native', _candidate_plan_identity(
+        identity, method, down_method, iq2_source, prefill_method, teacher_scope=teacher_scope)]
     semantic['state_kv_identity'] = kv
     # AUTO HC funding changes with the explicit 117976064-byte resident frame.
     # Preserve every HC semantic field except that independently recorded grant.
@@ -778,22 +790,331 @@ def _candidate_semantics(side, method, down_method='tensorfold', iq2_source='act
     return semantic
 
 
+def _candidate_teacher_metrics(left, right, control):
+    """One numerical implementation for both closed candidate evidence formats."""
+    import numpy as np
+    a, b = left['authority'], right['authority']
+    rows = []
+    for old, new in zip(a['frames'], b['frames']):
+        if any(old.get(k) != new.get(k) for k in ('step', 'position', 'teacher_id', 'full_vocab', 'role', 'execution_family')):
+            raise ValueError('candidate frame pairing differs')
+        arrays = []
+        for side, frame in ((left, old), (right, new)):
+            vector = frame['vector']
+            ref = {k: vector[k] for k in ('file', 'bytes', 'sha256')}
+            path = _owned_comparison_file(side['teacher_root'], ref, control, maximum=4*a['vocab']+4096, parsed=False)
+            arrays.append(_owned_comparison_vector(path, vector, a['vocab'], control))
+        x, y = arrays
+        unequal = x.view('<u4') != y.view('<u4')
+        rows.append({'step': old['step'], 'position': old['position'], 'teacher_id': old['teacher_id'],
+                     'reference_original_selected': old['selected_original'], 'candidate_original_selected': new['selected_original'],
+                     'reference_forced_id': old['teacher_id'], 'candidate_forced_id': new['teacher_id'],
+                     'exact_uint32_bits': not bool(unequal.any()), 'different_uint32_values': int(unequal.sum()),
+                     'reference_raw_top1_ties': int(np.count_nonzero(x == x.max())),
+                     'candidate_raw_top1_ties': int(np.count_nonzero(y == y.max())), 'finite': True,
+                     **compare_logits(x, y, old['teacher_id'])})
+        del arrays, x, y, unequal
+    count = len(rows)
+    base_nll = math.fsum(row['base_nll'] for row in rows) / count
+    candidate_nll = math.fsum(row['candidate_nll'] for row in rows) / count
+    nll_delta = math.fsum(row['nll_delta'] for row in rows) / count
+    def perplexity(value):
+        return math.exp(value) if value <= math.log(sys.float_info.max) else None
+    quality = {'tokens': count, 'mean_kl': math.fsum(row['kl'] for row in rows) / count,
+        'mean_nll_delta': nll_delta, 'reference_mean_nll': base_nll, 'candidate_mean_nll': candidate_nll,
+        'reference_perplexity': perplexity(base_nll), 'candidate_perplexity': perplexity(candidate_nll),
+        'ppl_ratio': perplexity(nll_delta),
+        'top1_agreement': sum(row['base_top1'] == row['candidate_top1'] for row in rows) / count,
+        'exact_frames': sum(row['exact_uint32_bits'] for row in rows),
+        'scope': 'conditional forced-prefix teacher-token metrics; not held-out accuracy or free-generation acceptance'}
+    return rows, quality
+
+
+def _prepared_expert_side(selected, mode, control, contract):
+    side = _owned_comparison_side(selected, mode, control, contract=contract)
+    operation, authority = side['inner']['operation'], side['authority']
+    contract.validate_operation(operation)
+    if ('reference' in operation) != (mode == 'replay'):
+        raise ValueError('prepared teacher capture/replay reference discriminant differs')
+    if (operation['teacher_scope'] != contract.SCOPE or authority.get('owner_family') != operation['prepared_execution']
+            or type(authority.get('vocab')) is not int or authority['vocab'] != 248320
+            or authority.get('widths') != [31040] * 8
+            or authority.get('reference_sha256') != (None if mode == 'capture' else operation['reference']['authority']['sha256'])):
+        raise ValueError('prepared teacher full authority differs from its closed operation')
+    if side['content'].get('assets') is None or [row.get('identity') for row in side['content']['assets']] != contract.operation_assets(operation):
+        raise ValueError('prepared teacher actual held content closure differs')
+    startups, natives, registrations, pids = [], [], [], set()
+    source = side['host'].get('source_after', {}).get('source', {})
+    observer = source.get('tools/v100_native_contract_driver.py', {})
+    if (not source or type(observer.get('bytes')) is not int or not 0 < observer['bytes'] <= 8 << 20
+            or not contract.legacy.sha(observer.get('sha256'))):
+        raise ValueError('prepared teacher actual frozen operator source proof missing')
+    for rank in range(8):
+        startup = _owned_comparison_file(side['root'], side['model']['startup_receipts'][rank], control)
+        contract.validate_startup(startup, operation)
+        windows = startup.get('teacher_windows', {})
+        if (startup.get('state_count') != 24 or windows.get('full_resident') is not True
+                or windows.get('slots') != 24
+                or any(type(windows.get(key)) is not int for key in
+                       ('capacity_min', 'capacity_max', 'limit_min', 'limit_max', 'logical_min', 'logical_max'))
+                or windows['capacity_min'] != windows['capacity_max'] or windows['limit_min'] != windows['limit_max']
+                or windows['capacity_min'] < 262144 or windows['limit_min'] < 262144
+                or windows['logical_min'] != 262144 or windows['logical_max'] != 262144):
+            raise ValueError('prepared teacher all-rank full-window materialization differs')
+        own_profile = startup['teacher_profile']
+        registration = own_profile.get('teacher_execution_registration')
+        if type(registration) is not dict or set(registration) != {'binding', 'numerics', 'contents'}:
+            raise ValueError('prepared teacher lacks issued registration/numerical contents')
+        binding = registration['binding']
+        if (type(binding) is not dict or type(binding.get('identity')) is not dict
+                or type(registration['numerics']) is not dict or type(registration['contents']) is not dict
+                or not registration['contents']
+                or any(type(name) is not str or not name.startswith(('source/', 'library/'))
+                       or type(item) is not dict or set(item) != {'size', 'sha256'}
+                       or type(item['size']) is not int or item['size'] < 0 or not contract.legacy.sha(item['sha256'])
+                       for name, item in registration['contents'].items())
+                or any(type(binding.get(key)) is not int for key in
+                       ('content_passes', 'hashes_reused_this_binding', 'verified_input_files', 'verified_input_bytes'))
+                # Scope is initial NONE, no DFlash pairing and no rebind: its
+                # actual issuer's _capture branch publishes literal reused=0.
+                or binding.get('content_passes') != 1 or binding.get('hashes_reused_this_binding') != 0
+                or binding.get('shared_immutable_same_host') is not True
+                or type(binding.get('verified_input_files')) is not int or binding['verified_input_files'] <= 0
+                or type(binding.get('verified_input_bytes')) is not int or binding['verified_input_bytes'] <= 0):
+            raise ValueError('prepared teacher lacks fresh complete profile content admission')
+        identity = binding['identity']
+        if (type(identity.get('context_tokens')) is not int or identity['context_tokens'] != 262144
+                or type(identity.get('resident_sessions')) is not int or identity['resident_sessions'] != 24
+                or identity.get('method') != 'none' or identity.get('draft') != 'none'
+                or identity.get('history_layout') != 'unique'):
+            raise ValueError('prepared teacher profile identity is outside the fixed NONE/full24 region')
+        summary = _owned_comparison_file(side['root'], side['model']['rank_receipts'][rank], control)
+        if (summary.get('schema') != 'tensorfold.owned-teacher-result-v1'
+                or summary.get('actual_owned_profile') != own_profile):
+            raise ValueError('prepared teacher registration changed before positive close')
+        if any(frame.get('execution_family') != operation['prepared_execution'] for frame in summary['frames']):
+            raise ValueError('prepared teacher rank frame dropped frozen numerical authority')
+        record = _owned_comparison_file(side['root'], side['model']['child_native_records'][rank], control)
+        pid = record.get('PID')
+        origin = startup.get('teacher_observer', {})
+        if (record.get('schema') != 'tensorfold.native-elf-observation-v3'
+                or record.get('identity_method') != 'kernel-vma-backed-fd-v1'
+                or type(pid) is not int or pid <= 1 or startup.get('teacher_worker_PID') != pid
+                or record.get('rank') != rank or record.get('tag') != 'teacher-closed'
+                or record.get('operation_limits') != contract.MODEL_OBSERVER_LIMITS
+                or record.get('missing_required_prefixes') != []
+                or any(record.get('observer', {}).get(key) != observer[key] for key in ('bytes', 'sha256'))
+                or type(origin) is not dict or set(origin) != {'path', 'bytes', 'sha256'}
+                or not contract.legacy.absolute(origin.get('path'))
+                or not origin['path'].endswith('/tools/v100_native_contract_driver.py')
+                or any(origin[key] != observer[key] for key in ('bytes', 'sha256'))
+                or record.get('access_precondition') != {'uids': [1000]*4, 'gids': [1000]*4, 'NoNewPrivs': '0',
+                    'caps': {key: '0000010000000000' for key in ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')}}):
+            raise ValueError('prepared teacher actual rank/PID/source/VMA access linkage differs')
+        pids.add(pid)
+        mapped = record.get('mapped_elfs')
+        if (type(mapped) is not list or not 0 < len(mapped) <= 64
+                or len({item['name'] for item in mapped}) != len(mapped)
+                or not any(item['name'].startswith('tf_gguf_') for item in mapped)
+                or any(not contract.legacy.absolute(item.get('path')) or type(item.get('bytes')) is not int
+                       or item['bytes'] <= 0 or not contract.legacy.sha(item.get('sha256'))
+                       or type(item.get('vmas')) is not list or not 0 < len(item['vmas']) <= 256 for item in mapped)):
+            raise ValueError('prepared teacher bounded unique mapped native identities differ')
+        for logical, item in registration['contents'].items():
+            path = logical.removeprefix('library/')
+            if logical.startswith('library/') and Path(path).name.startswith('tf_') and not any(
+                    saved['path'] == path and saved['sha256'] == item['sha256'] and saved['bytes'] == item['size']
+                    for saved in mapped):
+                raise ValueError('prepared issued native fingerprint differs from its actual mapped backing object')
+        selector = operation['selector']
+        if selector['gu'] == 'incumbent':
+            if ('onecat_experts' in startup or startup.get('grouped_gate_up') != {'requested_rows': 4, 'actual_rows': 4}):
+                raise ValueError('prepared reference lacks actual Grouped4 ownership')
+        else:
+            binding_record = startup.get('onecat_experts', {})
+            frame = binding_record.get('record', {})
+            profile = frame.get('profile', {})
+            onecat_gu = selector['gu'] != 'tensorfold'
+            frame_bytes, lookup = (117964800, 11264) if onecat_gu else (0, 0)
+            if (binding_record.get('schema') != 'tensorfold.private-onecat-frame-binding-v1'
+                    or binding_record.get('rank') != rank or binding_record.get('world') != 8
+                    or binding_record.get('status') != 'prepared-execution-eligible'
+                    or frame.get('schema') != 'tensorfold.onecat-active-frame-owner-v1'
+                    or frame.get('enabled') is not True or frame.get('closed') is not False
+                    or profile.get('policy') != 'owned-onecat-active-frame-current-down-v1'
+                    or any(profile.get(key) != selector[name] for key, name in
+                           (('method', 'gu'), ('down_method', 'down'), ('iq2_source', 'iq2_source'), ('prefill_method', 'prefill_method')))
+                    or profile.get('banks') != 48 or len(frame.get('raw_bindings', [])) != 48
+                    or profile.get('frame_slab_bytes') != frame_bytes or profile.get('shared_lookup_bytes') != lookup
+                    or profile.get('additional_device_bytes') != frame_bytes + lookup
+                    or profile.get('original_raw_retained') is not True or profile.get('baseline_grouped_gate_up_rows') != 4
+                    or profile.get('packer_workspace_bytes') != 0 or profile.get('mtp_provider') != 'tensorfold-fp32-mtp'
+                    or profile.get('down_format_policy') != {'20': selector['down'], '42': 'tensorfold'}):
+                raise ValueError('prepared expert actual typed frame binding differs')
+            fields = ['gate_up', 'down'] + (['packer'] if onecat_gu else [])
+            if selector['down'] != 'tensorfold':
+                fields.append('q8_down')
+            if selector['iq2_source'] == 'raw':
+                fields.append('raw_iq2_gate_up')
+            for field in fields:
+                path = binding_record.get('origins', {}).get(field, {}).get('path')
+                if not path or not any(item['path'] == path for item in mapped):
+                    raise ValueError('prepared expert origin lacks its actual executable VMA proof')
+        startups.append(startup)
+        natives.append({item['name']: item for item in mapped})
+        registrations.append(registration)
+    if len(pids) != 8:
+        raise ValueError('prepared teacher requires eight distinct actual worker processes')
+    client = _owned_comparison_file(side['root'], side['model']['client_report'], control)
+    if (client.get('schema') != 'tensorfold.owned-teacher-client-report-v1'
+            or client.get('quality_acceptance') is not False or client.get('P3_valid') is not False
+            or type(client.get('prompt_tokens')) is not int or client['prompt_tokens'] != len(authority['input_ids'])
+            or type(client.get('completion_tokens')) is not int or client['completion_tokens'] != len(authority['teacher_ids'])
+            or type(client.get('server_instance_id')) is not str or not client['server_instance_id']
+            or client['server_instance_id'] != startups[0].get('teacher_server_instance_id')
+            or authority.get('actual_owned_profile') != startups[0].get('teacher_profile')):
+        raise ValueError('prepared teacher HTTP instance/authority lacks its original rank0 linkage')
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+    numerics = [row['numerics'] for row in registrations]
+    for registration in registrations:
+        identity = registration['binding']['identity']
+        contents = registration['contents']
+        if (identity != registrations[0]['binding']['identity'] or contents != registrations[0]['contents']
+                or identity.get('numerics') != digest({'ranks': numerics})
+                or any(identity.get(key) != digest({label: {name: item for name, item in contents.items()
+                      if name.startswith(prefix)}}) for key, label, prefix in
+                       (('source', 'files', 'source/'), ('kernel_build', 'libraries', 'library/')))):
+            raise ValueError('prepared registration fingerprints do not bind the observed raw numerics/contents')
+    for frame in authority['frames']:
+        if frame.get('execution_family') != operation['prepared_execution']:
+            raise ValueError('prepared authority frame lacks its full frozen specification')
+    side.update(startups=startups, native=natives, registrations=registrations,
+                semantics=side['stable_semantics'], teacher_root=side['root'] / 'teacher')
+    return side
+
+
+def _compare_prepared_expert_teacher(reference, candidate, *, method, down_method, iq2_source, prefill_method, control):
+    contract = _owned_comparison_contract().prepared_teacher_contract()
+    left = _prepared_expert_side(reference, 'capture', control, contract)
+    right = _prepared_expert_side(candidate, 'replay', control, contract)
+    a, b = left['authority'], right['authority']
+    old_op, new_op = left['inner']['operation'], right['inner']['operation']
+    selected = {'gu': method, 'down': down_method, 'iq2_source': iq2_source, 'prefill_method': prefill_method}
+    if old_op['selector'] != contract.selectors()[0] or new_op['selector'] != selected:
+        raise ValueError('prepared comparison declared expert selector differs')
+    if b.get('reference_sha256') != left['authority_ref']['sha256']:
+        raise ValueError('prepared replay does not name this exact successful incumbent capture')
+    imported = new_op['reference']
+    expected_reference = {'teacher/teacher-authority.json': {
+        key: left['authority_ref'][key] for key in ('bytes', 'sha256')}}
+    for collection in ('rank_receipts', 'startup_receipts'):
+        for row in a[collection]:
+            expected_reference['teacher/' + row['file']] = {key: row[key] for key in ('bytes', 'sha256')}
+    for frame in a['frames']:
+        vector = frame['vector']
+        expected_reference['teacher/' + vector['file']] = {key: vector[key] for key in ('bytes', 'sha256')}
+    if (imported['files'] != expected_reference
+            or any(imported['authority'][key] != left['authority_ref'][key] for key in ('bytes', 'sha256'))
+            or any(imported['host_result'][key] != reference['host_result'][key] for key in ('bytes', 'sha256'))
+            or any(imported['completion'][key] != reference['completion'][key] for key in ('bytes', 'sha256'))):
+        raise ValueError('prepared replay imported a different actual capture/CLI/complete reference closure')
+    if left['inner']['image_id_declared'] != right['inner']['image_id_declared']:
+        raise ValueError('prepared comparison requires the same immutable application image')
+    for key in ('model_assets', 'frontend_assets', 'frontend_root', 'model_entrypoint', 'execution_manifest',
+                'case_authority', 'prepared_execution', 'teacher_scope'):
+        if old_op[key] != new_op[key]:
+            raise ValueError('prepared comparison unrelated closed input differs: ' + key)
+    for key in ('source_manifest', 'source_fixture', 'source', 'image_id'):
+        old = left['host'].get('source_after', {}).get(key)
+        if old is None or old != right['host'].get('source_after', {}).get(key):
+            raise ValueError('prepared comparison canonical source/image fingerprint differs: ' + key)
+    for key in ('input_ids', 'vocab', 'widths', 'teacher_ids', 'owner_family', 'runtime_sources'):
+        if a.get(key) != b.get(key):
+            raise ValueError('prepared comparison frozen prefix/installed source differs: ' + key)
+    for key in ('case_id', 'model_sha256', 'frontend_sha256', 'profile_sha256'):
+        if not a.get('declared_identity', {}).get(key) or a['declared_identity'][key] != b['declared_identity'].get(key):
+            raise ValueError('prepared comparison case/model/frontend/profile authority differs')
+    selected_method = None if method == 'incumbent' else method
+    if (_candidate_semantics(left, None, teacher_scope=contract.SCOPE) != _candidate_semantics(
+            right, selected_method, down_method, iq2_source, prefill_method, teacher_scope=contract.SCOPE)):
+        raise ValueError('prepared comparison changed unrelated State/row/RN semantics')
+    prefixes = ('tf_onecat_gu_', 'tf_onecat_pack_') if method not in ('tensorfold', 'incumbent') else ()
+    if down_method != 'tensorfold':
+        prefixes += ('tf_onecat_down_',)
+    producers = ('runtime_cli_sha256', 'dense_implementation', 'half_partial_policy', 'private_router_policy', 'empty_prefix_policy')
+    for rank in range(8):
+        old, new = left['native'][rank], right['native'][rank]
+        if any(name not in new or new[name]['sha256'] != item['sha256'] for name, item in old.items()):
+            raise ValueError('prepared comparison changed an incumbent native fingerprint')
+        if any(not name.startswith(prefixes) for name in new.keys() - old.keys()):
+            raise ValueError('prepared comparison added an unrelated foreign native library')
+        if any(left['startups'][rank].get(key) != right['startups'][rank].get(key) for key in producers):
+            raise ValueError('prepared comparison changed an unrelated producer policy')
+        old_reg, new_reg = left['registrations'][rank], right['registrations'][rank]
+        old_binding, new_binding = old_reg['binding'], new_reg['binding']
+        if any(old_binding.get(key) != new_binding.get(key) for key in
+               ('manifest_sha256', 'verified_input_files', 'verified_input_bytes', 'content_passes')):
+            raise ValueError('prepared comparison actual complete profile content differs')
+        if ({k: v for k, v in old_binding['identity'].items() if k not in ('numerics', 'kernel_build')}
+                != {k: v for k, v in new_binding['identity'].items() if k not in ('numerics', 'kernel_build')}):
+            raise ValueError('prepared comparison unrelated profile identity fingerprint differs')
+        old_numbers, new_numbers = dict(old_reg['numerics']), dict(new_reg['numerics'])
+        if old_numbers.get('owned_expert_native') != left['startups'][rank]['plan_identity'] or new_numbers.get(
+                'owned_expert_native') != right['startups'][rank]['plan_identity']:
+            raise ValueError('prepared registration numerical Plan differs from actual typed owner')
+        old_numbers['owned_expert_native'] = _candidate_plan_identity(old_numbers['owned_expert_native'], None, teacher_scope=contract.SCOPE)
+        new_numbers['owned_expert_native'] = _candidate_plan_identity(new_numbers['owned_expert_native'], selected_method,
+            down_method, iq2_source, prefill_method, teacher_scope=contract.SCOPE)
+        if old_numbers != new_numbers:
+            raise ValueError('prepared comparison changed numerical inputs beyond the explicit expert selector')
+        old_files, new_files = old_reg['contents'], new_reg['contents']
+        if any(new_files.get(name) != item for name, item in old_files.items()):
+            raise ValueError('prepared comparison changed issued incumbent source/library contents')
+        for name in new_files.keys() - old_files.keys():
+            path = name.removeprefix('library/')
+            if (not name.startswith('library/') or not Path(path).name.startswith(prefixes)
+                    or not any(item['path'] == path and item['sha256'] == new_files[name]['sha256']
+                               and item['bytes'] == new_files[name]['size'] for item in new.values())):
+                raise ValueError('prepared profile library delta lacks its exact selected VMA fingerprint')
+    rows, metrics = _candidate_teacher_metrics(left, right, control)
+    return {'schema': 'tensorfold.prepared-expert-teacher-comparison-v1', 'complete': True,
+            'status': 'DIAGNOSTIC_ONLY_REQUIRES_FULL_MODEL_QUALITY_REVIEW', 'qualification': False,
+            'quality_acceptance': False, 'P3_valid': False, 'teacher_scope': contract.SCOPE,
+            'selector': selected, 'reference': reference, 'candidate': candidate, 'frames': rows,
+            'quality_metrics': metrics, 'image_id': left['inner']['image_id_declared'],
+            'runtime_sources': [a['runtime_sources'], b['runtime_sources']],
+            'actual_profiles': [a['actual_owned_profile'], b['actual_owned_profile']],
+            'coverage': {'frames': len(rows), 'vocab': a['vocab'], 'case_id': a['declared_identity']['case_id'],
+                         'role_frames': {role: sum(frame.get('role') == role for frame in a['frames'])
+                                         for role in ('prefill', 'decode')},
+                         'prefill_rows': 256, 'decoder_target_rows': 24, 'expert_prepared_rows': 32,
+                         'method': 'none', 'forced_prefix_only': True, 'MTP4_graph_quality': False,
+                         'held_out_accuracy': False, 'universal_row_equivalence_proved': False},
+            'scope': 'Closed P256/E24/NONE RN12 expert-only forced-prefix diagnostics; no MTP4/graph/P3/held-out acceptance'}
+
+
 def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeout_s,
-                                    down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold'):
+                                    down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold',
+                                    teacher_scope='rn12-p4096-none-v1'):
     """Explicit expert-method forced-prefix diagnostic, never matched-control acceptance."""
-    if method not in ('tensorfold-fp32-epilogue', 'onecat-half-epilogue', 'tensorfold'):
+    if method not in ('tensorfold-fp32-epilogue', 'onecat-half-epilogue', 'tensorfold') and not (
+            teacher_scope == 'rn12-p256-none-v1' and method == 'incumbent'):
         raise ValueError('explicit OneCat GU comparison method required')
     if (down_method not in ('tensorfold', 'onecat-q8-slots') or iq2_source not in ('active-frame', 'raw')
             or method == 'tensorfold' and iq2_source != 'active-frame'
             or prefill_method not in ('tensorfold', 'candidate')):
         raise ValueError('explicit applicable target down/IQ2 source required')
+    if method == 'incumbent' and (down_method, iq2_source, prefill_method) != ('tensorfold', 'active-frame', 'tensorfold'):
+        raise ValueError('prepared matched control must retain the exact incumbent selector')
     if (type(read_timeout_s) not in (int, float) or not 0 < read_timeout_s <= sys.maxsize
             or not math.isfinite(read_timeout_s)):
         raise ValueError('candidate comparison requires positive finite read_timeout_s excluding bool')
-    import numpy as np
     control = _teacher_read_control(read_timeout_s)
-    left = _candidate_teacher_side(reference, 'capture', control)
-    right = _candidate_teacher_side(candidate, 'replay', control)
+    if teacher_scope == 'rn12-p256-none-v1':
+        return _compare_prepared_expert_teacher(reference, candidate, method=method,
+            down_method=down_method, iq2_source=iq2_source, prefill_method=prefill_method, control=control)
+    left = _candidate_teacher_side(reference, 'capture', control, teacher_scope=teacher_scope)
+    right = _candidate_teacher_side(candidate, 'replay', control, teacher_scope=teacher_scope)
     a, b = left['authority'], right['authority']
     if b.get('reference_sha256') != reference['files']['authority']['sha256']:
         raise ValueError('candidate replay does not name this capture')
@@ -826,7 +1147,9 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
         value = a.get('runtime_sources', {}).get(key)
         if type(value) is not str or not SHA.fullmatch(value) or value != b.get('runtime_sources', {}).get(key):
             raise ValueError('candidate installed math source differs: ' + key)
-    if _candidate_semantics(left, None) != _candidate_semantics(right, method, down_method, iq2_source, prefill_method):
+    if (_candidate_semantics(left, None, teacher_scope=teacher_scope)
+            != _candidate_semantics(right, method, down_method, iq2_source, prefill_method,
+                                    teacher_scope=teacher_scope)):
         raise ValueError('candidate unrelated actual State/RN/HC semantics differ')
     producers = ('runtime_cli_sha256', 'dense_implementation', 'half_partial_policy', 'private_router_policy', 'empty_prefix_policy')
     for side, selected_method in ((left, None), (right, method)):
@@ -835,7 +1158,8 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
             _candidate_plan_identity(startup.get('plan_identity'), selected_method,
                                      down_method if selected_method is not None else 'tensorfold',
                                      iq2_source if selected_method is not None else 'active-frame',
-                                     prefill_method if selected_method is not None else 'tensorfold')
+                                     prefill_method if selected_method is not None else 'tensorfold',
+                                     teacher_scope=teacher_scope)
             if any(startup.get(k) != first.get(k) for k in producers):
                 raise ValueError('candidate all8 producer selection differs')
             if selected_method is None:
@@ -883,43 +1207,12 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
             prefixes += ('tf_onecat_down_',)
         if any(not name.startswith(prefixes) for name in new.keys() - old.keys()):
             raise ValueError('candidate unexpected native dependency delta')
-    rows = []
-    for old, new in zip(a['frames'], b['frames']):
-        if any(old.get(k) != new.get(k) for k in ('step', 'position', 'teacher_id', 'full_vocab', 'role', 'execution_family')):
-            raise ValueError('candidate frame pairing differs')
-        arrays = []
-        for side, frame in ((left, old), (right, new)):
-            vector = frame['vector']
-            ref = {k: vector[k] for k in ('file', 'bytes', 'sha256')}
-            path = _owned_comparison_file(side['teacher_root'], ref, control, maximum=4*a['vocab']+4096, parsed=False)
-            arrays.append(_owned_comparison_vector(path, vector, a['vocab'], control))
-        x, y = arrays
-        unequal = x.view('<u4') != y.view('<u4')
-        rows.append({'step': old['step'], 'position': old['position'], 'teacher_id': old['teacher_id'],
-                     'reference_original_selected': old['selected_original'], 'candidate_original_selected': new['selected_original'],
-                     'reference_forced_id': old['teacher_id'], 'candidate_forced_id': new['teacher_id'],
-                     'exact_uint32_bits': not bool(unequal.any()), 'different_uint32_values': int(unequal.sum()),
-                     'reference_raw_top1_ties': int(np.count_nonzero(x == x.max())),
-                     'candidate_raw_top1_ties': int(np.count_nonzero(y == y.max())), 'finite': True,
-                     **compare_logits(x, y, old['teacher_id'])})
-        del arrays, x, y, unequal
-    count = len(rows)
-    base_nll = math.fsum(row['base_nll'] for row in rows) / count
-    candidate_nll = math.fsum(row['candidate_nll'] for row in rows) / count
-    nll_delta = math.fsum(row['nll_delta'] for row in rows) / count
-    def perplexity(value):
-        return math.exp(value) if value <= math.log(sys.float_info.max) else None
-    quality = {'tokens': count, 'mean_kl': math.fsum(row['kl'] for row in rows) / count,
-        'mean_nll_delta': nll_delta, 'reference_mean_nll': base_nll, 'candidate_mean_nll': candidate_nll,
-        'reference_perplexity': perplexity(base_nll), 'candidate_perplexity': perplexity(candidate_nll),
-        'ppl_ratio': perplexity(nll_delta),
-        'top1_agreement': sum(row['base_top1'] == row['candidate_top1'] for row in rows) / count,
-        'exact_frames': sum(row['exact_uint32_bits'] for row in rows),
-        'scope': 'conditional forced-prefix teacher-token metrics; not held-out accuracy or free-generation acceptance'}
+    rows, quality = _candidate_teacher_metrics(left, right, control)
     return {'schema': 'tensorfold.owned-candidate-teacher-comparison-v1', 'complete': True,
             'status': 'DIAGNOSTIC_ONLY_REQUIRES_ANALYTICAL_AND_FULL_MODEL_QUALITY_REVIEW',
             'qualification': False, 'quality_acceptance': False, 'P3_valid': False, 'method': method,
-            'down_method': down_method, 'iq2_source': iq2_source, 'prefill_method': prefill_method, 'quality_metrics': quality,
+            'down_method': down_method, 'iq2_source': iq2_source, 'prefill_method': prefill_method,
+            'teacher_scope': teacher_scope, 'quality_metrics': quality,
             'reference': reference, 'candidate': candidate, 'frames': rows,
             'image_id': left['records']['seal']['App'], 'runtime_sources': [a['runtime_sources'], b['runtime_sources']],
             'coordinate_activations': [left['activation'], right['activation']],
@@ -941,14 +1234,20 @@ def _compare_owned_candidate_teacher_main(argv):
         raise ValueError('candidate comparison input SHA differs')
     data = _owned_teacher_object(raw)
     required = {'schema', 'reference', 'candidate', 'method', 'read_timeout_s'}
+    prepared = data.get('schema') == 'tensorfold.prepared-expert-teacher-comparison-input-v1'
+    if prepared:
+        required = required | {'teacher_scope'}
     if (type(data) is not dict or not required <= set(data) <= required | {'down_method', 'iq2_source', 'prefill_method'}
-            or data['schema'] != 'tensorfold.owned-candidate-teacher-comparison-input-v1'):
+            or data['schema'] != ('tensorfold.prepared-expert-teacher-comparison-input-v1' if prepared else
+                                  'tensorfold.owned-candidate-teacher-comparison-input-v1')
+            or prepared and data['teacher_scope'] != 'rn12-p256-none-v1'):
         raise ValueError('closed candidate comparison input required')
     report = compare_owned_candidate_teacher(data['reference'], data['candidate'], method=data['method'],
                                               read_timeout_s=data['read_timeout_s'],
                                               down_method=data.get('down_method', 'tensorfold'),
                                               iq2_source=data.get('iq2_source', 'active-frame'),
-                                              prefill_method=data.get('prefill_method', 'tensorfold'))
+                                              prefill_method=data.get('prefill_method', 'tensorfold'),
+                                              teacher_scope=data.get('teacher_scope', 'rn12-p4096-none-v1'))
     report['comparison_input_sha256'] = args.expected_input_sha
     args.output_dir.mkdir(mode=0o700)
     _owned_teacher_json(args.output_dir / 'comparison.json', report, 8 << 20,
@@ -1481,7 +1780,7 @@ class OwnedTeacherFrames:
         self.runtime_sources = _owned_runtime_sources(engine)
         preparation = getattr(engine, '_owner_preparation', None)
         self.owner_family = ({'kernel_family': 'torch-reference', 'graph_family': 'uncaptured'} if preparation is None
-                             else dict(preparation.specification))
+                             else _owned_teacher_object(json.dumps(preparation.specification, allow_nan=False)))
         self.original = {name: getattr(self.decoder, name) for name in ('admit', 'round', 'finish')}
         self.restore_records = tuple((name, self.original[name], name in vars(self.decoder))
                                      for name in ('admit', 'round', 'finish'))
@@ -1618,6 +1917,12 @@ class OwnedTeacherFrames:
                 or (state.history_slot, state.slot_generation, state.kv_identity) != self.state_identity
                 or state.pos != len(data['input_ids']) + max(0, step - 1)):
             raise ValueError('teacher State generation/committed prefix differs from the frozen trajectory')
+        role = 'prefill' if step == 0 else 'decode'
+        buffers = self.decoder.pbuf if step == 0 else self.decoder.buf
+        actual_family = {'kernel_family': buffers.owner_kernel_family,
+                         'graph_family': buffers.owner_graph_family}
+        if actual_family != {key: self.owner_family.get(key) for key in actual_family}:
+            raise ValueError('teacher actual buffer family differs from its frozen preparation authority')
         source = logits[0]
         if step and source.data_ptr() != self.decoder.buf.logits.data_ptr():
             raise ValueError('teacher decode source is not the selected target row0 owner')
@@ -1644,11 +1949,8 @@ class OwnedTeacherFrames:
                             'teacher_id': token, 'full_vocab': data['vocab'], 'vector': vector,
                             'state_pos': self.stream.st.pos, 'slot_generation': self.stream.st.slot_generation,
                             'history_slot': self.stream.st.history_slot, 'kv_identity': self.stream.st.kv_identity}
-        role = 'prefill' if step == 0 else 'decode'
-        buffers = self.decoder.pbuf if step == 0 else self.decoder.buf
         frame['role'] = role
-        frame['execution_family'] = {'kernel_family': buffers.owner_kernel_family,
-                                     'graph_family': buffers.owner_graph_family}
+        frame['execution_family'] = dict(self.owner_family)
         if len(json.dumps(frame, allow_nan=False).encode()) > 4096:
             raise ValueError('teacher frame metadata exceeds its prepaid bound')
         self.frames.append(frame)
