@@ -31,9 +31,10 @@ __device__ __forceinline__ float convolve(const __half* p, const __half* history
 }
 
 template<bool Negative>
-__global__ __launch_bounds__(128) void front(const __half* p, const __half* history, const __half* weight,
-        const float* parameter, const float* bias, float* q, float* k, __half* v, float* g, float* beta) {
-    const int hk=blockIdx.x, row=blockIdx.y, t=threadIdx.x, warp=t>>5, lane=t&31;
+__device__ __forceinline__ void front_body(const __half* p, const __half* history, const __half* weight,
+        const float* parameter, const float* bias, float* q, float* k, __half* v, float* g, float* beta,
+        int hk, int row) {
+    const int t=threadIdx.x, warp=t>>5, lane=t&31;
     __shared__ float qs[D], ks[D];
     qs[t]=convolve(p,history,weight,row,hk*D+t);
     ks[t]=convolve(p,history,weight,row,NK*D+hk*D+t);
@@ -64,6 +65,12 @@ __global__ __launch_bounds__(128) void front(const __half* p, const __half* hist
     }
 }
 
+template<bool Negative>
+__global__ __launch_bounds__(128) void front(const __half* p, const __half* history, const __half* weight,
+        const float* parameter, const float* bias, float* q, float* k, __half* v, float* g, float* beta) {
+    front_body<Negative>(p,history,weight,parameter,bias,q,k,v,g,beta,blockIdx.x,blockIdx.y);
+}
+
 // EXACT incumbent update order, reused by forward and prefix replay.
 __device__ __forceinline__ void step(float (&s)[4][4], const float (&key)[4],
         const float (&value)[4], float g, float beta) {
@@ -80,11 +87,11 @@ __device__ __forceinline__ void step(float (&s)[4][4], const float (&key)[4],
 }
 
 template<int Preload, bool Replay>
-__global__ __launch_bounds__(64) void core(const float* initial, const float* q, const float* k,
+__device__ __forceinline__ void core_body(const float* initial, const float* q, const float* k,
         const __half* v, const float* g, const float* beta, int rows, const int* keep,
-        float* final, __half* raw) {
-    const int hv=blockIdx.y, hk=hv/3, warp=threadIdx.x>>5, lane=threadIdx.x&31;
-    const int first=blockIdx.x*8+warp*4;
+        float* final, __half* raw, int hv, int tile) {
+    const int hk=hv/3, warp=threadIdx.x>>5, lane=threadIdx.x&31;
+    const int first=tile*8+warp*4;
     constexpr int Count=Preload ? Preload : 1;
     float pq[Count][4], pk[Count][4], pv[Count][4], pg[Count], pb[Count];
     if constexpr (Preload>0) {
@@ -149,8 +156,16 @@ __global__ __launch_bounds__(64) void core(const float* initial, const float* q,
     }
 }
 
-__global__ __launch_bounds__(128) void back(const __half* p, const __half* norm, float eps, __half* out, float* sums) {
-    const int hv=blockIdx.x, row=blockIdx.y, t=threadIdx.x, warp=t>>5, lane=t&31;
+template<int Preload, bool Replay>
+__global__ __launch_bounds__(64) void core(const float* initial, const float* q, const float* k,
+        const __half* v, const float* g, const float* beta, int rows, const int* keep,
+        float* final, __half* raw) {
+    core_body<Preload,Replay>(initial,q,k,v,g,beta,rows,keep,final,raw,blockIdx.y,blockIdx.x);
+}
+
+__device__ __forceinline__ void back_body(const __half* p, const __half* norm, float eps,
+        __half* out, float* sums, int hv, int row) {
+    const int t=threadIdx.x, warp=t>>5, lane=t&31;
     __shared__ float y[D], inv;
     y[t]=__half2float(out[((size_t)row*NV+hv)*D+t]);
     __syncthreads();
@@ -168,6 +183,48 @@ __global__ __launch_bounds__(128) void back(const __half* p, const __half* norm,
     out[((size_t)row*NV+hv)*D+t]=__float2half_rn(value);
     const float total=warp_sum(value);
     if (lane==0) sums[(size_t)row*(NV*4)+hv*4+warp]=total;
+}
+
+__global__ __launch_bounds__(128) void back(const __half* p, const __half* norm, float eps, __half* out, float* sums) {
+    back_body(p,norm,eps,out,sums,blockIdx.x,blockIdx.y);
+}
+
+// Existing registered descriptor ABI: conv, current/alternate recurrence,
+// saved K/V/g/beta and optional live-row word. State-local row coordinates
+// never cross a sequence boundary; only Q/output use the compact global rows.
+template<bool Negative>
+__global__ __launch_bounds__(128) void batch_front(const __half* p, const __half* weight,
+        const float* parameter, const float* bias, float* q,
+        const int64_t* pointers, int64_t stride, const int* starts) {
+    const int slot=blockIdx.z, begin=starts[slot], rows=starts[slot+1]-begin, row=blockIdx.y;
+    if (row>=rows) return;  // Uniform for the entire CTA, before shared-memory barriers.
+    front_body<Negative>(p+(size_t)begin*PW, reinterpret_cast<const __half*>(pointers[slot]),
+        weight,parameter,bias,q+(size_t)begin*NK*D,
+        reinterpret_cast<float*>(pointers[3*stride+slot]),
+        reinterpret_cast<__half*>(pointers[4*stride+slot]),
+        reinterpret_cast<float*>(pointers[5*stride+slot]),
+        reinterpret_cast<float*>(pointers[6*stride+slot]),blockIdx.x,row);
+}
+
+template<int Preload>
+__global__ __launch_bounds__(64) void batch_core(const float* q, const int64_t* pointers,
+        int64_t stride, const int* starts, __half* out) {
+    const int slot=blockIdx.z, begin=starts[slot], rows=starts[slot+1]-begin;
+    core_body<Preload,false>(reinterpret_cast<const float*>(pointers[stride+slot]),
+        q+(size_t)begin*NK*D, reinterpret_cast<const float*>(pointers[3*stride+slot]),
+        reinterpret_cast<const __half*>(pointers[4*stride+slot]),
+        reinterpret_cast<const float*>(pointers[5*stride+slot]),
+        reinterpret_cast<const float*>(pointers[6*stride+slot]), rows,
+        reinterpret_cast<const int*>(pointers[7*stride+slot]),
+        reinterpret_cast<float*>(pointers[2*stride+slot]),out+(size_t)begin*NV*D,blockIdx.y,blockIdx.x);
+}
+
+__global__ __launch_bounds__(128) void batch_back(const __half* p, const __half* norm, float eps,
+        __half* out, float* sums, const int* starts) {
+    const int slot=blockIdx.z, begin=starts[slot], rows=starts[slot+1]-begin, row=blockIdx.y;
+    if (row>=rows) return;
+    back_body(p+(size_t)begin*PW,norm,eps,out+(size_t)begin*NV*D,
+              sums+(size_t)begin*NV*4,blockIdx.x,row);
 }
 
 template<bool Replay>
@@ -209,6 +266,40 @@ void value8_replay_cuda(const at::Tensor& initial,const at::Tensor& k,const at::
     launch_core<true>(initial.data_ptr<float>(),nullptr,k.data_ptr<float>(),reinterpret_cast<const __half*>(v.data_ptr()),
         g.data_ptr<float>(),b.data_ptr<float>(),rows,nullptr,final.data_ptr<float>(),nullptr,at::cuda::getCurrentCUDAStream());
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void value8_batch_chain_cuda(const at::Tensor& p, const at::Tensor& weight, const at::Tensor& parameter,
+        const at::Tensor& bias, const at::Tensor& norm, float eps, const at::Tensor& pointers,
+        const at::Tensor& starts, int max_rows, at::Tensor& out, at::Tensor& sums, at::Tensor& q, bool negative) {
+    auto stream=at::cuda::getCurrentCUDAStream();
+    const int slots=(int)pointers.size(1);
+    const auto* ptr=pointers.data_ptr<int64_t>();
+    const auto stride=pointers.stride(0);
+    const auto* start=starts.data_ptr<int>();
+#define BATCH_FRONT(N) batch_front<N><<<dim3(NK,max_rows,slots),128,0,stream>>>(reinterpret_cast<const __half*>(p.data_ptr()),reinterpret_cast<const __half*>(weight.data_ptr()),parameter.data_ptr<float>(),bias.data_ptr<float>(),q.data_ptr<float>(),ptr,stride,start)
+    if (negative) { BATCH_FRONT(true); } else { BATCH_FRONT(false); }
+#undef BATCH_FRONT
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+#define BATCH_CORE(N) batch_core<N><<<dim3(16,NV,slots),64,0,stream>>>(q.data_ptr<float>(),ptr,stride,start,reinterpret_cast<__half*>(out.data_ptr()))
+    if (max_rows<=1) { BATCH_CORE(1); }
+    else if (max_rows<=2) { BATCH_CORE(2); }
+    else if (max_rows<=4) { BATCH_CORE(4); }
+    else { BATCH_CORE(5); }
+#undef BATCH_CORE
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    batch_back<<<dim3(NV,max_rows,slots),128,0,stream>>>(reinterpret_cast<const __half*>(p.data_ptr()),
+        reinterpret_cast<const __half*>(norm.data_ptr()),eps,reinterpret_cast<__half*>(out.data_ptr()),
+        sums.data_ptr<float>(),start);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void value8_batch_prepare_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,batch_front<true>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,batch_front<false>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,batch_back));
+#define BATCH_ATTRIBUTE(N) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,batch_core<N>))
+    BATCH_ATTRIBUTE(1); BATCH_ATTRIBUTE(2); BATCH_ATTRIBUTE(4); BATCH_ATTRIBUTE(5);
+#undef BATCH_ATTRIBUTE
 }
 void value8_prepare_cuda() {
     cudaFuncAttributes attributes;

@@ -5,6 +5,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <cmath>
 #include <optional>
+#include <limits>
 #include "../kernels/tensor_contracts.cuh"
 
 void value8_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
@@ -14,6 +15,9 @@ void value8_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, 
 void value8_replay_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
     const at::Tensor&, int, at::Tensor&);
 void value8_prepare_cuda();
+void value8_batch_prepare_cuda();
+void value8_batch_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
+    const at::Tensor&, float, const at::Tensor&, const at::Tensor&, int, at::Tensor&, at::Tensor&, at::Tensor&, bool);
 
 namespace {
 void check(const at::Tensor& t, at::ScalarType kind, const at::Device& device) {
@@ -83,6 +87,41 @@ void replay(const at::Tensor& initial, const at::Tensor& k, const at::Tensor& v,
     value8_replay_cuda(initial, k, v, g, b, int(rows), final);
 }
 
+// Private NativeTables ABI: its actor validates every registered pointee and
+// publishes current pointers/starts before submission. No user-issued addresses
+// or GPU descriptor readback belong at this boundary.
+void batch_chain(const at::Tensor& p, const at::Tensor& weight, const at::Tensor& parameter,
+        const at::Tensor& bias, const at::Tensor& norm, double eps, const at::Tensor& pointers,
+        const at::Tensor& starts, int64_t max_rows, at::Tensor out, at::Tensor sums, at::Tensor q, bool negative) {
+    const auto device=p.device();
+    for (const auto* t : std::initializer_list<const at::Tensor*>{&p,&weight,&norm,&out}) check(*t,at::kHalf,device);
+    for (const auto* t : std::initializer_list<const at::Tensor*>{&parameter,&bias,&sums,&q}) check(*t,at::kFloat,device);
+    check(starts,at::kInt,device);
+    const auto* props=at::cuda::getDeviceProperties(p.get_device());
+    TORCH_CHECK(props->major==7 && props->minor==0,"value8 batch requires SM70");
+    TORCH_CHECK(pointers.is_cuda() && pointers.device()==device && pointers.scalar_type()==at::kLong
+        && pointers.dim()==2 && pointers.size(0)==8 && pointers.size(1)>0 && pointers.size(1)<=24
+        && pointers.stride(1)==1 && pointers.stride(0)>=pointers.size(1),"value8 registered batch pointer layout");
+    TORCH_CHECK(pointers.stride(0)<=(std::numeric_limits<int64_t>::max()-pointers.size(1))/7,
+                "value8 descriptor span overflow");
+    TORCH_CHECK(max_rows>0 && max_rows<=5 && p.dim()==2 && p.size(1)==2060
+        && p.size(0)>=pointers.size(1) && p.size(0)<=max_rows*pointers.size(1),"value8 batch row envelope");
+    const int64_t rows=p.size(0);
+    TORCH_CHECK(starts.dim()==1 && starts.numel()==pointers.size(1)+1,"value8 batch starts layout");
+    TORCH_CHECK(weight.sizes()==at::IntArrayRef({1280,4}) && parameter.sizes()==at::IntArrayRef({6})
+        && bias.sizes()==at::IntArrayRef({6}) && norm.sizes()==at::IntArrayRef({128}),"value8 batch weights");
+    TORCH_CHECK(out.sizes()==at::IntArrayRef({rows,768}) && sums.sizes()==at::IntArrayRef({rows,24}),
+                "value8 batch output layout");
+    TORCH_CHECK(q.dim()==3 && q.size(0)>=rows && q.size(1)==2 && q.size(2)==128,"value8 batch funded Q workspace");
+    TORCH_CHECK(std::isfinite(eps) && eps>0 && std::isfinite(float(eps)) && float(eps)>0,"value8 batch FP32 epsilon");
+    tensorfold::check_disjoint(out,{&p,&weight,&parameter,&bias,&norm,&pointers,&starts,&sums,&q},"value8 batch output aliases");
+    tensorfold::check_disjoint(sums,{&p,&weight,&parameter,&bias,&norm,&pointers,&starts,&q},"value8 batch sums alias");
+    tensorfold::check_disjoint(q,{&p,&weight,&parameter,&bias,&norm,&pointers,&starts},"value8 batch Q aliases");
+    c10::cuda::CUDAGuard guard(device);
+    value8_batch_chain_cuda(p,weight,parameter,bias,norm,float(eps),pointers,starts,int(max_rows),out,sums,q,negative);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("chain", &chain); m.def("replay", &replay); m.def("prepare", &value8_prepare_cuda);
+    m.def("batch_chain", &batch_chain); m.def("prepare_batch", &value8_batch_prepare_cuda);
 }
