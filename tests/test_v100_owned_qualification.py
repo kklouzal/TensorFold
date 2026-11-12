@@ -3041,7 +3041,7 @@ def test_c24_trace_actual_owner_refuses_before_tokenizer_or_observer(tmp_path, m
         owned.prepare_benchmark(engine, observer.plan, tmp_path)
 
 
-def _cold_q8_receipt_fixture():
+def _cold_q8_receipt_fixture(family='sm70-paged-owner-rn-ex2-p2051-v1'):
     from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     owner = object.__new__(OwnerBuffers)
@@ -3051,22 +3051,36 @@ def _cold_q8_receipt_fixture():
     module = NS(__name__='tf_sm70_family_actual', __file__='/actual/cache/tf_sm70_family_actual.so',
                 owned_q8_prepare=lambda *args: pytest.fail('cold receipt invoked native work'))
     owner.owned_q8_preparation = module
+    owner.native_kernel_family = family
     states = [object() for _ in range(24)]
     owner.native_states = {id(state): (state, 'signature') for state in states}
-    record = {'prepared': True, 'bound_states': 24, 'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1',
+    record = {'prepared': True, 'bound_states': 24,
               'owned_q8_preparation': {'policy': 'owned-q8-decode-preparation-v1', 'module': module.__name__,
                                        'rows_per_call': 1, 'qualified': False}}
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY
+    if family == RN_KERNEL_FAMILY:
+        record['kernel_family'] = family
+    else:
+        from tensorfold.cuda.sm70.attention_backends import OwnerTiles, FlashOwnerTiles
+        name, expected = ('aten_tiles', OwnerTiles) if family == ATEN_KERNEL_FAMILY else ('flash_tiles', FlashOwnerTiles)
+        tiles = object.__new__(expected)
+        tiles.closed = False
+        setattr(owner, name, tiles)
+        record[name] = {'family': family, 'closed': False}
     owner.native_record = lambda: record
-    buffers = NS(prefill=False, history_owner=owner, owner_kernel_family=record['kernel_family'],
+    buffers = NS(prefill=False, history_owner=owner, owner_kernel_family=family,
                  owner_graph_family='uncaptured')
     engine = NS(multi=NS(buf=buffers, states=states),
-                _owner_preparation=NS(prepared=True, closed=False, workspaces={'decode': owner}))
+                _owner_preparation=NS(prepared=True, closed=False, workspaces={'decode': owner},
+                    specification={'kernel_family': family, 'graph_family': 'uncaptured'}))
     return engine, owner, record
 
 
-def test_cold_q8_receipt_reads_retained_owner_without_loading_or_invoking(monkeypatch):
+@pytest.mark.parametrize('family', ['sm70-paged-owner-rn-ex2-p2051-v1',
+    'aten-cutlass-q8-normalized-lse-owner-v1', 'flash-v100-q8-normalized-lse-owner-v1'])
+def test_cold_q8_receipt_reads_retained_owner_without_loading_or_invoking(monkeypatch, family):
     from tensorfold.cuda.sm70 import family_native
-    engine, owner, _ = _cold_q8_receipt_fixture()
+    engine, owner, _ = _cold_q8_receipt_fixture(family)
     monkeypatch.setattr(family_native, 'extension', lambda: pytest.fail('forced native load'))
     receipt = owned._owned_q8_preparation_receipt(engine)
     assert receipt['state_count'] == 24 and receipt['row_capacity'] == 24
@@ -3074,6 +3088,7 @@ def test_cold_q8_receipt_reads_retained_owner_without_loading_or_invoking(monkey
                                          'path': owner.owned_q8_preparation.__file__}
     assert receipt['policy']['rows_per_call'] == 1
     assert receipt['invocation_evidence'] is False
+    assert receipt['kernel_family'] == family
     assert 'not kernel invocation evidence' in receipt['scope']
 
 
@@ -3091,7 +3106,8 @@ def test_cold_q8_baseline_omits_evidence_without_probing(fault):
 
 
 @pytest.mark.parametrize('fault', ['closed', 'prefill', 'wrong-workspace', 'not-prepared', 'wrong-state',
-                                  'state-count', 'family', 'graph', 'Q4', 'policy', 'module', 'path', 'callable'])
+                                  'state-count', 'family', 'owner-family', 'prepared-family', 'prepared-graph',
+                                  'graph', 'Q4', 'policy', 'module', 'path', 'callable'])
 def test_cold_q8_receipt_refuses_unbound_or_inconsistent_metadata(fault):
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     engine, owner, record = _cold_q8_receipt_fixture()
@@ -3110,6 +3126,12 @@ def test_cold_q8_receipt_refuses_unbound_or_inconsistent_metadata(fault):
         record['bound_states'] = 23
     elif fault == 'family':
         engine.multi.buf.owner_kernel_family = 'torch-reference'
+    elif fault == 'owner-family':
+        owner.native_kernel_family = 'torch-reference'
+    elif fault == 'prepared-family':
+        engine._owner_preparation.specification['kernel_family'] = 'torch-reference'
+    elif fault == 'prepared-graph':
+        engine._owner_preparation.specification['graph_family'] = 'captured'
     elif fault == 'graph':
         engine.multi.buf.owner_graph_family = 'captured'
     elif fault == 'Q4':
@@ -3122,6 +3144,24 @@ def test_cold_q8_receipt_refuses_unbound_or_inconsistent_metadata(fault):
         owner.owned_q8_preparation.__file__ = 'relative.so'
     else:
         owner.owned_q8_preparation.owned_q8_prepare = None
+    with pytest.raises(ValueError, match='owned Q8'):
+        owned._owned_q8_preparation_receipt(engine)
+
+
+@pytest.mark.parametrize('family', ['aten-cutlass-q8-normalized-lse-owner-v1',
+    'flash-v100-q8-normalized-lse-owner-v1'])
+@pytest.mark.parametrize('fault', ['type', 'closed', 'record-family', 'record-closed'])
+def test_cold_q8_receipt_refuses_mismatched_normalized_attention_owner(family, fault):
+    engine, owner, record = _cold_q8_receipt_fixture(family)
+    name = 'aten_tiles' if family.startswith('aten-') else 'flash_tiles'
+    if fault == 'type':
+        setattr(owner, name, NS(closed=False))
+    elif fault == 'closed':
+        getattr(owner, name).closed = True
+    elif fault == 'record-family':
+        record[name]['family'] = 'torch-reference'
+    else:
+        record[name]['closed'] = True
     with pytest.raises(ValueError, match='owned Q8'):
         owned._owned_q8_preparation_receipt(engine)
 

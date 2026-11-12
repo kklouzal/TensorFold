@@ -116,6 +116,12 @@ owner controls do not qualify this preparation/campaign increment or actual
 TP8 model quality, capacity, NUMA or P3. See the
 [Flash contract](docs/optimization-validation.md#private-sealed-flash-attention-owner).
 
+The private startup receipt now checks the retained Q8 preparation capability
+against the actual RN, ATen or Flash decode owner and its prepared family.
+The first Source19 Flash model attempt stopped at an RN-only receipt guard
+after graph capture; that failure is retained. The correction changes only
+cold qualification metadata validation; a fresh model run remains required.
+
 See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece
 boundaries without synchronizing each piece. Those observations can include

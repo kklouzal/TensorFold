@@ -3610,7 +3610,11 @@ def _owned_q8_preparation_receipt(engine):
     if module is None:
         return None  # Baseline profiles retain their existing receipt shape.
     from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import (
+        RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY, UNCAPTURED,
+    )
     preparation = getattr(engine, '_owner_preparation', None)
+    family = getattr(buffers, 'owner_kernel_family', None)
     states = decoder.states
     if (type(owner) is not OwnerBuffers or owner.closed or owner.prefill or buffers.prefill
             or owner.native_pair is None
@@ -3619,17 +3623,29 @@ def _owned_q8_preparation_receipt(engine):
             or preparation is None
             or not preparation.prepared or preparation.closed
             or preparation.workspaces.get('decode') is not owner
-            or buffers.owner_kernel_family != 'sm70-paged-owner-rn-ex2-p2051-v1'
-            or buffers.owner_graph_family != 'uncaptured'
+            or family not in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
+            or owner.native_kernel_family != family
+            or preparation.specification['kernel_family'] != family
+            or buffers.owner_graph_family != UNCAPTURED
+            or preparation.specification['graph_family'] != UNCAPTURED
             or owner.native_states is None or not states
             or len(owner.native_states) != len(states)
             or any(owner.native_states.get(id(state), (None,))[0] is not state for state in states)):
         raise ValueError('owned Q8 capability differs from its actual prepared decode owner')
     record = owner.native_record()
+    if family == RN_KERNEL_FAMILY:
+        family_matches = record.get('kernel_family') == family
+    else:
+        from tensorfold.cuda.sm70.attention_backends import OwnerTiles, FlashOwnerTiles
+        name, expected = ('aten_tiles', OwnerTiles) if family == ATEN_KERNEL_FAMILY else ('flash_tiles', FlashOwnerTiles)
+        tiles, retained = getattr(owner, name), record.get(name)
+        family_matches = (type(tiles) is expected and not tiles.closed
+                          and type(retained) is dict and retained.get('family') == family
+                          and retained.get('closed') is False)
     policy = record.get('owned_q8_preparation')
     name, path = getattr(module, '__name__', None), getattr(module, '__file__', None)
     if (not record.get('prepared') or record.get('bound_states') != len(states)
-            or record.get('kernel_family') != buffers.owner_kernel_family
+            or not family_matches
             or policy != {'policy': 'owned-q8-decode-preparation-v1', 'module': name,
                           'rows_per_call': 1, 'qualified': False}
             or type(name) is not str or not name.startswith('tf_sm70_family_')

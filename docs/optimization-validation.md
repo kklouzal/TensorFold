@@ -152,6 +152,17 @@ is retained. Primitive/owner component passes remain separate from typed
 factory/campaign, actual eight-rank transport, model serial/verify consistency,
 PPL, complete capacity and matched NUMA/P3 acceptance.
 
+The first Source19 Flash model attempt reached full24 graph preparation and
+then failed its private retained-Q8 startup receipt: that observer still
+required the RN family even though the actual owner prepares the same Q8
+capability for RN, ATen and Flash. The corrected receipt binds the actual
+owner, serving buffers and preparation specification to the same supported
+family. RN retains its top-level record check; ATen/Flash additionally require
+their exact live retained tile owner and nested family record. The original
+Q8 codec, state/role identity and module checks remain mandatory. This is a
+cold tool correction, with native implementation and sealed inputs unchanged;
+it does not qualify the failed model attempt or replace the fresh model gate.
+
 ## DFlash logits graph investigation
 
 The subsequent default-off `dflash_graph=True` constructor candidate changes
