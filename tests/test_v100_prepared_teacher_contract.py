@@ -149,13 +149,6 @@ def test_driver_prepared_dispatch_reuses_model_owner_and_passes_only_typed_opera
         payload = {'teacher-plan.json': plan, 'teacher-client.json': client, 'case.json': case, 'profile.json': profile}
         called = []
         with monkeypatch.context() as scoped:
-            # This path injects a fake installed App. Earlier Host IO controls
-            # may have imported their genuine FD helper; keep that unrelated
-            # package namespace outside this explicitly injected-runtime case.
-            # Any unexpected import during dispatch still trips origin checks.
-            for name in tuple(sys.modules):
-                if name == 'tensorfold' or name.startswith('tensorfold.'):
-                    scoped.delitem(sys.modules, name)
             scoped.setattr(driver, '_bound_model_json', lambda path, **kw: payload[Path(path).name])
             scoped.setattr(driver, '_call_owned_model', lambda args, **kw: called.append((args, kw)) or 0)
             owner.execute()

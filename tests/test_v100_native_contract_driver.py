@@ -38,6 +38,20 @@ def _spawn_import_probe(path, queue):
 
 class DriverTests(unittest.TestCase):
     def setUp(self):
+        # These cases inject their own installed App. A real package imported
+        # by unrelated conftests/Host helpers must not become part of that
+        # injected runtime, but a new import DURING run remains observable to
+        # the production origin guard. doCleanups also covers manual fixtures.
+        before = {name: module for name, module in sys.modules.items()
+                  if name == 'tensorfold' or name.startswith('tensorfold.')}
+        def restore_namespace():
+            for name in tuple(sys.modules):
+                if name == 'tensorfold' or name.startswith('tensorfold.'):
+                    sys.modules.pop(name, None)
+            sys.modules.update(before)
+        self.addCleanup(restore_namespace)
+        for name in before:
+            sys.modules.pop(name, None)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -83,6 +97,30 @@ class DriverTests(unittest.TestCase):
             fd=types.SimpleNamespace(__file__=str(self.fd), _source_sha256='c' * 64),
             torch=types.SimpleNamespace(__version__='fixture', version=types.SimpleNamespace(git_version='d' * 40, cuda='12.9'), cuda=cuda),
             pytest=types.SimpleNamespace(Module=object(), main=self.pytest_main))
+
+    def test_fixture_isolates_preexisting_namespace_and_restores_manual_owner(self):
+        existing = types.ModuleType('tensorfold.preexisting_fixture')
+        existing.__file__ = str(self.root/'unrelated.py')
+        sys.modules[existing.__name__] = existing
+        nested = DriverTests()
+        nested.setUp()
+        try:
+            self.assertNotIn(existing.__name__, sys.modules)
+            nested.execute()
+        finally:
+            nested.doCleanups()
+        self.assertIs(sys.modules[existing.__name__], existing)
+
+    def test_unexpected_import_during_injected_run_still_trips_actual_origin_guard(self):
+        foreign = types.ModuleType('tensorfold.imported_during_run')
+        foreign.__file__ = str(self.root/'outside-app.py')
+        def load():
+            sys.modules[foreign.__name__] = foreign
+            return self.runtime
+        with self.assertRaises(ValueError):
+            driver.run(self.spec, self.source, self.evidence, runtime_loader=load,
+                       helpers_loader=lambda: (self.publish, raise_failures))
+        self.assertIs(sys.modules[foreign.__name__], foreign)
 
     def synchronize(self):
         self.events.append('synchronize')
