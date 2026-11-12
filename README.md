@@ -47,7 +47,10 @@ graph startup, quality and performance gates remain open. The optional dense
 owner's worker-start handoff has CPU lifecycle coverage; native/model selection
 is still pending. A separate private paid-subset graph policy can declare
 which exact keys to capture while retaining ordinary eager execution for other
-shapes. Its model and performance qualification remains pending.
+shapes. Its model and performance qualification remains pending. An additional
+private HC writeback capture trial reuses the existing native modes0/3 operator
+only inside exact decode captures; its eager and prefill paths retain Torch.
+Component capture controls pass; model and performance gates remain pending.
 
 See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece

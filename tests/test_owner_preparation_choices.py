@@ -115,3 +115,26 @@ def test_unavailable_subset_fails_coordinated_contract_before_backend_allocation
     with pytest.raises(ValueError, match='private exact graph'):
         prepared.prepare(engine, text, NS(identity='q8'), page_tokens=128, device='cpu')
     assert prepared.before is None and prepared.workspaces == {}
+
+
+def test_native_hc_writeback_capture_is_opt_in_with_unchanged_false_identity():
+    assert preparation.parse_preparation(spec(native_hc_writeback_capture=False)) == preparation.parse_preparation(spec())
+    assert preparation.parse_preparation(spec(native_hc_writeback_capture=True))['native_hc_writeback_capture'] is True
+    for value in (0, 1, 'true', None):
+        with pytest.raises(ValueError, match='boolean'):
+            preparation.parse_preparation(spec(native_hc_writeback_capture=value))
+    with pytest.raises(ValueError, match='trial'):
+        preparation.parse_preparation({**spec(native_hc_writeback_capture=True), 'trial': False})
+
+
+def test_unavailable_native_hc_capture_stops_before_backend_or_allocation(monkeypatch):
+    from tensorfold.cuda.sm70 import foundation_headers
+    prepared = owner(native_hc_writeback_capture=True)
+    monkeypatch.setattr(foundation_headers, 'selected_identity', lambda: pytest.fail('unsupported HC capture reached backend'))
+    monkeypatch.setattr(execution_identity, '_retire_store', lambda *a, **k: None)
+    prepared._phase = lambda engine, name, operation, **kwargs: operation()
+    engine = NS(comm=None, tp=8, _native_hc_writeback_capture_enabled=False)
+    text = dict(num_attention_heads=24, num_key_value_heads=2, hidden_size=2560, head_dim=256)
+    with pytest.raises(ValueError, match='private exact graph'):
+        prepared.prepare(engine, text, NS(identity='q8'), page_tokens=128, device='cpu')
+    assert prepared.before is None and prepared.workspaces == {}

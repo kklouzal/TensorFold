@@ -883,7 +883,10 @@ def _fused(tensor, *, half=True):
 
 
 class PreparedHCWriteback:
-    """Resident operator capability, bound only to actual owned no-graph buffers.
+    """Resident operator capability, bound to the original owned buffers.
+
+    The caller selects eager use or the explicit private exact-capture trial;
+    preparing this capability does not change generic family dispatch.
 
     Generic APIs retain their original dispatch. Buffer adoption establishes
     disjoint storages and source prefixes once; only changing row/mode/operands

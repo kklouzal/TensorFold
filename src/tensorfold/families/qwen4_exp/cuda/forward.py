@@ -74,9 +74,13 @@ def _hc_writeback(b, h, hout, pss, streams, mode, branch=None, inject=None, y=No
     # No CUDA capture/capability query on the hot path: the existing execution
     # owner publishes graph policy, and split is the captured-forward boundary.
     prepared = getattr(b, 'hc_writeback', None)
-    if (prepared is not None and b.owner_graph_family == 'uncaptured' and b.split is None
-            and prepared.run(h, hout, pss, streams, mode, branch, inject, y, wts)):
-        return
+    if prepared is not None and b.owner_graph_family == 'uncaptured':
+        if getattr(b, 'hc_writeback_graph_only', False):
+            allowed = (not b.prefill and b.split is not None and getattr(b, 'exact_graph_handoffs', False))
+        else:
+            allowed = b.split is None
+        if allowed and prepared.run(h, hout, pss, streams, mode, branch, inject, y, wts):
+            return
     return glue.hc_writeback(h, hout, pss, streams, mode, branch=branch, inject=inject, y=y, wts=wts)
 
 

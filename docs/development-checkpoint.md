@@ -181,3 +181,21 @@ unexpected per-key or settled budget overruns remain fatal. Policy, chosen keys
 and declined coverage are recorded, and the selection is fixed for the engine's
 lifetime. This is a distinct policy candidate, with model coverage, quality and
 performance verification pending.
+
+
+The separate private boolean `preparation.native_hc_writeback_capture` trial
+prepares the existing owned HC4/D2560/TP8 modes0/3 writeback operator before
+admission and enables it only within private exact nonprefill captures. Other
+writeback modes and eager warmup, serving misses and prefill retain their
+original Torch path. The unchanged operator passed20 actual-row graph cases,
+40 changed-input replays and five retained special-value controls on V100 with
+its frozen source/ELF binding. This is component evidence; the new core hook's
+model capacity, outputs, coverage and performance remain unqualified.
+
+
+The bounded functional smoke keeps its two short known-answer pairs and adds
+one identical serial/MTP continuation pair capped at64 tokens. It requires at
+least16 generated IDs and exact full-sequence agreement so the fixture reaches
+beyond the initial MTP4 window. Length alone is not a graph-use pass: all eight
+closed rank receipts must still show positive target and MTP serving replay.
+The original short-only paid-catalog run remains a failed MTP-coverage result.

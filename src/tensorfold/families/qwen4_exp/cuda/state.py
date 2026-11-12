@@ -46,6 +46,14 @@ class Buffers:
             raise ValueError("issued positional execution requires the admitted unique-history layout")
         wide = c.streams * c.hidden
         self.rows, self.prefill = rows, prefill
+        self.hc_writeback_graph_only = w.meta.get('hc_writeback_graph_only', False)
+        if type(self.hc_writeback_graph_only) is not bool:
+            raise ValueError('HC writeback capture policy must be an explicit boolean')
+        if self.hc_writeback_graph_only and not prefill:
+            if type(rows) is not int or not 0 < rows <= 256:
+                raise ValueError('HC writeback capture requires an actual 1..256-row decode envelope')
+            if w.meta.get('hc_writeback_prepared') is None:
+                raise ValueError('HC writeback capture requires its resident prepared capability')
         self.owner_role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
         from ..pipeline_stage import for_weights as pipeline_for_weights
 
@@ -221,6 +229,8 @@ class Buffers:
         if (prepared_writeback is not None and bf == torch.float16 and c.streams == 4
                 and c.hidden == 2560 and 0 < rows <= 256 and world == 8):
             self.hc_writeback = prepared_writeback.bind(self)
+        if self.hc_writeback_graph_only and not prefill and self.hc_writeback is None:
+            raise ValueError('HC writeback capture lacks its actual bound decode capability')
 
 
 def _rows(t: torch.Tensor, rows: int, keep: int) -> torch.Tensor:

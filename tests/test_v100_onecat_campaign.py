@@ -368,5 +368,53 @@ class GraphPieceDiagnosticTests(unittest.TestCase):
                 frozen.assert_not_called()
 
 
+class FiniteSmokeCoverageTests(unittest.TestCase):
+    def run_client(self, *, short_bad=False, continuation_short=False, continuation_drift=False):
+        import contextlib
+        import io
+        requests = []
+        publications = []
+        def respond(request, timeout):
+            body = json.loads(request.data)
+            self.assertEqual(timeout, 180)
+            requests.append(body)
+            if len(requests) <= 2:
+                content, ids = ('5' if short_bad else '4'), [19, 248046]
+            elif len(requests) <= 4:
+                content, ids = 'READY', [44061, 248046]
+            else:
+                content = 'A controlled continuation fixture.'
+                ids = list(range(2 if continuation_short else 16))
+                if continuation_drift and body['draft']:
+                    ids[-1] += 1
+            payload = {'choices': [{'message': {'content': content}}], 'tensorfold': {'token_ids': ids}}
+            return io.BytesIO(json.dumps(payload).encode())
+        with patch('urllib.request.urlopen', side_effect=respond), patch('sys.argv', ['python', 'fixture-model']), \
+                patch.object(Path, 'write_text', side_effect=lambda value: publications.append(json.loads(value))), \
+                contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(campaign._SMOKE, '<finite smoke client>', 'exec'), {})
+        return requests, publications
+
+    def test_short_known_answers_and_long_pair_preserve_draft_and_token_bounds(self):
+        requests, publications = self.run_client()
+        self.assertEqual(len(requests), 6)
+        self.assertEqual([x['draft'] for x in requests], [False, True] * 3)
+        self.assertEqual([x['max_tokens'] for x in requests], [16] * 4 + [64] * 2)
+        self.assertEqual([len(x) for x in publications], list(range(1, 7)))
+        self.assertEqual(requests[4]['messages'], requests[5]['messages'])
+
+    def test_original_known_answer_contract_remains_required(self):
+        with self.assertRaisesRegex(RuntimeError, 'known-answer'):
+            self.run_client(short_bad=True)
+
+    def test_early_continuation_eos_does_not_claim_refresh_coverage(self):
+        with self.assertRaisesRegex(RuntimeError, 'required token window'):
+            self.run_client(continuation_short=True)
+
+    def test_long_serial_and_mtp_token_ids_must_match(self):
+        with self.assertRaisesRegex(RuntimeError, 'serial/MTP greedy'):
+            self.run_client(continuation_drift=True)
+
+
 if __name__ == "__main__":
     unittest.main()

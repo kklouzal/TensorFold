@@ -589,12 +589,17 @@ def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_event
 _SMOKE = """import json,pathlib,sys,time,urllib.request
 model=sys.argv[1]
 records=[]
-for prompt,expected in [('What is 2+2? Answer with only the number.','4'),
-                        ('Reply with exactly the word READY and nothing else.','READY')]:
+# The longer pair crosses the initial MTP4 window; closed rank counters still
+# decide whether refresh/proposal graphs actually served. Short EOS cases alone
+# do not exercise that route.
+for prompt,expected,limit,minimum in [
+        ('What is 2+2? Answer with only the number.','4',16,1),
+        ('Reply with exactly the word READY and nothing else.','READY',16,1),
+        ('Explain how rainbows form in at least 150 words. Write one continuous paragraph.',None,64,16)]:
     pair=[]
     for drafting in (False,True):
         body={'model':model,'messages':[{'role':'user','content':prompt}],
-              'temperature':0,'max_tokens':16,'stream':False,'draft':drafting,'return_token_ids':True}
+              'temperature':0,'max_tokens':limit,'stream':False,'draft':drafting,'return_token_ids':True}
         request=urllib.request.Request('http://127.0.0.1:8000/v1/chat/completions',
             data=json.dumps(body).encode(),headers={'Content-Type':'application/json'})
         with urllib.request.urlopen(request,timeout=180) as response:
@@ -604,11 +609,14 @@ for prompt,expected in [('What is 2+2? Answer with only the number.','4'),
         pair.append({'request':body,'response':result})
         records.append(pair[-1])
         pathlib.Path('/evidence/smoke-results.json').write_text(json.dumps(records,indent=2)+'\\n')
-        if result['choices'][0]['message']['content'].strip()!=expected:
+        if expected is not None and result['choices'][0]['message']['content'].strip()!=expected:
             raise RuntimeError('exact known-answer functional check failed')
+        ids=result['tensorfold']['token_ids']
+        if type(ids) is not list or not minimum <= len(ids) <= limit or any(type(i) is not int for i in ids):
+            raise RuntimeError('finite smoke continuation did not cover its required token window')
     if pair[0]['response']['tensorfold']['token_ids']!=pair[1]['response']['tensorfold']['token_ids']:
         raise RuntimeError('serial/MTP greedy smoke outputs differ')
-print(json.dumps({'complete':True,'cases':len(records),'scope':'finite known-answer serial/MTP check; no P3/held-out quality claim'}))
+print(json.dumps({'complete':True,'cases':len(records),'scope':'finite known-answer and continuation serial/MTP checks; no P3/held-out quality claim'}))
 """
 
 
@@ -971,7 +979,7 @@ def main(argv=None):
             item.add_argument("--settings", type=Path, required=True)
             item.add_argument("--installed-check", type=Path, required=True)
             item.add_argument("--startup-timeout", type=int, default=600)
-            item.add_argument("--smoke-only", action="store_true", help="serial/MTP known answers only; no benchmark timings")
+            item.add_argument("--smoke-only", action="store_true", help="serial/MTP known answers and bounded continuation only; no benchmark timings")
             item.add_argument("--diagnostic-graph-pieces", action="store_true",
                               help="startup per-piece signed allocation observations; unsynchronized snapshots, diagnostic only, never P3")
             item.add_argument("--cublas-workspace-cache", choices=("inherit", "on", "off"), default="inherit",

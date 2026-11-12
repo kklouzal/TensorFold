@@ -697,11 +697,18 @@ class FlashNextEngine:
         self._exact_graph_subset_enabled = (exact_graph_policy is not None and bool(graphs)
             and owned_graph_request and not managed and self.method_geometry.method in ('none', 'mtp')
             and not vram_experts and not vision)
-        hc_writeback_eligible = (self._owned_expert_requested and graphs is False and dspark_model_dir is None
+        hc_writeback_region = (self._owned_expert_requested and dspark_model_dir is None
             and dflash2_model_dir is None and self.sm70_profile == 'reference'
             and (owner_specification is None or owner_specification['graph_family'] == 'uncaptured'
                  and owner_specification.get('reference_arithmetic') is None)
             and int(text.get('hc_count', 4)) == 4 and int(text['hidden_size']) == 2560)
+        native_hc_requested = (owner_specification is not None
+            and owner_specification.get('native_hc_writeback_capture', False))
+        native_hc_capture = (native_hc_requested and hc_writeback_region
+            and bool(graphs) and owned_graph_request and not managed
+            and self.method_geometry.method in ('none', 'mtp') and not vram_experts and not vision)
+        self._native_hc_writeback_capture_enabled = native_hc_capture
+        hc_writeback_eligible = hc_writeback_region and (graphs is False or native_hc_capture)
         native_gdn_batch_region = (concurrent and self._owned_expert_requested and not managed
             and not self._owned_expert_admin_requested and source_is_gguf and tp == 8
             and history_placement is not None and self.sm70_profile == "reference"
@@ -731,7 +738,8 @@ class FlashNextEngine:
                             0 if self._owned_expert_gate_up_requested is None else self._owned_expert_gate_up_requested.rows,
                             int(self._owned_expert_requested),
                             int(self._owned_expert_requested and self._owned_expert_admin_requested),
-                            int(self._reference_owner_tiles_requested), int(hc_writeback_eligible)])
+                            int(self._reference_owner_tiles_requested),
+                            int(hc_writeback_eligible) | (int(native_hc_requested) << 1) | (int(native_hc_capture) << 2)])
             if any(row != modes[0] for row in modes[1:]):
                 raise RuntimeError("tensor-parallel ranks selected different history/session or expert placement policies")
         if self._owned_expert_requested and self._owned_expert_plan is None:
@@ -744,7 +752,8 @@ class FlashNextEngine:
 
         # A candidate operator island, not a family/profile switch. Resolve and
         # force function residency before the ordinary physical admission sees
-        # free memory. Other models/methods/graphs retain their original route.
+        # free memory. The explicit graph-only trial retains eager Torch writeback;
+        # other models/methods retain their original route.
         hc_writeback_prepared = None
         if hc_writeback_eligible:
             from tensorfold.cuda.sm70.family_ops import prepare_owned_hc_writeback
@@ -752,6 +761,8 @@ class FlashNextEngine:
             channel = 'tensorfold/flashnext/hc-writeback'
             def prepare_writeback():
                 nonlocal hc_writeback_prepared
+                if native_hc_requested and not native_hc_capture:
+                    raise ValueError('native HC writeback capture requires the fixed private exact graph region')
                 hc_writeback_prepared = prepare_owned_hc_writeback(torch.device('cuda', torch.cuda.current_device()))
                 return {'module': hc_writeback_prepared.module.__name__, 'operation': 'writeback'}
             hc_prepared_rows = _phase(self, channel, 'prepare', prepare_writeback, may_refuse=False)
@@ -1607,6 +1618,8 @@ class FlashNextEngine:
                 self.capacity_plan["onecat_gu_weights"] = self._onecat_owner.profile()
             if hc_writeback_prepared is not None:
                 w.meta['hc_writeback_prepared'] = hc_writeback_prepared
+                if native_hc_capture:
+                    w.meta['hc_writeback_graph_only'] = True
             self.capacity_plan["expert_parallel"]["implementation"] = w.meta["owned_expert_plan"].identity[0]
         if self.position_profile is not None:
             from ..position_profile import bind_position_profile
