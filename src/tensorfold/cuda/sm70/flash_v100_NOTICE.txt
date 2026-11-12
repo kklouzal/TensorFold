@@ -5,7 +5,7 @@ Tag26.10, commit0ababf82e3836c1786d7937c6002670ca4ecda62.
 D.Skryabin - telegram @ai_bond007
 
 The optional controlled component compiles unmodified upstream kernel/forward.cu
-and its exact include closure alongside the owned adapter. No upstream package
+and kernel/forward_varlen.cu (same immutable pin) and their exact include closure alongside the owned adapter. No upstream package
 installation, metadata aliases or cache-update API is selected. Preserve the
 accompanying flash_v100_LICENSE.txt when redistributing a resulting binary.
 External source/header identities and native SDK origins are retained by the

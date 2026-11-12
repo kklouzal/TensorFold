@@ -33,6 +33,7 @@ INPUTS = MappingProxyType({
     "include/softmax.h": (16462, "11ca1feaafef3592263e61783cbdb3907eb389f13808f8c320a59e8d1b198b0d"),
     "include/swizzle.h": (8284, "a8c07ce63bb92abf1f888d735f7956ca59bd66d3007b8fe7fc2bc6c81079d056"),
     "include/template.h": (12486, "21d4369bd93466d5f1250768f6320ebd2d19f9ab9e901c3a5dc9ba80420bd09d"),
+    "kernel/forward_varlen.cu": (27154, "876bdcc25c72104cb6ec71c044606ab81ccd861d7d4ded9ae3211258a7960874"),
     "kernel/forward.cu": (19802, "add843cc3c95ff9a3d74accf51c57ec9c00965f4a9a5945f71ec0fde83e7a991"),
 })
 
@@ -105,15 +106,16 @@ def compile_component(root, output, jobs):
     if headers is None:
         raise ValueError('component compilation requires protected selected SDK headers')
     owned = Path(__file__).resolve().parents[1] / 'src/tensorfold/cuda/sm70'
-    sources = [owned / 'flash_v100_forward.cpp', owned / 'flash_v100_forward.cu', root / 'kernel/forward.cu']
-    files = [*sources, owned / 'flash_v100_forward.cuh', owned / 'prefill_dense_contracts.cuh']
+    sources = [owned / 'flash_v100_forward.cpp', owned / 'flash_v100_forward.cu', root / 'kernel/forward.cu', root / 'kernel/forward_varlen.cu']
+    files = [*sources, owned / 'flash_v100_forward.cuh', owned / 'prefill_dense_contracts.cuh', Path(__file__).resolve(),
+        owned / 'flash_v100_NOTICE.txt', owned / 'flash_v100_LICENSE.txt']
     digests = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
     options = dict(extra_cflags=['-O3'],
         extra_cuda_cflags=['-O3', '-gencode=arch=compute_70,code=sm_70', '--use_fast_math',
             '-U__CUDA_NO_HALF_OPERATORS__', '-U__CUDA_NO_HALF_CONVERSIONS__', '-U__CUDA_NO_HALF2_OPERATORS__',
             '--expt-relaxed-constexpr', '--expt-extended-lambda', '--threads=1'],
         extra_include_paths=[*map(str, headers.roots), str(root / 'include')])
-    record = {'scope': 'standalone controlled component compile/import; no JIT/provider/model qualification',
+    record = {'scope': 'standalone dense+compacted-varlen controlled component compile/import; no JIT/provider/model qualification',
         'upstream_commit': PIN, 'foreign_inputs': dict(INPUTS), 'owned_source_sha256': digests,
         'SDK_headers': headers.record(), 'torch': torch.__version__, 'torch_cuda': torch.version.cuda,
         'requested_options': json.loads(json.dumps(options)), 'jobs': jobs, 'cuda_initialized_before': False}
@@ -130,6 +132,15 @@ def compile_component(root, output, jobs):
     try:
         module = cpp_extension.load(name='tf_fa_v100_forward_' + identity[:20], sources=list(map(str, sources)),
             build_directory=str(directory), verbose=True, with_cuda=True, **options)
+        for batch in (1, 256):
+            assert module.compacted_workspace_bytes(batch) == 2 * batch * 2051 * 256 * 2 + 4 * (3 * batch + 2)
+        for batch in (0, 257):
+            try:
+                module.compacted_workspace_bytes(batch)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError('native compacted geometry accepted unsupported row envelope')
         module.validate_geometry(1, 1, 12, 2051, 1)
         module.validate_geometry(1, 1, 32768, 256, 32768)
         try:

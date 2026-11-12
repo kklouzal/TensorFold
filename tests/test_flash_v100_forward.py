@@ -115,3 +115,43 @@ def test_mutation_publication_failure_poisoned_after_native_launch(native, monke
         owner.run(*args)
     owner.close()
     assert calls.count('run') == 1
+
+
+def compacted_operands(batch=1):
+    q = torch.ones(batch * 12, 1, 256).half()
+    k = torch.ones(batch, 2051, 1, 256).half()
+    return q, k, k.clone(), torch.ones(batch, 1, 2051, dtype=torch.bool), torch.empty_like(q), torch.empty(1, batch * 12)
+
+
+def test_compacted_credit_refusal_before_native_acquisition(native):
+    module, calls, _ = native
+    args = compacted_operands()
+    with pytest.raises(MemoryError, match='credit'):
+        fa.prepare_compacted(module, *args, tensor_budget_bytes=fa.compacted_workspace_bytes(1) - 1)
+    assert calls == []
+
+
+@pytest.mark.parametrize('batch', [0, 257, True, 1.0])
+def test_compacted_workspace_bound_refuses_unfunded_or_unbounded_geometry(batch):
+    with pytest.raises(ValueError):
+        fa.compacted_workspace_bytes(batch)
+
+
+def test_compacted_warm_mutation_and_native_mode_dispatch(native, monkeypatch):
+    module, calls, _ = native
+    monkeypatch.setattr(module.Prepared, 'run_compacted', lambda self, *args: self.invoke('compacted-run'), raising=False)
+    args = compacted_operands()
+    before = args[-2]._version, args[-1]._version
+    with fa.prepare_compacted(module, *args, tensor_budget_bytes=fa.compacted_workspace_bytes(1)) as owner:
+        result = owner.run(*args)
+        assert result[0] is args[-2] and result[1] is args[-1]
+        assert (args[-2]._version, args[-1]._version) == tuple(v + 2 for v in before)
+    assert calls == ['acquire', 'configure', 'warm', 'compacted-run', 'close']
+
+
+def test_compacted_missing_validity_refused_before_native_acquisition(native):
+    module, calls, _ = native
+    args = list(compacted_operands()); args[3] = None
+    with pytest.raises(ValueError, match='validity'):
+        fa.prepare_compacted(module, *args, tensor_budget_bytes=fa.compacted_workspace_bytes(1))
+    assert calls == []
