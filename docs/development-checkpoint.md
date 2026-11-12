@@ -259,10 +259,25 @@ allowances, the derived policy, read-only plan and all24 bootstrap/post-CUDA/rea
 receipts, including GPU UUID, same worker PID, current thread CPU masks and owned
 anonymous/pinned-page locality. The actual eight-GPU Torch/CUDA/NCCL test now
 passes all24 receipts, local anonymous/pinned pages and helper-thread masks.
-The full model/capacity and new-region performance gates remain pending.
+The frozen Source18 TensorFold reference now passes the bounded full-model
+NUMA gate: TP8/ETP4, 24 full 262,144-token Q8 windows, MTP4, prefill256/execution120
+and the 10-key paid graph catalogue. All 24 placement receipts validated before any
+generation and remained unchanged through clean retirement. Six requests
+include exact 64-token serial/MTP agreement; every rank closed with 75 verify
+and 66 MTP serving graph hits. Captures used 848 MiB within the 1,441 MiB allowance.
+Source UID `68ad56e92f8debb9e4a40176c50d1a39013ce04ea28ab2b124f84804b824fe9e`
+and image `sha256:d40618a6a17b23a2a05f592d9fc0f6253b68bb12aebd7f5ab3cb7a481a6029e4`
+bind that finite result. The separately held host controller includes the
+reviewed NUMA settings-parser correction; frozen worker tools and the installed
+image were unchanged. The installed gate passed 494 tests and 55 subtests with
+one existing platform skip under the required worker policy. The first CPU
+procedure's read-only cache failure and the first model controller's pre-Docker
+settings rejection are retained. Whole-model 1Cat, broader quality and matched
+new-region performance qualification remain pending.
 Shared file-cache pages and necessary TP8 traffic are outside a zero-UPI claim.
 
 The initial unbound TensorFold timing arm completed, but the matching 1Cat arm
 was cleanly cancelled after C8 when NUMA became a required region. Both remain
 diagnostic evidence; incomplete candidate results cannot establish a winner.
-The NUMA region requires a fresh functional baseline and matched timing run.
+The NUMA region now has a fresh TensorFold functional baseline; matched timing
+and candidate qualification remain required.

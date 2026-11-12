@@ -16,8 +16,11 @@ worker seccomp profile derived from the running Docker default. Each rank binds
 CPU cores and host-memory allocation to its GPU's PCI-local node before exec of
 Torch/CUDA, then verifies actual placement again after CUDA and startup. The
 unprivileged container permission, eight-rank CPU/exec and actual eight-GPU
-Torch/CUDA/NCCL/page/thread placement gates pass; the full model gate remains
-pending. The private campaign accepts the required NUMA settings and forwards
+Torch/CUDA/NCCL/page/thread placement gates pass. The frozen Source18 TensorFold
+reference also passed the bounded full-model NUMA gate with TP8/ETP4,
+24 full 262,144-token Q8 windows, MTP4 and a paid graph catalogue. Its six requests
+include exact 64-token serial/MTP agreement; quality and matched performance
+qualification remain pending. The private campaign accepts the required NUMA settings and forwards
 the sealed plan to its supervisor. Both GPU-history and RAM-archive deployment
 recipes require the worker-purpose profile. See [V100 deployment](deploy/v100/README.md).
 
