@@ -45,9 +45,17 @@ def plan(static, b, states, workspace, kernel, *, segs=None):
 def test_launch_bound_depends_only_on_exact_key_and_registered_width(rows, count, width, bound, preload):
     facts = gdn_value8.batch_layout(rows, count, width)
     assert facts['max_window_rows'] == bound and facts['preload_rows'] == preload
-    assert facts['core_grid'] == (16, 6, count)
-    assert facts['front_grid'] == (2, bound, count) and facts['back_grid'] == (6, bound, count)
+    assert facts['core_grid'] == [16, 6, count]
+    assert facts['front_grid'] == [2, bound, count] and facts['back_grid'] == [6, bound, count]
     assert facts['minimum_active_q_bytes'] == rows*1024 and facts['q_bytes_per_capacity_row'] == 1024
+
+
+def test_new_batch_resource_facts_are_directly_publishable_on_strict_control_channel():
+    import json
+    from tensorfold.engine.model_identity import canonical_runtime_json
+
+    facts = gdn_value8.batch_layout(120, 24, 5)
+    assert json.loads(canonical_runtime_json(facts, max_bytes=4096)) == facts
 
 
 @pytest.mark.parametrize('args', [(0, 0, 5), (1, 0, 5), (121, 24, 5), (25, 25, 1),

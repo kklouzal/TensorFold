@@ -51,8 +51,8 @@ def batch_layout(rows, participants, width):
     return {'rows': rows, 'participants': participants, 'max_window_rows': bound,
             'preload_rows': next(value for value in (1, 2, 4, 5) if bound <= value),
             'minimum_active_q_bytes': rows*1024, 'q_bytes_per_capacity_row': 1024,
-            'front_grid': (2, bound, participants), 'core_grid': (16, 6, participants),
-            'back_grid': (6, bound, participants)}
+            'front_grid': [2, bound, participants], 'core_grid': [16, 6, participants],
+            'back_grid': [6, bound, participants]}
 
 
 def _span(tensor):

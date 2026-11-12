@@ -51,7 +51,7 @@ def plans(candidate, table, b, workspace):
                 b.gout[:table.rows], b.gxs[:table.rows], workspace) for layer in range(table.static.lin)]
 
 
-@pytest.mark.parametrize('rows,count', [(1, 1), (5, 1), (6, 2), (120, 24)])
+@pytest.mark.parametrize('rows,count', [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 2), (120, 24)])
 @pytest.mark.parametrize('pattern', ['random', 'masked'])
 @pytest.mark.parametrize('negative', [False, True])
 def test_actual_batch_and_scalar_bits_saved_state_ragged_owners_parity_masks(component, rows, count, pattern, negative, record_property):
@@ -87,7 +87,9 @@ def test_actual_batch_and_scalar_bits_saved_state_ragged_owners_parity_masks(com
         incumbent_controls.exact(state.conv, before)
     record_property('value8_batch_component', json.dumps({**identity(old, candidate),
         'rows': rows, 'participants': count, 'pattern': pattern, 'negative_decay': negative,
-        'preload': bound[0].max_window_rows, 'Q_capacity_bytes': workspace.q.numel()*workspace.q.element_size()}))
+        'max_window_rows': bound[0].max_window_rows,
+        'preload_rows': gdn_value8.batch_layout(rows, count, static.width)['preload_rows'],
+        'Q_capacity_bytes': workspace.q.numel()*workspace.q.element_size()}))
 
 
 @pytest.mark.parametrize('count', [1, 24])
