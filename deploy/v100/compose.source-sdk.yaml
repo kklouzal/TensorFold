@@ -1,0 +1,7 @@
+# New source SDKs select an identity-bound persistent Triton cache in the image.
+# Keep the base profile's legacy /cache/triton setting for existing images.
+services:
+  tensorfold:
+    image: ${TENSORFOLD_V100_IMAGE:?Set TENSORFOLD_V100_IMAGE to the qualified source SDK image}
+    environment:
+      TRITON_CACHE_DIR: !reset null

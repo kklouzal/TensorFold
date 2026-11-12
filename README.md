@@ -1523,12 +1523,18 @@ docker build --network=none \
 ```
 
 The refreshed V100 nightly source compiled in the64-job bootstrap and its exact
-owned05adb fork passed five-path precommit lint/finalization. Final SDK, native
-device/model and performance qualification remain pending in the shared ledger.
+owned05adb fork passed five-path precommit lint/finalization. Its SDK image is
+built, and the installed restricted FP32 Triton FMA component and cache-profile
+inheritance checks passed. Other native/collective, full model and performance
+qualification remain pending in the shared ledger.
 
 That command builds the source producer, not a serving image. Complete the
 source workflow's framework build/export, installed audit and native/model gates
 before deployment. CUDA13 official wheels do not provide V100 qualification.
+New source-SDK service launches use both `deploy/v100/compose.yaml` and
+`deploy/v100/compose.source-sdk.yaml`, following the
+[cache profile](deploy/v100/README.md#refreshed-source-sdk-cache-profile);
+the legacy base launch retains its old cache behavior.
 The current refresh's three profile statuses remain in the
 [shared ledger](deploy/gb10/foundation-refresh-20261111.md).
 

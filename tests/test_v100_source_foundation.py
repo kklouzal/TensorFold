@@ -87,6 +87,10 @@ if args[0].endswith("source_foundation.py"):
     if args[1] == "source-configuration":
         print("tf_torch_wheel_version=2.14.1+tfcu129sm70")
         print("tf_nccl_version=2.32.3")
+        print("tf_lint_python_version=3.11.18")
+        print("tf_lint_python_build=20261110")
+        print("tf_lint_python_sha256=" + "a" * 64)
+        print("tf_lint_tools_sha256=" + "b" * 64)
         sys.exit(0)
     if args[1] == "verify-bootstrap-sources":
         (Path(os.environ["TF_SOURCE_STATE"]) / "receipts/bootstrap-sources.json").write_text(
@@ -368,7 +372,7 @@ def test_runtime_source_metadata_is_preserved_and_source_packages_are_installed_
     assert receipt["source_distributions"]["torch"] == {
         "version": "2.16.0.dev20261111+tfcu129sm70", "source_url": "file:///owned/torch",
         "requires_dist": ["typing-extensions>=1"], "requested_extras": [], "source_commit": "b" * 40}
-    assert receipt["triton_execution"] == "import-only; no SM70 compiler/backend execution contract"
+    assert receipt["triton_execution"] == "SM70 FP32 moe_partial ordered-FMA; protected CUDA12 tools; other kernels unqualified"
 
 
 @pytest.mark.parametrize("change", ["missing-source", "wrong-source-version", "remote-source", "editable-source"])
@@ -385,3 +389,133 @@ def test_runtime_report_requires_actual_declared_owned_source_metadata(change):
         source["download_info"]["dir_info"] = {"editable": True}
     with pytest.raises(ValueError, match="source"):
         SOURCE.render_build_report(data, "c" * 64, runtime=True, pins=pins)
+
+
+def lint_python_pins():
+    return {"lint_python": {"version": "3.11.18", "build": "20261110", "bytes": 30783322,
+        "sha256": "a" * 64,
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/"
+               "cpython-3.11.18%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"}}
+
+
+def test_lint_registry_selects_exact_archive_build_without_patching_uv():
+    pins = lint_python_pins()
+    registry = SOURCE.lint_python_registry(pins)
+    assert registry == {"cpython-3.11.18-linux-x86_64-gnu": {
+        "name": "cpython", "arch": {"family": "x86_64", "variant": None}, "os": "linux", "libc": "gnu",
+        "major": 3, "minor": 11, "patch": 18, "prerelease": "", "url": pins["lint_python"]["url"],
+        "sha256": "a" * 64, "variant": None, "build": "20261110"}}
+    for field, value in (("url", "https://example.invalid/python.tar.gz"), ("bytes", 0),
+                         ("sha256", "not-a-sha"), ("version", "3.11.18rc1")):
+        altered = copy.deepcopy(pins)
+        altered["lint_python"][field] = value
+        with pytest.raises(ValueError):
+            SOURCE.lint_python_registry(altered)
+
+
+def test_lint_capture_requires_selected_managed_binary_version_and_registry(tmp_path, monkeypatch):
+    pins = lint_python_pins()
+    root = tmp_path / "managed"
+    root.mkdir()
+    binary = root / "python3.11"
+    binary.write_bytes(b"independent managed interpreter fixture")
+    registry = tmp_path / "registry.json"
+    registry.write_bytes(SOURCE.canonical(SOURCE.lint_python_registry(pins)))
+    commands = []
+    def run(command, **kwargs):
+        commands.append(command)
+        return '{"implementation":"cpython","version":[3,11,18]}'
+    monkeypatch.setattr(SOURCE.subprocess, "check_output", run)
+    receipt = SOURCE.capture_lint_python(pins, binary, root, registry)
+    assert receipt["interpreter"]["sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
+    assert commands[0][:3] == [str(binary.resolve()), "-I", "-c"]
+    outsider = tmp_path / "outside-python"
+    outsider.write_bytes(b"same version from an unselected installation")
+    with pytest.raises(ValueError, match="escapes"):
+        SOURCE.capture_lint_python(pins, outsider, root, registry)
+    assert len(commands) == 1
+    monkeypatch.setattr(SOURCE.subprocess, "check_output", lambda *args, **kwargs:
+                        '{"implementation":"cpython","version":[3,11,17]}')
+    with pytest.raises(ValueError, match="differs"):
+        SOURCE.capture_lint_python(pins, binary, root, registry)
+    registry.write_text('{}')
+    with pytest.raises(ValueError, match="registry differs"):
+        SOURCE.capture_lint_python(pins, binary, root, registry)
+
+
+def test_framework_private_cutlass_version_comes_from_the_selected_header(tmp_path):
+    header = tmp_path / "third_party/cutlass/include/cutlass/version.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("#define CUTLASS_MAJOR 4\n#define CUTLASS_MINOR 8\n#define CUTLASS_PATCH 0\n")
+    actual = SOURCE.framework_private_cutlass(tmp_path)
+    assert actual == {"version": "4.8.0", "source": "pytorch/third_party/cutlass",
+                      "version_header": SOURCE.file_identity(header)}
+    header.write_text(header.read_text() + "#define CUTLASS_PATCH 1\n")
+    with pytest.raises(ValueError, match="one exact component version"):
+        SOURCE.framework_private_cutlass(tmp_path)
+
+
+def test_isolated_lint_script_dependencies_keep_their_actual_python_lifetime():
+    data = {"environment": {"sys_platform": "linux", "platform_machine": "x86_64",
+                            "implementation_name": "cpython", "python_version": "3.11"},
+            "install": [{"metadata": {"name": "cmakelint", "version": "1.4.1"}, "download_info": {
+                "url": "https://files.pythonhosted.org/packages/cmakelint-1.4.1-py3-none-any.whl",
+                "archive_info": {"hashes": {"sha256": "a" * 64}}}}]}
+    data["install"].append({"metadata": {"name": "lintrunner", "version": "0.12.7"}, "download_info": {
+        "url": "https://files.pythonhosted.org/packages/lintrunner-0.12.7-py3-none-any.whl",
+        "archive_info": {"hashes": {"sha256": "c" * 64}}}})
+    lock, receipt = SOURCE.render_build_report(data, "b" * 64, lint_script=True)
+    assert "cmakelint @" in lock and receipt["packages"]["cmakelint"]["version"] == "1.4.1"
+    assert receipt["schema"] == "tensorfold.v100-source-lint-script-tools"
+    assert receipt["environment"]["python_version"] == "3.11"
+    data["environment"]["python_version"] = "3.12"
+    with pytest.raises(ValueError, match="native Linux AMD64 CPython3.11"):
+        SOURCE.render_build_report(data, "b" * 64, lint_script=True)
+    with pytest.raises(ValueError, match="separate interpreter"):
+        SOURCE.render_build_report(data, "b" * 64, lint=True, lint_script=True)
+
+
+@pytest.mark.parametrize("fault", ["", "producer", "columns"])
+def test_export_captures_an_explicit_postbuild_package_observation_before_receipt(fault, tmp_path):
+    state = tmp_path / "state"
+    tools = state / "venv/bin"
+    tools.mkdir(parents=True)
+    marker = tmp_path / "capture-called"
+    python = tools / "python"
+    python.write_text(f"#!{sys.executable}\n" + """import os,sys
+from pathlib import Path
+args=sys.argv[1:]
+if args[0] == '-':
+    os.execv(sys.executable,[sys.executable,*args])
+if args[1] == 'source-configuration':
+    print('tf_torch_wheel_version=2.16.0.dev20261111+tfcu129sm70')
+    print('tf_nccl_version=2.32.6')
+    print('tf_lint_python_version=3.11.18')
+    print('tf_lint_python_build=20261110')
+    print('tf_lint_python_sha256='+'a'*64)
+    print('tf_lint_tools_sha256='+'b'*64)
+elif args[1] == 'capture-build':
+    Path(os.environ['CAPTURE_MARKER']).write_text('validated export reached capture')
+    sys.exit(23)
+""")
+    python.chmod(0o755)
+    query = tools / "dpkg-query"
+    query.write_text("#!/bin/sh\nif test \"$OBSERVATION_FAULT\" = columns; then printf 'pkg\\t1\\n'; "
+                     "else printf 'pkg\\t1\\tamd64\\n'; fi\n"
+                     "if test \"$OBSERVATION_FAULT\" = producer; then exit 42; fi\n")
+    query.chmod(0o755)
+    environment = {**os.environ, "TF_SOURCE_STATE": str(state), "TF_PROJECT_ROOT": str(ROOT),
+                   "CAPTURE_MARKER": str(marker), "OBSERVATION_FAULT": fault, "MAX_JOBS": "4"}
+    result = subprocess.run(["bash", str(ROOT / "deploy/v100/source_build.sh"), "export"],
+                            env=environment, capture_output=True, text=True)
+    observation = state / "receipts/builder-dpkg-observation.json"
+    if fault:
+        assert result.returncode == (42 if fault == "producer" else 1)
+        assert not marker.exists() and not observation.exists()
+    else:
+        assert result.returncode == 23 and marker.is_file()
+        actual = json.loads(observation.read_text())
+        assert actual["stage"] == "export-time package database observation; no pre-build claim"
+        assert actual["rows"] == 1
+        payload = (state / "receipts/builder-dpkg.txt").read_bytes()
+        assert actual["inventory"] == {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}

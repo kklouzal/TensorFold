@@ -15,8 +15,13 @@ export PATH="$tf_state/venv/bin:$PATH"
 tf_configuration=$(python "$tf_project/deploy/v100/source_foundation.py" source-configuration \
     --pins "$tf_project/deploy/v100/source-pins.json")
 eval "$tf_configuration"
+tf_lint_prefix="$tf_state/lint-venv/$tf_lint_tools_sha256"
 python "$tf_project/deploy/v100/source_foundation.py" verify-pristine-base
-export UV_CACHE_DIR="$tf_state/lint-cache/uv" UV_PYTHON_INSTALL_DIR="$tf_state/lint-python"
+export UV_CACHE_DIR="$tf_state/lint-cache/uv/$tf_lint_python_sha256" \
+    UV_PYTHON_INSTALL_DIR="$tf_state/lint-python/$tf_lint_python_sha256" \
+    UV_PYTHON_CPYTHON_BUILD="$tf_lint_python_build" \
+    UV_PYTHON_DOWNLOADS_JSON_URL="$tf_state/receipts/lint-python-downloads-$tf_lint_python_sha256.json" \
+    UV_FIND_LINKS="$tf_state/release/lint-wheels" UV_NO_INDEX=1
 mkdir -p "$tf_state/build" "$tf_state/logs" "$tf_state/receipts" "$tf_state/wheels"
 
 tf_capture_sources() {
@@ -30,13 +35,20 @@ tf_capture_sources() {
 
 case ${1:-} in
 lint-prepare)
-    if [[ ! -x "$tf_state/lint-venv/bin/python" ]]; then
-        python3.12 -m venv "$tf_state/lint-venv"
+    if [[ ! -x "$tf_lint_prefix/bin/python" ]]; then
+        python3.12 -m venv --without-pip "$tf_lint_prefix"
     fi
-    /opt/source-venv/bin/python -m pip --python "$tf_state/lint-venv" install --no-index \
+    /opt/source-venv/bin/python -m pip --python "$tf_lint_prefix" install --no-index \
         --find-links "$tf_state/release/lint-wheels" --require-hashes \
         -r "$tf_project/deploy/v100/requirements-source-lint-offline-amd64.lock"
-    "$tf_state/lint-venv/bin/uv" python install "$tf_lint_python_version"
+    python "$tf_project/deploy/v100/source_foundation.py" render-lint-python-registry \
+        --pins "$tf_project/deploy/v100/source-pins.json" --output "$UV_PYTHON_DOWNLOADS_JSON_URL"
+    "$tf_lint_prefix/bin/uv" python install "$tf_lint_python_version"
+    tf_lint_interpreter=$("$tf_lint_prefix/bin/uv" python find "$tf_lint_python_version")
+    python "$tf_project/deploy/v100/source_foundation.py" capture-lint-python \
+        --pins "$tf_project/deploy/v100/source-pins.json" --executable "$tf_lint_interpreter" \
+        --install-directory "$UV_PYTHON_INSTALL_DIR" --registry "$UV_PYTHON_DOWNLOADS_JSON_URL" \
+        --output "$tf_state/receipts/lint-python-runtime.json"
     ;;
 acquire|acquire-bootstrap)
     tf_acquire_args=()
@@ -45,13 +57,13 @@ acquire|acquire-bootstrap)
     fi
     python "$tf_project/deploy/v100/source_foundation.py" acquire-sources \
         --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" \
-        --lint-tool "$tf_state/lint-venv/bin/spin" "${tf_acquire_args[@]}"
+        --lint-tool "$tf_lint_prefix/bin/spin" "${tf_acquire_args[@]}"
     tf_capture_sources "$1"
     ;;
 finalize)
     python "$tf_project/deploy/v100/source_foundation.py" finalize-sources \
         --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" \
-        --receipts "$tf_state/receipts" --lint-tool "$tf_state/lint-venv/bin/spin"
+        --receipts "$tf_state/receipts" --lint-tool "$tf_lint_prefix/bin/spin"
     ;;
 prepare|prepare-bootstrap)
     if [[ ! -x "$tf_state/venv/bin/python" ]]; then
@@ -109,6 +121,32 @@ probes)
     done
     ;;
 export)
+    # This is an export-time observation, not a reconstructed pre-build baseline.
+    # Publish only a complete successful dpkg-query result before receipt capture.
+    dpkg-query -W -f='${binary:Package}\t${Version}\t${Architecture}\n' \
+        > "$tf_state/receipts/builder-dpkg.txt.pending"
+    mv -- "$tf_state/receipts/builder-dpkg.txt.pending" "$tf_state/receipts/builder-dpkg.txt"
+    python - "$tf_state/receipts/builder-dpkg.txt" "$tf_state/receipts/builder-dpkg-observation.json" <<'PY_PACKAGES'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+source, output = map(Path, sys.argv[1:])
+with source.open("rb") as stream:
+    raw = stream.read(16 * 2**20 + 1)
+if not raw or len(raw) > 16 * 2**20:
+    raise ValueError("builder package observation exceeds its document bound")
+rows = raw.decode("utf-8").splitlines()
+if any(len(row.split("\t")) != 3 or any(not value for value in row.split("\t")) for row in rows):
+    raise ValueError("builder package observation requires package/version/architecture columns")
+receipt = {"schema": "tensorfold.v100-builder-package-observation", "version": 1,
+    "stage": "export-time package database observation; no pre-build claim",
+    "rows": len(rows), "inventory": {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}}
+temporary = output.with_name(output.name + ".pending")
+temporary.write_text(json.dumps(receipt, sort_keys=True) + "\n")
+temporary.replace(output)
+PY_PACKAGES
     python "$tf_project/deploy/v100/source_foundation.py" capture-build \
         --pins "$tf_project/deploy/v100/source-pins.json" --state "$tf_state" --project "$tf_project" \
         --output "$tf_state/receipts/source-build.json"
@@ -118,7 +156,8 @@ export)
     cp "$tf_state/wheels/"torch-*.whl "$tf_state/release/wheels/"
     cp "$tf_state/receipts/source-build.json" "$tf_state/receipts/"*-source-inventory.json \
         "$tf_state/receipts/"*-metadata.json "$tf_state/receipts/"*-cubins.txt "$tf_state/receipts/"*-binary.sha256 \
-        "$tf_state/receipts/builder-dpkg.txt" "$tf_state/release/build-inputs/"
+        "$tf_state/receipts/builder-dpkg.txt" "$tf_state/receipts/builder-dpkg-observation.json" \
+        "$tf_state/release/build-inputs/"
     cp "$tf_state/sources/pytorch/build/CMakeCache.txt" "$tf_state/release/build-inputs/"
     for tf_probe in cccl-primitives libraries-probe reconvergence-6111901; do
         cp "$tf_state/build/$tf_probe" "$tf_state/release/probes/"

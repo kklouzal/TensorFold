@@ -12,7 +12,7 @@
 #include <cstring>
 
 static_assert(CUBLAS_VER_MAJOR == 12 && CUBLAS_VER_MINOR == 9 && CUBLAS_VER_PATCH == 2 && CUBLAS_VER_BUILD == 10);
-static_assert(CUDNN_VERSION == 91002 && NCCL_VERSION_CODE == 23203);
+static_assert(CUDNN_VERSION == 91002 && NCCL_VERSION_CODE == 23206);
 static_assert(CUTLASS_MAJOR == 4 && CUTLASS_MINOR == 8 && CUTLASS_PATCH == 1);
 
 static void blas(cublasStatus_t status, const char* action) {

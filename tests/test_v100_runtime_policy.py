@@ -107,9 +107,10 @@ def rebind(tmp_path, monkeypatch):
     actual = {key: value for key, value in old_runtime.items() if key != "torch_config_sha256"}
     actual.update(torch_build_configuration_sha256=build_sha, host_observations=host)
     monkeypatch.setattr(SOURCE, "__file__", str(current))
-    monkeypatch.setattr(SOURCE, "runtime_identity", lambda: copy.deepcopy(actual))
-    monkeypatch.setattr(SOURCE, "validate_runtime", lambda _: None)
-    monkeypatch.setattr(SOURCE, "application_nccl_identity", lambda: {"path": str(library), "version": 23203})
+    monkeypatch.setattr(SOURCE, "verify_pristine_base", lambda expected=None: {})
+    monkeypatch.setattr(SOURCE, "runtime_identity", lambda pins: copy.deepcopy(actual))
+    monkeypatch.setattr(SOURCE, "validate_runtime", lambda _, pins: None)
+    monkeypatch.setattr(SOURCE, "application_nccl_identity", lambda pins: {"path": str(library), "version": 23203})
     return pins, prior, policy_path, actual, library, header, build_path, old_producer, previous_path
 
 

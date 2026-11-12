@@ -91,6 +91,15 @@ toolkit's older default headers are not qualification for the selected release.
 Compiler flags, CMake cache, linked/loaded paths, source/submodule identities,
 whole artifact hashes and CPU/device receipts remain required release inputs.
 
+New source-SDK model launches use
+`docker compose -f deploy/v100/compose.yaml -f deploy/v100/compose.source-sdk.yaml`
+after their required qualification/resource checks. The overlay clears only the
+old explicit Triton cache override so the new image's checked namespace applies;
+the legacy base profile/recovery cache stays intact. See the
+[new source-SDK launch profile](README.md#refreshed-source-sdk-cache-profile).
+Compose render and create/inspect-only environment checks must precede target
+launch; image construction does not imply model qualification.
+
 ## Build stages
 
 `Dockerfile.source-builder` supplies build tools, profilers and the pinned CUDA base.
@@ -102,6 +111,10 @@ The preserved MTP FP32 MoE partial is an actual restricted Triton GPU consumer;
 its original ordered-FMA route needs pinned-source and SM70 real-shape
 qualification. Import success or the native Half family selector does not qualify
 that route, and regular upstream CC8+ support is not a blanket Volta claim.
+Actual restricted-FMA component checks through R160 passed bitwise against an
+independent C99 fmaf oracle with protected12.9 ptxas/libdevice. The final installed
+SDK also passed all six scoped cases with its checked persistent compiler/cache
+bindings. Full model and other native/collective qualification remain separate.
 The closure has no binary Torch/TorchVision or NVIDIA/CUDA provider wheels. The framework wheel
 is produced from canonical source with the selected native providers. The text
 profile does not require TorchVision; its old CUDA 12.6 provider is not imported.

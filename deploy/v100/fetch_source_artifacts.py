@@ -156,7 +156,7 @@ def load_plan(directory):
             raise ValueError('APT bundle omitted or changed a selected native package')
     for stem, schema, folder in (
         ('build', 'build-tools', 'python-wheels'), ('runtime', 'runtime', 'python-wheels'),
-        ('lint', 'lint-tools', 'lint-wheels')):
+        ('lint', 'lint-tools', 'lint-wheels'), ('lint-script', 'lint-script-tools', 'lint-wheels')):
         doc = parse_document(raw('source-' + schema + '-amd64.json'), 'tensorfold.v100-source-' + schema,
                              versions=(1, 2) if stem == 'runtime' else (1,))
         lock = raw('requirements-source-' + stem + '-amd64.lock')
@@ -169,14 +169,14 @@ def load_plan(directory):
             if (set(sources) != {'torch', 'tensorfold'}
                     or sources['torch'].get('source_commit') != pins['sources']['pytorch'].get(
                         'effective_commit', pins['sources']['pytorch']['commit'])
-                    or doc.get('triton_execution') != 'import-only; no SM70 compiler/backend execution contract'):
+                    or doc.get('triton_execution') != 'SM70 FP32 moe_partial ordered-FMA; protected CUDA12 tools; other kernels unqualified'):
                 raise ValueError('runtime source identities differ from the selected source foundation')
         if set(doc) != fields:
             raise ValueError('invalid Python receipt fields')
         environment = doc['environment']
         if any(environment.get(k) != v for k, v in {
                 'sys_platform': 'linux', 'platform_machine': 'x86_64',
-                'implementation_name': 'cpython', 'python_version': '3.12'}.items()):
+                'implementation_name': 'cpython', 'python_version': '3.11' if stem == 'lint-script' else '3.12'}.items()):
             raise ValueError('wrong Python receipt target')
         packages = doc['packages']
         if type(packages) is not dict or not 0 < len(packages) <= MAX_ARTIFACTS:
@@ -200,6 +200,7 @@ def load_plan(directory):
             raise ValueError('Python lock package set differs from receipt')
     lint = pins['lint_python']
     if (set(lint) != {'version', 'build', 'url', 'bytes', 'sha256'}
+            or type(lint['version']) is not str or type(lint['build']) is not str
             or re.fullmatch(r'3\.(?:10|11)\.[0-9]+', lint['version']) is None
             or re.fullmatch(r'[0-9]{8}', lint['build']) is None):
         raise ValueError('unexpected lint interpreter identity')

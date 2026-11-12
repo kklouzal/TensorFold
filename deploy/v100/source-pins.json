@@ -88,7 +88,7 @@
       "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/nsight-systems-2025.3.2_2025.3.2.474-1_amd64.deb"
     }
   ],
-  "status": "source-build-candidate; owned fork finalization and native-device/model qualification unrun",
+  "status": "source-build-candidate; native-device/model qualification unrun",
   "host_driver_candidate": {
     "version": "580.196.07",
     "kernel_module": "proprietary",

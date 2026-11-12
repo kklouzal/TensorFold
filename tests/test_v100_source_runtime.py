@@ -2,6 +2,7 @@
 
 import ctypes
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
@@ -16,12 +17,15 @@ pytestmark = pytest.mark.skipif(not Path("/opt/tensorfold-pins/v100-source-found
 def test_installed_source_application_uses_the_owned_nccl_provider():
     from tensorfold.cuda.comm import _library
 
-    expected = Path("/opt/tensorfold-native/nccl-2.32.3/lib/libnccl.so.2")
+    pins = json.loads(Path("/opt/tensorfold-pins/source-pins.json").read_text())
+    selected = pins["targets"]["nccl"]
+    major, minor, patch = map(int, selected.split("."))
+    expected = Path("/opt/tensorfold-native/nccl-" + selected + "/lib/libnccl.so.2")
     assert os.environ.get("TF_NCCL_LIB") == str(expected)
     library = _library()
     assert Path(library._name).resolve(strict=True) == expected.resolve(strict=True)
     version = ctypes.c_int()
-    assert library.ncclGetVersion(ctypes.byref(version)) == 0 and version.value == 23203
+    assert library.ncclGetVersion(ctypes.byref(version)) == 0 and version.value == major * 10000 + minor * 100 + patch
 
 
 def test_current_process_audit_binds_an_actual_additional_shared_module(tmp_path):

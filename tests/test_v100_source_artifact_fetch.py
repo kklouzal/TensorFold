@@ -70,9 +70,9 @@ class FetchTests(unittest.TestCase):
     def test_real_frozen_plan_is_bootstrap_readable(self):
         directory = Path(__file__).resolve().parents[1] / 'deploy/v100'
         items, inputs = FETCH['load_plan'](directory)
-        self.assertEqual(len(items), 197)
-        self.assertEqual(sum(i['folder'] == 'build-debs' for i in items), 124)
-        self.assertEqual(len(inputs), 8)
+        self.assertEqual(len(items), 264)
+        self.assertEqual(sum(i['folder'] == 'build-debs' for i in items), 191)
+        self.assertEqual(len(inputs), 10)
         self.assertTrue(all(len(i['sha256']) == 64 for i in inputs.values()))
 
     def frozen_metadata_copy(self):
@@ -99,6 +99,29 @@ class FetchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'positive native integer'):
             FETCH['load_plan'](directory)
 
+    def test_runtime_source_identity_cannot_drift_behind_the_binary_lock(self):
+        directory = self.frozen_metadata_copy()
+        path = directory / 'source-runtime-amd64.json'
+        runtime = json.loads(path.read_text())
+        runtime['source_distributions']['torch']['source_commit'] = 'a' * 40
+        path.write_text(json.dumps(runtime))
+        with self.assertRaisesRegex(ValueError, 'runtime source identities'):
+            FETCH['load_plan'](directory)
+
+    def test_native_package_omission_is_rejected_even_with_a_matching_edited_bundle_hash(self):
+        directory = self.frozen_metadata_copy()
+        path = directory / 'source-apt-amd64.json'
+        apt = json.loads(path.read_text())
+        apt['packages'] = [row for row in apt['packages'] if row['package'] != 'libcudnn9-cuda-12']
+        raw = json.dumps(apt).encode()
+        path.write_bytes(raw)
+        pins_path = directory / 'source-pins.json'
+        pins = json.loads(pins_path.read_text())
+        pins['source_apt_bundle_sha256'] = hashlib.sha256(raw).hexdigest()
+        pins_path.write_text(json.dumps(pins))
+        with self.assertRaisesRegex(ValueError, 'omitted or changed a selected native package'):
+            FETCH['load_plan'](directory)
+
     def test_interpreter_missing_size_cannot_become_head_derived(self):
         directory = self.frozen_metadata_copy()
         pins_path = directory / 'source-pins.json'
@@ -123,7 +146,7 @@ class FetchTests(unittest.TestCase):
                     'https://snapshot.ubuntu.com/ubuntu/20261025T000000Z/pool/'))
             else:
                 self.assertEqual(original['url'], effective['url'])
-        self.assertEqual(changed, 120)
+        self.assertEqual(changed, 187)
         self.assertEqual(len(policy['artifacts']), changed)
         self.assertTrue(any('nvidia.com' in i['url'] for i in selected))
         # Host alone is insufficient: only /ubuntu/pool/ APT paths are eligible.

@@ -1,0 +1,33 @@
+{
+  "environment": {
+    "implementation_name": "cpython",
+    "implementation_version": "3.11.18",
+    "os_name": "posix",
+    "platform_machine": "x86_64",
+    "platform_python_implementation": "CPython",
+    "platform_release": "7.0.0-43-generic",
+    "platform_system": "Linux",
+    "platform_version": "#43-Ubuntu SMP PREEMPT_DYNAMIC Fri Oct 23 13:25:25 UTC 2026",
+    "python_full_version": "3.11.18",
+    "python_version": "3.11",
+    "sys_platform": "linux"
+  },
+  "lock_sha256": "e05edb24a90e6858529779eb5fdb1eb1ad62b08645b47c0b27e49fc9a11b0048",
+  "packages": {
+    "cmakelint": {
+      "requires_dist": [],
+      "sha256": "b8df7e5595d30ba8e3e047876ef5dab5bd1dda0f6716324efc6f216e3e8fc42d",
+      "url": "https://files.pythonhosted.org/packages/9b/9b/bee3494004b93ebc2938c40e103b804d4b13dd1855ca41145a3134bdb094/cmakelint-1.4.1-py3-none-any.whl",
+      "version": "1.4.1"
+    },
+    "lintrunner": {
+      "requires_dist": [],
+      "sha256": "8b94d10bdb3f652df3142a5e4e168127f32482f837c06d8a2c2359a93c19347a",
+      "url": "https://files.pythonhosted.org/packages/9b/2d/bbd16778a0d890617eb0f8d57674780da0c6b32fcffddb4933efb1403cea/lintrunner-0.12.7-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "version": "0.12.7"
+    }
+  },
+  "resolver_report_sha256": "d084940d65f8375085ad441dc1789a7c7f1c4ee425e03e2929466ab2b706e9d6",
+  "schema": "tensorfold.v100-source-lint-script-tools",
+  "version": 1
+}

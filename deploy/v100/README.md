@@ -363,9 +363,41 @@ new FIFO configuration is still refused by ordinary CLI preflight, without an
 inferred fallback. Detailed retention/API launches use explicit argument arrays
 as described below and in the serving-profile guide.
 
+### Refreshed source-SDK cache profile
+
+For the refreshed source SDK, use the base profile plus the explicit overlay:
+
+```bash
+export TENSORFOLD_V100_IMAGE="${TENSORFOLD_V100_IMAGE:?Set the selected source SDK image}"
+docker compose -f deploy/v100/compose.yaml \
+  -f deploy/v100/compose.source-sdk.yaml config --quiet
+# After the selected SDK/model qualification and resource checks:
+docker compose -f deploy/v100/compose.yaml \
+  -f deploy/v100/compose.source-sdk.yaml up -d
+```
+
+The overlay requires an explicit nonempty `TENSORFOLD_V100_IMAGE` and clears
+only the legacy `TRITON_CACHE_DIR` override with Compose's
+`!reset` support, allowing the new image's SDK/runtime-lock-bound cache and
+protected CUDA12.9 compiler bindings to apply. It keeps the existing writable
+`/cache` volume. Exact render and create/inspect-only environment proof belong
+to the refresh evidence before GPU/model launch. The base profile alone and
+the explicit old-image command above retain their legacy cache behavior.
+
+The refreshed Triton3.9 restricted FP32 MoE partial passed actual SM70 component
+checks through R160 against an independent ordered-FMA oracle using protected
+CUDA12.9 ptxas/libdevice. The final installed SDK passed all six scoped cases
+with persistent checked bindings, and actual Compose render/create-only proof
+confirmed cache inheritance without starting a GPU/model process. Other
+native/collective and full model qualification remain separate; this does not
+establish general Triton-on-Volta support. See the
+[refresh ledger](../gb10/foundation-refresh-20261111.md) for exact scope and status.
+
 ### Triton/V100 compatibility and persistent caches
 
-Keep the current pinned Triton 3.8 for the validated scalar/FMA partial path.
+The legacy04cf source-SDK profile keeps its recorded Triton3.8 scalar/FMA path.
+Its old explicit cache command above is a legacy launch, not a command for the
+refreshed SDK; use the new overlay for that image.
 Its broad hardware matrix lists CC8.0+, but
 [maintainers distinguish the best-effort pre-Ampere FMA path from MMA-v1 removal](https://github.com/triton-lang/triton/pull/5066).
 Actual V100 real-shape partial checks support that specific path, not every

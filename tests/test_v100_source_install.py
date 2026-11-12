@@ -262,6 +262,13 @@ def test_generated_image_recipes_use_only_hash_verified_offline_source_artifacts
         assert content.index("xargs -a /tmp/source-apt-files apt-get") < content.index("foundation_sdk.sh check")
     assert "requirements-foundation-amd64.lock" not in generated["Dockerfile"]
     assert "capture-install" in generated["Dockerfile"] and "source_foundation.py audit" in generated["Dockerfile"]
+    image = generated["Dockerfile"]
+    assert image.index("verify-framework-wheel") < image.index("pip install --no-deps /source-wheels/torch-")
+    assert image.index("pip install --no-deps /source-wheels/torch-") < image.index("-r /locks/requirements-source-runtime.lock")
+    assert image.index("-r /locks/requirements-source-runtime.lock") < image.index("python -m pip check")
+    assert "TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas" in image
+    assert "TRITON_LIBDEVICE_PATH=/usr/local/cuda/nvvm/libdevice/libdevice.10.bc" in image
+    assert "TRITON_CACHE_DIR=/cache/volta-sm70-source-" in image
     policy = generated["Dockerfile.audit-policy"]
     assert policy == (ROOT / "deploy/v100/Dockerfile.audit-policy").read_text()
     assert "ARG AUDIT_BASE_IMAGE" in policy and "FROM ${AUDIT_BASE_IMAGE}" in policy
@@ -285,11 +292,11 @@ def test_offline_locks_preserve_exact_resolved_artifact_hashes():
         assert "https:" not in lock and "--hash=sha256:" in lock
 
 
-def test_runtime_closure_retains_import_only_triton_without_binary_cuda_providers():
+def test_runtime_closure_preserves_restricted_sm70_fma_without_binary_cuda_providers():
     receipt = SOURCE.read_json(ROOT / "deploy/v100/source-runtime-amd64.json")[0]
     assert receipt["packages"]["triton"]["version"] == "3.9.0"
     assert receipt["version"] == 2
-    assert receipt["triton_execution"] == "import-only; no SM70 compiler/backend execution contract"
+    assert receipt["triton_execution"] == "SM70 FP32 moe_partial ordered-FMA; protected CUDA12 tools; other kernels unqualified"
     assert receipt["source_distributions"]["torch"]["source_commit"] == "05adb434bd30d298eb408a72420b0496ee05f8e3"
     assert not {"torch", "torchvision"} & receipt["packages"].keys()
     assert not any(name.startswith(("nvidia-", "cuda-")) for name in receipt["packages"])
@@ -357,3 +364,21 @@ def test_pristine_capture_bytes_bind_before_audit_process(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="pristine native base capture differs"):
         SOURCE.verify_pristine_base(expected, directory=tmp_path)
     assert len(commands) == 1
+
+
+def test_framework_wheel_is_verified_against_owned_receipt_before_dependency_install(tmp_path):
+    pins = {"targets": {"pytorch": "2.16.0.dev20261111", "cuda": "12.9.2", "nccl": "2.32.6"},
+            "sources": {"pytorch": {"commit": "a" * 40, "effective_commit": "b" * 40}}}
+    wheel = tmp_path / "torch-2.16.0.dev20261111+tfcu129sm70-cp312-cp312-linux_x86_64.whl"
+    wheel.write_bytes(b"independent owned-wheel boundary fixture")
+    build = {"schema": "tensorfold.v100-source-build", "version": 1, "targets": pins["targets"],
+             "source_commits": {"pytorch": "b" * 40},
+             "wheel": {"artifact": wheel.name, **SOURCE.file_identity(wheel)}}
+    SOURCE.verify_framework_wheel(pins, build, wheel)
+    changed = copy.deepcopy(build)
+    changed["source_commits"]["pytorch"] = "c" * 40
+    with pytest.raises(ValueError, match="exact completed source-build"):
+        SOURCE.verify_framework_wheel(pins, changed, wheel)
+    wheel.write_bytes(b"changed owned-wheel artifact")
+    with pytest.raises(ValueError, match="whole-wheel artifact differs"):
+        SOURCE.verify_framework_wheel(pins, build, wheel)
