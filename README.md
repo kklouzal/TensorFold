@@ -26,6 +26,14 @@ qualification remain pending. The private campaign accepts the required NUMA set
 the sealed plan to its supervisor. Both GPU-history and RAM-archive deployment
 recipes require the worker-purpose profile. See [V100 deployment](deploy/v100/README.md).
 
+Verification-only NUMA capture has a separate fixed CAP40 role. It authenticates
+the owned launcher image and actual UID/GID1000 process with only
+`CHECKPOINT_RESTORE`, then extends that independently captured Docker default
+with the existing narrow worker BIND/self-query rules. Ordinary default-capability
+archive/worker profiles remain separate. CPU role and syscall checks do not
+qualify the next application image or model; regenerate its matching authority.
+See [verification capture](deploy/v100/source-foundation.md#fixed-cap40-numa-capture).
+
 The [short V100 diagnostic lifecycle helper](tools/v100_short_container.py)
 retains the owned container ID before logging and retires clients before
 reporting failures. Its 11 CPU fault controls pass; this does not qualify model

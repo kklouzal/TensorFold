@@ -335,3 +335,104 @@ def test_worker_adds_only_exact_static_thread_binding_over_archive(baseline):
                              'args':[{'index':0,'value':32770,'op':'SCMP_CMP_EQ'}]}
     assert json.loads(worker['manifest.json'])['purpose']=='tensorfold-numa-local-rank-worker'
     assert b['architectures']==a['architectures'] and b['defaultAction']==a['defaultAction']
+
+
+@pytest.fixture
+def cap40_source(capture_source,monkeypatch):
+    host=profile._host_authority();info=capture_source.info
+    authority={'image_id':'sha256:'+'c'*64,'verification_launcher':{
+        'mode':host.VERIFICATION_MODE,'base_image_id':'sha256:'+'d'*64,
+        'launcher':{'path':host.VERIFICATION_ENTRY,'bytes':16976,'sha256':'1'*64,
+            'source_bytes':8200,'source_sha256':'2'*64,'file_capability_hex':host.VERIFICATION_XATTR},
+        'python':{'path':host.VERIFICATION_PYTHON,'bytes':8020928,'sha256':'3'*64},
+        'providers':{'/opt/venv/lib/python3.12/site-packages/tensorfold/_fd_owner.abi3.so':{'bytes':1,'sha256':'4'*64}}}}
+    info.update(image=authority['image_id'],cap_add=['CAP_CHECKPOINT_RESTORE'],cap_drop=['ALL'],user='1000:1000',
+        readonly_root=True,pid_mode='',userns_mode='',network_mode='none',groups=None,mounts=[],tmpfs=None,
+        entrypoint=[host.VERIFICATION_ENTRY],command=list(profile.CAP40_CAPTURE_ARGS))
+    config=json.loads(capture_source.config.read_text())
+    config['root']={'readonly':True}
+    config['process'].update(user={'uid':1000,'gid':1000,'additionalGids':[1000]},
+        args=[host.VERIFICATION_ENTRY,*profile.CAP40_CAPTURE_ARGS],
+        capabilities={k:['CAP_CHECKPOINT_RESTORE'] for k in ('bounding','effective','permitted')})
+    capture_source.config.write_text(json.dumps(config))
+    facts={'status':{'Uid':[1000]*4,'Gid':[1000]*4,'Groups':[1000],
+        **{k:host.VERIFICATION_CAP for k in ('CapInh','CapPrm','CapEff','CapBnd','CapAmb')},
+        'NoNewPrivs':0,'Seccomp':2,'Seccomp_filters':1,'NSpid':[info['pid'],1]},
+        'start_time_ticks':12345,'argv':[host.VERIFICATION_PYTHON,*profile.CAP40_CAPTURE_ARGS]}
+    files={'launcher':{'bytes':16976,'sha256':'1'*64,'uid':0,'mode':0o555,'readonly':True,'file_capability_hex':host.VERIFICATION_XATTR},
+        'source':{'bytes':8200,'sha256':'2'*64,'uid':0,'mode':0o444,'readonly':True},
+        'python':{'bytes':8020928,'sha256':'3'*64,'uid':0,'mode':0o755,'readonly':True}}
+    original=profile._docker
+    def docker(executable,action,*args):
+        if action=='image':
+            image=args[-1];layers=['sha256:'+'e'*64]
+            return {'Id':image,'RootFS':{'Layers':layers+(['sha256:'+'f'*64] if image==authority['image_id'] else [])}}
+        return original(executable,action,*args)
+    monkeypatch.setattr(profile,'_docker',docker)
+    monkeypatch.setattr(profile,'_process_facts',lambda pid:copy.deepcopy(facts))
+    monkeypatch.setattr(profile,'_cap40_files',lambda *a:copy.deepcopy(files))
+    return SimpleNamespace(source=capture_source,authority=authority,facts=facts,files=files)
+
+
+def test_cap40_role_independently_captures_and_derives_only_worker_rules(cap40_source,baseline):
+    c=cap40_source
+    actual,provenance=profile.capture('fixed',bundle_config=c.source.config,capture_role=profile.CAP40_ROLE,
+                                      verification_contract=c.authority)
+    files=profile.render(actual,provenance,purpose='worker',capture_role=profile.CAP40_ROLE)
+    record=json.loads(files['manifest.json']);derived=json.loads(files['seccomp.json'])
+    assert record['schema_version']==2 and record['capture_role']==profile.CAP40_ROLE
+    assert record['purpose']=='tensorfold-numa-verification-cap40-worker'
+    assert derived['syscalls']==baseline['syscalls']+profile.numa_rules(worker=True)
+    assert provenance['actual_process']['status']['CapEff']=='0000010000000000'
+    assert c.source.secret.encode() not in b''.join(files.values())
+    assert files==profile.render(actual,provenance,purpose='worker',capture_role=profile.CAP40_ROLE)
+    with pytest.raises(ValueError):profile.render(actual,provenance,purpose='worker')
+    with pytest.raises(ValueError):profile.render(actual,provenance,capture_role=profile.CAP40_ROLE)
+    with pytest.raises(ValueError):profile.capture('fixed',bundle_config=c.source.config)
+
+
+@pytest.mark.parametrize('field,value', [('cap_add',['CAP_SYS_ADMIN']),('cap_drop',None),('user','0:0'),
+    ('readonly_root',False),('pid_mode','host'),('userns_mode','host'),('groups',['0']),('mounts',[{}]),
+    ('tmpfs',{'/tmp':''}),('network_mode','bridge'),('command',['-c','arbitrary']),('entrypoint',['/bin/sh']),
+    ('security_opt',['seccomp=unconfined']),('privileged',True)])
+def test_cap40_capture_refuses_every_other_envelope(cap40_source,field,value):
+    c=cap40_source;c.source.info[field]=value
+    with pytest.raises(ValueError):profile.capture('fixed',bundle_config=c.source.config,
+        capture_role=profile.CAP40_ROLE,verification_contract=c.authority)
+
+
+@pytest.mark.parametrize('field,value', [('Uid',[0]*4),('Groups',[1000,0]),('CapAmb','0000000000000000'),
+    ('CapPrm','0000010000200000'),('NoNewPrivs',1),('Seccomp',0),('Seccomp_filters',0),('NSpid',[1234,2])])
+def test_cap40_capture_requires_actual_post_launcher_facts(cap40_source,field,value):
+    c=cap40_source;c.facts['status'][field]=value
+    with pytest.raises(ValueError):profile.capture('fixed',bundle_config=c.source.config,
+        capture_role=profile.CAP40_ROLE,verification_contract=c.authority)
+
+
+@pytest.mark.parametrize('field', ['caps','uid','args','groups','readonly'])
+def test_cap40_oci_resolved_role_cannot_be_relabelled(cap40_source,field):
+    c=cap40_source;config=json.loads(c.source.config.read_text())
+    if field=='caps':config['process']['capabilities']['effective'].append('CAP_SYS_NICE')
+    elif field=='uid':config['process']['user']['uid']=0
+    elif field=='args':config['process']['args']=['/bin/sh']
+    elif field=='groups':config['process']['user']['additionalGids'].append(0)
+    else:config['root']['readonly']=False
+    c.source.config.write_text(json.dumps(config))
+    with pytest.raises(ValueError):profile.capture('fixed',bundle_config=c.source.config,
+        capture_role=profile.CAP40_ROLE,verification_contract=c.authority)
+
+
+def test_cap40_immutable_image_authority_and_pid_generation_are_required(cap40_source,monkeypatch):
+    c=cap40_source;c.files['launcher']['file_capability_hex']='00'
+    with pytest.raises(ValueError):profile.capture('fixed',bundle_config=c.source.config,
+        capture_role=profile.CAP40_ROLE,verification_contract=c.authority)
+    c.files['launcher']['file_capability_hex']=profile._host_authority().VERIFICATION_XATTR
+    count=0
+    def changed(pid):
+        nonlocal count
+        count+=1;facts=copy.deepcopy(c.facts)
+        if count==2:facts['start_time_ticks']+=1
+        return facts
+    monkeypatch.setattr(profile,'_process_facts',changed)
+    with pytest.raises(ValueError,match='changed during capture'):
+        profile.capture('fixed',bundle_config=c.source.config,capture_role=profile.CAP40_ROLE,verification_contract=c.authority)

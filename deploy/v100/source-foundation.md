@@ -1015,6 +1015,61 @@ Python/loader startup variables are refused. The source fixture stays bound to
 its genuine base application; the purpose image is bound separately. Do not
 rewrite an old manifest or reseal the SDK to make the derivative pass.
 
+### Fixed CAP40 NUMA capture
+
+The serving/default generator role still accepts only Docker's ordinary default
+capabilities and security options, with separate `archive` and `worker` purposes.
+It cannot authorize the verification envelope by assuming capability-zero and
+CAP40 filters are equivalent. Use the generator's explicit
+`verification-cap40-v1` capture role for the verification-only branch.
+
+Its closed authority JSON contains exactly `image_id` and the existing native
+Host `verification_launcher` contract. The source must be a CPU-only container
+of that exact trusted derivative, with UID/GID1000, read-only root, private PID,
+network `none`, no user mounts/devices or nonprimary groups, default builtin
+seccomp, `cap_drop ALL` and only `cap_add CHECKPOINT_RESTORE`. It must execute
+the owned launcher followed by `generate_numa_seccomp.CAP40_CAPTURE_ARGS`: an
+isolated `-I -S` Python signal-wait program. This dedicated capture process
+imports no Torch and creates no model/CUDA work. The authority comes from the
+verified purpose-image build, not an arbitrary launcher or capability list.
+
+On the Linux Docker host, retain its CID and run the generator with read access
+to its OCI bundle:
+
+```text
+tools/generate_numa_seccomp.py --container CID --capture-role verification-cap40-v1
+  --verification-contract AUTHORITY.json --purpose worker --output-directory NEWDIR
+```
+
+The generator independently records and checks the actual CID/host PID/cgroups,
+PID generation, exact resolved OCI capability-conditioned default filter and
+UID/GID, plus the post-launcher Python argv and all five actual capability sets.
+Only40 is accepted, with no-new-privileges0 and seccomp active. The protected
+read-only launcher/source/Python bytes, file-capability xattr and exact trusted
+base-image layer prefix are verified. Environment contents and full OCI
+configuration are not published.
+
+CAP40 output uses `schema_version: 2`, capture role
+`verification-cap40-v1` and purpose
+`tensorfold-numa-verification-cap40-worker`. Its three files remain
+`baseline-seccomp.json`, `seccomp.json` and `manifest.json`. The pure authority
+call is `render(baseline, provenance, purpose='worker',
+capture_role='verification-cap40-v1')`; the Host must regenerate and compare all
+bytes using the frozen generator. The ordinary role rejects CAP40 provenance.
+The only added rules are the existing static physical BIND modes for
+`set_mempolicy`/`mbind` (migration flags0), `get_mempolicy` and `move_pages`
+self-query with PID0/nodesNULL/flags0. No additional capability, privilege,
+unconfined option or generic syscall switch is introduced.
+
+The prepared-teacher Host may stage these three authorities as flat
+`numa-baseline-seccomp.json`, `numa-seccomp.json` and
+`numa-seccomp-manifest.json`, alongside the independently validated
+`numa-plan.json`. Those transport names do not alter their hashed content or
+replace actual rank-placement receipts. Historical CPU-only capture/placement
+proof applies only to its exact image/runtime; the next application-derived
+verification image must recapture and requalify its own CAP40 profile before
+model or quality claims.
+
 Before any CUDA query or pytest execution, the trusted inner validates current
 UID/GID, E/P/I/A/B cap-40-only state, launcher/Python origins, installed App/SDK /
 FD/Torch identities and actual provider VMA-FD records, then rechecks access and
