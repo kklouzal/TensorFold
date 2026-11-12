@@ -140,6 +140,51 @@ __global__ void down_kernel(const uint8_t* raw,int row_bytes,const Q81* input,co
   }
  }
 }
+// Integrated ABI publishes unweighted slots for the existing rank transport
+// and ordered outer fold. The caller-selected slot type owns rounding; no
+// weighted result or extra Half boundary is introduced for FP32 consumers.
+template<typename Output>
+__device__ __forceinline__ Output slot_value(float value) {
+ if constexpr(std::is_same<Output,half>::value) return __float2half_rn(value);
+ else return value;
+}
+template<typename Output>
+__global__ void initialize_slots(const void* ids, bool wide, const half* activation,
+                                Output* slots, int* status) {
+ if(threadIdx.x==0) {
+  const bool ids_ok=valid(ids,wide,blockIdx.x);
+  const bool producer_ok=__half_as_ushort(activation[(blockIdx.x*SLOTS+TOP)*K])==0;
+  status[blockIdx.x]=(ids_ok?0:1)|(producer_ok?0:4);
+ }
+ for(int i=threadIdx.x;i<SLOTS*D;i+=blockDim.x) slots[blockIdx.x*SLOTS*D+i]=slot_value<Output>(0.f);
+}
+template<typename Output>
+__global__ void down_slots(const uint8_t* raw,int row_bytes,const Q81* input,
+                          const void* ids,bool wide,const float* shared,Output* slots,
+                          const int* status,int first,int column_offset,int row_start) {
+ extern __shared__ __align__(16) uint32_t shared_words[];
+ const int lane=threadIdx.x%32,warp=threadIdx.x/32,row=row_start+blockIdx.y,col=blockIdx.x*32+lane;
+ if(status[row]) {
+  if(!warp) for(int slot=0;slot<SLOTS;++slot)
+   slots[(row*SLOTS+slot)*D+col]=slot_value<Output>(__int_as_float(0x7fffffff));
+  return;
+ }
+ const auto* source=reinterpret_cast<const uint32_t*>(input+row*SLOTS*GROUPS);
+ for(int i=threadIdx.x;i<TOP*GROUPS*9;i+=blockDim.x) shared_words[i]=source[i];
+ __syncthreads();
+ const auto* q=reinterpret_cast<const Q81*>(shared_words);
+ for(int slot=warp;slot<TOP;slot+=4) {
+  const int64_t global=pick(ids,wide,row*SLOTS+slot);
+  if(global<first || global>=first+256) continue;
+  const auto* coefficients=raw+(int64_t(global-first)*D+col)*row_bytes;
+  float dot=0.f;
+  #pragma unroll
+  for(int group=0;group<GROUPS;++group)
+   dot=__fadd_rn(dot,raw_dot(coefficients,group,q[slot*GROUPS+group],column_offset));
+  slots[(row*SLOTS+slot)*D+col]=slot_value<Output>(dot);
+ }
+ if(!warp) slots[(row*SLOTS+TOP)*D+col]=slot_value<Output>(shared[row*D+col]);
+}
 __global__ void slot_fold(const half* slots,const float* weights,const int* status,float* out) {
  const int row=blockIdx.y,col=blockIdx.x*256+threadIdx.x;
  if(status[row]) {out[row*D+col]=__int_as_float(0x7fffffff);return;}
@@ -207,10 +252,65 @@ void onecat_down(const at::Tensor& activation,const at::Tensor& ids,const at::Te
   C10_CUDA_KERNEL_LAUNCH_CHECK();
  }
 }
+void onecat_down_slots(const at::Tensor& activation,const at::Tensor& ids,const at::Tensor& raw,
+ const at::Tensor& shared,at::Tensor q8,at::Tensor status,at::Tensor slots,
+ int64_t kind,int64_t first,int64_t column_offset) {
+ TORCH_CHECK(kind==20,"IQ4_NL only; Q2_0 remains on the incumbent");
+ TORCH_CHECK(activation.is_cuda(),"CUDA activation required");
+ const auto device=activation.device();c10::cuda::CUDAGuard guard(device);
+ const auto* props=at::cuda::getDeviceProperties(device.index());
+ TORCH_CHECK(props->major==7&&props->minor==0,"SM70 down component required");
+ auto operand=[&](const at::Tensor& tensor,at::ScalarType dtype) {
+  TORCH_CHECK(tensor.device()==device&&tensor.scalar_type()==dtype&&tensor.is_contiguous()
+   &&!tensor.requires_grad()&&!tensor.is_neg()&&!tensor.is_conj(),"contiguous same-device non-grad operand required");
+ };
+ TORCH_CHECK(ids.scalar_type()==at::kInt||ids.scalar_type()==at::kLong,"integer route IDs required");
+ TORCH_CHECK(slots.scalar_type()==at::kHalf||slots.scalar_type()==at::kFloat,"Half/F32 route slots required");
+ operand(ids,ids.scalar_type());operand(activation,at::kHalf);operand(raw,at::kByte);
+ operand(shared,at::kFloat);operand(q8,at::kByte);operand(status,at::kInt);operand(slots,slots.scalar_type());
+ TORCH_CHECK(ids.dim()==2&&ids.size(0)>=1&&ids.size(0)<=32&&ids.size(1)==SLOTS,"R1..32/top10+shared required");
+ const int rows=ids.size(0);
+ TORCH_CHECK((first==0||first==256)&&column_offset>=0&&column_offset<=480&&column_offset%32==0,"owned E256/block-aligned lane required");
+ TORCH_CHECK(activation.sizes()==at::IntArrayRef({rows*SLOTS,K})
+  &&shared.sizes()==at::IntArrayRef({rows,D}),"Half activation/F32 shared extent differs");
+ TORCH_CHECK(raw.dim()==2&&raw.size(0)==256*D&&raw.size(1)%18==0&&raw.size(1)>=90&&raw.size(1)<=360
+  &&raw.size(1)>=(column_offset/32+GROUPS)*18,"original IQ4_NL raw bank extent differs");
+ TORCH_CHECK(q8.sizes()==at::IntArrayRef({rows*SLOTS,GROUPS,36})&&status.sizes()==at::IntArrayRef({rows})
+  &&slots.sizes()==at::IntArrayRef({rows,SLOTS,D}),"caller-owned slots scratch/output extent differs");
+ TORCH_CHECK(uintptr_t(q8.data_ptr())%4==0,"Q8_1 alignment");
+ const at::Tensor* writes[]={&q8,&status,&slots};
+ for(int i=0;i<3;++i) {
+  TORCH_CHECK(!writes[i]->is_inference()||c10::InferenceMode::is_enabled(),"inference output outside InferenceMode");
+  for(const auto* read:{&activation,&ids,&raw,&shared}) TORCH_CHECK(!tensorfold::overlaps(*writes[i],*read),"down read/write overlap");
+  for(int j=0;j<i;++j) TORCH_CHECK(!tensorfold::overlaps(*writes[i],*writes[j]),"down output overlap");
+ }
+ const auto stream=at::cuda::getCurrentCUDAStream();const bool wide=ids.scalar_type()==at::kLong;
+ const auto execute=[&](auto* output) {
+  using Output=std::remove_pointer_t<decltype(output)>;
+  initialize_slots<Output><<<rows,128,0,stream>>>(ids.data_ptr(),wide,
+   reinterpret_cast<const half*>(activation.data_ptr<at::Half>()),output,status.data_ptr<int>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  quantize<<<(rows*SLOTS*GROUPS+3)/4,128,0,stream>>>(reinterpret_cast<const half*>(activation.data_ptr<at::Half>()),ids.data_ptr(),wide,
+   reinterpret_cast<Q81*>(q8.data_ptr()),status.data_ptr<int>(),rows,first);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  for(int begin=0;begin<rows;begin+=8) {
+   const dim3 grid(D/32,std::min(8,rows-begin));
+   down_slots<Output><<<grid,128,TOP*GROUPS*sizeof(Q81),stream>>>(raw.data_ptr<uint8_t>(),int(raw.size(1)),
+    reinterpret_cast<const Q81*>(q8.data_ptr()),ids.data_ptr(),wide,shared.data_ptr<float>(),output,status.data_ptr<int>(),first,column_offset,begin);
+   C10_CUDA_KERNEL_LAUNCH_CHECK();
+  }
+ };
+ if(slots.scalar_type()==at::kHalf) execute(reinterpret_cast<half*>(slots.data_ptr<at::Half>()));
+ else execute(slots.data_ptr<float>());
+}
 void onecat_down_prepare() {
  cudaFuncAttributes a;
  C10_CUDA_CHECK(cudaFuncGetAttributes(&a,initialize<true>));
  C10_CUDA_CHECK(cudaFuncGetAttributes(&a,initialize<false>));C10_CUDA_CHECK(cudaFuncGetAttributes(&a,quantize));
  C10_CUDA_CHECK(cudaFuncGetAttributes(&a,down_kernel<true>));C10_CUDA_CHECK(cudaFuncGetAttributes(&a,down_kernel<false>));
  C10_CUDA_CHECK(cudaFuncGetAttributes(&a,slot_fold));
+ C10_CUDA_CHECK(cudaFuncGetAttributes(&a,initialize_slots<half>));
+ C10_CUDA_CHECK(cudaFuncGetAttributes(&a,initialize_slots<float>));
+ C10_CUDA_CHECK(cudaFuncGetAttributes(&a,down_slots<half>));
+ C10_CUDA_CHECK(cudaFuncGetAttributes(&a,down_slots<float>));
 }

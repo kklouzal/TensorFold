@@ -604,7 +604,7 @@ def test_eight_rank_commit_defers_http_migration_between_final_vote_and_publicat
 
 
 @pytest.mark.torch
-@pytest.mark.parametrize("fact", ["fp16-policy", "configured-power", "qsa-policy", "owned-expert-native"])
+@pytest.mark.parametrize("fact", ["fp16-policy", "configured-power", "qsa-policy", "owned-expert-native", "deleted-library"])
 @pytest.mark.parametrize("uuid_form", ["torch", "nvidia"])
 def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_operation(
         packet, monkeypatch, fact, uuid_form):
@@ -625,7 +625,7 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda d: (7, 0))
     monkeypatch.setattr(torch.backends.cuda, "preferred_blas_library", lambda: "Cublas")
     monkeypatch.setattr(torch._C, "_cuda_getCublasWorkspaceSize", lambda: 1024)
-    monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", False)
+    original_fp16_reduction = torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
     monkeypatch.setattr(identity.importlib.metadata, "version", lambda name: "pinned-version")
     monkeypatch.setattr(identity.importlib.metadata, "distributions", lambda: [])
     power = ["200"]
@@ -640,11 +640,12 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
 
     monkeypatch.setattr(identity, "_command", command)
     native = path.parent / "kernel.so"
+    mapping = ["0-1 r-xp 0 00:00 0 " + str(native) + "\n"]
 
     def small(name, limit=65536):
         name = str(name)
         if name.endswith("/maps"):
-            return ("0-1 r-xp 0 00:00 0 " + str(native) + "\n").encode()
+            return mapping[0].encode()
         if name.endswith("/cpuinfo"):
             return b"model name : qualified CPU\n"
         if name.endswith("/meminfo"):
@@ -656,6 +657,9 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
     authority = attention_qualification.runtime_identity
     authority.cache_clear()
     try:
+        # This native backend property has no deletion contract. Restore its
+        # observed value explicitly rather than monkeypatching a descriptor.
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         cached = authority(engine.w.device)
         assert cached["fp16_reduced_precision"] is False
         # A requested flag alone is not an observed arithmetic selection.
@@ -663,6 +667,13 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
             engine._owned_expert_requested = True
         identity.begin_execution_manifest(engine, path)
         old = identity.bind_execution_manifest(engine, path)["identity"]
+        if fact == 'deleted-library':
+            mapping[0] = "0-1 r-xp 0 00:00 42 " + str(native) + " (deleted)\n"
+            with pytest.raises(ValueError, match='deleted loaded library') as caught:
+                _RUNTIME_OBSERVER(engine)
+            assert str(native) in str(caught.value)
+            assert 'permissions=r-xp' in str(caught.value) and 'inode=42' in str(caught.value)
+            return
         old_numerics = dict(engine._execution_bind_local["numerics"])
         assert "owned_expert_native" not in old_numerics
         if fact == "owned-expert-native":
@@ -672,7 +683,7 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
             plan = Plan(ExpertPartition(8, 0, 512, 640, 4), 2560, 11, 32, 2048, False)
             engine.w.meta["owned_expert_plan"] = plan
         elif fact == "fp16-policy":
-            monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", True)
+            torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
             assert authority(engine.w.device)["fp16_reduced_precision"] is False
             assert authority.__wrapped__(engine.w.device)["fp16_reduced_precision"] is True
         elif fact == "qsa-policy":
@@ -704,6 +715,7 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
         assert len(operating_queries) == 3  # Initial capture and both registrations observe configured operation.
         assert "N/A" in engine._execution_bind_local["topology"]["configured_gpu_operation"]
     finally:
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = original_fp16_reduction
         authority.cache_clear()
 
 

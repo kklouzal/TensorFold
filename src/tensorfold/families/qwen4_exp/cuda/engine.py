@@ -21,6 +21,13 @@ KEEP_SERIAL = 4          # prompt states the serial engine keeps (they share its
 KEEP = 8                 # prompt states (one token before each end) a concurrent decoder keeps to resume from
 # Reserve bounded tower workspace separately from its weights; override for measured deployments.
 VISION_WORKSPACE = 4 * 2**30
+STARTUP_SECONDS = 3600  # Existing store/startup allowance; inference has separate deadlines.
+
+
+def _owned_graph_request(*, sm70, gguf, owned, adaptive, tp, etp, indexer_history):
+    """The fixed native owner has a distinct capture path from host compaction."""
+    return (sm70 and gguf and owned and adaptive and tp == 8 and etp == 4
+            and indexer_history == 'gpu')
 
 
 def vision_workspace() -> int:
@@ -79,10 +86,11 @@ class FlashNextEngine:
 
             if type(_owned_expert_gate_up) not in (_GroupedGateUp, OneCatGU) or not _owned_expert_native:
                 raise ValueError("private gate/up requires typed owned expert preparation")
-            if type(_owned_expert_gate_up) is OneCatGU and (type(depth) is not int or depth != 0
+            if type(_owned_expert_gate_up) is OneCatGU and (type(depth) is not int or not 0 <= depth <= MAX_DEPTH
                     or tp != 8 or expert_tensor_parallel_size != 4 or not adaptive_sessions
-                    or execution_profile_manifest is None or serving_profile_root is not None):
-                raise ValueError("1Cat GU qualification requires explicit NONE/adaptive TP8/ETP4 owner preparation")
+                    or execution_profile_manifest is None or serving_profile_root is not None
+                    or dspark_model_dir is not None or dflash2_model_dir is not None):
+                raise ValueError("1Cat qualification requires stock MTP or NONE/adaptive TP8/ETP4 owner preparation")
         self._owned_expert_gate_up_requested = _owned_expert_gate_up
         self._reference_owner_tiles_requested = _reference_owner_tiles
         self._owned_qualification_host = _owned_qualification_host
@@ -90,6 +98,7 @@ class FlashNextEngine:
         self._owned_expert_admin_requested = serving_profile_root is not None
         self._owned_expert_plan = None
         self._onecat_owner = None
+        self._triton_driver_preparation = None
         if serving_profile_root is not None:
             from .serving_profiles import profile_root
 
@@ -132,15 +141,20 @@ class FlashNextEngine:
         self.media_profile = self._media_authority = self._media_software_binding = self._media_numeric_scope = None
         self._startup_reads: list = []
         self._prepared_family_plan = _prepared_family_plan
-        try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest, media_profile_manifest=media_profile_manifest, max_waiting_input_bytes=max_waiting_input_bytes, max_waiting_input_bytes_per_principal=max_waiting_input_bytes_per_principal, output_queue_tokens=output_queue_tokens, queue_timeout_s=queue_timeout_s, retention_policy=retention_policy, expert_tensor_parallel_size=expert_tensor_parallel_size)
-            if serving_profile_root is not None:
-                from .serving_runtime import ServingProfiles
+        from tensorfold.cuda.cohort import startup_failure_context
 
-                self.serving_profiles = ServingProfiles(self, serving_profile_root, profile_options)
-        except BaseException as primary:
-            self._abort_comm = True
-            rollback(self, primary, self._rollback_startup)
+        with startup_failure_context(rank) as diagnostic:
+            try:
+                self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest, media_profile_manifest=media_profile_manifest, max_waiting_input_bytes=max_waiting_input_bytes, max_waiting_input_bytes_per_principal=max_waiting_input_bytes_per_principal, output_queue_tokens=output_queue_tokens, queue_timeout_s=queue_timeout_s, retention_policy=retention_policy, expert_tensor_parallel_size=expert_tensor_parallel_size)
+                if serving_profile_root is not None:
+                    from .serving_runtime import ServingProfiles
+
+                    self.serving_profiles = ServingProfiles(self, serving_profile_root, profile_options)
+            except BaseException as primary:
+                self._abort_comm = True
+                def retire_startup():
+                    finish((lambda: diagnostic.report(primary), self._rollback_startup))
+                rollback(self, primary, retire_startup)
 
     def _prepare_store_backend(self, implemented_admission: bool, *, rank: int, world: int) -> None:
         """Bind the live transport policy before model/device acquisition."""
@@ -351,13 +365,17 @@ class FlashNextEngine:
         text = config(model_dir)
         from .history_placement import HistoryPlacement
 
+        owned_graph_request = _owned_graph_request(sm70=sm70, gguf=source_is_gguf,
+            owned=self._owned_expert_requested, adaptive=adaptive_sessions, tp=tp,
+            etp=expert_tensor_parallel_size, indexer_history=indexer_history)
+
         if source_is_gguf:
             from ..expert_partition import ExpertPartition
 
             self.expert_partition = ExpertPartition(tp, rank, int(text["num_experts"]),
                 int(text["moe_intermediate_size"]), expert_tensor_parallel_size)
             if self.expert_partition.groups > 1:
-                if graphs:
+                if graphs and not owned_graph_request:
                     print("[tensorfold] CUDA graphs off: partitioned GGUF reference compacts owned rows", flush=True)
                     graphs = False
         partitioned_experts = self.expert_partition is not None and self.expert_partition.groups > 1
@@ -443,7 +461,7 @@ class FlashNextEngine:
             from .history_placement import HistoryPlacement
 
             history_placement = HistoryPlacement(8, 2, layer_counts(text)[1], degree=4)
-            if graphs:
+            if graphs and not owned_graph_request:
                 print("[tensorfold] CUDA graphs off: unique history owner execution requires live row bounds", flush=True)
                 graphs = False
         self._history_placement = history_placement
@@ -583,10 +601,10 @@ class FlashNextEngine:
                     self._startup_store_origin = self.comm.store_origin
             if self._startup_store is None:
                 if self._store_use_libuv is False:
-                    self._startup_store_origin = create_owned_tcp_store(rank, tp, master, port, timeout_s=3600)
+                    self._startup_store_origin = create_owned_tcp_store(rank, tp, master, port, timeout_s=STARTUP_SECONDS)
                     self._startup_store = self._startup_store_origin.store
                 else:
-                    self._startup_store = TCPStore(master, port, tp, rank == 0, timeout=timedelta(seconds=3600))
+                    self._startup_store = TCPStore(master, port, tp, rank == 0, timeout=timedelta(seconds=STARTUP_SECONDS))
             elif self._store_use_libuv is False:
                 validate_store_origin(self._startup_store_origin, self._startup_store, rank, tp, verified=True)
             selected_context = self.rope.context_limit if max_len in (None, 0) else max_len
@@ -602,6 +620,14 @@ class FlashNextEngine:
             if self._profile_build is not None and not stage_identity_cohort:
                 self._startup_store = self._startup_store_origin = None  # Existing comm retains the managed transport.
         torch.cuda.set_device(0)
+        if sm70 and self._owned_expert_requested:
+            from tensorfold.cuda.sm70.triton_driver import prepare_driver
+
+            # The current SDK shares a content-keyed Triton helper cache. Its
+            # cold publisher must finish before any rank loads/warmups kernels.
+            self._triton_driver_preparation = prepare_driver(timeout_s=STARTUP_SECONDS,
+                fma_geometry=(int(text["hidden_size"]), int(text["num_experts_per_tok"]),
+                              int(text["num_experts_per_tok"]) + 1))
         if stage_identity_cohort:
             from .stage_topology import prepare_pp1
 
@@ -1232,6 +1258,9 @@ class FlashNextEngine:
             history_host_per_rank = history_maximum_owners * history_plan.host_bytes(history_host_limit)
             host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * history_host_per_rank
         adaptive_capacity = {}
+        if self._owned_expert_plan is not None:
+            numeric_capacity["resident_extra"] = numeric_capacity.get("resident_extra", 0) + (
+                self._owned_expert_plan.resources(self._owned_expert_plan.rows)["additional_device_bytes"])
         if adaptive_sessions:
             from tensorfold.cuda.capacity import Geometry
             from .kv_status import workspace_bytes as status_workspace
@@ -1959,6 +1988,8 @@ class FlashNextEngine:
                 remaining = f"unavailable ({host['cgroup_read_error']})"
             print(f"[tensorfold] host after load: MemAvailable {available}; cgroup hard-limit room {remaining}; "
                   "advisory snapshot, competing allocations can consume it", flush=True)
+        if self._triton_driver_preparation is not None:
+            self.capacity_plan["triton_driver_preparation"] = self._triton_driver_preparation
         if execution_profile_manifest is not None:
             from .execution_identity import bind_execution_manifest
 

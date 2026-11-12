@@ -1,0 +1,14 @@
+{
+  "schema": "tensorfold.v100-triton-runtime-profile-input",
+  "version": 1,
+  "name": "sm70-triton32-v1",
+  "from_triton": "3.9.0",
+  "triton": {
+    "version": "3.2.0",
+    "artifact": "triton-3.2.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "url": "https://files.pythonhosted.org/packages/06/00/59500052cb1cf8cf5316be93598946bc451f14072c6ff256904428eaf03c/triton-3.2.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "bytes": 253159365,
+    "sha256": "8d9b215efc1c26fa7eefb9a157915c92d52e000d2bf83e5f69704047e63f125c"
+  },
+  "execution_scope": "SM70 compiler retaining MMAv1; actual FP32 moe_partial ordered-FMA qualification pending; protected CUDA12 tools"
+}

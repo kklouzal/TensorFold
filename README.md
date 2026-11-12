@@ -21,6 +21,30 @@ and reuses the existing grouped down-projection and shared-output publication.
 Serving dispatch is unchanged; model qualification remains separate from the
 component contract checks.
 
+The private TP8/ETP4 expert comparison now selects TensorFold or 1Cat gate/up
+and down paths independently, including direct raw-IQ2 gate/up. The 1Cat down
+candidate uses explicit Q8_1 activation quantization; its output differences are
+measured separately from throughput. Stock MTP retains its original FP32 expert
+provider and defaults to depth4. Larger target verifier batches and optional
+candidate prefill use bounded32-row panels without reducing admitted concurrency.
+The unique-history graph
+candidate captures expert, linear and HC GPU pieces around live attention,
+recurrent-state and PLE handoffs. Actual model quality, target/MTP serving replay
+and matched performance qualification remain pending. The frozen repaired image
+passed679 installed CPU tests plus11 subtests and163 actual V100 component tests,
+including37 raw-IQ2 and12 Q8-slot cases. Later prefill-selection changes retain
+their separate source and verification scope. These are private trials,
+not selected serving defaults. See the [development checkpoint](docs/development-checkpoint.md).
+
+The additional V100 candidate inventory covers 1Cat's TurboMind/LMDeploy,
+CUTLASS, GGML, FlashAttention-V100 and FlashQLA mechanisms, plus separate
+cuBLAS/cuBLASLt, BitBLAS and compatible ATen attention trials. The reference
+eager TP8/ETP4 model has completed a bounded MTP4 smoke run; graph startup and
+matched throughput/quality qualification remain open. The isolated Triton 3.2
+profile uses explicit PTX8.3 with the real CUDA12.9 compiler; updated GPU/model
+qualification remains pending.
+See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates).
+
 Gemma chat presentation routes repeated, nested and unknown channel blocks to
 reasoning and holds incomplete control markers while streaming. Channel controls
 stay out of visible content; native quoted tool arguments retain their literal

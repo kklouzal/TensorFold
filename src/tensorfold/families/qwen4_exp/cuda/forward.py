@@ -183,6 +183,17 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
             _prefill_chain(g, st, li, b, a0, a1, c, at.get(a0, ()))
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     _mm(b.mixed[:R], g.proj, b.xs_mixed[:R], b.proj[li, :R], b)
+    if b.split is not None and getattr(b, "exact_graph_handoffs", False):
+        b.split(("gdn_chain", layer, R))
+    else:
+        gdn_chain(layer, w, segs, b, R)
+    return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
+
+
+def gdn_chain(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int) -> None:
+    """The original recurrent chain, on this frame's live State pointers."""
+    c, g = w.cfg, layer.gdn
+    li = segs[0][0].lin_index[layer.index]
     tables = getattr(b, "gdn_tables", None)           # a concurrent round: every stream in one launch a step
     if tables is not None and b.h.dtype == torch.float16:
         from tensorfold.cuda.sm70.gdn_native import batch_chain
@@ -191,15 +202,14 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
             raise ValueError("GDN requires exactly one declared decay representation")
         batch_chain(b.proj[li, :R], g.conv, g.a_log if g.a_neg is None else g.a_neg,
                     g.dt_bias, g.norm, c.eps, tables, li, b.gout[:R], b.gxs[:R], negative_decay=g.a_neg is not None)
-        return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
+        return
     if tables is not None and b.h.dtype != torch.float16:
         gdn_multi.block(g, li, tables, b.proj[li, :R], c.eps, b.gout[:R], b.gxs[:R], c.nk)
-        return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
+        return
     for st, a0, a1 in segs:
         cur = st.cur[li]
         gdn_mod.chain(b.proj[li, a0:a1], st.conv[li], g.conv, st.rec[cur, li], g.a_log, g.dt_bias, g.norm, c.eps,
                       a1 - a0, st.scratch[li], st.rec[1 - cur, li], b.gout[a0:a1], b.gxs[a0:a1], a_neg=g.a_neg)
-    return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
 
 
 def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts: Sequence[Cut] = ()) -> None:
@@ -293,7 +303,14 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     if getattr(b, "history_owner", None) is not None:
         from .history_owner import attention_layer
 
-        o = attention_layer(layer, w, segs, b, R, mtp=mtp)
+        if b.split is not None:
+            # The packed-history owner validates the current issued coordinates
+            # and live State bounds between graph pieces. No padded row or
+            # captured host position may stand in for this handoff.
+            b.split(("owner_attention", layer, R, mtp))
+            o = b.attn_o[:R]
+        else:
+            o = attention_layer(layer, w, segs, b, R, mtp=mtp)
         glue.attn_gate(o, b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
         return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
     step = None if b.prefill or b.h.dtype == torch.float16 else getattr(b, "attn_step", None)

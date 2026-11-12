@@ -66,3 +66,16 @@ def test_python_refusal_preserves_every_output(keyword, value):
     with pytest.raises(ValueError):
         prepared.pack_active(raw, raw, picks, *outputs, **args)
     assert all(int(t[0]) == 177 for t in outputs)
+
+
+def test_union_wrapper_uses_separate_native_api_and_publishes_written_views():
+    calls = []
+    prepared = gpu.Prepared(NS(pack_union=lambda *args: calls.append(args),
+                              pack_active=lambda *args: pytest.fail('decode API selected')), torch.device('cpu'))
+    raw = torch.zeros(1, dtype=torch.uint8)
+    picks = torch.zeros((130, 11), dtype=torch.int64)
+    outputs = tuple(torch.zeros(1, dtype=torch.uint8) for _ in range(4))
+    versions = [tensor._version for tensor in outputs]
+    assert prepared.pack_union(raw, raw, picks, *outputs, first=256, ggml_type=22) == outputs
+    assert len(calls) == 1 and calls[0][2] is picks and calls[0][-4:] == (256, 22, 0, 0)
+    assert [tensor._version for tensor in outputs] == [value + 1 for value in versions]

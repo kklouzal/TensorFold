@@ -757,6 +757,46 @@ qualification remain pending and separately owned.
 
 ## Whole application wheel updates
 
+The private `sm70-triton32-v1` runtime candidate uses
+[the exact Triton 3.2.0 wheel input](source-runtime-triton32-input.json).
+`render-runtime-profile` accepts the prior runtime receipt, a matching resolver
+report, that profile input and the downloaded wheel; it emits a new runtime
+lock/receipt and `Dockerfile.runtime-profile`. Its prepare/apply stages preserve
+the original framework producer identity and all non-Triton dependency and
+protected native/compiler bytes. The current runtime auditor is recorded
+separately. The generated image must pass the complete audit as the actual
+nonroot worker; inaccessible owned directories are fatal, not repaired during
+serving. The rebuilt SDK `db6f0d55` passed this nonroot binding gate.
+
+Triton 3.2 retains the inspected Volta MMAv1 compiler, but its automatic PTX
+version table rejects CUDA 12.9. The owned launch boundary explicitly selects
+its supported PTX 8.3 option for this profile in cold FMA preparation, live
+FMA, and the conformance probes. The real CUDA 12.9.86 assembler identity stays
+visible and audited; no vendor compiler code or reported CUDA version changes.
+That assembler accepted a CPU-only SM70/PTX8.3 compilation. Actual GPU FMA,
+MMAv1, graph replay and complete MTP model gates remain pending for the updated
+application. This candidate does not replace the qualified restricted Triton
+3.9 reference by assumption.
+
+Private owned SM70 startup prepares Triton's CUDA driver helper under a shared
+lock inside the existing SDK/runtime-bound cache before any rank warms kernels.
+The pinned Triton3.9 cold publisher can replace a helper already mapped by a
+peer: an actual eight-process `CudaUtils` control retained seven deleted maps;
+the owned initialization retained none. Its normal CUDA launcher reuses this
+helper rather than publishing a separate per-kernel host launcher.
+The lock covers startup preparation only, with the existing startup allowance;
+inference, cache identity and installed Triton code are unchanged. The execution
+profile's deleted-library refusal stays fatal and now reports bounded path and
+mapping context.
+
+The helper verifies its persistent cache path, held-file hash and unchanged
+file identity against its live executable mapping. A one-byte private mapping
+from the held descriptor supplies the actual backing device/inode: OverlayFS
+can expose a different stat device from its backing mapping. The probe does not
+write the file and retires before preparation returns. Actual installed-helper
+controls passed on the current V100 SDK; full-model startup and quality remain
+separate gates. See [the helper](../../src/tensorfold/cuda/sm70/triton_driver.py).
+
 `Dockerfile.application-wheel` updates only the owned application on an exact
 source/media/policy image. Supply one complete wheel and its
 `application-wheel.sha256`; the recipe verifies the checksum, installs with

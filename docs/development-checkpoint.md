@@ -22,17 +22,98 @@ capacity and performance gates remain applicable to each trial before adoption.
 
 ## Known unfinished comparison work
 
-The offline candidate adapter in `tools/v100_rotorquant_quality.py` was stopped
-with **71 passing and two failing CPU controls**. Its new positive controls
-reject the Docker inspect JSON array because a reused reader accepts only JSON
-objects. Some refusal controls can consequently fail before the boundary they
-intend to exercise. Fix that narrow reader contract and recheck the positive
-and refusal controls before relying on the adapter. The existing strict teacher
-comparator retains its independent contract.
+The offline candidate adapter in `tools/v100_rotorquant_quality.py` historically
+stopped with **71 passing and two failing CPU controls**. The Docker inspect
+array boundary is now repaired without relaxing object-only authority readers,
+duplicate-key, finite-number, immutable-file or hash checks. The focused source
+suite passed82 controls in the pinned Python3.12 media image. The subsequent
+qualification/combination tool source batch passed120 tests and11 subtests;
+these CPU results do not qualify an installed model or performance comparison.
+The existing strict teacher comparator retains its independent contract.
 
-The raw-IQ2 gate/up prototype also remains unqualified on SM70: its GPU suite was
-collected, but native compilation and execution were not completed. The private
-B16 experiments are preserved for development, without a serving selection claim.
+The raw-IQ2 gate/up prototype compiled and passed37 actual SM70 component cases
+in the repaired frozen image `71ebf375`, among163 passing native cases. The new
+Q8 slots API passed12 cases against independent bit/oracle, poison and graph
+controls. The same image passed679 installed CPU tests and11 subtests with real
+source/SDK binding. The original compilation failures remain evidence; these
+passes do not qualify full-model quality or throughput. The private B16 experiments
+remain separate development work, without a serving selection claim.
+
+## Current expert comparison implementation
+
+The private qualification selector independently binds TensorFold Grouped4 or
+1Cat gate/up, TensorFold or IQ4_NL Q8_1/DP4A down, and packed or direct raw-IQ2
+input. Q2_0 down retains its declared TensorFold implementation. The original
+combined TensorFold Grouped4 operation remains an independent benchmark control;
+a split TensorFold gate/up+down call does not replace that control by assumption.
+Both down providers publish unweighted slots and preserve the original shared
+expert and outer weighting/reduction boundary. Additional quantization and
+epilogue rounding remain explicit numerical choices, not equivalence claims.
+
+Target verification and optional candidate prefill use sequential32-row panels. The
+separate MTP expert bank retains the declared TensorFold FP32 implementation;
+no Half conversion or approximate down path is installed on it. Candidate Q8
+scratch belongs to each selected target/prefill role, with one panel per role
+admitted before loading. TensorFold prefill remains an independent control and
+is selected unless the candidate prefill is explicitly requested.
+
+The unique-history graph implementation captures State-independent expert,
+linear and HC GPU pieces. Attention, recurrent chains and PLE State handoffs
+stay live between those pieces. Startup prepares exact row/participant shapes;
+unprepared shapes run eagerly. Serving counters distinguish target and MTP
+replays from startup replay. RAM indexer and other drafter graph contracts are
+outside this candidate. Source CPU graph controls passed100 tests; actual V100
+replay, graph/eager model parity, numerical differences, full-context resources
+and matched MTP4 performance remain required before selecting winners.
+
+## Additional V100 library candidates
+
+The pinned 1Cat source uses TurboMind/LMDeploy CUDA kernels, CUTLASS 4.4.2,
+GGML quantization primitives, FlashAttention-V100 and FlashQLA GDN kernels.
+Some consumers also use TileLang. These are separate mechanisms with different
+shape, state and numerical contracts; installing the complete 1Cat dependency
+set does not establish compatibility with this engine. The existing source SDK
+retains CUTLASS 4.8.1. FlashInfer's inspected attention backend requires SM75 or
+newer; its separate SM70 primitive probe does not establish V100 attention support.
+
+Private prepared adapters now assess CUDA 12.9 cuBLAS/cuBLASLt and CUTLASS SM70
+dense operations. Their native compilation, 15 CPU checks and 48 V100 component
+checks pass using the canonical wrapper and explicitly identified native ELF
+on the source8 SDK. JIT-provider and integrated selection remain pending.
+The xFormers 0.0.30 attention interface can
+reach the compatible ATen CUTLASS operator already built into the owned Torch;
+the old xFormers wheel is not installed over that SDK. BitBLAS 0.1.0.post1 has
+completed one actual V100 code-generation pilot, a shared-CUDA-runtime relink,
+and a bounded primitive/changed-input graph check. In that M1 case, 146 of160
+Float32 output bit patterns differed from the TensorFold Dense M32 reference
+(maximum absolute difference 7.82310962677002e-08); no numerical equivalence,
+model-quality or performance acceptance is claimed. Requested
+FlashAttention-V100 26.10 is a distinct source identity from 1Cat's bundled and
+externally pinned FlashAttention variants.
+
+The Triton 3.2.0 candidate retains the last inspected upstream MMAv1/SM70
+implementation. Its isolated SDK profile passes nonroot binding and installed
+CPU checks, but actual compilation exposed its unsupported CUDA 12.9 version
+mapping. The owned launch boundary now selects the supported PTX8.3 option;
+the real CUDA12.9 assembler accepted an SM70 compilation without initializing
+CUDA. Actual updated GPU/model gates remain pending; no vendor patch, fake
+compiler version or broad SM70 qualification is implied.
+
+The frozen source7 reference eager model completed four requests with full24
+GPU-resident sessions admitted, TP8/ETP4, native context262144, Q8 histories and
+MTP depth4. Serial and MTP token IDs matched on the two smoke prompts. This is
+functional evidence, not a throughput benchmark. Source8 graph startup fails
+before serving and remains under diagnosis. Graph replay and all matched
+performance/quality comparisons remain open gates.
+
+The private campaign's `model --diagnostic-commit-events N` reserves finite
+host storage before engine construction and records committed-output batch
+timestamps; `--diagnostic-commit-nvtx` adds numeric markers. A smoke diagnostic
+uses the existing known-answer requests; the other diagnostic selects the
+original C1/C8 prompts and work from the immutable plan. All eight rank traces
+must close, with positive leader work. These records are explicitly ineligible
+for performance selection; MTP batch timestamps do not imply individual token
+spacing. The ordinary timing campaign retains its separate protocol.
 
 ## Continue development
 

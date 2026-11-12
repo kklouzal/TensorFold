@@ -64,6 +64,35 @@ class Prepared:
         return outputs
 
 
+    def pack_union(self, gate_raw, up_raw, picks, gate_codes, gate_scales, up_codes, up_scales, *,
+                   first, ggml_type, gate_column_offset=0, up_column_offset=0):
+        """Pack the valid expert union for one bounded prefill/layer.
+
+        All source/picks and frame views remain owned through every consuming
+        GU panel. The caller serializes this layer before another frame writer.
+        Unlike pack_active, the native envelope is at most 65,535 total pairs.
+        """
+        import torch
+        _format_name(ggml_type)
+        if type(first) is not int or first not in (0, 256):
+            raise ValueError('owned E256 first must be0 or256')
+        for offset in (gate_column_offset, up_column_offset):
+            if type(offset) is not int or offset < 0 or offset%256:
+                raise ValueError('whole256-value source offset required')
+        inputs = (gate_raw, up_raw, picks)
+        outputs = (gate_codes, gate_scales, up_codes, up_scales)
+        if any(type(t) is not torch.Tensor for t in (*inputs, *outputs)):
+            raise TypeError('plain Tensor packing operands required')
+        if any(t.device != self.device for t in (*inputs, *outputs)):
+            raise ValueError('packing device differs from resident preparation')
+        if not torch.is_inference_mode_enabled() and any(t.is_inference() for t in outputs):
+            raise RuntimeError('inference output mutation outside inference mode')
+        self.module.pack_union(gate_raw, up_raw, picks, *outputs, first, ggml_type,
+                               gate_column_offset, up_column_offset)
+        torch.autograd.graph.increment_version(outputs)
+        return outputs
+
+
 def prepare(device):
     import torch
     from tensorfold.cuda import build

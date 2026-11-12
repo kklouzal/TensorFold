@@ -1,7 +1,8 @@
-"""Unselected component experiment: 1Cat grouped GGUF GU for owned E256 banks.
+"""Private 1Cat grouped GGUF GU candidates for owned E256 banks.
 
-No runtime dispatcher imports this module. Both epilogues share the same MMA
-and typed planes. Neither is a quality/performance-qualified replacement.
+The explicit private owner prepares these operators before admission/capture.
+Both epilogues share the same MMA and typed planes; their numerical and
+performance qualification remains separate from implementation.
 Original packed GGUF and original down/shared/fold paths remain independent.
 """
 
@@ -165,7 +166,7 @@ class RawIQ2Prepared:
 
 
 def prepare_raw_iq2(device):
-    """Explicit cold capability; never installed into any serving dispatcher."""
+    """Prepare the explicit original-byte IQ2 candidate before admission/capture."""
     import torch
     original = prepare(device)  # Preserve the packed control's preparation.
     with torch.cuda.device(original.device):

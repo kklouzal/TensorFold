@@ -1,4 +1,4 @@
-"""Unselected 1Cat active Q8_1/DP4A down algorithm for original IQ4_NL.
+"""Private 1Cat Q8_1/DP4A down candidates for original IQ4_NL.
 
 This is an explicit additional activation quantization method, NOT the frozen
 Half-MMA moe_down2 prototype or an equivalent current-TensorFold down claim.
@@ -18,7 +18,10 @@ output/quality certificate. All remaining shared activation/weight data ignored.
 Caller exclusively owns Q8/status/route/output scratch and retains ALL operands
 until positive current-stream completion and through graph capture/replay.
 Prepared retains module/device only, not Tensor owners or cross-stream events.
-No runtime caller/default selects this API; error/quality/resource/P3 gates remain.
+The explicit private candidate can publish unweighted Half/F32 route slots,
+including independent original shared results, for the existing transport/fold.
+The historical folded APIs retain their separate rounding contracts. Selection
+requires model quality/resource/performance qualification.
 """
 
 from dataclasses import dataclass
@@ -67,10 +70,46 @@ def layout(rows, first, *, ggml_type, column_offset, row_bytes, method):
     }
 
 
+def scratch_layout(rows):
+    """Caller-funded per-role quantization scratch; output slots are preexisting.
+
+    This is additional Q8_1 activation quantization, not an equivalence claim.
+    No allocation or stream/graph lifecycle is hidden by the native API.
+    """
+    if type(rows) is not int or not 1 <= rows <= 32:
+        raise ValueError("down scratch requires R1..32")
+    return {"q8_shape": (rows * 11, 5, 36), "status_shape": (rows,),
+            "q8_bytes": rows * 11 * 5 * 36, "status_bytes": rows * 4,
+            "additional_device_bytes": rows * (11 * 5 * 36 + 4),
+            "output_kind": "unweighted-slots-with-independent-shared",
+            "activation_error_contract": "explicit-Q8_1-approximation-not-qualified"}
+
+
 @dataclass(frozen=True)
 class Prepared:
     module: object
     device: object
+
+    def slots(self, activation, picks, raw, shared, q8, status, out, *, first, ggml_type, column_offset):
+        """Publish unweighted slots, retaining the caller's FP16/FP32 boundary.
+
+        Existing rank transport and ordered weighting/fold consume these slots.
+        Caller retains all operands until current-stream/graph retirement.
+        """
+        import torch
+
+        operands = (activation, picks, raw, shared, q8, status, out)
+        if any(type(t) is not torch.Tensor for t in operands):
+            raise TypeError("plain Tensor down operands required")
+        if picks.ndim != 2 or raw.ndim != 2:
+            raise ValueError("matrix picks/original packed rows required")
+        layout(picks.shape[0], first, ggml_type=ggml_type,
+               column_offset=column_offset, row_bytes=raw.shape[1], method=METHODS[1])
+        if activation.device != self.device:
+            raise ValueError("prepared device differs")
+        self.module.slots(*operands, ggml_type, first, column_offset)
+        torch.autograd.graph.increment_version((q8, status, out))
+        return out
 
     def down(self, activation, picks, weights, raw, q8, slots, status, out, *, first, ggml_type, column_offset, method):
         import torch

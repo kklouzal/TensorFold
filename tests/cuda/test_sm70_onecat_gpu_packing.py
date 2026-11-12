@@ -198,3 +198,91 @@ def test_IQ4_scale_half_classes_match_pinned_CPU_wire_including_payloads():
     prepared.pack_active(raw, raw, picks, *planes, first=0, ggml_type=23)
     torch.cuda.synchronize()
     compare(planes[:2], lambda expert: selected.copy(), list(range(10)), 23)
+
+
+@pytest.mark.parametrize('kind,first,dtype', [(18, 0, torch.int32), (21, 256, torch.int64),
+                                           (22, 0, torch.int64), (23, 256, torch.int32)])
+@torch.no_grad()
+def test_prefill_union_matches_all_panel_bytes_and_gu_for_late_valid_rows(kind, first, dtype):
+    from tensorfold.cuda.sm70 import onecat_moe_gu as gu
+
+    device = torch.device('cuda', torch.cuda.current_device())
+    producer, consumer = gpu.prepare(device), gu.prepare(device)
+    raw, expected_raw = raw_input(kind, offset=0, distinct=True)
+    union_slab, union_planes = outputs(kind, device)
+    panel_slab, panel_planes = outputs(kind, device)
+    rows = 130
+    picks = torch.arange(256-first, 267-first, dtype=dtype, device=device).repeat(rows, 1)
+    picks[:, 10] = 512
+    picks[33, :10] = torch.arange(first, first+10, dtype=dtype, device=device)
+    picks[129, :10] = torch.arange(first+220, first+230, dtype=dtype, device=device)
+    # Invalid rows mention another local expert, which must remain unprepared.
+    picks[65:69, :10] = torch.arange(first+240, first+250, dtype=dtype, device=device)
+    picks[65, 1] = picks[65, 0]
+    picks[66, 10] = 511
+    picks[67, 0] = -1
+    picks[68, 0] = 1 << 30
+    producer.pack_union(raw, raw, picks, *union_planes, first=first, ggml_type=kind)
+    for start in range(0, rows, 32):
+        producer.pack_active(raw, raw, picks[start:start+32], *panel_planes, first=first, ggml_type=kind)
+    assert torch.equal(union_slab, panel_slab)
+    active = active_ids(picks, first)
+    assert active == [*range(10), *range(220, 230)]
+    compare(union_planes[:2], expected_raw, active, kind)
+    table = torch.from_numpy(cpu.table(kind)).cuda()
+    x = torch.zeros((rows, 2560), device=device, dtype=torch.float16)
+    x[:, 127] = 2**-7
+    union_out = torch.empty((rows*11, 160), device=device, dtype=torch.float16)
+    panel_out = torch.empty_like(union_out)
+    name = {18:'IQ3_XXS', 21:'IQ3_S', 22:'IQ2_S', 23:'IQ4_XS'}[kind]
+    for start in range(0, rows, 32):
+        stop = min(start+32, rows)
+        arguments = dict(first=first, format_name=name, method=gu.METHODS[0])
+        consumer.gate_up(x[start:stop], picks[start:stop], *union_planes, table,
+                         union_out[start*11:stop*11], **arguments)
+        consumer.gate_up(x[start:stop], picks[start:stop], *panel_planes, table,
+                         panel_out[start*11:stop*11], **arguments)
+    assert torch.equal(union_out.view(torch.int16), panel_out.view(torch.int16))
+    assert torch.isnan(union_out.view(rows, 11, 160)[65:69]).all()
+    torch.cuda.synchronize()
+
+
+@torch.no_grad()
+def test_union_capture_replay_consumes_experts_appearing_only_in_changed_late_rows():
+    device = torch.device('cuda', torch.cuda.current_device())
+    prepared = gpu.prepare(device)
+    raw, expected = raw_input(22, offset=0, distinct=True)
+    slab, planes = outputs(22, device)
+    picks = picks_for(130, 256)
+    picks[:, :10] = torch.arange(256, 266, device=device)
+    picks[129, :10] = torch.arange(220, 230, device=device)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        prepared.pack_union(raw, raw, picks, *planes, first=0, ggml_type=22)
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        prepared.pack_union(raw, raw, picks, *planes, first=0, ggml_type=22)
+    stream.synchronize()
+    slab.fill_(0xa5)
+    picks[129, :10] = torch.arange(150, 160, device=device)
+    graph.replay()
+    torch.cuda.synchronize()
+    compare(planes[:2], expected, list(range(150, 160)), 22)
+    del graph
+
+
+@pytest.mark.parametrize('union,rows', [(False, 33), (True, 5958)])
+@torch.no_grad()
+def test_union_pair_limit_and_unchanged_active_row_limit_refuse_before_writes(union, rows):
+    device = torch.device('cuda', torch.cuda.current_device())
+    prepared = gpu.prepare(device)
+    raw, _ = raw_input(18, offset=0)
+    slab, planes = outputs(18, device)
+    picks = picks_for(rows, 0)
+    operation = prepared.pack_union if union else prepared.pack_active
+    with pytest.raises(RuntimeError, match='picks requires'):
+        operation(raw, raw, picks, *planes, first=0, ggml_type=18)
+    assert torch.all(slab == 0xa5)
+    torch.cuda.synchronize()

@@ -1738,6 +1738,46 @@ def _observer_failure(engine, primary):
         raise_failures(primary, [cleanup])
 
 
+def _commit_trace_spec(args):
+    events = getattr(args, 'commit_trace_events', None)
+    nvtx = getattr(args, 'commit_trace_nvtx', False)
+    if events is None:
+        if nvtx:
+            raise ValueError('commit NVTX markers require an explicit finite trace')
+        return None
+    if any(getattr(args, name, None) for name in ('teacher_plan', 'benchmark_client',
+            'router_row_input', 'history_input')):
+        raise ValueError('commit trace is a separate finite diagnostic, not a closed teacher/history operation')
+    if __package__:
+        from .v100_commit_trace import resources
+    else:
+        from v100_commit_trace import resources
+    plan = resources(events)
+    plan['nvtx'] = bool(nvtx)
+    plan['global_host_obligation_bytes'] = 8 * (
+        plan['retained_event_bytes'] + plan['serialization_bytes'] + 8192)
+    if plan['global_host_obligation_bytes'] > sys.maxsize:
+        raise ValueError('commit trace global host obligation exceeds its size domain')
+    return plan
+
+
+def _finish_commit_trace(trace, engine, output, spec):
+    report = trace.close()  # CLI has drained and retired the actual engine first.
+    report.update(rank=engine.rank, world=engine.tp, requested=spec,
+                  engine_closed=engine._closed is True, engine_aborted=engine._abort_comm is not False,
+                  observer_source_sha256=_source_sha(Path(__file__)))
+    if report['engine_closed'] is not True or report['engine_aborted']:
+        report['complete'] = False
+    if len(json.dumps(report, allow_nan=False).encode()) > spec['serialization_bytes']:
+        raise ValueError('commit diagnostic exceeded its admitted encoding bound')
+    target = Path(output) / f'commit-trace-rank-{engine.rank}.json'
+    if target.exists() or target.is_symlink():
+        raise ValueError('commit diagnostic receipt already exists')
+    write_json(target, report)
+    if report['complete'] is not True:
+        raise RuntimeError('commit diagnostic incomplete; model outcome remains independent')
+
+
 class _HistoryAttestation:
     """One private worker-boundary witness; never installed on normal serving."""
     def __init__(self, engine, data, input_sha, output, resources):
@@ -2216,7 +2256,7 @@ def _trace_inventory(engine, output):
 
 class _BenchmarkObserver:
     """Private current-stream inclusive envelopes; four events reused per cohort."""
-    def __init__(self, engine, plan, *, events=None, timed=True, strict=False, segment_journal=None, preparation_witness=None):
+    def __init__(self, engine, plan, *, events=None, timed=True, strict=False, segment_journal=None, preparation_witness=None, commit_trace=None):
         import torch
         from tensorfold.server.stats import INSTANCE_ID
         self.server_instance_id = INSTANCE_ID
@@ -2225,6 +2265,7 @@ class _BenchmarkObserver:
         self.timed, self.strict = timed, strict
         self.segment_journal = segment_journal
         self.preparation_witness = preparation_witness
+        self.commit_trace = commit_trace
         self.finished, self.failed = False, None
         self.seen = set()
         self.failure_status = [None] * 2
@@ -2238,6 +2279,7 @@ class _BenchmarkObserver:
         self.published = {"schema": "tensorfold.private-benchmark-v1", "run_identity": plan["run_identity"],
                           "server_instance_id": self.server_instance_id, "cohorts": {}}
         self.stream = None
+        self._publish()
 
     def _invalid(self, message):
         error = ValueError(message)
@@ -2337,6 +2379,9 @@ class _BenchmarkObserver:
         elif self.preparation_witness is not None:
             self.published.update(P3_valid=False, diagnostic_only=True,
                 scope='Q8 preparation parity fences invalidate all performance timings')
+        if self.commit_trace is not None:
+            self.published.update(P3_valid=False, diagnostic_only=True, commit_trace=self.commit_trace,
+                scope='Commit-batch diagnostic instrumentation invalidates performance timings')
 
     def install(self):
         decoder, observations = self.decoder, self.observations
@@ -2494,7 +2539,7 @@ class _BenchmarkObserver:
         observations.target, observations.record = guarded(targeted), guarded(recorded)
 
 
-def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0, closed=None, segment_journal=None, preparation_witness=None):
+def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0, closed=None, segment_journal=None, preparation_witness=None, commit_trace=None):
     if trace_output is not None and _trace_c24_only(plan):
         decoder = engine.multi
         if (engine.w.mtp is not None or decoder.speculation.method != 'none'
@@ -2509,7 +2554,8 @@ def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0,
     selection = None if trace_output is None else _trace_prefill_selection(plan, trace_prefill_start)
     observer = _BenchmarkObserver(engine, plan, timed=engine.rank == 0,
                                   strict=closed is not None or segment_journal is not None or preparation_witness is not None,
-                                  segment_journal=segment_journal, preparation_witness=preparation_witness)
+                                  segment_journal=segment_journal, preparation_witness=preparation_witness,
+                                  commit_trace=commit_trace)
     if closed is not None:
         engine._owned_benchmark = observer  # Journal before callback installation.
         _prepare_closed_benchmark(engine, observer, closed)
@@ -3326,10 +3372,17 @@ def _onecat_qualification_module():
 
 def _onecat_capability_from_args(args):
     """Cold private-trial selector; no public serving flag or automatic credit."""
+    if getattr(args, "graph_use_receipts", False) and any(getattr(args, name, False) for name in (
+            "prepared_feature_receipts", "normalization_parity", "gdn_batch_parity", "q8_preparation_parity")):
+        raise ValueError("graph-use receipts exclude parity/prepared-feature close observers")
     method = args.onecat_gu_method
+    down_method = getattr(args, "onecat_down_method", "tensorfold")
+    iq2_source = getattr(args, "onecat_iq2_source", "active-frame")
+    prefill_method = getattr(args, "onecat_prefill_method", "tensorfold")
     device, host = args.onecat_device_budget_bytes, args.onecat_global_host_bytes
     if method is None:
-        if device is not None or host is not None:
+        if (device is not None or host is not None or down_method != "tensorfold"
+                or iq2_source != "active-frame" or prefill_method != "tensorfold"):
             raise ValueError("1Cat credits require an explicit private method")
         return None
     if args.grouped_gate_up_rows is not None:
@@ -3337,7 +3390,10 @@ def _onecat_capability_from_args(args):
     if args.prepared_feature_receipts:
         raise ValueError("1Cat has a distinct cold receipt; prepared-feature intersection is unqualified")
     return _onecat_qualification_module().create_capability(
-        method, device_budget_bytes=device, global_host_bytes=host)
+        method, device_budget_bytes=device, global_host_bytes=host,
+        **({"down_method": down_method} if down_method != "tensorfold" else {}),
+        **({"iq2_source": iq2_source} if iq2_source != "active-frame" else {}),
+        **({"prefill_method": prefill_method} if prefill_method != "tensorfold" else {}))
 
 
 def _grouped_gate_up_capability(cli, rows):
@@ -3415,6 +3471,116 @@ def _owned_q8_preparation_receipt(engine):
             'invocation_evidence': False, 'P3_valid': False}
 
 
+def _qualification_failure_record(engine, primary, requested_rows):
+    """Cold validation-only scalars, never prompts, paths, environment or inputs.
+
+    A malformed field is unavailable diagnostic data, not an inferred zero.
+    Avoid arbitrary exception __str__ implementations and unbounded containers.
+    """
+    def integer(value):
+        return value if type(value) is int and -sys.maxsize - 1 <= value <= sys.maxsize else None
+
+    def scalars(value, keys):
+        value = value if type(value) is dict else {}
+        return {key: integer(value.get(key)) for key in keys}
+
+    plan = getattr(engine, "capacity_plan", {})
+    plan = plan if type(plan) is dict else {}
+    session = plan.get("session_capacity", {})
+    session = session if type(session) is dict else {}
+    selected = scalars(session, ("context_tokens", "configured_ceiling", "resident_capacity", "full_context_commitments"))
+    resource = session.get("limiting_resource")
+    selected["limiting_resource"] = resource if resource in ("administrator-ceiling", "host-memory", "rank-device-memory") else None
+    binding = session.get("binding_ranks")
+    selected["binding_ranks"] = ([integer(n) for n in binding[:8]] if type(binding) is list else None)
+    rank_fields = ("rank", "budget_bytes", "resident_weight_bytes", "loading_overlap_bytes",
+                   "session_execution_bytes", "next_session_execution_bytes")
+    ledger_fields = ("session_state", "retained_recovery", "execution_arenas", "slot_metadata", "history",
+                     "replacement_overlap", "serving_workspace", "graphs", "attention_scratch", "sm70_native_workspace",
+                     "kv_cohort_workspace", "expert_routing_extra", "migration_overlap_limit", "device_library_workspace",
+                     "retained_idle_recovery", "retained_restore_overlap", "media_mtp_boundary", "draft_history_execution",
+                     "draft_replacement_overlap", "dflash_window_state", "dflash_recovery_snapshots",
+                     "dflash_execution_workspace", "dflash_target_probability", "retained_device_dependencies")
+    baseline_fields = ("physical_free_bytes", "device_total_bytes", "effective_device_floor_bytes", "preallocated_project_bytes",
+                       "usable_serving_budget_bytes", "allocator_allocated_bytes", "allocator_reserved_bytes")
+    ranks = session.get("ranks")
+    selected["ranks"] = []
+    if type(ranks) is list:
+        for row in ranks[:8]:
+            if type(row) is dict:
+                selected["ranks"].append({**scalars(row, rank_fields),
+                    "resource_ledger_bytes": scalars(row.get("resource_ledger_bytes"), ledger_fields),
+                    "allocation_baseline": scalars(row.get("allocation_baseline"), baseline_fields)})
+    envelope = plan.get("execution_envelope", {})
+    envelope = envelope if type(envelope) is dict else {}
+    execution = scalars(envelope, ("target_rows", "max_proposals", "prefill_tokens"))
+    method = envelope.get("method")
+    execution["method"] = method if method in ("none", "mtp", "dspark", "dflash2") else None
+    windows = plan.get("kv_full_windows", {})
+    windows = windows if type(windows) is dict else {}
+    kv = scalars(windows, ("requested", "reserved", "stream_slots", "context_window", "cache_slots_each",
+                          "workspace_bytes", "allocated_cache_bytes"))
+    kv["materialized"] = windows.get("materialized") if type(windows.get("materialized")) is bool else None
+    kv["ranks"] = []
+    materialized = windows.get("ranks")
+    if type(materialized) is list:
+        for row in materialized[:8]:
+            if type(row) is dict:
+                sizes = row.get("startup_capacities")
+                kv["ranks"].append({**scalars(row, ("rank", "allocated_cache_bytes", "torch_allocated_bytes", "torch_reserved_bytes")),
+                    "materialized": row.get("materialized") if type(row.get("materialized")) is bool else None,
+                    "startup_capacities": [integer(n) for n in sizes[:64]] if type(sizes) is list else None,
+                    "capacities_truncated": type(sizes) is list and len(sizes) > 64})
+    decoder = getattr(engine, "multi", None)
+    controller = getattr(decoder, "controller", None)
+    effective = {"engine": integer(getattr(engine, "execution_rows", None)),
+                 "target": integer(getattr(getattr(decoder, "buf", None), "rows", None)),
+                 "mtp": integer(getattr(getattr(decoder, "mbuf", None), "rows", None))}
+    for key in ("maximum", "configured"):
+        value = getattr(controller, key, None)
+        effective["controller_" + key] = integer(value.get("row_budget")) if type(value) is dict else None
+    args = BaseException.args.__get__(primary)
+    message = args[0][:2048] if type(args) is tuple and len(args) == 1 and type(args[0]) is str else "compound/non-string exception arguments; retained in propagated failure"
+    record = {"schema": "tensorfold.qualification-startup-failure-v1", "rank": integer(getattr(engine, "rank", None)),
+              "world": integer(getattr(engine, "tp", None)), "failed": True, "qualification": False,
+              "error": {"type": type(primary).__name__[:128], "message": message},
+              "requested_execution_rows": integer(requested_rows), "effective_execution_rows": effective,
+              "capacity_plan": {"session_capacity": selected, "execution_envelope": execution, "kv_full_windows": kv},
+              "scope": "private cold startup validation failure only; no profile/model/quality/performance pass"}
+    if len(json.dumps(record, allow_nan=False).encode()) + 1 > 65536:
+        raise ValueError("qualification failure metadata exceeds65536bytes")
+    return record
+
+
+def _publish_qualification_failure(engine, output, primary, requested_rows):
+    """Publish before fatal supervisor notification can retire the printer."""
+    errors = [None, None, None]
+    record = None
+    try:
+        record = _qualification_failure_record(engine, primary, requested_rows)
+        target = Path(output) / f"qualification-failure-rank-{engine.rank}.json"
+        if target.exists() or target.is_symlink():
+            raise ValueError("qualification failure rank receipt already exists")
+        write_json(target, record, indent=None)
+    except BaseException as error:
+        errors[0] = error
+    try:
+        # This validation surface has no HTTP requests or prompt/env payloads.
+        # The record is an explicit whitelist, never engine/argument repr().
+        error = dict(record["error"]) if record is not None else {"type": type(primary).__name__[:128],
+            "message": "qualification diagnostic unavailable; retained primary failure"}
+        error["diagnostic_publication_error_type"] = None if errors[0] is None else type(errors[0]).__name__[:128]
+        print("[tensorfold] private qualification failure " + json.dumps(error, allow_nan=False), file=sys.stderr, flush=True)
+    except BaseException as error:
+        errors[1] = error
+    try:
+        if not notify_failure():
+            raise RuntimeError("qualification lost its TP supervisor capability")
+    except BaseException as error:
+        errors[2] = error
+    raise_failures(primary, [error for error in errors if error is not None])
+
+
 def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
                     execution_rows=None, reference_tiles=False, normalization_parity=None, gdn_batch_parity=None, q8_preparation_parity=None, grouped_gate_up=None, onecat_gu=None, prepared_features=None,
                     teacher_profile=None):
@@ -3475,12 +3641,123 @@ def publish_receipt(engine, output, *, dense_implementation=None, half_request=N
         engine.comm.ready("owned_expert_qualification")  # All eight receipts precede follower/listener publication.
     except BaseException as primary:
         engine._abort_comm = True
+        _publish_qualification_failure(engine, output, primary, execution_rows)
+
+
+def _graph_use_sources(engine, graphs):
+    roles = {"engine": engine}
+    if graphs is not None:
+        roles.update(graph_controller=graphs, graph_policy=graphs.bound)
+    sources = {name: _source_sha(Path(sys.modules[type(owner).__module__].__file__))
+               for name, owner in roles.items()}
+    sources["observer_tool"] = _source_sha(Path(__file__))
+    return sources
+
+
+def _attach_graph_use_observer(engine, output, capability, grouped_gate_up):
+    """Snapshot at graph retirement, after Engine drains accepted model work.
+
+    No serving callback is installed. The original graph close still owns its
+    fence and retirement; only positive Engine close makes this a closed report.
+    """
+    graph_module = _onecat_qualification_module()
+    graph_module._graph_receipt(engine)  # Refuse an unprepared graph request before listening.
+    graphs = getattr(engine.multi, "graphs", None)
+    sources = _graph_use_sources(engine, graphs)
+    startup = Path(output) / f"rank-{engine.rank}.json"
+    startup_sha = _source_sha(startup)
+    target = Path(output) / f"graph-use-rank-{engine.rank}.json"
+    if target.exists() or target.is_symlink():
+        raise ValueError("graph-use rank receipt already exists")
+    selector = ({"gu": "incumbent", "grouped_gate_up_rows": grouped_gate_up,
+                 "down": "tensorfold", "iq2_source": "not-applicable", "prefill_method": "tensorfold"} if capability is None else
+                {"gu": capability.method, "down": capability.down_method,
+                 "iq2_source": capability.iq2_source, "prefill_method": capability.prefill_method,
+                 "identity": capability.identity})
+    original_close, original_graph_close = engine.close, None if graphs is None else graphs.close
+    had_close, old_close = "close" in vars(engine), vars(engine).get("close")
+    graph_had_close = graphs is not None and "close" in vars(graphs)
+    old_graph_close = None if graphs is None else vars(graphs).get("close")
+    attempted, snapshot, snapshot_error = False, None, None
+
+    def observe():
+        record = graph_module._graph_receipt(engine)
+        if graphs is None:
+            return {**record, "serving_hits": None, "serving_misses": None}
+        raw = graphs.record()
+        for name in ("serving_hits", "serving_misses"):
+            counts = raw.get(name)
+            if (type(counts) is not dict or set(counts) != {"verify", "mtp"}
+                    or any(type(n) is not int or not 0 <= n <= sys.maxsize for n in counts.values())):
+                raise ValueError("graph-use serving counters lack their exact per-role schema")
+            record[name] = dict(counts)
+        return record
+
+    def graph_closing(*args, **kwargs):
+        nonlocal snapshot, snapshot_error
         try:
-            if not notify_failure():
-                raise RuntimeError("qualification lost its TP supervisor capability")
-        except BaseException as cleanup:
-            raise_failures(primary, [cleanup])
-        raise
+            snapshot = observe()
+        except BaseException as error:
+            snapshot_error = error
+        primary, result = snapshot_error, None
+        try:
+            result = original_graph_close(*args, **kwargs)
+        except BaseException as error:
+            if primary is None:
+                primary = error
+            else:
+                raise_failures(primary, [error])
+        if primary is not None:
+            raise primary
+        return result
+
+    def closing(*args, **kwargs):
+        nonlocal attempted, snapshot
+        if attempted:
+            raise RuntimeError("graph-use close observer already attempted; no uncertain retirement retry")
+        attempted = True
+        primary, result, errors = None, None, []
+        try:
+            if graphs is None:
+                snapshot = observe()
+            result = original_close(*args, **kwargs)
+            if engine._closed is not True or engine._abort_comm is not False:
+                raise RuntimeError("graph-use observer lacks positive non-aborted Engine retirement")
+            if snapshot is None:
+                raise RuntimeError("graph-use retirement boundary was not observed")
+            if _graph_use_sources(engine, graphs) != sources or _source_sha(startup) != startup_sha:
+                raise ValueError("graph-use source/startup identity changed during serving")
+        except BaseException as error:
+            primary = error
+        try:
+            report = {"schema": "tensorfold.graph-use-rank-v1", "rank": engine.rank, "world": engine.tp,
+                "closed": primary is None, "failed": primary is not None, "mtp_depth": engine.depth,
+                "mtp_active": engine.w.mtp is not None, "selector": selector,
+                "startup_receipt_sha256": startup_sha, "runtime_sources": sources, "graph_use": snapshot,
+                "primary_error_type": None if primary is None else type(primary).__name__[:512],
+                "snapshot_error_type": None if snapshot_error is None else type(snapshot_error).__name__[:512],
+                "scope": "per-role serving counters exclude startup; closed only after positive Engine retirement; no quality/P3 acceptance"}
+            if len(json.dumps(report, allow_nan=False).encode()) > 65536:
+                raise ValueError("graph-use receipt exceeds its bounded metadata envelope")
+            write_json(target, report)
+        except BaseException as error:
+            errors.append(error)
+        if primary is None and not errors:
+            if had_close:
+                engine.close = old_close
+            else:
+                del engine.close
+            if graphs is not None:
+                if graph_had_close:
+                    graphs.close = old_graph_close
+                else:
+                    del graphs.close
+        raise_failures(primary, errors)
+        return result
+
+    if graphs is not None:
+        graphs.close = graph_closing
+    engine.close = closing
 
 
 def worker(argv):
@@ -3512,6 +3789,16 @@ def worker(argv):
     parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
                         help="private prepared grouped gate/up trial; requires grouped down")
     parser.add_argument("--onecat-gu-method", help="private typed 1Cat GU trial; explicit credits required")
+    parser.add_argument("--onecat-down-method", choices=("tensorfold", "onecat-q8-slots"), default="tensorfold",
+                        help="target down projection; Q8_1 candidate applies only to IQ4_NL, MTP remains TensorFold FP32")
+    parser.add_argument("--onecat-iq2-source", choices=("active-frame", "raw"), default="active-frame",
+                        help="IQ2_S target GU source; raw bypasses active-frame packing for that format")
+    parser.add_argument("--onecat-prefill-method", choices=("tensorfold", "candidate"), default="tensorfold",
+                        help="target prefill expert implementation; candidate uses the selected GU/down path in bounded panels")
+    parser.add_argument("--graph-use-receipts", action="store_true",
+                        help="bounded per-rank serving graph counters at positive Engine retirement")
+    parser.add_argument('--commit-trace-events', type=int, help='finite diagnostic commit-batch event credit; never P3')
+    parser.add_argument('--commit-trace-nvtx', action='store_true', help='numeric NVTX batch markers; diagnostic only')
     parser.add_argument("--onecat-device-budget-bytes", type=int, help="explicit per-rank additional plane credit")
     parser.add_argument("--onecat-global-host-bytes", type=int, help="explicit global cold packing host credit")
     parser.add_argument("--gdn-batch-parity", action="store_true", help="diagnostic live batch-vs-scalar GDN and ordered segments; P3 invalid")
@@ -3523,6 +3810,7 @@ def worker(argv):
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     selected = parser.parse_args(argv)
     onecat_gu = _onecat_capability_from_args(selected)
+    commit_spec = _commit_trace_spec(selected)
     if selected.benchmark_client is not None and (selected.benchmark_plan is None or selected.scheduler_trace is None
             or selected.benchmark_trace_data is None or selected.teacher_plan is not None or selected.gdn_batch_parity):
         raise ValueError('closed benchmark client requires benchmark/trace and trusted trace DATA only')
@@ -3565,12 +3853,14 @@ def worker(argv):
     benchmark = benchmark_resources = parity_resources = feature_resources = gdn_resources = q8_resources = None
     model_setup_errors = [None] * 2  # Teacher/benchmark are exclusive; prepaid before either setup hook.
     teacher = model_observer = closed_benchmark = None
+    commit_trace = commit_engine = None
+    commit_finished = False
     half_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL")
     router_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS")
     empty_request = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX")
 
     def before_listener(engine):
-        nonlocal receipt_failed
+        nonlocal receipt_failed, commit_trace, commit_engine
         try:
             teacher_profile = None
             gdn_receipt = q8_receipt = None
@@ -3603,6 +3893,7 @@ def worker(argv):
                         gdn_witness = prepare_gdn_batch_parity(engine, gdn_resources, selected.out) if gdn_resources is not None else None
                         q8_witness = prepare_q8_preparation_parity(engine, q8_resources, selected.out) if q8_resources is not None else None
                         prepare_benchmark(engine, benchmark,
+                            **({'commit_trace': commit_spec} if commit_spec is not None else {}),
                             **({'segment_journal': gdn_witness} if gdn_witness is not None else {}),
                             **({'preparation_witness': q8_witness} if q8_witness is not None else {}))
                         q8_receipt = None if q8_witness is None else q8_witness.published
@@ -3610,6 +3901,7 @@ def worker(argv):
                     else:
                         prepare_benchmark(engine, benchmark, selected.scheduler_trace,
                             trace_prefill_start=selected.scheduler_trace_prefill_start or 0,
+                            **({'commit_trace': commit_spec} if commit_spec is not None else {}),
                             **({'closed': closed_benchmark} if closed_benchmark is not None else {}))
                 except BaseException as primary:
                     _owned_model_failure(engine, primary, model_setup_errors)
@@ -3628,6 +3920,22 @@ def worker(argv):
                 except BaseException as primary:
                     _observer_failure(engine, primary)
                     raise
+            if commit_spec is not None:
+                try:
+                    if __package__:
+                        from .v100_commit_trace import CommitTrace
+                    else:
+                        from v100_commit_trace import CommitTrace
+                    marker = None
+                    if commit_spec['nvtx']:
+                        import torch
+                        marker = lambda sid, delta, index: torch.cuda.nvtx.mark(f'commit-batch:{sid}:{delta}:{index}')
+                    commit_trace = CommitTrace(commit_spec['maximum_events'], marker=marker).install(engine.multi)
+                    commit_engine = engine
+                    engine.capacity_plan['commit_trace'] = {**commit_spec, 'P3_valid': False, 'diagnostic_only': True}
+                except BaseException as primary:
+                    _observer_failure(engine, primary)
+                    raise
             publish_receipt(engine, selected.out, dense_implementation=selected.dense_implementation,
                             half_request=half_request, router_request=router_request, empty_request=empty_request,
                             execution_rows=selected.execution_rows, reference_tiles=selected.reference_tiles,
@@ -3638,6 +3946,12 @@ def worker(argv):
                             **({'q8_preparation_parity': q8_receipt} if q8_receipt is not None else {}),
                             **({'teacher_profile': teacher_profile} if teacher_profile is not None else {}),
                             **({"prepared_features": feature_receipt} if feature_receipt is not None else {}))
+            if selected.graph_use_receipts:
+                try:
+                    _attach_graph_use_observer(engine, selected.out, onecat_gu, selected.grouped_gate_up_rows)
+                except BaseException as primary:
+                    _observer_failure(engine, primary)
+                    raise
         except BaseException:
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
@@ -3748,6 +4062,10 @@ def worker(argv):
                           hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
         if teacher is not None:
             obligation = (teacher['resources']['global_host_obligation_bytes'], teacher['input_sha256'])
+        if commit_spec is not None:
+            trace_sha = hashlib.sha256(json.dumps(
+                {'commit_trace': commit_spec, 'prior': obligation}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            obligation = ((obligation[0] if obligation else 0) + commit_spec['global_host_obligation_bytes'], trace_sha)
         capability = ({"grouped_gate_up": onecat_gu} if onecat_gu is not None else
                       _grouped_gate_up_capability(cli, selected.grouped_gate_up_rows))
         if selected.execution_rows is not None:
@@ -3759,13 +4077,26 @@ def worker(argv):
                 raise ValueError("installed CLI lacks pre-budget reference tile preparation")
             capability["reference_tiles"] = True
         args._owned_expert_qualification = cli._OwnedExpertQualification(before_listener, obligation, **capability)
-        return cli.cmd_serve(args)
+        result = cli.cmd_serve(args)
+        if commit_trace is not None:
+            commit_finished = True
+            _finish_commit_trace(commit_trace, commit_engine, selected.out, commit_spec)
+        return result
     except BaseException as primary:
+        diagnostic = None
+        if commit_trace is not None and not commit_finished:
+            commit_finished = True
+            try:
+                _finish_commit_trace(commit_trace, commit_engine, selected.out, commit_spec)
+            except BaseException as error:
+                diagnostic = error
         try:
             if not receipt_failed and not notify_failure():
                 raise RuntimeError("qualification lost its TP supervisor capability")
         except BaseException as cleanup:
-            raise_failures(primary, [cleanup])
+            raise_failures(primary, [diagnostic, cleanup])
+        if diagnostic is not None:
+            raise_failures(primary, [diagnostic])
         raise
 
 
@@ -3978,6 +4309,16 @@ def main(argv=None, *, _benchmark_operation=None):
     parser.add_argument("--grouped-gate-up-rows", type=int, choices=(2, 4),
                         help="private prepared grouped gate/up trial; requires grouped down")
     parser.add_argument("--onecat-gu-method", help="private typed 1Cat GU trial; explicit credits required")
+    parser.add_argument("--onecat-down-method", choices=("tensorfold", "onecat-q8-slots"), default="tensorfold",
+                        help="target down projection; Q8_1 candidate applies only to IQ4_NL, MTP remains TensorFold FP32")
+    parser.add_argument("--onecat-iq2-source", choices=("active-frame", "raw"), default="active-frame",
+                        help="IQ2_S target GU source; raw bypasses active-frame packing for that format")
+    parser.add_argument("--onecat-prefill-method", choices=("tensorfold", "candidate"), default="tensorfold",
+                        help="target prefill expert implementation; candidate uses the selected GU/down path in bounded panels")
+    parser.add_argument("--graph-use-receipts", action="store_true",
+                        help="bounded per-rank serving graph counters at positive Engine retirement")
+    parser.add_argument('--commit-trace-events', type=int, help='finite diagnostic commit-batch event credit; never P3')
+    parser.add_argument('--commit-trace-nvtx', action='store_true', help='numeric NVTX batch markers; diagnostic only')
     parser.add_argument("--onecat-device-budget-bytes", type=int, help="explicit per-rank additional plane credit")
     parser.add_argument("--onecat-global-host-bytes", type=int, help="explicit global cold packing host credit")
     parser.add_argument("--gdn-batch-parity", action="store_true", help="diagnostic live batch-vs-scalar GDN and ordered segments; P3 invalid")
@@ -3991,6 +4332,7 @@ def main(argv=None, *, _benchmark_operation=None):
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     _onecat_capability_from_args(args)  # Validate before spawning any rank.
+    _commit_trace_spec(args)
     teacher = selected_client = model_observer = None
     closed_benchmark = None
     if args.benchmark_client is not None:
@@ -4079,8 +4421,17 @@ def main(argv=None, *, _benchmark_operation=None):
         prefix += ["--grouped-gate-up-rows", str(args.grouped_gate_up_rows)]
     if args.onecat_gu_method is not None:
         prefix += ["--onecat-gu-method", args.onecat_gu_method,
+                   "--onecat-down-method", args.onecat_down_method,
+                   "--onecat-iq2-source", args.onecat_iq2_source,
+                   "--onecat-prefill-method", args.onecat_prefill_method,
                    "--onecat-device-budget-bytes", str(args.onecat_device_budget_bytes),
                    "--onecat-global-host-bytes", str(args.onecat_global_host_bytes)]
+    if args.graph_use_receipts:
+        prefix += ["--graph-use-receipts"]
+    if args.commit_trace_events is not None:
+        prefix += ['--commit-trace-events', str(args.commit_trace_events)]
+        if args.commit_trace_nvtx:
+            prefix += ['--commit-trace-nvtx']
     if args.gdn_batch_parity:
         prefix += ["--gdn-batch-parity"]
     if args.q8_preparation_parity:

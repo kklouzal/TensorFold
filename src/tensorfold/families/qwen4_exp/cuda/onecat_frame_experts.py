@@ -33,8 +33,9 @@ class OneCatFrameOwner(OneCatOwner):
 
         try:
             result = super().prepare_native()
-            self.packer = onecat_gpu_packing.prepare(self.device)
-            return {**result, "policy": POLICY, "packer_module": self.packer.module.__name__}
+            if self.spec.method != "tensorfold":
+                self.packer = onecat_gpu_packing.prepare(self.device)
+            return {**result, "policy": POLICY, "packer_module": None if self.packer is None else self.packer.module.__name__}
         except BaseException as error:
             self.native_error = error
             raise
@@ -43,10 +44,13 @@ class OneCatFrameOwner(OneCatOwner):
         from tensorfold.cuda.sm70.onecat_gpu_packing import layout
 
         descriptors, _, _, groups = _describe(prototype, staging_bytes)
-        frame_bytes = max(layout(kind)["pair_plane_bytes"] for kind in self.views)
+        frame_bytes = (0 if self.spec.method == "tensorfold" else
+                       max(layout(kind)["pair_plane_bytes"] for kind in self.views))
         workspace = max(layout(kind)["workspace_bytes"] for _, _, kind in descriptors)
         if workspace:
             raise ValueError("frame policy requires the declared zero-workspace GPU producer ABI")
+        if self.spec.method == "tensorfold":
+            groups = set()
         lookup = (8192 if "iq2" in groups else 0) + (3072 if "iq3" in groups else 0)
         payload = frame_bytes + lookup
         if payload > self.spec.device_budget_bytes:
@@ -59,13 +63,16 @@ class OneCatFrameOwner(OneCatOwner):
             return self.forecast_record
         self.descriptors = descriptors
         self.forecast_record = {"policy": POLICY, "pin": "1b57260a834d40faa32bfc6ac18f050414a8f042",
-            "method": self.spec.method, "banks": 48, "decode_rows_limit": 32,
+            "method": self.spec.method, "down_method": self.spec.down_method,
+            "iq2_source": self.spec.iq2_source, "prefill_method": self.spec.prefill_method,
+            "down_format_policy": {"20": self.spec.down_method, "42": "tensorfold"},
+            "mtp_provider": "tensorfold-fp32-mtp", "banks": 48, "decode_rows_limit": 32,
             "output_kind": "unweighted-slots", "additional_device_bytes": payload,
             "additional_device_scope": "persistent mutable execution frame; additive resident credit, not immutable weights",
             "frame_slab_bytes": frame_bytes, "shared_lookup_bytes": lookup, "packer_workspace_bytes": workspace,
             "global_host_credit_bytes": self.spec.global_host_bytes,
             "host_policy": "metadata/codebook only; no host packed-bank cache",
-            "packing_policy": "current-layer active valid owned experts; no host readback",
+            "packing_policy": "once-per-prefill-layer-union; decode-per-panel",
             "frame_ownership": "exclusive decoder worker/current stream; no reentry",
             "original_raw_retained": True, "baseline_grouped_gate_up_rows": 4,
             "tables": tuple(sorted(groups)),
@@ -77,13 +84,15 @@ class OneCatFrameOwner(OneCatOwner):
         import torch
         from tensorfold.cuda.sm70.onecat_gpu_packing import layout
 
-        if self.packer is None:
+        if self.packer is None and self.spec.method != "tensorfold":
             raise RuntimeError("GPU packer was not resolved before admission")
         # Parent only allocates the deduplicated lookup tensors and journals the
         # whole-load observation. Its virtual forecast dispatch uses this policy.
         super().begin_load(prototype, staging_bytes)
         self.frame = torch.empty(self.forecast_record["frame_slab_bytes"], dtype=torch.uint8, device=self.device)
         for kind, (gate, up) in self.views.items():
+            if self.spec.method == "tensorfold":
+                continue
             facts = layout(kind)
             offset = 0
             for output in (gate, up):
@@ -111,10 +120,12 @@ class OneCatFrameOwner(OneCatOwner):
                         raise ValueError("actual raw GU bank differs from its frame descriptor")
                 gate, up = self.views[kind]
                 group = "iq2" if kind == 22 else "iq3" if kind in (18, 21) else "empty"
+                if self.spec.method == "tensorfold":
+                    group = "empty"
                 # No reference back to this Owner: fixed weights can release
                 # deterministically without an Owner/provider reference cycle.
                 bank._onecat_provider = _Bank(self.spec, self.lease, self.gu, self.down,
-                    gate, up, self.tables[group], partition, bank, packer=self.packer)
+                    gate, up, self.tables[group], partition, bank, packer=self.packer, q8_down=self.q8_down, raw_iq2_gu=self.raw_iq2_gu)
                 self.raw_bindings[index] = {"layer": index, "kind": kind,
                     "gate_source_descriptor_sha256": hashlib.sha256(json.dumps(pair[0][0], separators=(",", ":")).encode()).hexdigest(),
                     "up_source_descriptor_sha256": hashlib.sha256(json.dumps(pair[1][0], separators=(",", ":")).encode()).hexdigest(),
@@ -145,7 +156,9 @@ class OneCatFrameOwner(OneCatOwner):
             raise RuntimeError("incomplete GPU frame has no positive profile")
         return {**self.forecast_record, "selector": self.spec.identity,
                 "gu_module": self.gu.module.__name__, "down_module": self.down.module.__name__,
-                "packer_module": self.packer.module.__name__}
+                "packer_module": None if self.packer is None else self.packer.module.__name__,
+                "q8_down_module": None if self.q8_down is None else self.q8_down.module.__name__,
+                "raw_iq2_gu_module": None if self.raw_iq2_gu is None else self.raw_iq2_gu.module.__name__}
 
     def record(self):
         return {"schema": "tensorfold.onecat-active-frame-owner-v1", "profile": self.profile(),

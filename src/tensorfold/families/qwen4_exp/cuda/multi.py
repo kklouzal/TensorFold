@@ -1018,7 +1018,9 @@ class MultiDecoder:
             raise RuntimeError("captured-round pools are immutable until this decoder retires")
         if self.graph_record["reason"] is not None:
             return
-        if getattr(self.w, "meta", {}).get("execution_provider") == "sm70" and not self._prepare_graph_floor():
+        meta = getattr(self.w, "meta", {})
+        if (meta.get("execution_provider") == "sm70" and meta.get("history_layout") != "unique"
+                and not self._prepare_graph_floor()):
             return
         multi_graphs.prepare_capture()
         live, future, resolution = self._resolve_graph_admission()

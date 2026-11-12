@@ -1259,8 +1259,10 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
         from .onecat_experts import OneCatOwner
         from .onecat_frame_experts import OneCatFrameOwner
 
-        if type(_onecat_owner) not in (OneCatOwner, OneCatFrameOwner) or mtp or _pipeline_stage is not None:
-            raise ValueError("typed NONE/PP1 cold GU owner required")
+        if type(_onecat_owner) not in (OneCatOwner, OneCatFrameOwner) or _pipeline_stage is not None:
+            raise ValueError("typed PP1 target GU owner required")
+        # The owner binds target banks only. The separately attached shared-Q8
+        # MTP retains its original FP32 provider and independent weight ledger.
         _onecat_owner.begin_load(prototype, STAGING_BYTES)
     reader = tables = None
     try:

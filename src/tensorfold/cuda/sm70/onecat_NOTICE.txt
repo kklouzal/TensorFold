@@ -23,6 +23,10 @@ the original CPU producer is retained as an independent wire-layout oracle.
 onecat_moe_down.cu adapts upstream gguf_dp4a_sm70.cu, gguf_q8_1.cuh and
 gguf_dp4a.cuh at the same pinned revision for explicit Q8_1/integer-dot
 methods, owned E256 routing, bounded scratch and separate reduction contracts.
+Additional TensorFold modifications (2026-11-12): unweighted Half/Float down
+slots preserving the caller's shared-expert and weighting boundary; bounded
+target/prefill panels; direct raw-IQ2 gate/up; and a separately prepared
+prefill union pack with one writer per expert. MTP keeps its original provider.
 The integer-dot formulas and Q8_1 layout follow GGML/llama.cpp (MIT);
 the complete notice is retained in LICENSES/GGML-MIT.txt.
 No upstream NOTICE file

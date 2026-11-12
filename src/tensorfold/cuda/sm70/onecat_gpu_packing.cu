@@ -113,15 +113,26 @@ template<int Kind> __device__ __forceinline__ uint32_t meta_word(const uint8_t* 
         return u16(b) | (scales << 16);
     }
 }
-template<int Kind, class I> __global__ void pack(Raw gate, Raw up, const I* picks, int rows, int first,
+template<int Kind, class I, bool Union = false> __global__ void pack(Raw gate, Raw up, const I* picks, int rows, int first,
         uint8_t* gc, uint8_t* gs, uint8_t* uc, uint8_t* us) {
     __shared__ unsigned active;
     const int expert = blockIdx.x, tid = threadIdx.x;
     if (tid < 32) {
         bool hit = false;
-        if (tid < rows && valid_row(picks, tid)) {
-            #pragma unroll
-            for (int j = 0; j < 10; ++j) hit = hit || int64_t(picks[tid*11+j]) == first + expert;
+        if constexpr (Union) {
+            // Presence across the complete bounded prefill, not only its first
+            // 32 rows. Every lane participates in the final warp ballot.
+            for (int row = tid; row < rows; row += 32) {
+                if (valid_row(picks, row)) {
+                    #pragma unroll
+                    for (int j = 0; j < 10; ++j) hit = hit || int64_t(picks[row*11+j]) == first + expert;
+                }
+            }
+        } else {
+            if (tid < rows && valid_row(picks, tid)) {
+                #pragma unroll
+                for (int j = 0; j < 10; ++j) hit = hit || int64_t(picks[tid*11+j]) == first + expert;
+            }
         }
         const unsigned mask = __ballot_sync(0xffffffffu, hit);
         if (!tid) active = mask;
@@ -169,6 +180,9 @@ template<int Kind, class I> __global__ void pack(Raw gate, Raw up, const I* pick
 void onecat_gpu_packing_prepare() {
 #define P(K,I) { cudaFuncAttributes a{}; C10_CUDA_CHECK(cudaFuncGetAttributes(&a, pack<K,I>)); }
     P(18,int) P(18,int64_t) P(21,int) P(21,int64_t) P(22,int) P(22,int64_t) P(23,int) P(23,int64_t)
+#define U(K,I) { cudaFuncAttributes a{}; C10_CUDA_CHECK(cudaFuncGetAttributes(&a, pack<K,I,true>)); }
+    U(18,int) U(18,int64_t) U(21,int) U(21,int64_t) U(22,int) U(22,int64_t) U(23,int) U(23,int64_t)
+#undef U
 #undef P
 }
 void onecat_gpu_packing_launch(const at::Tensor& gate, const at::Tensor& up, const at::Tensor& picks,
@@ -185,5 +199,22 @@ void onecat_gpu_packing_launch(const at::Tensor& gate, const at::Tensor& up, con
     F(18) F(21) F(22) F(23)
 #undef F
 #undef RUN
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void onecat_gpu_union_packing_launch(const at::Tensor& gate, const at::Tensor& up, const at::Tensor& picks,
+        at::Tensor gc, at::Tensor gs, at::Tensor uc, at::Tensor us, int kind, int first,
+        int64_t gate_offset, int64_t up_offset) {
+    auto raw = [](const at::Tensor& tensor, int64_t offset) {
+        return Raw{tensor.data_ptr<uint8_t>(), tensor.dim()==3 ? tensor.stride(0) : 160*tensor.stride(0),
+                   tensor.dim()==3 ? tensor.stride(1) : tensor.stride(0), offset};
+    };
+    const Raw g=raw(gate,gate_offset), u=raw(up,up_offset);
+    const auto stream=at::cuda::getCurrentCUDAStream();
+#define UNION(K,I) pack<K,I,true><<<256,256,0,stream>>>(g,u,picks.data_ptr<I>(),picks.size(0),first,gc.data_ptr<uint8_t>(),gs.data_ptr<uint8_t>(),uc.data_ptr<uint8_t>(),us.data_ptr<uint8_t>())
+#define FORMAT(K) if(kind==K) {if(picks.scalar_type()==at::kLong) {UNION(K,int64_t);} else {UNION(K,int);}}
+    FORMAT(18) FORMAT(21) FORMAT(22) FORMAT(23)
+#undef FORMAT
+#undef UNION
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

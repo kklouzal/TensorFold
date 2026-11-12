@@ -7,6 +7,7 @@
 using T = at::Tensor;
 void onecat_gpu_packing_prepare();
 void onecat_gpu_packing_launch(const T&, const T&, const T&, T, T, T, T, int, int, int64_t, int64_t);
+void onecat_gpu_union_packing_launch(const T&, const T&, const T&, T, T, T, T, int, int, int64_t, int64_t);
 namespace {
 struct Span { uintptr_t begin, end; };
 Span span(const T& t) {
@@ -41,12 +42,14 @@ int64_t raw(const T& t,const T& owner,int bytes,int64_t offset) {
     span(t);
     return offset/256*bytes;
 }
+template<bool Union>
 void run(const T& gate,const T& up,const T& picks,T gc,T gs,T uc,T us,int64_t first,int64_t kind,int64_t go,int64_t uo) {
     TORCH_CHECK(kind==18 || kind==21 || kind==22 || kind==23,"four original GGUF18/21/22/23 formats only");
     TORCH_CHECK(first==0 || first==256,"owned first must be0 or256");
     TORCH_CHECK(picks.is_cuda() && (picks.scalar_type()==at::kInt || picks.scalar_type()==at::kLong)
-        && picks.is_contiguous() && picks.dim()==2 && picks.size(1)==11 && picks.size(0)>=1 && picks.size(0)<=32
-        && !picks.is_neg() && !picks.is_conj(),"picks requires contiguous I32/I64[R1..32,11]");
+        && picks.is_contiguous() && picks.dim()==2 && picks.size(1)==11 && picks.size(0)>=1
+        && (Union ? picks.numel()<=65535 : picks.size(0)<=32)
+        && !picks.is_neg() && !picks.is_conj(),"picks requires contiguous I32/I64 rows: activeR<=32 or unionpairs<=65535");
     const auto* props=at::cuda::getDeviceProperties(picks.get_device());
     TORCH_CHECK(props->major==7 && props->minor==0,"packing requires SM70");
     const int bb=kind==18?98:kind==21?110:kind==22?82:136;
@@ -66,7 +69,8 @@ void run(const T& gate,const T& up,const T& picks,T gc,T gs,T uc,T us,int64_t fi
         for(int j=0;j<i;++j)disjoint(written[i],written[j]);
     }
     c10::cuda::CUDAGuard guard(picks.device());
-    onecat_gpu_packing_launch(gate,up,picks,gc,gs,uc,us,int(kind),int(first),g,u);
+    if constexpr (Union) onecat_gpu_union_packing_launch(gate,up,picks,gc,gs,uc,us,int(kind),int(first),g,u);
+    else onecat_gpu_packing_launch(gate,up,picks,gc,gs,uc,us,int(kind),int(first),g,u);
 }
 }
-PYBIND11_MODULE(TORCH_EXTENSION_NAME,m) {m.def("prepare",&onecat_gpu_packing_prepare);m.def("pack_active",&run);}
+PYBIND11_MODULE(TORCH_EXTENSION_NAME,m) {m.def("prepare",&onecat_gpu_packing_prepare);m.def("pack_active",&run<false>);m.def("pack_union",&run<true>);}

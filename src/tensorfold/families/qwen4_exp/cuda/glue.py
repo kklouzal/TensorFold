@@ -8,6 +8,7 @@ import triton.language as tl
 
 from tensorfold.cuda import pdl
 from tensorfold.cuda.sm70 import family_ops as _half_ops
+from tensorfold.cuda.sm70.triton_options import COMPILER_OPTIONS as _MOE_COMPILER_OPTIONS
 from tensorfold.cuda.pdl import wait as pdl_wait
 
 from .image_rows import rope_axis
@@ -156,7 +157,7 @@ def moe_partial(y: torch.Tensor, wts: torch.Tensor, out: torch.Tensor, rows: int
 
     d = out.shape[1]
     _moe_partial[(rows, d // 256)](y, wts, out, D=d, TOPK=wts.shape[1] - 1, SLOTS=wts.shape[1], BLOCK=256,
-                                   num_warps=2)
+                                   num_warps=2, **_MOE_COMPILER_OPTIONS)
 
 
 def hc_normed(h: torch.Tensor, pss: torch.Tensor, scale: torch.Tensor, normed: torch.Tensor, xs: torch.Tensor,

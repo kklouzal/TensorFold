@@ -280,7 +280,7 @@ def _owned_comparison_contract():
     return v100_owned_model_contract
 
 
-def _owned_comparison_file(root, reference, control, *, maximum=8 << 20, parsed=True):
+def _owned_comparison_file(root, reference, control, *, maximum=8 << 20, parsed=True, json_root=dict):
     contract = _owned_comparison_contract()
     contract.identity(reference, key='file', rank='rank' in reference)
     path = root / reference['file']
@@ -297,7 +297,7 @@ def _owned_comparison_file(root, reference, control, *, maximum=8 << 20, parsed=
     if hashlib.sha256(raw).hexdigest() != digest:
         raise ValueError('owned comparison reference changed before parsing')
     control.check()
-    return _owned_teacher_object(raw)
+    return _owned_teacher_parse(raw, root_type=json_root)
 
 
 def _owned_comparison_vector(path, vector, vocab, control):
@@ -594,7 +594,9 @@ def _candidate_teacher_side(selected, mode, control):
         raise ValueError('closed standalone candidate evidence set required')
     root = Path(selected['root'])
     files = selected['files']
-    records = {key: _owned_comparison_file(root, files[key], control) for key in sorted(required)}
+    records = {key: _owned_comparison_file(root, files[key], control,
+                                         json_root=list if key == 'inspect' else dict)
+               for key in sorted(required)}
     a, host, seal = records['authority'], records['host'], records['seal']
     contract.validate_teacher_completion(records['completion'], host_result_sha256=files['host']['sha256'],
                                        authority_sha256=files['authority']['sha256'])
@@ -608,6 +610,7 @@ def _candidate_teacher_side(selected, mode, control):
             or any(type(host.get(k)) is not list or any(e is not None for e in host[k])
                    for k in ('cleanup', 'post_errors', 'capture_errors'))
             or not retired(host.get('state')) or type(inspect_rows) is not list or len(inspect_rows) != 1
+            or type(inspect_rows[0]) is not dict
             or not retired(inspect_rows[0].get('State')) or inspect_rows[0].get('Id') != host.get('cid')
             or inspect_rows[0].get('Image') != seal.get('App')):
         raise ValueError('standalone owning Host/CLI retirement is not positive')
@@ -737,17 +740,23 @@ def _candidate_teacher_side(selected, mode, control):
             'teacher_root': root / Path(files['authority']['file']).parent}
 
 
-def _candidate_plan_identity(plan, method):
+def _candidate_plan_identity(plan, method, down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold'):
     base = ['owned-etp4-native-slots-v1', 8, 4, 512, 640, 2560, 11, 32, 4096, False, 'grouped-v1']
+    selector = ['owned-onecat-gu-current-down-v1', method, 117976064, 67108864, 'reference-grouped4']
+    if down_method != 'tensorfold':
+        selector += ['down', down_method]
+    if iq2_source != 'active-frame':
+        selector += ['iq2-source', iq2_source]
+    if prefill_method != 'tensorfold':
+        selector += ['prefill', prefill_method]
     suffix = (['grouped-gate-up', 4] if method is None else
-              ['owned-onecat-active-frame-current-down-v1',
-               ['owned-onecat-gu-current-down-v1', method, 117976064, 67108864, 'reference-grouped4']])
+              ['owned-onecat-active-frame-current-down-v1', selector])
     if plan != base + suffix:
         raise ValueError('candidate comparison unexpected owned Plan delta')
     return base + ['<explicit-GU-method>']
 
 
-def _candidate_semantics(side, method):
+def _candidate_semantics(side, method, down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold'):
     semantic = {**side['semantics']}
     kv = list(semantic['state_kv_identity'])
     markers = [i for i, item in enumerate(kv) if type(item) is list and item and item[0] == 'owned-expert-native']
@@ -756,7 +765,7 @@ def _candidate_semantics(side, method):
     identity = side['authority']['actual_owned_profile'].get('plan_identity')
     if kv[markers[0]][1] != identity:
         raise ValueError('candidate State/Plan identity linkage differs')
-    kv[markers[0]] = ['owned-expert-native', _candidate_plan_identity(identity, method)]
+    kv[markers[0]] = ['owned-expert-native', _candidate_plan_identity(identity, method, down_method, iq2_source, prefill_method)]
     semantic['state_kv_identity'] = kv
     # AUTO HC funding changes with the explicit 117976064-byte resident frame.
     # Preserve every HC semantic field except that independently recorded grant.
@@ -769,10 +778,15 @@ def _candidate_semantics(side, method):
     return semantic
 
 
-def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeout_s):
-    """Explicit OneCat GU forced-prefix diagnostic, never matched-control acceptance."""
-    if method not in ('tensorfold-fp32-epilogue', 'onecat-half-epilogue'):
+def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeout_s,
+                                    down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold'):
+    """Explicit expert-method forced-prefix diagnostic, never matched-control acceptance."""
+    if method not in ('tensorfold-fp32-epilogue', 'onecat-half-epilogue', 'tensorfold'):
         raise ValueError('explicit OneCat GU comparison method required')
+    if (down_method not in ('tensorfold', 'onecat-q8-slots') or iq2_source not in ('active-frame', 'raw')
+            or method == 'tensorfold' and iq2_source != 'active-frame'
+            or prefill_method not in ('tensorfold', 'candidate')):
+        raise ValueError('explicit applicable target down/IQ2 source required')
     if (type(read_timeout_s) not in (int, float) or not 0 < read_timeout_s <= sys.maxsize
             or not math.isfinite(read_timeout_s)):
         raise ValueError('candidate comparison requires positive finite read_timeout_s excluding bool')
@@ -812,13 +826,16 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
         value = a.get('runtime_sources', {}).get(key)
         if type(value) is not str or not SHA.fullmatch(value) or value != b.get('runtime_sources', {}).get(key):
             raise ValueError('candidate installed math source differs: ' + key)
-    if _candidate_semantics(left, None) != _candidate_semantics(right, method):
+    if _candidate_semantics(left, None) != _candidate_semantics(right, method, down_method, iq2_source, prefill_method):
         raise ValueError('candidate unrelated actual State/RN/HC semantics differ')
     producers = ('runtime_cli_sha256', 'dense_implementation', 'half_partial_policy', 'private_router_policy', 'empty_prefix_policy')
     for side, selected_method in ((left, None), (right, method)):
         first = side['startups'][0]
         for rank, startup in enumerate(side['startups']):
-            _candidate_plan_identity(startup.get('plan_identity'), selected_method)
+            _candidate_plan_identity(startup.get('plan_identity'), selected_method,
+                                     down_method if selected_method is not None else 'tensorfold',
+                                     iq2_source if selected_method is not None else 'active-frame',
+                                     prefill_method if selected_method is not None else 'tensorfold')
             if any(startup.get(k) != first.get(k) for k in producers):
                 raise ValueError('candidate all8 producer selection differs')
             if selected_method is None:
@@ -828,18 +845,31 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
                 binding = startup.get('onecat_experts', {})
                 record = binding.get('record', {})
                 p = record.get('profile', {})
+                onecat_gu = method != 'tensorfold'
+                frame_bytes, lookup_bytes = (117964800, 11264) if onecat_gu else (0, 0)
                 if (binding.get('schema') != 'tensorfold.private-onecat-frame-binding-v1'
                         or binding.get('rank') != rank or binding.get('world') != 8
                         or binding.get('status') != 'prepared-execution-eligible'
                         or record.get('schema') != 'tensorfold.onecat-active-frame-owner-v1'
                         or record.get('enabled') is not True or record.get('closed') is not False
                         or p.get('policy') != 'owned-onecat-active-frame-current-down-v1' or p.get('method') != method
-                        or p.get('banks') != 48 or p.get('additional_device_bytes') != 117976064
-                        or p.get('frame_slab_bytes') != 117964800 or p.get('shared_lookup_bytes') != 11264
+                        or p.get('down_method') != down_method or p.get('iq2_source') != iq2_source
+                        or p.get('prefill_method') != prefill_method
+                        or p.get('down_format_policy') != {'20': down_method, '42': 'tensorfold'}
+                        or p.get('mtp_provider') != 'tensorfold-fp32-mtp'
+                        or p.get('banks') != 48 or p.get('additional_device_bytes') != frame_bytes + lookup_bytes
+                        or p.get('frame_slab_bytes') != frame_bytes or p.get('shared_lookup_bytes') != lookup_bytes
                         or p.get('packer_workspace_bytes') != 0 or p.get('original_raw_retained') is not True
                         or p.get('baseline_grouped_gate_up_rows') != 4 or len(record.get('raw_bindings', [])) != 48):
                     raise ValueError('candidate explicit funded active-frame GU binding missing')
-                for field in ('gate_up', 'packer'):
+                fields = ['gate_up', 'down']
+                if onecat_gu:
+                    fields.append('packer')
+                if down_method != 'tensorfold':
+                    fields.append('q8_down')
+                if iq2_source != 'active-frame':
+                    fields.append('raw_iq2_gate_up')
+                for field in fields:
                     path = binding.get('origins', {}).get(field, {}).get('path', '')
                     if not path or Path(path).name not in side['native'][rank]:
                         raise ValueError('candidate native GU/packer not observed in actual worker maps')
@@ -848,7 +878,10 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
     for old, new in zip(left['native'], right['native']):
         if any(new.get(name) != digest for name, digest in old.items()):
             raise ValueError('candidate changed incumbent native dependency')
-        if any(not name.startswith(('tf_onecat_gu_', 'tf_onecat_pack_')) for name in new.keys() - old.keys()):
+        prefixes = ('tf_onecat_gu_', 'tf_onecat_pack_') if method != 'tensorfold' else ()
+        if down_method != 'tensorfold':
+            prefixes += ('tf_onecat_down_',)
+        if any(not name.startswith(prefixes) for name in new.keys() - old.keys()):
             raise ValueError('candidate unexpected native dependency delta')
     rows = []
     for old, new in zip(a['frames'], b['frames']):
@@ -870,9 +903,23 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
                      'candidate_raw_top1_ties': int(np.count_nonzero(y == y.max())), 'finite': True,
                      **compare_logits(x, y, old['teacher_id'])})
         del arrays, x, y, unequal
+    count = len(rows)
+    base_nll = math.fsum(row['base_nll'] for row in rows) / count
+    candidate_nll = math.fsum(row['candidate_nll'] for row in rows) / count
+    nll_delta = math.fsum(row['nll_delta'] for row in rows) / count
+    def perplexity(value):
+        return math.exp(value) if value <= math.log(sys.float_info.max) else None
+    quality = {'tokens': count, 'mean_kl': math.fsum(row['kl'] for row in rows) / count,
+        'mean_nll_delta': nll_delta, 'reference_mean_nll': base_nll, 'candidate_mean_nll': candidate_nll,
+        'reference_perplexity': perplexity(base_nll), 'candidate_perplexity': perplexity(candidate_nll),
+        'ppl_ratio': perplexity(nll_delta),
+        'top1_agreement': sum(row['base_top1'] == row['candidate_top1'] for row in rows) / count,
+        'exact_frames': sum(row['exact_uint32_bits'] for row in rows),
+        'scope': 'conditional forced-prefix teacher-token metrics; not held-out accuracy or free-generation acceptance'}
     return {'schema': 'tensorfold.owned-candidate-teacher-comparison-v1', 'complete': True,
             'status': 'DIAGNOSTIC_ONLY_REQUIRES_ANALYTICAL_AND_FULL_MODEL_QUALITY_REVIEW',
             'qualification': False, 'quality_acceptance': False, 'P3_valid': False, 'method': method,
+            'down_method': down_method, 'iq2_source': iq2_source, 'prefill_method': prefill_method, 'quality_metrics': quality,
             'reference': reference, 'candidate': candidate, 'frames': rows,
             'image_id': left['records']['seal']['App'], 'runtime_sources': [a['runtime_sources'], b['runtime_sources']],
             'coordinate_activations': [left['activation'], right['activation']],
@@ -880,7 +927,7 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
             'native_sets_by_rank': [left['native'], right['native']],
             'coverage': {'frames': len(rows), 'vocab': a['vocab'], 'case_id': a['declared_identity']['case_id'],
                          'forced_prefix_only': True, 'free_generation_quality': False, 'analytical_bound_proved': False},
-            'scope': 'same-App RN12 control versus explicit GU-only method; no tolerance, acceptance or timing claim'}
+            'scope': 'same-App RN12 control versus explicit GU/down/IQ2 selection; no tolerance, acceptance or timing claim'}
 
 
 def _compare_owned_candidate_teacher_main(argv):
@@ -893,11 +940,15 @@ def _compare_owned_candidate_teacher_main(argv):
     if not SHA.fullmatch(args.expected_input_sha) or hashlib.sha256(raw).hexdigest() != args.expected_input_sha:
         raise ValueError('candidate comparison input SHA differs')
     data = _owned_teacher_object(raw)
-    if (type(data) is not dict or set(data) != {'schema', 'reference', 'candidate', 'method', 'read_timeout_s'}
+    required = {'schema', 'reference', 'candidate', 'method', 'read_timeout_s'}
+    if (type(data) is not dict or not required <= set(data) <= required | {'down_method', 'iq2_source', 'prefill_method'}
             or data['schema'] != 'tensorfold.owned-candidate-teacher-comparison-input-v1'):
         raise ValueError('closed candidate comparison input required')
     report = compare_owned_candidate_teacher(data['reference'], data['candidate'], method=data['method'],
-                                              read_timeout_s=data['read_timeout_s'])
+                                              read_timeout_s=data['read_timeout_s'],
+                                              down_method=data.get('down_method', 'tensorfold'),
+                                              iq2_source=data.get('iq2_source', 'active-frame'),
+                                              prefill_method=data.get('prefill_method', 'tensorfold'))
     report['comparison_input_sha256'] = args.expected_input_sha
     args.output_dir.mkdir(mode=0o700)
     _owned_teacher_json(args.output_dir / 'comparison.json', report, 8 << 20,
@@ -1039,6 +1090,10 @@ def _owned_runtime_sources(engine):
 
 
 def _owned_teacher_object(raw):
+    return _owned_teacher_parse(raw, root_type=dict)
+
+
+def _owned_teacher_parse(raw, *, root_type):
     def pairs(items):
         result = {}
         for key, value in items:
@@ -1053,8 +1108,8 @@ def _owned_teacher_object(raw):
         return result
     result = json.loads(raw, object_pairs_hook=pairs, parse_float=finite,
                         parse_constant=lambda value: (_ for _ in ()).throw(ValueError('nonfinite teacher JSON')))
-    if type(result) is not dict:
-        raise ValueError('teacher JSON must be an object')
+    if type(result) is not root_type:
+        raise ValueError('teacher JSON must be an array' if root_type is list else 'teacher JSON must be an object')
     return result
 
 

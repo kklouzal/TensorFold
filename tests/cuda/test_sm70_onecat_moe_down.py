@@ -242,3 +242,81 @@ def test_original_inference_slots_unchanged_success_foreign_and_poison(prepared,
         assert args[6][0] == 0 and torch.isfinite(args[-1][0]).all()
         assert args[6][1] == 0 and torch.count_nonzero(args[-1][1]) == 0
         assert args[6][2] != 0 and torch.isnan(args[-1][2]).all()
+
+
+@pytest.mark.parametrize('dtype,bits', [(torch.float16, 16), (torch.float32, 32)])
+@pytest.mark.parametrize('rows,first,lane', [(1, 0, 0), (9, 256, 3), (32, 0, 3)])
+def test_unweighted_slots_independent_q8_oracle_shared_and_foreign(prepared, raw_crop, dtype, bits, rows, first, lane):
+    raw = raw_crop[first, lane][0]
+    activation, picks, _, _, q8, _, status, _ = operands(rows, first, down.METHODS[1], raw)
+    generator = torch.Generator(device='cuda').manual_seed(93971 + rows)
+    activation[:] = torch.randn(activation.shape, generator=generator, device='cuda').half()
+    activation.view(rows, 11, 160)[:, 10].zero_()
+    picks[:, 5:10] = torch.arange(256 - first, 261 - first, device='cuda')
+    shared = torch.full((rows, 2560), .12345679, dtype=torch.float32, device='cuda')
+    out = torch.full((rows, 11, 2560), float('nan'), dtype=dtype, device='cuda')
+    prepared.slots(activation, picks, raw, shared, q8, status, out,
+                   first=first, ggml_type=20, column_offset=0)
+    assert torch.count_nonzero(status) == 0
+    assert torch.count_nonzero(out[:, 5:10]) == 0
+    assert torch.equal(out[:, 10], shared.to(dtype))
+    for row, slot, column in [(0, 0, 0), (rows - 1, 4, 2559)]:
+        route = row * 11 + slot
+        for group in (0, 4):
+            source = [int(v) & 65535 for v in activation[route, group*32:(group+1)*32].view(torch.int16).cpu().tolist()]
+            assert bytes(q8[route, group].cpu().tolist()) == q8_block(source)
+        expert = int(picks[row, slot].item()) - first
+        rawrow = bytes(raw[expert*2560+column].cpu().tolist())
+        wire = bytes(q8[route].cpu().reshape(-1).tolist())
+        expected = route_bits(rawrow, wire, output_bits=bits)
+        actual = out[row, slot, column].view(torch.int16 if bits == 16 else torch.int32).item()
+        assert actual & ((1 << bits) - 1) == expected
+
+
+@pytest.mark.parametrize('fault', ['duplicate', 'invalid', 'shared', 'producer', 'nonfinite'])
+def test_unweighted_slots_poison_all_outputs_and_preserve_readonly_shared(prepared, raw_crop, fault):
+    raw = raw_crop[0, 0][0]
+    activation, picks, _, _, q8, _, status, _ = operands(2, 0, down.METHODS[1], raw)
+    if fault == 'duplicate':
+        picks[0, 1] = picks[0, 0]
+    elif fault == 'invalid':
+        picks[0, 0] = 2**40
+    elif fault == 'shared':
+        picks[0, 10] = 511
+    elif fault == 'producer':
+        activation[10, 0] = -0.
+    else:
+        activation[0, 0] = float('inf')
+    shared = torch.full((2, 2560), .12345679, dtype=torch.float32, device='cuda')
+    before = shared.clone()
+    out = torch.empty((2, 11, 2560), dtype=torch.float32, device='cuda')
+    prepared.slots(activation, picks, raw, shared, q8, status, out,
+                   first=0, ggml_type=20, column_offset=0)
+    assert status[0].item() != 0 and status[1].item() == 0
+    assert torch.isnan(out[0]).all() and torch.isfinite(out[1]).all()
+    assert torch.equal(shared, before)
+
+
+def test_unweighted_slots_capture_replay_consumes_changed_route_ids(prepared, raw_crop):
+    raw = raw_crop[0, 0][0]
+    activation, picks, _, _, q8, _, status, _ = operands(9, 0, down.METHODS[1], raw)
+    shared = torch.full((9, 2560), .12345679, dtype=torch.float32, device='cuda')
+    output = torch.empty((9, 11, 2560), dtype=torch.float32, device='cuda')
+    def execute(target):
+        prepared.slots(activation, picks, raw, shared, q8, status, target,
+                       first=0, ggml_type=20, column_offset=0)
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        execute(output)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        execute(output)
+    picks[:, 0] = 255
+    picks[:, 5:10] = torch.arange(256, 261, device='cuda')
+    graph.replay()
+    actual = output.clone()
+    execute(output)
+    torch.cuda.synchronize()
+    assert torch.equal(actual.view(torch.int32), output.view(torch.int32))

@@ -413,7 +413,8 @@ def _runtime(engine, *, previous_topology=None):
         parts = line.split(None, 5)
         if len(parts) == 6 and parts[5].startswith("/") and ".so" in parts[5]:
             if parts[5].endswith(" (deleted)"):
-                raise ValueError("execution profile binding cannot use a deleted loaded library")
+                raise ValueError("execution profile binding cannot use a deleted loaded library: "
+                                 f"{parts[5][:1024]} (permissions={parts[1]}, device={parts[3]}, inode={parts[4]})")
             path = Path(parts[5]).resolve(strict=True)
             libraries["library/" + str(path)] = path
     if not libraries or len(libraries) > _MAX_FILES:
@@ -669,16 +670,27 @@ def _fatal(engine, error):
         return
     engine._execution_manifest_uncertain = True
     engine._abort_comm = True
-    poison = getattr(engine.multi, "poison_control", None)
-    if callable(poison):
-        poison(error)
-    else:
-        from tensorfold.cuda.cohort import notify_failure
+    from tensorfold.cuda.cohort import report_startup_failure
 
-        try:
+    diagnostic = None
+    try:
+        # A constructor may be terminated by its supervisor immediately after
+        # notification. Publish bounded original context before that frontier.
+        report_startup_failure(error)
+    except BaseException as failure:
+        diagnostic = failure
+    poison = getattr(engine.multi, "poison_control", None)
+    try:
+        if callable(poison):
+            poison(error)
+        else:
+            from tensorfold.cuda.cohort import notify_failure
+
             notify_failure()
-        except BaseException as notification:
-            raise_failures(error, [notification])
+    except BaseException as notification:
+        raise_failures(error, [item for item in (diagnostic, notification) if item is not None])
+    if diagnostic is not None:
+        raise_failures(error, [diagnostic])
 
 
 def _unretired(error):

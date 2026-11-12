@@ -215,3 +215,37 @@ def prepare_owned_from_activation(device):
         module = extension()
         module.prepare_owned_from_activation()
     return _OwnedDownFromActivation(module, device)
+
+
+@dataclass(frozen=True)
+class _OwnedGateUp:
+    """Exact incumbent Grouped4 GU only, with caller-funded stable arenas."""
+    module: object
+    device: object
+
+    def run(self, x, picks, gate, up, *, first, local, activation, grouping):
+        operands = (x, picks, gate.data, up.data, local, activation, grouping)
+        if any(type(t) is not torch.Tensor for t in operands):
+            raise TypeError("owned GU requires plain Tensor operands")
+        if x.device != self.device:
+            raise ValueError("owned GU prepared device differs")
+        if type(first) is not int or first not in (0, 256):
+            raise ValueError("owned GU requires E256 first0|256")
+        self.module.experts_owned_gate_up(x, picks, gate.data, gate.ggml_type, gate.column_offset,
+                                         up.data, up.ggml_type, up.column_offset,
+                                         first, local, activation, grouping)
+        torch.autograd.graph.increment_version((local, activation, grouping))
+        return activation
+
+
+def prepare_owned_gate_up(device):
+    """Resolve GU-only incumbent before admission/capture; no down work."""
+    device = torch.device(device)
+    if device.type != "cuda" or device.index is None:
+        raise ValueError("explicit indexed CUDA device required")
+    with torch.cuda.device(device):
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("owned GU preparation requires an uncaptured stream")
+        module = extension()
+        module.prepare_owned_gate_up()
+    return _OwnedGateUp(module, device)

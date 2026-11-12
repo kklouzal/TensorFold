@@ -45,8 +45,8 @@ class Plan:
             if type(self._gate_up) not in (_GroupedGateUp, OneCatGU) or _GROUPED_DOWN != "grouped-v1":
                 raise ValueError("private gate/up requires its typed selector and prepared grouped down")
             onecat = type(self._gate_up) is OneCatGU
-            if onecat and (self.mtp or self.hidden != 2560 or self.slots != 11 or self.rows > 32):
-                raise ValueError("1Cat GU trial requires NONE/SC117 and at most32 decoded rows")
+            if onecat and (self.hidden != 2560 or self.slots != 11):
+                raise ValueError("1Cat trial requires the SC117 expert geometry")
             object.__setattr__(self, "_onecat", onecat)
             if onecat:
                 from .onecat_frame_experts import POLICY as frame_policy
@@ -79,14 +79,30 @@ class Plan:
                            + grouped_workspace_words(self.prefill_rows * self.slots, self.partition.count))
         if local + grouped > reserve:
             raise MemoryError("owned arenas exceed the paid reference routing reservation")
+        down_scratch = 0
+        target_scratch = prefill_scratch = 0
+        if self._onecat and self._gate_up.down_method == "onecat-q8-slots":
+            from tensorfold.cuda.sm70.onecat_moe_down import scratch_layout
+
+            # Target and optional prefill each own one reusable panel. MTP
+            # retains its independent FP32 provider and has no Q8 scratch.
+            target_scratch = scratch_layout(min(rows, 32))["additional_device_bytes"]
+            if self._gate_up.prefill_method == "candidate":
+                prefill_scratch = scratch_layout(min(self.prefill_rows, 32))["additional_device_bytes"]
+            down_scratch = target_scratch + prefill_scratch
         experiment = {} if self._gate_up is None else {"grouped_gate_up_rows": self._gate_up.rows}
         if self._onecat:
             experiment = {"onecat_gu_selector": self._gate_up.identity,
                           "reference_grouped_gate_up_rows": 4,
+                          "decode_panel_rows": 32,
+                          "prefill_expert_implementation": self._gate_up.prefill_method,
+                          "mtp_expert_implementation": "tensorfold-fp32" if self.mtp else None,
                           "additional_device_bytes_scope": "role arenas only; shared GU frame paid once as additive resident credit"}
         return {**experiment, "policy": POLICY, "exclusive_provider": True, "local_arena_bytes": local,
                 "grouped_down": _GROUPED_DOWN, "grouping_arena_bytes": grouped,
-                "contained_routing_reserve_bytes": reserve, "additional_device_bytes": 0,
+                "contained_routing_reserve_bytes": reserve, "additional_device_bytes": down_scratch,
+                "onecat_down_scratch_bytes": down_scratch,
+                "target_down_scratch_bytes": target_scratch, "prefill_down_scratch_bytes": prefill_scratch,
                 "activation_storage": "existing-moe-act", "output_storage": "existing-moe-y",
                 "qualification": "private-unqualified"}
 
@@ -98,7 +114,8 @@ class Plan:
                 or c.hidden != self.hidden or c.top_k + 1 != self.slots or c.moe_width != 160
                 or c.shared_width != 80 or (w.mtp is not None) != self.mtp):
             raise ValueError("owned preparation differs from actual target/method geometry")
-        banks = [layer.moe.experts for layer in w.layers]
+        target_banks = [layer.moe.experts for layer in w.layers]
+        banks = list(target_banks)
         if w.mtp is not None:
             banks.append(w.mtp.layer.moe.experts)
         for bank in banks:
@@ -111,12 +128,18 @@ class Plan:
 
             owner = w.meta.get("onecat_experts")
             if (type(owner) is not OneCatFrameOwner or owner.spec is not self._gate_up or not owner.complete
-                    or any(getattr(bank, "_onecat_provider", None) is None for bank in banks)):
+                    or any(getattr(bank, "_onecat_provider", None) is None for bank in target_banks)
+                    or self.mtp and getattr(w.mtp.layer.moe.experts, "_onecat_provider", None) is not None):
                 raise ValueError("1Cat owned provider lacks its complete admitted weight planes")
         # Validate all banks before publishing any exclusive provider binding.
         for bank in banks:
             bank.implementation = POLICY
             bank._owned_expert_plan = self
+        if self._onecat:
+            for bank in target_banks:
+                bank._owned_expert_role = "onecat-target"
+            if self.mtp:
+                w.mtp.layer.moe.experts._owned_expert_role = "tensorfold-fp32-mtp"
         if self._onecat:
             owner.adopt(self._gate_up)
         w.meta["owned_expert_plan"] = self
@@ -143,7 +166,17 @@ class Plan:
 
             grouping = torch.empty(grouped_workspace_words(rows * self.slots, self.partition.count),
                                    dtype=torch.int32, device=b.act.device)
-        return Arena(self, torch.empty((rows, self.slots), dtype=torch.int64, device=b.act.device), b.act, b.y, grouping, prefill=buffers.prefill)
+        q8 = status = None
+        if (self._onecat and self._gate_up.down_method == "onecat-q8-slots"
+                and (not buffers.prefill or self._gate_up.prefill_method == "candidate")
+                and getattr(buffers, "owner_role", "decode") != "mtp"):
+            from tensorfold.cuda.sm70.onecat_moe_down import scratch_layout
+
+            facts = scratch_layout(min(rows, 32))
+            q8 = torch.empty(facts["q8_shape"], dtype=torch.uint8, device=b.act.device)
+            status = torch.empty(facts["status_shape"], dtype=torch.int32, device=b.act.device)
+        return Arena(self, torch.empty((rows, self.slots), dtype=torch.int64, device=b.act.device),
+                     b.act, b.y, grouping, prefill=buffers.prefill, q8=q8, status=status)
 
     def reconcile(self, decoder):
         arenas = [decoder.buf, decoder.pbuf] + ([decoder.mbuf] if self.mtp else [])
@@ -158,11 +191,15 @@ class Plan:
         actual = sum(a.local.numel() * a.local.element_size() for a in owners)
         grouping_bytes = sum(0 if a.grouping is None else a.grouping.numel() * a.grouping.element_size() for a in owners)
         grouping_pointers = [a.grouping.data_ptr() for a in owners if a.grouping is not None]
+        down_scratch = sum(t.numel() * t.element_size() for a in owners for t in (a.q8, a.status) if t is not None)
+        if down_scratch != expected["onecat_down_scratch_bytes"]:
+            raise MemoryError("materialized candidate down scratch differs from its additive reservation")
         if len(set(grouping_pointers)) != len(grouping_pointers) or grouping_bytes != expected["grouping_arena_bytes"]:
             raise MemoryError("materialized grouped routing arenas differ from their contained reservation")
         if len(set(pointers)) != len(pointers) or actual != expected["local_arena_bytes"]:
             raise MemoryError("materialized owned arenas differ from their contained reservation")
         result = {**expected, "materialized_local_arena_bytes": actual, "materialized_grouping_arena_bytes": grouping_bytes,
+                  "materialized_onecat_down_scratch_bytes": down_scratch,
                   "arena_rows": [b.rows for b in arenas]}
         if self._onecat:
             owner = decoder.w.meta["onecat_experts"]
@@ -180,20 +217,40 @@ class Arena:
     output: object
     grouping: object = None
     prefill: bool = False
+    q8: object = None
+    status: object = None
 
     def execute(self, bank, x, picks, out):
         if (getattr(bank, "_owned_expert_plan", None) is not self.plan or bank.implementation != POLICY
                 or out.data_ptr() != self.output.data_ptr() or x.shape[0] > self.local.shape[0]):
             raise ValueError("owned execution lacks its exclusive prepared bank/arena")
         rows = x.shape[0]
-        if self.plan._onecat and not self.prefill and 0 < rows <= 32:
+        if (self.plan._onecat and (not self.prefill or self.plan._gate_up.prefill_method == "candidate")
+                and bank._owned_expert_role == "onecat-target"):
             if self.grouping is None:
                 raise ValueError("1Cat decoded role lacks its paid grouped-down arena")
             from tensorfold.cuda.sm70.gguf_ops import grouped_workspace_words
 
-            words = grouped_workspace_words(rows * picks.shape[1], self.plan.partition.count)
-            return bank._onecat_provider.run_slots(bank, x, picks, local=self.local[:rows],
-                activation=self.activation[:rows].view(-1, 160), out=out, grouping=self.grouping[:words])
+            # The bank/frame remain exclusively borrowed for this invocation.
+            # A whole-prefill union pays packing once; every panel's selected
+            # experts are a subset. No token/state survives into another layer.
+            frame_prepared = (bank._onecat_provider.prepare_prefill_frame(bank, picks)
+                              if self.prefill else False)
+            # Every panel completes its packing and GU reads in current-stream
+            # order before the next panel reuses the owner's shared frame.
+            # Row independence preserves the original per-slot outer fold.
+            for first in range(0, rows, 32):
+                stop = min(first + 32, rows)
+                words = grouped_workspace_words((stop - first) * picks.shape[1], self.plan.partition.count)
+                candidate_scratch = ({} if self.q8 is None else
+                                     {"q8": self.q8[:(stop - first) * self.plan.slots],
+                                      "status": self.status[:stop - first]})
+                if frame_prepared:
+                    candidate_scratch["_frame_prepared"] = True
+                bank._onecat_provider.run_slots(bank, x[first:stop], picks[first:stop],
+                    local=self.local[first:stop], activation=self.activation[first:stop].view(-1, 160),
+                    out=out[first:stop], grouping=self.grouping[:words], **candidate_scratch)
+            return out
         if self.grouping is None:
             return bank.forward_partitioned_native_candidate(x, picks,
                 local=self.local[:rows], activation=self.activation[:rows].view(-1, 160), out=out)

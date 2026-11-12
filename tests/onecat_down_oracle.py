@@ -41,7 +41,9 @@ def q8_block(half_bits):
     return struct.pack("<HH", scale, total) + bytes(q & 255 for q in codes)
 
 
-def route_bits(raw90, q180):
+def route_bits(raw90, q180, output_bits=16):
+    if output_bits not in (16, 32):
+        raise ValueError("explicit Half/F32 output rounding required")
     if len(raw90) != 90 or len(q180) != 180:
         raise ValueError("originalK160/Q8_1 extents required")
     dot = 0
@@ -58,7 +60,7 @@ def route_bits(raw90, q180):
         pair = bits_to_fraction(round_fraction(dw * dx))
         term = bits_to_fraction(round_fraction(integer * pair))
         dot = round_fraction(bits_to_fraction(dot) + term)
-    return round_fraction(bits_to_fraction(dot), 16)
+    return round_fraction(bits_to_fraction(dot), output_bits)
 
 
 def quantization_bound(half_bits, qbytes):

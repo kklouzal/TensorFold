@@ -38,6 +38,10 @@ void gguf_experts_owned_from_activation(const at::Tensor&, const at::Tensor&,
     const at::Tensor&, int64_t, int64_t, const at::Tensor&, int64_t, int64_t,
     const at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t,
     const at::Tensor&, at::Tensor, at::Tensor, at::Tensor, at::Tensor);
+void gguf_experts_owned_gate_up(const at::Tensor&, const at::Tensor&,
+    const at::Tensor&, int64_t, int64_t, const at::Tensor&, int64_t, int64_t,
+    int64_t, at::Tensor, at::Tensor, at::Tensor);
+void gguf_prepare_owned_gate_up();
 void gguf_prepare_owned_from_activation();
 void gguf_dense32(const at::Tensor&, const at::Tensor&, at::Tensor, bool);
 void gguf_dense_wmma(const at::Tensor&, const at::Tensor&, at::Tensor);
@@ -46,6 +50,8 @@ void gguf_concat32(const at::Tensor&, const std::vector<at::Tensor>&, at::Tensor
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("_experts_owned_grouped_gate_up", &gguf_experts_owned_grouped_gate_up);
     m.def("experts_owned_from_activation", &gguf_experts_owned_from_activation);
+    m.def("experts_owned_gate_up", &gguf_experts_owned_gate_up);
+    m.def("prepare_owned_gate_up", &gguf_prepare_owned_gate_up);
     m.def("prepare_owned_from_activation", &gguf_prepare_owned_from_activation);
     m.def("experts_owned", &gguf_experts_owned);
     m.def("experts_owned_grouped", &gguf_experts_owned_grouped);

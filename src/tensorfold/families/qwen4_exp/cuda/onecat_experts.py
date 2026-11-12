@@ -12,7 +12,10 @@ import hashlib
 import json
 import sys
 
-from tensorfold.cuda.sm70.onecat_moe_gu import METHODS, PIN
+from tensorfold.cuda.sm70.onecat_moe_gu import METHODS as GU_METHODS, PIN
+
+METHODS = (*GU_METHODS, "tensorfold")
+DOWN_METHODS = ("tensorfold", "onecat-q8-slots")
 
 POLICY = "owned-onecat-gu-current-down-v1"
 _KINDS = {18: "IQ3_XXS", 21: "IQ3_S", 22: "IQ2_S", 23: "IQ4_XS"}
@@ -23,10 +26,20 @@ class OneCatGU:
     method: str
     device_budget_bytes: int
     global_host_bytes: int
+    down_method: str = "tensorfold"
+    iq2_source: str = "active-frame"
+    prefill_method: str = "tensorfold"
 
     def __post_init__(self):
         if type(self.method) is not str or self.method not in METHODS:
             raise ValueError("explicit qualified-trial GU method required")
+        if type(self.down_method) is not str or self.down_method not in DOWN_METHODS:
+            raise ValueError("explicit qualified-trial down method required")
+        if (type(self.iq2_source) is not str or self.iq2_source not in ("active-frame", "raw")
+                or self.method == "tensorfold" and self.iq2_source != "active-frame"):
+            raise ValueError("raw IQ2 source requires an explicit OneCat GU method")
+        if type(self.prefill_method) is not str or self.prefill_method not in ("tensorfold", "candidate"):
+            raise ValueError("explicit qualified-trial prefill method required")
         if any(type(n) is not int or not 0 < n <= sys.maxsize
                for n in (self.device_budget_bytes, self.global_host_bytes)):
             raise ValueError("explicit positive device/global-host preparation credits required")
@@ -37,7 +50,12 @@ class OneCatGU:
 
     @property
     def identity(self):
-        return (POLICY, self.method, self.device_budget_bytes, self.global_host_bytes, "reference-grouped4")
+        original = (POLICY, self.method, self.device_budget_bytes, self.global_host_bytes, "reference-grouped4")
+        if self.down_method != "tensorfold":
+            original += ("down", self.down_method)
+        if self.iq2_source != "active-frame":
+            original += ("iq2-source", self.iq2_source)
+        return original if self.prefill_method == "tensorfold" else original + ("prefill", self.prefill_method)
 
 
 def _key(plan):
@@ -160,34 +178,80 @@ class _Sink:
 
 
 class _Bank:
-    def __init__(self, spec, lease, gu, down, gate_sink, up_sink, table, partition, bank, packer=None):
+    def __init__(self, spec, lease, gu, down, gate_sink, up_sink, table, partition, bank, packer=None, q8_down=None, raw_iq2_gu=None):
         self.spec, self.lease, self.gu, self.down = spec, lease, gu, down
         self.gate_sink, self.up_sink, self.table, self.partition = gate_sink, up_sink, table, partition
         self.raw_gate, self.raw_up, self.raw_down = bank.gate, bank.up, bank.down
         self.packer = packer
+        self.q8_down = q8_down
+        self.raw_iq2_gu = raw_iq2_gu
 
     def device_tensors(self):
         # A mutable shared frame is an execution owner, never immutable model
         # weight identity. Engine's additive resident credit pays it once.
-        if self.packer is not None:
+        if self.packer is not None or self.spec.method == "tensorfold":
             return ()
         return (self.gate_sink.codes, self.gate_sink.scales, self.up_sink.codes, self.up_sink.scales, self.table)
 
-    def run_slots(self, bank, x, picks, *, local, activation, out, grouping):
+    def _validate_bank(self, bank):
         if (not self.lease.enabled or self.lease.retiring or self.lease.closed or bank.gate is not self.raw_gate
                 or bank.up is not self.raw_up or bank.down is not self.raw_down or bank.partition != self.partition):
             raise RuntimeError("1Cat GU bank/owner is not the adopted immutable resident bank")
-        if self.packer is not None:
+
+    def prepare_prefill_frame(self, bank, picks):
+        """Enqueue one current-layer union producer for the exclusive Arena call.
+
+        The caller retains immutable picks/banks and runs every consuming panel
+        on this same stream before any other frame writer. No frame validity is
+        cached across calls, layers or roles. False means no packed-frame GU.
+        """
+        self._validate_bank(bank)
+        if self.spec.prefill_method != "candidate":
+            raise RuntimeError("union frame requires explicit candidate prefill")
+        if self.spec.method == "tensorfold" or self.spec.iq2_source == "raw" and self.gate_sink.kind == 22:
+            return False
+        if self.packer is None:
+            raise RuntimeError("prefill union requires its cold-prepared GPU packer")
+        self.packer.pack_union(bank.gate.data, bank.up.data, picks,
+            self.gate_sink.codes, self.gate_sink.scales, self.up_sink.codes, self.up_sink.scales,
+            first=self.partition.first, ggml_type=self.gate_sink.kind,
+            gate_column_offset=bank.gate.column_offset, up_column_offset=bank.up.column_offset)
+        return True
+
+    def run_slots(self, bank, x, picks, *, local, activation, out, grouping, q8=None, status=None, _frame_prepared=False):
+        self._validate_bank(bank)
+        if (type(_frame_prepared) is not bool or _frame_prepared and (self.spec.prefill_method != "candidate"
+                or self.packer is None or self.spec.method == "tensorfold"
+                or self.spec.iq2_source == "raw" and self.gate_sink.kind == 22)):
+            raise ValueError("prepared frame belongs only to the current candidate-prefill Arena call")
+        if (self.spec.down_method == "onecat-q8-slots" and bank.down.ggml_type == 20
+                and (self.q8_down is None or q8 is None or status is None)):
+            raise RuntimeError("Q8 down requires its prepared provider and caller-owned role scratch")
+        if self.spec.method == "tensorfold":
+            self.gu.run(x, picks, bank.gate, bank.up, first=self.partition.first,
+                        local=local, activation=activation, grouping=grouping)
+        elif self.spec.iq2_source == "raw" and self.gate_sink.kind == 22:
+            if self.raw_iq2_gu is None:
+                raise RuntimeError("raw IQ2 GU requires its cold-prepared provider")
+            self.raw_iq2_gu.gate_up_raw_iq2(x, picks, bank.gate.data, bank.up.data, self.table, activation,
+                                          first=self.partition.first, method=self.spec.method,
+                                          gate_column_offset=bank.gate.column_offset, up_column_offset=bank.up.column_offset)
+        elif self.packer is not None and not _frame_prepared:
             self.packer.pack_active(bank.gate.data, bank.up.data, picks,
                 self.gate_sink.codes, self.gate_sink.scales, self.up_sink.codes, self.up_sink.scales,
                 first=self.partition.first, ggml_type=self.gate_sink.kind,
                 gate_column_offset=bank.gate.column_offset, up_column_offset=bank.up.column_offset)
-        self.gu.gate_up(x, picks, self.gate_sink.codes, self.gate_sink.scales,
-                       self.up_sink.codes, self.up_sink.scales, self.table, activation,
-                       first=self.partition.first, format_name=_KINDS[self.gate_sink.kind], method=self.spec.method)
+        if self.spec.method != "tensorfold" and not (self.spec.iq2_source == "raw" and self.gate_sink.kind == 22):
+            self.gu.gate_up(x, picks, self.gate_sink.codes, self.gate_sink.scales,
+                           self.up_sink.codes, self.up_sink.scales, self.table, activation,
+                           first=self.partition.first, format_name=_KINDS[self.gate_sink.kind], method=self.spec.method)
         # Original shared Dense program after GU initialization; never the GU
         # activation status slot, never Q8_1 and never a routed expert remap.
         shared = bank.owned_shared_result(x)
+        if self.spec.down_method == "onecat-q8-slots" and bank.down.ggml_type == 20:
+            return self.q8_down.slots(activation, picks, bank.down.data, shared, q8, status, out,
+                                      first=self.partition.first, ggml_type=bank.down.ggml_type,
+                                      column_offset=bank.down.column_offset)
         return self.down.run(x, picks, bank.gate, bank.up, bank.down, first=self.partition.first,
                              shared=shared, local=local, activation=activation, out=out, grouping=grouping)
 
@@ -206,7 +270,7 @@ class OneCatOwner:
             raise TypeError("typed private GU selector required")
         self.spec, self.device = spec, torch.device(device)
         self.lease = _Lease()
-        self.gu = self.down = None
+        self.gu = self.down = self.q8_down = self.raw_iq2_gu = None
         self.descriptors = self.sinks = self.forecast_record = None
         self.tables = {"iq2": None, "iq3": None, "empty": None}
         self.bound = [False] * 48
@@ -225,10 +289,21 @@ class OneCatOwner:
         try:
             from tensorfold.cuda.sm70 import gguf_ops, onecat_moe_gu
 
-            self.gu = onecat_moe_gu.prepare(self.device)
+            self.gu = (gguf_ops.prepare_owned_gate_up(self.device) if self.spec.method == "tensorfold"
+                       else onecat_moe_gu.prepare(self.device))
             self.down = gguf_ops.prepare_owned_from_activation(self.device)
+            if self.spec.iq2_source == "raw":
+                self.raw_iq2_gu = onecat_moe_gu.prepare_raw_iq2(self.device)
+            if self.spec.down_method == "onecat-q8-slots":
+                from tensorfold.cuda.sm70 import onecat_moe_down
+
+                self.q8_down = onecat_moe_down.prepare(self.device)
             return {"policy": POLICY, "selector": self.spec.identity,
-                    "gu_module": self.gu.module.__name__, "down_module": self.down.module.__name__}
+                    "gu_module": self.gu.module.__name__, "down_module": self.down.module.__name__,
+                    "q8_down_module": None if self.q8_down is None else self.q8_down.module.__name__,
+                    "down_method": self.spec.down_method, "iq2_source": self.spec.iq2_source,
+                    "prefill_method": self.spec.prefill_method,
+                    "raw_iq2_gu_module": None if self.raw_iq2_gu is None else self.raw_iq2_gu.module.__name__}
         except BaseException as error:
             self.native_error = error
             raise
@@ -321,7 +396,7 @@ class OneCatOwner:
                     raise RuntimeError("1Cat resident bank lacks complete matching source planes")
                 group = "iq2" if kind == 22 else "iq3" if kind in (18, 21) else "empty"
                 bank._onecat_provider = _Bank(self.spec, self.lease, self.gu, self.down,
-                                             gate, up, self.tables[group], partition, bank)
+                                             gate, up, self.tables[group], partition, bank, q8_down=self.q8_down, raw_iq2_gu=self.raw_iq2_gu)
                 self.bound[index] = True
                 return
         raise ValueError("1Cat resident bank was not in the admitted model plan")
@@ -356,7 +431,11 @@ class OneCatOwner:
         if not self.complete:
             raise RuntimeError("incomplete 1Cat provider has no positive profile")
         return {**self.forecast_record, "selector": self.spec.identity,
-                "gu_module": self.gu.module.__name__, "down_module": self.down.module.__name__}
+                "gu_module": self.gu.module.__name__, "down_module": self.down.module.__name__,
+                "down_method": self.spec.down_method,
+                "q8_down_module": None if self.q8_down is None else self.q8_down.module.__name__,
+                "iq2_source": self.spec.iq2_source, "prefill_method": self.spec.prefill_method,
+                "raw_iq2_gu_module": None if self.raw_iq2_gu is None else self.raw_iq2_gu.module.__name__}
 
     def record(self):
         return {"profile": self.profile(), "partition": self.descriptors[0][1].identity(),

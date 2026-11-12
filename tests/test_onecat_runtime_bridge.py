@@ -131,7 +131,8 @@ def test_decode_dispatch_and_original_grouped4_prefill_fallback(monkeypatch):
     plan = owned_experts.Plan(partition, 2560, 11, 32, 4096, False, _gate_up=spec)
     assert plan._onecat and plan._reference_gate_up.rows == 4
     calls = []
-    bank = SimpleNamespace(_owned_expert_plan=plan, implementation=owned_experts.POLICY)
+    bank = SimpleNamespace(_owned_expert_plan=plan, implementation=owned_experts.POLICY,
+                           _owned_expert_role="onecat-target")
     bank._onecat_provider = SimpleNamespace(run_slots=lambda *a, **k: calls.append(("candidate", k)))
     bank.forward_partitioned_native_candidate = lambda *a, **k: calls.append(("original", k))
     for prefill, count in ((False, 24), (True, 24), (True, 64)):
@@ -145,6 +146,89 @@ def test_decode_dispatch_and_original_grouped4_prefill_fallback(monkeypatch):
         arena.execute(bank, x, picks, out)
     assert [name for name, _ in calls] == ["candidate", "original", "original"]
     assert all(kwargs["_gate_up"].rows == 4 for name, kwargs in calls if name == "original")
+
+
+def test_mtp4_verification_tiles_without_losing_rows_and_mtp_keeps_original_provider(monkeypatch):
+    monkeypatch.setattr(owned_experts, "_GROUPED_DOWN", "grouped-v1")
+    _, partition = prototype()
+    spec = OneCatGU("tensorfold-fp32-epilogue", 117_976_064, 1 << 20)
+    # Twenty-four MTP4 requests need120 target verification rows, not32.
+    plan = owned_experts.Plan(partition, 2560, 11, 120, 4096, True, _gate_up=spec)
+    calls = []
+    x = torch.arange(120, dtype=torch.float16)[:, None].expand(120, 2560).contiguous()
+    picks = torch.zeros((120, 11), dtype=torch.int64)
+    output = torch.full((120, 11, 2560), float('nan'), dtype=torch.float32)
+    arena = owned_experts.Arena(plan, torch.empty((120, 11), dtype=torch.int64),
+        torch.empty((120, 11, 160), dtype=torch.float16), output,
+        torch.empty(100000, dtype=torch.int32))
+
+    def candidate(bank, values, selected, **kwargs):
+        calls.append(values[:, 0].tolist())
+        kwargs['out'].copy_(values[:, None, :])
+
+    bank = SimpleNamespace(_owned_expert_plan=plan, implementation=owned_experts.POLICY,
+        _owned_expert_role="onecat-target", _onecat_provider=SimpleNamespace(run_slots=candidate))
+    assert arena.execute(bank, x, picks, output) is output
+    assert [len(rows) for rows in calls] == [32, 32, 32, 24]
+    assert [row for panel in calls for row in panel] == list(range(120))
+    assert torch.equal(output[:, 0, :], x.float())
+    assert plan.resources(120)['mtp_expert_implementation'] == 'tensorfold-fp32'
+    calls.clear()
+    bank._owned_expert_role = 'tensorfold-fp32-mtp'
+
+    def original(values, selected, **kwargs):
+        calls.append((values.shape[0], kwargs['_gate_up'].rows))
+        return kwargs['out']
+
+    bank.forward_partitioned_native_candidate = original
+    assert arena.execute(bank, x, picks, output) is output
+    assert calls == [(120, 4)]
+
+
+@pytest.mark.parametrize('prefill_method', ['tensorfold', 'candidate'])
+def test_q8_panel_scratch_is_paid_once_per_selected_role_and_never_for_mtp(monkeypatch, prefill_method):
+    monkeypatch.setattr(owned_experts, "_GROUPED_DOWN", "grouped-v1")
+    _, partition = prototype()
+    spec = OneCatGU("tensorfold", 1, 1, down_method="onecat-q8-slots", prefill_method=prefill_method)
+    plan = owned_experts.Plan(partition, 2560, 11, 120, 64, True, _gate_up=spec)
+
+    def buffers(rows, role):
+        b = SimpleNamespace(rows=rows, prefill=role == 'prefill', owner_role=role,
+            moe=SimpleNamespace(act=torch.empty((rows, 11, 160), dtype=torch.float16),
+                y=torch.empty((rows, 11, 2560), dtype=torch.float32),
+                pick=torch.empty((rows, 11), dtype=torch.int64)))
+        b.owned_experts = plan.arena(b)
+        return b
+
+    target, mtp, prompt = buffers(120, 'decode'), buffers(120, 'mtp'), buffers(64, 'prefill')
+    assert target.owned_experts.q8.shape == (32 * 11, 5, 36)
+    assert target.owned_experts.status.shape == (32,)
+    assert mtp.owned_experts.q8 is None and mtp.owned_experts.status is None
+    if prefill_method == 'tensorfold':
+        assert prompt.owned_experts.q8 is None and prompt.owned_experts.status is None
+    else:
+        assert prompt.owned_experts.q8.shape == (32 * 11, 5, 36)
+        assert prompt.owned_experts.status.shape == (32,)
+    owner = SimpleNamespace(spec=spec, lease=SimpleNamespace(enabled=True), profile=lambda: {})
+    dec = SimpleNamespace(buf=target, mbuf=mtp, pbuf=prompt,
+                          w=SimpleNamespace(meta={'onecat_experts': owner}))
+    result = plan.reconcile(dec)
+    expected = 63_488 * (1 + int(prefill_method == 'candidate'))
+    assert result['additional_device_bytes'] == result['materialized_onecat_down_scratch_bytes'] == expected
+    calls = []
+
+    def candidate(bank, values, selected, **kwargs):
+        calls.append(values.shape[0])
+        assert kwargs['q8'].shape == (values.shape[0] * 11, 5, 36)
+        kwargs['out'].zero_()
+
+    bank = SimpleNamespace(_owned_expert_plan=plan, implementation=owned_experts.POLICY,
+        _owned_expert_role='onecat-target', _onecat_provider=SimpleNamespace(
+            run_slots=candidate, prepare_prefill_frame=lambda bank, picks: False),
+        forward_partitioned_native_candidate=lambda *a, **k: calls.append('tensorfold-prefill'))
+    prompt.owned_experts.execute(bank, torch.empty((64, 2560), dtype=torch.float16),
+                                prompt.moe.pick, prompt.moe.y)
+    assert calls == ([32, 32] if prefill_method == 'candidate' else ['tensorfold-prefill'])
 
 
 def test_prepare_failure_keeps_authentic_primary_through_transport_and_notify(monkeypatch):

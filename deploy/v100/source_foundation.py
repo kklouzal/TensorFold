@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import email
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -243,6 +244,334 @@ def render_build_report(report, report_sha256, *, runtime=False, lint=False, lin
         receipt.update(version=2, source_distributions=sources,
                        triton_execution="SM70 FP32 moe_partial ordered-FMA; protected CUDA12 tools; other kernels unqualified")
     return lock, receipt
+
+
+def validate_triton_profile(profile):
+    if (type(profile) is not dict or set(profile) != {
+            "schema", "version", "name", "from_triton", "triton", "execution_scope"}
+            or profile["schema"] != "tensorfold.v100-triton-runtime-profile-input"
+            or type(profile["version"]) is not int or profile["version"] != 1
+            or profile["name"] != "sm70-triton32-v1" or profile["from_triton"] != "3.9.0"
+            or type(profile["execution_scope"]) is not str or not 0 < len(profile["execution_scope"]) <= 512):
+        raise ValueError("unsupported explicit SM70 runtime profile")
+    row = profile["triton"]
+    if type(row) is not dict or set(row) != {"version", "artifact", "url", "bytes", "sha256"}:
+        raise ValueError("runtime profile requires one complete official Triton wheel")
+    parsed = urlsplit(row["url"])
+    name, version, _, tags = parse_wheel_filename(row["artifact"])
+    if (name != "triton" or version != Version("3.2.0") or row["version"] != "3.2.0"
+            or parsed.scheme != "https" or parsed.hostname != "files.pythonhosted.org"
+            or parsed.username or parsed.password or parsed.query or parsed.fragment
+            or any(c.isspace() for c in row["url"]) or Path(parsed.path).name != row["artifact"]
+            or not any(t.interpreter == "cp312" and t.abi == "cp312" and t.platform.endswith("x86_64") for t in tags)
+            or expected_identity(row)["bytes"] <= 0):
+        raise ValueError("runtime profile requires its exact official CPython312 AMD64 Triton3.2 wheel")
+    return row
+
+
+def runtime_profile_lock(packages):
+    return ("# Generated verified base closure plus actual native Triton dependency-revision report.\n"
+            + "".join(f"{name} @ {p['url']} --hash=sha256:{p['sha256']}\n" for name, p in sorted(packages.items())))
+
+
+def render_runtime_profile(base, base_sha, report, report_sha, profile, wheel):
+    """Derive one dependency delta from a genuine pip report and verified wheel.
+
+    The original full closure/source metadata is retained, not represented as a
+    newly resolved full closure. Image construction runs genuine pip check and
+    checks unchanged base artifacts before admitting this separate candidate.
+    """
+    row = validate_triton_profile(profile)
+    if (base.get("schema") != "tensorfold.v100-source-runtime" or base.get("version") != 2
+            or base["packages"]["triton"]["version"] != profile["from_triton"]
+            or file_identity(wheel) != expected_identity(row) or wheel.name != row["artifact"]):
+        raise ValueError("runtime profile base or whole-wheel identity differs")
+    environment = report.get("environment", {})
+    if any(environment.get(k) != v for k, v in {"sys_platform": "linux", "platform_machine": "x86_64",
+            "implementation_name": "cpython", "python_version": "3.12"}.items()):
+        raise ValueError("runtime profile needs an actual native AMD64 CPython312 report")
+    installs = report.get("install")
+    if type(installs) is not list or len(installs) != 1:
+        raise ValueError("runtime profile pip report must change Triton only")
+    item = installs[0]
+    metadata, download = item["metadata"], item["download_info"]
+    url = urlsplit(download["url"])
+    if (canonicalize_name(metadata["name"]) != "triton" or metadata["version"] != row["version"]
+            or item.get("is_direct") is not True or url.scheme != "file" or url.netloc or url.query or url.fragment
+            or Path(url.path).name != row["artifact"]
+            or download.get("archive_info", {}).get("hashes", {}).get("sha256") != row["sha256"]):
+        raise ValueError("runtime profile report is not the selected genuine local wheel")
+    with zipfile.ZipFile(wheel) as archive:
+        names = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
+        if len(names) != 1 or archive.getinfo(names[0]).file_size > MAX_DOCUMENT_BYTES:
+            raise ValueError("runtime profile wheel needs one bounded genuine METADATA")
+        genuine = email.message_from_bytes(archive.read(names[0]))
+    requires = genuine.get_all("Requires-Dist", [])
+    if (canonicalize_name(genuine["Name"]) != "triton" or genuine["Version"] != row["version"]
+            or metadata.get("requires_dist", []) != requires):
+        raise ValueError("runtime profile report changed genuine wheel requirement metadata")
+    selected = {**base["packages"], "triton": {"version": row["version"], "url": row["url"],
+        "sha256": row["sha256"], "requires_dist": requires}}
+    lock = runtime_profile_lock(selected)
+    receipt = {**base, "version": 3, "packages": selected, "environment": environment,
+        "resolver_report_sha256": report_sha, "base_resolver_report_sha256": base["resolver_report_sha256"],
+        "lock_sha256": hashlib.sha256(lock.encode()).hexdigest(), "triton_execution": profile["execution_scope"],
+        "runtime_profile": {"schema": "tensorfold.v100-runtime-profile", "version": 1,
+            "name": profile["name"], "input_sha256": hashlib.sha256(canonical(profile)).hexdigest(),
+            "base_runtime_sha256": base_sha, "base_lock_sha256": base["lock_sha256"],
+            "changed_distributions": ["triton"]}}
+    return lock, receipt
+
+
+def validate_runtime_profile_delta(base, base_raw, candidate, profile):
+    row = validate_triton_profile(profile)
+    binding = candidate.get("runtime_profile", {})
+    if (base.get("version") != 2 or base["packages"]["triton"]["version"] != profile["from_triton"]
+            or candidate.get("version") != 3 or candidate.get("schema") != base.get("schema")
+            or candidate.keys() != base.keys() | {"runtime_profile", "base_resolver_report_sha256"}
+            or binding != {"schema": "tensorfold.v100-runtime-profile", "version": 1, "name": profile["name"],
+                "input_sha256": hashlib.sha256(canonical(profile)).hexdigest(),
+                "base_runtime_sha256": hashlib.sha256(base_raw).hexdigest(),
+                "base_lock_sha256": base["lock_sha256"], "changed_distributions": ["triton"]}
+            or candidate.get("base_resolver_report_sha256") != base.get("resolver_report_sha256")
+            or candidate.get("source_distributions") != base.get("source_distributions")
+            or candidate.get("triton_execution") != profile["execution_scope"]
+            or candidate.get("lock_sha256") != hashlib.sha256(runtime_profile_lock(candidate["packages"]).encode()).hexdigest()
+            or candidate["packages"].keys() != base["packages"].keys()
+            or any(candidate["packages"][name] != value for name, value in base["packages"].items() if name != "triton")):
+        raise ValueError("runtime profile changed an undeclared base dependency/source")
+    selected = candidate["packages"]["triton"]
+    if any(selected.get(k) != row[k] for k in ("version", "url", "sha256")):
+        raise ValueError("runtime profile changed its declared Triton wheel identity")
+
+
+def distribution_artifacts(name):
+    """Inventory only genuine installed distribution-owned files, not neighbours."""
+    distribution = importlib.metadata.distribution(name)
+    root = Path(distribution.locate_file(".")).resolve(strict=True)
+    module = root / name
+    metadata = root / (name + "-" + distribution.version + ".dist-info")
+    scripts = {p.name for p in distribution.entry_points if p.group == "console_scripts"}
+    result = []
+    for item in distribution.files or ():
+        if str(item).endswith((".pyc", ".pyo")):
+            continue
+        path = Path(distribution.locate_file(item)).resolve(strict=True)
+        if (not path.is_relative_to(module) and not path.is_relative_to(metadata)
+                and not (path.parent == Path("/opt/venv/bin") and path.name in scripts)):
+            raise ValueError("runtime distribution file escapes its declared module/metadata/scripts")
+        result.append({"path": str(path), **file_identity(path)})
+    if not result or len(result) > 10000 or len({p["path"] for p in result}) != len(result):
+        raise ValueError("runtime distribution requires a bounded duplicate-free installed inventory")
+    return sorted(result, key=lambda p: p["path"])
+
+
+def prepare_runtime_profile(pins, prior, candidate_path, profile_path, wheel, *, directory=Path("/opt/tensorfold-pins")):
+    """Capture the only permitted package delta before its normal installer runs."""
+    previous, previous_raw = read_json(prior / "v100-source-foundation.json")
+    base, base_raw = read_json(prior / "source-runtime-amd64.json")
+    candidate, candidate_raw = read_json(candidate_path)
+    profile = read_json(profile_path)[0]
+    validate_runtime_profile_delta(base, base_raw, candidate, profile)
+    row = validate_triton_profile(profile)
+    if file_identity(wheel) != expected_identity(row):
+        raise ValueError("runtime profile wheel changed before installation")
+    if (previous.get("schema") != "tensorfold.v100-source-foundation-install" or previous.get("version") != 2
+            or previous.get("pins_sha256") != hashlib.sha256(canonical(pins)).hexdigest()
+            or previous.get("release_qualified") is not False):
+        raise ValueError("runtime profile requires the preserved base source-foundation manifest")
+    rows = {entry["path"]: entry for entry in previous["artifacts"]}
+    for basename in ("source_foundation.py", "source-runtime-amd64.json"):
+        original = prior / basename
+        expected = rows.get(str(directory / basename), {})
+        if file_identity(original) != expected_identity(expected):
+            raise ValueError("runtime profile did not preserve its actual prior auditor/runtime input")
+    if importlib.metadata.version("triton") != profile["from_triton"]:
+        raise ValueError("runtime profile preparation does not observe the declared base package")
+    old_files = distribution_artifacts("triton")
+    if any(entry["path"] not in rows or expected_identity(rows[entry["path"]]) != expected_identity(entry)
+           for entry in old_files):
+        raise ValueError("prior source-foundation manifest omitted or changed old Triton bytes")
+    build_path = Path(previous["build_receipt"]["path"])
+    if file_identity(build_path) != expected_identity(previous["build_receipt"]):
+        raise ValueError("runtime profile changed its original framework-build receipt")
+    build = read_json(build_path)[0]
+    return {"schema": "tensorfold.v100-runtime-profile-preparation", "version": 1,
+        "prior_manifest_sha256": hashlib.sha256(previous_raw).hexdigest(),
+        "candidate_runtime_sha256": hashlib.sha256(candidate_raw).hexdigest(),
+        "profile_input_sha256": hashlib.sha256(canonical(profile)).hexdigest(),
+        "original_build_producer": expected_identity(build["producer_inputs"]["deploy/v100/source_foundation.py"]),
+        "previous_runtime_auditor": file_identity(prior / "source_foundation.py"), "old_triton_files": old_files,
+        "scope": "pre-install metadata; prior audit and post-install invariant checks remain separate"}
+
+
+def apply_runtime_profile(pins, prior, prepared_path, profile_path, *, directory=Path("/opt/tensorfold-pins")):
+    """Admit the named runtime delta while retaining every original framework byte."""
+    previous, raw = read_json(prior / "v100-source-foundation.json")
+    prepared = read_json(prepared_path)[0]
+    base, base_raw = read_json(prior / "source-runtime-amd64.json")
+    candidate, candidate_raw = read_json(directory / "source-runtime-amd64.json")
+    profile = read_json(profile_path)[0]
+    validate_runtime_profile_delta(base, base_raw, candidate, profile)
+    if (prepared.get("schema") != "tensorfold.v100-runtime-profile-preparation" or prepared.get("version") != 1
+            or prepared.get("prior_manifest_sha256") != hashlib.sha256(raw).hexdigest()
+            or prepared.get("candidate_runtime_sha256") != hashlib.sha256(candidate_raw).hexdigest()
+            or prepared.get("profile_input_sha256") != hashlib.sha256(canonical(profile)).hexdigest()
+            or prepared.get("previous_runtime_auditor") != file_identity(prior / "source_foundation.py")):
+        raise ValueError("runtime profile preparation/provenance changed before its installed audit")
+    old_entries = prepared["old_triton_files"]
+    if type(old_entries) is not list or not 0 < len(old_entries) <= 10000:
+        raise ValueError("runtime profile old-package inventory exceeds its bound")
+    replaced = {entry["path"] for entry in old_entries}
+    if len(replaced) != len(old_entries):
+        raise ValueError("runtime profile old-package inventory has duplicate paths")
+    site = Path("/opt/venv/lib/python3.12/site-packages")
+    for path in replaced:
+        selected = Path(path)
+        if (not selected.is_relative_to(site / "triton")
+                and not selected.is_relative_to(site / ("triton-" + profile["from_triton"] + ".dist-info"))
+                and selected not in (Path("/opt/venv/bin/proton"), Path("/opt/venv/bin/proton-viewer"))):
+            raise ValueError("runtime profile package delta cannot exclude another provider")
+    rebased = []
+    for entry in previous["artifacts"]:
+        path = entry["path"]
+        if path in replaced:
+            continue
+        if path in {str(directory / "source_foundation.py"), str(directory / "source-runtime-amd64.json")}:
+            entry = {**entry, "path": str((prior / Path(path).name).resolve(strict=True))}
+        rebased.append(entry)
+    # This decisive post-installer check covers every original Torch/native/
+    # compiler artifact and old receipt. No declared package delta can mask it.
+    verify_installed_artifacts(rebased)
+    build = read_json(previous["build_receipt"]["path"])[0]
+    original_producer = expected_identity(build["producer_inputs"]["deploy/v100/source_foundation.py"])
+    if (prepared["original_build_producer"] != original_producer
+            or not any(Path(entry["path"]).name == "source_foundation.py"
+                       and expected_identity(entry) == original_producer for entry in rebased)):
+        raise ValueError("runtime profile lost the original framework-build producer")
+    new_files = distribution_artifacts("triton")
+    new_paths = {entry["path"] for entry in new_files}
+    if any(Path(path).exists() or Path(path).is_symlink() for path in replaced - new_paths):
+        raise ValueError("runtime profile retains superseded installed Triton artifacts")
+    if importlib.metadata.version("triton") != profile["triton"]["version"]:
+        raise ValueError("runtime profile installed an undeclared replacement package")
+    # Pip's genuine dependency check precedes capture; retain an independent
+    # exact version/Requires-Dist check for the entire selected Python closure.
+    for name, wanted in {**candidate["packages"], **candidate["source_distributions"]}.items():
+        installed = importlib.metadata.distribution(name)
+        if installed.version != wanted["version"] or (installed.requires or []) != wanted["requires_dist"]:
+            raise ValueError("runtime profile changed genuine installed dependency metadata: " + name)
+    actual = runtime_identity(pins)
+    actual.pop("host_data_observations", None)
+    validate_runtime(actual, pins)
+    excluded = {"triton", "mapped_libraries", "host_driver_libraries", "host_observations", "host_data_observations"}
+    if ({k: v for k, v in actual.items() if k not in excluded}
+            != {k: v for k, v in previous["runtime"].items() if k not in excluded}):
+        raise ValueError("runtime profile changed a non-Triton framework/native provider identity")
+    paths = {entry["path"] for entry in [*rebased, *new_files]}
+    if not set(actual["mapped_libraries"]) <= paths:
+        raise ValueError("runtime profile loaded undeclared code outside the sealed original/new package")
+    additions = [Path(__file__).resolve(strict=True), directory / "source-runtime-amd64.json",
+                 prior / "v100-source-foundation.json", prior / "audit-process.json", prepared_path, profile_path]
+    artifacts = {entry["path"]: entry for entry in [*rebased, *new_files]}
+    for path in additions:
+        artifacts[str(path.resolve(strict=True))] = {"path": str(path.resolve(strict=True)), **file_identity(path)}
+    result = {**previous, "runtime": actual, "artifacts": [artifacts[k] for k in sorted(artifacts)],
+        "runtime_dependency_revision": {"schema": "tensorfold.v100-runtime-dependency-revision", "version": 1,
+            "profile": candidate["runtime_profile"], "original_build_producer": original_producer,
+            "previous_runtime_auditor": prepared["previous_runtime_auditor"],
+            "current_runtime_auditor": file_identity(Path(__file__).resolve(strict=True)),
+            "previous_install_manifest": file_identity(prior / "v100-source-foundation.json"),
+            "preparation": file_identity(prepared_path),
+            "scope": "Triton-only runtime revision; original Torch/native/compiler/build bytes unchanged; no new framework compilation"}}
+    audit_install(result, pins)
+    return result
+
+
+def unprivileged_artifact_access(manifest):
+    """Check every sealed path and ancestor with the actual worker credentials."""
+    if (os.getuid(), os.geteuid(), os.getgid(), os.getegid()) != (1000, 1000, 1000, 1000):
+        raise ValueError("artifact access gate requires actual UID/GID1000 without root credentials")
+    entries = manifest.get("artifacts")
+    if type(entries) is not list or not 0 < len(entries) <= 100000:
+        raise ValueError("artifact access gate requires a bounded sealed inventory")
+    parents, examples = set(), []
+    bad_parents = unreadable = 0
+    for entry in entries:
+        path = Path(entry["path"])
+        for parent in path.parents:
+            if parent in parents:
+                continue
+            parents.add(parent)
+            if not os.access(parent, os.X_OK):
+                bad_parents += 1
+                if len(examples) < 16:
+                    examples.append({"parent_not_searchable": str(parent)})
+        if not os.access(path, os.R_OK):
+            unreadable += 1
+            if len(examples) < 16:
+                examples.append({"artifact_not_readable": str(path)})
+    result = {"uid": os.getuid(), "gid": os.getgid(), "artifacts_checked": len(entries),
+              "parents_checked": len(parents), "unsearchable_parents": bad_parents,
+              "unreadable_artifacts": unreadable, "examples": examples}
+    if bad_parents or unreadable:
+        raise PermissionError("sealed artifacts are inaccessible to the worker: " + canonical(result).decode())
+    return result
+
+
+def runtime_profile_dockerfile(pins, runtime, profile):
+    """A separate dependency-revision image, never an in-place SDK update."""
+    row = validate_triton_profile(profile)
+    cache = "/cache/volta-sm70-source-" + hashlib.sha256(canonical(pins)).hexdigest() + "/" + runtime["lock_sha256"] + "/triton"
+    user_gate = "; ".join((
+        "import os,json,runpy,pathlib",
+        "os.setgroups([])", "os.setgid(1000)", "os.setuid(1000)",
+        "producer=runpy.run_path('/opt/tensorfold-pins/source_foundation.py')",
+        "manifest=producer['read_json'](pathlib.Path('/opt/tensorfold-pins/v100-source-foundation.json'))[0]",
+        "access=producer['unprivileged_artifact_access'](manifest)",
+        "from tensorfold.cuda.sm70 import software_binding",
+        "authority=software_binding.issue_source_binding(required=True)",
+        "binding=software_binding.verify_source_binding(authority)",
+        "print(json.dumps({'uid1000_artifact_access':access,'source_binding':binding,"
+        "'scope':'actual UID1000 full software audits through issue/verify; no GPU qualification'}))"))
+    return f'''# Generated by source_foundation.py render-runtime-profile.
+# Immutable source-built Torch/native providers are reused, not rebuilt.
+ARG RUNTIME_BASE_IMAGE
+FROM ${{RUNTIME_BASE_IMAGE}}
+COPY --from=runtime_profile --chmod=0444 /source_foundation.py /runtime-profile/source_foundation.py
+COPY --from=runtime_profile --chmod=0444 /source-runtime-amd64.json /runtime-profile/source-runtime-amd64.json
+COPY --from=runtime_profile --chmod=0444 /profile-input.json /runtime-profile/profile-input.json
+COPY --from=runtime_profile --chmod=0444 /requirements-runtime-delta.lock /runtime-profile/requirements-runtime-delta.lock
+RUN --network=none --mount=from=runtime_profile,source=/wheels,target=/runtime-wheels \\
+    mkdir -p /opt/tensorfold-pins/audit-history \\
+    && mkdir /opt/tensorfold-pins/audit-history/triton32-v1 \\
+    && python /opt/tensorfold-pins/source_foundation.py audit-process \\
+       > /opt/tensorfold-pins/audit-history/triton32-v1/audit-process.json \\
+    && cp /opt/tensorfold-pins/source_foundation.py /opt/tensorfold-pins/v100-source-foundation.json \\
+       /opt/tensorfold-pins/source-runtime-amd64.json /opt/tensorfold-pins/audit-history/triton32-v1/ \\
+    && python /runtime-profile/source_foundation.py prepare-runtime-profile \\
+       --pins /opt/tensorfold-pins/source-pins.json --prior-audit /opt/tensorfold-pins/audit-history/triton32-v1 \\
+       --candidate-runtime /runtime-profile/source-runtime-amd64.json --profile /runtime-profile/profile-input.json \\
+       --wheel /runtime-wheels/{row["artifact"]} --output /runtime-profile/revision-before.json \\
+    && python -m pip install --no-deps --no-index --no-cache-dir --require-hashes \\
+       --find-links=/runtime-wheels -r /runtime-profile/requirements-runtime-delta.lock \\
+    && python -m pip check
+COPY --from=runtime_profile --chmod=0444 /source_foundation.py /opt/tensorfold-pins/source_foundation.py
+COPY --from=runtime_profile --chmod=0444 /source-runtime-amd64.json /opt/tensorfold-pins/source-runtime-amd64.json
+ENV TRITON_CACHE_DIR={cache} \\
+    TENSORFOLD_SM70_TRITON_PROFILE=sm70-triton32-v1
+RUN --network=none chmod 0555 /runtime-profile \\
+    && chmod 0444 /runtime-profile/revision-before.json \\
+    && python /opt/tensorfold-pins/source_foundation.py apply-runtime-profile \\
+      --pins /opt/tensorfold-pins/source-pins.json --prior-audit /opt/tensorfold-pins/audit-history/triton32-v1 \\
+      --prepared /runtime-profile/revision-before.json --profile /runtime-profile/profile-input.json \\
+      --output /opt/tensorfold-pins/v100-source-foundation.json \\
+    && chmod 0444 /opt/tensorfold-pins/v100-source-foundation.json /runtime-profile/revision-before.json \\
+    && find /opt/tensorfold-pins/audit-history/triton32-v1 -type f -exec chmod 0444 {{}} + \\
+    && chmod 0555 /opt/tensorfold-pins/audit-history/triton32-v1 \\
+    && python /opt/tensorfold-pins/source_foundation.py audit-process
+RUN --network=none python -c {shlex.quote(user_gate)}
+'''
 
 
 def offline_lock(receipt, *, bootstrap=False):
@@ -617,10 +946,33 @@ def triton_provider_identity(pins):
     if (triton.__version__ != expected_version or importlib.metadata.version("triton") != expected_version
             or not Path(triton.__file__).resolve(strict=True).is_relative_to(Path("/opt/venv"))):
         raise ValueError("Triton does not come from the selected source-runtime provider")
+    profile = runtime.get("runtime_profile")
+    if profile is not None:
+        if (type(profile) is not dict or runtime.get("version") != 3 or profile.get("schema") != "tensorfold.v100-runtime-profile"
+                or type(profile.get("version")) is not int or profile["version"] != 1
+                or profile.get("name") != "sm70-triton32-v1" or expected_version != "3.2.0"
+                or profile.get("changed_distributions") != ["triton"]
+                or os.environ.get("TENSORFOLD_SM70_TRITON_PROFILE") != "sm70-triton32-v1"):
+            raise ValueError("unsupported candidate Triton runtime profile")
+        from triton.backends.nvidia.compiler import _path_to_binary, CUDAOptions
+        from triton.runtime import cache as cache_module
+
+        if (os.environ.get("TRITON_CACHE_MANAGER") is not None
+                or cache_module.__cache_cls is not cache_module.FileCacheManager):
+            raise ValueError("Triton3.2 requires its selected standard file cache manager")
+        actual_ptxas = _path_to_binary("ptxas")[0]
+        actual_libdevice = dict(CUDAOptions().extern_libs)["libdevice"]
+        actual_cache = os.environ.get("TRITON_CACHE_DIR", "").strip() or cache_module.default_cache_dir()
+    else:
+        if os.environ.get("TENSORFOLD_SM70_TRITON_PROFILE") is not None:
+            raise ValueError("the default runtime cannot claim another explicit Triton profile")
+        actual_ptxas = triton.knobs.nvidia.ptxas.path
+        actual_libdevice = triton.knobs.nvidia.libdevice_path
+        actual_cache = triton.knobs.cache.dir
     tools = {}
     for name, path, actual, environment in (
-            ("ptxas", "/usr/local/cuda/bin/ptxas", triton.knobs.nvidia.ptxas.path, "TRITON_PTXAS_PATH"),
-            ("libdevice", "/usr/local/cuda/nvvm/libdevice/libdevice.10.bc", triton.knobs.nvidia.libdevice_path,
+            ("ptxas", "/usr/local/cuda/bin/ptxas", actual_ptxas, "TRITON_PTXAS_PATH"),
+            ("libdevice", "/usr/local/cuda/nvvm/libdevice/libdevice.10.bc", actual_libdevice,
              "TRITON_LIBDEVICE_PATH")):
         expected = build["toolchain"][path]
         resolved = Path(actual).resolve(strict=True)
@@ -630,7 +982,7 @@ def triton_provider_identity(pins):
             raise ValueError("Triton selected a different protected CUDA12 provider: " + name)
         tools[name] = {"path": str(actual), "resolved_path": str(resolved), **identity}
     cache = "/cache/volta-sm70-source-" + hashlib.sha256(canonical(pins)).hexdigest() + "/" + runtime["lock_sha256"] + "/triton"
-    if os.environ.get("TRITON_CACHE_DIR") != cache or triton.knobs.cache.dir != cache:
+    if os.environ.get("TRITON_CACHE_DIR") != cache or actual_cache != cache:
         raise ValueError("Triton cache is not bound to the selected SDK/runtime identity")
     return {"version": expected_version, "scope": runtime["triton_execution"], "tools": tools, "cache": cache}
 
@@ -828,6 +1180,20 @@ def audit_install(manifest, pins, *, process_mode=False, host_data_observations=
             or manifest.get("release_qualified") is not False or manifest.get("include_roots") != dict(INCLUDE_ROOTS)):
         raise ValueError("unsupported installed source-foundation manifest")
     paths = verify_installed_artifacts(manifest.get("artifacts"))
+    revision = manifest.get("runtime_dependency_revision")
+    if manifest.get("runtime", {}).get("triton", {}).get("version") == "3.2.0" and revision is None:
+        raise ValueError("candidate runtime requires its explicit original-build/runtime-auditor binding")
+    if revision is not None:
+        build = read_json(manifest["build_receipt"]["path"])[0]
+        original = expected_identity(build["producer_inputs"]["deploy/v100/source_foundation.py"])
+        if (type(revision) is not dict or revision.get("schema") != "tensorfold.v100-runtime-dependency-revision"
+                or type(revision.get("version")) is not int or revision["version"] != 1
+                or revision.get("original_build_producer") != original
+                or revision.get("current_runtime_auditor") != file_identity(Path(__file__).resolve(strict=True))
+                or revision.get("profile", {}).get("name") != "sm70-triton32-v1"
+                or not any(Path(entry["path"]).name == "source_foundation.py" and expected_identity(entry) == original
+                           for entry in manifest["artifacts"])):
+            raise ValueError("runtime profile changed its original framework-build/current runtime-auditor roles")
     verify_pristine_base()
     application = application_nccl_identity(pins) if process_mode else None
     actual = runtime_identity(pins)
@@ -1520,6 +1886,26 @@ def main():
     runtime.add_argument("--pins", type=Path, required=True)
     runtime.add_argument("--lock", type=Path, required=True)
     runtime.add_argument("--receipt", type=Path, required=True)
+    profile = commands.add_parser("render-runtime-profile")
+    profile.add_argument("--pins", type=Path, required=True)
+    profile.add_argument("--base-runtime", type=Path, required=True)
+    profile.add_argument("--report", type=Path, required=True)
+    profile.add_argument("--profile", type=Path, required=True)
+    profile.add_argument("--wheel", type=Path, required=True)
+    profile.add_argument("--directory", type=Path, required=True)
+    prepare_profile = commands.add_parser("prepare-runtime-profile")
+    prepare_profile.add_argument("--pins", type=Path, required=True)
+    prepare_profile.add_argument("--prior-audit", type=Path, required=True)
+    prepare_profile.add_argument("--candidate-runtime", type=Path, required=True)
+    prepare_profile.add_argument("--profile", type=Path, required=True)
+    prepare_profile.add_argument("--wheel", type=Path, required=True)
+    prepare_profile.add_argument("--output", type=Path, required=True)
+    apply_profile = commands.add_parser("apply-runtime-profile")
+    apply_profile.add_argument("--pins", type=Path, required=True)
+    apply_profile.add_argument("--prior-audit", type=Path, required=True)
+    apply_profile.add_argument("--prepared", type=Path, required=True)
+    apply_profile.add_argument("--profile", type=Path, required=True)
+    apply_profile.add_argument("--output", type=Path, required=True)
     lint = commands.add_parser("render-lint-tools")
     lint.add_argument("--report", type=Path, required=True)
     lint.add_argument("--lock", type=Path, required=True)
@@ -1635,6 +2021,36 @@ def main():
         receipt = read_json(args.receipt)[0]
         args.output.write_text("# Generated from the selected foundation runtime; preserve shared providers.\n" + "".join(
             name + "===" + str(Version(row["version"])) + "\n" for name, row in sorted(receipt["packages"].items())))
+        return
+    if args.command == "render-runtime-profile":
+        base, base_raw = read_json(args.base_runtime)
+        report, report_raw = read_json(args.report)
+        profile = read_json(args.profile)[0]
+        lock, receipt = render_runtime_profile(base, hashlib.sha256(base_raw).hexdigest(), report,
+            hashlib.sha256(report_raw).hexdigest(), profile, args.wheel)
+        directory = args.directory
+        directory.mkdir(parents=True, exist_ok=False)
+        (directory / "wheels").mkdir()
+        shutil.copyfile(args.wheel, directory / "wheels" / args.wheel.name)
+        (directory / "source-runtime-amd64.json").write_bytes(canonical(receipt) + b"\n")
+        (directory / "profile-input.json").write_bytes(canonical(profile) + b"\n")
+        (directory / "requirements-source-runtime-amd64.lock").write_text(lock)
+        (directory / "requirements-source-runtime-offline-amd64.lock").write_text(offline_lock(receipt))
+        (directory / "requirements-runtime-delta.lock").write_text(
+            "triton==" + profile["triton"]["version"] + " --hash=sha256:" + profile["triton"]["sha256"] + "\n")
+        (directory / "Dockerfile.runtime-profile").write_text(runtime_profile_dockerfile(read_json(args.pins)[0], receipt, profile))
+        shutil.copyfile(Path(__file__), directory / "source_foundation.py")
+        for path in directory.rglob("*"):
+            if path.is_file():
+                path.chmod(0o444)
+        return
+    if args.command == "prepare-runtime-profile":
+        receipt = prepare_runtime_profile(read_json(args.pins)[0], args.prior_audit, args.candidate_runtime, args.profile, args.wheel)
+        args.output.write_bytes(canonical(receipt) + b"\n")
+        return
+    if args.command == "apply-runtime-profile":
+        receipt = apply_runtime_profile(read_json(args.pins)[0], args.prior_audit, args.prepared, args.profile)
+        args.output.write_bytes(canonical(receipt) + b"\n")
         return
     if args.command == "verify-ninja":
         args.output.write_bytes(canonical(ninja_tool_identity(read_json(args.tools)[0], args.wheels)) + b"\n")

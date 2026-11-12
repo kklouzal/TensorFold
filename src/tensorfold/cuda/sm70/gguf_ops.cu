@@ -1318,6 +1318,24 @@ __global__ void expert_down160_grouped(const __half* activation, PackedView down
     }
 }
 }
+// Standalone Grouped4 GU uses the same route/GU kernels as the full
+// incumbent. Its activation ABI agrees with the supplied-GU consumer: slot10's
+// first Half is immutable +0 for valid rows and NaN for malformed routes.
+template<typename Index>
+__global__ void initialize_owned_gu_slots(const Index* ids,__half* activation) {
+ const int row=blockIdx.x;
+ for(int i=threadIdx.x;i<11*160;i+=blockDim.x) activation[row*11*160+i]=__float2half_rn(0.f);
+ __syncthreads();
+ if(!threadIdx.x) {
+  bool valid=ids[row*11+10]==512;
+  for(int slot=0;slot<10;++slot) {
+   const auto id=ids[row*11+slot];
+   valid=valid&&id>=0&&id<512;
+   for(int before=0;before<slot;++before) valid=valid&&ids[row*11+before]!=id;
+  }
+  if(!valid) activation[(row*11+10)*160]=__float2half_rn(__int_as_float(0x7fffffff));
+ }
+}
 void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
     const at::Tensor& up, int64_t up_kind, int64_t up_offset,
@@ -1519,6 +1537,69 @@ void gguf_experts_owned_from_activation(const at::Tensor& x, const at::Tensor& p
         down,down_kind,down_offset,width,first,global_experts,shared,local,activation,output,grouping,0,true);
 }
 
+void gguf_experts_owned_gate_up(const at::Tensor& x,const at::Tensor& picks,
+ const at::Tensor& gate,int64_t gate_kind,int64_t gate_offset,
+ const at::Tensor& up,int64_t up_kind,int64_t up_offset,int64_t first,
+ at::Tensor local,at::Tensor activation,at::Tensor grouping) {
+ TORCH_CHECK(x.is_cuda()&&x.scalar_type()==at::kHalf&&x.is_contiguous()&&x.dim()==2
+  &&x.size(0)>=1&&x.size(0)<=32&&x.size(1)==2560,"owned GU requires Half CUDA R1..32/K2560");
+ const auto device=x.device();c10::cuda::CUDAGuard guard(device);
+ const auto* prop=at::cuda::getDeviceProperties(x.get_device());
+ TORCH_CHECK(prop->major==7&&prop->minor==0,"owned GU requires SM70");
+ TORCH_CHECK(first==0||first==256,"owned GU requires E256 first0|256");
+ TORCH_CHECK(picks.scalar_type()==at::kInt||picks.scalar_type()==at::kLong,"integer picks required");
+ operand(picks,picks.scalar_type(),device,"owned GU picks");
+ operand(local,at::kLong,device,"owned GU route scratch");
+ operand(activation,at::kHalf,device,"owned GU activation");
+ operand(grouping,at::kInt,device,"owned GU grouping scratch");
+ TORCH_CHECK(picks.sizes()==at::IntArrayRef({x.size(0),11})&&local.sizes()==picks.sizes()
+  &&activation.sizes()==at::IntArrayRef({picks.numel(),160}),"owned GU exact scratch geometry required");
+ const auto g=packed_view(gate,gate_kind,gate_offset,2560,device);
+ const auto u=packed_view(up,up_kind,up_offset,2560,device);
+ TORCH_CHECK(gate.size(0)==256*160&&up.size(0)==256*160,"owned GU E256/width160 banks required");
+ const int pairs=picks.numel(),experts=256;
+ const int tiles=std::min(pairs,(pairs+15)/16+experts-1);
+ const int words=2*pairs+2*experts+3*tiles+2;
+ TORCH_CHECK(grouping.dim()==1&&grouping.numel()==words,"owned GU grouping extent differs");
+ const at::Tensor* operands[]={&x,&picks,&gate,&up,&local,&activation,&grouping};
+ for(const auto* tensor:operands)
+  TORCH_CHECK(!tensor->requires_grad()&&!tensor->is_neg()&&!tensor->is_conj(),"owned GU plain non-autograd operands required");
+ const at::Tensor* writes[]={&local,&activation,&grouping};
+ for(int i=0;i<3;++i) {
+  TORCH_CHECK(!writes[i]->is_inference()||c10::InferenceMode::is_enabled(),"inference output outside InferenceMode");
+  tensorfold::check_disjoint(*writes[i],{&x,&picks,&gate,&up},"owned GU output/input overlap");
+  for(int j=0;j<i;++j) TORCH_CHECK(!tensorfold::overlaps(*writes[i],*writes[j]),"owned GU output overlap");
+ }
+ int* ptr=grouping.data_ptr<int>();OwnedGrouping group{};
+ group.counts=ptr;ptr+=experts;group.offsets=ptr;ptr+=experts+1;
+ group.ordinal=ptr;ptr+=pairs;group.pairs=ptr;ptr+=pairs;
+ group.tiles=ptr;ptr+=3*tiles;group.total=ptr;group.max_tiles=tiles;
+ const auto stream=at::cuda::getCurrentCUDAStream();const int blocks=(pairs+127)/128;
+ C10_CUDA_CHECK(cudaMemsetAsync(group.counts,0,experts*sizeof(int),stream));
+ if(picks.scalar_type()==at::kLong) {
+  initialize_owned_gu_slots<<<x.size(0),128,0,stream>>>(picks.data_ptr<int64_t>(),reinterpret_cast<__half*>(activation.data_ptr()));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  group_owned_routes<<<blocks,128,0,stream>>>(picks.data_ptr<int64_t>(),local.data_ptr<int64_t>(),pairs,int(first),experts,group);
+ } else {
+  initialize_owned_gu_slots<<<x.size(0),128,0,stream>>>(picks.data_ptr<int32_t>(),reinterpret_cast<__half*>(activation.data_ptr()));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  group_owned_routes<<<blocks,128,0,stream>>>(picks.data_ptr<int32_t>(),local.data_ptr<int64_t>(),pairs,int(first),experts,group);
+ }
+ C10_CUDA_KERNEL_LAUNCH_CHECK();
+ group_owned_prefix<<<1,1,0,stream>>>(experts,group);C10_CUDA_KERNEL_LAUNCH_CHECK();
+ group_owned_scatter<<<blocks,128,0,stream>>>(local.data_ptr<int64_t>(),pairs,group);C10_CUDA_KERNEL_LAUNCH_CHECK();
+ const dim3 grid(160/EXPERT_WARPS,group.max_tiles);
+ expert_gate_up_grouped<4><<<grid,EXPERT_WARPS*32,0,stream>>>(reinterpret_cast<const __half*>(x.data_ptr()),g,u,11,group,reinterpret_cast<__half*>(activation.data_ptr()));
+ C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void gguf_prepare_owned_gate_up() {
+ cudaFuncAttributes attributes{};
+ #define RESIDENT(FUNCTION) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,FUNCTION))
+ RESIDENT(initialize_owned_gu_slots<int32_t>);RESIDENT(initialize_owned_gu_slots<int64_t>);
+ RESIDENT(group_owned_routes<int32_t>);RESIDENT(group_owned_routes<int64_t>);
+ RESIDENT(group_owned_prefix);RESIDENT(group_owned_scatter);RESIDENT(expert_gate_up_grouped<4>);
+ #undef RESIDENT
+}
 void gguf_prepare_owned_from_activation() {
     cudaFuncAttributes attributes{};
 #define RESIDENT(...) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,__VA_ARGS__))

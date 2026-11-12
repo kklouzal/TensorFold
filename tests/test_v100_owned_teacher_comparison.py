@@ -389,14 +389,21 @@ def test_actual_activation_identity_requires_sha256_before_normalization(tmp_pat
 
 # Normal RN controller evidence is deliberately independent of closed-client
 # fixtures above: no teacher-client/model-result/typed Host files are supplied.
-def _standalone(root, mode, reference=None, method=None, fault=None, arrays=None):
+def _standalone(root, mode, reference=None, method=None, fault=None, arrays=None,
+                down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold'):
     original = _side(root, mode, reference, arrays=arrays)
     authority_path = root / 'teacher/teacher-authority.json'
     a = json.loads(authority_path.read_text())
     base = ['owned-etp4-native-slots-v1', 8, 4, 512, 640, 2560, 11, 32, 4096, False, 'grouped-v1']
+    selector = ['owned-onecat-gu-current-down-v1', method, 117976064, 67108864, 'reference-grouped4']
+    if down_method != 'tensorfold':
+        selector += ['down', down_method]
+    if iq2_source != 'active-frame':
+        selector += ['iq2-source', iq2_source]
+    if prefill_method != 'tensorfold':
+        selector += ['prefill', prefill_method]
     plan_id = base + (['grouped-gate-up', 4] if method is None else
-                     ['owned-onecat-active-frame-current-down-v1',
-                      ['owned-onecat-gu-current-down-v1', method, 117976064, 67108864, 'reference-grouped4']])
+                     ['owned-onecat-active-frame-current-down-v1', selector])
     family = {'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1', 'graph_family': 'uncaptured',
               'trial': True, 'rn_heads_per_block': 12}
     profile = a['actual_owned_profile']
@@ -426,16 +433,31 @@ def _standalone(root, mode, reference=None, method=None, fault=None, arrays=None
         if method is None:
             startup['grouped_gate_up'] = {'requested_rows': 4, 'actual_rows': 4}
         else:
-            paths += ['/cache/tf_onecat_gu_fixture.so', '/cache/tf_onecat_pack_fixture.so']
+            onecat_gu = method != 'tensorfold'
+            origins = {'gate_up': {'path': paths[0]}, 'down': {'path': paths[0]}}
+            if onecat_gu:
+                paths += ['/cache/tf_onecat_gu_fixture.so', '/cache/tf_onecat_pack_fixture.so']
+                origins.update(gate_up={'path': paths[1]}, packer={'path': paths[2]})
+            if down_method != 'tensorfold':
+                paths.append('/cache/tf_onecat_down_fixture.so')
+                origins['q8_down'] = {'path': paths[-1]}
+            if iq2_source != 'active-frame':
+                paths.append('/cache/tf_onecat_gu_raw_iq2_fixture.so')
+                origins['raw_iq2_gate_up'] = {'path': paths[-1]}
             startup['onecat_experts'] = {'schema': 'tensorfold.private-onecat-frame-binding-v1', 'rank': rank, 'world': 8,
                 'status': 'prepared-execution-eligible', 'record': {
                     'schema': 'tensorfold.onecat-active-frame-owner-v1', 'enabled': True, 'closed': False,
                     'profile': {'policy': 'owned-onecat-active-frame-current-down-v1', 'method': method,
-                                'banks': 48, 'additional_device_bytes': 117976064, 'frame_slab_bytes': 117964800,
-                                'shared_lookup_bytes': 11264, 'packer_workspace_bytes': 0,
+                                'down_method': down_method, 'iq2_source': iq2_source,
+                                'prefill_method': prefill_method,
+                                'down_format_policy': {'20': down_method, '42': 'tensorfold'},
+                                'mtp_provider': 'tensorfold-fp32-mtp',
+                                'banks': 48, 'additional_device_bytes': 117976064 if onecat_gu else 0,
+                                'frame_slab_bytes': 117964800 if onecat_gu else 0,
+                                'shared_lookup_bytes': 11264 if onecat_gu else 0, 'packer_workspace_bytes': 0,
                                 'original_raw_retained': True, 'baseline_grouped_gate_up_rows': 4},
                     'raw_bindings': list(range(48))},
-                'origins': {'gate_up': {'path': paths[1]}, 'packer': {'path': paths[2]}}}
+                'origins': origins}
         summary = {'rank': rank, 'actual_owned_profile': p, 'closed': True, 'finished': True, 'failed': False,
                    'teacher_ids': a['teacher_ids'], 'runtime_sources': a['runtime_sources'], 'frames': copy.deepcopy(a['frames'])}
         if fault:
@@ -483,14 +505,75 @@ def _standalone(root, mode, reference=None, method=None, fault=None, arrays=None
     return {'root': str(root), 'files': records}
 
 
-@pytest.mark.parametrize('method', ['tensorfold-fp32-epilogue', 'onecat-half-epilogue'])
-def test_standalone_candidate_diagnostic_uses_real_normal_controller_artifacts(tmp_path, method):
+@pytest.mark.parametrize('method,iq2_source', [('tensorfold', 'active-frame'),
+    ('tensorfold-fp32-epilogue', 'active-frame'), ('tensorfold-fp32-epilogue', 'raw'),
+    ('onecat-half-epilogue', 'active-frame'), ('onecat-half-epilogue', 'raw')])
+@pytest.mark.parametrize('down_method', ['tensorfold', 'onecat-q8-slots'])
+@pytest.mark.parametrize('prefill_method', ['tensorfold', 'candidate'])
+def test_standalone_candidate_diagnostic_uses_real_normal_controller_artifacts(tmp_path, method, down_method, iq2_source, prefill_method):
     a = _standalone(tmp_path / 'ref', 'capture')
-    b = _standalone(tmp_path / 'candidate', 'replay', a['files']['authority']['sha256'], method)
-    report = quality.compare_owned_candidate_teacher(a, b, method=method, read_timeout_s=30)
+    b = _standalone(tmp_path / 'candidate', 'replay', a['files']['authority']['sha256'], method,
+                    down_method=down_method, iq2_source=iq2_source, prefill_method=prefill_method)
+    report = quality.compare_owned_candidate_teacher(a, b, method=method, read_timeout_s=30,
+                                                      down_method=down_method, iq2_source=iq2_source, prefill_method=prefill_method)
     assert report['complete'] is True and len(report['frames']) == 4
     assert all(row['exact_uint32_bits'] for row in report['frames'])
     assert report['quality_acceptance'] is report['qualification'] is report['P3_valid'] is False
+    assert report['down_method'] == down_method and report['iq2_source'] == iq2_source
+    assert report['prefill_method'] == prefill_method
+    metrics = report['quality_metrics']
+    assert metrics['tokens'] == metrics['exact_frames'] == 4
+    assert metrics['mean_kl'] == metrics['mean_nll_delta'] == 0
+    assert metrics['ppl_ratio'] == metrics['top1_agreement'] == 1
+    assert metrics['reference_perplexity'] == metrics['candidate_perplexity'] > 1
+
+
+def test_standalone_quality_reports_logit_drift_separately_from_teacher_probabilities(tmp_path):
+    a = _standalone(tmp_path / 'ref', 'capture')
+    method = 'tensorfold-fp32-epilogue'
+    shifted = [np.array([1., 2., 2., 1.], dtype='<f4') for _ in range(4)]
+    b = _standalone(tmp_path / 'candidate', 'replay', a['files']['authority']['sha256'], method, arrays=shifted)
+    report = quality.compare_owned_candidate_teacher(a, b, method=method, read_timeout_s=30)
+    assert all(row['different_uint32_values'] == 4 and row['max_abs_logit_delta'] == 1 for row in report['frames'])
+    metrics = report['quality_metrics']
+    assert metrics['exact_frames'] == 0
+    assert metrics['mean_kl'] == metrics['mean_nll_delta'] == 0
+    assert metrics['ppl_ratio'] == metrics['top1_agreement'] == 1
+    assert report['qualification'] is report['quality_acceptance'] is report['P3_valid'] is False
+
+
+@pytest.mark.parametrize('raw,error', [
+    (b'{}', 'must be an array'),
+    (b'null', 'must be an array'),
+    (b'[]', 'retirement is not positive'),
+    (b'[null]', 'retirement is not positive'),
+    (b'[0]', 'retirement is not positive'),
+    (b'[{"State":{},"State":{}}]', 'duplicate teacher JSON key'),
+    (b'[{"extra":NaN}]', 'nonfinite teacher JSON'),
+    (b'[{"extra":1e999}]', 'nonfinite teacher JSON'),
+])
+def test_standalone_candidate_inspect_validates_array_and_nested_json_before_vectors(tmp_path, monkeypatch, raw, error):
+    a = _standalone(tmp_path / 'ref', 'capture')
+    method = 'tensorfold-fp32-epilogue'
+    b = _standalone(tmp_path / 'candidate', 'replay', a['files']['authority']['sha256'], method)
+    reference = b['files']['inspect']
+    (Path(b['root']) / reference['file']).write_bytes(raw)
+    b['files']['inspect'] = {'file': reference['file'], 'bytes': len(raw), 'sha256': _sha(raw)}
+    monkeypatch.setattr(quality, '_owned_comparison_vector', lambda *a, **k: pytest.fail('invalid inspect reached NPY'))
+    with pytest.raises(ValueError, match=error):
+        quality.compare_owned_candidate_teacher(a, b, method=method, read_timeout_s=30)
+
+
+def test_standalone_candidate_array_support_does_not_weaken_object_records(tmp_path, monkeypatch):
+    a = _standalone(tmp_path / 'ref', 'capture')
+    method = 'tensorfold-fp32-epilogue'
+    b = _standalone(tmp_path / 'candidate', 'replay', a['files']['authority']['sha256'], method)
+    b['files']['runtime'] = _write(Path(b['root']), b['files']['runtime']['file'], [])
+    monkeypatch.setattr(quality, '_owned_comparison_vector', lambda *a, **k: pytest.fail('invalid object reached NPY'))
+    with pytest.raises(ValueError, match='teacher JSON must be an object'):
+        quality.compare_owned_candidate_teacher(a, b, method=method, read_timeout_s=30)
+    with pytest.raises(ValueError, match='teacher JSON must be an object'):
+        quality._owned_teacher_object(b'[]')
 
 
 @pytest.mark.parametrize('key,change', [

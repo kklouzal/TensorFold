@@ -133,3 +133,37 @@ def test_actual_wrapper_native_arguments_and_each_written_version(method):
         with pytest.raises(RuntimeError) as found:
             prepared.down(*args, first=0, ggml_type=20, column_offset=0, method=method)
     assert found.value is primary and [t._version for t in args[4:]] == expected
+
+
+def test_slots_scratch_is_bounded_additional_storage_without_folded_output():
+    for rows in (1, 8, 24, 32):
+        facts = down.scratch_layout(rows)
+        assert facts['q8_shape'] == (rows * 11, 5, 36)
+        assert facts['status_shape'] == (rows,)
+        assert facts['additional_device_bytes'] == rows * (11 * 5 * 36 + 4)
+        assert facts['activation_error_contract'] == 'explicit-Q8_1-approximation-not-qualified'
+    for rows in (0, 33, True, 1.0):
+        with pytest.raises(ValueError):
+            down.scratch_layout(rows)
+
+
+@pytest.mark.parametrize('dtype', [torch.float16, torch.float32])
+def test_slots_wrapper_preserves_unweighted_output_dtype_and_publishes_only_writes(dtype):
+    calls = []
+    prepared = down.Prepared(SimpleNamespace(slots=lambda *args: calls.append(args)), torch.device('cpu'))
+    args = [torch.zeros((11, 160), dtype=torch.float16),
+            torch.zeros((1, 11), dtype=torch.int32),
+            torch.zeros((256 * 2560, 90), dtype=torch.uint8),
+            torch.zeros((1, 2560), dtype=torch.float32),
+            torch.empty((11, 5, 36), dtype=torch.uint8),
+            torch.empty(1, dtype=torch.int32), torch.empty((1, 11, 2560), dtype=dtype)]
+    versions = [tensor._version for tensor in args]
+    assert prepared.slots(*args, first=0, ggml_type=20, column_offset=0) is args[-1]
+    assert calls[0][-3:] == (20, 0, 0)
+    assert [tensor._version for tensor in args] == [v + int(index >= 4) for index, v in enumerate(versions)]
+    primary = RuntimeError('native slots refused')
+    with patch.object(prepared.module, 'slots', side_effect=primary):
+        with pytest.raises(RuntimeError) as found:
+            prepared.slots(*args, first=0, ggml_type=20, column_offset=0)
+    assert found.value is primary
+    assert [tensor._version for tensor in args] == [v + int(index >= 4) for index, v in enumerate(versions)]

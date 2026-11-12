@@ -3155,3 +3155,95 @@ def test_cold_Q8_mismatch_uses_existing_failure_notification_before_ready(channe
         owned.publish_receipt(engine, tmp_path)
     assert engine._abort_comm and os.read(channel[0], 8) == b'F'
     assert not (tmp_path / 'rank-0.json').exists()
+
+
+def _failure_diagnostic_engine():
+    return NS(rank=3, tp=8, _abort_comm=False, execution_rows=105,
+        multi=NS(buf=NS(rows=105), mbuf=NS(rows=105),
+                 controller=NS(maximum={'row_budget': 105}, configured={'row_budget': 105})),
+        prompt='must-not-be-copied', environment={'credential': 'must-not-be-copied'},
+        capacity_plan={'secret': 'must-not-be-copied', 'session_capacity': {
+            'context_tokens': 262144, 'configured_ceiling': 24, 'resident_capacity': 21,
+            'full_context_commitments': 21, 'limiting_resource': 'rank-device-memory', 'binding_ranks': [0],
+            'secret': 'must-not-be-copied', 'ranks': [{'rank': 0, 'budget_bytes': 100,
+                'resource_ledger_bytes': {'history': 60, 'secret': 'must-not-be-copied'}}]},
+            'execution_envelope': {'target_rows': 105, 'max_proposals': 4, 'prefill_tokens': 4096, 'method': 'mtp'},
+            'kv_full_windows': {'requested': 21, 'reserved': 21, 'stream_slots': 21, 'materialized': True,
+                'context_window': 262144, 'cache_slots_each': 262149, 'workspace_bytes': 2 * 2**30,
+                'ranks': [{'rank': 0, 'materialized': True, 'startup_capacities': [262149] * 21}]}})
+
+
+def test_qualification_failure_is_bounded_atomic_and_printed_before_supervisor_notification(tmp_path, monkeypatch, capsys):
+    engine = _failure_diagnostic_engine()
+    primary = ValueError('private execution rows differ: ' + 'x' * 10000)
+    monkeypatch.setattr(owned, 'bound_receipt', lambda _: (_ for _ in ()).throw(primary))
+    observed = []
+    def notified():
+        path = tmp_path / 'qualification-failure-rank-3.json'
+        raw = path.read_bytes()
+        assert len(raw) <= 65536 and b'must-not-be-copied' not in raw
+        record = json.loads(raw)
+        assert record['failed'] is True and record['qualification'] is False
+        assert record['requested_execution_rows'] == 120
+        assert set(record['effective_execution_rows'].values()) == {105}
+        assert record['capacity_plan']['session_capacity']['resident_capacity'] == 21
+        assert record['capacity_plan']['session_capacity']['configured_ceiling'] == 24
+        assert record['capacity_plan']['kv_full_windows']['cache_slots_each'] == 262149
+        assert record['capacity_plan']['kv_full_windows']['ranks'][0]['startup_capacities'] == [262149] * 21
+        assert len(record['error']['message']) == 2048
+        assert not list(tmp_path.glob('*.tmp'))
+        error_output = capsys.readouterr().err
+        assert 'ValueError' in error_output and 'private execution rows differ' in error_output
+        observed.append(True)
+        return True
+    monkeypatch.setattr(owned, 'notify_failure', notified)
+    with pytest.raises(ValueError) as raised:
+        owned.publish_receipt(engine, tmp_path, execution_rows=120)
+    assert raised.value is primary and observed == [True] and engine._abort_comm
+    assert not (tmp_path / 'rank-3.json').exists()
+
+
+def test_qualification_failure_keeps_primary_and_all_diagnostic_notification_errors(tmp_path, monkeypatch):
+    engine = _failure_diagnostic_engine()
+    primary, publication, emission, notification = [RuntimeError(name) for name in ('validation', 'write', 'stderr', 'notify')]
+    events = []
+    monkeypatch.setattr(owned, 'bound_receipt', lambda _: (_ for _ in ()).throw(primary))
+    def fail_write(*args, **kwargs):
+        events.append('write')
+        raise publication
+    def fail_print(*args, **kwargs):
+        events.append('stderr')
+        raise emission
+    def fail_notify():
+        events.append('notify')
+        raise notification
+    monkeypatch.setattr(owned, 'write_json', fail_write)
+    monkeypatch.setattr(owned, 'print', fail_print, raising=False)
+    monkeypatch.setattr(owned, 'notify_failure', fail_notify)
+    with pytest.raises(RuntimeError) as raised:
+        owned.publish_receipt(engine, tmp_path, execution_rows=120)
+    assert raised.value is primary and events == ['write', 'stderr', 'notify']
+    found, pending = set(), [raised.value]
+    while pending:
+        error = pending.pop()
+        if id(error) in found:
+            continue
+        found.add(id(error))
+        pending.extend(value for value in (error.__cause__, error.__context__) if value is not None)
+        pending.extend(getattr(error, 'exceptions', ()))
+    assert {id(value) for value in (primary, publication, emission, notification)} <= found
+
+
+def test_qualification_failure_does_not_overwrite_earlier_failure_evidence(tmp_path, monkeypatch):
+    engine = _failure_diagnostic_engine()
+    path = tmp_path / 'qualification-failure-rank-3.json'
+    path.write_text('{"historical":true}\n')
+    primary = ValueError('new refused attempt')
+    calls = []
+    monkeypatch.setattr(owned, 'bound_receipt', lambda _: (_ for _ in ()).throw(primary))
+    monkeypatch.setattr(owned, 'notify_failure', lambda: calls.append('notified') or True)
+    with pytest.raises(ValueError) as raised:
+        owned.publish_receipt(engine, tmp_path)
+    assert raised.value is primary and calls == ['notified']
+    assert path.read_text() == '{"historical":true}\n'
+    assert raised.value.__cause__ is not None

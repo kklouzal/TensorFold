@@ -81,15 +81,29 @@ def service_live_bytes(pool):
 def capturable(w) -> str | None:
     """Why this model's rounds cannot be captured (None: they can): experts that read their plan on the host."""
 
-    if w.meta.get("history_layout") == "unique":
-        return "unique history owner execution has no qualified padded capture contract"
+    unique = w.meta.get("history_layout") == "unique"
+    if unique:
+        from .owned_experts import POLICY
+
+        if getattr(w, "dflash2", None) is not None or getattr(w, "dspark", None) is not None:
+            return "exact unique-history graph pieces require stock MTP or no drafter"
+        if w.meta.get("indexer_history", "gpu") != "gpu":
+            return "exact unique-history graph pieces require GPU-resident indexer history"
+        plan = w.meta.get("owned_expert_plan")
+        banks = [layer.moe.experts for layer in w.layers]
+        if w.mtp is not None:
+            banks.append(w.mtp.layer.moe.experts)
+        if (w.meta.get("execution_provider") != "sm70" or plan is None
+                or any(getattr(bank, "_owned_expert_plan", None) is not plan
+                       or bank.implementation != POLICY for bank in banks)):
+            return "unique history graph pieces require prepared fixed native expert owners"
     if w.comm is not None and w.meta.get("execution_provider") != "sm70":
         return "tensor-parallel ranks"
-    if w.meta.get("execution_provider") == "sm70" and not w.meta.get("capture_ready", False):
+    if not unique and w.meta.get("execution_provider") == "sm70" and not w.meta.get("capture_ready", False):
         return w.meta.get("capture_reason", "the SM70 family provider has not prepared capture-safe state")
-    if any(getattr(layer.moe.experts, "capturable", True) is False for layer in w.layers):
+    if not unique and any(getattr(layer.moe.experts, "capturable", True) is False for layer in w.layers):
         return "this MoE reads its plan's item list on the host, which a capture rejects"
-    if w.mtp is not None and getattr(w.mtp.layer.moe.experts, "capturable", True) is False:
+    if not unique and w.mtp is not None and getattr(w.mtp.layer.moe.experts, "capturable", True) is False:
         return "the MTP head's MoE reads its plan's item list on the host"
     if w.meta.get("execution_provider") == "sm70" and sum(layer.ple is not None for layer in w.layers) > 1:
         return "bound SM70 captures require at most one PLE table"
@@ -133,9 +147,14 @@ class RoundGraphs:
         self.pending = []
         self.bound = None
         if dec.w.meta.get("execution_provider") == "sm70":
-            from .bound_graphs import BoundStateGraphs
+            if dec.w.meta.get("history_layout") == "unique":
+                from .exact_graphs import ExactStateGraphs
 
-            self.bound = BoundStateGraphs(self)
+                self.bound = ExactStateGraphs(self)
+            else:
+                from .bound_graphs import BoundStateGraphs
+
+                self.bound = BoundStateGraphs(self)
 
     def retain_failure(self, primary) -> None:
         """Own the original tensor-bearing frames independently of later exception traceback clearing."""
@@ -403,7 +422,8 @@ class RoundGraphs:
                 "rejected": self.rejected,
                 "allocator": self.allocator_record,
                 "pieces": sum(len(p.graphs) for p in (*self.verify.values(), *self.mtp.values())),
-                "keys": self.measured}
+                "keys": self.measured,
+                **(self.bound.record() if self.bound is not None and hasattr(self.bound, "record") else {})}
 
     def invalidate_state(self, state):
         if getattr(self, "bound", None) is not None:

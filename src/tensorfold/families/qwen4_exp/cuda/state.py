@@ -46,6 +46,7 @@ class Buffers:
             raise ValueError("issued positional execution requires the admitted unique-history layout")
         wide = c.streams * c.hidden
         self.rows, self.prefill = rows, prefill
+        self.owner_role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
         from ..pipeline_stage import for_weights as pipeline_for_weights
 
         self.pipeline_stage = pipeline_for_weights(w)
