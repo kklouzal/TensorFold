@@ -18,6 +18,42 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Private expert teacher CPU checks
+
+The closed prepared-teacher component covers the incumbent plus 20 expert
+selectors in its P256/NONE region (decoder E24, expert preparation R32). CPU
+coverage validates the control protocol and complete conditional score reader;
+it does not qualify model accuracy, NUMA/CAP40 execution or throughput.
+
+Run these two groups in separate fresh Python processes inside the matching
+application image, after its installed-wheel and SDK audits. Mount the frozen
+source read-only at `/source` and use `/source` as the working directory. The
+protocol group injects temporary application/runtime namespaces. Disable the
+unrelated Metal conftest for that group: preloaded real TensorFold modules would
+correctly fail the injected application's origin checks. Keep those guards and
+all assertions enabled.
+
+```bash
+/opt/venv/bin/python -B -m pytest --noconftest -c /dev/null \
+  --rootdir=/source -o pythonpath=/source -p no:cacheprovider -q \
+  /source/tests/test_v100_native_contract_driver.py \
+  /source/tests/test_v100_native_contract_host.py \
+  /source/tests/test_v100_prepared_teacher_contract.py
+
+/opt/venv/bin/python -B -m pytest -c /verification/pytest.ini \
+  -o 'pythonpath=/source/tests /source' -p no:cacheprovider -q \
+  /source/tests/test_v100_owned_qualification.py \
+  /source/tests/test_v100_owned_teacher_comparison.py \
+  /source/tests/test_v100_rotorquant_quality.py \
+  /source/tests/test_v100_prepared_teacher_comparison.py \
+  /source/tests/test_v100_numa_qualifier_forwarding.py
+```
+
+The second group imports the installed application and genuine native FD
+extension. `/source` supplies tools and test fixtures; do not add `/source/src`
+to its import path. Permission-sensitive native NUMA tests additionally need
+the derived policy and writable cache described by the V100 deployment recipe.
+
 ## Private ATen normalized attention owner
 
 The explicit trial family `aten-cutlass-q8-normalized-lse-owner-v1` uses the
