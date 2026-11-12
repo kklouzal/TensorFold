@@ -131,7 +131,10 @@ def test_new_tracer_exports_through_quota_and_records_both_headroom_points(tmp_p
         reads.append(after);return {'cgroup':{'memory.events':'oom 0\noom_kill 0'},'required':0 if after else grants.device_headroom_bytes}
     monkeypatch.setattr(diagnostic,'headroom',headroom)
     class Profile(Exporter):
-        def __init__(self):super().__init__(b'{"traceEvents":[1]}')
+        def __init__(self):
+            super().__init__(b'{"traceEvents":[1]}')
+            self.profiler=NS(kineto_results=NS(trace_activities=lambda:[
+                NS(type=lambda:'kernel'),NS(type=lambda:'cuda_runtime')]))
         def __enter__(self):return self
         def __exit__(self,*args):return False
     tracer=owned._SchedulerTrace(NS(rank=0,scheduler=NS(thread=threading.current_thread())),tmp_path,
@@ -141,6 +144,75 @@ def test_new_tracer_exports_through_quota_and_records_both_headroom_points(tmp_p
     row=json.loads((tmp_path/'c1-warmed-decode-round-1-receipt.json').read_text())
     assert row['entry_headroom']['required']==grants.device_headroom_bytes and row['exit_headroom']['required']==0
     assert reads==[False,True] and row['P3_valid']is False and row['diagnostic_grants']==spec()
+    assert row['native_cuda_activity']['counts']['kernel']==1
+
+
+def test_backend_initialization_never_registers_cpu_only_and_preserves_resource_checks(monkeypatch):
+    calls=[];torch=object();engine=object();grants=diagnostic.Grants.parse(spec())
+    before={'cgroup':{'memory.events':'oom 0\noom_kill 0'}}
+    def headroom(given,allowance,*,after=False):
+        assert given is engine and allowance is grants
+        calls.append(('headroom',after));return before
+    class Profile:
+        def __enter__(self):calls.append('enter configured CPU+CUDA')
+        def __exit__(self,*args):calls.append('exit configured CPU+CUDA')
+    def configured(given,allowance):
+        assert given is torch and allowance is grants
+        calls.append('configured profiler');return Profile()
+    monkeypatch.setattr(diagnostic,'headroom',headroom)
+    monkeypatch.setattr(diagnostic,'profiler',configured)
+    result=diagnostic.prepare_backend(torch,engine,grants)
+    assert calls==[('headroom',False),'configured profiler','enter configured CPU+CUDA',
+                   'exit configured CPU+CUDA',('headroom',True)]
+    assert result['activities']==['CPU','CUDA']
+    assert result['entry_headroom']is before and result['exit_headroom']is before
+
+
+def coverage(*types):
+    profile=NS(profiler=NS(kineto_results=NS(trace_activities=lambda:[
+        NS(type=lambda kind=kind:kind)for kind in types])))
+    return diagnostic.native_cuda_activity(profile)
+
+
+def test_cuda_coverage_uses_actual_exporter_activity_types_not_device_headers():
+    value=coverage('cpu_op','kernel','cuda_driver','gpu_memcpy','user_annotation')
+    assert diagnostic.require_cuda_activity(value)is value
+    assert value['counts']=={'kernel':1,'cuda_runtime':0,'cuda_driver':1,'gpu_memcpy':1,'gpu_memset':0}
+    assert value['native_event_count']==5
+
+
+@pytest.mark.parametrize('types',[(),('cpu_op','user_annotation'),('cuda_runtime',),('kernel',)])
+def test_cpu_only_or_missing_cuda_kernel_runtime_cannot_be_complete(types):
+    with pytest.raises(RuntimeError,match='actual CUDA kernel/runtime'):
+        diagnostic.require_cuda_activity(coverage(*types))
+
+
+@pytest.mark.parametrize('model_fails',[False,True])
+def test_missing_cuda_coverage_preserves_export_and_original_model_failure(tmp_path,monkeypatch,model_fails):
+    from tools import v100_owned_qualification as owned
+    grants=diagnostic.Grants.parse(spec())
+    monkeypatch.setattr(diagnostic,'headroom',lambda *a,**kw:{'cgroup':{'memory.events':'oom 0\noom_kill 0'}})
+    class Profile(Exporter):
+        def __init__(self):
+            super().__init__(b'{"traceEvents":[{"cat":"cpu_op"}]}')
+            self.profiler=NS(kineto_results=NS(trace_activities=lambda:[]))
+        def __enter__(self):return self
+        def __exit__(self,*args):return False
+    tracer=owned._SchedulerTrace(NS(rank=0,scheduler=NS(thread=threading.current_thread())),tmp_path,
+                                factory=Profile,diagnostic_grants=grants)
+    primary=ValueError('actual model failed');calls=[]
+    def model():
+        calls.append('model')
+        if model_fails:raise primary
+    with pytest.raises((ValueError,RuntimeError))as caught:
+        tracer.capture(diagnostic.WINDOWS[1],model)
+    assert calls==['model']
+    if model_fails:assert caught.value is primary
+    else:assert 'actual CUDA kernel/runtime'in str(caught.value)
+    assert json.loads((tmp_path/(diagnostic.WINDOWS[1]+'.json')).read_text())['traceEvents']
+    row=json.loads((tmp_path/(diagnostic.WINDOWS[1]+'-receipt.json')).read_text())
+    assert row['native_cuda_activity']['native_event_count']==0
+    assert 'RuntimeError'in row['post_errors'] and tracer.failed is caught.value
 
 
 def test_unfunded_scheduler_observer_refuses_before_backend_or_hooks(tmp_path):
@@ -187,7 +259,8 @@ def closed_windows(tmp_path):
         row={'process_pid':17,'rank':0,'label':window,'primary':None,'post_errors':[],
              'P3_valid':False,'diagnostic_grants':spec(),'capture_limit':5,
              'trace_region':'incumbent-c1-c8','exported_trace_bytes':2,'entry_headroom':point,
-             'exit_headroom':{**point,'required_headroom_bytes':0}}
+             'exit_headroom':{**point,'required_headroom_bytes':0},
+             'native_cuda_activity':coverage('kernel','cuda_runtime')}
         (root/(window+'-receipt.json')).write_text(json.dumps(row))
     log=tmp_path/'native.log'
     log.write_text('VERBOSE:2026-11-12 00:00:00 17:18 ConfigLoader.cpp:211] Detected base config change\n'+
@@ -202,6 +275,18 @@ def test_complete_collector_binds_exact_windows_to_actual_rank0_pid(closed_windo
     assert result['managed_disk_bytes']==sum(p.stat().st_size for p in root.iterdir())
     with pytest.raises(ValueError,match='actual process'):
         diagnostic.collect(root,grants,expected_pid=19,native_log=log)
+
+
+@pytest.mark.parametrize('failure',['missing','cpu-only','bool-count'])
+def test_final_collector_requires_positive_actual_cuda_activity(closed_windows,failure):
+    root,grants,log=closed_windows
+    path=root/(diagnostic.WINDOWS[1]+'-receipt.json');row=json.loads(path.read_text())
+    if failure=='missing':del row['native_cuda_activity']
+    elif failure=='cpu-only':row['native_cuda_activity']=coverage('cpu_op')
+    else:row['native_cuda_activity']['counts']['kernel']=True
+    path.write_text(json.dumps(row))
+    with pytest.raises((ValueError,RuntimeError),match='CUDA'):
+        diagnostic.collect(root,grants,expected_pid=17,native_log=log)
 
 
 @pytest.mark.parametrize('failure',['missing','extra','partial','bool-pid','truncated','headroom','memory-limit','gap-oom'])

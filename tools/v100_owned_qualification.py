@@ -1928,8 +1928,8 @@ class _SchedulerTrace:
         self.prefill_start, self.selection = prefill_start, selection
         self.plan_bound = selection is not None
         self.prefill_owner = self.prefill_state = self.profiler = self.failed = None
-        self.capture_errors = [None] * (8 if diagnostic_grants is not None else 7)  # Acquired before profiler/hook effects.
-        self.capture_error_order = ((0,1,2,3,6,7,4,5) if diagnostic_grants is not None else (0,1,2,3,6,4,5))  # Geometry precedes receipt/publication.
+        self.capture_errors = [None] * (9 if diagnostic_grants is not None else 7)  # Acquired before profiler/hook effects.
+        self.capture_error_order = ((0,1,2,3,8,6,7,4,5) if diagnostic_grants is not None else (0,1,2,3,6,4,5))  # Coverage/geometry precede receipt publication.
         self.notification_errors = [None] * 2
         self.transport = raise_failures
         self.headroom_check = None
@@ -2065,6 +2065,7 @@ class _SchedulerTrace:
         primary, entered, result = None, False, None
         before = started = entered_at = work_end = stopped = None
         trace_bytes = None
+        native_cuda_activity = None
         exit_headroom=None
         prefill = self.prefill_owner is not None
         try:
@@ -2107,6 +2108,16 @@ class _SchedulerTrace:
                         trace_bytes=self.storage.export(trace.name,profiler)
                 except BaseException as error:
                     errors[3] = error
+                if self.diagnostic_grants is not None:
+                    try:
+                        if __package__:
+                            from .v100_scheduler_diagnostic import native_cuda_activity as coverage,require_cuda_activity
+                        else:
+                            from v100_scheduler_diagnostic import native_cuda_activity as coverage,require_cuda_activity
+                        native_cuda_activity=coverage(profiler)
+                        require_cuda_activity(native_cuda_activity)
+                    except BaseException as error:
+                        errors[8]=error
                 if prefill:
                     selection = self.selection
                     try:
@@ -2116,9 +2127,11 @@ class _SchedulerTrace:
                         observed = (primary is None and selection['prepared_calls'] == 1
                             and selection['prepared_returned'] and selection['actual_count'] is not None
                             and selection['reason'] is None and errors[0] is None and errors[1] is None
-                            and errors[2] is None and errors[3] is None)
+                            and errors[2] is None and errors[3] is None
+                            and (self.diagnostic_grants is None or errors[8] is None))
                         selection['status'] = ('FAILED' if primary is not None or errors[0] is not None
-                            or errors[1] is not None or errors[2] is not None or errors[3] is not None else
+                            or errors[1] is not None or errors[2] is not None or errors[3] is not None
+                            or self.diagnostic_grants is not None and errors[8] is not None else
                             'OBSERVED' if observed else 'UNSUPPORTED_NOT_OBSERVED')
                         selection['prefix_operation'] = getattr(self.engine.tp_decoder, 'prefix_operation', None)
                     except BaseException as error:
@@ -2147,6 +2160,7 @@ class _SchedulerTrace:
                         'post_errors': [type.__dict__['__name__'].__get__(type(error)) for error in errors if error is not None],
                         'exported_trace_bytes': trace_bytes,
                         **({'diagnostic_grants':self.diagnostic_grants.as_dict(),'entry_headroom':entry_headroom,'exit_headroom':exit_headroom,
+                            'native_cuda_activity':native_cuda_activity,
                             'managed_disk_bytes':self.storage.used,'native_activity_loss_check':'required_after_positive_retirement',
                             'host_scope':'admitted obligation; nativeCPU/completedCUPTIbuffers are not byte-capped; wholecontainer cgroup/peak evidence required'}
                            if self.diagnostic_grants is not None else {}),
@@ -2619,7 +2633,8 @@ def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0,
             from .v100_scheduler_diagnostic import prepare_backend
         else:
             from v100_scheduler_diagnostic import prepare_backend
-        if engine.rank==0:prepare_backend(torch,engine,diagnostic_grants)
+        if engine.rank==0:
+            engine.capacity_plan['scheduler_diagnostic']['backend_preparation']=prepare_backend(torch,engine,diagnostic_grants)
 
     if trace_output is not None and _trace_c24_only(plan):
         decoder = engine.multi

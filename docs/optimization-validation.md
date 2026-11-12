@@ -100,7 +100,13 @@ cannot establish complete window evidence without all required markers.
 After clean model retirement, the collector requires exactly the five trace
 and receipt pairs plus inventory and prefill selection. It binds every capture
 to the validated NUMA rank-zero worker PID, checks entry/exit resource evidence
-and immutable locality, and rejects partial exports. Inputs and results bind
+and immutable locality, and rejects partial exports. Each stopped window also
+records the pinned SDK's actual native trace-activity categories, using the same
+retained `ProfilerResult.trace_activities()` source as its Python exporter.
+Positive kernel and CUDA runtime/driver events are mandatory. CPU events,
+device-properties headers and CUDA version metadata do not satisfy this gate.
+Actual exported coverage, correlations and critical-path attribution still need
+post-run analysis. Inputs and results bind
 the diagnostic helper to the frozen worker source inventory;
 a separately updated host controller may run only with the exact helper bytes.
 Host-helper mismatch fails before any Docker inspection or output creation.
@@ -110,6 +116,26 @@ or winner evidence. CPU controls include the actual pinned SDK's CPU exporter,
 quota exhaustion, reader drain, primary-error retention, origin/PID boundaries
 and existing scheduler semantics. Actual V100 profiling, loss/overhead and
 integrated resource qualification remain pending.
+
+The first Source21 model pilot completed its work and bounded exports but all
+five traces contained CPU events only. Its initial empty CPU-only setup caused
+the pinned Kineto singleton to retain `cpuOnly=true` for the process lifetime;
+later CPU+CUDA requests could not enable GPU collection. The project setup now
+uses the same explicitly configured CPU+CUDA profiler for that first session,
+with no model call, and verifies headroom and memory events before and after
+the cold backend preparation. The original CPU-only traces remain failure
+evidence for GPU coverage. No vendor patch, SDK rebuild or inference change is
+part of this correction. Three fresh-process GPU0 controls on the genuine
+Source21 SDK confirmed the boundary: the original CPU-first setup produced zero
+native/exported CUDA events; the corrected configured setup and a bare public
+CPU+CUDA control each recorded one kernel, eight runtime events and two memory
+copies. Native categories matched the actual exported JSON. All three completed
+the exact 512x512 FP32 known answer (ones times twos equals 1024), UUID and
+component NUMA checks. Containers retired cleanly; GPU health and all 48 links
+were unchanged, with no new Xids. The component uses node0 CPU/memory placement
+without claiming a one-rank model plan or full State admission. The corrected
+tools have not yet passed a newly installed image and model-level five-window
+GPU capture; those remain separate gates.
 
 ## Private ATen normalized attention owner
 

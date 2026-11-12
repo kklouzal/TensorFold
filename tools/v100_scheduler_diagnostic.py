@@ -279,16 +279,21 @@ def check_memory_events(before,after):
 
 
 def prepare_backend(torch,engine,grants):
-    """Zero model calls: start the SDK configuration loader before readiness.
+    """Zero model calls: initialize the CUDA-capable SDK backend before readiness.
 
     The source-versioned host collector still requires positive base-config
     evidence before every actual capture marker; no sleep or assumed poll race
-    is treated as success. This CPU-only setup is itself diagnostic overhead.
+    is treated as success. Pinned Kineto retains its first cpuOnly selection
+    for the process lifetime, so a CPU-only warmup would disable every later
+    CUDA capture. Use the same configured CPU+CUDA profiler as serving windows.
     """
-    headroom(engine,grants)
-    if torch.version.git_version!=SDK_GIT:raise RuntimeError('pinned profiler SDK required')
-    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]):
+    before=headroom(engine,grants)
+    with profiler(torch,grants):
         pass
+    after=headroom(engine,grants,after=True)
+    check_memory_events(before,after)
+    return {'activities':['CPU','CUDA'],'entry_headroom':before,'exit_headroom':after,
+            'scope':'zero model calls; first process-wide Kineto registration includes CUDA'}
 
 
 def capture_entry(label):
@@ -313,6 +318,40 @@ def profiler(torch,grants):
     activity=torch.profiler.ProfilerActivityConfig(profiler_configs=[BufferConfig()])
     return torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
         {torch.profiler.ProfilerActivity.CUDA:activity}],record_shapes=False,profile_memory=False,with_stack=False)
+
+
+CUDA_ACTIVITY_SCHEMA='tensorfold.native-cuda-profiler-coverage-v1'
+CUDA_ACTIVITY_TYPES=('kernel','cuda_runtime','cuda_driver','gpu_memcpy','gpu_memset')
+
+
+def native_cuda_activity(profile):
+    """Read the stopped pinned-SDK native event buffer, not device headers.
+
+    The profiler retains these events through export. This uses the same native
+    result API as its Python exporter; no second trace or CUDA operation runs.
+    Native event presence is necessary. Exported activity coverage/correlations
+    still require post-run analysis before kernel or critical-path claims.
+    """
+    counts=dict.fromkeys(CUDA_ACTIVITY_TYPES,0)
+    total=0
+    for event in profile.profiler.kineto_results.trace_activities():
+        total+=1
+        kind=event.type()
+        if kind in counts:counts[kind]+=1
+    return {'schema':CUDA_ACTIVITY_SCHEMA,'counts':counts,'native_event_count':total}
+
+
+def require_cuda_activity(value):
+    if (type(value)is not dict or set(value)!={'schema','counts','native_event_count'}
+            or value['schema']!=CUDA_ACTIVITY_SCHEMA or type(value['counts'])is not dict
+            or set(value['counts'])!=set(CUDA_ACTIVITY_TYPES)
+            or type(value['native_event_count'])is not int or value['native_event_count']<0
+            or any(type(n)is not int or n<0 for n in value['counts'].values())
+            or sum(value['counts'].values())>value['native_event_count']):
+        raise ValueError('stopped native CUDA activity evidence is invalid')
+    if value['counts']['kernel']==0 or value['counts']['cuda_runtime']+value['counts']['cuda_driver']==0:
+        raise RuntimeError('scheduler diagnostic lacks actual CUDA kernel/runtime activity; trace incomplete')
+    return value
 
 
 LOSS_MARKERS=('Exceeded max GPU buffer count','CollectTrace stopped by GPU profiler',
@@ -379,6 +418,7 @@ def collect(directory,grants,*,expected_pid,native_log):
         if (type(row.get('exported_trace_bytes'))is not int or row['exported_trace_bytes']<=0
                 or trace.stat().st_size!=row['exported_trace_bytes']):
             raise ValueError('scheduler diagnostic export missing/truncated')
+        require_cuda_activity(row.get('native_cuda_activity'))
         before,after=row.get('entry_headroom'),row.get('exit_headroom')
         for point,needed in ((before,grants.device_headroom_bytes),(after,0)):
             if (type(point)is not dict or point.get('required_headroom_bytes')!=needed

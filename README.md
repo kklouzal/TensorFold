@@ -135,7 +135,13 @@ rounds and two warmed C8 decode rounds. Explicit host, device-headroom, trace
 disk, native-log and in-flight CUPTI grants are required. Trace exports are
 bounded while streaming; incomplete native collection is rejected. These are
 instrumented diagnostics, never throughput evidence. CPU controls pass; actual
-GPU profiling remains pending. See the [diagnostic contract](docs/optimization-validation.md#private-five-window-scheduler-diagnostic).
+GPU profiling remains pending. The first Source21 pilot produced CPU events
+only: its CPU-only initialization selected Kineto's process-lifetime CPU mode.
+The corrected setup initializes the configured CPU+CUDA backend and requires
+actual native CUDA kernel/runtime activity in every window. Three fresh-process
+V100 controls reproduced CPU-first failure and verified CUDA events with both
+the corrected setup and the public CUDA control, with exact known-answer math.
+A fresh model capture remains required. See the [diagnostic contract](docs/optimization-validation.md#private-five-window-scheduler-diagnostic).
 
 
 Gemma chat presentation routes repeated, nested and unknown channel blocks to
