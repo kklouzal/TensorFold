@@ -238,6 +238,20 @@ class ModelArmTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--execution-rows") + 1], "120")
         self.assertEqual(argv[argv.index("--expert-tensor-parallel-size") + 1], "4")
 
+    def test_validated_numa_settings_reach_supervisor_before_serve_separator(self):
+        settings = {**self.settings(), "numa": {
+            "plan": "/sealed/plan.json", "plan_sha256": "a" * 64,
+            "seccomp_directory": "/sealed/seccomp", "seccomp_manifest_sha256": "b" * 64}}
+        argv = campaign.model_arguments(settings, self.plan(), smoke_only=True)
+        supervisor, serve = argv[:argv.index("--")], argv[argv.index("--") + 1:]
+        self.assertEqual(supervisor[supervisor.index("--numa-plan") + 1], "/operator/numa/plan.json")
+        self.assertEqual(supervisor[supervisor.index("--numa-plan-sha256") + 1], "a" * 64)
+        self.assertNotIn("--numa-plan", serve)
+        self.assertNotIn("--numa-plan-sha256", serve)
+        self.assertEqual(serve[serve.index("--mtp-drafts") + 1], "4")
+        with self.assertRaisesRegex(ValueError, "complete explicit campaign settings"):
+            campaign.model_arguments({**settings, "unknown_setting": True}, self.plan())
+
     def test_raw_candidate_is_explicit_and_smoke_cannot_enter_timing_observer(self):
         settings = {**self.settings(), "gu": "tensorfold-fp32-epilogue", "down": "onecat-q8-slots",
                     "iq2_source": "raw", "graphs": False, "prefill_method": "candidate"}

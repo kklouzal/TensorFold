@@ -17,7 +17,9 @@ CPU cores and host-memory allocation to its GPU's PCI-local node before exec of
 Torch/CUDA, then verifies actual placement again after CUDA and startup. The
 unprivileged container permission, eight-rank CPU/exec and actual eight-GPU
 Torch/CUDA/NCCL/page/thread placement gates pass; the full model gate remains
-pending. See [V100 deployment](deploy/v100/README.md).
+pending. The private campaign accepts the required NUMA settings and forwards
+the sealed plan to its supervisor. Both GPU-history and RAM-archive deployment
+recipes require the worker-purpose profile. See [V100 deployment](deploy/v100/README.md).
 
 The [short V100 diagnostic lifecycle helper](tools/v100_short_container.py)
 retains the owned container ID before logging and retires clients before

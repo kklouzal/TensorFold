@@ -518,7 +518,7 @@ def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_event
                 "gu", "down", "device_budget_bytes", "global_host_bytes", "max_waiting_input_bytes",
                 "prefill_rows", "mtp_confidence", "execution_rows", "graphs", "iq2_source", "prefill_method"}
     if (type(settings) is not dict or required - set(settings)
-            or set(settings) - required - {"bitblas_hc_exports"}):
+            or set(settings) - required - {"bitblas_hc_exports", "numa"}):
         raise ValueError("model arm requires the complete explicit campaign settings")
     if "bitblas_hc_exports" in settings and (type(settings["bitblas_hc_exports"]) is not str
                                             or not settings["bitblas_hc_exports"]):

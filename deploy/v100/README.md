@@ -1225,7 +1225,7 @@ host's actual default policy and the intended immutable TensorFold image:
 docker run -d --name tf-numa-default --network none \
   --entrypoint /bin/sleep "$TF_IMAGE" 300
 sudo python3 tools/generate_numa_seccomp.py --container tf-numa-default \
-  --output-directory /absolute/new/numa-profile
+  --purpose worker --output-directory /absolute/new/numa-profile
 docker rm -f tf-numa-default
 ```
 
