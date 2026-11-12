@@ -209,6 +209,22 @@ def owner_requirements(rows, panel_rows):
             'max_keys': OWNER_MAX_KEYS, 'scope': 'tensor payload; allocator/driver/graph reserve separate'}
 
 
+def _merge_normalized_owner(owner, views, normalized, local_lse):
+    from . import paged_attention as native
+    group = owner.rank // 4 * 4
+    owner.gather_native(views['local_stats'], views['all_stats'])
+    native.merge_statistics(views['all_stats'], views['row_table'], views['global_stats'],
+        group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
+    native.weight_owner_normalized(normalized, local_lse, views['global_stats'], views['row_table'],
+        views['local_values'], group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
+    owner.gather_native(views['local_values'], views['all_values'])
+    # Retain original rank-order reduction, inverse Q8 basis and final Half
+    # publication. Only the local normalized/LSE arithmetic is a new family.
+    native.merge_values(views['all_values'], views['row_table'], views['out'], rank=owner.rank,
+        page_tokens=owner.native_page_tokens, layer=owner.native_layer, value_bits=8, value_codec=0)
+    return views['out']
+
+
 class OwnerTiles:
     """Exclusive current-stream panels; the enclosing native owner fences release.
 
@@ -272,17 +288,7 @@ class OwnerTiles:
             # existing global statistics guard, never become an empty rank.
             stats[first:first + count, :, 1].copy_(result.valid_rows.expand(count, 12))
             del result
-        owner.gather_native(stats, views['all_stats'])
-        native.merge_statistics(views['all_stats'], views['row_table'], views['global_stats'],
-            group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
-        native.weight_owner_normalized(normalized, local_lse, views['global_stats'], views['row_table'],
-            views['local_values'], group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
-        owner.gather_native(views['local_values'], views['all_values'])
-        # Retain original rank-order reduction, inverse Q8 basis and final Half
-        # publication. Only the local normalized/LSE arithmetic is a new family.
-        native.merge_values(views['all_values'], views['row_table'], views['out'], rank=owner.rank,
-            page_tokens=owner.native_page_tokens, layer=owner.native_layer, value_bits=8, value_codec=0)
-        return views['out']
+        return _merge_normalized_owner(owner, views, normalized, local_lse)
 
     def record(self):
         return {'family': OWNER_FAMILY, 'requirements': dict(self.requirements),
@@ -296,4 +302,165 @@ class OwnerTiles:
         # Only after enclosing OwnerBuffers.retire_native positively fences all
         # current-stream raw-pointer, ATen and communication consumers.
         self.query = self.keys = self.values = self.valid = self.lse = self.panels = None
+        self.closed = True
+
+
+from .flash_v100_artifact import FAMILY as FLASH_OWNER_FAMILY
+
+
+def flash_owner_requirements(rows, panel_rows):
+    """Complete persistent role payload, including one fixed-P private native workspace."""
+    if (type(rows) is not int or not 1 <= rows <= 256 or type(panel_rows) is not int
+            or not 1 <= panel_rows <= 256):
+        raise ValueError('Flash owner requires bounded rows/panel1..256')
+    # Keep P independent of active tail count: one native owner per role.
+    panel = min(rows, panel_rows)
+    payloads = {'query_pack_bytes': rows * 12 * 256 * 2, 'local_lse_bytes': rows * 12 * 4,
+        'panel_query_output_bytes': panel * 12 * 256 * 2 * 2,
+        'panel_lse_bytes': panel * 12 * 4,
+        'key_value_panel_bytes': panel * OWNER_MAX_KEYS * 256 * 2 * 2,
+        'valid_key_panel_bytes': panel * OWNER_MAX_KEYS, 'nonempty_bytes': panel,
+        'native_private_bytes': 2 * panel * OWNER_MAX_KEYS * 256 * 2 + 4 * (3 * panel + 2)}
+    return {**payloads, 'persistent_bytes': sum(payloads.values()), 'operator_temporary_bytes': 0,
+        'panel_rows': panel, 'max_keys': OWNER_MAX_KEYS,
+        'scope': 'persistent tensor payload; cold extension/driver/allocator/host metadata measured separately'}
+
+
+class FlashOwnerTiles:
+    """One fixed-P compacted primitive; ghost compute rows never become State rows.
+
+    Pack the full live query frame before receive-slab reuse, then copy active
+    panels and zero only the query/mask ghost suffix. Gather touches only live
+    descriptor prefixes. Every library launch uses P physical batches and12
+    head-as-query rows; only active outputs/statistics enter ordered collectives.
+    Source pack/gather retains the existing finite-producer status authority.
+    """
+    def __init__(self, rows, panel_rows, device, artifact, *, tensor_budget_bytes, native_owner):
+        import threading
+        import torch
+        from . import flash_v100_forward as primitive
+
+        self.closed = self.failed = self._retirement_failed = False
+        self.primitive = self._loan = self.native_settings = None
+        self.artifact, self.frames = artifact, {}
+        self.common = None
+        self.query = self.lse = self.panel_query = self.panel_out = self.panel_lse = None
+        self.keys = self.values = self.valid = self.nonempty = None
+        self.rows, self.device, self.thread = rows, torch.device(device), threading.current_thread()
+        self.requirements = flash_owner_requirements(rows, panel_rows)
+        needed = self.requirements['persistent_bytes']
+        if type(tensor_budget_bytes) is not int or not needed <= tensor_budget_bytes <= sys.maxsize:
+            raise MemoryError('Flash owner role lacks its complete persistent tensor credit')
+        self.panel_rows = p = self.requirements['panel_rows']
+        self._loan = artifact.loan() # Journal before any device allocation.
+        self.query = torch.zeros((rows, 1, 12, 256), device=self.device, dtype=torch.float16)
+        self.lse = torch.empty((rows, 12), device=self.device, dtype=torch.float32)
+        self.panel_query = torch.zeros((p * 12, 1, 256), device=self.device, dtype=torch.float16)
+        self.panel_out = torch.empty_like(self.panel_query)
+        self.panel_lse = torch.empty((1, p * 12), device=self.device, dtype=torch.float32)
+        self.keys = torch.zeros((p, OWNER_MAX_KEYS, 1, 256), device=self.device, dtype=torch.float16)
+        self.values = torch.zeros_like(self.keys)
+        self.valid = torch.zeros((p, 1, OWNER_MAX_KEYS), device=self.device, dtype=torch.bool)
+        self.nonempty = torch.empty((p, 1), device=self.device, dtype=torch.bool)
+        self.primitive = primitive.prepare_compacted(artifact.module, self.panel_query, self.keys, self.values,
+            self.valid, self.panel_out, self.panel_lse, tensor_budget_bytes=self.requirements['native_private_bytes'])
+        self.native_settings = self.primitive.settings()
+        self.common = {'group_start': native_owner.rank // 4 * 4, 'page_tokens': native_owner.native_page_tokens,
+                       'layer': native_owner.native_layer}
+        for bucket in native_owner.native_buckets:
+            views = native_owner.native_views(bucket)
+            normalized = native_owner.queries.reshape(-1)[:bucket * 12 * 256].view(bucket, 12, 256)
+            local_lse = self.lse[:bucket]
+            parts = []
+            for first in range(0, bucket, p):
+                count = min(p, bucket - first)
+                parts.append((first, count, self.query[first:first + count].view(count * 12, 1, 256),
+                    self.panel_query[:count * 12], self.panel_query[count * 12:],
+                    self.keys[:count], self.values[:count], self.valid[:count], self.valid[count:],
+                    self.panel_out[:count * 12].view(count, 12, 256),
+                    self.panel_lse[:, :count * 12].view(count, 12),
+                    normalized[first:first + count], local_lse[first:first + count],
+                    views['local_stats'][first:first + count, :, 0],
+                    views['local_stats'][first:first + count, :, 1],
+                    self.nonempty[:count].expand(count, 12)))
+            self.frames[bucket] = (views, self.query[:bucket], normalized, local_lse, tuple(parts))
+
+    def _check(self):
+        import threading
+        if self.closed or self.failed or self._retirement_failed:
+            raise RuntimeError('Flash owner is retired, failed or retirement uncertain')
+        if threading.current_thread() is not self.thread:
+            raise RuntimeError('Flash owner belongs to another host Thread')
+        self.artifact.module
+
+    def run(self, owner, rows):
+        import torch
+        from . import paged_attention as native
+        self._check()
+        if type(rows) is not int or rows not in self.frames:
+            raise ValueError('Flash owner row frame was not prepared before admission')
+        views, query, normalized, local_lse, parts = self.frames[rows]
+        common = self.common
+        try:
+            native.pack_owner_queries(views['q_all'], views['row_table'], query, **common)
+            for (first, count, source_q, panel_q, ghost_q, key, value, valid, ghost_valid,
+                    result, result_lse, target, target_lse, stats_lse, stats_nonempty, flags) in parts:
+                panel_q.copy_(source_q)
+                if count != self.panel_rows:
+                    ghost_q.zero_(); ghost_valid.zero_()
+                native.gather_owner_q8(views['selected_all'], views['row_table'], key, value, valid,
+                                      first=first, **common)
+                self.primitive.run(self.panel_query, self.keys, self.values, self.valid, self.panel_out, self.panel_lse)
+                torch.any(self.valid, dim=2, out=self.nonempty)
+                target.copy_(result); target_lse.copy_(result_lse)
+                stats_lse.copy_(result_lse); stats_nonempty.copy_(flags)
+            return _merge_normalized_owner(owner, views, normalized, local_lse)
+        except BaseException:
+            self.failed = True
+            raise
+
+    def handoff_to_current_thread(self):
+        import threading
+        if self.closed or self.failed or self._retirement_failed:
+            raise RuntimeError('Flash owner is retired, failed or retirement uncertain')
+        try:
+            self.primitive.handoff_to_current_thread()
+        except BaseException:
+            self._retirement_failed = True
+            raise
+        self.thread = threading.current_thread()
+
+    def record(self):
+        metadata = sys.getsizeof(self.frames)
+        for frame in self.frames.values():
+            metadata += sys.getsizeof(frame) + sys.getsizeof(frame[-1]) + sys.getsizeof(frame[0])
+            for part in frame[-1]: metadata += sys.getsizeof(part) + sum(sys.getsizeof(v) for v in part)
+        return {'family': FLASH_OWNER_FAMILY, 'requirements': dict(self.requirements),
+            'native': None if self.native_settings is None else dict(self.native_settings),
+            'artifact': self.artifact.record(), 'prepared_rows': list(self.frames),
+            'host_metadata_payload_bytes': metadata, 'closed': self.closed,
+            'failed': self.failed, 'retirement_failed': self._retirement_failed,
+            'numeric_contract': 'fixed-P/fixed12 head-as-row stablecompactHalfO/F32LSE; finite producer required; mass limitation retained',
+            'qualification': 'unselected; actual owner/model/quality/resource/P3 gates separate'}
+
+    def close(self):
+        import torch
+        if self.closed: return
+        # A failed run may still retire positively; a failed retirement retains
+        # every tensor/module/loan and forbids retries via the primitive owner.
+        if self._retirement_failed: raise RuntimeError('Flash owner retirement uncertain; retry forbidden')
+        try:
+            if self.primitive is not None:
+                self.primitive.close()
+            elif any(isinstance(v, torch.Tensor) and v.is_cuda for v in vars(self).values()):
+                torch.cuda.synchronize(self.device)
+            if self._loan is not None:
+                self.artifact.release(self._loan); self._loan = None
+        except BaseException:
+            self._retirement_failed = True
+            raise
+        self.primitive = None; self.frames.clear()
+        self.query = self.lse = self.panel_query = self.panel_out = self.panel_lse = None
+        self.keys = self.values = self.valid = self.nonempty = None
+        self.common = self.thread = None
         self.closed = True

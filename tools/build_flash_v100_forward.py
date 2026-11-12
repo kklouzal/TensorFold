@@ -10,32 +10,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from types import MappingProxyType
 import urllib.request
 
-PIN = '0ababf82e3836c1786d7937c6002670ca4ecda62'
-INPUTS = MappingProxyType({
-    "AUTHORS": (33, "f12de99664c47d52a464bd7b7df54f7c07d2056a33fef22ea3ab191de43e0d6c"),
-    "LICENSE": (1511, "4eec967a15191488e23d9955fa472ba8074f89cfc3e4afacbf8e378180c28449"),
-    "include/api.h": (16706, "9cc837ae93563de7b91a77dcbff71aa22905243bb4f4cc3b5ce2e9c02ae55845"),
-    "include/backward.h": (4209, "70eb9f9613523b53b33faae673724e111b583efa20546384998b9b43f4b2e557"),
-    "include/debug.h": (24628, "aafe08e7fc5b594227048a56e37613d840c9b22cca62f38952cb157e45d7c527"),
-    "include/entropy.h": (1751, "87b991e89c2a8741ab4db346d61b5cb9d1335ba81543aaf95b1ce121daf09a9c"),
-    "include/forward.h": (2234, "0ec3ef3849b386176b4ff725a39cbe9abdd28fc24b1e0a26f0122ec6df134560"),
-    "include/gemm_smem.h": (10728, "20bd31e42c45610376821723625dc760d7f33ea36faecebd2c35581701a3c60d"),
-    "include/kernel.h": (6167, "5838088500e25aa3f16abd6ebf1e89557095b27188bfbb7e163afc20b3e67d03"),
-    "include/mat_mul.h": (12106, "db0466d1319e3051f10ed28889edaeeffb4f3fac5eb0fdca7a9a209d9408ff4a"),
-    "include/mma_m16n16k16.h": (29663, "704c0a7ac60749947c0d88b8bd000fa5f9805db70e1916b322a3a39c977e4262"),
-    "include/mma_m8n8k4.h": (22923, "84dc251cdd3c563bc3a3a9006e3128c174f143880a64853c9a3de8fc735a430c"),
-    "include/philox.h": (2350, "34b867fd565e064949d3a0963c82b7f28cf00023ac1ea246efbb30da9957c0c1"),
-    "include/product.h": (4399, "22061c0fad00921aa023e3aa7125f0219eafe8bc785eecc8b7a9513b5214a89d"),
-    "include/rotary.h": (13165, "740f0fd2ce99df6fdc3eb49cf27b4fbbe7cb31235f1303eb05757cd5de5971f0"),
-    "include/softmax.h": (16462, "11ca1feaafef3592263e61783cbdb3907eb389f13808f8c320a59e8d1b198b0d"),
-    "include/swizzle.h": (8284, "a8c07ce63bb92abf1f888d735f7956ca59bd66d3007b8fe7fc2bc6c81079d056"),
-    "include/template.h": (12486, "21d4369bd93466d5f1250768f6320ebd2d19f9ab9e901c3a5dc9ba80420bd09d"),
-    "kernel/forward_varlen.cu": (27154, "876bdcc25c72104cb6ec71c044606ab81ccd861d7d4ded9ae3211258a7960874"),
-    "kernel/forward.cu": (19802, "add843cc3c95ff9a3d74accf51c57ec9c00965f4a9a5945f71ec0fde83e7a991"),
-})
+# One stdlib authority shared with host validation and the cold runtime loader.
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
+from tensorfold.cuda.sm70.flash_v100_artifact import PIN, INPUTS, CUDA_FLAGS
+
 
 
 def read_input(path, size, digest):
@@ -111,9 +92,7 @@ def compile_component(root, output, jobs):
         owned / 'flash_v100_NOTICE.txt', owned / 'flash_v100_LICENSE.txt']
     digests = {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
     options = dict(extra_cflags=['-O3'],
-        extra_cuda_cflags=['-O3', '-gencode=arch=compute_70,code=sm_70', '--use_fast_math',
-            '-U__CUDA_NO_HALF_OPERATORS__', '-U__CUDA_NO_HALF_CONVERSIONS__', '-U__CUDA_NO_HALF2_OPERATORS__',
-            '--expt-relaxed-constexpr', '--expt-extended-lambda', '--threads=1'],
+        extra_cuda_cflags=list(CUDA_FLAGS),
         extra_include_paths=[*map(str, headers.roots), str(root / 'include')])
     record = {'scope': 'standalone dense+compacted-varlen controlled component compile/import; no JIT/provider/model qualification',
         'upstream_commit': PIN, 'foreign_inputs': dict(INPUTS), 'owned_source_sha256': digests,
@@ -185,12 +164,88 @@ def compile_component(root, output, jobs):
     raise_failures(primary, failures)
 
 
+def seal_component(root, result, output):
+    """Publish a new sealed directory from an actual compile receipt; never rebuild or install."""
+    from tensorfold.cuda.sm70 import flash_v100_artifact as artifact
+    import re
+
+    verify(root)
+    result = result.absolute()
+    result_identity, raw = artifact._acquire(result, limit=1 << 20, capture=True)
+    record = json.loads(raw)
+    if (record.get('status') != 'compiled-and-imported' or record.get('upstream_commit') != PIN
+            or record.get('foreign_inputs') != {k: list(v) for k, v in INPUTS.items()}
+            or record.get('cuda_initialized_before') is not False or record.get('cuda_initialized_after') is not False):
+        raise ValueError('sealing requires the genuine GPU-hidden exact-pin compile receipt')
+    module_path = Path(record['module_path'])
+    name = re.fullmatch(artifact.NATIVE_NAME_PATTERN, module_path.name)
+    if name is None or module_path.parent.name != 'build-' + name.group(1):
+        raise ValueError('sealing native path differs from the owned compile layout')
+    native = result.parent / module_path.parent.name / module_path.name
+    native_identity = artifact.file_record(native)
+    if native_identity['sha256'] != record['module_sha256']:
+        raise ValueError('sealing native ELF differs from compile receipt')
+    owned = Path(__file__).resolve().parents[1] / 'src/tensorfold/cuda/sm70'
+    for name in artifact.NATIVE_INPUTS:
+        compiled = [sha for path, sha in record['owned_source_sha256'].items() if Path(path).name == name]
+        if compiled != [artifact.file_record(owned / name)['sha256']]:
+            raise ValueError('sealing compiled native input differs from current owned source: ' + name)
+    abi = artifact.runtime_abi()
+    if (abi['torch'] != record['torch'] or abi['cuda'] != record['torch_cuda']
+            or abi['headers'] != record['SDK_headers']):
+        raise ValueError('sealing SDK differs from actual compiled native ABI')
+    producers = [sha for path, sha in record['owned_source_sha256'].items()
+                 if Path(path).name == 'build_flash_v100_forward.py']
+    if len(producers) != 1:
+        raise ValueError('sealing requires the original compile producer identity')
+    if output.exists():
+        raise FileExistsError('seal destination must be a new immutable artifact directory')
+    output.mkdir(parents=True)
+    def copy(source, target, expected):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open('xb') as stream:
+            observed, _ = artifact._acquire(source, expected_bytes=expected['bytes'], sink=stream)
+            if observed != expected:
+                raise ValueError('seal source changed during bounded copy: ' + str(source))
+        target.chmod(0o444)
+    for name, (size, digest) in INPUTS.items():
+        copy(root / name, output / 'foreign' / name, {'bytes': size, 'sha256': digest})
+    sources = {}
+    for name in artifact.OWNED:
+        sources[name] = artifact.file_record(artifact.owned_path(name))
+        copy(artifact.owned_path(name), output / 'owned' / name, sources[name])
+    copy(native, output / 'native' / native.name, native_identity)
+    copy(result, output / 'build.json', result_identity)
+    producer_identity = artifact.file_record(Path(__file__).resolve())
+    copy(Path(__file__).resolve(), output / 'producer' / 'build_flash_v100_forward.py', producer_identity)
+    data = {'schema': 1, 'family': artifact.FAMILY, 'foreign_pin': PIN,
+        'foreign_inputs': {k: list(v) for k, v in INPUTS.items()}, 'owned_sources': sources,
+        'native': {'name': native.name, **native_identity}, 'abi': abi,
+        'abi_origin': artifact.ABI_ORIGIN, 'compile_producer_sha256': producers[0],
+        'build': result_identity, 'options': record['requested_options'],
+        'producer': producer_identity}
+    data['profile_sha256'] = hashlib.sha256(artifact.canonical(data)).hexdigest()
+    manifest = output / 'manifest.json'
+    manifest_raw = artifact.canonical(data) + b'\n'
+    manifest.write_bytes(manifest_raw); manifest.chmod(0o444)
+    digest = hashlib.sha256(manifest_raw).hexdigest()
+    (output / 'manifest.sha256').write_text(digest + '\n')
+    (output / 'manifest.sha256').chmod(0o444)
+    verified = artifact.validate_manifest(manifest, digest)
+    for path in sorted(output.rglob('*'), reverse=True):
+        if path.is_dir(): path.chmod(0o555)
+    output.chmod(0o555)
+    return verified.record()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-root', type=Path, required=True)
     parser.add_argument('--download', action='store_true', help='fetch exact inputs if absent; resume verified files')
     parser.add_argument('--download-only', action='store_true')
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--seal-from', type=Path, help='seal an existing genuine compile result without rebuilding')
+    parser.add_argument('--seal-output', type=Path, help='new immutable operator artifact directory')
     parser.add_argument('--jobs', type=int, default=1)
     args = parser.parse_args()
     if args.jobs <= 0:
@@ -199,6 +254,13 @@ def main():
     if args.download:
         download(root)
     verify(root)
+    if args.seal_from is not None:
+        if args.seal_output is None or args.download_only or args.output is not None:
+            parser.error('--seal-from requires --seal-output and excludes compile/download-only')
+        print(json.dumps(seal_component(root, args.seal_from, args.seal_output.absolute()), sort_keys=True))
+        return
+    if args.seal_output is not None:
+        parser.error('--seal-output requires --seal-from')
     if not args.download_only:
         if args.output is None:
             parser.error('--output is required for compilation')

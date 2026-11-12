@@ -19,7 +19,8 @@ import torch
 from tensorfold.cuda.sm70 import family_ops as ops
 
 from .kvcache import KVCache, KVPairFormat
-from tensorfold.cuda.sm70.attention_backends import OWNER_FAMILY as ATEN_KERNEL_FAMILY
+from tensorfold.cuda.sm70.attention_backends import (OWNER_FAMILY as ATEN_KERNEL_FAMILY,
+                                                    FLASH_OWNER_FAMILY as FLASH_KERNEL_FAMILY)
 
 
 # Component-only, process-fixed trial. Ordinary serving retains the incumbent.
@@ -247,7 +248,7 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Operation-owned Q8 single-row target decode; every other path is original."""
     owner = getattr(buffers, 'history_owner', None)
     if (not mtp and not buffers.prefill and stop - start == 1
-            and getattr(buffers, 'owner_kernel_family', None) in ('sm70-paged-owner-rn-ex2-p2051-v1', ATEN_KERNEL_FAMILY)
+            and getattr(buffers, 'owner_kernel_family', None) in ('sm70-paged-owner-rn-ex2-p2051-v1', ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
             and getattr(buffers, 'owner_graph_family', None) == 'uncaptured'
             and owner is not None and getattr(owner, 'owned_q8_preparation', None) is not None
             and buffers.target_indexer_coordinates is not None
@@ -497,7 +498,7 @@ class OwnerBuffers:
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.reference_tiles = self.owned_q8_preparation = None
-        self.aten_tiles = None
+        self.aten_tiles = self.flash_tiles = None
         self.native_kernel_family, self.native_heads_per_block = "sm70-paged-owner-q8-compact-v1", None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_host_words = None
@@ -597,7 +598,7 @@ class OwnerBuffers:
         """
         native = self.native_record()
         extras = sum(native[name] for name in ("descriptor_bytes", "global_statistics_bytes",
-                                             "lane_control_bytes", "layer_control_bytes")) + native.get('aten_tensor_bytes', 0)
+                                             "lane_control_bytes", "layer_control_bytes")) + native.get('aten_tensor_bytes', 0) + native.get('flash_tensor_bytes', 0)
         return {"rows": self.rows, "prefill": self.prefill, "heads": self.heads,
                 "head_dim": self.head_dim, "index_width": self.idw,
                 "rank": self.rank, "device": str(self.device), "complete": self._base_ready,
@@ -796,15 +797,27 @@ class OwnerBuffers:
             self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
             self._upload_pending = True
 
-    def configure_native_family(self, family, heads_per_block=None, *, aten_panel_rows=None):
+    def configure_native_family(self, family, heads_per_block=None, *, aten_panel_rows=None,
+                                flash_artifact=None, flash_panel_rows=None, flash_tensor_budget_bytes=None):
         """Fix numerical policy before capture/admission; no serving redispatch."""
         from .owner_execution import KERNEL_FAMILY, RN_KERNEL_FAMILY
         if self._native_family_configured or self.native_states is not None or self._native_pending:
             raise RuntimeError("native numerical family is immutable after startup configuration")
-        if (family not in (KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY)
+        if (family not in (KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
                 or (family == RN_KERNEL_FAMILY and (type(heads_per_block) is not int or heads_per_block not in (1, 4, 12)))
-                or (family in (KERNEL_FAMILY, ATEN_KERNEL_FAMILY) and heads_per_block is not None)):
+                or (family in (KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY) and heads_per_block is not None)):
             raise ValueError("native numerical family requires its exact prepared head geometry")
+        if family == FLASH_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.attention_backends import FlashOwnerTiles
+            if (flash_artifact is None or aten_panel_rows is not None or self.native_pair is None
+                    or (self.native_pair.key.bits, self.native_pair.key.codec,
+                        self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
+                raise ValueError('Flash owner tiles require the explicit sealed original Q8 profile')
+            self.flash_tiles = object.__new__(FlashOwnerTiles)
+            self.flash_tiles.__init__(self.rows, flash_panel_rows, self.device, flash_artifact,
+                tensor_budget_bytes=flash_tensor_budget_bytes, native_owner=self)
+        elif any(value is not None for value in (flash_artifact, flash_panel_rows, flash_tensor_budget_bytes)):
+            raise ValueError('Flash options require their explicit numerical owner family')
         if family == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import OwnerTiles
             if (self.native_pair is None or (self.native_pair.key.bits, self.native_pair.key.codec,
@@ -819,7 +832,7 @@ class OwnerBuffers:
             if (self.partials.numel() * self.partials.element_size() < rn_probability_bytes(self.rows)
                     or torch._C._overlaps(self.partials, self.partial)):
                 raise ValueError("RN Half-P requires its fully paid disjoint PV receive slab")
-        if (family in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY) and not self.prefill and self.native_pair is not None
+        if (family in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY) and not self.prefill and self.native_pair is not None
                 and (self.native_pair.key.bits, self.native_pair.key.codec,
                      self.native_pair.value.bits, self.native_pair.value.codec) == (8, 0, 8, 0)):
             self.owned_q8_preparation = ops.prepare_owned_q8(self.device)
@@ -952,9 +965,15 @@ class OwnerBuffers:
 
         if rows not in self.native_buckets:
             raise ValueError("native owner execution shape was not prepared before admission")
-        views = self.native_views(rows)
         if self.comm is None or self.comm.world != 8 or self.comm.rank != self.rank:
             raise ValueError("native owner execution requires its active TP8 communicator")
+        if self.native_kernel_family == FLASH_KERNEL_FAMILY:
+            if self.flash_tiles is None:
+                raise RuntimeError('Flash owner frame was not prepared before serving')
+            if key_capacity is not None and key_capacity != 2051:
+                raise ValueError('Flash owner requires its fixed2051 compacted envelope')
+            return self.flash_tiles.run(self, rows)
+        views = self.native_views(rows)
         if self.native_kernel_family == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS
             if self.aten_tiles is None:
@@ -987,6 +1006,10 @@ class OwnerBuffers:
         native.merge_values(views["all_values"], views["row_table"], views["out"], rank=self.rank,
                              page_tokens=self.native_page_tokens, layer=self.native_layer, value_bits=bits, value_codec=codec)
         return views["out"]
+
+    def handoff_native_thread(self):
+        if self.flash_tiles is not None:
+            self.flash_tiles.handoff_to_current_thread()
 
     def mark_native_submitted(self):
         if self.native_done is not None:
@@ -1027,6 +1050,9 @@ class OwnerBuffers:
         if self.aten_tiles is not None:
             self.aten_tiles.close()
             self.aten_tiles = None
+        if self.flash_tiles is not None:
+            self.flash_tiles.close()
+            self.flash_tiles = None
         self.reference_tiles = self.owned_q8_preparation = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
@@ -1057,9 +1083,12 @@ class OwnerBuffers:
                 "host_descriptor_bytes": 0 if self.descriptors_host is None else self.descriptors_host.nbytes,
                 **({'aten_tensor_bytes': self.aten_tiles.requirements['persistent_bytes'],
                     'aten_tiles': self.aten_tiles.record()} if self.aten_tiles is not None else {}),
+                **({'flash_tensor_bytes': self.flash_tiles.requirements['persistent_bytes'],
+                    'flash_tiles': self.flash_tiles.record()} if self.flash_tiles is not None else {}),
                 "host_metadata_bytes": (0 if self.descriptor_host_words is None else
                                         sys.getsizeof(self.descriptor_host_words)
-                                        + sys.getsizeof(self.descriptor_host_words.base)),
+                                        + sys.getsizeof(self.descriptor_host_words.base))
+                    + (0 if self.flash_tiles is None else self.flash_tiles.record()['host_metadata_payload_bytes']),
                 "pinned_descriptor_bytes": (self.descriptors_host.nbytes if self.descriptors_host is not None
                                              and self.descriptors_host.is_pinned() else 0)}
 
@@ -1067,7 +1096,8 @@ class OwnerBuffers:
     def nbytes(self):
         return (sum(value.nbytes for name, value in vars(self).items()
                     if isinstance(value, torch.Tensor) and name != "descriptors_host")
-                + (0 if self.aten_tiles is None else self.aten_tiles.requirements['persistent_bytes']))
+                + (0 if self.aten_tiles is None else self.aten_tiles.requirements['persistent_bytes'])
+                + (0 if self.flash_tiles is None else self.flash_tiles.requirements['persistent_bytes']))
 
 
 def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False):
