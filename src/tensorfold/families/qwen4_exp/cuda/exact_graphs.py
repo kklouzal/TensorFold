@@ -10,6 +10,7 @@ Only idle startup creates graph keys; an unseen serving key runs eagerly.
 """
 
 from functools import partial
+from copy import deepcopy
 import json
 import os
 
@@ -38,6 +39,30 @@ class ExactStateGraphs:
             raise ValueError("exact graph piece diagnostic must be 0 or 1")
         self.piece_diagnostic = diagnostic == "1"
         self.native_gdn_capture = bool(getattr(self.dec, 'native_gdn_capture', False))
+        self.requested_policy = deepcopy(getattr(self.dec, 'exact_graph_policy', None))
+        if self.requested_policy is not None:
+            self.requested_policy['keys'] = tuple(tuple(key) for key in self.requested_policy['keys'])
+        self.available_keys = self.requested_keys = ()
+        self.captured_keys = []
+        self.selected_keys = None
+        self.declined_keys = {}
+
+    def _catalogue(self, states):
+        """Original finite shape order; selection never changes live capacity."""
+        width = self.dec.depth + 1
+        maximum = min(len(states), self.dec.buf.rows // width)
+        counts = sorted({value for value in (1, 2, 4, 8, 16, 24, maximum) if 0 < value <= maximum})
+        shapes = tuple((count, rows) for count in counts
+                       for rows in (range(1, width + 1) if count == 1 else sorted({1, width})))
+        available = tuple((role, count * rows, count) for count, rows in shapes
+                          for role in (('verify', 'mtp') if self.dec.mbuf is not None else ('verify',)))
+        requested = available if self.requested_policy is None else self.requested_policy['keys']
+        if not requested or not set(requested).issubset(available):
+            raise ValueError('exact graph subset contains a key outside the actual startup catalogue')
+        self.available_keys, self.requested_keys = available, tuple(requested)
+        self.selected_keys = frozenset(requested)
+        self.declined_keys = {key: 'excluded by paid-subset policy' for key in available if key not in self.selected_keys}
+        return shapes
 
     def _native_frame(self, segs, source, *, capture=False):
         """Startup-only publication; serving uses its decode preparation phase."""
@@ -116,8 +141,11 @@ class ExactStateGraphs:
     def _capture(self, kind, key, segs, source):
         if not self.preparing:
             raise RuntimeError("exact graph capture is restricted to idle startup")
+        if self.selected_keys is None or (kind, *key) not in self.selected_keys:
+            raise RuntimeError('exact graph capture requires a selected startup catalogue key')
         owner = self.owner
         if not self._agree(owner.room_bytes < owner.budget and owner._has_room()):
+            self.declined_keys[(kind, *key)] = owner.stopped or 'no admitted graph room before capture'
             return None
         run = partial(compute if kind == "verify" else mtp_compute,
                       self.dec.w, segs, source, check=False)
@@ -170,6 +198,8 @@ class ExactStateGraphs:
                 f"prior_bytes={owner.room_bytes} delta_bytes={took} budget_bytes={owner.budget}")
             owner.retain_failure(error)
         try:
+            if not admitted:
+                self.declined_keys[(kind, *key)] = 'captured key exceeded admitted graph budget'
             observation = {"schema": "tensorfold.exact-graph-key-v1", "rank": getattr(self.dec.w.comm, 'rank', 0),
                 "role": kind, "rows": key[0], "participants": key[1], "pieces": len(pieces.graphs),
                 "prior_keys": len(owner.measured), "prior_bytes": owner.room_bytes,
@@ -192,6 +222,7 @@ class ExactStateGraphs:
         owner.bytes += took
         owner.room_bytes += took
         (owner.verify if kind == "verify" else owner.mtp)[key] = pieces
+        self.captured_keys.append((kind, *key))
         return pieces
 
     def forward(self, kind, segs, *, mtp_positions=None, device_tokens=None):
@@ -233,7 +264,7 @@ class ExactStateGraphs:
 
                     reject_prepared(source, error)
         pieces = (self.owner.verify if kind == "verify" else self.owner.mtp).get(key)
-        if pieces is None and self.preparing:
+        if pieces is None and self.preparing and self.selected_keys is not None and (kind, *key) in self.selected_keys:
             pieces = self._capture(kind, key, segs, source)
             if pieces is not None:
                 # Capture preparation reset/restaged these same actual slots.
@@ -299,31 +330,39 @@ class ExactStateGraphs:
     def warm(self, states):
         if self.preparing or self.bindings:
             raise RuntimeError("exact graph catalogue is prepared once")
+        # Validate the entire requested shape/role set before resetting States,
+        # uploading inputs, or attempting any capture.
+        shapes = self._catalogue(states)
         self.preparing = True
         try:
-            width = self.dec.depth + 1
-            # Full-width verifier rows and one-row proposal steps cover the
-            # regular MTP round. C1 also prepares every acceptance-tail width.
-            maximum = min(len(states), self.dec.buf.rows // width)
-            counts = sorted({value for value in (1, 2, 4, 8, 16, 24, maximum) if 0 < value <= maximum})
-            for count in counts:
+            for count, rows in shapes:
+                verify = ('verify', count * rows, count) in self.selected_keys
+                mtp = ('mtp', count * rows, count) in self.selected_keys
+                if not verify and not mtp:
+                    continue
                 active = list(reversed(states))[:count]
-                widths = range(1, width + 1) if count == 1 else sorted({1, width})
-                for rows in widths:
-                    private = [(state, index * rows, (index + 1) * rows) for index, state in enumerate(active)]
-                    self._reset_warm_states(private)
-                    segs = stage(self.dec.w, self.dec.buf,
-                                 [(state, [0] * rows) for state in active], late=True)
-                    if self.dec.buf.ple_late is not None:
-                        stage_late(self.dec.w, self.dec.buf)
-                    self.forward("verify", segs)
-                    _kv_check(segs, comm=self.dec.w.comm)
-                    if self.dec.mbuf is not None:
-                        windows = [(state, [0] * rows, self.dec.buf.streams[first:last])
-                                   for state, first, last in segs]
-                        self._reset_warm_states(segs)
-                        self.forward("mtp", mtp_stage(self.dec.mbuf, windows))
-                        _kv_check(segs, comm=self.dec.w.comm)
+                private = [(state, index * rows, (index + 1) * rows) for index, state in enumerate(active)]
+                self._reset_warm_states(private)
+                segs = stage(self.dec.w, self.dec.buf,
+                             [(state, [0] * rows) for state in active], late=True)
+                if self.dec.buf.ple_late is not None:
+                    stage_late(self.dec.w, self.dec.buf)
+                result = self.forward('verify', segs) if verify else None
+                if result is None:
+                    # MTP needs the actual target HC rows even when that target
+                    # key was excluded or declined before capture admission.
+                    if self.native_gdn_capture:
+                        self._native_frame(segs, self.dec.buf)
+                    compute(self.dec.w, segs, self.dec.buf, check=False)
+                _kv_check(segs, comm=self.dec.w.comm)
+                if mtp:
+                    windows = [(state, [0] * rows, self.dec.buf.streams[first:last])
+                               for state, first, last in segs]
+                    self._reset_warm_states(segs)
+                    mseg = mtp_stage(self.dec.mbuf, windows)
+                    if self.forward('mtp', mseg) is None:
+                        mtp_compute(self.dec.w, mseg, self.dec.mbuf, check=False)
+                    _kv_check(mseg, comm=self.dec.w.comm)
         finally:
             self.preparing = False
 
@@ -345,8 +384,16 @@ class ExactStateGraphs:
         self.closed = True
 
     def record(self):
+        catalogue = {'policy': 'full-original-v1' if self.requested_policy is None else self.requested_policy['policy'],
+            'evidence_sha256': None if self.requested_policy is None else self.requested_policy['evidence_sha256'],
+            'available_keys': [list(key) for key in self.available_keys],
+            'requested_keys': [list(key) for key in self.requested_keys],
+            'selected_keys': [list(key) for key in self.available_keys if self.selected_keys is not None and key in self.selected_keys],
+            'captured_keys': [list(key) for key in self.captured_keys],
+            'declined_keys': [{'key': list(key), 'reason': reason} for key, reason in self.declined_keys.items()]}
         return {"capture_scope": "exact-row-gpu-pieces-with-eager-state-handoffs",
                 "replay_hits": self.hits, "replay_misses": self.misses,
                 "serving_hits": dict(self.serving_hits), "serving_misses": dict(self.serving_misses),
                 "native_gdn_capture": self.native_gdn_capture,
+                "exact_graph_catalogue": catalogue,
                 "eager_owner_inserts": self.owner_inserts, "capture_during_serving": False}

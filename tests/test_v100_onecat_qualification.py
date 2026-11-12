@@ -291,6 +291,13 @@ class FrameBinding(unittest.TestCase):
             receipt = tool.bound_receipt(e, selected)["graphs"]
             self.assertTrue(receipt["prepared"])
             self.assertEqual(receipt["replay_hits"], 3)
+            catalogue = {'policy': 'paid-subset-v1', 'evidence_sha256': 'a' * 64,
+                         'captured_keys': [['verify', 1, 1], ['mtp', 1, 1]],
+                         'declined_keys': [{'key': ['verify', 5, 1], 'reason': 'excluded by paid-subset policy'}]}
+            with patch.object(RoundGraphs, 'record', return_value={**record, 'exact_graph_catalogue': catalogue}):
+                bound = tool.bound_receipt(e, selected)['graphs']
+                self.assertEqual(bound['exact_graph_catalogue'], catalogue)
+
             for key, value in (("mtp_keys", 0), ("pieces", 0), ("bytes", 111),
                                ("replay_hits", True), ("capture_during_serving", True)):
                 bad = {**record, key: value}

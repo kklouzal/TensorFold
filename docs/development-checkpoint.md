@@ -169,3 +169,15 @@ The S12 complete catalog still exceeds its fixed allowance at the 21st key
 the same physical deltas and did not resolve that gate. Context, full24-State
 capacity and the configured memory reserves remain unchanged. Native component
 passes do not qualify complete model graph startup, quality or throughput.
+
+
+The optional private manifest field `preparation.exact_graph_policy` selects
+`paid-subset-v1`: an explicit finite list of `(role, total_rows, participants)`
+keys and a SHA256 identifying their cost-evidence packet. It is an unqualified
+trial and leaves the existing full catalog as the default when omitted. Startup
+validates the list against the actual decoder geometry before capture. Keys
+outside the chosen set remain supported through the ordinary eager route;
+unexpected per-key or settled budget overruns remain fatal. Policy, chosen keys
+and declined coverage are recorded, and the selection is fixed for the engine's
+lifetime. This is a distinct policy candidate, with model coverage, quality and
+performance verification pending.

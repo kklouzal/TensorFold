@@ -7,12 +7,13 @@ import pytest
 from tensorfold.families.qwen4_exp.cuda import exact_graphs
 
 
-def owner():
+def owner(*, slots=2, depth=4, rows=10, mtp=True, policy=None):
     states = [SimpleNamespace(kv_identity=("q8",), version=0, cur=[0, 0],
-                              pos=8, mtp_len=7, image_positions=None) for _ in range(2)]
-    source = SimpleNamespace(rows=10, rotor_lookup=False)
+                              pos=8, mtp_len=7, image_positions=None) for _ in range(slots)]
+    source = SimpleNamespace(rows=rows, rotor_lookup=False)
     model = SimpleNamespace(mtp=SimpleNamespace(layer=SimpleNamespace(linear=False)), comm=None)
-    outer = SimpleNamespace(dec=SimpleNamespace(free=states, buf=source, mbuf=source, w=model,
+    outer = SimpleNamespace(dec=SimpleNamespace(free=states, buf=source, mbuf=source if mtp else None, w=model,
+                                                depth=depth, exact_graph_policy=policy,
                                                 streams={}, filling=[], kept=[]),
                             verify={}, mtp={}, failure=None)
     graph = exact_graphs.ExactStateGraphs(outer)
@@ -223,6 +224,7 @@ def test_capture_handoff_lifetime_resets_after_piece_failure(monkeypatch):
     graph.owner.room_bytes, graph.owner.budget = 0, 1024
     graph.owner._has_room = lambda: True
     graph.preparing = True
+    graph.selected_keys = frozenset({('verify', 1, 1)})
     graph.dec.buf.split = None
     graph.dec.buf.exact_graph_handoffs = False
     events = []
@@ -260,12 +262,13 @@ def test_startup_capture_preserves_per_key_allocation_receipt_before_fatal_budge
 
     graph, (state, _) = owner()
     graph.preparing = True
+    graph.selected_keys = frozenset({('verify', 1, 1)})
     graph.dec.w.device = 'cuda:0'
     outer = graph.owner
     outer.room_bytes, outer.budget, outer.bytes, outer.measured = 0, budget, 0, []
     outer._has_room = lambda: True
     outer.retain_failure = lambda failure: setattr(outer, 'failure', failure)
-    pieces = SimpleNamespace(graphs=['captured'], out=object())
+    pieces = SimpleNamespace(graphs=[SimpleNamespace(reset=lambda: None)], out=object())
     graph.piece_diagnostic = piece_diagnostic and not write_failure
     def capture(*args, **kwargs):
         if graph.piece_diagnostic:
@@ -313,6 +316,11 @@ def test_startup_capture_preserves_per_key_allocation_receipt_before_fatal_budge
     assert record['prior_keys'] == 0 and record['admitted'] is allowed
     assert outer.measured[0]['accounting'] == record
     assert bool(outer.verify) is allowed
+    if allowed:
+        assert graph.record()['exact_graph_catalogue']['captured_keys'] == [['verify', 1, 1]]
+        graph.close()
+        assert not outer.verify
+        assert graph.record()['exact_graph_catalogue']['captured_keys'] == [['verify', 1, 1]]
 
 
 def test_private_reset_retires_real_unresolved_compact_staging_without_weakening_append_guard(monkeypatch):
@@ -481,3 +489,93 @@ def test_piece_diagnostic_is_explicit_and_startup_only(monkeypatch):
     monkeypatch.setenv('TENSORFOLD_EXACT_GRAPH_PIECE_DIAGNOSTIC', '1')
     graph, _ = owner()
     assert graph.piece_diagnostic is True
+
+
+def test_default_catalogue_retains_all_original_MTP4_keys_and_order():
+    graph, states = owner(slots=24, rows=120)
+    shapes = graph._catalogue(states)
+    assert shapes == ((1, 1), (1, 2), (1, 3), (1, 4), (1, 5),
+                      (2, 1), (2, 5), (4, 1), (4, 5), (8, 1), (8, 5),
+                      (16, 1), (16, 5), (24, 1), (24, 5))
+    record = graph.record()['exact_graph_catalogue']
+    assert record['policy'] == 'full-original-v1' and record['evidence_sha256'] is None
+    assert len(record['available_keys']) == len(record['requested_keys']) == len(record['selected_keys']) == 30
+    assert record['selected_keys'][:4] == [['verify', 1, 1], ['mtp', 1, 1], ['verify', 2, 1], ['mtp', 2, 1]]
+    assert record['declined_keys'] == record['captured_keys'] == []
+
+
+@pytest.mark.parametrize('key,mtp', [(['verify', 6, 1], True), (['verify', 3, 3], True), (['mtp', 1, 1], False)])
+def test_requested_subset_geometry_and_role_validate_before_any_State_or_GPU_work(monkeypatch, key, mtp):
+    policy = {'policy': 'paid-subset-v1', 'keys': [key], 'evidence_sha256': 'a'*64}
+    graph, states = owner(policy=policy, mtp=mtp)
+    monkeypatch.setattr(graph, '_reset_warm_states', lambda *a: pytest.fail('invalid subset touched State'))
+    monkeypatch.setattr(exact_graphs, 'stage', lambda *a, **kw: pytest.fail('invalid subset staged GPU inputs'))
+    with pytest.raises(ValueError, match='outside the actual startup catalogue'):
+        graph.warm(states)
+    assert graph.preparing is False and graph.bindings == {} and graph.selected_keys is None
+
+
+def test_paid_subset_snapshot_is_immutable_and_only_selected_keys_may_capture(monkeypatch):
+    policy = {'policy': 'paid-subset-v1', 'keys': [['mtp', 5, 1]], 'evidence_sha256': 'b'*64}
+    graph, states = owner(policy=policy)
+    policy['keys'][0][0] = 'verify'
+    graph._catalogue(states)
+    assert graph.selected_keys == frozenset({('mtp', 5, 1)})
+    record = graph.record()['exact_graph_catalogue']
+    assert record['requested_keys'] == record['selected_keys'] == [['mtp', 5, 1]]
+    assert record['evidence_sha256'] == 'b'*64 and len(record['declined_keys']) == 13
+    assert all(row['reason'] == 'excluded by paid-subset policy' for row in record['declined_keys'])
+    record['selected_keys'][0][0] = 'verify'
+    assert graph.selected_keys == frozenset({('mtp', 5, 1)})
+    graph.preparing = True
+    monkeypatch.setattr(graph, '_agree', lambda *a: pytest.fail('unselected key reached device agreement'))
+    with pytest.raises(RuntimeError, match='selected startup catalogue key'):
+        graph._capture('verify', (5, 1), [(states[0], 0, 5)], graph.dec.buf)
+
+
+def test_subset_warm_eagerly_produces_fresh_target_HC_for_selected_MTP_only_shape(monkeypatch):
+    import torch
+
+    policy = {'policy': 'paid-subset-v1', 'keys': [['mtp', 5, 1], ['verify', 2, 1]], 'evidence_sha256': 'c'*64}
+    graph, states = owner(policy=policy)
+    source = graph.dec.buf
+    source.ple_late = None
+    source.streams = torch.full((10, 2), -999, dtype=torch.float16)
+    events = []
+    def stage(weights, buffers, windows, **kwargs):
+        segs, end = [], 0
+        for state, tokens in windows:
+            segs.append((state, end, end+len(tokens)))
+            end += len(tokens)
+        events.append(('target-stage', end))
+        return segs
+    def reset(segs):
+        events.append(('reset', segs[-1][2]))
+    def forward(role, segs):
+        rows = segs[-1][2]
+        assert (role, rows, len(segs)) in graph.selected_keys
+        events.append(('capture', role, rows))
+        if role == 'verify':
+            source.streams[:rows].fill_(21)
+        return object()
+    def compute(weights, segs, buffers, *, check):
+        assert check is False and buffers is source and segs[-1][2] == 5
+        events.append(('eager-target-HC', 5))
+        source.streams[:5].fill_(51)
+    def mtp_stage(buffers, windows):
+        assert len(windows) == 1 and windows[0][1] == [0]*5
+        assert windows[0][2].data_ptr() == source.streams.data_ptr()
+        assert torch.equal(windows[0][2], torch.full((5, 2), 51, dtype=torch.float16))
+        events.append(('MTP-stage-valid-HC', 5))
+        return [(windows[0][0], 0, 5)]
+    monkeypatch.setattr(graph, '_reset_warm_states', reset)
+    monkeypatch.setattr(graph, 'forward', forward)
+    monkeypatch.setattr(exact_graphs, 'stage', stage)
+    monkeypatch.setattr(exact_graphs, 'compute', compute)
+    monkeypatch.setattr(exact_graphs, 'mtp_stage', mtp_stage)
+    monkeypatch.setattr(exact_graphs, '_kv_check', lambda segs, **kw: events.append(('status', segs[-1][2])))
+    graph.warm(states)
+    assert events == [('reset', 2), ('target-stage', 2), ('capture', 'verify', 2), ('status', 2),
+                      ('reset', 5), ('target-stage', 5), ('eager-target-HC', 5), ('status', 5),
+                      ('reset', 5), ('MTP-stage-valid-HC', 5), ('capture', 'mtp', 5), ('status', 5)]
+    assert not graph.preparing

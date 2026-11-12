@@ -144,6 +144,8 @@ def _graph_receipt(engine):
         raise ValueError("candidate graphs lack required target/MTP capture or exceed their admitted budget")
     return {"requested": bool(requested), "prepared": True, **compact,
             "capture_scope": record["capture_scope"], "capture_during_serving": False,
+            **({"exact_graph_catalogue": record["exact_graph_catalogue"]}
+               if "exact_graph_catalogue" in record else {}),
             "scope": "current prepared/replay counters; no full-model quality or performance acceptance"}
 
 

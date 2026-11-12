@@ -693,6 +693,10 @@ class FlashNextEngine:
                              if self._retention_native_runtime is not None else 0)
         gather = ((lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else
                   (lambda values: gather_ints(torch, self.comm.all_gather, values, world=tp))) if tp > 1 else None
+        exact_graph_policy = None if owner_specification is None else owner_specification.get('exact_graph_policy')
+        self._exact_graph_subset_enabled = (exact_graph_policy is not None and bool(graphs)
+            and owned_graph_request and not managed and self.method_geometry.method in ('none', 'mtp')
+            and not vram_experts and not vision)
         hc_writeback_eligible = (self._owned_expert_requested and graphs is False and dspark_model_dir is None
             and dflash2_model_dir is None and self.sm70_profile == 'reference'
             and (owner_specification is None or owner_specification['graph_family'] == 'uncaptured'
@@ -1749,6 +1753,7 @@ class FlashNextEngine:
                                       prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace,
                                       graphs=graphs, graph_budget=graph_request, hc_graphs=hc_graphs, native_gdn_batch=native_gdn_batch,
                                       **({"native_gdn_capture": True} if native_gdn_capture else {}),
+                                      **({"exact_graph_policy": exact_graph_policy} if exact_graph_policy is not None else {}),
                                       graph_memory_live=(lambda extra: partial(owner_preparation.graph_live_bytes,
                                           additional_outside_active_bytes=extra)) if hc_graphs else None,
                                       graph_header_room=max(0, self.capacity_plan["budget_bytes"]

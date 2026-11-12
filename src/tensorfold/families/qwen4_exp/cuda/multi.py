@@ -75,7 +75,7 @@ class MultiDecoder:
                  graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0,
                  full_windows: int | None = None, execution_rows: int | None = None, memory_live=None,
                  logical_context: int | None = None, hc_graphs: bool = False, graph_memory_live=None,
-                 native_gdn_batch: bool = False, native_gdn_capture: bool = False) -> None:
+                 native_gdn_batch: bool = False, native_gdn_capture: bool = False, exact_graph_policy=None) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         if type(hc_graphs) is not bool:
@@ -89,6 +89,12 @@ class MultiDecoder:
             raise ValueError('native GDN capture requires the private exact owned graph profile')
         if type(native_gdn_batch) is not bool or native_gdn_batch and not native_gdn_capture and (depth != 0 or w.mtp is not None):
             raise ValueError("native GDN batch initially requires independent NONE windows")
+        from .exact_graph_policy import parse_policy
+
+        self.exact_graph_policy = parse_policy(exact_graph_policy)
+        if self.exact_graph_policy is not None and (not graphs
+                or w.meta.get('history_layout') != 'unique' or multi_graphs.capturable(w) is not None):
+            raise ValueError('exact graph subset requires the private exact owned graph profile')
         self.native_gdn_capture = native_gdn_capture
         budget = (multi_graphs.budget_bytes() if graphs or hc_graphs else 0) if graph_budget is ... else graph_budget
         if hc_graphs and not callable(graph_memory_live):

@@ -45,7 +45,10 @@ profile uses explicit PTX8.3 with the real CUDA12.9 compiler. Its ordered FP32 k
 graph replay passed on V100, alongside a Volta MMA dot-product probe. Full-model
 graph startup, quality and performance gates remain open. The optional dense
 owner's worker-start handoff has CPU lifecycle coverage; native/model selection
-is still pending.
+is still pending. A separate private paid-subset graph policy can declare
+which exact keys to capture while retaining ordinary eager execution for other
+shapes. Its model and performance qualification remains pending.
+
 See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece
 boundaries without synchronizing each piece. Those observations can include

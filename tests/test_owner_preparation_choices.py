@@ -92,3 +92,26 @@ def test_late_binding_retirement_failure_poisoning_preserves_primary(monkeypatch
     if containment_fails:
         cause = primary.__cause__
         assert cause is secondary or isinstance(cause, BaseExceptionGroup) and secondary in cause.exceptions
+
+
+def test_exact_graph_subset_is_explicit_and_preserves_default_preparation():
+    from test_exact_graph_policy import policy
+    assert preparation.parse_preparation(spec(exact_graph_policy=None)) == preparation.parse_preparation(spec())
+    selected = preparation.parse_preparation(spec(exact_graph_policy=policy()))
+    assert selected['exact_graph_policy']['keys'] == [['mtp', 1, 1], ['verify', 5, 1]]
+    with pytest.raises(ValueError, match='trial'):
+        preparation.parse_preparation({**spec(exact_graph_policy=policy()), 'trial': False})
+
+
+def test_unavailable_subset_fails_coordinated_contract_before_backend_allocation(monkeypatch):
+    from tensorfold.cuda.sm70 import foundation_headers
+    from test_exact_graph_policy import policy
+    prepared = owner(exact_graph_policy=policy())
+    monkeypatch.setattr(foundation_headers, 'selected_identity', lambda: pytest.fail('unsupported subset reached backend'))
+    monkeypatch.setattr(execution_identity, '_retire_store', lambda *a, **k: None)
+    prepared._phase = lambda engine, name, operation, **kwargs: operation()
+    engine = NS(comm=None, tp=8, _exact_graph_subset_enabled=False)
+    text = dict(num_attention_heads=24, num_key_value_heads=2, hidden_size=2560, head_dim=256)
+    with pytest.raises(ValueError, match='private exact graph'):
+        prepared.prepare(engine, text, NS(identity='q8'), page_tokens=128, device='cpu')
+    assert prepared.before is None and prepared.workspaces == {}
