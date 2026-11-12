@@ -220,6 +220,27 @@ Q8 codec, state/role identity and module checks remain mandatory. This is a
 cold tool correction, with native implementation and sealed inputs unchanged;
 it does not qualify the failed model attempt or replace the fresh model gate.
 
+The fresh frozen Source20 run passed on eight V100s with Triton3.2/PTX8.3 and
+CUDA12.9: TP8/ETP4, panel16, P256/E120, all 24 allocated 262144-token Q8 windows,
+MTP4 and the 10-key paid graph catalogue. The exact role tensor forecast was
+205383960 bytes; cold residency and allocator costs were admitted separately.
+Captured graphs used 848 MiB within the remaining 1245 MiB allowance, preserving
+the original floor and workspace. All 24 placement receipts validated before
+generation and all eight ranks closed with 75 verify/62 MTP serving graph hits.
+Six complete texts and token-ID arrays match the Source19 Triton3.2 TensorFold reference,
+including the 64-token serial/MTP pair. The long Flash MTP request accepted
+31 of 67 drafted tokens; the reference accepted 32 of 70. Matching finite
+outputs does not establish identical intermediate numerics or general quality.
+
+This result binds source UID
+`c4f5ef650c504645b2a50a214eeaab01eae7304fac348908ef8770de0b3add68`, image
+`sha256:9036e2da131ee7ae38f00afa6b9b5ec611454663416df9d6324cbef6c16dbd18`
+and native seal `cf3e318ab62cfae974c2b0ba6fc7fc70ca59fac0650d09da41f834c306135392`.
+The container exited cleanly without OOM or cleanup errors; its GPU contexts
+retired. Actual conditional-score quality, broader workloads, panel selection
+and matched serving performance remain pending. Smoke-request timings are not
+a throughput comparison.
+
 ## DFlash logits graph investigation
 
 The subsequent default-off `dflash_graph=True` constructor candidate changes

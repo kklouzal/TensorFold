@@ -101,6 +101,17 @@ source11 SDK. These are explicit component bindings, not factory-JIT or
 whole-model qualification. Attention normalization/mass representation and
 GDN owner/admission integration remain separate gates.
 
+Flash's frozen Source20 panel16 model subsequently passed bounded TP8/ETP4
+NUMA/MTP4 serving with all 24 full 262144-token Q8 windows and paid graph replay.
+All 24 placement receipts validated before generation, and all eight ranks
+closed with 75 verify/62 MTP hits. Six complete outputs match the Source19 TensorFold
+reference, including the 64-token serial/MTP pair; draft acceptance counts
+differ, so intermediate numerical identity is not claimed. The installed gate
+passed 1570 tests and 235 subtests with one existing Compose availability skip.
+The original Source19 RN-only receipt failure remains retained. Exact source,
+image and seal identities and remaining quality/performance gates are in the
+[Flash validation record](optimization-validation.md#private-sealed-flash-attention-owner).
+
 
 The Triton 3.2.0 candidate retains the last inspected upstream MMAv1/SM70
 implementation. Its isolated SDK profile passes nonroot binding and installed

@@ -111,16 +111,18 @@ closed artifact tree read-only at `/operator/flash-v100`. Each role owns one
 fixed-size compacted primitive, with compute-only ghost tails and live State
 rows. Cold library residency is included before State admission, and worker
 handoff precedes serving. This retains the separate normalized-Half/F32-LSE
-numerical profile and its mass-loss limitation. Earlier native component and
-owner controls do not qualify this preparation/campaign increment or actual
-TP8 model quality, capacity, NUMA or P3. See the
+numerical profile and its mass-loss limitation. Frozen Source20 passed a bounded
+eight-V100 TP8/ETP4 model run with panel16, all 24 full-context Q8 windows,
+MTP4, paid graph replay and all 24 NUMA receipts. Six complete outputs match the
+Source19 TensorFold reference; broader numerical quality and matched P3 remain pending. See the
 [Flash contract](docs/optimization-validation.md#private-sealed-flash-attention-owner).
 
 The private startup receipt now checks the retained Q8 preparation capability
 against the actual RN, ATen or Flash decode owner and its prepared family.
 The first Source19 Flash model attempt stopped at an RN-only receipt guard
 after graph capture; that failure is retained. The correction changes only
-cold qualification metadata validation; a fresh model run remains required.
+cold qualification metadata validation. The subsequent Source20 run passed;
+the failed Source19 record retains its original scope.
 
 See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece
