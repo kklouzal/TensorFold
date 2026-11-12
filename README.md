@@ -1455,6 +1455,14 @@ metadata remain distinct from new-image/native/model qualification; the
 
 A fresh checkout can [stage the six tracked inputs and acquire the two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Native ARM images and the [GB10 checkpoint protocols](docs/gb10-nvfp4-validation.md) passed at their recorded bd1 source; final composed-source qualification remains separate. Older deployment profiles and measured rates retain their own identities.
 
+The ARM64 candidate runtime `e0bdd6b4`, source UID `1c166686`, passed installed
+CPU checks and the selected AEON 26B/DFlash functional, media, cancellation and
+full 262,144-token context protocols on GB10. The original service was restored and
+verified afterward. Balanced P3 evidence and promotion remain pending; current
+AMD64 native qualification is unrun. The
+[ledger](deploy/gb10/foundation-refresh-20261111.md) binds the full image/source,
+profile, receipt hashes and coverage limits.
+
 The earlier qualified 2026-10-06 build used this NVIDIA NGC CUDA DL inference development image:
 
 ```text
@@ -1513,6 +1521,10 @@ docker build --network=none \
   -f deploy/v100/Dockerfile.source-builder \
   -t tensorfold-v100:source-builder-cu1292 .
 ```
+
+The refreshed V100 nightly source compiled in the64-job bootstrap and its exact
+owned05adb fork passed five-path precommit lint/finalization. Final SDK, native
+device/model and performance qualification remain pending in the shared ledger.
 
 That command builds the source producer, not a serving image. Complete the
 source workflow's framework build/export, installed audit and native/model gates

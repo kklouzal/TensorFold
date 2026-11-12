@@ -17,8 +17,11 @@ architectures. The protected installer is pip 26.3. [ARM64 pins](nightly-pins.js
 and [AMD64 pins](nightly-pins-amd64.json) contain their separate authoritative
 child/index references and whole-wheel hashes. The cu134 wheel tag identifies a
 CUDA minor line; actual compiler and loaded-provider evidence establishes the
-selected toolkit patch. New-image/native/model qualification remains pending
-until recorded in the refresh ledger.
+selected toolkit patch. ARM64 candidate `e0bdd6b4` / source UID `1c166686`
+passed installed CPU and selected AEON 26B/DFlash functional/media/cancellation/
+full 262,144-token context checks. Original production was restored; balanced P3 and
+promotion remain pending. AMD64 native execution is unrun. Exact identities and
+coverage limits are recorded in the refresh ledger.
 
 Use the [fresh-checkout input preparation](foundation.md#prepare-the-tracked-selected-inputs)
 to stage the six tracked files and fetch the two native runtime addons from

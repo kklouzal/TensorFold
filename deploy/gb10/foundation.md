@@ -12,6 +12,13 @@ The declared native additions select cuSPARSELt0.10.0.12-1 and NVSHMEM3.8.0-1
 as latest compatible candidates outside the original base package inventory.
 Their documented/source ABI admission and the upstream Python distribution
 metadata remain separate from actual native/provider/model qualification.
+The current GB10 candidate runtime `e0bdd6b4` / source UID `1c166686` has
+separate installed CPU and selected AEON 26B/DFlash functional/media/cancellation/
+full 262,144-token context passes, with exact hashes in the ledger. Original production
+was restored after testing. P3/promotion and AMD64 native qualification remain
+open; these checks do not qualify other model/hardware or NVSHMEM distributed
+execution.
+
 The base supplies the CUDA
 headers, compiler, tools, cuDNN and NCCL. The selected nightly Torch/Triton and
 all their Python dependency versions belong to a separate protected prefix,
