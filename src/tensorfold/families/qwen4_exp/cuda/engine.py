@@ -853,6 +853,25 @@ class FlashNextEngine:
             history_maximum_owners = streams if concurrent else 2
             history_geometry["indexer_raw_device_bytes"] = history_plan.device_bytes_per_layer
         self._indexer_history_plan = history_plan
+        # Local HC readout is a fallback when whole-round capture was declined.
+        # Resolve this cold policy before a numerical owner allocates its arenas.
+        hc_graphs = (requested_graphs and not graphs and concurrent and self._owned_expert_requested
+            and not managed and not self._owned_expert_admin_requested and owner_specification is not None
+            and source_is_gguf and sm70 and tp == 8 and int(depth) == 0 and history_placement is not None
+            and indexer_history == "gpu" and vram_experts is None and not vision
+            and dspark_model_dir is None and dflash2_model_dir is None
+            and self.sm70_profile == "reference"
+            and (owner_specification is None or owner_specification["graph_family"] == "uncaptured")
+            and int(text["hidden_size"]) == 2560 and int(text["num_hidden_layers"]) == 48
+            and int(text.get("hc_count", 4)) == 4 and int(text.get("hc_lowrank", 320)) == 320)
+        if hc_graphs:
+            from .gguf_weights import GGUFDense, GGUFConcat
+
+            hc_graphs = GGUFDense.implementation == GGUFConcat.implementation == "reference"
+        graph_request = multi_graph_request() if concurrent and (graphs or hc_graphs) else 0
+        self._local_hc_readout_requested = bool(hc_graphs and graph_request != 0)
+        self._graph_request = graph_request
+        graph_bytes = (graph_request or 0) if vram_experts is None else 0
         if owner_specification is not None:
             from .owner_preparation import OwnerPreparation
             from .state import ATT_ROWS
@@ -948,22 +967,6 @@ class FlashNextEngine:
                     workers=signature(ReadAhead).parameters["threads"].default, alignment=ALIGN)
         # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
         # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
-        hc_graphs = (requested_graphs and concurrent and self._owned_expert_requested
-            and not managed and not self._owned_expert_admin_requested and owner_preparation is not None
-            and source_is_gguf and sm70 and tp == 8 and int(depth) == 0 and history_placement is not None
-            and indexer_history == "gpu" and vram_experts is None and not vision
-            and dspark_model_dir is None and dflash2_model_dir is None
-            and self.sm70_profile == "reference"
-            and (owner_specification is None or owner_specification["graph_family"] == "uncaptured")
-            and int(text["hidden_size"]) == 2560 and int(text["num_hidden_layers"]) == 48
-            and int(text.get("hc_count", 4)) == 4 and int(text.get("hc_lowrank", 320)) == 320)
-        if hc_graphs:
-            from .gguf_weights import GGUFDense, GGUFConcat
-
-            hc_graphs = GGUFDense.implementation == GGUFConcat.implementation == "reference"
-        graph_request = multi_graph_request() if concurrent and (graphs or hc_graphs) else 0
-        self._graph_request = graph_request
-        graph_bytes = (graph_request or 0) if vram_experts is None else 0
         def target_geometry(text, count=streams):
             if concurrent:
                 return indexed_stream_geometry(text, count, each, KEEP, mtp=mtp, points=POINTS,
@@ -2290,7 +2293,8 @@ class FlashNextEngine:
                             if getattr(getattr(self, "vision", None), "is_media_runtime", False) else None)}
             owned = weights.meta.get("owned_expert_plan")
             if owned is not None:
-                contract["owned_expert_native"] = list(owned.identity)
+                from .owned_experts import wire_identity
+                contract["owned_expert_native"] = wire_identity(owned)
             preparation = getattr(self, "_owner_preparation", None)
             selection = None if preparation is None else preparation.numerical_selection
             if selection is not None:

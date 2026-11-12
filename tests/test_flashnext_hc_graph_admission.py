@@ -259,7 +259,7 @@ def test_original_request_survives_whole_graph_decline_but_no_graphs_stays_off()
 @pytest.mark.parametrize('changes', [dict(owned=False), dict(depth=1), dict(tp=4), dict(vision=True),
                                     dict(history_placement=None), dict(indexer_history='ram'),
                                     dict(owner_specification={'graph_family': 'captured-owner'}),
-                                    dict(admin=True), dict(managed=True), dict(owner_preparation=None),
+                                    dict(admin=True), dict(managed=True), dict(owner_specification=None),
                                     dict(dense='native32'), dict(concat='fused')])
 def test_generic_and_unqualified_callers_preserve_original_route(changes):
     selected = engine_selection(**changes)
@@ -321,9 +321,10 @@ def test_constructor_uses_one_graph_request_authority_and_rejects_two_live_catal
     init = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
     end = next(i for i, n in enumerate(init.body) if isinstance(n, ast.Assign)
                and any(isinstance(t, ast.Name) and t.id == 'budget' for t in n.targets))
-    probe = ast.parse('def call(w, graphs, hc_graphs, graph_budget=..., native_gdn_batch=False):\n    pass').body[0]
+    probe = ast.parse('def call(w, graphs, hc_graphs, graph_budget=..., native_gdn_batch=False, native_gdn_capture=False, exact_graph_policy=None):\n    pass').body[0]
     probe.body = init.body[:end+1]+[ast.Return(value=ast.Name(id='budget', ctx=ast.Load()))]
-    namespace = {'multi_graphs': NS(budget_bytes=lambda: 42)}
+    namespace = {'multi_graphs': NS(budget_bytes=lambda: 42), 'self': NS(),
+                 '__package__': 'tensorfold.families.qwen4_exp.cuda'}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[probe], type_ignores=[])), str(path), 'exec'), namespace)
     w = NS(comm=object(), meta={'execution_provider': 'sm70'})
     assert namespace['call'](w, False, True) == 42
@@ -404,3 +405,22 @@ def test_actual_poison_callback_precedes_engine_cleanup_and_preserves_notificati
         e._close_resources()
     assert events.index('cohort-notify') < events.index('retire') < events.index('workspace-close')
     assert ('comm-close', True) in events and owners[0].closed
+
+
+@pytest.mark.parametrize('whole,expected', [(True, False), (False, True)])
+def test_local_hc_is_only_a_fallback_when_whole_capture_was_declined(whole, expected):
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace
+    source = Path(__file__).resolve().parents[1] / 'src/tensorfold/families/qwen4_exp/cuda/engine.py'
+    tree = ast.parse(source.read_text())
+    expression = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == 'hc_graphs' for target in node.targets)
+                      and isinstance(node.value, ast.BoolOp))
+    scope = dict(requested_graphs=True, graphs=whole, concurrent=True, managed=False,
+        owner_specification={'graph_family': 'uncaptured'}, source_is_gguf=True, sm70=True, tp=8, depth=0,
+        history_placement=object(), indexer_history='gpu', vram_experts=None, vision=False,
+        dspark_model_dir=None, dflash2_model_dir=None,
+        self=SimpleNamespace(_owned_expert_requested=True, _owned_expert_admin_requested=False, sm70_profile='reference'),
+        text={'hidden_size': 2560, 'num_hidden_layers': 48, 'hc_count': 4, 'hc_lowrank': 320})
+    assert bool(eval(compile(ast.Expression(expression), str(source), 'eval'), scope)) is expected

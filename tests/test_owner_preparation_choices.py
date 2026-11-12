@@ -138,3 +138,173 @@ def test_unavailable_native_hc_capture_stops_before_backend_or_allocation(monkey
     with pytest.raises(ValueError, match='private exact graph'):
         prepared.prepare(engine, text, NS(identity='q8'), page_tokens=128, device='cpu')
     assert prepared.before is None and prepared.workspaces == {}
+
+
+def hc_spec():
+    return {'backend':'bitblas-hc','manifest':'/sealed/hc/manifest.json','manifest_sha256':'b'*64,
+            'roles':['decode','prefill']}
+
+
+def test_hc_backend_is_explicit_and_keeps_other_numerics_and_flags():
+    selected=owner(dense_projections=hc_spec(),native_gdn_capture=True,native_hc_writeback_capture=True)
+    identity=selected.numerical_selection['dense_projections']
+    assert identity['scope']=='target-HC-only' and identity['other_linears']=='existing-reference-provider'
+    assert identity['MTP']=='existing-reference-provider'
+    assert identity['sealed_libraries_sha256']=='b'*64
+    assert selected.specification['native_gdn_capture'] and selected.specification['native_hc_writeback_capture']
+    assert selected.identity()['specification']['dense_projections']==hc_spec()
+    from tensorfold.engine.model_identity import canonical_runtime_json
+    assert canonical_runtime_json(selected.identity())
+
+
+@pytest.mark.parametrize('backend',['cublas','cublaslt','cutlass'])
+def test_existing_dense_backends_keep_their_original_factory_and_identity(backend):
+    from tensorfold.families.qwen4_exp.cuda import dense_projections
+    value={**dense_spec(),'backend':backend}
+    module,selection=preparation._dense_backend(value)
+    assert module is dense_projections and selection.as_dict()==value
+    assert owner(dense_projections=value).numerical_selection['dense_projections']==selection.numerical_identity
+
+
+def test_hc_factory_uses_custom_manifest_schema_and_zero_additional_device_temporary():
+    from tensorfold.families.qwen4_exp.cuda import bitblas_hc
+    prepared=owner(dense_projections=hc_spec())
+    backend,selection=preparation._dense_backend(hc_spec())
+    assert backend is bitblas_hc
+    prepared.dense_forecast=backend.forecast(selection,{'hidden_size':2560,'num_hidden_layers':48},prepared.role_rows)
+    prepared.aten_temporary_extra_bytes=17
+    assert prepared.additional_temporary_bytes==17
+    prepared.dense_binding_memory={'committed_delta_bytes':0}
+    assert prepared.additional_temporary_bytes==17
+    for changes in ({'roles':['mtp']},{'geometry':'fixed-m32'},{'manifest_sha256':'wrong'}):
+        with pytest.raises(ValueError):
+            owner(dense_projections={**hc_spec(),**changes})
+    with pytest.raises(ValueError,match='unqualified trial'):
+        preparation.parse_preparation({**spec(dense_projections=hc_spec()),'trial':False})
+
+
+def test_actual_prepare_phase_dispatches_hc_factory_and_journals_before_later_work(monkeypatch):
+    import torch
+
+    from tensorfold.cuda.sm70 import foundation_headers
+    from tensorfold.families.qwen4_exp.cuda import bitblas_hc
+    prepared=owner(dense_projections=hc_spec())
+    calls=[];native=NS(record=lambda:{'HC-only':True})
+    def create(selection,text,role_rows,device,*,world,register):
+        calls.append((selection.as_dict(),dict(role_rows),world));register(native);return native
+    monkeypatch.setattr(bitblas_hc.Owner,'prepare',create)
+    monkeypatch.setattr(foundation_headers,'selected_identity',dict)
+    monkeypatch.setattr(torch.cuda,'synchronize',lambda *a:None)
+    monkeypatch.setattr(torch.cuda,'empty_cache',lambda:None)
+    monkeypatch.setattr(execution_identity,'_retire_store',lambda *a,**k:None)
+    prepared._memory=lambda *a:{'physical_free_bytes':1000000000,'torch_allocated_bytes':0,'torch_reserved_bytes':0}
+    def phase(engine,name,operation,**kwargs):
+        result=operation()
+        if name=='contract':return [result]*8
+        if name=='dense-projections-prepare':raise ValueError('stop after journalled HC phase')
+        pytest.fail('unrelated native workspace work reached')
+    prepared._phase=phase
+    engine=NS(comm=None,tp=8,position_profile=object(),method_geometry=NS(method='mtp'))
+    text={'num_attention_heads':24,'num_key_value_heads':2,'hidden_size':2560,'head_dim':256,'num_hidden_layers':48}
+    with pytest.raises(ValueError,match='journalled HC'):
+        prepared.prepare(engine,text,NS(identity='q8'),page_tokens=128,device='cpu')
+    assert calls==[(hc_spec(),prepared.role_rows,8)] and prepared.dense_owner is native
+    assert prepared.workspaces=={}
+
+
+@pytest.mark.parametrize('valid',[False,True])
+def test_hc_binding_memory_proof_is_required_and_charged_once_before_states(monkeypatch,valid):
+    prepared=owner(dense_projections=hc_spec())
+    memory={'committed_delta_bytes':7 if valid else None,'outside_active_delta_bytes':7 if valid else None}
+    prepared.prepared=True;prepared.outside_active_bytes=11
+    prepared.dense_owner=NS(bind_weights=lambda weights:{'binding_memory':memory})
+    prepared._phase=lambda engine,name,operation,**kwargs:operation()
+    monkeypatch.setattr(execution_identity,'_retire_store',lambda *a,**k:None)
+    if valid:
+        prepared.bind_dense_weights(NS(),NS())
+        assert prepared.outside_active_bytes==18 and prepared.dense_binding_memory==memory
+        with pytest.raises(RuntimeError,match='one live prepared'):
+            prepared.bind_dense_weights(NS(),NS())
+    else:
+        with pytest.raises(ValueError,match='unproven'):
+            prepared.bind_dense_weights(NS(),NS())
+        assert prepared.outside_active_bytes==11 and prepared.dense_binding_memory is None
+
+
+@pytest.mark.parametrize('position,method',[(None,'none'),(None,'mtp'),(object(),'dspark'),(object(),'dflash2')])
+def test_hc_numerics_share_required_bound_none_mtp_guard_before_backend(monkeypatch,position,method):
+    from tensorfold.cuda.sm70 import foundation_headers
+    from tensorfold.families.qwen4_exp.cuda import bitblas_hc
+    prepared=owner(dense_projections=hc_spec())
+    monkeypatch.setattr(bitblas_hc,'forecast',lambda *a,**k:{})
+    monkeypatch.setattr(foundation_headers,'selected_identity',lambda:pytest.fail('HC unsupported region reached backend'))
+    monkeypatch.setattr(execution_identity,'_retire_store',lambda *a,**k:None)
+    prepared._phase=lambda engine,name,operation,**kwargs:operation()
+    engine=NS(comm=None,tp=8,position_profile=position,method_geometry=NS(method=method))
+    text={'num_attention_heads':24,'num_key_value_heads':2,'hidden_size':2560,'head_dim':256}
+    with pytest.raises(ValueError,match='bound NONE/MTP'):
+        prepared.prepare(engine,text,NS(identity='q8'),page_tokens=128,device='cpu')
+    assert prepared.before is None and prepared.dense_owner is None and prepared.workspaces=={}
+
+
+def test_hc_reuses_dense_owner_adoption_handoff_and_close_journal(monkeypatch):
+    from tensorfold.cuda.sm70 import foundation_headers
+    prepared=owner(dense_projections=hc_spec())
+    prepared.prepared=True
+    calls=[]
+    for role in ('decode','prefill'):
+        prepared.workspaces[role]=NS(native_kernel_family=preparation.KERNEL_FAMILY,native_heads_per_block=None,
+            bind_native_states=lambda states,role=role:calls.append(('states',role)),
+            close=lambda role=role:calls.append(('workspace-close',role)))
+    prepared.dense_owner=NS(bound_weights=True,adopt=lambda w,d:calls.append(('HC-adopt',w,d)),
+        handoff_to_current_thread=lambda:calls.append('HC-handoff'),close=lambda:calls.append('HC-close'))
+    monkeypatch.setattr(foundation_headers,'selected_identity',lambda:None)
+    weights=NS(meta={'owner_workspaces':prepared.workspaces})
+    decoder=NS(buf=NS(history_owner=prepared.workspaces['decode'],rows=4),mbuf=None,
+        pbuf=NS(history_owner=prepared.workspaces['prefill'],rows=8),states=[],
+        controller=NS(configure_execution_families=lambda **kwargs:calls.append(('families',kwargs))),
+        apply_execution_family=lambda:calls.append('apply-family'))
+    prepared.adopt(weights,decoder)
+    assert calls[-1]==('HC-adopt',weights,decoder)
+    assert decoder.buf.owner_graphs is None and decoder.pbuf.owner_graphs is None
+    prepared.handoff_to_current_thread()
+    assert calls[-1]=='HC-handoff'
+    prepared.close();prepared.close()
+    assert calls.count('HC-close')==1 and prepared.closed
+
+
+def test_hc_cannot_attach_before_the_shared_prestate_binding_proof(monkeypatch):
+    from tensorfold.cuda.sm70 import foundation_headers
+    prepared=owner(dense_projections=hc_spec());prepared.prepared=True
+    prepared.dense_owner=NS(bound_weights=False,adopt=lambda *args:pytest.fail('unbound HC reached serving'))
+    for role in ('decode','prefill'):
+        prepared.workspaces[role]=NS(native_kernel_family=preparation.KERNEL_FAMILY,native_heads_per_block=None,
+            bind_native_states=lambda states:None)
+    weights=NS(meta={'owner_workspaces':prepared.workspaces})
+    decoder=NS(buf=NS(history_owner=prepared.workspaces['decode'],rows=4),mbuf=None,
+        pbuf=NS(history_owner=prepared.workspaces['prefill'],rows=8),states=[],
+        controller=NS(configure_execution_families=lambda **kwargs:None),apply_execution_family=lambda:None)
+    monkeypatch.setattr(foundation_headers,'selected_identity',lambda:None)
+    with pytest.raises(RuntimeError,match='before State construction'):
+        prepared.adopt(weights,decoder)
+
+
+@pytest.mark.parametrize('backend', ['cublas', 'bitblas-hc'])
+def test_local_hc_readout_cannot_silently_bypass_selected_dense_numerics(monkeypatch, backend):
+    from tensorfold.cuda.sm70 import foundation_headers
+    from tensorfold.families.qwen4_exp.cuda import dense_projections, bitblas_hc
+    selection = (dense_spec() if backend == 'cublas' else
+                 {'backend': backend, 'manifest': '/operator/bitblas-hc/manifest.json',
+                  'manifest_sha256': 'a' * 64, 'roles': ['decode']})
+    prepared = owner(dense_projections=selection)
+    module = dense_projections if backend == 'cublas' else bitblas_hc
+    monkeypatch.setattr(module, 'forecast', lambda *a, **k: {})
+    monkeypatch.setattr(foundation_headers, 'selected_identity', lambda: pytest.fail('unsupported local readout reached backend'))
+    monkeypatch.setattr(execution_identity, '_retire_store', lambda *a, **k: None)
+    prepared._phase = lambda engine, name, operation, **kwargs: operation()
+    engine = NS(comm=None, tp=8, position_profile=object(), method_geometry=NS(method='none'),
+                _local_hc_readout_requested=True)
+    text = dict(num_attention_heads=96, num_key_value_heads=2, hidden_size=2560, head_dim=256)
+    with pytest.raises(ValueError, match='local HCReadoutGraphs'):
+        prepared.prepare(engine, text, NS(identity='q8'), page_tokens=128, device='cpu')
+    assert prepared.before is None and prepared.dense_owner is None

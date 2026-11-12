@@ -207,7 +207,7 @@ def bound_receipt(engine, capability):
     profile = record["profile"]
     onecat_gu = capability.method != "tensorfold"
     frame_bytes, lookup_bytes = (117964800, 11264) if onecat_gu else (0, 0)
-    expected_tables = ("empty", "iq2", "iq3") if onecat_gu else ()
+    expected_tables = ["empty", "iq2", "iq3"] if onecat_gu else []
     expected = {"policy": frame_api.POLICY, "pin": api.PIN, "method": capability.method,
         "down_method": capability.down_method,
         "iq2_source": capability.iq2_source,
@@ -224,7 +224,7 @@ def bound_receipt(engine, capability):
         "frame_ownership": "exclusive decoder worker/current stream; no reentry",
         "original_raw_retained": True, "baseline_grouped_gate_up_rows": 4,
         "tables": expected_tables, "format_banks": {"18": 17, "21": 10, "22": 20, "23": 1},
-        "qualification": "private-unqualified", "selector": capability.identity,
+        "qualification": "private-unqualified", "selector": list(capability.identity),
         "gu_module": owner.gu.module.__name__, "down_module": owner.down.module.__name__,
         "packer_module": owner.packer.module.__name__ if onecat_gu else None,
         "raw_iq2_gu_module": None if owner.raw_iq2_gu is None else owner.raw_iq2_gu.module.__name__,
@@ -276,7 +276,7 @@ def bound_receipt(engine, capability):
                 or not table.is_contiguous() or size and table.untyped_storage().data_ptr() == pointer):
             raise ValueError("1Cat lookup metadata differs")
     bindings = record["raw_bindings"]
-    if type(bindings) is not tuple or len(bindings) != 48:
+    if type(bindings) is not list or len(bindings) != 48:
         raise ValueError("1Cat requires 48 ordered raw descriptor bindings")
     formats = {18: 0, 21: 0, 22: 0, 23: 0}
     for index, layer in enumerate(w.layers):

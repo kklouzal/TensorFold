@@ -14,6 +14,18 @@ if _GROUPED_DOWN not in ("inherit", "grouped-v1"):
     raise ValueError("TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN requires inherit or grouped-v1")
 
 
+def wire_identity(plan):
+    """Adapt the hashable plan key to JSON without changing its internal identity.
+
+    A OneCat plan ends in one flat selector tuple; other plan fields are scalar.
+    Unknown values remain untouched for the strict runtime validator to reject.
+    """
+    result = list(plan.identity)
+    if result and type(result[-1]) is tuple:
+        result[-1] = list(result[-1])
+    return result
+
+
 @dataclass(frozen=True)
 class Plan:
     partition: ExpertPartition
@@ -92,7 +104,7 @@ class Plan:
             down_scratch = target_scratch + prefill_scratch
         experiment = {} if self._gate_up is None else {"grouped_gate_up_rows": self._gate_up.rows}
         if self._onecat:
-            experiment = {"onecat_gu_selector": self._gate_up.identity,
+            experiment = {"onecat_gu_selector": list(self._gate_up.identity),
                           "reference_grouped_gate_up_rows": 4,
                           "decode_panel_rows": 32,
                           "prefill_expert_implementation": self._gate_up.prefill_method,

@@ -47,7 +47,9 @@ class Selection:
 
     @property
     def numerical_identity(self):
-        return {'policy':POLICY,'geometry':'fixed-m32','roles':list(self.roles),
+        return {'policy':POLICY,'backend':'bitblas-hc','geometry':'fixed-m32','roles':list(self.roles),
+                'scope':'target-HC-only','other_linears':'existing-reference-provider',
+                'sealed_libraries_sha256':self.manifest_sha256,
                 'HC_decode_partials':'float32','HC_prefill_and_up':'explicit-float32-to-half-copy',
                 'MTP':'existing-reference-provider'}
 
@@ -90,9 +92,20 @@ def forecast(selection, text, role_rows, *, world=8):
     if tensors >= (1 << 63) or any(v['program_step_reference_bound'] >= (1 << 63) for v in roles.values()):
         raise ValueError('HC resource arithmetic exceeds its supported range')
     return {'roles': roles, 'padded_inject_weights': 96, 'padded_weight_bytes': padded,
-            'tensor_bytes': tensors, 'bound_HC_faces': 194, 'original_HC_weight_faces':290, 'padded_weight_views':96, 'native_libraries': 3,
+            'tensor_bytes': tensors, 'cold_temporary_bytes':0, 'future_temporary_bytes':0, 'bound_HC_faces': 194, 'original_HC_weight_faces':290, 'padded_weight_views':96, 'native_libraries': 3,
             'host_catalogue': 'finite row-program/view/reference bounds; Python/native metadata residency measured cold',
             'opaque_residency': 'loaded ELF/CUDA runtime and host Tensor metadata measured before service admission'}
+
+
+def binding_memory(before,after):
+    active=after['torch_allocated_bytes']-before['torch_allocated_bytes']
+    reserved=after['torch_reserved_bytes']-before['torch_reserved_bytes']
+    physical=before['physical_free_bytes']-after['physical_free_bytes']
+    outside=physical-reserved
+    return {'before':before,'after':after,
+            'committed_delta_bytes':active+outside if active>=0 and outside>=0 else None,
+            'outside_active_delta_bytes':outside if active>=0 and outside>=0 else None,
+            'scope':'isolated post-weight/pre-State binding, fixed kernel/Half-copy warmup; noisy deltas cannot admit States'}
 
 
 def _plain(value):
@@ -237,12 +250,38 @@ class Owner:
             if (actual != self.resources['tensor_bytes'] or len(self._bindings) != self.resources['bound_HC_faces']
                     or len(self._weights) != self.resources['padded_inject_weights']):
                 raise MemoryError('HC actual weight/scratch inventory differs from its funded forecast')
+            # The fixed exported kernels have no weight-dependent planning.
+            # Resolve each actual kernel and its explicit Half publication code
+            # once per arena before States, with paid scratch and original W.
+            first = hcs[0]
+            warm = (('hc-down',self._bindings[first.down].weights[0]),
+                    ('hc-inject',self._bindings[first.down].weights[1]),
+                    ('hc-up',self._bindings[first.up].weights[0]))
+            for execution_role,arena in self._arenas.items():
+                for role, weight in warm:
+                    kernel = self._kernels[role]
+                    m,n,k = kernel.dimensions
+                    source = arena['input'][:m*k].view(m,k)
+                    output = arena['output'][:m*n].view(m,n)
+                    library.call_library(kernel,source,weight,output,torch)
+                    arena['input'][:m*n].view(m,n).copy_(output)
+                    if role != 'hc-up':
+                        # Match the runtime320+4 publication strides/dtypes,
+                        # including cropped inject8->4, before States exist.
+                        storage = arena['partial'] if execution_role == 'decode' else arena['input']
+                        joined = storage[:32*324].view(32,324)
+                        if role == 'hc-down':
+                            joined[:,:320].copy_(output)
+                            if execution_role == 'decode':
+                                storage[:32*320].view(32,320).copy_(output)
+                        else:
+                            joined[:,320:324].copy_(output[:,:4])
+                    arena['input'].zero_()
             torch.cuda.synchronize(self.device)
         # Retain original wrappers/weight owners as well as each borrowed Tensor.
         self._hcs = hcs
         self.bound_weights = True
-        self.binding_memory = {'before': before, 'after': self._memory(),
-                               'scope': 'cold original-weight binding plus immutable inject copies'}
+        self.binding_memory = binding_memory(before,self._memory())
         return self.record()
 
     def adopt(self, weights, decoder):

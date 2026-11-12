@@ -219,3 +219,23 @@ Engine already supported exact `OneCatGU`. The corrected adapter admits the
 same two exact owned types and preserves nonowned/subclass/duck-type refusals.
 Its57 CPU adapter/selection/tool controls pass. A new installed model run is
 required; the original failure remains evidence.
+
+
+The next maximal 1Cat trial passed family admission and real native factory
+builds, then stopped before serving because its preparation selector was a
+tuple under the strict runtime JSON protocol. Explicit preparation, profile,
+resource and receipt wire fields now use lists; internal selector and plan
+identities remain hashable tuples. The strict serializer and typed validation
+remain unchanged, and actual producer/consumer controls cover all20 selectors.
+A corrected installed trial remains required before 1Cat qualification.
+
+The private `preparation.dense_projections` backend `bitblas-hc` uses its sealed
+manifest/SHA and target roles, with all other linears and MTP on their existing
+providers. Campaign settings supply `bitblas_hc_exports`; the exact ten-file
+bundle is validated from the frozen stdlib helper, copied under read-only
+`/operator/bitblas-hc`, and revalidated before native loading. Inject padding,
+row scratch and copy-kernel residency are funded before State construction.
+Local HC readout graphs are explicitly incompatible with selected dense
+numerics because they clone reference matrices. Whole-round capture and the
+local fallback are now mutually exclusive; no numerical provider is silently
+substituted. Model, quality and P3 checks remain pending.

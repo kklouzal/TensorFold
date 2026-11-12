@@ -298,7 +298,7 @@ class OneCatOwner:
                 from tensorfold.cuda.sm70 import onecat_moe_down
 
                 self.q8_down = onecat_moe_down.prepare(self.device)
-            return {"policy": POLICY, "selector": self.spec.identity,
+            return {"policy": POLICY, "selector": list(self.spec.identity),
                     "gu_module": self.gu.module.__name__, "down_module": self.down.module.__name__,
                     "q8_down_module": None if self.q8_down is None else self.q8_down.module.__name__,
                     "down_method": self.spec.down_method, "iq2_source": self.spec.iq2_source,
@@ -356,7 +356,7 @@ class OneCatOwner:
             "global_host_credit_bytes": self.spec.global_host_bytes,
             "max_host_chunk_payload_bytes_per_rank": host_chunk,
             "original_raw_retained": True, "baseline_grouped_gate_up_rows": 4,
-            "tables": tuple(sorted(groups)),
+            "tables": sorted(groups),
             "format_banks": {str(kind): sum(item[2] == kind for item in descriptors) for kind in _KINDS},
             "qualification": "private-unqualified"}
         return self.forecast_record
@@ -430,7 +430,7 @@ class OneCatOwner:
     def profile(self):
         if not self.complete:
             raise RuntimeError("incomplete 1Cat provider has no positive profile")
-        return {**self.forecast_record, "selector": self.spec.identity,
+        return {**self.forecast_record, "selector": list(self.spec.identity),
                 "gu_module": self.gu.module.__name__, "down_module": self.down.module.__name__,
                 "down_method": self.spec.down_method,
                 "q8_down_module": None if self.q8_down is None else self.q8_down.module.__name__,
@@ -440,7 +440,7 @@ class OneCatOwner:
     def record(self):
         return {"profile": self.profile(), "partition": self.descriptors[0][1].identity(),
                 "source_planes_sha256": self.source_planes_sha256,
-                "source_planes": tuple(s.receipt for s in self.sinks),
+                "source_planes": [s.receipt for s in self.sinks],
                 "loading_phase_before": self.phase_before, "loading_phase_after": self.phase_after,
                 "phase_scope": "whole weight load; not exact plane physical bytes",
                 "closed": self.lease.closed, "enabled": self.lease.enabled}

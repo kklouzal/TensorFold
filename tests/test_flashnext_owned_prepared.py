@@ -204,7 +204,8 @@ def startup_policy_probe(*, dflash=False, dspark=False, hidden=256):
                      execution_rows=None, source_is_gguf=True, tp=8, expert_tensor_parallel_size=4,
                      dspark_model_dir="draft" if dspark else None, dflash2_model_dir="draft" if dflash else None,
                      text={"hidden_size": hidden, "num_experts_per_tok": 10},
-                     chunk=64, PREFILL_ROWS=2048, stock_mtp=False, hc_writeback_eligible=False)
+                     chunk=64, PREFILL_ROWS=2048, stock_mtp=False, hc_writeback_eligible=False,
+                     native_hc_requested=False, native_hc_capture=False)
     exec(compile(ast.fix_missing_locations(ast.Module(body=[probe], type_ignores=[])), str(path), "exec"), namespace)
     return namespace["probe"]
 

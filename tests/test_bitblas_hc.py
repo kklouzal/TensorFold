@@ -155,3 +155,13 @@ def test_owner_receipt_uses_strict_json_lists_for_native_geometry():
     record=owner.record()
     assert record['native_libraries']['hc-down']['dimensions']==[32,320,10240]
     assert canonical_runtime_json(record)
+
+
+@pytest.mark.parametrize('active,reserved,physical,committed,outside',
+                         [(0,0,0,0,0),(0,0,1024,1024,1024),(128,256,512,384,256),
+                          (-1,0,0,None,None),(0,128,0,None,None),(0,0,-1,None,None)])
+def test_binding_residency_preserves_absolute_admission_and_noise_refusal(active,reserved,physical,committed,outside):
+    before={'torch_allocated_bytes':100,'torch_reserved_bytes':200,'physical_free_bytes':1000}
+    after={'torch_allocated_bytes':100+active,'torch_reserved_bytes':200+reserved,'physical_free_bytes':1000-physical}
+    memory=hc.binding_memory(before,after)
+    assert memory['committed_delta_bytes']==committed and memory['outside_active_delta_bytes']==outside

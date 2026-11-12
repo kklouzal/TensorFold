@@ -75,7 +75,7 @@ class OneCatFrameOwner(OneCatOwner):
             "packing_policy": "once-per-prefill-layer-union; decode-per-panel",
             "frame_ownership": "exclusive decoder worker/current stream; no reentry",
             "original_raw_retained": True, "baseline_grouped_gate_up_rows": 4,
-            "tables": tuple(sorted(groups)),
+            "tables": sorted(groups),
             "format_banks": {str(kind): sum(item[2] == kind for item in descriptors) for kind in self.views},
             "qualification": "private-unqualified"}
         return self.forecast_record
@@ -154,7 +154,7 @@ class OneCatFrameOwner(OneCatOwner):
     def profile(self):
         if not self.complete:
             raise RuntimeError("incomplete GPU frame has no positive profile")
-        return {**self.forecast_record, "selector": self.spec.identity,
+        return {**self.forecast_record, "selector": list(self.spec.identity),
                 "gu_module": self.gu.module.__name__, "down_module": self.down.module.__name__,
                 "packer_module": None if self.packer is None else self.packer.module.__name__,
                 "q8_down_module": None if self.q8_down is None else self.q8_down.module.__name__,
@@ -162,7 +162,7 @@ class OneCatFrameOwner(OneCatOwner):
 
     def record(self):
         return {"schema": "tensorfold.onecat-active-frame-owner-v1", "profile": self.profile(),
-                "partition": self.descriptors[0][1].identity(), "raw_bindings": tuple(self.raw_bindings),
+                "partition": self.descriptors[0][1].identity(), "raw_bindings": list(self.raw_bindings),
                 "frame": {"bytes": self.frame.numel(), "device": str(self.frame.device),
                           "dtype": str(self.frame.dtype), "storage_pointer_local_only": self.frame.untyped_storage().data_ptr()},
                 "packing_scope": "active experts repacked per layer; inactive bytes are not initialized/observed",

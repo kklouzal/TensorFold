@@ -76,6 +76,8 @@ def test_shared_frame_views_exact_allocation_raw_binding_and_no_false_hashes(mon
     assert len(fences) == 1 and owner.complete
     owner.adopt(owner.spec)
     record = owner.record()
+    from tensorfold.engine.model_identity import canonical_runtime_json
+    canonical_runtime_json(record, max_bytes=4 << 20)
     assert record["schema"] == "tensorfold.onecat-active-frame-owner-v1"
     assert record["frame"]["bytes"] == 117_964_800
     assert len(record["raw_bindings"]) == 48
@@ -136,7 +138,7 @@ def test_tensorfold_gu_has_no_packing_residency_and_explicit_down_selection():
     owner = OneCatFrameOwner(spec, 'cpu')
     profile = owner.forecast(proto, 32 << 20)
     assert profile['additional_device_bytes'] == profile['frame_slab_bytes'] == profile['shared_lookup_bytes'] == 0
-    assert profile['tables'] == ()
+    assert profile['tables'] == []
     assert profile['down_format_policy'] == {'20': 'onecat-q8-slots', '42': 'tensorfold'}
     assert profile['mtp_provider'] == 'tensorfold-fp32-mtp'
     assert spec.identity[-2:] == ('down', 'onecat-q8-slots')

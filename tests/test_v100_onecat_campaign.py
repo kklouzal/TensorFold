@@ -1,14 +1,131 @@
 """Campaign artifact boundaries; no Docker, SDK or GPU emulation."""
-import json
-import hashlib
 import copy
-from pathlib import Path
+import hashlib
+import json
 import subprocess
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tools import v100_onecat_campaign as campaign
+
+
+class HCExportStagingTests(unittest.TestCase):
+    def prepare(self, root):
+        from tests.test_bitblas_library import manifest
+
+        frozen = root / "frozen"
+        relative = "src/tensorfold/cuda/sm70/bitblas_library.py"
+        helper = frozen / "source" / relative
+        helper.parent.mkdir(parents=True)
+        helper.write_bytes((Path(campaign.__file__).parent.parent / relative).read_bytes())
+        helper.chmod(0o444)
+        source = {"source_uid": "c" * 64,
+                  "files": {relative: {"type": "file", **campaign.identity(helper)}}}
+        exports = root / "exports"
+        exports.mkdir()
+        path, _ = manifest(exports)
+        sha = campaign.identity(path)["sha256"]
+        settings = {**ModelArmTests().settings(), "bitblas_hc_exports": str(exports)}
+        profile = {"preparation": {"dense_projections": {
+            "backend": "bitblas-hc", "manifest": "/operator/bitblas-hc/manifest.json",
+            "manifest_sha256": sha, "roles": ["decode", "prefill"]}}}
+        return frozen, source, settings, profile
+
+    def test_sealed_closure_uses_frozen_stdlib_validator_and_copies_readonly(self):
+        from tensorfold.cuda.sm70 import bitblas_library
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frozen, source, settings, profile = self.prepare(root)
+            with patch("ctypes.CDLL", side_effect=AssertionError("native load")), \
+                    patch.dict(sys.modules, {"torch": None}), \
+                    patch.object(bitblas_library, "hc_manifest", side_effect=AssertionError("live helper")):
+                bundle = campaign._hc_exports(frozen, source, settings, profile)
+                operator = root / "operator"
+                operator.mkdir()
+                receipt = campaign._stage_hc_exports(bundle, operator)
+            self.assertEqual(receipt["closure_files"], 10)
+            self.assertEqual(receipt["files"], receipt["copied_files"])
+            self.assertEqual(receipt["validator"]["source_uid"], source["source_uid"])
+            self.assertEqual(receipt["payload_bytes"], sum(v["bytes"] for v in receipt["files"].values()))
+            for path in (operator / "bitblas-hc").rglob("*"):
+                self.assertEqual(path.stat().st_mode & 0o777, 0o555 if path.is_dir() else 0o444)
+            self.assertEqual((operator / "bitblas-hc").stat().st_mode & 0o777, 0o555)
+            self.assertEqual(campaign.model_arguments(settings, ModelArmTests().plan()),
+                             campaign.model_arguments(ModelArmTests().settings(), ModelArmTests().plan()))
+
+    def test_missing_unused_and_wrong_runtime_binding_fail_before_staging(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frozen, source, settings, profile = self.prepare(root)
+            for supplied, declared in [(settings, {}), (ModelArmTests().settings(), profile),
+                                      (settings, {"preparation": {"dense_projections": {
+                                          **profile["preparation"]["dense_projections"], "manifest": "/host/manifest.json"}}})]:
+                with self.subTest(supplied=supplied, declared=declared), self.assertRaises(ValueError):
+                    campaign._hc_exports(frozen, source, supplied, declared)
+            self.assertIsNone(campaign._hc_exports(frozen, source, ModelArmTests().settings(), {}))
+
+    def test_extra_entries_symlinks_stale_seal_and_changed_validator_are_refused(self):
+        for defect in ("extra", "file-link", "directory-link", "root-link", "seal", "validator"):
+            with self.subTest(defect=defect), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                frozen, source, settings, profile = self.prepare(root)
+                exports = Path(settings["bitblas_hc_exports"])
+                if defect == "extra":
+                    (exports / "unlisted").write_text("extra")
+                elif defect == "file-link":
+                    file = exports / "hc-down/library.so"
+                    file.rename(root / "outside.so")
+                    file.symlink_to(root / "outside.so")
+                elif defect == "directory-link":
+                    (exports / "hc-down").rename(root / "outside")
+                    (exports / "hc-down").symlink_to(root / "outside", target_is_directory=True)
+                elif defect == "root-link":
+                    (root / "link").symlink_to(exports, target_is_directory=True)
+                    settings["bitblas_hc_exports"] = str(root / "link")
+                elif defect == "seal":
+                    profile["preparation"]["dense_projections"]["manifest_sha256"] = "0" * 64
+                else:
+                    helper = frozen / "source/src/tensorfold/cuda/sm70/bitblas_library.py"
+                    helper.chmod(0o644)
+                    helper.write_text("raise AssertionError('changed validator executed')")
+                with self.assertRaises(ValueError):
+                    campaign._hc_exports(frozen, source, settings, profile)
+
+    def test_source_growth_after_validation_stops_bounded_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frozen, source, settings, profile = self.prepare(root)
+            bundle = campaign._hc_exports(frozen, source, settings, profile)
+            with (Path(settings["bitblas_hc_exports"]) / "hc-down/library.so").open("ab") as stream:
+                stream.write(b"x")
+            operator = root / "operator"
+            operator.mkdir()
+            with self.assertRaisesRegex(ValueError, "grew during bounded copy"):
+                campaign._stage_hc_exports(bundle, operator)
+
+    def test_copied_payload_is_validated_again_before_sealing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            frozen, source, settings, profile = self.prepare(root)
+            bundle = campaign._hc_exports(frozen, source, settings, profile)
+            operator = root / "operator"
+            operator.mkdir()
+            validate = campaign._hc_closure
+
+            def corrupt_copy(directory, library, seal):
+                if directory == operator / "bitblas-hc":
+                    file = directory / "hc-up/library.so"
+                    file.chmod(0o644)
+                    file.write_bytes(b"x" * file.stat().st_size)
+                return validate(directory, library, seal)
+
+            with patch.object(campaign, "_hc_closure", side_effect=corrupt_copy), \
+                    self.assertRaisesRegex(ValueError, "artifact bytes changed"):
+                campaign._stage_hc_exports(bundle, operator)
 
 
 class SourceCaptureTests(unittest.TestCase):

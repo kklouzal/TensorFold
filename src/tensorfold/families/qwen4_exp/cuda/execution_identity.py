@@ -187,7 +187,8 @@ def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context, pr
                     or owned.partition.world != engine.tp or plan.tp != (engine.rank, engine.tp)
                     or owned.hidden != plan.config.hidden):
                 raise ValueError("dense DFlash pairing requires a validated matching target-only owned expert plan")
-            numerics["owned_expert_native"] = list(owned.identity)
+            from .owned_experts import wire_identity
+            numerics["owned_expert_native"] = wire_identity(owned)
         prepared = prepare_pairing_inputs(manifest, files=files, target_config=target_config, draft_plan=plan,
             context=context, kv_identity=engine.kv_pair.identity, target_numerics=numerics)
         from tensorfold.token_metadata import tokenizer_override
@@ -368,7 +369,8 @@ def _runtime(engine, *, previous_topology=None):
     owned = engine.w.meta.get("owned_expert_plan")
     if owned is not None:
         # The immutable prepared identity has a declared JSON-array encoding.
-        numerics["owned_expert_native"] = list(owned.identity)
+        from .owned_experts import wire_identity
+        numerics["owned_expert_native"] = wire_identity(owned)
     preparation = getattr(engine, "_owner_preparation", None)
     selection = None if preparation is None else preparation.numerical_selection
     if selection is not None:

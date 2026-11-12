@@ -42,6 +42,15 @@ class ArithmeticRequest:
         return cls(value['graph_budget_bytes'], value['policy'])
 
 
+def _dense_backend(value):
+    """Cold explicit dispatch; HC has its own finite manifest/role contract."""
+    if type(value) is dict and value.get('backend') == 'bitblas-hc':
+        from . import bitblas_hc as backend
+    else:
+        from . import dense_projections as backend
+    return backend, backend.Selection.parse(value)
+
+
 def parse_preparation(value):
     if value is None:
         return None
@@ -80,8 +89,7 @@ def parse_preparation(value):
         raise ValueError('ATen tile credits require their explicit attention family')
     dense = None
     if value.get('dense_projections') is not None:
-        from .dense_projections import Selection
-        dense = Selection.parse(value['dense_projections'])
+        _, dense = _dense_backend(value['dense_projections'])
     if dense is not None and not value['trial']:
         raise ValueError('dense projection selection is an explicit unqualified trial')
     from .exact_graph_policy import parse_policy
@@ -199,11 +207,10 @@ class OwnerPreparation:
             baseline = attention_temporary_bytes(contract['heads'] // engine.tp, contract['head_dim'])
             self.aten_temporary_extra_bytes = max(0, max(
                 row['operator_temporary_bytes'] for row in self.aten_requirements.values()) - baseline)
-        dense_selection = None
+        dense_selection = dense_backend = None
         if self.specification.get('dense_projections') is not None:
-            from .dense_projections import Selection, forecast
-            dense_selection = Selection.parse(self.specification['dense_projections'])
-            self.dense_forecast = forecast(dense_selection, text, self.role_rows, world=engine.tp)
+            dense_backend, dense_selection = _dense_backend(self.specification['dense_projections'])
+            self.dense_forecast = dense_backend.forecast(dense_selection, text, self.role_rows, world=engine.tp)
         primary = None
         try:
             def prepared_contract():
@@ -222,6 +229,8 @@ class OwnerPreparation:
                 if self.specification.get('native_hc_writeback_capture', False) and not getattr(
                         engine, '_native_hc_writeback_capture_enabled', False):
                     raise ValueError('native HC writeback capture requires the fixed private exact graph region')
+                if dense_selection is not None and getattr(engine, '_local_hc_readout_requested', False):
+                    raise ValueError('dense projection trials do not cover local HCReadoutGraphs')
                 self.source_foundation = selected_identity()
                 if self.reference_tiles_requested:
                     from tensorfold.cuda.sm70.reference_owner_tiles import prepare
@@ -253,8 +262,7 @@ class OwnerPreparation:
             self.before = self._memory(torch, device)
             if dense_selection is not None:
                 def dense_prepare():
-                    from .dense_projections import Owner
-                    owner = Owner.prepare(dense_selection, text, self.role_rows, device, world=engine.tp,
+                    owner = dense_backend.Owner.prepare(dense_selection, text, self.role_rows, device, world=engine.tp,
                         register=lambda owner: setattr(self, 'dense_owner', owner))
                     return owner.record()
                 self._phase(engine, 'dense-projections-prepare', dense_prepare, may_refuse=False)
@@ -445,8 +453,8 @@ class OwnerPreparation:
                 'key_capacity_policy': 'fixed2051-mask-v1', 'local_output': 'normalized-half',
                 'global_merge': 'ordered-float-lse-weights-v1'}
         if self.specification.get('dense_projections') is not None:
-            from .dense_projections import Selection
-            selected['dense_projections'] = Selection.parse(self.specification['dense_projections']).numerical_identity
+            _, selected_dense = _dense_backend(self.specification['dense_projections'])
+            selected['dense_projections'] = selected_dense.numerical_identity
         return selected or None
 
     @property

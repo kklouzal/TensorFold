@@ -53,7 +53,11 @@ which exact keys to capture while retaining ordinary eager execution for other
 shapes. Its model and performance qualification remains pending. An additional
 private HC writeback capture trial reuses the existing native modes0/3 operator
 only inside exact decode captures; its eager and prefill paths retain Torch.
-Component capture controls pass; model and performance gates remain pending.
+Component capture controls pass; model and performance gates remain pending. The private
+`bitblas-hc` dense selector now binds the sealed HC-only reference through the
+same prepared-owner lifecycle, with a read-only ten-file operator bundle.
+Its model and performance selection remains pending.
+
 
 The private `aten-cutlass-q8-normalized-lse-owner-v1` attention trial now has
 an opt-in owner integration: bounded Q8/QSA gather, fixed masked2051-key panels,

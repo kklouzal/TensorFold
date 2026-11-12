@@ -128,7 +128,7 @@ def fixture(rank=0, method="tensorfold-fp32-epilogue", depth=0, down_method="ten
         "packing_policy": "once-per-prefill-layer-union; decode-per-panel",
         "frame_ownership": "exclusive decoder worker/current stream; no reentry",
         "original_raw_retained": True, "baseline_grouped_gate_up_rows": 4,
-        "tables": ("empty", "iq2", "iq3") if onecat_gu else (), "format_banks": dict(Counter(map(str, kinds))),
+        "tables": ["empty", "iq2", "iq3"] if onecat_gu else [], "format_banks": dict(Counter(map(str, kinds))),
         "qualification": "private-unqualified"}
     mtp = None
     resources = {"onecat_weight_residency": owner.profile()}

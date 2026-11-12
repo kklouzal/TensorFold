@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
 import subprocess
@@ -21,6 +21,7 @@ import time
 import tomllib
 import uuid
 import zipfile
+from pathlib import Path
 
 if __package__:
     from .v100_short_container import OwnedContainer
@@ -515,8 +516,12 @@ def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_event
     required = {"gpus", "models_root", "target", "mtp", "profile_manifest", "matrix_plan", "cache",
                 "gu", "down", "device_budget_bytes", "global_host_bytes", "max_waiting_input_bytes",
                 "prefill_rows", "mtp_confidence", "execution_rows", "graphs", "iq2_source", "prefill_method"}
-    if type(settings) is not dict or set(settings) != required:
+    if (type(settings) is not dict or required - set(settings)
+            or set(settings) - required - {"bitblas_hc_exports"}):
         raise ValueError("model arm requires the complete explicit campaign settings")
+    if "bitblas_hc_exports" in settings and (type(settings["bitblas_hc_exports"]) is not str
+                                            or not settings["bitblas_hc_exports"]):
+        raise ValueError("BitBLAS HC exports require an explicit host directory")
     devices = settings["gpus"]
     if (type(devices) is not list or len(devices) != 8 or len(set(devices)) != 8
             or any(type(value) is not str or not value or "," in value for value in devices)):
@@ -785,6 +790,109 @@ def cublas_workspace_configuration(selection):
             "scope": "unchanged selected image environment" if selection == "inherit" else "explicit diagnostic runtime configuration"}
 
 
+def _hc_closure(directory, library, expected_sha256):
+    """The sealed producer owns schema/content validation; the campaign owns the exact file tree."""
+    def children(path, expected):
+        if path.is_symlink() or not stat.S_ISDIR(path.stat().st_mode):
+            raise ValueError("BitBLAS HC export directory must be regular and nonsymlink")
+        names = set()
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if len(names) == len(expected) or entry.name not in expected:
+                    raise ValueError("BitBLAS HC export closure contains extra entries")
+                names.add(entry.name)
+        if names != expected:
+            raise ValueError("BitBLAS HC export closure is incomplete")
+
+    children(directory, {"manifest.json", *library.HC_KERNELS})
+    root = directory.resolve(strict=True)
+    files = [Path("manifest.json")]
+    for role in library.HC_KERNELS:
+        children(directory / role, {"generated.cu", "library.so", "bounds.json"})
+        files.extend(Path(role) / name for name in ("generated.cu", "library.so", "bounds.json"))
+    for relative in files:
+        path = directory / relative
+        if (path.is_symlink() or not stat.S_ISREG(path.stat().st_mode)
+                or not path.resolve(strict=True).is_relative_to(root)):
+            raise ValueError("BitBLAS HC export must be a regular nonsymlink file inside its closure")
+    library.hc_manifest(root / "manifest.json", expected_sha256)
+    return {str(name): library.file_identity(directory / name) for name in files}
+
+
+def _hc_exports(root, source, settings, profile):
+    if type(profile) is not dict or type(profile.get("preparation", {})) is not dict:
+        raise ValueError("execution profile preparation must be an object")
+    preparation = profile.get("preparation") or {}
+    dense = preparation.get("dense_projections") or {}
+    if type(dense) is not dict:
+        raise ValueError("dense projection preparation must be an object")
+    if dense.get("backend") != "bitblas-hc":
+        if "bitblas_hc_exports" in settings:
+            raise ValueError("unused BitBLAS HC exports require the bitblas-hc preparation backend")
+        return None
+    if "bitblas_hc_exports" not in settings:
+        raise ValueError("bitblas-hc preparation requires its host export bundle")
+    if dense.get("manifest") != "/operator/bitblas-hc/manifest.json":
+        raise ValueError("BitBLAS HC profile must bind /operator/bitblas-hc/manifest.json")
+    relative = "src/tensorfold/cuda/sm70/bitblas_library.py"
+    expected = source["files"][relative]
+    path = root / "source" / relative
+    if (expected["type"] != "file" or path.is_symlink() or not path.is_file()
+            or path.stat().st_size != expected["bytes"]):
+        raise ValueError("frozen BitBLAS manifest validator differs")
+    with path.open("rb") as stream:
+        code = stream.read(expected["bytes"] + 1)
+    if len(code) != expected["bytes"] or hashlib.sha256(code).hexdigest() != expected["sha256"]:
+        raise ValueError("frozen BitBLAS manifest validator differs")
+    name = "_tensorfold_campaign_hc_" + uuid.uuid4().hex
+    spec = importlib.util.spec_from_file_location(name, path)
+    library = importlib.util.module_from_spec(spec)
+    sys.modules[name] = library
+    try:
+        # Execute only the bounded bytes authenticated by the frozen source inventory, never export contents.
+        exec(compile(code, str(path), "exec"), library.__dict__)  # noqa: S102
+    finally:
+        del sys.modules[name]
+    directory = Path(settings["bitblas_hc_exports"])
+    if directory.is_symlink():
+        raise ValueError("BitBLAS HC export directory cannot be a symlink")
+    directory = directory.resolve(strict=True)
+    files = _hc_closure(directory, library, dense.get("manifest_sha256"))
+    return {"directory": directory, "library": library, "files": files,
+            "manifest_sha256": dense["manifest_sha256"],
+            "validator": {"source_uid": source["source_uid"], "path": relative,
+                          **{key: expected[key] for key in ("bytes", "sha256")}}}
+
+
+def _stage_hc_exports(bundle, operator):
+    destination = operator / "bitblas-hc"
+    destination.mkdir()
+    for name, expected in bundle["files"].items():
+        target = destination / name
+        target.parent.mkdir(exist_ok=True)
+        with (bundle["directory"] / name).open("rb") as source, target.open("xb") as copied:
+            remaining = expected["bytes"]
+            while remaining:
+                chunk = source.read(min(remaining, 1 << 20))
+                if not chunk:
+                    raise ValueError("BitBLAS HC export truncated during bounded copy")
+                copied.write(chunk)
+                remaining -= len(chunk)
+            if source.read(1):
+                raise ValueError("BitBLAS HC export grew during bounded copy")
+        target.chmod(0o444)
+    library = bundle["library"]
+    if (_hc_closure(bundle["directory"], library, bundle["manifest_sha256"]) != bundle["files"]
+            or _hc_closure(destination, library, bundle["manifest_sha256"]) != bundle["files"]):
+        raise ValueError("BitBLAS HC export changed during operator publication")
+    for directory in (*[destination / name for name in library.HC_KERNELS], destination):
+        directory.chmod(0o555)
+    return {"source_directory": str(bundle["directory"]), "operator_directory": "/operator/bitblas-hc",
+            "validator": bundle["validator"], "files": bundle["files"],
+            "copied_files": {name: library.file_identity(destination / name) for name in bundle["files"]},
+            "closure_files": len(bundle["files"]), "payload_bytes": sum(v["bytes"] for v in bundle["files"].values())}
+
+
 def model(root, output, selected_image, settings_path, installed_check, cpus, memory, timeout, startup_timeout, smoke_only,
           diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False):
     workspace = cublas_workspace_configuration(cublas_workspace_cache)
@@ -807,6 +915,11 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     plan = diagnostic_c1_c8_plan(original_plan) if commit is not None and not smoke_only else original_plan
     qualifier = model_arguments(settings, plan, smoke_only=smoke_only,
         diagnostic_commit_events=diagnostic_commit_events, diagnostic_commit_nvtx=diagnostic_commit_nvtx)
+    manifest = Path(settings["profile_manifest"]).resolve(strict=True)
+    if manifest.stat().st_size > 16 << 20:
+        raise ValueError("execution manifest exceeds bounded operator metadata")
+    profile_identity = identity(manifest)
+    hc_exports = _hc_exports(root, record, settings, json.loads(manifest.read_text()))
     models = Path(settings["models_root"]).resolve(strict=True)
     for name in ("target", "mtp"):
         artifact = models / settings[name]
@@ -825,12 +938,13 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
         shutil.copyfile(plan_path, operator / "matrix.json")
     if json.loads((operator / "matrix.json").read_text()) != plan:
         raise ValueError("matrix plan changed before publication as immutable operator input")
-    manifest = Path(settings["profile_manifest"]).resolve(strict=True)
-    if manifest.stat().st_size > 16 << 20:
-        raise ValueError("execution manifest exceeds bounded operator metadata")
     shutil.copyfile(manifest, operator / "profile.json")
+    if identity(operator / "profile.json") != profile_identity or identity(manifest) != profile_identity:
+        raise ValueError("execution manifest changed during immutable operator publication")
+    hc_staged = _stage_hc_exports(hc_exports, operator) if hc_exports is not None else None
     for item in operator.iterdir():
-        item.chmod(0o444)
+        if item.is_file():
+            item.chmod(0o444)
     operator.chmod(0o555)
     cache = Path(settings["cache"]).absolute()
     cache.mkdir(parents=True, exist_ok=True)
@@ -860,6 +974,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             "installed_check": accepted,
             "cublas_workspace_cache": workspace, "controller_source": controller_source,
             "diagnostic_graph_pieces": diagnostic_graph_pieces,
+            **({"bitblas_hc_exports": hc_staged} if hc_staged is not None else {}),
             "commit_diagnostic": commit, "diagnostic_only": commit is not None or configuration_diagnostic,
             "P3_valid": False if commit is not None or configuration_diagnostic else None,
             "source_matrix": {"path": str(plan_path), **identity(plan_path)},
