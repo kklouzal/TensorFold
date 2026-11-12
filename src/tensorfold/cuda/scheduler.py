@@ -323,7 +323,10 @@ class Scheduler:
                  max_pending_requests: int | None = None, admission_policy: str = "legacy",
                  max_waiting_input_bytes: int | None = None,
                  max_waiting_input_bytes_per_principal: int | None = None, queue_timeout_s: float | None = None,
-                 output_queue_tokens: int | None = None) -> None:
+                 output_queue_tokens: int | None = None,
+                 worker_prepare: Callable[[], None] | None = None) -> None:
+        if worker_prepare is not None and not callable(worker_prepare):
+            raise ValueError("worker_prepare must be a callable cold ownership handoff")
         if type(max_streams) is not int or max_streams <= 0:
             raise ValueError("max_streams must be a positive integer")
         if admission_policy not in ("legacy", "fifo"):
@@ -372,6 +375,9 @@ class Scheduler:
         self._cleanup_failure: BaseException | None = None
         self._worker_done = threading.Event()
         self._worker_entered = threading.Event()
+        self._worker_prepare = worker_prepare
+        self._worker_prepared = None if worker_prepare is None else threading.Event()
+        self._worker_prepare_error = None
         self._worker_lease = threading.Lock()
         self._start_attempted = False
         self._started_ok = False
@@ -516,12 +522,26 @@ class Scheduler:
                 self.thread.start()
                 self._worker_entered.wait()
                 self._started_ok = True
-                self._closing = False
+                self._closing = self._worker_prepared is not None
             except BaseException as error:
                 self._closing = True
                 self._started_ok = False
                 self._start_error = error
                 raise
+        if self._worker_prepared is not None:
+            # The worker may acquire its cold native owner only after the
+            # positive Thread.start commit above releases the startup lock.
+            self._worker_prepared.wait()
+            with self._state_lock:
+                error = self._worker_prepare_error
+                if error is None:
+                    error = self._failure
+                if error is None and (self._stop_published or self._worker_done.is_set()):
+                    error = RuntimeError("CUDA scheduler closed during worker preparation")
+                if error is not None:
+                    self._start_error = error
+                    raise error
+                self._closing = False
         return self
 
     def close(self) -> None:
@@ -561,6 +581,7 @@ class Scheduler:
             if self._cleanup_failure is None:
                 self.decoder = None
                 self._arrival_original = None
+                self._worker_prepare = None
         if self._failure is not None:
             raise RuntimeError("CUDA scheduler worker failed during shutdown") from self._failure
 
@@ -1152,6 +1173,16 @@ class Scheduler:
                 started = self._started_ok
                 if not started:
                     return                      # an ambiguously launched actor aborts without decoder access
+            if self._worker_prepared is not None:
+                prepare, self._worker_prepare = self._worker_prepare, None
+                try:
+                    prepare()
+                except BaseException as error:
+                    self._worker_prepare_error = error
+                    raise
+                finally:
+                    prepare = None
+                    self._worker_prepared.set()
             self._run()
         except BaseException as exc:
             prior = (BaseException.__cause__.__get__(exc), BaseException.__context__.__get__(exc),

@@ -159,9 +159,12 @@ def test_direct_gguf_loader_adopts_checked_target_vector_without_rebuilding(tmp_
     loaded.meta["ple_tables"].close(lambda: None)
 
 
-@pytest.mark.parametrize("malformed", [False, True])
-@pytest.mark.parametrize("owned_transition", [False, True])
-def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(tmp_path, monkeypatch, malformed, owned_transition):
+@pytest.mark.parametrize("owned_transition,numerical_transition,malformed", [
+    (False, False, False), (True, False, False), (False, False, True), (True, False, True),
+    (False, True, False), (True, True, False),
+])
+def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(
+        tmp_path, monkeypatch, malformed, owned_transition, numerical_transition):
     """Eight host control participants, not CUDA/NCCL execution evidence."""
     from concurrent.futures import ThreadPoolExecutor
     from datetime import timedelta
@@ -255,22 +258,31 @@ def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(tmp_pa
         assert len(set(first)) == 1 and store.data == {}
         first_local = [owner.coordinate_profile_binding["local_contract_identity"] for owner, _ in participants]
         assert all("owned_expert_native" not in contract for contract in contracts)
+        assert all("owner_preparation_numerics" not in contract for contract in contracts)
         first_contracts = {contract["rank"]: contract.copy() for contract in contracts}
         contracts.clear()
         if owned_transition:
             attach_owned_metadata()
+        if numerical_transition:
+            for owner, _ in participants:
+                owner._owner_preparation = SimpleNamespace(numerical_selection={
+                    "dense_projections": {"backend": "cutlass", "geometry": "direct", "roles": ["decode", "prefill"]}})
         second = list(workers.map(bind, participants))
     second_local = [owner.coordinate_profile_binding["local_contract_identity"] for owner, _ in participants]
-    assert all((left != right) == owned_transition for left, right in zip(first_local, second_local))
+    assert all((left != right) == (owned_transition or numerical_transition)
+               for left, right in zip(first_local, second_local))
     for contract in contracts:
+        expected = first_contracts[contract["rank"]].copy()
         if owned_transition:
             plan = participants[contract["rank"]][1].meta["owned_expert_plan"]
             assert contract["owned_expert_native"] == list(plan.identity)
             assert type(contract["owned_expert_native"]) is list
-            assert contract == {**first_contracts[contract["rank"]], "owned_expert_native": list(plan.identity)}
+            expected["owned_expert_native"] = list(plan.identity)
         else:
             assert "owned_expert_native" not in contract
-            assert contract == first_contracts[contract["rank"]]
+        if numerical_transition:
+            expected["owner_preparation_numerics"] = participants[contract["rank"]][0]._owner_preparation.numerical_selection
+        assert contract == expected
     assert len(set(second)) == 1 and second[0] != first[0]
     assert store.data == {} and store.maximum <= 32
     assert all(owner.coordinate_profile_binding["content_certificate"] is False for owner, _ in participants)

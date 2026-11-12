@@ -1,6 +1,7 @@
 """Owned GDN frame/descriptor contracts. CPU doubles do not qualify kernels."""
 import ast
 import gc
+import importlib
 from pathlib import Path
 import sys
 from types import ModuleType
@@ -132,6 +133,39 @@ def test_C1_prefill_capture_and_replaced_State_storage_keep_scalar(monkeypatch):
     assert static.copied.records == 0
 
 
+def test_only_explicit_exact_preparation_admits_single_state_and_original_buffer(monkeypatch):
+    static, b, states, _ = fixture(monkeypatch, width=5)
+    segs = [(states[0], 0, 5)]
+    assert static.native_frame(segs, b) is None
+    frame = static.native_frame(segs, b, allow_single=True)
+    assert type(frame) is NativeTables and frame.rows == 5
+    pointers, starts = frame.operands(0, b.proj[0, :5], b.gout[:5], b.gxs[:5])
+    assert pointers.shape == (8, 1) and starts.data.tolist() == [0, 5]
+    with pytest.raises(ValueError, match='explicit boolean'):
+        static.native_frame(segs, b, allow_single=1)
+    assert static.native_frame(segs, NS(**vars(b)), allow_single=True) is None
+
+
+@pytest.mark.parametrize('changed', ['parity', 'storage', 'segments', 'stream'])
+def test_exact_current_frame_refuses_changed_preparation_without_republishing(monkeypatch, changed):
+    static, b, states, stream = fixture(monkeypatch, width=5)
+    segs = [(states[0], 0, 5)]
+    frame = static.native_frame(segs, b, allow_single=True)
+    frame.validate_current(segs, b)
+    copies = static.copied.records
+    if changed == 'parity':
+        states[0].cur[0] ^= 1
+    elif changed == 'storage':
+        states[0].rec = Array(states[0].rec.shape, torch.float32)
+    elif changed == 'segments':
+        segs = [(states[0], 0, 4)]
+    else:
+        monkeypatch.setattr(torch.cuda, 'current_stream', lambda device: object())
+    with pytest.raises(ValueError, match='current prepared'):
+        frame.validate_current(segs, b)
+    assert static.copied.records == copies
+
+
 @pytest.mark.parametrize('windows', [[(0, 0, 1), (0, 1, 2)], [(0, 0, 1), (1, 2, 3)],
                                     [(0, 0, 4), (1, 4, 5)], [(0, 0, 1), (1, 1, 1)]])
 def test_invalid_alias_or_window_fails_before_DMA(monkeypatch, windows):
@@ -185,6 +219,34 @@ def test_exact_additional_pointer_words_are_charged_in_both_domains():
         multi_static_domains(config, 24, 1, False, gdn_pointer_fields=7)
 
 
+def test_native_extension_declares_its_owned_source_root_with_the_real_stager(monkeypatch, tmp_path):
+    from tensorfold.cuda import build
+    from tensorfold.cuda.sm70 import gdn_native, provider, source_cache
+
+    root = Path(gdn_native.__file__).parent.parent
+    # Normal installed execution is unchanged: both roots are the same CUDA
+    # package directory. An explicitly loaded component declares its own root.
+    assert root == Path(source_cache.__file__).parent.parent
+    actual_stage, calls = source_cache.stage_sources, []
+    def stage(sources, *, headers, source_root):
+        assert source_root == root
+        assert all(Path(path).is_relative_to(root) for path in [*sources, *headers])
+        result = actual_stage(sources, headers=headers, source_root=source_root, cache_root=tmp_path)
+        calls.append(result)
+        return result
+    native = object()
+    monkeypatch.setattr(provider, '_native', lambda: NS(__name__='owned_gdn_source_closure_probe'))
+    monkeypatch.setattr(source_cache, 'stage_sources', stage)
+    monkeypatch.setattr(build, 'load', lambda *args, **kwargs: native)
+    gdn_native.extension.cache_clear()
+    try:
+        assert gdn_native.extension() is native and len(calls) == 1
+        assert [Path(path).read_bytes() for path in calls[0]] == [
+            (root/'sm70/gdn_bindings.cpp').read_bytes(), (root/'sm70/gdn.cu').read_bytes()]
+    finally:
+        gdn_native.extension.cache_clear()
+
+
 @pytest.mark.parametrize('key', ['moe_selection_prepared', 'half_moe_partial_prepared'])
 @pytest.mark.parametrize('cleanup_fails', [False, True])
 def test_loaded_weights_are_owned_before_fallible_capability_publication(key, cleanup_fails):
@@ -235,6 +297,10 @@ def test_loaded_weights_are_owned_before_fallible_capability_publication(key, cl
         assert owners[0].w is weights and device == weights.device
         events.append('fenced-loaded-weights')
     runtime.cuda = NS(synchronize=fence)
+    # Keep the real constructor diagnostic module outside the temporary module
+    # map: patch.dict would otherwise remove its sys.modules entry while the
+    # parent package retained a different, stale module for later fatal tests.
+    importlib.import_module('tensorfold.cuda.cohort')
     with patch.dict(sys.modules, {'torch': runtime}):
         with pytest.raises(MemoryError) as caught:
             engine(Path('opaque-loaded-checkpoint'))

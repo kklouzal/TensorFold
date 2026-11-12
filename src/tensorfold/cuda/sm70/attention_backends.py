@@ -11,12 +11,14 @@ fixed input/mask storage and own library/output allocations in their graph pool;
 no stream, synchronization, host mask readback or gradient graph is introduced.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 import sys
 
 
 POLICY = 'aten-cutlass-half-normalized-lse-v1'
+OWNER_FAMILY = 'aten-cutlass-q8-normalized-lse-owner-v1'
+OWNER_MAX_KEYS = 2051
 _MAX_FLOAT32 = float.fromhex('0x1.fffffep+127')
 SCHEMA = (
     'aten::_efficient_attention_forward(Tensor query, Tensor key, Tensor value, Tensor? bias, '
@@ -189,3 +191,101 @@ def prepare(spec, *, device, device_budget_bytes):
     if torch.cuda.get_device_capability(device) != (7, 0):
         raise ValueError('decoded attention component requires the actual SM70 target')
     return Prepared(spec, device, device_budget_bytes, identity)
+
+
+def owner_requirements(rows, panel_rows):
+    """Additional persistent packing plus real per-panel operator temporaries."""
+    if (type(rows) is not int or not 1 <= rows <= 256 or type(panel_rows) is not int
+            or not 1 <= panel_rows <= 256):
+        raise ValueError('owner tiles require the existing bounded256-row envelope and a positive panel')
+    panel = min(rows, panel_rows)
+    primitive = tensor_requirements(TileSpec(panel, 1, OWNER_MAX_KEYS, 12, 1, .0625, masked=True))
+    payloads = {'query_pack_bytes': rows * 12 * 256 * 2,
+                'local_lse_bytes': rows * 12 * 4,
+                'key_value_panel_bytes': panel * OWNER_MAX_KEYS * 256 * 2 * 2,
+                'valid_key_panel_bytes': panel * OWNER_MAX_KEYS}
+    return {**payloads, 'persistent_bytes': sum(payloads.values()),
+            'operator_temporary_bytes': primitive['known_peak_tensor_bytes'], 'panel_rows': panel,
+            'max_keys': OWNER_MAX_KEYS, 'scope': 'tensor payload; allocator/driver/graph reserve separate'}
+
+
+class OwnerTiles:
+    """Exclusive current-stream panels; the enclosing native owner fences release.
+
+    Pack every query before borrowing the old query receive slab for local
+    normalized results. Local LSE remains in a disjoint persistent slab while
+    the ordinary statistics/value communication slabs advance their phases.
+    ATen outputs are temporary allocations retained through their submitted
+    copies; this path is not allocation-free or an incumbent numeric alias.
+    """
+    def __init__(self, rows, panel_rows, device):
+        import torch
+
+        self.query = self.keys = self.values = self.valid = self.lse = None
+        self.closed = False
+        self.rows, self.device = rows, torch.device(device)
+        self.requirements = owner_requirements(rows, panel_rows)
+        self.panel_rows = self.requirements['panel_rows']
+        template = TileSpec(self.panel_rows, 1, OWNER_MAX_KEYS, 12, 1, .0625, masked=True)
+        self.primitive = prepare(template, device=self.device,
+                                 device_budget_bytes=self.requirements['operator_temporary_bytes'])
+        self.query = torch.empty((rows, 1, 12, 256), dtype=torch.float16, device=self.device)
+        self.lse = torch.empty((rows, 12), dtype=torch.float32, device=self.device)
+        elements = self.panel_rows * OWNER_MAX_KEYS * 256
+        self.keys = torch.empty(elements, dtype=torch.float16, device=self.device)
+        self.values = torch.empty_like(self.keys)
+        self.valid = torch.empty(self.panel_rows * OWNER_MAX_KEYS, dtype=torch.bool, device=self.device)
+
+    def run(self, owner, rows, views, key_capacity):
+        from . import paged_attention as native
+
+        if self.closed or not 1 <= rows <= self.rows or not 1 <= key_capacity <= OWNER_MAX_KEYS:
+            raise ValueError('ATen owner tile frame exceeds its prepared live row/key envelope')
+        group = owner.rank // 4 * 4
+        query = self.query[:rows]
+        native.pack_owner_queries(views['q_all'], views['row_table'], query,
+                                  group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
+        # query_all has retired as an input after the pack, on this same stream.
+        normalized = owner.queries.reshape(-1)[:rows * 12 * 256].view(rows, 12, 256)
+        local_lse = self.lse[:rows]
+        stats = views['local_stats']
+        for first in range(0, rows, self.panel_rows):
+            count = min(self.panel_rows, rows - first)
+            key = self.keys[:count * key_capacity * 256].view(count, key_capacity, 1, 256)
+            value = self.values[:count * key_capacity * 256].view_as(key)
+            valid = self.valid[:count * key_capacity].view(count, 1, key_capacity)
+            native.gather_owner_q8(views['selected_all'], views['row_table'], key, value, valid,
+                first=first, group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
+            actual = replace(self.primitive.spec, batch=count, key_rows=key_capacity)
+            primitive = Prepared(actual, self.device, self.primitive.device_budget_bytes, self.primitive.identity)
+            result = primitive.run(query[first:first + count], key, value, valid_keys=valid)
+            normalized[first:first + count].copy_(result.output[:, 0])
+            local_lse[first:first + count].copy_(result.logsumexp[:, :, 0])
+            stats[first:first + count, :, 0].copy_(result.logsumexp[:, :, 0])
+            # Keep independent validity: nonempty NaN/+inf LSE must fail the
+            # existing global statistics guard, never become an empty rank.
+            stats[first:first + count, :, 1].copy_(result.valid_rows.expand(count, 12))
+            del result
+        owner.gather_native(stats, views['all_stats'])
+        native.merge_statistics(views['all_stats'], views['row_table'], views['global_stats'],
+            group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
+        native.weight_owner_normalized(normalized, local_lse, views['global_stats'], views['row_table'],
+            views['local_values'], group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
+        owner.gather_native(views['local_values'], views['all_values'])
+        # Retain original rank-order reduction, inverse Q8 basis and final Half
+        # publication. Only the local normalized/LSE arithmetic is a new family.
+        native.merge_values(views['all_values'], views['row_table'], views['out'], rank=owner.rank,
+            page_tokens=owner.native_page_tokens, layer=owner.native_layer, value_bits=8, value_codec=0)
+        return views['out']
+
+    def record(self):
+        return {'family': OWNER_FAMILY, 'requirements': dict(self.requirements),
+                'operator': dict(self.primitive.identity), 'closed': self.closed,
+                'numeric_contract': 'Half normalized local values and natural-log LSE; ordered FP32 rank weights/merge',
+                'qualification': 'unselected; operator/component/model/PPL/resource/P3 gates remain separate'}
+
+    def close(self):
+        # Only after enclosing OwnerBuffers.retire_native positively fences all
+        # current-stream raw-pointer, ATen and communication consumers.
+        self.query = self.keys = self.values = self.valid = self.lse = None
+        self.closed = True

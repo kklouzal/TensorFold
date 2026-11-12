@@ -94,9 +94,9 @@ __device__ __forceinline__ float value(const uint8_t* p, int type, int i) {
             * ((p[74 + group * 4 + sub] & (1 << element)) ? -1.0f : 1.0f);
     }
     if (type == 20) {
-        constexpr int grid[16] = {TF_GGUF_IQ4NL_VALUES};
+        // The same exact signed integers already live in module read-only storage.
         const int q = (p[2 + i % 16] >> (4 * (i / 16))) & 15;
-        return half_value(p) * float(grid[q]);
+        return half_value(p) * float(tf_kvalues_iq4nl[q]);
     }
     if (type == 7) {
         const int q = ((p[8 + i % 16] >> (4 * (i / 16))) & 15) | (((u32(p + 4) >> i) & 1) << 4);
@@ -732,7 +732,9 @@ struct ConcatSources {
 };
 
 template <bool F32>
-__global__ void concat_copy32(ConcatSources sources, void* out, int rows, int columns, int64_t stride) {
+// Every field is read-only for the grid; indexed arrays need no per-thread copy.
+__global__ void concat_copy32(const __grid_constant__ ConcatSources sources,
+                              void* out, int rows, int columns, int64_t stride) {
     for (int64_t at = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; at < int64_t(rows) * columns;
          at += int64_t(gridDim.x) * blockDim.x) {
         const int row = at / columns, col = at % columns;

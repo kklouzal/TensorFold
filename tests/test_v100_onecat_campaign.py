@@ -324,5 +324,49 @@ class CommitDiagnosticTests(unittest.TestCase):
                 campaign.commit_trace_receipts(root, source, spec)
 
 
+class CublasWorkspaceConfigurationTests(unittest.TestCase):
+    def test_only_explicit_supported_values_forward_one_whitelisted_environment(self):
+        self.assertEqual(campaign.cublas_workspace_configuration("inherit")["environment"], {})
+        self.assertEqual(campaign.cublas_workspace_configuration("on")["environment"],
+                         {"TORCH_CUBLAS_WORKSPACE_CACHE": "1"})
+        self.assertEqual(campaign.cublas_workspace_configuration("off")["environment"],
+                         {"TORCH_CUBLAS_WORKSPACE_CACHE": "0"})
+        for value in (None, True, 1, "1", "ON", "on\nEVIL=1"):
+            with self.subTest(value=value), patch.object(campaign, "frozen") as frozen:
+                with self.assertRaisesRegex(ValueError, "inherit, on or off"):
+                    campaign.model(None, None, None, None, None, 1, "1g", 1, 1, True,
+                                   cublas_workspace_cache=value)
+                frozen.assert_not_called()
+
+    def test_cli_preserves_default_and_forwards_explicit_configuration_separately(self):
+        argv = ["model", "--source", "/source", "--out", "/out", "--image", "image",
+                "--settings", "/settings.json", "--installed-check", "/checked", "--smoke-only"]
+        for selection in ("inherit", "on", "off"):
+            with self.subTest(selection=selection), patch.object(campaign, "model") as model:
+                extra = [] if selection == "inherit" else ["--cublas-workspace-cache", selection]
+                self.assertEqual(campaign.main(argv + extra), 0)
+                self.assertEqual(model.call_args.kwargs, {"cublas_workspace_cache": selection, "diagnostic_graph_pieces": False})
+                self.assertEqual(model.call_args.args[-3:], (True, None, False))
+
+
+class GraphPieceDiagnosticTests(unittest.TestCase):
+    def test_cli_explicit_piece_diagnostic_is_separate_from_workspace_selection(self):
+        argv = ["model", "--source", "/source", "--out", "/out", "--image", "image",
+                "--settings", "/settings.json", "--installed-check", "/checked", "--smoke-only",
+                "--diagnostic-graph-pieces"]
+        with patch.object(campaign, "model") as model:
+            self.assertEqual(campaign.main(argv), 0)
+            self.assertEqual(model.call_args.kwargs,
+                {"cublas_workspace_cache": "inherit", "diagnostic_graph_pieces": True})
+
+    def test_non_boolean_selection_fails_before_source_or_container_access(self):
+        for value in (1, "1", None):
+            with self.subTest(value=value), patch.object(campaign, "frozen") as frozen:
+                with self.assertRaisesRegex(ValueError, "must be boolean"):
+                    campaign.model(None, None, None, None, None, 1, "1g", 1, 1, True,
+                                   diagnostic_graph_pieces=value)
+                frozen.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

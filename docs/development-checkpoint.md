@@ -82,28 +82,42 @@ checks pass using the canonical wrapper and explicitly identified native ELF
 on the source8 SDK. JIT-provider and integrated selection remain pending.
 The xFormers 0.0.30 attention interface can
 reach the compatible ATen CUTLASS operator already built into the owned Torch;
-the old xFormers wheel is not installed over that SDK. BitBLAS 0.1.0.post1 has
-completed one actual V100 code-generation pilot, a shared-CUDA-runtime relink,
-and a bounded primitive/changed-input graph check. In that M1 case, 146 of160
-Float32 output bit patterns differed from the TensorFold Dense M32 reference
-(maximum absolute difference 7.82310962677002e-08); no numerical equivalence,
-model-quality or performance acceptance is claimed. Requested
-FlashAttention-V100 26.10 is a distinct source identity from 1Cat's bundled and
-externally pinned FlashAttention variants.
+the old xFormers wheel is not installed over that SDK. Its adapter passed five
+actual V100 component controls, with explicit normalized-output/LSE numerical
+representation. Integration and quality acceptance remain open.
+
+BitBLAS 0.1.0.post1 direct-shape pilots exposed unsafe generated tails; those
+original failures remain evidence. The corrected bounded physical-padding
+exports passed all20 native value, changed-input capture and Compute Sanitizer
+memcheck cases. Row-shape-dependent arithmetic differs from TensorFold and
+between SIMT/WMMA variants; the fixed-M32 adapter remains a separate required
+control before model use. No quality or performance acceptance is claimed.
+
+Requested FlashAttention-V100 26.10 is a distinct source identity from 1Cat's
+bundled and externally pinned variants. Its owned prepared forward binding
+passed18 actual V100 component cases using the exact source/ELF closure on the
+source8 SDK. The separate GDN Value8 candidate passed19 native controls on the
+source11 SDK. These are explicit component bindings, not factory-JIT or
+whole-model qualification. Attention normalization/mass representation and
+GDN owner/admission integration remain separate gates.
+
 
 The Triton 3.2.0 candidate retains the last inspected upstream MMAv1/SM70
 implementation. Its isolated SDK profile passes nonroot binding and installed
 CPU checks, but actual compilation exposed its unsupported CUDA 12.9 version
 mapping. The owned launch boundary now selects the supported PTX8.3 option;
 the real CUDA12.9 assembler accepted an SM70 compilation without initializing
-CUDA. Actual updated GPU/model gates remain pending; no vendor patch, fake
-compiler version or broad SM70 qualification is implied.
+CUDA. The source10 image then passed two actual V100 controls: bit-exact ordered
+FP32 FMA with changed-input graph replay, and a 64x64 FP16 dot product checked
+against an independent integer oracle with Volta MMA PTX/CUBIN provenance.
+Full-model gates remain pending; no vendor patch, fake compiler version or
+broad SM70 qualification is implied.
 
 The frozen source7 reference eager model completed four requests with full24
 GPU-resident sessions admitted, TP8/ETP4, native context262144, Q8 histories and
 MTP depth4. Serial and MTP token IDs matched on the two smoke prompts. This is
-functional evidence, not a throughput benchmark. Source8 graph startup fails
-before serving and remains under diagnosis. Graph replay and all matched
+functional evidence, not a throughput benchmark. Source12 graph startup exceeds its fixed memory allowance before serving
+and remains under diagnosis. Graph replay and all matched
 performance/quality comparisons remain open gates.
 
 The private campaign's `model --diagnostic-commit-events N` reserves finite
@@ -114,6 +128,15 @@ original C1/C8 prompts and work from the immutable plan. All eight rank traces
 must close, with positive leader work. These records are explicitly ineligible
 for performance selection; MTP batch timestamps do not imply individual token
 spacing. The ordinary timing campaign retains its separate protocol.
+
+The unselected dense integration now binds actual matrix contracts before
+State construction and includes its numerical selection in coordinate/cache
+identity. Its optional scheduler handoff completes on the decoding worker
+before request admission opens; an ambiguous thread start cannot acquire that
+owner. The shared scheduler passed105 CPU lifecycle, FIFO and eight-peer Store
+controls with the exact source11 Scheduler/Engine implementation. Two corrected
+test fixtures retain separate source identities. Actual selected-dense native
+handoff, admission and full-model gates remain pending.
 
 ## Continue development
 
@@ -129,3 +152,20 @@ run the affected checks. A clean Git checkout and successful transfer establish
 source integrity, not target qualification. Ignored caches, compiled outputs,
 credentials, model payloads and active service configuration are outside the
 source handoff.
+
+
+## Graph allocation diagnostic
+
+The private campaign runner accepts `--diagnostic-graph-pieces` to enable
+startup-only per-piece physical and Torch allocation observations. It records
+only the handoff kind, layer index and row count; weight objects and State
+pointers remain outside receipts. Samples occur after capture ends, without
+per-piece synchronization or cache flushing. Their asynchronous allocation
+attribution is diagnostic and these runs are explicitly ineligible for P3.
+The default capture path performs no additional allocation queries.
+
+The S12 complete catalog still exceeds its fixed allowance at the 21st key
+(target40 rows/eight participants). Explicit cuBLAS workspace caching produced
+the same physical deltas and did not resolve that gate. Context, full24-State
+capacity and the configured memory reserves remain unchanged. Native component
+passes do not qualify complete model graph startup, quality or throughput.

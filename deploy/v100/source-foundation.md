@@ -773,9 +773,11 @@ version table rejects CUDA 12.9. The owned launch boundary explicitly selects
 its supported PTX 8.3 option for this profile in cold FMA preparation, live
 FMA, and the conformance probes. The real CUDA 12.9.86 assembler identity stays
 visible and audited; no vendor compiler code or reported CUDA version changes.
-That assembler accepted a CPU-only SM70/PTX8.3 compilation. Actual GPU FMA,
-MMAv1, graph replay and complete MTP model gates remain pending for the updated
-application. This candidate does not replace the qualified restricted Triton
+That assembler accepted a CPU-only SM70/PTX8.3 compilation. Application image
+`4a4a2229` subsequently passed the actual ordered FP32 production FMA oracle,
+changed-input graph replay and a 64x64 FP16/Float32 Volta MMA probe. Complete
+MTP model, capacity and performance gates remain pending. This candidate does
+not replace the qualified restricted Triton
 3.9 reference by assumption.
 
 Private owned SM70 startup prepares Triton's CUDA driver helper under a shared

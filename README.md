@@ -41,9 +41,16 @@ CUTLASS, GGML, FlashAttention-V100 and FlashQLA mechanisms, plus separate
 cuBLAS/cuBLASLt, BitBLAS and compatible ATen attention trials. The reference
 eager TP8/ETP4 model has completed a bounded MTP4 smoke run; graph startup and
 matched throughput/quality qualification remain open. The isolated Triton 3.2
-profile uses explicit PTX8.3 with the real CUDA12.9 compiler; updated GPU/model
-qualification remains pending.
-See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates).
+profile uses explicit PTX8.3 with the real CUDA12.9 compiler. Its ordered FP32 kernel and changed-input
+graph replay passed on V100, alongside a Volta MMA dot-product probe. Full-model
+graph startup, quality and performance gates remain open. The optional dense
+owner's worker-start handoff has CPU lifecycle coverage; native/model selection
+is still pending.
+See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
+`--diagnostic-graph-pieces` records signed startup allocations at capture-piece
+boundaries without synchronizing each piece. Those observations can include
+asynchronous allocation effects and are excluded from performance qualification.
+
 
 Gemma chat presentation routes repeated, nested and unknown channel blocks to
 reasoning and holds incomplete control markers while streaming. Channel controls

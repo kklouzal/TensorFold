@@ -106,6 +106,8 @@ def running_cohort(blockage="none", *, pool_size=2):
         decoder.passed, decoder.copy = {}, False
         decoder.controller, decoder.graphs, decoder.full_resident = None, None, True
         decoder.capacity, decoder.depth, decoder.prefill_rows = 257, 0, 16
+        decoder.logical_context = states[0].logical_context
+        assert all(state.logical_context == decoder.logical_context for state in states)
         decoder.share, decoder.round_s, decoder.row_s, decoder.points = 0., None, None, None
         decoder.eos = ()
         decoder.buf, decoder.mbuf, decoder.pbuf = NS(rows=4), None, None

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tensorfold.cuda.scheduler import Scheduler
-from tensorfold.cleanup import rollback
+from tensorfold.cleanup import finish, rollback
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,7 +110,8 @@ def test_actual_flashnext_constructor_cleanup_does_not_self_chain_the_startup_fa
         calls.append("close")
         raise primary
 
-    namespace = {"initial": primary, "rollback": rollback}
+    namespace = {"initial": primary, "rollback": rollback, "finish": finish,
+                 "diagnostic": SimpleNamespace(report=lambda error: calls.append(("report", error)))}
     exec(compile(unit, str(path), "exec"), namespace)
     try:
         namespace["construct"](SimpleNamespace(close=close, _rollback_startup=close))
@@ -118,7 +119,7 @@ def test_actual_flashnext_constructor_cleanup_does_not_self_chain_the_startup_fa
         assert caught is primary and caught.__cause__ is None
     else:
         raise AssertionError("actual FlashNext constructor hid the startup failure")
-    assert calls == ["close"]
+    assert calls == [("report", primary), "close"]
 
 
 def test_actual_flashnext_constructor_warms_before_starting_its_published_actor():
@@ -176,7 +177,7 @@ def test_actual_flashnext_startup_statements_defer_public_admission_until_warmup
 
     # Keep the production publication/warmup/start branches and rollback,
     # replacing numerical stages with a bounded, independently owned decoder.
-    wrapper = ast.parse("def startup(self, streams, managed=False):\n    pass\n").body[0]
+    wrapper = ast.parse("def startup(self, streams, managed=False, owner_preparation=None):\n    pass\n").body[0]
     wrapper.body = [ast.Try(body=project(initialized.body), handlers=scope.handlers, orelse=[], finalbody=[])]
     unit = ast.Module(body=[wrapper], type_ignores=[])
     ast.fix_missing_locations(unit)

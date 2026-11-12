@@ -1,8 +1,11 @@
 """Strict native GDN State batching against a separately pinned incumbent ELF."""
 import hashlib
 import importlib.util
+import ast
+import json
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace as NS
 
 import pytest
@@ -31,12 +34,59 @@ def pair():
     return old, new
 
 
+@pytest.fixture(scope='module')
+def capture_component():
+    """Representation-only qualification against the unchanged frozen native ABI.
+
+    Scalar and batched entry points deliberately use the SAME native ELF. This
+    fixture does not replace the independent old/new arithmetic oracle above.
+    Only the two new Python descriptor/submission modules are explicit readonly
+    component inputs; all CUDA arithmetic and real commit use the genuine SDK.
+    """
+    binary = Path(os.environ['TF_GDN_CAPTURE_BINARY']).resolve(strict=True)
+    digest = os.environ['TF_GDN_CAPTURE_SHA256']
+    assert hashlib.sha256(binary.read_bytes()).hexdigest() == digest
+    root = Path(os.environ['TF_GDN_CAPTURE_SOURCE_ROOT']).resolve(strict=True)
+    import tensorfold.cuda.sm70.gdn_native as installed_native
+    import tensorfold.families.qwen4_exp.cuda.forward as installed_forward
+
+    native_root = Path(installed_native.__file__).parent
+    source_root = root/'src/tensorfold/cuda/sm70'
+    for name in ('gdn.cu', 'gdn_bindings.cpp'):
+        assert (native_root/name).read_bytes() == (source_root/name).read_bytes()
+    assert (native_root.parent/'kernels/tensor_contracts.cuh').read_bytes() == (
+        source_root.parent/'kernels/tensor_contracts.cuh').read_bytes()
+    def commit_source(path):
+        text = path.read_text()
+        node = next(node for node in ast.parse(text).body if isinstance(node, ast.FunctionDef) and node.name == 'commit')
+        return ast.dump(node, include_attributes=False)
+    assert commit_source(Path(installed_forward.__file__)) == commit_source(
+        root/'src/tensorfold/families/qwen4_exp/cuda/forward.py')
+    def component(name, path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+    tables = component('tensorfold.families.qwen4_exp.cuda.gdn_capture_component',
+                       root/'src/tensorfold/families/qwen4_exp/cuda/gdn_multi.py')
+    prepared = component('tensorfold.cuda.sm70.gdn_capture_component', source_root/'gdn_native.py')
+    native = prepared.extension()
+    assert hashlib.sha256(Path(native.__file__).read_bytes()).hexdigest() == digest
+    assert hashlib.sha256(Path(installed_native.extension().__file__).read_bytes()).hexdigest() == digest
+    return NS(raw=native, tables=tables.RoundTables, prepared=prepared,
+        identity={'scope': 'representation-only; same frozen scalar/batch ELF; no independent arithmetic/model/P3 claim',
+                  'frozen_elf': str(binary), 'loaded_elf': native.__file__, 'elf_sha256': digest,
+                  'source_sha256': {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in
+                      (Path(tables.__file__), Path(prepared.__file__), source_root/'gdn.cu', source_root/'gdn_bindings.cpp')}})
+
+
 def exact(actual, expected):
     assert torch.equal(actual.contiguous().view(torch.uint8), expected.contiguous().view(torch.uint8))
 
 
-def setup(nv, pattern):
-    nk, layers, width, slots = nv//3, 2, 3, 24
+def setup(nv, pattern, *, width=3, static_type=RoundTables):
+    nk, layers, slots = nv//3, 2, 24
     channels, pw = widths(nk, nv)
     gen = torch.Generator(device='cuda').manual_seed(725+nv)
     def half(shape):
@@ -65,7 +115,7 @@ def setup(nv, pattern):
         b.proj.copy_(values.repeat((b.proj.numel()+7)//8)[:b.proj.numel()].view_as(b.proj))
         for state in states:
             state.rec[..., ::2] *= -1
-    static = RoundTables(NS(device=torch.device('cuda')), NS(lin=layers), slots, width, native_half=True)
+    static = static_type(NS(device=torch.device('cuda')), NS(lin=layers), slots, width, native_half=True)
     static.bind_native(states, b)
     weight, norm = half((channels, 4)), torch.ones(128, device='cuda', dtype=torch.float16)
     bias, log, neg = torch.randn(nv, device='cuda', generator=gen)*.1, torch.zeros(nv, device='cuda'), -torch.ones(nv, device='cuda')
@@ -263,3 +313,91 @@ def test_output_in_unread_descriptor_gap_is_legal_and_matches_frozen_bits(pair):
         exact(state.rec, expected[0][id(state)])
         for name in ('k', 'v', 'g', 'b'):
             exact(getattr(state.scratch[0], name), getattr(expected[1][id(state)], name))
+
+
+@pytest.mark.parametrize('count', [1, 24])
+@pytest.mark.parametrize('keep', [1, 2, 3, 4, 5])
+def test_MTP4_width_captured_descriptor_views_keep_every_accepted_prefix(capture_component, count, keep, record_property):
+    """Existing chain/commit arithmetic, with the new exact-owner submission boundary."""
+    from tensorfold.families.qwen4_exp.cuda.forward import commit
+
+    old = new = capture_component.raw
+    new.prepare_batch(6)
+    static, states, b, weight, norm, bias, _, decay = setup(6, 'random', width=5, static_type=capture_component.tables)
+    for state in states:
+        state.kv_check = lambda: None
+        state.ple_last, state.pos = None, 0
+        state.set_pos = lambda value, state=state: setattr(state, 'pos', value)
+    weights = NS(cfg=NS(conv_dim=1280))
+    segs = [(state, index*5, (index+1)*5) for index, state in enumerate(states[:count])]
+    table = static.native_frame(segs, b, allow_single=True)
+    operands = tuple(table.operands(layer, b.proj[layer, :table.rows], b.gout[:table.rows], b.gxs[:table.rows])
+                     for layer in range(static.lin))
+    stream, graph = torch.cuda.Stream(), torch.cuda.CUDAGraph()
+    torch.cuda.synchronize()
+    primary, cleanup = None, [None, None]
+    try:
+        with torch.cuda.graph(graph, stream=stream):
+            for layer in range(static.lin):
+                capture_component.prepared.batch_chain_prepared(b.proj[layer, :table.rows], weight, decay, bias, norm, 1e-6,
+                    operands[layer], b.gout[:table.rows], b.gxs[:table.rows], negative_decay=True)
+        torch.cuda.synchronize()
+        for iteration in range(2):
+            chosen = list(reversed(states))[:count] if iteration else states[:count]
+            segs = [(state, index*5, (index+1)*5) for index, state in enumerate(chosen)]
+            # A fresh actor-frame updates the same GPU pointers/parity/starts;
+            # the captured views/launch geometry are retained unchanged.
+            table = static.native_frame(segs, b, allow_single=True)
+            table.validate_current(segs, b)
+            for layer in range(static.lin):
+                table.operands(layer, b.proj[layer, :table.rows], b.gout[:table.rows], b.gxs[:table.rows])
+            expected = [oracle(old, table, b, layer, weight, norm, bias, decay, True)
+                        for layer in range(static.lin)]
+            conv = {id(state): state.conv.clone() for state in chosen}
+            prefix = {}
+            for state, begin, end in segs:
+                saved = []
+                for layer in range(static.lin):
+                    initial = state.rec[state.cur[layer], layer]
+                    final = torch.empty_like(initial)
+                    if keep == 5:
+                        final.copy_(expected[layer][0][id(state)][1-state.cur[layer], layer])
+                    else:
+                        scratch = expected[layer][1][id(state)]
+                        old.replay(initial, scratch.k, scratch.v, scratch.g, scratch.b, keep, final)
+                    saved.append(final)
+                prefix[id(state)] = saved
+            graph.replay()
+            # Both layers share output buffers, so the final layer's output
+            # is visible; recurrence and saved replay operands cover both.
+            exact(b.gout, expected[-1][2])
+            exact(b.gxs, expected[-1][3])
+            for layer in range(static.lin):
+                for state, _, _ in segs:
+                    exact(state.rec[:, layer], expected[layer][0][id(state)][:, layer])
+                    for name in ('k', 'v', 'g', 'b'):
+                        exact(getattr(state.scratch[layer], name), getattr(expected[layer][1][id(state)], name))
+            for state, begin, end in segs:
+                before = state.cur[:]
+                commit(weights, state, b, 5, keep, at=begin)
+                assert state.cur == [1-value for value in before]
+                for layer in range(static.lin):
+                    exact(state.rec[state.cur[layer], layer], prefix[id(state)][layer])
+                rows = b.proj[:, begin:begin+keep, :1280]
+                expected_conv = torch.cat((conv[id(state)], rows), dim=1)[:, -3:]
+                exact(state.conv, expected_conv)
+            b.proj.mul_(-1)
+    except BaseException as error:
+        primary = error
+    finally:
+        try:
+            torch.cuda.synchronize()
+        except BaseException as error:
+            cleanup[0] = error
+        if cleanup[0] is None:
+            try:
+                graph.reset()
+            except BaseException as error:
+                cleanup[1] = error
+        raise_failures(primary, [error for error in cleanup if error is not None])
+    record_property('gdn_capture_component', json.dumps({**capture_component.identity, 'count': count, 'keep': keep}))

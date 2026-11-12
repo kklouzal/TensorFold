@@ -369,6 +369,10 @@ def _runtime(engine, *, previous_topology=None):
     if owned is not None:
         # The immutable prepared identity has a declared JSON-array encoding.
         numerics["owned_expert_native"] = list(owned.identity)
+    preparation = getattr(engine, "_owner_preparation", None)
+    selection = None if preparation is None else preparation.numerical_selection
+    if selection is not None:
+        numerics["owner_preparation_numerics"] = selection
     pairing = getattr(engine, "_dflash_pairing", None)
     if pairing is not None:
         numerics["dflash2_pairing"] = pairing.identity

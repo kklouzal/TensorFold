@@ -249,7 +249,8 @@ def test_version_profile_selection_is_explicit_and_not_a_missing_attribute_fallb
 
 
 @pytest.mark.parametrize('compiler_options', [{}, {'ptx_version': 83}])
-def test_production_fma_warmup_realizes_vendor_launcher_without_invoking_it(monkeypatch, tmp_path, compiler_options):
+@pytest.mark.parametrize('matches_factory', [True, False])
+def test_production_fma_warmup_realizes_vendor_launcher_without_invoking_it(monkeypatch, tmp_path, compiler_options, matches_factory):
     from tensorfold.families.qwen4_exp.cuda import glue
     import torch
 
@@ -282,7 +283,12 @@ def test_production_fma_warmup_realizes_vendor_launcher_without_invoking_it(monk
     compiled.src.fn = kernel
     monkeypatch.setattr(glue, '_moe_partial', kernel)
     monkeypatch.setattr(glue, '_MOE_COMPILER_OPTIONS', compiler_options)
-    monkeypatch.setitem(sys.modules, 'triton.backends.nvidia.driver', SimpleNamespace(CudaLauncher=CudaLauncher))
+    # The canonical import is a different nominal class from Triton3.2's
+    # dynamic backend module. CompiledKernel owns the active factory instead.
+    monkeypatch.setitem(sys.modules, 'triton.backends.nvidia.driver', SimpleNamespace(CudaLauncher=type('OtherCudaLauncher', (), {})))
+    monkeypatch.setitem(sys.modules, 'triton.runtime.driver', SimpleNamespace(driver=SimpleNamespace(
+        active=SimpleNamespace(launcher_cls=CudaLauncher if matches_factory else type('WrongActiveFactory', (), {})))))
+    monkeypatch.setattr(triton_driver, '_launcher_factory_source', lambda factory: {'path': 'actual-vendor-driver.py'})
     monkeypatch.setitem(sys.modules, 'triton.compiler.compiler', SimpleNamespace(CompiledKernel=CompiledKernel))
     monkeypatch.setitem(sys.modules, 'triton.runtime.jit', SimpleNamespace(MockTensor=MockTensor))
     def identity(function, root, prefix):
@@ -290,7 +296,13 @@ def test_production_fma_warmup_realizes_vendor_launcher_without_invoking_it(monk
         calls.append('actual-launcher-mapping')
         return {'sha256': 'b'*64}
     monkeypatch.setattr(triton_driver, '_mapped_code_identity', identity)
+    if not matches_factory:
+        with pytest.raises(ValueError, match='actual CUDA launcher'):
+            triton_driver._prepare_fma(tmp_path, (2560, 10, 11))
+        assert calls == ['actual-signature-warmup', 'launcher-realized']
+        return
     result = triton_driver._prepare_fma(tmp_path, (2560, 10, 11))
     assert calls == ['actual-signature-warmup', 'launcher-realized', 'actual-launcher-mapping']
     assert result['geometry']['num_warps'] == 2 and result['launcher']['sha256'] == 'b'*64
     assert result['compiler_options'] == compiler_options
+    assert result['launcher_factory_source']['path'] == 'actual-vendor-driver.py'

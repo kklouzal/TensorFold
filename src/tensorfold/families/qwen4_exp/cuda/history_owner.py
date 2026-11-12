@@ -19,6 +19,7 @@ import torch
 from tensorfold.cuda.sm70 import family_ops as ops
 
 from .kvcache import KVCache, KVPairFormat
+from tensorfold.cuda.sm70.attention_backends import OWNER_FAMILY as ATEN_KERNEL_FAMILY
 
 
 # Component-only, process-fixed trial. Ordinary serving retains the incumbent.
@@ -246,7 +247,7 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Operation-owned Q8 single-row target decode; every other path is original."""
     owner = getattr(buffers, 'history_owner', None)
     if (not mtp and not buffers.prefill and stop - start == 1
-            and getattr(buffers, 'owner_kernel_family', None) == 'sm70-paged-owner-rn-ex2-p2051-v1'
+            and getattr(buffers, 'owner_kernel_family', None) in ('sm70-paged-owner-rn-ex2-p2051-v1', ATEN_KERNEL_FAMILY)
             and getattr(buffers, 'owner_graph_family', None) == 'uncaptured'
             and owner is not None and getattr(owner, 'owned_q8_preparation', None) is not None
             and buffers.target_indexer_coordinates is not None
@@ -496,6 +497,7 @@ class OwnerBuffers:
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.reference_tiles = self.owned_q8_preparation = None
+        self.aten_tiles = None
         self.native_kernel_family, self.native_heads_per_block = "sm70-paged-owner-q8-compact-v1", None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_host_words = None
@@ -595,7 +597,7 @@ class OwnerBuffers:
         """
         native = self.native_record()
         extras = sum(native[name] for name in ("descriptor_bytes", "global_statistics_bytes",
-                                               "lane_control_bytes", "layer_control_bytes"))
+                                             "lane_control_bytes", "layer_control_bytes")) + native.get('aten_tensor_bytes', 0)
         return {"rows": self.rows, "prefill": self.prefill, "heads": self.heads,
                 "head_dim": self.head_dim, "index_width": self.idw,
                 "rank": self.rank, "device": str(self.device), "complete": self._base_ready,
@@ -794,21 +796,30 @@ class OwnerBuffers:
             self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
             self._upload_pending = True
 
-    def configure_native_family(self, family, heads_per_block=None):
+    def configure_native_family(self, family, heads_per_block=None, *, aten_panel_rows=None):
         """Fix numerical policy before capture/admission; no serving redispatch."""
         from .owner_execution import KERNEL_FAMILY, RN_KERNEL_FAMILY
         if self._native_family_configured or self.native_states is not None or self._native_pending:
             raise RuntimeError("native numerical family is immutable after startup configuration")
-        if (family not in (KERNEL_FAMILY, RN_KERNEL_FAMILY)
+        if (family not in (KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY)
                 or (family == RN_KERNEL_FAMILY and (type(heads_per_block) is not int or heads_per_block not in (1, 4, 12)))
-                or (family == KERNEL_FAMILY and heads_per_block is not None)):
+                or (family in (KERNEL_FAMILY, ATEN_KERNEL_FAMILY) and heads_per_block is not None)):
             raise ValueError("native numerical family requires its exact prepared head geometry")
+        if family == ATEN_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.attention_backends import OwnerTiles
+            if (self.native_pair is None or (self.native_pair.key.bits, self.native_pair.key.codec,
+                    self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
+                raise ValueError('ATen owner tiles require the explicit homogeneous original Q8 profile')
+            self.aten_tiles = object.__new__(OwnerTiles)  # Own partial allocation before effects.
+            self.aten_tiles.__init__(self.rows, aten_panel_rows, self.device)
+        elif aten_panel_rows is not None:
+            raise ValueError('ATen panels require their explicit numerical owner family')
         if family == RN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.paged_attention import rn_probability_bytes
             if (self.partials.numel() * self.partials.element_size() < rn_probability_bytes(self.rows)
                     or torch._C._overlaps(self.partials, self.partial)):
                 raise ValueError("RN Half-P requires its fully paid disjoint PV receive slab")
-        if (family == RN_KERNEL_FAMILY and not self.prefill and self.native_pair is not None
+        if (family in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY) and not self.prefill and self.native_pair is not None
                 and (self.native_pair.key.bits, self.native_pair.key.codec,
                      self.native_pair.value.bits, self.native_pair.value.codec) == (8, 0, 8, 0)):
             self.owned_q8_preparation = ops.prepare_owned_q8(self.device)
@@ -930,7 +941,7 @@ class OwnerBuffers:
             torch.cuda.synchronize(self.device)
         self.reference_transport_rows = self.rows
 
-    def native_run(self, rows):
+    def native_run(self, rows, *, key_capacity=None):
         """The same preallocated partial-attention pipeline for eager and graphs.
 
         The caller owns a serialized same-stream owner frame through final
@@ -944,6 +955,11 @@ class OwnerBuffers:
         views = self.native_views(rows)
         if self.comm is None or self.comm.world != 8 or self.comm.rank != self.rank:
             raise ValueError("native owner execution requires its active TP8 communicator")
+        if self.native_kernel_family == ATEN_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS
+            if self.aten_tiles is None:
+                raise RuntimeError('ATen owner frame was not prepared before serving')
+            return self.aten_tiles.run(self, rows, views, OWNER_MAX_KEYS if key_capacity is None else key_capacity)
         bits, codec = self.native_pair.key.bits, self.native_pair.key.codec
         common = {"group_start": self.rank // 4 * 4, "page_tokens": self.native_page_tokens, "layer": self.native_layer}
         if self.native_kernel_family == native.RN_KERNEL_FAMILY:
@@ -1006,6 +1022,9 @@ class OwnerBuffers:
         self.retire_native()
         if self.reference_tiles is not None:
             self.reference_tiles.release_views()
+        if self.aten_tiles is not None:
+            self.aten_tiles.close()
+            self.aten_tiles = None
         self.reference_tiles = self.owned_q8_preparation = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
@@ -1034,6 +1053,8 @@ class OwnerBuffers:
                 "lane_control_bytes": 0 if self.lane_rows is None else self.lane_rows.nbytes,
                 "layer_control_bytes": 0 if self.native_layer is None else self.native_layer.nbytes,
                 "host_descriptor_bytes": 0 if self.descriptors_host is None else self.descriptors_host.nbytes,
+                **({'aten_tensor_bytes': self.aten_tiles.requirements['persistent_bytes'],
+                    'aten_tiles': self.aten_tiles.record()} if self.aten_tiles is not None else {}),
                 "host_metadata_bytes": (0 if self.descriptor_host_words is None else
                                         sys.getsizeof(self.descriptor_host_words)
                                         + sys.getsizeof(self.descriptor_host_words.base)),
@@ -1042,8 +1063,9 @@ class OwnerBuffers:
 
     @property
     def nbytes(self):
-        return sum(value.nbytes for name, value in vars(self).items()
-                   if isinstance(value, torch.Tensor) and name != "descriptors_host")
+        return (sum(value.nbytes for name, value in vars(self).items()
+                    if isinstance(value, torch.Tensor) and name != "descriptors_host")
+                + (0 if self.aten_tiles is None else self.aten_tiles.requirements['persistent_bytes']))
 
 
 def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False):
@@ -1157,7 +1179,13 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
             owner.stage_native_descriptors(segments, layer, base, count, mtp=mtp, bucket_rows=bucket)
             if graph_manager is None:
                 owner.wait_native_inputs()
-                output = owner.native_run(bucket)[:count]
+                if family == ATEN_KERNEL_FAMILY:
+                    from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS
+                    capacity = max(min(pos + last - first, OWNER_MAX_KEYS)
+                                   for _state, _ai, first, last, pos, _owner in selected_segments)
+                    output = owner.native_run(bucket, key_capacity=capacity)[:count]
+                else:
+                    output = owner.native_run(bucket)[:count]
             else:
                 output = graph_manager.run(count, graph=buffers.owner_graph_family != "uncaptured")
             owner.wait_native_reuse()

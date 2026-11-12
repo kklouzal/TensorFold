@@ -40,6 +40,11 @@ def _gather(w: Weights, b: Buffers, part: torch.Tensor, flat: torch.Tensor, R: i
 
 def _mm(x: torch.Tensor, q: qmm.Q4, xs: torch.Tensor, out: torch.Tensor, b: Buffers, **kw) -> torch.Tensor:
     f32 = out.dtype == torch.float32              # unrounded sums: tensor-parallel partials and the head's logits
+    dense = getattr(b, "dense_linears", None)
+    if dense is not None:
+        result = dense.matmul(x, q, out)
+        if result is not None:
+            return result
     prepared = getattr(b, "padded_linears", None)
     if prepared is not None:
         result = prepared.matmul(x, q, out)
@@ -141,16 +146,22 @@ def _down_act(hc: HC, b: Buffers, R: int, streams: int, low: int, inject) -> Non
     """A hyper-connection's down projection, then SiLU and the inject gates: b.act, b.xs_act (and ``inject``). With a split K the slice sum is fused into the activation kernel (the same bits as reduce, then act)."""
 
     out = b.dn[:R] if hc.down.n == b.dn.shape[1] else b.dn_mix[:R]
-    if isinstance(hc.down, qmm.Q4):
-        got = _mm(b.normed[:R], hc.prefill_down if b.prefill and hc.prefill_down is not None else hc.down,
-                  b.xs_normed[:R], out, b, reduce=False)
-    elif b.prefill:                                   # an EXL3 pack's fp16 matrix: summed slices, any row count
-        got = hc.down(b.normed[:R], out)
-    else:
-        prepared = getattr(b, "padded_linears", None)
-        got = None if prepared is None else prepared.partials(hc.down, b.normed[:R])
-        if got is None:
-            got = hc.down.partials(b.normed[:R])      # fp32 slices [SK, R, N] that the activation sums in order
+    dense = getattr(b, "dense_linears", None)
+    got = None
+    if dense is not None:
+        got = (dense.matmul(b.normed[:R], hc.down, out) if b.prefill
+               else dense.partials(hc.down, b.normed[:R]))
+    if got is None:
+        if isinstance(hc.down, qmm.Q4):
+            got = _mm(b.normed[:R], hc.prefill_down if b.prefill and hc.prefill_down is not None else hc.down,
+                      b.xs_normed[:R], out, b, reduce=False)
+        elif b.prefill:                               # an EXL3 pack's fp16 matrix: summed slices, any row count
+            got = hc.down(b.normed[:R], out)
+        else:
+            prepared = getattr(b, "padded_linears", None)
+            got = None if prepared is None else prepared.partials(hc.down, b.normed[:R])
+            if got is None:
+                got = hc.down.partials(b.normed[:R])  # fp32 slices [SK, R, N] summed in order
     if got.dim() == 3:
         glue.hc_reduce_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
     else:
@@ -183,7 +194,18 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
             _prefill_chain(g, st, li, b, a0, a1, c, at.get(a0, ()))
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     _mm(b.mixed[:R], g.proj, b.xs_mixed[:R], b.proj[li, :R], b)
-    if b.split is not None and getattr(b, "exact_graph_handoffs", False):
+    operands = getattr(b, 'gdn_capture_operands', None)
+    if b.split is not None and getattr(b, 'exact_graph_handoffs', False) and operands is not None:
+        from tensorfold.cuda.sm70.gdn_native import batch_chain_prepared
+
+        if (g.a_log is None) == (g.a_neg is None):
+            raise ValueError('GDN requires exactly one declared decay representation')
+        # The exact owner validated these fixed descriptor views on its actor
+        # stream before capture. Submission reads their live GPU contents; no
+        # State/frame/stream-dependent Python operation belongs in this piece.
+        batch_chain_prepared(b.proj[li, :R], g.conv, g.a_log if g.a_neg is None else g.a_neg,
+            g.dt_bias, g.norm, c.eps, operands[li], b.gout[:R], b.gxs[:R], negative_decay=g.a_neg is not None)
+    elif b.split is not None and getattr(b, "exact_graph_handoffs", False):
         b.split(("gdn_chain", layer, R))
     else:
         gdn_chain(layer, w, segs, b, R)
@@ -815,9 +837,11 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
         from .input_preparation import reject_prepared
 
         reject_prepared(b, ValueError("merged target inputs must cover the admitted window on its exact dtype/device"))
-    from .compact_indexer import validate_target_indexer_frame
+    exact_capture = b.split is not None and getattr(b, 'exact_graph_handoffs', False)
+    if not exact_capture:
+        from .compact_indexer import validate_target_indexer_frame
 
-    validate_target_indexer_frame(b, segs)
+        validate_target_indexer_frame(b, segs)
     runtime = getattr(w, "dspark", None)
     dflash2 = getattr(w, "dflash2", None)
     if runtime is not None and dflash2 is not None:
@@ -829,7 +853,11 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
     try:
         if archive:
             history_runtime.begin(segs, prefill=b.prefill)
-        _kv_begin(segs)
+        # The exact owner validated this live frame and retired transfer
+        # readers before _pieces began capture. State entry is a host handoff;
+        # replay performs it again eagerly on the current actual States.
+        if not exact_capture:
+            _kv_begin(segs)
         c = w.cfg
         if input_embeddings is None:
             _embed(w, b.ids[:R], c.streams, b.h[:R])

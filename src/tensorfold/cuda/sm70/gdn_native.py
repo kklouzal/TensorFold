@@ -18,7 +18,7 @@ def extension():
     headers = [root.parent / "kernels/tensor_contracts.cuh"]
     for source in [*sources, *headers]:
         identity.update(source.name.encode() + b"\0" + source.read_bytes())
-    staged = stage_sources(sources, headers=headers)
+    staged = stage_sources(sources, headers=headers, source_root=root.parent)
     return build.load("tf_sm70_gdn_" + identity.hexdigest()[:20], staged, need=(7, 0),
                       extra_cuda_cflags=["-O3", "--fmad=false"], extra_cflags=["-O3"])
 
@@ -48,3 +48,14 @@ def prepare_batch(device, value_heads):
     import torch
     with torch.cuda.device(device):
         extension().prepare_batch(value_heads)
+
+
+def batch_chain_prepared(p, weight, decay, bias, norm, eps, operands, output, sums, *, negative_decay=False):
+    """Submit cold-validated exact-owner descriptor views, including on its capture stream.
+
+    The decoder retains the static tables and registered pointees until graphs
+    retire. Its live actor issues/validates the fresh frame before every replay.
+    Native operand geometry/alias checks remain the same batch entry contract.
+    """
+    pointers, starts = operands
+    return extension().batch_chain(p, weight, decay, bias, norm, eps, pointers, starts, output, sums, negative_decay)

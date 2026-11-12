@@ -150,9 +150,12 @@ class RoundTables:
                 end_write = max(end_write, end)
         self.native_states, self.native_buffers = tuple(records), b
 
-    def native_frame(self, segs, b):
-        """Stage before compute/capture; C1 and unregistered storage stay scalar."""
-        if (not self.native_half or len(segs) <= 1 or b.prefill or b.split is not None
+    def native_frame(self, segs, b, *, allow_single=False):
+        """Stage before submission; only the private exact owner opts C1 in."""
+        if type(allow_single) is not bool:
+            raise ValueError('native GDN single-State admission must be explicit boolean')
+        if (not self.native_half or b is not self.native_buffers
+                or len(segs) <= (0 if allow_single else 1) or b.prefill or b.split is not None
                 or b.owner_graph_family != "uncaptured"):
             return None
         selected = []
@@ -193,6 +196,8 @@ class NativeTables:
         starts = static.h32.numpy()[at:at+n+1]
         starts[:] = [begin for _, begin, _ in segs] + [rows]
         self.static, self.buffers, self.segs, self.rows = static, b, tuple(segs), rows
+        self.parities = tuple(tuple(state.cur) for state, _, _ in segs)
+        self.records = tuple(records)
         self.stream = torch.cuda.current_stream(b.h.device)
         self.pointers = static.i64.view(8, static.lin, static.slots)[:, :, :n]
         self.starts = static.i32[at:at+n+1]
@@ -202,6 +207,19 @@ class NativeTables:
             static.copied.record()
             static.queued = True
         static.native_current = weakref.ref(self)
+
+    def validate_current(self, segs, b):
+        """Validate one prepared exact replay frame without publishing it again."""
+        if (b is not self.buffers or self.static.native_current is None
+                or self.static.native_current() is not self
+                or torch.cuda.current_stream(b.h.device) != self.stream
+                or len(segs) != len(self.segs)
+                or any(state is not original or begin != first or end != last
+                    or state.conv is not record[1] or state.rec is not record[2] or state.scratch is not record[3]
+                    or tuple(state.cur) != parity
+                    for (state, begin, end), (original, first, last), parity, record
+                    in zip(segs, self.segs, self.parities, self.records))):
+            raise ValueError('native GDN replay lacks its current prepared State/parity frame')
 
     def operands(self, layer, p, output, sums):
         b = self.buffers

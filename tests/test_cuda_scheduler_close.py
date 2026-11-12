@@ -141,10 +141,12 @@ def test_failed_start_before_spawn_retains_journal_until_actor_completion_is_pro
     assert scheduler._worker_done.is_set() and not scheduler.thread.is_alive()
 
 
-def test_failed_start_after_actual_spawn_aborts_and_joins_without_decoder_access():
+@pytest.mark.parametrize("with_prepare", [False, True])
+def test_failed_start_after_actual_spawn_aborts_and_joins_without_decoder_access(with_prepare):
     decoder = Unused()
     original = decoder.arrived
-    scheduler = Scheduler(decoder)
+    calls = []
+    scheduler = Scheduler(decoder, worker_prepare=(lambda: calls.append("unexpected handoff")) if with_prepare else None)
     primary = KeyboardInterrupt("controlled accepted startup interruption")
     real_start = scheduler.thread.start
 
@@ -164,6 +166,77 @@ def test_failed_start_after_actual_spawn_aborts_and_joins_without_decoder_access
     assert scheduler.decoder is None and decoder.arrived is original
     assert scheduler._worker_done.is_set() and not scheduler.thread.is_alive()
     assert scheduler._start_error is primary and primary.__traceback__ is None
+    assert calls == []
+
+
+def test_cold_worker_handoff_completes_once_before_start_returns_and_releases_callback():
+    calls = []
+    class Owner:
+        def handoff(self):
+            calls.append(threading.current_thread())
+    owner = Owner()
+    ref = weakref.ref(owner)
+    scheduler = Scheduler(Idle(), worker_prepare=owner.handoff)
+    try:
+        scheduler.start()
+        assert calls == [scheduler.thread] and not scheduler._closing
+        del owner
+        gc.collect()
+        assert ref() is None
+    finally:
+        scheduler.close()
+    assert calls == [scheduler.thread]
+
+
+def test_cold_worker_handoff_failure_is_original_start_failure_and_joins():
+    primary = RuntimeError("controlled cold ownership failure")
+    def prepare():
+        raise primary
+    scheduler = Scheduler(Idle(), worker_prepare=prepare)
+    with pytest.raises(RuntimeError) as caught:
+        scheduler.start()
+    assert caught.value is primary and scheduler._closing
+    with pytest.raises(RuntimeError, match="worker failed during shutdown") as closed:
+        scheduler.close()
+    assert closed.value.__cause__ is primary
+    assert scheduler._worker_done.is_set() and not scheduler.thread.is_alive()
+
+
+def test_close_during_cold_handoff_cannot_reopen_admission():
+    entered, release, stop_published = threading.Event(), threading.Event(), threading.Event()
+    def prepare():
+        entered.set()
+        assert release.wait(5), "controlled handoff release deadline"
+    scheduler = Scheduler(Idle(), worker_prepare=prepare)
+    outcomes = []
+    def start():
+        try:
+            scheduler.start()
+            outcomes.append("incorrectly opened")
+        except BaseException as error:
+            outcomes.append(error)
+    original_stop = scheduler.waiting.stop
+    def stop():
+        original_stop()
+        stop_published.set()
+    scheduler.waiting.stop = stop
+    starter = threading.Thread(target=start)
+    closer = threading.Thread(target=scheduler.close)
+    starter.start()
+    try:
+        assert entered.wait(5)
+        assert scheduler._closing and outcomes == []
+        closer.start()
+        assert stop_published.wait(5)
+    finally:
+        release.set()
+        starter.join(5)
+        if closer.ident is not None:
+            closer.join(5)
+        scheduler.close()
+    assert not starter.is_alive() and not closer.is_alive()
+    assert len(outcomes) == 1 and isinstance(outcomes[0], RuntimeError)
+    assert scheduler._closing and scheduler.decoder is None
 
 
 def test_native_spawn_before_thread_started_publication_retains_owner_until_retry_join():

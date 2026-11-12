@@ -74,15 +74,22 @@ class MultiDecoder:
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False,
                  graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0,
                  full_windows: int | None = None, execution_rows: int | None = None, memory_live=None,
-                 logical_context: int | None = None, hc_graphs: bool = False, graph_memory_live=None, native_gdn_batch: bool = False) -> None:
+                 logical_context: int | None = None, hc_graphs: bool = False, graph_memory_live=None,
+                 native_gdn_batch: bool = False, native_gdn_capture: bool = False) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         if type(hc_graphs) is not bool:
             raise ValueError("local HC graph request must be boolean")
         if hc_graphs and graphs:
             raise ValueError("local HC graphs require whole-round capture to be declined")
-        if type(native_gdn_batch) is not bool or native_gdn_batch and (depth != 0 or w.mtp is not None):
+        if (type(native_gdn_capture) is not bool or native_gdn_capture and (
+                not native_gdn_batch or not graphs or w.meta.get('history_layout') != 'unique'
+                or w.meta.get('input_preparation_context') is None
+                or multi_graphs.capturable(w) is not None)):
+            raise ValueError('native GDN capture requires the private exact owned graph profile')
+        if type(native_gdn_batch) is not bool or native_gdn_batch and not native_gdn_capture and (depth != 0 or w.mtp is not None):
             raise ValueError("native GDN batch initially requires independent NONE windows")
+        self.native_gdn_capture = native_gdn_capture
         budget = (multi_graphs.budget_bytes() if graphs or hc_graphs else 0) if graph_budget is ... else graph_budget
         if hc_graphs and not callable(graph_memory_live):
             raise ValueError("local HC graphs require the existing prepared owner's physical live-reader factory")
@@ -2198,7 +2205,13 @@ class MultiDecoder:
         def prepare_decode():
             windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
             # N-gram rows are read behind the target layers before their layer.
-            return windows, stage(self.w, self.buf, windows, late=True)
+            segs = stage(self.w, self.buf, windows, late=True)
+            if self.native_gdn_capture:
+                frame = self.round_tables.native_frame(segs, self.buf, allow_single=True)
+                if frame is None:
+                    raise ValueError('fixed exact GDN registration changed before decode admission')
+                self.buf.gdn_tables = frame
+            return windows, segs
 
         context = getattr(self.buf, "input_preparation_context", None)
         windows, segs = prepare_decode() if context is None else context.prepare("decode-window", prepare_decode)
@@ -2225,7 +2238,11 @@ class MultiDecoder:
         held = [self.held.pop(s.sid, []) for s in live]
         half = self.buf.h.dtype == torch.float16
         tables = None if half else gdn_multi.Tables(self.gdn, segs, held, static=self.round_tables)
-        self.buf.gdn_tables = self.round_tables.native_frame(segs, self.buf) if half and getattr(getattr(self, "round_tables", None), "native_half", False) else tables
+        # The private capture profile already staged its fresh frame, including
+        # C1, inside decode-window above. Ordinary NONE staging stays here.
+        if not self.native_gdn_capture:
+            self.buf.gdn_tables = (self.round_tables.native_frame(segs, self.buf)
+                if half and getattr(getattr(self, "round_tables", None), "native_half", False) else tables)
         self.buf.attn_step = (None if half else attn_multi.Step(
             self.w, segs, mtp=False, tables=self.step_tables, rotor_lookup=self.buf.rotor_lookup))
         try:

@@ -209,9 +209,29 @@ def _cache_root(triton, selected, configured):
     return root.resolve()
 
 
+def _launcher_factory_source(factory):
+    """Bind the active vendor factory to the selected SDK source file.
+
+    Triton3.2 loads its backend under a dynamic ``nvidia`` module name. Importing
+    the canonical module again creates a distinct nominal class from the same
+    source, so that second class is not the launcher's ownership authority.
+    """
+    import triton
+
+    expected = (Path(triton.__file__).resolve(strict=True).parent / 'backends/nvidia/driver.py').resolve(strict=True)
+    initializer = getattr(factory, '__init__', None)
+    code, namespace = getattr(initializer, '__code__', None), getattr(initializer, '__globals__', None)
+    if (code is None or type(namespace) is not dict or type(namespace.get('__file__')) is not str
+            or Path(code.co_filename).resolve(strict=True) != expected
+            or Path(namespace['__file__']).resolve(strict=True) != expected):
+        raise ValueError('Triton3.2 active launcher factory escaped the selected SDK source')
+    data = expected.read_bytes()
+    return {'path': str(expected), 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+
+
 def _prepare_fma(root, geometry):
     import torch
-    from triton.backends.nvidia.driver import CudaLauncher
+    from triton.runtime.driver import driver
     from triton.compiler.compiler import CompiledKernel
     from triton.runtime.jit import MockTensor
     from tensorfold.families.qwen4_exp.cuda import glue
@@ -231,13 +251,16 @@ def _prepare_fma(root, geometry):
     # for the first inference, where peers could invalidate a loaded mapping.
     # Do not invoke this callable: startup prepares no model tensor/collective.
     launcher = compiled.run
-    if type(launcher) is not CudaLauncher:
+    factory = driver.active.launcher_cls
+    if type(factory) is not type or type(launcher) is not factory:
         raise ValueError('Triton3.2 FP32 kernel did not realize its actual CUDA launcher')
+    factory_source = _launcher_factory_source(factory)
     identity = _mapped_code_identity(launcher.launch, root, '__triton_launcher')
     return {'kernel': glue._moe_partial.__name__, 'signature': dict(compiled.src.signature),
             'compiler_options': dict(glue._MOE_COMPILER_OPTIONS),
             'geometry': {'hidden': hidden, 'top_k': top_k, 'slots': slots, 'block': 256, 'num_warps': 2},
-            'launcher': identity, 'scope': 'actual-production-signature-compiled-and-loaded; no-kernel-launch'}
+            'launcher': identity, 'launcher_factory_source': factory_source,
+            'scope': 'actual-production-signature-compiled-and-loaded; no-kernel-launch'}
 
 
 def prepare_driver(*, timeout_s, fma_geometry=None):

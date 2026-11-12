@@ -73,7 +73,8 @@ def test_frozen_plan_refuses_incompatible_selection(tmp_path, mutation):
     record = {'schema': pilot.SCHEMA, 'phase': 'plan', 'project_python_commit': pilot.PYTHON_COMMIT,
               'cases': pilot.cases(), 'generation_policy': {'backend': 'tl', 'enable_tuning': False,
                   'weight_propagation': False, 'compile_during_serving': False},
-              'wheel': {'sha256': pilot.WHEEL_SHA256}}
+              'wheel': {'sha256': pilot.WHEEL_SHA256}, 'padding_policy': pilot.PADDING_POLICY,
+              'physical_cases': [pilot.physical_case(case) for case in pilot.cases()]}
     if mutation == 'matrix':
         record['cases'][0]['M'] = True
     elif mutation == 'tuning':
@@ -160,9 +161,138 @@ def test_static_reference_is_refused_before_native_library_loading(tmp_path, mon
     (tmp_path / 'generated.cu').write_text(SOURCE)
     (tmp_path / 'library.so').write_bytes(b'not loaded')
     record = {'case': case, 'abi': pilot.check_abi(SOURCE),
-              'config_sha256': hashlib.sha256(json.dumps(case, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+              'config_sha256': pilot.config_identity(case), 'physical_case': pilot.physical_case(case),
+              'padding_policy': pilot.PADDING_POLICY,
               'source': pilot.file_identity(tmp_path / 'generated.cu'),
               'library': pilot.file_identity(tmp_path / 'library.so'), 'needed_libraries': ['libstdc++.so.6']}
     monkeypatch.setattr(pilot.ctypes, 'CDLL', lambda *a, **k: pytest.fail('loaded unchecked static reference'))
     with pytest.raises(ValueError, match='static unchecked'):
         pilot.load_artifact(tmp_path, record)
+
+
+def test_padding_uses_supported_physical_geometry_and_pays_retained_staging():
+    for case in pilot.cases():
+        physical = pilot.physical_case(case)
+        simt = case['M'] < 8 or case['N'] < 16
+        if simt:
+            assert physical['N'] % 8 == 0 and physical['K'] % 128 == 0
+        else:
+            assert physical == case
+        assert physical['M'] == case['M']
+    down = next(case for case in pilot.cases() if case['id'] == 'down-reference-m1')
+    assert pilot.physical_case(down)['K'] == 256
+    storage = pilot.padding_storage(down)
+    assert storage['additional_payload_bytes'] == 1*256*2 + 2560*256*2
+    assert storage['input_copy_per_call'] is True and storage['logical_output_copy_per_call'] is False
+    inject = next(case for case in pilot.cases() if case['id'] == 'hc-inject-m120')
+    assert pilot.physical_case(inject)['N'] == 8
+    assert pilot.padding_storage(inject)['logical_output_copy_per_call'] is True
+    up = next(case for case in pilot.cases() if case['id'] == 'hc-up-m5')
+    assert pilot.physical_case(up)['K'] == 384
+
+
+def test_historical_unpadded_library_is_refused_before_loading(tmp_path, monkeypatch):
+    case = next(case for case in pilot.cases() if case['id'] == 'hc-inject-m120')
+    monkeypatch.setattr(pilot.ctypes, 'CDLL', lambda *a, **k: pytest.fail('loaded unsafe historical code'))
+    with pytest.raises(ValueError, match='historical or unpadded'):
+        pilot.load_artifact(tmp_path, {'case': case})
+
+
+def test_finite_geometry_checks_actual_launch_and_rejects_unsafe_default_dimensions():
+    case = next(case for case in pilot.cases() if case['id'] == 'down-reference-m5')
+    unsafe = 'A + ((ko*128)+(tx*8)); C[by*2560+ty]=0; f<<<dim3(320, 5, 1), dim3(16, 8, 1), 0, stream>>>(A,B,C);'
+    with pytest.raises(ValueError, match='unsafe'):
+        pilot.geometry_record(case, case, unsafe)
+    physical = pilot.physical_case(case)
+    report = pilot.geometry_record(case, physical, 'matmul_m5n2560k256_f16xf16 ' + unsafe)
+    assert report['finite_reasoning']['A']['range'] == [0, 5*256-1]
+    assert report['finite_reasoning']['B']['range'] == [0, 2560*256-1]
+    assert report['native_memory_acceptance'] is False
+    assert report['status'] == 'finite_geometry_record_requires_independent_source_review_and_native_memcheck'
+
+
+@pytest.mark.parametrize('selection', [['gu-reference-m1', 'gu-reference-m1'], ['unknown'], [{}], 'gu-reference-m1'])
+def test_generation_subset_is_checked_before_payload_or_hardware(selection, monkeypatch, tmp_path):
+    monkeypatch.setattr(pilot, 'read_plan', lambda path: {'cases': pilot.cases()})
+    monkeypatch.setattr(pilot, 'verify_installed_payload', lambda path: pytest.fail('read payload for invalid subset'))
+    with pytest.raises(ValueError, match='finite unique'):
+        pilot.generate('unused', tmp_path / 'attempt', case_ids=selection, compile_timeout_s=240)
+    assert not (tmp_path / 'attempt').exists()
+
+
+@pytest.mark.parametrize('input_alignment', [8, 16])
+@pytest.mark.parametrize('operand', [0, 1, 2])
+def test_reviewed_vector_alignment_is_enforced_before_native_calls(input_alignment, operand):
+    from types import SimpleNamespace
+
+    device = SimpleNamespace(type='cuda', index=0)
+    class MetadataTensor:
+        requires_grad = False
+        def __init__(self, shape, dtype, pointer):
+            self.shape, self.dtype, self.pointer, self.device = shape, dtype, pointer, device
+        def is_contiguous(self):
+            return True
+        def is_neg(self):
+            return False
+        def is_conj(self):
+            return False
+        def data_ptr(self):
+            return self.pointer
+    fake = SimpleNamespace(Tensor=MetadataTensor, float16='Half', float32='Float')
+    values = [MetadataTensor((1, 2560), 'Half', 0x10000000),
+              MetadataTensor((160, 2560), 'Half', 0x20000000),
+              MetadataTensor((1, 160), 'Float', 0x30000000)]
+    values[operand].pointer += 2
+    native = SimpleNamespace(call=lambda *args: pytest.fail('launched a misaligned vector access'))
+    prepared = pilot.PreparedLibrary(native, None, (1, 160, 2560), {}, (input_alignment, input_alignment, 4))
+    with pytest.raises(ValueError, match='emitter alignment'):
+        pilot.call_library(prepared, *values, fake)
+
+
+def test_fixed32_preserves_logical_shapes_and_reuses_exact_m32_geometry():
+    for case in pilot.cases():
+        budget = pilot.fixed32_budget(case)
+        physical = budget['physical_kernel']
+        assert physical['M'] == 32
+        assert physical['N'] == (8 if case['role'] == 'hc-inject' else case['N'])
+        assert physical['K'] == case['K']
+        assert sum(budget['panels']) == case['M']
+        assert budget['panels'] == ([32, 32, 32, 24] if case['M'] == 120 else [case['M']])
+        frame = budget['reusable_frame_bytes']
+        assert frame['A32'] == 32*case['K']*2
+        assert frame['C32'] == 32*physical['N']*4
+        assert frame['derived_W'] == (8*case['K']*2 if case['role'] == 'hc-inject' else 0)
+        assert budget['additional_payload_bytes'] == sum(frame.values())
+
+
+def test_fixed32_counts_partial_staging_zero_crop_and_full_panel_borrowing():
+    by_id = {case['id']: case for case in pilot.cases()}
+    down = pilot.fixed32_budget(by_id['down-reference-m120'])
+    assert down['input_copy_bytes_per_call'] == 24*160*2
+    assert down['input_tail_zero_bytes_per_call'] == 8*160*2
+    assert down['output_copy_bytes_per_call'] == 24*2560*4
+    full = pilot.fixed32_budget(by_id['down-reference-m32'])
+    assert full['input_copy_bytes_per_call'] == full['input_tail_zero_bytes_per_call'] == full['output_copy_bytes_per_call'] == 0
+    inject = pilot.fixed32_budget(by_id['hc-inject-m120'])
+    assert inject['output_copy_bytes_per_call'] == 120*4*4
+    single = pilot.fixed32_budget(by_id['hc-up-m1'])
+    assert single['input_copy_bytes_per_call'] == 320*2
+    assert single['input_tail_zero_bytes_per_call'] == 31*320*2
+    assert single['output_copy_bytes_per_call'] == 10240*4
+
+
+def test_fixed32_refuses_historical_schema_before_creating_outputs(tmp_path):
+    source = tmp_path/'manifest.json'
+    source.write_text(json.dumps({'schema': 'historical', 'phase': 'generated'}))
+    with pytest.raises(ValueError, match='clean schema-v2'):
+        pilot.prepare_fixed32(source, tmp_path/'output')
+    assert not (tmp_path/'output').exists()
+
+
+def test_fixed32_requires_all_five_roles_before_creating_outputs(tmp_path):
+    source = tmp_path/'manifest.json'
+    source.write_text(json.dumps({'schema': pilot.SCHEMA, 'phase': 'generated',
+                                  'cases': [{'case': pilot.cases()[0]}]}))
+    with pytest.raises(ValueError, match='all five'):
+        pilot.prepare_fixed32(source, tmp_path/'output')
+    assert not (tmp_path/'output').exists()

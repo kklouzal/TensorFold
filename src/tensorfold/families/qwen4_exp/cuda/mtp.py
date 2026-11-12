@@ -150,7 +150,8 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
         from .input_preparation import reject_prepared
 
         reject_prepared(b, ValueError("ready media MTP input cannot fall back to placeholder-token lookup"))
-    if getattr(b, "compact_indexer_stage", None) is not None:
+    exact_capture = b.split is not None and getattr(b, 'exact_graph_handoffs', False)
+    if not exact_capture and getattr(b, "compact_indexer_stage", None) is not None:
         from .compact_indexer import validate_mtp_indexer_frame
 
         validate_mtp_indexer_frame(b, segs)
@@ -158,7 +159,11 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
     archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
     if archive:
         history_runtime.begin(segs, prefill=b.prefill, mtp=True)
-    _kv_begin(segs)
+    # Exact graph construction already performed this frame's eager entry.
+    # Ordinary and legacy captures retain their original checks; the exact
+    # replay owner re-enters the current State before every replay.
+    if not exact_capture:
+        _kv_begin(segs)
     m = w.mtp
     if next_inputs is None:
         _embed(w, b.ids[:n], 1, b.mtp_e[:n])

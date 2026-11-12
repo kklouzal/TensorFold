@@ -52,6 +52,10 @@ def free_bytes() -> int:
     return int(room) if room is not None else int(torch.cuda.mem_get_info()[0])
 
 
+def _piece_memory_snapshot():
+    return free_bytes(), int(torch.cuda.memory_allocated()), int(torch.cuda.memory_reserved())
+
+
 def prepare_capture() -> None:
     """Return ordinary warmup cache before choosing physical room; private graph cache is never credited."""
     torch.cuda.synchronize()
@@ -214,9 +218,14 @@ class RoundGraphs:
             history_runtime.submitted(segs, prefill=b.prefill, mtp=mtp)
 
     # -- capture -----------------------------------------------------------------------------------------------
-    def _pieces(self, run, b, *, split=True) -> Pieces:
+    def _pieces(self, run, b, *, split=True, observer=None) -> Pieces:
         """``run()`` captured in pieces, one ending at each ``b.split`` insert. Only a begun capture is ended, once;
-        a failure inside ``run`` stays the raised error, with a failed end of its open capture attached."""
+        a failure inside ``run`` stays the raised error, with a failed end of its open capture attached.
+
+        An optional startup observer receives ``(index, terminating_insert, observation)`` after a successful end,
+        outside capture and before the next begin. Measurements are signed, unsynchronized boundary deltas:
+        asynchronous work or other device users can affect attribution. No observations are retained here.
+        """
 
         pieces = Pieces()
         pending = getattr(self, "pending", None)
@@ -224,18 +233,31 @@ class RoundGraphs:
             pending = self.pending = []
         pending.append(pieces)                          # retain native owners before any fallible capture call
         open_graph: list[torch.cuda.CUDAGraph] = []      # the piece being captured (begun, not yet ended)
+        boundary = None
 
         def begin() -> None:
+            nonlocal boundary
+            if observer is not None:
+                boundary = _piece_memory_snapshot()
             graph = torch.cuda.CUDAGraph()
             open_graph.append(graph)
             pieces.graphs.append(graph)
             graph.capture_begin(pool=self.pool, capture_error_mode="thread_local")
 
-        def end() -> None:
+        def end(terminating_insert=None) -> None:
             open_graph.pop().capture_end()               # popped first: a failed end is never retried
+            if observer is not None:
+                after = _piece_memory_snapshot()
+                observer(len(pieces.graphs) - 1, terminating_insert,
+                         {"physical_delta_bytes": boundary[0] - after[0],
+                          "allocated_delta_bytes": after[1] - boundary[1],
+                          "reserved_delta_bytes": after[2] - boundary[2],
+                          "physical_free_bytes": after[0], "allocated_bytes": after[1],
+                          "reserved_bytes": after[2],
+                          "attribution": "unsynchronized boundary delta; asynchronous or external work may contribute"})
 
         def insert_piece(insert) -> None:
-            end()
+            end(insert)
             pieces.inserts.append(insert)
             begin()
 

@@ -604,7 +604,8 @@ def test_eight_rank_commit_defers_http_migration_between_final_vote_and_publicat
 
 
 @pytest.mark.torch
-@pytest.mark.parametrize("fact", ["fp16-policy", "configured-power", "qsa-policy", "owned-expert-native", "deleted-library"])
+@pytest.mark.parametrize("fact", ["fp16-policy", "configured-power", "qsa-policy", "owned-expert-native",
+                                  "owner-preparation-numerics", "deleted-library"])
 @pytest.mark.parametrize("uuid_form", ["torch", "nvidia"])
 def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_operation(
         packet, monkeypatch, fact, uuid_form):
@@ -676,6 +677,18 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
             return
         old_numerics = dict(engine._execution_bind_local["numerics"])
         assert "owned_expert_native" not in old_numerics
+        assert "owner_preparation_numerics" not in old_numerics
+        if fact == "owner-preparation-numerics":
+            # Registration adds draft-vocabulary facts after this raw observer.
+            # Compare like observation boundaries, preserving all other fields.
+            original_observed = _RUNTIME_OBSERVER(engine)[1]
+            selection = {"dense_projections": {"backend": "cutlass", "geometry": "direct",
+                                                "roles": ["decode", "prefill"]}}
+            engine._owner_preparation = NS(numerical_selection=selection)
+            observed = _RUNTIME_OBSERVER(engine)[1]
+            assert observed == {**original_observed, "owner_preparation_numerics": selection}
+            assert identity.digest(observed) != identity.digest(original_observed)
+            return
         if fact == "owned-expert-native":
             from tensorfold.families.qwen4_exp.expert_partition import ExpertPartition
             from tensorfold.families.qwen4_exp.cuda.owned_experts import Plan

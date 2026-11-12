@@ -30,6 +30,12 @@ def _owned_graph_request(*, sm70, gguf, owned, adaptive, tp, etp, indexer_histor
             and indexer_history == 'gpu')
 
 
+def _native_gdn_capture_request(*, requested, batch_region, graphs, exact_owner, method, cached_experts, vision):
+    """The existing native batch ABI is captured only in the fixed owned region."""
+    return bool(requested and batch_region and graphs and exact_owner and method in ('none', 'mtp')
+                and cached_experts is None and not vision)
+
+
 def vision_workspace() -> int:
     import os
 
@@ -692,14 +698,21 @@ class FlashNextEngine:
             and (owner_specification is None or owner_specification['graph_family'] == 'uncaptured'
                  and owner_specification.get('reference_arithmetic') is None)
             and int(text.get('hc_count', 4)) == 4 and int(text['hidden_size']) == 2560)
-        native_gdn_batch = (concurrent and self._owned_expert_requested and not managed
-            and not self._owned_expert_admin_requested and source_is_gguf and tp == 8 and int(depth) == 0
+        native_gdn_batch_region = (concurrent and self._owned_expert_requested and not managed
+            and not self._owned_expert_admin_requested and source_is_gguf and tp == 8
             and history_placement is not None and self.sm70_profile == "reference"
             and int(text["linear_num_key_heads"]) // tp == 2
             and int(text["linear_num_value_heads"]) // tp == 6
             and int(text["linear_key_head_dim"]) == int(text["linear_value_head_dim"]) == 128
             and int(text["linear_conv_kernel_dim"]) == 4
             and (owner_specification is None or owner_specification["graph_family"] == "uncaptured"))
+        native_gdn_capture = _native_gdn_capture_request(
+            requested=owner_specification is not None and owner_specification.get('native_gdn_capture', False),
+            batch_region=native_gdn_batch_region,
+            graphs=graphs, exact_owner=owned_graph_request, method=self.method_geometry.method,
+            cached_experts=vram_experts, vision=vision)
+        self._native_gdn_capture_enabled = native_gdn_capture
+        native_gdn_batch = native_gdn_batch_region and (int(depth) == 0 or native_gdn_capture)
         moe_selection_eligible = (self._owned_expert_requested and not managed and source_is_gguf and tp == 8
             and self.sm70_profile == "reference" and int(text["num_experts"]) == 512
             and int(text["num_experts_per_tok"]) == 10
@@ -1009,6 +1022,8 @@ class FlashNextEngine:
                         # free. Only future temporary work remains unallocated.
                         total += (sum(a["persistent_bytes"] for a in arenas) if owner_preparation is None else 0)
                         total += max(a["temporary_bytes"] for a in arenas)
+                        if owner_preparation is not None:
+                            total += owner_preparation.additional_temporary_bytes
                     return total
 
                 def breakdown(capacity):
@@ -1702,6 +1717,11 @@ class FlashNextEngine:
                   f"{self.vision.weight_bytes / 2**30:.2f} GiB tower with {vision_workspace() / 2**30:.2f} GiB of "
                   f"workspace reserved{'; https URLs allowed' if vision_urls else ''}", flush=True)
         w.meta["media_inputs_enabled"] = self._media_inputs_enabled
+        if owner_preparation is not None:
+            # Resolve actual weight contracts and their opaque CUDA residency
+            # before any State allocation or numerical namespace publication.
+            owner_preparation.bind_dense_weights(self, w)
+            self.capacity_plan["owner_preparation"] = owner_preparation.record()
         if self.position_profile is not None:
             self._bind_coordinate_profile(w)
             from .input_preparation import install_input_preparation
@@ -1728,6 +1748,7 @@ class FlashNextEngine:
                                       kv_pair=self.kv_pair, share=share, vision=self.vision,
                                       prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace,
                                       graphs=graphs, graph_budget=graph_request, hc_graphs=hc_graphs, native_gdn_batch=native_gdn_batch,
+                                      **({"native_gdn_capture": True} if native_gdn_capture else {}),
                                       graph_memory_live=(lambda extra: partial(owner_preparation.graph_live_bytes,
                                           additional_outside_active_bytes=extra)) if hc_graphs else None,
                                       graph_header_room=max(0, self.capacity_plan["budget_bytes"]
@@ -1738,7 +1759,10 @@ class FlashNextEngine:
                                       **({"full_windows": resident_windows} if resident_windows is not None else {}))
             self.capacity_plan["native_gdn_batch"] = {"enabled": native_gdn_batch,
                 "implementation": "sm70-gdn-state-batch-v1", "pointer_fields": 8 if native_gdn_batch else 2,
-                "scalar_C1": True, "qualification": "candidate; pinned binary/model/performance gates pending"}
+                "scalar_C1": not native_gdn_capture,
+                **({"native_gdn_capture": True, "capture": "prepared-native-gdn-operands-v1"}
+                   if native_gdn_capture else {}),
+                "qualification": "candidate; pinned binary/model/performance gates pending"}
             if dflash_plan is not None:
                 planned = self.capacity_plan["dflash2"]["resources"]
                 windows = sum(state.dflash2.nbytes for state in self.multi.states)
@@ -2001,7 +2025,9 @@ class FlashNextEngine:
         # warmup must finish on every rank before installing those semantics.
         if self.concurrent and not managed and (self.comm is None or self.rank == 0):
             self.scheduler = Scheduler(self.tp_decoder if self.comm is not None else self.multi,
-                                       max_streams=streams, **self._admission_options)
+                                       max_streams=streams, **self._admission_options,
+                                       **({"worker_prepare": owner_preparation.handoff_to_current_thread}
+                                          if owner_preparation is not None and owner_preparation.dense_owner is not None else {}))
         if self.scheduler is not None and not managed:
             self.scheduler.start()            # warmup's synthetic streams belong solely to the constructor
 
@@ -2247,6 +2273,10 @@ class FlashNextEngine:
             owned = weights.meta.get("owned_expert_plan")
             if owned is not None:
                 contract["owned_expert_native"] = list(owned.identity)
+            preparation = getattr(self, "_owner_preparation", None)
+            selection = None if preparation is None else preparation.numerical_selection
+            if selection is not None:
+                contract["owner_preparation_numerics"] = selection
             local.update(contract_identity=digest(contract), authority=authority)
             return {"rank": self.rank, "contract": local["contract_identity"],
                     "nonce": secrets.token_hex(32) if self.rank == 0 else None}

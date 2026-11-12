@@ -77,8 +77,7 @@ __global__ void quantize(const half* h,const void* ids,bool wide,Q81* q,int* sta
  if(!lane) q[at].ds=__floats2half2_rn(invalid?0.f:d,invalid?0.f:sum);
 }
 __device__ int iq_value(int code) {
- constexpr int table[16]={TF_GGUF_IQ4NL_VALUES};
- return table[code];
+ return int(tf_kvalues_iq4nl[code]);
 }
 __device__ float raw_dot(const uint8_t* row,int group,const Q81& q,int column_offset) {
  const uint8_t* p=row+(column_offset/32+group)*18;

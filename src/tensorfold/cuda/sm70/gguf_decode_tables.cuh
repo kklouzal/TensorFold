@@ -3,8 +3,6 @@
 #pragma once
 #include <cstdint>
 
-#define TF_GGUF_IQ4NL_VALUES -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113
-
 static const __device__ uint8_t tf_ksigns_iq2xs[128] = {
     0, 129, 130, 3, 132, 5, 6, 135,
     136, 9, 10, 139, 12, 141, 142, 15,

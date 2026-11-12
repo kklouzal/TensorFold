@@ -768,9 +768,24 @@ def commit_trace_receipts(output, source, spec):
     return records
 
 
+def cublas_workspace_configuration(selection):
+    """Host-only selection of the pinned Torch public workspace policy."""
+    if type(selection) is not str or selection not in ("inherit", "on", "off"):
+        raise ValueError("cuBLAS workspace cache requires inherit, on or off")
+    environment = {} if selection == "inherit" else {"TORCH_CUBLAS_WORKSPACE_CACHE": "1" if selection == "on" else "0"}
+    return {"selection": selection, "environment": environment,
+            "scope": "unchanged selected image environment" if selection == "inherit" else "explicit diagnostic runtime configuration"}
+
+
 def model(root, output, selected_image, settings_path, installed_check, cpus, memory, timeout, startup_timeout, smoke_only,
-          diagnostic_commit_events=None, diagnostic_commit_nvtx=False):
+          diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False):
+    workspace = cublas_workspace_configuration(cublas_workspace_cache)
+    if type(diagnostic_graph_pieces) is not bool:
+        raise ValueError("graph piece diagnostic selection must be boolean")
+    configuration_diagnostic = cublas_workspace_cache != "inherit" or diagnostic_graph_pieces
     commit = commit_diagnostic_spec(diagnostic_commit_events, diagnostic_commit_nvtx)
+    controller_path = Path(__file__).resolve()
+    controller_source = {"path": str(controller_path), **identity(controller_path)}
     record = frozen(root)
     image_binding = immutable_image(selected_image)
     accepted = installed_check_receipt(installed_check, record["source_uid"], image_binding["id"])
@@ -825,6 +840,8 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             "-e", "TF_GGUF_ASSETS_DIR=/cache/gguf_assets", "-e", "TENSORFOLD_SM70_PROFILE=reference",
             "-e", "TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN=grouped-v1",
             "-e", "TENSORFOLD_PREFILL_ROWS=" + str(settings["prefill_rows"]),
+            *(["-e", "TENSORFOLD_EXACT_GRAPH_PIECE_DIAGNOSTIC=1"] if diagnostic_graph_pieces else []),
+            *[item for key, value in workspace["environment"].items() for item in ("-e", key + "=" + value)],
             "-v", str(models) + ":/models:ro", "-v", str(root / "source/tools") + ":/tools:ro",
             "-v", str(operator) + ":/operator:ro", "-v", str(output) + ":/evidence:rw",
             "-v", str(cache) + ":/cache:rw", "-w", "/tools", "--entrypoint", qualifier[0],
@@ -833,8 +850,10 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             "manifest": identity(operator / "profile.json"), "image_binding": image_binding,
             "source_uid": record["source_uid"], "qualification": False, "P3_accepted": False,
             "installed_check": accepted,
-            "commit_diagnostic": commit, "diagnostic_only": commit is not None,
-            "P3_valid": False if commit is not None else None,
+            "cublas_workspace_cache": workspace, "controller_source": controller_source,
+            "diagnostic_graph_pieces": diagnostic_graph_pieces,
+            "commit_diagnostic": commit, "diagnostic_only": commit is not None or configuration_diagnostic,
+            "P3_valid": False if commit is not None or configuration_diagnostic else None,
             "source_matrix": {"path": str(plan_path), **identity(plan_path)},
             "scope": "one complete candidate arm; matched repetition and quality acceptance are separate"})
     owner = OwnedContainer()
@@ -901,14 +920,21 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             raise RuntimeError("post-run compute contexts remain; no P3 acceptance")
     except BaseException as error:
         errors.append(error)
+    try:
+        if identity(controller_path) != {key: controller_source[key] for key in ("bytes", "sha256")}:
+            raise RuntimeError("campaign controller source changed during the owned model lifetime")
+    except BaseException as error:
+        errors.append(error)
     failed = owner.exit_code(primary) or bool(errors)
     try:
         publish(output / "model-result.json", {"cid": owner.cid, "state": owner.state,
                 "exit_code": int(failed), "primary": None if primary is None else repr(primary),
                 "cleanup": [repr(error) for error in errors], "elapsed_s": time.monotonic() - started,
                 "graph_use": graph_evidence,
-                "commit_diagnostic": commit, "diagnostic_only": commit is not None,
-                "P3_valid": False if commit is not None else None,
+                "cublas_workspace_cache": workspace, "controller_source": controller_source,
+            "diagnostic_graph_pieces": diagnostic_graph_pieces,
+                "commit_diagnostic": commit, "diagnostic_only": commit is not None or configuration_diagnostic,
+                "P3_valid": False if commit is not None or configuration_diagnostic else None,
                 "commit_trace": commit_evidence,
                 "quality_accepted": False, "P3_accepted": False})
     except BaseException as error:
@@ -946,6 +972,10 @@ def main(argv=None):
             item.add_argument("--installed-check", type=Path, required=True)
             item.add_argument("--startup-timeout", type=int, default=600)
             item.add_argument("--smoke-only", action="store_true", help="serial/MTP known answers only; no benchmark timings")
+            item.add_argument("--diagnostic-graph-pieces", action="store_true",
+                              help="startup per-piece signed allocation observations; unsynchronized snapshots, diagnostic only, never P3")
+            item.add_argument("--cublas-workspace-cache", choices=("inherit", "on", "off"), default="inherit",
+                              help="host-only pinned Torch workspace configuration; explicit values are diagnostic, never P3")
             item.add_argument("--diagnostic-commit-events", type=int,
                               help="finite commit-batch event credit; smoke or C1/C8 diagnostic only, never P3")
             item.add_argument("--diagnostic-commit-nvtx", action="store_true",
@@ -983,7 +1013,9 @@ def main(argv=None):
     else:
         model(args.source.absolute(), args.out.absolute(), args.image, args.settings.absolute(), args.installed_check.absolute(),
               args.cpus, args.memory, args.timeout, args.startup_timeout, args.smoke_only,
-              args.diagnostic_commit_events, args.diagnostic_commit_nvtx)
+              args.diagnostic_commit_events, args.diagnostic_commit_nvtx,
+              cublas_workspace_cache=args.cublas_workspace_cache,
+              diagnostic_graph_pieces=args.diagnostic_graph_pieces)
     return 0
 
 

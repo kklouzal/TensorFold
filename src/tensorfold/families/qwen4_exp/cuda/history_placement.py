@@ -189,6 +189,13 @@ def native_owner_workspace_bytes(rows: int) -> dict[str, int]:
             "host_metadata_bytes": metadata, "host_staging_bytes": descriptors + metadata}
 
 
+def attention_temporary_bytes(heads, dims):
+    """The incumbent bounded128-key attention tensor envelope, one authority."""
+    _int(heads, 'local query heads', 1)
+    _int(dims, 'head dimensions', 1)
+    return 128 * dims * 64 + 4 * heads * (128 + dims) * 32
+
+
 def owner_workspace_bytes(text, rows: int, world: int = 8, *, native: bool = False) -> dict[str, int]:
     """Construction-derived owner slabs and a conservative ATen work envelope.
 
@@ -230,7 +237,7 @@ def owner_workspace_bytes(text, rows: int, world: int = 8, *, native: bool = Fal
     pool_groups = min(pooled, (rows + ratio - 1) // ratio)
     pool_work = pool_groups * ratio * index_dim * 16 + max(pool_groups, min(pooled, 16)) * index_dim * 64
     indexer = pool_work + chunk * pooled * 32
-    attention = 128 * dims * 64 + 4 * heads * (128 + dims) * 32
+    attention = attention_temporary_bytes(heads, dims)
     prefix = 128 * (2 * dims * 2 + 2 * index_dim)
     return {"persistent_bytes": persistent, "host_staging_bytes": native_bytes["host_staging_bytes"],
             "host_metadata_bytes": native_bytes["host_metadata_bytes"],

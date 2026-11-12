@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from functools import partial
 from tensorfold.cleanup import finish, raise_failures
 from .owner_execution import (
-    FULL_COLLECTIVE, HEAD_COLLECTIVE, KERNEL_FAMILY, RN_KERNEL_FAMILY,
+    FULL_COLLECTIVE, HEAD_COLLECTIVE, KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY,
     NATIVE_FAMILIES, UNCAPTURED, graph_family_for, row_buckets,
 )
 
@@ -45,12 +45,18 @@ class ArithmeticRequest:
 def parse_preparation(value):
     if value is None:
         return None
+    # Temporary source-integration boundary for the minimal graph diagnostic:
+    # native ATen additions are retained as an exact read-only WIP patch and
+    # are not part of this immutable diagnostic's compiled native module.
+    if isinstance(value, dict) and value.get('kernel_family') == ATEN_KERNEL_FAMILY:
+        raise ValueError('ATen owner family remains unselected WIP outside this minimal graph diagnostic')
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
-            or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block"})
+            or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
+                                               "aten_tiles", "dense_projections", "native_gdn_capture"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
-            or value["graph_family"] not in (UNCAPTURED, graph_family_for(value["kernel_family"]))
+            or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
             or type(value["trial"]) is not bool or type(value["graph_budget_bytes"]) is not int
             or value["graph_budget_bytes"] < 0
             or (value["graph_family"] != UNCAPTURED) != (value["graph_budget_bytes"] > 0)):
@@ -67,11 +73,33 @@ def parse_preparation(value):
             raise ValueError("a native execution role requires a nonempty bounded bucket list")
         row_buckets(rows[-1], rows)
     request = ArithmeticRequest.parse(value.get("reference_arithmetic"))
+    aten = value['kernel_family'] == ATEN_KERNEL_FAMILY
+    tiles = value.get('aten_tiles')
+    if aten:
+        if (type(tiles) is not dict or set(tiles) != {'panel_rows', 'tensor_budget_bytes'}
+                or type(tiles['panel_rows']) is not int or not 1 <= tiles['panel_rows'] <= 256
+                or type(tiles['tensor_budget_bytes']) is not int or not 0 < tiles['tensor_budget_bytes'] < 2**63
+                or not value['trial'] or value['graph_family'] != UNCAPTURED or request is not None):
+            raise ValueError('ATen owner trial needs explicit panels/tensor credit and uncaptured owner execution')
+    elif tiles is not None:
+        raise ValueError('ATen tile credits require their explicit attention family')
+    dense = None
+    if value.get('dense_projections') is not None:
+        from .dense_projections import Selection
+        dense = Selection.parse(value['dense_projections'])
+    if dense is not None and not value['trial']:
+        raise ValueError('dense projection selection is an explicit unqualified trial')
+    capture = value.get('native_gdn_capture', False)
+    if type(capture) is not bool or capture and not value['trial']:
+        raise ValueError('native GDN capture requires an explicit boolean unqualified trial')
     return {"kernel_family": value["kernel_family"], "graph_family": value["graph_family"],
             "graph_budget_bytes": value["graph_budget_bytes"], "trial": value["trial"],
             "collective_family": value.get("collective_family", FULL_COLLECTIVE),
             "row_buckets": deepcopy(buckets),
             **({"rn_heads_per_block": value["rn_heads_per_block"]} if rn else {}),
+            **({'aten_tiles': dict(tiles)} if aten else {}),
+            **({'dense_projections': dense.as_dict()} if dense is not None else {}),
+            **({'native_gdn_capture': True} if capture else {}),
             **({"reference_arithmetic": {"policy": request.policy, "graph_budget_bytes": request.graph_budget_bytes}}
                if request is not None else {})}
 
@@ -111,6 +139,20 @@ class OwnerPreparation:
         self.allocations = {}
         self.private_spare_bytes = None
         self.outside_active_bytes = None
+        self.aten_requirements, self.aten_operator_identity = {}, None
+        self.aten_temporary_extra_bytes = 0
+        if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.attention_backends import owner_requirements
+            self.aten_requirements = {role: owner_requirements(rows, self.specification['aten_tiles']['panel_rows'])
+                                      for role, rows in self.role_rows.items()}
+            needed = (sum(row['persistent_bytes'] for row in self.aten_requirements.values())
+                      + max(row['operator_temporary_bytes'] for row in self.aten_requirements.values()))
+            if needed > self.specification['aten_tiles']['tensor_budget_bytes']:
+                raise MemoryError('ATen owner roles exceed their aggregate explicit tensor credit')
+        self.dense_owner = None
+        self.dense_forecast = None
+        self.dense_binding_started = False
+        self.dense_binding_memory = None
 
     @staticmethod
     def _memory(torch, device):
@@ -144,11 +186,32 @@ class OwnerPreparation:
         import json
 
         contract = json.loads(canonical_runtime_json(contract, max_bytes=4 << 20))
+        if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS
+            from .history_placement import attention_temporary_bytes
+            if ((pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec) != (8, 0, 8, 0)
+                    or contract['index_budget'] + contract['index_ratio'] - 1 != OWNER_MAX_KEYS):
+                raise ValueError('ATen owner family requires its original Q8/2051-key selected profile')
+            baseline = attention_temporary_bytes(contract['heads'] // engine.tp, contract['head_dim'])
+            self.aten_temporary_extra_bytes = max(0, max(
+                row['operator_temporary_bytes'] for row in self.aten_requirements.values()) - baseline)
+        dense_selection = None
+        if self.specification.get('dense_projections') is not None:
+            from .dense_projections import Selection, forecast
+            dense_selection = Selection.parse(self.specification['dense_projections'])
+            self.dense_forecast = forecast(dense_selection, text, self.role_rows, world=engine.tp)
         primary = None
         try:
             def prepared_contract():
                 from tensorfold.cuda.sm70.foundation_headers import selected_identity
 
+                if self.numerical_selection is not None and (
+                        getattr(engine, 'position_profile', None) is None
+                        or getattr(getattr(engine, 'method_geometry', None), 'method', None) not in ('none', 'mtp')):
+                    raise ValueError('new owner numerics require the bound NONE/MTP coordinate region')
+                if self.specification.get('native_gdn_capture', False) and not getattr(
+                        engine, '_native_gdn_capture_enabled', False):
+                    raise ValueError('native GDN capture requires the fixed private exact graph region')
                 self.source_foundation = selected_identity()
                 if self.reference_tiles_requested:
                     from tensorfold.cuda.sm70.reference_owner_tiles import prepare
@@ -158,6 +221,10 @@ class OwnerPreparation:
                     from tensorfold.cuda.sm70.paged_attention import rn_preparation_identity
                     self.rn_numerical_identity = deepcopy(rn_preparation_identity())
                     arithmetic_source["rn_numerical_identity"] = self.rn_numerical_identity
+                if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
+                    from tensorfold.cuda.sm70.attention_backends import operator_identity
+                    self.aten_operator_identity = operator_identity()
+                    arithmetic_source['aten_operator_identity'] = self.aten_operator_identity
                 if self.reference_arithmetic_request is not None:
                     from . import reference_arithmetic
                     import hashlib
@@ -174,6 +241,13 @@ class OwnerPreparation:
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
+            if dense_selection is not None:
+                def dense_prepare():
+                    from .dense_projections import Owner
+                    owner = Owner.prepare(dense_selection, text, self.role_rows, device, world=engine.tp,
+                        register=lambda owner: setattr(self, 'dense_owner', owner))
+                    return owner.record()
+                self._phase(engine, 'dense-projections-prepare', dense_prepare, may_refuse=False)
             if self.specification["collective_family"] == HEAD_COLLECTIVE:
                 def head_owner():
                     from tensorfold.cuda.comm import NCCL
@@ -212,7 +286,9 @@ class OwnerPreparation:
                         register=lambda owner: self.workspaces.__setitem__(role, owner),
                         **({"reference_preparation": self.reference_preparation} if self.reference_tiles_requested else {}))
                     owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
-                    owner.configure_native_family(self.specification["kernel_family"], self.specification.get("rn_heads_per_block"))
+                    owner.configure_native_family(self.specification["kernel_family"], self.specification.get("rn_heads_per_block"),
+                        **({'aten_panel_rows': self.specification['aten_tiles']['panel_rows']}
+                           if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY else {}))
                     owner.configure_native_transport(self.specification["collective_family"],
                                                      self.head_comm or engine.comm)
                     return owner.allocation_record()
@@ -344,6 +420,64 @@ class OwnerPreparation:
             trial={"kernel_family": self.specification["kernel_family"], "graph_family": self.specification["graph_family"]}
                   if self.specification["trial"] else None)
         decoder.apply_execution_family()
+        if self.dense_owner is not None:
+            if not self.dense_owner.bound_weights:
+                raise RuntimeError('dense projection shapes must bind before State construction')
+            self.dense_owner.adopt(weights, decoder)
+
+    @property
+    def numerical_selection(self):
+        selected = {}
+        if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS, POLICY
+            selected['attention'] = {'family': ATEN_KERNEL_FAMILY, 'operator': POLICY,
+                'max_keys': OWNER_MAX_KEYS, 'panel_rows': self.specification['aten_tiles']['panel_rows']}
+        if self.specification.get('dense_projections') is not None:
+            from .dense_projections import Selection
+            selected['dense_projections'] = Selection.parse(self.specification['dense_projections']).numerical_identity
+        return selected or None
+
+    @property
+    def additional_temporary_bytes(self):
+        dense = self.dense_forecast
+        if dense is None:
+            return self.aten_temporary_extra_bytes
+        return (self.aten_temporary_extra_bytes + dense['future_temporary_bytes']
+                + (dense['cold_temporary_bytes'] if self.dense_binding_memory is None else 0))
+
+    def bind_dense_weights(self, engine, weights):
+        """Isolate post-weight/pre-State code residency from the early baseline."""
+        if self.dense_owner is None:
+            return
+        if not self.prepared or self.closed or self.dense_binding_started:
+            raise RuntimeError('dense weights require one live prepared pre-State binding')
+        self.dense_binding_started = True
+        stage = 'dense-projections-weight-binding'
+        def bind():
+            record = self.dense_owner.bind_weights(weights)
+            memory = record['binding_memory']
+            for name in ('committed_delta_bytes', 'outside_active_delta_bytes'):
+                if type(memory.get(name)) is not int or memory[name] < 0:
+                    raise ValueError('dense binding residency is unproven; State admission must stop')
+            self.dense_binding_memory = deepcopy(memory)
+            if self.outside_active_bytes is None:
+                raise ValueError('dense binding requires the original absolute-cap preparation proof')
+            self.outside_active_bytes += memory['outside_active_delta_bytes']
+            return record
+        from .execution_identity import _fatal, _retire_store
+        self._phase(engine, stage, bind, may_refuse=False)
+        try:
+            _retire_store(engine, _CHANNEL, stages=(stage,))
+        except BaseException as primary:
+            try:
+                _fatal(engine, primary)
+            except BaseException as containment:
+                raise_failures(primary, [containment])
+            raise
+
+    def handoff_to_current_thread(self):
+        if self.dense_owner is not None:
+            self.dense_owner.handoff_to_current_thread()
 
     def committed_bytes(self):
         """Settled nonreusable preallocation, excluding ordinary reusable cache."""
@@ -358,7 +492,10 @@ class OwnerPreparation:
         outside = physical - reserved
         if active < 0 or outside < 0:
             return None  # Competing/freeing activity cannot establish a positive owner charge.
-        return active + outside + sum(graph.private_spare_bytes for graph in captures)
+        if self.dense_binding_started and self.dense_binding_memory is None:
+            return None
+        extra = 0 if self.dense_binding_memory is None else self.dense_binding_memory['committed_delta_bytes']
+        return active + outside + sum(graph.private_spare_bytes for graph in captures) + extra
 
     def live_bytes(self):
         """Credit ordinary spare only after excluding proved private-pool ownership."""
@@ -413,6 +550,10 @@ class OwnerPreparation:
                    if self.reference_arithmetic_request is not None else {}),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
+                **({'aten_operator_identity': deepcopy(self.aten_operator_identity),
+                    'aten_tensor_requirements': deepcopy(self.aten_requirements)}
+                   if self.aten_requirements else {}),
+                **({'dense_projections': self.dense_owner.record()} if self.dense_owner is not None else {}),
                 "allocator_accounting": "exclude-proved-private-spare; physical-only-when-unavailable",
                 **({"reference_tile_preparation": dict(self.reference_preparation)}
                    if self.reference_preparation is not None else {})}
@@ -428,6 +569,9 @@ class OwnerPreparation:
                 "proved_nonreusable_commitment_bytes": self.committed_bytes(),
                 "private_pool_spare_bytes": self.private_spare_bytes,
                 "outside_active_torch_commitment_bytes": self.outside_active_bytes,
+                'additional_operator_temporary_bytes': self.additional_temporary_bytes,
+                **({'dense_binding_memory': deepcopy(self.dense_binding_memory)}
+                   if self.dense_binding_started else {}),
                 "graphs": {role: graph.record() for role, graph in self.graphs.items()},
                 "reference_arithmetic": {role: graph.record() for role, graph in self.reference_arithmetic.items()},
                 "qualification_trial": self.specification["trial"],
@@ -442,6 +586,8 @@ class OwnerPreparation:
             construction.retire_bindings(self)
         finish((graph.close for graph in (*self.graphs.values(), *self.reference_arithmetic.values())))
         finish((owner.close for owner in self.workspaces.values()))
+        if self.dense_owner is not None:
+            self.dense_owner.close()
         if self.head_comm is not None:
             if construction is not None:
                 construction.retire_bindings(self.head_comm)
