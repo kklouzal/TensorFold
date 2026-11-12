@@ -62,6 +62,60 @@ decoded-tile CUDA passes qualify those integration gates.
 Outer exact graph pieces still keep owner attention as a live handoff; this
 family adds no padded State envelope or admission reduction.
 
+## Private sealed Flash attention owner
+
+`flash-v100-q8-normalized-lse-owner-v1` is an explicit unqualified attention
+family for the bound NONE/MTP coordinate region and original homogeneous Q8
+histories. It accepts only uncaptured owner execution, `trial: true`, zero
+owner graph allowance, and a `flash_tiles` object with exactly these fields:
+
+| Field | Contract |
+| --- | --- |
+| `panel_rows` | Integer1..256, fixed before preparation |
+| `tensor_budget_bytes` | Explicit integer credit covering the complete aggregate role forecast |
+| `native_manifest` | `/operator/flash-v100/manifest.json` in the private campaign |
+| `native_manifest_sha256` | Exact lowercase SHA256 returned by the trusted seal producer |
+
+Compute the aggregate credit as the sum of
+`flash_owner_requirements(rows, panel_rows)['persistent_bytes']` over the actual
+decode/MTP/prefill role envelopes. No budget or quality margin is inferred. Each
+role has one fixed `P=min(role_rows,panel_rows)` native owner, including source
+and private compacted KV, Q/output/LSE, lengths and mask/status scratch. Cold
+extension loading, warmup, allocator reserve and driver residency are measured
+before State admission; zero operator temporary does not mean zero opaque cost.
+Ghost query/mask rows pad only private compute. Descriptor gathering and output
+publication retain their active prefixes and original State failure authority.
+
+Build the exact pinned component with `tools/build_flash_v100_forward.py`, then
+use `--source-root FOREIGN --seal-from BUILD/result.json --seal-output NEWDIR`
+in the matching GPU-hidden SDK to seal its existing compiled ELF. The seal
+includes twenty unchanged foreign inputs, runtime primitive/bridge sources,
+ELF, compile receipt and current seal producer. The original compile-producer
+hash and seal-derived static Torch/CUDA ABI metadata remain distinct. The
+authoritative Torch-absent validator authenticates the manifest, sources,
+binary and profile before native import; cold runtime checks actual SDK ABI and
+requires the operator mount read-only. The manifest/profile identities enter
+the all-rank preparation contract and State/prefix numerical identity.
+
+For the private campaign, supply `settings.flash_v100_exports` as the absolute
+host seal directory. The execution profile must bind the fixed operator path
+above. The campaign authenticates the validator from its frozen source
+inventory, validates the exact closed tree, copies bounded verified payloads
+and rechecks both source and copy. Unused or incomplete exports are refused.
+No wheel install, vendor patch, SDK replacement or runtime source search occurs.
+
+Prepared roles hand off to the scheduler worker after a positive cold fence.
+Graphs and role consumers retire before role buffers and artifact FD journals;
+Python/CUDA extension maps may remain process resident after close. The
+attention family does not change the stock MTP expert, linear or GDN providers
+or the independent reference oracle. Explicit Flash selection also covers its
+MTP attention owner role; there is no silent MTP attention-family exception.
+Local normalized Half output and Float32 LSE differ from the original globally
+rounded Half probabilities. The large-common-score LSE mass-loss counterexample
+is retained. Primitive/owner component passes remain separate from typed
+factory/campaign, actual eight-rank transport, model serial/verify consistency,
+PPL, complete capacity and matched NUMA/P3 acceptance.
+
 ## DFlash logits graph investigation
 
 The subsequent default-off `dflash_graph=True` constructor candidate changes

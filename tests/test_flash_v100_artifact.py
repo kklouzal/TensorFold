@@ -12,6 +12,8 @@ from tensorfold.cuda.sm70 import flash_v100_artifact as artifact
 
 @pytest.fixture
 def sealed(tmp_path, monkeypatch):
+    tmp_path = tmp_path / 'exports'
+    tmp_path.mkdir()
     raw = b'// foreign fixture\n'
     inputs = MappingProxyType({'kernel/forward.cu': (len(raw), hashlib.sha256(raw).hexdigest())})
     monkeypatch.setattr(artifact, 'INPUTS', inputs)
@@ -143,3 +145,16 @@ def test_growing_input_is_read_only_to_captured_extent_plus_one(sealed, monkeypa
         if target == 'record': artifact.file_record(path)
         else: artifact.validate_manifest(manifest, digest)
     assert len(opened) == 1 and requested == [extent, 1]
+
+
+def test_staging_inventory_binds_complete_transport_tree_and_sidecar(sealed):
+    root,data,write=sealed;path,digest=write()
+    (root/'manifest.sha256').write_text(digest+'\n')
+    checked=artifact.validate_manifest(path,digest)
+    files=checked.staging_files()
+    assert set(files)=={'manifest.json','manifest.sha256','build.json','producer/build_flash_v100_forward.py',
+        'native/'+data['native']['name'],*('foreign/'+name for name in artifact.INPUTS),
+        *('owned/'+name for name in artifact.OWNED)}
+    for name,identity in files.items():assert artifact.file_record(root/name)==identity
+    (root/'manifest.sha256').write_text('0'*64+'\n')
+    with pytest.raises(ValueError):checked.staging_files()

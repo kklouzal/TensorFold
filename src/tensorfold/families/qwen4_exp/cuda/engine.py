@@ -2088,7 +2088,7 @@ class FlashNextEngine:
             self.scheduler = Scheduler(self.tp_decoder if self.comm is not None else self.multi,
                                        max_streams=streams, **self._admission_options,
                                        **({"worker_prepare": owner_preparation.handoff_to_current_thread}
-                                          if owner_preparation is not None and owner_preparation.dense_owner is not None else {}))
+                                          if owner_preparation is not None and owner_preparation.requires_worker_handoff else {}))
         if self.scheduler is not None and not managed:
             self.scheduler.start()            # warmup's synthetic streams belong solely to the constructor
 

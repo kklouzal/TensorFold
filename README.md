@@ -17,9 +17,11 @@ CPU cores and host-memory allocation to its GPU's PCI-local node before exec of
 Torch/CUDA, then verifies actual placement again after CUDA and startup. The
 unprivileged container permission, eight-rank CPU/exec and actual eight-GPU
 Torch/CUDA/NCCL/page/thread placement gates pass. The frozen Source18 TensorFold
-reference also passed the bounded full-model NUMA gate with TP8/ETP4,
+reference, maximal 1Cat combination and capture-only GDN Value8 variant passed
+the bounded full-model NUMA gate with TP8/ETP4,
 24 full 262,144-token Q8 windows, MTP4 and a paid graph catalogue. Its six requests
-include exact 64-token serial/MTP agreement; quality and matched performance
+include exact 64-token serial/MTP agreement and matching complete IDs across
+those three variants; broader quality and matched performance
 qualification remain pending. The private campaign accepts the required NUMA settings and forwards
 the sealed plan to its supervisor. Both GPU-history and RAM-archive deployment
 recipes require the worker-purpose profile. See [V100 deployment](deploy/v100/README.md).
@@ -88,6 +90,18 @@ temporaries require explicit admission. On the owned CUDA12.9 SDK and V100,
 changed-KV/mask graph replay and a live-row bit-invariance fixture. TP8 owner
 transport, model/MTP, quality, capacity and performance remain pending. See
 [validation scope](docs/optimization-validation.md#private-aten-normalized-attention-owner).
+
+The explicit private `flash-v100-q8-normalized-lse-owner-v1` trial now has typed
+preparation and sealed campaign staging. `flash_tiles` binds a panel size,
+aggregate tensor credit and exact native manifest/SHA; the campaign stages its
+closed artifact tree read-only at `/operator/flash-v100`. Each role owns one
+fixed-size compacted primitive, with compute-only ghost tails and live State
+rows. Cold library residency is included before State admission, and worker
+handoff precedes serving. This retains the separate normalized-Half/F32-LSE
+numerical profile and its mass-loss limitation. Earlier native component and
+owner controls do not qualify this preparation/campaign increment or actual
+TP8 model quality, capacity, NUMA or P3. See the
+[Flash contract](docs/optimization-validation.md#private-sealed-flash-attention-owner).
 
 See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece

@@ -10,9 +10,11 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
+import re
 from tensorfold.cleanup import finish, raise_failures
 from .owner_execution import (
-    FULL_COLLECTIVE, HEAD_COLLECTIVE, KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY,
+    FULL_COLLECTIVE, HEAD_COLLECTIVE, KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY,
     NATIVE_FAMILIES, UNCAPTURED, graph_family_for, row_buckets,
 )
 
@@ -42,6 +44,33 @@ class ArithmeticRequest:
         return cls(value['graph_budget_bytes'], value['policy'])
 
 
+@dataclass(frozen=True)
+class FlashRequest:
+    panel_rows: int
+    tensor_budget_bytes: int
+    native_manifest: str
+    native_manifest_sha256: str
+
+    def __post_init__(self):
+        if (type(self.panel_rows) is not int or not 1 <= self.panel_rows <= 256
+                or type(self.tensor_budget_bytes) is not int or not 0 < self.tensor_budget_bytes < 2**63
+                or type(self.native_manifest) is not str or not Path(self.native_manifest).is_absolute()
+                or type(self.native_manifest_sha256) is not str
+                or re.fullmatch('[0-9a-f]{64}', self.native_manifest_sha256) is None):
+            raise ValueError('Flash owner needs bounded panels/credit and an absolute sealed manifest/SHA')
+
+    @classmethod
+    def parse(cls, value):
+        fields = {'panel_rows', 'tensor_budget_bytes', 'native_manifest', 'native_manifest_sha256'}
+        if type(value) is not dict or set(value) != fields:
+            raise ValueError('Flash owner needs its exact flash_tiles contract')
+        return cls(**value)
+
+    def as_dict(self):
+        return {'panel_rows': self.panel_rows, 'tensor_budget_bytes': self.tensor_budget_bytes,
+                'native_manifest': self.native_manifest, 'native_manifest_sha256': self.native_manifest_sha256}
+
+
 def _dense_backend(value):
     """Cold explicit dispatch; HC has its own finite manifest/role contract."""
     if type(value) is dict and value.get('backend') == 'bitblas-hc':
@@ -57,7 +86,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "gdn_value8_capture"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "gdn_value8_capture"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -87,6 +116,14 @@ def parse_preparation(value):
             raise ValueError('ATen owner trial needs explicit panels/tensor credit and uncaptured owner execution')
     elif tiles is not None:
         raise ValueError('ATen tile credits require their explicit attention family')
+    flash = value['kernel_family'] == FLASH_KERNEL_FAMILY
+    flash_tiles = None
+    if flash:
+        flash_tiles = FlashRequest.parse(value.get('flash_tiles'))
+        if not value['trial'] or value['graph_family'] != UNCAPTURED or request is not None:
+            raise ValueError('Flash owner requires an explicit uncaptured unqualified trial')
+    elif value.get('flash_tiles') is not None:
+        raise ValueError('Flash tile credits require their explicit attention family')
     dense = None
     if value.get('dense_projections') is not None:
         _, dense = _dense_backend(value['dense_projections'])
@@ -111,6 +148,7 @@ def parse_preparation(value):
             "row_buckets": deepcopy(buckets),
             **({"rn_heads_per_block": value["rn_heads_per_block"]} if rn else {}),
             **({'aten_tiles': dict(tiles)} if aten else {}),
+            **({'flash_tiles': flash_tiles.as_dict()} if flash else {}),
             **({'dense_projections': dense.as_dict()} if dense is not None else {}),
             **({'native_gdn_capture': True} if capture else {}),
             **({'gdn_value8_capture': True} if value8 else {}),
@@ -157,6 +195,8 @@ class OwnerPreparation:
         self.outside_active_bytes = None
         self.aten_requirements, self.aten_operator_identity = {}, None
         self.aten_temporary_extra_bytes = 0
+        self.flash_request = self.flash_validated = self.flash_artifact = None
+        self.flash_requirements = {}
         if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import owner_requirements
             self.aten_requirements = {role: owner_requirements(rows, self.specification['aten_tiles']['panel_rows'])
@@ -165,6 +205,18 @@ class OwnerPreparation:
                       + max(row['operator_temporary_bytes'] for row in self.aten_requirements.values()))
             if needed > self.specification['aten_tiles']['tensor_budget_bytes']:
                 raise MemoryError('ATen owner roles exceed their aggregate explicit tensor credit')
+        if self.specification['kernel_family'] == FLASH_KERNEL_FAMILY:
+            from tensorfold.cuda.sm70.attention_backends import flash_owner_requirements
+            from tensorfold.cuda.sm70.flash_v100_artifact import validate_manifest
+            self.flash_request = FlashRequest.parse(self.specification['flash_tiles'])
+            self.flash_requirements = {role: flash_owner_requirements(rows, self.flash_request.panel_rows)
+                                       for role, rows in self.role_rows.items()}
+            if sum(row['persistent_bytes'] for row in self.flash_requirements.values()) > self.flash_request.tensor_budget_bytes:
+                raise MemoryError('Flash owner roles exceed their aggregate complete tensor credit')
+            # Metadata/source/ELF validation is Torch-absent and precedes CUDA
+            # allocation; no later pointer or plan lookup can grow this owner.
+            self.flash_validated = validate_manifest(self.flash_request.native_manifest,
+                                                      self.flash_request.native_manifest_sha256)
         self.dense_owner = None
         self.dense_forecast = None
         self.dense_binding_started = False
@@ -202,15 +254,16 @@ class OwnerPreparation:
         import json
 
         contract = json.loads(canonical_runtime_json(contract, max_bytes=4 << 20))
-        if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
+        if self.specification['kernel_family'] in (ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY):
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS
             from .history_placement import attention_temporary_bytes
             if ((pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec) != (8, 0, 8, 0)
                     or contract['index_budget'] + contract['index_ratio'] - 1 != OWNER_MAX_KEYS):
-                raise ValueError('ATen owner family requires its original Q8/2051-key selected profile')
-            baseline = attention_temporary_bytes(contract['heads'] // engine.tp, contract['head_dim'])
-            self.aten_temporary_extra_bytes = max(0, max(
-                row['operator_temporary_bytes'] for row in self.aten_requirements.values()) - baseline)
+                raise ValueError('ATen/Flash owner family requires its original Q8/2051-key selected profile')
+            if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
+                baseline = attention_temporary_bytes(contract['heads'] // engine.tp, contract['head_dim'])
+                self.aten_temporary_extra_bytes = max(0, max(
+                    row['operator_temporary_bytes'] for row in self.aten_requirements.values()) - baseline)
         dense_selection = dense_backend = None
         if self.specification.get('dense_projections') is not None:
             dense_backend, dense_selection = _dense_backend(self.specification['dense_projections'])
@@ -251,6 +304,8 @@ class OwnerPreparation:
                     from tensorfold.cuda.sm70.attention_backends import operator_identity
                     self.aten_operator_identity = operator_identity()
                     arithmetic_source['aten_operator_identity'] = self.aten_operator_identity
+                if self.flash_validated is not None:
+                    arithmetic_source['flash_native_identity'] = self.flash_validated.record()
                 if self.reference_arithmetic_request is not None:
                     from . import reference_arithmetic
                     import hashlib
@@ -267,6 +322,14 @@ class OwnerPreparation:
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
+            if self.flash_validated is not None:
+                def flash_load():
+                    from tensorfold.cuda.sm70.flash_v100_artifact import load_native
+                    self.flash_artifact = load_native(self.flash_validated)
+                    return self.flash_artifact.record()
+                # Loading/role warmup is inside the measured commitment window,
+                # before any State is allocated. Code maps may remain resident.
+                self._phase(engine, 'flash-native-load', flash_load, may_refuse=False)
             if dense_selection is not None:
                 def dense_prepare():
                     owner = dense_backend.Owner.prepare(dense_selection, text, self.role_rows, device, world=engine.tp,
@@ -313,7 +376,11 @@ class OwnerPreparation:
                     owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
                     owner.configure_native_family(self.specification["kernel_family"], self.specification.get("rn_heads_per_block"),
                         **({'aten_panel_rows': self.specification['aten_tiles']['panel_rows']}
-                           if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY else {}))
+                           if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY else {}),
+                        **({'flash_artifact': self.flash_artifact,
+                            'flash_panel_rows': self.flash_request.panel_rows,
+                            'flash_tensor_budget_bytes': self.flash_requirements[role]['persistent_bytes']}
+                           if self.flash_artifact is not None else {}))
                     owner.configure_native_transport(self.specification["collective_family"],
                                                      self.head_comm or engine.comm)
                     return owner.allocation_record()
@@ -459,6 +526,14 @@ class OwnerPreparation:
                 'max_keys': OWNER_MAX_KEYS, 'panel_rows': self.specification['aten_tiles']['panel_rows'],
                 'key_capacity_policy': 'fixed2051-mask-v1', 'local_output': 'normalized-half',
                 'global_merge': 'ordered-float-lse-weights-v1'}
+        if self.flash_validated is not None:
+            selected['attention'] = {'family': FLASH_KERNEL_FAMILY,
+                'native_manifest_sha256': self.flash_validated.manifest_sha256,
+                'native_profile_sha256': self.flash_validated.profile_sha256,
+                'panel_rows': self.flash_request.panel_rows, 'max_keys': 2051,
+                'key_capacity_policy': 'stable-compact2051-fixed-panel-v1',
+                'query_layout': 'fixed12-head-as-row', 'local_output': 'normalized-half',
+                'global_merge': 'ordered-float-lse-weights-v1'}
         if self.specification.get('dense_projections') is not None:
             _, selected_dense = _dense_backend(self.specification['dense_projections'])
             selected['dense_projections'] = selected_dense.numerical_identity
@@ -502,9 +577,16 @@ class OwnerPreparation:
                 raise_failures(primary, [containment])
             raise
 
+    @property
+    def requires_worker_handoff(self):
+        return self.dense_owner is not None or self.flash_artifact is not None
+
     def handoff_to_current_thread(self):
         if self.dense_owner is not None:
             self.dense_owner.handoff_to_current_thread()
+        if self.flash_artifact is not None:
+            for owner in self.workspaces.values():
+                owner.handoff_native_thread()
 
     def committed_bytes(self):
         """Settled nonreusable preallocation, excluding ordinary reusable cache."""
@@ -580,6 +662,10 @@ class OwnerPreparation:
                 **({'aten_operator_identity': deepcopy(self.aten_operator_identity),
                     'aten_tensor_requirements': deepcopy(self.aten_requirements)}
                    if self.aten_requirements else {}),
+                **({'flash_native_identity': self.flash_validated.record(),
+                    'flash_tensor_requirements': deepcopy(self.flash_requirements),
+                    'flash_native_owner': None if self.flash_artifact is None else self.flash_artifact.record()}
+                   if self.flash_validated is not None else {}),
                 **({'dense_projections': self.dense_owner.record()} if self.dense_owner is not None else {}),
                 "allocator_accounting": "exclude-proved-private-spare; physical-only-when-unavailable",
                 **({"reference_tile_preparation": dict(self.reference_preparation)}
@@ -615,6 +701,9 @@ class OwnerPreparation:
         finish((owner.close for owner in self.workspaces.values()))
         if self.dense_owner is not None:
             self.dense_owner.close()
+        if self.flash_artifact is not None:
+            self.flash_artifact.close()
+            self.flash_artifact = None
         if self.head_comm is not None:
             if construction is not None:
                 construction.retire_bindings(self.head_comm)

@@ -12,20 +12,21 @@ from tensorfold.cuda.sm70.paged_attention import (
     RN_GRAPH_FAMILY as RN_GRAPH_FAMILY,
 )
 from tensorfold.cuda.sm70.attention_backends import OWNER_FAMILY as ATEN_KERNEL_FAMILY
+from tensorfold.cuda.sm70.flash_v100_artifact import FAMILY as FLASH_KERNEL_FAMILY
 
 REFERENCE_KERNEL = "torch-reference"
 UNCAPTURED = "uncaptured"
 GRAPH_FAMILY = "owner-attention-v1"
 FULL_COLLECTIVE = "tp8-allgather-v1"
 HEAD_COLLECTIVE = "head4-allgather-v1"
-NATIVE_FAMILIES = frozenset({KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY})
+NATIVE_FAMILIES = frozenset({KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY})
 
 
 def graph_family_for(kernel):
     if type(kernel) is not str or kernel not in NATIVE_FAMILIES:
         raise ValueError("unsupported native numerical family")
-    if kernel == ATEN_KERNEL_FAMILY:
-        raise ValueError('ATen owner tiles expose only the explicit uncaptured owner handoff')
+    if kernel in (ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY):
+        raise ValueError('ATen/Flash owner tiles expose only the explicit uncaptured owner handoff')
     return RN_GRAPH_FAMILY if kernel == RN_KERNEL_FAMILY else GRAPH_FAMILY
 
 

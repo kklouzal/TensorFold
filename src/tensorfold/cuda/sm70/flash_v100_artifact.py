@@ -178,6 +178,28 @@ class ValidatedArtifact:
                 'compile_producer_sha256': data['compile_producer_sha256'],
                 'abi': data['abi'], 'abi_origin': data['abi_origin']}
 
+    def staging_files(self):
+        """Complete producer closure for bounded host copying, never native import.
+
+        The manifest SHA remains the external authority. The checksum sidecar
+        is checked as transport data, not accepted as its own authority.
+        """
+        if self.path.name != 'manifest.json':
+            raise ValueError('Flash operator staging requires the producer manifest.json')
+        data = json.loads(self._raw)
+        manifest, _ = _acquire(self.path, limit=1 << 20)
+        if manifest['sha256'] != self.manifest_sha256:
+            raise ValueError('Flash manifest changed before staging inventory')
+        checksum = (self.manifest_sha256 + '\n').encode('ascii')
+        checksum_identity = {'bytes': len(checksum), 'sha256': hashlib.sha256(checksum).hexdigest()}
+        _check_file(self.path.parent / 'manifest.sha256', checksum_identity)
+        files = {'manifest.json': manifest, 'manifest.sha256': checksum_identity,
+                 'build.json': data['build'], 'producer/build_flash_v100_forward.py': data['producer'],
+                 'native/' + data['native']['name']: {k: data['native'][k] for k in ('bytes', 'sha256')}}
+        files.update({'foreign/' + name: {'bytes': size, 'sha256': sha} for name, (size, sha) in INPUTS.items()})
+        files.update({'owned/' + name: value for name, value in data['owned_sources'].items()})
+        return files
+
 
 def validate_manifest(path, digest):
     """Host staging API: stdlib only, no Torch, native import or CUDA query."""

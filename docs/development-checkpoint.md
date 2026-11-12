@@ -280,8 +280,19 @@ reviewed NUMA settings-parser correction; frozen worker tools and the installed
 image were unchanged. The installed gate passed 494 tests and 55 subtests with
 one existing platform skip under the required worker policy. The first CPU
 procedure's read-only cache failure and the first model controller's pre-Docker
-settings rejection are retained. Whole-model 1Cat, broader quality and matched
-new-region performance qualification remain pending.
+settings rejection are retained.
+
+The same image and NUMA authority also passed the maximal 1Cat profile
+(half-epilogue GU, Q8-slot down, raw IQ2 and candidate prefill) and the separate
+TensorFold capture-only GDN Value8 profile. Each validated all 24 placement
+receipts before generation and closed all eight ranks cleanly. All six complete
+texts and token-ID arrays match the fresh TensorFold reference, including the
+64-token serial/MTP pair. The 1Cat run recorded 75 verify and 62 MTP serving
+hits per rank; Value8 recorded 75 and 66. Value8 reuses 122,880 bytes of existing
+Q scratch with no additional workspace tensor allocation, while graph storage
+is 856 MiB versus the reference's 848 MiB; this is not total-resource
+equivalence. Broader model quality, all remaining expert combinations and
+matched new-region performance qualification remain pending.
 Shared file-cache pages and necessary TP8 traffic are outside a zero-UPI claim.
 
 The initial unbound TensorFold timing arm completed, but the matching 1Cat arm

@@ -815,7 +815,9 @@ worker/helper-thread affinity. Bounded receipts are written to a fresh
 gate passes. The frozen Source18 TensorFold reference also passed six bounded
 requests with all 24 full 262,144-token Q8 windows, MTP4 and paid graph replay:
 all 24 placement receipts validated before generation and remained unchanged
-through clean retirement. The source/image identities and remaining quality
+through clean retirement. The same image/NUMA authority also passed maximal
+1Cat and capture-only GDN Value8 checks with matching complete six-case IDs.
+The source/image identities and remaining quality
 and performance gates are recorded in the [development checkpoint](../../docs/development-checkpoint.md#required-numa-deployment-region).
 Shared file-cache pages and necessary TP8
 cross-socket/NVLink traffic are not claimed to disappear.

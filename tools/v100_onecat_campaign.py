@@ -518,11 +518,14 @@ def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_event
                 "gu", "down", "device_budget_bytes", "global_host_bytes", "max_waiting_input_bytes",
                 "prefill_rows", "mtp_confidence", "execution_rows", "graphs", "iq2_source", "prefill_method"}
     if (type(settings) is not dict or required - set(settings)
-            or set(settings) - required - {"bitblas_hc_exports", "numa"}):
+            or set(settings) - required - {"bitblas_hc_exports", "numa", "flash_v100_exports"}):
         raise ValueError("model arm requires the complete explicit campaign settings")
     if "bitblas_hc_exports" in settings and (type(settings["bitblas_hc_exports"]) is not str
                                             or not settings["bitblas_hc_exports"]):
         raise ValueError("BitBLAS HC exports require an explicit host directory")
+    if 'flash_v100_exports' in settings and (type(settings['flash_v100_exports']) is not str
+                                            or not settings['flash_v100_exports']):
+        raise ValueError('Flash exports require an explicit host directory')
     devices = settings["gpus"]
     if (type(devices) is not list or len(devices) != 8 or len(set(devices)) != 8
             or any(type(value) is not str or not value or "," in value for value in devices)):
@@ -908,6 +911,102 @@ def _frozen_code(root, source, relative):
     return path, data
 
 
+def _flash_closure(directory, library, expected_sha256):
+    """Use the authoritative validator; reject unlisted tree members before copying."""
+    if directory.is_symlink():
+        raise ValueError('Flash export directory cannot be a symlink')
+    checked = library.validate_manifest(directory / 'manifest.json', expected_sha256)
+    files = checked.staging_files()
+    tree = {}
+    for name in files:
+        relative = Path(name)
+        parent = Path('.')
+        for item in relative.parts:
+            tree.setdefault(parent, set()).add(item)
+            parent /= item
+    for parent, expected in tree.items():
+        path = directory / parent
+        if path.is_symlink() or not stat.S_ISDIR(path.stat().st_mode):
+            raise ValueError('Flash export directory must be regular and nonsymlink')
+        names = set()
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if len(names) == len(expected) or entry.name not in expected:
+                    raise ValueError('Flash export closure contains extra entries')
+                names.add(entry.name)
+        if names != expected:
+            raise ValueError('Flash export closure is incomplete')
+    return checked, files
+
+
+def _flash_exports(root, source, settings, profile):
+    if type(profile) is not dict:
+        raise ValueError('execution profile must be an object')
+    preparation = profile.get('preparation') or {}
+    if type(preparation) is not dict:
+        raise ValueError('execution profile preparation must be an object')
+    selected = preparation.get('kernel_family') == 'flash-v100-q8-normalized-lse-owner-v1'
+    if not selected:
+        if 'flash_v100_exports' in settings:
+            raise ValueError('unused Flash exports require the explicit Flash attention family')
+        return None
+    tiles = preparation.get('flash_tiles')
+    if (type(tiles) is not dict or tiles.get('native_manifest') != '/operator/flash-v100/manifest.json'
+            or 'flash_v100_exports' not in settings):
+        raise ValueError('Flash profile needs its host exports and /operator/flash-v100/manifest.json')
+    relative = 'src/tensorfold/cuda/sm70/flash_v100_artifact.py'
+    expected = source['files'][relative]
+    path = root / 'source' / relative
+    if (expected['type'] != 'file' or path.is_symlink() or not path.is_file()
+            or path.stat().st_size != expected['bytes']):
+        raise ValueError('frozen Flash artifact validator differs')
+    with path.open('rb') as stream:
+        code = stream.read(expected['bytes'] + 1)
+    if len(code) != expected['bytes'] or hashlib.sha256(code).hexdigest() != expected['sha256']:
+        raise ValueError('frozen Flash artifact validator differs')
+    name = '_tensorfold_campaign_flash_' + uuid.uuid4().hex
+    spec = importlib.util.spec_from_file_location(name, path)
+    library = importlib.util.module_from_spec(spec)
+    sys.modules[name] = library
+    try:
+        exec(compile(code, str(path), 'exec'), library.__dict__)  # noqa: S102
+    finally:
+        del sys.modules[name]
+    directory = Path(settings['flash_v100_exports'])
+    if not directory.is_absolute():
+        raise ValueError('Flash exports require an absolute host directory')
+    checked, files = _flash_closure(directory, library, tiles.get('native_manifest_sha256'))
+    return {'directory': directory, 'library': library, 'files': files,
+            'manifest_sha256': checked.manifest_sha256, 'identity': checked.record(),
+            'validator': {'source_uid': source['source_uid'], 'path': relative,
+                          **{key: expected[key] for key in ('bytes', 'sha256')}}}
+
+
+def _stage_flash_exports(bundle, operator):
+    destination = operator / 'flash-v100'
+    destination.mkdir()
+    library = bundle['library']
+    for name, expected in bundle['files'].items():
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open('xb') as stream:
+            observed, _ = library._acquire(bundle['directory'] / name, expected_bytes=expected['bytes'], sink=stream)
+            if observed != expected:
+                raise ValueError('Flash export changed during bounded copy')
+        target.chmod(0o444)
+    _, source_files = _flash_closure(bundle['directory'], library, bundle['manifest_sha256'])
+    copied, copied_files = _flash_closure(destination, library, bundle['manifest_sha256'])
+    if source_files != bundle['files'] or copied_files != bundle['files']:
+        raise ValueError('Flash export changed during immutable operator publication')
+    for path in sorted((p for p in destination.rglob('*') if p.is_dir()), reverse=True):
+        path.chmod(0o555)
+    destination.chmod(0o555)
+    return {'source_directory': str(bundle['directory']), 'operator_directory': '/operator/flash-v100',
+            'validator': bundle['validator'], 'identity': copied.record(),
+            'files': source_files, 'copied_files': copied_files, 'closure_files': len(copied_files),
+            'payload_bytes': sum(value['bytes'] for value in copied_files.values())}
+
+
 def _numa_modules(root, source):
     """Execute authenticated stdlib policy code, never operator-provided code."""
     name = '_tensorfold_campaign_numa_' + uuid.uuid4().hex
@@ -1055,6 +1154,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
         raise ValueError("execution manifest exceeds bounded operator metadata")
     profile_identity = identity(manifest)
     hc_exports = _hc_exports(root, record, settings, json.loads(manifest.read_text()))
+    flash_exports = _flash_exports(root, record, settings, json.loads(manifest.read_text()))
     models = Path(settings["models_root"]).resolve(strict=True)
     for name in ("target", "mtp"):
         artifact = models / settings[name]
@@ -1077,6 +1177,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     if identity(operator / "profile.json") != profile_identity or identity(manifest) != profile_identity:
         raise ValueError("execution manifest changed during immutable operator publication")
     hc_staged = _stage_hc_exports(hc_exports, operator) if hc_exports is not None else None
+    flash_staged = _stage_flash_exports(flash_exports, operator) if flash_exports is not None else None
     numa_staged = _stage_numa(numa, operator, output)
     for item in operator.iterdir():
         if item.is_file():
@@ -1115,6 +1216,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             "cublas_workspace_cache": workspace, "controller_source": controller_source,
             "diagnostic_graph_pieces": diagnostic_graph_pieces,
             **({"bitblas_hc_exports": hc_staged} if hc_staged is not None else {}),
+            **({'flash_v100_exports': flash_staged} if flash_staged is not None else {}),
             "commit_diagnostic": commit, "diagnostic_only": commit is not None or configuration_diagnostic,
             "P3_valid": False if commit is not None or configuration_diagnostic else None,
             "source_matrix": {"path": str(plan_path), **identity(plan_path)},
