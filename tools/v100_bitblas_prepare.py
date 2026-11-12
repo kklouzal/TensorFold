@@ -8,7 +8,6 @@ No operation edits the protected runtime, installs packages, or selects serving.
 from __future__ import annotations
 
 import argparse
-import ctypes
 import hashlib
 import importlib.util
 import json
@@ -18,7 +17,6 @@ import re
 import shutil
 import subprocess
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 
 VERSION = '0.1.0.post1'
@@ -317,8 +315,7 @@ def compile_shared(source, library, toolchain, package, log, *, timeout_s):
 
 
 def runtime_provider():
-    path = Path('/usr/local/cuda/lib64/libcudart.so').resolve(strict=True)
-    return {'path': str(path), **file_identity(path)}
+    return _runtime_library().runtime_provider()
 
 
 def generate(plan_path, output, wheel=None, case_ids=None, compile_timeout_s=None):
@@ -530,73 +527,28 @@ def assemble_reviewed(old_manifest, corrected_manifest, output, *, wheel, compil
     return result
 
 
-@dataclass(frozen=True)
-class PreparedLibrary:
-    native: object
-    cudart: object
-    dimensions: tuple[int, int, int]
-    runtime_provider: dict
-    alignment_bytes: tuple[int, int, int]
-    native_provider: dict | None = None
+def _runtime_library():
+    # Installed SDK execution uses its owned module. A standalone checkout's
+    # CPU tools may not have TensorFold installed; load the same stdlib source
+    # directly, without importing Torch or changing global DLL search paths.
+    import importlib
+    import sys
+    source=Path(__file__).resolve().parents[1]/'src/tensorfold/cuda/sm70/bitblas_library.py'
+    if not source.is_file():
+        return importlib.import_module('tensorfold.cuda.sm70.bitblas_library')
+    name='_tensorfold_bitblas_library_host'
+    if name not in sys.modules:
+        spec=importlib.util.spec_from_file_location(name,source)
+        module=importlib.util.module_from_spec(spec)
+        sys.modules[name]=module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
 
 
-def _cuda_status(cudart):
-    status = cudart.cudaGetLastError()
-    if status:
-        message = cudart.cudaGetErrorString(status)
-        raise RuntimeError('prebuilt CUDA launch failed: ' + (message.decode() if message else str(status)))
-
-
-def checked_runtime(library, expected):
-    path = Path(expected['path']).resolve(strict=True)
-    if str(path) != runtime_provider()['path']:
-        raise ValueError('runtime provider differs from the protected CUDA SDK path')
-    if file_identity(path) != {key: expected[key] for key in ('bytes', 'sha256')}:
-        raise ValueError('loaded CUDA runtime provider content differs')
-    functions = (library.cudaRuntimeGetVersion, library.cudaGetLastError, library.cudaGetErrorString)
-    with open('/proc/self/maps', encoding='utf-8') as stream:
-        mappings = [line.rstrip('\n').split(None, 5) for line in stream]
-    for function in functions:
-        address = ctypes.cast(function, ctypes.c_void_p).value
-        found = False
-        for fields in mappings:
-            begin, end = (int(value, 16) for value in fields[0].split('-'))
-            if begin <= address < end:
-                if (len(fields) != 6 or 'x' not in fields[1] or fields[5].endswith(' (deleted)')
-                        or Path(fields[5]).resolve(strict=True) != path):
-                    raise ValueError('CUDA error function does not belong to the declared live SDK runtime')
-                found = True
-                break
-        if not found:
-            raise ValueError('CUDA runtime function mapping is unavailable')
-    library.cudaRuntimeGetVersion.argtypes, library.cudaRuntimeGetVersion.restype = [ctypes.POINTER(ctypes.c_int)], ctypes.c_int
-    version = ctypes.c_int()
-    if library.cudaRuntimeGetVersion(ctypes.byref(version)) != 0 or version.value != 12090:
-        raise ValueError('prebuilt pilot requires the protected CUDA12.9 runtime')
-    library.cudaGetLastError.argtypes, library.cudaGetLastError.restype = [], ctypes.c_int
-    library.cudaGetErrorString.argtypes, library.cudaGetErrorString.restype = [ctypes.c_int], ctypes.c_char_p
-    return {'path': str(path), **file_identity(path), 'binding': 'actual-error-function-executable-VMA'}
-
-
-
-def bind_native_functions(library, path):
-    path = Path(path).resolve(strict=True)
-    with open('/proc/self/maps', encoding='utf-8') as stream:
-        mappings = [line.rstrip('\n').split(None, 5) for line in stream]
-    for function in (library.init, library.call):
-        address = ctypes.cast(function, ctypes.c_void_p).value
-        found = False
-        for fields in mappings:
-            begin, end = (int(value, 16) for value in fields[0].split('-'))
-            if begin <= address < end:
-                if (len(fields) != 6 or 'x' not in fields[1] or fields[5].endswith(' (deleted)')
-                        or Path(fields[5]).resolve(strict=True) != path):
-                    raise ValueError('generated native entry point differs from its sealed artifact')
-                found = True
-                break
-        if not found:
-            raise ValueError('generated native entry point mapping is unavailable')
-    return {'path': str(path), **file_identity(path), 'binding': 'actual-init-and-call-executable-VMAs'}
+def __getattr__(name):
+    if name in ('PreparedLibrary','_cuda_status','ctypes'):
+        return getattr(_runtime_library(),name)
+    raise AttributeError(name)
 
 
 def load_artifact(directory, record):
@@ -622,49 +574,13 @@ def load_artifact(directory, record):
     bounds = json.loads(bounds_path.read_text())
     if not _same(bounds, geometry_record(record['case'], record['physical_case'], source)):
         raise ValueError('finite geometry evidence differs from the actual generated source')
-    library = ctypes.CDLL(str((directory / 'library.so').resolve(strict=True)))
-    library.init.argtypes, library.init.restype = [], None
-    library.call.argtypes, library.call.restype = [ctypes.c_void_p] * 4, None
-    native_provider = bind_native_functions(library, directory / 'library.so')
-    if {key: native_provider[key] for key in ('bytes', 'sha256')} != record['library']:
-        raise ValueError('mapped generated native artifact content changed')
-    provider = checked_runtime(library, record['runtime_provider'])
-    library.init()
-    _cuda_status(library)
-    return PreparedLibrary(library, library, tuple(record['physical_case'][key] for key in ('M', 'N', 'K')), provider,
-                           tuple(bounds['finite_reasoning']['alignment_bytes'][key] for key in ('A', 'W', 'C')), native_provider)
+    return _runtime_library().load_verified_library(directory,record,
+        tuple(record['physical_case'][key] for key in ('M','N','K')),
+        tuple(bounds['finite_reasoning']['alignment_bytes'][key] for key in ('A','W','C')))
 
 
-
-def call_library(library, a, w, output, torch):
-    """Borrow prepared code and operands through positive stream/graph retirement.
-
-    The caller retains every object, including this library, through completion
-    and any capture/replay lifetime. The helper neither allocates nor retires it.
-    """
-    if type(library) is not PreparedLibrary:
-        raise TypeError('prepared static library binding required')
-    rows, columns, reduction = library.dimensions
-    if (type(a) is not torch.Tensor or type(w) is not torch.Tensor or type(output) is not torch.Tensor
-            or a.dtype != torch.float16 or w.dtype != torch.float16 or output.dtype != torch.float32
-            or a.shape != (rows, reduction) or w.shape != (columns, reduction)
-            or output.shape != (rows, columns) or a.device.type != 'cuda' or a.device != w.device
-            or a.device != output.device or any(not value.is_contiguous() or value.requires_grad or value.is_neg() or value.is_conj()
-                                              for value in (a, w, output))):
-        raise ValueError('prebuilt call requires exact contiguous Half/Half/Float CUDA matrices')
-    if any(value.data_ptr() % alignment for value, alignment in zip((a, w, output), library.alignment_bytes)):
-        raise ValueError('prebuilt operand base violates the reviewed emitter alignment')
-    if output.is_inference() and not torch.is_inference_mode_enabled():
-        raise RuntimeError('prebuilt inference output mutated outside inference mode')
-    begin, end = output.data_ptr(), output.data_ptr() + output.numel() * output.element_size()
-    if any(begin < value.data_ptr() + value.numel() * value.element_size() and value.data_ptr() < end for value in (a, w)):
-        raise ValueError('prebuilt output aliases a read operand')
-    with torch.cuda.device(a.device):
-        stream = torch.cuda.current_stream(device=a.device).cuda_stream
-        library.native.call(a.data_ptr(), w.data_ptr(), output.data_ptr(), stream)
-        _cuda_status(library.cudart)
-    torch.autograd.graph.increment_version(output)
-    return output
+def call_library(library,a,w,output,torch):
+    return _runtime_library().call_library(library,a,w,output,torch)
 
 
 def numerical_observation(actual, expected, torch):
@@ -980,6 +896,51 @@ def diagnose_fixed32(manifest_path, output):
     return result
 
 
+def prepare_hc(manifest_path, output):
+    """Seal only three existing HC libraries; no vendor import/compiler/GPU work."""
+    manifest_path=Path(manifest_path)
+    original=json.loads(manifest_path.read_text())
+    if (original.get('schema') != FIXED_SCHEMA or original.get('phase') != 'prepared'
+            or set(original.get('kernels',{})) != {v[0] for v in SHAPES}):
+        raise ValueError('complete fixed32 producer manifest required')
+    runtime=_runtime_library()
+    selected={}
+    for role,(m,n,k,alignment) in runtime.HC_KERNELS.items():
+        record=original['kernels'][role]
+        case=next(v for v in cases() if v['role']==role and v['M']==32)
+        directory=manifest_path.parent/'kernels'/role
+        if (not _same(record.get('case'),case) or not _same(record.get('physical_case'),physical_case(case))
+                or record.get('config_sha256') != config_identity(case)
+                or record.get('padding_policy') != PADDING_POLICY):
+            raise ValueError('HC producer configuration differs')
+        for filename,key in [('generated.cu','source'),('library.so','library'),('bounds.json','bounds')]:
+            if (directory/filename).is_symlink() or file_identity(directory/filename) != record[key]:
+                raise ValueError('HC producer artifact bytes differ')
+        source=(directory/'generated.cu').read_text()
+        bounds=json.loads((directory/'bounds.json').read_text())
+        if (check_abi(source) != record['abi'] or not _same(bounds,geometry_record(case,physical_case(case),source))
+                or [bounds['finite_reasoning']['alignment_bytes'][v] for v in ('A','W','C')] != [alignment,alignment,4]
+                or record.get('runtime_policy') != 'shared-cuda12.9-checked'
+                or 'libcudart.so.12' not in record.get('needed_libraries',[])):
+            raise ValueError('HC producer ABI/bounds/runtime differs')
+        selected[role]={'directory':role,'dimensions':[m,n,k],'alignment_bytes':[alignment,alignment,4],
+                        'input_dtype':'float16','output_dtype':'float32','accumulation_dtype':'float32','record':record}
+    output=Path(output);output.mkdir(parents=True,exist_ok=False)
+    for role in selected:
+        directory=output/role;directory.mkdir()
+        for filename in ('generated.cu','library.so','bounds.json'):
+            shutil.copyfile(manifest_path.parent/'kernels'/role/filename,directory/filename)
+            os.chmod(directory/filename,0o444)
+    result={'schema':runtime.HC_SCHEMA,'phase':'prepared','policy':'fixed-m32-hc-only-f32-accumulation-v1',
+            'source_tool':file_identity(__file__),'library_helper':file_identity(runtime.__file__),
+            'producer_manifest':file_identity(manifest_path),'project_python_commit':PYTHON_COMMIT,
+            'whole_wheel_sha256':WHEEL_SHA256,'kernels':selected,
+            'quality_acceptance':False,'performance_acceptance':False,
+            'scope':'three unchanged fixed32 HC exports; explicit Half publication remains adapter responsibility'}
+    write_record(output/'manifest.json',result)
+    return result
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest='command', required=True)
@@ -1006,6 +967,9 @@ def main(argv=None):
     selected = subparsers.add_parser('prepare-fixed32')
     selected.add_argument('--manifest', type=Path, required=True)
     selected.add_argument('--output', type=Path, required=True)
+    selected = subparsers.add_parser('prepare-hc')
+    selected.add_argument('--manifest', type=Path, required=True)
+    selected.add_argument('--output', type=Path, required=True)
     selected = subparsers.add_parser('diagnose-fixed32')
     selected.add_argument('--manifest', type=Path, required=True)
     selected.add_argument('--output', type=Path, required=True)
@@ -1024,6 +988,8 @@ def main(argv=None):
                                    wheel=args.wheel, compile_timeout_s=args.compile_timeout_s)
     elif args.command == 'prepare-fixed32':
         result = prepare_fixed32(args.manifest, args.output)
+    elif args.command == 'prepare-hc':
+        result = prepare_hc(args.manifest, args.output)
     elif args.command == 'diagnose-fixed32':
         result = diagnose_fixed32(args.manifest, args.output)
     else:

@@ -74,7 +74,7 @@ def test_provisional_or_unsupported_formats_cannot_enter_pv_or_value_merge(monke
 
 def test_native_source_closure_reuses_the_owned_codec_decoder_and_pins_sm70(monkeypatch):
     from tensorfold.cuda import build
-    from tensorfold.cuda.sm70 import provider, source_cache
+    from tensorfold.cuda.sm70 import provider, source_cache, attention_backends
 
     staged = []
     built = []
@@ -89,7 +89,9 @@ def test_native_source_closure_reuses_the_owned_codec_decoder_and_pins_sm70(monk
     module = NS(descriptor_abi=descriptor.ABI_VERSION, descriptor_words=descriptor.WORDS,
                 descriptor_schema_id=descriptor.SCHEMA_ID, rn_family=operator.RN_KERNEL_FAMILY,
                 rn_graph_family=operator.RN_GRAPH_FAMILY, rn_max_selected=operator.RN_MAX_SELECTED,
-                rn_log2e_bits=operator.RN_LOG2E_BITS, rn_algorithm=operator.RN_ALGORITHM)
+                rn_log2e_bits=operator.RN_LOG2E_BITS, rn_algorithm=operator.RN_ALGORITHM,
+                aten_owner_family=attention_backends.OWNER_FAMILY,
+                aten_owner_max_keys=attention_backends.OWNER_MAX_KEYS)
     monkeypatch.setattr(build, "load", lambda *args, **kwargs: built.append((args, kwargs)) or module)
     operator.extension.cache_clear()
     try:

@@ -323,8 +323,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     grouped_gate_up = options.get("_owned_expert_gate_up")
     if grouped_gate_up is not None:
         from tensorfold.cuda.sm70.gguf_ops import _GroupedGateUp
+        from .cuda.onecat_experts import OneCatGU
 
-        if not owned or type(grouped_gate_up) is not _GroupedGateUp:
+        if not owned or type(grouped_gate_up) not in (_GroupedGateUp, OneCatGU):
             raise TypeError("private grouped gate/up requires typed owned qualification")
         engine_options["_owned_expert_gate_up"] = grouped_gate_up
     reference_tiles = options.get("_reference_owner_tiles", False)

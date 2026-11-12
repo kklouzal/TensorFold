@@ -45,11 +45,6 @@ class ArithmeticRequest:
 def parse_preparation(value):
     if value is None:
         return None
-    # Temporary source-integration boundary for the minimal graph diagnostic:
-    # native ATen additions are retained as an exact read-only WIP patch and
-    # are not part of this immutable diagnostic's compiled native module.
-    if isinstance(value, dict) and value.get('kernel_family') == ATEN_KERNEL_FAMILY:
-        raise ValueError('ATen owner family remains unselected WIP outside this minimal graph diagnostic')
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
@@ -446,7 +441,9 @@ class OwnerPreparation:
         if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS, POLICY
             selected['attention'] = {'family': ATEN_KERNEL_FAMILY, 'operator': POLICY,
-                'max_keys': OWNER_MAX_KEYS, 'panel_rows': self.specification['aten_tiles']['panel_rows']}
+                'max_keys': OWNER_MAX_KEYS, 'panel_rows': self.specification['aten_tiles']['panel_rows'],
+                'key_capacity_policy': 'fixed2051-mask-v1', 'local_output': 'normalized-half',
+                'global_merge': 'ordered-float-lse-weights-v1'}
         if self.specification.get('dense_projections') is not None:
             from .dense_projections import Selection
             selected['dense_projections'] = Selection.parse(self.specification['dense_projections']).numerical_identity

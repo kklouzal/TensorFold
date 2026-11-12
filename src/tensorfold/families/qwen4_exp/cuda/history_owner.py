@@ -959,7 +959,9 @@ class OwnerBuffers:
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS
             if self.aten_tiles is None:
                 raise RuntimeError('ATen owner frame was not prepared before serving')
-            return self.aten_tiles.run(self, rows, views, OWNER_MAX_KEYS if key_capacity is None else key_capacity)
+            if key_capacity is not None and key_capacity != OWNER_MAX_KEYS:
+                raise ValueError('ATen owner profile requires its fixed2051-key mask envelope')
+            return self.aten_tiles.run(self, rows, views, OWNER_MAX_KEYS)
         bits, codec = self.native_pair.key.bits, self.native_pair.key.codec
         common = {"group_start": self.rank // 4 * 4, "page_tokens": self.native_page_tokens, "layer": self.native_layer}
         if self.native_kernel_family == native.RN_KERNEL_FAMILY:
@@ -1179,13 +1181,7 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
             owner.stage_native_descriptors(segments, layer, base, count, mtp=mtp, bucket_rows=bucket)
             if graph_manager is None:
                 owner.wait_native_inputs()
-                if family == ATEN_KERNEL_FAMILY:
-                    from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS
-                    capacity = max(min(pos + last - first, OWNER_MAX_KEYS)
-                                   for _state, _ai, first, last, pos, _owner in selected_segments)
-                    output = owner.native_run(bucket, key_capacity=capacity)[:count]
-                else:
-                    output = owner.native_run(bucket)[:count]
+                output = owner.native_run(bucket)[:count]
             else:
                 output = graph_manager.run(count, graph=buffers.owner_graph_family != "uncaptured")
             owner.wait_native_reuse()

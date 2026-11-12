@@ -18,6 +18,50 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Private ATen normalized attention owner
+
+The explicit trial family `aten-cutlass-q8-normalized-lse-owner-v1` uses the
+owned Torch2.16 CUDA12.9 `_efficient_attention_forward` operator with its
+xFormers0.0.30-compatible schema. This is source/operator reuse, not an
+installation of the Torch2.7 xFormers wheel. The default remains unchanged.
+
+Its preparation requires `trial: true`, owner `graph_family: uncaptured`, zero
+owner graph allowance and `aten_tiles` containing an explicit `panel_rows` and
+`tensor_budget_bytes`. The credit must cover the sum of retained packing across
+all actual decode/MTP/prefill roles plus the largest serially used operator
+temporary. Runtime allocator, driver and outer graph costs remain separate.
+The preparation contract, source/native origins and numerical selection bind
+the existing coordinate/State/prefix identity and all-rank agreement.
+
+Queries use the original four-rank head group. A native producer gathers only
+authoritative selected, visible, locally owned Q8 keys/values in original order
+into contiguous Half panels and reports validity independently. Every panel
+uses the same2051-key mask envelope; empty/unowned slots contribute zero mass.
+Nonfinite valid producer data latches the existing State status. Local results
+are normalized Half output plus Float32 natural-log LSE. The statistics gather
+combines LSE with independent nonempty flags, then weights local outputs in
+Float32 before the original ordered value gather, inverse Q8 basis and Half
+publication. This is a different numerical family from global normalization
+followed by Half probability rounding; no equivalence or accepted PPL margin is
+claimed. In particular, Float32 LSE can lose relative shard mass at large common
+scores. The retained adversarial counterexample is not waived by source-derived
+normalized-domain bounds.
+
+The genuine owned Torch2.16/CUDA12.9 SDK passes45 focused CPU controls and
+CPU-only native compile/import with explicit SM70. The new native component
+passes13 cases on V100: four logical shards materialized by copies, both head
+groups, empty owners, stale generations, nonfinite status, changed Q8 bytes and
+selected masks under capture, and exact output/LSE bits for the tested live-row
+embedding/reordering fixture. An unequal-mass fixture records maximum absolute
+error0.0037984178511116795 against its mathematical output; this is diagnostic
+data without an accepted tolerance. The packet is
+`build-cache/aten-owner-native-20261112-v1`; actual TP8 collectives, owner State
+admission, whole-model MTP4 outputs/quality, complete capacity accounting and
+matched serving P3 remain unrun. Neither these controls nor the five earlier
+decoded-tile CUDA passes qualify those integration gates.
+Outer exact graph pieces still keep owner attention as a live handoff; this
+family adds no padded State envelope or admission reduction.
+
 ## DFlash logits graph investigation
 
 The subsequent default-off `dflash_graph=True` constructor candidate changes

@@ -92,6 +92,10 @@ def extension():
     if (getattr(module, "descriptor_abi", None), getattr(module, "descriptor_words", None),
             getattr(module, "descriptor_schema_id", None)) != (ABI_VERSION, WORDS, SCHEMA_ID):
         raise RuntimeError("native owner attention descriptor ABI differs from its caller schema")
+    from .attention_backends import OWNER_FAMILY, OWNER_MAX_KEYS
+    if (getattr(module, 'aten_owner_family', None), getattr(module, 'aten_owner_max_keys', None)) != (
+            OWNER_FAMILY, OWNER_MAX_KEYS):
+        raise RuntimeError('ATen owner tile native boundary differs from its declared family')
     if (getattr(module, "rn_family", None), getattr(module, "rn_graph_family", None),
             getattr(module, "rn_max_selected", None), getattr(module, "rn_log2e_bits", None),
             getattr(module, "rn_algorithm", None)) != (
@@ -194,3 +198,31 @@ def rn_preparation_identity():
             "requested_cuda_flags": list(RN_CUDA_FLAGS),
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources},
             "qualification": "experimental numerical family; bounds/binary/quality/resource/P3 unqualified"}
+
+
+def pack_owner_queries(queries, row_table, out, *, group_start, page_tokens, layer):
+    _controls(group_start, page_tokens)
+    extension().pack_owner_queries(queries, row_table, out, group_start, page_tokens, layer)
+    _publish_owner_writes(out)
+    return out
+
+
+def gather_owner_q8(selections, row_table, keys, values, valid, *, first, group_start, page_tokens, layer):
+    _controls(group_start, page_tokens)
+    extension().gather_owner_q8(selections, row_table, keys, values, valid, first, group_start, page_tokens, layer)
+    _publish_owner_writes(keys, values, valid)
+    return keys, values, valid
+def weight_owner_normalized(normalized, local_lse, global_statistics, row_table, out, *,
+                            group_start, page_tokens, layer):
+    _controls(group_start, page_tokens)
+    extension().weight_owner_normalized(normalized, local_lse, global_statistics, row_table, out,
+                                        group_start, page_tokens, layer)
+    _publish_owner_writes(out)
+    return out
+
+
+def _publish_owner_writes(*outputs):
+    import torch
+    for value in outputs:
+        if not value.is_inference():
+            torch.autograd.graph.increment_version(value)

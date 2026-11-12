@@ -11,7 +11,7 @@ fixed input/mask storage and own library/output allocations in their graph pool;
 no stream, synchronization, host mask readback or gradient graph is introduced.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import math
 import sys
 
@@ -221,7 +221,7 @@ class OwnerTiles:
     def __init__(self, rows, panel_rows, device):
         import torch
 
-        self.query = self.keys = self.values = self.valid = self.lse = None
+        self.query = self.keys = self.values = self.valid = self.lse = self.panels = None
         self.closed = False
         self.rows, self.device = rows, torch.device(device)
         self.requirements = owner_requirements(rows, panel_rows)
@@ -229,6 +229,13 @@ class OwnerTiles:
         template = TileSpec(self.panel_rows, 1, OWNER_MAX_KEYS, 12, 1, .0625, masked=True)
         self.primitive = prepare(template, device=self.device,
                                  device_budget_bytes=self.requirements['operator_temporary_bytes'])
+        # The owner family fixes key capacity2051. Per-count metadata is cold,
+        # bounded and immutable; no serving-time descriptor construction or
+        # context-dependent online-softmax tiling is introduced.
+        self.panels = tuple([None] + [Prepared(
+            TileSpec(count, 1, OWNER_MAX_KEYS, 12, 1, .0625, masked=True), self.device,
+            self.primitive.device_budget_bytes, self.primitive.identity)
+            for count in range(1, self.panel_rows + 1)])
         self.query = torch.empty((rows, 1, 12, 256), dtype=torch.float16, device=self.device)
         self.lse = torch.empty((rows, 12), dtype=torch.float32, device=self.device)
         elements = self.panel_rows * OWNER_MAX_KEYS * 256
@@ -239,7 +246,7 @@ class OwnerTiles:
     def run(self, owner, rows, views, key_capacity):
         from . import paged_attention as native
 
-        if self.closed or not 1 <= rows <= self.rows or not 1 <= key_capacity <= OWNER_MAX_KEYS:
+        if self.closed or not 1 <= rows <= self.rows or key_capacity != OWNER_MAX_KEYS:
             raise ValueError('ATen owner tile frame exceeds its prepared live row/key envelope')
         group = owner.rank // 4 * 4
         query = self.query[:rows]
@@ -256,8 +263,7 @@ class OwnerTiles:
             valid = self.valid[:count * key_capacity].view(count, 1, key_capacity)
             native.gather_owner_q8(views['selected_all'], views['row_table'], key, value, valid,
                 first=first, group_start=group, page_tokens=owner.native_page_tokens, layer=owner.native_layer)
-            actual = replace(self.primitive.spec, batch=count, key_rows=key_capacity)
-            primitive = Prepared(actual, self.device, self.primitive.device_budget_bytes, self.primitive.identity)
+            primitive = self.panels[count]
             result = primitive.run(query[first:first + count], key, value, valid_keys=valid)
             normalized[first:first + count].copy_(result.output[:, 0])
             local_lse[first:first + count].copy_(result.logsumexp[:, :, 0])
@@ -282,10 +288,12 @@ class OwnerTiles:
         return {'family': OWNER_FAMILY, 'requirements': dict(self.requirements),
                 'operator': dict(self.primitive.identity), 'closed': self.closed,
                 'numeric_contract': 'Half normalized local values and natural-log LSE; ordered FP32 rank weights/merge',
+                'key_capacity_policy': 'fixed2051 masked keys; no context-dependent shape or row dispatch',
+                'prepared_panel_counts': list(range(1, self.panel_rows + 1)),
                 'qualification': 'unselected; operator/component/model/PPL/resource/P3 gates remain separate'}
 
     def close(self):
         # Only after enclosing OwnerBuffers.retire_native positively fences all
         # current-stream raw-pointer, ATen and communication consumers.
-        self.query = self.keys = self.values = self.valid = self.lse = None
+        self.query = self.keys = self.values = self.valid = self.lse = self.panels = None
         self.closed = True

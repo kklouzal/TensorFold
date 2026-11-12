@@ -29,8 +29,10 @@ provider and defaults to depth4. Larger target verifier batches and optional
 candidate prefill use bounded32-row panels without reducing admitted concurrency.
 The unique-history graph
 candidate captures expert, linear and HC GPU pieces around live attention,
-recurrent-state and PLE handoffs. Actual model quality, target/MTP serving replay
-and matched performance qualification remain pending. The frozen repaired image
+recurrent-state and PLE handoffs. The frozen source15 TensorFold reference
+passed bounded MTP4 serving with a paid graph catalog, all24 full-context
+windows admitted, and exact64-token serial/MTP agreement. Full 1Cat model
+quality and matched performance qualification remain pending. The frozen repaired image
 passed679 installed CPU tests plus11 subtests and163 actual V100 component tests,
 including37 raw-IQ2 and12 Q8-slot cases. Later prefill-selection changes retain
 their separate source and verification scope. These are private trials,
@@ -39,11 +41,12 @@ not selected serving defaults. See the [development checkpoint](docs/development
 The additional V100 candidate inventory covers 1Cat's TurboMind/LMDeploy,
 CUTLASS, GGML, FlashAttention-V100 and FlashQLA mechanisms, plus separate
 cuBLAS/cuBLASLt, BitBLAS and compatible ATen attention trials. The reference
-eager TP8/ETP4 model has completed a bounded MTP4 smoke run; graph startup and
-matched throughput/quality qualification remain open. The isolated Triton 3.2
+TP8/ETP4 model has completed bounded eager and paid-catalog graph MTP4 smoke
+runs. Matched throughput and held-out quality qualification remain open. The isolated Triton 3.2
 profile uses explicit PTX8.3 with the real CUDA12.9 compiler. Its ordered FP32 kernel and changed-input
 graph replay passed on V100, alongside a Volta MMA dot-product probe. Full-model
-graph startup, quality and performance gates remain open. The optional dense
+graph coverage beyond those finite requests, quality and performance gates
+remain open. The optional dense
 owner's worker-start handoff has CPU lifecycle coverage; native/model selection
 is still pending. A separate private paid-subset graph policy can declare
 which exact keys to capture while retaining ordinary eager execution for other
@@ -51,6 +54,18 @@ shapes. Its model and performance qualification remains pending. An additional
 private HC writeback capture trial reuses the existing native modes0/3 operator
 only inside exact decode captures; its eager and prefill paths retain Torch.
 Component capture controls pass; model and performance gates remain pending.
+
+The private `aten-cutlass-q8-normalized-lse-owner-v1` attention trial now has
+an opt-in owner integration: bounded Q8/QSA gather, fixed masked2051-key panels,
+normalized FP16 local outputs and FP32 LSE with ordered four-rank weighting.
+It reuses the compatible operator in the pinned owned Torch SDK; no xFormers
+wheel is installed. Its arithmetic differs from the reference's globally
+normalized FP16 probabilities. Aggregate persistent packing and operator
+temporaries require explicit admission. On the owned CUDA12.9 SDK and V100,
+45 focused CPU checks and13 native owner component controls pass, including
+changed-KV/mask graph replay and a live-row bit-invariance fixture. TP8 owner
+transport, model/MTP, quality, capacity and performance remain pending. See
+[validation scope](docs/optimization-validation.md#private-aten-normalized-attention-owner).
 
 See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece

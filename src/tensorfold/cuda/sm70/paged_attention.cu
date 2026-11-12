@@ -614,6 +614,84 @@ __global__ void rn_pv_kernel(const __half* probability, const int* selections, c
     }
 }
 
+// The ATen owner family retains the same descriptor, Q8 decoder and failure
+// authority. Only its local normalized Half/LSE arithmetic is different.
+__global__ void aten_pack_queries_kernel(const __half* input, const int64_t* table, __half* output,
+                                         int rows, int group, const int* layer_word) {
+    const int row = blockIdx.x, layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    const bool enabled = active(descriptor, layer);
+    for (int at = threadIdx.x; at < HEADS * DIM; at += blockDim.x) {
+        const int head = at / DIM, col = at % DIM;
+        __half value = __float2half_rn(0.f);
+        if (enabled) {
+            value = input[((int64_t(group + head / 3) * rows + row) * 3 + head % 3) * DIM + col];
+            if (!isfinite(__half2float(value))) {
+                latch(descriptor, 1, layer);
+                value = __float2half_rn(0.f); // Failed-row scratch; status forbids publication.
+            }
+        }
+        output[int64_t(row) * HEADS * DIM + at] = value;
+    }
+}
+
+__global__ void aten_gather_q8_kernel(const int* selections, const int64_t* table,
+        __half* keys, __half* values, bool* valid, int rows, int width, int first_row,
+        int key_capacity, int page_tokens, const int* layer_word) {
+    constexpr int KEYS_PER_BLOCK = 8;
+    const int panel_row = blockIdx.y, row = first_row + panel_row, layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    __shared__ int end, count, enabled;
+    __shared__ const int* ids;
+    if (!threadIdx.x) {
+        enabled = domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
+        if (enabled && count > key_capacity) {
+            latch(descriptor, 32, layer);
+            enabled = false;
+        }
+    }
+    __syncthreads();
+    const int tile = int(blockIdx.x) * KEYS_PER_BLOCK;
+    for (int item = threadIdx.x; item < KEYS_PER_BLOCK * DIM; item += blockDim.x) {
+        const int key = tile + item / DIM, col = item % DIM;
+        if (key >= key_capacity) continue;
+        const int logical = enabled && key < count ? (ids == nullptr ? key : ids[key]) : -1;
+        const int64_t physical = enabled ? local_row(descriptor, logical, end, page_tokens, layer) : -1;
+        __half k = __float2half_rn(0.f), v = __float2half_rn(0.f);
+        if (physical >= 0) {
+            k = tf_sm70::decoded_half(pointer<const void>(descriptor[meta::K_DATA]),
+                pointer<const void>(descriptor[meta::K_METADATA]), 8, 0, physical * DIM + col);
+            v = tf_sm70::decoded_half(pointer<const void>(descriptor[meta::V_DATA]),
+                pointer<const void>(descriptor[meta::V_METADATA]), 8, 0, physical * DIM + col);
+            if (!isfinite(__half2float(k))) { latch(descriptor, 2, layer); k = __float2half_rn(0.f); }
+            if (!isfinite(__half2float(v))) { latch(descriptor, 4, layer); v = __float2half_rn(0.f); }
+        }
+        const int64_t at = (int64_t(panel_row) * key_capacity + key) * DIM + col;
+        keys[at] = k;
+        values[at] = v;
+        if (!col) valid[int64_t(panel_row) * key_capacity + key] = physical >= 0;
+    }
+}
+
+__global__ void aten_weight_values_kernel(const __half* normalized, const float* local_lse,
+        const float* global, const int64_t* table, float* output, const int* layer_word) {
+    const int row = blockIdx.x, head = blockIdx.y, col = threadIdx.x, layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    const int64_t at = int64_t(row) * HEADS + head;
+    float value = 0.f;
+    if (active(descriptor, layer)) {
+        const float lse = local_lse[at];
+        if (lse != -CUDART_INF_F) {
+            const float maximum = global[at * 2], denominator = global[at * 2 + 1];
+            const float weight = __fdiv_rn(expf(__fsub_rn(lse, maximum)), denominator);
+            value = __fmul_rn(weight, __half2float(normalized[at * DIM + col]));
+        }
+        // Nonempty NaNs remain NaN through the ordinary final publication
+        // guard. Only the explicit local-empty (-inf) identity skips the read.
+    }
+    output[at * DIM + col] = value;
+}
+
 }  // namespace
 
 void sm70_paged_statistics_cuda(const T& queries, const T& selected, const T& table, T& output,
@@ -693,5 +771,35 @@ void sm70_paged_rn_pv_cuda(const T& probability, const T& selected, const T& tab
     rn_pv_kernel<<<dim3(rows, HEADS, 4), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(probability.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
         output.data_ptr<float>(), rows, int(selected.size(2)), page_tokens, layer.data_ptr<int>(), codec);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_paged_aten_pack_cuda(const T& queries, const T& table, T& output, int group, const T& layer) {
+    const int rows = int(queries.size(1));
+    if (!rows) return;
+    aten_pack_queries_kernel<<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<const __half*>(queries.data_ptr()), table.data_ptr<int64_t>(),
+        reinterpret_cast<__half*>(output.data_ptr()), rows, group, layer.data_ptr<int>());
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_paged_aten_gather_cuda(const T& selected, const T& table, T& keys, T& values, T& valid,
+        int first, int page_tokens, const T& layer) {
+    const int count = int(keys.size(0)), capacity = int(keys.size(1));
+    if (!count) return;
+    aten_gather_q8_kernel<<<dim3((capacity + 7) / 8, count), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+        selected.data_ptr<int>(), table.data_ptr<int64_t>(), reinterpret_cast<__half*>(keys.data_ptr()),
+        reinterpret_cast<__half*>(values.data_ptr()), valid.data_ptr<bool>(), int(selected.size(1)),
+        int(selected.size(2)), first, capacity, page_tokens, layer.data_ptr<int>());
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_paged_aten_weight_cuda(const T& normalized, const T& local_lse, const T& global,
+        const T& table, T& output, const T& layer) {
+    const int rows = int(normalized.size(0));
+    if (!rows) return;
+    aten_weight_values_kernel<<<dim3(rows, HEADS), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<const __half*>(normalized.data_ptr()), local_lse.data_ptr<float>(),
+        global.data_ptr<float>(), table.data_ptr<int64_t>(), output.data_ptr<float>(), layer.data_ptr<int>());
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

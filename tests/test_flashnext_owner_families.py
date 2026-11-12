@@ -167,6 +167,9 @@ def test_tp_family_digest_ignores_mapping_insertion_order_across_processes():
     for family in (dict(REFERENCE), dict(reversed(tuple(REFERENCE.items())))):
         decoder = object.__new__(TensorParallelDecoder)
         decoder.requests = {}
+        # Match the constructor state used by the complete current digest.
+        decoder.engine = SimpleNamespace(serving_profiles=None)
+        decoder.admission_policy = "legacy"
         decoder.decoder = SimpleNamespace(controller=SimpleNamespace(
             epoch=0, effective={"row_budget": 8, "proposal_limit": 1, "prefill_tokens": 16, "session_ceiling": 2},
             last_served=None, effective_family=family))

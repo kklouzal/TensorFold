@@ -3,6 +3,7 @@
 #include <ATen/MemoryOverlap.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/core/InferenceMode.h>
 #include <cmath>
 #include <limits>
 #include <cstdint>
@@ -17,13 +18,17 @@ void sm70_paged_merge_values_cuda(const T&, const T&, T&, int, const T&, int);
 void sm70_paged_rn_qk_cuda(const T&, const T&, const T&, const T&, T&, int, int, const T&, int, int, bool);
 void sm70_paged_rn_merge_cuda(const T&, const T&, T&, int, const T&);
 void sm70_paged_rn_pv_cuda(const T&, const T&, const T&, T&, int, int, const T&, int);
+void sm70_paged_aten_pack_cuda(const T&, const T&, T&, int, const T&);
+void sm70_paged_aten_gather_cuda(const T&, const T&, T&, T&, T&, int, int, const T&);
+void sm70_paged_aten_weight_cuda(const T&, const T&, const T&, const T&, T&, const T&);
 
 namespace {
 constexpr int WORLD = 8, HEADS = 12, DIM = 256, WORDS = tf_sm70_paged::WORD_COUNT;
 
 void check(const T& value, const T& owner, at::ScalarType dtype, const char* name) {
     TORCH_CHECK(value.is_cuda() && value.device() == owner.device() && value.scalar_type() == dtype
-                && value.is_contiguous(), name, " needs contiguous same-device storage with declared dtype");
+                && value.is_contiguous() && !value.is_neg() && !value.is_conj(),
+                name, " needs resolved contiguous same-device storage with declared dtype");
 }
 
 int rows_of(const T& queries) {
@@ -80,6 +85,10 @@ void distinct(const T& output, const T& input) {
     // Contiguity was established once above; preserve only the cross-buffer
     // aliasing check needed while earlier input phases still own their data.
     at::assert_no_overlap(output, input);
+}
+void writable(const T& value) {
+    TORCH_CHECK(!value.requires_grad() && (!value.is_inference() || c10::InferenceMode::is_enabled()),
+                "ATen owner output requires non-grad storage and its active inference scope");
 }
 }  // namespace
 
@@ -233,7 +242,71 @@ void rn_partial_values(const T& probability, const T& selected, const T& table, 
                           value_bits == 4 ? value_codec : 0);
 }
 
+void pack_owner_queries(const T& queries, const T& table, T output, int group, int page_tokens, const T& layer) {
+    const int rows = rows_of(queries);
+    TORCH_CHECK(rows > 0 && rows <= 256, "ATen owner query rows require1..256");
+    controls(table, queries, rows, group, page_tokens, layer);
+    check(output, queries, at::kHalf, "ATen packed query tile");
+    writable(output);
+    TORCH_CHECK(output.sizes() == at::IntArrayRef({rows, 1, HEADS, DIM}) && !output.requires_grad()
+                && !queries.requires_grad(), "ATen queries require plain[rows,1,12,256] Half storage");
+    for (const auto* input : {&queries, &table, &layer}) distinct(output, *input);
+    c10::cuda::CUDAGuard guard(queries.device());
+    sm70_paged_aten_pack_cuda(queries, table, output, group, layer);
+}
+
+void gather_owner_q8(const T& selected, const T& table, T keys, T values, T valid,
+        int first, int group, int page_tokens, const T& layer) {
+    check(selected, selected, at::kInt, "ATen canonical selections");
+    TORCH_CHECK(selected.dim() == 3 && selected.size(1) > 0 && selected.size(1) <= 256, "ATen selected row geometry");
+    const int rows = int(selected.size(1));
+    controls(table, selected, rows, group, page_tokens, layer);
+    selections(selected, selected, rows);
+    check(keys, selected, at::kHalf, "ATen decoded key panel");
+    check(values, selected, at::kHalf, "ATen decoded value panel");
+    check(valid, selected, at::kBool, "ATen selected-key validity");
+    writable(keys); writable(values); writable(valid);
+    TORCH_CHECK(keys.dim() == 4 && keys.size(0) > 0 && keys.size(0) <= rows
+                && keys.size(1) > 0 && keys.size(1) <= 2051 && keys.size(2) == 1 && keys.size(3) == DIM,
+                "ATen Q8 panels require[panel,keys<=2051,1,256]");
+    TORCH_CHECK(first >= 0 && int64_t(first) + keys.size(0) <= rows,
+                "ATen panel must be contained in the current descriptor prefix");
+    TORCH_CHECK(values.sizes() == keys.sizes()
+                && valid.sizes() == at::IntArrayRef({keys.size(0), 1, keys.size(1)})
+                && !keys.requires_grad() && !values.requires_grad(), "ATen panel output schema differs");
+    for (const auto* output : {&keys, &values, &valid})
+        for (const auto* input : {&selected, &table, &layer}) distinct(*output, *input);
+    distinct(keys, values); distinct(keys, valid); distinct(values, valid);
+    c10::cuda::CUDAGuard guard(selected.device());
+    sm70_paged_aten_gather_cuda(selected, table, keys, values, valid, first, page_tokens, layer);
+}
+
+void weight_owner_normalized(const T& normalized, const T& local_lse, const T& global,
+        const T& table, T output, int group, int page_tokens, const T& layer) {
+    check(normalized, normalized, at::kHalf, "ATen normalized local values");
+    TORCH_CHECK(normalized.dim() == 3 && normalized.size(0) > 0 && normalized.size(0) <= 256
+                && normalized.size(1) == HEADS && normalized.size(2) == DIM,
+                "ATen normalized local values require[rows,12,256]");
+    const int rows = int(normalized.size(0));
+    controls(table, normalized, rows, group, page_tokens, layer);
+    check(local_lse, normalized, at::kFloat, "ATen local LSE");
+    TORCH_CHECK(local_lse.sizes() == at::IntArrayRef({rows, HEADS}), "ATen local LSE requires[rows,12]");
+    statistics(global, normalized, rows, false);
+    rn_values(output, normalized, rows);
+    writable(output);
+    TORCH_CHECK(!normalized.requires_grad() && !local_lse.requires_grad() && !output.requires_grad(),
+                "ATen owner weights do not provide an autograd path");
+    for (const auto* input : {&normalized, &local_lse, &global, &table, &layer}) distinct(output, *input);
+    c10::cuda::CUDAGuard guard(normalized.device());
+    sm70_paged_aten_weight_cuda(normalized, local_lse, global, table, output, layer);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+    module.attr("aten_owner_family") = "aten-cutlass-q8-normalized-lse-owner-v1";
+    module.attr("aten_owner_max_keys") = 2051;
+    module.def("pack_owner_queries", &pack_owner_queries);
+    module.def("gather_owner_q8", &gather_owner_q8);
+    module.def("weight_owner_normalized", &weight_owner_normalized);
     module.attr("rn_family") = "sm70-paged-owner-rn-ex2-p2051-v1";
     module.attr("rn_graph_family") = "owner-attention-rn-five-phase-v1";
     module.attr("rn_max_selected") = 2051;

@@ -1,8 +1,8 @@
-"""Private, pre-admitted 1Cat GU composition with the current TF down path.
+"""Private, pre-admitted TensorFold/1Cat expert projection composition.
 
 No public flag/default dispatch. The typed selector is for owned qualification
-only. Original raw banks remain resident for the unchanged grouped4 prefill and
-other-role path. Additional planes are ordinary weight residency, never borrowed
+only. Original raw banks remain resident for TensorFold controls, declared
+format fallbacks and the unchanged MTP expert path. Additional planes are ordinary weight residency, never borrowed
 from routing scratch, State capacity, graph budgets or the physical floor.
 """
 from dataclasses import dataclass

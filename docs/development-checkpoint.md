@@ -199,3 +199,23 @@ least16 generated IDs and exact full-sequence agreement so the fixture reaches
 beyond the initial MTP4 window. Length alone is not a graph-use pass: all eight
 closed rank receipts must still show positive target and MTP serving replay.
 The original short-only paid-catalog run remains a failed MTP-coverage result.
+
+
+## Bounded graph/MTP serving milestone
+
+Frozen source15 (`344f93e6`, source UID `20bb0dff`, image `a2ed1829`)
+passed the six-request functional protocol with the TensorFold expert reference,
+TP8/ETP4, MTP4, all24 full262144-token windows and unchanged resource reserves.
+Its paid catalog captured seven target and15 MTP keys (1320 MiB within its
+1441 MiB allowance); eight other target keys retain eager execution. Every rank
+closed successfully with75 target and84 MTP serving hits. The long serial/MTP
+pair matched all64 output IDs, with70 MTP drafts and32 accepted. Actual live
+serving coverage was C1; the larger keys were startup captures. These are
+functional/resource results, not token/s or held-out model-quality results.
+
+The first maximal 1Cat run on that image failed before Engine construction:
+the family adapter still admitted only `_GroupedGateUp` while the qualifier and
+Engine already supported exact `OneCatGU`. The corrected adapter admits the
+same two exact owned types and preserves nonowned/subclass/duck-type refusals.
+Its57 CPU adapter/selection/tool controls pass. A new installed model run is
+required; the original failure remains evidence.
