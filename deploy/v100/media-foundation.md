@@ -13,9 +13,11 @@ receipts bind its 2,810 inherited payload files, whole METADATA and genuine
 Requires-Dist before/after. The two-wheel role validator refuses stale extra
 Transformers wheels without deleting historical files. The input/configuration
 manifest and exact source revisions remain in [media-pins.json](media-pins.json).
-Current preparation/ownership controls passed 103 cases, and the six CPU build/
-export phases completed with exit0. Image/install/decoder and model qualification
-remain separate from those passes and from the historical receipts below.
+Current preparation/ownership controls passed 103 cases and six CPU build/export
+phases completed with exit0. Final application/media images passed protected
+audits, real software binding,25 installed controls and 88 frontend/replay checks.
+Full SC117 multimodal/full-history/performance qualification remains future
+work, separate from these bounded software checks and historical receipts.
 
 The pinned image processor consumes CPU FP32 TorchVision transforms. This needs
 the actual TorchVision backend, without TorchVision CUDA operators or NVJPEG.
@@ -115,10 +117,10 @@ docker build --network=none --build-arg "SOURCE_IMAGE=$TF_MEDIA_SDK_IMAGE" \
 docker image inspect tensorfold-v100:media --format '{{.Id}}'
 ```
 
-The current preparation/source-build/export receipts pass; final image/install/
-decoder checks remain separate. The historical 04cf image/producer receipts remain
-reference evidence; do not mix that older SDK with refreshed native/provider
-inputs.
+Current preparation/source-build/export and final image/software-control
+receipts pass. Full model qualification remains separate. Historical 04cf
+image/producer receipts remain reference evidence; do not mix that older SDK
+with refreshed native/provider inputs.
 
 Create `$TF_MEDIA_STATE/native` before starting. Keep it outside the project and ordinary
 Docker context. The owned prefix link is only a build-state mapping; the final

@@ -8,6 +8,7 @@ they cannot recreate an authority or clear compiler/device/model/media gates.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -231,6 +232,37 @@ def _prepare_source(*, required):
     return _SourcePreparation(module, manifest, pins, states, protected)
 
 
+
+def _prepared_provider_identities(module, pins):
+    """Dispatch only the two verified source-producer interface contracts.
+
+    Existing qualified SDKs expose zero-argument identity functions. New SDKs
+    require the sealed preparation's explicit pins. Unknown or mixed interfaces
+    fail before either function is invoked; exceptions are never dispatch.
+    """
+    contracts = []
+    for name in ("application_nccl_identity", "runtime_identity"):
+        function = getattr(module, name, None)
+        if not isinstance(function, types.FunctionType):
+            raise SoftwareBindingError("protected source producer has an unsupported identity interface")
+        parameters = list(inspect.signature(function).parameters.values())
+        if not parameters:
+            contracts.append("legacy-no-pins")
+        elif (len(parameters) == 1 and parameters[0].name == "pins"
+                and parameters[0].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+                and parameters[0].default is inspect.Parameter.empty):
+            contracts.append("explicit-sealed-pins")
+        else:
+            raise SoftwareBindingError("protected source producer has an unsupported identity interface")
+    if contracts[0] != contracts[1]:
+        raise SoftwareBindingError("protected source producer has mixed identity interfaces")
+    if contracts[0] == "explicit-sealed-pins":
+        module.application_nccl_identity(pins)
+        return module.runtime_identity(pins)
+    module.application_nccl_identity()
+    return module.runtime_identity()
+
+
 def _issue_prepared_source(prepared):
     module, manifest, pins = prepared.module, prepared.manifest, prepared.pins
     states = dict(prepared.states)
@@ -240,8 +272,7 @@ def _issue_prepared_source(prepared):
     # Discover process-owned inputs through the same protected implementation
     # before its content audit, so a concurrent mapping/file change cannot be
     # silently accepted into the issued lifetime after the audit has returned.
-    module.application_nccl_identity()
-    runtime = module.runtime_identity()
+    runtime = _prepared_provider_identities(module, pins)
     process_paths = {Path(path) for name in ("mapped_libraries", "host_driver_libraries")
                      for path in runtime[name]}
     states.update(_snapshot(process_paths))

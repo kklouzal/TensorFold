@@ -1530,16 +1530,18 @@ docker build --network=none \
 The refreshed V100 nightly source compiled in the64-job bootstrap and its exact
 owned05adb fork passed five-path precommit lint/finalization. Its SDK image is
 built, and the installed restricted FP32 Triton FMA component and cache-profile
-inheritance checks passed. Other native/collective, full model and performance
-qualification remain pending in the shared ledger.
+inheritance checks passed. Selected Q8 TP8/ETP4/MTP4 startup and two exact short text requests passed with
+NCCL 2.32.6 on all eight ranks. Full SC117 multimodal/full-history/performance
+and existing Q03 limitations remain explicitly unqualified future coverage.
 
 That command builds the source producer, not a serving image. Complete the
 source workflow's framework build/export, installed audit and native/model gates
 before deployment. CUDA13 official wheels do not provide V100 qualification.
 The refreshed CPU media producer reuses the protected published Transformers
 provider and builds exactly the CPU TorchVision/PyAV wheels. Its 103 preparation/
-ownership controls and six CPU build/export stages passed; final media image,
-decoder and model gates remain separately recorded.
+ownership controls and six CPU build/export stages passed. Final core/media
+images passed protected audits, 25 installed and 88 frontend/replay controls;
+broader model coverage remains separately recorded.
 
 New source-SDK service launches use both `deploy/v100/compose.yaml` and
 `deploy/v100/compose.source-sdk.yaml`, following the

@@ -38,9 +38,9 @@ def protected(tmp_path, monkeypatch):
     return paths
 
 
-def install_fixture(paths, *, fail=False, mutate=None):
+def install_fixture(paths, *, fail=False, mutate=None, producer_raw=PRODUCER):
     manifest, pins, producer = paths
-    producer.write_bytes(PRODUCER)
+    producer.write_bytes(producer_raw)
     data = manifest.parent / "sealed.data"
     data.write_bytes(b"sealed compiler input")
     rows = [{"path": str(path), "bytes": path.stat().st_size,
@@ -195,3 +195,22 @@ def test_failed_metadata_close_preserves_primary_and_cleanup_roots(protected, mo
         assert isinstance(primary.__dict__["_tensorfold_checkpoint_file_scope"], Scope)
     finally:
         actual.close()
+
+
+def test_current_identity_interface_receives_the_sealed_preparation_pins(protected):
+    current = PRODUCER.replace(b"def application_nccl_identity():", b"def application_nccl_identity(pins):\n    assert pins['targets'] == {'torch':'source'}")
+    current = current.replace(b"def runtime_identity():", b"def runtime_identity(pins):\n    assert pins['targets'] == {'torch':'source'}")
+    install_fixture(protected, producer_raw=current)
+    authority = binding.issue_source_binding(required=True)
+    binding.verify_source_binding(authority)
+
+
+def test_unknown_or_mixed_identity_interfaces_are_rejected_without_fallback(protected):
+    mixed = PRODUCER.replace(b"def runtime_identity():", b"def runtime_identity(pins):")
+    install_fixture(protected, producer_raw=mixed)
+    with pytest.raises(binding.SoftwareBindingError, match="mixed identity interfaces"):
+        binding.issue_source_binding(required=True)
+    unsupported = PRODUCER.replace(b"def runtime_identity():", b"def runtime_identity(other):")
+    install_fixture(protected, producer_raw=unsupported)
+    with pytest.raises(binding.SoftwareBindingError, match="unsupported identity interface"):
+        binding.issue_source_binding(required=True)

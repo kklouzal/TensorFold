@@ -760,13 +760,23 @@ qualification remain pending and separately owned.
 `Dockerfile.application-wheel` updates only the owned application on an exact
 source/media/policy image. Supply one complete wheel and its
 `application-wheel.sha256`; the recipe verifies the checksum, installs with
-`--no-deps` and networking disabled, then runs `pip check`:
+`--no-deps` and networking disabled, then runs `pip check` and before/after SDK
+audits plus the actual media audit when present. Select the exact base explicitly:
 
 ```bash
 docker build --network=none \
+  --build-arg "APPLICATION_IMAGE=${TF_APPLICATION_IMAGE:?Set the exact source/media image}" \
   --build-context application_artifacts=/path/to/verified-complete-app-wheel \
   -f deploy/v100/Dockerfile.application-wheel -t tensorfold-v100:app-owned-update .
 ```
+
+The refresh's final repaired core `829ebca2` and media `a817b9a4` images passed
+actual source binding/pip checks, protected SDK/media audits, 25 installed
+controls and 88 frontend/replay checks. The standalone native socket fixture
+compiled the selected owned source and passed CTest 1/1. These bounded repairs
+change caller/interface handling, not framework/native arithmetic. Full SC117
+multimodal/full-history/performance and the existing Q03 limits remain
+unqualified future work; no new manifest or campaign is implied.
 
 The recorded attention-metadata candidate used the same complete-wheel/checksum/
 no-deps/check operations through an explicitly authorized clean-container update

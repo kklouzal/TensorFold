@@ -35,7 +35,9 @@ def test_actual_installed_media_inventory_and_cpu_codecs():
     assert result["software_integrity"] == "passed" and result["release_qualified"] is False
     actual = manifest["runtime"]
     assert actual["torchvision_cuda"] == -1
-    assert actual["packages"]["torch"] == "2.14.1+tfcu129sm70"
+    foundation = media.read_json(Path("/opt/tensorfold-pins/source-pins.json"))[0]
+    selected = foundation["targets"]["pytorch"] + "+tfcu129sm70"
+    assert actual["packages"]["torch"] == selected
     assert actual["image_backend"] == "torchvision" and actual["decoder_backend"] == "pyav"
     assert {row["name"] for row in actual["decoders"]} >= {"h264", "hevc", "vp9", "rawvideo", "libdav1d"}
     assert "av1" in actual["known_unavailable_cpu_decoders"]
@@ -79,7 +81,8 @@ def test_warm_media_and_base_process_binding_use_the_same_actual_process(monkeyp
 def test_provider_metadata_queries_capture_their_own_lazy_mappings_before_returning():
     command = (
         "import sys;sys.path.insert(0,'/opt/tensorfold-pins');import source_foundation as f;"
-        "a=f.runtime_identity();b=f.runtime_identity();"
+        "p=f.read_json(f.Path('/opt/tensorfold-pins/source-pins.json'))[0];"
+        "a=f.runtime_identity(p);b=f.runtime_identity(p);"
         "changed=[key for key in a if a[key]!=b[key]];"
         "print(changed);sys.exit(bool(changed))"
     )
@@ -92,8 +95,8 @@ def test_media_audit_refuses_an_actual_provider_mapping_outside_owned_prefix(mon
     media = producer()
     original = media.foundation_runtime_identity
 
-    def relocated():
-        result = original()
+    def relocated(pins):
+        result = original(pins)
         result["mapped_libraries"] = [str(tmp_path / Path(path).name) if Path(path).name.startswith("libavcodec.so")
                                        else path for path in result["mapped_libraries"]]
         return result
