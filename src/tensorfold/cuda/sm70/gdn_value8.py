@@ -91,7 +91,7 @@ class BatchPrepared:
     inference_storage: bool
     bound_addresses: tuple
 
-    def validate_frame(self, frame):
+    def validate_frame(self, frame, *, segs=None):
         """Actor-side metadata only: no upload, allocation or device readback."""
         from tensorfold.families.qwen4_exp.cuda.gdn_multi import NativeTables
 
@@ -99,7 +99,7 @@ class BatchPrepared:
                 or frame.buffers is not self.buffers or frame.rows != self.rows
                 or len(frame.segs) != self.participants or frame.static.width != self.table_width):
             raise ValueError('value8 batch replay differs from its registered exact geometry')
-        frame.validate_current(frame.segs, self.buffers)
+        frame.validate_current(frame.segs if segs is None else segs, self.buffers)
         b = self.buffers
         if (frame.pointers.stride(0) != self.pointers.stride(0)
                 or frame.pointers.data_ptr()+self.layer*frame.pointers.stride(1)*frame.pointers.element_size() != self.bound_addresses[4]

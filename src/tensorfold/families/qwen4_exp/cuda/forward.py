@@ -199,7 +199,13 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     _mm(b.mixed[:R], g.proj, b.xs_mixed[:R], b.proj[li, :R], b)
     operands = getattr(b, 'gdn_capture_operands', None)
-    if b.split is not None and getattr(b, 'exact_graph_handoffs', False) and operands is not None:
+    value8 = getattr(b, 'gdn_value8_capture', None)
+    if b.split is not None and getattr(b, 'exact_graph_handoffs', False) and value8 is not None:
+        if (g.a_log is None) == (g.a_neg is None):
+            raise ValueError('GDN requires exactly one declared decay representation')
+        value8[li].chain_prepared(g.conv, g.a_log if g.a_neg is None else g.a_neg,
+            g.dt_bias, g.norm, c.eps, negative_decay=g.a_neg is not None)
+    elif b.split is not None and getattr(b, 'exact_graph_handoffs', False) and operands is not None:
         from tensorfold.cuda.sm70.gdn_native import batch_chain_prepared
 
         if (g.a_log is None) == (g.a_neg is None):

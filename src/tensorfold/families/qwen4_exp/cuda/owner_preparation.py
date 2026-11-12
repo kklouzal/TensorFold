@@ -57,7 +57,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture"})
+                                               "aten_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "gdn_value8_capture"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -102,6 +102,9 @@ def parse_preparation(value):
     capture = value.get('native_gdn_capture', False)
     if type(capture) is not bool or capture and not value['trial']:
         raise ValueError('native GDN capture requires an explicit boolean unqualified trial')
+    value8 = value.get('gdn_value8_capture', False)
+    if type(value8) is not bool or value8 and (not value['trial'] or not capture):
+        raise ValueError('Value8 capture requires an explicit trial with native GDN capture')
     return {"kernel_family": value["kernel_family"], "graph_family": value["graph_family"],
             "graph_budget_bytes": value["graph_budget_bytes"], "trial": value["trial"],
             "collective_family": value.get("collective_family", FULL_COLLECTIVE),
@@ -110,6 +113,7 @@ def parse_preparation(value):
             **({'aten_tiles': dict(tiles)} if aten else {}),
             **({'dense_projections': dense.as_dict()} if dense is not None else {}),
             **({'native_gdn_capture': True} if capture else {}),
+            **({'gdn_value8_capture': True} if value8 else {}),
             **({'native_hc_writeback_capture': True} if hc_capture else {}),
             **({'exact_graph_policy': exact_graph_policy} if exact_graph_policy is not None else {}),
             **({"reference_arithmetic": {"policy": request.policy, "graph_budget_bytes": request.graph_budget_bytes}}
@@ -231,6 +235,9 @@ class OwnerPreparation:
                     raise ValueError('native HC writeback capture requires the fixed private exact graph region')
                 if dense_selection is not None and getattr(engine, '_local_hc_readout_requested', False):
                     raise ValueError('dense projection trials do not cover local HCReadoutGraphs')
+                if self.specification.get('gdn_value8_capture', False) and not getattr(
+                        engine, '_gdn_value8_capture_enabled', False):
+                    raise ValueError('Value8 capture requires the fixed private native GDN graph region')
                 self.source_foundation = selected_identity()
                 if self.reference_tiles_requested:
                     from tensorfold.cuda.sm70.reference_owner_tiles import prepare

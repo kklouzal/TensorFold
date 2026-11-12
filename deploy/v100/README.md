@@ -754,6 +754,75 @@ binary hashes, compiler identities, SM70 cubins and bounded execution checks.
 Its optional `--checkpoint /models/first-shard.gguf` inventories a read-only
 model mount without loading the full model.
 
+## GPU-local CPU and host-memory placement
+
+New eight-V100 deployments require a sealed NUMA rank plan and a worker-purpose
+seccomp profile. Use a matching image containing `tensorfold.cuda.rank_placement`.
+The old unbound A/B runs describe their old placement only; they do not qualify
+this configuration. No service, clock, daemon or affinity changes are applied to
+an already running benchmark.
+
+Select **full GPU UUIDs in rank order**, never inferred CUDA/NVML ordinal
+correspondence. The planner reads NVIDIA's kernel UUID/PCI inventory, sysfs NUMA
+nodes and the container's CPU/memory allowances. It assigns disjoint physical
+core groups, including their allowed SMT siblings, to GPUs on the same node.
+Missing or excluded GPU-local nodes/cores fail startup; node0 is not a fallback.
+
+```bash
+export TF_IMAGE=tensorfold-v100:verified
+export TF_GPU_UUIDS=GPU-full-uuid-0,GPU-full-uuid-1,GPU-full-uuid-2,GPU-full-uuid-3,GPU-full-uuid-4,GPU-full-uuid-5,GPU-full-uuid-6,GPU-full-uuid-7
+export TF_NUMA_DIRECTORY=/absolute/new/numa-inputs
+mkdir -p "$TF_NUMA_DIRECTORY"
+# CPU-only metadata: no Torch, CUDA initialization or model allocation.
+docker run --rm --runtime runc --network none --user 1000:1000 \
+  -e NVIDIA_VISIBLE_DEVICES=void --entrypoint /opt/venv/bin/python \
+  -v "$TF_NUMA_DIRECTORY:/numa:rw" "$TF_IMAGE" \
+  -m tensorfold.cuda.rank_placement plan --gpus "$TF_GPU_UUIDS" --output /numa/plan.json
+```
+
+Record the returned SHA256 and CPU/memory-node unions as
+`TF_NUMA_PLAN_SHA256`, `TF_NUMA_CPUSET` and `TF_NUMA_MEMSET` (Docker list syntax,
+for example `0-63` and `0,1` on the audited host). Set `TF_NUMA_PLAN` to the
+absolute host `plan.json`. Generate the permission profile from the actual
+running Docker default for the intended image and capability envelope:
+
+```bash
+docker run -d --name tf-numa-default --network none --user 1000:1000 \
+  --entrypoint /bin/sleep "$TF_IMAGE" 300
+sudo python3 tools/generate_numa_seccomp.py --container tf-numa-default \
+  --purpose worker --output-directory "$TF_NUMA_DIRECTORY/seccomp"
+docker rm -f tf-numa-default
+export TF_NUMA_SECCOMP="$TF_NUMA_DIRECTORY/seccomp/seccomp.json"
+```
+
+The worker profile preserves the captured default and archive rules, adding
+only `set_mempolicy` with `MPOL_BIND|MPOL_F_STATIC_NODES` (32770). UID1000 with
+zero effective capabilities passed real node0/node1 affinity, policy readback,
+local anonymous-page and fork/exec inheritance checks; Docker's unmodified
+filter returned EPERM. This needs neither `SYS_NICE`, privilege, unconfined
+seccomp nor a package installation on the audited image (`libnuma1` is present).
+A different image/capability/default policy requires fresh derivation and
+validation. Do not substitute a profile derived for a different native-host
+capability envelope.
+
+The common launcher binds CPU **and memory policy before exec** of each original
+worker, retaining its PID and failure pipe. It requires
+`NCCL_IGNORE_CPU_AFFINITY=0`; NCCL may narrow, never broaden, the assigned mask.
+After CUDA initialization and again before admission, the engine checks actual
+CUDA UUID, memory policy, owned anonymous and pinned pages, and every current
+worker/helper-thread affinity. Bounded receipts are written to a fresh
+`TENSORFOLD_NUMA_RECEIPT_DIR`. Required GPU/pinned and full-model gates remain
+separate from the CPU proof. Shared file-cache pages and necessary TP8
+cross-socket/NVLink traffic are not claimed to disappear.
+
+The base Compose profile requires `TF_GPU_UUIDS`, `TF_NUMA_PLAN`,
+`TF_NUMA_PLAN_SHA256`, `TF_NUMA_CPUSET` and `TF_NUMA_SECCOMP`. It creates a fresh
+receipt directory per container start. Compose's service schema has no standard
+`cpuset_mems` field: its inherited allowed memory nodes are checked by bootstrap;
+for an explicit memory-node cgroup union use the direct Docker recipe below
+(`--cpuset-mems`) or the qualified campaign. Regenerate/requalify after changes
+to GPU identity/order, topology, CPU/memory allowances, image or security policy.
+
 ## Serve the original checkpoint
 
 Stop the existing GPU consumer before loading a second full model. Keep its
@@ -764,13 +833,25 @@ must be present. The model mount remains read-only.
 ```bash
 : "${TF_MAX_PENDING_REQUESTS:?Set a positive finite unfinished-request limit}"
 : "${TF_MAX_HTTP_CONNECTIONS:?Set a positive finite HTTP connection limit}"
+: "${TF_NUMA_PLAN:?Generate the sealed target-image plan first}"
+: "${TF_NUMA_PLAN_SHA256:?Set the sealed plan hash}"
+: "${TF_NUMA_CPUSET:?Set the plan CPU union}"
+: "${TF_NUMA_MEMSET:?Set the plan memory-node union}"
+: "${TF_NUMA_SECCOMP:?Generate the worker-purpose policy first}"
+TF_NUMA_RECEIPTS=$(mktemp -d /absolute/writable/numa-receipts.XXXXXXXX)
 docker run -d --name tensorfold-flash-next --gpus all --ipc host \
+  --cpuset-cpus "$TF_NUMA_CPUSET" --cpuset-mems "$TF_NUMA_MEMSET" \
+  --security-opt "seccomp=$TF_NUMA_SECCOMP" \
   --ulimit memlock=-1:-1 --ulimit stack=67108864 --ulimit core=0 \
   -p 127.0.0.1:8000:8000 \
   -e PYTHONUNBUFFERED=1 -e TENSORFOLD_NO_UPDATE_CHECK=1 \
-  -e TF_GGUF_ASSETS_DIR=/cache/gguf_assets \
+  -e TF_GGUF_ASSETS_DIR=/cache/gguf_assets -e NCCL_IGNORE_CPU_AFFINITY=0 \
+  -e TENSORFOLD_NUMA_RECEIPT_DIR=/numa-receipts \
+  -v "$TF_NUMA_RECEIPTS:/numa-receipts:rw" \
+  -v "$TF_NUMA_PLAN:/run/tensorfold-v100/numa/plan.json:ro" \
   -v tensorfold-v100-cache:/cache -v /path/to/models:/models:ro \
-  tensorfold-v100:verified /src/tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- \
+  "$TF_IMAGE" /src/tools/launch_cuda_tp.py --gpus "$TF_GPU_UUIDS" \
+  --numa-plan /run/tensorfold-v100/numa/plan.json --numa-plan-sha256 "$TF_NUMA_PLAN_SHA256" -- \
   /models/Flash-Next-00001-of-00004.gguf --backend cuda \
   --host 0.0.0.0 --port 8000 --name flash-next \
   --max-pending-requests "$TF_MAX_PENDING_REQUESTS" \
@@ -1148,8 +1229,10 @@ sudo python3 tools/generate_numa_seccomp.py --container tf-numa-default \
 docker rm -f tf-numa-default
 ```
 
-The generated profile preserves the captured filter and grants only static
-node binding without migration, policy queries and self page-location queries.
+For the new rank-bound V100 recipe use `--purpose worker`, which retains the
+archive mapping/query rules and additionally permits only physical static
+thread BIND. The archive-only default purpose does not authorize worker
+`set_mempolicy` and is insufficient for this recipe. No migration is granted.
 It requires neither extra capabilities nor unconfined seccomp. Regenerate and
 requalify after changes to Docker/runtime defaults, capabilities or CPU/node
 allowances. Keep the selected node in the container's allowed memory set.
@@ -1166,8 +1249,8 @@ docker compose -f deploy/v100/compose.yaml \
   -f deploy/v100/compose.numa.yaml up -d
 ```
 
-Use an archive-capable image built from the matching canonical source. The
-optional override is unnecessary for GPU-history mode. Startup reports host
+Use an archive-capable image built from the matching canonical source. The base eight-V100 profile requires worker binding even in GPU-history mode;
+the override retains archive capabilities for RAM history. Startup reports host
 archive/pinned staging reservations separately from GPU cache storage. Preserve
 the existing device floor and workspace while selecting equal context windows;
 saved raw-history bytes alone do not establish how many full windows fit.

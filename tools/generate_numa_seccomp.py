@@ -13,12 +13,12 @@ import copy
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import stat
 import subprocess
 import tempfile
+from pathlib import Path
 
 if __package__:
     from .worker_lifetime import raise_failures
@@ -132,7 +132,7 @@ def capture(container, *, docker='docker', bundle_config=None):
     return seccomp, provenance
 
 
-def numa_rules():
+def numa_rules(*, worker=False):
     """Allow physical-node BIND and self page queries, with no migration flags.
 
     MPOL_F_STATIC_NODES (1 << 15) preserves physical node identities when
@@ -142,22 +142,28 @@ def numa_rules():
     def equal(index, value):
         return {'index': index, 'value': value, 'op': 'SCMP_CMP_EQ'}
 
-    return [
+    rules = [
         {'names': ['mbind'], 'action': 'SCMP_ACT_ALLOW', 'args': [equal(2, 32770), equal(5, 0)]},
         {'names': ['get_mempolicy'], 'action': 'SCMP_ACT_ALLOW'},
         {'names': ['move_pages'], 'action': 'SCMP_ACT_ALLOW',
          'args': [equal(0, 0), equal(3, 0), equal(5, 0)]},
     ]
 
+    if worker:
+        rules.append({'names':['set_mempolicy'],'action':'SCMP_ACT_ALLOW','args':[equal(0,32770)]})
+    return rules
 
-def render(baseline, provenance):
+
+def render(baseline, provenance, *, purpose='archive'):
     if (not isinstance(baseline, dict) or baseline.get('defaultAction') != 'SCMP_ACT_ERRNO'
             or not isinstance(baseline.get('syscalls'), list) or not baseline['syscalls']
             or not isinstance(baseline.get('architectures'), list) or not baseline['architectures']):
         raise ValueError('expected a resolved default-deny OCI seccomp profile')
     if set(baseline) - {'defaultAction', 'defaultErrnoRet', 'architectures', 'flags', 'syscalls'}:
         raise ValueError('unsupported resolved seccomp fields; review before extending this profile')
-    added = numa_rules()
+    if purpose not in ('archive','worker'):
+        raise ValueError('NUMA profile purpose must be archive or worker')
+    added = numa_rules(worker=purpose=='worker')
     names = {name for rule in added for name in rule['names']}
     for rule in baseline['syscalls']:
         if not isinstance(rule, dict) or not isinstance(rule.get('names'), list):
@@ -167,7 +173,7 @@ def render(baseline, provenance):
     profile = copy.deepcopy(baseline)
     profile['syscalls'].extend(added)
     baseline_bytes, profile_bytes = encoded(baseline), encoded(profile)
-    manifest = {'schema_version': 1, 'purpose': 'tensorfold-numa-local-archive',
+    manifest = {'schema_version': 1, 'purpose': 'tensorfold-numa-local-rank-worker' if purpose=='worker' else 'tensorfold-numa-local-archive',
                 'baseline_sha256': digest(baseline_bytes), 'profile_sha256': digest(profile_bytes),
                 'generator_sha256': digest(Path(__file__).read_bytes()),
                 'added_rules': added, 'provenance': provenance,
@@ -262,10 +268,12 @@ def main():
                         help='new output directory, or identical previous generation')
     parser.add_argument('--bundle-config', type=Path,
                         help='alternate runtime-root/<full container ID>/config.json')
+    parser.add_argument('--purpose', choices=('archive','worker'), default='archive',
+                        help='worker adds only physical-node static thread BIND to the archive/self-query policy')
     parser.add_argument('--docker', default='docker', help='Docker executable on this host')
     args = parser.parse_args()
     baseline, provenance = capture(args.container, docker=args.docker, bundle_config=args.bundle_config)
-    files = render(baseline, provenance)
+    files = render(baseline, provenance, purpose=args.purpose)
     publish(args.output_directory, files)
     print(json.dumps({'profile': str(args.output_directory / 'seccomp.json'),
                       'manifest': str(args.output_directory / 'manifest.json'),

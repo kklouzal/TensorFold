@@ -17,6 +17,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import types
 import time
 import tomllib
 import uuid
@@ -570,6 +571,8 @@ def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_event
     qualifier = ["/opt/venv/bin/python", "-B", "/tools/v100_owned_qualification.py", "--gpus", ",".join(devices),
                  "--out", "/evidence/qualification", "--execution-rows", str(settings["execution_rows"]),
                  "--graph-use-receipts"]
+    if settings.get('numa') is not None:
+        qualifier += ['--numa-plan', '/operator/numa/plan.json', '--numa-plan-sha256', settings['numa']['plan_sha256']]
     commit = commit_diagnostic_spec(diagnostic_commit_events, diagnostic_commit_nvtx)
     if commit is not None:
         if not smoke_only and (plan.get("levels") != [1, 8] or len(plan.get("cohorts", [])) != 3):
@@ -893,6 +896,137 @@ def _stage_hc_exports(bundle, operator):
             "closure_files": len(bundle["files"]), "payload_bytes": sum(v["bytes"] for v in bundle["files"].values())}
 
 
+def _frozen_code(root, source, relative):
+    expected = source['files'].get(relative)
+    path = root / 'source' / relative
+    if expected is None or expected['type'] != 'file' or path.is_symlink():
+        raise ValueError('frozen NUMA source dependency is missing or incompatible')
+    with path.open('rb') as stream:
+        data = stream.read(expected['bytes'] + 1)
+    if len(data) != expected['bytes'] or hashlib.sha256(data).hexdigest() != expected['sha256']:
+        raise ValueError('frozen NUMA source dependency changed')
+    return path, data
+
+
+def _numa_modules(root, source):
+    """Execute authenticated stdlib policy code, never operator-provided code."""
+    name = '_tensorfold_campaign_numa_' + uuid.uuid4().hex
+    placement_path, placement_code = _frozen_code(root, source, 'src/tensorfold/cuda/rank_placement.py')
+    placement = types.ModuleType(name + '_placement')
+    placement.__file__ = str(placement_path)
+    exec(compile(placement_code, str(placement_path), 'exec'), placement.__dict__)  # noqa: S102
+    package = types.ModuleType(name)
+    package.__path__ = []
+    sys.modules[name] = package
+    try:
+        modules = []
+        for leaf in ('worker_lifetime', 'generate_numa_seccomp'):
+            path, code = _frozen_code(root, source, 'tools/' + leaf + '.py')
+            module = types.ModuleType(name + '.' + leaf)
+            module.__file__, module.__package__ = str(path), name
+            sys.modules[module.__name__] = module
+            exec(compile(code, str(path), 'exec'), module.__dict__)  # noqa: S102
+            modules.append(module)
+        return placement, modules[-1]
+    finally:
+        for leaf in ('worker_lifetime', 'generate_numa_seccomp'):
+            sys.modules.pop(name + '.' + leaf, None)
+        sys.modules.pop(name, None)
+
+
+def _bounded_numa_file(path, maximum=2 << 20):
+    path = Path(path)
+    if not path.is_absolute() or path.is_symlink():
+        raise ValueError('NUMA authority must use absolute regular files')
+    with path.open('rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= maximum:
+            raise ValueError('NUMA authority exceeds its bounded regular file envelope')
+        data = stream.read(info.st_size + 1)
+        after = os.fstat(stream.fileno())
+    stamp = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    if len(data) != info.st_size or stamp(info) != stamp(after) or stamp(info) != stamp(path.stat()):
+        raise ValueError('NUMA authority changed during acquisition')
+    return data
+
+
+def _numa_inputs(root, source, settings):
+    value = settings.get('numa')
+    if (type(value) is not dict or set(value) != {'plan', 'plan_sha256', 'seccomp_directory', 'seccomp_manifest_sha256'}):
+        raise ValueError('V100 eight-rank model runs require a sealed NUMA plan and worker seccomp authority')
+    placement, generator = _numa_modules(root, source)
+    plan_path = Path(value['plan'])
+    plan = placement.load_plan(plan_path, value['plan_sha256'])
+    if plan['ordered_gpu_uuids'] != settings['gpus'] or len(plan['ranks']) != 8:
+        raise ValueError('NUMA plan must match eight exact canonical GPU UUIDs in rank order')
+    cpus, mems = plan['cpuset_cpus'], plan['cpuset_mems']
+    if (type(cpus) is not list or not cpus or any(type(n) is not int or n < 0 for n in cpus)
+            or cpus != sorted(set(cpus)) or not set(cpus) <= set(os.sched_getaffinity(0))
+            or type(mems) is not list or not mems or any(type(n) is not int or n < 0 for n in mems)
+            or mems != sorted(set(mems))):
+        raise ValueError('NUMA Docker CPU/memory-node allowances are malformed or unavailable')
+    directory = Path(value['seccomp_directory'])
+    if not directory.is_absolute() or directory.is_symlink() or not directory.is_dir():
+        raise ValueError('NUMA seccomp authority must be an absolute regular directory')
+    if set(path.name for path in directory.iterdir()) != {'baseline-seccomp.json', 'seccomp.json', 'manifest.json'}:
+        raise ValueError('NUMA seccomp authority requires its exact three-file provenance closure')
+    files = {'plan.json': _bounded_numa_file(plan_path)}
+    files.update({name: _bounded_numa_file(directory / name) for name in
+                  ('baseline-seccomp.json', 'seccomp.json', 'manifest.json')})
+    if (hashlib.sha256(files['plan.json']).hexdigest() != value['plan_sha256']
+            or hashlib.sha256(files['manifest.json']).hexdigest() != value['seccomp_manifest_sha256']):
+        raise ValueError('NUMA sealed input identity differs')
+    manifest = json.loads(files['manifest.json'])
+    if manifest.get('purpose') != 'tensorfold-numa-local-rank-worker':
+        raise ValueError('NUMA worker requires its explicit static thread-binding seccomp purpose')
+    rendered = generator.render(json.loads(files['baseline-seccomp.json']), manifest['provenance'], purpose='worker')
+    if any(rendered[name] != files[name] for name in rendered):
+        raise ValueError('NUMA seccomp differs from the frozen generator and captured default policy')
+    return {'plan': plan, 'files': files, 'source_plan': str(plan_path), 'source_seccomp': str(directory),
+            'plan_sha256': value['plan_sha256'], 'cpuset_cpus': ','.join(map(str, cpus)),
+            'cpuset_mems': ','.join(map(str, mems)), 'source_uid': source['source_uid']}
+
+
+def _stage_numa(bundle, operator, output):
+    directory = operator / 'numa'
+    directory.mkdir()
+    for name, data in bundle['files'].items():
+        with (directory / name).open('xb') as stream:
+            stream.write(data)
+        (directory / name).chmod(0o444)
+    directory.chmod(0o555)
+    receipts = output / 'numa'
+    receipts.mkdir(mode=0o700)
+    return {key: value for key, value in bundle.items() if key != 'files'} | {
+        'files': {name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+                  for name, data in bundle['files'].items()},
+        'operator_plan': '/operator/numa/plan.json', 'receipt_directory': '/evidence/numa'}
+
+
+def numa_receipts(root, source, output, bundle):
+    """Require actual enforced startup policy from every GPU-owning rank."""
+    placement, _ = _numa_modules(root, source)
+    expected_source = source['files']['src/tensorfold/cuda/rank_placement.py']['sha256']
+    records, pids = [], set()
+    for rank in range(8):
+        pid, stages = None, {}
+        for stage in ('bootstrap', 'post-cuda', 'ready'):
+            path = output / 'numa' / f'rank-{rank}-{stage}.json'
+            raw = _bounded_numa_file(path, maximum=1 << 20)
+            record = placement.validate_receipt(json.loads(raw), bundle['plan'], rank, stage,
+                plan_sha256=bundle['plan_sha256'], source_sha256=expected_source, pid=pid)
+            pid = record['pid']
+            stages[stage] = {'file': str(path.relative_to(output)), 'bytes': len(raw),
+                'sha256': hashlib.sha256(raw).hexdigest(), 'record': record}
+        if pid in pids:
+            raise ValueError('NUMA ranks do not have eight distinct GPU-owning worker processes')
+        pids.add(pid)
+        records.append({'rank': rank, 'pid': pid, 'stages': stages})
+    return {'schema': 'tensorfold.numa-eight-rank-readiness-v1', 'plan_sha256': bundle['plan_sha256'],
+            'source_uid': source['source_uid'], 'ranks': records,
+            'scope': 'actual CPU/memory policy, anonymous/pinned pages and all-thread masks before requests'}
+
+
 def model(root, output, selected_image, settings_path, installed_check, cpus, memory, timeout, startup_timeout, smoke_only,
           diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False):
     workspace = cublas_workspace_configuration(cublas_workspace_cache)
@@ -911,6 +1045,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     plan_path = Path(settings["matrix_plan"]).resolve(strict=True)
     if plan_path.stat().st_size > 96 << 20:
         raise ValueError("matrix exceeds the existing qualifier DATA envelope")
+    numa = _numa_inputs(root, record, settings)
     original_plan = json.loads(plan_path.read_text())
     plan = diagnostic_c1_c8_plan(original_plan) if commit is not None and not smoke_only else original_plan
     qualifier = model_arguments(settings, plan, smoke_only=smoke_only,
@@ -942,6 +1077,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     if identity(operator / "profile.json") != profile_identity or identity(manifest) != profile_identity:
         raise ValueError("execution manifest changed during immutable operator publication")
     hc_staged = _stage_hc_exports(hc_exports, operator) if hc_exports is not None else None
+    numa_staged = _stage_numa(numa, operator, output)
     for item in operator.iterdir():
         if item.is_file():
             item.chmod(0o444)
@@ -952,6 +1088,10 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     argv = ["docker", "create", "--name", "tf-onecat-model-" + uuid.uuid4().hex[:12],
             "--runtime", "nvidia", "--gpus", '"device=' + gpus + '"', "--network", "none", "--read-only",
             "--user", f"{os.getuid()}:{os.getgid()}", "--cpus", str(cpus), "--memory", memory,
+            "--cpuset-cpus", numa['cpuset_cpus'], "--cpuset-mems", numa['cpuset_mems'],
+            "--security-opt", "seccomp=" + str(operator / 'numa/seccomp.json'),
+            "-e", "TENSORFOLD_NUMA_RECEIPT_DIR=/evidence/numa",
+            "-e", "NCCL_IGNORE_CPU_AFFINITY=0",
             "--memory-swap", memory, "--ipc", "host", "--ulimit", "memlock=-1:-1",
             "--ulimit", "nofile=1048576:1048576", "--ulimit", "core=0:0",
             "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=8g,mode=1777", "-e", "NVIDIA_VISIBLE_DEVICES=" + gpus,
@@ -971,7 +1111,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     publish(output / "model-inputs.json", {"settings": settings, "matrix": identity(operator / "matrix.json"),
             "manifest": identity(operator / "profile.json"), "image_binding": image_binding,
             "source_uid": record["source_uid"], "qualification": False, "P3_accepted": False,
-            "installed_check": accepted,
+            "installed_check": accepted, "numa": numa_staged,
             "cublas_workspace_cache": workspace, "controller_source": controller_source,
             "diagnostic_graph_pieces": diagnostic_graph_pieces,
             **({"bitblas_hc_exports": hc_staged} if hc_staged is not None else {}),
@@ -982,6 +1122,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     owner = OwnedContainer()
     primary = None
     errors = []
+    numa_evidence = None
     started = time.monotonic()
     try:
         owner.create(argv, lambda command, result: publish(output / "create.json", {"argv": command,
@@ -1003,6 +1144,8 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             raise TimeoutError("original startup deadline expired before HTTP readiness")
         logged(["docker", "exec", owner.cid, "/opt/venv/bin/python", "-B", "-c", _WAIT_READY,
                 str(remaining), plan["profile"]], readiness, remaining + 5)
+        numa_evidence = numa_receipts(root, record, output, numa)
+        publish(output / 'numa-readiness.json', numa_evidence)
         if smoke_only:
             logged(["docker", "exec", owner.cid, "/opt/venv/bin/python", "-B", "-c", _SMOKE, plan["model"]], client, timeout)
         else:
@@ -1026,6 +1169,9 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     if primary is None and not errors and owner.exit_code(None) == 0:
         try:
             graph_evidence = graph_use_receipts(output, record, settings)
+            final_numa = numa_receipts(root, record, output, numa)
+            if final_numa != numa_evidence:
+                raise ValueError('NUMA verified startup receipts changed during model lifetime')
             if commit is not None:
                 commit_evidence = commit_trace_receipts(output, record, commit)
         except BaseException as error:
@@ -1054,6 +1200,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
                 "exit_code": int(failed), "primary": None if primary is None else repr(primary),
                 "cleanup": [repr(error) for error in errors], "elapsed_s": time.monotonic() - started,
                 "graph_use": graph_evidence,
+                "numa": numa_evidence,
                 "cublas_workspace_cache": workspace, "controller_source": controller_source,
             "diagnostic_graph_pieces": diagnostic_graph_pieces,
                 "commit_diagnostic": commit, "diagnostic_only": commit is not None or configuration_diagnostic,

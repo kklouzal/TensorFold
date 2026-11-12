@@ -102,6 +102,16 @@ def test_replay_validation_refuses_stale_or_rebound_storage(monkeypatch, changed
         bound.validate_frame(frame)
 
 
+def test_replay_validation_preserves_actual_forward_segments_not_just_staged_self_consistency(monkeypatch):
+    static, b, states, workspace, kernel, calls = setup(monkeypatch)
+    segs = [(states[0], 0, 1), (states[1], 1, 6)]
+    bound, frame = plan(static, b, states, workspace, kernel, segs=segs)
+    bound.validate_frame(frame)  # Standalone default remains supported.
+    with pytest.raises(ValueError, match='current prepared State/parity'):
+        bound.validate_frame(frame, segs=[(states[0], 0, 3), (states[1], 3, 6)])
+    assert not calls
+
+
 @pytest.mark.parametrize('alias', ['unselected-State-save', 'projection', 'residual', 'descriptor'])
 def test_extra_Q_credit_never_authorizes_aliasing_registered_inference_storage(monkeypatch, alias):
     static, b, states, workspace, kernel, calls = setup(monkeypatch, slots=4, layers=4)

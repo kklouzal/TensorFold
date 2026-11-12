@@ -146,6 +146,8 @@ def _graph_receipt(engine):
             "capture_scope": record["capture_scope"], "capture_during_serving": False,
             **({"exact_graph_catalogue": record["exact_graph_catalogue"]}
                if "exact_graph_catalogue" in record else {}),
+            **({"gdn_value8_capture": True, "gdn_value8_workspace": record["gdn_value8_workspace"]}
+               if record.get("gdn_value8_capture") is True else {}),
             "scope": "current prepared/replay counters; no full-model quality or performance acceptance"}
 
 

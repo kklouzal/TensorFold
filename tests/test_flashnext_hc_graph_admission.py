@@ -321,7 +321,7 @@ def test_constructor_uses_one_graph_request_authority_and_rejects_two_live_catal
     init = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
     end = next(i for i, n in enumerate(init.body) if isinstance(n, ast.Assign)
                and any(isinstance(t, ast.Name) and t.id == 'budget' for t in n.targets))
-    probe = ast.parse('def call(w, graphs, hc_graphs, graph_budget=..., native_gdn_batch=False, native_gdn_capture=False, exact_graph_policy=None):\n    pass').body[0]
+    probe = ast.parse('def call(w, graphs, hc_graphs, graph_budget=..., native_gdn_batch=False, native_gdn_capture=False, exact_graph_policy=None, gdn_value8_prepared=None):\n    pass').body[0]
     probe.body = init.body[:end+1]+[ast.Return(value=ast.Name(id='budget', ctx=ast.Load()))]
     namespace = {'multi_graphs': NS(budget_bytes=lambda: 42), 'self': NS(),
                  '__package__': 'tensorfold.families.qwen4_exp.cuda'}

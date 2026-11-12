@@ -156,11 +156,30 @@ class FlashNextEngine:
                     from .serving_runtime import ServingProfiles
 
                     self.serving_profiles = ServingProfiles(self, serving_profile_root, profile_options)
+                self._verify_numa_placement("ready", expected_rank=rank)
             except BaseException as primary:
                 self._abort_comm = True
                 def retire_startup():
                     finish((lambda: diagnostic.report(primary), self._rollback_startup))
                 rollback(self, primary, retire_startup)
+
+    def _verify_numa_placement(self, stage, torch_module=None, *, expected_rank):
+        """Startup-only verification of the launcher's enforced worker policy."""
+        from os import environ
+        names = ('TENSORFOLD_NUMA_PLAN', 'TENSORFOLD_NUMA_PLAN_SHA256', 'TENSORFOLD_NUMA_RANK')
+        if not any(name in environ for name in names):
+            return
+        from tensorfold.cuda.rank_placement import verify_worker_from_env
+        if torch_module is None:
+            import torch as torch_module
+        record = verify_worker_from_env(torch_module,
+            torch_module.device('cuda', torch_module.cuda.current_device()), stage=stage)
+        if type(record) is not dict or record.get('rank') != expected_rank:
+            raise ValueError('NUMA worker verification rank differs from the actual Engine rank')
+        records = getattr(self, '_numa_placement', None)
+        if records is None:
+            self._numa_placement = records = {}
+        records[stage] = record
 
     def _prepare_store_backend(self, implemented_admission: bool, *, rank: int, world: int) -> None:
         """Bind the live transport policy before model/device acquisition."""
@@ -626,6 +645,7 @@ class FlashNextEngine:
             if self._profile_build is not None and not stage_identity_cohort:
                 self._startup_store = self._startup_store_origin = None  # Existing comm retains the managed transport.
         torch.cuda.set_device(0)
+        self._verify_numa_placement("post-cuda", torch, expected_rank=rank)
         if sm70 and self._owned_expert_requested:
             from tensorfold.cuda.sm70.triton_driver import prepare_driver
 
@@ -723,6 +743,9 @@ class FlashNextEngine:
             graphs=graphs, exact_owner=owned_graph_request, method=self.method_geometry.method,
             cached_experts=vram_experts, vision=vision)
         self._native_gdn_capture_enabled = native_gdn_capture
+        gdn_value8_capture = (native_gdn_capture and owner_specification is not None
+            and owner_specification.get('gdn_value8_capture', False))
+        self._gdn_value8_capture_enabled = gdn_value8_capture
         native_gdn_batch = native_gdn_batch_region and (int(depth) == 0 or native_gdn_capture)
         moe_selection_eligible = (self._owned_expert_requested and not managed and source_is_gguf and tp == 8
             and self.sm70_profile == "reference" and int(text["num_experts"]) == 512
@@ -784,12 +807,12 @@ class FlashNextEngine:
                 raise ValueError("1Cat GU trial requires the existing uncaptured owned reference region")
             self._onecat_owner = OneCatFrameOwner(self._owned_expert_gate_up_requested,
                                             torch.device("cuda", torch.cuda.current_device()))
-        moe_selection_prepared = half_partial_prepared = None
+        moe_selection_prepared = half_partial_prepared = gdn_value8_prepared = None
         if self._owned_expert_requested:
             from .execution_identity import _phase, _retire_store, _fatal
             channel = 'tensorfold/flashnext/native-runtime-operators'
             def prepare_runtime_operators():
-                nonlocal moe_selection_prepared, half_partial_prepared
+                nonlocal moe_selection_prepared, half_partial_prepared, gdn_value8_prepared
                 result = {"gdn_batch": None, "moe_selection": None, "half_partial": None}
                 from tensorfold.cuda.sm70.family_ops import prepare_half_moe_partial
 
@@ -803,6 +826,14 @@ class FlashNextEngine:
                     gdn_native.prepare_batch(torch.device("cuda", torch.cuda.current_device()), 6)
                     result["gdn_batch"] = {"module": gdn_native.extension().__name__, "heads": 6,
                                            "operation": "batch_chain"}
+                if gdn_value8_capture:
+                    from tensorfold.cuda.sm70 import gdn_value8
+
+                    gdn_value8_prepared = gdn_value8.prepare(
+                        torch.device("cuda", torch.cuda.current_device()), batch=True)
+                    result['gdn_value8'] = {'module': gdn_value8_prepared.module.__name__,
+                        'policy': 'value8-registered-batch-v1', 'scope': 'private-exact-capture-only',
+                        'q_workspace': 'reuse-decoder-scratch-q'}
                 if moe_selection_eligible:
                     from tensorfold.cuda.sm70.routing_native import prepare_owned_selection
 
@@ -1769,6 +1800,7 @@ class FlashNextEngine:
                                       prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace,
                                       graphs=graphs, graph_budget=graph_request, hc_graphs=hc_graphs, native_gdn_batch=native_gdn_batch,
                                       **({"native_gdn_capture": True} if native_gdn_capture else {}),
+                                      **({"gdn_value8_prepared": gdn_value8_prepared} if gdn_value8_capture else {}),
                                       **({"exact_graph_policy": exact_graph_policy} if exact_graph_policy is not None else {}),
                                       graph_memory_live=(lambda extra: partial(owner_preparation.graph_live_bytes,
                                           additional_outside_active_bytes=extra)) if hc_graphs else None,
@@ -1784,6 +1816,14 @@ class FlashNextEngine:
                 **({"native_gdn_capture": True, "capture": "prepared-native-gdn-operands-v1"}
                    if native_gdn_capture else {}),
                 "qualification": "candidate; pinned binary/model/performance gates pending"}
+            if gdn_value8_capture:
+                self.capacity_plan['native_gdn_batch']['value8_capture'] = {
+                    'policy': 'value8-registered-batch-v1',
+                    'scope': 'private-exact-capture-only; eager-native-batch',
+                    'q_workspace': 'reuse-decoder-scratch-q',
+                    'reused_q_bytes': self.multi.gdn.q.numel() * self.multi.gdn.q.element_size(),
+                    'additional_device_bytes': 0,
+                    'qualification': 'candidate; actual model and performance gates pending'}
             if dflash_plan is not None:
                 planned = self.capacity_plan["dflash2"]["resources"]
                 windows = sum(state.dflash2.nbytes for state in self.multi.states)

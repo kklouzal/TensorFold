@@ -134,3 +134,46 @@ def test_failed_capture_end_is_not_observed_or_retried(capture, monkeypatch):
         owner._pieces(run, buffers, observer=lambda *args: pytest.fail("failed end observed"))
     assert caught.value is primary and caught.value.__cause__ is cleanup
     assert buffers.split is None and not state.active and state.ends == 1
+
+
+@pytest.mark.parametrize('special', [False, True])
+def test_pending_borrowers_retire_before_bound_owner_release(monkeypatch, special):
+    from types import SimpleNamespace as NS
+    from tensorfold.families.qwen4_exp.cuda import multi_graphs
+    events = []
+    owner = object.__new__(multi_graphs.RoundGraphs)
+    owner.dec = NS(w=NS(device='cuda:0', dspark=object() if special else None))
+    owner.pending = [NS(graphs=[NS(reset=lambda: events.append('pending-reset'))])]
+    def release():
+        assert owner.pending == []
+        events.append('native-owner-release')
+    owner.bound = NS(close=release)
+    monkeypatch.setattr(multi_graphs.torch.cuda, 'synchronize', lambda *a: events.append('fence'))
+    owner.close()
+    assert events == ['fence', 'pending-reset', 'native-owner-release']
+
+
+def test_pending_reset_failure_retains_native_owner_and_borrower(monkeypatch):
+    from types import SimpleNamespace as NS
+    from tensorfold.families.qwen4_exp.cuda import multi_graphs
+    failure = RuntimeError('pending reset failed')
+    def reset():
+        raise failure
+    pending = NS(graphs=[NS(reset=reset)])
+    owner = object.__new__(multi_graphs.RoundGraphs)
+    owner.dec = NS(w=NS(device='cuda:0', dspark=None))
+    owner.pending = [pending]
+    owner.bound = NS(close=lambda: pytest.fail('native owner released before borrower retirement'))
+    monkeypatch.setattr(multi_graphs.torch.cuda, 'synchronize', lambda *a: None)
+    with pytest.raises(RuntimeError) as caught:
+        owner.close()
+    assert caught.value is failure and owner.pending == [pending]
+
+
+def test_successful_capture_can_transfer_pending_borrow_only_after_caller_publication(capture):
+    owner, buffers, state, _ = capture
+    pieces = owner._pieces(lambda: 'result', buffers, retain_pending=True)
+    assert not state.active and owner.pending == [pieces] and pieces.out == 'result'
+    published = {'key': pieces}
+    owner.pending.remove(pieces)
+    assert not owner.pending and published['key'] is pieces

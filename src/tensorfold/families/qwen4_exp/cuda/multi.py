@@ -39,7 +39,7 @@ from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import CUTS, POINTS, pass_limit
 from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room
 from .speculation import MethodGeometry
-from .state import ENDS, Buffers, KVNumericError, State
+from .state import ENDS, Buffers, KVNumericError, State, execution_dtype
 
 FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's caches grow by at a time
 GIB = 1024**3
@@ -75,7 +75,8 @@ class MultiDecoder:
                  graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0,
                  full_windows: int | None = None, execution_rows: int | None = None, memory_live=None,
                  logical_context: int | None = None, hc_graphs: bool = False, graph_memory_live=None,
-                 native_gdn_batch: bool = False, native_gdn_capture: bool = False, exact_graph_policy=None) -> None:
+                 native_gdn_batch: bool = False, native_gdn_capture: bool = False, exact_graph_policy=None,
+                 gdn_value8_prepared=None) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         if type(hc_graphs) is not bool:
@@ -96,6 +97,19 @@ class MultiDecoder:
                 or w.meta.get('history_layout') != 'unique' or multi_graphs.capturable(w) is not None):
             raise ValueError('exact graph subset requires the private exact owned graph profile')
         self.native_gdn_capture = native_gdn_capture
+        if gdn_value8_prepared is not None:
+            from tensorfold.cuda.sm70.gdn_value8 import Prepared
+
+            if (not native_gdn_capture or type(gdn_value8_prepared) is not Prepared
+                    or gdn_value8_prepared.batch_ready is not True or gdn_value8_prepared.device != torch.device(w.device)
+                    or gdn_value8_prepared.device.type != 'cuda'
+                    or execution_dtype(w) != torch.float16 or (w.cfg.nk, w.cfg.nv) != (2, 6)
+                    or type(slots) is not int or not 0 < slots <= 24
+                    or type(depth) is not int or not 0 <= depth <= 4
+                    or not any(layer.linear for layer in w.layers)):
+                raise ValueError('value8 capture requires resident Half H2/HV6 native exact GDN with at most24States/five-row windows')
+        self.gdn_value8_prepared = gdn_value8_prepared
+        self.gdn_value8_workspace = None
         budget = (multi_graphs.budget_bytes() if graphs or hc_graphs else 0) if graph_budget is ... else graph_budget
         if hc_graphs and not callable(graph_memory_live):
             raise ValueError("local HC graphs require the existing prepared owner's physical live-reader factory")
@@ -128,6 +142,8 @@ class MultiDecoder:
         rows = slots * (depth + 1) if execution_rows is None else execution_rows
         if type(rows) is not int or not depth + 1 <= rows <= slots * (depth + 1):
             raise ValueError("execution_rows must hold one complete verification window within the resident envelope")
+        if gdn_value8_prepared is not None and rows > 120:
+            raise ValueError('value8 capture requires its actual at-most120-row decode envelope')
         self.controller = None
         self.execution_manifest_installer = None
         self.poison_control = None
@@ -169,6 +185,13 @@ class MultiDecoder:
         enroll(w, self.buf)
         enroll(w, self.mbuf, mtp=True)
         self.gdn = gdn_multi.Scratch(w, rows)            # every stream's DeltaNet rows, one launch a step
+        if gdn_value8_prepared is not None:
+            from tensorfold.cuda.sm70.gdn_value8 import Workspace
+
+            # The sole old Q reader is gdn_multi.block, reached only for BF16.
+            # Half native/per-State chains and _flush do not consume it. This
+            # fixed capture region reuses that already-paid storage exclusively.
+            self.gdn_value8_workspace = Workspace(self.gdn.q, rows)
         # a frame's codec status words, read back with its sampling packet (KVWords): one host wait a step
         self.kv_host = torch.zeros((slots, 2), dtype=torch.int32, pin_memory=torch.cuda.is_available())
         self.kv_cohort = None

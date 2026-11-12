@@ -297,6 +297,14 @@ class FrameBinding(unittest.TestCase):
             with patch.object(RoundGraphs, 'record', return_value={**record, 'exact_graph_catalogue': catalogue}):
                 bound = tool.bound_receipt(e, selected)['graphs']
                 self.assertEqual(bound['exact_graph_catalogue'], catalogue)
+            workspace = {'source': 'MultiDecoder.gdn.q', 'reused_bytes': 122880,
+                         'additional_device_bytes': 0, 'scope': 'target-exact-capture-only'}
+            with patch.object(RoundGraphs, 'record', return_value={**record,
+                    'gdn_value8_capture': True, 'gdn_value8_workspace': workspace}):
+                bound = tool.bound_receipt(e, selected)['graphs']
+                self.assertIs(bound['gdn_value8_capture'], True)
+                self.assertEqual(bound['gdn_value8_workspace'], workspace)
+
 
             for key, value in (("mtp_keys", 0), ("pieces", 0), ("bytes", 111),
                                ("replay_hits", True), ("capture_during_serving", True)):

@@ -15,7 +15,7 @@ def owner(*, slots=2, depth=4, rows=10, mtp=True, policy=None):
     outer = SimpleNamespace(dec=SimpleNamespace(free=states, buf=source, mbuf=source if mtp else None, w=model,
                                                 depth=depth, exact_graph_policy=policy,
                                                 streams={}, filling=[], kept=[]),
-                            verify={}, mtp={}, failure=None)
+                            verify={}, mtp={}, failure=None, pending=[])
     graph = exact_graphs.ExactStateGraphs(outer)
     return graph, states
 
@@ -237,7 +237,8 @@ def test_capture_handoff_lifetime_resets_after_piece_failure(monkeypatch):
     monkeypatch.setattr(exact_graphs.torch.cuda, 'memory_allocated', lambda device: 0)
     monkeypatch.setattr(exact_graphs.torch.cuda, 'memory_reserved', lambda device: 0)
     failure = RuntimeError('controlled capture failed')
-    def pieces(run, buffers):
+    def pieces(run, buffers, *, retain_pending):
+        assert retain_pending is True
         buffers.split = lambda value: None
         try:
             run()
@@ -270,11 +271,13 @@ def test_startup_capture_preserves_per_key_allocation_receipt_before_fatal_budge
     outer.retain_failure = lambda failure: setattr(outer, 'failure', failure)
     pieces = SimpleNamespace(graphs=[SimpleNamespace(reset=lambda: None)], out=object())
     graph.piece_diagnostic = piece_diagnostic and not write_failure
-    def capture(*args, **kwargs):
+    def capture(*args, retain_pending, **kwargs):
+        assert retain_pending is True
         if graph.piece_diagnostic:
             kwargs['observer'](0, ('gdn_chain', SimpleNamespace(index=3, tensor=object()), 1), {'physical_delta_bytes': -64})
         else:
             assert not kwargs
+        outer.pending.append(pieces)
         return pieces
     outer._pieces = capture
     monkeypatch.setattr(exact_graphs, 'compute', lambda *args, **kw: None)

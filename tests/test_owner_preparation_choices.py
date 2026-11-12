@@ -308,3 +308,29 @@ def test_local_hc_readout_cannot_silently_bypass_selected_dense_numerics(monkeyp
     with pytest.raises(ValueError, match='local HCReadoutGraphs'):
         prepared.prepare(engine, text, NS(identity='q8'), page_tokens=128, device='cpu')
     assert prepared.before is None and prepared.dense_owner is None
+
+
+def test_value8_capture_is_explicit_and_requires_native_frame_policy():
+    assert preparation.parse_preparation(spec(gdn_value8_capture=False)) == preparation.parse_preparation(spec())
+    enabled = preparation.parse_preparation(spec(native_gdn_capture=True, gdn_value8_capture=True))
+    assert enabled['gdn_value8_capture'] is True
+    for value in (0, 1, 'true', None):
+        with pytest.raises(ValueError, match='Value8'):
+            preparation.parse_preparation(spec(native_gdn_capture=True, gdn_value8_capture=value))
+    with pytest.raises(ValueError, match='Value8'):
+        preparation.parse_preparation(spec(gdn_value8_capture=True))
+    with pytest.raises(ValueError):
+        preparation.parse_preparation({**spec(native_gdn_capture=True, gdn_value8_capture=True), 'trial': False})
+
+
+def test_unavailable_value8_capture_refuses_before_backend_or_allocation(monkeypatch):
+    from tensorfold.cuda.sm70 import foundation_headers
+    prepared = owner(native_gdn_capture=True, gdn_value8_capture=True)
+    monkeypatch.setattr(foundation_headers, 'selected_identity', lambda: pytest.fail('unsupported value8 reached backend'))
+    monkeypatch.setattr(execution_identity, '_retire_store', lambda *a, **k: None)
+    prepared._phase = lambda engine, name, operation, **kwargs: operation()
+    engine = NS(comm=None, tp=8, _native_gdn_capture_enabled=True, _gdn_value8_capture_enabled=False)
+    text = dict(num_attention_heads=96, num_key_value_heads=2, hidden_size=2560, head_dim=256)
+    with pytest.raises(ValueError, match='Value8'):
+        prepared.prepare(engine, text, NS(identity='q8'), page_tokens=128, device='cpu')
+    assert prepared.before is None and prepared.workspaces == {}

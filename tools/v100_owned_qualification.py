@@ -4296,6 +4296,8 @@ def main(argv=None, *, _benchmark_operation=None):
         return worker(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpus", required=True)
+    parser.add_argument("--numa-plan", type=Path, help="sealed per-rank GPU-local CPU and memory placement plan")
+    parser.add_argument("--numa-plan-sha256", help="exact NUMA placement plan SHA256")
     parser.add_argument("--master-port", type=int, default=29551)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--benchmark-plan", type=Path)
@@ -4331,6 +4333,8 @@ def main(argv=None, *, _benchmark_operation=None):
     parser.add_argument("--history-input", type=Path, help="private C/N/R/L and expected prompt-ID SHA DATA")
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if (args.numa_plan is None) != (args.numa_plan_sha256 is None):
+        parser.error('NUMA plan and SHA256 must be supplied together')
     _onecat_capability_from_args(args)  # Validate before spawning any rank.
     _commit_trace_spec(args)
     teacher = selected_client = model_observer = None
@@ -4454,7 +4458,9 @@ def main(argv=None, *, _benchmark_operation=None):
         if args.scheduler_trace_prefill_start is not None:
             prefix += ["--scheduler-trace-prefill-start", str(args.scheduler_trace_prefill_start)]
     prefix += ["--"]
-    command = ["--gpus", args.gpus, "--master-port", str(args.master_port), *args.serve_args]
+    numa_options = ([] if args.numa_plan is None else
+                    ["--numa-plan", str(args.numa_plan.absolute()), "--numa-plan-sha256", args.numa_plan_sha256])
+    command = ["--gpus", args.gpus, "--master-port", str(args.master_port), *numa_options, *args.serve_args]
     if selected_client is None:
         result = launch_cuda_tp.main(command, _command_prefix=prefix)
         if teacher is not None and result == 0:

@@ -218,13 +218,14 @@ class RoundGraphs:
             history_runtime.submitted(segs, prefill=b.prefill, mtp=mtp)
 
     # -- capture -----------------------------------------------------------------------------------------------
-    def _pieces(self, run, b, *, split=True, observer=None) -> Pieces:
+    def _pieces(self, run, b, *, split=True, observer=None, retain_pending=False) -> Pieces:
         """``run()`` captured in pieces, one ending at each ``b.split`` insert. Only a begun capture is ended, once;
         a failure inside ``run`` stays the raised error, with a failed end of its open capture attached.
 
         An optional startup observer receives ``(index, terminating_insert, observation)`` after a successful end,
         outside capture and before the next begin. Measurements are signed, unsynchronized boundary deltas:
         asynchronous work or other device users can affect attribution. No observations are retained here.
+        ``retain_pending`` transfers the successful borrower only after the caller journals its new owner.
         """
 
         pieces = Pieces()
@@ -278,7 +279,8 @@ class RoundGraphs:
                 end()
         finally:
             b.split = None
-        pending.remove(pieces)
+        if not retain_pending:
+            pending.remove(pieces)
         return pieces
 
     def capture(self, *, prepared: bool = False) -> None:
@@ -454,13 +456,12 @@ class RoundGraphs:
     def close(self):
         """After replay admission closes, fence and retire graphs before borrowed native owners."""
         torch.cuda.synchronize(self.dec.w.device)
-        if getattr(self.dec.w, "dspark", None) is not None:
-            # A failed capture can retain graphs outside the bound catalogue.
-            # Retire those borrowers before bound.close releases tap anchors.
-            for pieces in tuple(getattr(self, "pending", ())):
-                for graph in pieces.graphs:
-                    graph.reset()
-                self.pending.remove(pieces)
+        # Failed captures borrow native owners even before catalogue publication.
+        # Retire all pending borrowers before bound.close releases those owners.
+        for pieces in tuple(getattr(self, "pending", ())):
+            for graph in pieces.graphs:
+                graph.reset()
+            self.pending.remove(pieces)
         if getattr(self, "bound", None) is not None:
             self.bound.close()
         else:
@@ -469,7 +470,3 @@ class RoundGraphs:
                     for graph in pieces.graphs:
                         graph.reset()
                     del mapping[key]
-        for pieces in tuple(getattr(self, "pending", ())):
-            for graph in pieces.graphs:
-                graph.reset()
-            self.pending.remove(pieces)

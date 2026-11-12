@@ -239,3 +239,30 @@ Local HC readout graphs are explicitly incompatible with selected dense
 numerics because they clone reference matrices. Whole-round capture and the
 local fallback are now mutually exclusive; no numerical provider is silently
 substituted. Model, quality and P3 checks remain pending.
+
+
+## Required NUMA deployment region
+
+Live Source17 ranks were allowed on both CPU/memory nodes and sampled CPU and
+memory placements crossed sockets. GPUs0–3 are PCI-local to node0 and GPUs4–7
+to node1. The image already contains libnuma2.0.18; Docker's captured default
+blocks policy queries and static binding for UID1000/CapEff0. The owned worker
+profile preserves that captured default and adds only the static32770 thread
+policy operation to the existing narrow NUMA rules. Real node0/node1 binding,
+readback, owned-page location and fork/exec inheritance pass without added
+capabilities, unconfined seccomp, package installation or daemon changes.
+
+The common launcher now accepts a sealed UUID-ordered placement plan, assigning
+four physical cores plus their allowed SMT siblings per rank on this host.
+Actual eight-rank CPU/exec tests pass. New model runs require Docker CPU/memory
+allowances, the derived policy, read-only plan and all24 bootstrap/post-CUDA/ready
+receipts, including GPU UUID, same worker PID, current thread CPU masks and owned
+anonymous/pinned-page locality. The actual eight-GPU Torch/CUDA/NCCL test now
+passes all24 receipts, local anonymous/pinned pages and helper-thread masks.
+The full model/capacity and new-region performance gates remain pending.
+Shared file-cache pages and necessary TP8 traffic are outside a zero-UPI claim.
+
+The initial unbound TensorFold timing arm completed, but the matching 1Cat arm
+was cleanly cancelled after C8 when NUMA became a required region. Both remain
+diagnostic evidence; incomplete candidate results cannot establish a winner.
+The NUMA region requires a fresh functional baseline and matched timing run.

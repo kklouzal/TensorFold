@@ -1,6 +1,8 @@
-# Optional RAM-archive capability override. Generate/requalify the profile from
-# this host's running Docker default with tools/generate_numa_seccomp.py first.
-# The base profile and ordinary GPU-history mode need no custom seccomp policy.
+# Optional RAM-archive override. The base eight-V100 profile already requires
+# the worker-purpose derived NUMA policy for CPU+memory binding. That policy
+# includes the original archive's mbind/self-query rules; archive-only profiles
+# lack set_mempolicy and cannot satisfy the worker bootstrap. No extra capability
+# or unconfined policy is required. Set TF_INDEXER_HISTORY=ram to use the archive.
 services:
   tensorfold:
     security_opt:

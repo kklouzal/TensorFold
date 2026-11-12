@@ -39,6 +39,14 @@ class ExactStateGraphs:
             raise ValueError("exact graph piece diagnostic must be 0 or 1")
         self.piece_diagnostic = diagnostic == "1"
         self.native_gdn_capture = bool(getattr(self.dec, 'native_gdn_capture', False))
+        self.value8_prepared = getattr(self.dec, 'gdn_value8_prepared', None)
+        self.value8_bindings = {}
+        workspace = getattr(self.dec, 'gdn_value8_workspace', None)
+        if self.value8_prepared is not None and workspace is None:
+            raise ValueError('value8 exact capture requires its existing decoder Q workspace')
+        self.value8_workspace_record = (None if self.value8_prepared is None else {
+            'source': 'MultiDecoder.gdn.q', 'reused_bytes': workspace.q.numel()*workspace.q.element_size(),
+            'additional_device_bytes': 0, 'scope': 'target-exact-capture-only; eager/prefill/MTP retain incumbent'})
         self.requested_policy = deepcopy(getattr(self.dec, 'exact_graph_policy', None))
         if self.requested_policy is not None:
             self.requested_policy['keys'] = tuple(tuple(key) for key in self.requested_policy['keys'])
@@ -77,14 +85,20 @@ class ExactStateGraphs:
         context = getattr(source, 'input_preparation_context', None)
         frame = prepare() if context is None else context.prepare('exact-gdn-warm-frame', prepare)
         source.gdn_capture_ready_operands = None
+        source.gdn_value8_ready = None
         rows = segs[-1][2]
         if capture:
             # NativeTables.operands validates current frame and actor stream.
             # Capture consumes these cold views without asking a frame created
             # on that actor stream to validate against the separate side stream.
-            source.gdn_capture_ready_operands = tuple(frame.operands(layer,
-                source.proj[layer, :rows], source.gout[:rows], source.gxs[:rows])
-                for layer in range(self.dec.round_tables.lin))
+            if self.value8_prepared is not None:
+                source.gdn_value8_ready = tuple(self.value8_prepared.batch_prepare(frame, layer,
+                    source.proj[layer, :rows], source.gout[:rows], source.gxs[:rows], self.dec.gdn_value8_workspace)
+                    for layer in range(self.dec.round_tables.lin))
+            else:
+                source.gdn_capture_ready_operands = tuple(frame.operands(layer,
+                    source.proj[layer, :rows], source.gout[:rows], source.gxs[:rows])
+                    for layer in range(self.dec.round_tables.lin))
         elif self.dec.round_tables.lin:
             frame.operands(0, source.proj[0, :rows], source.gout[:rows], source.gxs[:rows])
         return frame
@@ -161,10 +175,14 @@ class ExactStateGraphs:
         before = free_bytes()
         before_allocated = int(torch.cuda.memory_allocated(self.dec.w.device))
         before_reserved = int(torch.cuda.memory_reserved(self.dec.w.device))
-        source.exact_graph_handoffs = True
-        source.gdn_capture_operands = (source.gdn_capture_ready_operands
-            if kind == 'verify' and self.native_gdn_capture else None)
         try:
+            source.exact_graph_handoffs = True
+            source.gdn_capture_operands = (source.gdn_capture_ready_operands
+                if kind == 'verify' and self.native_gdn_capture else None)
+            source.gdn_value8_capture = (source.gdn_value8_ready
+                if kind == 'verify' and self.value8_prepared is not None else None)
+            if source.gdn_value8_capture is not None:
+                self.value8_bindings[key] = source.gdn_value8_capture
             if self.piece_diagnostic:
                 def observe(index, insert, accounting):
                     record = {"schema": "tensorfold.exact-graph-piece-v1",
@@ -178,16 +196,21 @@ class ExactStateGraphs:
                     payload = (json.dumps(record, separators=(',', ':')) + '\n').encode('ascii')
                     if os.write(2, payload) != len(payload):
                         raise OSError('exact graph piece diagnostic receipt was truncated')
-                pieces = owner._pieces(run, source, observer=observe)
+                pieces = owner._pieces(run, source, observer=observe, retain_pending=True)
             else:
-                pieces = owner._pieces(run, source)
+                pieces = owner._pieces(run, source, retain_pending=True)
+            # _pieces keeps its original borrower journal until this transfer.
+            # Publish before any flag cleanup, device fence or memory query.
+            self.bindings[(kind, key)] = pieces
+            owner.pending.remove(pieces)
         finally:
             source.exact_graph_handoffs = False
             source.gdn_capture_operands = None
+            source.gdn_value8_capture = None
+            source.gdn_value8_ready = None
         torch.cuda.synchronize(self.dec.w.device)
         physical_delta = before - free_bytes()
         took = max(0, physical_delta)
-        self.bindings[(kind, key)] = pieces
         admitted = self._agree(owner.room_bytes + took <= owner.budget)
         error = None
         if not admitted:
@@ -258,7 +281,14 @@ class ExactStateGraphs:
                     # Published inside the existing all-rank decode-window
                     # preparation phase. The fixed region rejects registration
                     # changes there rather than taking a rank-local fallback.
-                    source.gdn_tables.validate_current(segs, source)
+                    value8 = self.value8_bindings.get(key) if self.value8_prepared is not None else None
+                    if value8 is not None:
+                        # Contains the original current-frame/actor check plus
+                        # Q/descriptor/output binding facts. All layers share
+                        # these fixed owners, so validate once, not per layer.
+                        value8[0].validate_frame(source.gdn_tables, segs=segs)
+                    else:
+                        source.gdn_tables.validate_current(segs, source)
                 except BaseException as error:
                     from .input_preparation import reject_prepared
 
@@ -381,6 +411,10 @@ class ExactStateGraphs:
                 graph.reset()
             (self.owner.verify if kind == "verify" else self.owner.mtp).pop(key, None)
             del self.bindings[(kind, key)]
+        # The outer owner retires pending/partial captures before this method.
+        # Keep every plan if any graph reset fails, including failed-capture
+        # keys that never reached the published self.bindings catalogue.
+        self.value8_bindings.clear()
         self.closed = True
 
     def record(self):
@@ -395,5 +429,7 @@ class ExactStateGraphs:
                 "replay_hits": self.hits, "replay_misses": self.misses,
                 "serving_hits": dict(self.serving_hits), "serving_misses": dict(self.serving_misses),
                 "native_gdn_capture": self.native_gdn_capture,
+                "gdn_value8_capture": self.value8_prepared is not None,
+                "gdn_value8_workspace": deepcopy(self.value8_workspace_record),
                 "exact_graph_catalogue": catalogue,
                 "eager_owner_inserts": self.owner_inserts, "capture_during_serving": False}

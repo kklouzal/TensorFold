@@ -5,6 +5,9 @@ services:
     image: ${TENSORFOLD_V100_IMAGE:-tensorfold-v100:verified}
     container_name: tensorfold-flash-next
     gpus: all
+    cpuset: "${TF_NUMA_CPUSET:?Set TF_NUMA_CPUSET to the sealed plan CPU union}"
+    security_opt:
+      - "seccomp=${TF_NUMA_SECCOMP:?Set TF_NUMA_SECCOMP to the worker-purpose derived seccomp.json}"
     ipc: host
     restart: unless-stopped
     stop_grace_period: 45s
@@ -17,9 +20,14 @@ services:
     volumes:
       - "${MODEL_ROOT:?Set MODEL_ROOT to the existing model directory}:/models:ro"
       - tensorfold-v100-cache:/cache
+      - "${TF_NUMA_PLAN:?Set TF_NUMA_PLAN to the sealed target-image plan.json}:/run/tensorfold-v100/numa/plan.json:ro"
       - ./personal_profile.sh:/run/tensorfold-v100/personal_profile.sh:ro
     environment:
       PYTHONUNBUFFERED: "1"
+      NCCL_IGNORE_CPU_AFFINITY: "0"
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
       TENSORFOLD_NO_UPDATE_CHECK: "1"
       TENSORFOLD_SM70_PROFILE: "${TF_SM70_PROFILE:-reference}"
       TENSORFOLD_PREFILL_ROWS: "${TF_PREFILL_ROWS:-}"
@@ -63,12 +71,17 @@ services:
         if [[ -n "$${TF_EXPERT_TENSOR_PARALLEL_SIZE:-}" ]]; then
           args+=(--expert-tensor-parallel-size "$$TF_EXPERT_TENSOR_PARALLEL_SIZE")
         fi
+        export TENSORFOLD_NUMA_RECEIPT_DIR=$$(mktemp -d /cache/numa-ranks.XXXXXXXX)
         exec /opt/venv/bin/python "$${args[@]}"
       - tensorfold-v100
     command:
       - /src/tools/launch_cuda_tp.py
       - --gpus
-      - 0,1,2,3,4,5,6,7
+      - "${TF_GPU_UUIDS:?Set TF_GPU_UUIDS to eight canonical GPU UUIDs in sealed plan rank order}"
+      - --numa-plan
+      - /run/tensorfold-v100/numa/plan.json
+      - --numa-plan-sha256
+      - "${TF_NUMA_PLAN_SHA256:?Set TF_NUMA_PLAN_SHA256 to the sealed plan hash}"
       - --
       - "${GGUF_FILE:?Set GGUF_FILE to the first shard path under /models}"
       - --backend

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Supervise the ordinary TensorFold CUDA CLI ranks on one multi-GPU host.
 
-Example: python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- MODEL --context 4096 --no-drafts
+V100 NUMA recipe: --gpus GPU-uuid0,...,GPU-uuid7 --numa-plan /sealed/plan.json
+--numa-plan-sha256 SHA -- MODEL --context 4096 --no-drafts. Other declared
+legacy regions may omit the plan; the new V100 campaign/recipe requires it.
 Arguments after ``--`` are passed to ``tensorfold serve`` on every rank.
 """
 
@@ -12,20 +14,29 @@ import os
 import signal
 import sys
 
+from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.cohort import FAILURE_FD_ENV
 from tensorfold.cuda.expert_launch import supervise
-from tensorfold.cleanup import raise_failures
 
 
 def main(argv=None, *, _command_prefix=None, _shutdown_probe=None, _failure_probe=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpus", required=True, help="Comma-separated visible CUDA device IDs or UUIDs, rank order")
+    parser.add_argument("--numa-plan", help="Absolute sealed GPU-UUID/NUMA rank plan; required by the V100 NUMA recipe")
+    parser.add_argument("--numa-plan-sha256", help="Exact lowercase SHA256 of the rank plan")
     parser.add_argument("--master-port", type=int, default=29551)
     parser.add_argument("serve_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     devices = [device.strip() for device in args.gpus.split(",")]
     if len(devices) not in (2, 4, 8) or any(not item.strip() for item in devices) or len(set(devices)) != len(devices):
         parser.error("--gpus requires 2, 4 or 8 distinct device IDs")
+    if (args.numa_plan is None)!=(args.numa_plan_sha256 is None):
+        parser.error('--numa-plan and --numa-plan-sha256 must be supplied together')
+    if args.numa_plan is not None:
+        if os.environ.get('NCCL_IGNORE_CPU_AFFINITY','0')!='0':
+            parser.error('NUMA rank placement requires NCCL_IGNORE_CPU_AFFINITY=0')
+        from tensorfold.cuda.rank_placement import load_plan, validate_plan
+        validate_plan(load_plan(args.numa_plan,args.numa_plan_sha256),devices)
     tail = args.serve_args
     if tail[:1] == ["--"]:
         tail = tail[1:]
@@ -56,6 +67,11 @@ def main(argv=None, *, _command_prefix=None, _shutdown_probe=None, _failure_prob
             env = dict(os.environ, CUDA_VISIBLE_DEVICES=devices[rank], **{FAILURE_FD_ENV: str(write_fd)})
             command = [*prefix, *tail, "--tp", str(len(devices)),
                        "--rank", str(rank), "--master", "127.0.0.1", "--master-port", str(args.master_port)]
+            if args.numa_plan is not None:
+                env['NCCL_IGNORE_CPU_AFFINITY']='0'
+                command=[sys.executable,'-m','tensorfold.cuda.rank_placement','exec',
+                         '--plan',args.numa_plan,'--sha256',args.numa_plan_sha256,
+                         '--rank',str(rank),'--',*command]
             commands.append(command)
             environments.append(env)
 

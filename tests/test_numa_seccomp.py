@@ -4,13 +4,12 @@ import copy
 import importlib.util
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('tools.generate_numa_seccomp', ROOT / 'tools/generate_numa_seccomp.py')
@@ -297,29 +296,42 @@ def test_config_input_detects_mutation_during_read(tmp_path, monkeypatch):
         profile._read_json(path)
 
 
-def test_optional_compose_merge_only_adds_a_required_profile(tmp_path):
+def test_v100_compose_requires_worker_plan_and_override_preserves_it(tmp_path):
     docker = shutil.which('docker')
     if docker is None:
         pytest.skip('requires host Docker Compose')
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith(('TF_', 'TENSORFOLD_', 'MODEL_ROOT', 'GGUF_FILE'))}
     environment.update(MODEL_ROOT='/models', GGUF_FILE='/models/model.gguf')
-    empty_env = tmp_path / 'empty.env'
-    empty_env.write_text('')
-    command = [docker, 'compose', '--env-file', str(empty_env), '-f',
-               str(ROOT / 'deploy/v100/compose.yaml')]
+    required={'TF_GPU_UUIDS':','.join('GPU-00000000-0000-0000-0000-'+str(i+1).zfill(12)for i in range(8)),
+              'TF_NUMA_PLAN':'/profiles/plan.json','TF_NUMA_PLAN_SHA256':'a'*64,
+              'TF_NUMA_CPUSET':'0-63','TF_NUMA_SECCOMP':'/profiles/seccomp.json'}
+    empty_env = tmp_path / 'empty.env';empty_env.write_text('')
+    command = [docker, 'compose', '--env-file', str(empty_env), '-f',str(ROOT / 'deploy/v100/compose.yaml')]
+    def run(arguments, extra):
+        return subprocess.run(arguments,capture_output=True,text=True,timeout=30,env=environment|extra,check=False)
+    for name in required:
+        missing=run(command+['config','--format','json'],{k:v for k,v in required.items()if k!=name})
+        assert missing.returncode!=0 and name in missing.stderr
+    base=run(command+['config','--format','json'],required)
+    assert base.returncode==0,base.stderr
+    merged=run(command+['-f',str(ROOT/'deploy/v100/compose.numa.yaml'),'config','--format','json'],required)
+    assert merged.returncode==0,merged.stderr
+    expected,actual=json.loads(base.stdout),json.loads(merged.stdout)
+    service=actual['services']['tensorfold']
+    assert service['security_opt']==['seccomp=/profiles/seccomp.json']
+    assert service['cpuset']=='0-63' and service['environment']['NCCL_IGNORE_CPU_AFFINITY']=='0'
+    assert '--numa-plan' in service['command'] and '--numa-plan-sha256' in service['command']
+    assert any(v['target']=='/run/tensorfold-v100/numa/plan.json' and v['read_only']for v in service['volumes'])
+    assert actual==expected
 
-    def run(arguments, extra=None):
-        return subprocess.run(arguments, capture_output=True, text=True, timeout=30,
-                              env=environment | (extra or {}), check=False)
 
-    base = run(command + ['config', '--format', 'json'])
-    assert base.returncode == 0, base.stderr
-    command += ['-f', str(ROOT / 'deploy/v100/compose.numa.yaml'), 'config', '--format', 'json']
-    missing = run(command)
-    assert missing.returncode != 0 and 'TF_NUMA_SECCOMP' in missing.stderr
-    merged = run(command, {'TF_NUMA_SECCOMP': '/profiles/seccomp.json'})
-    assert merged.returncode == 0, merged.stderr
-    expected, actual = json.loads(base.stdout), json.loads(merged.stdout)
-    assert actual['services']['tensorfold'].pop('security_opt') == ['seccomp=/profiles/seccomp.json']
-    assert actual == expected
+def test_worker_adds_only_exact_static_thread_binding_over_archive(baseline):
+    archive=profile.render(baseline,{'versions':'recorded'})
+    worker=profile.render(baseline,{'versions':'recorded'},purpose='worker')
+    a=json.loads(archive['seccomp.json']);b=json.loads(worker['seccomp.json'])
+    assert b['syscalls'][:-1]==a['syscalls']
+    assert b['syscalls'][-1]=={'names':['set_mempolicy'],'action':'SCMP_ACT_ALLOW',
+                             'args':[{'index':0,'value':32770,'op':'SCMP_CMP_EQ'}]}
+    assert json.loads(worker['manifest.json'])['purpose']=='tensorfold-numa-local-rank-worker'
+    assert b['architectures']==a['architectures'] and b['defaultAction']==a['defaultAction']
