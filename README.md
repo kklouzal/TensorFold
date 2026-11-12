@@ -127,6 +127,14 @@ See [candidate status](docs/development-checkpoint.md#additional-v100-library-ca
 boundaries without synchronizing each piece. Those observations can include
 asynchronous allocation effects and are excluded from performance qualification.
 
+The private campaign also accepts `--scheduler-diagnostic-grants` for five
+actual scheduler windows: one C1 prefill-containing round, two warmed C1 decode
+rounds and two warmed C8 decode rounds. Explicit host, device-headroom, trace
+disk, native-log and in-flight CUPTI grants are required. Trace exports are
+bounded while streaming; incomplete native collection is rejected. These are
+instrumented diagnostics, never throughput evidence. CPU controls pass; actual
+GPU profiling remains pending. See the [diagnostic contract](docs/optimization-validation.md#private-five-window-scheduler-diagnostic).
+
 
 Gemma chat presentation routes repeated, nested and unknown channel blocks to
 reasoning and holds incomplete control markers while streaming. Channel controls

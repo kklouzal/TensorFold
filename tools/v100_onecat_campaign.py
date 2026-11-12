@@ -512,7 +512,7 @@ def diagnostic_c1_c8_plan(plan):
     return derived
 
 
-def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_events=None, diagnostic_commit_nvtx=False):
+def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_events=None, diagnostic_commit_nvtx=False, scheduler_diagnostic=None):
     """One explicit MTP4/graph-enabled arm; numerical acceptance is separate."""
     required = {"gpus", "models_root", "target", "mtp", "profile_manifest", "matrix_plan", "cache",
                 "gu", "down", "device_budget_bytes", "global_host_bytes", "max_waiting_input_bytes",
@@ -583,6 +583,11 @@ def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_event
         qualifier += ["--commit-trace-events", str(diagnostic_commit_events)]
         if diagnostic_commit_nvtx:
             qualifier.append("--commit-trace-nvtx")
+    if scheduler_diagnostic is not None:
+        if smoke_only or plan.get('levels')!=[1,8] or len(plan.get('cohorts',[]))!=3:
+            raise ValueError('five-window scheduler diagnostic requires its finite C1/C8 matrix')
+        qualifier += ['--scheduler-trace','/evidence/qualification/trace',
+                      '--scheduler-diagnostic-grants','/operator/scheduler-diagnostic.json']
     if not smoke_only:
         qualifier += ["--benchmark-plan", "/operator/matrix.json"]
     if settings["gu"] == "incumbent":
@@ -1127,15 +1132,32 @@ def numa_receipts(root, source, output, bundle):
 
 
 def model(root, output, selected_image, settings_path, installed_check, cpus, memory, timeout, startup_timeout, smoke_only,
-          diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False):
+          diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False, scheduler_diagnostic_grants=None):
     workspace = cublas_workspace_configuration(cublas_workspace_cache)
     if type(diagnostic_graph_pieces) is not bool:
         raise ValueError("graph piece diagnostic selection must be boolean")
     configuration_diagnostic = cublas_workspace_cache != "inherit" or diagnostic_graph_pieces
     commit = commit_diagnostic_spec(diagnostic_commit_events, diagnostic_commit_nvtx)
+    diagnostic=None;diagnostic_source=None
+    if scheduler_diagnostic_grants is not None:
+        if __package__:
+            from . import v100_scheduler_diagnostic as diagnostic_module
+        else:
+            import v100_scheduler_diagnostic as diagnostic_module
+        diagnostic=diagnostic_module.read_grants(scheduler_diagnostic_grants)
+        diagnostic_path=Path(diagnostic_module.__file__).resolve()
+        diagnostic_source={'path':str(diagnostic_path),**identity(diagnostic_path)}
+        if smoke_only:raise ValueError('five-window scheduler trace is not a smoke procedure')
     controller_path = Path(__file__).resolve()
     controller_source = {"path": str(controller_path), **identity(controller_path)}
     record = frozen(root)
+    if diagnostic is not None:
+        relative='tools/v100_scheduler_diagnostic.py'
+        _,worker_code=_frozen_code(root,record,relative)
+        if ({'bytes':len(worker_code),'sha256':hashlib.sha256(worker_code).hexdigest()}
+                !={key:diagnostic_source[key]for key in ('bytes','sha256')}):
+            raise ValueError('host scheduler diagnostic differs from its frozen worker helper')
+        diagnostic_source.update(source_uid=record['source_uid'],relative=relative)
     image_binding = immutable_image(selected_image)
     accepted = installed_check_receipt(installed_check, record["source_uid"], image_binding["id"])
     if settings_path.stat().st_size > 1 << 20:
@@ -1146,9 +1168,10 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
         raise ValueError("matrix exceeds the existing qualifier DATA envelope")
     numa = _numa_inputs(root, record, settings)
     original_plan = json.loads(plan_path.read_text())
-    plan = diagnostic_c1_c8_plan(original_plan) if commit is not None and not smoke_only else original_plan
+    plan = diagnostic_c1_c8_plan(original_plan) if (commit is not None or diagnostic is not None) and not smoke_only else original_plan
     qualifier = model_arguments(settings, plan, smoke_only=smoke_only,
-        diagnostic_commit_events=diagnostic_commit_events, diagnostic_commit_nvtx=diagnostic_commit_nvtx)
+        diagnostic_commit_events=diagnostic_commit_events, diagnostic_commit_nvtx=diagnostic_commit_nvtx,
+        **({'scheduler_diagnostic':diagnostic}if diagnostic is not None else {}))
     manifest = Path(settings["profile_manifest"]).resolve(strict=True)
     if manifest.stat().st_size > 16 << 20:
         raise ValueError("execution manifest exceeds bounded operator metadata")
@@ -1165,7 +1188,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     output.mkdir(parents=True, exist_ok=False)
     operator = output / "operator"
     operator.mkdir()
-    if commit is not None and not smoke_only:
+    if (commit is not None or diagnostic is not None) and not smoke_only:
         if json.loads(plan_path.read_text()) != original_plan:
             raise ValueError("source matrix changed before diagnostic derivation")
         publish(operator / "matrix.json", plan)
@@ -1176,6 +1199,13 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     shutil.copyfile(manifest, operator / "profile.json")
     if identity(operator / "profile.json") != profile_identity or identity(manifest) != profile_identity:
         raise ValueError("execution manifest changed during immutable operator publication")
+    if diagnostic is not None:
+        publish(operator/'scheduler-diagnostic.json',diagnostic.as_dict())
+        if __package__:
+            from .v100_scheduler_diagnostic import KINETO_CONFIG_TEXT
+        else:
+            from v100_scheduler_diagnostic import KINETO_CONFIG_TEXT
+        (operator/'scheduler-kineto.conf').write_text(KINETO_CONFIG_TEXT)
     hc_staged = _stage_hc_exports(hc_exports, operator) if hc_exports is not None else None
     flash_staged = _stage_flash_exports(flash_exports, operator) if flash_exports is not None else None
     numa_staged = _stage_numa(numa, operator, output)
@@ -1187,12 +1217,14 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     cache.mkdir(parents=True, exist_ok=True)
     gpus = ",".join(settings["gpus"])
     argv = ["docker", "create", "--name", "tf-onecat-model-" + uuid.uuid4().hex[:12],
+            *(diagnostic_module.docker_log_options(diagnostic)if diagnostic is not None else []),
             "--runtime", "nvidia", "--gpus", '"device=' + gpus + '"', "--network", "none", "--read-only",
             "--user", f"{os.getuid()}:{os.getgid()}", "--cpus", str(cpus), "--memory", memory,
             "--cpuset-cpus", numa['cpuset_cpus'], "--cpuset-mems", numa['cpuset_mems'],
             "--security-opt", "seccomp=" + str(operator / 'numa/seccomp.json'),
             "-e", "TENSORFOLD_NUMA_RECEIPT_DIR=/evidence/numa",
             "-e", "NCCL_IGNORE_CPU_AFFINITY=0",
+            *(["-e","KINETO_LOG_LEVEL=0","-e","KINETO_CONFIG=/operator/scheduler-kineto.conf"] if diagnostic is not None else []),
             "--memory-swap", memory, "--ipc", "host", "--ulimit", "memlock=-1:-1",
             "--ulimit", "nofile=1048576:1048576", "--ulimit", "core=0:0",
             "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=8g,mode=1777", "-e", "NVIDIA_VISIBLE_DEVICES=" + gpus,
@@ -1217,8 +1249,9 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             "diagnostic_graph_pieces": diagnostic_graph_pieces,
             **({"bitblas_hc_exports": hc_staged} if hc_staged is not None else {}),
             **({'flash_v100_exports': flash_staged} if flash_staged is not None else {}),
-            "commit_diagnostic": commit, "diagnostic_only": commit is not None or configuration_diagnostic,
-            "P3_valid": False if commit is not None or configuration_diagnostic else None,
+            "commit_diagnostic": commit, "scheduler_diagnostic":None if diagnostic is None else diagnostic.as_dict(),
+            "scheduler_diagnostic_source":diagnostic_source,"diagnostic_only": commit is not None or diagnostic is not None or configuration_diagnostic,
+            "P3_valid": False if commit is not None or diagnostic is not None or configuration_diagnostic else None,
             "source_matrix": {"path": str(plan_path), **identity(plan_path)},
             "scope": "one complete candidate arm; matched repetition and quality acceptance are separate"})
     owner = OwnedContainer()
@@ -1257,10 +1290,10 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
                     "--response-mib", "16", "--sse-line-kib", "64"], client, timeout)
             if json.loads((output / "matrix-results.json").read_text()).get("passed") is not True:
                 raise RuntimeError("matrix protocol/work/overlap qualification did not pass")
-            if commit is not None:
+            if commit is not None or diagnostic is not None:
                 publish(output / "diagnostic-matrix-result.json", {"diagnostic_only": True, "P3_valid": False,
                     "matrix": identity(output / "matrix-results.json"), "workload": "one canonical warmup then C1/C8,1024input/128output",
-                    "scope": "instrumented commit-batch diagnostic; raw matrix rates are not P3 evidence"})
+                    "scope": "instrumented scheduler/commit diagnostic; raw matrix rates are not P3 evidence"})
     except BaseException as error:
         primary = error
     finally:
@@ -1268,6 +1301,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     errors.extend(error for error in owner.errors if error is not None)
     graph_evidence = None
     commit_evidence = None
+    scheduler_evidence=None
     if primary is None and not errors and owner.exit_code(None) == 0:
         try:
             graph_evidence = graph_use_receipts(output, record, settings)
@@ -1278,10 +1312,18 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
                 commit_evidence = commit_trace_receipts(output, record, commit)
         except BaseException as error:
             errors.append(error)
+    native_log_evidence=None
     if owner.cid is not None:
         try:
-            with (output / "server.log").open("xb") as log:
-                subprocess.run(["docker", "logs", owner.cid], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=60)
+            if diagnostic is not None:
+                if __package__:
+                    from .v100_scheduler_diagnostic import capture_native_log
+                else:
+                    from v100_scheduler_diagnostic import capture_native_log
+                native_log_evidence=capture_native_log(owner.cid,output/'server.log',diagnostic)
+            else:
+                with (output / "server.log").open("xb") as log:
+                    subprocess.run(["docker", "logs", owner.cid], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=60)
         except BaseException as error:
             errors.append(error)
     try:
@@ -1296,6 +1338,20 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             raise RuntimeError("campaign controller source changed during the owned model lifetime")
     except BaseException as error:
         errors.append(error)
+    if diagnostic is not None and primary is None and not errors:
+        try:
+            if identity(diagnostic_path)!={k:diagnostic_source[k]for k in ('bytes','sha256')}:
+                raise ValueError('host scheduler diagnostic helper changed during model lifetime')
+            if __package__:
+                from .v100_scheduler_diagnostic import collect
+            else:
+                from v100_scheduler_diagnostic import collect
+            scheduler_evidence=collect(output/'qualification/trace',diagnostic,
+                expected_pid=numa_evidence['ranks'][0]['pid'],native_log=output/'server.log')
+            scheduler_evidence['native_log_storage']=native_log_evidence
+            publish(output/'scheduler-diagnostic-result.json',scheduler_evidence)
+        except BaseException as error:
+            errors.append(error)
     failed = owner.exit_code(primary) or bool(errors)
     try:
         publish(output / "model-result.json", {"cid": owner.cid, "state": owner.state,
@@ -1305,9 +1361,10 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
                 "numa": numa_evidence,
                 "cublas_workspace_cache": workspace, "controller_source": controller_source,
             "diagnostic_graph_pieces": diagnostic_graph_pieces,
-                "commit_diagnostic": commit, "diagnostic_only": commit is not None or configuration_diagnostic,
-                "P3_valid": False if commit is not None or configuration_diagnostic else None,
-                "commit_trace": commit_evidence,
+                "commit_diagnostic": commit, "scheduler_diagnostic":None if diagnostic is None else diagnostic.as_dict(),
+                "scheduler_diagnostic_source":diagnostic_source,"diagnostic_only": commit is not None or diagnostic is not None or configuration_diagnostic,
+                "P3_valid": False if commit is not None or diagnostic is not None or configuration_diagnostic else None,
+                "commit_trace": commit_evidence,"scheduler_trace":scheduler_evidence,
                 "quality_accepted": False, "P3_accepted": False})
     except BaseException as error:
         errors.append(error)
@@ -1348,6 +1405,8 @@ def main(argv=None):
                               help="startup per-piece signed allocation observations; unsynchronized snapshots, diagnostic only, never P3")
             item.add_argument("--cublas-workspace-cache", choices=("inherit", "on", "off"), default="inherit",
                               help="host-only pinned Torch workspace configuration; explicit values are diagnostic, never P3")
+            item.add_argument('--scheduler-diagnostic-grants',type=Path,
+                              help='explicit typed five-window host/headroom/disk/inflight-buffer diagnostic grants; neverP3')
             item.add_argument("--diagnostic-commit-events", type=int,
                               help="finite commit-batch event credit; smoke or C1/C8 diagnostic only, never P3")
             item.add_argument("--diagnostic-commit-nvtx", action="store_true",
@@ -1387,7 +1446,8 @@ def main(argv=None):
               args.cpus, args.memory, args.timeout, args.startup_timeout, args.smoke_only,
               args.diagnostic_commit_events, args.diagnostic_commit_nvtx,
               cublas_workspace_cache=args.cublas_workspace_cache,
-              diagnostic_graph_pieces=args.diagnostic_graph_pieces)
+              diagnostic_graph_pieces=args.diagnostic_graph_pieces,
+              **({'scheduler_diagnostic_grants':args.scheduler_diagnostic_grants}if args.scheduler_diagnostic_grants is not None else {}))
     return 0
 
 

@@ -54,6 +54,63 @@ extension. `/source` supplies tools and test fixtures; do not add `/source/src`
 to its import path. Permission-sensitive native NUMA tests additionally need
 the derived policy and writable cache described by the V100 deployment recipe.
 
+## Private five-window scheduler diagnostic
+
+The campaign's optional `model --scheduler-diagnostic-grants PATH` selects a
+separate, instrumented C1/C8 diagnostic. It derives one canonical C1 warmup
+(1024 input/16 output), then C1 and C8 cohorts (1024 input/128 output). The
+rank-zero scheduler profiles at most one actual C1 prefill-containing callback,
+two warmed C1 decode callbacks and two warmed C8 decode callbacks. The original
+callback executes once; other calls and rank processes continue their existing
+execution. The historical closed prefill-only trace contract stays separate.
+
+The JSON DATA has exactly `schema: tensorfold.scheduler-five-window-diagnostic-v1`,
+`scope: c1-prefill-c1decode2-c8decode2-v1` and five positive integer byte grants:
+`host_obligation_bytes`, `device_headroom_bytes`, `disk_bytes`,
+`cupti_inflight_buffer_bytes` and `native_log_bytes`. Administrators provide
+these allowances; the procedure supplies no guessed default. CUPTI credit must
+be an integral 4 MiB, and host credit must include it plus the two fixed IO
+buffers. Host credit is charged before States. Entry checks use actual free
+device memory and the existing graph service-spare reader after the unchanged
+floor, full-window and workspace commitments. It is minimum-free headroom,
+not a reservation or proof of peak native usage.
+
+This boundary is pinned to owned Torch source `05adb434bd30d298eb408a72420b0496ee05f8e3`
+and CUDA12.9. Its supported Python Chrome exporter streams to an owned pipe;
+a drained fixed-buffer task refuses excess trace bytes before they reach the
+file. Five traces and their metadata share the cumulative `disk_bytes` quota.
+Producer, sink and cleanup errors remain failures, with no retry after uncertain
+retirement. The pinned Kineto configuration limits **in-flight** CUPTI host
+buffer blocks. Completed buffers and CPU event records are library-managed;
+this is not a total profiler RSS or GPU-byte ceiling. The explicit whole-container
+cgroup limit supplies hard process-memory containment; cgroup current/peak/OOM
+events and process usage are recorded, and memory exhaustion invalidates the
+diagnostic. No device floor or service workspace is borrowed to fund profiling.
+
+Native logging uses only this container's
+[Docker local-driver rotation settings](https://docs.docker.com/engine/logging/drivers/local/):
+one file, compression off and `max-size` set from `native_log_bytes`. This is a
+rotation target with driver framing/final-record overhead, not an exact daemon
+file-byte ceiling. The retired `docker logs` export has a separate hard
+`native_log_bytes` payload quota and bounded client retirement. Missing initial
+Kineto configuration evidence, reordered/missing capture markers, native
+activity loss or early stop makes the traces incomplete; retained rotated logs
+cannot establish complete window evidence without all required markers.
+
+After clean model retirement, the collector requires exactly the five trace
+and receipt pairs plus inventory and prefill selection. It binds every capture
+to the validated NUMA rank-zero worker PID, checks entry/exit resource evidence
+and immutable locality, and rejects partial exports. Inputs and results bind
+the diagnostic helper to the frozen worker source inventory;
+a separately updated host controller may run only with the exact helper bytes.
+Host-helper mismatch fails before any Docker inspection or output creation.
+Inputs, results and
+receipts carry `P3_valid: false`; measured instrumented durations are not speed
+or winner evidence. CPU controls include the actual pinned SDK's CPU exporter,
+quota exhaustion, reader drain, primary-error retention, origin/PID boundaries
+and existing scheduler semantics. Actual V100 profiling, loss/overhead and
+integrated resource qualification remain pending.
+
 ## Private ATen normalized attention owner
 
 The explicit trial family `aten-cutlass-q8-normalized-lse-owner-v1` uses the

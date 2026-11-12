@@ -1761,6 +1761,20 @@ def _commit_trace_spec(args):
     return plan
 
 
+def _scheduler_diagnostic_spec(args):
+    path=getattr(args,'scheduler_diagnostic_grants',None)
+    if path is None:return None
+    if (args.scheduler_trace is None or args.benchmark_plan is None
+            or any(getattr(args,name,None)for name in ('benchmark_client','teacher_plan','history_input','router_row_input'))
+            or getattr(args,'scheduler_trace_prefill_start',None)not in (None,0)):
+        raise ValueError('five-window scheduler diagnostic requires its separate C1/C8 benchmark/trace, no closed-prefill/client operation')
+    if __package__:
+        from .v100_scheduler_diagnostic import read_grants
+    else:
+        from v100_scheduler_diagnostic import read_grants
+    return read_grants(path)
+
+
 def _finish_commit_trace(trace, engine, output, spec):
     report = trace.close()  # CLI has drained and retired the actual engine first.
     report.update(rank=engine.rank, world=engine.tp, requested=spec,
@@ -1905,7 +1919,7 @@ def _trace_prefill_selection(plan, start):
 
 class _SchedulerTrace:
     """At most five incumbent calls OR two C24-only decode calls, rank zero."""
-    def __init__(self, engine, output, *, factory=None, prefill_start=0, selection=None):
+    def __init__(self, engine, output, *, factory=None, prefill_start=0, selection=None, diagnostic_grants=None):
         if type(prefill_start) is not int or not 0 <= prefill_start <= sys.maxsize:
             raise ValueError('scheduler trace prefill start must be a nonnegative integer')
         self.engine, self.output, self.factory = engine, Path(output), factory
@@ -1914,11 +1928,27 @@ class _SchedulerTrace:
         self.prefill_start, self.selection = prefill_start, selection
         self.plan_bound = selection is not None
         self.prefill_owner = self.prefill_state = self.profiler = self.failed = None
-        self.capture_errors = [None] * 7  # Acquired before profiler/hook effects.
-        self.capture_error_order = (0, 1, 2, 3, 6, 4, 5)  # Geometry precedes receipt/publication.
+        self.capture_errors = [None] * (8 if diagnostic_grants is not None else 7)  # Acquired before profiler/hook effects.
+        self.capture_error_order = ((0,1,2,3,6,7,4,5) if diagnostic_grants is not None else (0,1,2,3,6,4,5))  # Geometry precedes receipt/publication.
         self.notification_errors = [None] * 2
         self.transport = raise_failures
         self.headroom_check = None
+        self.diagnostic_grants=diagnostic_grants
+        self.storage=None
+        if diagnostic_grants is not None:
+            if __package__:
+                from . import v100_scheduler_diagnostic as diagnostic
+            else:
+                import v100_scheduler_diagnostic as diagnostic
+            self.storage=diagnostic.TraceStorage(self.output,diagnostic_grants.disk_bytes,thread=engine.scheduler.thread)
+            self.headroom_check=lambda:diagnostic.headroom(engine,diagnostic_grants)
+
+    def write_json(self,path,value):
+        if self.storage is None:
+            return write_json(path,value)
+        if Path(path).parent!=self.output:
+            raise ValueError('diagnostic metadata escaped its quota directory')
+        return self.storage.write_json(Path(path).name,value)
 
     def label(self, observer):
         if observer.current is None:
@@ -2009,12 +2039,22 @@ class _SchedulerTrace:
             raise self.failed  # No retry after uncertain profiler retirement.
         if self.active:
             raise RuntimeError('scheduler profiler capture is reentrant')
+        entry_headroom=None
         if self.headroom_check is not None:
-            self.selection['profiler_entry_headroom'] = self.headroom_check()
+            entry_headroom=self.headroom_check()
+            if self.diagnostic_grants is None or self.prefill_owner is not None:
+                self.selection['profiler_entry_headroom']=entry_headroom
         errors = self.capture_errors
         for index in range(len(errors)):
             errors[index] = None
-        if self.factory is None:
+        if self.factory is None and self.diagnostic_grants is not None:
+            import torch
+            if __package__:
+                from .v100_scheduler_diagnostic import profiler as prepare_profiler
+            else:
+                from v100_scheduler_diagnostic import profiler as prepare_profiler
+            profiler=prepare_profiler(torch,self.diagnostic_grants)
+        elif self.factory is None:
             import torch
             profiler = torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,
                 torch.profiler.ProfilerActivity.CUDA], record_shapes=False, profile_memory=False,
@@ -2025,9 +2065,16 @@ class _SchedulerTrace:
         primary, entered, result = None, False, None
         before = started = entered_at = work_end = stopped = None
         trace_bytes = None
+        exit_headroom=None
         prefill = self.prefill_owner is not None
         try:
             before, started = self.process(), time.monotonic()
+            if self.diagnostic_grants is not None:
+                if __package__:
+                    from .v100_scheduler_diagnostic import capture_entry
+                else:
+                    from v100_scheduler_diagnostic import capture_entry
+                capture_entry(label)
             profiler.__enter__()
             entered = True
             self.active = True
@@ -2053,8 +2100,11 @@ class _SchedulerTrace:
                     errors[2] = error
                 try:
                     trace = self.output / (label + '.json')
-                    profiler.export_chrome_trace(str(trace))
-                    trace_bytes = trace.stat().st_size
+                    if self.storage is None:
+                        profiler.export_chrome_trace(str(trace))
+                        trace_bytes=trace.stat().st_size
+                    else:
+                        trace_bytes=self.storage.export(trace.name,profiler)
                 except BaseException as error:
                     errors[3] = error
                 if prefill:
@@ -2074,9 +2124,19 @@ class _SchedulerTrace:
                     except BaseException as error:
                         errors[6] = error
                         selection['status'] = 'FAILED'
+                if self.diagnostic_grants is not None:
+                    try:
+                        if __package__:
+                            from .v100_scheduler_diagnostic import headroom,check_memory_events
+                        else:
+                            from v100_scheduler_diagnostic import headroom,check_memory_events
+                        exit_headroom=headroom(self.engine,self.diagnostic_grants,after=True)
+                        check_memory_events(entry_headroom,exit_headroom)
+                    except BaseException as error:
+                        errors[7]=error
                 try:
-                    write_json(self.output / (label + '-receipt.json'), {
-                        'rank': self.engine.rank, 'thread': threading.current_thread().name,
+                    self.write_json(self.output / (label + '-receipt.json'), {
+                        'rank': self.engine.rank, 'process_pid':os.getpid(), 'thread': threading.current_thread().name,
                         'thread_ident': threading.get_ident(), 'label': label,
                         'profiler_enter_seconds': None if entered_at is None or started is None else entered_at - started,
                         'work_call_seconds': None if work_end is None or entered_at is None else work_end - entered_at,
@@ -2086,6 +2146,10 @@ class _SchedulerTrace:
                         'primary': None if primary is None else type.__dict__['__name__'].__get__(type(primary)),
                         'post_errors': [type.__dict__['__name__'].__get__(type(error)) for error in errors if error is not None],
                         'exported_trace_bytes': trace_bytes,
+                        **({'diagnostic_grants':self.diagnostic_grants.as_dict(),'entry_headroom':entry_headroom,'exit_headroom':exit_headroom,
+                            'managed_disk_bytes':self.storage.used,'native_activity_loss_check':'required_after_positive_retirement',
+                            'host_scope':'admitted obligation; nativeCPU/completedCUPTIbuffers are not byte-capped; wholecontainer cgroup/peak evidence required'}
+                           if self.diagnostic_grants is not None else {}),
                         'prefill_selection': self.selection if prefill else None, 'P3_valid': False,
                         'trace_region': 'c24-only' if self.c24_only else 'incumbent-c1-c8',
                         'capture_limit': self.capture_limit,
@@ -2097,7 +2161,7 @@ class _SchedulerTrace:
                 if not entered:
                     self.selection['status'] = 'FAILED' if primary is not None else 'UNSUPPORTED_NOT_OBSERVED'
                 try:
-                    write_json(self.output / 'prefill-selection.json', self.selection)
+                    self.write_json(self.output / 'prefill-selection.json', self.selection)
                 except BaseException as error:
                     errors[5] = error
         index = 0
@@ -2164,7 +2228,7 @@ class _SchedulerTrace:
                 return result
         decoder._prepare_pass = preparing
         if self.selection is not None:
-            write_json(self.output / 'prefill-selection.json', self.selection)
+            self.write_json(self.output / 'prefill-selection.json', self.selection)
         original = adapter.round
         def failure(primary):
             self.failed = primary
@@ -2195,7 +2259,8 @@ class _SchedulerTrace:
         adapter.round = rounded
 
 
-def _trace_inventory(engine, output):
+def _trace_inventory(engine, output, *, writer=None):
+    if writer is None:writer=write_json
     from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat, GGUFPacked
     from tensorfold.cuda.sm70 import family_ops
     buffers = {}
@@ -2244,7 +2309,7 @@ def _trace_inventory(engine, output):
         matrix("mtp.fc_e", engine.w.mtp.fc_e)
         matrix("mtp.fc_h", engine.w.mtp.fc_h)
         layer_sample("mtp.layer", engine.w.mtp.layer)
-    write_json(Path(output) / "inventory.json", {"rank": engine.rank, "buffers": buffers,
+    writer(Path(output) / "inventory.json", {"rank": engine.rank, "buffers": buffers,
         "Dense_implementation": GGUFDense.implementation,
         "Concat_implementation": GGUFConcat.implementation,
         "sm70_profile": engine.w.meta.get("sm70_profile"),
@@ -2539,7 +2604,23 @@ class _BenchmarkObserver:
         observations.target, observations.record = guarded(targeted), guarded(recorded)
 
 
-def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0, closed=None, segment_journal=None, preparation_witness=None, commit_trace=None):
+def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0, closed=None, segment_journal=None, preparation_witness=None, commit_trace=None, diagnostic_grants=None):
+    if diagnostic_grants is not None:
+        obligation=getattr(engine,'_owned_qualification_host',None)
+        catalog=getattr(engine,'retention_catalog',None)
+        if (not obligation or obligation[0]<diagnostic_grants.host_obligation_bytes
+                or catalog is None or catalog.host_resources is None
+                or catalog.host_resources.baseline_host_bytes<diagnostic_grants.host_obligation_bytes):
+            raise ValueError('scheduler diagnostic host obligation was not admitted before model/States')
+        engine.capacity_plan['scheduler_diagnostic']={**diagnostic_grants.as_dict(),'P3_valid':False,
+            'host_bound':'admitted obligation, not total native RSS ceiling','native_loss_check':'required_after_retirement'}
+        import torch
+        if __package__:
+            from .v100_scheduler_diagnostic import prepare_backend
+        else:
+            from v100_scheduler_diagnostic import prepare_backend
+        if engine.rank==0:prepare_backend(torch,engine,diagnostic_grants)
+
     if trace_output is not None and _trace_c24_only(plan):
         decoder = engine.multi
         if (engine.w.mtp is not None or decoder.speculation.method != 'none'
@@ -2565,8 +2646,9 @@ def prepare_benchmark(engine, plan, trace_output=None, *, trace_prefill_start=0,
         preparation_witness.observer = observer
     observer.install()
     if trace_output is not None and engine.rank == 0:
-        _trace_inventory(engine, trace_output)
-        tracer = _SchedulerTrace(engine, trace_output, prefill_start=trace_prefill_start, selection=selection)
+        tracer = _SchedulerTrace(engine, trace_output, prefill_start=trace_prefill_start, selection=selection,
+                                 diagnostic_grants=diagnostic_grants)
+        _trace_inventory(engine,trace_output,writer=tracer.write_json)
         if closed is not None:
             tracer.headroom_check = lambda: _benchmark_headroom(engine, closed['trace'])
         tracer.install(observer)
@@ -3973,6 +4055,7 @@ def worker(argv):
     parser.add_argument('--teacher-client-bytes', type=int)
     parser.add_argument('--prepared-teacher-operation', type=Path)
     parser.add_argument('--prepared-teacher-operation-sha')
+    parser.add_argument("--scheduler-diagnostic-grants", type=Path, help="versioned diagnostic-only C1-prefill/C1x2/C8x2 host/headroom/disk grants")
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--scheduler-trace-prefill-start", type=int, help="private committed C1 prefill cursor threshold; default0 with trace")
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
@@ -4006,6 +4089,9 @@ def worker(argv):
         raise ValueError('prepared teacher worker requires its complete closed parent binding')
     onecat_gu = _onecat_capability_from_args(selected)
     commit_spec = _commit_trace_spec(selected)
+    scheduler_grants=_scheduler_diagnostic_spec(selected)
+    if scheduler_grants is not None and (not os.environ.get('TENSORFOLD_NUMA_PLAN') or os.environ.get('KINETO_LOG_LEVEL')!='0'):
+        raise ValueError('scheduler diagnostic requires the inherited NUMA region and explicit Kineto loss logging')
     if selected.benchmark_client is not None and (selected.benchmark_plan is None or selected.scheduler_trace is None
             or selected.benchmark_trace_data is None or selected.teacher_plan is not None or selected.gdn_batch_parity):
         raise ValueError('closed benchmark client requires benchmark/trace and trusted trace DATA only')
@@ -4096,6 +4182,7 @@ def worker(argv):
                     else:
                         prepare_benchmark(engine, benchmark, selected.scheduler_trace,
                             trace_prefill_start=selected.scheduler_trace_prefill_start or 0,
+                            **({'diagnostic_grants':scheduler_grants} if scheduler_grants is not None else {}),
                             **({'commit_trace': commit_spec} if commit_spec is not None else {}),
                             **({'closed': closed_benchmark} if closed_benchmark is not None else {}))
                 except BaseException as primary:
@@ -4167,6 +4254,13 @@ def worker(argv):
             else:
                 from bench_concurrent import load_matrix
             benchmark = load_matrix(selected.benchmark_plan)
+            if scheduler_grants is not None:
+                if ([c['level']for c in benchmark['cohorts']]!=[1,1,8]
+                        or [c['warmup']for c in benchmark['cohorts']]!=[True,False,False]
+                        or any(c['input_tokens']!=1024 for c in benchmark['cohorts'])
+                        or benchmark['cohorts'][0]['tokens']!=16
+                        or any(c['tokens']!=128 for c in benchmark['cohorts']if not c['warmup'])):
+                    raise ValueError('scheduler diagnostic needs exact finite canonical warmup/C1/C8 DATA')
             if selected.scheduler_trace is not None:
                 _trace_prefill_selection(benchmark, selected.scheduler_trace_prefill_start or 0)  # Before Engine/admission.
             size = selected.benchmark_plan.stat().st_size
@@ -4276,6 +4370,10 @@ def worker(argv):
             trace_sha = hashlib.sha256(json.dumps(
                 {'commit_trace': commit_spec, 'prior': obligation}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             obligation = ((obligation[0] if obligation else 0) + commit_spec['global_host_obligation_bytes'], trace_sha)
+        if scheduler_grants is not None:
+            binding=hashlib.sha256(json.dumps({'scheduler_diagnostic':scheduler_grants.as_dict(),'prior':obligation},
+                sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            obligation=((obligation[0]if obligation else 0)+scheduler_grants.host_obligation_bytes,binding)
         capability = ({"grouped_gate_up": onecat_gu} if onecat_gu is not None else
                       _grouped_gate_up_capability(cli, selected.grouped_gate_up_rows))
         if selected.execution_rows is not None:
@@ -4514,6 +4612,7 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
     parser.add_argument("--benchmark-client", type=Path)
     parser.add_argument("--teacher-plan", type=Path, help="private none/greedy raw full-vocabulary capture or frozen-prefix replay DATA; never P3")
     parser.add_argument('--teacher-client', type=Path, help='closed one-request client DATA; normal shutdown only after validated completion')
+    parser.add_argument("--scheduler-diagnostic-grants", type=Path, help="versioned diagnostic-only C1-prefill/C1x2/C8x2 host/headroom/disk grants")
     parser.add_argument("--scheduler-trace", type=Path)
     parser.add_argument("--scheduler-trace-prefill-start", type=int, help="private committed C1 prefill cursor threshold; default0 with trace")
     parser.add_argument("--dense-implementation", choices=("reference", "native32"))
@@ -4697,6 +4796,11 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
     if closed_benchmark is not None:
         prefix += ['--benchmark-client', str(args.benchmark_client.absolute()), '--benchmark-trace-data',
                    json.dumps(closed_benchmark['trace'], sort_keys=True, separators=(',', ':'))]
+    scheduler_grants=_scheduler_diagnostic_spec(args)
+    if scheduler_grants is not None:
+        if args.numa_plan is None:
+            raise ValueError('scheduler diagnostic requires its explicit NUMA rank plan')
+        prefix += ["--scheduler-diagnostic-grants",str(args.scheduler_diagnostic_grants.absolute())]
     if args.scheduler_trace is not None:
         trace_output = args.scheduler_trace.absolute()
         trace_output.mkdir(mode=0o700)
