@@ -344,20 +344,22 @@ def _run_host_cli(command):
     return status[0]
 
 
-def complete_cli(host_spec, expected, output, operation_gate, review):
+def complete_cli(host_spec, expected, output, operation_gate, review, *, contract=None):
     """Observe the fixed canonical Host subprocess; never infer its CLI exit from attach."""
     if __package__:
         from . import v100_native_contract_host as host
     else:
         import v100_native_contract_host as host
+    contract = legacy.prepared_teacher_contract() if contract is None else contract
     data, actual = _read(host_spec, expected)
     host.validate_spec(data)
     selected = host.validate_data(data)
-    require(selected['mode'] == MODE, 'expert controller only runs the closed prepared-teacher mode')
+    require(selected['mode'] == contract.MODE, 'expert controller only runs its exact closed prepared-teacher mode')
     sources, _ = host.source_inventory(data)
     for name, path in (('v100_native_contract_host.py', host.__file__),
                        ('v100_owned_model_contract.py', legacy.__file__),
-                       ('v100_onecat_combinations.py', __file__)):
+                       ('v100_onecat_combinations.py', __file__),
+                       *([('v100_prepared_teacher_numa.py', contract.__file__)] if contract.MODE == legacy.NUMA_PREPARED_TEACHER_MODE else [])):
         requested = Path(path)
         require('tools/' + name in sources and not requested.is_symlink()
                 and requested.resolve() == (Path(data['source']['root']) / 'tools' / name).resolve()
@@ -395,7 +397,7 @@ def complete_cli(host_spec, expected, output, operation_gate, review):
         raise primary
     outcome, host_id = _read(output / 'host-result.json')
     authority, authority_id = _read(output / 'teacher/teacher-authority.json')
-    validate_completed_teacher_host(outcome, authority_sha256=authority_id['sha256'], authority_bytes=authority_id['bytes'])
+    contract.validate_completed_teacher_host(outcome, authority_sha256=authority_id['sha256'], authority_bytes=authority_id['bytes'])
     completion = {'schema': 'tensorfold.owned-teacher-completion-v1', 'host_result_sha256': host_id['sha256'],
                   'authority_sha256': authority_id['sha256'], 'host_cli_exit': code,
                   'operation_gate_sha256': gate_id['sha256'], 'review_sha256': review_id['sha256'],
@@ -410,13 +412,14 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     listed = commands.add_parser('selectors', help='publish the finite21 selectors; no model operation')
     listed.add_argument('--out', type=Path, required=True)
-    run = commands.add_parser('run', help='one separately leased, closed prepared-teacher Host operation')
-    run.add_argument('--spec', type=Path, required=True)
-    run.add_argument('--spec-sha256', required=True)
-    run.add_argument('--spec-bytes', type=int, required=True)
-    run.add_argument('--out', type=Path, required=True)
-    run.add_argument('--operation-gate', type=Path, required=True)
-    run.add_argument('--review', type=Path, required=True)
+    for name in ('run', 'run-numa'):
+        run = commands.add_parser(name, help='one separately leased, versioned closed prepared-teacher Host operation')
+        run.add_argument('--spec', type=Path, required=True)
+        run.add_argument('--spec-sha256', required=True)
+        run.add_argument('--spec-bytes', type=int, required=True)
+        run.add_argument('--out', type=Path, required=True)
+        run.add_argument('--operation-gate', type=Path, required=True)
+        run.add_argument('--review', type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == 'selectors':
         _quality()._owned_teacher_json(args.out.absolute(), {
@@ -426,7 +429,8 @@ def main(argv=None):
     require(legacy.sha(args.spec_sha256) and type(args.spec_bytes) is int and 0 < args.spec_bytes <= 8 << 20,
             'bounded explicit Host input identity required')
     complete_cli(args.spec, {'bytes': args.spec_bytes, 'sha256': args.spec_sha256}, args.out.absolute(),
-                 args.operation_gate, args.review)
+                 args.operation_gate, args.review,
+                 contract=legacy.prepared_teacher_contract(numa=True) if args.command == 'run-numa' else None)
     return 0
 
 

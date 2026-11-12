@@ -2589,9 +2589,9 @@ def _model_contract():
     return v100_owned_model_contract
 
 
-def _teacher_client_input(path, teacher, *, prepared=False):
+def _teacher_client_input(path, teacher, *, prepared=False, numa=False):
     raw = _teacher_module()._owned_teacher_read(path, 8 << 20)
-    contract = _model_contract().prepared_teacher_contract() if prepared else _model_contract()
+    contract = _model_contract().prepared_teacher_contract(numa=numa) if prepared else _model_contract()
     spec = contract.validate_teacher_client(_teacher_module()._owned_teacher_object(raw))
     if spec['teacher_plan_sha256'] != teacher['input_sha256'] or not 1 <= teacher['data']['max_frames'] <= 64:
         raise ValueError('one planned teacher client differs from its frozen plan/MAX64 region')
@@ -2600,7 +2600,8 @@ def _teacher_client_input(path, teacher, *, prepared=False):
 
 def _prepared_teacher_input(operation, teacher, plan_path):
     """Validate the new fixed operation without changing historical reference DATA."""
-    contract = _model_contract().prepared_teacher_contract()
+    numa = 'numa' in operation
+    contract = _model_contract().prepared_teacher_contract(numa=numa)
     contract.validate_operation(operation)
     if (str(plan_path.absolute()) != operation['teacher_plan']['path']
             or teacher['input_sha256'] != operation['teacher_plan']['sha256']
@@ -2633,10 +2634,14 @@ def _prepared_teacher_input(operation, teacher, plan_path):
     if (type(artifacts) is not dict or not artifacts or any(type(row) is not dict
             or type(row.get('size')) is not int or row['size'] < 0 for row in artifacts.values())):
         raise ValueError('prepared teacher execution manifest artifact census differs')
-    return {'operation': operation, 'control': control, 'sizes': sizes,
+    selected = {'operation': operation, 'control': control, 'sizes': sizes,
             'manifest_canonical_sha256': digest(payloads['execution_manifest']),
             'manifest_artifact_files': len(artifacts),
             'manifest_artifact_bytes': sum(row['size'] for row in artifacts.values())}
+    if numa:
+        selected['numa_bundle'] = contract.load_inputs(operation['numa'])
+        selected['sizes'].extend(len(raw) for raw in selected['numa_bundle']['raw'].values())
+    return selected
 
 
 def _prepared_teacher_credit(teacher, selected):
@@ -2656,6 +2661,15 @@ def _prepared_teacher_credit(teacher, selected):
     resources['prepared_teacher_input_bytes'] = list(selected['sizes'])
     resources['prepared_teacher_payload_bytes'] = 9 * one
     resources['global_host_obligation_bytes'] += 9 * one
+    if 'numa' in selected['operation']:
+        # The parent streams24 receipts and retains only bounded descriptors.
+        # Two actual validated receipt trees plus the eight startups may
+        # coexist; raw receipt payload is at most the source validator's1MiB.
+        receipt = 1 << 20
+        extra = 2 * (_json_parse_payload(receipt, policy)['total_bytes'] + _json_tree_payload(receipt, policy))
+        extra += _json_tree_payload(8 << 20, policy)
+        resources['prepared_numa_parent_payload_bytes'] = extra
+        resources['global_host_obligation_bytes'] += extra
     if resources['global_host_obligation_bytes'] > sys.maxsize:
         raise ValueError('prepared teacher host obligation exceeds selected size domain')
     teacher['resources'] = resources
@@ -2723,7 +2737,8 @@ def _owned_client_service(stats, spec, instance, role, *, prepared_manifest=None
     expected = spec['expected_service']
     expert = stats['capacity_plan']['expert_parallel']
     families = stats['runtime']['execution']['execution_families']
-    prepared_teacher = spec.get('schema') == 'tensorfold.prepared-expert-teacher-client-v1'
+    prepared_teacher = spec.get('schema') in ('tensorfold.prepared-expert-teacher-client-v1',
+                                             'tensorfold.prepared-expert-teacher-numa-client-v2')
     expected_trial = ({key: expected[key] for key in ('kernel_family', 'graph_family')}
                       if prepared_teacher else None)
     if (effective['instance_id'] != instance or effective['model']['id'] != spec['model']
@@ -2776,7 +2791,8 @@ def _owned_client_open(owner, role, *, deadline=None):
     for rank in range(8):
         row = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(owner.output / f'rank-{rank}.json', 8 << 20))
         windows, expected = row.get(role + '_windows', {}), spec['expected_service']
-        if spec.get('schema') == 'tensorfold.prepared-expert-teacher-client-v1':
+        if spec.get('schema') in ('tensorfold.prepared-expert-teacher-client-v1',
+                                  'tensorfold.prepared-expert-teacher-numa-client-v2'):
             _prepared_teacher_startup(row, spec)
         if (row.get('rank') != rank or row.get('mtp_banks') != 0 or windows.get('full_resident') is not True
                 or windows.get('slots') != expected['resident_capacity']
@@ -2830,6 +2846,13 @@ class _TeacherClient:
             import openai_protocol as protocol
         spec, plan = self.selected['data'], self.teacher['data']
         client, control, before, instance = _owned_client_open(self, 'teacher')
+        numa = spec.get('schema') == 'tensorfold.prepared-expert-teacher-numa-client-v2'
+        if numa:
+            control.check()
+            contract = _model_contract().prepared_teacher_contract(numa=True)
+            snapshot = contract.collect(self.selected['prepared_operation'], self.output)
+            _teacher_module()._owned_teacher_json(self.output/'numa-readiness.json', snapshot, 8 << 20, control)
+            self.selected['numa_readiness'] = snapshot  # Read by parent only after Task.done/drain.
         body = {'model': spec['model'], 'prompt': plan['input_ids'], 'max_tokens': plan['max_frames'],
                 'temperature': 0, 'draft': False, 'stream': False, 'return_token_ids': True}
         self.post_attempts += 1
@@ -2855,7 +2878,8 @@ class _TeacherClient:
                     _owned_client_service(final, spec, instance, 'teacher', prepared_manifest=prepared_manifest))
         if observed != before:
             raise ValueError('teacher service identity/configuration changed during its one request')
-        self.result = {'schema': 'tensorfold.owned-teacher-client-report-v1', 'complete': True,
+        self.result = {'schema': (contract.CLIENT_REPORT_SCHEMA if numa else 'tensorfold.owned-teacher-client-report-v1'),
+                       'complete': True,
                        'post_attempts': self.post_attempts, 'teacher_plan_sha256': self.teacher['input_sha256'],
                        'teacher_client_sha256': self.selected['sha256'], 'mode': plan['mode'],
                        'server_instance_id': instance, 'token_ids': ids, 'finish_reason': choices[0]['finish_reason'],
@@ -3012,14 +3036,18 @@ def _teacher_model_result(output, teacher, selected, observer, authority):
                 or record.get('observer', {}).get('sha256') != observer['source']['sha256']):
             raise ValueError('teacher child native record differs from its actual worker/source/contract')
         native.append(_teacher_file(paths[0], root, rank=rank))
-    result = {'schema': _model_contract().RESULT_SCHEMA, 'teacher_plan_sha256': teacher['input_sha256'],
+    numa = selected['data'].get('schema') == 'tensorfold.prepared-expert-teacher-numa-client-v2'
+    contract = _model_contract().prepared_teacher_contract(numa=True) if numa else _model_contract()
+    result = {'schema': contract.RESULT_SCHEMA, 'teacher_plan_sha256': teacher['input_sha256'],
               'teacher_client_sha256': selected['sha256'], 'launch_exit': 0,
               'client_report': _teacher_file(Path(output) / 'teacher-client-report.json', root),
               'teacher_authority': _teacher_file(Path(output) / 'teacher-authority.json', root),
               'rank_receipts': [_teacher_file(Path(output) / row['file'], root, rank=row['rank']) for row in authority['rank_receipts']],
               'startup_receipts': [_teacher_file(Path(output) / row['file'], root, rank=row['rank']) for row in authority['startup_receipts']],
               'child_native_records': native}
-    _model_contract().validate_model_result(result)
+    if numa:
+        result['numa'] = contract.evidence(selected['prepared_operation'], output, selected['numa_readiness'], native)
+    contract.validate_model_result(result)
     write_json(Path(output) / 'teacher-model-result.json', result)
     return result
 
@@ -3313,6 +3341,12 @@ def _teacher_preflight(args, teacher, cli, *, prepared_operation=None, selected=
                 or selected.onecat_device_budget_bytes != (None if expected['gu'] == 'incumbent' else 117976064)
                 or selected.onecat_global_host_bytes != (None if expected['gu'] == 'incumbent' else 67108864)):
             raise ValueError('prepared teacher requires its exact expert selector and P256/E24/NONE CLI')
+        if 'numa' in prepared_operation and (os.environ.get('TENSORFOLD_NUMA_PLAN') != prepared_operation['numa']['plan']['path']
+                or os.environ.get('TENSORFOLD_NUMA_PLAN_SHA256') != prepared_operation['numa']['plan']['sha256']
+                or os.environ.get('TENSORFOLD_NUMA_RANK') != str(args.rank)
+                or os.environ.get('TENSORFOLD_NUMA_RECEIPT_DIR') != '/evidence/numa'
+                or os.environ.get('NCCL_IGNORE_CPU_AFFINITY') != '0'):
+            raise ValueError('prepared teacher worker did not inherit its exact NUMA bootstrap authority')
     if not args.no_graphs:
         # This admits intent only. The typed, funded HC catalogue is mandatory
         # after construction and before any teacher hook can be installed.
@@ -4543,7 +4577,8 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
             teacher['prepared_expert_operation'] = _prepared_teacher_operation
         if args.teacher_client is not None:
             selected_client = (_teacher_client_input(args.teacher_client, teacher) if prepared_teacher is None else
-                               _teacher_client_input(args.teacher_client, teacher, prepared=True))
+                               _teacher_client_input(args.teacher_client, teacher, prepared=True,
+                                   numa='numa' in _prepared_teacher_operation))
             if prepared_teacher is not None:
                 expected_client = _prepared_teacher_operation['teacher_client']
                 if (str(args.teacher_client.absolute()) != expected_client['path']
@@ -4552,6 +4587,13 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
                     raise ValueError('prepared teacher actual client differs from closed operation')
                 selected_client['prepared_manifest'] = {key: prepared_teacher[key] for key in
                     ('manifest_canonical_sha256', 'manifest_artifact_files', 'manifest_artifact_bytes')}
+                if 'numa' in _prepared_teacher_operation:
+                    numa = _prepared_teacher_operation['numa']
+                    if (str(args.numa_plan) != numa['plan']['path'] or args.numa_plan_sha256 != numa['plan']['sha256']
+                            or os.environ.get('TENSORFOLD_NUMA_RECEIPT_DIR') != '/evidence/numa'
+                            or os.environ.get('NCCL_IGNORE_CPU_AFFINITY') != '0'):
+                        raise ValueError('prepared teacher parent lacks its exact common NUMA launcher plan')
+                    selected_client['prepared_operation'] = _prepared_teacher_operation
             model_observer = _teacher_model_observer(args.out)
             _teacher_operation_credit(teacher, selected_client['bytes'], model_observer)
     if args.gdn_batch_parity and (args.benchmark_plan is None or any((args.normalization_parity,
@@ -4597,6 +4639,10 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
         if control.read_bytes() != prepared_teacher['control']:
             raise ValueError('prepared worker control publication differs from its prepaid bytes')
         prefix += ['--prepared-teacher-operation', str(control), '--prepared-teacher-operation-sha', control_sha]
+        if 'numa' in prepared_teacher['operation']:
+            contract = _model_contract().prepared_teacher_contract(numa=True)
+            (output.parent/'numa').mkdir(mode=0o700)
+            contract.publish_inputs(prepared_teacher['operation'], prepared_teacher['numa_bundle'], output)
     if args.router_row_input is not None:
         prefix += ["--router-row-input", str(args.router_row_input.absolute())]
     if args.history_input is not None:

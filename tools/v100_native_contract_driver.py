@@ -78,10 +78,12 @@ def validate_spec(spec):
     fields = ('schema', 'mode', 'image_id', 'source_commit', 'app_root', 'expected_app', 'sdk_manifest',
               'fd', 'torch', 'UUIDs', 'SM', 'modules', 'test_files', 'diagnostics', 'required_native_elf_prefixes')
     benchmark = type(spec) is dict and spec.get('schema') == model_contract.BENCHMARK_SCHEMA
-    prepared_teacher = type(spec) is dict and spec.get('schema') == model_contract.PREPARED_TEACHER_SCHEMA
-    contract = model_contract.prepared_teacher_contract() if prepared_teacher else model_contract
+    numa_teacher = type(spec) is dict and spec.get('schema') == model_contract.NUMA_PREPARED_TEACHER_SCHEMA
+    prepared_teacher = type(spec) is dict and spec.get('schema') in (
+        model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA)
+    contract = model_contract.prepared_teacher_contract(numa=numa_teacher) if prepared_teacher else model_contract
     model = type(spec) is dict and spec.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA,
-                                                       model_contract.PREPARED_TEACHER_SCHEMA)
+                                                       model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA)
     if model:
         fields = tuple(key for key in fields if key not in ('modules', 'test_files')) + ('operation', 'source_files')
     if (type(spec) is not dict or set(spec) not in (set(fields), set(fields) | {'verification_launcher'})
@@ -143,6 +145,11 @@ def validate_spec(spec):
             raise ValueError('first model operation requires eight ranks and owned capability/native observer contract')
         (model_contract.validate_benchmark_operation if benchmark else contract.validate_operation)(spec['operation'])
         (model_contract.validate_benchmark_sources if benchmark else contract.validate_sources)(spec['source_files'])
+        if numa_teacher:
+            source = spec['operation']['numa']['placement_source']
+            if any(spec['expected_app'].get(contract.PLACEMENT_MEMBER, {}).get(key) != source[key]
+                   for key in ('bytes', 'sha256')):
+                raise ValueError('NUMA Driver expected App lacks its exact placement implementation')
     return spec
 
 
@@ -861,7 +868,8 @@ def _junit(path, collected, reported_subtests=0):
 def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=_helpers):
     """Execute once. Tests may inject dependencies; production has no bypass CLI."""
     validate_spec(spec)
-    if spec['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE, model_contract.PREPARED_TEACHER_MODE):
+    if spec['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE, model_contract.PREPARED_TEACHER_MODE,
+                        model_contract.NUMA_PREPARED_TEACHER_MODE):
         return _run_model(spec, source, evidence, runtime_loader=None if runtime_loader is _load_runtime else runtime_loader,
                           helpers_loader=helpers_loader)
     if os.environ.get(CHILD_EVIDENCE_ENV):
@@ -1134,7 +1142,8 @@ def _load_benchmark_plan(operation, source):
 
 
 def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
-    contract = model_contract
+    numa_teacher = spec['mode'] == model_contract.NUMA_PREPARED_TEACHER_MODE
+    contract = model_contract.prepared_teacher_contract(numa=True) if numa_teacher else model_contract
     result = contract.validate_model_result(_bound_model_json(root / 'teacher/teacher-model-result.json'))
     operation = spec['operation']
     teacher_binding = ({'mode': 'capture', 'reference_sha256': None, 'teacher_ids': None}
@@ -1165,7 +1174,8 @@ def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
             ('post_attempts', 'cached_tokens', 'drafted', 'accepted', 'completion_tokens', 'prompt_tokens'))
             or type(client.get('token_ids')) is not list or any(type(value) is not int for value in client['token_ids'])
             or client.get('mode') != teacher_binding['mode']
-            or client.get('schema') != 'tensorfold.owned-teacher-client-report-v1' or client.get('complete') is not True
+            or client.get('schema') != (contract.CLIENT_REPORT_SCHEMA if numa_teacher else
+                                        'tensorfold.owned-teacher-client-report-v1') or client.get('complete') is not True
             or client.get('post_attempts') != 1 or client.get('client_protocol_passed') is not True
             or client.get('quality_acceptance') is not False or client.get('P3_valid') is not False
             or client.get('teacher_plan_sha256') != result['teacher_plan_sha256']
@@ -1178,6 +1188,8 @@ def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
     rank0 = _accept_model_native_records(root, result, spec, source, role='teacher')
     if client.get('server_instance_id') != rank0.get('teacher_server_instance_id') or not client.get('server_instance_id'):
         raise RuntimeError('teacher HTTP response does not bind the original rank0 server instance')
+    if numa_teacher:
+        contract.validate_result_files(root, result, operation)
     return result
 
 
@@ -1362,8 +1374,9 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
     source_after_match, content_complete = False, False
     source_files, operation = spec['source_files'], spec['operation']
     benchmark = spec['mode'] == model_contract.BENCHMARK_MODE
-    prepared_teacher = spec['mode'] == model_contract.PREPARED_TEACHER_MODE
-    contract = model_contract.prepared_teacher_contract() if prepared_teacher else model_contract
+    numa_teacher = spec['mode'] == model_contract.NUMA_PREPARED_TEACHER_MODE
+    prepared_teacher = spec['mode'] in (model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE)
+    contract = model_contract.prepared_teacher_contract(numa=numa_teacher) if prepared_teacher else model_contract
     role = 'benchmark' if benchmark else 'teacher'
     result_schema = model_contract.BENCHMARK_HOST_RESULT_SCHEMA if benchmark else contract.HOST_RESULT_SCHEMA
     old_path = list(sys.path)
@@ -1390,7 +1403,8 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                 raise RuntimeError('executing model operator source differs')
         if prepared_teacher:
             actual = file_identity(contract.__file__)
-            if any(actual[key] != source_files['tools/v100_onecat_combinations.py'][key] for key in ('bytes', 'sha256')):
+            name = 'tools/v100_prepared_teacher_numa.py' if numa_teacher else 'tools/v100_onecat_combinations.py'
+            if any(actual[key] != source_files[name][key] for key in ('bytes', 'sha256')):
                 raise RuntimeError('executing prepared teacher contract differs from canonical source')
         sys.path[:0] = [str(source), str(source / 'tools')]
         launch = _verification_process(spec)
@@ -1435,6 +1449,13 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                             or any(capture_inner['operation'][key] != operation[key]
                                    for key in ('case_authority', 'prepared_execution', 'teacher_scope'))):
                         raise ValueError('prepared replay differs from the original incumbent case/numerics')
+                    if numa_teacher:
+                        if capture_inner['operation']['numa'] != operation['numa']:
+                            raise ValueError('NUMA replay changed the original placement/seccomp authority')
+                        expected_numa = contract.reference_result_files(capture_inner['model_result'])
+                        if any(operation['reference']['files'].get(name) != item for name, item in expected_numa.items()):
+                            raise ValueError('NUMA replay did not import its exact original24-receipt proof')
+                        contract.validate_result_files(Path('/reference'), capture_inner['model_result'], capture_inner['operation'])
 
                 extra = ({'case': _bound_model_json(operation['case_authority']['path']),
                           'profile': _bound_model_json(operation['execution_manifest']['path'], maximum=16 << 20)}

@@ -966,7 +966,9 @@ def _prepared_expert_side(selected, mode, control, contract):
     if len(pids) != 8:
         raise ValueError('prepared teacher requires eight distinct actual worker processes')
     client = _owned_comparison_file(side['root'], side['model']['client_report'], control)
-    if (client.get('schema') != 'tensorfold.owned-teacher-client-report-v1'
+    numa = contract.MODE == _owned_comparison_contract().NUMA_PREPARED_TEACHER_MODE
+    expected_client_schema = contract.CLIENT_REPORT_SCHEMA if numa else 'tensorfold.owned-teacher-client-report-v1'
+    if (client.get('schema') != expected_client_schema
             or client.get('quality_acceptance') is not False or client.get('P3_valid') is not False
             or type(client.get('prompt_tokens')) is not int or client['prompt_tokens'] != len(authority['input_ids'])
             or type(client.get('completion_tokens')) is not int or client['completion_tokens'] != len(authority['teacher_ids'])
@@ -988,13 +990,17 @@ def _prepared_expert_side(selected, mode, control, contract):
     for frame in authority['frames']:
         if frame.get('execution_family') != operation['prepared_execution']:
             raise ValueError('prepared authority frame lacks its full frozen specification')
+    if numa:
+        contract.validate_result_files(side['root'], side['model'], operation)
     side.update(startups=startups, native=natives, registrations=registrations,
                 semantics=side['stable_semantics'], teacher_root=side['root'] / 'teacher')
     return side
 
 
-def _compare_prepared_expert_teacher(reference, candidate, *, method, down_method, iq2_source, prefill_method, control):
-    contract = _owned_comparison_contract().prepared_teacher_contract()
+def _compare_prepared_expert_teacher(reference, candidate, *, method, down_method, iq2_source, prefill_method, control,
+                                     contract=None):
+    contract = _owned_comparison_contract().prepared_teacher_contract() if contract is None else contract
+    numa = contract.MODE == _owned_comparison_contract().NUMA_PREPARED_TEACHER_MODE
     left = _prepared_expert_side(reference, 'capture', control, contract)
     right = _prepared_expert_side(candidate, 'replay', control, contract)
     a, b = left['authority'], right['authority']
@@ -1013,6 +1019,8 @@ def _compare_prepared_expert_teacher(reference, candidate, *, method, down_metho
     for frame in a['frames']:
         vector = frame['vector']
         expected_reference['teacher/' + vector['file']] = {key: vector[key] for key in ('bytes', 'sha256')}
+    if numa:
+        expected_reference.update(contract.reference_result_files(left['model']))
     if (imported['files'] != expected_reference
             or any(imported['authority'][key] != left['authority_ref'][key] for key in ('bytes', 'sha256'))
             or any(imported['host_result'][key] != reference['host_result'][key] for key in ('bytes', 'sha256'))
@@ -1021,7 +1029,7 @@ def _compare_prepared_expert_teacher(reference, candidate, *, method, down_metho
     if left['inner']['image_id_declared'] != right['inner']['image_id_declared']:
         raise ValueError('prepared comparison requires the same immutable application image')
     for key in ('model_assets', 'frontend_assets', 'frontend_root', 'model_entrypoint', 'execution_manifest',
-                'case_authority', 'prepared_execution', 'teacher_scope'):
+                'case_authority', 'prepared_execution', 'teacher_scope', *(['numa'] if numa else [])):
         if old_op[key] != new_op[key]:
             raise ValueError('prepared comparison unrelated closed input differs: ' + key)
     for key in ('source_manifest', 'source_fixture', 'source', 'image_id'):
@@ -1077,13 +1085,15 @@ def _compare_prepared_expert_teacher(reference, candidate, *, method, down_metho
                                and item['bytes'] == new_files[name]['size'] for item in new.values())):
                 raise ValueError('prepared profile library delta lacks its exact selected VMA fingerprint')
     rows, metrics = _candidate_teacher_metrics(left, right, control)
-    return {'schema': 'tensorfold.prepared-expert-teacher-comparison-v1', 'complete': True,
+    return {'schema': ('tensorfold.prepared-expert-teacher-numa-comparison-v2' if numa else
+                       'tensorfold.prepared-expert-teacher-comparison-v1'), 'complete': True,
             'status': 'DIAGNOSTIC_ONLY_REQUIRES_FULL_MODEL_QUALITY_REVIEW', 'qualification': False,
             'quality_acceptance': False, 'P3_valid': False, 'teacher_scope': contract.SCOPE,
             'selector': selected, 'reference': reference, 'candidate': candidate, 'frames': rows,
             'quality_metrics': metrics, 'image_id': left['inner']['image_id_declared'],
             'runtime_sources': [a['runtime_sources'], b['runtime_sources']],
             'actual_profiles': [a['actual_owned_profile'], b['actual_owned_profile']],
+            **({'numa_evidence': [left['model']['numa'], right['model']['numa']]} if numa else {}),
             'coverage': {'frames': len(rows), 'vocab': a['vocab'], 'case_id': a['declared_identity']['case_id'],
                          'role_frames': {role: sum(frame.get('role') == role for frame in a['frames'])
                                          for role in ('prefill', 'decode')},
@@ -1095,7 +1105,7 @@ def _compare_prepared_expert_teacher(reference, candidate, *, method, down_metho
 
 def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeout_s,
                                     down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold',
-                                    teacher_scope='rn12-p4096-none-v1'):
+                                    teacher_scope='rn12-p4096-none-v1', numa=False):
     """Explicit expert-method forced-prefix diagnostic, never matched-control acceptance."""
     if method not in ('tensorfold-fp32-epilogue', 'onecat-half-epilogue', 'tensorfold') and not (
             teacher_scope == 'rn12-p256-none-v1' and method == 'incumbent'):
@@ -1106,13 +1116,16 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
         raise ValueError('explicit applicable target down/IQ2 source required')
     if method == 'incumbent' and (down_method, iq2_source, prefill_method) != ('tensorfold', 'active-frame', 'tensorfold'):
         raise ValueError('prepared matched control must retain the exact incumbent selector')
+    if type(numa) is not bool or numa and teacher_scope != 'rn12-p256-none-v1':
+        raise ValueError('NUMA quality requires its exact explicit prepared NONE region')
     if (type(read_timeout_s) not in (int, float) or not 0 < read_timeout_s <= sys.maxsize
             or not math.isfinite(read_timeout_s)):
         raise ValueError('candidate comparison requires positive finite read_timeout_s excluding bool')
     control = _teacher_read_control(read_timeout_s)
     if teacher_scope == 'rn12-p256-none-v1':
         return _compare_prepared_expert_teacher(reference, candidate, method=method,
-            down_method=down_method, iq2_source=iq2_source, prefill_method=prefill_method, control=control)
+            down_method=down_method, iq2_source=iq2_source, prefill_method=prefill_method, control=control,
+            contract=_owned_comparison_contract().prepared_teacher_contract(numa=True) if numa else None)
     left = _candidate_teacher_side(reference, 'capture', control, teacher_scope=teacher_scope)
     right = _candidate_teacher_side(candidate, 'replay', control, teacher_scope=teacher_scope)
     a, b = left['authority'], right['authority']
@@ -1234,11 +1247,14 @@ def _compare_owned_candidate_teacher_main(argv):
         raise ValueError('candidate comparison input SHA differs')
     data = _owned_teacher_object(raw)
     required = {'schema', 'reference', 'candidate', 'method', 'read_timeout_s'}
-    prepared = data.get('schema') == 'tensorfold.prepared-expert-teacher-comparison-input-v1'
+    numa = data.get('schema') == 'tensorfold.prepared-expert-teacher-numa-comparison-input-v2'
+    prepared = data.get('schema') in ('tensorfold.prepared-expert-teacher-comparison-input-v1',
+                                     'tensorfold.prepared-expert-teacher-numa-comparison-input-v2')
     if prepared:
         required = required | {'teacher_scope'}
     if (type(data) is not dict or not required <= set(data) <= required | {'down_method', 'iq2_source', 'prefill_method'}
-            or data['schema'] != ('tensorfold.prepared-expert-teacher-comparison-input-v1' if prepared else
+            or data['schema'] != ('tensorfold.prepared-expert-teacher-numa-comparison-input-v2' if numa else
+                                  'tensorfold.prepared-expert-teacher-comparison-input-v1' if prepared else
                                   'tensorfold.owned-candidate-teacher-comparison-input-v1')
             or prepared and data['teacher_scope'] != 'rn12-p256-none-v1'):
         raise ValueError('closed candidate comparison input required')
@@ -1247,7 +1263,7 @@ def _compare_owned_candidate_teacher_main(argv):
                                               down_method=data.get('down_method', 'tensorfold'),
                                               iq2_source=data.get('iq2_source', 'active-frame'),
                                               prefill_method=data.get('prefill_method', 'tensorfold'),
-                                              teacher_scope=data.get('teacher_scope', 'rn12-p4096-none-v1'))
+                                              teacher_scope=data.get('teacher_scope', 'rn12-p4096-none-v1'), numa=numa)
     report['comparison_input_sha256'] = args.expected_input_sha
     args.output_dir.mkdir(mode=0o700)
     _owned_teacher_json(args.output_dir / 'comparison.json', report, 8 << 20,

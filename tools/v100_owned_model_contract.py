@@ -32,10 +32,18 @@ REQUIRED_TOOLS = {'tools/v100_owned_qualification.py', 'tools/launch_cuda_tp.py'
 
 PREPARED_TEACHER_SCHEMA = 'tensorfold.v100-prepared-expert-teacher-operation-v1'
 PREPARED_TEACHER_MODE = 'owned-prepared-expert-teacher-model-v1'
+NUMA_PREPARED_TEACHER_SCHEMA = 'tensorfold.v100-prepared-expert-teacher-numa-operation-v2'
+NUMA_PREPARED_TEACHER_MODE = 'owned-prepared-expert-teacher-numa-model-v2'
 
 
-def prepared_teacher_contract():
+def prepared_teacher_contract(*, numa=False):
     """One fixed extension; historical v1 validators remain unchanged."""
+    if numa:
+        if __package__:
+            from . import v100_prepared_teacher_numa
+        else:
+            import v100_prepared_teacher_numa
+        return v100_prepared_teacher_numa
     if __package__:
         from . import v100_onecat_combinations
     else:

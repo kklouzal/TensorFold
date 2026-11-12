@@ -257,8 +257,12 @@ The closed prepared-teacher operation and comparison reader now have CPU
 coverage for the incumbent plus20 explicit expert selectors, complete frame
 specifications and full-vocabulary conditional KL/NLL/PPL diagnostics. Historical
 teacher validators and the guarded native-contract Host lifecycle remain
-independent controls. This component still requires the actual NUMA/CAP40
-permission and24-receipt bridge, sealed input cases and model execution. No
+independent controls. The versioned NUMA/CAP40 bridge now binds four sealed
+operator files, the source-owned policy renderer and all 24 placement receipts.
+The Host checks exact CPU/memory-node and seccomp authority; before generation
+and after retirement, the validator links worker PIDs to startup and native
+observer records. Replay retains the complete immutable closure. Matching-image
+native permission/admission proof and model execution remain pending. No
 dataset, accepted error margin, held-out accuracy or P3 result is implied.
 
 Live Source17 ranks were allowed on both CPU/memory nodes and sampled CPU and

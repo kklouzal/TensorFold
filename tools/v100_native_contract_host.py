@@ -188,7 +188,8 @@ def _verification_environment(env):
 def validate_spec(raw):
     required = {"schema", "name", "image_id", "uuids", "source", "inputs", "mounts", "environment",
                 "entrypoint", "argv", "resources", "health_baseline", "timeouts", "disk_bytes", "diagnostics"}
-    require(type(raw) is dict and set(raw) in (required, required | {"verification_launcher"}) and raw["schema"] == SCHEMA, "invalid native host schema/fields")
+    require(type(raw) is dict and set(raw) in (required, required | {"verification_launcher"},
+            required | {"verification_launcher", "numa"}) and raw["schema"] == SCHEMA, "invalid native host schema/fields")
     require(type(raw["name"]) is str and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", raw["name"]), "invalid attempt name")
     require(type(raw["image_id"]) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", raw["image_id"]), "immutable image required")
     ids = raw["uuids"]
@@ -242,6 +243,14 @@ def validate_spec(raw):
             "canonical inner driver/data interface required; no embedded Python")
     inputs = {item["path"]: item for item in raw["inputs"]}
     operator = Path(mounts["/operator"]["source"])
+    if 'numa' in raw:
+        contract = model_contract.prepared_teacher_contract(numa=True)
+        contract.validate_numa(raw['numa'], operator_root=str(operator))
+        for key in contract.FILES:
+            expected = raw['numa'][key]
+            require(inputs.get(expected['path']) == expected, 'sealed NUMA payload lacks exact outer input authority')
+        require(env.get('TENSORFOLD_NUMA_RECEIPT_DIR') == contract.RECEIPT_DIR
+                and env.get('NCCL_IGNORE_CPU_AFFINITY') == '0', 'fixed NUMA receipt/NCCL environment required')
     require(str(operator / "v100_native_contract_driver.py") in inputs, "canonical driver input hash required")
     inner_identity = inputs.get(str(operator / Path(argv[3]).name))
     require(inner_identity is not None and inner_identity["sha256"] == argv[5]
@@ -316,12 +325,17 @@ def validate_data(spec):
     inner_input = next(item for item in spec['inputs'] if item['path'] == inner_path)
     inner = object_json(bound_file(inner_input))
     benchmark = inner.get('schema') == model_contract.BENCHMARK_SCHEMA
-    prepared = inner.get('schema') == model_contract.PREPARED_TEACHER_SCHEMA
-    contract = model_contract.prepared_teacher_contract() if prepared else model_contract
+    numa = inner.get('schema') == model_contract.NUMA_PREPARED_TEACHER_SCHEMA
+    prepared = inner.get('schema') in (model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA)
+    contract = model_contract.prepared_teacher_contract(numa=numa) if prepared else model_contract
     model = inner.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA,
-                                   model_contract.PREPARED_TEACHER_SCHEMA)
+                                   model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA)
+    require(('numa' in spec) == numa, 'NUMA host extension requires its exact versioned prepared operation')
     if model:
-        (model_contract.validate_benchmark_host_operation if benchmark else contract.validate_host_operation)(spec, inner)
+        if numa:
+            contract.validate_host_operation(spec, inner, numa_bundle=_numa_authority(spec))
+        else:
+            (model_contract.validate_benchmark_host_operation if benchmark else contract.validate_host_operation)(spec, inner)
         for name, identity in inner['source_files'].items():
             require(name in source_files and all(source_files[name][key] == identity[key] for key in ('bytes', 'sha256')),
                     'model operator differs from complete reviewed source fixture')
@@ -343,6 +357,15 @@ def validate_data(spec):
             require('v100_onecat_combinations.py' in inputs and all(
                 inputs['v100_onecat_combinations.py'][key] == inner['source_files']['tools/v100_onecat_combinations.py'][key]
                 for key in ('bytes', 'sha256')), 'prepared contract differs from canonical staged source')
+        if numa:
+            for key in contract.FILES:
+                item = inner['operation']['numa'][key]
+                staged = inputs.get(Path(item['path']).name)
+                require(staged is not None and all(staged[k] == item[k] for k in ('bytes', 'sha256')),
+                        'NUMA operation payload differs from staged Host input')
+            for name in ('v100_prepared_teacher_numa.py', 'generate_numa_seccomp.py'):
+                require(name in inputs and all(inputs[name][k] == inner['source_files']['tools/'+name][k]
+                                               for k in ('bytes', 'sha256')), 'NUMA contract/generator source differs')
         result = {key: inner[key] for key in ('mode', 'source_commit', 'image_id', 'operation')}
     else:
         mode = "cuda" if spec["uuids"] else "cpu"
@@ -373,6 +396,12 @@ def _cpu_arg(nano):
     return str(whole) if not fractional else str(whole) + "." + f"{fractional:09d}".rstrip("0")
 
 
+def _numa_authority(spec):
+    """Read only the explicit, independently captured verification-cap40 role."""
+    source, _ = source_inventory(spec)
+    return model_contract.prepared_teacher_contract(numa=True).frozen_host_inputs(spec, source)
+
+
 def ownership_label(spec):
     return spec["name"] + ":" + hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
@@ -388,6 +417,10 @@ def create_argv(spec, output):
             "--cpus", _cpu_arg(r["nano_cpus"]), "--memory", str(r["memory_bytes"]), "--memory-swap", str(r["memory_swap_bytes"])]
     if "verification_launcher" in spec:
         argv.extend(("--cap-drop", "ALL", "--cap-add", "CHECKPOINT_RESTORE"))
+    if 'numa' in spec:
+        bundle = _numa_authority(spec)
+        argv.extend(('--cpuset-cpus', bundle['cpuset_cpus'], '--cpuset-mems', bundle['cpuset_mems'],
+                     '--security-opt', 'seccomp='+spec['numa']['seccomp']['path']))
     for key, value in sorted(r["tmpfs"].items()):
         argv.extend(("--tmpfs", key + ":" + value))
     for item in r["ulimits"]:
@@ -409,12 +442,28 @@ def admit(document, spec, cid):
     h, c = document["HostConfig"], document["Config"]
     r = spec["resources"]
     verification = "verification_launcher" in spec
+    numa_bundle = _numa_authority(spec) if 'numa' in spec else None
+    if numa_bundle is None:
+        security_ok = h.get("SecurityOpt") in (None, [], *([["label=disable"]] if r["ipc"] == "host" else []))
+    else:
+        options = h.get('SecurityOpt')
+        require(type(options) is list and len(options) in (1, 2)
+                and all(type(item) is str for item in options) and len(set(options)) == len(options),
+                'actual NUMA security options differ from fixed policy')
+        selected = [item.removeprefix('seccomp=') for item in options if item.startswith('seccomp=')]
+        other = [item for item in options if not item.startswith('seccomp=')]
+        require(len(selected) == 1 and len(selected[0]) <= 2 << 20
+                and other in ([], *([['label=disable']] if r['ipc'] == 'host' else [])),
+                'only the sealed NUMA seccomp and existing host-IPC label option are permitted')
+        # Docker CLI resolves seccomp=FILE to its JSON payload before the API
+        # call. Compare the actual inspected policy, never a path-only claim.
+        security_ok = object_json(selected[0]) == object_json(numa_bundle['raw']['seccomp'])
     require(document["Image"] == spec["image_id"] and h["Runtime"] == ("nvidia" if spec["uuids"] else "runc")
             and h["NetworkMode"] == "none" and h["ReadonlyRootfs"] is True and h["Privileged"] is False
             and not h.get("Devices")
             and (h.get("CapAdd") == ["CAP_CHECKPOINT_RESTORE"] and h.get("CapDrop") == ["ALL"]
                  if verification else not h.get("CapAdd") and not h.get("CapDrop"))
-            and h.get("SecurityOpt") in (None, [], *([["label=disable"]] if r["ipc"] == "host" else []))
+            and security_ok
             and not h.get("DeviceCgroupRules") and not h.get("PidMode") and not h.get("AutoRemove")
             and c["User"] == "1000:1000" and c["Entrypoint"] == [spec["entrypoint"]]
             and c["Cmd"] == spec["argv"] and c["WorkingDir"] == "/canonical", "image/command/isolation admission differs")
@@ -422,6 +471,10 @@ def admit(document, spec, cid):
         require(not h.get("GroupAdd") and not h.get("Init")
                 and set(document.get("NetworkSettings", {}).get("Networks", {})) == {"none"},
                 "verification requires private init/group/network envelope")
+    if numa_bundle is not None:
+        require(h.get('CpusetCpus') == numa_bundle['cpuset_cpus']
+                and h.get('CpusetMems') == numa_bundle['cpuset_mems'],
+                'actual NUMA CPU/memory cgroup allowance differs from the sealed plan')
     requests = h.get("DeviceRequests")
     if spec["uuids"]:
         require(type(requests) is list and len(requests) == 1 and requests[0]["DeviceIDs"] == spec["uuids"]
@@ -622,6 +675,17 @@ class System:
         require(image == spec["image_id"], "image identity changed")
         result = {"source_manifest": spec["source"]["manifest"]["sha256"], "source_fixture": fixture, "source": actual,
                   "inputs": spec["inputs"], "image_id": image}
+        if 'numa' in spec:
+            bundle = _numa_authority(spec)
+            provenance = bundle['manifest']['provenance']
+            versions = object_json(self.command(['docker', 'version', '--format', '{{json .}}']))
+            security = json.loads(self.command(['docker', 'info', '--format', '{{json .SecurityOptions}}']))
+            require(versions == provenance['docker_versions'] and security == provenance['daemon_security'],
+                    'captured CAP40 seccomp daemon/runtime authority changed; regenerate the exact role policy')
+            result['numa_policy_authority'] = {'daemon_versions': versions, 'daemon_security': security,
+                'capture_role': bundle['manifest']['capture_role'],
+                'profile_sha256': spec['numa']['seccomp']['sha256'],
+                'manifest_sha256': spec['numa']['seccomp_manifest']['sha256']}
         if "verification_launcher" in spec:
             result["verification_operator"] = verification_operator(spec, self.spec_identity)
             candidate = object_json(self.command(["docker", "image", "inspect", "--format", "{{json .}}", image]))
@@ -984,10 +1048,12 @@ def run(spec, output, system=None, *, spec_identity=None):
                     "verification prequalification receipt changed")
             outcome["verification_preflight"] = verified
         if expected_inner['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE,
-                                     model_contract.PREPARED_TEACHER_MODE):
+                                     model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE):
             benchmark = expected_inner['mode'] == model_contract.BENCHMARK_MODE
-            contract = (model_contract.prepared_teacher_contract()
-                        if expected_inner['mode'] == model_contract.PREPARED_TEACHER_MODE else model_contract)
+            contract = (model_contract.prepared_teacher_contract(
+                numa=expected_inner['mode'] == model_contract.NUMA_PREPARED_TEACHER_MODE)
+                if expected_inner['mode'] in (model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE)
+                else model_contract)
             role = 'benchmark' if benchmark else 'teacher'
             outcome['inner'] = object_json(read_bytes(output / ('owned-' + role + '-operation-result.json'), LIMIT))
             (model_contract.validate_benchmark_host_result if benchmark else contract.validate_host_result)(
