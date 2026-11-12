@@ -110,8 +110,18 @@ the real CUDA12.9 assembler accepted an SM70 compilation without initializing
 CUDA. The source10 image then passed two actual V100 controls: bit-exact ordered
 FP32 FMA with changed-input graph replay, and a 64x64 FP16 dot product checked
 against an independent integer oracle with Volta MMA PTX/CUBIN provenance.
-Full-model gates remain pending; no vendor patch, fake compiler version or
-broad SM70 qualification is implied.
+The frozen Source19 NUMA TensorFold reference subsequently passed with actual
+Triton 3.2.0/PTX8.3, native CUDA12.9 compiler binding, TP8/ETP4, 24 allocated
+262144-token Q8 windows, MTP4 and the 10-key paid graph catalogue. All 24 placement receipts
+validated before generation and all eight ranks closed with 75 verify/66 MTP
+serving hits. All six complete output-ID sequences match the fresh Source18
+reference, including the 64-token serial/MTP pair. Source UID
+`216adcab1716d9b72f97eb9232604a388433e46f35ccee75c78a9b6cd3756f55` and image
+`sha256:bade98770b97f00d1c582c631893bdce81d37ff078dbffd50d7eccabc1ff248e`
+bind this bounded result. Both Source19 reference and Triton3.2 images passed
+1,052 installed CPU tests and 235 subtests each, with one existing Docker Compose
+availability skip. Broader quality and matched performance remain pending;
+no vendor patch, fake compiler version or broad SM70 qualification is implied.
 
 The frozen source7 reference eager model completed four requests with full24
 GPU-resident sessions admitted, TP8/ETP4, native context262144, Q8 histories and

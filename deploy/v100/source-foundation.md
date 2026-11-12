@@ -775,10 +775,19 @@ FMA, and the conformance probes. The real CUDA 12.9.86 assembler identity stays
 visible and audited; no vendor compiler code or reported CUDA version changes.
 That assembler accepted a CPU-only SM70/PTX8.3 compilation. Application image
 `4a4a2229` subsequently passed the actual ordered FP32 production FMA oracle,
-changed-input graph replay and a 64x64 FP16/Float32 Volta MMA probe. Complete
-MTP model, capacity and performance gates remain pending. This candidate does
-not replace the qualified restricted Triton
-3.9 reference by assumption.
+changed-input graph replay and a 64x64 FP16/Float32 Volta MMA probe. A bounded
+MTP model run subsequently passed on frozen Source19 UID
+`216adcab1716d9b72f97eb9232604a388433e46f35ccee75c78a9b6cd3756f55`, image
+`sha256:bade98770b97f00d1c582c631893bdce81d37ff078dbffd50d7eccabc1ff248e`:
+eight V100s, TP8/ETP4, 24 allocated 262144-token Q8 windows, MTP4,
+prefill256/execution120 and the 10-key paid graph catalogue. All 24 NUMA receipts
+validated before generation, all eight ranks recorded verify/MTP serving hits
+and closed cleanly, and six complete output-ID sequences match the fresh
+reference, including the 64-token serial/MTP pair. The actual installed compiler
+is Triton 3.2.0 with PTX8.3 and the real CUDA12.9 assembler; native compilation
+remained bound to that SDK. Broader quality, workloads and matched performance
+remain pending. This finite result does not replace other qualified runtime
+regions by assumption.
 
 Private owned SM70 startup prepares Triton's CUDA driver helper under a shared
 lock inside the existing SDK/runtime-bound cache before any rank warms kernels.

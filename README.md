@@ -73,8 +73,10 @@ cuBLAS/cuBLASLt, BitBLAS and compatible ATen attention trials. The reference
 TP8/ETP4 model has completed bounded eager and paid-catalog graph MTP4 smoke
 runs. Matched throughput and held-out quality qualification remain open. The isolated Triton 3.2
 profile uses explicit PTX8.3 with the real CUDA12.9 compiler. Its ordered FP32 kernel and changed-input
-graph replay passed on V100, alongside a Volta MMA dot-product probe. Full-model
-graph coverage beyond those finite requests, quality and performance gates
+graph replay passed on V100, alongside a Volta MMA dot-product probe. The frozen
+Source19 NUMA model also passed TP8/ETP4, 24 allocated full-context Q8
+windows, MTP4 and paid graph replay; all six complete output-ID sequences match
+the fresh reference. Broader workload coverage, quality and performance gates
 remain open. The optional dense
 owner's worker-start handoff has CPU lifecycle coverage; native/model selection
 is still pending. A separate private paid-subset graph policy can declare
