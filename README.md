@@ -91,6 +91,14 @@ Component capture controls pass; model and performance gates remain pending. The
 same prepared-owner lifecycle, with a read-only ten-file operator bundle.
 Its model and performance selection remains pending.
 
+The separate default-off `native_hc_writeback_target_eager` preparation trial
+extends the existing HC4/D2560/TP8 modes0/3 operator to target decode eager work,
+including misses in a graph-enabled private profile. Captured execution keeps
+its existing capture selector; MTP and prefill routes retain their previous
+policies. The operator and workspace are unchanged. Model, numerical quality
+and matched unprofiled performance qualification remain pending. See the
+[target-eager HC contract](docs/optimization-validation.md#private-target-eager-hc-writeback).
+
 
 The private `aten-cutlass-q8-normalized-lse-owner-v1` attention trial now has
 an opt-in owner integration: bounded Q8/QSA gather, fixed masked2051-key panels,

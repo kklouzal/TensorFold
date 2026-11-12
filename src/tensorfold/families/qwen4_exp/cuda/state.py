@@ -49,12 +49,20 @@ class Buffers:
         self.hc_writeback_graph_only = w.meta.get('hc_writeback_graph_only', False)
         if type(self.hc_writeback_graph_only) is not bool:
             raise ValueError('HC writeback capture policy must be an explicit boolean')
-        if self.hc_writeback_graph_only and not prefill:
+        self.owner_role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
+        self.hc_writeback_target_eager = w.meta.get('hc_writeback_target_eager', False)
+        if type(self.hc_writeback_target_eager) is not bool:
+            raise ValueError('HC target-eager policy must be an explicit boolean')
+        hc_required = self.hc_writeback_graph_only or (self.hc_writeback_target_eager and self.owner_role == 'decode')
+        if hc_required and not prefill:
             if type(rows) is not int or not 0 < rows <= 256:
                 raise ValueError('HC writeback capture requires an actual 1..256-row decode envelope')
             if w.meta.get('hc_writeback_prepared') is None:
                 raise ValueError('HC writeback capture requires its resident prepared capability')
-        self.owner_role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
+        if self.hc_writeback_target_eager and not prefill and self.owner_role == 'decode':
+            if (execution_dtype(w) != torch.float16 or c.streams != 4 or c.hidden != 2560
+                    or int(w.meta.get('world', 1)) != 8):
+                raise ValueError('HC target-eager policy requires Half HC4/D2560/TP8 decode buffers')
         from ..pipeline_stage import for_weights as pipeline_for_weights
 
         self.pipeline_stage = pipeline_for_weights(w)
@@ -231,6 +239,9 @@ class Buffers:
             self.hc_writeback = prepared_writeback.bind(self)
         if self.hc_writeback_graph_only and not prefill and self.hc_writeback is None:
             raise ValueError('HC writeback capture lacks its actual bound decode capability')
+        if (getattr(self, 'hc_writeback_target_eager', False) and not prefill
+                and self.owner_role == 'decode' and self.hc_writeback is None):
+            raise ValueError('HC target-eager policy lacks its actual bound decode capability')
 
 
 def _rows(t: torch.Tensor, rows: int, keep: int) -> torch.Tensor:

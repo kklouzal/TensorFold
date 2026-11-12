@@ -267,6 +267,49 @@ retired. Actual conditional-score quality, broader workloads, panel selection
 and matched serving performance remain pending. Smoke-request timings are not
 a throughput comparison.
 
+## Private target-eager HC writeback
+
+The explicit boolean `preparation.native_hc_writeback_target_eager` defaults to
+false and is omitted from the prepared identity when false. It selects the
+already-owned resident HC writeback modes0/3 for target decode eager calls in
+the fixed graph-enabled private SM70 NONE/MTP region: Half HC4/D2560, TP8/ETP4,
+GPU histories, no cached-expert, vision or managed execution. Other model and
+hardware profiles remain outside this trial. An unavailable request fails cold
+before States; actual decode buffers additionally require rows1–256, the prepared
+capability and an actual successful binding. The existing no-graphs region
+already selects native eager writeback and does not need this extension flag.
+
+The capture and target-eager selectors are independent. Target eager requires
+the actual decode owner, nonprefill buffers and the ordinary `split is None`
+boundary. Existing exact capture selection remains controlled by
+`native_hc_writeback_capture`; MTP eager and prefill keep their previous routes.
+Modes1/2/4 and operands outside the retained capability domain keep the original
+generic operation. No capture-status query, State padding, new native kernel,
+GPU workspace, tensor materialization or global family switch is introduced.
+The existing all-rank cold agreement includes both requested and eligible bits.
+Function residency remains prepared before physical admission, and the bound
+operator retains its original tensors/module through their owner lifetime.
+
+The reused kernel's numerical contract is unchanged: mode0 copies residual Half
+bits; mode3 sums rank0–7 Float32 partials in order with `--fmad=false`, rounds
+the update to Half, rounds the injected product to Half and rounds the residual
+sum to Half. PSS uses the pinned ATen contiguous Float32 vector4 reduction tree
+for256-element chunks. At HC4/D2560 and rows1–256 there are at least40 outputs,
+so the source's virtual reduction width remains32. Each CTA writes and reads
+its own256-element residual chunk across its local barrier; source and PSS
+storages remain disjoint and the current-stream launch preserves ordering.
+The retained mode0/3 native, changed-input, signed-zero/NaN and mutation-version
+oracles remain independent evidence; their finite passes do not prove general
+cross-SDK bit identity. No error tolerance is introduced.
+
+This candidate is motivated by actual Source22 eager C8 launch/HC scopes, not
+a causal speedup conclusion. It eliminates only the eligible writeback chain;
+normalization, mixing, activations, other modes and other work remain. Actual
+new-profile serving, full-capacity and MTP4 behavior, conditional output quality,
+and unprofiled matched end-to-end prefill/decode/tail measurements are required
+before selection. Preserve the original floor, workspace, full24 context and
+all other required candidates during those comparisons.
+
 ## DFlash logits graph investigation
 
 The subsequent default-off `dflash_graph=True` constructor candidate changes

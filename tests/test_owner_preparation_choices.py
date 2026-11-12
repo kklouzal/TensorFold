@@ -140,6 +140,32 @@ def test_unavailable_native_hc_capture_stops_before_backend_or_allocation(monkey
     assert prepared.before is None and prepared.workspaces == {}
 
 
+def test_native_target_eager_hc_is_default_off_and_strict_trial():
+    name='native_hc_writeback_target_eager'
+    assert preparation.parse_preparation(spec(**{name:False}))==preparation.parse_preparation(spec())
+    assert preparation.parse_preparation(spec(**{name:True}))[name]is True
+    both=preparation.parse_preparation(spec(native_hc_writeback_capture=True,**{name:True}))
+    assert both[name]and both['native_hc_writeback_capture']
+    for value in (0,1,'true',None):
+        with pytest.raises(ValueError,match='explicit boolean'):
+            preparation.parse_preparation(spec(**{name:value}))
+    with pytest.raises(ValueError,match='trial'):
+        preparation.parse_preparation({**spec(**{name:True}),'trial':False})
+
+
+def test_unavailable_target_eager_hc_fails_before_backend_or_state_allocation(monkeypatch):
+    from tensorfold.cuda.sm70 import foundation_headers
+    selected=owner(native_hc_writeback_target_eager=True)
+    monkeypatch.setattr(foundation_headers,'selected_identity',lambda:pytest.fail('unavailable trial reached backend'))
+    monkeypatch.setattr(execution_identity,'_retire_store',lambda *a,**k:None)
+    selected._phase=lambda engine,name,operation,**kwargs:operation()
+    engine=NS(comm=None,tp=8,_native_hc_writeback_target_eager_enabled=False)
+    text=dict(num_attention_heads=24,num_key_value_heads=2,hidden_size=2560,head_dim=256)
+    with pytest.raises(ValueError,match='graph-enabled region'):
+        selected.prepare(engine,text,NS(identity='q8'),page_tokens=128,device='cpu')
+    assert selected.before is None and selected.workspaces=={}
+
+
 def hc_spec():
     return {'backend':'bitblas-hc','manifest':'/sealed/hc/manifest.json','manifest_sha256':'b'*64,
             'roles':['decode','prefill']}

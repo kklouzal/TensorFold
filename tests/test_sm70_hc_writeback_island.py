@@ -135,6 +135,97 @@ def test_graph_only_hook_uses_only_private_decode_capture_and_preserves_old_poli
         assert generic[0][1]['branch'] is branch and generic[0][1]['inject'] is inject
 
 
+@pytest.mark.parametrize('mode',[0,3])
+@pytest.mark.parametrize('role,prefill,split,exact,capture,native',[
+    ('decode',False,False,False,False,True),
+    ('decode',False,False,False,True,True),
+    ('mtp',False,False,False,False,False),
+    ('mtp',False,False,False,True,False),
+    ('prefill',True,False,False,False,False),
+    ('prefill',True,False,False,True,False),
+    ('decode',False,True,True,False,False),
+    ('decode',False,True,True,True,True),
+    ('mtp',False,True,True,True,True),
+    ('decode',False,True,False,True,False),
+])
+def test_target_eager_trial_closes_only_target_miss_without_changing_other_scopes(
+        monkeypatch,mode,role,prefill,split,exact,capture,native):
+    b,calls,generic=buffers(),[],[]
+    b.hc_writeback=prepared(b,calls)
+    b.hc_writeback_target_eager=True;b.hc_writeback_graph_only=capture
+    b.owner_role,b.prefill,b.split,b.exact_graph_handoffs=role,prefill,object()if split else None,exact
+    monkeypatch.setattr(forward.glue,'hc_writeback',lambda *a,**kw:generic.append((a,kw)))
+    monkeypatch.setattr(torch.cuda,'is_current_stream_capturing',lambda:pytest.fail('hot capture query'))
+    branch,inject=(b.g_branch.view(8,3,2560),b.inj_a)if mode else(None,None)
+    forward._hc_writeback(b,b.h,b.h,b.pss,4,mode,branch=branch,inject=inject)
+    assert len(calls)==int(native)and len(generic)==int(not native)
+    if generic:
+        assert all(actual is expected for actual,expected in zip(generic[0][0][:3],(b.h,b.h,b.pss)))
+        assert generic[0][1]['branch']is branch and generic[0][1]['inject']is inject
+
+
+@pytest.mark.parametrize('value,valid',[(False,True),(True,True),(0,False),(1,False),(None,False)])
+def test_target_eager_buffer_flag_is_strict_and_retained_before_allocations(value,valid):
+    source=Path(forward.__file__).with_name('state.py');tree=ast.parse(source.read_text())
+    cls=next(n for n in tree.body if isinstance(n,ast.ClassDef)and n.name=='Buffers')
+    init=next(n for n in cls.body if isinstance(n,ast.FunctionDef)and n.name=='__init__')
+    index=next(i for i,n in enumerate(init.body)if isinstance(n,ast.Assign)
+               and any(isinstance(t,ast.Attribute)and t.attr=='hc_writeback_target_eager'for t in n.targets))
+    code=compile(ast.Module(body=init.body[index:index+2],type_ignores=[]),str(source),'exec');owner=NS()
+    if valid:
+        exec(code,{'self':owner,'w':NS(meta={'hc_writeback_target_eager':value})})
+        assert owner.hc_writeback_target_eager is value
+    else:
+        with pytest.raises(ValueError,match='explicit boolean'):
+            exec(code,{'self':owner,'w':NS(meta={'hc_writeback_target_eager':value})})
+
+
+@pytest.mark.parametrize('rows,cap,world,dtype,match',[
+    (0,object(),8,'float16','1..256-row'),(257,object(),8,'float16','1..256-row'),
+    (8,None,8,'float16','resident prepared capability'),
+    (8,object(),4,'float16','Half HC4/D2560/TP8'),
+    (8,object(),8,'bfloat16','Half HC4/D2560/TP8')])
+def test_explicit_target_eager_actual_envelope_refuses_before_allocations(monkeypatch,rows,cap,world,dtype,match):
+    from tensorfold.families.qwen4_exp.cuda.state import Buffers
+    def allocation(*a,**kw):pytest.fail('unavailable target-eager trial reached allocation')
+    monkeypatch.setattr(torch,'empty',allocation);monkeypatch.setattr(torch,'zeros',allocation)
+    monkeypatch.setattr(torch.cuda,'Event',allocation)
+    w=NS(cfg=NS(streams=4,hidden=2560),device='cuda:0',positions=None,
+         meta={'hc_writeback_target_eager':True,'hc_writeback_prepared':cap,'world':world,'execution_dtype':dtype})
+    with pytest.raises(ValueError,match=match):Buffers(w,rows,4096)
+
+
+@pytest.mark.parametrize('fault,enabled',[
+    (None,True),('graphs-off',False),('not-owned-graphs',False),('managed',False),
+    ('cached-experts',False),('vision',False),('other-method',False),('other-owner-graphs',False),
+    ('other-HC',False),('other-hidden',False),('not-owned',False)])
+def test_engine_target_eager_selection_uses_actual_cold_region(fault,enabled):
+    source=Path(forward.__file__).with_name('engine.py');tree=ast.parse(source.read_text())
+    names={'hc_writeback_region','native_hc_requested','native_hc_capture','native_hc_eager_requested',
+           'native_hc_eager','hc_writeback_eligible'}
+    assignments=[n for n in ast.walk(tree)if isinstance(n,ast.Assign)
+                 and any(isinstance(t,ast.Name)and t.id in names for t in n.targets)]
+    assignments.sort(key=lambda n:n.lineno)
+    scope={'self':NS(_owned_expert_requested=True,sm70_profile='reference',method_geometry=NS(method='mtp')),
+           'dspark_model_dir':None,'dflash2_model_dir':None,
+           'owner_specification':{'graph_family':'uncaptured','native_hc_writeback_target_eager':True},
+           'text':{'hc_count':4,'hidden_size':2560},'graphs':True,'owned_graph_request':True,
+           'managed':False,'vram_experts':None,'vision':None}
+    if fault=='graphs-off':scope['graphs']=False
+    elif fault=='not-owned-graphs':scope['owned_graph_request']=False
+    elif fault=='managed':scope['managed']=True
+    elif fault=='cached-experts':scope['vram_experts']=object()
+    elif fault=='vision':scope['vision']=object()
+    elif fault=='other-method':scope['self'].method_geometry.method='dflash2'
+    elif fault=='other-owner-graphs':scope['owner_specification']['graph_family']='other-graph'
+    elif fault=='other-HC':scope['text']['hc_count']=8
+    elif fault=='other-hidden':scope['text']['hidden_size']=1280
+    elif fault=='not-owned':scope['self']._owned_expert_requested=False
+    exec(compile(ast.Module(body=assignments,type_ignores=[]),str(source),'exec'),scope)
+    assert bool(scope['native_hc_eager'])is enabled
+    assert scope['native_hc_capture']is False  # The new trial does not silently select capture.
+
+
 @pytest.mark.parametrize('fault', ['mode', 'foreign', 'source-grad', 'unbound'])
 def test_private_capture_hook_keeps_existing_capability_refusals_on_generic_route(monkeypatch, fault):
     b, calls, generic = buffers(), [], []

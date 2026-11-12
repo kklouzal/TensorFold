@@ -75,7 +75,11 @@ def _hc_writeback(b, h, hout, pss, streams, mode, branch=None, inject=None, y=No
     # owner publishes graph policy, and split is the captured-forward boundary.
     prepared = getattr(b, 'hc_writeback', None)
     if prepared is not None and b.owner_graph_family == 'uncaptured':
-        if getattr(b, 'hc_writeback_graph_only', False):
+        graph_only = getattr(b, 'hc_writeback_graph_only', False)
+        if getattr(b, 'hc_writeback_target_eager', False):
+            allowed = (not b.prefill and ((b.owner_role == 'decode' and b.split is None)
+                or (graph_only and b.split is not None and getattr(b, 'exact_graph_handoffs', False))))
+        elif graph_only:
             allowed = (not b.prefill and b.split is not None and getattr(b, 'exact_graph_handoffs', False))
         else:
             allowed = b.split is None
