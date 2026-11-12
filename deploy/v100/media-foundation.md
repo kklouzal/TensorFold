@@ -1,14 +1,21 @@
 # CPU media software for the V100 source foundation
 
-This additive image supplies the required official processor backend against the
-[selected source Torch stack](source-foundation.md). It builds TorchVision
-published0.30.0.dev20261111 source8d995a1694b18f6944da14f4a45865d0277f8b20
-on CPU, Transformers5.22.2 at `6d195c6262a0ac2ef44f7b9a308617562286ff45`,
-PyAV 19.0.2, FFmpeg 9.0.2 and dav1d 1.5.4 from their exact archived sources. Pillow 13.0.0
-and the remaining Python support wheels have generated hash locks. The
-[input manifest](media-pins.json) pins both official processor configuration
-files, source archives, revisions and extraction bounds. The current home design
-`14fda300` retains the inspected processor/stack contract from `72972474`.
+This additive image supplies the required CPU processor/decoder backend against
+the [selected source Torch stack](source-foundation.md). It reuses the protected
+published Transformers 5.22.2 provider already in that SDK and builds published
+TorchVision 0.30.0.dev20261111 source8d995a1694b18f6944da14f4a45865d0277f8b20
+on CPU, PyAV 19.0.2, FFmpeg 9.0.2 and dav1d 1.5.4. Pillow 13 and disjoint media
+extras/build tools have generated hash locks constrained by the base runtime.
+
+The Transformers source archive is reference-only. No separate Transformers
+build stage or third replacement wheel is installed. Prepare/export/install
+receipts bind its 2,810 inherited payload files, whole METADATA and genuine
+Requires-Dist before/after. The two-wheel role validator refuses stale extra
+Transformers wheels without deleting historical files. The input/configuration
+manifest and exact source revisions remain in [media-pins.json](media-pins.json).
+Current preparation/ownership controls passed 103 cases, and the six CPU build/
+export phases completed with exit0. Image/install/decoder and model qualification
+remain separate from those passes and from the historical receipts below.
 
 The pinned image processor consumes CPU FP32 TorchVision transforms. This needs
 the actual TorchVision backend, without TorchVision CUDA operators or NVJPEG.
@@ -19,6 +26,9 @@ muxers and devices disabled. No CUDA/NPP or additional encoder dependency is
 introduced. The source Torch, CUDA and NCCL libraries are preserved. The refreshed source-media
 candidate requires its own source-wheel/CPU-origin and installed native/model
 qualification; historical receipts below retain their original inputs.
+
+The earlier home-design checkpoints `14fda300` and `72972474` retain their
+recorded processor/stack scope; they do not qualify this refreshed candidate.
 
 ## Independent input acquisition checkpoint
 
@@ -68,35 +78,47 @@ input readiness does not waive them or the exact SDK/audit boundary.
 
 ## Reproduce the source build
 
-The command block below is the historical04cf SDK example, not a qualified
-refreshed-image recipe. The refresh must bind its newly completed exact SDK/base
-identity before reusing the stage order with the latest pins.
-
-Use the exact base from `Dockerfile.media`, a Linux AMD64 CPython 3.12 container,
-and an owned external state directory. These CPU build/semantic controls used
-four CPUs and at most 24 GiB; they are not throughput benchmarks. Do not change
-source inputs/scripts during a stage. No GPU or host driver change is needed.
+Use the completed explicit source-SDK image and an immutable current producer
+snapshot. Keep source/producer files unchanged for the whole operation; a
+read-only mount does not prevent edits on its host. Select CPU/memory/job bounds
+from the actual host and retain the completed environment receipt.
 
 ```bash
-docker run -d --name tensorfold-v100-media-build --cpus 4 --memory 24g \
-  --entrypoint sleep \
+set -euo pipefail
+: "${TF_MEDIA_SDK_IMAGE:?Set the explicit immutable source SDK image}"
+: "${TF_MEDIA_PROJECT:?Set the immutable current producer snapshot path}"
+: "${TF_MEDIA_STATE:?Set a new owned external media state directory}"
+: "${TF_MEDIA_CPUS:?Set the actual CPU quota}"
+: "${TF_MEDIA_MEMORY:?Set the actual container memory limit}"
+mkdir -p "$TF_MEDIA_STATE/native"
+
+docker run -d --name tensorfold-v100-media-build --runtime runc \
+  --cpus "$TF_MEDIA_CPUS" --memory "$TF_MEDIA_MEMORY" --network bridge \
+  -e "MAX_JOBS=${MAX_JOBS:-4}" -e NVIDIA_VISIBLE_DEVICES=void \
+  -e CUDA_VISIBLE_DEVICES=-1 --entrypoint sleep \
   --mount type=bind,src="$TF_MEDIA_STATE",dst=/media \
-  --mount type=bind,src="$PWD",dst=/src,readonly \
-  tensorfold-v100:source-socket-04cf2557@sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28 infinity
+  --mount type=bind,src="$TF_MEDIA_PROJECT",dst=/src,readonly \
+  "$TF_MEDIA_SDK_IMAGE" infinity
 docker exec tensorfold-v100-media-build ln -s /media/native /opt/tensorfold-media
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh acquire
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh prepare
 docker network disconnect bridge tensorfold-v100-media-build
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh torchvision
-docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh transformers
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh dav1d
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh ffmpeg
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh pyav
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh export
-docker build --network=none --build-context "media_artifacts=$TF_MEDIA_STATE" \
-  -f deploy/v100/Dockerfile.media -t tensorfold-v100:media .
+docker build --network=none --build-arg "SOURCE_IMAGE=$TF_MEDIA_SDK_IMAGE" \
+  --build-context "media_artifacts=$TF_MEDIA_STATE" \
+  -f "$TF_MEDIA_PROJECT/deploy/v100/Dockerfile.media" \
+  -t tensorfold-v100:media "$TF_MEDIA_PROJECT"
 docker image inspect tensorfold-v100:media --format '{{.Id}}'
 ```
+
+The current preparation/source-build/export receipts pass; final image/install/
+decoder checks remain separate. The historical 04cf image/producer receipts remain
+reference evidence; do not mix that older SDK with refreshed native/provider
+inputs.
 
 Create `$TF_MEDIA_STATE/native` before starting. Keep it outside the project and ordinary
 Docker context. The owned prefix link is only a build-state mapping; the final
@@ -109,17 +131,23 @@ changed or unrecorded cache inputs require an explicitly prepared fresh source
 root. Interrupted extraction/build state is retained for diagnosis, never
 silently treated as complete. Archive download retries are explicit.
 
-`prepare` installs the eleven exact Debian artifacts and hash-locked Python
-support/build closure; it does not select a new package version. CPU source
-builds then run offline. PyAV follows its maintained `make` entry point, with
+`prepare` verifies the generated `media-native-apt.json` native-requirements
+schema against the exact foundation APT manifest and installed versions. All
+eleven requirements are already satisfied in the selected 191-package SDK, so
+there is no native download/reinstall or base write. It snapshots the inherited
+Transformers provider, installs only disjoint hash-locked media extras/build
+tools and verifies the provider unchanged. CPU source builds then run offline. PyAV follows its maintained `make` entry point, with
 supported Python/pip/quoted compiler flag variables and the exact build
-constraints. `export` binds completed source receipts, three wheel hashes,
-producer inputs and the native prefix. Do not reuse an export after changing
+constraints. `export` binds completed source receipts, exactly two wheel hashes,
+the inherited-provider snapshot, producer inputs and the native prefix. Do not reuse an export after changing
 any of its inputs. Regenerate support locks using the existing
-`source_foundation.py render-runtime`/`render-build-tools` and `offline-lock` commands
-from matching-platform resolver reports; the companion JSON records their
-identities. Generate `media-build-constraints.txt` with the same native report's
-`render-build-tools --constraints` option. Active source/media Ninja pins stay
+`source_foundation.py render-media-build-tools`,
+`render-media-runtime-support` and `offline-lock` commands from actual
+matching-platform reports. Their companion JSON binds the source/runtime
+identity. First constrain resolution with `runtime-constraints` from the
+protected base runtime. Publish `media-build-constraints.txt` through the same
+actual build report's `render-media-build-tools --constraints` output; do not
+replace shared providers with a separately resolved closure. Active source/media Ninja pins stay
 at the selected fixed 1.13.2 tool; build stages and export bind its actual wheel/
 executable provenance through the shared producer guard. This does not qualify
 media output or a completed SDK. Do not edit generated locks or installed tools.
@@ -140,8 +168,11 @@ PyAV's pinned Makefile runs one `python setup.py build_ext --inplace --debug`
 recipe. Make's `-j` and the three inherited job variables alone do not set that
 command's extension compiler parallelism. A future producer writes the bounded
 job-specific `build/pyav-build-ext-N.cfg` with `[build_ext] parallel = N`, then
-passes its absolute path through setuptools 80.9.0's supported
-[`DIST_EXTRA_CONFIG` discovery](https://github.com/pypa/setuptools/blob/v80.9.0/setuptools/_distutils/dist.py).
+passes its absolute path through the selected setuptools 84.2.1
+`DIST_EXTRA_CONFIG` mechanism, with parser/version evidence bound to the actual
+build report. The earlier 80.9.0
+[discovery implementation](https://github.com/pypa/setuptools/blob/v80.9.0/setuptools/_distutils/dist.py)
+remains historical feature evidence.
 This variable is set only for the PyAV stage and reaches both canonical Make
 and the subsequent wheel build. The Makefile, vendor source, `--inplace --debug`,
 CFLAGS/LDFLAGS and wheel command stay unchanged. `MAX_JOBS=1` remains an explicit

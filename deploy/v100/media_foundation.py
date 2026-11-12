@@ -19,6 +19,9 @@ import subprocess
 import tarfile
 from urllib.parse import urlsplit
 
+from packaging.utils import parse_wheel_filename
+from packaging.version import Version
+
 from source_foundation import canonical, expected_identity, file_identity, read_json, read_document, runtime_identity as foundation_runtime_identity, ninja_tool_identity
 
 
@@ -262,18 +265,92 @@ def build_environments(state, sources, script_sha256, helper_sha256):
     return result
 
 
-def capture_build(pins, state, project):
+
+
+def native_requirements(pins, source_apt, source_apt_bytes):
+    selected = {row["package"]: row for row in source_apt["packages"]}
+    names = pins["native_requirements"]
+    if not names or len(set(names)) != len(names) or any(name not in selected for name in names):
+        raise ValueError("media native requirements must be provided by the selected foundation bundle")
+    return {"schema": "tensorfold.v100-media-native-requirements", "version": 1,
+            "role": "foundation-provided packages; verify only, never reinstall",
+            "source_apt_bundle_sha256": hashlib.sha256(source_apt_bytes).hexdigest(),
+            "packages": [selected[name] for name in names]}
+
+
+def verify_native_requirements(requirements, foundation_pins):
+    if requirements["source_apt_bundle_sha256"] != foundation_pins["source_apt_bundle_sha256"]:
+        raise ValueError("media native requirements refer to a different foundation bundle")
+    names = [row["package"] for row in requirements["packages"]]
+    result = subprocess.check_output(["dpkg-query", "-W", "-f=${Package}\t${Version}\t${Architecture}\t${db:Status-Status}\n", *names], text=True)
+    actual = {}
+    for line in result.splitlines():
+        package, version, architecture, status = line.split("\t")
+        actual[package] = (version, architecture, status)
+    expected = {row["package"]: (row["version"], row["architecture"], "installed") for row in requirements["packages"]}
+    if actual != expected:
+        raise ValueError("media native packages differ from their protected foundation requirements")
+    return actual
+
+
+def verify_owned_wheels(pins, directory, build=None):
+    """Only CPU TorchVision and PyAV may install from the media source wheel set."""
+    versions = {row["name"]: row.get("version") for row in pins["artifacts"]}
+    expected = {"torchvision": Version(versions["torchvision"] + "+tfcpu"), "av": Version(versions["pyav"])}
+    selected = {}
+    paths = sorted(directory.glob("*.whl"))
+    for path in paths:
+        name, version, _, _ = parse_wheel_filename(path.name)
+        if name not in expected or name in selected or version != expected[name]:
+            raise ValueError("media wheel set must contain only the selected CPU TorchVision and PyAV providers")
+        selected[name] = path
+    if selected.keys() != expected.keys():
+        raise ValueError("media export needs exactly its two completed source wheels")
+    if build is not None and {path.name: file_identity(path) for path in paths} != build.get("source_wheels"):
+        raise ValueError("media wheel inputs differ from their completed build receipt")
+    return paths
+
+
+def inherited_transformers_identity(pins, base_runtime):
+    """Seal the already selected published provider without reinstalling it."""
+    expected = pins["processor"]["provider"]
+    if expected["kind"] != "foundation-published-wheel" or expected["distribution"] != "transformers":
+        raise ValueError("media processor must retain its selected foundation provider")
+    selected = base_runtime["packages"]["transformers"]
+    dist = importlib.metadata.distribution("transformers")
+    if dist.version != selected["version"] or list(dist.requires or ()) != selected.get("requires_dist", []):
+        raise ValueError("foundation Transformers version or genuine requirements changed")
+    files = {}
+    metadata_members = []
+    for member in dist.files or ():
+        name = str(member)
+        if name.endswith(".dist-info/METADATA"):
+            metadata_members.append(Path(dist.locate_file(member)))
+        if name.startswith("transformers/") and not name.endswith((".pyc", ".pyo")):
+            files[name] = file_identity(Path(dist.locate_file(member)))
+    payload_hash = hashlib.sha256(canonical(files)).hexdigest()
+    if (len(files) != expected["runtime_package_files"] or payload_hash != expected["runtime_payload_sha256"]
+            or len(metadata_members) != 1 or file_identity(metadata_members[0])["sha256"] != expected["metadata_sha256"]):
+        raise ValueError("foundation Transformers payload or genuine METADATA differs from its published provider")
+    return {"distribution": "transformers", "provider": "foundation-published-wheel", "version": dist.version,
+            "wheel": {key: selected[key] for key in ("url", "sha256")},
+            "runtime_package_files": len(files), "runtime_payload_sha256": payload_hash,
+            "metadata_sha256": expected["metadata_sha256"]}
+
+
+def capture_build(pins, state, project, *, base_runtime):
     inputs = {}
     for row in pins["artifacts"]:
         if row["kind"] == "source-archive":
             receipt = state / "receipts" / ("source-" + row["name"] + ".json")
             verify_source(row, state / "downloads", state / "sources", receipt)
             inputs[row["name"]] = file_identity(receipt)
-    wheels = sorted((state / "wheels").glob("*.whl"))
-    if len(wheels) != 3 or {path.name.split("-", 1)[0] for path in wheels} != {"av", "torchvision", "transformers"}:
-        raise ValueError("media export needs exactly its three completed source wheels")
+    wheels = verify_owned_wheels(pins, state / "wheels")
+    inherited = read_json(state / "receipts/base-transformers-before.json")[0]
+    if inherited != inherited_transformers_identity(pins, base_runtime):
+        raise ValueError("media build changed the inherited Transformers provider")
     owned = ["source_foundation.py", "media_foundation.py", "media_build.sh", "media_probe.py", "Dockerfile.media", "media-pins.json",
-             "media-native-apt.json", "media-native-apt.sha256", "media-runtime-amd64.json", "media-build-amd64.json",
+             "media-native-apt.json", "media-runtime-amd64.json", "media-build-amd64.json",
              "media-build-constraints.txt", "requirements-media-runtime-amd64.lock",
              "requirements-media-runtime-offline-amd64.lock", "requirements-media-build-amd64.lock",
              "requirements-media-build-offline-amd64.lock"]
@@ -287,6 +364,7 @@ def capture_build(pins, state, project):
             "pins_sha256": hashlib.sha256(canonical(pins)).hexdigest(), "source_receipts": inputs,
             "source_wheels": {path.name: file_identity(path) for path in wheels},
             "native_prefix": prefix_inventory(state / "native"), "ninja_toolchain": ninja,
+            "inherited_providers": {"transformers": inherited},
             "producer_inputs": producers, "build_environments": environments,
             "release_qualified": False}
 
@@ -379,8 +457,11 @@ def capture_install(pins, runtime, base_runtime, metadata, wheels):
             or file_identity(Path(__file__)) != build["producer_inputs"]["media_foundation.py"]
             or file_identity(Path("/opt/tensorfold-pins/source_foundation.py")) != build["producer_inputs"]["source_foundation.py"]):
         raise ValueError("installed media bytes differ from their completed source-build receipt")
-    if {path.name: file_identity(path) for path in wheels.glob("*.whl")} != build.get("source_wheels"):
-        raise ValueError("installed media source-wheel inputs differ from the completed build")
+    verify_owned_wheels(pins, wheels, build)
+    inherited = inherited_transformers_identity(pins, base_runtime)
+    if (inherited != read_json(metadata / "base-transformers-before.json")[0]
+            or inherited != build.get("inherited_providers", {}).get("transformers")):
+        raise ValueError("media installation changed the inherited Transformers provider")
     for name, expected in build["source_receipts"].items():
         if file_identity(metadata / ("source-" + name + ".json")) != expected_identity(expected):
             raise ValueError("installed media source receipt differs from the completed build")
@@ -402,7 +483,7 @@ def capture_install(pins, runtime, base_runtime, metadata, wheels):
     paths = installed_paths(selected, Path("/opt/tensorfold-media"), metadata)
     return {"schema": "tensorfold.v100-media-install", "version": 1,
             "pins_sha256": hashlib.sha256(canonical(pins)).hexdigest(),
-            "packages": selected, "runtime": actual,
+            "packages": selected, "runtime": actual, "inherited_providers": {"transformers": inherited},
             "artifacts": [{"path": path, **file_identity(path)} for path in sorted(paths)],
             "evidence_class": "CPU-source-built-media-software", "release_qualified": False,
             "pending_gates": ["service-input-bounds-and-format-parity", "SC117-mmproj-model-equivalence",
@@ -515,12 +596,14 @@ def extract_source(row, downloads, sources, receipt=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("fetch", "fetch-native", "extract", "verify-source", "record-source", "capture-build", "capture-install", "audit", "begin-build-environment", "complete-build-environment"))
+    parser.add_argument("command", choices=("fetch", "extract", "verify-source", "record-source", "capture-build", "capture-install", "audit", "begin-build-environment", "complete-build-environment", "render-native-requirements", "verify-native-requirements", "verify-wheels", "snapshot-inherited-provider", "verify-inherited-provider"))
     parser.add_argument("--pins", type=Path, required=True)
     parser.add_argument("--downloads", type=Path)
     parser.add_argument("--sources", type=Path)
     parser.add_argument("--runtime", type=Path)
     parser.add_argument("--base-runtime", type=Path)
+    parser.add_argument("--source-apt", type=Path)
+    parser.add_argument("--foundation-pins", type=Path)
     parser.add_argument("--metadata", type=Path, default=Path("/opt/tensorfold-media-pins"))
     parser.add_argument("--source-name")
     parser.add_argument("--receipt", type=Path)
@@ -530,16 +613,18 @@ def main():
     parser.add_argument("--wheels", type=Path)
     args = parser.parse_args()
     pins = read_json(args.pins)[0]
-    if args.command == "fetch-native":
-        if (pins.get("schema") != "tensorfold.v100-source-apt-bundle" or type(pins.get("version")) is not int
-                or pins["version"] != 1 or args.downloads is None):
-            raise ValueError("native media acquisition needs its exact Debian artifact manifest and directory")
-        for row in pins["packages"]:
-            print(canonical({"artifact": row["artifact"], "status": fetch_artifact(row, args.downloads)}).decode())
+    if args.command == "verify-native-requirements":
+        if pins.get("schema") != "tensorfold.v100-media-native-requirements" or pins.get("version") != 1:
+            raise ValueError("invalid media native requirement schema")
+        verify_native_requirements(pins, read_json(args.foundation_pins)[0])
         return
     if (pins.get("schema") != "tensorfold.v100-media-inputs" or type(pins.get("version")) is not int
             or pins["version"] != 1):
         raise ValueError("unsupported media source input manifest")
+    if args.command == "render-native-requirements":
+        source_apt, raw = read_json(args.source_apt)
+        args.receipt.write_bytes(canonical(native_requirements(pins, source_apt, raw)) + b"\n")
+        return
     if args.command in ("begin-build-environment", "complete-build-environment"):
         stages = {row["name"] for row in pins["artifacts"] if row["kind"] == "source-archive"}
         if args.state is None or args.source_name not in stages:
@@ -551,10 +636,22 @@ def main():
         else:
             complete_build_environment(args.state, args.source_name)
         return
+    if args.command == "verify-wheels":
+        verify_owned_wheels(pins, args.wheels, read_json(args.receipt)[0])
+        return
+    if args.command == "verify-inherited-provider":
+        if inherited_transformers_identity(pins, read_json(args.base_runtime)[0]) != read_json(args.receipt)[0]:
+            raise ValueError("media preparation changed the inherited Transformers provider")
+        return
+    if args.command == "snapshot-inherited-provider":
+        args.receipt.write_bytes(canonical(inherited_transformers_identity(pins, read_json(args.base_runtime)[0])) + b"\n")
+        return
     if args.command == "capture-build":
         if args.state is None or args.project is None:
             raise ValueError("media build capture needs its completed state and canonical producer source")
-        build = capture_build(pins, args.state, args.project)
+        if args.base_runtime is None:
+            raise ValueError("media export requires the actual foundation runtime receipt")
+        build = capture_build(pins, args.state, args.project, base_runtime=read_json(args.base_runtime)[0])
         (args.state / "receipts/media-build.json").write_bytes(canonical(build) + b"\n")
         (args.state / "receipts/source-wheels.sha256").write_text("".join(
             row["sha256"] + "  " + name + "\n" for name, row in build["source_wheels"].items()))

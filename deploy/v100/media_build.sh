@@ -18,7 +18,7 @@ if [[ "$tf_stage" == pyav ]]; then
     # setuptools consumes this supported final config path in Make and wheel builds.
     export DIST_EXTRA_CONFIG="$(cd "$tf_media/build" && pwd -P)/pyav-build-ext-$tf_jobs.cfg"
 fi
-if [[ "$tf_stage" =~ ^(torchvision|transformers|ffmpeg|pyav|dav1d)$ ]]; then
+if [[ "$tf_stage" =~ ^(torchvision|ffmpeg|pyav|dav1d)$ ]]; then
     python "$tf_project/deploy/v100/source_foundation.py" verify-ninja \
         --tools "$tf_project/deploy/v100/media-build-amd64.json" \
         --wheels "$tf_media/support-wheels" --output "$tf_media/receipts/ninja-toolchain.json"
@@ -39,12 +39,15 @@ acquire)
         --pins "$tf_project/deploy/v100/media-pins.json" --downloads "$tf_media/downloads"
     python "$tf_project/deploy/v100/media_foundation.py" extract \
         --pins "$tf_project/deploy/v100/media-pins.json" --downloads "$tf_media/downloads" --sources "$tf_media/sources"
-    python "$tf_project/deploy/v100/media_foundation.py" fetch-native \
-        --pins "$tf_project/deploy/v100/media-native-apt.json" --downloads "$tf_media/apt-debs"
     ;;
 prepare)
-    (cd "$tf_media/apt-debs" && sha256sum --strict --check "$tf_project/deploy/v100/media-native-apt.sha256")
-    dpkg -i "$tf_media/apt-debs/"*.deb
+    python "$tf_project/deploy/v100/media_foundation.py" snapshot-inherited-provider \
+        --pins "$tf_project/deploy/v100/media-pins.json" \
+        --base-runtime /opt/tensorfold-pins/source-runtime-amd64.json \
+        --receipt "$tf_media/receipts/base-transformers-before.json"
+    python "$tf_project/deploy/v100/media_foundation.py" verify-native-requirements \
+        --pins "$tf_project/deploy/v100/media-native-apt.json" \
+        --foundation-pins /opt/tensorfold-pins/source-pins.json
     python -m pip download --no-deps --require-hashes \
         -r "$tf_project/deploy/v100/requirements-media-build-amd64.lock" --dest "$tf_media/support-wheels"
     python -m pip download --no-deps --require-hashes \
@@ -53,6 +56,10 @@ prepare)
         -r "$tf_project/deploy/v100/requirements-media-build-offline-amd64.lock" \
         -r "$tf_project/deploy/v100/requirements-media-runtime-offline-amd64.lock"
     python -m pip check
+    python "$tf_project/deploy/v100/media_foundation.py" verify-inherited-provider \
+        --pins "$tf_project/deploy/v100/media-pins.json" \
+        --base-runtime /opt/tensorfold-pins/source-runtime-amd64.json \
+        --receipt "$tf_media/receipts/base-transformers-before.json"
     ;;
 torchvision)
     # The pinned official processor consumes CPU FP32 torchvision transforms.
@@ -69,10 +76,6 @@ print(next(row["version"] for row in pins["artifacts"] if row["name"] == "torchv
 PY_VERSION
     )
     python -m pip wheel --no-build-isolation --no-deps "$tf_media/sources/torchvision" \
-        --wheel-dir "$tf_media/wheels"
-    ;;
-transformers)
-    python -m pip wheel --no-build-isolation --no-deps "$tf_media/sources/transformers" \
         --wheel-dir "$tf_media/wheels"
     ;;
 ffmpeg)
@@ -119,15 +122,16 @@ pyav)
     ;;
 export)
     python "$tf_project/deploy/v100/media_foundation.py" capture-build \
-        --pins "$tf_project/deploy/v100/media-pins.json" --state "$tf_media" --project "$tf_project"
+        --pins "$tf_project/deploy/v100/media-pins.json" --state "$tf_media" --project "$tf_project" \
+        --base-runtime /opt/tensorfold-pins/source-runtime-amd64.json
     ;;
 *)
-    echo "media_build.sh requires acquire, prepare, torchvision, transformers, dav1d, ffmpeg, pyav or export" >&2
+    echo "media_build.sh requires acquire, prepare, torchvision, dav1d, ffmpeg, pyav or export" >&2
     exit 2
     ;;
 esac
 
-if [[ "$tf_stage" =~ ^(torchvision|transformers|ffmpeg|pyav|dav1d)$ ]]; then
+if [[ "$tf_stage" =~ ^(torchvision|ffmpeg|pyav|dav1d)$ ]]; then
     python "$tf_project/deploy/v100/media_foundation.py" record-source \
         --pins "$tf_project/deploy/v100/media-pins.json" --downloads "$tf_media/downloads" \
         --sources "$tf_media/sources" --source-name "$tf_stage" \

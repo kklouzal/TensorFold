@@ -19,9 +19,11 @@ child/index references and whole-wheel hashes. The cu134 wheel tag identifies a
 CUDA minor line; actual compiler and loaded-provider evidence establishes the
 selected toolkit patch. ARM64 candidate `e0bdd6b4` / source UID `1c166686`
 passed installed CPU and selected AEON 26B/DFlash functional/media/cancellation/
-full 262,144-token context checks. Original production was restored; balanced P3 and
-promotion remain pending. AMD64 native execution is unrun. Exact identities and
-coverage limits are recorded in the refresh ledger.
+full 262,144-token context checks. It is deployed on port 8888 as `0aa83b4b` after
+explicit user approval with comparative P3 deferred. Exact profile/gold 4/4/cache
+reuse 23/23 passed; `7ea` is retained stopped for rollback. No performance
+gain/equivalence is claimed; AMD64 native execution is unrun. Exact identities
+and coverage limits are recorded in the refresh ledger.
 
 Use the [fresh-checkout input preparation](foundation.md#prepare-the-tracked-selected-inputs)
 to stage the six tracked files and fetch the two native runtime addons from

@@ -318,7 +318,7 @@ elif name == "python" and args[0].endswith("media_foundation.py") and args[1] ==
         path = tools / name
         path.write_text(shim)
         path.chmod(0o755)
-    for name in ("torchvision", "transformers", "dav1d", "ffmpeg", "pyav"):
+    for name in ("torchvision", "dav1d", "ffmpeg", "pyav"):
         source = state / "sources" / name
         source.mkdir(parents=True)
         if name == "ffmpeg":
@@ -347,7 +347,7 @@ elif name == "python" and args[0].endswith("media_foundation.py") and args[1] ==
     return run, state
 
 
-@pytest.mark.parametrize("stage", ["torchvision", "transformers", "dav1d", "ffmpeg", "pyav"])
+@pytest.mark.parametrize("stage", ["torchvision", "dav1d", "ffmpeg", "pyav"])
 @pytest.mark.parametrize("jobs", [None, "", "4", "24", "64"])
 def test_media_driver_propagates_actual_controls_and_records_success(media_driver, stage, jobs):
     import json
@@ -378,7 +378,7 @@ def test_media_driver_propagates_actual_controls_and_records_success(media_drive
         configuration = state / "build" / ("pyav-build-ext-" + (jobs or "4") + ".cfg")
         assert value["version"] == 2
         assert value["pyav_build_ext"] == {"config_path": str(configuration),
-            "config": MEDIA.file_identity(configuration), "setuptools": "80.9.0", "effective_parallel": int(jobs or "4")}
+            "config": MEDIA.file_identity(configuration), "setuptools": "84.2.1", "effective_parallel": int(jobs or "4")}
         assert configuration.read_text() == "[build_ext]\nparallel = " + (jobs or "4") + "\n"
         assert all(row["dist_extra_config"] == str(configuration) for row in commands)
     else:
@@ -427,8 +427,8 @@ def test_media_environment_refuses_forged_or_stale_facts(media_driver, change):
     import json
 
     run, state = media_driver
-    assert run("transformers")[0].returncode == 0
-    target = state / "receipts/build-environment-transformers.json"
+    assert run("torchvision")[0].returncode == 0
+    target = state / "receipts/build-environment-torchvision.json"
     value = json.loads(target.read_text())
     if change == "controls":
         value["CMAKE_BUILD_PARALLEL_LEVEL"] = "4"
@@ -441,15 +441,15 @@ def test_media_environment_refuses_forged_or_stale_facts(media_driver, change):
     elif change == "source":
         value["source_receipt_sha256"] = "0" * 64
     elif change == "range":
-        value["MAX_JOBS"] = "25"
+        value["MAX_JOBS"] = "65"
     elif change == "version":
         value["version"] = True
     else:
         value["unexpected"] = "not a stage fact"
     target.write_text(json.dumps(value))
-    source = MEDIA.file_identity(state / "receipts/source-transformers.json")
+    source = MEDIA.file_identity(state / "receipts/source-torchvision.json")
     with pytest.raises(ValueError, match="stage/source/policy"):
-        MEDIA.build_environments(state, {"transformers": source}, MEDIA.file_identity(ROOT / "deploy/v100/media_build.sh")["sha256"],
+        MEDIA.build_environments(state, {"torchvision": source}, MEDIA.file_identity(ROOT / "deploy/v100/media_build.sh")["sha256"],
                                  MEDIA.file_identity(Path(MEDIA.__file__))["sha256"])
 
 
@@ -457,21 +457,26 @@ def test_media_export_embeds_the_actual_completed_stage_environments(media_drive
     import json
 
     run, state = media_driver
-    stages = ("torchvision", "transformers", "dav1d", "ffmpeg", "pyav")
+    stages = ("torchvision", "dav1d", "ffmpeg", "pyav")
     for stage in stages:
         result, _ = run(stage)
         assert result.returncode == 0, result.stdout + result.stderr
     wheels = state / "wheels"
-    for name in ("av", "torchvision", "transformers"):
-        (wheels / (name + "-boundary.whl")).write_bytes(b"external wheel boundary; no media build proof")
+    for filename in ("av-19.0.2-cp312-cp312-linux_x86_64.whl",
+                     "torchvision-0.30.0.dev20261111+tfcpu-cp312-cp312-linux_x86_64.whl"):
+        (wheels / filename).write_bytes(b"external wheel boundary; no media build proof")
     # Independent source/Ninja admission controls retain their own real tests.
     # This test exercises only actual shell environment publication and export.
     monkeypatch.setattr(MEDIA, "verify_source", lambda *args: None)
     monkeypatch.setattr(MEDIA, "ninja_tool_identity", lambda *args: {"tool": "external-boundary-only"})
-    pins = {"artifacts": [{"name": stage, "kind": "source-archive"} for stage in stages]}
+    versions = {"torchvision": "0.30.0.dev20261111", "pyav": "19.0.2"}
+    pins = {"artifacts": [{"name": stage, "kind": "source-archive", "version": versions.get(stage)} for stage in stages]}
     for control in ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS"):
         monkeypatch.setenv(control, "1")  # Export-time settings cannot relabel completed 24-job stages.
-    result = MEDIA.capture_build(pins, state, ROOT)
+    inherited = {"provider": "isolated inherited-provider boundary"}
+    (state / "receipts/base-transformers-before.json").write_text(json.dumps(inherited))
+    monkeypatch.setattr(MEDIA, "inherited_transformers_identity", lambda *args: inherited)
+    result = MEDIA.capture_build(pins, state, ROOT, base_runtime={"packages": {}})
     expected = {stage: json.loads((state / "receipts" / ("build-environment-" + stage + ".json")).read_text())
                 for stage in stages}
     assert result["build_environments"] == expected
@@ -484,10 +489,10 @@ def test_media_accepted_job_range_boundaries_are_recorded(media_driver, jobs):
     import json
 
     run, state = media_driver
-    result, commands = run("transformers", jobs)
+    result, commands = run("torchvision", jobs)
     assert result.returncode == 0, result.stdout + result.stderr
     assert all(all(value == jobs for value in command["controls"].values()) for command in commands)
-    value = json.loads((state / "receipts/build-environment-transformers.json").read_text())
+    value = json.loads((state / "receipts/build-environment-torchvision.json").read_text())
     assert value["MAX_JOBS"] == jobs
 
 
@@ -583,7 +588,7 @@ def test_pyav_extra_config_selects_actual_pinned_setuptools_build_ext(media_driv
                             'LDFLAGS="-Wl,-rpath,' + str(state / "native/ffmpeg-9.0.2/lib") + '"']
     monkeypatch.setenv("DIST_EXTRA_CONFIG", configuration)
     monkeypatch.chdir(state / "sources/pyav")
-    assert importlib.metadata.version("setuptools") == "80.9.0"
+    assert importlib.metadata.version("setuptools") == "84.2.1"
     distribution = Distribution({"script_name": "setup.py", "script_args": ["build_ext", "--inplace", "--debug"]})
     assert distribution.find_config_files()[-1] == configuration
     distribution.parse_config_files()
@@ -686,3 +691,66 @@ def test_pyav_changed_config_during_build_cannot_publish_or_borrow_old_facts(med
     with pytest.raises(ValueError, match="unfinished"):
         MEDIA.build_environments(state, {"pyav": source}, MEDIA.file_identity(ROOT / "deploy/v100/media_build.sh")["sha256"],
                                  MEDIA.file_identity(Path(MEDIA.__file__))["sha256"])
+
+
+def test_media_owned_wheel_set_cannot_overwrite_inherited_transformers(tmp_path):
+    pins = {"artifacts": [{"name": "torchvision", "version": "0.30.0.dev20261111"},
+                           {"name": "pyav", "version": "19.0.2"}]}
+    for filename in ("av-19.0.2-cp312-cp312-linux_x86_64.whl",
+                     "torchvision-0.30.0.dev20261111+tfcpu-cp312-cp312-linux_x86_64.whl"):
+        (tmp_path / filename).write_bytes(b"owned wheel boundary fixture")
+    expected = {path.name: MEDIA.file_identity(path) for path in tmp_path.glob("*.whl")}
+    assert len(MEDIA.verify_owned_wheels(pins, tmp_path, {"source_wheels": expected})) == 2
+    stale = tmp_path / "transformers-5.22.2-py3-none-any.whl"
+    stale.write_bytes(b"historical source wheel must not replace the base provider")
+    with pytest.raises(ValueError, match="only the selected CPU TorchVision and PyAV"):
+        MEDIA.verify_owned_wheels(pins, tmp_path, {"source_wheels": expected})
+    assert stale.read_bytes() == b"historical source wheel must not replace the base provider"
+
+
+def test_inherited_processor_reuse_preserves_package_bytes_and_genuine_metadata(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    site = tmp_path / "site"
+    (site / "transformers").mkdir(parents=True)
+    (site / "transformers/module.py").write_bytes(b"unchanged published runtime module")
+    meta = site / "transformers-5.22.2.dist-info/METADATA"
+    meta.parent.mkdir()
+    meta.write_bytes(b"Name: transformers\nVersion: 5.22.2\nRequires-Dist: numpy>=1\n")
+    files = {"transformers/module.py": MEDIA.file_identity(site / "transformers/module.py")}
+    provider = {"kind": "foundation-published-wheel", "distribution": "transformers",
+                "runtime_package_files": 1, "runtime_payload_sha256": hashlib.sha256(MEDIA.canonical(files)).hexdigest(),
+                "metadata_sha256": MEDIA.file_identity(meta)["sha256"]}
+    pins = {"processor": {"provider": provider}}
+    base = {"packages": {"transformers": {"version": "5.22.2", "requires_dist": ["numpy>=1"],
+        "url": "https://files.pythonhosted.org/transformers.whl", "sha256": "a" * 64}}}
+    dist = SimpleNamespace(version="5.22.2", requires=["numpy>=1"],
+        files=[Path("transformers/module.py"), Path("transformers-5.22.2.dist-info/METADATA")],
+        locate_file=lambda path: site / path)
+    monkeypatch.setattr(MEDIA.importlib.metadata, "distribution", lambda name: dist)
+    identity = MEDIA.inherited_transformers_identity(pins, base)
+    assert identity["provider"] == "foundation-published-wheel" and identity["wheel"]["sha256"] == "a" * 64
+    dist.requires = ["changed-dependency"]
+    with pytest.raises(ValueError, match="genuine requirements changed"):
+        MEDIA.inherited_transformers_identity(pins, base)
+    dist.requires = ["numpy>=1"]
+    meta.write_bytes(meta.read_bytes() + b"changed metadata")
+    with pytest.raises(ValueError, match="genuine METADATA differs"):
+        MEDIA.inherited_transformers_identity(pins, base)
+
+
+def test_media_native_requirements_verify_foundation_packages_without_installing(monkeypatch):
+    pins = {"native_requirements": ["libjpeg", "nasm"]}
+    source = {"packages": [{"package": "libjpeg", "version": "1", "architecture": "amd64"},
+                            {"package": "nasm", "version": "2", "architecture": "amd64"}]}
+    raw = b"independent selected foundation manifest bytes"
+    requirements = MEDIA.native_requirements(pins, source, raw)
+    foundation = {"source_apt_bundle_sha256": hashlib.sha256(raw).hexdigest()}
+    monkeypatch.setattr(MEDIA.subprocess, "check_output", lambda command, **kwargs:
+                        "libjpeg\t1\tamd64\tinstalled\nnasm\t2\tamd64\tinstalled\n")
+    assert len(MEDIA.verify_native_requirements(requirements, foundation)) == 2
+    with pytest.raises(ValueError, match="different foundation bundle"):
+        MEDIA.verify_native_requirements(requirements, {"source_apt_bundle_sha256": "a" * 64})
+    monkeypatch.setattr(MEDIA.subprocess, "check_output", lambda command, **kwargs:
+                        "libjpeg\t1\tamd64\tinstalled\nnasm\tolder\tamd64\tinstalled\n")
+    with pytest.raises(ValueError, match="differ from their protected"):
+        MEDIA.verify_native_requirements(requirements, foundation)

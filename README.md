@@ -37,9 +37,11 @@ Seventeen of eighteen descriptive two-observation HTTP median groups remained
 slower than the old snapshot service; replay-seed and complete-cell costs are
 reported separately. The user prioritizes full caching and accepts the observed
 small cold-request delay; this is not an equivalence or whole-feature speedup
-claim. The public service now uses this qualified runtime and fixed profile; the
-original container is retained stopped for rollback. The prior 256-entry
-snapshot mitigation remains an unselected historical checkpoint.
+claim. Those observations retain their `d992ac68` identity. The public service
+now uses refreshed runtime `e0bdd6b4` / source UID `1c166686` with the same fixed
+profile, after functional qualification and explicit user deferral of comparative
+P3. The replaced service and earlier rollback artifacts remain preserved. The
+prior 256-entry snapshot mitigation remains an unselected historical checkpoint.
 
 The replacement reuses compatible partial prefixes, retains separate conversation
 branches and publishes the actual completed conversation through its renderer.
@@ -1449,17 +1451,20 @@ The [Dockerfile](deploy/gb10/Dockerfile) uses the selected CUDA **13.4.3 cuDNN d
 
 The selected foundation also protects the pinned pip 26.3 installer and its full
 transitive closure. Declared native add-ons are cuSPARSELt0.10.0.12-1
-and NVSHMEM3.8.0-1; their new-image/native qualification remains pending. Native ARM64 resolution and explicitly cross-resolved AMD64
-metadata remain distinct from new-image/native/model qualification; the
+and NVSHMEM3.8.0-1. Their selected GB10 consumer/provider evidence is recorded;
+NVSHMEM distributed execution and AMD64 native execution remain unqualified.
+Native ARM64 resolution and explicitly cross-resolved AMD64 metadata remain
+distinct from hardware/model qualification; the
 [refresh ledger](deploy/gb10/foundation-refresh-20261111.md) records their current scope.
 
 A fresh checkout can [stage the six tracked inputs and acquire the two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Native ARM images and the [GB10 checkpoint protocols](docs/gb10-nvfp4-validation.md) passed at their recorded bd1 source; final composed-source qualification remains separate. Older deployment profiles and measured rates retain their own identities.
 
-The ARM64 candidate runtime `e0bdd6b4`, source UID `1c166686`, passed installed
-CPU checks and the selected AEON 26B/DFlash functional, media, cancellation and
-full 262,144-token context protocols on GB10. The original service was restored and
-verified afterward. Balanced P3 evidence and promotion remain pending; current
-AMD64 native qualification is unrun. The
+The ARM64 runtime `e0bdd6b4`, source UID `1c166686`, passed installed CPU and
+the selected AEON 26B/DFlash functional, media, cancellation and full 262,144-token context
+protocols on GB10. It is now deployed on port 8888 as container `0aa83b4b`, with
+the exact profile, gold 4/4 and 23/23 cache reuse verified. The replaced `7ea`
+service is retained stopped for rollback. Comparative P3 was explicitly deferred
+by the user; no gain/equivalence is claimed. AMD64 native qualification is unrun. The
 [ledger](deploy/gb10/foundation-refresh-20261111.md) binds the full image/source,
 profile, receipt hashes and coverage limits.
 
@@ -1531,6 +1536,11 @@ qualification remain pending in the shared ledger.
 That command builds the source producer, not a serving image. Complete the
 source workflow's framework build/export, installed audit and native/model gates
 before deployment. CUDA13 official wheels do not provide V100 qualification.
+The refreshed CPU media producer reuses the protected published Transformers
+provider and builds exactly the CPU TorchVision/PyAV wheels. Its 103 preparation/
+ownership controls and six CPU build/export stages passed; final media image,
+decoder and model gates remain separately recorded.
+
 New source-SDK service launches use both `deploy/v100/compose.yaml` and
 `deploy/v100/compose.source-sdk.yaml`, following the
 [cache profile](deploy/v100/README.md#refreshed-source-sdk-cache-profile);

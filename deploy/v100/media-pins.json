@@ -10,7 +10,14 @@
     "video_class": "Qwen3VLVideoProcessor",
     "decoder_backend": "pyav",
     "pixel_compute": "CPU FP32",
-    "cap_pixels_per_frame": false
+    "cap_pixels_per_frame": false,
+    "provider": {
+      "kind": "foundation-published-wheel",
+      "distribution": "transformers",
+      "runtime_package_files": 2810,
+      "runtime_payload_sha256": "11e726ceef261502bda74c7438b6febcc461332cb70421272159c8e33ed26ba6",
+      "metadata_sha256": "6adeb6ebffd05a916183bfb054630b9e435b1e4c582ec4dcf17df3aaf236eead"
+    }
   },
   "artifacts": [
     {
@@ -31,7 +38,7 @@
       "artifact": "transformers.tar.gz",
       "bytes": 20525619,
       "sha256": "221f8bd8cafcc2f85c891782d0333ce9016f8fecec018b9f8fbef487c05d5e41",
-      "kind": "source-archive",
+      "kind": "source-reference",
       "version": "5.22.2",
       "commit": "6d195c6262a0ac2ef44f7b9a308617562286ff45",
       "extraction_max_bytes": 1610612736
@@ -105,5 +112,18 @@
       "bytes": 385,
       "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13"
     }
+  ],
+  "native_requirements": [
+    "libjpeg-turbo8-dev",
+    "libjpeg-turbo8",
+    "libpng-dev",
+    "libsharpyuv-dev",
+    "libsharpyuv0",
+    "libwebp-dev",
+    "libwebp7",
+    "libwebpdecoder3",
+    "libwebpdemux2",
+    "libwebpmux3",
+    "nasm"
   ]
 }
