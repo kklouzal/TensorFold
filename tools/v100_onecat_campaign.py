@@ -471,18 +471,20 @@ def inputs(root, output, selected_image, installed_check, models, target, mtp, c
     verify_source(root / "source", record["files"])
 
 
-def commit_diagnostic_spec(events, nvtx):
-    if type(nvtx) is not bool:
-        raise ValueError("commit NVTX selection must be an explicit boolean")
+def commit_diagnostic_spec(events, nvtx, graph_attempts=False):
+    if type(nvtx) is not bool or type(graph_attempts) is not bool or graph_attempts and nvtx:
+        raise ValueError("diagnostic selection must be explicit; graph attempts forbid CUDA/NVTX markers")
     if events is None:
-        if nvtx:
-            raise ValueError("commit NVTX markers require explicit finite diagnostic events")
+        if nvtx or graph_attempts:
+            raise ValueError("diagnostic modes require explicit finite diagnostic events")
         return None
     if __package__:
         from .v100_commit_trace import resources
     else:
         from v100_commit_trace import resources
-    budget = resources(events)
+    budget = resources(events, graph_attempts=graph_attempts)
+    if graph_attempts:
+        budget['graph_attempts'] = True
     global_bytes = 8 * (budget["retained_event_bytes"] + budget["serialization_bytes"] + 8192)
     if global_bytes > sys.maxsize:
         raise ValueError("commit diagnostic global host obligation exceeds its size domain")
@@ -520,8 +522,10 @@ def diagnostic_c1_c8_plan(plan):
     return derived
 
 
-def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_events=None, diagnostic_commit_nvtx=False, scheduler_diagnostic=None):
+def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_events=None, diagnostic_commit_nvtx=False, scheduler_diagnostic=None, diagnostic_graph_attempts=False):
     """One explicit MTP4/graph-enabled arm; numerical acceptance is separate."""
+    if diagnostic_graph_attempts and (smoke_only or scheduler_diagnostic is not None):
+        raise ValueError('graph attempt diagnostic requires the finite C1/C8 matrix without profiling')
     required = {"gpus", "models_root", "target", "mtp", "profile_manifest", "matrix_plan", "cache",
                 "gu", "down", "device_budget_bytes", "global_host_bytes", "max_waiting_input_bytes",
                 "prefill_rows", "mtp_confidence", "execution_rows", "graphs", "iq2_source", "prefill_method"}
@@ -584,11 +588,13 @@ def model_arguments(settings, plan, *, smoke_only=False, diagnostic_commit_event
                  "--graph-use-receipts"]
     if settings.get('numa') is not None:
         qualifier += ['--numa-plan', '/operator/numa/plan.json', '--numa-plan-sha256', settings['numa']['plan_sha256']]
-    commit = commit_diagnostic_spec(diagnostic_commit_events, diagnostic_commit_nvtx)
+    commit = commit_diagnostic_spec(diagnostic_commit_events, diagnostic_commit_nvtx, diagnostic_graph_attempts)
     if commit is not None:
         if not smoke_only and (plan.get("levels") != [1, 8] or len(plan.get("cohorts", [])) != 3):
             raise ValueError("commit diagnostic requires the separate finite C1/C8 matrix plan")
         qualifier += ["--commit-trace-events", str(diagnostic_commit_events)]
+        if diagnostic_graph_attempts:
+            qualifier += ['--commit-trace-graph-attempts']
         if diagnostic_commit_nvtx:
             qualifier.append("--commit-trace-nvtx")
     if scheduler_diagnostic is not None:
@@ -767,13 +773,20 @@ def commit_trace_receipts(output, source, spec):
         from .v100_commit_trace import COLUMNS
     else:
         from v100_commit_trace import COLUMNS
+    if spec.get('graph_attempts', False):
+        if __package__:
+            from .v100_commit_trace import GRAPH_COLUMNS, GRAPH_ROLES, GRAPH_OUTCOMES, GRAPH_REASONS, graph_histogram
+        else:
+            from v100_commit_trace import GRAPH_COLUMNS, GRAPH_ROLES, GRAPH_OUTCOMES, GRAPH_REASONS, graph_histogram
+        COLUMNS = GRAPH_COLUMNS
     records = []
     for rank in range(8):
         path = output / "qualification" / f"commit-trace-rank-{rank}.json"
         if path.stat().st_size > spec["serialization_bytes"]:
             raise ValueError("commit diagnostic exceeds its admitted encoding bound")
         record = json.loads(path.read_text())
-        if (record.get("schema") != "tensorfold.commit-batch-diagnostic-v1" or record.get("rank") != rank
+        expected_schema = 'tensorfold.graph-attempt-diagnostic-v1' if spec.get('graph_attempts', False) else 'tensorfold.commit-batch-diagnostic-v1'
+        if (record.get("schema") != expected_schema or record.get("rank") != rank
                 or record.get("world") != 8 or record.get("closed") is not True or record.get("complete") is not True
                 or record.get("failure") is not None or record.get("engine_closed") is not True
                 or record.get("engine_aborted") is not False or record.get("diagnostic_only") is not True
@@ -782,7 +795,8 @@ def commit_trace_receipts(output, source, spec):
             raise ValueError("commit diagnostic lacks a positive bound closed-rank outcome")
         requested = record.get("requested", {})
         if any(requested.get(key) != spec[key] for key in
-               ("maximum_events", "retained_event_bytes", "serialization_bytes", "nvtx", "global_host_obligation_bytes")):
+               (("maximum_events", "retained_event_bytes", "serialization_bytes", "nvtx", "global_host_obligation_bytes")
+                + (('graph_attempts', 'maximum_graph_bindings', 'graph_binding_slot_bytes') if spec.get('graph_attempts', False) else ()))):
             raise ValueError("commit diagnostic differs from the admitted finite request")
         events = record.get("events")
         if type(events) is not list or len(events) > spec["maximum_events"]:
@@ -790,12 +804,23 @@ def commit_trace_receipts(output, source, spec):
         for row in events:
             if (type(row) is not list or len(row) != len(COLUMNS)
                     or any(type(n) is not int or not 0 <= n <= sys.maxsize for n in row)
-                    or row[2] < row[1] or row[4] < row[3] or row[5] != row[4] - row[3]):
+                    or (row[0] > 1 or row[3] > 2 or row[4] > 9 or row[6] > row[5]
+                        if spec.get('graph_attempts', False) else
+                        row[2] < row[1] or row[4] < row[3] or row[5] != row[4] - row[3])):
                 raise ValueError("commit diagnostic batch interval/count law differs")
+        if spec.get('graph_attempts', False):
+            if (record.get('roles') != list(GRAPH_ROLES) or record.get('outcomes') != list(GRAPH_OUTCOMES)
+                    or record.get('reasons') != list(GRAPH_REASONS) or record.get('histogram') != graph_histogram(events)
+                    or type(record.get('graph_bindings')) is not int
+                    or not 0 < record['graph_bindings'] <= spec['maximum_graph_bindings']):
+                raise ValueError('graph attempt histogram/binding credit differs from exact recorded events')
         records.append({"rank": rank, "file": str(path.relative_to(output)), **identity(path),
-                        "events": len(events), "committed_delta": sum(row[-1] for row in events),
+                        "events": len(events),
+                        **({'graph_attempts': len(events), 'multi_participant_attempts': sum(row[2] >= 2 for row in events),
+                            'replay_returns': sum(row[6] for row in events)} if spec.get('graph_attempts', False) else
+                           {'committed_delta': sum(row[-1] for row in events)}),
                         "diagnostic_only": True, "P3_valid": False})
-    if not records[0]["events"] or not records[0]["committed_delta"]:
+    if not records[0]["events"] or not (records[0]['multi_participant_attempts'] if spec.get('graph_attempts', False) else records[0]["committed_delta"]):
         raise ValueError("leader commit diagnostic observed no actual committed work")
     return records
 
@@ -1140,16 +1165,18 @@ def numa_receipts(root, source, output, bundle):
 
 
 def model(root, output, selected_image, settings_path, installed_check, cpus, memory, timeout, startup_timeout, smoke_only,
-          diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False, scheduler_diagnostic_grants=None, smoke_before_matrix=False):
+          diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False, scheduler_diagnostic_grants=None, smoke_before_matrix=False, diagnostic_graph_attempts=False):
     if type(smoke_before_matrix) is not bool or smoke_before_matrix and smoke_only:
         raise ValueError("smoke-before-matrix requires matrix mode and a boolean selection")
+    if diagnostic_graph_attempts and scheduler_diagnostic_grants is not None:
+        raise ValueError('graph attempt diagnostic cannot be combined with profiling')
     if smoke_before_matrix and (diagnostic_commit_events is not None or scheduler_diagnostic_grants is not None):
         raise ValueError("smoke-before-matrix cannot precede a finite instrumented window plan")
     workspace = cublas_workspace_configuration(cublas_workspace_cache)
     if type(diagnostic_graph_pieces) is not bool:
         raise ValueError("graph piece diagnostic selection must be boolean")
     configuration_diagnostic = cublas_workspace_cache != "inherit" or diagnostic_graph_pieces
-    commit = commit_diagnostic_spec(diagnostic_commit_events, diagnostic_commit_nvtx)
+    commit = commit_diagnostic_spec(diagnostic_commit_events, diagnostic_commit_nvtx, diagnostic_graph_attempts)
     diagnostic=None;diagnostic_source=None
     if scheduler_diagnostic_grants is not None:
         if __package__:
@@ -1183,6 +1210,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
     plan = diagnostic_c1_c8_plan(original_plan) if (commit is not None or diagnostic is not None) and not smoke_only else original_plan
     qualifier = model_arguments(settings, plan, smoke_only=smoke_only,
         diagnostic_commit_events=diagnostic_commit_events, diagnostic_commit_nvtx=diagnostic_commit_nvtx,
+        **({'diagnostic_graph_attempts': True} if diagnostic_graph_attempts else {}),
         **({'scheduler_diagnostic':diagnostic}if diagnostic is not None else {}))
     manifest = Path(settings["profile_manifest"]).resolve(strict=True)
     if manifest.stat().st_size > 16 << 20:
@@ -1431,6 +1459,8 @@ def main(argv=None):
                               help="host-only pinned Torch workspace configuration; explicit values are diagnostic, never P3")
             item.add_argument('--scheduler-diagnostic-grants',type=Path,
                               help='explicit typed five-window host/headroom/disk/inflight-buffer diagnostic grants; neverP3')
+            item.add_argument('--diagnostic-graph-attempts', action='store_true',
+                              help='use explicit finite commit-event credit for graph role/rows/participants hit/miss histogram; no CUDA/NVTX calls, never P3')
             item.add_argument("--diagnostic-commit-events", type=int,
                               help="finite commit-batch event credit; smoke or C1/C8 diagnostic only, never P3")
             item.add_argument("--diagnostic-commit-nvtx", action="store_true",
@@ -1473,6 +1503,7 @@ def main(argv=None):
         model(args.source.absolute(), args.out.absolute(), args.image, args.settings.absolute(), args.installed_check.absolute(),
               args.cpus, args.memory, args.timeout, args.startup_timeout, args.smoke_only,
               args.diagnostic_commit_events, args.diagnostic_commit_nvtx,
+              **({'diagnostic_graph_attempts': True} if args.diagnostic_graph_attempts else {}),
               cublas_workspace_cache=args.cublas_workspace_cache,
               diagnostic_graph_pieces=args.diagnostic_graph_pieces,
               **({'scheduler_diagnostic_grants':args.scheduler_diagnostic_grants}if args.scheduler_diagnostic_grants is not None else {}),

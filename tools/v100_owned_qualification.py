@@ -1739,12 +1739,29 @@ def _observer_failure(engine, primary):
         raise_failures(primary, [cleanup])
 
 
+def _finite_diagnostic_matrix(benchmark, *, label):
+    cohorts = benchmark['cohorts']
+    if ([c['level'] for c in cohorts] != [1, 1, 8]
+            or [c['warmup'] for c in cohorts] != [True, False, False]
+            or any(c['input_tokens'] != 1024 for c in cohorts)
+            or cohorts[0]['tokens'] != 16
+            or any(c['tokens'] != 128 for c in cohorts if not c['warmup'])):
+        raise ValueError(label + ' needs exact finite canonical warmup/C1/C8 DATA')
+
+
 def _commit_trace_spec(args):
     events = getattr(args, 'commit_trace_events', None)
     nvtx = getattr(args, 'commit_trace_nvtx', False)
+    graph_attempts = getattr(args, 'commit_trace_graph_attempts', False)
+    if type(graph_attempts) is not bool or graph_attempts and nvtx:
+        raise ValueError('graph attempt mode requires a boolean selection and no CUDA/NVTX markers')
+    if graph_attempts and (getattr(args, 'benchmark_plan', None) is None
+            or getattr(args, 'scheduler_trace', None) is not None
+            or getattr(args, 'scheduler_diagnostic_grants', None) is not None):
+        raise ValueError('graph attempt mode requires its finite benchmark plan without profiling')
     if events is None:
-        if nvtx:
-            raise ValueError('commit NVTX markers require an explicit finite trace')
+        if nvtx or graph_attempts:
+            raise ValueError('diagnostic modes require an explicit finite trace')
         return None
     if any(getattr(args, name, None) for name in ('teacher_plan', 'benchmark_client',
             'router_row_input', 'history_input')):
@@ -1753,7 +1770,9 @@ def _commit_trace_spec(args):
         from .v100_commit_trace import resources
     else:
         from v100_commit_trace import resources
-    plan = resources(events)
+    plan = resources(events, graph_attempts=graph_attempts)
+    if graph_attempts:
+        plan['graph_attempts'] = True
     plan['nvtx'] = bool(nvtx)
     plan['global_host_obligation_bytes'] = 8 * (
         plan['retained_event_bytes'] + plan['serialization_bytes'] + 8192)
@@ -4196,6 +4215,8 @@ def worker(argv):
                         help="bounded per-rank serving graph counters at positive Engine retirement")
     parser.add_argument('--commit-trace-events', type=int, help='finite diagnostic commit-batch event credit; never P3')
     parser.add_argument('--commit-trace-nvtx', action='store_true', help='numeric NVTX batch markers; diagnostic only')
+    parser.add_argument('--commit-trace-graph-attempts', action='store_true',
+                        help='use finite trace credit for graph shape/outcome histogram; no CUDA/NVTX calls; never P3')
     parser.add_argument("--onecat-device-budget-bytes", type=int, help="explicit per-rank additional plane credit")
     parser.add_argument("--onecat-global-host-bytes", type=int, help="explicit global cold packing host credit")
     parser.add_argument("--gdn-batch-parity", action="store_true", help="diagnostic live batch-vs-scalar GDN and ordered segments; P3 invalid")
@@ -4335,7 +4356,8 @@ def worker(argv):
                     if commit_spec['nvtx']:
                         import torch
                         marker = lambda sid, delta, index: torch.cuda.nvtx.mark(f'commit-batch:{sid}:{delta}:{index}')
-                    commit_trace = CommitTrace(commit_spec['maximum_events'], marker=marker).install(engine.multi)
+                    commit_trace = CommitTrace(commit_spec['maximum_events'], marker=marker,
+                        **({'graph_attempts': True} if commit_spec.get('graph_attempts', False) else {})).install(engine.multi)
                     commit_engine = engine
                     engine.capacity_plan['commit_trace'] = {**commit_spec, 'P3_valid': False, 'diagnostic_only': True}
                 except BaseException as primary:
@@ -4377,13 +4399,9 @@ def worker(argv):
             else:
                 from bench_concurrent import load_matrix
             benchmark = load_matrix(selected.benchmark_plan)
-            if scheduler_grants is not None:
-                if ([c['level']for c in benchmark['cohorts']]!=[1,1,8]
-                        or [c['warmup']for c in benchmark['cohorts']]!=[True,False,False]
-                        or any(c['input_tokens']!=1024 for c in benchmark['cohorts'])
-                        or benchmark['cohorts'][0]['tokens']!=16
-                        or any(c['tokens']!=128 for c in benchmark['cohorts']if not c['warmup'])):
-                    raise ValueError('scheduler diagnostic needs exact finite canonical warmup/C1/C8 DATA')
+            if scheduler_grants is not None or commit_spec is not None and commit_spec.get('graph_attempts', False):
+                _finite_diagnostic_matrix(benchmark,
+                    label='scheduler diagnostic' if scheduler_grants is not None else 'graph attempt diagnostic')
             if selected.scheduler_trace is not None:
                 _trace_prefill_selection(benchmark, selected.scheduler_trace_prefill_start or 0)  # Before Engine/admission.
             size = selected.benchmark_plan.stat().st_size
@@ -4753,6 +4771,8 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
                         help="bounded per-rank serving graph counters at positive Engine retirement")
     parser.add_argument('--commit-trace-events', type=int, help='finite diagnostic commit-batch event credit; never P3')
     parser.add_argument('--commit-trace-nvtx', action='store_true', help='numeric NVTX batch markers; diagnostic only')
+    parser.add_argument('--commit-trace-graph-attempts', action='store_true',
+                        help='use finite trace credit for graph shape/outcome histogram; no CUDA/NVTX calls; never P3')
     parser.add_argument("--onecat-device-budget-bytes", type=int, help="explicit per-rank additional plane credit")
     parser.add_argument("--onecat-global-host-bytes", type=int, help="explicit global cold packing host credit")
     parser.add_argument("--gdn-batch-parity", action="store_true", help="diagnostic live batch-vs-scalar GDN and ordered segments; P3 invalid")
@@ -4904,6 +4924,8 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
         prefix += ['--commit-trace-events', str(args.commit_trace_events)]
         if args.commit_trace_nvtx:
             prefix += ['--commit-trace-nvtx']
+        if args.commit_trace_graph_attempts:
+            prefix += ['--commit-trace-graph-attempts']
     if args.gdn_batch_parity:
         prefix += ["--gdn-batch-parity"]
     if args.q8_preparation_parity:

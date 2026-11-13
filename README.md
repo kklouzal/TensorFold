@@ -368,6 +368,12 @@ shutdown rerun passed all 87 HTTP requests and produced all eight closed,
 nonfailed summaries with zero same-input/result/status mismatches across
 47,872 helper calls. This observed parity does not explain the prior 13 output
 differences; selection remains held.
+The existing finite commit diagnostic also supports an explicit
+[graph-attempt histogram](docs/benchmarking.md#bounded-graph-attempt-histogram):
+role, total rows, participants, hit/miss/error reason, and replay API call/return
+counts. It binds only the selected diagnostic instance, adds no CUDA/profiler
+operations, and leaves ordinary graph dispatch unchanged. Host counters do not
+prove GPU completion; native diagnostic integration remains pending.
 Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
 capture finite CPU/CUDA windows without Python stacks and report export sizes
 separately from clean performance comparisons.

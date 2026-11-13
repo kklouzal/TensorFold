@@ -70,6 +70,8 @@ class Compiler:
                     for name in ("tilelang", "apache-tvm-ffi", "torch", "triton")}
         if packages["tilelang"] != "0.1.10" or packages["triton"] != "3.2.0":
             raise RuntimeError("G3 requires scoped TileLang0.1.10 and retained Triton3.2.0")
+        if packages["apache-tvm-ffi"] != "0.1.16":
+            raise RuntimeError("G3 scoped stream API requires verified apache-tvm-ffi==0.1.16")
         from packaging.requirements import Requirement
         requirements = []
         for text in importlib.metadata.requires("tilelang") or ():

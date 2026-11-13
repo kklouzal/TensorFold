@@ -32,7 +32,8 @@ no unverified replay/version-counter guarantee is implied.
 `prepare(rows, device, workspace_budget_bytes=..., compiler=Compiler(...))`
 is cold, outside capture. It requires the protected CUDA12.9 nvcc path/hash,
 preconfigured CUDA_HOME/PATH and TL_CUTLASS_PATH selecting the protected
-CUTLASS4.8.1 include root, scoped TileLang0.1.10 and preserved Triton3.2.0.
+CUTLASS4.8.1 include root, scoped TileLang0.1.10, verified FFI0.1.16 and
+preserved Triton3.2.0.
 It records and checks installed TileLang base requirements without installing
 anything. It does not import vLLM/FlashQLA, change global compiler callbacks,
 patch installed libraries or select pip CUDA headers. The selected foundation header manifest is verified. Public
@@ -160,3 +161,17 @@ Actual compiler and GPU execution are still pending separate leases.
 The [prefill integration design](gdn-chunk64-prefill-integration.md) defines the
 raw-log/qk/beta producer, epilogue, row-capacity and prefix-cut/alternate-bank
 work still needed before an ordinary serving hook.
+
+The compiler admission explicitly requires `apache-tvm-ffi==0.1.16` before
+using its stream API. TileLang's broader base dependency floor establishes
+package compatibility, not a verified stream contract for every allowed FFI
+version. Other FFI versions are refused; no SDK patch or dependency install is
+performed by this guard. A focused mocked-toolkit control checks rejection of
+0.1.10/0.1.15/0.1.17/0.2.0 and progression to remaining dependency inspection
+for0.1.16; it does not claim actual compiler admission.
+
+The five new version controls passed in0.37s in the genuine Source25 SDK image
+with the isolated source overlay (UID1000,2CPU/4GiB,Node1,runc/NVIDIAvoid/netnone);
+18 prior unaffected checks were deselected and reused. Ruff for the three
+checked Python files, syntax and whitespace checks pass. No installed-source
+qualification, compiler execution, SDK hashing or GPU result is implied.

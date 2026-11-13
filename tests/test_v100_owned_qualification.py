@@ -3319,3 +3319,33 @@ def test_qualification_failure_does_not_overwrite_earlier_failure_evidence(tmp_p
     assert raised.value is primary and calls == ['notified']
     assert path.read_text() == '{"historical":true}\n'
     assert raised.value.__cause__ is not None
+
+
+@pytest.mark.parametrize('changed', [None, 'participant_count', 'warmup_flags', 'input_tokens', 'warmup_tokens', 'output_tokens'])
+def test_graph_attempt_loaded_matrix_is_bound_before_any_engine_constructor(channel, monkeypatch, tmp_path, changed):
+    from tools import bench_concurrent, v100_onecat_campaign as campaign
+    from tests.test_v100_onecat_campaign import CommitDiagnosticTests
+    plan = campaign.diagnostic_c1_c8_plan(CommitDiagnosticTests().plan())
+    if changed == 'participant_count':
+        plan['cohorts'][2]['level'] = 4
+    elif changed == 'warmup_flags':
+        plan['cohorts'][1]['warmup'] = True
+    elif changed == 'input_tokens':
+        plan['cohorts'][2]['input_tokens'] = 512
+    elif changed == 'warmup_tokens':
+        plan['cohorts'][0]['tokens'] = 8
+    elif changed == 'output_tokens':
+        plan['cohorts'][1]['tokens'] = 64
+    path = tmp_path / 'plan.json'
+    path.write_text(json.dumps(plan))
+    monkeypatch.setattr(bench_concurrent, 'load_matrix', lambda path: plan)
+    calls = []
+    monkeypatch.setattr(cli, 'cmd_serve', lambda args: calls.append(args) or 17)
+    arguments = ['--benchmark-plan', str(path), '--commit-trace-events', '2048',
+                 '--commit-trace-graph-attempts', *worker_args(tmp_path)]
+    if changed is None:
+        assert owned.worker(arguments) == 17 and len(calls) == 1
+    else:
+        with pytest.raises(ValueError, match='graph attempt diagnostic needs exact finite canonical'):
+            owned.worker(arguments)
+        assert calls == []

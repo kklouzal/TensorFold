@@ -116,3 +116,33 @@ def test_bound_nondefault_ffi_scope_restores_after_success_or_launch_failure(mon
             bound.run()
         assert "versions" not in calls
     assert current["ffi"]==41
+
+
+@pytest.mark.parametrize("ffi",["0.1.10","0.1.15","0.1.16","0.1.17","0.2.0"])
+def test_compiler_admits_only_verified_ffi_before_stream_api_use(tmp_path,monkeypatch,ffi):
+    """Dependency-only control; mock toolkit metadata, never execute a compiler."""
+    from types import SimpleNamespace
+
+    class DependencyInspectionReached(Exception):
+        pass
+
+    nvcc=tmp_path/"bin/nvcc"
+    nvcc.parent.mkdir()
+    nvcc.write_bytes(b"mock-nvcc-identity")
+    monkeypatch.setenv("CUDA_HOME",str(tmp_path))
+    monkeypatch.setattr(g3.shutil,"which",lambda name:str(nvcc))
+    monkeypatch.setattr(g3.subprocess,"run",lambda *args,**kwargs:SimpleNamespace(stdout="release 12.9, mock"))
+    packages={"tilelang":"0.1.10","apache-tvm-ffi":ffi,"torch":"2.16.dev-test","triton":"3.2.0"}
+    monkeypatch.setattr(g3.importlib.metadata,"version",packages.__getitem__)
+
+    def requires(name):
+        raise DependencyInspectionReached
+
+    monkeypatch.setattr(g3.importlib.metadata,"requires",requires)
+    compiler=g3.Compiler(str(tmp_path),hashlib.sha256(nvcc.read_bytes()).hexdigest())
+    if ffi=="0.1.16":
+        with pytest.raises(DependencyInspectionReached):
+            compiler.inspect()
+    else:
+        with pytest.raises(RuntimeError,match="apache-tvm-ffi==0.1.16"):
+            compiler.inspect()

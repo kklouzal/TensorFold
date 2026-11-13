@@ -54,6 +54,19 @@ extension. `/source` supplies tools and test fixtures; do not add `/source/src`
 to its import path. Permission-sensitive native NUMA tests additionally need
 the derived policy and writable cache described by the V100 deployment recipe.
 
+## Private bounded graph-attempt diagnostic
+
+A tools-only mode of the existing finite commit observer records exact graph
+attempt shapes/outcomes and replay API calls/returns under explicit event and
+host storage credit. It preserves production graph source and default dispatch.
+Focused CPU controls exercise the actual graph forward method with replay
+doubles, bounded exhaustion, original failure propagation, retirement/binding
+restoration and source-bound closed-rank histogram collection. These do not
+qualify real CUDA graph-object interception or native model execution. Actual
+supervised all-rank diagnostic integration remains pending; no GPU activity,
+accuracy cause, performance gain or new capture selection is established.
+[Procedure and interpretation](benchmarking.md#bounded-graph-attempt-histogram).
+
 ## Private five-window scheduler diagnostic
 
 The campaign's optional `model --scheduler-diagnostic-grants PATH` selects a

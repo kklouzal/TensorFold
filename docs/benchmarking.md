@@ -1426,3 +1426,54 @@ long-history performance or deployment selection. The governing performance
 targets remain unmet. The local evidence ledger retains the four raw runs and
 `grouped-balanced-comparison-v1/paired-receipt.json` under the
 `providerone-alignment-20261106` audit root.
+
+
+## Bounded graph-attempt histogram
+
+The existing private commit diagnostic can use its finite event credit for graph
+attempts instead of committed-output intervals:
+
+```bash
+python3 tools/v100_onecat_campaign.py model \
+  --source /sealed/source --out /new/graph-attempt-run \
+  --image IMAGE_ID --settings /sealed/settings.json \
+  --installed-check /sealed/installed-check \
+  --diagnostic-commit-events EVENT_CREDIT --diagnostic-graph-attempts
+```
+
+Use the existing complete1024-input/128-output C1/C8 plan. The campaign derives
+one C1 warmup and one complete C1/C8 cohort without changing their exact work.
+Graph mode requires the finite benchmark plan and rejects smoke-only/profiling
+or NVTX combinations. The private supervisor/worker receives
+`--commit-trace-graph-attempts` with the same `--commit-trace-events` credit.
+Ordinary serving, graph defaults and absent-observer dispatch remain unchanged.
+
+Each rank preallocates signed integer rows and bounded replay-binding slots.
+The admitted event credit also bounds retained graph proxies; insufficient
+binding credit fails before installation. Host grant computation includes those
+bindings, report materialization and bounded histogram/JSON encoding. Event
+exhaustion makes the diagnostic incomplete while executing model work exactly
+once. Existing supervised host obligations, frozen-source checks, finite plan,
+positive Engine retirement and atomic closed-rank files remain authoritative.
+
+The observer wraps only the selected `ExactStateGraphs.forward` instance and
+its captured graph entries. Replay/reset proxies delegate existing calls exactly
+once; they do not add a CUDA launch, synchronization, capture, profiler or reset.
+Binding identity is checked and restored after drained retirement. Records use
+role/rows/participants, outcome/reason and replay-call/replay-return counts.
+There are no token IDs/text, State addresses, positions or stream IDs. An actual
+source hit must agree with successful replay API returns; errors distinguish
+before-replay from after a replay call, without hiding the original exception.
+Those host observations do not establish GPU execution/completion or a causal
+performance bottleneck.
+
+Closed `commit-trace-rank-N.json` files use schema
+`tensorfold.graph-attempt-diagnostic-v1`; the legacy commit diagnostic keeps its
+original schema. Both raw bounded rows and their reconciled histogram are
+retained. Miss reasons distinguish uncaptured keys, device-greedy arguments,
+rotor and media exclusions; original model errors remain errors. Calls bypassing
+`ExactStateGraphs.forward` entirely—such as logits-free MTP, explicit next inputs
+or caller-level media exclusion—are outside this attempt histogram. In the
+specified C1/C8 plan, participant counts at least2 identify C8 work; count1 mixes
+C1 warmup/measured work and C8 tails. No cohort label is inferred for those rows.
+All rates from this instrumented run remain diagnostic, never P3 acceptance.
