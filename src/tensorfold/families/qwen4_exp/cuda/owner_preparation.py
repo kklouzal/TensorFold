@@ -86,7 +86,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "prepared_linears"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -156,6 +156,10 @@ def parse_preparation(value):
             or value['kernel_family'] not in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
             or value['graph_family'] != UNCAPTURED)):
         raise ValueError('owned Q8 window preparation requires an explicit uncaptured numerical trial')
+    q8_dispatch = value.get('owned_q8_window_dispatch', 'leaf-loop-v1')
+    if ('owned_q8_window_dispatch' in value and not q8_window
+            or q8_dispatch not in ('leaf-loop-v1', 'grid-v1')):
+        raise ValueError('owned Q8 window dispatch requires its selected window trial and versioned policy')
     capture = value.get('native_gdn_capture', False)
     if type(capture) is not bool or capture and not value['trial']:
         raise ValueError('native GDN capture requires an explicit boolean unqualified trial')
@@ -173,6 +177,7 @@ def parse_preparation(value):
             **({'native_gdn_capture': True} if capture else {}),
             **({'native_family': native_family} if native_family is not None else {}),
             **({'owned_q8_window_prepare': True} if q8_window else {}),
+            **({'owned_q8_window_dispatch': 'grid-v1'} if q8_dispatch == 'grid-v1' else {}),
             **({'prepared_linears': prepared_linears} if prepared_linears is not None else {}),
             **({'gdn_value8_capture': True} if value8 else {}),
             **({'native_hc_writeback_capture': True} if hc_capture else {}),
@@ -428,6 +433,8 @@ class OwnerPreparation:
                     owner.configure_native_family(self.specification["kernel_family"], self.specification.get("rn_heads_per_block"),
                         **({'owned_q8_window_prepare': True, 'owned_q8_window_role': role}
                            if self.specification.get('owned_q8_window_prepare', False) and role != 'prefill' else {}),
+                        **({'owned_q8_window_dispatch': 'grid-v1'}
+                           if self.specification.get('owned_q8_window_dispatch') == 'grid-v1' and role != 'prefill' else {}),
                         **({'aten_panel_rows': self.specification['aten_tiles']['panel_rows']}
                            if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY else {}),
                         **({'flash_artifact': self.flash_artifact,
@@ -586,10 +593,14 @@ class OwnerPreparation:
             selected['native_family'] = numerical_identity()
         if self.specification.get('owned_q8_window_prepare', False):
             selected['owned_q8_window_preparation'] = {
-                'policy': 'owned-q8-window-preparation-v1',
+                'policy': ('owned-q8-window-grid-preparation-v1'
+                           if self.specification.get('owned_q8_window_dispatch') == 'grid-v1'
+                           else 'owned-q8-window-preparation-v1'),
                 'roles': [role for role in ('decode', 'mtp') if role in self.role_rows],
-                'codec': 'original-floor-q8', 'native_rows_per_dispatch': 1,
-                'native_dispatches_per_window': 'rows', 'maximum_window_rows': 256,
+                'codec': 'original-floor-q8',
+                'native_rows_per_dispatch': ('window' if self.specification.get('owned_q8_window_dispatch') == 'grid-v1' else 1),
+                'native_dispatches_per_window': (1 if self.specification.get('owned_q8_window_dispatch') == 'grid-v1' else 'rows'),
+                'maximum_window_rows': 256,
                 'compact_indexer': 'reference-window-transaction', 'qualified': False}
         if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS, POLICY

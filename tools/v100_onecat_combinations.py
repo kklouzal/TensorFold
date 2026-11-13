@@ -359,7 +359,8 @@ def complete_cli(host_spec, expected, output, operation_gate, review, *, contrac
     for name, path in (('v100_native_contract_host.py', host.__file__),
                        ('v100_owned_model_contract.py', legacy.__file__),
                        ('v100_onecat_combinations.py', __file__),
-                       *([('v100_prepared_teacher_numa.py', contract.__file__)] if contract.MODE == legacy.NUMA_PREPARED_TEACHER_MODE else [])):
+                       *([(Path(contract.__file__).name, contract.__file__)] if contract.MODE in
+                           (legacy.NUMA_PREPARED_TEACHER_MODE, legacy.NUMERICAL_TEACHER_MODE) else [])):
         requested = Path(path)
         require('tools/' + name in sources and not requested.is_symlink()
                 and requested.resolve() == (Path(data['source']['root']) / 'tools' / name).resolve()

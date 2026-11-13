@@ -2687,9 +2687,9 @@ def _model_contract():
     return v100_owned_model_contract
 
 
-def _teacher_client_input(path, teacher, *, prepared=False, numa=False):
+def _teacher_client_input(path, teacher, *, prepared=False, numa=False, numerical=False):
     raw = _teacher_module()._owned_teacher_read(path, 8 << 20)
-    contract = _model_contract().prepared_teacher_contract(numa=numa) if prepared else _model_contract()
+    contract = _model_contract().prepared_teacher_contract(numa=numa, numerical=numerical) if prepared else _model_contract()
     spec = contract.validate_teacher_client(_teacher_module()._owned_teacher_object(raw))
     if spec['teacher_plan_sha256'] != teacher['input_sha256'] or not 1 <= teacher['data']['max_frames'] <= 64:
         raise ValueError('one planned teacher client differs from its frozen plan/MAX64 region')
@@ -2699,7 +2699,8 @@ def _teacher_client_input(path, teacher, *, prepared=False, numa=False):
 def _prepared_teacher_input(operation, teacher, plan_path):
     """Validate the new fixed operation without changing historical reference DATA."""
     numa = 'numa' in operation
-    contract = _model_contract().prepared_teacher_contract(numa=numa)
+    contract = _model_contract().prepared_teacher_contract(numa=numa, numerical=
+        'numerical_trial' in operation)
     contract.validate_operation(operation)
     if (str(plan_path.absolute()) != operation['teacher_plan']['path']
             or teacher['input_sha256'] != operation['teacher_plan']['sha256']
@@ -2774,7 +2775,7 @@ def _prepared_teacher_credit(teacher, selected):
 
 
 def _prepared_teacher_startup(row, spec):
-    return _model_contract().prepared_teacher_contract().validate_startup(row, spec)
+    return _model_contract().prepared_teacher_contract(numerical='numerical_trial' in spec).validate_startup(row, spec)
 
 
 _TEACHER_READINESS_ATTEMPTS = 3601
@@ -2836,7 +2837,7 @@ def _owned_client_service(stats, spec, instance, role, *, prepared_manifest=None
     expert = stats['capacity_plan']['expert_parallel']
     families = stats['runtime']['execution']['execution_families']
     prepared_teacher = spec.get('schema') in ('tensorfold.prepared-expert-teacher-client-v1',
-                                             'tensorfold.prepared-expert-teacher-numa-client-v2')
+                                             'tensorfold.prepared-expert-teacher-numa-client-v2', 'tensorfold.numerical-teacher-client-v3')
     expected_trial = ({key: expected[key] for key in ('kernel_family', 'graph_family')}
                       if prepared_teacher else None)
     if (effective['instance_id'] != instance or effective['model']['id'] != spec['model']
@@ -2890,7 +2891,7 @@ def _owned_client_open(owner, role, *, deadline=None):
         row = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(owner.output / f'rank-{rank}.json', 8 << 20))
         windows, expected = row.get(role + '_windows', {}), spec['expected_service']
         if spec.get('schema') in ('tensorfold.prepared-expert-teacher-client-v1',
-                                  'tensorfold.prepared-expert-teacher-numa-client-v2'):
+                                  'tensorfold.prepared-expert-teacher-numa-client-v2', 'tensorfold.numerical-teacher-client-v3'):
             _prepared_teacher_startup(row, spec)
         if (row.get('rank') != rank or row.get('mtp_banks') != 0 or windows.get('full_resident') is not True
                 or windows.get('slots') != expected['resident_capacity']
@@ -2944,10 +2945,10 @@ class _TeacherClient:
             import openai_protocol as protocol
         spec, plan = self.selected['data'], self.teacher['data']
         client, control, before, instance = _owned_client_open(self, 'teacher')
-        numa = spec.get('schema') == 'tensorfold.prepared-expert-teacher-numa-client-v2'
+        numa = spec.get('schema') in ('tensorfold.prepared-expert-teacher-numa-client-v2', 'tensorfold.numerical-teacher-client-v3')
         if numa:
             control.check()
-            contract = _model_contract().prepared_teacher_contract(numa=True)
+            contract = _model_contract().prepared_teacher_contract(numa=True, numerical='numerical_trial' in spec)
             snapshot = contract.collect(self.selected['prepared_operation'], self.output)
             _teacher_module()._owned_teacher_json(self.output/'numa-readiness.json', snapshot, 8 << 20, control)
             self.selected['numa_readiness'] = snapshot  # Read by parent only after Task.done/drain.
@@ -3134,8 +3135,9 @@ def _teacher_model_result(output, teacher, selected, observer, authority):
                 or record.get('observer', {}).get('sha256') != observer['source']['sha256']):
             raise ValueError('teacher child native record differs from its actual worker/source/contract')
         native.append(_teacher_file(paths[0], root, rank=rank))
-    numa = selected['data'].get('schema') == 'tensorfold.prepared-expert-teacher-numa-client-v2'
-    contract = _model_contract().prepared_teacher_contract(numa=True) if numa else _model_contract()
+    numa = selected['data'].get('schema') in ('tensorfold.prepared-expert-teacher-numa-client-v2', 'tensorfold.numerical-teacher-client-v3')
+    contract = _model_contract().prepared_teacher_contract(numa=True, numerical=
+        'numerical_trial' in selected['data']) if numa else _model_contract()
     result = {'schema': contract.RESULT_SCHEMA, 'teacher_plan_sha256': teacher['input_sha256'],
               'teacher_client_sha256': selected['sha256'], 'launch_exit': 0,
               'client_report': _teacher_file(Path(output) / 'teacher-client-report.json', root),
@@ -3470,6 +3472,8 @@ def prepare_owned_teacher(engine, prepared, output, *, hc_graphs=False):
                 or engine.multi.buf.rows != 24 or engine.multi.prefill_rows != 256
                 or not engine.multi.full_resident or len(engine.multi.states) != 24):
             raise ValueError('prepared teacher actual full preparation/NONE geometry differs')
+    if operation is not None and 'numerical_trial' in operation:
+        _model_contract().prepared_teacher_contract(numerical=True).validate_engine(engine, operation)
     profile = bound_receipt(engine)
     if operation is not None:
         from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
@@ -3494,6 +3498,13 @@ def prepare_owned_teacher(engine, prepared, output, *, hc_graphs=False):
             raise ValueError('prepared teacher registration differs from its issued source/native contents')
         profile['teacher_execution_registration'] = _teacher_module()._owned_teacher_object(json.dumps({
             'binding': binding, 'numerics': local['numerics'], 'contents': contents}, allow_nan=False))
+        if 'numerical_trial' in operation:
+            from tensorfold.families.qwen4_exp.cuda.execution_identity import retention_identity_payload
+            retention = retention_identity_payload(engine)
+            if binding['identity']['retention'] != digest(retention):
+                raise ValueError('numerical retention evidence differs from actual issued fingerprint')
+            profile['numerical_trial_retention'] = _teacher_module()._owned_teacher_object(
+                json.dumps(retention, allow_nan=False))
     observer.__init__(engine, prepared, Path(output) / f'teacher-rank{engine.rank}',
                       fail=_observer_failure, profile=profile, hc_graphs=hc_graphs)
     observer.setup()
@@ -3755,6 +3766,9 @@ def _owned_q8_preparation_receipt(engine):
             and owner.owned_q8_window_preparation is not None):
         raise ValueError('owned Q8 window capability has no explicit selection')
     if preparation.specification.get('owned_q8_window_prepare', False):
+        grid = preparation.specification.get('owned_q8_window_dispatch') == 'grid-v1'
+        if grid and not callable(getattr(module, 'owned_q8_prepare_window', None)):
+            raise ValueError('owned Q8 grid entry differs from its retained module')
         for role, actual in (('decode', buffers), ('mtp', getattr(decoder, 'mbuf', None))):
             if role not in preparation.role_rows:
                 continue
@@ -3767,14 +3781,15 @@ def _owned_q8_preparation_receipt(engine):
                     or retained.native_kernel_family != family
                     or retained.owned_q8_window_preparation is not module
                     or retained.owned_q8_window_role != role
+                    or (retained.owned_q8_window_dispatch == 'grid-v1') != grid
                     or retained.native_states is None or len(retained.native_states) != len(states)
                     or any(retained.native_states.get(id(state), (None,))[0] is not state for state in states)):
                 raise ValueError('owned Q8 window capability differs from its actual prepared role')
             capability = retained.native_record().get('owned_q8_window_preparation')
             if not 1 <= retained.rows <= 256 or capability != {
-                    'policy': 'owned-q8-window-preparation-v1', 'module': name,
+                    'policy': ('owned-q8-window-grid-preparation-v1' if grid else 'owned-q8-window-preparation-v1'), 'module': name,
                     'role': role, 'max_window_rows': retained.rows,
-                    'native_rows_per_dispatch': 1, 'native_dispatches_per_window': 'rows',
+                    'native_rows_per_dispatch': ('window' if grid else 1), 'native_dispatches_per_window': (1 if grid else 'rows'),
                     'qualified': False}:
                 raise ValueError('owned Q8 window record differs from its retained capability')
             window[role] = capability
@@ -3783,7 +3798,9 @@ def _owned_q8_preparation_receipt(engine):
             'kernel_family': buffers.owner_kernel_family, 'graph_family': buffers.owner_graph_family,
             'native_module': {'name': name, 'path': path},
             **({'window_roles': window} if window else {}),
-            'scope': ('cold role-bound window selection only; one existing native dispatch per issued row; not invocation evidence'
+            'scope': (('cold role-bound grid selection only; one native dispatch per window; not invocation evidence'
+                       if preparation.specification.get('owned_q8_window_dispatch') == 'grid-v1'
+                       else 'cold role-bound window selection only; one existing native dispatch per issued row; not invocation evidence')
                       if window else 'cold prepared/selection evidence only; target decode one issued Q8 row under no-grad; not kernel invocation evidence'),
             'invocation_evidence': False, 'P3_valid': False}
 
@@ -4799,7 +4816,7 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
         if args.teacher_client is not None:
             selected_client = (_teacher_client_input(args.teacher_client, teacher) if prepared_teacher is None else
                                _teacher_client_input(args.teacher_client, teacher, prepared=True,
-                                   numa='numa' in _prepared_teacher_operation))
+                                   numa='numa' in _prepared_teacher_operation, numerical='numerical_trial' in _prepared_teacher_operation))
             if prepared_teacher is not None:
                 expected_client = _prepared_teacher_operation['teacher_client']
                 if (str(args.teacher_client.absolute()) != expected_client['path']

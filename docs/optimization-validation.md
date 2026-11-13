@@ -1572,3 +1572,100 @@ new owned build, full24/MTP4 functional/conditional quality and matched
 unprofiled prefill/decode/tail measurements are pending. Kernel-count reduction
 is motivation, not a causal speedup or adoption result; budgets, full context,
 capacity, floor and workspace are unchanged.
+
+### One-launch Q8 grid candidate
+
+With `owned_q8_window_prepare: true`, the optional versioned selector
+`owned_q8_window_dispatch: grid-v1` selects one native two-dimensional launch
+for the whole window. The omitted selector and explicit `leaf-loop-v1` normalize
+to the previous preparation identity and keep the N-launch loop candidate.
+Any selector without the window flag, or an unknown selector, fails cold.
+The selected module must expose the new native entry before residency is
+committed. This does not extend prefill or change a default numerical profile.
+
+The native binding shares validation between its old single-row entry and the
+new window entry. The old entry still requires N=1; the new entry admits only
+N1–256 and requires the entire logical span to fit before launch. Full-window
+contiguous input/output/control storage and alias checks remain shipping checks.
+Grid X selects the original query/key/value/index-query head; grid Y selects a
+row. Only P/coordinate/Q/IQ pointers and logical start advance by that row.
+The leaf normalization, rotary, Half rounding, Hadamard and original floor-Q8
+arithmetic remain one shared source body. Every row uses the same layer ID,
+including MTP -1, so commutative sticky error flags and compare-exchange of the
+same first-error layer introduce no row-order selection. A native build and
+sensitive exact-byte oracles are still required; shared source is not a
+cross-compiler bit-identity or performance result.
+
+The original Y1 launch performs no collision scan. For larger windows every
+CTA's thread0 checks its validated physical destination's preimage in each
+active logical page. It considers only0<=page_offset<=destination before
+subtraction; page and logical arithmetic use bounded int64 values. If a forged
+page table maps another active logical row to that destination, all CTAs of
+both colliding rows poison32 and return before writing Q/IQ or cache data.
+The predicate is read-only and symmetric; it needs no inter-CTA wait, prepass
+or GPU workspace. At N<=256 this inspects at most3 pages for the actual128-token
+page geometry (at most65 under the native4-token minimum), including partial
+last pages. Foreign pages retain input/status/Q/IQ work and mask only cache
+stores. The same-stream caller lease keeps the table and generation metadata
+stable throughout. The guard remains enabled during measurements.
+
+Raw IK, compact append/pool/commit and manual publication counters remain once
+per window, independent of dispatch geometry. The cold receipt identifies the
+actual role and one dispatch/window for grid; it explicitly supplies no
+invocation or P3 evidence. Whole-model Q8 selection cannot be inferred from
+that receipt alone.
+
+The maintained native gate retains all52 leaf-loop/single-row cases and adds
+grid/reference exact bytes and versions, explicit loop-versus-grid changed-input
+nondefault-stream comparison, sticky first-error preservation, invalid range
+and cross-row alias rejection, stale generations, extreme/invalid offsets,
+and symmetric exact/partial-page collision containment. These native cases,
+the new owned build, installed full24/MTP4 functional/conditional quality and
+matched unprofiled end-to-end comparisons are pending. Neither fewer launches
+nor shared leaf source selects a winner or justifies dropping the loop candidate.
+
+## Private numerical teacher v3 intermediate protocol
+
+`tools/v100_numerical_teacher.py` selects exactly three boolean preparation
+axes: `native_family`, `prepared_linears`, and `owned_q8_window_prepare`. Their
+eight combinations retain the expert21 selector. Old v1/v2 expert contracts
+remain closed. The control has every numerical axis disabled and the incumbent
+expert selector. Candidate replay consumes its complete positively retired
+reference, forced tokens, raw full-vocabulary vectors, original model/frontend,
+source/image and NUMA/CAP40 closure. Each side names its own exact manifest;
+no manifest SHA or numerical identity is aliased to the control.
+
+The same Host/Driver, Engine, forced-token frame writer and F64 metric reader
+own the work. Before teacher hooks install, genuine retained native, prepared
+projection and Q8 role capabilities must match the trial. Startup receipts bind
+the actual numerical registration and raw canonical retention fingerprint input;
+closed kernel-VMA records retain native providers. Comparisons require the
+same immutable source/image, arithmetic outside the explicit selections,
+full-context retention and raw complete vectors. Capability binding is not an
+invocation counter. Raw changed resource/capability records remain evidence.
+
+The intermediate execution region is one active NONE request, P256 prefill,
+E24 target buffers, R32 expert preparation and 24 resident 262,144-row windows.
+The protocol's MAX64 frame bound is unchanged. It does **not** exercise C8
+MTP4 target verification, MTP proposals, graph replay or the generated trajectory
+of a speculative request. That required capture protocol is subsequent work.
+Synthetic repeated prompts are diagnostic inputs, not a held-out quality corpus.
+Conditional KL/NLL/PPL are measurements, without a chosen error tolerance or
+model-quality acceptance rule.
+
+CPU checks use the matching installed application/SDK and genuine FD extension,
+with the changed pure retention fingerprint helper mounted read-only when the
+image predates this source. Run in separate fresh processes as required by the
+existing teacher controls:
+
+```bash
+/opt/venv/bin/python -B -m pytest --noconftest -c /dev/null \
+  --rootdir=/source -o pythonpath=/source -p no:cacheprovider -q \
+  /source/tests/test_v100_numerical_teacher.py \
+  /source/tests/test_v100_prepared_teacher_numa.py \
+  /source/tests/test_v100_prepared_teacher_comparison.py
+```
+
+This is CPU protocol and metric validation only. Fresh matching-image CAP40
+capture/admission, full teacher execution, complete native/content/CLI retirement,
+actual capacity and numerical quality remain required before deployment claims.

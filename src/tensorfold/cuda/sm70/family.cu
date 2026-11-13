@@ -384,7 +384,7 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
     else ikc[cache_row * index_dim + col] = __float2half_rn(value);
 }
 
-// Operation-owned unique-history Q8 decode. One State row; explicit issued
+// Operation-owned unique-history Q8 decode. Independent State window rows; explicit issued
 // coordinates and a current owned-page table, never contiguous logical KV.
 __global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordinates,
         const float* qw, const float* kw, const float* iw, const float* freq,
@@ -395,6 +395,13 @@ __global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordina
         int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
     __shared__ float shared[512], normalized[256];
     __shared__ int64_t destination;
+    const int row = blockIdx.y;
+    const int64_t window_start = start;
+    p += int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim);
+    coordinates += int64_t(row) * 3;
+    queries += int64_t(row) * qheads * 256;
+    iq += int64_t(row) * index_heads * index_dim;
+    start += row;
     const int unit = blockIdx.x, col = threadIdx.x;
     if (!col) {
         destination = -2;
@@ -407,7 +414,27 @@ __global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordina
             if (offset == -1) destination = -1;
             else if (offset < -1 || within >= physical || offset > physical - 1 - within) {
                 atomicOr(status, 32); atomicCAS(status + 1, -2, layer);
-            } else destination = offset + within;
+            } else {
+                destination = offset + within;
+                // Each page maps its active rows by offset+within. Test this
+                // destination's preimage in every active page, so malformed
+                // overlapping pages cannot create concurrent payload stores.
+                // Both colliding rows reject before *any* of their CTA writes.
+                if (gridDim.y > 1) {
+                    const int64_t end = window_start + gridDim.y;
+                    for (int64_t page = window_start / page_tokens; page <= (end - 1) / page_tokens; ++page) {
+                        const int64_t other_offset = offsets[page];
+                        if (other_offset < 0 || other_offset > destination) continue;
+                        const int64_t other_within = destination - other_offset;
+                        const int64_t position = page * page_tokens + other_within;
+                        if (other_within < page_tokens && position >= window_start && position < end && position != start) {
+                            destination = -2;
+                            atomicOr(status, 32); atomicCAS(status + 1, -2, layer);
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
     __syncthreads();
@@ -1000,7 +1027,7 @@ void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const 
         const T& generations, T& status, int64_t slot, int64_t owner, int64_t start,
         int64_t logical, int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
         int index_dim, float eps, float amplitude, int section1, int section2) {
-    owned_q8_prepare_kernel<<<qheads + 2 + index_heads, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+    owned_q8_prepare_kernel<<<dim3(qheads + 2 + index_heads, p.size(0)), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         ptr<__half>(p), axes.data_ptr<int64_t>(), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(freq),
         ptr<__half>(q), ptr<__half>(iq), k.data_ptr<int8_t>(), v.data_ptr<int8_t>(), ptr<__half>(ks), ptr<__half>(vs),
         offsets.data_ptr<int64_t>(), generations.data_ptr<int64_t>(), status.data_ptr<int>(), slot, owner, start,

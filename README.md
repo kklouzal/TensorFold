@@ -6,6 +6,13 @@ SC117/V100 is the immediate delivery priority while selected existing profiles,
 including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
 separates requested, source-implemented, qualified and effective behavior.
 
+An explicit [GDN chunk64 component trial](docs/gdn-chunk64-component.md) now
+preserves the original FlashQLA SM70 TileLang generators behind an owned,
+prefill-only API. It is a separate numerical candidate with no serving hook;
+protected-toolchain compilation, native numerical/state checks and integrated
+quality/performance qualification remain pending. It adds no default dependency
+or runtime selection.
+
 The [development handoff checkpoint](docs/development-checkpoint.md) records the
 preserved V100 trials, research drafts and known unfinished comparison controls.
 Their inclusion on `python-0.6` preserves ongoing development; combined target
@@ -139,6 +146,13 @@ transaction per window. The binding now admits the actual MTP layer `-1`;
 this requires a new owned native build. Defaults, prefill and the independent
 Torch oracle remain unchanged. Native window parity, full-model quality and
 matched performance remain pending. See the [window contract](docs/optimization-validation.md#private-q8-window-preparation).
+
+With that trial selected, `owned_q8_window_dispatch: grid-v1` requests a
+separate one-launch window candidate. It shares the leaf arithmetic and adds
+row addressing plus a guard against overlapping active physical rows. Omitting
+the selector retains `leaf-loop-v1` and its existing identity. Both candidates
+remain available; the grid requires its own native build, parity, model and
+matched performance gates before selection.
 
 See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece
@@ -2882,3 +2896,13 @@ in one resident model. Both clients retain separate logs and outcomes; use the
 same preceding checks and warmup on both arms. This workflow adds no model
 quality or performance qualification. It cannot precede a finite instrumented
 window plan.
+
+The private `tools/v100_numerical_teacher.py` v3 protocol adds explicit
+`native_family`, `prepared_linears` and `owned_q8_window_prepare` trial axes to
+the existing CAP40/NUMA full-vocabulary teacher, retaining the 21 expert
+selectors. This intermediate protocol uses C1/NONE/P256/E24 with all 24 native
+context windows allocated. It reports forced-prefix conditional KL/NLL/PPL;
+it supplies no tolerance, model-accuracy acceptance or throughput claim.
+C8/MTP4 target-window and graph execution require their own versioned capture
+and remain pending. See [optimization validation](docs/optimization-validation.md)
+for the source and CPU-control scope.

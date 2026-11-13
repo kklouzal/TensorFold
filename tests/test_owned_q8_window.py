@@ -69,26 +69,29 @@ def tensors(item):
 
 
 @pytest.mark.parametrize('mtp', [False, True])
+@pytest.mark.parametrize('dispatch', ['leaf-loop-v1', 'grid-v1'])
 @pytest.mark.parametrize('rows,owned_pages', [(1, (0,)), (5, ()), (129, (0, 2)), (256, (0, 1, 2))])
 @torch.no_grad()
-def test_native_row_views_and_window_versions_match_independent_reference(rows, owned_pages, mtp):
+def test_native_row_views_and_window_versions_match_independent_reference(rows, owned_pages, mtp, dispatch):
     old = fixture(rows, mtp=mtp, owned_pages=owned_pages)
     new = fixture(rows, mtp=mtp, owned_pages=owned_pages)
     before = [[t._version for t in tensors(item)] for item in (old, new)]
     calls = []
-    module = NS(owned_q8_prepare=lambda *args: calls.append(args))
+    module = NS(owned_q8_prepare=lambda *args: calls.append(args),
+                owned_q8_prepare_window=lambda *args: calls.append(args))
     p, state, layer, weights, buffers, _ = new
     history._prepare_reference(*old[:5], 0, rows, mtp=mtp)
     result = ops.owned_q8_prepare_window(module, p, buffers.target_indexer_coordinates,
         weights, state.kc[0], state, layer, buffers.q, buffers.iq,
-        frequency=weights.inv_freq, sections=(11, 11, 10), amplitude=1., start=state.pos)
+        frequency=weights.inv_freq, sections=(11, 11, 10), amplitude=1., start=state.pos, dispatch=dispatch)
     assert result.shape == (rows, 128)
-    assert len(calls) == rows
-    for row, args in enumerate(calls):
+    step = rows if dispatch == 'grid-v1' else 1
+    assert len(calls) == (1 if dispatch == 'grid-v1' else rows)
+    for row, args in zip(range(0, rows, step), calls):
         for value, base in ((args[0], p), (args[1], buffers.target_indexer_coordinates),
                             (args[6], buffers.q), (args[7], buffers.iq)):
-            assert value.shape[0] == 1 and value.is_contiguous()
-            assert value.data_ptr() == base[row:row+1].data_ptr()
+            assert value.shape[0] == step and value.is_contiguous()
+            assert value.data_ptr() == base[row:row+step].data_ptr()
         assert args[17] == state.pos+row
         assert args[21] == layer.index
     deltas = [[t._version-v for t, v in zip(tensors(item), versions)]
@@ -98,13 +101,15 @@ def test_native_row_views_and_window_versions_match_independent_reference(rows, 
 
 
 @pytest.mark.parametrize('mtp', [False, True])
+@pytest.mark.parametrize('dispatch', ['leaf-loop-v1', 'grid-v1'])
 @torch.no_grad()
-def test_selected_roles_keep_one_raw_transaction_and_commit_only_mtp(monkeypatch, mtp):
+def test_selected_roles_keep_one_raw_transaction_and_commit_only_mtp(monkeypatch, mtp, dispatch):
     item = fixture(5, mtp=mtp)
     p, state, _layer, _weights, buffers, events = item
     module = object()
     buffers.history_owner = NS(owned_q8_window_preparation=module,
-        owned_q8_window_role=buffers.owner_role, rows=5, native_kernel_family=FAMILY)
+        owned_q8_window_role=buffers.owner_role, rows=5, native_kernel_family=FAMILY,
+        owned_q8_window_dispatch=dispatch)
     invocations = []
     def native(*args, **kwargs):
         invocations.append((args, kwargs))
@@ -112,6 +117,7 @@ def test_selected_roles_keep_one_raw_transaction_and_commit_only_mtp(monkeypatch
     monkeypatch.setattr(ops, 'owned_q8_prepare_window', native)
     history.prepare(*item[:5], 0, 5, mtp=mtp)
     assert len(invocations) == 1 and invocations[0][1]['start'] == 127
+    assert invocations[0][1].get('dispatch', 'leaf-loop-v1') == dispatch
     assert [event[0] for event in events] == (['append', 'pool', 'prepare_commit', 'publish_commit']
                                               if mtp else ['append', 'pool'])
     assert events[0][1][0:2] == (1 if mtp else 0, 127)
@@ -153,8 +159,39 @@ def test_opt_in_is_strict_and_false_preserves_baseline_identity():
         preparation.parse_preparation({**spec, 'trial': False, 'owned_q8_window_prepare': True})
 
 
+def test_grid_selector_requires_window_flag_and_preserves_leaf_loop_identity():
+    spec = {'kernel_family': FAMILY, 'rn_heads_per_block': 12, 'graph_family': 'uncaptured',
+            'graph_budget_bytes': 0, 'trial': True, 'owned_q8_window_prepare': True}
+    assert preparation.parse_preparation(spec) == preparation.parse_preparation({**spec, 'owned_q8_window_dispatch': 'leaf-loop-v1'})
+    assert preparation.parse_preparation({**spec, 'owned_q8_window_dispatch': 'grid-v1'})['owned_q8_window_dispatch'] == 'grid-v1'
+    for value in (None, False, 1, 'grid', 'grid-v2'):
+        with pytest.raises(ValueError, match='dispatch'):
+            preparation.parse_preparation({**spec, 'owned_q8_window_dispatch': value})
+    for flag in (False, None):
+        unused = {**spec, 'owned_q8_window_dispatch': 'grid-v1'}
+        if flag is None:
+            unused.pop('owned_q8_window_prepare')
+        else:
+            unused['owned_q8_window_prepare'] = flag
+        with pytest.raises(ValueError, match='dispatch'):
+            preparation.parse_preparation(unused)
+
+
+def test_grid_capability_is_checked_before_residency(monkeypatch):
+    from contextlib import nullcontext
+
+    from tensorfold.cuda.sm70 import family_native
+    monkeypatch.setattr(torch.cuda, 'get_device_capability', lambda d: (7, 0))
+    monkeypatch.setattr(torch.cuda, 'device', lambda d: nullcontext())
+    monkeypatch.setattr(family_native, 'extension', lambda: NS(
+        prepare_owned_q8=lambda: pytest.fail('unavailable grid warmed old entry')))
+    with pytest.raises(ValueError, match='built native window entry'):
+        ops.prepare_owned_q8('cuda:0', window_dispatch='grid-v1')
+
+
 @pytest.mark.parametrize('role', ['decode', 'mtp'])
-def test_cold_capability_reuses_one_residency_operation(monkeypatch, role):
+@pytest.mark.parametrize('dispatch', ['leaf-loop-v1', 'grid-v1'])
+def test_cold_capability_reuses_one_residency_operation(monkeypatch, role, dispatch):
     owner = object.__new__(history.OwnerBuffers)
     owner._empty_resources()
     owner.prefill, owner.device, owner.rows, owner.heads, owner.head_dim = False, 'cpu', 5, 3, 256
@@ -162,11 +199,13 @@ def test_cold_capability_reuses_one_residency_operation(monkeypatch, role):
     owner.partials, owner.partial = torch.empty(8, 5, 12, 256), torch.empty(5, 12, 256)
     module = NS(__name__='resident')
     calls = []
-    monkeypatch.setattr(ops, 'prepare_owned_q8', lambda d: (calls.append(d), module)[1])
-    owner.configure_native_family(FAMILY, 12, owned_q8_window_prepare=True, owned_q8_window_role=role)
-    assert calls == ['cpu']
+    monkeypatch.setattr(ops, 'prepare_owned_q8', lambda d, **kw: (calls.append((d, kw)), module)[1])
+    owner.configure_native_family(FAMILY, 12, owned_q8_window_prepare=True,
+        owned_q8_window_role=role, owned_q8_window_dispatch=dispatch)
+    assert calls == [('cpu', {'window_dispatch': 'grid-v1'} if dispatch == 'grid-v1' else {})]
     assert owner.owned_q8_window_preparation is owner.owned_q8_preparation is module
     assert owner.owned_q8_window_role == role
+    assert owner.owned_q8_window_dispatch == dispatch
     with pytest.raises(RuntimeError, match='immutable'):
         owner.configure_native_family(FAMILY, 12, owned_q8_window_prepare=True, owned_q8_window_role=role)
 

@@ -34,10 +34,27 @@ PREPARED_TEACHER_SCHEMA = 'tensorfold.v100-prepared-expert-teacher-operation-v1'
 PREPARED_TEACHER_MODE = 'owned-prepared-expert-teacher-model-v1'
 NUMA_PREPARED_TEACHER_SCHEMA = 'tensorfold.v100-prepared-expert-teacher-numa-operation-v2'
 NUMA_PREPARED_TEACHER_MODE = 'owned-prepared-expert-teacher-numa-model-v2'
+NUMERICAL_TEACHER_SCHEMA = 'tensorfold.v100-numerical-teacher-operation-v3'
+NUMERICAL_TEACHER_MODE = 'owned-numerical-teacher-model-v3'
+PREPARED_SCHEMAS = (PREPARED_TEACHER_SCHEMA, NUMA_PREPARED_TEACHER_SCHEMA, NUMERICAL_TEACHER_SCHEMA)
 
 
-def prepared_teacher_contract(*, numa=False):
-    """One fixed extension; historical v1 validators remain unchanged."""
+def teacher_contract(value):
+    key = value.get('schema', value.get('mode'))
+    numerical = key in (NUMERICAL_TEACHER_SCHEMA, NUMERICAL_TEACHER_MODE) or value.get('mode') == NUMERICAL_TEACHER_MODE
+    numa = key in (NUMA_PREPARED_TEACHER_SCHEMA, NUMA_PREPARED_TEACHER_MODE) or value.get('mode') == NUMA_PREPARED_TEACHER_MODE
+    return prepared_teacher_contract(numa=numa, numerical=numerical)
+
+
+
+def prepared_teacher_contract(*, numa=False, numerical=False):
+    """Explicit versioned dispatch; historical validators remain unchanged."""
+    if numerical:
+        if __package__:
+            from . import v100_numerical_teacher
+        else:
+            import v100_numerical_teacher
+        return v100_numerical_teacher
     if numa:
         if __package__:
             from . import v100_prepared_teacher_numa

@@ -1098,25 +1098,31 @@ def shift_windows(old, new, keep, channels):
     return _reference["shift_windows"](old, new, keep, channels)
 
 
-def prepare_owned_q8(device):
+def prepare_owned_q8(device, *, window_dispatch='leaf-loop-v1'):
     """Resolve only the owned-Q8 decode operator during voted owner preparation."""
+    if window_dispatch not in ('leaf-loop-v1', 'grid-v1'):
+        raise ValueError('owned Q8 preparation requires its versioned window dispatch')
     if torch.device(device).type != 'cuda' or torch.cuda.get_device_capability(device) != (7, 0):
         raise ValueError('owned Q8 preparation requires its admitted SM70 owner')
     from .family_native import extension
     with torch.cuda.device(device):
         module = extension()
+        if window_dispatch == 'grid-v1' and not callable(getattr(module, 'owned_q8_prepare_window', None)):
+            raise ValueError('owned Q8 grid dispatch requires its built native window entry')
         module.prepare_owned_q8()
     return module
 
 
 def owned_q8_prepare_window(module, projection, coordinates, weights, cache, state, layer, query, iq, *,
-                            frequency, sections, amplitude, start):
-    """Bounded window using the unchanged one-row native operator/current stream.
+                            frequency, sections, amplitude, start, dispatch='leaf-loop-v1'):
+    """Bounded leaf-loop or grid window on the caller-owned current stream.
 
     Issued contiguous row views need no materialization. Raw IK is guarded once
     and stays with the caller's one compact-indexer transaction. Version counters
     describe the reference window publications, not the number of native launches.
     """
+    if dispatch not in ('leaf-loop-v1', 'grid-v1'):
+        raise ValueError('owned Q8 window requires its versioned dispatch')
     outputs = (query, iq, cache.k, cache.v, cache.ks, cache.vs, state.kv_status)
     if (torch.is_grad_enabled() or any(t.requires_grad for t in (projection, *outputs))
             or (not torch.is_inference_mode_enabled() and any(t.is_inference() for t in outputs))):
@@ -1142,9 +1148,13 @@ def owned_q8_prepare_window(module, projection, coordinates, weights, cache, sta
             raise ValueError('owned Q8 window operands must be separately owned')
     at = 2 * c.heads * c.head_dim + 2 * c.head_dim + c.index_heads * c.index_dim
     ik = _guard(projection[:, at:at + c.index_dim], state.kv_status, 16, layer.index)
-    for row in range(rows):
-        module.owned_q8_prepare(projection[row:row + 1], coordinates[row:row + 1],
-            a.q_scale, a.k_scale, a.iq_scale, frequency, query[row:row + 1], iq[row:row + 1],
+    # Grid validates/launches the complete window in its native boundary. The
+    # independent leaf-loop candidate deliberately retains one dispatch per row.
+    operator = module.owned_q8_prepare_window if dispatch == 'grid-v1' else module.owned_q8_prepare
+    step = rows if dispatch == 'grid-v1' else 1
+    for row in range(0, rows, step):
+        operator(projection[row:row + step], coordinates[row:row + step],
+            a.q_scale, a.k_scale, a.iq_scale, frequency, query[row:row + step], iq[row:row + step],
             cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets,
             state.history_generations, state.kv_status, state.slot_generation, state.history_generation,
             start + row, cache.logical_capacity, cache.capacity, cache.placement.page_tokens, layer.index,

@@ -45,18 +45,19 @@ def window_fixture(rows, *, mtp=False, pattern='random', owned_pages=(0, 2)):
     (True, 5, 'raw-index-nonfinite', (0, 1)), (True, 5, 'subnormal', (0, 1)),
     (True, 5, 'zeros', (0, 1)),
 ])
+@pytest.mark.parametrize('dispatch', ['leaf-loop-v1', 'grid-v1'])
 @torch.no_grad()
-def test_window_exact_reference_bytes_status_and_versions(mtp, rows, pattern, owned_pages):
+def test_window_exact_reference_bytes_status_and_versions(mtp, rows, pattern, owned_pages, dispatch):
     old = window_fixture(rows, mtp=mtp, pattern=pattern, owned_pages=owned_pages)
     new = window_fixture(rows, mtp=mtp, pattern=pattern, owned_pages=owned_pages)
     module = ops.prepare_owned_q8(new[0].device)
     calls = []
-    def dispatch(*args):
-        calls.append((args[17], args[21]))
-        return module.owned_q8_prepare(*args)
-    new[4].history_owner = NS(owned_q8_window_preparation=NS(owned_q8_prepare=dispatch),
+    def invoke(*args):
+        calls.append((args[17], args[21], args[0].shape[0]))
+        return (module.owned_q8_prepare_window if dispatch == 'grid-v1' else module.owned_q8_prepare)(*args)
+    new[4].history_owner = NS(owned_q8_window_preparation=NS(owned_q8_prepare=invoke, owned_q8_prepare_window=invoke),
         owned_q8_window_role=new[4].owner_role, rows=rows,
-        native_kernel_family=new[4].owner_kernel_family)
+        native_kernel_family=new[4].owner_kernel_family, owned_q8_window_dispatch=dispatch)
     def tensors(item):
         _, state, _, _, buffers = item
         cache = state.kc[0]
@@ -70,7 +71,8 @@ def test_window_exact_reference_bytes_status_and_versions(mtp, rows, pattern, ow
     deltas = [[t._version-v for t, v in zip(tensors(item), versions)]
               for item, versions in zip((old, new), before)]
     assert deltas[0] == deltas[1]
-    assert calls == [(127+row, -1 if mtp else 0) for row in range(rows)]
+    assert calls == ([(127, -1 if mtp else 0, rows)] if dispatch == 'grid-v1' else
+                     [(127+row, -1 if mtp else 0, 1) for row in range(rows)])
     assert (new[1].pos, new[1].mtp_len) == (127, 127)
     assert new[1].target_tentative_length == (127 if mtp else 127+rows)
 
@@ -93,6 +95,113 @@ def test_mtp_negative_layer_error_and_lower_invalid_layer_boundary():
     with pytest.raises(RuntimeError, match='domain geometry'):
         ops.owned_q8_prepare(module, p[:1], buffers.mtp_indexer_coordinates[:1], weights,
             state.kc[0], state, layer, buffers.q[:1], buffers.iq[:1], **arguments)
+
+
+def raw_grid(module, item, *, start=None):
+    """Exercise the new native boundary independently of the Python adapter."""
+    p, state, layer, weights, buffers = item
+    cache, a, c = state.kc[0], layer.attn, weights.cfg
+    return module.owned_q8_prepare_window(p, buffers.target_indexer_coordinates,
+        a.q_scale, a.k_scale, a.iq_scale, weights.inv_freq, buffers.q, buffers.iq,
+        cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets, state.history_generations,
+        state.kv_status, state.slot_generation, state.history_generation,
+        state.pos if start is None else start, cache.logical_capacity, cache.capacity,
+        cache.placement.page_tokens, layer.index, c.heads, c.index_heads, c.index_dim,
+        c.eps, 1., 11, 10)
+
+
+@pytest.mark.parametrize('mtp', [False, True])
+@pytest.mark.parametrize('fault', ['generation', 'negative', 'overflow', 'out-of-bounds', 'collision'])
+@torch.no_grad()
+def test_grid_faults_cannot_publish_colliding_or_invalid_rows(mtp, fault):
+    item = window_fixture(2, mtp=mtp, owned_pages=(0, 1))
+    p, state, layer, _weights, buffers = item
+    cache = state.kc[0]
+    module = ops.prepare_owned_q8(p.device, window_dispatch='grid-v1')
+    values = (buffers.q, buffers.iq, cache.k, cache.v, cache.ks, cache.vs)
+    before = [value.clone() for value in values]
+    if fault == 'generation':
+        state.history_generations[1] += 1
+    elif fault == 'collision':
+        cache.page_offsets[1] = 127  # logical127 and128 now share physical127.
+    else:
+        cache.page_offsets.fill_({'negative': -(2**63), 'overflow': 2**63-1,
+                                  'out-of-bounds': cache.capacity}[fault])
+    raw_grid(module, item)
+    torch.cuda.synchronize()
+    assert state.kv_status.cpu().tolist() == [32, layer.index]
+    for actual, expected in zip(values, before):
+        exact(actual, expected)
+
+
+@torch.no_grad()
+def test_grid_partial_last_page_collision_refuses_both_rows_and_all_their_ctas():
+    item = window_fixture(12, mtp=True, owned_pages=(2, 3))
+    p, state, layer, _weights, buffers = item
+    cache = state.kc[0]
+    state.pos = state.mtp_len = 373
+    cache.page_offsets[3] = 127  # rows383/384 collide; page3 has only one logical row.
+    module = ops.prepare_owned_q8(p.device, window_dispatch='grid-v1')
+    before = [tensor.clone() for tensor in (buffers.q[-2:], buffers.iq[-2:],
+              cache.k[127], cache.v[127], cache.ks[127], cache.vs[127])]
+    raw_grid(module, item)
+    torch.cuda.synchronize()
+    assert state.kv_status.cpu().tolist() == [32, layer.index]
+    for actual, expected in zip((buffers.q[-2:], buffers.iq[-2:],
+            cache.k[127], cache.v[127], cache.ks[127], cache.vs[127]), before):
+        exact(actual, expected)
+
+
+@pytest.mark.parametrize('fault', ['empty', 'too-many', 'range', 'cross-row-alias'])
+@torch.no_grad()
+def test_grid_native_boundary_rejects_invalid_whole_window_before_launch(fault):
+    rows = 257 if fault == 'too-many' else 5
+    item = list(window_fixture(rows))
+    p, state, _layer, _weights, buffers = item
+    module = ops.prepare_owned_q8(p.device, window_dispatch='grid-v1')
+    if fault == 'empty':
+        item[0] = p[:0]
+        buffers.target_indexer_coordinates = buffers.target_indexer_coordinates[:0]
+        buffers.q, buffers.iq = buffers.q[:0], buffers.iq[:0]
+    elif fault == 'cross-row-alias':
+        buffers.q = p.reshape(-1)[2688:2688+rows*3*256].reshape(rows, 3, 256)
+    values = (p, state.kv_status, state.kc[0].k, state.kc[0].v, state.kc[0].ks, state.kc[0].vs)
+    before = [value.clone() for value in values]
+    with pytest.raises(RuntimeError):
+        raw_grid(module, item, start=384 if fault == 'range' else None)
+    torch.cuda.synchronize()
+    for actual, expected in zip(values, before):
+        exact(actual, expected)
+
+
+@torch.no_grad()
+def test_grid_and_leaf_loop_same_changed_input_nondefault_stream_with_sticky_first_error():
+    old, loop, grid = [window_fixture(5, mtp=True, pattern='nonfinite') for _ in range(3)]
+    module = ops.prepare_owned_q8(grid[0].device, window_dispatch='grid-v1')
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        for repeat in range(3):
+            for p, state, _layer, _weights, buffers in (old, loop, grid):
+                p.mul_(.5)
+                buffers.target_indexer_coordinates.add_(repeat+1)
+                state.kv_status.copy_(torch.tensor([8, 2], dtype=torch.int32, device=p.device))
+            history._prepare_reference(*old, 0, 5, mtp=True)
+            for item, dispatch in ((loop, 'leaf-loop-v1'), (grid, 'grid-v1')):
+                p, state, layer, weights, buffers = item
+                ops.owned_q8_prepare_window(module, p, buffers.target_indexer_coordinates,
+                    weights, state.kc[0], state, layer, buffers.q, buffers.iq,
+                    frequency=weights.inv_freq, sections=(11, 11, 10), amplitude=1., start=127,
+                    dispatch=dispatch)
+    stream.synchronize()
+    def tensors(item):
+        _, state, _, _, buffers = item
+        cache = state.kc[0]
+        return (buffers.q, buffers.iq, cache.k, cache.v, cache.ks, cache.vs, state.kv_status)
+    for item in (loop, grid):
+        for actual, expected in zip(tensors(item), tensors(old)):
+            exact(actual, expected)
+        assert item[1].kv_status.cpu().tolist()[1] == 2
 
 
 def fixture(start=64, *, rank=0, owned=True, pattern='random', capacity=385, owned_pages=None):

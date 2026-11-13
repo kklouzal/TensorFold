@@ -1,0 +1,35 @@
+{
+  "release": "v1.5.2",
+  "wheel_build_commit": "9f970d62885d4d73698d9e7a9859632a65704985",
+  "wheel_sha256": "a27afc512cf29d4baa322366f92b32f1d0ddec6d7178b0bf4351ad00c1958baa",
+  "extractions": [
+    {
+      "source": "flash_qla/ops/utils/cumsum.py",
+      "name": "tilelang_chunk_local_cumsum",
+      "start": 11,
+      "end": 128,
+      "source_sha256": "0fdf892f9840211047ec576fd1d207d139d3688a0818c4f7a7929bde15c8b494",
+      "extracted_sha256": "02c3dd3935e58207a1a315642cc1ecb5e7283260b78eb4e7fb96dfc975615490",
+      "adapted_sha256": "02c3dd3935e58207a1a315642cc1ecb5e7283260b78eb4e7fb96dfc975615490"
+    },
+    {
+      "source": "flash_qla/ops/gated_delta_rule/chunk/hopper/kkt_solve.py",
+      "name": "tilelang_kkt_solve_sm70",
+      "start": 305,
+      "end": 565,
+      "source_sha256": "3f133e4d787eb35c39aa3f16142339fa9d6cdd0e3d8534edd59a721116dfcbc0",
+      "extracted_sha256": "38437969b1dfbf03258736ba7e118687073b96b05ca3fad5100204661f8aa07e",
+      "adapted_sha256": "8ccadd36f2539ef906469a97bccbe1f4c471caf321cea56be5c244f9e5afb7d2"
+    },
+    {
+      "source": "flash_qla/ops/gated_delta_rule/chunk/hopper/fused_fwd.py",
+      "name": "tilelang_fused_chunk_gdr_fwd_sm70",
+      "start": 538,
+      "end": 896,
+      "source_sha256": "3844b75f68ede69de828bfbccab43f115648e953f8899ed4dfc94e7f2819f0c5",
+      "extracted_sha256": "77215dd3e6e82e414e49193d8cff39b89925f4aba03f9586067b16cb82b80330",
+      "adapted_sha256": "7bb91169631ecbd9588cc40baa5b395c20ed83a87de10f03fa39f284d135f3f1"
+    }
+  ],
+  "modifications": "Only module imports/header, function selection, and T.gemm_v1( -> T.gemm( spelling. Actual TileLang0.1.10 exports gemm, and original flash_qla.__init__ aliases gemm_v1=gemm; no global module patch adopted."
+}

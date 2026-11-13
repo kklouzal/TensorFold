@@ -3106,17 +3106,23 @@ def test_cold_q8_baseline_omits_evidence_without_probing(fault):
 
 
 @pytest.mark.parametrize('fault', [None, 'role', 'record', 'unselected'])
-def test_window_q8_receipt_distinguishes_actual_role_and_cold_dispatch_contract(fault):
+@pytest.mark.parametrize('dispatch', ['leaf-loop-v1', 'grid-v1'])
+def test_window_q8_receipt_distinguishes_actual_role_and_cold_dispatch_contract(fault, dispatch):
     engine, owner, record = _cold_q8_receipt_fixture()
     module = owner.owned_q8_preparation
+    module.owned_q8_prepare_window = lambda *a: pytest.fail('cold grid invocation')
     owner.owned_q8_window_preparation, owner.owned_q8_window_role = module, 'decode'
+    owner.owned_q8_window_dispatch = dispatch
     record['owned_q8_window_preparation'] = {
-        'policy': 'owned-q8-window-preparation-v1', 'module': module.__name__,
-        'role': 'decode', 'max_window_rows': 24, 'native_rows_per_dispatch': 1,
-        'native_dispatches_per_window': 'rows', 'qualified': False}
+        'policy': ('owned-q8-window-grid-preparation-v1' if dispatch == 'grid-v1' else 'owned-q8-window-preparation-v1'),
+        'module': module.__name__, 'role': 'decode', 'max_window_rows': 24,
+        'native_rows_per_dispatch': ('window' if dispatch == 'grid-v1' else 1),
+        'native_dispatches_per_window': (1 if dispatch == 'grid-v1' else 'rows'), 'qualified': False}
     engine.multi.buf.owner_role = 'decode'
     engine._owner_preparation.role_rows = {'decode': 24, 'prefill': 256}
     engine._owner_preparation.specification['owned_q8_window_prepare'] = fault != 'unselected'
+    if dispatch == 'grid-v1':
+        engine._owner_preparation.specification['owned_q8_window_dispatch'] = dispatch
     if fault == 'role':
         owner.owned_q8_window_role = 'mtp'
     elif fault == 'record':

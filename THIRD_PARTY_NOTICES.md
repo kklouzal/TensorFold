@@ -206,3 +206,13 @@ The multimodal rotary and image-feature integration is adapted from MiaAI-Lab's
 [Flash Next vision patch 0008](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold/blob/a3aa89835022c55ca8e55008c37785954834e04f/patches/0008-flash-next-vision.patch),
 MIT License, Copyright (c) 2026 MiaAI-Lab. The license is included in `LICENSES/MiaAI-Lab-MIT.txt`.
 The port preserves the v0.5 CUDA execution APIs and adds an offline EXL3 vision adapter.
+
+## FlashQLA SM70 chunk64 numerical-trial component
+
+`src/tensorfold/cuda/sm70/gdn_chunk64_kernels.py` contains the three SM70
+TileLang generators selected from 1Cat-vLLM v1.5.2, wheel build
+`9f970d62885d4d73698d9e7a9859632a65704985`, originally FlashQLA,
+Copyright (c) 2026 The Qwen team, Alibaba Group, under the MIT License.
+The full license is `src/tensorfold/cuda/sm70/gdn_chunk64_LICENSE.txt`;
+`gdn_chunk64_provenance.json` records exact source and extraction identities.
+The owned adapter does not import vLLM or adopt its compiler override.

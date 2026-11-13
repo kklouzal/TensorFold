@@ -966,11 +966,8 @@ def _prepare_manifest(engine, manifest_path, *, rebind, manifest_root):
             "migration_epoch": migration_epoch, "files": files, "before": before, "local": local}
 
 
-def _profile_identity(engine, context, ranks, contents):
-    checkpoint = context["checkpoint"]
-    def group(prefix):
-        return {k: v for k, v in contents.items() if k.startswith(prefix)}
-
+def retention_identity_payload(engine):
+    """Raw canonical retention fingerprint input, also used by typed trial evidence."""
     from .prompt_plan import CUTS, POINTS
     from tensorfold.cuda.markers import MIN_GAP
 
@@ -984,6 +981,15 @@ def _profile_identity(engine, context, ranks, contents):
     preparation = getattr(engine, "_owner_preparation", None)
     if preparation is not None:
         retention["owner_preparation"] = preparation.identity()
+    return retention
+
+
+def _profile_identity(engine, context, ranks, contents):
+    checkpoint = context["checkpoint"]
+    def group(prefix):
+        return {k: v for k, v in contents.items() if k.startswith(prefix)}
+
+    retention = retention_identity_payload(engine)
     identity = {
         "target": digest({"files": group("target/"), "config": contents["metadata/config.json"]}),
         "draft": digest({"files": group("draft/")}) if group("draft/") else "none",

@@ -790,13 +790,16 @@ def _candidate_semantics(side, method, down_method='tensorfold', iq2_source='act
     return semantic
 
 
-def _candidate_teacher_metrics(left, right, control):
+def _candidate_teacher_metrics(left, right, control, *, execution_families=None):
     """One numerical implementation for both closed candidate evidence formats."""
     import numpy as np
     a, b = left['authority'], right['authority']
     rows = []
     for old, new in zip(a['frames'], b['frames']):
-        if any(old.get(k) != new.get(k) for k in ('step', 'position', 'teacher_id', 'full_vocab', 'role', 'execution_family')):
+        if any(old.get(k) != new.get(k) for k in ('step', 'position', 'teacher_id', 'full_vocab', 'role')):
+            raise ValueError('candidate frame pairing differs')
+        families = (old.get('execution_family'), new.get('execution_family'))
+        if (families[0] != families[1] if execution_families is None else families != execution_families):
             raise ValueError('candidate frame pairing differs')
         arrays = []
         for side, frame in ((left, old), (right, new)):
@@ -966,7 +969,8 @@ def _prepared_expert_side(selected, mode, control, contract):
     if len(pids) != 8:
         raise ValueError('prepared teacher requires eight distinct actual worker processes')
     client = _owned_comparison_file(side['root'], side['model']['client_report'], control)
-    numa = contract.MODE == _owned_comparison_contract().NUMA_PREPARED_TEACHER_MODE
+    numa = contract.MODE in (_owned_comparison_contract().NUMA_PREPARED_TEACHER_MODE,
+                             _owned_comparison_contract().NUMERICAL_TEACHER_MODE)
     expected_client_schema = contract.CLIENT_REPORT_SCHEMA if numa else 'tensorfold.owned-teacher-client-report-v1'
     if (client.get('schema') != expected_client_schema
             or client.get('quality_acceptance') is not False or client.get('P3_valid') is not False
@@ -1000,7 +1004,8 @@ def _prepared_expert_side(selected, mode, control, contract):
 def _compare_prepared_expert_teacher(reference, candidate, *, method, down_method, iq2_source, prefill_method, control,
                                      contract=None):
     contract = _owned_comparison_contract().prepared_teacher_contract() if contract is None else contract
-    numa = contract.MODE == _owned_comparison_contract().NUMA_PREPARED_TEACHER_MODE
+    numa = contract.MODE in (_owned_comparison_contract().NUMA_PREPARED_TEACHER_MODE,
+                             _owned_comparison_contract().NUMERICAL_TEACHER_MODE)
     left = _prepared_expert_side(reference, 'capture', control, contract)
     right = _prepared_expert_side(candidate, 'replay', control, contract)
     a, b = left['authority'], right['authority']
@@ -1246,6 +1251,19 @@ def _compare_owned_candidate_teacher_main(argv):
     if not SHA.fullmatch(args.expected_input_sha) or hashlib.sha256(raw).hexdigest() != args.expected_input_sha:
         raise ValueError('candidate comparison input SHA differs')
     data = _owned_teacher_object(raw)
+    if data.get('schema') == 'tensorfold.numerical-teacher-comparison-input-v3':
+        if set(data) != {'schema', 'reference', 'candidate', 'read_timeout_s'}:
+            raise ValueError('closed numerical teacher comparison input required')
+        if __package__:
+            from . import v100_numerical_teacher
+        else:
+            import v100_numerical_teacher
+        control = _teacher_read_control(data['read_timeout_s'])
+        report = v100_numerical_teacher.compare(data['reference'], data['candidate'], control=control)
+        report['comparison_input_sha256'] = args.expected_input_sha
+        args.output_dir.mkdir(mode=0o700)
+        _owned_teacher_json(args.output_dir / 'comparison.json', report, 8 << 20, control)
+        return 0
     required = {'schema', 'reference', 'candidate', 'method', 'read_timeout_s'}
     numa = data.get('schema') == 'tensorfold.prepared-expert-teacher-numa-comparison-input-v2'
     prepared = data.get('schema') in ('tensorfold.prepared-expert-teacher-comparison-input-v1',

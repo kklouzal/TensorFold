@@ -78,12 +78,11 @@ def validate_spec(spec):
     fields = ('schema', 'mode', 'image_id', 'source_commit', 'app_root', 'expected_app', 'sdk_manifest',
               'fd', 'torch', 'UUIDs', 'SM', 'modules', 'test_files', 'diagnostics', 'required_native_elf_prefixes')
     benchmark = type(spec) is dict and spec.get('schema') == model_contract.BENCHMARK_SCHEMA
-    numa_teacher = type(spec) is dict and spec.get('schema') == model_contract.NUMA_PREPARED_TEACHER_SCHEMA
-    prepared_teacher = type(spec) is dict and spec.get('schema') in (
-        model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA)
-    contract = model_contract.prepared_teacher_contract(numa=numa_teacher) if prepared_teacher else model_contract
+    numa_teacher = type(spec) is dict and spec.get('schema') in (model_contract.NUMA_PREPARED_TEACHER_SCHEMA, model_contract.NUMERICAL_TEACHER_SCHEMA)
+    prepared_teacher = type(spec) is dict and spec.get('schema') in model_contract.PREPARED_SCHEMAS
+    contract = model_contract.teacher_contract(spec) if prepared_teacher else model_contract
     model = type(spec) is dict and spec.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA,
-                                                       model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA)
+                                                       model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA, model_contract.NUMERICAL_TEACHER_SCHEMA)
     if model:
         fields = tuple(key for key in fields if key not in ('modules', 'test_files')) + ('operation', 'source_files')
     if (type(spec) is not dict or set(spec) not in (set(fields), set(fields) | {'verification_launcher'})
@@ -869,7 +868,7 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
     """Execute once. Tests may inject dependencies; production has no bypass CLI."""
     validate_spec(spec)
     if spec['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE, model_contract.PREPARED_TEACHER_MODE,
-                        model_contract.NUMA_PREPARED_TEACHER_MODE):
+                        model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE):
         return _run_model(spec, source, evidence, runtime_loader=None if runtime_loader is _load_runtime else runtime_loader,
                           helpers_loader=helpers_loader)
     if os.environ.get(CHILD_EVIDENCE_ENV):
@@ -1142,8 +1141,8 @@ def _load_benchmark_plan(operation, source):
 
 
 def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
-    numa_teacher = spec['mode'] == model_contract.NUMA_PREPARED_TEACHER_MODE
-    contract = model_contract.prepared_teacher_contract(numa=True) if numa_teacher else model_contract
+    numa_teacher = spec['mode'] in (model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE)
+    contract = model_contract.teacher_contract(spec) if numa_teacher else model_contract
     result = contract.validate_model_result(_bound_model_json(root / 'teacher/teacher-model-result.json'))
     operation = spec['operation']
     teacher_binding = ({'mode': 'capture', 'reference_sha256': None, 'teacher_ids': None}
@@ -1374,9 +1373,9 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
     source_after_match, content_complete = False, False
     source_files, operation = spec['source_files'], spec['operation']
     benchmark = spec['mode'] == model_contract.BENCHMARK_MODE
-    numa_teacher = spec['mode'] == model_contract.NUMA_PREPARED_TEACHER_MODE
-    prepared_teacher = spec['mode'] in (model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE)
-    contract = model_contract.prepared_teacher_contract(numa=numa_teacher) if prepared_teacher else model_contract
+    numa_teacher = spec['mode'] in (model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE)
+    prepared_teacher = spec['mode'] in (model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE)
+    contract = model_contract.teacher_contract(spec) if prepared_teacher else model_contract
     role = 'benchmark' if benchmark else 'teacher'
     result_schema = model_contract.BENCHMARK_HOST_RESULT_SCHEMA if benchmark else contract.HOST_RESULT_SCHEMA
     old_path = list(sys.path)
@@ -1403,7 +1402,8 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                 raise RuntimeError('executing model operator source differs')
         if prepared_teacher:
             actual = file_identity(contract.__file__)
-            name = 'tools/v100_prepared_teacher_numa.py' if numa_teacher else 'tools/v100_onecat_combinations.py'
+            name = ('tools/v100_numerical_teacher.py' if spec['mode'] == model_contract.NUMERICAL_TEACHER_MODE else
+                    'tools/v100_prepared_teacher_numa.py' if numa_teacher else 'tools/v100_onecat_combinations.py')
             if any(actual[key] != source_files[name][key] for key in ('bytes', 'sha256')):
                 raise RuntimeError('executing prepared teacher contract differs from canonical source')
         sys.path[:0] = [str(source), str(source / 'tools')]
@@ -1442,10 +1442,13 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                         host_result_sha256=proof['host_result']['sha256'], authority_sha256=proof['authority']['sha256'])
                     if 'reference' in capture_inner['operation']:
                         raise ValueError('matched replay requires an original capture, not a replay chain')
-                    for key in ('model_assets', 'model_entrypoint', 'frontend_assets', 'frontend_root', 'execution_manifest'):
+                    for key in ('model_assets', 'model_entrypoint', 'frontend_assets', 'frontend_root',
+                                *(() if spec['mode'] == model_contract.NUMERICAL_TEACHER_MODE else ('execution_manifest',))):
                         if capture_inner['operation'][key] != operation[key]:
                             raise ValueError('matched reference replay model/frontend inputs differ from the capture')
-                    if prepared_teacher and (capture_inner['operation']['selector'] != contract.selectors()[0]
+                    if spec['mode'] == model_contract.NUMERICAL_TEACHER_MODE:
+                        contract.validate_replay_pair(capture_inner['operation'], operation)
+                    elif prepared_teacher and (capture_inner['operation']['selector'] != contract.selectors()[0]
                             or any(capture_inner['operation'][key] != operation[key]
                                    for key in ('case_authority', 'prepared_execution', 'teacher_scope'))):
                         raise ValueError('prepared replay differs from the original incumbent case/numerics')

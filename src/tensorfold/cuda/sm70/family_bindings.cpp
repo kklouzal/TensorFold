@@ -215,13 +215,15 @@ void shift(T old, const T& rows, int keep, int channels) {
     c10::cuda::CUDAGuard guard(old.device()); family_shift_cuda(old, rows, keep, channels);
 }
 
+template<bool WINDOW>
 void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
         const T& freq, T q, T iq, T k, T v, T ks, T vs, const T& offsets,
         const T& generations, T status, int64_t slot, int64_t owner, int64_t start,
         int64_t logical, int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
         int index_dim, double eps, double amplitude, int section1, int section2) {
     check_half(p); epsilon(eps);
-    TORCH_CHECK(p.dim() == 2 && p.size(0) == 1 && qheads == 3 && index_heads > 0 && index_heads <= 256
+    TORCH_CHECK(p.dim() == 2 && p.size(0) >= 1 && p.size(0) <= (WINDOW ? 256 : 1)
+        && qheads == 3 && index_heads > 0 && index_heads <= 256
         && index_dim > 0 && index_dim <= 256 && index_dim % 32 == 0
         && p.size(1) == 2 * qheads * 256 + 512 + (index_heads + 1) * index_dim, "owned Q8 projection geometry");
     for (const auto* x : {&q, &iq, &ks, &vs}) same_half(*x, p);
@@ -229,12 +231,14 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
     for (const auto* x : {&axes, &offsets, &generations}) check(*x, p, at::kLong, "owned Q8 metadata");
     for (const auto* x : {&k, &v}) check(*x, p, at::kChar, "owned Q8 payload");
     check(status, p, at::kInt, "owned Q8 status");
-    TORCH_CHECK(q.numel() == qheads * 256 && iq.numel() == index_heads * index_dim && axes.dim() == 2 && axes.size(0) == 1 && axes.size(1) == 3
+    const int64_t rows = p.size(0);
+    TORCH_CHECK(q.numel() == rows * qheads * 256 && iq.numel() == rows * index_heads * index_dim
+        && axes.dim() == 2 && axes.size(0) == rows && axes.size(1) == 3
         && qw.numel() == 256 && kw.numel() == 256 && iw.numel() == index_dim && freq.dim() == 1
         && freq.numel() > 0 && freq.numel() * 2 <= std::min(256, index_dim)
         && generations.numel() == 2 && status.numel() == 2, "owned Q8 output/control geometry");
     TORCH_CHECK(slot >= 0 && owner >= 0 && logical > 0 && logical <= INT32_MAX && physical >= 0 && physical <= INT32_MAX
-        && start >= 0 && start < logical && page_tokens > 0 && page_tokens % 4 == 0
+        && start >= 0 && start <= logical - rows && page_tokens > 0 && page_tokens % 4 == 0
         && offsets.dim() == 1 && offsets.numel() == (logical + page_tokens - 1) / page_tokens
         && k.numel() >= physical * 256 && v.numel() >= physical * 256 && ks.numel() >= physical * 8
         && vs.numel() >= physical * 8 && layer >= -1 && section1 >= 0 && section2 >= 0
@@ -543,7 +547,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("prepare_writeback", &family_writeback_prepare_cuda);
     m.def("prepare_partial", &family_partial_prepare_cuda);
     m.def("prepare_owned_q8", &family_owned_q8_prepare_resident_cuda);
-    m.def("owned_q8_prepare", &owned_q8_prepare);
+    m.def("owned_q8_prepare", &owned_q8_prepare<false>);
+    m.def("owned_q8_prepare_window", &owned_q8_prepare<true>);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
     m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);

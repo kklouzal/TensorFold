@@ -271,7 +271,8 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
         ik = ops.owned_q8_prepare_window(window_module, projection[start:stop], coordinates,
             weights, cache, state, layer, buffers.q[start:stop], buffers.iq[start:stop],
             frequency=position.inv_freq, sections=position.sections,
-            amplitude=position.amplitude, start=pos)
+            amplitude=position.amplitude, start=pos,
+            **({'dispatch': 'grid-v1'} if getattr(owner, 'owned_q8_window_dispatch', None) == 'grid-v1' else {}))
         if ik is not None:
             if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
                     include_mtp=hasattr(state, 'mtp_kc')):
@@ -537,6 +538,7 @@ class OwnerBuffers:
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.reference_tiles = self.owned_q8_preparation = None
         self.owned_q8_window_preparation = self.owned_q8_window_role = None
+        self.owned_q8_window_dispatch = None
         self.aten_tiles = self.flash_tiles = None
         self.native_kernel_family, self.native_heads_per_block = "sm70-paged-owner-q8-compact-v1", None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
@@ -838,13 +840,15 @@ class OwnerBuffers:
 
     def configure_native_family(self, family, heads_per_block=None, *, aten_panel_rows=None,
                                 flash_artifact=None, flash_panel_rows=None, flash_tensor_budget_bytes=None,
-                                owned_q8_window_prepare=False, owned_q8_window_role=None):
+                                owned_q8_window_prepare=False, owned_q8_window_role=None,
+                                owned_q8_window_dispatch=None):
         """Fix numerical policy before capture/admission; no serving redispatch."""
         from .owner_execution import KERNEL_FAMILY, RN_KERNEL_FAMILY
         if self._native_family_configured or self.native_states is not None or self._native_pending:
             raise RuntimeError("native numerical family is immutable after startup configuration")
         if (type(owned_q8_window_prepare) is not bool
-                or not owned_q8_window_prepare and owned_q8_window_role is not None):
+                or not owned_q8_window_prepare and (owned_q8_window_role is not None or owned_q8_window_dispatch is not None)
+                or owned_q8_window_dispatch not in (None, 'leaf-loop-v1', 'grid-v1')):
             raise ValueError('owned Q8 window requires its explicit boolean selection')
         if owned_q8_window_prepare and (owned_q8_window_role not in ('decode', 'mtp')
                 or self.prefill or not 1 <= self.rows <= 256 or self.heads != 3 or self.head_dim != 256
@@ -884,10 +888,12 @@ class OwnerBuffers:
         if (family in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY) and not self.prefill and self.native_pair is not None
                 and (self.native_pair.key.bits, self.native_pair.key.codec,
                      self.native_pair.value.bits, self.native_pair.value.codec) == (8, 0, 8, 0)):
-            self.owned_q8_preparation = ops.prepare_owned_q8(self.device)
+            self.owned_q8_preparation = ops.prepare_owned_q8(self.device,
+                **({'window_dispatch': 'grid-v1'} if owned_q8_window_dispatch == 'grid-v1' else {}))
         if owned_q8_window_prepare:
             self.owned_q8_window_preparation = self.owned_q8_preparation
             self.owned_q8_window_role = owned_q8_window_role
+            self.owned_q8_window_dispatch = owned_q8_window_dispatch or 'leaf-loop-v1'
         self.native_kernel_family, self.native_heads_per_block = family, heads_per_block
         self._native_family_configured = True
 
@@ -1107,6 +1113,7 @@ class OwnerBuffers:
             self.flash_tiles = None
         self.reference_tiles = self.owned_q8_preparation = None
         self.owned_q8_window_preparation = self.owned_q8_window_role = None
+        self.owned_q8_window_dispatch = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_host_words = None
@@ -1117,10 +1124,12 @@ class OwnerBuffers:
     def native_record(self):
         return {"prepared": self.descriptors is not None,
                 **({'owned_q8_window_preparation': {
-                    'policy': 'owned-q8-window-preparation-v1',
+                    'policy': ('owned-q8-window-grid-preparation-v1' if self.owned_q8_window_dispatch == 'grid-v1'
+                               else 'owned-q8-window-preparation-v1'),
                     'module': self.owned_q8_window_preparation.__name__,
                     'role': self.owned_q8_window_role, 'max_window_rows': self.rows,
-                    'native_rows_per_dispatch': 1, 'native_dispatches_per_window': 'rows',
+                    'native_rows_per_dispatch': ('window' if self.owned_q8_window_dispatch == 'grid-v1' else 1),
+                    'native_dispatches_per_window': (1 if self.owned_q8_window_dispatch == 'grid-v1' else 'rows'),
                     'qualified': False}} if self.owned_q8_window_preparation is not None else {}),
                 "owned_q8_preparation": (None if self.owned_q8_preparation is None else {
                     "policy": "owned-q8-decode-preparation-v1", "module": self.owned_q8_preparation.__name__,
