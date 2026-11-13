@@ -670,7 +670,15 @@ class FlashNextEngine:
             self._stage_identity = prepare_pp1(self, torch, required=stage_identity_required)
             if self._profile_build is not None:
                 self._startup_store = self._startup_store_origin = None  # Managed comm retains its transport.
-        if sm70 and adaptive_sessions:
+        full_window_target = (24 if (self.kv_pair.key.bits, self.kv_pair.value.bits) == (8, 8)
+                              else 32 if (self.kv_pair.key.bits, self.kv_pair.value.bits) == (4, 4) else None)
+        full_window_headroom = bool(sm70 and adaptive_sessions and graphs and multi_graph_request() is None
+            and self._owned_expert_requested and self.method_geometry.method in ('none', 'mtp')
+            and vram_experts is None and tp == 8 and int(text['hidden_size']) == 2560
+            and int(text['num_hidden_layers']) == 48 and indexer_history == 'gpu' and not vision
+            and self.rope.native_context == selected_context == 262144
+            and full_window_target is not None and (session_ceiling is None or session_ceiling >= full_window_target))
+        if sm70 and adaptive_sessions and not full_window_headroom:
             from tensorfold.cuda.capacity import cuda_reserve_bytes
 
             if cuda_reserve_bytes(int(torch.cuda.mem_get_info()[1])) < 4 * 2**30:
@@ -1473,6 +1481,7 @@ class FlashNextEngine:
                                    gather=gather, extra_files=extra_files(model_dir) if exl3 else (),
                                    **automatic_capacity,
                                    **numeric_capacity,
+                                   **({'memory_reserve': 0, 'full_window_headroom': True} if full_window_headroom else {}),
                                    **rope_capacity, **host_capacity, **adaptive_capacity,
                                    **({"preallocated_device_bytes": nvfp4_preallocated
                                        + (owner_preparation.committed_bytes() or 0 if owner_preparation is not None else 0)}
@@ -1501,6 +1510,14 @@ class FlashNextEngine:
             self.capacity_plan["sm70_weight_plan"] = self._sm70_weight_plan
         if adaptive_sessions:
             resolved_streams = self.capacity_plan["session_capacity"]["resident_capacity"]
+            if full_window_headroom:
+                if resolved_streams < full_window_target:
+                    raise MemoryError('required full-context resident Q8/Q4 capacity does not fit complete service promises')
+                self.capacity_plan['full_window_headroom'] = {
+                    'policy': 'full-window-physical-headroom-v1', 'required_sessions': full_window_target,
+                    'logical_context': 262144, 'unused_device_floor_bytes': 0,
+                    'execution_workspace': 'unchanged complete geometry and runtime minimum2GiB',
+                    'initial_admission': 'actual physical free/remaining absolute grant; no unused4GiB reservation'}
             if hc_graphs and resolved_streams < streams:
                 raise MemoryError("HC graph reservation cannot reduce the requested full-resident State envelope")
             streams = resolved_streams
@@ -1839,6 +1856,17 @@ class FlashNextEngine:
             self.e = None
             if managed:
                 self._profile_build.phase("allocating_state")
+            observed_graph_budget = None
+            if (graph_request is None and graphs and sm70 and history_placement is not None
+                    and resident_windows is not None and resident_windows >= streams
+                    and w.meta.get('history_layout') == 'unique' and owner_preparation is not None
+                    and w.meta.get('indexer_history', 'gpu') == 'gpu'
+                    and self.method_geometry.method in ('none', 'mtp')):
+                from .service_memory import full_window_graph_budget, full_window_headroom_required
+                if full_window_headroom_required(self.capacity_plan, key_bits=self.kv_pair.key.bits,
+                        value_bits=self.kv_pair.value.bits, slots=streams, full_windows=resident_windows,
+                        physical_capacity=self.max_len):
+                    observed_graph_budget = full_window_graph_budget(self.capacity_plan)
             self.multi = MultiDecoder(w, slots=streams, capacity=self.max_len, logical_context=self.context_window,
                                       depth=self.depth,
                                       confidence=self.confidence, keep=KEEP, points=self.points,
@@ -1852,9 +1880,14 @@ class FlashNextEngine:
                                           additional_outside_active_bytes=extra)) if hc_graphs else None,
                                       graph_header_room=max(0, self.capacity_plan["budget_bytes"]
                                                             - self.capacity_plan["serving_peak_bytes_estimate"]),
+                                      **({'graph_project_budget': observed_graph_budget,
+                                          'graph_headroom_live': owner_preparation.live_bytes}
+                                         if observed_graph_budget is not None else {}),
                                       vision_workspace_bytes=workspace,
                                       **({"execution_rows": execution_rows} if execution_rows is not None else {}),
-                                      **({"memory_live": owner_preparation.live_bytes} if owner_preparation is not None else {}),
+                                      **({"memory_live": (partial(owner_preparation.live_bytes, reserve=0)
+                                                          if observed_graph_budget is not None else owner_preparation.live_bytes)}
+                                         if owner_preparation is not None else {}),
                                       **({"full_windows": resident_windows} if resident_windows is not None else {}))
             self.capacity_plan["native_gdn_batch"] = {"enabled": native_gdn_batch,
                 "implementation": "sm70-gdn-state-batch-v1", "pointer_fields": 8 if native_gdn_batch else 2,

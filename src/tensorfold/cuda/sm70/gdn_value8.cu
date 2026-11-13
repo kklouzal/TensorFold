@@ -9,6 +9,7 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <optional>
+#include <type_traits>
 
 namespace {
 constexpr int NK=2, NV=6, D=128, C=1280, PW=2060;
@@ -30,10 +31,10 @@ __device__ __forceinline__ float convolve(const __half* p, const __half* history
     return half_round(acc/(1.0f+expf(-acc)));
 }
 
-template<bool Negative>
+template<bool Negative, bool Chunk64 = false>
 __device__ __forceinline__ void front_body(const __half* p, const __half* history, const __half* weight,
-        const float* parameter, const float* bias, float* q, float* k, __half* v, float* g, float* beta,
-        int hk, int row) {
+        const float* parameter, const float* bias, std::conditional_t<Chunk64, __half, float>* q,
+        std::conditional_t<Chunk64, __half, float>* k, __half* v, float* g, float* beta, int hk, int row) {
     const int t=threadIdx.x, warp=t>>5, lane=t&31;
     __shared__ float qs[D], ks[D];
     qs[t]=convolve(p,history,weight,row,hk*D+t);
@@ -46,10 +47,13 @@ __device__ __forceinline__ void front_body(const __half* p, const __half* histor
         for (int i=0;i<4;++i) { x[i]=values[lane*4+i]; ss=ss+x[i]*x[i]; }
         ss=warp_sum(ss);
         float inv=1.0f/sqrtf(ss+1e-6f);
-        if (warp==0) inv=inv*(1.0f/sqrtf((float)D));
-        float* dest=warp==0 ? q : k;
+        if constexpr (!Chunk64) { if (warp==0) inv=inv*(1.0f/sqrtf((float)D)); }
+        auto* dest=warp==0 ? q : k;
 #pragma unroll
-        for (int i=0;i<4;++i) dest[((size_t)row*NK+hk)*D+lane*4+i]=x[i]*inv;
+        for (int i=0;i<4;++i) {
+            if constexpr (Chunk64) dest[((size_t)row*NK+hk)*D+lane*4+i]=__float2half_rn(x[i]*inv);
+            else dest[((size_t)row*NK+hk)*D+lane*4+i]=x[i]*inv;
+        }
     }
 #pragma unroll
     for (int repeat=0;repeat<3;++repeat) {
@@ -59,7 +63,8 @@ __device__ __forceinline__ void front_body(const __half* p, const __half* histor
             const float b=__half2float(p[(size_t)row*PW+C+NV*D+hv]);
             const float a=__half2float(p[(size_t)row*PW+C+NV*D+NV+hv]);
             const float rate=Negative ? parameter[hv] : -expf(parameter[hv]);
-            g[row*NV+hv]=expf(rate*softplus(a+bias[hv]));
+            if constexpr (Chunk64) g[row*NV+hv]=rate*softplus(a+bias[hv]);
+            else g[row*NV+hv]=expf(rate*softplus(a+bias[hv]));
             beta[row*NV+hv]=half_round(sigmoid(b));
         }
     }
@@ -69,6 +74,14 @@ template<bool Negative>
 __global__ __launch_bounds__(128) void front(const __half* p, const __half* history, const __half* weight,
         const float* parameter, const float* bias, float* q, float* k, __half* v, float* g, float* beta) {
     front_body<Negative>(p,history,weight,parameter,bias,q,k,v,g,beta,blockIdx.x,blockIdx.y);
+}
+
+// Explicit G3 producer: no query scaling and no exp/log round trip.
+template<bool Negative>
+__global__ __launch_bounds__(128) void chunk64_front(const __half* p, const __half* history,
+        const __half* weight, const float* parameter, const float* bias,
+        __half* q, __half* k, __half* v, float* g, float* beta) {
+    front_body<Negative,true>(p,history,weight,parameter,bias,q,k,v,g,beta,blockIdx.x,blockIdx.y);
 }
 
 // EXACT incumbent update order, reused by forward and prefix replay.
@@ -164,10 +177,10 @@ __global__ __launch_bounds__(64) void core(const float* initial, const float* q,
 }
 
 __device__ __forceinline__ void back_body(const __half* p, const __half* norm, float eps,
-        __half* out, float* sums, int hv, int row) {
+        const __half* raw, __half* out, float* sums, int hv, int row) {
     const int t=threadIdx.x, warp=t>>5, lane=t&31;
     __shared__ float y[D], inv;
-    y[t]=__half2float(out[((size_t)row*NV+hv)*D+t]);
+    y[t]=__half2float(raw[((size_t)row*NV+hv)*D+t]);
     __syncthreads();
     if (warp==0) {
         float ss=0.0f;
@@ -186,7 +199,12 @@ __device__ __forceinline__ void back_body(const __half* p, const __half* norm, f
 }
 
 __global__ __launch_bounds__(128) void back(const __half* p, const __half* norm, float eps, __half* out, float* sums) {
-    back_body(p,norm,eps,out,sums,blockIdx.x,blockIdx.y);
+    back_body(p,norm,eps,out,out,sums,blockIdx.x,blockIdx.y);
+}
+
+__global__ __launch_bounds__(128) void chunk64_back(const __half* p, const __half* norm, float eps,
+        const __half* raw, __half* out, float* sums) {
+    back_body(p,norm,eps,raw,out,sums,blockIdx.x,blockIdx.y);
 }
 
 // Existing registered descriptor ABI: conv, current/alternate recurrence,
@@ -223,7 +241,7 @@ __global__ __launch_bounds__(128) void batch_back(const __half* p, const __half*
         __half* out, float* sums, const int* starts) {
     const int slot=blockIdx.z, begin=starts[slot], rows=starts[slot+1]-begin, row=blockIdx.y;
     if (row>=rows) return;
-    back_body(p+(size_t)begin*PW,norm,eps,out+(size_t)begin*NV*D,
+    back_body(p+(size_t)begin*PW,norm,eps,out+(size_t)begin*NV*D,out+(size_t)begin*NV*D,
               sums+(size_t)begin*NV*4,blockIdx.x,row);
 }
 
@@ -310,4 +328,28 @@ void value8_prepare_cuda() {
     ATTRIBUTE(0,false); ATTRIBUTE(1,false); ATTRIBUTE(2,false); ATTRIBUTE(4,false); ATTRIBUTE(5,false); ATTRIBUTE(8,false);
     ATTRIBUTE(0,true); ATTRIBUTE(1,true); ATTRIBUTE(2,true); ATTRIBUTE(4,true); ATTRIBUTE(5,true); ATTRIBUTE(8,true);
 #undef ATTRIBUTE
+}
+
+// Owned Half boundaries only. The G3 core and State publication are independent.
+void value8_chunk64_front_cuda(const at::Tensor& p, const at::Tensor& history, const at::Tensor& weight,
+        const at::Tensor& parameter, const at::Tensor& bias, int rows, at::Tensor& q, at::Tensor& k,
+        at::Tensor& v, at::Tensor& gate, at::Tensor& beta, bool negative) {
+    auto stream=at::cuda::getCurrentCUDAStream();
+#define G3_FRONT(N) chunk64_front<N><<<dim3(NK,rows),128,0,stream>>>(reinterpret_cast<const __half*>(p.data_ptr()),reinterpret_cast<const __half*>(history.data_ptr()),reinterpret_cast<const __half*>(weight.data_ptr()),parameter.data_ptr<float>(),bias.data_ptr<float>(),reinterpret_cast<__half*>(q.data_ptr()),reinterpret_cast<__half*>(k.data_ptr()),reinterpret_cast<__half*>(v.data_ptr()),gate.data_ptr<float>(),beta.data_ptr<float>())
+    if (negative) { G3_FRONT(true); } else { G3_FRONT(false); }
+#undef G3_FRONT
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void value8_chunk64_back_cuda(const at::Tensor& p, const at::Tensor& norm, float eps, int rows,
+        const at::Tensor& raw, at::Tensor& out, at::Tensor& sums) {
+    chunk64_back<<<dim3(NV,rows),128,0,at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __half*>(p.data_ptr()),
+        reinterpret_cast<const __half*>(norm.data_ptr()),eps,reinterpret_cast<const __half*>(raw.data_ptr()),
+        reinterpret_cast<__half*>(out.data_ptr()),sums.data_ptr<float>());
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void value8_chunk64_prepare_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,chunk64_front<true>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,chunk64_front<false>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,chunk64_back));
 }

@@ -499,13 +499,15 @@ def cuda_limit_bytes(environ: Mapping[str, str] | None = None) -> int | None:
     return numerator * GIB // denominator
 
 
-def available_bytes(torch, *, reserve: int | None = None) -> int:
+def available_bytes(torch, *, reserve: int | None = None, full_window_headroom=False) -> int:
     """What admission and the runtime gate read as live: the pool's free memory less its floor, under the explicit cap."""
 
     free, total = map(int, torch.cuda.mem_get_info())
     if reserve is not None and (type(reserve) is not int or not 0 <= reserve <= total):
         raise ValueError("explicit CUDA memory reserve must be integer bytes within device memory")
     integrated = unified(torch)
+    if type(full_window_headroom) is not bool or full_window_headroom and (reserve != 0 or integrated):
+        raise ValueError('full-window headroom requires an explicit discrete zero unused-floor policy')
     memory = _meminfo() if integrated else None
     if memory is not None:
         granted = memory["MemAvailable"] - (reserve_bytes(memory["MemTotal"], host=True) if reserve is None else reserve)     # one pool: page cache counts as free
@@ -514,12 +516,13 @@ def available_bytes(torch, *, reserve: int | None = None) -> int:
         # a discrete-only override must not lower a shared host reservation.
         granted = free - (reserve_bytes(total) if reserve is None else reserve)
     else:
-        granted = free - cuda_reserve_bytes(total, default=reserve)        # a discrete card (or no /proc/meminfo): the floor comes off the card
+        configured_floor = cuda_reserve_bytes(total, default=reserve) # Retain invalid-configuration refusals.
+        granted = free if full_window_headroom else free - configured_floor
     limit = cuda_limit_bytes()
     return max(0, min(granted, limit)) if limit is not None else max(0, granted)
 
 
-def device_allocation_baseline(torch, *, reserve=None, preallocated_device_bytes=0):
+def device_allocation_baseline(torch, *, reserve=None, preallocated_device_bytes=0, full_window_headroom=False):
     """One startup-only discrete-device sample and its incremental budget.
 
     The caller has quiesced its GPU work before model admission. This separate
@@ -529,6 +532,8 @@ def device_allocation_baseline(torch, *, reserve=None, preallocated_device_bytes
     """
     if type(preallocated_device_bytes) is not int or preallocated_device_bytes < 0:
         raise ValueError("preallocated device commitments must be nonnegative integer bytes")
+    if type(full_window_headroom) is not bool or full_window_headroom and reserve != 0:
+        raise ValueError('full-window admission requires its explicit zero unused-floor policy')
     if unified(torch):
         raise ValueError("the SM70 allocation baseline requires a discrete CUDA device")
     start, observed_at = time.monotonic_ns(), time.time_ns()
@@ -549,8 +554,9 @@ def device_allocation_baseline(torch, *, reserve=None, preallocated_device_bytes
     free, total = map(int, torch.cuda.mem_get_info())  # Exactly this sample governs the returned budget.
     if not 0 <= free <= total:
         raise RuntimeError("CUDA physical free/total observation is inconsistent")
-    floor = cuda_reserve_bytes(total, default=reserve)
-    if floor < 4 * GIB:
+    configured_floor = cuda_reserve_bytes(total, default=reserve)
+    floor = 0 if full_window_headroom else configured_floor
+    if floor < 4 * GIB and not full_window_headroom:
         raise ValueError("SM70 allocation baseline requires at least 4 GiB device headroom")
     cap = cuda_limit_bytes()
     if cap is not None and preallocated_device_bytes > cap:
@@ -681,7 +687,7 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           session_ceiling: int | None = None,
           session_host_workspace: Callable[[int], int] | None = None,
           preallocated_device_bytes: int = 0,
-          capture_device_baseline: bool = False,
+          capture_device_baseline: bool = False, full_window_headroom: bool = False,
           execution_capability: tuple[int, int] | None = None) -> dict:
     """One refusal or capacity on both ranks before allocating.
 
@@ -718,6 +724,9 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
             raise ValueError("preallocated device commitments must be nonnegative integer bytes")
         if type(capture_device_baseline) is not bool:
             raise ValueError("device baseline capture must be an explicit boolean")
+        if (type(full_window_headroom) is not bool or full_window_headroom
+                and (not capture_device_baseline or memory_reserve != 0 or session_geometry is None)):
+            raise ValueError('full-window headroom requires explicit measured resident-session admission')
         preallocation_limit = cuda_limit_bytes() if preallocated_device_bytes else None
         if preallocation_limit is not None and preallocated_device_bytes > preallocation_limit:
             raise ValueError("preallocated device commitments exceed the absolute CUDA budget")
@@ -803,7 +812,7 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
         effective_native = native if context_limit is None else context_limit
         if capture_device_baseline:
             baseline = device_allocation_baseline(torch, reserve=memory_reserve,
-                                                  preallocated_device_bytes=preallocated_device_bytes)
+                preallocated_device_bytes=preallocated_device_bytes, full_window_headroom=full_window_headroom)
             budget = baseline["usable_serving_budget_bytes"]
             preallocation_limit = baseline["absolute_grant_cap_bytes"]
         else:

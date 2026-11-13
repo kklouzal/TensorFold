@@ -63,23 +63,26 @@ def prepare_capture() -> None:
     torch.cuda.empty_cache()
 
 
-def live_bytes() -> int:
+def live_bytes(*, reserve=None) -> int:
     from tensorfold.cuda.capacity import available_bytes, cuda_limit_bytes
 
-    room = int(available_bytes(torch))
+    room = int(available_bytes(torch)) if reserve is None else int(available_bytes(torch, reserve=reserve,
+        **({'full_window_headroom': True} if reserve == 0 else {})))
     limit = cuda_limit_bytes()
     return max(0, min(room, limit - int(torch.cuda.memory_allocated()))) if limit is not None else room
 
 
-def service_live_bytes(pool):
+def service_live_bytes(pool, *, reserve=None):
     if pool.private_spare_bytes is None:
         # Backends without the native segment proof retain physical-only
         # admission. Never infer zero private storage from an empty snapshot.
-        return live_bytes
+        return live_bytes if reserve is None else partial(live_bytes, reserve=reserve)
     from tensorfold.cuda.capacity import available_bytes
     from tensorfold.cuda.memory_gate import torch_live
 
-    return torch_live(torch, available_bytes, unavailable_spare_bytes=pool.private_spare_bytes, owner=pool)
+    available = available_bytes if reserve is None else partial(available_bytes, reserve=reserve,
+        **({'full_window_headroom': True} if reserve == 0 else {}))
+    return torch_live(torch, available, unavailable_spare_bytes=pool.private_spare_bytes, owner=pool)
 
 
 def capturable(w) -> str | None:
@@ -303,6 +306,7 @@ class RoundGraphs:
         if not prepared:
             prepare_capture()
         before = free_bytes()
+        reserved_before = int(torch.cuda.memory_reserved())
         enabled = gc.isenabled()
         gc.disable()                                     # collecting a graph's exec invalidates an active capture
         primary = None
@@ -330,6 +334,7 @@ class RoundGraphs:
             self.room_bytes = max(self.bytes, self.settled_bytes)
             self.capture_s = time.perf_counter() - started
             self._account_pool()
+            self.capture_reserved_delta_bytes = int(torch.cuda.memory_reserved()) - reserved_before
             if self.room_bytes > self.budget:
                 raise MemoryError(f"captured rounds retain {self.room_bytes} bytes beyond their {self.budget}-byte "
                                   "admitted budget after settlement")

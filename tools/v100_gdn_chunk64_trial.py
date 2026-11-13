@@ -29,6 +29,50 @@ def reference(q, k, v, raw_log_gate, beta, initial):
     return torch.stack(outputs,dim=1),s
 
 
+def half_frontend_reference(projection, history, weight, parameter, bias, *, negative_decay):
+    """Independent CPU boundary oracle; no native equivalence/tolerance claim.
+
+    Ordered FP32 convolution and explicit Half cast points model the producer.
+    Torch transcendental/reduction implementations are diagnostic references,
+    not assumed bit-identical to CUDA intrinsics and warp reduction trees.
+    """
+    import torch
+
+    p,h,w,a,dt = [value.detach().cpu().float() for value in (projection,history,weight,parameter,bias)]
+    rows = p.shape[0]
+    source = torch.cat((h,p[:,:1280]),dim=0)
+    conv = torch.zeros((rows,1280),dtype=torch.float32)
+    for tap in range(4):
+        conv = conv + source[tap:tap+rows]*w[:,tap]
+    activated = (conv/(1+torch.exp(-conv))).half().float()
+    q = activated[:,:256].reshape(1,rows,2,128)
+    k = activated[:,256:512].reshape(1,rows,2,128)
+    q = (q/torch.sqrt(q.square().sum(-1,keepdim=True)+1e-6)).half()
+    k = (k/torch.sqrt(k.square().sum(-1,keepdim=True)+1e-6)).half()
+    v = activated[:,512:].reshape(1,rows,6,128).half()
+    shifted = p[:,2054:2060]+dt
+    softplus = torch.where(shifted>20,shifted,torch.log1p(torch.exp(shifted)))
+    rate = a if negative_decay else -torch.exp(a)
+    raw = (rate*softplus)[None]
+    beta = (1/(1+torch.exp(-p[:,2048:2054]))).half().float()[None]
+    return q,k,v,raw,beta
+
+
+def half_epilogue_reference(raw, projection, norm, eps):
+    """Independent CPU Half cast/gated-RMSNorm/group32 boundary diagnostic."""
+    import torch
+
+    y,p,n = [value.detach().cpu().float() for value in (raw,projection,norm)]
+    rows = p.shape[0]
+    y = y.reshape(rows,6,128)
+    inv = 1/torch.sqrt(y.square().mean(-1,keepdim=True)+eps)
+    normalized = ((y*inv).half().float()*n).half().float()
+    z = p[:,1280:2048].reshape(rows,6,128)
+    output = (normalized/(1+torch.exp(-z))).half().reshape(rows,768)
+    sums = output.float().reshape(rows,24,32).sum(-1)
+    return output,sums
+
+
 def unchanged_initial(initial, original):
     """Compare storage bits of the admitted contiguous FP32 state banks."""
     import torch
@@ -50,14 +94,23 @@ def errors(actual, expected):
 
 
 
+def cuda_entry(source):
+    """Require one unique entry; generated declarations may repeat its name."""
+    import re
+
+    pattern=r'(?:extern\s+"C"\s+)?__global__\s+void\s+(?:__launch_bounds__\([^\)]*\)\s+)?(\w+)'
+    names=set(re.findall(pattern,source))
+    if len(names)!=1:
+        raise RuntimeError("cannot bind exactly one generated CUDA entry per G3 stage")
+    return names.pop()
+
+
 def nondefault_stream_trial(args, compiler, progress):
     """Actual producer/core/consumer ordering plus recorded CUDA stream evidence.
 
     This diagnostic refuses to substitute profiler headers or CPU annotations
     for actual native GPU records. It does not qualify physical clock accuracy.
     """
-    import re
-
     import torch
 
     from tensorfold.cuda.sm70.gdn_chunk64 import layout, prepare
@@ -78,12 +131,8 @@ def nondefault_stream_trial(args, compiler, progress):
         prepared=prepare(rows,args.device,workspace_budget_bytes=layout(rows).workspace_bytes,compiler=compiler)
         bound=prepared.bind(q,k,v,g,beta,initial,output,final)
         symbols=[]
-        pattern=r'(?:extern\s+"C"\s+)?__global__\s+void\s+(?:__launch_bounds__\([^\)]*\)\s+)?(\w+)'
         for kernel in (prepared.cumsum,prepared.kkt,prepared.core):
-            names=re.findall(pattern,kernel.get_kernel_source())
-            if len(names)!=1:
-                raise RuntimeError("cannot bind exactly one generated CUDA entry per G3 stage")
-            symbols.extend(names)
+            symbols.append(cuda_entry(kernel.get_kernel_source()))
         torch.cuda.synchronize(args.device)
         progress["current"]={"stage":"nondefault-stream-profile","rows":rows}
         # CUDA must be requested by the process's FIRST Kineto initialization.
@@ -122,6 +171,8 @@ def nondefault_stream_trial(args, compiler, progress):
 
 
 def run(args, progress):
+    progress["phase"]=args.phase
+    progress["main_numerical_cases"]="unrun" if args.phase=="nondefault-stream" else "incomplete"
     from tensorfold.cuda.sm70.gdn_chunk64 import Compiler, layout, prepare
     from tensorfold.cuda.sm70.gdn_chunk64_artifact import OwnedArtifact
     owned=(OwnedArtifact(str(args.owned_tilelang_attestation),args.owned_attestation_bytes,
@@ -139,7 +190,7 @@ def run(args, progress):
     torch.cuda.set_device(args.device)
     torch.manual_seed(20261113)
     results=progress["results"]
-    for rows in (1,63,64,65,128,129):
+    for rows in ((1,63,64,65,128,129) if args.phase=="full" else ()):
         for case in ("zero", "nonzero_initial", "raw_underflow"):
             progress["current"]={"rows":rows,"case":case,"stage":"operands"}
             with torch.inference_mode():
@@ -214,8 +265,11 @@ def run(args, progress):
                 record["initial_unchanged"]=record["initial_unchanged"] and unchanged_initial(initial,original)
                 progress.pop("current_record",None)
                 progress["current"]["stage"]="complete"
+    if args.phase=="full":
+        progress["main_numerical_cases"]="completed"
     stream_result=nondefault_stream_trial(args,compiler,progress)
     return {"schema":"tensorfold.gdn-chunk64-native-numerical-trial-v1",
+            "phase":args.phase,"main_numerical_cases":progress["main_numerical_cases"],
             "quality_acceptance":False,"performance_qualified":False,
             "reason":"Errors reported without invented tolerance; frontend/model/state-cut integration unqualified",
             "compiler":compiler.inspect(),"device":torch.cuda.get_device_name(args.device),
@@ -247,6 +301,8 @@ def main(argv=None):
     p.add_argument("--cuda-home",required=True)
     p.add_argument("--nvcc-sha256",required=True)
     p.add_argument("--device",default="cuda:0")
+    p.add_argument("--phase",choices=("full","nondefault-stream"),default="full",
+                   help="full runs all18 numerical cases and both splits; nondefault-stream runs only the stream control, with main cases explicitly unrun")
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--stream-trace-output",type=Path,required=True)
     p.add_argument("--owned-tilelang-attestation",type=Path,
@@ -274,6 +330,7 @@ def main(argv=None):
         result=run(args, progress)
     except Exception as exc:
         result={"schema":"tensorfold.gdn-chunk64-native-numerical-trial-v1",
+                "phase":args.phase,"main_numerical_cases":progress.get("main_numerical_cases","unrun"),
                 "quality_acceptance":False,"performance_qualified":False,
                 "failure":{"type":type(exc).__name__,"message":str(exc)},
                 "progress":progress}
@@ -283,6 +340,16 @@ def main(argv=None):
     args.output.write_text(json.dumps(result,indent=2,allow_nan=False)+"\n")
     if not result["nondefault_stream"]["actual_single_nondefault_stream_proof"] or not result["nondefault_stream"]["producer_core_consumer_exact_zero"]:
         raise SystemExit("G3 nondefault stream proof failed; preserve report, do not adopt")
+    if args.phase=="nondefault-stream":
+        if result["results"] or result["main_numerical_cases"]!="unrun":
+            raise SystemExit("G3 stream-only report must not claim main numerical cases")
+        return
+    expected={(rows,case) for rows in (1,63,64,65,128,129)
+              for case in ("zero","nonzero_initial","raw_underflow")}
+    if (len(result["results"])!=len(expected)
+            or {(r["rows"],r["case"]) for r in result["results"]}!=expected
+            or result["main_numerical_cases"]!="completed"):
+        raise SystemExit("G3 full trial requires all18 main numerical cases")
     if any(not r["initial_unchanged"] or not r["initial_alias_refused"]
            or not r["output"]["finite"] or not r["final"]["finite"]
            or not r.get("exact_zero_output_and_final",True)

@@ -41,6 +41,15 @@ Private receipts are provenance, not dependencies for fresh-checkout tests.
 
 ## Requested, implemented, qualified and effective
 
+The2026-11-13 user authority updates the graph resource contract for complete
+resident SC117 capacity: otherwise unused memory may fund execution after24 Q8
+or32 Q4 full262,144-token contexts and required speculative tails, workspace,
+snapshots and copy/recovery overlap are protected. The source now derives
+automatic graph allowance from current worst-rank physical/absolute-grant
+headroom after full window materialization. Earlier floor-based receipts remain
+historical; native capacity/C36 fit and output/performance qualification of this
+new policy remain pending. Other profiles retain their scoped admission rules.
+
 The [branch consolidation scope](../branch-consolidation.md) records the
 independently ported boundary/tool/fixture changes, the Dense wrapper correctness
 repair and the prepared native-owner host-word component. Tail/Pool preparation

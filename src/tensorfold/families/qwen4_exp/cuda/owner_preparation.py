@@ -827,22 +827,26 @@ class OwnerPreparation:
         extra = 0 if self.dense_binding_memory is None else self.dense_binding_memory['committed_delta_bytes']
         return active + outside + sum(graph.private_spare_bytes for graph in captures) + extra
 
-    def live_bytes(self):
+    def live_bytes(self, *, reserve=None, additional_private_spare_bytes=0, additional_outside_active_bytes=0):
         """Credit ordinary spare only after excluding proved private-pool ownership."""
         import torch
         from tensorfold.cuda.capacity import available_bytes, cuda_limit_bytes
         from tensorfold.cuda.kv_arena import mapped_bytes
 
+        if any(type(v) is not int or v < 0 for v in (additional_private_spare_bytes, additional_outside_active_bytes)):
+            raise ValueError('additional graph ownership must be nonnegative integer bytes')
         active = int(torch.cuda.memory_allocated())
-        spare = (max(0, int(torch.cuda.memory_reserved()) - active - self.private_spare_bytes)
+        spare = (max(0, int(torch.cuda.memory_reserved()) - active - self.private_spare_bytes - additional_private_spare_bytes)
                  if self.private_spare_bytes is not None else 0)
-        free = int(available_bytes(torch)) + spare
+        free = (int(available_bytes(torch, reserve=reserve, **({'full_window_headroom': True} if reserve == 0 else {})))
+                if reserve is not None else int(available_bytes(torch))) + spare
         limit = cuda_limit_bytes()
         if limit is None:
             return free
         if self.outside_active_bytes is None:
             return 0
-        return max(0, min(free, limit - active - mapped_bytes() - self.outside_active_bytes))
+        return max(0, min(free, limit - active - mapped_bytes() - self.outside_active_bytes
+                         - additional_outside_active_bytes - additional_private_spare_bytes))
 
     def graph_live_bytes(self, *, additional_outside_active_bytes):
         """Physical-only HC caller view, retaining this owner's absolute-cap proof.

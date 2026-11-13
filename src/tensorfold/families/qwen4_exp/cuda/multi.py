@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from functools import partial
 
 import numpy as np
 import torch
@@ -76,7 +77,7 @@ class MultiDecoder:
                  full_windows: int | None = None, execution_rows: int | None = None, memory_live=None,
                  logical_context: int | None = None, hc_graphs: bool = False, graph_memory_live=None,
                  native_gdn_batch: bool = False, native_gdn_capture: bool = False, exact_graph_policy=None,
-                 gdn_value8_prepared=None) -> None:
+                 gdn_value8_prepared=None, graph_project_budget=None, graph_headroom_live=None) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         if type(hc_graphs) is not bool:
@@ -237,6 +238,15 @@ class MultiDecoder:
         self.held: dict[int, list[int]] = {}             # stream id -> last round's kept rows, folded in next round
         # A full-window promise owns every selected cache before startup returns.
         # Legacy and explicitly shared modes keep the original growing floors.
+        self.graph_project_budget = graph_project_budget
+        self.graph_headroom_live = graph_headroom_live
+        if graph_project_budget is not None and (
+                type(graph_project_budget) is not int or graph_project_budget < 0 or budget is not None
+                or not graphs or full_windows is None or full_windows < slots
+                or memory_live is None or not callable(graph_headroom_live)
+                or w.meta.get('execution_provider') != 'sm70' or w.meta.get('history_layout') != 'unique'
+                or w.meta.get('indexer_history', 'gpu') != 'gpu'):
+            raise ValueError('observed graph headroom requires automatic unique resident SM70 full GPU windows')
         self.full_resident = full_windows is not None and full_windows >= slots
         initial_capacity = capacity if self.full_resident else min(capacity, FIRST)
         self.free = [State(w, initial_capacity, depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
@@ -991,18 +1001,22 @@ class MultiDecoder:
                                 growth_bytes=growth, vision_workspace_bytes=self.vision_workspace_bytes,
                                 minimum_workspace_bytes=self.memory_gate.reserve,
                                 copy_overlap_bytes=promise["copy_overlap_bytes"])
-        live = multi_graphs.live_bytes if live is None else live
+        physical_headroom = getattr(self, 'graph_project_budget', None) is not None
+        live = (partial(multi_graphs.live_bytes, reserve=0) if physical_headroom else multi_graphs.live_bytes) if live is None else live
         automatic = self.graph_request is None
         observed = (automatic and getattr(self, "full_resident", False)
                     and getattr(self.w, "meta", {}).get("execution_provider") == "sm70"
-                    and getattr(self.w, "meta", {}).get("indexer_history") == "ram")
+                    and (getattr(self.w, "meta", {}).get("indexer_history") == "ram" or physical_headroom))
         refinement = None
         if observed:
             initial_live, error = 0, None
             packet = [0, 0, 0, future["future_bytes"]]
             try:
                 initial_live = live()
-                room = materialized_graph_room(self.free, self.capacity, initial_live, promise, future)
+                room = materialized_graph_room(self.free, self.capacity, initial_live, promise, future,
+                                               **({'gpu_history': True} if physical_headroom else {}))
+                if physical_headroom:
+                    room = min(room, self.graph_project_budget)
                 packet = [1, room, initial_live, future["future_bytes"]]
             except Exception as failure:
                 error = failure
@@ -1018,7 +1032,8 @@ class MultiDecoder:
                 if error is not None:
                     raise error
                 raise RuntimeError("a peer could not prove observed full-window graph room")
-            if any(row[1] < 0 or row[3] < 2 * GIB or row[2] < row[3] or row[1] != row[2] - row[3]
+            if any(row[1] < 0 or row[3] < 2 * GIB or row[2] < row[3]
+                   or row[1] != (min(row[2] - row[3], self.graph_project_budget) if physical_headroom else row[2] - row[3])
                    for row in observations):
                 raise RuntimeError("inconsistent all-rank materialized graph room proof")
             self.graph_budget = min(row[1] for row in observations)
@@ -1027,6 +1042,11 @@ class MultiDecoder:
                                   "future_service_bytes": row[3]} for rank, row in enumerate(observations)],
                 "full_slots": slots, "capacity": self.capacity, "future_service": dict(future),
                 "header_room_bytes": self.graph_header_room, "private_spare_credit_bytes": 0}
+            if physical_headroom:
+                from .service_memory import FULL_GRAPH_HEADROOM_POLICY
+                refinement.update(policy=FULL_GRAPH_HEADROOM_POLICY,
+                    admitted_project_budget_bytes=self.graph_project_budget, live_reserve_bytes=0,
+                    basis='all materialized full GPU windows plus unchanged snapshots/copy-overlap/workspace; unused startup floor fungible')
         else:
             initial_live = live()
         if automatic and not observed:
@@ -1245,7 +1265,25 @@ class MultiDecoder:
         """Prepare fallible metadata before publishing one accounted pool; interrupted publication poisons reuse."""
         self._failed_graphs = graphs
         try:
-            live = multi_graphs.service_live_bytes(graphs)
+            if getattr(self, 'graph_project_budget', None) is not None:
+                reserved = graphs.capture_reserved_delta_bytes
+                if type(reserved) is not int or reserved < 0:
+                    raise MemoryError('graph capture cannot prove its additional allocator/driver commitment')
+                outside = max(0, graphs.room_bytes - reserved)
+                # No private-pool allocator proof means physical-only: it must
+                # not be mistaken for zero unavailable cached graph storage.
+                if graphs.private_spare_bytes is None:
+                    live = partial(multi_graphs.live_bytes, reserve=0)
+                    from tensorfold.cuda.capacity import cuda_limit_bytes
+                    if cuda_limit_bytes() is not None:
+                        raise MemoryError('absolute graph headroom needs settled private-pool ownership')
+                else:
+                    live = partial(self.graph_headroom_live, reserve=0,
+                        additional_private_spare_bytes=graphs.private_spare_bytes,
+                        additional_outside_active_bytes=outside)
+                resolution['observed_graph_admission']['graph_outside_allocator_bytes'] = outside
+            else:
+                live = multi_graphs.service_live_bytes(graphs)
             record = {"captured": captured,
                       "reason": None if captured else "capture failed; retained pool accounted, decoder remains eager",
                       **resolution, **graphs.record()}

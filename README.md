@@ -1,16 +1,34 @@
 # TensorFold fork
 
+Automatic graph admission for the complete resident SC117 region now derives
+its allowance from observed worst-rank headroom after24 Q8 or32 Q4 full-context
+windows and all remaining service promises. Unused startup reserve can fund
+graphs; required workspace, snapshots, copy overlap and absolute grants remain
+protected. This source policy still needs native capacity/graph verification;
+no new throughput or numerical claim is made. See
+[admission scope](docs/optimization-validation.md#full-window-graph-headroom).
+Personal profiles use explicit24/32 ceilings. Uncapped automatic capacity still
+maximizes sessions; graph fit depends on the headroom left by that selection.
+
 The standalone GDN native trial has a maintained resource/cache envelope in
 `tools/v100_gdn_native_envelope.py`. It preserves kernel failures through
 resource, cache-retention and report-publication failures. Its native V100
 execution remains a separate component gate.
 Its initial-state preservation checks compare FP32 storage bits, including
 signed zero, through the alias-refusal control.
+The numerical helper defaults to `--phase full`; `--phase nondefault-stream`
+isolates the same stream diagnostic and reports main numerical cases as unrun.
+A stream-only result does not qualify the complete component.
 
 The first matching Source35 GDN native trial stopped before GDN compilation:
 the selected TileLang API requires structured target options. The caller now
 uses an explicit CUDA/SM70 dictionary; actual CPU parser and 64 controls pass.
 Native kernel, model-quality and performance qualification remain pending.
+The rebuilt Source36 component completed all 18 main native cases with finite
+outputs and preserved initial-state bits, including both split continuations.
+The subsequent stream diagnostic stopped on duplicate declarations of the same
+CUDA symbol. Its unique-name parser correction passes CPU controls; the actual
+stream proof and numerical/model/performance acceptance remain pending.
 
 Token staging now retains NumPy views of its existing host ID buffers. Target
 and MTP keep their original conversions, DMA fences and buffer payloads. Focused
@@ -49,6 +67,12 @@ The [development handoff checkpoint](docs/development-checkpoint.md) records the
 preserved V100 trials, research drafts and known unfinished comparison controls.
 Their inclusion on `python-0.6` preserves ongoing development; combined target
 qualification remains separate from the qualified production images.
+
+The private G3 component now has explicit, default-off owned Half frontend and
+epilogue boundaries: unscaled Half q/k, direct FP32 raw gates, Half-rounded beta
+and a separately funded raw output. The incumbent GDN path remains selected.
+Native boundary math, capacity/span and segmented State integration, full-model
+quality and performance gates remain pending; see the [integration contract](docs/gdn-chunk64-prefill-integration.md).
 
 The GDN chunk64 compiler now requires an explicit immutable owned-TileLang
 attestation, retained wheel and cold hashing credit. It verifies the installed
@@ -3071,3 +3095,11 @@ groups with 3, 5, 6 and 7 participants. Its closed catalogue requires all previo
 exact replay and fit checks; full-history behavior, conditional quality and
 performance remain pending. Application/kernel bytes and ordinary service
 defaults are unchanged.
+
+The private C8 teacher can request `capacity_contract=full-window-physical-headroom-v1`.
+Its versioned startup and HTTP capacity records bind the complete native windows,
+speculative tail, eight physical rank baselines, unchanged service workspace,
+all-rank graph minimum, settled private graph ownership and issued retention.
+The shared proof validator distinguishes full 24-slot Q8 and 32-slot Q4 capacity;
+the C8 teacher operation remains explicitly 24-slot Q8. Focused CPU contract controls pass;
+actual Source37 capacity, numerical quality and performance remain separate gates.

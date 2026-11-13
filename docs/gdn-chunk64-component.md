@@ -16,6 +16,22 @@ preservation failures remain sticky through later alias-refusal checks.
 The selected TileLang0.1.10 compile API receives the explicit target dictionary
 `{'kind': 'cuda', 'arch': 'sm_70'}`. The legacy target string was rejected at the
 first native preparation before GDN compilation; that failure is retained.
+The corrected Source36 run completed the 18 main native cases and both split
+continuations. Outputs/final states were finite and initial storage bits stayed
+unchanged. Maximum observed absolute errors against the serial F64 oracle were
+`1.1128783187982355e-5` for output and `3.8669565944969564e-5` for final state;
+these observations establish no accepted error tolerance or model accuracy.
+Its nondefault-stream diagnostic stopped before profiling because the symbol
+parser counted one forward declaration and definition twice. The corrected
+parser requires one unique entry; the actual stream proof remains a native gate.
+
+The helper defaults to `--phase full`, retaining all18 main cases and both
+continuations before the stream diagnostic. `--phase nondefault-stream` runs
+the same stream diagnostic alone and emits `phase: nondefault-stream`,
+`main_numerical_cases: unrun` and an empty `results` list. It claims no main
+numerical pass. Complete component evidence requires the separately retained,
+source-bound main-case and split results as well as an actual stream proof;
+a stream-only process exit cannot replace either numerical or quality gates.
 
 The private candidate in `tensorfold.cuda.sm70.gdn_chunk64` owns a minimal
 prefill component around three original FlashQLA SM70 TileLang generators.

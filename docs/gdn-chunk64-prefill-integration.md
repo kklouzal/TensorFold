@@ -1,8 +1,10 @@
-# G3 prefill integration contract (design; no engine hook)
+# G3 prefill integration contract (private boundaries; no engine hook)
 
 The standalone component is an intermediate numerical trial. Actual native
 verification precedes the serving hook; this design does not claim a selected
-profile, numerical equivalence, implemented frontend or qualified performance.
+profile, numerical equivalence or qualified performance. The explicit
+`cuda.sm70.gdn_chunk64_half` frontend/epilogue is implemented as an unqualified
+component; its native build/math and full-model gates remain pending.
 Current native chain/Value8 paths remain independently usable.
 
 ## Guarded frontend and epilogue
@@ -52,6 +54,42 @@ bytes/row if kept separate. Thus a straightforward separate allocation needs
 4936 bytes/row+21, excluding existing final output, initial/final state and
 compiler/runtime retention. Reusing old scratch/output needs actual lifetime
 and alias evidence and an updated admission receipt; no savings are asserted.
+
+## Implemented fixed-capacity Half boundaries
+
+`gdn_chunk64_half.layout(capacity)` admits1..65535 rows (the owned native
+frontend/epilogue use grid-y). `allocate_workspace` requires4144 bytes/row
+explicit device credit before allocation:2608 for the frontend plus1536 for a
+separate raw Half core output. Existing final output/sums, FP32 state and the
+core's792 bytes/row+21 are independently funded. No storage savings are claimed.
+The owner cold-binds exact contiguous plain Half/F32 tensors, original conv
+history, exactly one typed `a_log` or `a_neg`, positive representable FP32 epsilon
+and disjoint outputs. It retains full-capacity owners and active contiguous
+views. Binding and submission require inference mode, the current prepared
+CUDA device, one CPU thread and one stream; capture is refused. Shape/storage
+replacement is rejected and a submission failure latches the bound owner.
+All borrowers, kernels and operands survive positive stream completion; failure
+requires State containment and retained ownership, with no retry/publication.
+
+The native specialization shares `gdn_value8.cu`'s existing convolution,
+normalization, gate and epilogue bodies. Its explicit compile-time variant emits
+unscaled Half q/k and direct FP32 raw gates. The old variant retains its scaled
+FP32 q and exp gate. Both use Half-rounded beta widened to FP32. The epilogue
+shares the incumbent arithmetic and reads the G3 core's separate Half raw
+buffer; final Half output and FP32 group32 sums do not alias any input/workspace.
+The independently bound core must consume the frontend and produce raw output
+on this same ordered stream before `back()`. Uninitialized raw output is never
+a valid epilogue operand. Typed weights/producers must establish finite inputs
+and finite nonpositive raw gates; this owner introduces no synchronizing GPU
+value discovery or boolean numerical attestation.
+
+This fixed-capacity boundary component has no engine selector or forward hook.
+It prepares kernels once, binds outside requests and performs no device
+allocation/compilation during submission. Independent CPU boundary diagnostics
+retain cast points and direct-gate underflow cases without a tolerance or CUDA
+bit-equivalence claim. Actual native frontend/epilogue/call ordering, full model
+continuation/output/PPL/MTP, fit and end-to-end P3 gates remain required. The
+missing core span API and segmented State adapter below still block serving.
 
 ## Prefix cuts and alternate banks
 

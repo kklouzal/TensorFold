@@ -19,6 +19,12 @@ void value8_batch_prepare_cuda();
 void value8_batch_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
     const at::Tensor&, float, const at::Tensor&, const at::Tensor&, int, at::Tensor&, at::Tensor&, at::Tensor&, bool);
 
+void value8_chunk64_front_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
+    const at::Tensor&, int, at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&, bool);
+void value8_chunk64_back_cuda(const at::Tensor&, const at::Tensor&, float, int, const at::Tensor&,
+    at::Tensor&, at::Tensor&);
+void value8_chunk64_prepare_cuda();
+
 namespace {
 void check(const at::Tensor& t, at::ScalarType kind, const at::Device& device) {
     TORCH_CHECK(t.is_cuda() && t.device() == device && t.scalar_type() == kind && t.is_contiguous(),
@@ -121,7 +127,67 @@ void batch_chain(const at::Tensor& p, const at::Tensor& weight, const at::Tensor
     value8_batch_chain_cuda(p,weight,parameter,bias,norm,float(eps),pointers,starts,int(max_rows),out,sums,q,negative);
 }
 
+namespace {
+void chunk64_check(const at::Tensor& t, at::ScalarType kind, const at::Device& device) {
+    check(t,kind,device);
+    TORCH_CHECK(!t.requires_grad() && !t.is_conj() && !t.is_neg(), "G3 Half boundary requires plain forward-only operands");
+}
+void chunk64_projection(const at::Tensor& p, int64_t rows) {
+    TORCH_CHECK(rows>0 && rows<=65535, "G3 Half boundary rows exceed grid-y capacity");
+    chunk64_check(p,at::kHalf,p.device());
+    const auto* props=at::cuda::getDeviceProperties(p.get_device());
+    TORCH_CHECK(props->major==7 && props->minor==0,"G3 Half boundaries require SM70");
+    TORCH_CHECK(p.dim()==2 && p.size(0)>=rows && p.size(1)==2060,"G3 Half projection layout");
+}
+void chunk64_rows(const at::Tensor& t, int64_t rows, int64_t heads, at::ScalarType kind, const at::Device& device) {
+    chunk64_check(t,kind,device);
+    TORCH_CHECK(t.dim()==3 && t.size(0)>=rows && t.size(1)==heads && t.size(2)==128,"G3 Half row tensor layout");
+}
+}
+void chunk64_front(const at::Tensor& p, const at::Tensor& conv, const at::Tensor& weight,
+        const at::Tensor& parameter, const at::Tensor& bias, int64_t rows,
+        at::Tensor q, at::Tensor k, at::Tensor v, at::Tensor gate, at::Tensor beta, bool negative) {
+    chunk64_projection(p,rows);
+    const auto device=p.device();
+    chunk64_check(conv,at::kHalf,device); chunk64_check(weight,at::kHalf,device);
+    chunk64_check(parameter,at::kFloat,device); chunk64_check(bias,at::kFloat,device);
+    TORCH_CHECK(conv.sizes()==at::IntArrayRef({3,1280}) && weight.sizes()==at::IntArrayRef({1280,4}),"G3 Half conv layout");
+    TORCH_CHECK(parameter.sizes()==at::IntArrayRef({6}) && bias.sizes()==at::IntArrayRef({6}),"G3 Half gate weights");
+    chunk64_rows(q,rows,2,at::kHalf,device); chunk64_rows(k,rows,2,at::kHalf,device);
+    chunk64_rows(v,rows,6,at::kHalf,device);
+    for (const auto* t : {&gate,&beta}) {
+        chunk64_check(*t,at::kFloat,device);
+        TORCH_CHECK(t->dim()==2 && t->size(0)>=rows && t->size(1)==6,"G3 raw gate/beta layout");
+    }
+    const at::Tensor* reads[]={&p,&conv,&weight,&parameter,&bias};
+    at::Tensor* writes[]={&q,&k,&v,&gate,&beta};
+    for (int w=0;w<5;++w) {
+        for (const auto* input : reads) tensorfold::check_disjoint(*writes[w],{input},"G3 frontend write aliases input");
+        for (int other=0;other<w;++other) tensorfold::check_disjoint(*writes[w],{writes[other]},"G3 frontend writes alias");
+    }
+    c10::cuda::CUDAGuard guard(device);
+    value8_chunk64_front_cuda(p,conv,weight,parameter,bias,int(rows),q,k,v,gate,beta,negative);
+}
+void chunk64_back(const at::Tensor& p, const at::Tensor& norm, double eps, int64_t rows,
+        const at::Tensor& raw, at::Tensor out, at::Tensor sums) {
+    chunk64_projection(p,rows);
+    const auto device=p.device();
+    chunk64_check(norm,at::kHalf,device);
+    TORCH_CHECK(norm.sizes()==at::IntArrayRef({128}),"G3 Half epilogue norm layout");
+    chunk64_rows(raw,rows,6,at::kHalf,device);
+    chunk64_check(out,at::kHalf,device); chunk64_check(sums,at::kFloat,device);
+    TORCH_CHECK(out.dim()==2 && out.size(0)>=rows && out.size(1)==768 && sums.dim()==2
+        && sums.size(0)>=rows && sums.size(1)==24,"G3 Half epilogue output layout");
+    TORCH_CHECK(std::isfinite(eps) && eps>0 && std::isfinite(float(eps)) && float(eps)>0,"G3 Half FP32 epsilon");
+    tensorfold::check_disjoint(out,{&p,&norm,&raw,&sums},"G3 epilogue requires separate raw/output storage");
+    tensorfold::check_disjoint(sums,{&p,&norm,&raw},"G3 epilogue sums alias input");
+    c10::cuda::CUDAGuard guard(device);
+    value8_chunk64_back_cuda(p,norm,float(eps),int(rows),raw,out,sums);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("chain", &chain); m.def("replay", &replay); m.def("prepare", &value8_prepare_cuda);
     m.def("batch_chain", &batch_chain); m.def("prepare_batch", &value8_batch_prepare_cuda);
+    m.def("chunk64_front", &chunk64_front); m.def("chunk64_back", &chunk64_back);
+    m.def("prepare_chunk64_boundaries", &value8_chunk64_prepare_cuda);
 }

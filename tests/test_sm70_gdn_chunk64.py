@@ -28,6 +28,21 @@ def test_native_initial_preservation_rejects_signed_zero_bit_changes():
     assert trial.unchanged_initial(initial,initial.clone())
 
 
+def test_stream_entry_accepts_generated_forward_declaration_and_definition():
+    from tools.v100_gdn_chunk64_trial import cuda_entry
+
+    # Source36 generated CUDA emits both declarations of the same entry.
+    source = '''extern "C" __global__ void tilelang_chunk_local_cumsum_kernel_kernel(float* g);
+extern "C" __global__ void __launch_bounds__(128, 1) tilelang_chunk_local_cumsum_kernel_kernel(float* g) {
+  extern __shared__ __align__(1024) unsigned char buf_dyn_shmem[];
+}'''
+    assert cuda_entry(source) == "tilelang_chunk_local_cumsum_kernel_kernel"
+    with pytest.raises(RuntimeError, match="exactly one generated CUDA entry"):
+        cuda_entry(source + '\nextern "C" __global__ void different_entry(float* g);')
+    with pytest.raises(RuntimeError, match="exactly one generated CUDA entry"):
+        cuda_entry("")
+
+
 @pytest.mark.parametrize("rows",[0,-1,True,1.0,2**31])
 def test_invalid_geometry_refused_before_dependencies(rows):
     with pytest.raises(ValueError):
@@ -138,8 +153,9 @@ def test_trial_keeps_full128_and129_cases_and_non_aligned_split_extents(monkeypa
     monkeypatch.setattr(trial, "nondefault_stream_trial",
                         lambda *args: {"scope": "unrun in CPU protocol fixture"})
     args = SimpleNamespace(owned_tilelang_attestation=None, cuda_home="unused", nvcc_sha256="unused",
-                           device="cpu")
+                           device="cpu",phase="full")
     result = trial.run(args, {"results": []})
+    assert result["phase"]=="full" and result["main_numerical_cases"]=="completed"
     records = {(row["rows"], row["case"]): row for row in result["results"]}
     assert set(records) == {(rows, case) for rows in (1, 63, 64, 65, 128, 129)
                             for case in ("zero", "nonzero_initial", "raw_underflow")}
@@ -151,6 +167,62 @@ def test_trial_keeps_full128_and129_cases_and_non_aligned_split_extents(monkeypa
         assert record["continuation"]["initial_unchanged"] is (not mutate_and_restore)
         assert record["continuation"]["output_vs_serial"]["finite"]
         assert record["continuation"]["final_vs_serial"]["finite"]
+
+
+def test_stream_only_phase_calls_same_control_without_main_numerical_work(monkeypatch):
+    from types import SimpleNamespace
+
+    import torch
+
+    from tools import v100_gdn_chunk64_trial as trial
+
+    compiler=SimpleNamespace(inspect=lambda:{"scope":"CPU protocol fixture only"})
+    monkeypatch.setattr(g3,"Compiler",lambda *args:compiler)
+    monkeypatch.setattr(torch.cuda,"set_device",lambda *args:None)
+    monkeypatch.setattr(torch.cuda,"get_device_name",lambda *args:"CPU fixture")
+
+    def forbidden(*args,**kwargs):
+        pytest.fail("stream-only phase reached main numerical work")
+
+    monkeypatch.setattr(g3,"prepare",forbidden)
+    monkeypatch.setattr(trial,"reference",forbidden)
+    calls=[]
+
+    def stream(args,selected,progress):
+        assert selected is compiler
+        assert progress["results"]==[] and progress["main_numerical_cases"]=="unrun"
+        calls.append(args.phase)
+        return {"scope":"CPU protocol fixture only; actual stream unrun"}
+
+    monkeypatch.setattr(trial,"nondefault_stream_trial",stream)
+    args=SimpleNamespace(owned_tilelang_attestation=None,cuda_home="unused",nvcc_sha256="unused",
+                         device="cpu",phase="nondefault-stream")
+    result=trial.run(args,{"results":[]})
+    assert calls==["nondefault-stream"]
+    assert result["phase"]=="nondefault-stream" and result["main_numerical_cases"]=="unrun"
+    assert result["results"]==[] and result["quality_acceptance"] is False
+
+
+@pytest.mark.parametrize("phase,proof",[("full",True),("nondefault-stream",True),("nondefault-stream",False)])
+def test_phase_cli_default_full_refuses_empty_main_and_stream_still_requires_proof(tmp_path,monkeypatch,phase,proof):
+    from tools import v100_gdn_chunk64_trial as trial
+
+    def run(args,progress):
+        assert args.phase==phase
+        return {"phase":phase,"main_numerical_cases":"unrun" if phase=="nondefault-stream" else "completed",
+                "results":[],"nondefault_stream":{"actual_single_nondefault_stream_proof":proof,
+                                                  "producer_core_consumer_exact_zero":True}}
+
+    monkeypatch.setattr(trial,"run",run)
+    argv=["--cuda-home","unused","--nvcc-sha256","unused","--output",str(tmp_path/"report.json"),
+          "--stream-trace-output",str(tmp_path/"trace.json")]
+    if phase!="full":
+        argv += ["--phase",phase]
+    if phase=="full" or not proof:
+        with pytest.raises(SystemExit,match="all18" if phase=="full" else "stream proof failed"):
+            trial.main(argv)
+    else:
+        trial.main(argv)
 
 
 @pytest.mark.parametrize("failure",[None,"cumsum","kkt","core"])

@@ -166,6 +166,376 @@ def resources(input_bytes, plan):
             'scope': 'streamed per-window payload; allocator/native/RSS measurements remain separate; no P3 claim'}
 
 
+CAPACITY_CONTRACT = 'full-window-physical-headroom-v1'
+CAPACITY_PROOF_SCHEMA = 'tensorfold.window-full-capacity-proof-v1'
+_CAPACITY_FIELDS = ('native_window', 'requested_context', 'context_window', 'cache_slots', 'budget_bytes',
+    'startup_peak_bytes_estimate', 'serving_peak_bytes_estimate', 'total_bytes_estimate',
+    'full_window_headroom', 'session_capacity', 'kv_full_windows', 'execution_envelope',
+    'observed_graph_admission', 'multi_graphs', 'resource_ledger_bytes')
+
+
+def _capacity_contract(operation):
+    value = operation.get('capacity_contract')
+    require('capacity_contract' not in operation or value == CAPACITY_CONTRACT, 'unknown window capacity contract')
+    return value
+
+
+def _capacity_integer(value, name, minimum=0):
+    require(type(value) is int and value >= minimum, 'invalid capacity integer: '+name)
+    return value
+
+
+def _validate_capacity_plan(cap, *, slots, bits, local_rank=0):
+    from tensorfold.families.qwen4_exp.cuda.service_memory import full_window_graph_budget
+    require(type(slots) is int and type(bits) is int and (slots, bits) in ((24, 8), (32, 4)), 'unsupported full-window capacity region')
+    number = _capacity_integer
+    require(type(cap) is dict and set(cap) == set(_CAPACITY_FIELDS), 'complete capacity projection required')
+    physical = number(cap['cache_slots'], 'physical capacity', 262144+DEPTH+1)
+    require(all(type(cap[k]) is int and cap[k] == 262144 for k in
+                ('native_window', 'requested_context', 'context_window'))
+            and cap['cache_slots'] == physical, 'full native context and speculative physical tail required')
+    marker, sessions, windows = (cap[k] for k in ('full_window_headroom', 'session_capacity', 'kv_full_windows'))
+    require(type(marker) is dict and marker.get('policy') == CAPACITY_CONTRACT
+            and type(marker.get('required_sessions')) is int and marker['required_sessions'] == slots
+            and marker.get('logical_context') == 262144 and type(marker.get('logical_context')) is int
+            and type(marker.get('unused_device_floor_bytes')) is int and marker['unused_device_floor_bytes'] == 0,
+            'zero floor requires its scoped full-window policy')
+    require(type(sessions) is dict and type(sessions.get('context_tokens')) is int and sessions['context_tokens'] == 262144
+            and all(type(sessions.get(k)) is int and sessions[k] == slots for k in
+                    ('configured_ceiling', 'resident_capacity', 'full_context_commitments')),
+            'explicit full resident capacity and ceiling required')
+    ranks = sessions.get('ranks')
+    require(type(ranks) is list and len(ranks) == WORLD, 'all eight allocation baselines required')
+    caps = []
+    for rank, row in enumerate(ranks):
+        require(type(row) is dict and type(row.get('rank')) is int and row['rank'] == rank
+                and type(row.get('allocation_baseline')) is dict, 'ordered actual rank allocation baseline required')
+        baseline = row['allocation_baseline']
+        free = number(baseline.get('physical_free_bytes'), 'baseline physical free')
+        total = number(baseline.get('device_total_bytes'), 'device total', 1)
+        preallocated = number(baseline.get('preallocated_project_bytes'), 'preallocated project')
+        require(free <= total and type(baseline.get('effective_device_floor_bytes')) is int
+                and baseline['effective_device_floor_bytes'] == 0, 'scoped zero-floor baseline required')
+        absolute, remaining = baseline.get('absolute_grant_cap_bytes'), baseline.get('remaining_absolute_grant_bytes')
+        if absolute is None:
+            require(remaining is None, 'absent absolute grant cannot create remaining credit')
+        else:
+            number(absolute, 'absolute grant', 1)
+            require(absolute >= preallocated and type(remaining) is int and remaining == absolute-preallocated,
+                    'absolute grant must deduct preallocated owners exactly once')
+        usable = free if remaining is None else min(free, remaining)
+        require(type(baseline.get('usable_serving_budget_bytes')) is int
+                and baseline['usable_serving_budget_bytes'] == usable
+                and type(row.get('budget_bytes')) is int and row['budget_bytes'] == usable,
+                'rank physical/absolute startup budgets differ')
+        ledger = row.get('resource_ledger_bytes')
+        require(type(ledger) is dict and type(ledger.get('serving_workspace')) is int,
+                'actual rank workspace ledger required')
+        caps.append(absolute)
+        require(all(type(v) is int and v >= 0 for v in ledger.values()), 'invalid rank resource ledger bytes')
+        resident = number(row.get('resident_weight_bytes'), 'resident weight')
+        loading = number(row.get('loading_overlap_bytes'), 'loading overlap')
+        execution = number(row.get('session_execution_bytes'), 'session execution')
+        require(resident + max(loading, execution) <= usable, 'rank loading/complete service exceeds its grant')
+    budget = full_window_graph_budget(cap)
+    require(number(cap['budget_bytes'], 'project budget') == budget,
+            'project ceiling must equal the worst physical/absolute rank grant')
+    for key in ('startup_peak_bytes_estimate', 'serving_peak_bytes_estimate', 'total_bytes_estimate'):
+        number(cap[key], key)
+    require(cap['total_bytes_estimate'] == max(cap['startup_peak_bytes_estimate'], cap['serving_peak_bytes_estimate'])
+            and cap['total_bytes_estimate'] <= budget, 'complete startup/serving peak exceeds project budget')
+    require(type(windows) is dict and windows.get('materialized') is True
+            and all(type(windows.get(k)) is int and windows[k] == slots for k in ('requested', 'reserved', 'stream_slots'))
+            and type(windows.get('context_window')) is int and windows['context_window'] == 262144
+            and type(windows.get('cache_slots_each')) is int and windows['cache_slots_each'] == physical,
+            'every complete physical full window must be materialized')
+    workspace = number(windows.get('workspace_bytes'), 'workspace', 2 << 30)
+    require(type(cap['resource_ledger_bytes']) is dict
+            and cap['resource_ledger_bytes'].get('serving_workspace') == workspace
+            and all(row['resource_ledger_bytes']['serving_workspace'] == workspace for row in ranks),
+            'workspace differs from complete rank service promises')
+    allocated = windows.get('ranks')
+    require(type(allocated) is list and len(allocated) == WORLD, 'all eight materialized rank receipts required')
+    for rank, row in enumerate(allocated):
+        require(type(row) is dict and type(row.get('rank')) is int and row['rank'] == rank
+                and row.get('materialized') is True and type(row.get('startup_capacities')) is list
+                and len(row['startup_capacities']) == slots
+                and all(type(n) is int and n >= physical for n in row['startup_capacities']),
+                'rank does not own all full physical windows')
+        cache = number(row.get('allocated_cache_bytes'), 'owned cache', 1)
+        active = number(row.get('torch_allocated_bytes'), 'rank active')
+        reserved = number(row.get('torch_reserved_bytes'), 'rank reserved')
+        require(cache <= active <= reserved, 'physical allocator cannot cover owned windows')
+    envelope = cap['execution_envelope']
+    require(type(envelope) is dict and envelope.get('method') == 'mtp'
+            and type(envelope.get('max_proposals')) is int and envelope['max_proposals'] == DEPTH
+            and type(envelope.get('target_rows')) is int and envelope['target_rows'] == slots*(DEPTH+1)
+            and type(envelope.get('prefill_tokens')) is int and envelope['prefill_tokens'] == 256,
+            'full MTP4 row/prefill envelope required')
+    graph, admission = cap['multi_graphs'], cap['observed_graph_admission']
+    require(type(graph) is dict and graph.get('automatic') is True and graph.get('captured') is True
+            and graph.get('reason') is None and graph.get('stopped') is None and graph.get('rejected') is None
+            and type(admission) is dict and admission.get('policy') == CAPACITY_CONTRACT
+            and type(graph.get('observed_graph_admission')) is dict
+            and {k:v for k,v in graph['observed_graph_admission'].items() if k != 'basis'} == {k:v for k,v in admission.items()
+                if k not in ('original_header', 'observed_serving_base_bytes', 'basis')}
+            and type(admission.get('admitted_project_budget_bytes')) is int
+            and admission['admitted_project_budget_bytes'] == budget
+            and type(admission.get('live_reserve_bytes')) is int and admission['live_reserve_bytes'] == 0,
+            'current captured graph must retain its actual scoped admission')
+    observations = admission.get('observations')
+    require(type(observations) is list and len(observations) == WORLD, 'all-rank graph headroom observations required')
+    rooms = []
+    for rank, observation in enumerate(observations):
+        require(type(observation) is dict and type(observation.get('rank')) is int and observation['rank'] == rank,
+                'ordered graph observation required')
+        live = number(observation.get('live_after_floor_bytes'), 'observed live')
+        future = number(observation.get('future_service_bytes'), 'observed future', 2 << 30)
+        room = number(observation.get('graph_room_bytes'), 'observed graph room')
+        require(live >= future and room == min(live-future, budget), 'graph observation borrowed promised future storage')
+        rooms.append(room)
+    agreed = number(admission.get('agreed_graph_bytes'), 'agreed graph budget', 1)
+    require(agreed == min(rooms) and type(graph.get('planned_bytes')) is int and type(graph.get('budget_bytes')) is int
+            and graph['planned_bytes'] == graph['budget_bytes'] == agreed,
+            'graph budget must be the all-rank minimum')
+    future = admission.get('future_service')
+    require(type(future) is dict and graph.get('future_service') == future
+            and all(type(future.get(k)) is int and future[k] >= 0 for k in
+                    ('growth_bytes', 'copy_overlap_bytes', 'snapshot_bytes_each', 'snapshot_bytes', 'transient_bytes',
+                     'workspace_bytes', 'future_bytes'))
+            and future['growth_bytes'] == 0 and future['workspace_bytes'] == workspace
+            and future['future_bytes'] == sum(future[k] for k in
+                    ('growth_bytes', 'copy_overlap_bytes', 'snapshot_bytes', 'workspace_bytes'))
+            and all(row['future_service_bytes'] == future['future_bytes'] for row in observations),
+            'unchanged complete future service/workspace proof required')
+    require(type(admission.get('observed_serving_base_bytes')) is int
+            and admission['observed_serving_base_bytes'] == budget-agreed
+            and cap['serving_peak_bytes_estimate'] == admission['observed_serving_base_bytes']+agreed,
+            'graph reservation differs from refined serving envelope')
+    catalogue = graph.get('exact_graph_catalogue', {})
+    require(type(catalogue) is dict and type(catalogue.get('requested_keys')) is list
+            and catalogue['requested_keys'] and catalogue.get('captured_keys') == catalogue['requested_keys']
+            and catalogue.get('declined_keys') == [], 'complete requested graph catalogue required')
+    keys = catalogue['requested_keys']
+    require(all(type(key) is list and len(key) == 3 and key[0] in ('verify','mtp')
+            and type(key[1]) is int and type(key[2]) is int and 0 < key[2] <= slots
+            and key[2] <= key[1] <= slots*(DEPTH+1) for key in keys)
+            and len({tuple(key) for key in keys}) == len(keys), 'invalid/duplicate full-window graph key')
+    measured = graph.get('keys')
+    require(type(measured) is list and len(measured) == len(keys), 'every requested key needs its actual capture accounting')
+    charged, pieces = 0, 0
+    for index, item in enumerate(measured):
+        require(type(item) is dict and type(item.get('accounting')) is dict, 'actual per-key capture accounting required')
+        row = item['accounting']
+        key = [row.get('role'), row.get('rows'), row.get('participants')]
+        require(key == catalogue['captured_keys'][index] and row.get('schema') == 'tensorfold.exact-graph-key-v1'
+                and row.get('admitted') is True and type(row.get('rank')) is int and row['rank'] == local_rank
+                and type(row.get('prior_keys')) is int and row['prior_keys'] == index
+                and type(row.get('prior_bytes')) is int and row['prior_bytes'] == charged
+                and type(row.get('physical_delta_bytes')) is int and type(row.get('budget_bytes')) is int
+                and row['budget_bytes'] == agreed and type(row.get('pieces')) is int and row['pieces'] > 0
+                and type(item.get('bytes')) is int and item['bytes'] == max(0,row['physical_delta_bytes'])
+                and type(item.get('pieces')) is int and item['pieces'] == row['pieces'],
+                'graph key memory/ownership differs from its settled capture')
+        charged += item['bytes']
+        pieces += item['pieces']
+    require(graph.get('bytes') == charged and graph.get('pieces') == pieces
+            and graph.get('verify_keys') == sum(key[0] == 'verify' for key in keys)
+            and graph.get('mtp_keys') == sum(key[0] == 'mtp' for key in keys)
+            and graph.get('capture_during_serving') is False, 'graph capture totals/catalogue differ')
+    required = {(role,count*rows,count) for count in (1,2,4,8,16,24)
+                for rows in (range(1,6) if count == 1 else (1,5)) for role in ('verify','mtp')}
+    required.update({('verify',28,8), ('mtp',28,8), *(('mtp',n,n) for n in (3,5,6,7))})
+    require(required <= {tuple(key) for key in keys}, 'full-window proof dropped required C36 keys')
+    if slots == 32:
+        require(all(key in catalogue['requested_keys'] for key in
+                    (['verify',32,32], ['mtp',32,32], ['verify',160,32], ['mtp',160,32])),
+                '32-slot capacity proof lacks full E160 graph keys')
+    require(type(graph.get('settled_bytes')) is int, 'actual signed capture settlement required')
+    room = number(graph.get('room_bytes'), 'retained graph room')
+    require(room == max(number(graph.get('bytes'), 'graph bytes'), graph.get('settled_bytes', 0))
+            and room <= agreed, 'settled private graph retention exceeds admission')
+    allocator = graph.get('allocator')
+    require(type(allocator) is dict, 'actual graph allocator ownership required')
+    private = allocator.get('private_pool_spare_bytes')
+    if private is None:
+        require(allocator.get('accounting') == 'physical-only' and all(cap is None for cap in caps),
+                'unmeasured private storage cannot support absolute-grant headroom')
+    else:
+        number(private, 'private pool spare')
+        require(allocator.get('backend') == 'native' and allocator.get('accounting') == 'native-pool-inactive',
+                'private spare must belong to the measured native pool')
+    return {'physical':physical, 'future':future, 'absolute_caps':caps}
+
+
+def validate_capacity_proof(proof, *, retention, slots=24, bits=8):
+    """The two user-required full native regions; no eight-active capacity inference."""
+    require(type(slots) is int and type(bits) is int and (slots, bits) in ((24, 8), (32, 4)), 'unsupported full-window capacity region')
+    fields = {'schema', 'contract', 'rank', 'slots', 'bits', 'physical_capacity', 'capacity',
+              'states', 'owner', 'sample', 'retention_sha256', 'kv_pair'}
+    require(type(proof) is dict and set(proof) == fields and proof['schema'] == CAPACITY_PROOF_SCHEMA
+            and proof['contract'] == CAPACITY_CONTRACT and type(proof['rank']) is int
+            and 0 <= proof['rank'] < WORLD and type(proof['slots']) is int and proof['slots'] == slots
+            and type(proof['bits']) is int and proof['bits'] == bits
+            and legacy.sha(proof['retention_sha256']), 'closed full-window capacity proof required')
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+    require(type(retention) is dict and proof['retention_sha256'] == digest(retention)
+            and type(retention.get('keep')) is int and retention['keep'] >= 0
+            and type(retention.get('recovery_points_per_piece')) is int and retention['recovery_points_per_piece'] >= 0,
+            'capacity proof requires its actual issued recovery retention')
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+    kv = proof['kv_pair']
+    require(type(kv) is dict and set(kv) == {'key_dtype','value_dtype','identity'}
+            and all(type(v) is str for v in kv.values()), 'actual typed KV formats required')
+    pair = get_pair('bf16', kv['key_dtype'], kv['value_dtype'])
+    require(pair.identity == kv['identity'] and pair.key.bits == pair.value.bits == bits,
+            'capacity proof changed actual KV storage/codec identity')
+    cap = proof['capacity']
+    validated = _validate_capacity_plan(cap, slots=slots, bits=bits, local_rank=proof['rank'])
+    physical, future = validated['physical'], validated['future']
+    require(future['snapshot_bytes'] == future['snapshot_bytes_each']*(
+                retention['keep'] + slots*retention['recovery_points_per_piece']),
+            'future service snapshot promise differs from actual retained recovery owners')
+    allocated = cap['kv_full_windows']['ranks']
+    number = _capacity_integer
+    require(type(proof['physical_capacity']) is int and proof['physical_capacity'] == physical,
+            'local physical capacity differs from the complete admission')
+    states = proof['states']
+    require(type(states) is list and len(states) == slots, 'all actual State owners required')
+    for index, state in enumerate(states):
+        require(type(state) is dict and set(state) == {'slot', 'logical_context', 'capacity', 'limit', 'pos', 'mtp_len'}
+                and all(type(n) is int for n in state.values()) and state['slot'] == index
+                and state['logical_context'] == 262144 and state['capacity'] >= physical and state['limit'] >= physical
+                and state['pos'] == state['mtp_len'] == 0
+                and state['capacity'] == allocated[proof['rank']]['startup_capacities'][index],
+                'actual idle State differs from all-rank materialized physical ownership')
+    require(type(proof['owner']) is dict and all(type(proof['owner'].get(k)) is bool for k in
+                ('admitted','bound_closed','failed_owner','capture_failure','preparation_closed','prepared'))
+            and type(proof['owner'].get('pending')) is int
+            and proof['owner'] == {'admitted':True, 'bound_closed':False, 'pending':0,
+                'failed_owner':False, 'capture_failure':False, 'preparation_closed':False, 'prepared':True},
+            'failed/pending/retired private owners cannot create startup headroom')
+    sample = proof['sample']
+    require(type(sample) is dict and set(sample) == {'physical_free_bytes','device_total_bytes','allocated_bytes',
+                'reserved_bytes','live_bytes','observed_at_unix_ns','interval_monotonic_ns','ownership'}, 'fresh physical sample required')
+    require(number(sample['physical_free_bytes'], 'sample free') <= number(sample['device_total_bytes'], 'sample total', 1)
+            and number(sample['allocated_bytes'], 'sample active') <= number(sample['reserved_bytes'], 'sample reserved')
+            and number(sample['live_bytes'], 'current usable live') >= future['future_bytes'],
+            'current graph/private ownership cannot preserve future service')
+    require(sample['device_total_bytes'] == cap['session_capacity']['ranks'][proof['rank']]['allocation_baseline']['device_total_bytes'],
+            'fresh sample device differs from rank baseline')
+    ownership = sample['ownership']
+    require(type(ownership) is dict and set(ownership) == {'prepared_private_spare_bytes',
+        'prepared_outside_active_bytes','mapped_bytes','absolute_cap_bytes','graph_outside_allocator_bytes'},
+        'actual private/mapped/driver ownership required')
+    prepared_private = ownership['prepared_private_spare_bytes']
+    outside = ownership['prepared_outside_active_bytes']
+    for value, label in ((prepared_private,'prepared private spare'), (outside,'prepared outside active')):
+        require(value is None or type(value) is int and value >= 0, 'unmeasured '+label+' cannot be inferred zero')
+    mapped = number(ownership['mapped_bytes'], 'mapped bytes')
+    graph_outside = number(ownership['graph_outside_allocator_bytes'], 'graph outside allocator')
+    private = cap['multi_graphs']['allocator']['private_pool_spare_bytes']
+    ordinary = (max(0,sample['reserved_bytes']-sample['allocated_bytes']-prepared_private-private)
+                if prepared_private is not None and private is not None else 0)
+    upper = sample['physical_free_bytes'] + ordinary if private is not None else sample['physical_free_bytes']
+    absolute = ownership['absolute_cap_bytes']
+    require(absolute == validated['absolute_caps'][proof['rank']], 'current absolute grant differs from startup')
+    if absolute is not None:
+        require(outside is not None and private is not None, 'unknown outside/private storage cannot support an absolute grant')
+        upper = max(0,min(upper,absolute-sample['allocated_bytes']-mapped-outside-graph_outside-private))
+    require(sample['live_bytes'] <= upper, 'live room credited private/mapped/outside ownership or exceeded physical grant')
+    number(sample['observed_at_unix_ns'], 'sample time')
+    interval = sample['interval_monotonic_ns']
+    require(type(interval) is list and len(interval) == 2 and all(type(n) is int and n >= 0 for n in interval)
+            and interval[0] <= interval[1], 'actual physical sample interval required')
+    return proof
+
+
+def _legacy_capacity_plan(cap):
+    rows = cap.get('session_capacity', {}).get('ranks', [])
+    require(type(rows) is list and all(type(row) is dict for row in rows), 'invalid legacy rank capacity metadata')
+    require(cap.get('full_window_headroom') is None and all(
+        type(row.get('allocation_baseline', {})) is dict
+        and row.get('allocation_baseline', {}).get('effective_device_floor_bytes') != 0 for row in rows),
+        'scoped zero-floor engine requires an explicit capacity contract')
+
+
+def _runtime_capacity_proof(engine, operation, retention, *, slots=24, bits=8):
+    from copy import deepcopy
+    contract = _capacity_contract(operation)
+    cap = engine.capacity_plan
+    if contract is None:
+        _legacy_capacity_plan(cap)
+        return None
+    import time
+
+    import torch
+
+    from tensorfold.cuda.capacity import cuda_limit_bytes
+    from tensorfold.cuda.kv_arena import mapped_bytes
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+    graphs, prepared = engine.multi.graphs, engine._owner_preparation
+    require(graphs is not None and graphs.dec is engine.multi and graphs.bound.owner is graphs
+            and graphs.bound.dec is engine.multi and len(engine.multi.states) == slots and len({id(state) for state in engine.multi.states}) == slots,
+            'actual distinct full-window owners required')
+    start, wall = time.monotonic_ns(), time.time_ns()
+    free, total = map(int, torch.cuda.mem_get_info(engine.w.device))
+    sample = {'physical_free_bytes':free, 'device_total_bytes':total,
+        'allocated_bytes':int(torch.cuda.memory_allocated(engine.w.device)),
+        'reserved_bytes':int(torch.cuda.memory_reserved(engine.w.device)),
+        'live_bytes':engine.multi.memory_gate.live(), 'observed_at_unix_ns':wall,
+        'interval_monotonic_ns':[start,time.monotonic_ns()],
+        'ownership':{'prepared_private_spare_bytes':prepared.private_spare_bytes,
+            'prepared_outside_active_bytes':prepared.outside_active_bytes, 'mapped_bytes':mapped_bytes(),
+            'absolute_cap_bytes':cuda_limit_bytes(),
+            'graph_outside_allocator_bytes':max(0,graphs.room_bytes-graphs.capture_reserved_delta_bytes)}}
+    proof = {'schema':CAPACITY_PROOF_SCHEMA, 'contract':contract, 'rank':engine.rank, 'slots':slots, 'bits':bits,
+        'physical_capacity':engine.multi.capacity,
+        'kv_pair':{'key_dtype':engine.kv_pair.key_dtype, 'value_dtype':engine.kv_pair.value_dtype, 'identity':engine.kv_pair.identity},
+        'capacity':deepcopy({k:cap[k] for k in _CAPACITY_FIELDS}),
+        'states':[{'slot':i, **{k:getattr(state,k) for k in ('logical_context','capacity','limit','pos','mtp_len')}}
+                  for i,state in enumerate(engine.multi.states)],
+        'owner':{'admitted':graphs.admitted, 'bound_closed':graphs.bound.closed, 'pending':len(graphs.pending),
+            'failed_owner':engine.multi._failed_graphs is not None, 'capture_failure':graphs.failure is not None,
+            'preparation_closed':prepared.closed, 'prepared':prepared.prepared}, 'sample':sample, 'retention_sha256':digest(retention)}
+    validate_capacity_proof(proof, retention=retention, slots=slots, bits=bits)
+    _validate_capacity_catalogue(proof['capacity'], operation)
+    return proof
+
+
+def _validate_capacity_catalogue(capacity, operation):
+    catalogue = capacity['multi_graphs']['exact_graph_catalogue']
+    policy = operation['prepared_execution'].get('exact_graph_policy')
+    if policy is None:
+        require(catalogue.get('policy') == 'full-original-v1'
+                and catalogue.get('requested_keys') == catalogue.get('available_keys'),
+                'full original graph catalogue was reduced')
+    else:
+        require(catalogue.get('policy') == policy['policy']
+                and catalogue.get('evidence_sha256') == policy['evidence_sha256']
+                and {tuple(key) for key in catalogue['requested_keys']} == {tuple(key) for key in policy['keys']},
+                'capacity proof dropped or changed requested graph keys')
+
+
+def _validate_startup_capacity(profile, operation):
+    contract = _capacity_contract(operation)
+    require(('full_window_capacity' in profile) == (contract is not None), 'capacity contract/proof presence differs')
+    if contract is None:
+        return
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+    proof = validate_capacity_proof(profile['full_window_capacity'], retention=profile.get('numerical_trial_retention'))
+    _validate_capacity_catalogue(proof['capacity'], operation)
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+    require(proof['kv_pair'] == {'key_dtype':'int8','value_dtype':'int8','identity':get_pair('int8').identity},
+            'C8 teacher capacity requires its actual ordinary int8 KV pair')
+    registration = profile['teacher_execution_registration']
+    require(proof['rank'] == profile['rank'] and proof['retention_sha256'] == registration['binding']['identity']['retention']
+            and registration['binding']['identity'].get('codec') == digest({'pair':proof['kv_pair']['identity']})
+            and registration.get('capacity_projection') == {'schema':CAPACITY_PROOF_SCHEMA,
+                'capacity_sha256':digest(proof), 'retention_sha256':proof['retention_sha256']},
+            'capacity proof is not bound to actual startup retention')
+
+
 def graph_counts(graphs):
     from tensorfold.families.qwen4_exp.cuda.exact_graphs import ExactStateGraphs
     require(graphs is not None and type(getattr(graphs, 'bound', None)) is ExactStateGraphs,
@@ -1124,8 +1494,9 @@ def validate_operation(value):
     required = {'teacher_plan', 'teacher_client', 'model_entrypoint', 'model_assets', 'mtp_artifact',
                 'frontend_root', 'frontend_assets', 'execution_manifest', 'prepared_execution', 'numerical_trial',
                 'selector', 'numa', 'teacher_scope', 'mtp_confidence', 'output_grants'}
-    require(type(value) is dict and set(value) in (required, required | {'preparation_contract'}) and value['teacher_scope'] == _teacher_scope(value),
+    require(type(value) is dict and required <= set(value) <= required | {'preparation_contract', 'capacity_contract'} and value['teacher_scope'] == _teacher_scope(value),
             'closed C8 MTP4 forced-window operation required')
+    _capacity_contract(value)
     for name in ('teacher_plan', 'teacher_client', 'execution_manifest'):
         identity(value[name])
         require(Path(value[name]['path']).parent == Path('/operator')
@@ -1164,10 +1535,12 @@ def validate_sources(value):
 
 def validate_teacher_client(value):
     extra = {'teacher_scope', 'prepared_execution', 'numerical_trial', 'selector', 'numa', 'execution_manifest_sha256', 'mtp_confidence'}
-    if type(value) is dict and 'preparation_contract' in value:
-        extra.add('preparation_contract')
+    if type(value) is dict:
+        extra.update(key for key in ('preparation_contract', 'capacity_contract') if key in value)
     required = {'schema', 'teacher_plan_sha256', 'base', 'model', 'expected_service', 'readiness_timeout_s',
                 'whole_timeout_s', 'socket_timeout_s', 'response_bytes', *extra}
+    if type(value) is dict:
+        _capacity_contract(value)
     service = expected_service(value) if type(value) is dict else SERVICE
     require(type(value) is dict and set(value) == required and value['schema'] == CLIENT_SCHEMA
             and value['teacher_scope'] == _teacher_scope(value) and value['expected_service'] == service
@@ -1195,6 +1568,7 @@ def validate_teacher_operation_plan(operation, plan, client, *, profile=None, **
             and plan['identity']['profile_sha256'] == operation['execution_manifest']['sha256']
             and plan['mtp_confidence'] == operation['mtp_confidence'],
             'window plan and actual candidate profile differ')
+    require(_capacity_contract(client) == _capacity_contract(operation), 'capacity client/operation contract differs')
     require(_preparation_contract(client) == _preparation_contract(operation), 'C8 client/operation preparation contract differs')
     require(client['teacher_plan_sha256'] == operation['teacher_plan']['sha256']
             and client['execution_manifest_sha256'] == operation['execution_manifest']['sha256']
@@ -1346,6 +1720,11 @@ def runtime_profile(engine, operation):
                        'resident_states': 24, 'active_states': ACTIVE,
                        'target_rows': 120, 'prefill_rows': 256, 'context': engine.context_window,
                        'state_kv_identity': states[0].kv_identity, 'prepared_execution': prepared.specification})
+    capacity = _runtime_capacity_proof(engine, operation, retention)
+    if capacity is not None:
+        profile['full_window_capacity'] = capacity
+        profile['teacher_execution_registration']['capacity_projection'] = {'schema':CAPACITY_PROOF_SCHEMA,
+            'capacity_sha256':digest(capacity), 'retention_sha256':digest(retention)}
     if _preparation_contract(operation) == ATEN_PREPARATION_CONTRACT:
         _attention_retention({'teacher_profile':profile}, operation, {})
     # Use the existing strict JSON owner; no tensor, object repr or identity alias.
@@ -1403,6 +1782,13 @@ def validate_service(stats, spec, instance, *, prepared_manifest):
     effective = qualification.profile(stats)
     qualification.require_idle(stats)
     qualification.materialization(stats, effective)
+    if _capacity_contract(spec) is not None:
+        plan = stats['capacity_plan']
+        require(all(k in plan for k in _CAPACITY_FIELDS), 'service lacks complete scoped capacity policy')
+        _validate_capacity_plan({k:plan[k] for k in _CAPACITY_FIELDS}, slots=24, bits=8)
+        _validate_capacity_catalogue(plan, spec)
+    else:
+        _legacy_capacity_plan(stats['capacity_plan'])
     expected = spec['expected_service']
     expert = stats['capacity_plan']['expert_parallel']
     runtime = stats['runtime']
@@ -1561,6 +1947,7 @@ def client_credit(teacher, client_bytes):
 
 
 def validate_startup(row, selected):
+    _validate_startup_capacity(row.get('teacher_profile', {}), selected)
     validate_preparation(selected['prepared_execution'], selected['numerical_trial'], _preparation_contract(selected))
     profile, windows = row.get('teacher_profile', {}), row.get('teacher_windows', {})
     require(type(row.get('rank')) is int and 0 <= row['rank'] < WORLD and row.get('world') == WORLD
@@ -2055,6 +2442,22 @@ def preparation_changes(reference, candidate):
 
 
 def _comparison_retention(row, operation, changes):
+    result = _preparation_retention(row, operation, changes)
+    _validate_startup_capacity(row['teacher_profile'], operation)
+    if _capacity_contract(operation) is not None:
+        from copy import deepcopy
+        result = deepcopy(result)
+        proof = row['teacher_profile']['full_window_capacity']
+        validated = _validate_capacity_plan(proof['capacity'], slots=24, bits=8, local_rank=proof['rank'])
+        result['window_capacity_contract'] = {'schema':CAPACITY_PROOF_SCHEMA,
+            'contract':CAPACITY_CONTRACT, 'slots':24, 'bits':8, 'logical_context':262144,
+            'kv_pair':proof['kv_pair'],
+            'physical_capacity':validated['physical'], 'future_service':validated['future'],
+            'absolute_grant_caps':validated['absolute_caps']}
+    return result
+
+
+def _preparation_retention(row, operation, changes):
     if _preparation_contract(operation) == ATEN_PREPARATION_CONTRACT:
         return _attention_retention(row, operation, changes)
     if changes is None:
@@ -2105,6 +2508,7 @@ def compare(reference, candidate, *, control, output):
         import v100_target_window_evidence as shards
     left, right = _comparison_side(reference, control), _comparison_side(candidate, control)
     a, b = left['inner']['operation'], right['inner']['operation']
+    require(_capacity_contract(a) == _capacity_contract(b), 'comparison capacity contract differs')
     changes = preparation_changes(a, b)
     require(not any(a['numerical_trial'].values()) and a['selector'] == selectors()[0],
             'window comparison requires its all-off original expert control')

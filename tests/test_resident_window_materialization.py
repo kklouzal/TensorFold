@@ -99,6 +99,7 @@ def test_production_constructor_owns_every_promised_cache_and_counts_it_once(slo
         "MemoryGate": MemoryGate,
         "torch": NS(cuda=NS(is_available=lambda: False)),
         "memory_live": None,
+        "native_gdn_batch": False,  # Actual constructor default for this language-only allocation slice.
     }
     exec(compile(ast.fix_missing_locations(module), str(file), "exec"), ns)
     # This isolated allocation block starts after the constructor binds its

@@ -158,6 +158,47 @@ without claiming a one-rank model plan or full State admission. The corrected
 tools have not yet passed a newly installed image and model-level five-window
 GPU capture; those remain separate gates.
 
+## Full-window graph headroom
+
+The 2026-11-13 user authority permits otherwise unused memory to fund graphs
+after the required24 Q8 or32 Q4 sessions retain the model-advertised262,144-token
+logical context and actual MTP physical tail. In that scoped automatic,
+resident SM70 unique-GPU-history NONE/MTP region, post-materialization admission
+uses current physical free memory and the remaining absolute project grant,
+with complete service promises charged once. It retains at least2 GiB of
+execution workspace, actual snapshot retention and replacement/copy overlap;
+fully materialized windows have zero remaining growth. Every rank validates
+its materialization and reports its allowance; the minimum governs capture.
+The personal profiles bind explicit ceilings of24 Q8 or32 Q4. With no session
+ceiling, automatic capacity retains its existing maximum-capacity semantics;
+extra resident sessions can consume headroom, so graph fit remains conditional
+on the resulting physical proof. This policy does not silently cap that API.
+
+The scoped cold capacity calculation also omits the unused floor, so it cannot
+reject the required feasible capacity before materialization. It still applies
+the complete geometry, loading overlap and absolute grant; fewer than the
+required24/32 full-context slots is an explicit failure. Other cold routes keep
+their previous floor. Historical floor-based receipts remain historical.
+The actual initial allocation baseline and header estimates remain in the
+receipt. The enclosing project ceiling derives from each baseline's actual
+pre-target physical free and remaining absolute grant, never by adding already
+materialized owners. After capture, private allocator spare remains unavailable
+to ordinary service, and graph residency outside the allocator is charged in
+the absolute-cap domain without charging reserved allocator bytes twice.
+Unknown ownership cannot grant absolute-cap credit. Explicit graph ceilings,
+partial/nonfull-window profiles, other hardware and existing RAM policies keep
+their previous contracts. Source accounting is not evidence that physical Q4
+capacity and all required graph keys have passed native qualification.
+
+This change does not alter numerical providers, graph keys or replay order.
+The S32 C36 functional proof selected owned native family/prepared M32, whereas
+the failed S34 teacher selected the independent Torch reference. Their different
+graph residency is not allocator-variance evidence. One graph pool was already
+shared. The pinned Torch contract permits pool sharing under nonconcurrent,
+capture-order replay; arbitrary new sharing requires its own live-allocation
+proof and is not introduced here. Native all-rank capacity, full C36 graph fit,
+serial/MTP outputs and matched performance remain required gates.
+
 ## Token staging host view reuse
 
 The target and MTP stages cache full NumPy borrowers of the existing
@@ -1952,3 +1993,12 @@ still declares64MiB soft/hard and pays64MiB for each of eight HTTP owners.
 This corrects an upper-bound check; it changes no model math, precision,
 forcing, vocabulary, scheduling or required output. The failed pilot remains
 failed, with no valid baseline/completion or quality result.
+
+The Source37 C8 capacity consumer increment adds an explicit versioned contract
+without changing application code, graph pools, numerical providers or precision.
+Legacy records remain legacy; an undeclared or arbitrary zero floor cannot
+become a full-window proof. The new projection retains measured rank, graph and
+private-pool fields, while paired retention comparison includes only validated
+unchanged capacity/recovery promises. Focused CPU contract and preserved legacy/reader controls pass on genuine Source37
+SDK/application origins without an application overlay. Native/model capacity and
+quality remain unrun; no physical capacity or performance result is inferred.
