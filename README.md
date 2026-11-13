@@ -31,8 +31,10 @@ its allowance from observed worst-rank headroom after24 Q8 or32 Q4 full-context
 windows and all remaining service promises. Unused startup reserve can fund
 graphs; required workspace, snapshots, copy overlap and absolute grants remain
 protected. The Q4 v3 run supplies scoped physical-capacity/graph evidence;
-positive Q4 lifecycle closure is verified; the Q8 reference is still pending. No new
-throughput or numerical claim is made. See
+positive Q4 lifecycle closure is verified. The Source40 Q8 forced-prefix pair
+also completed: all528 target-logit vectors matched bitwise, while recorded MTP
+probabilities differed. Unforced MTP quality and matched performance remain
+pending. See
 [admission scope](docs/optimization-validation.md#full-window-graph-headroom).
 Personal profiles use explicit24/32 ceilings. Uncapped automatic capacity still
 maximizes sessions; graph fit depends on the headroom left by that selection.
@@ -43,6 +45,13 @@ GDN Q workspace and retains the same per-State arithmetic. The candidate stays
 default-off. Source41 passed73 native component cases, including32-State frames
 and captured accepted prefixes, with independent incumbent/kernel provenance
 and clean retirement. Integrated model/quality and performance gates remain pending.
+
+The maintained packed-group G3 native test now authors real Q8/ISO4 State,
+actor-handoff, pending-codec, cut-copy and one-slab controls against the matching
+Source41 GDN artifact. Its11 CPU fixture and13 evidence-boundary controls pass; the new CUDA test remains
+unrun and does not qualify TP8 model adoption, quality or performance. The
+[finite native contract](docs/gdn-chunk64-prefill-integration.md#packed-group-native-diagnostics)
+preserves the separate standalone seven-case oracle.
 
 The standalone GDN native trial has a maintained resource/cache envelope in
 `tools/v100_gdn_native_envelope.py`. It preserves kernel failures through

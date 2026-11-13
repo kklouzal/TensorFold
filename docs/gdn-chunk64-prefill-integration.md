@@ -334,3 +334,74 @@ full24/full32 fit, closed G3 model/quality contract and all end-to-end P3 region
 remain unqualified. The single-frame API and seven-case native oracle remain
 available independently. No source implementation alone selects this mode for
 ordinary serving or provides numerical tolerance/quality acceptance.
+
+## Packed-group native diagnostics
+
+`tests/cuda/test_sm70_g3_target_group.py` is a separately authorized component
+procedure for the matching installed Source41 GDN image. It uses real Q8/ISO4
+State allocations with two GDN layers, one cold compiled kernel set and one
+P256 slab. It runs packed63/64/65 pieces and24/32-piece P256 shapes twice with
+changed frame ordering, nonzero recurrent/conv history, interior cuts and a
+real admitted actor handoff. It exercises epoch, alias, budget and actual
+codec-status failure boundaries. It does not substitute a fake TP8 communicator
+or claim actual model/policy adoption. The standalone seven-case native oracle
+and runtime algorithms remain unchanged.
+
+The diagnostic observes actual cut copies using the protected Torch dispatch
+mode: it forwards each copy once, then clones that copy's source on the same
+stream before reuse. Explicit clone/header credits and positive completion
+retain those owners. It compares cut copies and conv-tail storage bits,
+including signed zero, against the actually produced source. No CPU numerical
+approximation is used as an exact-copy oracle. CPU serial and actual incumbent
+outputs/State errors are recorded without a new acceptance tolerance.
+
+The finite fixture tensor upper bound is216,639,189 bytes at32 pieces, below
+the256MiB fixture grant. This includes diagnostic source clones and the
+serialized incumbent temporary. Allocator, compiler, native metadata and process
+RSS are separate measured envelope obligations. The proposed native envelope
+is4CPU/8GiB on Node0,1200 seconds,2GiB scratch and1GiB retained compiler cache;
+these are proposal DATA, never execution authority. An external held input
+binds the actual source UID, immutable image, compiler and owned artifact.
+Native collection/execution, TP8 full24/full32 adoption, model/quality and P3
+remain separate required gates.
+
+The CPU fixture/real redispatch controls pass11 tests on the Source41 protected
+SDK without CUDA visibility or application overlay. The new CUDA test has not
+been collected or executed. A first combined gate preserved Ruff's read-only
+cache failure after the11 passes; a subsequent static-only gate fixed that
+procedure and passed scoped Ruff. Formatting retained exact ASTs. No numerical
+or native result follows from these CPU checks.
+
+The component observation additionally binds the three retained actual TVM
+callee modules with `get_function(..., query_imports=False)` and their unique
+`__tvm_ffi_` dynamic exports to the existing VMA-backed FD observer. It checks
+compiler-library bytes/SHA against the owned admission report. The pinned public
+`TempDirectory.set_keep_for_debug()` context keeps actual generated libraries
+pathname-backed through that proof and restores its prior flag in `finally`.
+Owned compiler inspection precedes the TileLang/TVM import; the extra cold hash
+pass is diagnostic overhead. There is no SDK patch or deleted-path relaxation.
+The proposal sets ordinary `TMPDIR=/cache`, retaining the debug objects and
+actual generated DSOs inside the same paid1GiB compiler cache before unmount;
+`/tmp` remains a separate2GiB process scratch grant.
+
+Every completed State cohort, its final chosen-order borrower, projections and
+parameters are released before the next allocation RHS. Each independent
+incumbent State/cut owner is likewise released after its CPU diagnostic copies
+complete. This prevents an uncharged two-cohort/two-baseline overlap. Retained
+Cut tensors remain owned until their exact-copy proof and positive completion.
+The seven new CPU evidence-boundary controls use explicit mock records; they
+validate refusal/protocol behavior and grant no native provider authority.
+
+An additional real installed CPU control invokes the actual image's `nm` through
+an inherited held FD for its genuine `_fd_owner` ELF, finds `PyInit__fd_owner`,
+checks unchanged file metadata and proves descriptor closure. It passes without
+CUDA visibility. This verifies that evidence-tool boundary; generated G3 native
+DSOs remain unobserved until the separately authorized native run.
+
+The export probe uses the existing bounded `v100_adaptive_qualification.capture`
+process-group owner with an optional caller-owned `pass_fds` tuple. Its old
+empty default is unchanged. The probe bounds output while reading, rejects
+truncation, timeout and nonzero status, and retains the input FD until positive
+process-group retirement and the final metadata check. Three refusal controls,
+two actual passed-FD output/timeout controls and the affected actual installed
+`nm` control pass; earlier CPU scopes are not repeated for this repair.

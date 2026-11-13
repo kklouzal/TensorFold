@@ -252,3 +252,18 @@ def test_transfer_inputs_rejected_before_importing_optional_framework():
         qualification.transfers(payload_bytes=0)
     with pytest.raises(ValueError, match="positive integer"):
         qualification.transfers(reps=False)
+
+
+@pytest.mark.parametrize('kind',['output-limit','timeout'])
+def test_capture_passed_descriptor_survives_bounded_output_and_timeout(tmp_path,kind):
+    import os
+    path = tmp_path/'owned.txt';path.write_bytes(b'held owner')
+    with path.open('rb') as source:
+        descriptor = source.fileno()
+        check = "import os,sys,time; assert os.read(int(sys.argv[1]),10)==b'held owner'; "
+        action = "print('x'*10000)" if kind == 'output-limit' else 'os.close(1); os.close(2); time.sleep(20)'
+        result = qualification.capture([sys.executable,'-c',check+action,str(descriptor)],
+            pass_fds=(descriptor,),limit=37,timeout=2 if kind == 'output-limit' else .1)
+        assert result['status'] == kind and result['exit_code'] is not None
+        assert len(result['output_utf8']) <= 37 and os.fstat(descriptor).st_ino == path.stat().st_ino
+        assert result['elapsed_s'] < 5

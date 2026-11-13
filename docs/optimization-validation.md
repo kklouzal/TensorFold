@@ -2214,3 +2214,34 @@ observer runs after actual resource fences but before outer close marks the
 engine and teacher closed. Required graph replay coverage, positive retirement
 and primary/cleanup transport remain enforced. The failed r4 run retained all
 prefill/window data but is not a complete baseline or quality result.
+
+### Source40 completed forced-prefix pair
+
+The fresh r5 reference and candidate both completed on application source
+`991c0282`, purpose image `8e9d2a5b`, and tool source `e3d82e0e`. Both retained
+24 Q8 windows at262,144 logical positions plus the speculative tail, TP8/ETP4,
+MTP depth4 and the C36 catalogue. Eight active requests used256-token prompts
+and16 forced continuation positions each. The reference disabled native-family,
+prepared-M32 and owned-Q8 preparation; the candidate enabled those declared
+preparation changes. Both kept incumbent GU, TensorFold down and TensorFold
+prefill. This pair does not select among the other expert/backend combinations.
+
+Both owning CLIs and containers exited zero, with all eight closed, nonfailed
+worker summaries, native/provider postchecks and24 NUMA receipts. Source/seal
+holds, container removal and unchanged GPU health completed positively. The
+canonical CPU comparison streamed all528 full-vocabulary Float32 vectors and128
+unique gold positions: all target vectors matched as UInt32 bits, top1 agreement
+was1, KL and NLL delta were0. On that small repository-document continuation
+corpus, both arms had mean NLL3.8534560981935453 and perplexity47.155756853146215.
+These are forced-prefix diagnostic measurements, not held-out accuracy or
+populated maximum-history qualification.
+
+The400 original MTP token observations also matched, but all400 recorded
+probabilities differed in binary64. Mean absolute probability delta was
+0.001381911440091322 and maximum was0.11561892707657417. No recorded pair
+crossed the configured0.7 confidence boundary; forced continuation nevertheless
+does not establish ordinary proposal trajectories, acceptance rates or MTP-head
+equivalence. Source/axis and MTP-head investigation remains required before
+unforced quality or performance acceptance. The CPU comparison stayed within
+its4 GiB hard limit without OOM; its actual peak was not captured. No matched
+token/s result or candidate adoption follows from this diagnostic pair.

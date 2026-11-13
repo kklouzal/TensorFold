@@ -37,8 +37,8 @@ def positive(value, name):
     return value
 
 
-def capture(argv, *, timeout=15.0, limit=1 << 20):
-    """Bound retained bytes and wall time; retire the command's whole process group."""
+def capture(argv, *, timeout=15.0, limit=1 << 20, pass_fds=()):
+    """Bound output/time and retire the whole group; caller retains passed FDs through return."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("command timeout must be finite and positive")
     positive(limit, "command output limit")
@@ -46,7 +46,7 @@ def capture(argv, *, timeout=15.0, limit=1 << 20):
     result = {"argv": list(argv), "status": "unavailable", "exit_code": None}
     try:
         process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, start_new_session=True)
+                                   stderr=subprocess.STDOUT, start_new_session=True, pass_fds=pass_fds)
     except OSError as error:
         result["error"] = {"type": type(error).__name__, "message": str(error)}
         return result
