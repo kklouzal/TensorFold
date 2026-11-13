@@ -444,6 +444,7 @@ def test_actual_target_and_mtp_host_staging_preserve_ids_and_boundary_coordinate
     b.staged=NS(synchronize=lambda:None,record=lambda:None)
     b.ids_host,b.ids=torch.zeros(4,dtype=torch.int32),torch.zeros(4,dtype=torch.int32)
     b.last_host,b.last=torch.zeros(2,dtype=torch.int32),torch.zeros(2,dtype=torch.int32)
+    b.ids_host_array,b.last_host_array=b.ids_host.numpy(),b.last_host.numpy()
     b.mtp_in=torch.zeros((4,1))
     for state in states:
         state.mtp_boundary=None

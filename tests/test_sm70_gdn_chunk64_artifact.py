@@ -101,6 +101,7 @@ def test_compiler_report_binds_owned_identity_before_remaining_dependencies(inst
     assert report["owned_artifact"]["attestation_sha256"] == installed.selected.attestation_sha256
     assert report["packages"]["tilelang"] == "0.1.10+fixture"
     assert report["tilelang_base_requirements"] == []
+    assert report["target"] == {"kind": "cuda", "arch": "sm_70"}
 
 
 @pytest.mark.parametrize("failure", ["extra-field", "path-escape", "second-ffi", "ffi-version", "image",

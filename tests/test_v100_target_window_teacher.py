@@ -355,6 +355,7 @@ def test_actual_eight_state_mtp_staging_binds_gold_device_ids_and_coordinates(fa
         input_preparation_context=None, compact_indexer_stage=staging,
         mtp_indexer_position=position, mtp_indexer_coordinate_storage=staging.mtp_coordinates,
         mtp_indexer_frame_id=0, mtp_indexer_coordinates=None, mtp_indexer_frame=None)
+    buffers.ids_host_array, buffers.last_host_array = buffers.ids_host.numpy(), buffers.last_host.numpy()
     observer.decoder = SimpleNamespace(mbuf=buffers, pbuf=object(),
         controller=SimpleNamespace(effective={'prefill_tokens': 256, 'row_budget': 120}),
         _proposal_limit=lambda: 4)

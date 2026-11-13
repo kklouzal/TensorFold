@@ -1803,6 +1803,20 @@ def test_teacher_native_observation_is_after_resource_fence_and_no_retry(monkeyp
     assert events == ['positive-resource-fence', 'observation']
 
 
+def test_attention_sdk_observation_keeps_existing_fence_and_limits(tmp_path):
+    paths = ('/ordinary/torch/_C.cpython-312-x86_64-linux-gnu.so','/ordinary/torch/lib/libtorch_cuda.so')
+    events = []
+    engine = NS(rank=1, _owned_teacher_frames=NS(finished=True,failed=None),
+        _teacher_attention_provider_paths=paths, _close_resources=lambda:events.append('fence'))
+    def record(required, **kwargs):
+        assert events == ['fence'] and required == ['tf_gguf_']
+        assert kwargs['provider_paths'] == paths and kwargs['limits'] == owned._model_contract().MODEL_OBSERVER_LIMITS
+        events.append('observed')
+    owned._attach_teacher_native_observer(engine,{'module':NS(record_native_elfs=record),'directory':tmp_path})
+    engine._close_resources()
+    assert events == ['fence','observed']
+
+
 def test_teacher_native_observer_failure_notifies_and_preserves_primary(monkeypatch, tmp_path):
     primary, events = RuntimeError('origin'), []
     def fail(*args, **kwargs):

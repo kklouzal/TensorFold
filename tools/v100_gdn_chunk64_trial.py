@@ -29,6 +29,12 @@ def reference(q, k, v, raw_log_gate, beta, initial):
     return torch.stack(outputs,dim=1),s
 
 
+def unchanged_initial(initial, original):
+    """Compare storage bits of the admitted contiguous FP32 state banks."""
+    import torch
+    return bool(torch.equal(initial.view(torch.int32),original.view(torch.int32)))
+
+
 def errors(actual, expected):
     import torch
     a=actual.detach().cpu().to(torch.float64)
@@ -119,7 +125,8 @@ def run(args, progress):
     from tensorfold.cuda.sm70.gdn_chunk64 import Compiler, layout, prepare
     from tensorfold.cuda.sm70.gdn_chunk64_artifact import OwnedArtifact
     owned=(OwnedArtifact(str(args.owned_tilelang_attestation),args.owned_attestation_bytes,
-                         args.owned_attestation_sha256,str(args.owned_tilelang_wheel),args.owned_hash_byte_credit)
+                         args.owned_attestation_sha256,str(args.owned_tilelang_wheel),args.owned_hash_byte_credit,
+                         str(args.owned_native_base_wheel) if args.owned_native_base_wheel is not None else None)
            if args.owned_tilelang_attestation is not None else None)
     compiler=Compiler(args.cuda_home,args.nvcc_sha256,owned)
     import tensorfold.cuda.sm70.gdn_chunk64 as component
@@ -132,7 +139,7 @@ def run(args, progress):
     torch.cuda.set_device(args.device)
     torch.manual_seed(20261113)
     results=progress["results"]
-    for rows in (1,63,64,65,129):
+    for rows in (1,63,64,65,128,129):
         for case in ("zero", "nonzero_initial", "raw_underflow"):
             progress["current"]={"rows":rows,"case":case,"stage":"operands"}
             with torch.inference_mode():
@@ -142,6 +149,7 @@ def run(args, progress):
                 g=-torch.nn.functional.softplus(torch.randn(1,rows,6,device=args.device))
                 b=torch.sigmoid(torch.randn_like(g))
                 initial=torch.randn(1,6,128,128,device=args.device,dtype=torch.float32)*0.125
+                initial[...,0,0]=-0.0
                 if case == "zero":
                     v.zero_();initial.zero_()
                 elif case == "raw_underflow":
@@ -159,15 +167,15 @@ def run(args, progress):
                 torch.cuda.synchronize()
                 elapsed=time.monotonic()-before
                 progress["current"]["stage"]="reference"
-                expected,expected_state=reference(q,k,v,g,b,initial)
+                expected,expected_state=reference(q,k,v,g,b,original)
                 record={"rows":rows,"case":case,"cold_prepare_and_run_seconds":elapsed,
                         "workspace_bytes":p.layout.workspace_bytes,
-                        "initial_unchanged":bool(torch.equal(initial,original)),
+                        "initial_unchanged":unchanged_initial(initial,original),
                         "output":errors(output,expected),"final":errors(final,expected_state)}
                 if case == "zero":
                     record["exact_zero_output_and_final"] = bool((output==0).all() and (final==0).all())
                 progress["current_record"]=record
-                if rows == 129 and case == "nonzero_initial":
+                if rows in (128,129) and case == "nonzero_initial":
                     # Separate-final continuation through a non-chunk-aligned
                     # boundary. Record numerical differences, never relabel
                     # tolerance-free differences as equivalent.
@@ -175,7 +183,7 @@ def run(args, progress):
                     middle=torch.empty_like(initial)
                     second=torch.empty_like(initial)
                     parts=[]
-                    for start,end,state_in,state_out in ((0,65,initial,middle),(65,129,middle,second)):
+                    for start,end,state_in,state_out in ((0,65,initial,middle),(65,rows,middle,second)):
                         count=end-start
                         fragment=torch.empty((1,count,6,128),device=args.device,dtype=torch.float16)
                         part=prepare(count,args.device,workspace_budget_bytes=layout(count).workspace_bytes,compiler=compiler)
@@ -188,14 +196,14 @@ def run(args, progress):
                         torch.cuda.synchronize()
                         parts.append(fragment)
                     split_output=torch.cat(parts,dim=1)
-                    record["continuation"]={"boundary":65,"initial_unchanged":bool(torch.equal(initial,original)),
+                    record["continuation"]={"boundary":65,"part_rows":[65,rows-65],
+                        "initial_unchanged":unchanged_initial(initial,original),
                         "output_vs_serial":errors(split_output,expected),
                         "final_vs_serial":errors(second,expected_state),
                         "output_vs_unsplit":errors(split_output,output),
                         "final_vs_unsplit":errors(second,final)}
                 results.append(record)
-                # Capture refusal and alias refusal both precede dispatch; no
-                # separate alternative kernel or tolerant acceptance is hidden.
+                # Alias refusal precedes dispatch; capture is unsupported.
                 progress["current"]["stage"]="alias-negative-control"
                 try:
                     p.bind(q,k,v,g,b,initial,output,initial)
@@ -203,6 +211,7 @@ def run(args, progress):
                     record["initial_alias_refused"] = True
                 else:
                     record["initial_alias_refused"] = False
+                record["initial_unchanged"]=record["initial_unchanged"] and unchanged_initial(initial,original)
                 progress.pop("current_record",None)
                 progress["current"]["stage"]="complete"
     stream_result=nondefault_stream_trial(args,compiler,progress)
@@ -246,12 +255,16 @@ def main(argv=None):
     p.add_argument("--owned-attestation-sha256",help="Externally selected actual attestation SHA256")
     p.add_argument("--owned-tilelang-wheel",type=Path,help="Actual retained owned wheel whose bytes must match")
     p.add_argument("--owned-hash-byte-credit",type=int,
-                   help="Byte credit per cold inspection for wheel + owned/protected-FFI installed members")
+                   help="SHA256 byte credit per inspection: wheels, installed members and v2 archive member payloads")
+    p.add_argument("--owned-native-base-wheel",type=Path,
+                   help="Retained native base wheel, required only by closed Python-derivation attestation v2")
     args=p.parse_args(argv)
     selections=(args.owned_tilelang_attestation,args.owned_attestation_bytes,args.owned_attestation_sha256,
                 args.owned_tilelang_wheel,args.owned_hash_byte_credit)
     if any(value is not None for value in selections) and any(value is None for value in selections):
         p.error("owned TileLang admission requires all five explicit artifact/credit fields")
+    if args.owned_native_base_wheel is not None and args.owned_tilelang_attestation is None:
+        p.error("a native base wheel requires the complete explicit owned artifact selection")
     if args.stream_trace_output.resolve()==args.output.resolve() or args.stream_trace_output.exists():
         p.error("stream trace requires its own unused output path")
     if args.output.exists():

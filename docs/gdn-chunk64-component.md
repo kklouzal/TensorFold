@@ -1,5 +1,22 @@
 # Explicit GDN chunk64 numerical trial
 
+The maintained `tools/v100_gdn_native_envelope.py` runs the numerical helper
+with an explicitly hashed, bounded DATA selection. It checks the actual GPU
+UUID, SM70 capability, CPU affinity and installed component hashes, records
+resource snapshots, and retains a bounded compiler cache before process exit.
+Snapshot, retention and publication failures are transported with the original
+kernel failure. This replaces the private Source27 envelope for future trials;
+that failed historical packet is preserved. CPU envelope controls and actual
+native/component/model qualification remain distinct.
+Initial-state preservation uses FP32 storage-bit equality through both the
+continuation and alias-refusal controls; value equality alone misses signed
+zero changes. Nonzero-state cases include negative zero as an adverse input.
+The serial oracle consumes the saved pre-launch initial bank. Observed
+preservation failures remain sticky through later alias-refusal checks.
+The selected TileLang0.1.10 compile API receives the explicit target dictionary
+`{'kind': 'cuda', 'arch': 'sm_70'}`. The legacy target string was rejected at the
+first native preparation before GDN compilation; that failure is retained.
+
 The private candidate in `tensorfold.cuda.sm70.gdn_chunk64` owns a minimal
 prefill component around three original FlashQLA SM70 TileLang generators.
 It has no engine hook, CLI serving flag, automatic selection or dependency
@@ -71,9 +88,10 @@ stream. There is no concurrent workspace reuse or multi-stream contract.
 The focused maintained CPU boundary checks are `tests/test_sm70_gdn_chunk64.py`.
 The explicit GPU trial `tools/v100_gdn_chunk64_trial.py` compares component
 outputs/final states with an independent CPU float64 serial delta rule at
-rows1/63/64/65/129, zero and nonzero initial states, and raw gates whose exp
+rows1/63/64/65/128/129, zero and nonzero initial states, and raw gates whose exp
 underflows. It checks immutable initial-bank ownership, alias refusal,
-finite/full outputs and exact zero known answers. Numerical errors are
+finite/full outputs and exact zero known answers. The nonzero-initial controls
+retain separate-bank continuations at128=65+63 and129=65+64. Numerical errors are
 reported without an invented tolerance; a zero process exit does not qualify
 the numerical mode. Use only a coordinator-granted GPU/resource lease and keep
 all failures. Compiler failure produces a structured failure report.
@@ -156,6 +174,38 @@ The closed schema `tensorfold.g3-owned-tilelang-attestation-v1` has exactly:
 - `evidence`: exact maintained producer hash and the successful postbuild audit,
   TileLang-first and FFI/Torch-first receipt identities.
 - `schema` and `qualification: artifact-identity-only`.
+
+Attestation `tensorfold.g3-owned-tilelang-attestation-v2` retains those eight
+fields and adds one closed `derivation` object. Top-level `source_pins` and
+`build` continue to identify the native708bc2d/a8d1a61 build and its archive;
+`tilelang` and the audit/import `evidence` identify the resulting derived
+artifact. The derivation records the complete native base wheel inventory,
+reviewed Python07827c6/772f65b pins, the exact approved DictAttrs before/after
+member, packaging proposal/producer/tool/recipe-input/image identities and
+the embedded provenance member. It permits this one reviewed change, not an
+arbitrary Python patch or unknown source tree.
+The registered derived-provenance member cannot be admitted under v1 by
+dropping the derivation field; valid single-build v1 selections remain unchanged.
+
+V2 requires the explicit retained `--owned-native-base-wheel` in addition to
+the five existing selection flags. V1 rejects that unused extra selection.
+Both retained wheels and all declared archive member payloads are hashed;
+normalized dist-info renaming must preserve every unaffected/native member.
+METADATA may change only Version; WHEEL may change only Generator to the
+reviewed public-wheel0.48.0 derivation label. Both RECORD files must cover the
+actual complete member identities. The sole added provenance JSON must match
+the selected native/Python/packager/recipe chain exactly, excluding its own
+digest, resulting wheel hash and image so that the identity is noncircular.
+
+V2 SHA256 credit additionally covers the base wheel and both decompressed
+member inventories. Each RECORD is separately bounded metadata of at most16MiB;
+CRC work and ZIP-library IO are not claimed as SHA256 byte credit. The dedicated
+process's host-memory, wall-time and cache grants remain required. Structural
+normalization and an ordinary import report do not prove actual bundled-TVM
+origin: the consumer's existing Python/native mapping checks still run directly
+after import and before compilation. Actual attestation publication waits for
+the successful derived audit and both fresh import-order receipts; a future
+matching application image is required for v2 admission.
 
 An external SHA256 selection is administrator authority, not a signature or
 proof of numerical quality. The producer must first establish the actual

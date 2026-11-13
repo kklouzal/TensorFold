@@ -732,7 +732,7 @@ def _stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]
 
     stage_text_indexer_frame(b, segs)
     b.staged.synchronize()               # the previous step's copies out of the pinned buffers are done
-    b.ids_host[:R].numpy()[:] = np.asarray([t for _, tokens in windows for t in tokens], dtype=np.int32)
+    b.ids_host_array[:R] = np.asarray([t for _, tokens in windows for t in tokens], dtype=np.int32)
     b.ids[:R].copy_(b.ids_host[:R], non_blocking=True)
     rows = []
     for layer in w.layers:

@@ -751,13 +751,15 @@ def _native_elfs(required):
     return report
 
 
-def record_native_elfs(required, *, rank, tag, evidence_dir, limits=None):
+def record_native_elfs(required, *, rank, tag, evidence_dir, limits=None, provider_paths=()):
     """Explicit child call AFTER native use; exclusive durable bounded record.
 
     The controlled driver provides a fresh directory. Its source file must be
     part of the declared read-only test/tool inventory; this helper imports no
     runtime, initializes no CUDA state and does not query another process.
     """
+    if type(provider_paths) is not tuple or len(provider_paths) > 2:
+        raise ValueError('child attention observation requires at most two fixed provider paths')
     if type(rank) is not int or not 0 <= rank < 65536 or type(tag) is not str or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', tag):
         raise ValueError('bounded child rank/tag required')
     root = Path(evidence_dir)
@@ -765,7 +767,9 @@ def record_native_elfs(required, *, rank, tag, evidence_dir, limits=None):
         info = os.fstat(directory)
         if info.st_uid != os.getuid() or info.st_mode & 0o022:
             raise ValueError('child evidence requires an ordinary private owned directory')
-        report = observe_native_elfs(required, limits=limits)
+        report = observe_native_elfs(required, limits=limits, **({'provider_paths':provider_paths} if provider_paths else {}))
+        if provider_paths:
+            report['required_provider_paths'] = list(provider_paths)
         if limits is not None:
             report['operation_limits'] = dict(limits)
         report.update(rank=rank, tag=tag, observer=file_identity(__file__),
@@ -784,7 +788,7 @@ def record_native_elfs(required, *, rank, tag, evidence_dir, limits=None):
                 written += count
             os.fsync(descriptor)
         os.fsync(directory)
-    if report['missing_required_prefixes']:
+    if report['missing_required_prefixes'] or report['missing_required_provider_paths']:
         raise RuntimeError('required child native ELF was not actually mapped')
     return report
 

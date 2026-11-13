@@ -5,6 +5,8 @@ signature or numerical qualification. Installed packages and the retained wheel
 must stay immutable for the dedicated component process. No TileLang/FFI import,
 installation, environment mutation or compiler operation belongs in this module.
 """
+import base64
+import csv
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -14,12 +16,35 @@ import os
 import re
 import stat
 import sys
+import zipfile
 from dataclasses import dataclass
+from email import policy as email_policy
+from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 
 from tensorfold.cleanup import raise_failures
 
 SCHEMA = "tensorfold.g3-owned-tilelang-attestation-v1"
+DERIVED_SCHEMA = "tensorfold.g3-owned-tilelang-attestation-v2"
+DERIVATION_SCHEMA = "tensorfold.g3-python-derivation-v1"
+PROVENANCE_SCHEMA = "tensorfold.g3-python-derivation-provenance-v1"
+PROVENANCE_MEMBER = "tilelang/owned-python-derivation.json"
+ATTRS_MEMBER = "tilelang/3rdparty/tvm/python/tvm/ir/attrs.py"
+ATTRS_BEFORE = (4300, "d5b1e80bb592b87f9870f35612d9400707b62d7f3435538ed23d5a8a856a5e5b")
+ATTRS_AFTER = (4617, "d04673f928d70669b809e352b303e6b4229ba2b5080683f226a38dcc33dacdd2")
+PYTHON_PINS = (("tilelang", "07827c6ade1125677ce30be043bb9f9ac30cbb2d"),
+               ("tvm", "772f65b487db8dd61c590433c16270e50f4a935b"))
+NATIVE_PINS = (
+    ("tilelang", "708bc2d93ed7e9e4f572a5ba89e85e19fcf32296"),
+    ("tvm", "a8d1a6142941ee2bdac67539435274232edca7da"),
+    ("tvm_ffi", "3c35034fd1026011736e19a4e0e1ed0f22058c42"),
+    ("dlpack", "84d107bf416c6bab9ae68ad285876600d230490d"),
+    ("libbacktrace", "793921876c981ce49759114d7bb89bb89b2d3a2d"),
+    ("cutlass", "b2dd65dc864e09688245b316ac46c4a6cd07e15c"),
+    ("composable_kernel", "b38bb492a1a55b5abb0c345962143c0f9c482cfb"),
+)
+NATIVE_ARCHIVE = "6bdaac08c8c2d0d7b5f94f50d71224ff9ed475058a43652ac63cbeb1c6327a54"
+PACKAGER_GENERATOR = "wheel 0.48.0 (owned Python-only derivation)"
 MAX_METADATA_BYTES = 16 << 20
 # The inspected public wheel actually aborts with this protected FFI runtime.
 # A selected manifest cannot turn that known contradictory artifact into proof.
@@ -92,11 +117,70 @@ def _compiler_members(members):
     return libraries, initializers[0]
 
 
+def _metadata_root(members):
+    return next(PurePosixPath(name).parts[0] for name in members
+                if len(PurePosixPath(name).parts) == 2 and name.endswith(".dist-info/METADATA"))
+
+
+def _normalized_members(members):
+    root = _metadata_root(members)
+    return {(".dist-info/" + name[len(root) + 1:] if name.startswith(root + "/") else name): record
+            for name, record in members.items()}
+
+
+def _validate_derivation(value):
+    item = value["derivation"]
+    _fields(item, ("schema", "base_tilelang", "python_source_pins", "changes", "packaging", "embedded_provenance"))
+    if (item["schema"] != DERIVATION_SCHEMA or value["source_pins"] != dict(NATIVE_PINS)
+            or value["build"]["source_archive_sha256"] != NATIVE_ARCHIVE
+            or item["python_source_pins"] != dict(PYTHON_PINS)):
+        raise ValueError("G3 Python derivation requires its reviewed native and Python source origins")
+    base = item["base_tilelang"]
+    _fields(base, ("version", "wheel", "installed_members"))
+    if type(base["version"]) is not str or not base["version"] or len(base["version"]) > 512:
+        raise ValueError("G3 Python derivation requires the actual native wheel version")
+    _extent(base["wheel"])
+    _members(base["installed_members"], "tilelang", "tilelang")
+    _compiler_members(base["installed_members"])
+    before, after = ({"bytes": size, "sha256": sha} for size, sha in (ATTRS_BEFORE, ATTRS_AFTER))
+    expected = [{"member": ATTRS_MEMBER, "before": before, "after": after}]
+    if type(item["changes"]) is not list or item["changes"] != expected:
+        raise ValueError("G3 Python derivation permits only the reviewed DictAttrs change")
+    packaging = item["packaging"]
+    _fields(packaging, ("proposal_sha256", "producer_sha256", "recipe_identity_sha256", "tool", "image_id"))
+    for name in ("proposal_sha256", "producer_sha256", "recipe_identity_sha256"):
+        _sha(packaging[name])
+    if type(packaging["image_id"]) is not str or not packaging["image_id"].startswith("sha256:"):
+        raise ValueError("G3 Python derivation requires its actual derived image")
+    _sha(packaging["image_id"][7:])
+    _fields(packaging["tool"], ("name", "version", "wheel_sha256"))
+    if packaging["tool"]["name"] != "wheel" or packaging["tool"]["version"] != "0.48.0":
+        raise ValueError("G3 Python derivation requires the selected public wheel packager")
+    _sha(packaging["tool"]["wheel_sha256"])
+    provenance = item["embedded_provenance"]
+    _fields(provenance, ("member", "bytes", "sha256"))
+    if provenance["member"] != PROVENANCE_MEMBER:
+        raise ValueError("G3 Python derivation provenance path differs")
+    _extent({key: provenance[key] for key in ("bytes", "sha256")})
+    old, new = (_normalized_members(package["installed_members"]) for package in (base, value["tilelang"]))
+    if (PROVENANCE_MEMBER in old or set(new) != set(old) | {PROVENANCE_MEMBER}
+            or old.get(ATTRS_MEMBER) != before or new.get(ATTRS_MEMBER) != after
+            or new[PROVENANCE_MEMBER] != {key: provenance[key] for key in ("bytes", "sha256")}
+            or base["version"] == value["tilelang"]["version"]):
+        raise ValueError("G3 Python derivation inventory does not describe the exact base-to-derived change")
+    for name, record in old.items():
+        if name not in (ATTRS_MEMBER, ".dist-info/METADATA", ".dist-info/WHEEL") and new[name] != record:
+            raise ValueError("G3 Python derivation changed an unaffected or native member: " + name)
+
+
 def validate(value):
-    """Validate the one agreed schema; no installed artifact is admitted here."""
-    _fields(value, ("schema", "source_pins", "build", "tilelang", "protected_ffi",
-                    "compiler_environment", "evidence", "qualification"))
-    if value["schema"] != SCHEMA or value["qualification"] != "artifact-identity-only":
+    """Validate either closed identity schema; v1 retains its single-build meaning."""
+    names = ("schema", "source_pins", "build", "tilelang", "protected_ffi",
+             "compiler_environment", "evidence", "qualification")
+    if type(value) is not dict or value.get("schema") not in (SCHEMA, DERIVED_SCHEMA):
+        raise ValueError("G3 owned artifact schema differs")
+    _fields(value, (*names, "derivation") if value["schema"] == DERIVED_SCHEMA else names)
+    if value["qualification"] != "artifact-identity-only":
         raise ValueError("G3 owned artifact schema/qualification differs")
     _fields(value["source_pins"], SOURCE_NAMES)
     for pin in value["source_pins"].values():
@@ -145,6 +229,10 @@ def validate(value):
     _sha(value["evidence"]["producer"]["sha256"])
     for name in ("audit", "tl_first", "ffi_torch_first"):
         _extent(value["evidence"][name])
+    if value["schema"] == DERIVED_SCHEMA:
+        _validate_derivation(value)
+    elif PROVENANCE_MEMBER in value["tilelang"]["installed_members"]:
+        raise ValueError("G3 Python-derived wheel requires its explicit v2 provenance chain")
     return value
 
 
@@ -244,10 +332,142 @@ def read_attestation(path, metadata_bytes, sha256):
 
 
 def hash_bytes(value):
-    """Requested bytes read per cold admission pass, excluding metadata/SDK."""
-    return value["tilelang"]["wheel"]["bytes"] + sum(
+    """SHA256 input credit per cold pass; metadata/CRC, ZIP IO and SDK are separate."""
+    size = value["tilelang"]["wheel"]["bytes"] + sum(
         record["bytes"] for key in ("tilelang", "protected_ffi")
         for record in value[key]["installed_members"].values())
+    if value["schema"] == DERIVED_SCHEMA:
+        base = value["derivation"]["base_tilelang"]
+        size += base["wheel"]["bytes"] + sum(record["bytes"] for package in (base, value["tilelang"])
+                                           for record in package["installed_members"].values())
+    return size
+
+
+def _zip_read(archive, name, size, *, capture=False, hashed=True):
+    if capture and size > MAX_METADATA_BYTES:
+        raise ValueError("G3 wheel metadata exceeds its bounded read envelope")
+    stream, primary, errors, blocks = None, None, [], []
+    digest = hashlib.sha256()
+    try:
+        stream = archive.open(name)
+        remaining = size
+        while remaining:
+            block = stream.read(min(remaining, 1 << 20))
+            if not block:
+                raise ValueError("G3 retained wheel member was truncated")
+            if hashed:
+                digest.update(block)
+            if capture:
+                blocks.append(block)
+            remaining -= len(block)
+        if stream.read(1):
+            raise ValueError("G3 retained wheel member grew beyond its declared extent")
+    except BaseException as error:  # noqa: BLE001 - close every member before transporting its failure
+        primary = error
+    if stream is not None:
+        try:
+            stream.close()
+        except BaseException as error:  # noqa: BLE001 - preserve failed CRC/read and retirement
+            errors.append(error)
+    raise_failures(primary, errors)
+    return digest.hexdigest(), b"".join(blocks) if capture else None
+
+
+def _wheel_record(raw, name, members):
+    seen = set()
+    for row in csv.reader(io.StringIO(raw.decode("utf-8"), newline="")):
+        if len(row) != 3 or row[0] in seen:
+            raise ValueError("G3 retained wheel RECORD is malformed or duplicated")
+        member, sha, size = row
+        seen.add(member)
+        if member == name:
+            if sha or size:
+                raise ValueError("G3 wheel RECORD must leave its own hash/size empty")
+        elif member not in members:
+            raise ValueError("G3 wheel RECORD names an unowned member")
+        else:
+            expected = members[member]
+            encoded = base64.urlsafe_b64encode(bytes.fromhex(expected["sha256"])).rstrip(b"=").decode()
+            if sha != "sha256=" + encoded or size != str(expected["bytes"]):
+                raise ValueError("G3 retained wheel RECORD differs from actual member identities")
+    if seen != set(members) | {name}:
+        raise ValueError("G3 retained wheel RECORD omits a member")
+
+
+def _wheel_contents(path, members):
+    root = _metadata_root(members)
+    record = root + "/RECORD"
+    captured = {root + "/METADATA", root + "/WHEEL", PROVENANCE_MEMBER}
+    result, archive, primary, errors = {}, None, None, []
+    try:
+        archive = zipfile.ZipFile(path)
+        names = archive.namelist()
+        if len(names) != len(set(names)):
+            raise ValueError("G3 retained wheel contains duplicate entries")
+        directories = {str(parent) + "/" for name in (*members, record)
+                       for parent in PurePosixPath(name).parents if str(parent) != "."}
+        if any(info.is_dir() and info.filename not in directories for info in archive.infolist()):
+            raise ValueError("G3 retained wheel contains an unowned directory")
+        ordinary = {info.filename: info for info in archive.infolist() if not info.is_dir()}
+        if set(ordinary) != set(members) | {record}:
+            raise ValueError("G3 retained wheel inventory differs from the selected installed-member closure")
+        for name, expected in members.items():
+            if ordinary[name].file_size != expected["bytes"]:
+                raise ValueError("G3 retained wheel member size differs")
+            sha, raw = _zip_read(archive, name, expected["bytes"], capture=name in captured)
+            if sha != expected["sha256"]:
+                raise ValueError("G3 retained wheel member digest differs: " + name)
+            if raw is not None:
+                result[name] = raw
+        # RECORD is metadata, bounded separately rather than falsely charged as
+        # an installed member. ZipFile owns its CRC algorithm.
+        _, raw = _zip_read(archive, record, ordinary[record].file_size, capture=True, hashed=False)
+        _wheel_record(raw, record, members)
+    except BaseException as error:  # noqa: BLE001 - retain archive validation failure through close
+        primary = error
+    if archive is not None:
+        try:
+            archive.close()
+        except BaseException as error:  # noqa: BLE001 - report archive retirement as well
+            errors.append(error)
+    raise_failures(primary, errors)
+    return {name[len(root):] if name.startswith(root + "/") else name: raw for name, raw in result.items()}
+
+
+def _header_change(before, after, name, old_value, new_value):
+    parsed = [BytesParser(policy=email_policy.default).parsebytes(raw) for raw in (before, after)]
+    for message, expected in zip(parsed, (old_value, new_value)):
+        if message.is_multipart() or message.get_all(name) != [expected]:
+            raise ValueError("G3 derived wheel metadata header differs: " + name)
+    remaining = [[(key.lower(), str(value)) for key, value in message.items() if key.lower() != name.lower()]
+                 for message in parsed]
+    if remaining[0] != remaining[1] or parsed[0].get_payload() != parsed[1].get_payload():
+        raise ValueError("G3 Python derivation changed unrelated wheel metadata")
+
+
+def _derived_wheels(value, native_wheel, derived_wheel):
+    item = value["derivation"]
+    base = item["base_tilelang"]
+    old = _wheel_contents(native_wheel, base["installed_members"])
+    new = _wheel_contents(derived_wheel, value["tilelang"]["installed_members"])
+    _header_change(old["/METADATA"], new["/METADATA"], "Version", base["version"], value["tilelang"]["version"])
+    old_wheel = BytesParser(policy=email_policy.default).parsebytes(old["/WHEEL"])
+    generators = old_wheel.get_all("Generator")
+    if generators is None or len(generators) != 1:
+        raise ValueError("G3 native wheel requires one Generator header")
+    _header_change(old["/WHEEL"], new["/WHEEL"], "Generator", str(generators[0]), PACKAGER_GENERATOR)
+    packaging = item["packaging"]
+    expected = {
+        "schema": PROVENANCE_SCHEMA,
+        "native": {"source_pins": value["source_pins"], "build": value["build"],
+                   "base_tilelang": {key: base[key] for key in ("version", "wheel")}},
+        "python_source_pins": item["python_source_pins"], "changes": item["changes"],
+        "packager": {**packaging["tool"], "producer_sha256": packaging["producer_sha256"]},
+        "recipe_identity_sha256": packaging["recipe_identity_sha256"],
+    }
+    actual = json.loads(new[PROVENANCE_MEMBER], object_pairs_hook=_object, parse_constant=_nonfinite)
+    if actual != expected:
+        raise ValueError("G3 embedded derivation provenance differs from the selected chain")
 
 
 def publish(path, value):
@@ -274,9 +494,12 @@ def publish(path, value):
     raise_failures(primary, errors)
     Path(path).chmod(0o444)
     digest = hashlib.sha256(raw).hexdigest()
-    return {"path": str(path), "bytes": len(raw), "sha256": digest,
-            "cache_namespace": cache_name(digest, value["compiler_environment"]),
-            "required_hash_bytes": hash_bytes(value), "qualification": "structural-normalization-only"}
+    report = {"path": str(path), "bytes": len(raw), "sha256": digest,
+              "cache_namespace": cache_name(digest, value["compiler_environment"]),
+              "required_hash_bytes": hash_bytes(value), "qualification": "structural-normalization-only"}
+    if value["schema"] == DERIVED_SCHEMA:
+        report["archive_record_metadata_limit_bytes"] = 2 * MAX_METADATA_BYTES
+    return report
 
 
 @dataclass(frozen=True)
@@ -286,6 +509,7 @@ class OwnedArtifact:
     attestation_sha256: str
     wheel: str
     hash_byte_credit: int
+    native_base_wheel: str | None = None
 
     def inspect(self, environment, packages):
         """Hash the selected finite closure before any TileLang import."""
@@ -299,7 +523,13 @@ class OwnedArtifact:
         if (type(self.hash_byte_credit) is not int or not 0 <= self.hash_byte_credit < 2**63
                 or required > self.hash_byte_credit):
             raise ValueError("G3 owned artifact hashing lacks explicit aggregate byte credit")
+        derived = value["schema"] == DERIVED_SCHEMA
+        if derived != (self.native_base_wheel is not None):
+            raise ValueError("G3 retained native base wheel is required only for the closed derivation schema")
         _read(self.wheel, value["tilelang"]["wheel"])
+        if derived:
+            _read(self.native_base_wheel, value["derivation"]["base_tilelang"]["wheel"])
+            _derived_wheels(value, self.native_base_wheel, self.wheel)
         roots, distributions = {}, {}
         for key, distribution, package in (("tilelang", "tilelang", "tilelang"),
                                             ("protected_ffi", "apache-tvm-ffi", "tvm_ffi")):
@@ -367,7 +597,7 @@ class OwnedArtifact:
                           or not Path(temporary).is_relative_to(cache)
                           or any(p.is_symlink() for p in (Path(temporary), *Path(temporary).parents))):
             raise RuntimeError("G3 owned TileLang temporary cache must remain inside its namespace")
-        report = {"schema": SCHEMA, "attestation_sha256": self.attestation_sha256,
+        report = {"schema": value["schema"], "attestation_sha256": self.attestation_sha256,
                 "source_pins": value["source_pins"], "build": value["build"],
                 "tilelang_version": value["tilelang"]["version"], "wheel": value["tilelang"]["wheel"],
                 "protected_ffi_wheel": value["protected_ffi"]["wheel"],
@@ -380,6 +610,12 @@ class OwnedArtifact:
                 "tvm_python_directory": python_directory, "tvm_library_directories": library_directories,
                 "qualification": "artifact-identity-only"}
         report["preimport_libraries"] = _library_bindings(report, complete=False)
+        if derived:
+            report["derivation"] = {key: value["derivation"][key] for key in (
+                "schema", "python_source_pins", "changes", "packaging", "embedded_provenance")}
+            report["derivation"]["base_tilelang"] = {
+                key: value["derivation"]["base_tilelang"][key] for key in ("version", "wheel")}
+            report["archive_record_metadata_limit_bytes"] = 2 * MAX_METADATA_BYTES
         return report
 
 

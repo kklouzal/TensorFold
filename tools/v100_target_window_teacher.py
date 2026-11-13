@@ -863,6 +863,11 @@ def _legacy_validate_preparation(value, trial):
 
 
 PREPARATION_CONTRACT = 'source30-rn12-candidates-v1'
+ATEN_PREPARATION_CONTRACT = 'source33-aten-q8-layouts-v1'
+ATEN_SCOPE = legacy.ATEN_WINDOW_TEACHER_SCOPE
+ATEN_FAMILY = 'aten-cutlass-q8-normalized-lse-owner-v1'
+ATEN_PANEL_ROWS = 16
+ATEN_LAYOUTS = ('native-gqa-v1', 'fixed12-head-as-query-lse-v1')
 TRANSPORT_OPTIONS = {'prepared_router': 'owned-serial-router-v1',
     'row_sampling_scratch': 'canonical-row-scratch-v1',
     'coordinate_staging': 'owned-host-int64-coordinates-v1',
@@ -874,6 +879,8 @@ PREPARATION_OPTIONS = set(TRANSPORT_OPTIONS) | NUMERICAL_OPTIONS | set(numerical
 def validate_preparation(value, trial, contract=None):
     if contract is None:
         return _legacy_validate_preparation(value, trial)
+    if contract == ATEN_PREPARATION_CONTRACT:
+        return _validate_aten_preparation(value, trial)
     require(contract == PREPARATION_CONTRACT, 'unsupported versioned C8 preparation contract')
     numerical.validate_trial(trial)
     require(type(value) is dict and value.get('native_gdn_capture') is True
@@ -907,6 +914,45 @@ def validate_preparation(value, trial, contract=None):
         require(not trial['prepared_linears'] or dense['roles'] == ['prefill'],
                 'prepared M32 and vendor dense projections must retain disjoint roles')
     require('dense_projections' not in value or dense is not None, 'absent vendor selection must be omitted')
+    return _validate_window_graph_policy(value)
+
+
+
+def _validate_aten_preparation(value, trial):
+    numerical.validate_trial(trial)
+    require(not any(trial.values()), 'attention-family contract leaves the three independent RN numerical axes off')
+    required = {'kernel_family', 'graph_family', 'graph_budget_bytes', 'trial', 'collective_family',
+                'row_buckets', 'native_gdn_capture', 'native_hc_writeback_capture', 'exact_graph_policy'}
+    require(type(value) is dict and value.get('kernel_family') in (SERVICE['kernel_family'], ATEN_FAMILY),
+            'explicit RN12 reference or ATen Q8 family required')
+    aten = value['kernel_family'] == ATEN_FAMILY
+    require(set(value) == required | ({'aten_tiles'} if aten else {'rn_heads_per_block'})
+            and value['graph_family'] == 'uncaptured' and type(value['graph_budget_bytes']) is int
+            and value['graph_budget_bytes'] == 0 and value['trial'] is True
+            and value['collective_family'] == 'tp8-allgather-v1' and type(value['row_buckets']) is dict
+            and value['row_buckets'] == {} and value['native_gdn_capture'] is True
+            and value['native_hc_writeback_capture'] is True,
+            'attention-family contract requires its canonical isolated C8 preparation')
+    if aten:
+        tiles = value['aten_tiles']
+        require(type(tiles) is dict and {'panel_rows', 'tensor_budget_bytes'} <= set(tiles)
+                and set(tiles) <= {'panel_rows', 'tensor_budget_bytes', 'query_layout'}
+                and type(tiles['panel_rows']) is int and tiles['panel_rows'] == ATEN_PANEL_ROWS
+                and type(tiles['tensor_budget_bytes']) is int and 0 < tiles['tensor_budget_bytes'] < 2**63
+                and ('query_layout' not in tiles or type(tiles['query_layout']) is str
+                     and tiles['query_layout'] in ATEN_LAYOUTS),
+                'explicit paid panel16 ATen default/native-GQA/head-row layout required')
+    else:
+        require(type(value['rn_heads_per_block']) is int and value['rn_heads_per_block'] == 12,
+                'attention-family reference must remain RN12')
+    require(type(value.get('exact_graph_policy')) is dict
+            and type(value['exact_graph_policy'].get('keys')) is list
+            and len(value['exact_graph_policy']['keys']) <= 128,
+            'attention-family graph catalogue exceeds its finite runtime bound')
+    return _validate_window_graph_policy(value)
+
+
+def _validate_window_graph_policy(value):
     policy = value.get('exact_graph_policy')
     require(type(policy) is dict and set(policy) == {'policy', 'keys', 'evidence_sha256'}
             and policy['policy'] in ('paid-subset-v1', 'observed-demand-v1') and legacy.sha(policy['evidence_sha256'])
@@ -928,22 +974,38 @@ def validate_preparation(value, trial, contract=None):
     return value
 
 
+def _teacher_scope(value):
+    return ATEN_SCOPE if _preparation_contract(value) == ATEN_PREPARATION_CONTRACT else SCOPE
+
+
+def expected_service(value):
+    if _preparation_contract(value) != ATEN_PREPARATION_CONTRACT:
+        return dict(SERVICE)
+    preparation = value.get('prepared_execution')
+    require(type(preparation) is dict and preparation.get('kernel_family') in (SERVICE['kernel_family'], ATEN_FAMILY),
+            'closed attention service family required')
+    return {**SERVICE, 'kernel_family': preparation['kernel_family']}
+
 def _preparation_contract(value):
     if 'preparation_contract' not in value:
         return None
-    require(value['preparation_contract'] == PREPARATION_CONTRACT, 'unknown C8 preparation contract')
+    require(value['preparation_contract'] in (PREPARATION_CONTRACT, ATEN_PREPARATION_CONTRACT), 'unknown C8 preparation contract')
     return value['preparation_contract']
 
 
-def _expected_preparation_numerics(operation):
-    if _preparation_contract(operation) is None:
-        return numerical.expected_numerics(operation['numerical_trial'], mtp=True)
+def _preparation_owner(operation):
     from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
     owner = OwnerPreparation(operation['prepared_execution'], role_rows={'decode': 120, 'mtp': 120, 'prefill': 256},
                              manifest_sha256=operation['execution_manifest_sha256'] if 'execution_manifest_sha256' in operation
                              else operation['execution_manifest']['sha256'])
     require(owner.specification == operation['prepared_execution'], 'C8 preparation DATA must equal actual canonical owner parsing')
-    return owner.numerical_selection
+    return owner
+
+
+def _expected_preparation_numerics(operation):
+    if _preparation_contract(operation) is None:
+        return numerical.expected_numerics(operation['numerical_trial'], mtp=True)
+    return _preparation_owner(operation).numerical_selection
 
 
 def _validate_preparation_numerics(value, operation):
@@ -953,11 +1015,116 @@ def _validate_preparation_numerics(value, operation):
             'actual C8 preparation numerical registration differs from its runtime owner')
 
 
+
+def _validate_attention_provider(profile, operation):
+    """Bind builtin ATen metadata and the two actual protected Torch providers."""
+    from tensorfold.cuda.sm70.attention_backends import POLICY
+    from tensorfold.cuda.sm70.attention_backends import SCHEMA as operator_schema
+    provider = profile.get('attention_provider')
+    require(type(provider) is dict and set(provider) == {'operator', 'libraries', 'roles'},
+            'actual attention SDK/operator/role registration required')
+    operator = provider['operator']
+    require(type(operator) is dict and operator.get('policy') == POLICY and operator.get('schema') == operator_schema
+            and operator.get('torch') == '2.16.0.dev20261111+tfcu129sm70'
+            and operator.get('torch_git') == '05adb434bd30d298eb408a72420b0496ee05f8e3'
+            and operator.get('torch_cuda') == '12.9' and operator.get('cuda_registered') is True,
+            'attention requires the genuine protected Source33 Torch/ATen stack')
+    libraries = provider['libraries']
+    require(type(libraries) is dict and set(libraries) == {'torch_C', 'torch_cuda'},
+            'both actual builtin Torch providers required')
+    for row in libraries.values():
+        require(type(row) is dict and set(row) == {'path', 'bytes', 'sha256'} and absolute(row['path'])
+                and len(row['path']) <= MODEL_OBSERVER_LIMITS['path_characters']
+                and type(row['bytes']) is int and 0 < row['bytes'] <= MODEL_OBSERVER_LIMITS['elf_bytes']
+                and legacy.sha(row['sha256']), 'bounded actual builtin Torch library identity required')
+    cpp, cuda = Path(libraries['torch_C']['path']), Path(libraries['torch_cuda']['path'])
+    require(cpp.name == '_C.cpython-312-x86_64-linux-gnu.so' and cuda.name == 'libtorch_cuda.so'
+            and cuda.parent.name == 'lib' and cpp.parent == cuda.parent.parent,
+            'builtin Torch providers must share their actual ordinary installed package')
+    contents = profile.get('teacher_execution_registration', {}).get('contents', {})
+    require(all(contents.get('library/'+row['path']) == {'size':row['bytes'], 'sha256':row['sha256']}
+                for row in libraries.values()), 'builtin Torch provider differs from issued complete library authority')
+    selected = operation['prepared_execution']
+    roles = provider['roles']
+    aten = selected['kernel_family'] == ATEN_FAMILY
+    require(type(roles) is dict and set(roles) == ({'decode', 'mtp', 'prefill'} if aten else set()),
+            'actual attention family role catalogue differs')
+    if aten:
+        expected = _preparation_owner(operation)
+        fields = {'family','requirements','operator','closed','numeric_contract',
+                  'key_capacity_policy','prepared_panel_counts','qualification'}
+        if 'query_layout' in selected['aten_tiles']:
+            fields.add('query_layout')
+        for role, row in roles.items():
+            require(type(row) is dict and set(row) == fields
+                    and row.get('numeric_contract') == 'Half normalized local values and natural-log LSE; ordered FP32 rank weights/merge'
+                    and row.get('key_capacity_policy') == 'fixed2051 masked keys; no context-dependent shape or row dispatch'
+                    and row.get('qualification') == 'unselected; operator/component/model/PPL/resource/P3 gates remain separate'
+                    and row.get('family') == ATEN_FAMILY and row.get('closed') is False
+                    and row.get('requirements') == expected.aten_requirements[role] and row.get('operator') == operator
+                    and ('query_layout' in row) == ('query_layout' in selected['aten_tiles'])
+                    and row.get('query_layout') == selected['aten_tiles'].get('query_layout')
+                    and row.get('prepared_panel_counts') == list(range(1, ATEN_PANEL_ROWS+1)),
+                    'actual paid ATen roles/layout differ from canonical runtime preparation')
+    return provider
+
+
+def _runtime_attention_provider(engine, operation, contents):
+    import torch
+
+    from tensorfold.cuda.sm70.attention_backends import OwnerTiles, operator_identity
+    prepared = engine._owner_preparation
+    paths = {'torch_C':Path(torch._C.__file__).resolve(strict=True),
+             'torch_cuda':(Path(torch.__file__).resolve(strict=True).parent/'lib/libtorch_cuda.so').resolve(strict=True)}
+    libraries = {}
+    for name, path in paths.items():
+        row = contents.get('library/'+str(path))
+        require(type(row) is dict, 'actual protected Torch library was not issued into the model binding')
+        libraries[name] = {'path':str(path), 'bytes':row['size'], 'sha256':row['sha256']}
+    operator = operator_identity()
+    operator['torch'] = str(operator['torch'])
+    roles = {}
+    aten = operation['prepared_execution']['kernel_family'] == ATEN_FAMILY
+    require(set(prepared.workspaces) == {'decode', 'mtp', 'prefill'}, 'actual attention preparation roles required')
+    for role, workspace in prepared.workspaces.items():
+        require(workspace.native_kernel_family == operation['prepared_execution']['kernel_family'],
+                'actual workspace attention family differs')
+        tile = workspace.aten_tiles
+        if aten:
+            require(type(tile) is OwnerTiles and not tile.closed and tile.query_layout ==
+                    operation['prepared_execution']['aten_tiles'].get('query_layout'),
+                    'actual ATen layout capability differs from its requested policy')
+            require(all(item.spec.query_layout == tile.query_layout for item in tile.panels[1:]),
+                    'actual ATen panel descriptor layout differs')
+            roles[role] = tile.record()
+        else:
+            require(tile is None and workspace.native_heads_per_block == 12,
+                    'RN12 reference acquired an unrequested ATen capability')
+    provider = {'operator':operator,'libraries':libraries,'roles':roles}
+    _validate_attention_provider({'attention_provider':provider,
+        'teacher_execution_registration':{'contents':contents}}, operation)
+    # This tuple is consumed only by the existing positive-retirement observer;
+    # no extra library is loaded and its original limits/reserve stay unchanged.
+    engine._teacher_attention_provider_paths = tuple(row['path'] for row in libraries.values())
+    return provider
+
+
+def _validate_attention_vmas(profile, operation, native):
+    provider = _validate_attention_provider(profile, operation)
+    paths = [row['path'] for row in provider['libraries'].values()]
+    require(native.get('required_provider_paths') == paths and native.get('missing_required_provider_paths') == [],
+            'closed attention observer did not require the actual builtin Torch providers')
+    for expected in provider['libraries'].values():
+        require(any(row.get('path') == expected['path'] and row.get('bytes') == expected['bytes']
+                    and row.get('sha256') == expected['sha256'] and type(row.get('vmas')) is list and row['vmas']
+                    for row in native['mapped_elfs']),
+                'builtin attention Torch provider lacks its actual closed VMA backing proof')
+
 def validate_operation(value):
     required = {'teacher_plan', 'teacher_client', 'model_entrypoint', 'model_assets', 'mtp_artifact',
                 'frontend_root', 'frontend_assets', 'execution_manifest', 'prepared_execution', 'numerical_trial',
                 'selector', 'numa', 'teacher_scope', 'mtp_confidence', 'output_grants'}
-    require(type(value) is dict and set(value) in (required, required | {'preparation_contract'}) and value['teacher_scope'] == SCOPE,
+    require(type(value) is dict and set(value) in (required, required | {'preparation_contract'}) and value['teacher_scope'] == _teacher_scope(value),
             'closed C8 MTP4 forced-window operation required')
     for name in ('teacher_plan', 'teacher_client', 'execution_manifest'):
         identity(value[name])
@@ -1001,9 +1168,10 @@ def validate_teacher_client(value):
         extra.add('preparation_contract')
     required = {'schema', 'teacher_plan_sha256', 'base', 'model', 'expected_service', 'readiness_timeout_s',
                 'whole_timeout_s', 'socket_timeout_s', 'response_bytes', *extra}
+    service = expected_service(value) if type(value) is dict else SERVICE
     require(type(value) is dict and set(value) == required and value['schema'] == CLIENT_SCHEMA
-            and value['teacher_scope'] == SCOPE and value['expected_service'] == SERVICE
-            and all(type(value['expected_service'][k]) is type(v) for k, v in SERVICE.items())
+            and value['teacher_scope'] == _teacher_scope(value) and value['expected_service'] == service
+            and all(type(value['expected_service'][k]) is type(v) for k, v in service.items())
             and legacy.sha(value['execution_manifest_sha256']), 'closed versioned C8 window client required')
     validate_preparation(value['prepared_execution'], value['numerical_trial'], _preparation_contract(value))
     require(value['selector'] in selectors(), 'explicit window expert selection required')
@@ -1033,10 +1201,20 @@ def validate_teacher_operation_plan(operation, plan, client, *, profile=None, **
             and all(client[key] == operation[key] for key in
                     ('teacher_scope', 'prepared_execution', 'numerical_trial', 'selector', 'numa', 'mtp_confidence')),
             'window client/operation/plan identity differs')
-    require(type(profile.get('artifacts')) is dict and profile['artifacts'].get(
-        'draft/' + Path(operation['mtp_artifact']['path']).name) == {
-            'size': operation['mtp_artifact']['bytes'], 'sha256': operation['mtp_artifact']['sha256']},
-            'canonical manifest lacks its actual held MTP content')
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import _METADATA
+
+    # Match the runtime loader's inventory using already validated held assets.
+    # ready.json belongs to frontend preparation, not runtime model metadata.
+    expected = {'target/' + Path(item['path']).name: {'size': item['bytes'], 'sha256': item['sha256']}
+                for item in operation['model_assets']}
+    expected.update({'metadata/' + Path(item['path']).name: {'size': item['bytes'], 'sha256': item['sha256']}
+                     for item in operation['frontend_assets'] if Path(item['path']).name in _METADATA})
+    item = operation['mtp_artifact']
+    expected['draft/' + Path(item['path']).name] = {'size': item['bytes'], 'sha256': item['sha256']}
+    require(type(profile['artifacts']) is dict and profile['artifacts'] == expected
+            and all(type(record) is dict and type(record.get('size')) is int
+                    for record in profile['artifacts'].values()),
+            'canonical manifest artifacts differ from actual held target/MTP/runtime frontend content')
     projected = resources(operation['teacher_plan']['bytes'], plan)
     require(operation['output_grants']['frame_bytes'] == projected['max_total_frame_file_bytes']
             and operation['output_grants']['metadata_bytes'] >= projected['metadata_output_bytes_bound']
@@ -1159,6 +1337,8 @@ def runtime_profile(engine, operation):
     states = engine.multi.states
     require(states and all(state.kv_identity == states[0].kv_identity for state in states),
             'window States do not share the actual immutable numerical policy')
+    if _preparation_contract(operation) == ATEN_PREPARATION_CONTRACT:
+        profile['attention_provider'] = _runtime_attention_provider(engine, operation, contents)
     profile.update(teacher_execution_registration={'binding': binding, 'numerics': local['numerics'], 'contents': contents},
                    numerical_trial_retention=retention,
                    window_teacher_semantics={'method': 'mtp', 'depth': DEPTH,
@@ -1166,6 +1346,8 @@ def runtime_profile(engine, operation):
                        'resident_states': 24, 'active_states': ACTIVE,
                        'target_rows': 120, 'prefill_rows': 256, 'context': engine.context_window,
                        'state_kv_identity': states[0].kv_identity, 'prepared_execution': prepared.specification})
+    if _preparation_contract(operation) == ATEN_PREPARATION_CONTRACT:
+        _attention_retention({'teacher_profile':profile}, operation, {})
     # Use the existing strict JSON owner; no tensor, object repr or identity alias.
     return frames._owned_teacher_object(frames.json.dumps(profile, allow_nan=False))
 
@@ -1415,6 +1597,8 @@ def validate_startup(row, selected):
     selector = selected['selector']
     frames._candidate_plan_identity(projection, None if selector['gu'] == 'incumbent' else selector['gu'],
         selector['down'], selector['iq2_source'], selector['prefill_method'], teacher_scope=numa.SCOPE)
+    if _preparation_contract(selected) == ATEN_PREPARATION_CONTRACT:
+        _validate_attention_provider(profile, selected)
     registration = profile.get('teacher_execution_registration', {})
     _validate_preparation_numerics(registration.get('numerics'), selected)
     from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
@@ -1423,6 +1607,8 @@ def validate_startup(row, selected):
             and raw.get('owner_preparation', {}).get('specification') == {
                 k: v for k, v in selected['prepared_execution'].items() if k != 'trial'},
             'actual window retention payload differs from its issued fingerprint')
+    if _preparation_contract(selected) == ATEN_PREPARATION_CONTRACT:
+        _attention_retention(row, selected, {})
     for axis in ('native_family', 'prepared_linears'):
         require((axis in row) == selected['numerical_trial'][axis], 'window numerical capability receipt differs')
         if selected['numerical_trial'][axis]:
@@ -1647,6 +1833,8 @@ def validate_runtime_records(root, model, operation, *, observer_source):
         if operation['numerical_trial']['owned_q8_window_prepare']:
             path = startup['owned_q8_preparation'].get('native_module', {}).get('path')
             require(any(row['path'] == path for row in mapped), 'actual Q8 window provider VMA differs')
+        if _preparation_contract(operation) == ATEN_PREPARATION_CONTRACT:
+            _validate_attention_vmas(startup['teacher_profile'], operation, native)
         frames._prepared_expert_binding(startup, operation['selector'], mapped, rank)
         require(registration['numerics'].get('owned_expert_native') == startup['plan_identity'],
                 'actual window expert numerical Plan differs')
@@ -1754,12 +1942,108 @@ def _comparison_side(selected, control):
     return side
 
 
+
+def _attention_preparation_projection(value, changes):
+    from copy import deepcopy
+    projected = deepcopy(value)
+    if 'kernel_family' in changes:
+        for key in ('kernel_family', 'rn_heads_per_block', 'aten_tiles'):
+            projected.pop(key, None)
+    elif 'aten_tiles' in changes:
+        projected['aten_tiles'].pop('query_layout', None)
+    return projected
+
+
+def _attention_preparation_changes(reference, candidate):
+    old, new = reference['prepared_execution'], candidate['prepared_execution']
+    require(new['kernel_family'] == ATEN_FAMILY,
+            'attention comparison candidate must use the explicitly admitted ATen family')
+    changes = {}
+    if old['kernel_family'] != new['kernel_family']:
+        require(old['kernel_family'] == SERVICE['kernel_family'], 'attention family reference must be RN12')
+        for key in ('kernel_family', 'rn_heads_per_block', 'aten_tiles'):
+            changes[key] = {'classification':'numerical-family', 'reference':old.get(key), 'candidate':new.get(key)}
+    else:
+        require(old['aten_tiles'].get('query_layout') in (None, 'native-gqa-v1'),
+                'ATen layout reference must retain default or explicit native GQA')
+        if old['aten_tiles'] != new['aten_tiles']:
+            changes['aten_tiles'] = {'classification':'numerical-layout',
+                'reference':old['aten_tiles'], 'candidate':new['aten_tiles']}
+    require(_attention_preparation_projection(old, changes) == _attention_preparation_projection(new, changes),
+            'attention comparison changed unrelated canonical preparation/credit/graph authority')
+    return changes
+
+
+def _attention_retention(row, operation, changes):
+    from copy import deepcopy
+
+    from tensorfold.cuda.sm70.paged_attention import rn_preparation_identity
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+    profile = row['teacher_profile']
+    provider = _validate_attention_provider(profile, operation)
+    raw = profile['numerical_trial_retention']
+    require(profile['teacher_execution_registration']['binding']['identity']['retention'] == digest(raw),
+            'raw attention retention differs from its actual issued fingerprint')
+    selected = operation['prepared_execution']
+    owner = raw.get('owner_preparation')
+    require(type(owner) is dict and owner.get('specification') == {k:v for k,v in selected.items() if k != 'trial'}
+            and owner.get('roles') == {'decode':120,'mtp':120,'prefill':256},
+            'actual attention retention preparation/roles differ')
+    aten = selected['kernel_family'] == ATEN_FAMILY
+    expected = _preparation_owner(operation)
+    if aten:
+        require('rn_numerical_identity' not in owner and owner.get('aten_operator_identity') == provider['operator']
+                and owner.get('aten_tensor_requirements') == expected.aten_requirements,
+                'ATen retained operator/resource records differ from actual runtime requirements')
+    else:
+        require(owner.get('rn_numerical_identity') == rn_preparation_identity()
+                and 'aten_operator_identity' not in owner and 'aten_tensor_requirements' not in owner,
+                'RN12 reference acquired unrequested attention arithmetic or resources')
+    normalized = deepcopy(raw)
+    retained = normalized['owner_preparation']
+    retained['specification'] = _attention_preparation_projection(retained['specification'], changes)
+    allocations = retained.get('allocations')
+    require(type(allocations) is dict and set(allocations) == {'decode','mtp','prefill'},
+            'actual attention allocation role lists required')
+    for role, records in allocations.items():
+        require(type(records) is list and len(records) == WORLD
+                and all(type(record) is dict and type(record.get('rank')) is int and record['rank'] == rank
+                        and record.get('rows') == retained['roles'][role] for rank,record in enumerate(records)),
+                'actual eight-rank attention allocation records required')
+        if aten:
+            payload = expected.aten_requirements[role]['persistent_bytes']
+            for record in records:
+                for key in ('device_tensor_bytes','native_tensor_bytes'):
+                    require(type(record.get(key)) is int and record[key] >= payload,
+                            'paid ATen attention payload is missing from its actual allocation charge')
+                    if 'kernel_family' in changes:
+                        record[key] -= payload
+    if 'kernel_family' in changes:
+        for key in ('rn_numerical_identity','aten_operator_identity','aten_tensor_requirements'):
+            retained.pop(key,None)
+    return normalized
+
+
+def _attention_provider_comparison(profile, operation, changes):
+    from copy import deepcopy
+    value = deepcopy(_validate_attention_provider(profile, operation))
+    if 'kernel_family' in changes:
+        value['roles'] = {}  # Only the verified, paid family-specific tile metadata varies.
+    elif 'aten_tiles' in changes:
+        for role in value['roles'].values():
+            role.pop('query_layout',None)
+    return value
+
+
+
 def preparation_changes(reference, candidate):
     require(_preparation_contract(reference) == _preparation_contract(candidate), 'paired C8 preparation contracts differ')
     if _preparation_contract(reference) is None:
         return None
     for operation in (reference, candidate):
         validate_preparation(operation['prepared_execution'], operation['numerical_trial'], _preparation_contract(operation))
+    if _preparation_contract(reference) == ATEN_PREPARATION_CONTRACT:
+        return _attention_preparation_changes(reference, candidate)
     old, new = reference['prepared_execution'], candidate['prepared_execution']
     require(not any(key in old for key in PREPARATION_OPTIONS), 'original C8 preparation reference must leave all candidate options off')
     changes = {key: {'classification': 'transport-contract' if key in TRANSPORT_OPTIONS else 'numerical',
@@ -1771,6 +2055,8 @@ def preparation_changes(reference, candidate):
 
 
 def _comparison_retention(row, operation, changes):
+    if _preparation_contract(operation) == ATEN_PREPARATION_CONTRACT:
+        return _attention_retention(row, operation, changes)
     if changes is None:
         return numerical._normalized_retention(row, operation)
     from copy import deepcopy
@@ -1837,13 +2123,19 @@ def compare(reference, candidate, *, control, output):
         require(profile.get('preparation') == operation['prepared_execution']
                 and side['authority']['plan']['identity']['profile_sha256'] == operation['execution_manifest']['sha256'],
                 'window profile/forced plan must name its own exact authority')
-        normalized.append({**profile, 'preparation': {k: v for k, v in profile['preparation'].items()
-            if k not in (numerical.AXES if changes is None else changes)}})
+        preparation = (_attention_preparation_projection(profile['preparation'], changes)
+            if _preparation_contract(operation) == ATEN_PREPARATION_CONTRACT else
+            {k:v for k,v in profile['preparation'].items() if k not in (numerical.AXES if changes is None else changes)})
+        normalized.append({**profile, 'preparation':preparation})
     require(normalized[0] == normalized[1], 'window comparison changed unrelated profile artifacts or preparation')
     for rank in range(WORLD):
         old, new = left['proofs'], right['proofs']
         require(_comparison_retention(old['startups'][rank], a, changes) ==
                 _comparison_retention(new['startups'][rank], b, changes), 'unrelated window retention policy changed')
+        if _preparation_contract(a) == ATEN_PREPARATION_CONTRACT:
+            require(_attention_provider_comparison(old['startups'][rank]['teacher_profile'], a, changes) ==
+                    _attention_provider_comparison(new['startups'][rank]['teacher_profile'], b, changes),
+                    'attention comparison changed protected SDK or unrelated role metadata')
         registrations = [side['registrations'][rank] for side in (old, new)]
         numbers = []
         for registration, operation in zip(registrations, (a, b)):
@@ -1879,6 +2171,14 @@ def compare(reference, candidate, *, control, output):
             allowed.append('tf_onecat_down_')
         require(all(name.startswith(tuple(allowed)) for name in new_native.keys()-old_native.keys()),
                 'window trial introduced an unrelated native library')
+        if _preparation_contract(a) == ATEN_PREPARATION_CONTRACT:
+            old_libraries = {name:row for name,row in registrations[0]['contents'].items() if name.startswith('library/')}
+            new_libraries = {name:row for name,row in registrations[1]['contents'].items() if name.startswith('library/')}
+            require(all(new_libraries.get(name) == row for name,row in old_libraries.items()),
+                    'attention trial changed a baseline SDK/library authority')
+            require(all(Path(name.removeprefix('library/')).name.startswith(tuple(allowed))
+                        for name in new_libraries.keys()-old_libraries.keys()),
+                    'attention trial introduced an unrelated external library bundle')
     report = shards.compare_rows(left['root']/'teacher', right['root']/'teacher', left['authority'], right['authority'],
                                   control=control, output=output)
     row_path = Path(output)/'comparison.json'
@@ -1891,7 +2191,7 @@ def compare(reference, candidate, *, control, output):
                   numa_evidence=[left['model']['numa'], right['model']['numa']],
                   scope='forced production C8 target windows with actual MTP/graph records; target-logit metrics only; no held-out accuracy, MTP-head KL or free-generation acceptance')
     if changes is not None:
-        report['preparation_contract'] = PREPARATION_CONTRACT
+        report['preparation_contract'] = _preparation_contract(b)
         report['preparation_changes'] = changes
         report['preparation_comparison_scope'] = 'Declared finite experiment variables only; raw profiles, paid retention and issued identities remain in both positive owners. Transport contracts are not measured equivalence or quality acceptance.'
     frames._owned_teacher_json(Path(output)/'owned-comparison.json', report, 8 << 20, control)

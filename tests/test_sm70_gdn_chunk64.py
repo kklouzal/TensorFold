@@ -16,6 +16,18 @@ def test_layout_exact_finite_payload(rows):
     assert plan.workspace_bytes==rows*792+21
 
 
+def test_native_initial_preservation_rejects_signed_zero_bit_changes():
+    import torch
+
+    from tools import v100_gdn_chunk64_trial as trial
+
+    initial=torch.tensor([0.0,-0.0],dtype=torch.float32)
+    changed=torch.tensor([-0.0,0.0],dtype=torch.float32)
+    assert torch.equal(initial,changed)  # Value equality cannot prove read-only storage.
+    assert not trial.unchanged_initial(initial,changed)
+    assert trial.unchanged_initial(initial,initial.clone())
+
+
 @pytest.mark.parametrize("rows",[0,-1,True,1.0,2**31])
 def test_invalid_geometry_refused_before_dependencies(rows):
     with pytest.raises(ValueError):
@@ -66,6 +78,79 @@ def test_independent_serial_reference_known_one_row_and_decay_order():
     out2,final2=reference(q,k,v,g,beta,initial)
     assert torch.equal(out2,out)
     assert torch.equal(final2,final)
+
+
+@pytest.mark.parametrize("mutate_and_restore",[False,True])
+def test_trial_keeps_full128_and129_cases_and_non_aligned_split_extents(monkeypatch,mutate_and_restore):
+    """CPU protocol control; synthetic calls do not qualify the GPU algorithm."""
+    from types import SimpleNamespace
+
+    import torch
+
+    from tools import v100_gdn_chunk64_trial as trial
+
+    original_reference=trial.reference
+    latest_before=[None]
+    restored=[]
+
+    def observe_reference(q,k,v,gate,beta,initial):
+        # The serial oracle must consume the saved input, even if the native
+        # procedure illegally changed its own initial bank.
+        assert trial.unchanged_initial(initial,latest_before[0])
+        return original_reference(q,k,v,gate,beta,initial)
+
+    class Compiler:
+        def __init__(self, *args):
+            pass
+
+        def inspect(self):
+            return {"scope": "CPU protocol fixture only"}
+
+    class Prepared:
+        def __init__(self, rows):
+            self.rows, self.layout = rows, g3.layout(rows)
+
+        def bind(self, q, k, v, gate, beta, initial, output, final):
+            assert all(tensor.shape[1] == self.rows for tensor in (q, k, v, gate, beta, output))
+            if final is initial:
+                if mutate_and_restore:
+                    initial.copy_(self.original)
+                    restored.append(True)
+                raise ValueError("fixture alias refusal")
+            self.original=initial.clone()
+
+            def run():
+                latest_before[0]=self.original
+                values, state = original_reference(q, k, v, gate, beta, initial)
+                output.copy_(values)
+                final.copy_(state)
+                if mutate_and_restore:
+                    initial.add_(1)
+
+            return SimpleNamespace(run=run)
+
+    monkeypatch.setattr(g3, "Compiler", Compiler)
+    monkeypatch.setattr(trial,"reference",observe_reference)
+    monkeypatch.setattr(g3, "prepare", lambda rows, *args, **kwargs: Prepared(rows))
+    monkeypatch.setattr(torch.cuda, "set_device", lambda *args: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *args: None)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda *args: "CPU fixture")
+    monkeypatch.setattr(trial, "nondefault_stream_trial",
+                        lambda *args: {"scope": "unrun in CPU protocol fixture"})
+    args = SimpleNamespace(owned_tilelang_attestation=None, cuda_home="unused", nvcc_sha256="unused",
+                           device="cpu")
+    result = trial.run(args, {"results": []})
+    records = {(row["rows"], row["case"]): row for row in result["results"]}
+    assert set(records) == {(rows, case) for rows in (1, 63, 64, 65, 128, 129)
+                            for case in ("zero", "nonzero_initial", "raw_underflow")}
+    assert all(row["initial_unchanged"] is (not mutate_and_restore) for row in records.values())
+    assert len(restored)==(18 if mutate_and_restore else 0)
+    for rows, expected in ((128, [65, 63]), (129, [65, 64])):
+        record = records[rows, "nonzero_initial"]
+        assert record["continuation"]["part_rows"] == expected
+        assert record["continuation"]["initial_unchanged"] is (not mutate_and_restore)
+        assert record["continuation"]["output_vs_serial"]["finite"]
+        assert record["continuation"]["final_vs_serial"]["finite"]
 
 
 @pytest.mark.parametrize("failure",[None,"cumsum","kkt","core"])

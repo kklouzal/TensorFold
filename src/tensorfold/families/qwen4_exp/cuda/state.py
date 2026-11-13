@@ -125,6 +125,12 @@ class Buffers:
         self.ids_host = torch.zeros((rows,), dtype=torch.int32, pin_memory=torch.cuda.is_available())
         self.last = torch.zeros((rows,), dtype=torch.int32, device=dev)          # each stream's last row
         self.last_host = torch.zeros((rows,), dtype=torch.int32, pin_memory=torch.cuda.is_available())
+        # Owned NumPy borrowers share these already-funded pinned tensors.
+        # Staging waits for its prior DMA before either array is overwritten.
+        # Buffers retains these original host tensors/storage without rebind
+        # or resize for its lifetime; target and MTP stages borrow the arrays.
+        self.ids_host_array = self.ids_host.numpy()
+        self.last_host_array = self.last_host.numpy()
         self.staged = torch.cuda.Event() if torch.cuda.is_available() else None
         self.ple_late = None           # n-gram rows ``stage(late=True)`` left for the forward (forward.stage_late)
         self.split = None              # while a forward is captured in pieces: ends one at each per-step insert

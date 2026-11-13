@@ -1,5 +1,23 @@
 # TensorFold fork
 
+The standalone GDN native trial has a maintained resource/cache envelope in
+`tools/v100_gdn_native_envelope.py`. It preserves kernel failures through
+resource, cache-retention and report-publication failures. Its native V100
+execution remains a separate component gate.
+Its initial-state preservation checks compare FP32 storage bits, including
+signed zero, through the alias-refusal control.
+
+The first matching Source35 GDN native trial stopped before GDN compilation:
+the selected TileLang API requires structured target options. The caller now
+uses an explicit CUDA/SM70 dictionary; actual CPU parser and 64 controls pass.
+Native kernel, model-quality and performance qualification remain pending.
+
+Token staging now retains NumPy views of its existing host ID buffers. Target
+and MTP keep their original conversions, DMA fences and buffer payloads. Focused
+CPU contracts and local host-fill comparisons pass; full-model performance
+selection remains pending. Span-filling alternatives that regressed tested
+CPU regions were rejected. See [validation scope](docs/optimization-validation.md#token-staging-host-view-reuse).
+
 The explicit private [descriptor upload ring trial](docs/descriptor-upload-ring.md)
 adds a second cold, paid pinned host slot while retaining the same GPU descriptor
 slab and attention math. It waits on a slot only when that host storage is reused.
@@ -24,7 +42,8 @@ preserves the original FlashQLA SM70 TileLang generators behind an owned,
 prefill-only API. It is a separate numerical candidate with no serving hook;
 protected-toolchain compilation, native numerical/state checks and integrated
 quality/performance qualification remain pending. It adds no default dependency
-or runtime selection.
+or runtime selection. Its fixed native trial includes128-row and129-row
+continuations split after row65; these cases still require actual device execution.
 
 The [development handoff checkpoint](docs/development-checkpoint.md) records the
 preserved V100 trials, research drafts and known unfinished comparison controls.
@@ -38,6 +57,12 @@ cache namespace before TileLang import. The unpatched public0.1.10/FFI0.1.16
 tuple is refused after its observed import abort. This is source-level identity
 admission; an actual owned build, matching derived application image and native
 component qualification remain pending. See the [artifact contract](docs/gdn-chunk64-component.md#owned-artifact-admission).
+
+The closed G3 attestation v2 additionally distinguishes native-build provenance
+from the reviewed Python-only DictAttrs derivation. It verifies the retained
+base/derived wheels, exact member delta, metadata/RECORD and embedded provenance
+before import. V1 remains unchanged. A matching application image and explicit
+actual artifact/native gates are required before this path can be used.
 
 The eight-V100 deployment now requires a sealed NUMA placement plan and a
 worker seccomp profile derived from the running Docker default. Each rank binds
@@ -156,6 +181,17 @@ Its maintained native controls now cover both layouts, shared QSA visibility,
 LSE head order, streams/capture and decoded codec operands. These added controls
 passed on GPU0 with the protected runtime. The ATen owner retains its Q8-only
 admission contract; decoded codec operands do not qualify an Iso4 owner.
+
+The private C8 teacher preflight requires the execution profile's complete target,
+MTP and runtime frontend size/SHA inventory to match its held asset descriptors
+before launch. Frontend preparation's `ready.json` is excluded from runtime metadata.
+
+A separate closed C8 teacher contract, `source33-aten-q8-layouts-v1`, admits a
+canonical RN12 reference and paid panel16 ATen default/native-GQA/head-row
+profiles. It binds actual runtime numerical/retention identities and protected
+Torch provider VMAs; it does not turn attention into a transport boolean.
+Existing RN12 teacher versions remain strict. All-eight-rank ATen model/quality,
+capacity and matched performance qualification remain pending.
 
 The explicit private `flash-v100-q8-normalized-lse-owner-v1` trial now has typed
 preparation and sealed campaign staging. `flash_tiles` binds a panel size,

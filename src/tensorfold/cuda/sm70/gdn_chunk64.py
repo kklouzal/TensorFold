@@ -132,7 +132,7 @@ class Compiler:
         return {"tilelang_base_requirements": requirements, "packages": packages,
                 **nvcc, "headers": headers, "owned_artifact": owned,
                 "cutlass_root": cutlass, "cccl_root": cccl,
-                "target": "cuda -arch=sm_70", "execution_backend": "tvm_ffi"}
+                "target": {"kind": "cuda", "arch": "sm_70"}, "execution_backend": "tvm_ffi"}
 
 
 class Prepared:

@@ -89,9 +89,9 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
         for copy in copies:
             if copy[2]:
                 copy[1] = copy[1].clone()
-        b.ids_host[:n].numpy()[:] = [int(t) for _, next_tokens, _ in windows for t in next_tokens]
+        b.ids_host_array[:n] = [int(t) for _, next_tokens, _ in windows for t in next_tokens]
         b.ids[:n].copy_(b.ids_host[:n], non_blocking=True)
-        b.last_host[:len(segs)].numpy()[:] = [a1 - 1 for _, _, a1 in segs]
+        b.last_host_array[:len(segs)] = [a1 - 1 for _, _, a1 in segs]
         b.last[:len(segs)].copy_(b.last_host[:len(segs)], non_blocking=True)
         for destination, source, _overlap in copies:
             destination.copy_(source, non_blocking=True)

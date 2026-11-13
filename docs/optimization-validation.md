@@ -158,6 +158,35 @@ without claiming a one-rank model plan or full State admission. The corrected
 tools have not yet passed a newly installed image and model-level five-window
 GPU capture; those remain separate gates.
 
+## Token staging host view reuse
+
+The target and MTP stages cache full NumPy borrowers of the existing
+`Buffers.ids_host` and `last_host` tensors. These host tensors and their storage
+must retain their original identity and extent for the Buffers lifetime; the
+owning source creates them once and does not resize or rebind them. The previous
+`staged` event still retires DMA before host writes, and the next record remains
+after the same transfers. MTP overlap snapshots and rollback ordering are
+unchanged. Flat token lists and original NumPy/int coercion remain: tested
+per-segment and all-scalar alternatives regressed required CPU shapes.
+
+On the historical owned CUDA12.9 SDK, Python3.12.3, Torch2.16 git05adb and
+NumPy2.5.4, 75 focused CPU checks pass. Fifteen randomized paired host-fill
+blocks cover C1, C8, P256,120 rows/24 segments,256 singleton segments and4096
+rows/16 segments. Cached-view median costs are below the reference in each
+tested region; this is local CPU evidence, not tokens/s or a full-model P3
+result. The containers used UID1000, two CPU credits on CPUs20–21/52–53 with
+memory-node1,4GiB, offline and GPUs hidden. This does not qualify later installed
+model images or asynchronous CUDA transfers.
+
+Each Buffers retains368 bytes of measured object-header payload:224 bytes for
+two NumPy headers and144 bytes for their two Tensor base wrappers, independent
+of the tested row count. The existing host/pinned/device backing payload is
+shared unchanged. Three roles retain1104 header bytes; Python attribute/dict
+and allocator/RSS effects remain separate fixed engine obligations, not new
+per-session history. The broader S26 factory counts are not driver allocation
+counts; its warmed trace's absence of named cudaMalloc/free events does not
+make the remaining factory/copy operations free.
+
 ## Private ATen normalized attention owner
 
 The explicit trial family `aten-cutlass-q8-normalized-lse-owner-v1` uses the
@@ -281,6 +310,34 @@ milestone/retirement/source-hold records. This result qualifies the declared
 single-GPU component controls only. TP8 owner transport, full model/MTP,
 capacity, conditional quality, Iso4-owner support and matched P3 still need
 their own evidence. Ordinary service defaults remain unchanged.
+
+The independent C8 preparation contract `source33-aten-q8-layouts-v1` uses
+teacher scope `aten-q8-p256-e120-c8-mtp4-layouts-v1`. It accepts only a canonical
+RN12 attention reference or the ATen Q8 family with panel16 and explicit tensor
+credit; absent layout, explicit `native-gqa-v1` and
+`fixed12-head-as-query-lse-v1` retain their actual distinct profile identities.
+The existing three numerical axes stay off in this attention-only version;
+legacy RN12 versions retain their three axes and all 21 expert selectors.
+No Flash/BitBLAS bundle or unrelated preparation option is admitted by a flag.
+
+Both arms retain the original C8/MTP4/full24/context262144/P256/E120 corpus,
+raw full-vocabulary logits, coordinates, keep schedule, proposal samples,
+output grants and all-rank source/NUMA/FD closure. Runtime owner parsing must
+match the exact manifest, and actual paid tile records, operator identity and
+numerical selection must match the declaration. Family and layout changes are
+explicit numerical variables. Comparison removes only those declared fields
+and verified family-specific packing charges from copied comparison views;
+raw profiles, rank allocation lists, issued retention hashes and unknown fields
+remain intact and available for review. Other graph/credit/context changes fail.
+
+The existing bounded child observer additionally requires the genuine loaded
+Torch `_C` and `libtorch_cuda.so` VMA/held-FD identities for this version. Their
+source33 sizes fit its unchanged ELF/host reserve; no library is force-loaded
+and no new observer budget is granted. SDK/provider facts must match the
+actual issued library inventory. This contract implementation does not supply
+an ATen model result, numerical tolerance, accuracy acceptance or P3 result.
+The separately captured RN12 pilot DATA and its immutable authorities are not
+converted into an ATen reference by this extension.
 
 ## Private sealed Flash attention owner
 

@@ -37,7 +37,11 @@ def inputs(flags=(False, False, False)):
     client.update(schema=window.CLIENT_SCHEMA, teacher_scope=window.SCOPE, prepared_execution=copy.deepcopy(prep),
         numerical_trial=copy.deepcopy(trial), numa=copy.deepcopy(numa), mtp_confidence=0.7)
     profile = {'schema': 'tensorfold.execution-profile-manifest', 'version': 1, 'preparation': copy.deepcopy(prep),
-        'artifacts': {'draft/'+Path(mtp['path']).name: {'size': mtp['bytes'], 'sha256': mtp['sha256']}}}
+        'artifacts': {**{'target/'+Path(item['path']).name: {'size': item['bytes'], 'sha256': item['sha256']}
+                         for item in operation['model_assets']},
+                      **{'metadata/'+Path(item['path']).name: {'size': item['bytes'], 'sha256': item['sha256']}
+                         for item in operation['frontend_assets'] if Path(item['path']).name != 'ready.json'},
+                      'draft/'+Path(mtp['path']).name: {'size': mtp['bytes'], 'sha256': mtp['sha256']}}}
     return operation, plan, client, profile
 
 
@@ -93,7 +97,7 @@ def test_raw_manifest_identity_and_complete_draft_content_remain_binding():
     with pytest.raises(ValueError, match='profile'):
         window.validate_teacher_operation_plan(operation, changed, client, profile=profile)
     profile['artifacts'].clear()
-    with pytest.raises(ValueError, match='MTP content'):
+    with pytest.raises(ValueError, match='manifest artifacts'):
         window.validate_teacher_operation_plan(operation, plan, client, profile=profile)
 
 
@@ -307,14 +311,16 @@ def test_real_source30_raw_profile_requires_a_new_canonical_manifest_identity():
     profile = json.loads(raw)
     original = copy.deepcopy(profile)
     assert 'row_buckets' not in profile['preparation']
-    operation, plan, client, _ = current_inputs((True, True, True))
+    operation, plan, client, held_profile = current_inputs((True, True, True))
     operation['prepared_execution'] = profile['preparation']
     with pytest.raises(ValueError, match='canonical manifest'):
         window.validate_operation(operation)
     canonical = parse_preparation(profile['preparation'])
     assert canonical['row_buckets'] == {}
     assert profile == original
-    profile = {**profile, 'preparation':canonical}
+    # The derived manifest must also bind this test operation's held assets;
+    # the immutable historical profile above remains provenance, not live DATA.
+    profile = {**profile, 'preparation':canonical, 'artifacts':held_profile['artifacts']}
     encoded = (json.dumps(profile, indent=2)+'\n').encode()
     assert hashlib.sha256(encoded).hexdigest() != hashlib.sha256(raw).hexdigest()
     operation['prepared_execution'] = canonical
@@ -364,3 +370,40 @@ def test_http_stack_payload_keeps_all_eight_original_64MiB_bounds():
     assert teacher['resources']['client_maximum_threads'] == 8
     assert teacher['resources']['client_thread_stack_per_thread_bound'] == 64 << 20
     assert teacher['resources']['client_thread_stack_virtual_bound'] == 8*(64 << 20)
+
+
+@pytest.mark.parametrize('prefix', ['target/', 'draft/', 'metadata/'])
+@pytest.mark.parametrize('fault', ['size', 'sha256', 'missing', 'extra', 'record-extra', 'bool-size'])
+def test_complete_runtime_artifact_correspondence_rejects_stale_or_partial_profiles(prefix, fault):
+    operation, plan, client, profile = inputs()
+    name = next(key for key in profile['artifacts'] if key.startswith(prefix))
+    if fault == 'size':
+        profile['artifacts'][name]['size'] += 1
+    elif fault == 'sha256':
+        profile['artifacts'][name]['sha256'] = '0'*64
+    elif fault == 'missing':
+        del profile['artifacts'][name]
+    elif fault == 'extra':
+        profile['artifacts'][prefix+'unconsumed.json'] = {'size': 1, 'sha256': '0'*64}
+    elif fault == 'record-extra':
+        profile['artifacts'][name]['path'] = '/other'
+    else:
+        # Even a numerically equal JSON bool cannot replace a byte extent.
+        if prefix == 'metadata/':
+            item = next(item for item in operation['frontend_assets'] if Path(item['path']).name == name.split('/', 1)[1])
+            item['bytes'] = profile['artifacts'][name]['size'] = 1
+        profile['artifacts'][name]['size'] = True
+    with pytest.raises(ValueError, match='manifest artifacts'):
+        window.validate_teacher_operation_plan(operation, plan, client, profile=profile)
+
+
+def test_runtime_frontend_inventory_excludes_preparation_ready_marker():
+    operation, plan, client, profile = inputs()
+    expected = {'metadata/config.json', 'metadata/tokenizer.json', 'metadata/tokenizer_config.json',
+                'metadata/generation_config.json'}
+    assert {name for name in profile['artifacts'] if name.startswith('metadata/')} == expected
+    assert window.validate_teacher_operation_plan(operation, plan, client, profile=profile)['mode'] == 'forced-window'
+    ready = next(item for item in operation['frontend_assets'] if Path(item['path']).name == 'ready.json')
+    profile['artifacts']['metadata/ready.json'] = {'size': ready['bytes'], 'sha256': ready['sha256']}
+    with pytest.raises(ValueError, match='manifest artifacts'):
+        window.validate_teacher_operation_plan(operation, plan, client, profile=profile)

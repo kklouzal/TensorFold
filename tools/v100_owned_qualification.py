@@ -2958,7 +2958,7 @@ def _teacher_client_input(path, teacher, *, prepared=False, numa=False, numerica
 def _prepared_teacher_input(operation, teacher, plan_path):
     """Validate the new fixed operation without changing historical reference DATA."""
     contract = _model_contract().teacher_operation_contract(operation)
-    if operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE:
+    if operation.get('teacher_scope') in _model_contract().WINDOW_TEACHER_SCOPES:
         return contract.prepare_input(operation, teacher, plan_path)
     numa = 'numa' in operation
     contract.validate_operation(operation)
@@ -3320,6 +3320,7 @@ def _owned_model_failure(engine, primary, status):
 def _attach_owned_model_observer(engine, selected, *, role, complete, summary=None):
     """One shared native observer, after real fences and before positive close."""
     original = engine._close_resources
+    provider_paths = getattr(engine, '_teacher_attention_provider_paths', ()) if role == 'teacher' else ()
     attempted = False
     status = [None] * 2
     setattr(engine, '_' + role + '_native_observer', selected)
@@ -3333,7 +3334,8 @@ def _attach_owned_model_observer(engine, selected, *, role, complete, summary=No
             try:
                 selected['module'].record_native_elfs(_model_contract().REQUIRED_PREFIXES,
                     rank=engine.rank, tag=role + '-closed', evidence_dir=selected['directory'],
-                    limits=_model_contract().MODEL_OBSERVER_LIMITS)
+                    limits=_model_contract().MODEL_OBSERVER_LIMITS,
+                    **({'provider_paths':provider_paths} if provider_paths else {}))
             except BaseException as primary:
                 _owned_model_failure(engine, primary, status)
         return result
@@ -3693,7 +3695,7 @@ def _benchmark_model_result(output, prepared):
 
 
 def _teacher_preflight(args, teacher, cli, *, prepared_operation=None, selected=None):
-    if prepared_operation is not None and prepared_operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE:
+    if prepared_operation is not None and prepared_operation.get('teacher_scope') in _model_contract().WINDOW_TEACHER_SCOPES:
         return _model_contract().prepared_teacher_contract(window=True).preflight(
             args, teacher, cli, selected=selected, operation=prepared_operation)
     if (args.draft_method != 'none' or args.context != teacher['data']['context']
@@ -3731,7 +3733,7 @@ def _teacher_preflight(args, teacher, cli, *, prepared_operation=None, selected=
 
 def prepare_owned_teacher(engine, prepared, output, *, hc_graphs=False):
     """Install only after original immutable loading/serving admission paid it."""
-    if prepared.get('prepared_expert_operation', {}).get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE:
+    if prepared.get('prepared_expert_operation', {}).get('teacher_scope') in _model_contract().WINDOW_TEACHER_SCOPES:
         return _model_contract().prepared_teacher_contract(window=True).prepare_engine(engine, prepared, output)
     expected = (prepared['resources']['global_host_obligation_bytes'], prepared['input_sha256'])
     if engine._owned_qualification_host != expected:
@@ -4723,7 +4725,7 @@ def worker(argv):
                 operation = _teacher_module()._owned_teacher_object(raw)
                 if selected.teacher_client_bytes != operation.get('teacher_client', {}).get('bytes'):
                     raise ValueError('prepared teacher worker client credit differs from its actual DATA')
-            if operation is not None and operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE:
+            if operation is not None and operation.get('teacher_scope') in _model_contract().WINDOW_TEACHER_SCOPES:
                 teacher = _model_contract().teacher_operation_contract(operation).prepare_plan(
                     selected.teacher_plan, operation['teacher_plan'])
             else:
@@ -5117,7 +5119,7 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
                 args.normalization_parity, args.prepared_feature_receipts, args.gdn_batch_parity, args.q8_preparation_parity)):
             parser.error('teacher capture/replay excludes other diagnostic procedures')
         if (_prepared_teacher_operation is not None and
-                _prepared_teacher_operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE):
+                _prepared_teacher_operation.get('teacher_scope') in _model_contract().WINDOW_TEACHER_SCOPES):
             contract = _model_contract().teacher_operation_contract(_prepared_teacher_operation)
             contract.validate_operation(_prepared_teacher_operation)
             teacher = contract.prepare_plan(args.teacher_plan, _prepared_teacher_operation['teacher_plan'])
@@ -5131,7 +5133,7 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
             selected_client = (_teacher_client_input(args.teacher_client, teacher) if prepared_teacher is None else
                                _teacher_client_input(args.teacher_client, teacher, prepared=True,
                                    numa='numa' in _prepared_teacher_operation, numerical='numerical_trial' in _prepared_teacher_operation,
-                                   window=_prepared_teacher_operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE))
+                                   window=_prepared_teacher_operation.get('teacher_scope') in _model_contract().WINDOW_TEACHER_SCOPES))
             if prepared_teacher is not None:
                 expected_client = _prepared_teacher_operation['teacher_client']
                 if (str(args.teacher_client.absolute()) != expected_client['path']

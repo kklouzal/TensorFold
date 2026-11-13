@@ -39,6 +39,8 @@ NUMERICAL_TEACHER_MODE = 'owned-numerical-teacher-model-v3'
 WINDOW_TEACHER_SCHEMA = 'tensorfold.v100-target-window-teacher-operation-v4'
 WINDOW_TEACHER_MODE = 'owned-target-window-teacher-model-v4'
 WINDOW_TEACHER_SCOPE = 'rn12-p256-e120-c8-mtp4-forced-window-v1'
+ATEN_WINDOW_TEACHER_SCOPE = 'aten-q8-p256-e120-c8-mtp4-layouts-v1'
+WINDOW_TEACHER_SCOPES = (WINDOW_TEACHER_SCOPE, ATEN_WINDOW_TEACHER_SCOPE)
 PREPARED_SCHEMAS = (PREPARED_TEACHER_SCHEMA, NUMA_PREPARED_TEACHER_SCHEMA, NUMERICAL_TEACHER_SCHEMA,
                     WINDOW_TEACHER_SCHEMA)
 
@@ -54,7 +56,7 @@ def teacher_contract(value):
 
 def teacher_operation_contract(operation):
     """Select only the finite declared operation versions; validators own admissibility."""
-    return prepared_teacher_contract(window=operation.get('teacher_scope') == WINDOW_TEACHER_SCOPE,
+    return prepared_teacher_contract(window=operation.get('teacher_scope') in WINDOW_TEACHER_SCOPES,
         numerical='numerical_trial' in operation, numa='numa' in operation)
 
 

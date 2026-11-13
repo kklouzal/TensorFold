@@ -735,11 +735,31 @@ except ValueError as error:
         self.assertEqual(report['observer']['sha256'], driver.file_identity(driver.__file__)['sha256'])
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
+    def test_child_record_preserves_explicit_builtin_provider_paths(self):
+        library = self.native_library('provider.so')
+        with self.mapped_model(library):
+            report = driver.record_native_elfs([], rank=2, tag='attention-sdk', evidence_dir=self.evidence,
+                                               provider_paths=(str(library),))
+        self.assertEqual(report['required_provider_paths'], [str(library)])
+        self.assertEqual(report['missing_required_provider_paths'], [])
+        self.assertEqual(report['mapped_elfs'][0]['sha256'], hashlib.sha256(library.read_bytes()).hexdigest())
+        path = self.evidence / ('attention-sdk-rank-2-pid-' + str(os.getpid()) + '.json')
+        self.assertEqual(json.loads(path.read_text())['required_provider_paths'], [str(library)])
+
     def test_missing_child_mapping_is_published_before_owning_failure(self):
         with mock.patch.object(driver, '_read_native_maps', return_value=''):
             with self.assertRaisesRegex(RuntimeError, 'required child'):
                 driver.record_native_elfs(['tf_fixture'], rank=0, tag='missing', evidence_dir=self.evidence)
         self.assertEqual(len(list(self.evidence.glob('missing-*.json'))), 1)
+
+    def test_missing_required_builtin_provider_is_published_and_owning(self):
+        with (mock.patch.object(driver, '_read_native_maps', return_value=''),
+              self.assertRaisesRegex(RuntimeError, 'required child')):
+            driver.record_native_elfs([], rank=0, tag='missing-sdk', evidence_dir=self.evidence,
+                                     provider_paths=('/ordinary/torch/lib/libtorch_cuda.so',))
+        path = next(self.evidence.glob('missing-sdk-*.json'))
+        self.assertEqual(json.loads(path.read_text())['missing_required_provider_paths'],
+                         ['/ordinary/torch/lib/libtorch_cuda.so'])
 
     def test_child_write_failure_and_environment_restore_failure_remain_owning(self):
         library = self.native_library()
