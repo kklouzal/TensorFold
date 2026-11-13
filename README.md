@@ -3002,5 +3002,7 @@ component result. No inference client or throughput measurement ran in that gate
 The private [v2 ragged component gate](docs/observed-graph-demand.md#version2-hot-mtp-component-extension)
 retains the qualified Source30 `(28,8)` cases and adds controlled MTP single-row
 groups with 3, 5, 6 and 7 participants. Its closed catalogue requires all previous
-32 keys plus those four; native 36-key fit/replay and conditional quality remain
-pending. Application/kernel bytes and ordinary service defaults are unchanged.
+32 keys plus those four. The Source32 all-eight-GPU component gate passed its
+exact replay and fit checks; full-history behavior, conditional quality and
+performance remain pending. Application/kernel bytes and ordinary service
+defaults are unchanged.

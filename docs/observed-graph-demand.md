@@ -44,7 +44,7 @@ short valid prefixes and committed recurrence are copied to CPU; there are no
 full-window State clones or additional weights. A failure propagates to the
 existing caller's cohort/process containment; successful slots reset before
 admission. The Source30 native execution below passed v1's two `(28,8)` cases
-on all eight ranks. The added v2 MTP groups require their own native result.
+on all eight ranks. The added v2 MTP groups passed the separate Source32 result below.
 It is a short-context component check, not qualification of all 24 windows,
 conditional model quality or P3 performance. The caller must retain its actual
 image/source/native identities and all eight returned rank receipts.
@@ -153,9 +153,10 @@ separate post-READY NVML record and raw-output seal. Independent review
 reconciled the per-rank cases, capture records, samples and retirement.
 This functional run overlapped a CPU dependency build and supplies no P3
 or model-accuracy result. The separate legacy six-lane exact-output failure
-remains unresolved. Non-bucket MTP participant counts 3/5/6/7, other requested
-shapes, full-history behavior, conditional quality and matched regional
-performance still require their own evidence.
+remains unresolved. The v1 result did not cover non-bucket MTP participant
+counts 3/5/6/7; their Source32 result follows below. Other requested shapes,
+full-history behavior, conditional quality and matched regional performance
+still require their own evidence.
 
 
 ## Version2 hot MTP component extension
@@ -181,5 +182,53 @@ fit the original eight-State, 28+8-row, ten-history-row reference envelope. Thre
 int32 position words per State add 96 bytes to its one-tree tensor bound; the
 36-key metadata and eager encoding bounds are separately admitted before Engine
 construction. No new State/weight bank, device workspace, kernel or numerical
-tolerance is introduced. V2 source controls do not qualify these four new native
-capture shapes; a separately sealed all-eight-rank execution is still required.
+tolerance is introduced. V2 source controls remain distinct from the separately
+sealed all-eight-rank native result below.
+
+### Source32 actual hot36 result
+
+The Source32 component run passed on all eight V100s using immutable image
+`sha256:a7ee3f508c0663e77c46a8286c3ff0ff8be7f6219bb0a5655d1a1383587178d3`,
+source `44ce0266`, and frozen UID
+`d145228640b673ce047bb433434889c74d10fbd6595a929eed8a2d2fc2adc897`.
+All 848 installed application members were byte-identical to Source30; the
+focused installed boundary gate passed 160 tests plus 44 subtests, with
+328 unchanged qualifier cases explicitly deselected. Protected SDK, FD owner,
+Triton 3.2, source identities and ordinary image-bound NUMA authority reconciled.
+
+Every rank passed the two original ragged cases and four hot MTP cases:
+48 case comparisons and 64 target/MTP role comparisons in total. Actual live
+GPU input positions matched the unequal nonempty histories for all four new
+participant counts. Reordered slots, ordinary resets, packets, outputs and
+valid State data passed the source oracle's exact checks; the expected reset
+generation total was 111 increments per rank. All 24 State frontiers were
+clean afterward, with logical 262,144 and physical 262,149-row allocations.
+
+Each rank captured 16 verify and 20 MTP keys, 280 pieces, without declines.
+The charge was 1,189,085,184 bytes (1134 MiB), settled charge 1,186,988,032 bytes
+(1132 MiB), within the unchanged 1,503,076,308-byte AUTO grant. The recorded
+charge and settlement were 6 MiB above the prior C32 run; this is an observed
+whole-catalogue difference, not an additive price or speed prediction.
+The pre-admitted global oracle host credit was 4,482,961,568 bytes, with a
+123,359,744-byte one-tree tensor envelope and no added device payload.
+
+Fresh post-probe CUDA free memory was 8,460,435,456 bytes (8068.5 MiB) on every
+rank, above the unchanged 4 GiB floor. Allocation was unchanged during the
+probe while reservation increased by 20 MiB. A separately timed, live-container
+host NVML sample after idle READY reported 8069 MiB free per GPU. As in C32,
+the CUDA byte samples, displayed NVML MiB and historical graph-settlement
+records retain their distinct timing and meanings.
+
+The run completed in 317.15 seconds with zero inference requests, all 24 NUMA
+receipts and eight ordinary CapEff0 rank processes. Exit was 0 with no OOM,
+primary failure or cleanup error; the owned container was removed and the
+all-eight lease released. Source and input bytes held, and ECC/retired-page,
+48-link, link-error, Xid and empty-context health baselines were unchanged.
+Independent review verified the per-rank records and immutable 65-file raw seal.
+Raw evidence is retained in the private
+`onecat-integration-20261113-v32/ragged-native-gate-model-v1` packet.
+
+This establishes the requested 36-key fit and controlled short-history replay
+checks only. It is not full-history, conditional accuracy, token-throughput or
+candidate-adoption evidence. The legacy six-lane failure and other catalogue,
+operator, model-quality and matched performance gates remain open.
