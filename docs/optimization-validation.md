@@ -204,7 +204,8 @@ packet shape is explicitly one-dimensional. Borrowed weights, communicator
 and device packet are excluded; shared aliases are counted once. No CUDA
 context or packet payload is constructed by the forecast.
 
-The retained forecast map is separately counted. Admission covers the maximum
+The retained forecast and runtime owner-map headers are separately counted;
+actual owner-map shape/capacity is checked after allocation. Admission covers the maximum
 of sequential constructor/prototype overlap while prior roles remain live and
 all persistent payload/headers plus the largest header/forecast traversal
 scratch. Post-materialization checks, bind and record observation therefore do
@@ -221,7 +222,7 @@ allocator/interpreter/copy internals or the original chooser's per-row
 temporaries. A new runtime image, actual CUDA header checks and whole-model
 resource/quality gates remain required before adoption. The fixed default
 without readback is unchanged. Source-component CPU checks over the genuine
-Source40 SDK pass132 controls through affected reruns, including real CPU owners and maximum native
+Source40 SDK pass133 controls through affected reruns, including real CPU owners and maximum native
 pointer/storage-size metadata domains. Only three owned runtime modules are
 source-mounted; the installed FD owner is loaded first and source-matched.
 The initial121-test pass was followed by a pre-existing Ruff F821 on a valid
@@ -233,6 +234,10 @@ The first accounting checkpoint omitted traversal scratch concurrent with all
 materialized roles. D13 found that peak; it is corrected and retained as a
 historical defect. The current45 readback controls include all-live role and
 forecast walks plus scratch exhaustion; unrelated passed controls are reused.
+An isolated cold-first test then exposed setup estimates depending on prior
+same-class split-dictionary history. The prototype now uses an unshared complete
+field dictionary and a representation-capacity check/copy-overlap bound; the
+failure and cold-to-warm stability controls are retained.
 
 ## Campaign preparation DATA
 

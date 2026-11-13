@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 import re
+import sys
 from tensorfold.cleanup import finish, raise_failures
 from .owner_execution import (
     FULL_COLLECTIVE, HEAD_COLLECTIVE, KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY,
@@ -1030,6 +1031,10 @@ class OwnerPreparation:
             return {role: owner.record() for role, owner in self.gathered_readbacks.items()}
 
         peers = self._phase(engine, 'allocate-gathered-readbacks', allocate, may_refuse=False)
+        if (type(self.gathered_readbacks) is not dict or set(self.gathered_readbacks)!=set(self.gathered_readback_forecast)
+                or sys.getsizeof(self.gathered_readbacks)>
+                self.gathered_host_resources()['owner_map_metadata_bound_bytes']):
+            raise MemoryError('gathered readback owner map exceeds its admitted header bound')
         comparable=[]
         for peer in peers:
             if type(peer) is not dict or set(peer)!=set(self.gathered_readback_forecast):

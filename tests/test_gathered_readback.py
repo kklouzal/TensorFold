@@ -210,6 +210,9 @@ def test_payload_only_credit_is_no_longer_mistaken_for_complete_header_funding()
     costs=forecast(8,{'decode':120,'mtp':120})
     resource=forecast_resources(costs)
     assert resource['host_payload_bytes']==990720
+    assert resource['owner_map_metadata_bound_bytes']==sys.getsizeof(dict.fromkeys(('decode','mtp')))
+    assert resource['host_persistent_bytes']==(resource['host_payload_bytes']+resource['host_metadata_bound_bytes']
+        +resource['forecast_metadata_bytes']+resource['owner_map_metadata_bound_bytes'])
     assert resource['host_admission_bytes']>=resource['host_persistent_bytes']>990720
     with pytest.raises(MemoryError,match='aggregate host credit'):
         OwnerPreparation(base,role_rows={'decode':120,'mtp':120,'prefill':256},manifest_sha256='a'*64)
@@ -231,6 +234,13 @@ def test_forecast_uses_zero_payload_cpu_headers_and_never_initializes_cuda(monke
     assert calls==['tensor','numpy','tensor','numpy']
     assert resource['host_metadata_bound_bytes']>0 and resource['forecast_metadata_bytes']>0
     assert not torch.cuda.is_initialized()
+
+
+def test_forecast_is_independent_of_prior_same_class_prototype_history():
+    roles={'decode':3,'mtp':2}
+    first=forecast(8,roles)
+    for _ in range(8):
+        assert forecast(8,roles)==first
 
 
 @pytest.mark.parametrize('rows',[1,3,120,160,256])

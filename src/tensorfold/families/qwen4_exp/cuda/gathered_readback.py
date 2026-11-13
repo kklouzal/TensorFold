@@ -91,8 +91,17 @@ def metadata_forecast(world,rows,role):
     """
     prototype=object.__new__(GatheredReadback)
     prototype._initialize(world,rows,role,'cuda')
-    old_dictionary=vars(prototype)
-    prototype.__dict__=dict(old_dictionary)
+    # Instance split dictionaries can shrink as more same-class instances are
+    # created. Use the same complete insertion sequence in an unshared dict so
+    # a forecast/TP-rank does not depend on earlier prototype history. The old
+    # representation retires at replacement; bound its copy overlap, not its
+    # history-dependent retained size.
+    complete={}
+    for key,value in vars(prototype).items():complete[key]=value
+    dictionary_bound=sys.getsizeof(complete)
+    if sys.getsizeof(vars(prototype))>dictionary_bound:
+        raise ValueError('unsupported readback instance dictionary capacity')
+    prototype.__dict__=complete
     prototype.host=torch.empty(0,dtype=torch.float32,device='cpu')
     prototype.words=prototype.host.numpy()
     prototype.ids=np.empty(0,dtype=np.int64)
@@ -110,7 +119,7 @@ def metadata_forecast(world,rows,role):
     result={'host_metadata_bound_bytes':bound,'host_traversal_scratch_bound_bytes':walk_peak-bound,
             'host_setup_metadata_peak_bytes':_fresh_int(size)}
     # Dictionary conversion and decimal pointer construction are setup-only.
-    setup=_metadata_size(prototype,old_dictionary,result)[1]+max(
+    setup=_metadata_size(prototype,result)[1]+dictionary_bound+max(
         sys.getsizeof(str(size)),sys.getsizeof(str(pointer)),sys.getsizeof([1]))
     if bound>size or setup>size:
         raise OverflowError('gathered readback metadata exceeds the native size domain')
@@ -128,20 +137,24 @@ def forecast(world,role_rows):
 def forecast_resources(costs):
     """One-rank explicit peak; serial setup retires before ordinary service."""
     headers,forecast_walk_peak=_metadata_size(costs) if costs else (0,0)
+    owner_map={}
+    for role in costs:owner_map[role]=None  # Same insertion pattern; owners are separately charged.
+    owner_map_headers=sys.getsizeof(owner_map) if costs else 0
     metadata=sum(cost['host_metadata_bound_bytes'] for cost in costs.values())
     payload=sum(cost['host_payload_bytes'] for cost in costs.values())
-    peak=prefix=headers
+    peak=prefix=headers+owner_map_headers
     for cost in costs.values():
         # Prior roles stay live during the next empty actor/prototype setup.
         # The actor and prototype have distinct headers; no array payload is
-        # present in the prototype. The forecast map itself is paid once.
+        # present in the prototype. Forecast and owner-map headers are each paid once.
         peak=max(peak,prefix+cost['host_metadata_bound_bytes']+cost['host_setup_metadata_peak_bytes'])
         prefix+=cost['host_payload_bytes']+cost['host_metadata_bound_bytes']
-    persistent=payload+metadata+headers
-    scratch=max([forecast_walk_peak-headers,
+    persistent=payload+metadata+headers+owner_map_headers
+    scratch=max([forecast_walk_peak-headers,owner_map_headers,
         *(cost['host_traversal_scratch_bound_bytes']for cost in costs.values())])
     return {'host_payload_bytes':payload,'host_metadata_bound_bytes':metadata,
-        'forecast_metadata_bytes':headers,'host_persistent_bytes':payload+metadata+headers,
+        'forecast_metadata_bytes':headers,'host_persistent_bytes':persistent,
+        'owner_map_metadata_bound_bytes':owner_map_headers,
         'host_observation_scratch_bound_bytes':scratch,
         'host_admission_bytes':max(peak,persistent+scratch),
         'scope':'controlled headers and payload; native allocator/interpreter/copy internals separately observed'}
