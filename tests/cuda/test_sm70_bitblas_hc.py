@@ -1,19 +1,26 @@
 """Explicitly provisioned prebuilt HC libraries: real SM70 adapter gates."""
+import hashlib
+import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+from tensorfold.cleanup import raise_failures
 from tensorfold.families.qwen4_exp.cuda import bitblas_hc as candidate
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFConcat, GGUFDense
+from tensorfold.families.qwen4_exp.cuda.owner_preparation import _dense_backend
 
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason='actual SM70 HC reference component')
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability()!=(7,0),
+                                reason='actual SM70 HC reference component')
 
 
 class Buffers:
     def __init__(self, role, rows, device):
         self.rows,self.owner_role,self.execution_dtype=rows,role,torch.float16
+        self.dense_linears=None
         values=torch.arange(1,rows+1,device=device,dtype=torch.float16).view(-1,1)/16
         self.normed=values.expand(rows,10240).clone()
         self.act=values.expand(rows,320).clone()
@@ -22,39 +29,81 @@ class Buffers:
         self.dn_mix=torch.empty((rows,320),device=device,dtype=torch.float16)
 
 
+def _factory(path,sha,roles,device,registered):
+    backend,selection=_dense_backend({'backend':'bitblas-hc','manifest':path,'manifest_sha256':sha,'roles':list(roles)})
+    assert backend is candidate and type(selection) is candidate.Selection
+    owner=backend.Owner.prepare(selection,
+        {'hidden_size':2560,'hc_lowrank':320,'hc_count':4,'num_hidden_layers':48},
+        {'decode':120,'prefill':256},device,register=registered.append)
+    assert registered[-1] is owner
+    return owner
+
+
+def _weights(down,inject,up,device):
+    def hc(injecting=True):
+        d=GGUFConcat([GGUFDense(down),GGUFDense(inject)]) if injecting else GGUFDense(down)
+        return SimpleNamespace(down=d,up=GGUFDense(up),inject=injecting)
+    return SimpleNamespace(device=device,meta={'world':8,'execution_provider':'sm70'},
+        layers=[SimpleNamespace(attn_hc=hc(),mlp_hc=hc()) for _ in range(48)],mixer=hc(False))
+
+
+def _decoder(device):
+    return SimpleNamespace(buf=Buffers('decode',120,device),pbuf=Buffers('prefill',256,device),
+                           mbuf=SimpleNamespace(dense_linears=None))
+
+
+def _retire_graph(graph,owners,device,errors):
+    """Keep failed graph borrows alive until the owning process retires."""
+    safe=True
+    try:
+        torch.cuda.synchronize(device)
+    except BaseException as error:  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
+        errors.append(error);safe=False
+    if safe and graph is not None:
+        try:
+            graph.reset()
+        except BaseException as error:  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
+            errors.append(error);safe=False
+    if not safe:
+        for owner in owners:
+            owner.failed_retirement=True
+            owner._failed_test_graph=graph
+    return safe
+
+
 @pytest.fixture(scope='module')
 def prepared():
     path=os.environ.get('TENSORFOLD_BITBLAS_HC_MANIFEST')
     sha=os.environ.get('TENSORFOLD_BITBLAS_HC_SHA256')
     if not path or not sha:
         pytest.skip('explicit producer-bound HC manifest/SHA required; no implicit cache/generation')
-    if torch.cuda.device_count()!=1 or torch.cuda.get_device_capability()!=(7,0):
+    if torch.cuda.device_count()!=1:
         pytest.skip('one actual SM70 device required')
+    registered=[];primary=None;errors=[]
     with torch.inference_mode():
         device=torch.device('cuda',0)
-        registered=[]
-        owner=candidate.Owner.prepare(candidate.Selection(path,sha),
-            {'hidden_size':2560,'hc_lowrank':320,'hc_count':4,'num_hidden_layers':48},
-            {'decode':40,'prefill':40},device,register=registered.append)
-        down=torch.full((320,10240),2**-10,dtype=torch.float16,device=device)
-        inject=torch.full((4,10240),2**-9,dtype=torch.float16,device=device)
-        up=torch.full((10240,320),2**-8,dtype=torch.float16,device=device)
-        def hc(injecting=True):
-            d=GGUFConcat([GGUFDense(down),GGUFDense(inject)]) if injecting else GGUFDense(down)
-            return SimpleNamespace(down=d,up=GGUFDense(up),inject=injecting)
-        weights=SimpleNamespace(device=device,meta={'world':8,'execution_provider':'sm70'},
-            layers=[SimpleNamespace(attn_hc=hc(),mlp_hc=hc()) for _ in range(48)],mixer=hc(False))
-        owner.bind_weights(weights)
-        decoder=SimpleNamespace(buf=Buffers('decode',40,device),pbuf=Buffers('prefill',40,device))
-        owner.adopt(weights,decoder)
         try:
+            owner=_factory(path,sha,('decode','prefill'),device,registered)
+            down=torch.full((320,10240),2**-10,dtype=torch.float16,device=device)
+            inject=torch.full((4,10240),2**-9,dtype=torch.float16,device=device)
+            up=torch.full((10240,320),2**-8,dtype=torch.float16,device=device)
+            weights=_weights(down,inject,up,device)
+            owner.bind_weights(weights)
+            decoder=_decoder(device)
+            owner.adopt(weights,decoder)
             yield owner,weights,decoder
+        except BaseException as error:  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
+            primary=error
         finally:
-            owner.close()
+            for owner in registered:
+                if not owner.failed_retirement:
+                    try:owner.close()
+                    except BaseException as error:errors.append(error)  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
+            raise_failures(primary,errors)
 
 
-@pytest.mark.parametrize('role',['decode','prefill'])
-@pytest.mark.parametrize('rows',[1,5,32,40])
+@pytest.mark.parametrize('role,rows',[(role,rows) for role,maximum in [('decode',120),('prefill',256)]
+                                       for rows in (1,5,32,40,maximum)])
 def test_actual_hc_known_answers_row_regroup_live_graph_and_funding(prepared,role,rows):
     owner,w,decoder=prepared
     b=decoder.buf if role=='decode' else decoder.pbuf
@@ -86,26 +135,28 @@ def test_actual_hc_known_answers_row_regroup_live_graph_and_funding(prepared,rol
     stream=torch.cuda.Stream();stream.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(stream):run()
     stream.synchronize()
-    graph=torch.cuda.CUDAGraph()
+    graph=torch.cuda.CUDAGraph();primary=None;errors=[];changed=False
     try:
         with torch.cuda.graph(graph,stream=stream):
             captured=run()
-        b.normed.mul_(2);b.act.mul_(2)
+        b.normed.mul_(2);b.act.mul_(2);changed=True
         graph.replay();torch.cuda.synchronize()
         assert torch.equal(captured,initial*2)
         assert torch.equal(b.up[:rows],initial_up*2)
-    finally:
-        torch.cuda.synchronize();graph.reset()
-        b.normed.div_(2);b.act.div_(2)
-        torch.cuda.synchronize()
+    except BaseException as error:  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
+        primary=error
+    if _retire_graph(graph,[owner],b.normed.device,errors) and changed:
+        try:
+            b.normed.div_(2);b.act.div_(2)
+            torch.cuda.synchronize()
+        except BaseException as error:  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
+            errors.append(error);owner.failed_retirement=True
+    raise_failures(primary,errors)
 
 
 @pytest.mark.parametrize('pattern',['random','gguf'])
 def test_random_and_actual_hc_matrices_keep_row_law_and_live_graph(pattern, record_property):
     """Numerical differences are recorded, never accepted by a fitted tolerance."""
-    import json
-    from pathlib import Path
-
     import numpy as np
 
     from tensorfold.families.qwen4_exp.gguf import decode_rows
@@ -145,18 +196,12 @@ def test_random_and_actual_hc_matrices_keep_row_law_and_live_graph(pattern, reco
             down=torch.randn((320,10240),device=device,dtype=torch.float16,generator=generator)*.02
             inject=torch.randn((4,10240),device=device,dtype=torch.float16,generator=generator)*.02
             up=torch.randn((10240,320),device=device,dtype=torch.float16,generator=generator)*.02
-        def hc(injecting=True):
-            d=GGUFConcat([GGUFDense(down),GGUFDense(inject)]) if injecting else GGUFDense(down)
-            return SimpleNamespace(down=d,up=GGUFDense(up),inject=injecting)
-        weights=SimpleNamespace(device=device,meta={'world':8,'execution_provider':'sm70'},
-            layers=[SimpleNamespace(attn_hc=hc(),mlp_hc=hc()) for _ in range(48)],mixer=hc(False))
+        weights=_weights(down,inject,up,device)
         registered=[]
         try:
-            owner=candidate.Owner.prepare(candidate.Selection(path,sha),
-                {'hidden_size':2560,'hc_lowrank':320,'hc_count':4,'num_hidden_layers':48},
-                {'decode':40,'prefill':40},device,register=registered.append)
+            owner=_factory(path,sha,('decode','prefill'),device,registered)
             owner.bind_weights(weights)
-            decoder=SimpleNamespace(buf=Buffers('decode',40,device),pbuf=Buffers('prefill',40,device))
+            decoder=_decoder(device)
             owner.adopt(weights,decoder)
             observations={}
             for role,b in [('decode',decoder.buf),('prefill',decoder.pbuf)]:
@@ -168,7 +213,7 @@ def test_random_and_actual_hc_matrices_keep_row_law_and_live_graph(pattern, reco
                             else frame.matmul(b.normed[:rows],h.down,b.dn[:rows]))
                     frame.matmul(b.act[:rows],h.up,b.up[:rows])
                     return result
-                baseline=run(40).clone();baseline_up=b.up.clone()
+                baseline=run(b.rows).clone();baseline_up=b.up.clone()
                 expected=h.down.matmul_reference(b.normed,f32=role=='decode')
                 expected_up=h.up.matmul_reference(b.act)
                 for name,actual,reference in [('down',baseline,expected),('up',baseline_up,expected_up)]:
@@ -178,19 +223,19 @@ def test_random_and_actual_hc_matrices_keep_row_law_and_live_graph(pattern, reco
                             !=reference.view(torch.int32 if reference.dtype==torch.float32 else torch.int16)).sum().item()),
                         'max_absolute':float((actual.float()-reference.float()).abs().max().item()),
                         'quality_acceptance':False}
-                for rows in (1,5,32):
+                for rows in (1,5,32,40):
                     result=run(rows)
                     assert torch.equal(result.view(torch.uint8),baseline[:rows].view(torch.uint8))
                     assert torch.equal(b.up[:rows].view(torch.uint8),baseline_up[:rows].view(torch.uint8))
                 stream=torch.cuda.Stream();stream.wait_stream(torch.cuda.current_stream())
-                with torch.cuda.stream(stream):run(40)
+                with torch.cuda.stream(stream):run(b.rows)
                 stream.synchronize()
                 graph=torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph,stream=stream):captured=run(40)
+                with torch.cuda.graph(graph,stream=stream):captured=run(b.rows)
                 b.normed.mul_(.5);b.act.mul_(1.5)
                 graph.replay();torch.cuda.synchronize()
                 changed=captured.clone();changed_up=b.up.clone()
-                eager=run(40);torch.cuda.synchronize()
+                eager=run(b.rows);torch.cuda.synchronize()
                 assert torch.equal(changed.view(torch.uint8),eager.view(torch.uint8))
                 assert torch.equal(changed_up.view(torch.uint8),b.up.view(torch.uint8))
                 graph.reset();graph=None
@@ -198,16 +243,107 @@ def test_random_and_actual_hc_matrices_keep_row_law_and_live_graph(pattern, reco
         except BaseException as error:  # noqa: BLE001 - retain the primary through all GPU retirements.
             primary=error
         errors=[]
-        try:torch.cuda.synchronize()
-        except BaseException as error:  # noqa: BLE001 - preserve cleanup failures with the primary.
-            errors.append(error)
-        if graph is not None:
-            try:graph.reset()
-            except BaseException as error:  # noqa: BLE001 - preserve independent retirement failures.
-                errors.append(error)
-        for registered_owner in registered:
-            try:registered_owner.close()
-            except BaseException as error:  # noqa: BLE001 - preserve independent retirement failures.
-                errors.append(error)
-        from tensorfold.cleanup import raise_failures
+        if _retire_graph(graph,registered,device,errors):
+            for registered_owner in registered:
+                try:registered_owner.close()
+                except BaseException as error:errors.append(error)  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
         raise_failures(primary,errors)
+
+
+def _observe_providers(observer,expected):
+    observed=observer.observe_native_elfs([],provider_paths=tuple(expected))
+    assert observed['identity_method']=='kernel-vma-backed-fd-v1'
+    assert observed['missing_required_provider_paths']==[]
+    mapped={row['path']:row for row in observed['mapped_elfs']}
+    assert len(mapped)==len(observed['mapped_elfs'])
+    for path,identity in expected.items():
+        assert {k:mapped[path][k] for k in ('bytes','sha256')}==identity
+        assert mapped[path]['vmas']
+    return observed
+
+
+def _provider_record(owner):
+    """Existing observer, explicit paths: three library.so names stay distinct."""
+    from tools import v100_native_contract_driver as observer
+
+    record=owner.record()
+    assert set(record['native_libraries'])==set(candidate.library.HC_KERNELS)
+    root=Path(owner.selection.manifest).parent.resolve(strict=True)
+    expected={}
+    for role,item in record['native_libraries'].items():
+        assert item['dimensions']==list(candidate.library.HC_KERNELS[role][:3])
+        native=item['native'];runtime=item['runtime']
+        assert native['path']==str(root/role/'library.so')
+        assert native['binding']=='actual-init-and-call-executable-VMAs'
+        assert runtime['binding']=='actual-error-function-executable-VMA'
+        source=owner.manifest['kernels'][role]['record']
+        assert {k:native[k] for k in ('bytes','sha256')}==source['library']
+        assert {k:runtime[k] for k in ('path','bytes','sha256')}==source['runtime_provider']
+        for provider in (native,runtime):
+            identity={k:provider[k] for k in ('bytes','sha256')}
+            assert provider['path'] not in expected or expected[provider['path']]==identity
+            expected[provider['path']]=identity
+    assert len(expected)==4
+    observed=_observe_providers(observer,expected)
+    source=Path(observer.__file__)
+    return {'owner':record,'expected_provider_paths':expected,'VMA_FD':observed,
+            'observer_source':{'path':str(source),'bytes':source.stat().st_size,
+                               'sha256':hashlib.sha256(source.read_bytes()).hexdigest()},
+            'scope':'Current typed-factory component only; not TP8/model/quality/P3 acceptance'}
+
+
+@pytest.mark.parametrize('roles',[('decode',),('prefill',),('decode','prefill')])
+def test_current_factory_role_windows_mixer_and_provider_retirement(roles,record_property):
+    path=os.environ.get('TENSORFOLD_BITBLAS_HC_MANIFEST')
+    sha=os.environ.get('TENSORFOLD_BITBLAS_HC_SHA256')
+    if not path or not sha:
+        pytest.skip('explicit producer-bound HC manifest/SHA required')
+    device=torch.device('cuda',0)
+    registered=[];primary=None;errors=[];frames=[];provider=None
+    with torch.inference_mode():
+        try:
+            owner=_factory(path,sha,roles,device,registered)
+            down=torch.full((320,10240),2**-10,dtype=torch.float16,device=device)
+            inject=torch.full((4,10240),2**-9,dtype=torch.float16,device=device)
+            up=torch.full((10240,320),2**-8,dtype=torch.float16,device=device)
+            weights=_weights(down,inject,up,device)
+            decoder=_decoder(device)
+            owner.bind_weights(weights)
+            owner.adopt(weights,decoder)
+            assert owner.bound_weights and owner.adopted and set(owner._frames)==set(roles)
+            assert owner.resources['bound_HC_faces']==194 and len(owner._weights)==96
+            assert owner.adoption_memory['before']['torch_allocated_bytes']==owner.adoption_memory['after']['torch_allocated_bytes']
+            assert decoder.mbuf.dense_linears is None
+            for role,b in [('decode',decoder.buf),('prefill',decoder.pbuf)]:
+                if role not in roles:
+                    assert b.dense_linears is None
+                    continue
+                frame=b.dense_linears;frames.append(frame)
+                values=torch.arange(1,b.rows+1,device=device,dtype=torch.float32).view(-1,1)
+                for h,target in [(weights.layers[0].attn_hc,b.dn),(weights.mixer,b.dn_mix)]:
+                    actual=(frame.partials(h.down,b.normed)[0] if role=='decode'
+                            else frame.matmul(b.normed,h.down,target))
+                    assert torch.equal(actual[:,:320],(values*.625).expand(b.rows,320).to(actual.dtype))
+                    if h.inject:
+                        assert torch.equal(actual[:,320:],(values*1.25).expand(b.rows,4).to(actual.dtype))
+                    frame.matmul(b.act,h.up,b.up)
+                    assert torch.equal(b.up,(values*.078125).expand(b.rows,10240).half())
+            torch.cuda.synchronize(device)
+            if roles==('decode','prefill'):
+                provider=_provider_record(owner)
+        except BaseException as error:  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
+            primary=error
+        if _retire_graph(None,registered,device,errors):
+            for owner in registered:
+                try:owner.close()
+                except BaseException as error:errors.append(error)  # noqa: BLE001 - preserve primary/independent retirement roots; transported below
+        raise_failures(primary,errors)
+        for frame in frames:
+            assert frame.closed
+        assert decoder.buf.dense_linears is None and decoder.pbuf.dense_linears is None
+        if provider is not None:
+            from tools import v100_native_contract_driver as observer
+            provider['positive_close_VMA_FD']=_observe_providers(observer,provider['expected_provider_paths'])
+            record_property('hc-factory-provider',json.dumps(provider,sort_keys=True))
+        record_property('hc-factory-roles',json.dumps({'roles':list(roles),'resources':owner.resources,
+            'closed':owner.closed,'MTP_provider':'unchanged','scope':'typed-factory component only; not full Engine/TP8'}))

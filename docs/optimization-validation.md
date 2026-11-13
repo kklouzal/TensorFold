@@ -18,6 +18,38 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Current HC typed-factory native gate
+
+`tests/cuda/test_sm70_bitblas_hc.py` defines15 component cases. The original
+physical-M32 dyadic/row-law, independent Torch reference and random/actual-GGUF
+controls remain. Target decode now includes rows1/5/32/40/120 and prefill
+rows1/5/32/40/256; the two random/GGUF cases use the full E120/P256 capacities.
+Three additional cases select decode, prefill or both through the real
+`owner_preparation._dense_backend` and current HC `Owner.prepare`, bind and
+adopt lifecycle, including mixer-down320 and layer-down324/up faces. No
+runtime, vendor export or observer implementation changes accompany this gate.
+The97 HC inventory still repeats dyadic/random or actual block0 HC3 weights;
+it is not evidence for97 distinct real model matrices.
+
+The both-role factory case uses the existing `v100_native_contract_driver`
+observer with three exact HC ELF paths and the protected cudart path. Full
+path/byte/SHA and kernel VMA-backed FD identity are required; the three files
+named `library.so` remain distinct. The frozen observer source must be declared
+in the native DATA. A qualified UID/GID1000 CAP40-only purpose is required for
+this provider proof. The bundle stays a dedicated read-only10-file mount;
+no BitBLAS wheel install, filename-prefix allowance or loader fallback is used.
+Manifest/SHA and actual-GGUF environment selections must be supplied explicitly;
+qualification requires all15 cases with zero skips.
+
+Graph consumers are fenced and retired before buffers or owners close. Failed
+fence/reset borrows remain retained and poisoned; primary and cleanup failures
+are transported by the existing cleanup helper. Runtime source, original
+matrix/row oracle, Half publication and per-owner funding remain unchanged.
+CPU controls and native collection are separate from actual device execution.
+The new native run, genuine current factory/model admission, closed-C8 HC
+63-row comparison authority, all-rank model quality and matched performance
+remain separate gates. No numerical tolerance or performance gain is claimed.
+
 ## Private expert teacher CPU checks
 
 The Host/tool and installed-application cleanup transports accept nullable

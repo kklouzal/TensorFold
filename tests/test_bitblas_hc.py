@@ -165,3 +165,34 @@ def test_binding_residency_preserves_absolute_admission_and_noise_refusal(active
     after={'torch_allocated_bytes':100+active,'torch_reserved_bytes':200+reserved,'physical_free_bytes':1000-physical}
     memory=hc.binding_memory(before,after)
     assert memory['committed_delta_bytes']==committed and memory['outside_active_delta_bytes']==outside
+
+
+@pytest.mark.parametrize('roles',[('decode',),('prefill',),('decode','prefill')])
+def test_real_typed_factory_preserves_explicit_HC_role_and_forecast(roles):
+    from tensorfold.families.qwen4_exp.cuda.owner_preparation import _dense_backend
+
+    backend,selected=_dense_backend(selection(roles).as_dict())
+    assert backend is hc and type(selected) is hc.Selection and selected.roles==roles
+    resource=backend.forecast(selected,TEXT,{'decode':120,'prefill':256})
+    expected={('decode',):17850240,('prefill',):17694720,('decode','prefill'):19816320}
+    assert set(resource['roles'])==set(roles) and resource['tensor_bytes']==expected[roles]
+    assert resource['padded_weight_bytes']==15728640
+
+
+@pytest.mark.parametrize('fault',['fence','graph-reset'])
+def test_native_test_retirement_preserves_failed_borrows(monkeypatch,fault):
+    from tests.cuda.test_sm70_bitblas_hc import _retire_graph
+
+    owner=SimpleNamespace(failed_retirement=False)
+    graph=SimpleNamespace(reset=lambda:None)
+    error=RuntimeError(fault)
+
+    def fail(*args):
+        raise error
+
+    monkeypatch.setattr(torch.cuda,'synchronize',fail if fault=='fence' else lambda device:None)
+    if fault=='graph-reset':
+        graph.reset=fail
+    errors=[]
+    assert not _retire_graph(graph,[owner],'cpu',errors)
+    assert errors==[error] and owner.failed_retirement and owner._failed_test_graph is graph

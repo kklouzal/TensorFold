@@ -243,6 +243,10 @@ Component capture controls pass; model and performance gates remain pending. The
 `bitblas-hc` dense selector now binds the sealed HC-only reference through the
 same prepared-owner lifecycle, with a read-only ten-file operator bundle.
 Its model and performance selection remains pending.
+The maintained HC native gate now defines15 cases through the real typed factory,
+with target E120/P256 windows and explicit full-path VMA-backed FD checks for
+all three HC libraries and protected cudart. The new native run remains pending;
+component diagnostics are not full-model quality or performance acceptance.
 
 The separate default-off `native_hc_writeback_target_eager` preparation trial
 extends the existing HC4/D2560/TP8 modes0/3 operator to target decode eager work,
