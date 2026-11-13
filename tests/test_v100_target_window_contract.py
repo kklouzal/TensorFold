@@ -330,3 +330,37 @@ def test_real_source30_raw_profile_requires_a_new_canonical_manifest_identity():
     client['execution_manifest_sha256'] = hashlib.sha256(raw).hexdigest()
     with pytest.raises(ValueError, match='identity'):
         window.validate_teacher_operation_plan(operation, plan, client, profile=profile)
+
+
+@pytest.mark.parametrize('limits,thread_stack,valid', [
+    ((8 << 20, 64 << 20), 0, True),  # Actual Source32 CAP40 interpreter shape.
+    ((64 << 20, 64 << 20), 0, True),
+    ((0, 64 << 20), 0, False),
+    ((-1, 64 << 20), 0, False),
+    ((8 << 20, -1), 0, False),
+    (((64 << 20)+1, 64 << 20), 0, False),
+    ((64 << 20, (64 << 20)+1), 0, False),
+    ((8 << 20, 64 << 20), 1 << 20, False),
+])
+def test_http_stack_effective_soft_limit_is_bounded_by_original_admission(monkeypatch, tmp_path, limits, thread_stack, valid):
+    import resource
+    import threading
+
+    monkeypatch.setattr(resource, 'getrlimit', lambda kind: limits)
+    monkeypatch.setattr(threading, 'stack_size', lambda: thread_stack)
+    if valid:
+        client = window.WindowClient(None, None, tmp_path)
+        assert client.result is None and client.post_attempts == 0
+    else:
+        with pytest.raises(ValueError, match='stack policy exceeds'):
+            window.WindowClient(None, None, tmp_path)
+
+
+def test_http_stack_payload_keeps_all_eight_original_64MiB_bounds():
+    from tests.test_v100_target_window_teacher import plan
+
+    teacher = {'resources':window.resources(1, plan(4))}
+    window.client_credit(teacher, 1)
+    assert teacher['resources']['client_maximum_threads'] == 8
+    assert teacher['resources']['client_thread_stack_per_thread_bound'] == 64 << 20
+    assert teacher['resources']['client_thread_stack_virtual_bound'] == 8*(64 << 20)

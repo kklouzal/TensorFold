@@ -206,6 +206,44 @@ def test_host_prepared_dispatch_binds_flat_case_profile_and_new_contract_source(
         owner.doCleanups()
 
 
+@pytest.mark.parametrize('code', [0, 7])
+def test_external_host_cli_reports_exit_with_unused_nullable_cleanup_slots(code):
+    old = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    assert prepared._run_host_cli([sys.executable, '-c', 'raise SystemExit(' + str(code) + ')']) == code
+    assert {number: signal.getsignal(number) for number in old} == old
+
+
+def test_external_host_cli_acquisition_failure_retains_primary_and_restores_handlers(monkeypatch):
+    failure = OSError('Popen failed')
+    def fail(*args, **kwargs):
+        raise failure
+    old = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    monkeypatch.setattr(prepared.subprocess, 'Popen', fail)
+    with pytest.raises(OSError) as caught:
+        prepared._run_host_cli(['unused'])
+    assert caught.value is failure
+    assert {number: signal.getsignal(number) for number in old} == old
+
+
+def test_external_host_cli_wait_failure_preserves_real_retirement_error_among_null_slots(monkeypatch):
+    primary, retired = OSError('first wait'), RuntimeError('retirement wait')
+    calls = []
+    class Child:
+        def wait(self):
+            calls.append('wait')
+            raise primary if len(calls) == 1 else retired
+        def poll(self):
+            return None
+        def send_signal(self, number):
+            calls.append('signal')
+    monkeypatch.setattr(prepared.subprocess, 'Popen', lambda command: Child())
+    with pytest.raises(OSError) as caught:
+        prepared._run_host_cli(['unused'])
+    assert caught.value is primary and primary.__cause__ is retired
+    assert calls == ['wait', 'signal', 'wait']
+    assert 'NoneType' not in ' '.join(primary.__notes__)
+
+
 def test_owned_external_host_interruption_drains_child_and_restores_handlers(tmp_path):
     ready, done = tmp_path/'ready', tmp_path/'done'
     code = ('import signal,time,pathlib,sys; '

@@ -20,6 +20,14 @@ change the user's selected precision or sampling policy.
 
 ## Private expert teacher CPU checks
 
+The Host/tool and installed-application cleanup transports accept nullable
+prepaid status slots. They select the first actual failure when no primary
+exists, preserve an existing primary and its native roots, and exclude only
+`None` from diagnostics/groups. Real failures remain observable after child
+retirement, cancellation and signal-handler restoration. The original C8 pilot's
+stack-policy admission failure remains a separate required fix; correcting
+cleanup transport does not authorize a model retry or relax that guard.
+
 The closed prepared-teacher component covers the incumbent plus 20 expert
 selectors in its P256/NONE region (decoder E24, expert preparation R32). CPU
 coverage validates the control protocol and complete conditional score reader;
@@ -1873,3 +1881,17 @@ or retention changes fail. Flash/BitBLAS external bundles are excluded: campaign
 staging is not a closed teacher asset/lifetime authority. ATen/Flash numerical
 families require their own explicit contract rather than a transport toggle.
 Native, installed-image and actual quality gates remain separate.
+
+
+### CAP40 effective stack bound
+
+The first Source32 reference pilot failed before model workers, HTTP POSTs or
+raw vectors because its client required effective soft and hard stack limits
+to equal the64MiB admission. An actual same-image/file-capability CPU probe found
+8MiB soft,64MiB hard and Python's default thread-stack policy before and after
+runtime imports. The client now requires a finite positive effective soft limit
+at most the unchanged64MiB hard limit and the default thread policy. Host DATA
+still declares64MiB soft/hard and pays64MiB for each of eight HTTP owners.
+This corrects an upper-bound check; it changes no model math, precision,
+forcing, vocabulary, scheduling or required output. The failed pilot remains
+failed, with no valid baseline/completion or quality result.

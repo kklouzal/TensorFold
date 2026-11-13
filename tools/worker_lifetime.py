@@ -62,14 +62,17 @@ class Task:
 
 
 def _raise_failures(primary, errors):
-    if primary is None and errors:
-        primary, errors = errors[0], errors[1:]
+    if primary is None:
+        for error in errors:
+            if error is not None:
+                primary = error
+                break
     if primary is None:
         return
     previous = (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary))
     others = []
     for error in errors:
-        if error is not primary and all(error is not previous for previous in others):
+        if error is not None and error is not primary and all(error is not previous for previous in others):
             others.append(error)
     annotations = []
     annotation_failed = False
@@ -108,11 +111,16 @@ def raise_failures(primary, errors):
     this traceback frame if cold annotation or grouping cannot allocate. Such
     a transport failure is the explicit cause; no successful grouping or
     continued retention after a caller clears traceback frames is promised.
+    Nullable prepaid slots represent successful/unattempted cleanup, not errors;
+    select the first real failure without filtering or replacing the sequence.
     """
     if primary is None:
-        if not errors:
+        for error in errors:
+            if error is not None:
+                primary = error
+                break
+        if primary is None:
             return
-        primary = errors[0]
     native_cause = BaseException.__cause__.__get__(primary)
     native_context = BaseException.__context__.__get__(primary)
     if native_cause is primary:

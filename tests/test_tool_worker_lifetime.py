@@ -27,6 +27,55 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 class Tasks(unittest.TestCase):
+    def test_nullable_slots_are_success_until_a_real_failure_is_present(self):
+        for empty in ([], [None], [None] * 5, (None, None)):
+            self.assertIsNone(raise_failures(None, empty))
+        first, second = OSError('first actual status'), RuntimeError('second actual status')
+        statuses = [None, first, None, second, None, first]
+        with self.assertRaises(OSError) as caught:
+            raise_failures(None, statuses)
+        self.assertIs(caught.exception, first)
+        self.assertIs(first.__cause__, second)
+        self.assertNotIn('NoneType', ' '.join(first.__notes__))
+        self.assertEqual(statuses, [None, first, None, second, None, first])
+
+    def test_nullable_slots_preserve_primary_and_every_distinct_native_failure(self):
+        primary, native, cleanup = KeyboardInterrupt('caller'), EOFError('native'), OSError('cleanup')
+        primary.__cause__ = native
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            raise_failures(primary, [None, cleanup, None, cleanup, primary, None])
+        self.assertIs(caught.exception, primary)
+        self.assertEqual(primary.__cause__.exceptions, (native, cleanup))
+        self.assertNotIn('NoneType', ' '.join(primary.__notes__))
+
+    def test_falsey_exception_is_not_a_success_slot(self):
+        class Falsey(OSError):
+            def __bool__(self):
+                raise AssertionError('status truthiness must not be consulted')
+        failure = Falsey()
+        with self.assertRaises(Falsey) as caught:
+            raise_failures(None, (None, failure, None))
+        self.assertIs(caught.exception, failure)
+
+    def test_nullable_group_exhaustion_retains_original_status_sequence(self):
+        first, second, third = KeyboardInterrupt('first'), OSError('second'), ValueError('third')
+        statuses, allocation = [None, first, None, second, third, None], MemoryError('group')
+        with patch.object(worker_lifetime, 'BaseExceptionGroup', side_effect=allocation, create=True):
+            try:
+                raise_failures(None, statuses)
+            except KeyboardInterrupt as caught:
+                # unittest.assertRaises clears the exception traceback at
+                # context exit; inspect retention while the failure is live.
+                self.assertIs(caught, first)
+                self.assertIs(first.__cause__, allocation)
+                frame = first.__traceback__
+                while frame is not None and frame.tb_frame.f_code.co_name != 'raise_failures':
+                    frame = frame.tb_next
+                self.assertIsNotNone(frame)
+                self.assertIs(frame.tb_frame.f_locals['errors'], statuses)
+            else:
+                self.fail('group exhaustion discarded the actual failure')
+
     def test_every_actual_callback_finishes_and_child_errors_observed(self):
         errors = [ValueError('first'),OSError('second'),RuntimeError('third')]
         complete = []

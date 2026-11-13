@@ -8,6 +8,47 @@ from tensorfold import cleanup
 
 
 class CleanupTransportTests(unittest.TestCase):
+    def test_nullable_slots_select_only_real_errors_without_changing_sequence(self):
+        self.assertIsNone(cleanup.raise_failures(None, [None] * 5))
+        first, second = OSError('first'), ValueError('second')
+        statuses = [None, first, None, second, first, None]
+        with self.assertRaises(OSError) as caught:
+            cleanup.raise_failures(None, statuses)
+        self.assertIs(caught.exception, first)
+        self.assertIs(first.__cause__, second)
+        self.assertNotIn('NoneType', ' '.join(first.__notes__))
+        self.assertEqual(statuses, [None, first, None, second, first, None])
+
+    def test_primary_with_only_nullable_slots_retains_original_native_cause(self):
+        primary, cause = KeyboardInterrupt(), OSError()
+        primary.__cause__ = cause
+        with self.assertRaises(KeyboardInterrupt) as caught:
+            cleanup.raise_failures(primary, (None, None))
+        self.assertIs(caught.exception, primary)
+        self.assertIs(primary.__cause__, cause)
+        self.assertFalse(hasattr(primary, '__notes__'))
+
+    def test_falsey_exception_remains_a_failure(self):
+        class Falsey(OSError):
+            def __bool__(self):
+                raise AssertionError('status truthiness must not be consulted')
+        failure = Falsey()
+        with self.assertRaises(Falsey) as caught:
+            cleanup.raise_failures(None, [None, failure, None])
+        self.assertIs(caught.exception, failure)
+
+    def test_nullable_group_failure_preserves_primary_and_all_real_statuses(self):
+        first, second, third = KeyboardInterrupt(), OSError(), ValueError()
+        statuses, allocation = [None, first, None, second, third, None], MemoryError()
+        with (
+            patch.object(cleanup, 'BaseExceptionGroup', side_effect=allocation, create=True),
+            self.assertRaises(KeyboardInterrupt) as caught,
+        ):
+            cleanup.raise_failures(None, statuses)
+        self.assertIs(caught.exception, first)
+        self.assertIs(first.__cause__, allocation)
+        self.assertEqual(first.__dict__['_tensorfold_retained_failures'], [second, third])
+
     def test_primary_and_distinct_native_roots_and_statuses_survive(self):
         primary, cause, context = KeyboardInterrupt(), ValueError(), EOFError()
         first, second = OSError(), RuntimeError()

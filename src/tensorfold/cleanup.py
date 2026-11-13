@@ -38,8 +38,11 @@ def raise_grouped(primary, causes):
 
 
 def _transport(primary, errors):
-    if primary is None and errors:
-        primary, errors = errors[0], errors[1:]
+    if primary is None:
+        for error in errors:
+            if error is not None:
+                primary = error
+                break
     if primary is None:
         return
     previous = (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary))
@@ -55,7 +58,7 @@ def _transport(primary, errors):
         raise primary from retention
     others = []
     for error in errors:
-        if error is not primary and all(error is not previous for previous in others):
+        if error is not None and error is not primary and all(error is not previous for previous in others):
             others.append(error)
     annotations = []
     annotation_failed = False
@@ -95,11 +98,16 @@ def raise_failures(primary, errors):
     retained-payload snapshots or group preparation itself cannot allocate.
     This fallback reports that distinct transport failure as the explicit
     cause; it does not promise allocation succeeds or a complete group forms.
+    Nullable prepaid slots are successful/unattempted statuses. The original
+    sequence remains retained while only actual failures enter diagnostics.
     """
     if primary is None:
-        if not errors:
+        for error in errors:
+            if error is not None:
+                primary = error
+                break
+        if primary is None:
             return
-        primary = errors[0]
     native_cause = BaseException.__cause__.__get__(primary)
     native_context = BaseException.__context__.__get__(primary)
     try:

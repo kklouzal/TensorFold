@@ -78,6 +78,11 @@ candidate uses explicit Q8_1 activation quantization; its output differences are
 measured separately from throughput. Stock MTP retains its original FP32 expert
 provider and defaults to depth4. Larger target verifier batches and optional
 candidate prefill use bounded32-row panels without reducing admitted concurrency.
+The finite teacher controller treats unused prepaid cleanup slots as successful
+statuses and preserves the original failure plus every real cleanup error.
+CPU lifetime and error controls cover this transport; model and quality
+qualification remain separate.
+
 The private closed teacher tooling now describes all 21 expert combinations and
 compares complete conditional score outputs through the guarded Host/driver
 lifecycle. Its versioned NUMA/CAP40 bridge binds the sealed policy, all 24
@@ -2983,6 +2988,10 @@ choices and keep paths. Native matching-image execution and model quality remain
 unverified; configured depth is distinct from observed proposal/graph coverage.
 Focused source CPU controls verify gold proposal continuation under deliberately
 wrong low-confidence samples and actual eight-State MTP staging IDs/coordinates.
+The first actual reference pilot stopped before POST at an exact stack-limit
+guard; the verified CAP40 runtime uses8MiB soft/64MiB hard. The correction
+accepts finite positive soft limits within the unchanged64MiB funded bound;
+actual quality capture remains pending.
 An explicit versioned RN12 preparation contract also describes the current
 observed-demand catalogue, router/sampling/coordinate/descriptor transport and
 Q8 grid/vendor numerical trials; source controls remain separate from native
