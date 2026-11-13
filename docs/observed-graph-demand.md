@@ -43,7 +43,7 @@ partial commits, valid local KV spans, compact indexer tails and pools. Only
 short valid prefixes and committed recurrence are copied to CPU; there are no
 full-window State clones or additional weights. A failure propagates to the
 existing caller's cohort/process containment; successful slots reset before
-admission. This gate is implemented but native execution remains pending.
+admission. The Source30 native execution below passed this gate on all eight ranks.
 It is a short-context component check, not qualification of all 24 windows,
 conditional model quality or P3 performance. The caller must retain its actual
 image/source/native identities and all eight returned rank receipts.
@@ -75,8 +75,7 @@ checks the unchanged default device floor. Capture-settlement allocator values
 retain their original startup timing. Both metadata trees and encoding bounds
 are admitted before Engine construction. Missing/declined keys, inconsistent
 charges, changed commitments or an insufficient fresh floor fail before the
-listener. This export is source implemented; actual all-eight-rank execution
-remains pending.
+listener. The Source30 result below includes actual all-eight-rank execution.
 
 `tools/v100_ragged_replay_gate.py` is the standalone host owner. Its closed
 `tensorfold.native-ragged-gate-operation-v1` DATA binds immutable source/image,
@@ -101,3 +100,58 @@ changes, missing rank evidence, acquisition/publication errors and removal
 failures remain nonzero outcomes. No benchmark, teacher, profiler, smoke or
 HTTP inference request is issued. Kernel-Xid collection uses the existing
 noninteractive host journal permission; an unavailable query fails visibly.
+
+## Source30 actual eight-rank component result
+
+The loaded SC117 component gate completed on all eight V100s with TP8/ETP4,
+Q8 KV, MTP4, 24 resident logical 262,144-token windows (262,149 physical rows
+including method guards), P256/E120, the default 4 GiB device floor and 2 GiB
+workspace. It used source `13e1ab6f`, immutable image
+`sha256:0ad2d11d26cc921f72c675d0e787b590c9da9de2ae3504bdd21c98ed290d6426`,
+frozen source UID `adcb9120776f501629560257c6b39b2d33fd3a880bcf2e5387af8711fc2edd1a`,
+and the separately frozen, reviewed standalone host controller. The image's
+887 CPU tests plus 38 subtests, all 848 installed members, FD owner, protected
+SDK and actual Triton 3.2 checks passed before this native run.
+
+Each rank passed both exact eager-versus-captured `(28,8)` layouts, reversing
+slots 7..0 and then using the overlapping reversed subset 9..2. This is 16
+case comparisons and 32 target/MTP role comparisons across the eight ranks.
+The source oracle checks logits, candidate packets, HC, committed recurrent
+state and valid cache/indexer prefixes, partial commits, MTP last-row maps and
+ordinary reset/generation reuse. All 24 State frontiers were clean afterward.
+The histories exercised here were short; allocating all full windows does
+not qualify near-limit history execution or full-context throughput.
+
+All ranks captured the original 30 keys plus verify/MTP `(28,8)`: 16 verify
+and 16 MTP keys, 272 pieces per rank, with no declines. The recorded graph
+charge was 1,182,793,728 bytes (1128 MiB), settled charge 1,180,696,576 bytes
+(1126 MiB), within the unchanged 1,503,076,308-byte AUTO grant. These are
+capture-settlement observations, not additive predictions for other catalogues.
+The oracle's global host obligation was 4,479,619,888 bytes, admitted before
+construction; it requested no additional device payload.
+
+Fresh post-probe CUDA samples on every rank reported 8,466,726,912 free bytes
+(8074.5 MiB), above the 4 GiB floor. Relative to the before-probe sample,
+allocated bytes were unchanged while reserved bytes increased by 20 MiB;
+the historical graph-settlement records remained unchanged. A separate host
+NVML observation, bounded by live-container checks after READY, reported
+8075 MiB free on each GPU. NVML's displayed MiB precision is separate from
+the CUDA byte samples; neither is an allocator or peak-memory timeline.
+
+The service reached idle READY with zero inference requests. All 24 NUMA
+receipts and eight distinct UID/GID1000, CapEff0 rank processes reconciled.
+The controller exited 0 in 308.4 seconds, with no OOM or cleanup error, removed
+its owned container and retained source/input identities. All eight GPUs'
+ECC/retired-page baseline and 48 links were unchanged, with no new Xids,
+link errors or remaining compute contexts. IPv6 localhost fallback warnings
+were retained; the host has IPv6 disabled and startup proceeded.
+
+Raw evidence is retained in the private
+`onecat-integration-20261113-v30/ragged-native-gate-model-v1` packet, with its
+separate post-READY NVML record and raw-output seal. Independent review
+reconciled the per-rank cases, capture records, samples and retirement.
+This functional run overlapped a CPU dependency build and supplies no P3
+or model-accuracy result. The separate legacy six-lane exact-output failure
+remains unresolved. Non-bucket MTP participant counts 3/5/6/7, other requested
+shapes, full-history behavior, conditional quality and matched regional
+performance still require their own evidence.

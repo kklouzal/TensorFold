@@ -2970,23 +2970,26 @@ The private `observed-demand-v1` exact-graph policy can request bounded
 ragged row totals and participant counts absent from the original 30-key
 catalogue. Cold preparation seeds real compact State segments; runtime State
 handoffs remain live. Default and `paid-subset-v1` catalogues are unchanged.
-Native replay, output quality, live budget fit and performance remain pending
-for the new shapes. See [demand capture](docs/observed-graph-demand.md).
+The Source30 loaded-model component gate passed both `(28,8)` layouts on all
+eight GPUs, with 24 full-context allocations and all 32 requested keys fitting
+the unchanged AUTO grant. Other shapes, full-history execution, conditional
+quality and performance remain pending. See [demand capture](docs/observed-graph-demand.md).
 
 A controlled [native ragged replay oracle](docs/observed-graph-demand.md)
 now compares actual `ExactStateGraphs` target/MTP `(28,8)` replay against eager
 execution on the same idle TP8 decoder using ordinary State reset/restaging and
-bounded short-prefix CPU references. Its native execution is pending; this
-adds no full-window, quality or performance qualification.
+bounded short-prefix CPU references. The Source30 all-eight-rank gate passed;
+this adds no full-history, model-quality or performance qualification.
 
 The private ragged component receipt now includes all eight ranks' bounded
 capture/settlement and full-window accounting through the existing per-rank
-oracle path, with separately timed quiescent CUDA samples. Source controls do
-not qualify an installed image or establish graph fit; native execution is pending.
+oracle path, with separately timed quiescent CUDA samples. The actual Source30
+gate retained all 32 keys within the original budget and passed its exact replay
+checks; broader shape, quality and performance gates remain open.
 
 The private [standalone ragged gate controller](tools/v100_ragged_replay_gate.py)
 uses the existing owned-container, NUMA and readiness procedures without an
 inference client, benchmark or observer mix. It requires a sealed operation,
 separately bound current-boot Root GO and the exact installed source/image.
-Host boundary checks do not qualify native replay; actual all-eight execution
-remains pending.
+Host boundary checks remain distinct from the recorded Source30 all-eight native
+component result. No inference client or throughput measurement ran in that gate.
