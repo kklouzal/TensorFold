@@ -194,6 +194,42 @@ decoded-tile CUDA passes qualify those integration gates.
 Outer exact graph pieces still keep owner attention as a live handoff; this
 family adds no padded State envelope or admission reduction.
 
+The optional private ATen tile selector
+`aten_tiles.query_layout: fixed12-head-as-query-lse-v1` keeps the same protected
+operator and numerical family. The default omits this field and retains native
+GQA. For checked Half `[B,1,12,256]` queries, one KV head and an explicit shared
+`[B,1,S]` selected-visible-key mask, the candidate views queries as
+`[B,12,1,256]` and the same aligned mask backing as `[B,1,12,S]` with zero row
+stride. K/V and logical batch/State/position ownership do not change. Other
+query/head/mask regimes retain the existing request; dropout remains zero,
+window/implicit causal masking remain absent, and the selected QSA mask still
+supplies actual visibility.
+
+The operator still computes LSE. Its `[B,1,32]` LSE allocation contributes only
+its first twelve query rows, remapped to `[B,12,1]`; padded entries never enter
+rank normalization. Half output views back to `[B,1,12,256]`, then the existing
+empty/nonfinite publication and ordered owner merge run unchanged. All retained
+arenas and original conservative temporary credit remain paid; no capacity or
+allocation-free claim is made. The layout binds the existing preparation and
+State numerical identity. This source candidate is not a transport toggle or
+an installation of the xFormers wheel. Native numerical/stream/capture,
+whole-model/MTP/quality, actual all-rank residency and matched P3 gates remain
+pending. The existing raw LSE mass-loss counterexample remains required.
+
+The maintained native gates in `tests/cuda/test_sm70_attention_backends.py` and
+`tests/cuda/test_sm70_aten_owner_attention.py` now include the original and
+fixed12 layouts. They retain the existing exact integer/uniform-value oracle
+and within-layout live-row bit contract, add singleton LSE head-order and
+future-poison QSA visibility checks, and record cross-layout random differences
+without a fitted tolerance. Capture/nondefault-stream and output storage checks
+remain component gates. Registered Q8 and codec10 decoded working operands are
+covered at the primitive boundary; this does not widen the Q8-only ATen owner
+to Iso4. The source/control preparation is unrun on GPU and requires a matching
+Source33 image plus the independently cleared G3 application admission contract.
+Run it through the existing closed `v100_native_contract_host.py` and driver
+with actual image/source/SDK/FD/native identities after a separate resource
+lease; historical component passes do not qualify these added cases.
+
 ## Private sealed Flash attention owner
 
 `flash-v100-q8-normalized-lse-owner-v1` is an explicit unqualified attention

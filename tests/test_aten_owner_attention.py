@@ -49,7 +49,8 @@ def test_owner_payload_forecast_has_one_authoritative_panel_peak():
         backend.TileSpec(panel, 1, 2051, 12, 1, .0625, masked=True))['known_peak_tensor_bytes']
 
 
-def test_fixed_panel_descriptors_and_query_loan_retire_before_reuse(monkeypatch):
+@pytest.mark.parametrize('query_layout', [None, backend.HEAD_QUERY_LAYOUT])
+def test_fixed_panel_descriptors_and_query_loan_retire_before_reuse(monkeypatch, query_layout):
     descriptors, calls = [], []
     class Primitive:
         def __init__(self, spec, device, budget, identity):
@@ -87,7 +88,9 @@ def test_fixed_panel_descriptors_and_query_loan_retire_before_reuse(monkeypatch)
         destination.copy_(send[None].expand_as(destination))
     owner = NS(rank=0, native_page_tokens=128, native_layer=torch.tensor([3], dtype=torch.int32),
                queries=q, gather_native=communicate)
-    tile = backend.OwnerTiles(rows, 2, 'cpu')
+    tile = backend.OwnerTiles(rows, 2, 'cpu', query_layout=query_layout)
+    assert all(item.spec.query_layout == query_layout for item in descriptors)
+    assert tile.record().get('query_layout') == query_layout
     before = len(descriptors)
     result = tile.run(owner, rows, views, 2051)
     assert torch.equal(result, torch.ones_like(result))
@@ -98,3 +101,51 @@ def test_fixed_panel_descriptors_and_query_loan_retire_before_reuse(monkeypatch)
         tile.run(owner, rows, views, 8)
     tile.close()
     assert tile.panels is tile.keys is tile.values is None
+
+
+def test_head_row_layout_is_explicit_private_attention_numeric_identity():
+    original = specification()
+    selected = specification(aten_tiles={**original['aten_tiles'], 'query_layout': backend.HEAD_QUERY_LAYOUT})
+    assert 'query_layout' not in preparation.parse_preparation(original)['aten_tiles']
+    reference = preparation.OwnerPreparation(original, role_rows={'decode':4,'mtp':4,'prefill':8}, manifest_sha256='a'*64)
+    trial = preparation.OwnerPreparation(selected, role_rows={'decode':4,'mtp':4,'prefill':8}, manifest_sha256='b'*64)
+    assert trial.numerical_selection['attention']['query_layout'] == backend.HEAD_QUERY_LAYOUT
+    assert 'query_layout' not in reference.numerical_selection['attention']
+    assert trial.aten_requirements == reference.aten_requirements
+    assert trial.additional_temporary_bytes == reference.additional_temporary_bytes
+    for value in [None, True, 'unknown', {}]:
+        with pytest.raises(ValueError):
+            preparation.parse_preparation(specification(aten_tiles={**original['aten_tiles'], 'query_layout':value}))
+    with pytest.raises(ValueError):
+        preparation.parse_preparation({**selected,'trial':False})
+
+
+@pytest.mark.parametrize('query_layout', [None, backend.HEAD_QUERY_LAYOUT])
+def test_native_owner_configuration_passes_only_explicit_aten_layout(monkeypatch, query_layout):
+    from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
+    captured = []
+    class Tiles:
+        def __init__(self, rows, panel_rows, device, **kwargs):
+            captured.append((rows, panel_rows, device, kwargs))
+    monkeypatch.setattr(backend, 'OwnerTiles', Tiles)
+    owner = object.__new__(OwnerBuffers)
+    owner._native_family_configured, owner.native_states, owner._native_pending = False, None, False
+    owner.rows, owner.heads, owner.head_dim, owner.prefill, owner.device = 4, 3, 256, True, 'cpu'
+    owner.native_pair = NS(key=NS(bits=8,codec=0),value=NS(bits=8,codec=0))
+    options = {} if query_layout is None else {'aten_query_layout':query_layout}
+    owner.configure_native_family(preparation.ATEN_KERNEL_FAMILY, aten_panel_rows=2, **options)
+    assert captured == [(4,2,'cpu',{} if query_layout is None else {'query_layout':query_layout})]
+    assert owner.native_kernel_family == preparation.ATEN_KERNEL_FAMILY and owner._native_family_configured
+
+
+def test_head_row_selector_does_not_admit_iso4_to_q8_owner(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
+    monkeypatch.setattr(backend, 'OwnerTiles', lambda *a, **k:pytest.fail('Iso4 entered a Q8 tile owner'))
+    owner = object.__new__(OwnerBuffers)
+    owner._native_family_configured, owner.native_states, owner._native_pending = False, None, False
+    owner.rows, owner.heads, owner.head_dim, owner.prefill, owner.device = 4, 3, 256, True, 'cpu'
+    owner.native_pair = NS(key=NS(bits=4,codec=10),value=NS(bits=4,codec=10))
+    with pytest.raises(ValueError, match='homogeneous original Q8'):
+        owner.configure_native_family(preparation.ATEN_KERNEL_FAMILY, aten_panel_rows=2,
+            aten_query_layout=backend.HEAD_QUERY_LAYOUT)
+    assert not owner._native_family_configured

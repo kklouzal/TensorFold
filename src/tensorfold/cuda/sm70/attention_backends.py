@@ -19,6 +19,8 @@ import sys
 POLICY = 'aten-cutlass-half-normalized-lse-v1'
 OWNER_FAMILY = 'aten-cutlass-q8-normalized-lse-owner-v1'
 OWNER_MAX_KEYS = 2051
+NATIVE_QUERY_LAYOUT = 'native-gqa-v1'
+HEAD_QUERY_LAYOUT = 'fixed12-head-as-query-lse-v1'
 _MAX_FLOAT32 = float.fromhex('0x1.fffffep+127')
 SCHEMA = (
     'aten::_efficient_attention_forward(Tensor query, Tensor key, Tensor value, Tensor? bias, '
@@ -39,13 +41,16 @@ class TileSpec:
     scale: float
     masked: bool = False
     head_dim: int = 256
+    query_layout: str | None = None
 
     def __post_init__(self):
         positive = (self.batch, self.query_rows, self.query_heads, self.kv_heads, self.head_dim)
         if (any(type(value) is not int or not 0 < value <= (1 << 31) - 1 for value in positive)
                 or type(self.key_rows) is not int or not 0 <= self.key_rows <= (1 << 31) - 1
                 or self.head_dim != 256 or self.query_heads % self.kv_heads
-                or type(self.masked) is not bool):
+                or type(self.masked) is not bool
+                or self.query_layout is not None and type(self.query_layout) is not str
+                or self.query_layout not in (None, NATIVE_QUERY_LAYOUT, HEAD_QUERY_LAYOUT)):
             raise ValueError('SM70 tile requires bounded BMHK head256 and divisible query/KV heads')
         if (type(self.scale) not in (float, int) or self.scale <= 0 or self.scale > _MAX_FLOAT32
                 or not math.isfinite(self.scale)):
@@ -53,6 +58,13 @@ class TileSpec:
         if max(self.batch * self.query_rows * self.query_heads * 256 * 4,
                self.batch * self.key_rows * self.kv_heads * 256 * 4) > sys.maxsize:
             raise OverflowError('decoded tile byte arithmetic exceeds the host address range')
+
+    @property
+    def heads_as_query_rows(self):
+        # The explicit mask is one selected-visible-key vector per logical
+        # query, shared by all12 heads. Other tile regimes keep native GQA.
+        return (self.query_layout == HEAD_QUERY_LAYOUT and self.query_rows == 1
+                and self.query_heads == 12 and self.kv_heads == 1 and self.masked)
 
 
 def tensor_requirements(spec):
@@ -63,6 +75,8 @@ def tensor_requirements(spec):
     Float32 output accumulator. Masked output publication can overlap these
     with one additional Half result and a compact Float32 LSE. Allocator/graph
     pool reservation and runtime-managed effects still require native evidence.
+    The optional fixed12 head-row layout keeps this original conservative
+    credit, including its larger native-GQA LSE padding; no fit credit is taken.
     """
     if type(spec) is not TileSpec:
         raise TypeError('actual immutable TileSpec required')
@@ -155,6 +169,7 @@ class Prepared:
                            torch.full((s.batch, s.query_heads, s.query_rows), -math.inf,
                                       dtype=torch.float32, device=self.device),
                            torch.zeros((s.batch, s.query_rows), dtype=torch.bool, device=self.device))
+        head_rows = s.heads_as_query_rows
         bias, valid_rows = None, None
         if s.masked:
             # The actual native bias ABI needs aligned row strides. Expanded
@@ -163,11 +178,22 @@ class Prepared:
             slab = torch.zeros((s.batch, s.query_rows, aligned), dtype=torch.float16, device=self.device)
             selected = slab[:, :, :s.key_rows]
             selected.masked_fill_(~valid_keys, -math.inf)
-            bias = selected[:, None].expand(s.batch, s.query_heads, s.query_rows, s.key_rows)
+            bias = selected[:, None].expand(
+                (s.batch, 1, s.query_heads, s.key_rows) if head_rows
+                else (s.batch, s.query_heads, s.query_rows, s.key_rows))
             valid_rows = valid_keys.any(dim=-1)
+        # Batch still identifies the original logical query/owner. Only its
+        # 12 heads become compute rows; no State row or causal position changes.
+        native_query = query.view(s.batch, 12, 1, 256) if head_rows else query
         output, lse, _seed, _offset, _max_q, _max_k = torch.ops.aten._efficient_attention_forward.default(
-            query, key, value, bias, None, None, None, None, 0.0, 0, True, scale=float(s.scale))
-        lse = lse[:, :, :s.query_rows]
+            native_query, key, value, bias, None, None, None, None, 0.0, 0, True, scale=float(s.scale))
+        if head_rows:
+            output = output.view(s.batch, 1, 12, 256)
+            # Native LSE is[B,1,32]: only the first12 query rows are heads.
+            # Padding is not a head and must never enter the rank-mass merge.
+            lse = lse[:, 0, :12].unsqueeze(-1)
+        else:
+            lse = lse[:, :, :s.query_rows]
         return Partial(output, lse, None) if valid_rows is None else _publish_masked(output, lse, valid_rows)
 
 
@@ -234,22 +260,24 @@ class OwnerTiles:
     ATen outputs are temporary allocations retained through their submitted
     copies; this path is not allocation-free or an incumbent numeric alias.
     """
-    def __init__(self, rows, panel_rows, device):
+    def __init__(self, rows, panel_rows, device, *, query_layout=None):
         import torch
 
         self.query = self.keys = self.values = self.valid = self.lse = self.panels = None
         self.closed = False
         self.rows, self.device = rows, torch.device(device)
+        self.query_layout = query_layout
         self.requirements = owner_requirements(rows, panel_rows)
         self.panel_rows = self.requirements['panel_rows']
-        template = TileSpec(self.panel_rows, 1, OWNER_MAX_KEYS, 12, 1, .0625, masked=True)
+        template = TileSpec(self.panel_rows, 1, OWNER_MAX_KEYS, 12, 1, .0625,
+                            masked=True, query_layout=query_layout)
         self.primitive = prepare(template, device=self.device,
                                  device_budget_bytes=self.requirements['operator_temporary_bytes'])
         # The owner family fixes key capacity2051. Per-count metadata is cold,
         # bounded and immutable; no serving-time descriptor construction or
         # context-dependent online-softmax tiling is introduced.
         self.panels = tuple([None] + [Prepared(
-            TileSpec(count, 1, OWNER_MAX_KEYS, 12, 1, .0625, masked=True), self.device,
+            TileSpec(count, 1, OWNER_MAX_KEYS, 12, 1, .0625, masked=True, query_layout=query_layout), self.device,
             self.primitive.device_budget_bytes, self.primitive.identity)
             for count in range(1, self.panel_rows + 1)])
         self.query = torch.empty((rows, 1, 12, 256), dtype=torch.float16, device=self.device)
@@ -292,6 +320,7 @@ class OwnerTiles:
 
     def record(self):
         return {'family': OWNER_FAMILY, 'requirements': dict(self.requirements),
+                **({'query_layout': self.query_layout} if self.query_layout is not None else {}),
                 'operator': dict(self.primitive.identity), 'closed': self.closed,
                 'numeric_contract': 'Half normalized local values and natural-log LSE; ordered FP32 rank weights/merge',
                 'key_capacity_policy': 'fixed2051 masked keys; no context-dependent shape or row dispatch',

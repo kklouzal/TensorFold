@@ -109,7 +109,11 @@ def parse_preparation(value):
     aten = value['kernel_family'] == ATEN_KERNEL_FAMILY
     tiles = value.get('aten_tiles')
     if aten:
-        if (type(tiles) is not dict or set(tiles) != {'panel_rows', 'tensor_budget_bytes'}
+        from tensorfold.cuda.sm70.attention_backends import HEAD_QUERY_LAYOUT, NATIVE_QUERY_LAYOUT
+        if (type(tiles) is not dict or not {'panel_rows', 'tensor_budget_bytes'} <= set(tiles)
+                or set(tiles).difference({'panel_rows', 'tensor_budget_bytes', 'query_layout'})
+                or 'query_layout' in tiles and (type(tiles['query_layout']) is not str
+                    or tiles['query_layout'] not in (NATIVE_QUERY_LAYOUT, HEAD_QUERY_LAYOUT))
                 or type(tiles['panel_rows']) is not int or not 1 <= tiles['panel_rows'] <= 256
                 or type(tiles['tensor_budget_bytes']) is not int or not 0 < tiles['tensor_budget_bytes'] < 2**63
                 or not value['trial'] or value['graph_family'] != UNCAPTURED or request is not None):
@@ -484,6 +488,9 @@ class OwnerPreparation:
                            if self.specification.get('owned_q8_window_dispatch') == 'grid-v1' and role != 'prefill' else {}),
                         **({'aten_panel_rows': self.specification['aten_tiles']['panel_rows']}
                            if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY else {}),
+                        **({'aten_query_layout': self.specification['aten_tiles']['query_layout']}
+                           if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY
+                           and 'query_layout' in self.specification['aten_tiles'] else {}),
                         **({'flash_artifact': self.flash_artifact,
                             'flash_panel_rows': self.flash_request.panel_rows,
                             'flash_tensor_budget_bytes': self.flash_requirements[role]['persistent_bytes']}
@@ -675,6 +682,8 @@ class OwnerPreparation:
         if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS, POLICY
             selected['attention'] = {'family': ATEN_KERNEL_FAMILY, 'operator': POLICY,
+                **({'query_layout': self.specification['aten_tiles']['query_layout']}
+                   if 'query_layout' in self.specification['aten_tiles'] else {}),
                 'max_keys': OWNER_MAX_KEYS, 'panel_rows': self.specification['aten_tiles']['panel_rows'],
                 'key_capacity_policy': 'fixed2051-mask-v1', 'local_output': 'normalized-half',
                 'global_merge': 'ordered-float-lse-weights-v1'}

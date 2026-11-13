@@ -865,7 +865,7 @@ class OwnerBuffers:
                 ring.fail(error)
                 raise
 
-    def configure_native_family(self, family, heads_per_block=None, *, aten_panel_rows=None,
+    def configure_native_family(self, family, heads_per_block=None, *, aten_panel_rows=None, aten_query_layout=None,
                                 flash_artifact=None, flash_panel_rows=None, flash_tensor_budget_bytes=None,
                                 owned_q8_window_prepare=False, owned_q8_window_role=None,
                                 owned_q8_window_dispatch=None):
@@ -889,7 +889,7 @@ class OwnerBuffers:
             raise ValueError("native numerical family requires its exact prepared head geometry")
         if family == FLASH_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import FlashOwnerTiles
-            if (flash_artifact is None or aten_panel_rows is not None or self.native_pair is None
+            if (flash_artifact is None or aten_panel_rows is not None or aten_query_layout is not None or self.native_pair is None
                     or (self.native_pair.key.bits, self.native_pair.key.codec,
                         self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
                 raise ValueError('Flash owner tiles require the explicit sealed original Q8 profile')
@@ -904,8 +904,9 @@ class OwnerBuffers:
                     self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
                 raise ValueError('ATen owner tiles require the explicit homogeneous original Q8 profile')
             self.aten_tiles = object.__new__(OwnerTiles)  # Own partial allocation before effects.
-            self.aten_tiles.__init__(self.rows, aten_panel_rows, self.device)
-        elif aten_panel_rows is not None:
+            self.aten_tiles.__init__(self.rows, aten_panel_rows, self.device,
+                **({'query_layout': aten_query_layout} if aten_query_layout is not None else {}))
+        elif aten_panel_rows is not None or aten_query_layout is not None:
             raise ValueError('ATen panels require their explicit numerical owner family')
         if family == RN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.paged_attention import rn_probability_bytes

@@ -119,7 +119,7 @@ def test_bound_nondefault_ffi_scope_restores_after_success_or_launch_failure(mon
 
 
 @pytest.mark.parametrize("ffi",["0.1.10","0.1.15","0.1.16","0.1.17","0.2.0"])
-def test_compiler_admits_only_verified_ffi_before_stream_api_use(tmp_path,monkeypatch,ffi):
+def test_compiler_refuses_unknown_ffi_or_unattested_tilelang_before_stream_api_use(tmp_path,monkeypatch,ffi):
     """Dependency-only control; mock toolkit metadata, never execute a compiler."""
     from types import SimpleNamespace
 
@@ -141,7 +141,7 @@ def test_compiler_admits_only_verified_ffi_before_stream_api_use(tmp_path,monkey
     monkeypatch.setattr(g3.importlib.metadata,"requires",requires)
     compiler=g3.Compiler(str(tmp_path),hashlib.sha256(nvcc.read_bytes()).hexdigest())
     if ffi=="0.1.16":
-        with pytest.raises(DependencyInspectionReached):
+        with pytest.raises(RuntimeError,match="explicit owned artifact"):
             compiler.inspect()
     else:
         with pytest.raises(RuntimeError,match="apache-tvm-ffi==0.1.16"):

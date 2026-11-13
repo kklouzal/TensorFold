@@ -21,6 +21,8 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from .gdn_chunk64_artifact import OwnedArtifact
+
 
 @dataclass(frozen=True)
 class Layout:
@@ -50,8 +52,9 @@ class Compiler:
     """
     cuda_home: str
     nvcc_sha256: str
+    owned_artifact: OwnedArtifact | None = None
 
-    def inspect(self):
+    def _nvcc(self):
         import hashlib
         import os
         home = Path(self.cuda_home).resolve(strict=True)
@@ -66,22 +69,12 @@ class Compiler:
                                  text=True, timeout=15).stdout
         if "release 12.9," not in version:
             raise RuntimeError("G3 initial trial requires protected CUDA12.9")
-        packages = {name: importlib.metadata.version(name)
-                    for name in ("tilelang", "apache-tvm-ffi", "torch", "triton")}
-        if packages["tilelang"] != "0.1.10" or packages["triton"] != "3.2.0":
-            raise RuntimeError("G3 requires scoped TileLang0.1.10 and retained Triton3.2.0")
-        if packages["apache-tvm-ffi"] != "0.1.16":
-            raise RuntimeError("G3 scoped stream API requires verified apache-tvm-ffi==0.1.16")
-        from packaging.requirements import Requirement
-        requirements = []
-        for text in importlib.metadata.requires("tilelang") or ():
-            requirement = Requirement(text)
-            if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
-                continue
-            installed = importlib.metadata.version(requirement.name)
-            if not requirement.specifier.contains(installed):
-                raise RuntimeError(f"G3 TileLang base requirement is unsatisfied: {text}; installed {installed}")
-            requirements.append({"requirement": text, "installed": installed})
+        return {"cuda_home": str(home), "nvcc_sha256": self.nvcc_sha256, "nvcc_version": version}
+
+    @staticmethod
+    def _headers():
+        import os
+
         from .foundation_headers import selected_headers
         selected = selected_headers()
         if selected is None:
@@ -95,13 +88,50 @@ class Compiler:
         configured = os.environ.get("TL_CUTLASS_PATH")
         if not configured or Path(configured).resolve() != cutlass[0].resolve():
             raise RuntimeError("G3 TL_CUTLASS_PATH must select protected CUTLASS before TileLang import")
+        return headers, str(cutlass[0]), str(cccl[0])
+
+    def environment(self):
+        """Metadata-only compiler/header descriptor for the attestation producer."""
+        nvcc = self._nvcc()
+        headers, _, _ = self._headers()
+        return {key: nvcc[key] for key in ("cuda_home", "nvcc_sha256")} | {"headers": headers}
+
+    def inspect(self):
+        nvcc = self._nvcc()
+        packages = {name: importlib.metadata.version(name)
+                    for name in ("tilelang", "apache-tvm-ffi", "torch", "triton")}
+        if packages["triton"] != "3.2.0":
+            raise RuntimeError("G3 requires retained Triton3.2.0")
+        if packages["apache-tvm-ffi"] != "0.1.16":
+            raise RuntimeError("G3 scoped stream API requires verified apache-tvm-ffi==0.1.16")
+        # The unpatched public0.1.10/FFI0.1.16 combination actually aborted at
+        # import. No version string, including that historical default, proves
+        # patched ownership. Exact externally selected artifact evidence must
+        # precede every TileLang import; unknown/unattested builds stay closed.
+        if self.owned_artifact is None:
+            raise RuntimeError("G3 TileLang requires an explicit owned artifact attestation; "
+                               "unpatched TileLang0.1.10/FFI0.1.16 is not admitted")
+        if type(self.owned_artifact) is not OwnedArtifact:
+            raise TypeError("G3 requires its closed owned artifact identity")
+        headers, cutlass, cccl = self._headers()
+        environment = {key: nvcc[key] for key in ("cuda_home", "nvcc_sha256")} | {"headers": headers}
+        owned = self.owned_artifact.inspect(environment, packages)
+        from packaging.requirements import Requirement
+        requirements = []
+        for text in importlib.metadata.requires("tilelang") or ():
+            requirement = Requirement(text)
+            if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+                continue
+            installed = importlib.metadata.version(requirement.name)
+            if not requirement.specifier.contains(installed):
+                raise RuntimeError(f"G3 TileLang base requirement is unsatisfied: {text}; installed {installed}")
+            requirements.append({"requirement": text, "installed": installed})
         import sys
         if any(name == "flash_qla" or name.startswith("flash_qla.") for name in sys.modules):
             raise RuntimeError("G3 dedicated process must not import the upstream compiler override")
         return {"tilelang_base_requirements": requirements, "packages": packages,
-                "cuda_home": str(home), "nvcc_sha256": self.nvcc_sha256,
-                "nvcc_version": version, "headers": headers,
-                "cutlass_root": str(cutlass[0]), "cccl_root": str(cccl[0]),
+                **nvcc, "headers": headers, "owned_artifact": owned,
+                "cutlass_root": cutlass, "cccl_root": cccl,
                 "target": "cuda -arch=sm_70", "execution_backend": "tvm_ffi"}
 
 
@@ -211,9 +241,14 @@ def prepare(rows, device, *, workspace_budget_bytes, compiler, cuts=()):
         import tilelang
         import tvm_ffi
         from tilelang.env import CUDA_HOME, CUTLASS_INCLUDE_DIR
+        from tilelang.env import env as tilelang_environment
         if (Path(CUTLASS_INCLUDE_DIR).resolve() != Path(report["cutlass_root"]).resolve()
-                or Path(CUDA_HOME).resolve() != Path(report["cuda_home"]).resolve()):
+                or Path(CUDA_HOME).resolve() != Path(report["cuda_home"]).resolve()
+                or Path(tilelang_environment.TILELANG_CACHE_DIR) != Path(report["owned_artifact"]["cache_directory"])
+                or Path(tilelang_environment.TILELANG_TMP_DIR) != Path(report["owned_artifact"]["temporary_directory"])):
             raise RuntimeError("G3 TileLang imported a different compiler/header binding")
+        from .gdn_chunk64_artifact import loaded_compiler
+        report["owned_artifact"]["loaded_compiler"] = loaded_compiler(report["owned_artifact"])
         from . import gdn_chunk64_kernels as kernels
 
         def compile_kernel(generator, *args, **kwargs):

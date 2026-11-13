@@ -31,6 +31,14 @@ preserved V100 trials, research drafts and known unfinished comparison controls.
 Their inclusion on `python-0.6` preserves ongoing development; combined target
 qualification remains separate from the qualified production images.
 
+The GDN chunk64 compiler now requires an explicit immutable owned-TileLang
+attestation, retained wheel and cold hashing credit. It verifies the installed
+package members, protected FFI0.1.16, compiler/header identity and a dedicated
+cache namespace before TileLang import. The unpatched public0.1.10/FFI0.1.16
+tuple is refused after its observed import abort. This is source-level identity
+admission; an actual owned build, matching derived application image and native
+component qualification remain pending. See the [artifact contract](docs/gdn-chunk64-component.md#owned-artifact-admission).
+
 The eight-V100 deployment now requires a sealed NUMA placement plan and a
 worker seccomp profile derived from the running Docker default. Each rank binds
 CPU cores and host-memory allocation to its GPU's PCI-local node before exec of
@@ -131,6 +139,16 @@ temporaries require explicit admission. On the owned CUDA12.9 SDK and V100,
 changed-KV/mask graph replay and a live-row bit-invariance fixture. TP8 owner
 transport, model/MTP, quality, capacity and performance remain pending. See
 [validation scope](docs/optimization-validation.md#private-aten-normalized-attention-owner).
+
+An optional `aten_tiles.query_layout: fixed12-head-as-query-lse-v1` private trial
+views each packed query's twelve heads as compute rows in that same ATen
+operator. It retains required LSE, the shared visible-key mask, empty/nonfinite
+publication and conservative resource credit. Other tile regimes keep native
+GQA. It is a separate numerical layout selection with native/model/quality/P3
+qualification pending; no new library or provider is introduced.
+Its maintained native controls now cover both layouts, shared QSA visibility,
+LSE head order, streams/capture and decoded codec operands. These added controls
+remain unrun on GPU; the ATen owner retains its Q8-only admission contract.
 
 The explicit private `flash-v100-q8-normalized-lse-owner-v1` trial now has typed
 preparation and sealed campaign staging. `flash_tiles` binds a panel size,

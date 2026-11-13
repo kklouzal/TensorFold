@@ -32,7 +32,8 @@ no unverified replay/version-counter guarantee is implied.
 `prepare(rows, device, workspace_budget_bytes=..., compiler=Compiler(...))`
 is cold, outside capture. It requires the protected CUDA12.9 nvcc path/hash,
 preconfigured CUDA_HOME/PATH and TL_CUTLASS_PATH selecting the protected
-CUTLASS4.8.1 include root, scoped TileLang0.1.10, verified FFI0.1.16 and
+CUTLASS4.8.1 include root, an explicitly attested owned TileLang artifact,
+verified protected FFI0.1.16 and
 preserved Triton3.2.0.
 It records and checks installed TileLang base requirements without installing
 anything. It does not import vLLM/FlashQLA, change global compiler callbacks,
@@ -120,6 +121,84 @@ Its base metadata requires FFI `>=0.1.10,~=0.1.0`, so the owned FFI0.1.16 is
 metadata-admissible; it does not require Triton or CUDA13. The optional `nvcc`
 extra requires CUDA13 and is outside this trial. Tensor/FFI integration with the
 owned Torch2.16 developer build still requires actual component execution.
+
+## Owned artifact admission
+
+The unpatched public TileLang0.1.10 with the protected FFI0.1.16 actually aborted
+while importing its embedded TVM reflection registrations. Metadata dependency
+compatibility did not establish runtime compatibility. `Compiler.inspect()`
+now refuses that unattested tuple and every other unattested version before
+TileLang import. The existing two compiler arguments and trial invocation
+surface remain; there is no automatic version-prefix admission or FFI downgrade.
+An actual owned wheel/version is not yet established by this source change.
+
+`Compiler` accepts an explicit `OwnedArtifact` selection: immutable attestation
+path, exact metadata byte count/SHA256, retained owned-wheel path and aggregate
+hash-byte credit. The metadata envelope is at most16MiB. One cold inspection
+hashes the wheel and all declared owned/FFI installed members; the caller funds
+their measured sum, separately from metadata, existing SDK/header inspection
+and compiler/runtime/allocator memory. No guessed wheel size or version is
+supplied. Package contents exclude wheel `RECORD` and runtime bytecode; package
+extra/missing files and symlinks are refused. The exact protected FFI wheel,
+256-member inventory and core remain fixed to the observed0.1.16 foundation.
+
+The closed schema `tensorfold.g3-owned-tilelang-attestation-v1` has exactly:
+
+- `source_pins`: actual TileLang, TVM, build-header FFI, DLPack, libbacktrace,
+  CUTLASS and composable-kernel commits.
+- `build`: actual proposal/archive SHA256 and successful build image ID, observed
+  externally by the build controller.
+- `tilelang` and `protected_ffi`: exact metadata version, wheel bytes/SHA256 and
+  complete relative installed-member bytes/SHA256.
+- `compiler_environment`: the existing verified `cuda_home`, `nvcc_sha256` and
+  selected-header descriptor, obtained without importing TileLang through
+  `Compiler.environment()`.
+- `evidence`: exact maintained producer hash and the successful postbuild audit,
+  TileLang-first and FFI/Torch-first receipt identities.
+- `schema` and `qualification: artifact-identity-only`.
+
+An external SHA256 selection is administrator authority, not a signature or
+proof of numerical quality. The producer must first establish the actual
+successful build, all three postbuild outcomes, immutable sources and positive
+retirement. The maintained trial helper's `attest-owned` mode accepts the bounded
+immutable candidate DATA through `--input`, `--input-bytes`, `--input-sha256`
+and a new `--output`. It uses the same closed parser and requires its own actual
+source hash in `evidence.producer`; it performs structural normalization only,
+preserves existing files, and reports the minimum hashing credit and derived
+cache namespace. It does not manufacture or validate successful import receipts.
+
+The native trial adds five paired flags:
+`--owned-tilelang-attestation`, `--owned-attestation-bytes`,
+`--owned-attestation-sha256`, `--owned-tilelang-wheel` and
+`--owned-hash-byte-credit`. Their absence produces a clean identity-admission
+failure before operand allocation or TileLang import. The launcher must
+preselect `TILELANG_CACHE_DIR` with the reported identity namespace as its leaf;
+an explicit `TILELANG_TMP_DIR` must stay inside that namespace. The key binds
+the complete attestation and actual compiler/header descriptor. Code does not
+rewrite environment variables or callbacks. Actual imported compiler/header/
+cache settings are checked again before compilation. Both package descendants
+and the top-level bundled TVM must have verified Python origins. TVM Python and
+library-path overrides may select only the attested trees. Existing foreign
+TileLang/TVM/FFI mappings fail before TileLang import; compilation additionally
+requires the exact mapped TileLang, TVM runtime/compiler and protected FFI
+libraries. Installed packages, wheel and cache ownership remain
+immutable/exclusive for the dedicated component lifetime.
+
+The compiler report retains the admitted identity, source/build provenance,
+hashing credit and cache namespace. Controlled CPU fixtures exercise this
+contract without qualifying a real owned wheel. Changes to the application
+consumer require a matching derived image/source gate; old installed code or
+the failed upstream purpose image cannot qualify this new path. Actual owned
+artifact admission, generated SM70 code, stream/math/state and model/quality/P3
+gates remain pending.
+
+The focused source-overlay gate passed61 controlled CPU cases in0.70s on the
+genuine Source30 SDK/application image `0ad2d11d`, with its installed FD
+extension, UID1000,2CPU/4GiB, runc/VOID and no network. TileLang remained
+unimported and CUDA unavailable. Scoped Ruff and whitespace checks pass;
+source hashes held and the check containers were inspected and
+removed. These fixtures validate the identity/credit/origin/error boundaries;
+they are not an actual owned artifact or compiler/native result.
 The bundled CUTLASS4.1.0 is not adopted: the configured selected4.8.1 headers
 must compile successfully. No dependency lock or shipping image is changed.
 
@@ -162,13 +241,15 @@ The [prefill integration design](gdn-chunk64-prefill-integration.md) defines the
 raw-log/qk/beta producer, epilogue, row-capacity and prefix-cut/alternate-bank
 work still needed before an ordinary serving hook.
 
-The compiler admission explicitly requires `apache-tvm-ffi==0.1.16` before
+The earlier stream admission explicitly required `apache-tvm-ffi==0.1.16` before
 using its stream API. TileLang's broader base dependency floor establishes
 package compatibility, not a verified stream contract for every allowed FFI
 version. Other FFI versions are refused; no SDK patch or dependency install is
-performed by this guard. A focused mocked-toolkit control checks rejection of
+performed by this guard. At that checkpoint a mocked-toolkit control checked rejection of
 0.1.10/0.1.15/0.1.17/0.2.0 and progression to remaining dependency inspection
-for0.1.16; it does not claim actual compiler admission.
+for0.1.16; it did not establish actual compiler admission. The owned-artifact
+guard above now additionally requires complete explicit identity evidence
+before that dependency inspection can continue.
 
 The five new version controls passed in0.37s in the genuine Source25 SDK image
 with the isolated source overlay (UID1000,2CPU/4GiB,Node1,runc/NVIDIAvoid/netnone);

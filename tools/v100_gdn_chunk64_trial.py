@@ -7,6 +7,7 @@ not constitute numerical acceptance: this new mode has no authorized tolerance.
 import argparse
 import hashlib
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -115,14 +116,19 @@ def nondefault_stream_trial(args, compiler, progress):
 
 
 def run(args, progress):
-    import torch
-
     from tensorfold.cuda.sm70.gdn_chunk64 import Compiler, layout, prepare
-    compiler=Compiler(args.cuda_home,args.nvcc_sha256)
+    from tensorfold.cuda.sm70.gdn_chunk64_artifact import OwnedArtifact
+    owned=(OwnedArtifact(str(args.owned_tilelang_attestation),args.owned_attestation_bytes,
+                         args.owned_attestation_sha256,str(args.owned_tilelang_wheel),args.owned_hash_byte_credit)
+           if args.owned_tilelang_attestation is not None else None)
+    compiler=Compiler(args.cuda_home,args.nvcc_sha256,owned)
     import tensorfold.cuda.sm70.gdn_chunk64 as component
     root=Path(component.__file__).parent
     progress["source_inputs"]={name:hashlib.sha256((root/name).read_bytes()).hexdigest()
-                              for name in ("gdn_chunk64.py","gdn_chunk64_kernels.py","gdn_chunk64_provenance.json")}
+                              for name in ("gdn_chunk64.py","gdn_chunk64_artifact.py",
+                                           "gdn_chunk64_kernels.py","gdn_chunk64_provenance.json")}
+    progress["compiler_admission"]=compiler.inspect()
+    import torch
     torch.cuda.set_device(args.device)
     torch.manual_seed(20261113)
     results=progress["results"]
@@ -207,14 +213,45 @@ def run(args, progress):
             "nondefault_stream":stream_result,"torch":torch.__version__,"seed":20261113,"source_inputs":progress["source_inputs"],"results":results}
 
 
-def main():
+def normalize_attestation(argv):
+    """One shared structural schema, fed only actual verified producer DATA."""
+    from tensorfold.cuda.sm70.gdn_chunk64_artifact import publish, read_attestation
+    parser=argparse.ArgumentParser(description="Normalize owned artifact DATA; no artifact or GPU admission")
+    parser.add_argument("--input",type=Path,required=True)
+    parser.add_argument("--input-bytes",type=int,required=True)
+    parser.add_argument("--input-sha256",required=True)
+    parser.add_argument("--output",type=Path,required=True)
+    args=parser.parse_args(argv)
+    value=read_attestation(args.input,args.input_bytes,args.input_sha256)
+    if value["evidence"]["producer"]["sha256"]!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest():
+        raise ValueError("G3 attestation must name this exact maintained normalization producer")
+    result=publish(args.output,value)
+    print(json.dumps(result,sort_keys=True))
+    return result
+
+
+def main(argv=None):
+    argv=list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0]=="attest-owned":
+        return normalize_attestation(argv[1:])
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cuda-home",required=True)
     p.add_argument("--nvcc-sha256",required=True)
     p.add_argument("--device",default="cuda:0")
     p.add_argument("--output",type=Path,required=True)
     p.add_argument("--stream-trace-output",type=Path,required=True)
-    args=p.parse_args()
+    p.add_argument("--owned-tilelang-attestation",type=Path,
+                   help="Explicit immutable postbuild attestation; unattested TileLang is refused before import")
+    p.add_argument("--owned-attestation-bytes",type=int,help="Exact attestation metadata byte credit (at most16MiB)")
+    p.add_argument("--owned-attestation-sha256",help="Externally selected actual attestation SHA256")
+    p.add_argument("--owned-tilelang-wheel",type=Path,help="Actual retained owned wheel whose bytes must match")
+    p.add_argument("--owned-hash-byte-credit",type=int,
+                   help="Byte credit per cold inspection for wheel + owned/protected-FFI installed members")
+    args=p.parse_args(argv)
+    selections=(args.owned_tilelang_attestation,args.owned_attestation_bytes,args.owned_attestation_sha256,
+                args.owned_tilelang_wheel,args.owned_hash_byte_credit)
+    if any(value is not None for value in selections) and any(value is None for value in selections):
+        p.error("owned TileLang admission requires all five explicit artifact/credit fields")
     if args.stream_trace_output.resolve()==args.output.resolve() or args.stream_trace_output.exists():
         p.error("stream trace requires its own unused output path")
     if args.output.exists():
