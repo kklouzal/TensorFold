@@ -360,3 +360,26 @@ def test_unavailable_value8_capture_refuses_before_backend_or_allocation(monkeyp
     with pytest.raises(ValueError, match='Value8'):
         prepared.prepare(engine, text, NS(identity='q8'), page_tokens=128, device='cpu')
     assert prepared.before is None and prepared.workspaces == {}
+
+
+@pytest.mark.parametrize('mask', range(8))
+def test_native_family_q8_windows_and_prepared_panels_select_independently(mask):
+    from tensorfold.cuda.sm70 import owned_family
+    from tensorfold.families.qwen4_exp.cuda import padded_linears
+
+    value = dict(kernel_family=preparation.RN_KERNEL_FAMILY, rn_heads_per_block=12,
+                 graph_family=preparation.UNCAPTURED, graph_budget_bytes=0, trial=True)
+    expected = set()
+    if mask & 1:
+        value['native_family'] = owned_family.POLICY
+        expected.add('native_family')
+    if mask & 2:
+        value['owned_q8_window_prepare'] = True
+        expected.add('owned_q8_window_preparation')
+    if mask & 4:
+        value['prepared_linears'] = padded_linears.OWNED_POLICY
+        expected.add('prepared_linears')
+    selected = preparation.OwnerPreparation(value,
+        role_rows={'decode': 120, 'mtp': 120, 'prefill': 256}, manifest_sha256='a' * 64)
+    assert set(selected.numerical_selection or {}) == expected
+    assert preparation.parse_preparation(selected.specification) == selected.specification

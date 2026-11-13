@@ -1109,6 +1109,54 @@ def prepare_owned_q8(device):
     return module
 
 
+def owned_q8_prepare_window(module, projection, coordinates, weights, cache, state, layer, query, iq, *,
+                            frequency, sections, amplitude, start):
+    """Bounded window using the unchanged one-row native operator/current stream.
+
+    Issued contiguous row views need no materialization. Raw IK is guarded once
+    and stays with the caller's one compact-indexer transaction. Version counters
+    describe the reference window publications, not the number of native launches.
+    """
+    outputs = (query, iq, cache.k, cache.v, cache.ks, cache.vs, state.kv_status)
+    if (torch.is_grad_enabled() or any(t.requires_grad for t in (projection, *outputs))
+            or (not torch.is_inference_mode_enabled() and any(t.is_inference() for t in outputs))):
+        return None
+    c, a = weights.cfg, layer.attn
+    if any(t.requires_grad for t in (a.q_scale, a.k_scale, a.iq_scale, frequency)):
+        return None
+    rows = projection.shape[0]
+    if (projection.ndim != 2 or not 1 <= rows <= 256 or coordinates.shape != (rows, 3)
+            or query.shape != (rows, c.heads, c.head_dim)
+            or iq.shape != (rows, c.index_heads, c.index_dim)):
+        raise ValueError('owned Q8 window requires bounded issued coordinate rows')
+    # Validate the whole logical range before the first launch/publication.
+    spans = tuple(cache._spans(start, rows))
+    if any(not t.is_contiguous() for t in (projection, coordinates, query, iq)):
+        raise ValueError('owned Q8 window requires contiguous row views')
+    # The one-row binding cannot detect a write to a *later* row's input.
+    # Check full-window aliases before any row mutates; no tensor data is read.
+    reads = (projection, coordinates, a.q_scale, a.k_scale, a.iq_scale, frequency,
+             cache.page_offsets, state.history_generations)
+    for index, output in enumerate(outputs):
+        if any(torch._C._overlaps(output, other) for other in (*reads, *outputs[:index])):
+            raise ValueError('owned Q8 window operands must be separately owned')
+    at = 2 * c.heads * c.head_dim + 2 * c.head_dim + c.index_heads * c.index_dim
+    ik = _guard(projection[:, at:at + c.index_dim], state.kv_status, 16, layer.index)
+    for row in range(rows):
+        module.owned_q8_prepare(projection[row:row + 1], coordinates[row:row + 1],
+            a.q_scale, a.k_scale, a.iq_scale, frequency, query[row:row + 1], iq[row:row + 1],
+            cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets,
+            state.history_generations, state.kv_status, state.slot_generation, state.history_generation,
+            start + row, cache.logical_capacity, cache.capacity, cache.placement.page_tokens, layer.index,
+            c.heads, c.index_heads, c.index_dim, c.eps, amplitude, sections[1], sections[2])
+    # Reference: eight guards (16 status writes) and two quantizer status pairs
+    # (4), independent of rows. The raw-IK guard above already published two.
+    mutations = (query, iq) + (state.kv_status,) * 18
+    mutations += (cache.k, cache.v, cache.ks, cache.vs) * len(spans)
+    torch.autograd.graph.increment_version(tuple(t for t in mutations if not t.is_inference()))
+    return ik
+
+
 def owned_q8_prepare(module, projection, coordinates, weights, cache, state, layer, query, iq, *,
                      frequency, sections, amplitude, start):
     """Existing caller lease owns inputs/outputs through current-stream completion.

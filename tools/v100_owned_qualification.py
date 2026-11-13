@@ -1102,6 +1102,7 @@ def _q8_witness_region(engine):
     import torch
     decoder = engine.multi
     if (_owned_q8_preparation_receipt(engine) is None or engine.w.device.type != 'cuda'
+            or engine._owner_preparation.specification.get('owned_q8_window_prepare', False)
             or engine.w.mtp is not None or decoder.speculation.method != 'none'
             or decoder.speculation.maximum_proposals != 0 or len(decoder.states) != 24
             or not decoder.full_resident or not decoder.round_tables.native_half
@@ -3749,11 +3750,41 @@ def _owned_q8_preparation_receipt(engine):
             or type(path) is not str or not Path(path).is_absolute()
             or not callable(getattr(module, 'owned_q8_prepare', None))):
         raise ValueError('owned Q8 native policy/module metadata differs from its retained capability')
+    window = {}
+    if (not preparation.specification.get('owned_q8_window_prepare', False)
+            and owner.owned_q8_window_preparation is not None):
+        raise ValueError('owned Q8 window capability has no explicit selection')
+    if preparation.specification.get('owned_q8_window_prepare', False):
+        for role, actual in (('decode', buffers), ('mtp', getattr(decoder, 'mbuf', None))):
+            if role not in preparation.role_rows:
+                continue
+            retained = getattr(actual, 'history_owner', None)
+            if (type(retained) is not OwnerBuffers or retained.closed or retained.prefill
+                    or preparation.workspaces.get(role) is not retained
+                    or getattr(actual, 'owner_role', None) != role
+                    or actual.owner_graph_family != UNCAPTURED
+                    or actual.owner_kernel_family != family
+                    or retained.native_kernel_family != family
+                    or retained.owned_q8_window_preparation is not module
+                    or retained.owned_q8_window_role != role
+                    or retained.native_states is None or len(retained.native_states) != len(states)
+                    or any(retained.native_states.get(id(state), (None,))[0] is not state for state in states)):
+                raise ValueError('owned Q8 window capability differs from its actual prepared role')
+            capability = retained.native_record().get('owned_q8_window_preparation')
+            if not 1 <= retained.rows <= 256 or capability != {
+                    'policy': 'owned-q8-window-preparation-v1', 'module': name,
+                    'role': role, 'max_window_rows': retained.rows,
+                    'native_rows_per_dispatch': 1, 'native_dispatches_per_window': 'rows',
+                    'qualified': False}:
+                raise ValueError('owned Q8 window record differs from its retained capability')
+            window[role] = capability
     return {'schema': 'tensorfold.owned-q8-preparation-selection-v1',
             'policy': policy, 'state_count': len(states), 'row_capacity': owner.rows,
             'kernel_family': buffers.owner_kernel_family, 'graph_family': buffers.owner_graph_family,
             'native_module': {'name': name, 'path': path},
-            'scope': 'cold prepared/selection evidence only; target decode one issued Q8 row under no-grad; not kernel invocation evidence',
+            **({'window_roles': window} if window else {}),
+            'scope': ('cold role-bound window selection only; one existing native dispatch per issued row; not invocation evidence'
+                      if window else 'cold prepared/selection evidence only; target decode one issued Q8 row under no-grad; not kernel invocation evidence'),
             'invocation_evidence': False, 'P3_valid': False}
 
 
@@ -3867,6 +3898,35 @@ def _publish_qualification_failure(engine, output, primary, requested_rows):
     raise_failures(primary, [error for error in errors if error is not None])
 
 
+def _prepared_m32_receipt(engine):
+    preparation = getattr(engine, '_owner_preparation', None)
+    requested = None if preparation is None else preparation.specification.get('prepared_linears')
+    actual = getattr(getattr(engine, 'w', None), '_private_prepared_m32', None)
+    if requested is None:
+        if actual is not None:
+            raise ValueError('unrequested prepared M32 capability is bound')
+        return None
+    if actual is None or actual is not preparation.prepared_m32 or not actual.bound_weights:
+        raise ValueError('prepared M32 differs from its bound pre-State owner')
+    from tensorfold.families.qwen4_exp.cuda.padded_linears import owned_numerical_identity
+    if engine.w.meta.get('private_prepared_m32_policy') != owned_numerical_identity():
+        raise ValueError('prepared M32 numerical identity differs from its bound provider')
+    roles = {}
+    for role, buffers in (('decode', engine.multi.buf), ('mtp', engine.multi.mbuf)):
+        if buffers is None:
+            continue
+        paid = actual.buffers.get(role)
+        if paid is None or buffers.padded_linears is not paid or actual.reconciled_bytes.get(role) != actual.forecast[role]:
+            raise ValueError('prepared M32 serving buffers differ from their paid role')
+        roles[role] = {'logical_rows': paid.rows, 'physical_rows': paid.physical_rows,
+                       'extra_tensor_bytes': actual.reconciled_bytes[role]}
+    if set(roles) != set(actual.role_rows):
+        raise ValueError('prepared M32 omitted a declared execution role')
+    return {'requested': requested, 'actual': actual.record(), 'roles': roles,
+            'scope': 'cold weight/buffer contract;not kernel invocation evidence',
+            'invocation_evidence': False, 'P3_valid': False}
+
+
 def _native_family_receipt(engine):
     preparation = getattr(engine, '_owner_preparation', None)
     requested = None if preparation is None else preparation.specification.get('native_family')
@@ -3898,6 +3958,9 @@ def publish_receipt(engine, output, *, dense_implementation=None, half_request=N
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
+        prepared_m32 = _prepared_m32_receipt(engine)
+        if prepared_m32 is not None:
+            receipt['prepared_linears'] = prepared_m32
         family = _native_family_receipt(engine)
         if family is not None:
             receipt['native_family'] = family

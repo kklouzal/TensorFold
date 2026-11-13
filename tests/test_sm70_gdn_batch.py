@@ -310,3 +310,39 @@ def test_loaded_weights_are_owned_before_fallible_capability_publication(key, cl
         assert id(secondary) in roots(primary) and not owners[0]._closed
     else:
         assert owners[0]._closed
+
+
+def test_paid_m32_projection_registers_physical_span_and_uses_real_layer_stride(monkeypatch):
+    static, b, states, _ = fixture(monkeypatch, slots=4, width=3)
+    physical = Array((static.lin, 32, 2060))
+    b.proj = physical[:, :b.rows]
+    from tensorfold.families.qwen4_exp.cuda.padded_linears import PaddedLinears
+    b.padded_linears = PaddedLinears.__new__(PaddedLinears)  # CPU registration boundary double
+    b.padded_linears.owned_panels, b.padded_linears.physical_rows = True, 32
+    b.padded_linears.owners = {'proj': physical}
+    assert not b.proj.is_contiguous()
+    static.bind_native(states, b)
+    frame = static.native_frame([(states[0], 0, 3)], b, allow_single=True)
+    pointers, starts = frame.operands(1, b.proj[1, :3], b.gout[:3], b.gxs[:3])
+    assert pointers.shape == (8, 1) and starts.data.tolist() == [0, 3]
+    assert b.proj[1].data_ptr() == physical.data_ptr() + 32 * 2060 * 2
+    # A mutable output aliasing only the final padding must still be rejected.
+    b.gout = Array(data=physical.data[-1, b.rows:].reshape(-1)[:b.rows * 768].view(b.rows, 768))
+    with pytest.raises(ValueError, match='overlaps a mutable'):
+        static.bind_native(states, b)
+
+
+def test_only_the_exact_paid_projection_view_can_relax_global_contiguity(monkeypatch):
+    static, b, states, _ = fixture(monkeypatch)
+    physical = Array((static.lin, 32, 2060))
+    b.proj = physical[:, 1:1 + b.rows]
+    from tensorfold.families.qwen4_exp.cuda.padded_linears import PaddedLinears
+    b.padded_linears = PaddedLinears.__new__(PaddedLinears)  # CPU registration boundary double
+    b.padded_linears.owned_panels, b.padded_linears.physical_rows = True, 32
+    b.padded_linears.owners = {'proj': physical}
+    with pytest.raises(ValueError, match='paid prepared-M32 owner'):
+        static.bind_native(states, b)
+    b.proj = physical[:, :b.rows]
+    b.padded_linears = None
+    with pytest.raises(ValueError, match='pointee representation'):
+        static.bind_native(states, b)

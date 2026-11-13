@@ -245,8 +245,46 @@ def _encode(value, format, status, layer, *, error):
 
 
 def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
-    """Operation-owned Q8 single-row target decode; every other path is original."""
+    """Select prepared Q8 writers while retaining the independent reference."""
     owner = getattr(buffers, 'history_owner', None)
+    window_module = getattr(owner, 'owned_q8_window_preparation', None)
+    if window_module is not None:
+        role = 'mtp' if mtp else 'decode'
+        if (buffers.prefill or buffers.owner_graph_family != 'uncaptured'
+                or owner.owned_q8_window_role != role or buffers.owner_role != role
+                or buffers.owner_kernel_family != owner.native_kernel_family):
+            raise ValueError('owned Q8 window differs from its prepared execution role')
+        rows = stop - start
+        if not 1 <= rows <= owner.rows:
+            raise ValueError('owned Q8 window exceeds its prepared row envelope')
+        c, a = weights.cfg, layer.attn
+        ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
+        cache = state.mtp_kc if mtp else state.kc[ai]
+        pos = state.mtp_len if mtp else state.pos
+        coordinates = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
+        position = buffers.mtp_indexer_position if mtp else buffers.target_indexer_position
+        if (type(cache) is not OwnedKVCache or
+                (cache.key_format.bits, cache.key_format.codec, cache.value_format.bits, cache.value_format.codec) != (8, 0, 8, 0)
+                or coordinates is None or position is None or state.compact_indexer is None):
+            raise ValueError('owned Q8 window requires its original Q8 cache and issued indexer profile')
+        coordinates = coordinates[start:stop]
+        ik = ops.owned_q8_prepare_window(window_module, projection[start:stop], coordinates,
+            weights, cache, state, layer, buffers.q[start:stop], buffers.iq[start:stop],
+            frequency=position.inv_freq, sections=position.sections,
+            amplitude=position.amplitude, start=pos)
+        if ik is not None:
+            if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
+                    include_mtp=hasattr(state, 'mtp_kc')):
+                expected = (state.slot_generation, state.history_generation)
+                entry = state.compact_indexer.append(ai, pos, ik.half(), coordinates,
+                    buffers.compact_indexer_stage, start, stop, mtp=mtp, expected=expected)
+                entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale,
+                           position.inv_freq, c.eps, position.sections, position.amplitude)
+                if mtp:
+                    entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)
+            if not mtp:
+                state.target_tentative_length = pos + rows
+            return
     if (not mtp and not buffers.prefill and stop - start == 1
             and getattr(buffers, 'owner_kernel_family', None) in ('sm70-paged-owner-rn-ex2-p2051-v1', ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
             and getattr(buffers, 'owner_graph_family', None) == 'uncaptured'
@@ -498,6 +536,7 @@ class OwnerBuffers:
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.reference_tiles = self.owned_q8_preparation = None
+        self.owned_q8_window_preparation = self.owned_q8_window_role = None
         self.aten_tiles = self.flash_tiles = None
         self.native_kernel_family, self.native_heads_per_block = "sm70-paged-owner-q8-compact-v1", None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
@@ -798,11 +837,21 @@ class OwnerBuffers:
             self._upload_pending = True
 
     def configure_native_family(self, family, heads_per_block=None, *, aten_panel_rows=None,
-                                flash_artifact=None, flash_panel_rows=None, flash_tensor_budget_bytes=None):
+                                flash_artifact=None, flash_panel_rows=None, flash_tensor_budget_bytes=None,
+                                owned_q8_window_prepare=False, owned_q8_window_role=None):
         """Fix numerical policy before capture/admission; no serving redispatch."""
         from .owner_execution import KERNEL_FAMILY, RN_KERNEL_FAMILY
         if self._native_family_configured or self.native_states is not None or self._native_pending:
             raise RuntimeError("native numerical family is immutable after startup configuration")
+        if (type(owned_q8_window_prepare) is not bool
+                or not owned_q8_window_prepare and owned_q8_window_role is not None):
+            raise ValueError('owned Q8 window requires its explicit boolean selection')
+        if owned_q8_window_prepare and (owned_q8_window_role not in ('decode', 'mtp')
+                or self.prefill or not 1 <= self.rows <= 256 or self.heads != 3 or self.head_dim != 256
+                or family not in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
+                or self.native_pair is None or (self.native_pair.key.bits, self.native_pair.key.codec,
+                    self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
+            raise ValueError('owned Q8 window requires its bounded original Q8 decode/MTP owner')
         if (family not in (KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
                 or (family == RN_KERNEL_FAMILY and (type(heads_per_block) is not int or heads_per_block not in (1, 4, 12)))
                 or (family in (KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY) and heads_per_block is not None)):
@@ -836,6 +885,9 @@ class OwnerBuffers:
                 and (self.native_pair.key.bits, self.native_pair.key.codec,
                      self.native_pair.value.bits, self.native_pair.value.codec) == (8, 0, 8, 0)):
             self.owned_q8_preparation = ops.prepare_owned_q8(self.device)
+        if owned_q8_window_prepare:
+            self.owned_q8_window_preparation = self.owned_q8_preparation
+            self.owned_q8_window_role = owned_q8_window_role
         self.native_kernel_family, self.native_heads_per_block = family, heads_per_block
         self._native_family_configured = True
 
@@ -1054,6 +1106,7 @@ class OwnerBuffers:
             self.flash_tiles.close()
             self.flash_tiles = None
         self.reference_tiles = self.owned_q8_preparation = None
+        self.owned_q8_window_preparation = self.owned_q8_window_role = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_host_words = None
@@ -1063,6 +1116,12 @@ class OwnerBuffers:
 
     def native_record(self):
         return {"prepared": self.descriptors is not None,
+                **({'owned_q8_window_preparation': {
+                    'policy': 'owned-q8-window-preparation-v1',
+                    'module': self.owned_q8_window_preparation.__name__,
+                    'role': self.owned_q8_window_role, 'max_window_rows': self.rows,
+                    'native_rows_per_dispatch': 1, 'native_dispatches_per_window': 'rows',
+                    'qualified': False}} if self.owned_q8_window_preparation is not None else {}),
                 "owned_q8_preparation": (None if self.owned_q8_preparation is None else {
                     "policy": "owned-q8-decode-preparation-v1", "module": self.owned_q8_preparation.__name__,
                     "rows_per_call": 1, "qualified": False}),

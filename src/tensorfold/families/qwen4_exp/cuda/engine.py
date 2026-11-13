@@ -1054,7 +1054,9 @@ class FlashNextEngine:
                 from tensorfold.cuda.sm70.attention_native import workspace_bytes
 
                 main_rows = row_envelope(count) if concurrent else max(8, each)
-                padded_bytes = (1 + int(mtp)) * padded_linears.workspace_bytes_from_text(text, main_rows, tp)
+                owned_m32 = owner_preparation is not None and owner_preparation.prepared_m32 is not None
+                padded_bytes = (1 + int(mtp)) * padded_linears.workspace_bytes_from_text(text, main_rows, tp,
+                    **({'enabled': True, 'owned_panels': True} if owned_m32 else {}))
                 native_attention = (family_ops._NATIVE_FAMILY and family_ops._NATIVE_ATTENTION
                                     and history_placement is None)
                 if not native_attention and not padded_bytes and history_placement is None:
@@ -1683,6 +1685,10 @@ class FlashNextEngine:
             w.meta.update(history_layout="unique", attention_degree=history_placement.degree)
         if owner_preparation is not None:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
+            if owner_preparation.prepared_m32 is not None:
+                w._private_prepared_m32 = owner_preparation.prepared_m32
+                from .padded_linears import owned_numerical_identity
+                w.meta['private_prepared_m32_policy'] = owned_numerical_identity()
             if owner_preparation.native_family is not None:
                 w._private_native_family = owner_preparation.native_family
                 w.meta['private_native_family_policy'] = owner_preparation.native_family.record()

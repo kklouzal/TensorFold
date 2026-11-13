@@ -560,6 +560,18 @@ class NativeFamilyInputTests(unittest.TestCase):
             campaign.main(argv + ['--native-family', 'optimized'])
 
 
+class PreparedM32InputTests(unittest.TestCase):
+    def test_cli_preserves_the_independent_prepared_m32_choice(self):
+        argv = ['inputs', '--source', '/source', '--out', '/out', '--image', 'image',
+                '--installed-check', '/check', '--models', '/models', '--target', 'target',
+                '--mtp', 'mtp', '--cache', '/cache', '--name', 'model',
+                '--prepared-linears', 'owned-prepared-m32-v1']
+        with patch.object(campaign, 'inputs') as selected:
+            campaign.main(argv)
+            self.assertEqual(selected.call_args.kwargs['prepared_linears'], 'owned-prepared-m32-v1')
+            self.assertIsNone(selected.call_args.kwargs['native_family'])
+
+
 if __name__ == "__main__":
     unittest.main()
 

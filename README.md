@@ -132,6 +132,14 @@ after graph capture; that failure is retained. The correction changes only
 cold qualification metadata validation. The subsequent Source20 run passed;
 the failed Source19 record retains its original scope.
 
+The private preparation flag `owned_q8_window_prepare: true` selects an
+unqualified, uncaptured original-Q8 decode/MTP window candidate. It dispatches
+the existing one-row kernel once per row and retains one compact-indexer
+transaction per window. The binding now admits the actual MTP layer `-1`;
+this requires a new owned native build. Defaults, prefill and the independent
+Torch oracle remain unchanged. Native window parity, full-model quality and
+matched performance remain pending. See the [window contract](docs/optimization-validation.md#private-q8-window-preparation).
+
 See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece
 boundaries without synchronizing each piece. Those observations can include
@@ -1307,6 +1315,16 @@ screen was 3, measuring 50.41/53.92/54.67 decode tokens/s with two fully allocat
 262,140-token windows. MTP's three-slot run retained a repeated prefix that the
 two-slot DSpark run evicted; these screens do not isolate a method-only gain.
 Compose exposes method/checkpoint/depth/confidence and equal full-window counts.
+
+A separate default-off `preparation.prepared_linears=owned-prepared-m32-v1`
+RN-owner trial extends existing prepared Dense/Concat M32 buffers through120
+logical decode/MTP rows, including an active C1 prefix on a120-row owner. Paid
+physical extents round up to128, with bounded panel views and original full-N
+per-part GEMMs. Generic and prefill providers stay selected outside those paid
+views. Native GDN registration validates the exact padded projection owner and
+its layer stride. This is an unqualified numerical candidate; native/model,
+MTP/graph, capacity, quality and matched throughput gates remain pending.
+[Contracts and forecast](docs/owned-prepared-m32.md).
 
 A private, default-off `preparation.native_family=owned-native-family-v1` RN-owner
 trial now binds the existing native HC, RMS, PLE, attention-output gate, MTP add,

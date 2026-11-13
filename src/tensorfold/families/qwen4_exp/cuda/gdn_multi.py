@@ -113,7 +113,27 @@ class RoundTables:
         nk, channels = nv // 3, (2 * (nv // 3) + nv) * 128
         if nv not in (6, 12, 24, 48):
             raise ValueError("native GDN registration head geometry")
-        tensor(b.proj, torch.float16, (self.lin, b.rows, channels + nv*128 + 2*nv), False)
+        projection_width = channels + nv*128 + 2*nv
+        padded = getattr(b, 'padded_linears', None)
+        if padded is not None and getattr(padded, 'owned_panels', False):
+            from .padded_linears import PaddedLinears
+            if type(padded) is not PaddedLinears:
+                raise ValueError('native GDN projection lacks its paid prepared-M32 owner')
+            # The private prepared-M32 candidate pays a complete physical row
+            # extent per layer. Kernels consume contiguous 2-D layer panels and
+            # NativeTables already binds their actual layer stride. Register
+            # the full retained allocation, including row padding, for overlap
+            # checks; never infer its span from logical numel across gaps.
+            owner = padded.owners.get('proj')
+            if (owner is None or tuple(b.proj.shape) != (self.lin, b.rows, projection_width)
+                    or b.proj.dtype != torch.float16 or b.proj.device != b.h.device
+                    or b.proj.data_ptr() != owner.data_ptr()
+                    or b.proj.stride() != (padded.physical_rows * projection_width, projection_width, 1)
+                    or b.proj.requires_grad or b.proj.is_neg() or b.proj.is_conj()):
+                raise ValueError('native GDN projection differs from its paid prepared-M32 owner')
+            tensor(owner, torch.float16, (self.lin, padded.physical_rows, projection_width), False)
+        else:
+            tensor(b.proj, torch.float16, (self.lin, b.rows, projection_width), False)
         tensor(b.gout, torch.float16, (b.rows, nv*128), True)
         tensor(b.gxs, torch.float32, (b.rows, nv*4), True)
         for state in states:

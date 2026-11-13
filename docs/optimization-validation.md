@@ -1523,3 +1523,52 @@ The plain shipping service is healthy on port8000: same607runtimehashes,
 all4benchmark outputs+3concurrent complete responses exact. Quiet128-input/
 512-output decode54.04/54.42/59.78tokens/s. All four closeouts complete;
 100single-request tokens/s remains unmet and optimization pauses as agreed.
+
+## Private Q8 window preparation
+
+`owned_q8_window_prepare` is a strict boolean preparation field, default false;
+true requires an explicit numerical trial with uncaptured RN, ATen or Flash
+owner attention. Each non-prefill role prepares its own immutable decode/MTP
+capability before State admission. Only original floor-Q8 key/value codecs,
+three local query heads, D256, rows1–256 and issued position/coordinate profiles
+are admitted. An unavailable explicit request fails cold. This operation-owned
+choice does not select the global native family. Existing prefill, graph
+policies, single-row selection and `_prepare_reference` remain available.
+
+The candidate reuses the single-row CUDA kernel in row order/current stream,
+with contiguous views and no per-row data copy or new GPU workspace. It makes
+N native dispatches for N rows, rather than introducing a fused multirow kernel.
+The binding's layer domain expands from nonnegative target layers to include
+exactly MTP `-1`, preserving `-2` as the unset error sentinel and rejecting lower
+values. CUDA math, generation/page guards and ABI remain unchanged, but the
+changed binding requires a new native source/build identity and actual target
+execution; historical binaries do not prove the new admission contract.
+
+The raw-IK guard runs once per window. Query/IQ version publication occurs once
+per window; sticky status has20 reference publications (eight guards and two
+quantizer status pairs), independent of row count. Two come from the retained
+raw-IK guard and18 are published after native dispatches. Each cache tensor
+advances once per owned page span, including page-boundary crossings, rather
+than once per native launch. Foreign pages still compute Q/IQ and input/status
+validation. Full-window disjointness excludes cross-row aliases before any
+launch. Unsupported autograd/inference contexts retain the original fallback.
+
+Target uses `state.kc`/`state.pos`; MTP uses `mtp_kc`/`mtp_len`. Both retain the
+incumbent compact append/pool once per window and generation tuple; MTP also
+retains prepare_commit/publish_commit once. The operation does not advance
+State.pos or mtp_len; target tentative length becomes pos+rows. Existing caller
+commit/rollback owns accepted-prefix and generation transitions. Capability
+receipts identify role, maximum rows and one-row dispatch geometry; they remain
+cold selection evidence, never actual invocation or performance evidence.
+The existing single-row model witness rejects this distinct window profile;
+its retained single-row oracle is not represented as new-window validation.
+
+Focused CPU tests check row views/counts, reference-derived publication deltas,
+transaction ordering, explicit cold rejection and fallback boundaries. Native
+oracles additionally cover exact output/cache/status bytes and versions across
+owned/foreign/page-crossing target and real negative-layer MTP windows, adverse
+operands, generation poisoning, and rejection below -1. Those native tests,
+new owned build, full24/MTP4 functional/conditional quality and matched
+unprofiled prefill/decode/tail measurements are pending. Kernel-count reduction
+is motivation, not a causal speedup or adoption result; budgets, full context,
+capacity, floor and workspace are unchanged.

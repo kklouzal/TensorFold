@@ -3105,6 +3105,32 @@ def test_cold_q8_baseline_omits_evidence_without_probing(fault):
     assert owned._owned_q8_preparation_receipt(engine) is None
 
 
+@pytest.mark.parametrize('fault', [None, 'role', 'record', 'unselected'])
+def test_window_q8_receipt_distinguishes_actual_role_and_cold_dispatch_contract(fault):
+    engine, owner, record = _cold_q8_receipt_fixture()
+    module = owner.owned_q8_preparation
+    owner.owned_q8_window_preparation, owner.owned_q8_window_role = module, 'decode'
+    record['owned_q8_window_preparation'] = {
+        'policy': 'owned-q8-window-preparation-v1', 'module': module.__name__,
+        'role': 'decode', 'max_window_rows': 24, 'native_rows_per_dispatch': 1,
+        'native_dispatches_per_window': 'rows', 'qualified': False}
+    engine.multi.buf.owner_role = 'decode'
+    engine._owner_preparation.role_rows = {'decode': 24, 'prefill': 256}
+    engine._owner_preparation.specification['owned_q8_window_prepare'] = fault != 'unselected'
+    if fault == 'role':
+        owner.owned_q8_window_role = 'mtp'
+    elif fault == 'record':
+        record['owned_q8_window_preparation']['native_rows_per_dispatch'] = 24
+    if fault:
+        with pytest.raises(ValueError, match='Q8 window'):
+            owned._owned_q8_preparation_receipt(engine)
+    else:
+        receipt = owned._owned_q8_preparation_receipt(engine)
+        assert receipt['window_roles'] == {'decode': record['owned_q8_window_preparation']}
+        assert receipt['invocation_evidence'] is receipt['P3_valid'] is False
+        assert 'not invocation evidence' in receipt['scope']
+
+
 @pytest.mark.parametrize('fault', ['closed', 'prefill', 'wrong-workspace', 'not-prepared', 'wrong-state',
                                   'state-count', 'family', 'owner-family', 'prepared-family', 'prepared-graph',
                                   'graph', 'Q4', 'policy', 'module', 'path', 'callable'])

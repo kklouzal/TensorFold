@@ -86,7 +86,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "prepared_linears"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -139,12 +139,23 @@ def parse_preparation(value):
     hc_eager = value.get('native_hc_writeback_target_eager', False)
     if type(hc_eager) is not bool or hc_eager and not value['trial']:
         raise ValueError('native target-eager HC writeback requires an explicit boolean unqualified trial')
+    prepared_linears = value.get('prepared_linears')
+    if prepared_linears is not None:
+        from .padded_linears import OWNED_POLICY
+        if (prepared_linears != OWNED_POLICY or not value['trial'] or not rn
+                or value['graph_family'] != UNCAPTURED or request is not None or dense is not None):
+            raise ValueError('prepared M32 requires its explicit RN trial without competing dense/reference arithmetic')
     native_family = value.get('native_family')
     if native_family is not None:
         from tensorfold.cuda.sm70.owned_family import POLICY
         if (native_family != POLICY or not value['trial'] or not rn
                 or value['graph_family'] != UNCAPTURED or request is not None):
             raise ValueError('native family requires its explicit RN owner trial without reference arithmetic')
+    q8_window = value.get('owned_q8_window_prepare', False)
+    if (type(q8_window) is not bool or q8_window and (not value['trial']
+            or value['kernel_family'] not in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
+            or value['graph_family'] != UNCAPTURED)):
+        raise ValueError('owned Q8 window preparation requires an explicit uncaptured numerical trial')
     capture = value.get('native_gdn_capture', False)
     if type(capture) is not bool or capture and not value['trial']:
         raise ValueError('native GDN capture requires an explicit boolean unqualified trial')
@@ -161,6 +172,8 @@ def parse_preparation(value):
             **({'dense_projections': dense.as_dict()} if dense is not None else {}),
             **({'native_gdn_capture': True} if capture else {}),
             **({'native_family': native_family} if native_family is not None else {}),
+            **({'owned_q8_window_prepare': True} if q8_window else {}),
+            **({'prepared_linears': prepared_linears} if prepared_linears is not None else {}),
             **({'gdn_value8_capture': True} if value8 else {}),
             **({'native_hc_writeback_capture': True} if hc_capture else {}),
             **({'native_hc_writeback_target_eager': True} if hc_eager else {}),
@@ -198,6 +211,7 @@ class OwnerPreparation:
         self.comm = self._open_head = None
         self.source_foundation = None
         self.native_family = None
+        self.prepared_m32 = None
         self.phases = []
         self.before = self.after = None
         self.graph_physical_bytes = 0
@@ -280,6 +294,9 @@ class OwnerPreparation:
         if self.specification.get('dense_projections') is not None:
             dense_backend, dense_selection = _dense_backend(self.specification['dense_projections'])
             self.dense_forecast = dense_backend.forecast(dense_selection, text, self.role_rows, world=engine.tp)
+        if self.specification.get('prepared_linears') is not None:
+            from .padded_linears import PreparedM32
+            self.prepared_m32 = PreparedM32(text, self.role_rows, device)
         primary = None
         try:
             def prepared_contract():
@@ -306,7 +323,8 @@ class OwnerPreparation:
                 if self.specification.get('gdn_value8_capture', False) and not getattr(
                         engine, '_gdn_value8_capture_enabled', False):
                     raise ValueError('Value8 capture requires the fixed private native GDN graph region')
-                if self.specification.get('native_family') is not None:
+                if (self.specification.get('native_family') is not None
+                        or self.specification.get('prepared_linears') is not None):
                     if (not getattr(engine, '_owned_expert_requested', False)
                             or getattr(engine, '_owned_expert_admin_requested', True)
                             or getattr(engine, 'sm70_profile', None) != 'reference'
@@ -315,7 +333,7 @@ class OwnerPreparation:
                             or int(text['hidden_size']) != 2560 or int(text.get('hc_count', 4)) != 4
                             or self.reference_tiles_requested
                             or getattr(engine, '_local_hc_readout_requested', False)):
-                        raise ValueError('native family requires the private TP8/ETP4 HC4 reference-owner region')
+                        raise ValueError('native family/prepared M32 requires the private TP8/ETP4 HC4 reference-owner region')
                 self.source_foundation = selected_identity()
                 if self.reference_tiles_requested:
                     from tensorfold.cuda.sm70.reference_owner_tiles import prepare
@@ -408,6 +426,8 @@ class OwnerPreparation:
                         **({"reference_preparation": self.reference_preparation} if self.reference_tiles_requested else {}))
                     owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
                     owner.configure_native_family(self.specification["kernel_family"], self.specification.get("rn_heads_per_block"),
+                        **({'owned_q8_window_prepare': True, 'owned_q8_window_role': role}
+                           if self.specification.get('owned_q8_window_prepare', False) and role != 'prefill' else {}),
                         **({'aten_panel_rows': self.specification['aten_tiles']['panel_rows']}
                            if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY else {}),
                         **({'flash_artifact': self.flash_artifact,
@@ -538,6 +558,9 @@ class OwnerPreparation:
                 raise RuntimeError("serving buffers did not adopt their preallocated owner workspace")
             if getattr(buffers, 'native_family', None) is not self.native_family:
                 raise RuntimeError('serving buffers did not adopt their prepared native family capability')
+            if self.prepared_m32 is not None and role in self.prepared_m32.role_rows:
+                if buffers.padded_linears is not self.prepared_m32.buffers.get(role):
+                    raise RuntimeError('serving role did not adopt its paid prepared M32 buffers')
             buffers.owner_graphs = self.graphs.get(role)
         # Every owner frame is bounded by its adopted workspace, even when a
         # larger model batch is split into several such attention operations.
@@ -555,9 +578,19 @@ class OwnerPreparation:
     @property
     def numerical_selection(self):
         selected = {}
+        if self.specification.get('prepared_linears') is not None:
+            from .padded_linears import owned_numerical_identity
+            selected['prepared_linears'] = owned_numerical_identity()
         if self.specification.get('native_family') is not None:
             from tensorfold.cuda.sm70.owned_family import numerical_identity
             selected['native_family'] = numerical_identity()
+        if self.specification.get('owned_q8_window_prepare', False):
+            selected['owned_q8_window_preparation'] = {
+                'policy': 'owned-q8-window-preparation-v1',
+                'roles': [role for role in ('decode', 'mtp') if role in self.role_rows],
+                'codec': 'original-floor-q8', 'native_rows_per_dispatch': 1,
+                'native_dispatches_per_window': 'rows', 'maximum_window_rows': 256,
+                'compact_indexer': 'reference-window-transaction', 'qualified': False}
         if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS, POLICY
             selected['attention'] = {'family': ATEN_KERNEL_FAMILY, 'operator': POLICY,
@@ -587,14 +620,15 @@ class OwnerPreparation:
 
     def bind_dense_weights(self, engine, weights):
         """Isolate post-weight/pre-State code residency from the early baseline."""
-        if self.dense_owner is None:
+        if self.dense_owner is None and self.prepared_m32 is None:
             return
         if not self.prepared or self.closed or self.dense_binding_started:
             raise RuntimeError('dense weights require one live prepared pre-State binding')
         self.dense_binding_started = True
         stage = 'dense-projections-weight-binding'
         def bind():
-            record = self.dense_owner.bind_weights(weights)
+            owner = self.dense_owner if self.dense_owner is not None else self.prepared_m32
+            record = owner.bind_weights(weights)
             memory = record['binding_memory']
             for name in ('committed_delta_bytes', 'outside_active_delta_bytes'):
                 if type(memory.get(name)) is not int or memory[name] < 0:
@@ -694,6 +728,7 @@ class OwnerPreparation:
                    if self.specification["kernel_family"] == RN_KERNEL_FAMILY else {}),
                 "roles": dict(self.role_rows),
                 **({'native_family': self.native_family.record()} if self.native_family is not None else {}),
+                **({'prepared_linears': self.prepared_m32.record()} if self.prepared_m32 is not None else {}),
                 **({"reference_arithmetic_source_sha256": self.reference_arithmetic_source}
                    if self.reference_arithmetic_request is not None else {}),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
@@ -740,6 +775,8 @@ class OwnerPreparation:
         finish((owner.close for owner in self.workspaces.values()))
         if self.dense_owner is not None:
             self.dense_owner.close()
+        if self.prepared_m32 is not None:
+            self.prepared_m32.close()
         if self.flash_artifact is not None:
             self.flash_artifact.close()
             self.flash_artifact = None

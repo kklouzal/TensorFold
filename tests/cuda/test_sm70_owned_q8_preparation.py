@@ -21,6 +21,80 @@ def exact(actual, expected):
     assert torch.equal(actual.contiguous().view(torch.uint8), expected.contiguous().view(torch.uint8))
 
 
+def window_fixture(rows, *, mtp=False, pattern='random', owned_pages=(0, 2)):
+    """Extend the independent one-row fixture without changing its oracle."""
+    p, state, layer, weights, buffers = fixture(127, pattern=pattern, owned_pages=owned_pages)
+    p = torch.cat([torch.roll(p, row, dims=1) for row in range(rows)], 0)
+    axes = torch.stack([buffers.target_indexer_coordinates[0] + row for row in range(rows)])
+    buffers.target_indexer_coordinates = buffers.mtp_indexer_coordinates = axes
+    buffers.mtp_indexer_position = buffers.target_indexer_position
+    buffers.q = torch.full((rows, 3, 256), 13, device=p.device, dtype=torch.float16)
+    buffers.iq = torch.full((rows, 4, 128), 13, device=p.device, dtype=torch.float16)
+    buffers.owner_role = 'mtp' if mtp else 'decode'
+    state.history_placement.target_layers = 1
+    state.mtp_kc, state.mtp_len, state.mtp_pooled = state.kc[0], state.pos, None
+    layer.index = -1 if mtp else 0
+    return p, state, layer, weights, buffers
+
+
+@pytest.mark.parametrize('mtp,rows,pattern,owned_pages', [
+    (False, 2, 'random', (0, 1)), (False, 5, 'random', ()),
+    (False, 129, 'cancellation', (0, 2)), (False, 256, 'random', (0, 1, 2)),
+    (True, 1, 'random', (0,)), (True, 5, 'random', (0, 2)),
+    (True, 129, 'nonfinite', (0, 2)), (True, 256, 'overflow', ()),
+    (True, 5, 'raw-index-nonfinite', (0, 1)), (True, 5, 'subnormal', (0, 1)),
+    (True, 5, 'zeros', (0, 1)),
+])
+@torch.no_grad()
+def test_window_exact_reference_bytes_status_and_versions(mtp, rows, pattern, owned_pages):
+    old = window_fixture(rows, mtp=mtp, pattern=pattern, owned_pages=owned_pages)
+    new = window_fixture(rows, mtp=mtp, pattern=pattern, owned_pages=owned_pages)
+    module = ops.prepare_owned_q8(new[0].device)
+    calls = []
+    def dispatch(*args):
+        calls.append((args[17], args[21]))
+        return module.owned_q8_prepare(*args)
+    new[4].history_owner = NS(owned_q8_window_preparation=NS(owned_q8_prepare=dispatch),
+        owned_q8_window_role=new[4].owner_role, rows=rows,
+        native_kernel_family=new[4].owner_kernel_family)
+    def tensors(item):
+        _, state, _, _, buffers = item
+        cache = state.kc[0]
+        return (buffers.q, buffers.iq, cache.k, cache.v, cache.ks, cache.vs, state.kv_status)
+    before = [[t._version for t in tensors(item)] for item in (old, new)]
+    history._prepare_reference(*old, 0, rows, mtp=mtp)
+    history.prepare(*new, 0, rows, mtp=mtp)
+    torch.cuda.synchronize()
+    for actual, expected in zip(tensors(new), tensors(old)):
+        exact(actual, expected)
+    deltas = [[t._version-v for t, v in zip(tensors(item), versions)]
+              for item, versions in zip((old, new), before)]
+    assert deltas[0] == deltas[1]
+    assert calls == [(127+row, -1 if mtp else 0) for row in range(rows)]
+    assert (new[1].pos, new[1].mtp_len) == (127, 127)
+    assert new[1].target_tentative_length == (127 if mtp else 127+rows)
+
+
+@torch.no_grad()
+def test_mtp_negative_layer_error_and_lower_invalid_layer_boundary():
+    p, state, layer, weights, buffers = window_fixture(5, mtp=True)
+    module = ops.prepare_owned_q8(p.device)
+    state.history_generations[0] += 1
+    values = (buffers.q, buffers.iq, state.kc[0].k, state.kc[0].v, state.kc[0].ks, state.kc[0].vs)
+    before = [value.clone() for value in values]
+    arguments = {'frequency': weights.inv_freq, 'sections': (11, 11, 10), 'amplitude': 1., 'start': 127}
+    ops.owned_q8_prepare_window(module, p, buffers.mtp_indexer_coordinates, weights,
+        state.kc[0], state, layer, buffers.q, buffers.iq, **arguments)
+    torch.cuda.synchronize()
+    assert state.kv_status.cpu().tolist() == [32, -1]
+    for actual, expected in zip(values, before):
+        exact(actual, expected)
+    layer.index = -2
+    with pytest.raises(RuntimeError, match='domain geometry'):
+        ops.owned_q8_prepare(module, p[:1], buffers.mtp_indexer_coordinates[:1], weights,
+            state.kc[0], state, layer, buffers.q[:1], buffers.iq[:1], **arguments)
+
+
 def fixture(start=64, *, rank=0, owned=True, pattern='random', capacity=385, owned_pages=None):
     device = torch.device('cuda', torch.cuda.current_device())
     gen = torch.Generator(device=device).manual_seed(1207)

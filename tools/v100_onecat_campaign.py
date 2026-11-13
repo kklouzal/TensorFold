@@ -392,7 +392,7 @@ from tensorfold import hub
 from tensorfold.families.qwen4_exp.cuda.execution_identity import artifact_files
 sys.path.insert(0,'/tools')
 from bench_concurrent import prepare_matrix
-target,mtp,model,profile,inputs,tokens,reps,levels,native_family=sys.argv[1:]
+target,mtp,model,profile,inputs,tokens,reps,levels,native_family,prepared_linears=sys.argv[1:]
 prepared=hub.resolve(target,download=False)
 engine=SimpleNamespace(model_dir=prepared,method_geometry=SimpleNamespace(method='mtp'),
                        mtp_model_dir=pathlib.Path(mtp),media_profile=None)
@@ -410,6 +410,8 @@ manifest={'schema':'tensorfold.execution-profile-manifest','version':1,'artifact
                          'graph_budget_bytes':0,'trial':True,'collective_family':'tp8-allgather-v1','rn_heads_per_block':12}}
 if native_family:
     manifest['preparation']['native_family']=native_family
+if prepared_linears:
+    manifest['preparation']['prepared_linears']=prepared_linears
 matrix=prepare_matrix(prepared,model,profile,[int(n) for n in levels.split(',')],[int(inputs)],int(tokens),int(reps))
 for name,value in [('profile.json',manifest),('matrix.json',matrix)]:
     with (pathlib.Path('/evidence')/name).open('x') as out:
@@ -435,7 +437,9 @@ def installed_check_receipt(directory, source_uid, image_id):
 
 
 def inputs(root, output, selected_image, installed_check, models, target, mtp, cache, model_name,
-           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None):
+           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None, prepared_linears=None):
+    if prepared_linears not in (None, 'owned-prepared-m32-v1'):
+        raise ValueError('prepared M32 inputs require the explicit private numerical policy')
     if native_family not in (None, 'owned-native-family-v1'):
         raise ValueError('native family inputs require the explicit private numerical policy')
     record = frozen(root)
@@ -458,7 +462,7 @@ def inputs(root, output, selected_image, installed_check, models, target, mtp, c
             "-v", str(root / "source/tools") + ":/tools:ro", "-v", str(output) + ":/evidence:rw",
             "-w", "/tmp", "--entrypoint", "/opt/venv/bin/python", binding["reference"], "-B", "-c", _PREPARE_INPUTS,
             "/models/" + target, "/models/" + mtp, model_name, profile, str(input_tokens), str(tokens),
-            str(repetitions), levels, native_family or ""]
+            str(repetitions), levels, native_family or "", prepared_linears or ""]
     container(argv, output, timeout)
     publish(output / "inputs.json", {"source_uid": record["source_uid"], "image_binding": binding,
             "manifest": identity(output / "profile.json"), "matrix": identity(output / "matrix.json"),
@@ -1444,6 +1448,8 @@ def main(argv=None):
             item.add_argument("--tokens", type=int, default=128)
             item.add_argument("--reps", type=int, default=3)
             item.add_argument("--levels", default="1,2,4,8,16,24")
+            item.add_argument('--prepared-linears', choices=('owned-prepared-m32-v1',),
+                              help='explicit unqualified per-owner fixed-M32 decode/MTP buffers; default keeps existing linears')
             item.add_argument('--native-family', choices=('owned-native-family-v1',),
                               help='explicit unqualified per-engine native family numerics; default keeps existing family')
     args = parser.parse_args(argv)
@@ -1462,7 +1468,7 @@ def main(argv=None):
     elif args.command == "inputs":
         inputs(args.source.absolute(), args.out.absolute(), args.image, args.installed_check.absolute(), args.models, args.target, args.mtp,
                args.cache.absolute(), args.name, args.profile, args.input_tokens, args.tokens, args.reps,
-               args.levels, args.cpus, args.memory, args.timeout, native_family=args.native_family)
+               args.levels, args.cpus, args.memory, args.timeout, native_family=args.native_family, prepared_linears=args.prepared_linears)
     else:
         model(args.source.absolute(), args.out.absolute(), args.image, args.settings.absolute(), args.installed_check.absolute(),
               args.cpus, args.memory, args.timeout, args.startup_timeout, args.smoke_only,

@@ -237,7 +237,7 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
         && start >= 0 && start < logical && page_tokens > 0 && page_tokens % 4 == 0
         && offsets.dim() == 1 && offsets.numel() == (logical + page_tokens - 1) / page_tokens
         && k.numel() >= physical * 256 && v.numel() >= physical * 256 && ks.numel() >= physical * 8
-        && vs.numel() >= physical * 8 && layer >= 0 && section1 >= 0 && section2 >= 0
+        && vs.numel() >= physical * 8 && layer >= -1 && section1 >= 0 && section2 >= 0
         && section1 <= 256 && section2 <= 256 && std::isfinite(amplitude) && amplitude > 0
         && std::isfinite(float(amplitude)), "owned Q8 page/domain geometry");
     // The outputs and the status word are separately owned. No user-supplied

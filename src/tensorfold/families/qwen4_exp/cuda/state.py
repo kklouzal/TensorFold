@@ -106,6 +106,7 @@ class Buffers:
         from .padded_linears import create as padded_linears
 
         self.padded_linears = padded_linears(w, rows, prefill=prefill, dtype=bf,
+            **({'owner_role': self.owner_role} if getattr(w, '_private_prepared_m32', None) is not None else {}),
             **({"head_columns": head_columns, "linear_layers": sum(layer.linear for layer in w.layers)}
                if self.pipeline_stage is not None else {}))
 
@@ -245,6 +246,9 @@ class Buffers:
         if (getattr(self, 'hc_writeback_target_eager', False) and not prefill
                 and self.owner_role == 'decode' and self.hc_writeback is None):
             raise ValueError('HC target-eager policy lacks its actual bound decode capability')
+        prepared_m32 = getattr(w, '_private_prepared_m32', None)
+        if prepared_m32 is not None and not prefill:
+            prepared_m32.verify_buffers(self.owner_role, self.padded_linears)
 
 
 def _rows(t: torch.Tensor, rows: int, keep: int) -> torch.Tensor:
