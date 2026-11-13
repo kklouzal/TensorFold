@@ -160,7 +160,7 @@ def _condition_inputs(weights, buffers, chunks, consumers):
             row = at
             if span is None:
                 coordinates = issue_text_indexer_coordinates(_st, buffers.mtp_indexer_position,
-                    _st.mtp_len, len(ids), max_rows=buffers.rows)
+                    _st.mtp_len, len(ids), max_rows=buffers.rows, buffers=buffers)
                 coordinate_windows.append(CoordinateWindow(at, at + len(ids), coordinates,
                                                              buffers.mtp_indexer_position))
             else:
@@ -314,7 +314,7 @@ def _target_inputs(weights, buffers, windows, segments, consumers):
                 raise ValueError("media target rows cannot fall back to placeholder embeddings")
             _embed(weights, buffers.ids[begin:end], 1, buffers.mixed[begin:end])
             coordinates = issue_text_indexer_coordinates(st, buffers.target_indexer_position,
-                st.pos, len(ids), max_rows=buffers.rows)
+                st.pos, len(ids), max_rows=buffers.rows, buffers=buffers)
             coordinate_windows.append(CoordinateWindow(begin, end, coordinates, buffers.target_indexer_position))
         else:
             lease = consumers.enter_context(borrow_span(st, "target"))

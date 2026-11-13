@@ -9,8 +9,8 @@ members; completed raw keys are never a context-growing history.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, replace
 
 import torch
 
@@ -20,6 +20,19 @@ from tensorfold.cleanup import raise_failures
 
 SCHEMA = "tensorfold.compact-indexer-v1"
 RATIO = 4
+HOST_COORDINATE_POLICY = 'owned-host-int64-coordinates-v1'
+
+
+@dataclass(frozen=True)
+class _TextCoordinates:
+    staging: object
+    position: object
+    profile: str
+    generation: int
+    media: object
+    start: int
+    rows: int
+    delta: int
 
 
 def coordinate_rows(state, positions):
@@ -42,7 +55,7 @@ def resolve_indexer_coordinates(state, cache_start, rows):
     return coordinate_rows(state, positions)
 
 
-def issue_text_indexer_coordinates(state, position, cache_start, rows, *, max_rows):
+def issue_text_indexer_coordinates(state, position, cache_start, rows, *, max_rows, buffers=None):
     """Issue known text continuation rows, without reading device coordinates.
 
     The admitted producer context and host continuation delta are authoritative.
@@ -56,6 +69,10 @@ def issue_text_indexer_coordinates(state, position, cache_start, rows, *, max_ro
             or not 0 < rows <= max_rows or cache_start < 0 or cache_start > state.capacity
             or rows > state.capacity - cache_start or type(state.rope_delta) is not int):
         raise ValueError("text coordinate issuance requires its bounded admitted host row/context recipe")
+    stage = None if buffers is None else getattr(buffers, 'compact_indexer_stage', None)
+    if stage is not None and getattr(stage, 'host_coordinates', False):
+        return _TextCoordinates(stage, position, state.coordinate_profile_identity,
+            state.slot_generation, state.media_identity, cache_start, rows, state.rope_delta)
     values = np.arange(cache_start, cache_start + rows, dtype=np.int64) + state.rope_delta
     host = np.repeat(values[:, None], 3, axis=1)
     return issue_coordinates(host, position=position, profile_identity=state.coordinate_profile_identity,
@@ -150,7 +167,8 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
     for window in coordinates:
         if (type(window) is not CoordinateWindow or type(window.first) is not int or type(window.last) is not int
                 or window.first != cursor or not cursor < window.last <= count
-                or type(window.source) is not IssuedCoordinates or window.source.tensor.device != storage.device):
+                or type(window.source) not in (IssuedCoordinates, _TextCoordinates)
+                or type(window.source) is IssuedCoordinates and window.source.tensor.device != storage.device):
             raise ValueError("issued coordinate windows must cover every execution row in order")
         while cursor >= rows[segment][5]:
             segment += 1
@@ -176,11 +194,24 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
     _revoke_frame(buffers, prefix)  # Old authorization is gone before any fallible staging/copy.
     try:
         stage.begin(mtp=mtp)
+        text = any(type(transfer.source) is _TextCoordinates for transfer in transfers)
+        if text:
+            transfers = stage.issue_host(transfers, position, candidate, mtp=mtp)
         with ExitStack() as readers:
             for owner in owners:
                 readers.enter_context(owner.staging.reading(mtp=owner.mtp))
-            readers.enter_context(stage.reading(mtp=mtp, borrowers=tuple(window.source.tensor for window in coordinates)))
-            issued = copy_coordinate_batch(transfers, owner=candidate, max_rows=buffers.rows)
+            readers.enter_context(stage.reading(mtp=mtp, borrowers=tuple(transfer.source.tensor for transfer in transfers)))
+            primary = secondary = None
+            try:
+                issued = copy_coordinate_batch(transfers, owner=candidate, max_rows=buffers.rows)
+            except BaseException as error:  # noqa: BLE001 - retire issued DMA even on cancellation
+                primary = error
+            if text:
+                try:
+                    stage.host_submitted(mtp=mtp)
+                except BaseException as error:  # noqa: BLE001 - preserve primary and uncertain DMA ownership
+                    secondary = error
+            raise_failures(primary, () if secondary is None else (secondary,))
             object.__setattr__(candidate, "issued", tuple((*record, value) for record, value in zip(metadata, issued)))
             object.__setattr__(candidate, "signature", _signature(storage))
             values = storage[:count]
@@ -275,7 +306,7 @@ def stage_text_indexer_frame(buffers, segments, *, mtp=False):
         return
     windows = tuple(CoordinateWindow(first, last,
         issue_text_indexer_coordinates(state, position, state.mtp_len if mtp else state.pos,
-                                       last - first, max_rows=buffers.rows), position)
+                                       last - first, max_rows=buffers.rows, buffers=buffers), position)
         for state, first, last in segments)
     _stage_frame(buffers, segments, windows, mtp=mtp)
 
@@ -295,7 +326,11 @@ def _validate_or_fail(buffers, segments, *, mtp):
 
 class Staging:
     """At most one owned ordinal per eight-ordinal channel and execution row."""
-    def __init__(self, rows, caches, device, *, mtp, mtp_only=False):
+    def __init__(self, rows, caches, device, *, mtp, mtp_only=False, host_coordinates=False):
+        self._errors = [None, None]
+        self._host, self._host_arrays = [None, None], [None, None]
+        self._host_events, self._host_pending = [None, None], [False, False]
+        self.host_coordinates = host_coordinates
         self.rows = rows
         channels = 0 if mtp_only else (caches + 7) // 8
         self.target = torch.empty((channels, rows, 128), dtype=torch.float16, device=device)
@@ -305,8 +340,16 @@ class Staging:
         self.mtp = torch.empty((rows if mtp else 0, 128), dtype=torch.float16, device=device)
         self.target_epoch = self.mtp_epoch = 0
         self._events, self._streams = [None, None], [None, None]
-        self._errors = [None, None]
         self._borrowers = [(), ()]
+        if host_coordinates:
+            for role, enabled in enumerate((not mtp_only, mtp)):
+                if enabled:
+                    with torch.inference_mode(False):
+                        self._host[role] = torch.empty((rows, 3), dtype=torch.int64,
+                            pin_memory=torch.device(device).type == 'cuda')
+                    self._host_arrays[role] = self._host[role].numpy()
+                    if torch.device(device).type == 'cuda':
+                        self._host_events[role] = torch.cuda.Event()
         for role, values in enumerate((self.target, self.mtp)):
             if values.is_cuda and values.numel():
                 self._events[role] = torch.cuda.Event()
@@ -354,9 +397,9 @@ class Staging:
             self._borrowers[int(mtp)] = borrowers
         primary = prior = secondary = None
         try:
-            if borrowers and borrowers[0].is_cuda:
-                stream = torch.cuda.current_stream(borrowers[0].device)
-                for tensor in borrowers:
+            for tensor in borrowers:
+                if tensor.is_cuda:
+                    stream = torch.cuda.current_stream(tensor.device)
                     tensor.record_stream(stream)
             yield
         except BaseException as error:
@@ -384,6 +427,92 @@ class Staging:
             self.mtp_epoch += 1
         else:
             self.target_epoch += 1
+
+    def host_wait(self, *, mtp):
+        role = int(mtp)
+        if self._errors[role] is not None:
+            raise self._errors[role]
+        if self._host_pending[role]:
+            try:
+                self._host_events[role].synchronize()
+            except BaseException as error:
+                self._errors[role] = error
+                raise
+            self._host_pending[role] = False
+
+    def host_submitted(self, *, mtp):
+        role = int(mtp)
+        event = self._host_events[role]
+        if event is not None:
+            try:
+                event.record(torch.cuda.current_stream(self.coordinates.device))
+                self._host_pending[role] = True
+            except BaseException as error:
+                self._errors[role] = error
+                raise
+
+    def issue_host(self, transfers, position, owner, *, mtp):
+        """Populate all text rows before issuing any immutable source proof.
+
+        Dedicated host completion protects pinned writes; stream dependencies
+        on the raw/coordinate arena alone cannot authorize CPU reuse.
+        """
+        from .position_coordinates import _context, _issued, _position
+
+        self.host_wait(mtp=mtp)
+        host = self._host[int(mtp)]
+        if host is None:
+            raise ValueError('text coordinate role has no paid host stage')
+        from tensorfold.cuda.sm70.tensor_mutation import require_mutation_budget
+        require_mutation_budget(host, 1)
+        # NumPy writes do not update Tensor versions. Explicitly revoke every
+        # old immutable source view before changing their shared backing.
+        torch.autograd.graph.increment_version(host)
+        pending = []
+        for transfer in transfers:
+            recipe = transfer.source
+            if type(recipe) is not _TextCoordinates:
+                pending.append((transfer, None, None, None))
+                continue
+            if (recipe.staging is not self or recipe.position is not position
+                    or recipe.rows != transfer.row_count or recipe.start != transfer.row_start
+                    or (recipe.profile, recipe.generation, recipe.media) !=
+                       (transfer.profile_identity, transfer.generation, transfer.media_identity)):
+                raise ValueError('text coordinate recipe differs from its current admitted frame')
+            _context(recipe.profile, recipe.generation, recipe.media)
+            low, high = recipe.start + recipe.delta, recipe.start + recipe.delta + recipe.rows - 1
+            _position(position).validate_span(recipe.start, recipe.rows,
+                coordinate_min=(low,) * 3, coordinate_max=(high,) * 3)
+            # The validated signed-int31 domain proves conversion before writes.
+            from ..position_profile import MAX_POSITION
+            if not 0 <= low <= high < MAX_POSITION:
+                raise ValueError('text coordinates exceed signed-int31 device positions')
+            offset = transfer.destination.storage_offset() // 3
+            source = host[offset:offset + recipe.rows]
+            if source.shape != (recipe.rows, 3):
+                raise ValueError('text coordinate stage exceeds its paid row envelope')
+            # Fill retained actual host rows without a temporary vector/matrix.
+            for row in range(recipe.rows):
+                self._host_arrays[int(mtp)][offset + row] = low + row
+            pending.append((transfer, source, (low,) * 3, (high,) * 3))
+        result = []
+        for transfer, source, minimum, maximum in pending:
+            if source is not None:
+                recipe = transfer.source
+                issued = _issued(source, position, profile_identity=recipe.profile, generation=recipe.generation,
+                    media_identity=recipe.media, row_start=recipe.start, minimum=minimum, maximum=maximum, owner=owner)
+                transfer = replace(transfer, source=issued, source_owner=owner)
+            result.append(transfer)
+        return tuple(result)
+
+    @property
+    def pinned_host_bytes(self):
+        return sum(tensor.nbytes for tensor in self._host if tensor is not None)
+
+    def close_host(self):
+        for role in range(2):
+            self.host_wait(mtp=bool(role))
+        self._host = self._host_arrays = [None, None]
 
     def span(self, ordinal, first, last, *, mtp):
         if not 0 <= first < last <= self.rows:

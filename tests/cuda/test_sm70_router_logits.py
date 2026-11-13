@@ -212,7 +212,10 @@ def test_exact_router_bound_six_lane_capture_matches_logical_rows_at_actual_geom
     from tensorfold.families.qwen4_exp.cuda import padded_linears
 
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", True)
-    monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", True)
+    # Match the imported helper's short-context fixture: its module-local
+    # autouse fixture does not run here. The private cu126 attention candidate
+    # excludes both these nine-token histories and the source-built SDK.
+    monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", False)
     monkeypatch.setattr(padded_linears, "_ENABLED", True)
     monkeypatch.setattr(routing_native, "_NATIVE_LOGITS", True)
     _qualify_six_lanes(actual_router_weights(), "int8")

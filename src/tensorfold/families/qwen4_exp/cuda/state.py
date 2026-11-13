@@ -91,8 +91,14 @@ class Buffers:
                 raise ValueError("compact unique indexer requires the qualified I128/four-row grouping")
             role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
             enabled = w.mtp is not None and (prefill or role == "mtp")
-            self.compact_indexer_stage = Staging(rows, placement.target_layers + int(w.mtp is not None), dev,
-                                                  mtp=enabled, mtp_only=role == "mtp")
+            coordinate_stages = getattr(w, '_private_coordinate_stages', None)
+            stage = self.compact_indexer_stage = object.__new__(Staging)
+            if coordinate_stages is not None:
+                if role in coordinate_stages:
+                    raise ValueError('coordinate staging requires one paid Buffers owner per execution role')
+                coordinate_stages[role] = stage  # Journal before pinned allocation.
+            stage.__init__(rows, placement.target_layers + int(w.mtp is not None), dev,
+                mtp=enabled, mtp_only=role == 'mtp', host_coordinates=coordinate_stages is not None)
             if enabled:
                 self.mtp_indexer_coordinate_storage = self.compact_indexer_stage.mtp_coordinates
             if role != "mtp":

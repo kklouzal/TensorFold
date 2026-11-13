@@ -99,9 +99,9 @@ def test_engine_requires_actual_retained_capabilities(monkeypatch):
 
 
 def test_retention_identity_refactor_preserves_original_fingerprint_input():
+    from tensorfold.cuda.markers import MIN_GAP
     from tensorfold.families.qwen4_exp.cuda.execution_identity import retention_identity_payload
     from tensorfold.families.qwen4_exp.cuda.prompt_plan import CUTS, POINTS
-    from tensorfold.cuda.markers import MIN_GAP
     engine = SimpleNamespace(w=SimpleNamespace(meta={'history_layout': 'unique', 'attention_degree': 4}),
         indexer_history='gpu', multi=SimpleNamespace(full_windows=True, keep=24), points=None,
         capacity_plan={'execution_envelope': {'scope': 'fixture'}}, _owner_preparation=SimpleNamespace(identity=lambda: {'actual': 'fixture'}))
@@ -114,7 +114,9 @@ def test_retention_identity_refactor_preserves_original_fingerprint_input():
 
 def test_full_vocabulary_metrics_pair_explicit_families_without_hiding_differences(tmp_path):
     import hashlib
+
     import numpy as np
+
     from tools import v100_rotorquant_quality as quality
     def side(name, preparation, bump):
         root = tmp_path/name

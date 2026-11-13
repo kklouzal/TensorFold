@@ -86,7 +86,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "prepared_router"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "prepared_router", "coordinate_staging"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -167,6 +167,11 @@ def parse_preparation(value):
     if ('owned_q8_window_dispatch' in value and not q8_window
             or q8_dispatch not in ('leaf-loop-v1', 'grid-v1')):
         raise ValueError('owned Q8 window dispatch requires its selected window trial and versioned policy')
+    coordinate_staging = value.get('coordinate_staging')
+    if coordinate_staging is not None:
+        from .compact_indexer import HOST_COORDINATE_POLICY
+        if coordinate_staging != HOST_COORDINATE_POLICY or not value['trial']:
+            raise ValueError('coordinate staging requires its explicit versioned private trial')
     descriptor_upload = value.get('descriptor_upload')
     if descriptor_upload is not None:
         from .descriptor_upload import POLICY
@@ -197,6 +202,7 @@ def parse_preparation(value):
             **({'owned_q8_window_dispatch': 'grid-v1'} if q8_dispatch == 'grid-v1' else {}),
             **({'prepared_linears': prepared_linears} if prepared_linears is not None else {}),
             **({'prepared_router': prepared_router} if prepared_router is not None else {}),
+            **({'coordinate_staging': coordinate_staging} if coordinate_staging is not None else {}),
             **({'descriptor_upload': descriptor_upload} if descriptor_upload is not None else {}),
             **({'row_sampling_scratch': row_sampling} if row_sampling is not None else {}),
             **({'gdn_value8_capture': True} if value8 else {}),
@@ -239,6 +245,7 @@ class OwnerPreparation:
         self.prepared_router = None
         self.prepared_m32 = None
         self.row_sampling = {}
+        self.coordinate_stages = {}
         self.phases = []
         self.before = self.after = None
         self.graph_physical_bytes = 0
@@ -358,7 +365,8 @@ class OwnerPreparation:
                 if (self.specification.get('native_family') is not None
                         or self.specification.get('prepared_linears') is not None
                         or self.specification.get('row_sampling_scratch') is not None
-                        or self.specification.get('prepared_router') is not None):
+                        or self.specification.get('prepared_router') is not None
+                        or self.specification.get('coordinate_staging') is not None):
                     if (not getattr(engine, '_owned_expert_requested', False)
                             or getattr(engine, '_owned_expert_admin_requested', True)
                             or getattr(engine, 'sm70_profile', None) != 'reference'
@@ -613,6 +621,10 @@ class OwnerPreparation:
                 raise RuntimeError("serving buffers did not adopt their preallocated owner workspace")
             if getattr(buffers, 'native_family', None) is not self.native_family:
                 raise RuntimeError('serving buffers did not adopt their prepared native family capability')
+            if self.specification.get('coordinate_staging') is not None:
+                stage = self.coordinate_stages.get(role)
+                if stage is None or buffers.compact_indexer_stage is not stage or not stage.host_coordinates:
+                    raise RuntimeError('serving role did not adopt its paid coordinate host stage')
             if self.row_sampling:
                 if buffers.row_sampling_scratch is not self.row_sampling[role]:
                     raise RuntimeError('serving role did not adopt its paid sampling scratch')
@@ -637,6 +649,9 @@ class OwnerPreparation:
     @property
     def numerical_selection(self):
         selected = {}
+        if self.specification.get('coordinate_staging') is not None:
+            selected['coordinate_staging'] = {'policy': self.specification['coordinate_staging'],
+                'qualification': 'private-unqualified', 'coordinates': 'same-int64-final-rows'}
         if self.specification.get('prepared_router') is not None:
             from tensorfold.cuda.sm70.routing_native import prepared_logits_identity
             selected['prepared_router'] = prepared_logits_identity()
@@ -859,6 +874,8 @@ class OwnerPreparation:
                    if self.reference_arithmetic_request is not None else {}),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
+                **({'coordinate_staging': {role: stage.pinned_host_bytes for role, stage in self.coordinate_stages.items()}}
+                   if self.coordinate_stages else {}),
                 **({'row_sampling_scratch': {role: scratch.record() for role, scratch in self.row_sampling.items()}}
                    if self.row_sampling else {}),
                 **({'aten_operator_identity': deepcopy(self.aten_operator_identity),
@@ -902,6 +919,7 @@ class OwnerPreparation:
         finish((graph.close for graph in (*self.graphs.values(), *self.reference_arithmetic.values())))
         finish((owner.close for owner in self.workspaces.values()))
         finish((scratch.close for scratch in self.row_sampling.values()))
+        finish(stage.close_host for stage in self.coordinate_stages.values())
         if self.dense_owner is not None:
             self.dense_owner.close()
         if self.prepared_m32 is not None:

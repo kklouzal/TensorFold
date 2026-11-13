@@ -57,3 +57,17 @@ def test_owned_target_mtp_and_prefill_coordinates_are_already_in_compact_staging
     coordinates = sum(role.coordinates.nbytes + role.mtp_coordinates.nbytes for role in roles)
     assert coordinates == rows * 24 * (4 if mtp else 2)
     assert coordinate_source_host_bytes(rows) > 0  # A host-only delta; no additional GPU owner is constructed.
+
+
+@pytest.mark.parametrize('mtp', [False,True])
+def test_persistent_host_stage_forecast_matches_all_actual_role_payloads(mtp):
+    from tensorfold.families.qwen4_exp.cuda.history_placement import coordinate_stage_host_bytes
+    decode,prefill=5,32
+    roles=[Staging(decode,13,'cpu',mtp=False,host_coordinates=True),
+           Staging(prefill,13,'cpu',mtp=mtp,host_coordinates=True)]
+    if mtp:
+        roles.append(Staging(decode,13,'cpu',mtp=True,mtp_only=True,host_coordinates=True))
+    assert sum(role.pinned_host_bytes for role in roles) == coordinate_stage_host_bytes(decode,prefill,mtp=mtp)
+    assert sum(role.pinned_host_bytes for role in roles) > 0
+    for role in roles:
+        role.close_host()

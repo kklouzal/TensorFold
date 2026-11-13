@@ -379,6 +379,77 @@ def prepare_router_rows(engine, prepared, output):
     return resources
 
 
+def _ragged_module():
+    if __package__:
+        from . import v100_ragged_replay_oracle as module
+    else:
+        import v100_ragged_replay_oracle as module
+    return module
+
+
+def _ragged_input(path):
+    limit = 4096
+    with Path(path).open('rb') as source:
+        raw = source.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError('ragged replay input exceeds fixed byte bound')
+    expected = {'schema': 'tensorfold.native-ragged-replay-input-v1', 'key': [28, 8],
+                'layouts': [list(counts) for counts in _ragged_module().LAYOUTS],
+                'slots': 10, 'maximum_context_rows': 10, 'comparison': 'bit-exact'}
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('duplicate ragged replay input field')
+            result[key] = value
+        return result
+    data = json.loads(raw, object_pairs_hook=pairs)
+    if json.dumps(data, sort_keys=True) != json.dumps(expected, sort_keys=True):
+        raise ValueError('ragged replay input differs from the fixed native component contract')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _ragged_resources(args, cli, path):
+    from tensorfold.families.qwen4_exp.cuda.weight_types import Config
+    if (args.draft_method != 'mtp' or args.mtp_drafts != 4 or args.no_drafts or args.no_graphs
+            or str(args.parallel).lower() == 'auto' or cli._parallel(args.parallel) != 24
+            or args.context != 262144):
+        raise ValueError('ragged oracle requires explicit MTP4/graphs/24/full262144 before construction')
+    digest = _ragged_input(path)
+    cfg = Config.read(cli._config_dir(args.model))
+    if cfg.nv % 8 or cfg.nk % 8 or cfg.head_dim % 32 or cfg.index_ratio != 4:
+        raise ValueError('ragged oracle header does not support its actual TP8/Q8 geometry')
+    payload = _ragged_module().snapshot_payload(cfg)
+    # Two complete bounded CPU result trees plus one incoming largest tensor.
+    # Three payloads conservatively cover that transfer peak. Tensor wrapper,
+    # field/scalar and source/receipt trees use the existing JSON payload policy.
+    base = _history_resources(8 * (8 * cfg.layers + 32) + 128, 4096)
+    source_bytes = Path(__file__).stat().st_size + Path(_ragged_module().__file__).stat().st_size
+    per_rank = base['per_rank_payload_bytes'] + 3 * payload + source_bytes
+    if 8 * per_rank > sys.maxsize:
+        raise ValueError('ragged oracle host obligation exceeds host size domain')
+    return {**base, 'per_rank_payload_bytes': per_rank, 'global_host_obligation_bytes': 8 * per_rank,
+            'snapshot_payload_bytes': payload, 'input_sha256': digest, 'additional_device_bytes': 0,
+            'diagnostic_only': True, 'P3_valid': False}
+
+
+def prepare_ragged_replay(engine, resources, output):
+    expected = (resources['global_host_obligation_bytes'], resources['input_sha256'])
+    if (engine._owned_qualification_host != expected or engine.context_window != 262144
+            or engine.retention_catalog.host_resources.baseline_host_bytes < expected[0]):
+        raise ValueError('ragged replay obligation is absent from original full-window admission')
+    report = _ragged_module().qualify(engine.multi, snapshot_payload_bytes=resources['snapshot_payload_bytes'])
+    report.update({'input_sha256': resources['input_sha256'], 'resources': resources,
+                   'runtime_sources': _graph_use_sources(engine, engine.multi.graphs)})
+    target = Path(output) / f'ragged-replay-rank-{engine.rank}.json'
+    if target.exists() or target.is_symlink():
+        raise ValueError('ragged replay receipt already exists')
+    if len(json.dumps(report, allow_nan=False).encode()) > resources['receipt_bytes_limit']:
+        raise ValueError('ragged replay receipt exceeds paid metadata bound')
+    write_json(target, report)
+    return report
+
+
 def _prepared_feature_resources():
     # Three fixed role records of at most eight 1KiB schema units each, plus
     # fixed identity/grant headers. Pay both retained intent and final trees.
@@ -2706,20 +2777,25 @@ def _model_contract():
     return v100_owned_model_contract
 
 
-def _teacher_client_input(path, teacher, *, prepared=False, numa=False, numerical=False):
+def _teacher_client_input(path, teacher, *, prepared=False, numa=False, numerical=False, window=False):
     raw = _teacher_module()._owned_teacher_read(path, 8 << 20)
-    contract = _model_contract().prepared_teacher_contract(numa=numa, numerical=numerical) if prepared else _model_contract()
+    contract = _model_contract().prepared_teacher_contract(numa=numa, numerical=numerical, window=window) if prepared else _model_contract()
     spec = contract.validate_teacher_client(_teacher_module()._owned_teacher_object(raw))
-    if spec['teacher_plan_sha256'] != teacher['input_sha256'] or not 1 <= teacher['data']['max_frames'] <= 64:
+    if window:
+        contract.validate_plan(teacher['data'])
+    elif not 1 <= teacher['data']['max_frames'] <= 64:
+        raise ValueError('one planned teacher client differs from its frozen plan/MAX64 region')
+    if spec['teacher_plan_sha256'] != teacher['input_sha256']:
         raise ValueError('one planned teacher client differs from its frozen plan/MAX64 region')
     return {'data': spec, 'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
 
 
 def _prepared_teacher_input(operation, teacher, plan_path):
     """Validate the new fixed operation without changing historical reference DATA."""
+    contract = _model_contract().teacher_operation_contract(operation)
+    if operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE:
+        return contract.prepare_input(operation, teacher, plan_path)
     numa = 'numa' in operation
-    contract = _model_contract().prepared_teacher_contract(numa=numa, numerical=
-        'numerical_trial' in operation)
     contract.validate_operation(operation)
     if (str(plan_path.absolute()) != operation['teacher_plan']['path']
             or teacher['input_sha256'] != operation['teacher_plan']['sha256']
@@ -2794,7 +2870,7 @@ def _prepared_teacher_credit(teacher, selected):
 
 
 def _prepared_teacher_startup(row, spec):
-    return _model_contract().prepared_teacher_contract(numerical='numerical_trial' in spec).validate_startup(row, spec)
+    return _model_contract().teacher_operation_contract(spec).validate_startup(row, spec)
 
 
 _TEACHER_READINESS_ATTEMPTS = 3601
@@ -2845,6 +2921,9 @@ def _owned_model_startup_fields(engine, profile, observer, role):
 
 
 def _owned_client_service(stats, spec, instance, role, *, prepared_manifest=None):
+    if spec.get('schema') == 'tensorfold.target-window-teacher-client-v4':
+        return _model_contract().prepared_teacher_contract(window=True).validate_service(
+            stats, spec, instance, prepared_manifest=prepared_manifest)
     if __package__:
         from . import v100_adaptive_qualification as qualification
     else:
@@ -2909,18 +2988,21 @@ def _owned_client_open(owner, role, *, deadline=None):
     for rank in range(8):
         row = _teacher_module()._owned_teacher_object(_teacher_module()._owned_teacher_read(owner.output / f'rank-{rank}.json', 8 << 20))
         windows, expected = row.get(role + '_windows', {}), spec['expected_service']
-        if spec.get('schema') in ('tensorfold.prepared-expert-teacher-client-v1',
-                                  'tensorfold.prepared-expert-teacher-numa-client-v2', 'tensorfold.numerical-teacher-client-v3'):
-            _prepared_teacher_startup(row, spec)
-        if (row.get('rank') != rank or row.get('mtp_banks') != 0 or windows.get('full_resident') is not True
-                or windows.get('slots') != expected['resident_capacity']
-                or windows.get('capacity_min') != windows.get('capacity_max')
-                or windows.get('limit_min') != windows.get('limit_max')
-                or windows.get('capacity_min', 0) < expected['context_tokens']
-                or windows.get('limit_min', 0) < expected['context_tokens']
-                or windows.get('logical_min') != expected['context_tokens']
-                or windows.get('logical_max') != expected['context_tokens']):
-            raise ValueError(role + ' startup lacks actual all-rank full-window materialization')
+        if spec.get('schema') == 'tensorfold.target-window-teacher-client-v4':
+            _model_contract().prepared_teacher_contract(window=True).validate_startup(row, spec)
+        else:
+            if spec.get('schema') in ('tensorfold.prepared-expert-teacher-client-v1',
+                                      'tensorfold.prepared-expert-teacher-numa-client-v2', 'tensorfold.numerical-teacher-client-v3'):
+                _prepared_teacher_startup(row, spec)
+            if (row.get('rank') != rank or row.get('mtp_banks') != 0 or windows.get('full_resident') is not True
+                    or windows.get('slots') != expected['resident_capacity']
+                    or windows.get('capacity_min') != windows.get('capacity_max')
+                    or windows.get('limit_min') != windows.get('limit_max')
+                    or windows.get('capacity_min', 0) < expected['context_tokens']
+                    or windows.get('limit_min', 0) < expected['context_tokens']
+                    or windows.get('logical_min') != expected['context_tokens']
+                    or windows.get('logical_max') != expected['context_tokens']):
+                raise ValueError(role + ' startup lacks actual all-rank full-window materialization')
         if rank == 0:
             startup = row
         if role == 'benchmark' and row.get('tool_sha256') != owner.producer_sha:
@@ -3039,7 +3121,10 @@ def _teacher_model_observer(output):
     return _owned_model_observer(output, 'teacher')
 
 def _teacher_operation_credit(teacher, client_bytes, observer):
-    _teacher_client_credit(teacher, client_bytes)
+    if teacher['data'].get('schema') == 'tensorfold.target-window-teacher-plan-v1':
+        _model_contract().prepared_teacher_contract(window=True).client_credit(teacher, client_bytes)
+    else:
+        _teacher_client_credit(teacher, client_bytes)
     resources = dict(teacher['resources'])
     teacher['resources'] = _owned_observer_credit(resources, observer['resources'])
 
@@ -3443,6 +3528,9 @@ def _benchmark_model_result(output, prepared):
 
 
 def _teacher_preflight(args, teacher, cli, *, prepared_operation=None, selected=None):
+    if prepared_operation is not None and prepared_operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE:
+        return _model_contract().prepared_teacher_contract(window=True).preflight(
+            args, teacher, cli, selected=selected, operation=prepared_operation)
     if (args.draft_method != 'none' or args.context != teacher['data']['context']
             or str(args.parallel).lower() == 'auto' or cli._parallel(args.parallel) < 9):
         raise ValueError('teacher requires explicit none/context and at least nine fixed slots')
@@ -3478,6 +3566,8 @@ def _teacher_preflight(args, teacher, cli, *, prepared_operation=None, selected=
 
 def prepare_owned_teacher(engine, prepared, output, *, hc_graphs=False):
     """Install only after original immutable loading/serving admission paid it."""
+    if prepared.get('prepared_expert_operation', {}).get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE:
+        return _model_contract().prepared_teacher_contract(window=True).prepare_engine(engine, prepared, output)
     expected = (prepared['resources']['global_host_obligation_bytes'], prepared['input_sha256'])
     if engine._owned_qualification_host != expected:
         raise ValueError('teacher staging obligation differs from original admitted baseline')
@@ -4222,6 +4312,7 @@ def worker(argv):
     parser.add_argument("--gdn-batch-parity", action="store_true", help="diagnostic live batch-vs-scalar GDN and ordered segments; P3 invalid")
     parser.add_argument("--q8-preparation-parity", action="store_true", help="diagnostic one warmed C24 round same-input Q8 writer witness; P3 invalid")
     parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
+    parser.add_argument("--ragged-replay-input", type=Path, help="fixed idle native R28/N8 component oracle DATA; excludes benchmarks/teachers")
     parser.add_argument("--prepared-feature-receipts", action="store_true",
                         help="private bounded post-close Graph/Plan receipts; requires benchmark")
     parser.add_argument("--execution-rows", type=int)
@@ -4276,6 +4367,7 @@ def worker(argv):
     receipt_failed = False
     prepared = router_prepared = None
     benchmark = benchmark_resources = parity_resources = feature_resources = gdn_resources = q8_resources = None
+    ragged_resources = None
     model_setup_errors = [None] * 2  # Teacher/benchmark are exclusive; prepaid before either setup hook.
     teacher = model_observer = closed_benchmark = prepared_teacher = None
     commit_trace = commit_engine = None
@@ -4331,6 +4423,12 @@ def worker(argv):
                             **({'closed': closed_benchmark} if closed_benchmark is not None else {}))
                 except BaseException as primary:
                     _owned_model_failure(engine, primary, model_setup_errors)
+            if ragged_resources is not None:
+                try:
+                    prepare_ragged_replay(engine, ragged_resources, selected.out)
+                except BaseException as primary:
+                    _observer_failure(engine, primary)
+                    raise
             parity_receipt = None
             if parity_resources is not None:
                 try:
@@ -4451,7 +4549,7 @@ def worker(argv):
             data, input_sha, input_limit = _history_input(selected.history_input)
             prepared = (data, input_sha, _history_resources(data["C"], input_limit))
         if selected.teacher_plan is not None:
-            teacher = _teacher_module().owned_teacher_plan(selected.teacher_plan)
+            operation = None
             if selected.prepared_teacher_operation is not None:
                 raw = _teacher_module()._owned_teacher_read(selected.prepared_teacher_operation, 8 << 20)
                 if (not _model_contract().sha(selected.prepared_teacher_operation_sha)
@@ -4460,6 +4558,12 @@ def worker(argv):
                 operation = _teacher_module()._owned_teacher_object(raw)
                 if selected.teacher_client_bytes != operation.get('teacher_client', {}).get('bytes'):
                     raise ValueError('prepared teacher worker client credit differs from its actual DATA')
+            if operation is not None and operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE:
+                teacher = _model_contract().teacher_operation_contract(operation).prepare_plan(
+                    selected.teacher_plan, operation['teacher_plan'])
+            else:
+                teacher = _teacher_module().owned_teacher_plan(selected.teacher_plan)
+            if operation is not None:
                 prepared_teacher = _prepared_teacher_input(operation, teacher, selected.teacher_plan)
                 _prepared_teacher_credit(teacher, prepared_teacher)
                 teacher['prepared_expert_operation'] = operation
@@ -4468,6 +4572,16 @@ def worker(argv):
                 _teacher_operation_credit(teacher, selected.teacher_client_bytes, model_observer)
         from tensorfold import cli
         args = cli.build_parser().parse_args(["serve", *tail])
+        if selected.ragged_replay_input is not None:
+            if any((selected.benchmark_plan is not None, selected.teacher_plan is not None,
+                    selected.history_input is not None, selected.router_row_input is not None,
+                    selected.scheduler_trace is not None, selected.normalization_parity,
+                    selected.prepared_feature_receipts, selected.gdn_batch_parity,
+                    selected.q8_preparation_parity, selected.graph_use_receipts,
+                    commit_spec is not None, scheduler_grants is not None)):
+                raise ValueError('ragged replay excludes other benchmark/teacher/observer operations')
+            ragged_resources = _ragged_resources(args, cli, selected.ragged_replay_input)
+
         if selected.scheduler_trace is not None and _trace_c24_only(benchmark):
             _trace_c24_preflight(args, cli)
         if selected.q8_preparation_parity:
@@ -4505,6 +4619,8 @@ def worker(argv):
         if benchmark_resources is not None:
             obligation = (benchmark_resources["global_host_obligation_bytes"],
                           hashlib.sha256(selected.benchmark_plan.read_bytes()).hexdigest())
+        if ragged_resources is not None:
+            obligation = (ragged_resources['global_host_obligation_bytes'], ragged_resources['input_sha256'])
         if teacher is not None:
             obligation = (teacher['resources']['global_host_obligation_bytes'], teacher['input_sha256'])
         if commit_spec is not None:
@@ -4517,6 +4633,10 @@ def worker(argv):
             obligation=((obligation[0]if obligation else 0)+scheduler_grants.host_obligation_bytes,binding)
         capability = ({"grouped_gate_up": onecat_gu} if onecat_gu is not None else
                       _grouped_gate_up_capability(cli, selected.grouped_gate_up_rows))
+        if teacher is not None and teacher['data'].get('schema') == 'tensorfold.target-window-teacher-plan-v1':
+            if 'device_obligation' not in cli._OwnedExpertQualification.__dataclass_fields__:
+                raise ValueError('installed CLI lacks explicit window-teacher device admission')
+            capability['device_obligation'] = (teacher['resources']['additional_project_device_bytes'], teacher['input_sha256'])
         if selected.execution_rows is not None:
             if "execution_rows" not in cli._OwnedExpertQualification.__dataclass_fields__:
                 raise ValueError("installed CLI lacks private execution-row preparation")
@@ -4666,6 +4786,8 @@ def _run_owned_client(client, command, prefix, output, *, role, plan_sha, client
     try:
         task.start()
         def failed():
+            if mode == 'forced-window' and client.failure() is not None:
+                raise client.failure()
             if task.done.is_set() and task.error is not None:
                 raise task.error
             return False
@@ -4778,6 +4900,7 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
     parser.add_argument("--gdn-batch-parity", action="store_true", help="diagnostic live batch-vs-scalar GDN and ordered segments; P3 invalid")
     parser.add_argument("--q8-preparation-parity", action="store_true", help="diagnostic one warmed C24 round same-input Q8 writer witness; P3 invalid")
     parser.add_argument("--normalization-parity", action="store_true", help="diagnostic same-input raw-bit normalization witness; invalidates performance timings")
+    parser.add_argument("--ragged-replay-input", type=Path, help="fixed idle native R28/N8 component oracle DATA; excludes benchmarks/teachers")
     parser.add_argument("--prepared-feature-receipts", action="store_true",
                         help="private bounded post-close Graph/Plan receipts; requires benchmark")
     parser.add_argument("--execution-rows", type=int, help="private prepared MTP row envelope; requires explicit depth/parallel")
@@ -4828,7 +4951,13 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
         if any((args.benchmark_plan, args.scheduler_trace, args.router_row_input, args.history_input,
                 args.normalization_parity, args.prepared_feature_receipts, args.gdn_batch_parity, args.q8_preparation_parity)):
             parser.error('teacher capture/replay excludes other diagnostic procedures')
-        teacher = _teacher_module().owned_teacher_plan(args.teacher_plan)  # Pure bounded validation before parent effects.
+        if (_prepared_teacher_operation is not None and
+                _prepared_teacher_operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE):
+            contract = _model_contract().teacher_operation_contract(_prepared_teacher_operation)
+            contract.validate_operation(_prepared_teacher_operation)
+            teacher = contract.prepare_plan(args.teacher_plan, _prepared_teacher_operation['teacher_plan'])
+        else:
+            teacher = _teacher_module().owned_teacher_plan(args.teacher_plan)  # Pure bounded validation before parent effects.
         if _prepared_teacher_operation is not None:
             prepared_teacher = _prepared_teacher_input(_prepared_teacher_operation, teacher, args.teacher_plan)
             _prepared_teacher_credit(teacher, prepared_teacher)
@@ -4836,7 +4965,8 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
         if args.teacher_client is not None:
             selected_client = (_teacher_client_input(args.teacher_client, teacher) if prepared_teacher is None else
                                _teacher_client_input(args.teacher_client, teacher, prepared=True,
-                                   numa='numa' in _prepared_teacher_operation, numerical='numerical_trial' in _prepared_teacher_operation))
+                                   numa='numa' in _prepared_teacher_operation, numerical='numerical_trial' in _prepared_teacher_operation,
+                                   window=_prepared_teacher_operation.get('teacher_scope') == _model_contract().WINDOW_TEACHER_SCOPE))
             if prepared_teacher is not None:
                 expected_client = _prepared_teacher_operation['teacher_client']
                 if (str(args.teacher_client.absolute()) != expected_client['path']
@@ -4932,6 +5062,9 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
         prefix += ["--q8-preparation-parity"]
     if args.normalization_parity:
         prefix += ["--normalization-parity"]
+    if args.ragged_replay_input is not None:
+        _ragged_input(args.ragged_replay_input)
+        prefix += ["--ragged-replay-input", str(args.ragged_replay_input.absolute())]
     if args.prepared_feature_receipts:
         prefix += ["--prepared-feature-receipts"]
     if args.execution_rows is not None:
@@ -4966,6 +5099,13 @@ def main(argv=None, *, _benchmark_operation=None, _prepared_teacher_operation=No
         result = _run_owned_client(client, command, prefix, output, role='benchmark',
             plan_sha=closed_benchmark['plan_sha256'], client_sha=selected_client['sha256'], mode='diagnostic')
         _benchmark_model_result(output, closed_benchmark)
+        return result
+    if teacher['data'].get('schema') == 'tensorfold.target-window-teacher-plan-v1':
+        contract = _model_contract().prepared_teacher_contract(window=True)
+        client = contract.WindowClient(teacher, selected_client, output)
+        result = _run_owned_client(client, command, prefix, output, role='teacher',
+            plan_sha=teacher['input_sha256'], client_sha=selected_client['sha256'], mode='forced-window')
+        contract.finish_model(output, teacher, selected_client, model_observer, result)
         return result
     client = _TeacherClient(teacher, selected_client, output)
     result = _run_owned_client(client, command, prefix, output, role='teacher',

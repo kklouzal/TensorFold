@@ -450,3 +450,15 @@ def test_composed_owners_bind_serially_and_commit_each_opaque_delta_once(monkeyp
     assert calls == ['prefill', 'decode+mtp']
     with pytest.raises(RuntimeError, match='one live prepared'):
         selected.bind_dense_weights(NS(), NS())
+
+
+def test_coordinate_host_stage_requires_exact_private_policy_and_binds_identity():
+    from tensorfold.families.qwen4_exp.cuda.compact_indexer import HOST_COORDINATE_POLICY
+    chosen = owner(coordinate_staging=HOST_COORDINATE_POLICY)
+    assert chosen.numerical_selection['coordinate_staging']['policy'] == HOST_COORDINATE_POLICY
+    assert 'coordinate_staging' not in preparation.parse_preparation(spec())
+    for value in [True, 'unknown']:
+        with pytest.raises(ValueError,match='coordinate staging'):
+            owner(coordinate_staging=value)
+    with pytest.raises(ValueError,match='coordinate staging'):
+        preparation.parse_preparation({**spec(coordinate_staging=HOST_COORDINATE_POLICY),'trial':False})

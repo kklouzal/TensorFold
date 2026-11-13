@@ -34,9 +34,11 @@ remain uncontrolled, so this is not an allocation-free claim.
 
 The unchanged original `forward.candidates` path is the packet oracle. The
 focused193-control CPU gate passes on the protected SDK, including complete
-packet bits and candidate/receive mutation-version deltas. SM70 complete-bit,
-mapped-ID and changed-input graph fixtures are provided but remain unrun.
-Actual output alignment/bit identity, all supported row offsets/maps, graph and
-eager ownership, protected installed-artifact provenance, full24 capacity,
-NUMA, model/teacher quality and repeated matched throughput require separate
-qualification. Source-level copy/allocation removal is not a speed result.
+packet bits and candidate/receive mutation-version deltas. A separate installed
+Source28 SM70 component gate passed all13 complete-bit, mapped-ID and
+changed-input graph cases with protected application/SDK provenance and NUMA0
+binding; see [the exact component scope](v100-adaptive-validation.md#source28-prepared-router-and-sampling-component-result).
+Those cases use a synthetic collective fixture. Actual eight-rank NCCL,
+full24 capacity, model/teacher quality and repeated matched throughput remain
+pending, as does the separate legacy six-lane graph mismatch. Source-level
+copy/allocation removal is not a speed result.

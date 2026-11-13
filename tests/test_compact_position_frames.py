@@ -17,12 +17,12 @@ from tensorfold.families.qwen4_exp.cuda.input_preparation import InputPreparatio
 from test_qwen4_exp_position_coordinates import policy
 
 
-def prepared(*, mtp=False, profile_identity="1" * 64, context_identity=None):
+def prepared(*, mtp=False, profile_identity="1" * 64, context_identity=None, host_coordinates=False):
     position = policy("mtp" if mtp else "target")
-    stage = Staging(4, 13, "cpu", mtp=True)
+    stage = Staging(4, 13, "cpu", mtp=True, host_coordinates=host_coordinates)
     prefix = "mtp" if mtp else "target"
     storage = stage.mtp_coordinates if mtp else stage.coordinates
-    buffers = NS(rows=4, compact_indexer_stage=stage, input_preparation_context=None, **{
+    buffers = NS(rows=4, split=None, compact_indexer_stage=stage, input_preparation_context=None, **{
         prefix + "_indexer_position": position, prefix + "_indexer_coordinate_storage": storage,
         prefix + "_indexer_frame_id": 0, prefix + "_indexer_coordinates": None,
         prefix + "_indexer_frame": None})
@@ -79,7 +79,8 @@ def test_foreign_full_profile_is_refused_before_frame_or_text_writes(monkeypatch
 @pytest.mark.parametrize("route", ["target", "mtp", "compute", "mixed", "mtp_compute"])
 def test_foreign_full_profile_is_rejected_before_proofs_or_persistent_compute(monkeypatch, route):
     from tensorfold.cuda import cohort
-    from tensorfold.families.qwen4_exp.cuda import forward, mtp as method, position_coordinates as issuer
+    from tensorfold.families.qwen4_exp.cuda import forward
+    from tensorfold.families.qwen4_exp.cuda import mtp as method, position_coordinates as issuer
 
     is_mtp = route in ("mtp", "mtp_compute")
     buffers, _position, _states, windows, segments = prepared(mtp=is_mtp, context_identity="1" * 64)
@@ -335,3 +336,127 @@ def test_owner_attention_and_pooling_use_the_selected_role_operands(monkeypatch,
     assert len(records) == 4
     assert all(freq is operands.inv_freq and sections == operands.sections and scale == operands.amplitude
                for freq, sections, scale in records)
+
+
+@pytest.mark.parametrize('mtp', [False, True])
+def test_paid_host_text_stage_reuses_storage_and_publishes_current_full_batch(monkeypatch, mtp):
+    from tensorfold.families.qwen4_exp.cuda import position_coordinates as issuer
+    b, p, states, _, segments = prepared(mtp=mtp, host_coordinates=True)
+    stage = b.compact_indexer_stage
+    host = stage._host[int(mtp)]
+    address = host.data_ptr()
+    monkeypatch.setattr(issuer, 'issue_coordinates', lambda *a, **k: pytest.fail('GPU int32 source issuance'))
+    original, sources = issuer._issued, []
+    def issued(tensor, *a, **kw):
+        value = original(tensor, *a, **kw)
+        if tensor.untyped_storage().data_ptr() == host.untyped_storage().data_ptr():
+            sources.append(value)
+        return value
+    monkeypatch.setattr(issuer, '_issued', issued)
+    validate = validate_mtp_indexer_frame if mtp else validate_target_indexer_frame
+    for turn in range(2):
+        stage_text_indexer_frame(b, segments, mtp=mtp)
+        result = validate(b, segments)
+        assert result.dtype == torch.int64 and result.tolist() == [[7+turn]*3,[8+turn]*3,[12+turn]*3,[13+turn]*3]
+        assert host.data_ptr() == address and stage.pinned_host_bytes == 2 * 4 * 24
+        frame = getattr(b, ('mtp' if mtp else 'target') + '_indexer_frame')
+        assert all(value.proof._owner() is frame for *_meta, value in frame.issued)
+        if turn == 0:
+            old = frame
+            for st in states:
+                st.pos += 1
+                st.mtp_len += 1
+    assert not old.active and frame is not old
+    with pytest.raises(ValueError, match='changed or retired'):
+        sources[0].proof.validate(sources[0].tensor,p,profile_identity=states[0].coordinate_profile_identity,
+            generation=states[0].slot_generation,media_identity=states[0].media_identity,
+            row_start=7,row_count=2,owner=old)
+    stage.close_host()
+    assert stage.pinned_host_bytes == 0
+
+
+def test_host_text_mixed_with_immutable_media_boundary_keeps_actual_coordinates():
+    b, p, states, windows, segments = prepared(host_coordinates=True)
+    recipe = issue_text_indexer_coordinates(states[1], p, 12, 2, max_rows=b.rows, buffers=b)
+    mixed = (windows[0], CoordinateWindow(2,4,recipe,p))
+    stage_target_indexer_frame(b,segments,mixed)
+    assert validate_target_indexer_frame(b,segments).tolist() == [[7,21,31],[8,22,32],[12]*3,[13]*3]
+    assert windows[0].source.tensor.tolist() == [[7,21,31],[8,22,32]]
+
+
+def test_host_dma_retirement_precedes_rewrite_and_record_failure_retains_sources(monkeypatch):
+    b, _p, _states, _, segments = prepared(host_coordinates=True)
+    stage = b.compact_indexer_stage
+    host = stage._host[0]
+    host.fill_(99)
+    events = []
+    class Event:
+        def synchronize(self):
+            assert torch.all(host == 99)
+            events.append('wait')
+        def record(self, stream):
+            events.append('record')
+            raise RuntimeError('uncertain host DMA endpoint')
+    stage._host_events[0],stage._host_pending[0] = Event(),True
+    monkeypatch.setattr(torch.cuda,'current_stream',lambda *a:object())
+    with pytest.raises(RuntimeError,match='uncertain host DMA endpoint'):
+        stage_text_indexer_frame(b,segments)
+    assert events == ['wait','record']
+    assert stage._host[0] is host and stage._borrowers[0]
+    assert b.target_indexer_frame is None
+    with pytest.raises(RuntimeError,match='uncertain host DMA endpoint'):
+        stage.close_host()
+    assert stage._host[0] is host
+
+
+def test_invalid_host_recipe_stops_before_final_device_frame_write():
+    b, _p, states, _, segments = prepared(host_coordinates=True)
+    before = b.target_indexer_coordinate_storage._version
+    states[1].rope_delta = -1000
+    with pytest.raises(ValueError):
+        stage_text_indexer_frame(b,segments)
+    assert b.target_indexer_coordinate_storage._version == before
+    assert b.target_indexer_frame is None
+
+
+def test_copy_failure_remains_primary_when_host_completion_record_also_fails(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import position_coordinates as issuer
+    b, _p, _states, _, segments = prepared(host_coordinates=True)
+    primary,secondary=ValueError('copy failed'),RuntimeError('event failed')
+    monkeypatch.setattr(issuer,'copy_coordinate_batch',lambda *a,**k:(_ for _ in ()).throw(primary))
+    stage=b.compact_indexer_stage
+    def fail(**kw):
+        stage._errors[0]=secondary
+        raise secondary
+    monkeypatch.setattr(stage,'host_submitted',fail)
+    with pytest.raises(ValueError) as caught:
+        stage_text_indexer_frame(b,segments)
+    assert caught.value is primary
+    assert primary.__cause__ is secondary or isinstance(primary.__cause__,BaseExceptionGroup)
+    assert stage._host[0] is not None and stage._borrowers[0]
+
+
+@pytest.mark.parametrize('mtp,boundary', [(False,False),(True,False),(True,True)])
+def test_actual_target_and_mtp_host_staging_preserve_ids_and_boundary_coordinates(mtp,boundary):
+    from tensorfold.families.qwen4_exp.cuda import forward
+    from tensorfold.families.qwen4_exp.cuda import mtp as method
+    b,p,states,windows,segments=prepared(mtp=mtp,host_coordinates=True)
+    b.staged=NS(synchronize=lambda:None,record=lambda:None)
+    b.ids_host,b.ids=torch.zeros(4,dtype=torch.int32),torch.zeros(4,dtype=torch.int32)
+    b.last_host,b.last=torch.zeros(2,dtype=torch.int32),torch.zeros(2,dtype=torch.int32)
+    b.mtp_in=torch.zeros((4,1))
+    for state in states:
+        state.mtp_boundary=None
+    if boundary:
+        states[0].mtp_boundary=NS(row=7,generation=3,coordinate_record=windows[0].source,position=p)
+    tokens=[[5,6],[9,10]]
+    if mtp:
+        actual=method._mtp_stage(b,[(st,ids,torch.ones((2,1)))for st,ids in zip(states,tokens)])
+        result=validate_mtp_indexer_frame(b,actual)
+        assert b.last[:2].tolist()==[1,3]
+    else:
+        actual=forward._stage(NS(layers=[]),b,list(zip(states,tokens)))
+        result=validate_target_indexer_frame(b,actual)
+    assert b.ids.tolist()==[5,6,9,10] and actual==segments
+    expected=[[7,21,31]if boundary else [7]*3,[8]*3,[12]*3,[13]*3]
+    assert result.tolist()==expected

@@ -1661,7 +1661,7 @@ The intermediate execution region is one active NONE request, P256 prefill,
 E24 target buffers, R32 expert preparation and 24 resident 262,144-row windows.
 The protocol's MAX64 frame bound is unchanged. It does **not** exercise C8
 MTP4 target verification, MTP proposals, graph replay or the generated trajectory
-of a speculative request. That required capture protocol is subsequent work.
+of a speculative request. The separate v4 source protocol below owns that required capture region; actual native execution remains pending.
 Synthetic repeated prompts are diagnostic inputs, not a held-out quality corpus.
 Conditional KL/NLL/PPL are measurements, without a chosen error tolerance or
 model-quality acceptance rule.
@@ -1682,3 +1682,80 @@ existing teacher controls:
 This is CPU protocol and metric validation only. Fresh matching-image CAP40
 capture/admission, full teacher execution, complete native/content/CLI retirement,
 actual capacity and numerical quality remain required before deployment claims.
+
+
+## Private C8/MTP4 forced-window teacher v4
+
+`tools/v100_target_window_teacher.py` and its sharded evidence reader extend the
+existing Host/Driver/Engine/NUMA/CAP40 owners. The older expert21 and C1 schemas
+remain closed. The v4 region retains all24 native262144-token Q8 windows, P256
+prefill, E120 target/MTP buffers, TP8/ETP4 and the pinned shared-Q8 MTP companion.
+The same three numerical axes and21 expert selectors remain explicit. It does
+not select a dataset, error tolerance, quality acceptance rule or performance
+winner.
+
+The SHA-bound plan contains eight explicit prompt/gold sequences (at most128
+outputs each), per-window widths1..5 and keep paths, model/frontend/profile
+identities, confidence and the diagnostic proposal policy. All eight requests
+admit before prompt work begins. Their sampler still runs: raw original target
+choices and MTP choices/confidence values are recorded. Diagnostic gold tokens
+then drive target acceptance, MTP refresh and every proposal-step input. A
+separately labelled continuation decision exhausts the production reply/context/
+row cap at requested depth4. Counterfactual acceptance is computed against the
+forced proposals/prefix, not represented as the normal generated trajectory.
+Ordinary serving methods and confidence remain unchanged outside this operation.
+
+Before each compute, the observer checks actual host-staged IDs and text/cache
+coordinates against the immutable plan. MTP checks also read the staged device
+IDs and validate the existing coordinate owner's actual issued frame before
+comparing all text coordinate rows. Focused source CPU controls exercise the
+production serial and batched draft loops with deliberately wrong low-probability
+original samples, plus actual eight-State MTP staging and rejected input, device-ID
+and coordinate drift. These retain the full248320 vocabulary contract and do not
+establish GPU execution. Every target row retains case/absolute
+position, input/gold token, window and packed row, slot/generation and method
+metadata. The existing bounded Float32 NPY writer owns vectors. A dedicated
+993280-byte per-rank gather destination is charged before original capacity
+admission; live target rows are never borrowed for it. GPU copy consumers retire
+before the CPU vector is reused. Each vector is fsynced, hashed and closed before
+its reference publishes.
+
+Partial keeps deliberately preserve overlapping and uncommitted target rows.
+The128-token/keep1 maximum is5008 vectors, about4.97GB of raw payload, plus
+explicit bounded metadata. Summaries own sharded window/MTP-stage/MTP-pick
+indices. Readers open and retire one file at a time; comparisons retain at most
+three Float32 vocabulary vectors. Frame, metadata, disk and time grants are
+explicit. Exhaustion, incomplete rows, changed generations, missing native/PID
+proof or uncertain retirement fails the operation rather than dropping data.
+
+Corpus NLL/PPL uses the predeclared first observation of each unique
+`(case_id,absolute_position,gold_token)`. A separate all-window-row metric retains
+all overlaps, including prefill singleton rows; these are dependent rollback/
+row-shape observations, not independent corpus samples. Per-window metric shards
+retain both physical layouts and original samples. Synthetic repeated prompts
+remain diagnostic inputs, not held-out assistant-quality evidence.
+
+Graph coverage uses the genuine exact-graph owner's per-call serving counters,
+actual participant/row shapes and positive retirement. C1 graph hits do not
+satisfy C8 coverage. PAID10 lacks the required C8 keys; the v4 manifest must name
+legal eight-participant target/MTP keys and prove their actual fit/replay without
+borrowing the device floor, service workspace or context capacity. Configured
+maximum depth4, actual cap/chain execution, original confidence values and MTP
+head accuracy are separate facts. Target-logit KL/NLL/PPL does not qualify the
+MTP head, free generation or normal acceptance.
+
+Run source CPU controls inside the matching installed SDK/application with
+genuine FD ownership; when testing source newer than the image, mount only the
+explicit changed owned Python helpers read-only and label the result as source
+protocol evidence. A built installed matching image is required for native use.
+Use disk-backed test scratch with an explicit grant for the full-vocabulary
+fixtures; the small default container `/tmp` is insufficient. The broader
+qualifier controls require `pythonpath=/source/tests /source`, as documented
+above. CPU fixtures are never native, model-quality or throughput evidence.
+
+Actual capture requires a fresh matching source/image CAP40 layer and role
+capture, both mandatory mapped providers, complete CPU Host/Driver admission,
+D13 review, the exact operation gate and an exclusive eight-GPU lease. Old
+Source22/preboot authority is not authority for this protocol. Complete native
+capacity, forced-corpus metrics and candidate selection remain unrun until those
+gates complete.

@@ -9,9 +9,9 @@ performance qualification of the trial are pending.
 An explicit private [canonical row sampling scratch trial](docs/row-sampling-scratch.md)
 reuses a cold aligned FP32 score row and writes standard Torch top-k/ID/LSE
 outputs into the existing candidate packet. Default sampling and all codec
-status/readback checks remain unchanged. The focused193-control CPU gate passes;
-native packet, graph/model quality and matched performance qualification remain
-pending.
+status/readback checks remain unchanged. The focused193-control CPU gate and
+13 Source28 SM70 packet/map/changed-input graph cases pass; actual eight-rank
+collectives, model quality and matched performance qualification remain pending.
 
 Development is now governed by the [canonical ProviderOne implementation design](ProviderOne%20Implementation%20Docs/ProviderOne_V100_Adaptive_Inference_Design.md)
 and its unchanged companion documents in [ProviderOne Implementation Docs](ProviderOne%20Implementation%20Docs/).
@@ -467,14 +467,18 @@ enabling the broader optimized profile; the ordinary default remains unchanged.
 The private launcher validates each worker's requested and configured router
 policy before model preparation and service publication.
 GPU component results retain a separate unresolved graph-fixture failure.
+The Source28 short-context fixture now selects eligible reference attention;
+its separate six-lane exact-output mismatch remains unresolved. A separate
+native component gate passed 58 prepared-router and 13 sampling-scratch checks.
 
 The private preparation selector `prepared_router: owned-serial-router-v1`
 (`v100_onecat_campaign.py inputs --prepared-router owned-serial-router-v1`)
 adds a separate resident serial-logit trial for decode and MTP with2–256 rows.
 It binds the actual model weights and role buffers before serving, retains the
 R1 serial reference and prefill path, and leaves the existing process selector,
-top-k and expert weights unchanged. A fresh native build, exact logits/routing
-oracles, full-model quality and matched performance remain pending. See the
+top-k and expert weights unchanged. The Source28 native component gate passed
+its exact logits/routing and sampling-packet checks; full-model quality,
+the separate graph failure and matched performance remain pending. See the
 [prepared router contract](docs/v100-adaptive-validation.md#prepared-per-owner-serial-router-trial).
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
@@ -1358,6 +1362,15 @@ screen was 3, measuring 50.41/53.92/54.67 decode tokens/s with two fully allocat
 262,140-token windows. MTP's three-slot run retained a repeated prefix that the
 two-slot DSpark run evicted; these screens do not isolate a method-only gain.
 Compose exposes method/checkpoint/depth/confidence and equal full-window counts.
+
+An explicit private `preparation.coordinate_staging=owned-host-int64-coordinates-v1`
+trial (`v100_onecat_campaign.py inputs --coordinate-staging owned-host-int64-coordinates-v1`)
+retains paid pinned int64 text-coordinate staging per execution role and
+copies into the existing final GPU coordinate owner. CPU rewriting waits for its
+own H2D completion; mixed media and deferred MTP boundary coordinates keep their
+issued-source contracts. The trial removes fresh text GPU int32 intermediates;
+native/model, resource and matched performance gates remain pending. It requires
+one Buffers owner per role; defaults retain ordinary issuance.
 
 A prepared decode/MTP M32 trial can now compose with the existing named dense
 vendor owner for **prefill only** (`cublas`, `cublaslt` or `cutlass`). Overlapping
@@ -2942,9 +2955,16 @@ the existing CAP40/NUMA full-vocabulary teacher, retaining the 21 expert
 selectors. This intermediate protocol uses C1/NONE/P256/E24 with all 24 native
 context windows allocated. It reports forced-prefix conditional KL/NLL/PPL;
 it supplies no tolerance, model-accuracy acceptance or throughput claim.
-C8/MTP4 target-window and graph execution require their own versioned capture
-and remain pending. See [optimization validation](docs/optimization-validation.md)
-for the source and CPU-control scope.
+The separate v4 `tools/v100_target_window_teacher.py` protocol adds explicit
+C8/MTP4/P256/E120 forced target windows and proposal conditioning, using the
+production decoder and graph owners. It streams complete target-vocabulary
+rows and preserves original target/MTP samples separately from diagnostic gold
+choices and keep paths. Native matching-image execution and model quality remain
+unverified; configured depth is distinct from observed proposal/graph coverage.
+Focused source CPU controls verify gold proposal continuation under deliberately
+wrong low-confidence samples and actual eight-State MTP staging IDs/coordinates.
+See [optimization validation](docs/optimization-validation.md) for the controls,
+resource bounds and evidence limits.
 
 The private `observed-demand-v1` exact-graph policy can request bounded
 ragged row totals and participant counts absent from the original 30-key
@@ -2952,3 +2972,9 @@ catalogue. Cold preparation seeds real compact State segments; runtime State
 handoffs remain live. Default and `paid-subset-v1` catalogues are unchanged.
 Native replay, output quality, live budget fit and performance remain pending
 for the new shapes. See [demand capture](docs/observed-graph-demand.md).
+
+A controlled [native ragged replay oracle](docs/observed-graph-demand.md)
+now compares actual `ExactStateGraphs` target/MTP `(28,8)` replay against eager
+execution on the same idle TP8 decoder using ordinary State reset/restaging and
+bounded short-prefix CPU references. Its native execution is pending; this
+adds no full-window, quality or performance qualification.

@@ -74,7 +74,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _owned_expert_gate_up=None, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=()) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _owned_expert_gate_up=None, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=(), _owned_qualification_device: tuple=()) -> None:
         if type(_owned_expert_native) is not bool:
             raise ValueError("private owned expert selection must be a literal boolean")
         if (type(_owned_qualification_host) is not tuple or _owned_qualification_host and (not _owned_expert_native
@@ -83,6 +83,14 @@ class FlashNextEngine:
                 or type(_owned_qualification_host[1]) is not str or len(_owned_qualification_host[1]) != 64
                 or any(char not in "0123456789abcdef" for char in _owned_qualification_host[1]))):
             raise ValueError("private qualification host obligation requires bounded bytes and SHA256 provenance")
+        if (type(_owned_qualification_device) is not tuple or _owned_qualification_device and (
+                not _owned_expert_native or len(_owned_qualification_device) != 2
+                or type(_owned_qualification_device[0]) is not int
+                or not 0 < _owned_qualification_device[0] <= (1 << 63) - 1
+                or type(_owned_qualification_device[1]) is not str
+                or not _owned_qualification_host
+                or _owned_qualification_device[1] != _owned_qualification_host[1])):
+            raise ValueError("private qualification device bytes require their exact owned host/input SHA lifetime")
         if type(_reference_owner_tiles) is not bool or _reference_owner_tiles and (not _owned_expert_native
                 or execution_profile_manifest is None):
             raise ValueError("reference tiles require the private owned preparation lifecycle")
@@ -100,6 +108,7 @@ class FlashNextEngine:
         self._owned_expert_gate_up_requested = _owned_expert_gate_up
         self._reference_owner_tiles_requested = _reference_owner_tiles
         self._owned_qualification_host = _owned_qualification_host
+        self._owned_qualification_device = _owned_qualification_device
         self._owned_expert_requested = _owned_expert_native
         self._owned_expert_admin_requested = serving_profile_root is not None
         self._owned_expert_plan = None
@@ -120,6 +129,7 @@ class FlashNextEngine:
         profile_options.pop("_owned_expert_gate_up")
         profile_options.pop("_GroupedGateUp", None)
         profile_options.pop("_owned_qualification_host")
+        profile_options.pop("_owned_qualification_device")
         profile_options.pop("_prepared_family_plan")  # private startup cache is never an administrator option
         self._profile_build = None
         self.serving_profiles = None
@@ -1419,9 +1429,11 @@ class FlashNextEngine:
                 total = tp * multi_static_domains(text, count, each, mtp, gdn_pointer_fields=8 if native_gdn_batch else 2)[1]
                 total += tp * status_workspace(count, tp)[1] if tp > 1 else 0
                 if self.position_profile is not None:
-                    from .history_placement import coordinate_source_host_bytes
+                    from .history_placement import coordinate_source_host_bytes, coordinate_stage_host_bytes
 
                     total += tp * coordinate_source_host_bytes(max(row_envelope(count), rows0))
+                    if owner_specification is not None and owner_specification.get('coordinate_staging') is not None:
+                        total += tp * coordinate_stage_host_bytes(row_envelope(count), rows0, mtp=mtp)
                 if dspark_plan is not None and graphs and proposal_graphs_enabled:
                     total += tp * graph_host_bytes(count, min(int(depth), dspark_plan.config.block), tp, int(max_len))
                 if dflash_plan is not None:
@@ -1449,6 +1461,10 @@ class FlashNextEngine:
         if self._owned_qualification_host:
             # Private observer input persists through loading and serving; no materialized credit.
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + self._owned_qualification_host[0]
+        if self._owned_qualification_device:
+            # Dedicated diagnostic tensors persist through serving. Charge
+            # before capacity admission; never borrow floor or service credit.
+            numeric_capacity["device_workspace_bytes"] = numeric_capacity.get("device_workspace_bytes", 0) + self._owned_qualification_device[0]
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision and not media_requested, rank, workspace),
                                    weight_rule,
@@ -1591,12 +1607,14 @@ class FlashNextEngine:
                 "preparation": self._position_prepared.receipt(),
                 "effective_context_window": self.capacity_plan["context_window"],
                 "vectors": dict(position_vector_ledger)}
-            from .history_placement import coordinate_source_host_bytes
+            from .history_placement import coordinate_source_host_bytes, coordinate_stage_host_bytes
 
             coordinate_rows = max(row_envelope(streams), rows0)
             self.capacity_plan["position_profile"]["coordinate_sources"] = {
                 "rows": coordinate_rows, "host_payload_bytes_per_rank": coordinate_source_host_bytes(coordinate_rows),
-                "project_pinned_bytes": 0, "gpu_payload": "covered-by-existing-owner-prepare-envelope"}
+                "project_pinned_bytes": (coordinate_stage_host_bytes(row_envelope(streams), rows0, mtp=mtp)
+                    if owner_specification is not None and owner_specification.get('coordinate_staging') is not None else 0),
+                "gpu_payload": "covered-by-existing-owner-prepare-envelope"}
         if self.rope.rope_type != "default":
             print(f"[tensorfold] static YaRN factor {self.rope.factor:g}, rotary amplitude "
                   f"{self.rope.attention_factor:.8g}, original context {self.rope.native_context}; "
@@ -1685,6 +1703,8 @@ class FlashNextEngine:
             w.meta.update(history_layout="unique", attention_degree=history_placement.degree)
         if owner_preparation is not None:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
+            if owner_preparation.specification.get('coordinate_staging') is not None:
+                w._private_coordinate_stages = owner_preparation.coordinate_stages
             if owner_preparation.row_sampling:
                 w._private_row_sampling = owner_preparation.row_sampling
             if owner_preparation.prepared_m32 is not None:
@@ -2464,6 +2484,8 @@ class FlashNextEngine:
             policy.append(["owned-expert-native", owned.identity])
         if getattr(self, "_owned_qualification_host", ()):
             policy.append(["private-qualification-host", self._owned_qualification_host])
+        if getattr(self, "_owned_qualification_device", ()):
+            policy.append(["private-qualification-device", self._owned_qualification_device])
         if getattr(self, "position_profile", None) is not None:
             policy.append(["position-profile", self.position_profile.identity, self.position_profile.epoch,
                            self.position_method_binding])

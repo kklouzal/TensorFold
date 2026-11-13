@@ -175,8 +175,9 @@ def validate_startup(row, selected):
     return row
 
 
-def expected_numerics(trial):
+def expected_numerics(trial, *, mtp=False):
     validate_trial(trial)
+    require(type(mtp) is bool, 'explicit numerical role selection required')
     result = {}
     if trial['native_family']:
         from tensorfold.cuda.sm70.owned_family import numerical_identity
@@ -186,15 +187,15 @@ def expected_numerics(trial):
         result['prepared_linears'] = owned_numerical_identity()
     if trial['owned_q8_window_prepare']:
         result['owned_q8_window_preparation'] = {
-            'policy': 'owned-q8-window-preparation-v1', 'roles': ['decode'],
+            'policy': 'owned-q8-window-preparation-v1', 'roles': ['decode', 'mtp'] if mtp else ['decode'],
             'codec': 'original-floor-q8', 'native_rows_per_dispatch': 1,
             'native_dispatches_per_window': 'rows', 'maximum_window_rows': 256,
             'compact_indexer': 'reference-window-transaction', 'qualified': False}
     return result or None
 
 
-def validate_numerics(value, trial):
-    expected = expected_numerics(trial)
+def validate_numerics(value, trial, *, mtp=False):
+    expected = expected_numerics(trial, mtp=mtp)
     require(type(value) is dict and ('owner_preparation_numerics' in value) == (expected is not None)
             and value.get('owner_preparation_numerics') == expected,
             'actual numerical registration differs from runtime-owned absent/present identity')

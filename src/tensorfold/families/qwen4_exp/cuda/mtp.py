@@ -109,7 +109,7 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
                     at += 1
                 if at < end:
                     coordinates = issue_text_indexer_coordinates(st, b.mtp_indexer_position,
-                        st.mtp_len + at - begin, end - at, max_rows=b.rows)
+                        st.mtp_len + at - begin, end - at, max_rows=b.rows, buffers=b)
                     coordinate_windows.append(CoordinateWindow(at, end, coordinates, b.mtp_indexer_position))
             indexer_coordinates = tuple(coordinate_windows)
         if indexer_coordinates is not None or hasattr(b, "mtp_indexer_coordinate_storage"):

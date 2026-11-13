@@ -2593,3 +2593,73 @@ the container exited 0 without OOM and was removed. These controls include
 exact Weights adoption, Half-only binding, role ownership, closed-owner
 rejection and row mutation publication. They certify host controls only;
 the native/model/quality/performance gates above remain pending.
+
+## Source28 router graph fixture repair
+
+The Source28 installed native router/sampling gate stopped after 46 passes
+with one failure in the existing six-lane router graph fixture: graph replay
+returned `None`, before the new prepared-router and sampling-scratch controls
+ran. The failed log and retirement receipt remain preserved; this is not a
+numerical failure or a passing qualification.
+
+The caller enabled the private attention candidate while importing a helper
+whose own module-local autouse fixture selects reference Torch attention.
+Importing that helper does not apply its defining module's pytest fixture.
+Its nine-token histories are outside the attention candidate's minimum
+65-token boundary, and Source28's source-built Torch/CUDA identity also differs
+from the candidate's exact historical cu126 build. The bound graph planner
+therefore correctly declined before lane preparation. The default catalogue
+includes the maximum six participants; an omitted six-lane key is not the cause.
+
+The router fixture now explicitly selects reference attention, matching the
+helper's existing contract. Native router, family and prepared-linear settings,
+fixture geometry, exact logits/state comparisons and captured-hit assertion
+remain intact. No runtime, native source, attention qualification, SDK or
+installed application changes are made. A fresh full 105-router plus
+13-sampling-scratch native gate remains required; model, quality, capacity and
+matched performance qualification remain pending.
+
+With immutable Source28 image
+`sha256:6762b57bfb49bd222ba3aaa8285ef5db673e0aa3c37ae994de177c179da43764`,
+installed-first genuine FD/SDK and a read-only source overlay, the existing
+CPU attention-qualification and bound-graph controls passed 29 cases and
+24 subtests. A subsequent manual GPU-helper import failed its existing
+module-level CUDA capability query on the GPU-hidden worker; that failure is
+retained. A separate CPU probe invoked the real repaired router fixture with
+only its numerical helper substituted, confirmed all four requested provider
+flags, and independently checked the two attention-decline predicates. All
+118 native cases collected without execution. Source hashes held in both runs;
+both bounded UID1000 containers retired and were removed. These host checks
+do not replace the fresh native gate.
+
+### Source28 prepared-router and sampling component result
+
+The separate installed Source28 component gate passed **71 tests** in 2.47s:
+58 prepared-router cases and 13 reusable sampling-scratch cases, with zero
+skips or errors. The other 47 cases were explicitly deselected for this
+independent component gate. The full 118-case gate remains failed: after the
+attention fixture repair, its legacy six-lane comparison differed in 512 of
+3,072 target vocabulary logits (maximum absolute difference
+`1.6570091247558594e-05`). Its exact assertions remain unchanged; the first
+divergence still requires diagnosis. The component result does not replace it.
+
+The component run used source `2401a6c0` and immutable image
+`sha256:6762b57bfb49bd222ba3aaa8285ef5db673e0aa3c37ae994de177c179da43764`,
+with all 848 installed application files, genuine FD owner, protected SDK and
+dependency checks held, without a package or test overlay. GPU0 was a native
+SM70 V100 under ordinary UID1000/CapEff0, with CPU and anonymous/pinned memory
+bound to NUMA0. The actual same-process routing extension exposed and warmed
+`prepared_logits`; its 403,912-byte binary had SHA256
+`bb7de1939629fb795c29ba0a7c5063bd36902ea978cc67689b59280ba49adb19`.
+The controls cover exact serial logits, routing packets, adverse inputs,
+owner bindings and changed-input graph replay, plus original-versus-scratch
+packet bits. The sampling collective fixture is synthetic; it does not
+qualify an actual eight-rank NCCL/model execution.
+
+The run exited 0 without OOM, retained source identity, retired and removed
+its container, and left all eight GPUs healthy with 48 active links and no
+new Xids or compute contexts. Raw evidence is retained in the private
+`onecat-integration-20261113-v28/prepared-router-scratch71-v1` build packet.
+This is component correctness evidence, not a full-model, accuracy, capacity,
+allocation-free or throughput qualification. Torch internal top-k and
+log-sum-exp workspaces remain outside the reusable scratch contract.

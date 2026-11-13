@@ -208,11 +208,14 @@ def _prepare_copy(source, *, source_position, position, row_start, row_count, dt
     lo = row_start - proof.row_start
     selected = source.tensor[lo:lo + row_count]
     if destination is not None:
+        host_transfer = (source_owner is owner and owner is not None
+                         and source.tensor.device.type == 'cpu' and destination.device.type == 'cuda'
+                         and source.tensor.is_pinned() and source.tensor.dtype == dtype == torch.int64)
         if (destination.shape != (row_count, 3) or destination.dtype != dtype
-                or destination.device != source.tensor.device or not destination.is_contiguous()):
+                or destination.device != source.tensor.device and not host_transfer or not destination.is_contiguous()):
             raise ValueError("coordinate destination must match the final row/device/integer layout")
         require_mutation_budget(destination, 1)
-        if row_count:
+        if row_count and destination.device == source.tensor.device:
             source_storage, destination_storage = source.tensor.untyped_storage(), destination.untyped_storage()
             left, right = source_storage.data_ptr(), destination_storage.data_ptr()
             if (left < right + destination_storage.nbytes()
@@ -226,7 +229,7 @@ def _perform_copy(plan):
     with torch.inference_mode(False):
         if plan.destination is None:
             return plan.selected.to(dtype=plan.dtype, copy=True)
-        plan.destination.copy_(plan.selected)
+        plan.destination.copy_(plan.selected, non_blocking=plan.selected.device != plan.destination.device)
         return plan.destination
 
 

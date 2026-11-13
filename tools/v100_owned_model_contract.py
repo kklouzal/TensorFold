@@ -36,19 +36,36 @@ NUMA_PREPARED_TEACHER_SCHEMA = 'tensorfold.v100-prepared-expert-teacher-numa-ope
 NUMA_PREPARED_TEACHER_MODE = 'owned-prepared-expert-teacher-numa-model-v2'
 NUMERICAL_TEACHER_SCHEMA = 'tensorfold.v100-numerical-teacher-operation-v3'
 NUMERICAL_TEACHER_MODE = 'owned-numerical-teacher-model-v3'
-PREPARED_SCHEMAS = (PREPARED_TEACHER_SCHEMA, NUMA_PREPARED_TEACHER_SCHEMA, NUMERICAL_TEACHER_SCHEMA)
+WINDOW_TEACHER_SCHEMA = 'tensorfold.v100-target-window-teacher-operation-v4'
+WINDOW_TEACHER_MODE = 'owned-target-window-teacher-model-v4'
+WINDOW_TEACHER_SCOPE = 'rn12-p256-e120-c8-mtp4-forced-window-v1'
+PREPARED_SCHEMAS = (PREPARED_TEACHER_SCHEMA, NUMA_PREPARED_TEACHER_SCHEMA, NUMERICAL_TEACHER_SCHEMA,
+                    WINDOW_TEACHER_SCHEMA)
 
 
 def teacher_contract(value):
     key = value.get('schema', value.get('mode'))
+    window = key in (WINDOW_TEACHER_SCHEMA, WINDOW_TEACHER_MODE) or value.get('mode') == WINDOW_TEACHER_MODE
     numerical = key in (NUMERICAL_TEACHER_SCHEMA, NUMERICAL_TEACHER_MODE) or value.get('mode') == NUMERICAL_TEACHER_MODE
     numa = key in (NUMA_PREPARED_TEACHER_SCHEMA, NUMA_PREPARED_TEACHER_MODE) or value.get('mode') == NUMA_PREPARED_TEACHER_MODE
-    return prepared_teacher_contract(numa=numa, numerical=numerical)
+    return prepared_teacher_contract(numa=numa, numerical=numerical, window=window)
 
 
 
-def prepared_teacher_contract(*, numa=False, numerical=False):
+def teacher_operation_contract(operation):
+    """Select only the finite declared operation versions; validators own admissibility."""
+    return prepared_teacher_contract(window=operation.get('teacher_scope') == WINDOW_TEACHER_SCOPE,
+        numerical='numerical_trial' in operation, numa='numa' in operation)
+
+
+def prepared_teacher_contract(*, numa=False, numerical=False, window=False):
     """Explicit versioned dispatch; historical validators remain unchanged."""
+    if window:
+        if __package__:
+            from . import v100_target_window_teacher
+        else:
+            import v100_target_window_teacher
+        return v100_target_window_teacher
     if numerical:
         if __package__:
             from . import v100_numerical_teacher

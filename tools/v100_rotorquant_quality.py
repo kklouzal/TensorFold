@@ -833,6 +833,43 @@ def _candidate_teacher_metrics(left, right, control, *, execution_families=None)
     return rows, quality
 
 
+def _prepared_expert_binding(startup, selector, mapped, rank):
+    """The same retained expert frame/provider contract in NONE and MTP trials."""
+    if selector['gu'] == 'incumbent':
+        if ('onecat_experts' in startup or startup.get('grouped_gate_up') != {'requested_rows': 4, 'actual_rows': 4}):
+            raise ValueError('prepared reference lacks actual Grouped4 ownership')
+    else:
+        binding_record = startup.get('onecat_experts', {})
+        frame = binding_record.get('record', {})
+        profile = frame.get('profile', {})
+        onecat_gu = selector['gu'] != 'tensorfold'
+        frame_bytes, lookup = (117964800, 11264) if onecat_gu else (0, 0)
+        if (binding_record.get('schema') != 'tensorfold.private-onecat-frame-binding-v1'
+                or binding_record.get('rank') != rank or binding_record.get('world') != 8
+                or binding_record.get('status') != 'prepared-execution-eligible'
+                or frame.get('schema') != 'tensorfold.onecat-active-frame-owner-v1'
+                or frame.get('enabled') is not True or frame.get('closed') is not False
+                or profile.get('policy') != 'owned-onecat-active-frame-current-down-v1'
+                or any(profile.get(key) != selector[name] for key, name in
+                       (('method', 'gu'), ('down_method', 'down'), ('iq2_source', 'iq2_source'), ('prefill_method', 'prefill_method')))
+                or profile.get('banks') != 48 or len(frame.get('raw_bindings', [])) != 48
+                or profile.get('frame_slab_bytes') != frame_bytes or profile.get('shared_lookup_bytes') != lookup
+                or profile.get('additional_device_bytes') != frame_bytes + lookup
+                or profile.get('original_raw_retained') is not True or profile.get('baseline_grouped_gate_up_rows') != 4
+                or profile.get('packer_workspace_bytes') != 0 or profile.get('mtp_provider') != 'tensorfold-fp32-mtp'
+                or profile.get('down_format_policy') != {'20': selector['down'], '42': 'tensorfold'}):
+            raise ValueError('prepared expert actual typed frame binding differs')
+        fields = ['gate_up', 'down'] + (['packer'] if onecat_gu else [])
+        if selector['down'] != 'tensorfold':
+            fields.append('q8_down')
+        if selector['iq2_source'] == 'raw':
+            fields.append('raw_iq2_gate_up')
+        for field in fields:
+            path = binding_record.get('origins', {}).get(field, {}).get('path')
+            if not path or not any(item['path'] == path for item in mapped):
+                raise ValueError('prepared expert origin lacks its actual executable VMA proof')
+
+
 def _prepared_expert_side(selected, mode, control, contract):
     side = _owned_comparison_side(selected, mode, control, contract=contract)
     operation, authority = side['inner']['operation'], side['authority']
@@ -929,40 +966,7 @@ def _prepared_expert_side(selected, mode, control, contract):
                     saved['path'] == path and saved['sha256'] == item['sha256'] and saved['bytes'] == item['size']
                     for saved in mapped):
                 raise ValueError('prepared issued native fingerprint differs from its actual mapped backing object')
-        selector = operation['selector']
-        if selector['gu'] == 'incumbent':
-            if ('onecat_experts' in startup or startup.get('grouped_gate_up') != {'requested_rows': 4, 'actual_rows': 4}):
-                raise ValueError('prepared reference lacks actual Grouped4 ownership')
-        else:
-            binding_record = startup.get('onecat_experts', {})
-            frame = binding_record.get('record', {})
-            profile = frame.get('profile', {})
-            onecat_gu = selector['gu'] != 'tensorfold'
-            frame_bytes, lookup = (117964800, 11264) if onecat_gu else (0, 0)
-            if (binding_record.get('schema') != 'tensorfold.private-onecat-frame-binding-v1'
-                    or binding_record.get('rank') != rank or binding_record.get('world') != 8
-                    or binding_record.get('status') != 'prepared-execution-eligible'
-                    or frame.get('schema') != 'tensorfold.onecat-active-frame-owner-v1'
-                    or frame.get('enabled') is not True or frame.get('closed') is not False
-                    or profile.get('policy') != 'owned-onecat-active-frame-current-down-v1'
-                    or any(profile.get(key) != selector[name] for key, name in
-                           (('method', 'gu'), ('down_method', 'down'), ('iq2_source', 'iq2_source'), ('prefill_method', 'prefill_method')))
-                    or profile.get('banks') != 48 or len(frame.get('raw_bindings', [])) != 48
-                    or profile.get('frame_slab_bytes') != frame_bytes or profile.get('shared_lookup_bytes') != lookup
-                    or profile.get('additional_device_bytes') != frame_bytes + lookup
-                    or profile.get('original_raw_retained') is not True or profile.get('baseline_grouped_gate_up_rows') != 4
-                    or profile.get('packer_workspace_bytes') != 0 or profile.get('mtp_provider') != 'tensorfold-fp32-mtp'
-                    or profile.get('down_format_policy') != {'20': selector['down'], '42': 'tensorfold'}):
-                raise ValueError('prepared expert actual typed frame binding differs')
-            fields = ['gate_up', 'down'] + (['packer'] if onecat_gu else [])
-            if selector['down'] != 'tensorfold':
-                fields.append('q8_down')
-            if selector['iq2_source'] == 'raw':
-                fields.append('raw_iq2_gate_up')
-            for field in fields:
-                path = binding_record.get('origins', {}).get(field, {}).get('path')
-                if not path or not any(item['path'] == path for item in mapped):
-                    raise ValueError('prepared expert origin lacks its actual executable VMA proof')
+        _prepared_expert_binding(startup, operation['selector'], mapped, rank)
         startups.append(startup)
         natives.append({item['name']: item for item in mapped})
         registrations.append(registration)

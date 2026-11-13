@@ -392,7 +392,7 @@ from tensorfold import hub
 from tensorfold.families.qwen4_exp.cuda.execution_identity import artifact_files
 sys.path.insert(0,'/tools')
 from bench_concurrent import prepare_matrix
-target,mtp,model,profile,inputs,tokens,reps,levels,native_family,prepared_linears,prepared_router=sys.argv[1:]
+target,mtp,model,profile,inputs,tokens,reps,levels,native_family,prepared_linears,prepared_router,coordinate_staging=sys.argv[1:]
 prepared=hub.resolve(target,download=False)
 engine=SimpleNamespace(model_dir=prepared,method_geometry=SimpleNamespace(method='mtp'),
                        mtp_model_dir=pathlib.Path(mtp),media_profile=None)
@@ -414,6 +414,8 @@ if prepared_linears:
     manifest['preparation']['prepared_linears']=prepared_linears
 if prepared_router:
     manifest['preparation']['prepared_router']=prepared_router
+if coordinate_staging:
+    manifest['preparation']['coordinate_staging']=coordinate_staging
 matrix=prepare_matrix(prepared,model,profile,[int(n) for n in levels.split(',')],[int(inputs)],int(tokens),int(reps))
 for name,value in [('profile.json',manifest),('matrix.json',matrix)]:
     with (pathlib.Path('/evidence')/name).open('x') as out:
@@ -439,7 +441,9 @@ def installed_check_receipt(directory, source_uid, image_id):
 
 
 def inputs(root, output, selected_image, installed_check, models, target, mtp, cache, model_name,
-           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None, prepared_linears=None, prepared_router=None):
+           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None, prepared_linears=None, prepared_router=None, coordinate_staging=None):
+    if coordinate_staging not in (None, 'owned-host-int64-coordinates-v1'):
+        raise ValueError('coordinate staging inputs require the explicit private policy')
     if prepared_linears not in (None, 'owned-prepared-m32-v1'):
         raise ValueError('prepared M32 inputs require the explicit private numerical policy')
     if native_family not in (None, 'owned-native-family-v1'):
@@ -466,7 +470,7 @@ def inputs(root, output, selected_image, installed_check, models, target, mtp, c
             "-v", str(root / "source/tools") + ":/tools:ro", "-v", str(output) + ":/evidence:rw",
             "-w", "/tmp", "--entrypoint", "/opt/venv/bin/python", binding["reference"], "-B", "-c", _PREPARE_INPUTS,
             "/models/" + target, "/models/" + mtp, model_name, profile, str(input_tokens), str(tokens),
-            str(repetitions), levels, native_family or "", prepared_linears or "", prepared_router or ""]
+            str(repetitions), levels, native_family or "", prepared_linears or "", prepared_router or "", coordinate_staging or ""]
     container(argv, output, timeout)
     publish(output / "inputs.json", {"source_uid": record["source_uid"], "image_binding": binding,
             "manifest": identity(output / "profile.json"), "matrix": identity(output / "matrix.json"),
@@ -1488,6 +1492,8 @@ def main(argv=None):
                               help='explicit unqualified per-owner fixed-M32 decode/MTP buffers; default keeps existing linears')
             item.add_argument('--native-family', choices=('owned-native-family-v1',),
                               help='explicit unqualified per-engine native family numerics; default keeps existing family')
+            item.add_argument('--coordinate-staging', choices=('owned-host-int64-coordinates-v1',),
+                              help='private paid int64 text-coordinate host staging trial (default: ordinary issuance)')
             item.add_argument('--prepared-router', choices=('owned-serial-router-v1',),
                               help='explicit unqualified resident serial logits for decode/MTP2..256; R1 and prefill stay reference')
     args = parser.parse_args(argv)
@@ -1507,7 +1513,7 @@ def main(argv=None):
         inputs(args.source.absolute(), args.out.absolute(), args.image, args.installed_check.absolute(), args.models, args.target, args.mtp,
                args.cache.absolute(), args.name, args.profile, args.input_tokens, args.tokens, args.reps,
                args.levels, args.cpus, args.memory, args.timeout, native_family=args.native_family,
-               prepared_linears=args.prepared_linears, prepared_router=args.prepared_router)
+               prepared_linears=args.prepared_linears, prepared_router=args.prepared_router, coordinate_staging=args.coordinate_staging)
     else:
         model(args.source.absolute(), args.out.absolute(), args.image, args.settings.absolute(), args.installed_check.absolute(),
               args.cpus, args.memory, args.timeout, args.startup_timeout, args.smoke_only,

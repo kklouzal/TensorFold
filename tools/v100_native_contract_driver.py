@@ -78,11 +78,12 @@ def validate_spec(spec):
     fields = ('schema', 'mode', 'image_id', 'source_commit', 'app_root', 'expected_app', 'sdk_manifest',
               'fd', 'torch', 'UUIDs', 'SM', 'modules', 'test_files', 'diagnostics', 'required_native_elf_prefixes')
     benchmark = type(spec) is dict and spec.get('schema') == model_contract.BENCHMARK_SCHEMA
-    numa_teacher = type(spec) is dict and spec.get('schema') in (model_contract.NUMA_PREPARED_TEACHER_SCHEMA, model_contract.NUMERICAL_TEACHER_SCHEMA)
+    numa_teacher = type(spec) is dict and spec.get('schema') in (
+        model_contract.NUMA_PREPARED_TEACHER_SCHEMA, model_contract.NUMERICAL_TEACHER_SCHEMA, model_contract.WINDOW_TEACHER_SCHEMA)
     prepared_teacher = type(spec) is dict and spec.get('schema') in model_contract.PREPARED_SCHEMAS
     contract = model_contract.teacher_contract(spec) if prepared_teacher else model_contract
     model = type(spec) is dict and spec.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA,
-                                                       model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA, model_contract.NUMERICAL_TEACHER_SCHEMA)
+                                                       *model_contract.PREPARED_SCHEMAS)
     if model:
         fields = tuple(key for key in fields if key not in ('modules', 'test_files')) + ('operation', 'source_files')
     if (type(spec) is not dict or set(spec) not in (set(fields), set(fields) | {'verification_launcher'})
@@ -868,7 +869,8 @@ def run(spec, source, evidence, *, runtime_loader=_load_runtime, helpers_loader=
     """Execute once. Tests may inject dependencies; production has no bypass CLI."""
     validate_spec(spec)
     if spec['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE, model_contract.PREPARED_TEACHER_MODE,
-                        model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE):
+                        model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE,
+                        model_contract.WINDOW_TEACHER_MODE):
         return _run_model(spec, source, evidence, runtime_loader=None if runtime_loader is _load_runtime else runtime_loader,
                           helpers_loader=helpers_loader)
     if os.environ.get(CHILD_EVIDENCE_ENV):
@@ -1141,6 +1143,9 @@ def _load_benchmark_plan(operation, source):
 
 
 def _accept_teacher_result(root, spec, source, *, teacher_binding=None):
+    if spec['mode'] == model_contract.WINDOW_TEACHER_MODE:
+        return model_contract.teacher_contract(spec).accept_teacher_result(
+            root, spec, source, teacher_binding=teacher_binding, native_acceptor=_accept_model_native_records)
     numa_teacher = spec['mode'] in (model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE)
     contract = model_contract.teacher_contract(spec) if numa_teacher else model_contract
     result = contract.validate_model_result(_bound_model_json(root / 'teacher/teacher-model-result.json'))
@@ -1373,8 +1378,10 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
     source_after_match, content_complete = False, False
     source_files, operation = spec['source_files'], spec['operation']
     benchmark = spec['mode'] == model_contract.BENCHMARK_MODE
-    numa_teacher = spec['mode'] in (model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE)
-    prepared_teacher = spec['mode'] in (model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE)
+    numa_teacher = spec['mode'] in (model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE,
+                                    model_contract.WINDOW_TEACHER_MODE)
+    prepared_teacher = spec['mode'] in (model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE,
+                                       model_contract.NUMERICAL_TEACHER_MODE, model_contract.WINDOW_TEACHER_MODE)
     contract = model_contract.teacher_contract(spec) if prepared_teacher else model_contract
     role = 'benchmark' if benchmark else 'teacher'
     result_schema = model_contract.BENCHMARK_HOST_RESULT_SCHEMA if benchmark else contract.HOST_RESULT_SCHEMA
@@ -1402,7 +1409,8 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                 raise RuntimeError('executing model operator source differs')
         if prepared_teacher:
             actual = file_identity(contract.__file__)
-            name = ('tools/v100_numerical_teacher.py' if spec['mode'] == model_contract.NUMERICAL_TEACHER_MODE else
+            name = ('tools/v100_target_window_teacher.py' if spec['mode'] == model_contract.WINDOW_TEACHER_MODE else
+                    'tools/v100_numerical_teacher.py' if spec['mode'] == model_contract.NUMERICAL_TEACHER_MODE else
                     'tools/v100_prepared_teacher_numa.py' if numa_teacher else 'tools/v100_onecat_combinations.py')
             if any(actual[key] != source_files[name][key] for key in ('bytes', 'sha256')):
                 raise RuntimeError('executing prepared teacher contract differs from canonical source')
@@ -1460,11 +1468,17 @@ def _run_model(spec, source, evidence, *, runtime_loader=None, helpers_loader=_h
                             raise ValueError('NUMA replay did not import its exact original24-receipt proof')
                         contract.validate_result_files(Path('/reference'), capture_inner['model_result'], capture_inner['operation'])
 
-                extra = ({'case': _bound_model_json(operation['case_authority']['path']),
-                          'profile': _bound_model_json(operation['execution_manifest']['path'], maximum=16 << 20)}
-                         if prepared_teacher else {})
+                if spec['mode'] == model_contract.WINDOW_TEACHER_MODE:
+                    extra = {'profile': _bound_model_json(operation['execution_manifest']['path'], maximum=16 << 20)}
+                else:
+                    extra = ({'case': _bound_model_json(operation['case_authority']['path']),
+                              'profile': _bound_model_json(operation['execution_manifest']['path'], maximum=16 << 20)}
+                             if prepared_teacher else {})
                 teacher_binding = contract.validate_teacher_operation_plan(
                     operation, plan, client, prepared=verified, reference=reference, **extra)
+                if spec['mode'] == model_contract.WINDOW_TEACHER_MODE and (
+                        type(teacher_binding) is not dict or teacher_binding.get('mode') != 'forced-window'):
+                    raise ValueError('target-window operation must retain its explicit forced-window binding')
             if os.environ.get('TF_GGUF_ASSETS_DIR') != '/frontend':
                 raise ValueError('model operation requires separate readonly prepared frontend')
             prepared = _prepare_model_frontend(operation)

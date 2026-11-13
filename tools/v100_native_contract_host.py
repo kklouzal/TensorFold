@@ -325,11 +325,12 @@ def validate_data(spec):
     inner_input = next(item for item in spec['inputs'] if item['path'] == inner_path)
     inner = object_json(bound_file(inner_input))
     benchmark = inner.get('schema') == model_contract.BENCHMARK_SCHEMA
-    numa = inner.get('schema') in (model_contract.NUMA_PREPARED_TEACHER_SCHEMA, model_contract.NUMERICAL_TEACHER_SCHEMA)
+    numa = inner.get('schema') in (model_contract.NUMA_PREPARED_TEACHER_SCHEMA, model_contract.NUMERICAL_TEACHER_SCHEMA,
+                                 model_contract.WINDOW_TEACHER_SCHEMA)
     prepared = inner.get('schema') in model_contract.PREPARED_SCHEMAS
     contract = model_contract.teacher_contract(inner) if prepared else model_contract
     model = inner.get('schema') in (model_contract.SCHEMA, model_contract.BENCHMARK_SCHEMA,
-                                   model_contract.PREPARED_TEACHER_SCHEMA, model_contract.NUMA_PREPARED_TEACHER_SCHEMA, model_contract.NUMERICAL_TEACHER_SCHEMA)
+                                   *model_contract.PREPARED_SCHEMAS)
     require(('numa' in spec) == numa, 'NUMA host extension requires its exact versioned prepared operation')
     if model:
         if numa:
@@ -349,7 +350,8 @@ def validate_data(spec):
             require(staged is not None and all(staged[key] == item[key] for key in ('bytes', 'sha256')),
                     'model DATA not bound in readonly operator closure')
         if prepared:
-            for label in ('case_authority', 'execution_manifest'):
+            for label in (('execution_manifest',) if inner['schema'] == model_contract.WINDOW_TEACHER_SCHEMA
+                          else ('case_authority', 'execution_manifest')):
                 item = inner['operation'][label]
                 staged = inputs.get(Path(item['path']).name)
                 require(staged is not None and all(staged[key] == item[key] for key in ('bytes', 'sha256')),
@@ -364,7 +366,9 @@ def validate_data(spec):
                 require(staged is not None and all(staged[k] == item[k] for k in ('bytes', 'sha256')),
                         'NUMA operation payload differs from staged Host input')
             for name in ('v100_prepared_teacher_numa.py', 'generate_numa_seccomp.py',
-                         *(('v100_numerical_teacher.py',) if inner['schema'] == model_contract.NUMERICAL_TEACHER_SCHEMA else ())):
+                         *(('v100_numerical_teacher.py',) if inner['schema'] in
+                           (model_contract.NUMERICAL_TEACHER_SCHEMA, model_contract.WINDOW_TEACHER_SCHEMA) else ()),
+                         *(('v100_target_window_teacher.py',) if inner['schema'] == model_contract.WINDOW_TEACHER_SCHEMA else ())):
                 require(name in inputs and all(inputs[name][k] == inner['source_files']['tools/'+name][k]
                                                for k in ('bytes', 'sha256')), 'NUMA contract/generator source differs')
         result = {key: inner[key] for key in ('mode', 'source_commit', 'image_id', 'operation')}
@@ -1049,10 +1053,12 @@ def run(spec, output, system=None, *, spec_identity=None):
                     "verification prequalification receipt changed")
             outcome["verification_preflight"] = verified
         if expected_inner['mode'] in (model_contract.MODE, model_contract.BENCHMARK_MODE,
-                                     model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE):
+                                     model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE,
+                                     model_contract.NUMERICAL_TEACHER_MODE, model_contract.WINDOW_TEACHER_MODE):
             benchmark = expected_inner['mode'] == model_contract.BENCHMARK_MODE
             contract = (model_contract.teacher_contract(expected_inner)
-                if expected_inner['mode'] in (model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE, model_contract.NUMERICAL_TEACHER_MODE)
+                if expected_inner['mode'] in (model_contract.PREPARED_TEACHER_MODE, model_contract.NUMA_PREPARED_TEACHER_MODE,
+                                              model_contract.NUMERICAL_TEACHER_MODE, model_contract.WINDOW_TEACHER_MODE)
                 else model_contract)
             role = 'benchmark' if benchmark else 'teacher'
             outcome['inner'] = object_json(read_bytes(output / ('owned-' + role + '-operation-result.json'), LIMIT))

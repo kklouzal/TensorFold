@@ -36,6 +36,7 @@ class _OwnedExpertQualification:
     execution_rows: int | None = None
     reference_tiles: bool = False
     grouped_gate_up: object = None
+    device_obligation: tuple = ()
 
     def __post_init__(self):
         if self.host_obligation and (type(self.host_obligation) is not tuple or len(self.host_obligation) != 2
@@ -45,6 +46,12 @@ class _OwnedExpertQualification:
             raise TypeError("private qualification requires bounded host bytes and SHA256 provenance")
         if type(self.host_obligation) is not tuple:
             raise TypeError("private qualification host obligation must be a tuple")
+        if (type(self.device_obligation) is not tuple or self.device_obligation and (
+                len(self.device_obligation) != 2 or type(self.device_obligation[0]) is not int
+                or not 0 < self.device_obligation[0] <= (1 << 63) - 1
+                or type(self.device_obligation[1]) is not str
+                or not self.host_obligation or self.device_obligation[1] != self.host_obligation[1])):
+            raise TypeError("private qualification device bytes require the same admitted host/input SHA lifetime")
         if not callable(self.before_listener):
             raise TypeError("private qualification requires its receipt/containment owner")
         if self.grouped_gate_up is not None:
@@ -417,6 +424,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             options["_reference_owner_tiles"] = True
         if qualification.host_obligation:
             options["_owned_qualification_host"] = qualification.host_obligation
+        if qualification.device_obligation:
+            options["_owned_qualification_device"] = qualification.device_obligation
         if qualification.execution_rows is not None:
             options["execution_rows"] = qualification.execution_rows
     options.update(_model_overrides(args))

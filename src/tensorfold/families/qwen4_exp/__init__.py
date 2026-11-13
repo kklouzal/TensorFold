@@ -338,6 +338,11 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         if not owned:
             raise ValueError("qualification host obligation requires private owned execution")
         engine_options["_owned_qualification_host"] = obligation
+    device_obligation = options.get("_owned_qualification_device", ())
+    if device_obligation:
+        if not owned:
+            raise ValueError("qualification device obligation requires private owned execution")
+        engine_options["_owned_qualification_device"] = device_obligation
     for name in ("max_waiting_input_bytes", "max_waiting_input_bytes_per_principal", "output_queue_tokens", "queue_timeout_s", "retention_policy"):
         if options.get(name) is not None:
             engine_options[name] = options[name]

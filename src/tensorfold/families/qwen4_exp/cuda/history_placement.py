@@ -48,6 +48,15 @@ def coordinate_source_host_bytes(rows: int) -> int:
     return max(68 * rows, 56 * rows + 24)
 
 
+def coordinate_stage_host_bytes(decode_rows: int, prefill_rows: int, *, mtp: bool) -> int:
+    """Persistent int64 THW stages for decode, prefill and enabled MTP roles."""
+    _int(decode_rows, 'coordinate decode rows', 1)
+    _int(prefill_rows, 'coordinate prefill rows', 1)
+    if type(mtp) is not bool:
+        raise ValueError('coordinate stage MTP selection must be boolean')
+    return 24 * (1 + int(mtp)) * (decode_rows + prefill_rows)
+
+
 @dataclass(frozen=True)
 class HistoryPlacement:
     world: int
