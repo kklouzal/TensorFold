@@ -212,9 +212,10 @@ empty/nonfinite publication and ordered owner merge run unchanged. All retained
 arenas and original conservative temporary credit remain paid; no capacity or
 allocation-free claim is made. The layout binds the existing preparation and
 State numerical identity. This source candidate is not a transport toggle or
-an installation of the xFormers wheel. Native numerical/stream/capture,
-whole-model/MTP/quality, actual all-rank residency and matched P3 gates remain
-pending. The existing raw LSE mass-loss counterexample remains required.
+an installation of the xFormers wheel. The Source33 native component result
+below covers the selected numerical/stream/capture controls. Whole-model/MTP/
+quality, actual all-rank residency and matched P3 gates remain pending. The
+existing raw LSE mass-loss counterexample remains required.
 
 The maintained native gates in `tests/cuda/test_sm70_attention_backends.py` and
 `tests/cuda/test_sm70_aten_owner_attention.py` now include the original and
@@ -224,11 +225,54 @@ future-poison QSA visibility checks, and record cross-layout random differences
 without a fitted tolerance. Capture/nondefault-stream and output storage checks
 remain component gates. Registered Q8 and codec10 decoded working operands are
 covered at the primitive boundary; this does not widen the Q8-only ATen owner
-to Iso4. The source/control preparation is unrun on GPU and requires a matching
-Source33 image plus the independently cleared G3 application admission contract.
-Run it through the existing closed `v100_native_contract_host.py` and driver
-with actual image/source/SDK/FD/native identities after a separate resource
-lease; historical component passes do not qualify these added cases.
+to Iso4. These cases passed in the matching Source33 installed component gate
+below. That operation uses the builtin protected ATen mechanism and does not
+admit or import the separate owned G3 dependency.
+
+### Source33 actual ATen layout component result
+
+The installed Source33 gate passed all **54 cases**, 27 decoded primitive and
+27 owner cases, with zero failures, errors or skips. It used source `6a5a8aa7`,
+immutable image
+`sha256:5214d917f766b22552a29de698354c9f96da828d9473ab15bf921017c7c9f6cb`,
+and frozen UID `573bf7b0fb1d65f1ffc471c4c06409cee8bcb28c829e4a793dd82743fa0fcbb0`.
+All 849 installed members, FD source/ELF, protected SDK and dependency checks
+held without an application overlay. The prerequisite focused installed batch
+passed 184 CPU tests. Native execution used GPU0 V100/SM70, protected Torch git
+`05adb434bd30d298eb408a72420b0496ee05f8e3`, CUDA 12.9 and the exact efficient
+attention operator schema. The standard frozen component procedure added only
+pre-Torch NUMA setup and outcome metadata; it applied no test filter, mock,
+kernel patch or tolerance change.
+
+The original within-layout exact integer/live-row, singleton LSE head-order,
+QSA visibility, inactive/future-poison, empty/nonfinite, output storage,
+nondefault-stream and graph-replay controls passed. Sampled cross-layout output
+and LSE bit differences were zero for those fixtures only. This is not general
+numerical or P3 equivalence. Both layouts recorded the same maximum absolute
+difference, 0.0037984178511116795, versus the Float64 ideal in the unequal-local-
+mass diagnostic. The separate raw LSE mass-loss counterexample remains required.
+The singleton-head LSE observation
+`0.8750000596046448` versus analytic `0.875` remains recorded; no acceptance
+margin was fitted to it.
+
+The JUnit test phase took 108.107 seconds; full container duration was
+235.798741 seconds. Neither is a serving-performance measurement. GPU UUID,
+CapEff0, static NUMA0 BIND, anonymous and pinned placement, actual source and
+native-binary identities reconciled. All 2,589 frozen files and 34 sealed
+packet/external inputs held. The owned container exited 0 without OOM or cleanup
+error, was explicitly removed once, and the GPU lease was released. The eight
+GPUs' ECC/retired-page, 48-link, link-error, Xid and empty-context health baseline
+was unchanged. A finalizer's case-sensitive missing-container message assertion
+failed after successful removal; that reporting diagnostic is retained and was
+resolved against the existing exit/missing-object records, without a second
+removal or native rerun.
+
+Raw records and the independent actual audit are retained in the private
+`onecat-integration-20261113-v33/aten-head-native54-v1` packet and its sibling
+milestone/retirement/source-hold records. This result qualifies the declared
+single-GPU component controls only. TP8 owner transport, full model/MTP,
+capacity, conditional quality, Iso4-owner support and matched P3 still need
+their own evidence. Ordinary service defaults remain unchanged.
 
 ## Private sealed Flash attention owner
 

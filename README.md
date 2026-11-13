@@ -144,11 +144,13 @@ An optional `aten_tiles.query_layout: fixed12-head-as-query-lse-v1` private tria
 views each packed query's twelve heads as compute rows in that same ATen
 operator. It retains required LSE, the shared visible-key mask, empty/nonfinite
 publication and conservative resource credit. Other tile regimes keep native
-GQA. It is a separate numerical layout selection with native/model/quality/P3
-qualification pending; no new library or provider is introduced.
+GQA. It is a separate numerical layout selection; no new library or provider
+is introduced. Its Source33 native component gate passed all 54 cases; actual
+model/quality/P3 qualification remains pending.
 Its maintained native controls now cover both layouts, shared QSA visibility,
 LSE head order, streams/capture and decoded codec operands. These added controls
-remain unrun on GPU; the ATen owner retains its Q8-only admission contract.
+passed on GPU0 with the protected runtime. The ATen owner retains its Q8-only
+admission contract; decoded codec operands do not qualify an Iso4 owner.
 
 The explicit private `flash-v100-q8-normalized-lse-owner-v1` trial now has typed
 preparation and sealed campaign staging. `flash_tiles` binds a panel size,
