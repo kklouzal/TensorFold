@@ -2983,3 +2983,10 @@ The private ragged component receipt now includes all eight ranks' bounded
 capture/settlement and full-window accounting through the existing per-rank
 oracle path, with separately timed quiescent CUDA samples. Source controls do
 not qualify an installed image or establish graph fit; native execution is pending.
+
+The private [standalone ragged gate controller](tools/v100_ragged_replay_gate.py)
+uses the existing owned-container, NUMA and readiness procedures without an
+inference client, benchmark or observer mix. It requires a sealed operation,
+separately bound current-boot Root GO and the exact installed source/image.
+Host boundary checks do not qualify native replay; actual all-eight execution
+remains pending.

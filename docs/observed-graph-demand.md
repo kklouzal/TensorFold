@@ -77,3 +77,27 @@ are admitted before Engine construction. Missing/declined keys, inconsistent
 charges, changed commitments or an insufficient fresh floor fail before the
 listener. This export is source implemented; actual all-eight-rank execution
 remains pending.
+
+`tools/v100_ragged_replay_gate.py` is the standalone host owner. Its closed
+`tensorfold.native-ragged-gate-operation-v1` DATA binds immutable source/image,
+actual installed-check file identities, read-only profile/oracle/demand assets,
+ordinary NUMA authority, host resources, GPU/link/Xid baseline and its separately
+frozen host-helper closure. A separate `tensorfold.native-ragged-gate-root-go-v1`
+record binds that operation digest, controller digest, image, source and current
+boot before container effects. Invoke only with reviewed final DATA:
+
+```text
+python3 -B tools/v100_ragged_replay_gate.py --operation /absolute/operation.json \
+  --operation-sha256 EXACT_SHA --root-go /absolute/root-go.json \
+  --root-go-sha256 EXACT_GO_SHA --out /absolute/fresh-attempt
+```
+
+The runtime uses the original frozen owned qualifier and installed application;
+the host controller may be frozen separately when those runtime bytes are
+unchanged. It captures all eight oracle/accounting/startup receipts, validates
+settled full-window READY and actual ordinary rank UID/GID/CapEff0, then retires
+the owned CID through normal SIGINT and bounded wait. Source/input/NUMA/health
+changes, missing rank evidence, acquisition/publication errors and removal
+failures remain nonzero outcomes. No benchmark, teacher, profiler, smoke or
+HTTP inference request is issued. Kernel-Xid collection uses the existing
+noninteractive host journal permission; an unavailable query fails visibly.
