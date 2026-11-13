@@ -69,7 +69,7 @@ def _validate_gathered_padding(values: np.ndarray, tokens: np.ndarray, plan: Sam
 
 def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Sequence[int], sampling: Sampling | None,
                     with_prob: bool = False, *, logits: torch.Tensor | None = None,
-                    plan: SamplingShard | None = None):
+                    plan: SamplingShard | None = None, readback=None):
     """Use original FP32-score/FP32-lse packets; borrow original logits to repair tied truncation.
 
     ``cand_all`` must be the completed packet produced with these exact source
@@ -102,12 +102,31 @@ def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Seque
             raise ValueError("gathered policy or token-ID range requires the complete original logits")
         return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
                               offset=int(w.meta.get("vocab_offset", 0)))
-    g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
-    values = g[:, :, :CAND].astype(np.float32)
-    tokens = np.ascontiguousarray(g[:, :, CAND:2 * CAND]).view(np.int32).astype(np.int64)
+    if readback is None:
+        g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
+        values = g[:, :, :CAND].astype(np.float32)
+        tokens = np.ascontiguousarray(g[:, :, CAND:2 * CAND]).view(np.int32).astype(np.int64)
+        result = _choose_gathered_host(values, tokens, g[:, :, 2 * CAND], positions, sampling, with_prob, plan)
+    else:
+        from .gathered_readback import GatheredReadback
+        if type(readback) is not GatheredReadback:
+            raise TypeError("gathered readback requires its explicit paid owner")
+        with readback.borrow(w, cand_all, R) as (values, tokens, norms):
+            result = _choose_gathered_host(values, tokens, norms, positions, sampling, with_prob, plan)
+    # No packet borrower remains active across nested full-source sampling.
+    if result is None:
+        if logits is None:
+            raise ValueError("ambiguous gathered cutoff requires the complete original logits")
+        return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
+                              offset=int(w.meta.get("vocab_offset", 0)))
+    return result
+
+
+def _choose_gathered_host(values, tokens, norms, positions, sampling, with_prob, plan):
+    """Original domain/tie/probability rules, consumed before host packet reuse."""
+    world = values.shape[0]
     _validate_gathered_padding(values, tokens, plan)
     valid_scores(values, require_finite=False)
-    norms = g[:, :, 2 * CAND]
     if np.isnan(norms).any() or np.isposinf(norms).any():
         raise ValueError("a rank's complete sampling scores contain NaN or positive infinity")
     if not np.isfinite(norms).any(axis=0).all():
@@ -116,7 +135,7 @@ def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Seque
     need_source = False
     k = 1 if greedy else int(sampling.top_k)
     if not need_source:
-        for row in range(R):
+        for row in range(len(positions)):
             v = values[:, row].reshape(-1)
             cutoff = np.partition(v, len(v) - k)[len(v) - k]
             for rank in range(world):
@@ -128,10 +147,7 @@ def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Seque
             if need_source:
                 break
     if need_source:
-        if logits is None:
-            raise ValueError("ambiguous gathered cutoff requires the complete original logits")
-        return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
-                              offset=int(w.meta.get("vocab_offset", 0)))
+        return None
     chosen = _tp_choose(values, tokens, positions, sampling)
     if not with_prob:
         return chosen
@@ -255,7 +271,8 @@ class Engine:
             b = self.mbuf if draft else self.buf
             if gathered and logits.data_ptr() == b.logits.data_ptr() and _gathered_fits(sampling):
                 return choose_gathered(self.w, b.cand_all, logits.shape[0], positions, sampling, logits=logits,
-                                       plan=self._draft_plan if draft else self._sample_plan)
+                                       plan=self._draft_plan if draft else self._sample_plan,
+                                       readback=b.gathered_readback)
             return tp_sample_rows(self.w, logits, positions, sampling, offset=self.w.meta["vocab_offset"],
                                   id_map=self.w.draft_ids if mapped else None,
                                   plan=self._draft_plan if draft else self._sample_plan)
@@ -272,7 +289,7 @@ class Engine:
         if w.comm is not None:
             if logits.data_ptr() == self.mbuf.logits.data_ptr() and _gathered_fits(sampling):
                 toks, probs = choose_gathered(w, self.mbuf.cand_all, 1, [position], sampling, with_prob=True,
-                                             logits=logits[:1], plan=self._draft_plan)
+                                             logits=logits[:1], plan=self._draft_plan, readback=self.mbuf.gathered_readback)
             else:
                 toks, probs = tp_sample_rows(w, logits[:1], [position], sampling, offset=w.meta["vocab_offset"],
                                              id_map=w.draft_ids if mapped else None, with_prob=True,

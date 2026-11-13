@@ -15,17 +15,19 @@ import importlib.metadata
 import json
 import math
 import os
-from pathlib import Path
 import platform
 import selectors
 import subprocess
+import sys
 import time
+from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
-from tensorfold.tensor_file import _metadata_object, _regular_stream, checkpoint_path
-from tensorfold.engine.model_identity import canonical_runtime_json, capture_model_identity
 from tensorfold.cleanup import finish, raise_failures, rollback
+from tensorfold.engine.model_identity import canonical_runtime_json, capture_model_identity
+from tensorfold.tensor_file import _metadata_object, _regular_stream, checkpoint_path
 
 SCHEMA = "tensorfold.execution-profile-manifest"
 VERSION = 1
@@ -64,6 +66,101 @@ def tuning_environment_identity(environment):
     """
     return digest({name: value for name, value in environment.items()
                    if name.startswith(_TUNING_PREFIXES) and name not in _PROCESS_LABELS})
+
+
+@dataclass(frozen=True, slots=True)
+class _SharedContentProjection:
+    """Immutable metadata from the existing rank-zero content outcome, not an authority."""
+    generation: int
+    manifest: str
+    source: str
+    libraries: str
+    records: tuple
+    retained_bytes: int
+
+
+def execution_content_projection_resources(world):
+    """Charge old+new immutable projections before ordinary host admission.
+
+    Existing phase packets cap all source/library names at PHASE_VALUE_BYTES.
+    Four bytes per wire character bounds a retained Unicode representation;
+    every entry additionally pays its tuple, integer and both string headers.
+    SHA256 text is fixed ASCII64. Rebind overlaps two projections, never an
+    append-only history. This is host forecast, not materialized memory credit.
+    """
+    import struct
+    if type(world) is not int or world < 1:
+        raise ValueError('projection host forecast requires a positive rank count')
+    pointer = struct.calcsize('P')
+    per_entry = (sys.getsizeof((None,None,None)) + sys.getsizeof((1 << 63)-1)
+                 + sys.getsizeof(chr(0x10ffff))-4 + sys.getsizeof('0'*64) + pointer)
+    fixed = sys.getsizeof(()) + _SharedContentProjection.__basicsize__ + 1024
+    one = 4*PHASE_VALUE_BYTES + _MAX_FILES*per_entry + fixed
+    return {'schema':'tensorfold.shared-execution-content-host-v1','world':world,
+            'per_rank_retained_bytes':one,'per_rank_rebind_peak_bytes':2*one,
+            'global_host_bytes':world*2*one,'phase_wire_bound':PHASE_VALUE_BYTES,'max_files':_MAX_FILES}
+
+
+def _shared_content_projection(engine, contents, actual, manifest):
+    rows = tuple((name,row['size'],row['sha256']) for name,row in sorted(contents.items())
+                 if name.startswith(('source/','library/')))
+    if len(rows)>_MAX_FILES:
+        raise ValueError('shared content projection exceeds admitted file bound')
+    budget = execution_content_projection_resources(engine.tp)
+    if engine.capacity_plan.get('execution_content_projection_resources') != budget:
+        raise ValueError('shared content projection lacks original host admission')
+    retained = (sys.getsizeof(rows)+_SharedContentProjection.__basicsize__+1024
+        +sum(sys.getsizeof(row)+sum(sys.getsizeof(value)for value in row)for row in rows))
+    if retained>budget['per_rank_retained_bytes']:
+        raise MemoryError('shared content projection exceeds original host forecast')
+    return _SharedContentProjection(engine._execution_manifest_generation,manifest,
+                                   actual['source'],actual['kernel_build'],rows,retained)
+
+
+def execution_source_contents(engine):
+    """Read current cohort-verified source/library metadata on every local rank.
+
+    Rank zero alone retains issued descriptor authority. Followers retain no
+    authority and perform no hash pass: their content metadata is the outcome
+    already broadcast by the supported same-host immutable-input protocol.
+    Current local opened identities and the committed controller binding are
+    checked again; this API cannot turn a closed/poisoned/replaced binding into
+    new authority or report a follower-local fresh hash.
+    """
+    if any(getattr(engine,name,False) for name in ('_closed','_closing','_execution_manifest_uncertain')):
+        raise ValueError('shared execution content is closed or poisoned')
+    view = getattr(engine,'_execution_content_projection',None)
+    binding = engine.capacity_plan.get('execution_profile_binding')
+    local = engine._execution_bind_local
+    if (type(view)is not _SharedContentProjection or type(binding)is not dict
+            or binding.get('identity')!=engine._execution_profile_identity
+            or engine.multi.controller.identity!=engine._execution_profile_identity
+            or engine.multi.controller.binding_invalidated_reason is not None
+            or binding.get('content_projection_generation')!=view.generation
+            or view.manifest!=local['manifest'] or binding.get('manifest_sha256')!=view.manifest
+            or binding.get('shared_immutable_same_host')is not True):
+        raise ValueError('shared execution content no longer names its committed binding')
+    contents = {name:{'size':size,'sha256':sha}for name,size,sha in view.records}
+    for key,label,prefix,expected in (('source','files','source/',view.source),
+                                     ('kernel_build','libraries','library/',view.libraries)):
+        observed = digest({label:{name:row for name,row in contents.items()if name.startswith(prefix)}})
+        if observed!=expected or binding['identity'].get(key)!=observed:
+            raise ValueError('shared execution content differs from its verified cohort identity')
+    before = {name:row for name,row in local['files'].items()if name.startswith(('source/','library/'))}
+    if _opened_stats({name:Path(row['path'])for name,row in before.items()})!=before:
+        raise ValueError('local shared execution inputs changed after binding')
+    authorities = engine._execution_input_authorities
+    if engine.rank==0:
+        if not authorities or authorities[0]is not engine._execution_input_authority:
+            raise ValueError('rank-zero issued execution authority was replaced')
+        for authority in authorities:authority.verify_unchanged()
+    elif authorities or engine._execution_input_authority is not None:
+        raise ValueError('follower unexpectedly owns execution descriptor authority')
+    return contents, {'schema':'tensorfold.shared-execution-content-projection-v1','issuer_rank':0,
+        'local_authority_owned':engine.rank==0,'cohort_content_passes':binding['content_passes'],
+        'local_payload_bytes_read_this_binding':binding['bytes_read_this_binding']if engine.rank==0 else 0,
+        'cohort_hashes_reused_this_binding':binding['hashes_reused_this_binding'],
+        'manifest_sha256':view.manifest,'retained_host_bytes':view.retained_bytes}
 
 
 def _stat(info):
@@ -1085,7 +1182,8 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
                                     proposal_limit=maximum["proposal_limit"], prefill_tokens=maximum["prefill_tokens"])
         staged.bind_identity(actual, evidence=proofs)
         staged.install_profiles(table)
-        context.update(identity=actual, evidence=proofs, table=table)
+        projection = _shared_content_projection(engine,outcome['contents'],actual,local['manifest'])
+        context.update(identity=actual, evidence=proofs, table=table, content_projection=projection)
         return digest({"identity": actual, "table": table, "evidence": sorted(proofs)})
 
     prepared = _phase(engine, channel, "evidence", evidence)
@@ -1098,6 +1196,7 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
         # until every rank has committed/refused and consumed its outcome.
         engine.multi.controller.replace_verified_profiles(context["identity"], evidence=context["evidence"],
             table=context["table"], expected_migration_epoch=context["migration_epoch"])
+        engine._execution_content_projection = context["content_projection"]
         engine._execution_input_authority = context["authority"]
         engine._execution_input_authorities = context["authorities"]
         engine._execution_profile_identity = context["identity"]
@@ -1106,7 +1205,8 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
         engine._execution_profile_artifacts = dict(context["expected"])
         engine._execution_bind_local = local
         return {"schema": SCHEMA, "version": VERSION, "identity": context["identity"],
-                "manifest_sha256": local["manifest"], "verified_input_files": len(context["artifacts"]),
+                "manifest_sha256": local["manifest"],
+                "content_projection_generation":context["content_projection"].generation, "verified_input_files": len(context["artifacts"]),
                 "verified_input_bytes": sum(v["stat"][2] for v in context["artifact_stats"].values()),
                 "content_passes": int(not rebind), "shared_immutable_same_host": True,
                 "bytes_read_this_binding": outcome["bytes_read"], "hashes_reused_this_binding": outcome["hashes_reused"],

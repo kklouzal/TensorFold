@@ -269,7 +269,7 @@ class ServingProfiles:
         engine._owner_preparation = None  # __init__ is not rerun for the next profile.
         engine.capacity_plan = None
         for name in ("grammars", "_execution_input_authority", "_execution_input_authorities", "_execution_profile_identity",
-                     "_execution_profile_artifacts", "_execution_bind_local", "_execution_preload", "_execution_profile_root"):
+                     "_execution_profile_artifacts", "_execution_content_projection", "_execution_bind_local", "_execution_preload", "_execution_profile_root"):
             engine.__dict__.pop(name, None)
         gc.collect()
         torch.cuda.empty_cache()

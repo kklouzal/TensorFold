@@ -2890,12 +2890,15 @@ def test_teacher_graph_setup_primary_survives_notification_failure(channel, tmp_
     def prepare(*args, **kwargs):
         assert kwargs == {'hc_graphs': True}
         raise primary
-    def notify(engine, error):
-        assert error is primary
+    engine = NS(rank=3)
+    def notify():
+        assert engine._abort_comm is True
+        record = json.loads((tmp_path / 'qualification-failure-rank-3.json').read_text())
+        assert record['error'] == {'type':'ValueError', 'message':'HC enrollment proof'}
         raise secondary
     monkeypatch.setattr(owned, 'prepare_owned_teacher', prepare)
-    monkeypatch.setattr(owned, '_observer_failure', notify)
-    monkeypatch.setattr(cli, 'cmd_serve', lambda args: args._owned_expert_qualification.before_listener(NS()))
+    monkeypatch.setattr(owned, 'notify_failure', notify)
+    monkeypatch.setattr(cli, 'cmd_serve', lambda args: args._owned_expert_qualification.before_listener(engine))
     argv = worker_args(tmp_path) + ['--draft-method', 'none', '--context', '64', '--parallel', '24']
     with pytest.raises(ValueError) as caught:
         owned.worker(['--teacher-plan', str(tmp_path / 'plan.json'), *argv])

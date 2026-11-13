@@ -314,13 +314,17 @@ def _validate_capacity_plan(cap, *, slots, bits, local_rank=0):
             'graph reservation differs from refined serving envelope')
     catalogue = graph.get('exact_graph_catalogue', {})
     require(type(catalogue) is dict and type(catalogue.get('requested_keys')) is list
-            and catalogue['requested_keys'] and catalogue.get('captured_keys') == catalogue['requested_keys']
+            and catalogue['requested_keys'] and type(catalogue.get('captured_keys')) is list
             and catalogue.get('declined_keys') == [], 'complete requested graph catalogue required')
     keys = catalogue['requested_keys']
     require(all(type(key) is list and len(key) == 3 and key[0] in ('verify','mtp')
             and type(key[1]) is int and type(key[2]) is int and 0 < key[2] <= slots
-            and key[2] <= key[1] <= slots*(DEPTH+1) for key in keys)
+            and key[2] <= key[1] <= slots*(DEPTH+1) for key in [*keys,*catalogue['captured_keys']])
             and len({tuple(key) for key in keys}) == len(keys), 'invalid/duplicate full-window graph key')
+    captured = catalogue['captured_keys']
+    require(len(captured) == len(keys) and len({tuple(key) for key in captured}) == len(captured)
+            and {tuple(key) for key in captured} == {tuple(key) for key in keys},
+            'complete unique requested graph catalogue required')
     measured = graph.get('keys')
     require(type(measured) is list and len(measured) == len(keys), 'every requested key needs its actual capture accounting')
     charged, pieces = 0, 0
@@ -1690,15 +1694,8 @@ def runtime_profile(engine, operation):
             'actual ordinary Q8 target history required')
     local = engine._execution_bind_local
     binding = engine.capacity_plan.get('execution_profile_binding')
-    contents = {}
-    for authority in engine._execution_input_authorities:
-        authority._check_issued()
-        for item in authority.files:
-            if item.logical_name.startswith(('source/', 'library/')):
-                record = {'size': item.size, 'sha256': item.sha256}
-                require(item.logical_name not in contents or contents[item.logical_name] == record,
-                        'window issued content authorities disagree')
-                contents[item.logical_name] = record
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import execution_source_contents
+    contents, content_projection = execution_source_contents(engine)
     require(type(binding) is dict and binding.get('content_passes') == 1
             and type(binding.get('hashes_reused_this_binding')) is int and binding['hashes_reused_this_binding'] == 0
             and binding.get('manifest_sha256') == local['manifest']
@@ -1713,7 +1710,8 @@ def runtime_profile(engine, operation):
             'window States do not share the actual immutable numerical policy')
     if _preparation_contract(operation) == ATEN_PREPARATION_CONTRACT:
         profile['attention_provider'] = _runtime_attention_provider(engine, operation, contents)
-    profile.update(teacher_execution_registration={'binding': binding, 'numerics': local['numerics'], 'contents': contents},
+    profile.update(teacher_execution_registration={'binding': binding, 'numerics': local['numerics'], 'contents': contents,
+                   'content_projection':content_projection},
                    numerical_trial_retention=retention,
                    window_teacher_semantics={'method': 'mtp', 'depth': DEPTH,
                        'mtp_confidence': engine.multi.confidence, 'proposal_policy': PROPOSAL_POLICY,
@@ -2164,6 +2162,32 @@ def _json_ref(root, ref, *, maximum=8 << 20):
     return frames._owned_comparison_file(Path(root), ref, control, maximum=maximum)
 
 
+def _validate_content_projection(registration, operation, rank):
+    fields = {'binding','numerics','contents','content_projection'}
+    if _capacity_contract(operation) is not None:
+        fields.add('capacity_projection')
+    require(type(registration) is dict and set(registration) == fields,
+            'window actual source/numerical/projection registration missing')
+    binding, projection = registration['binding'], registration['content_projection']
+    require(type(binding) is dict and type(projection) is dict
+            and set(projection) == {'schema','issuer_rank','local_authority_owned','cohort_content_passes',
+                'local_payload_bytes_read_this_binding','cohort_hashes_reused_this_binding',
+                'manifest_sha256','retained_host_bytes'}
+            and projection['schema'] == 'tensorfold.shared-execution-content-projection-v1'
+            and type(projection['issuer_rank']) is int and projection['issuer_rank'] == 0
+            and projection['local_authority_owned'] is (rank == 0)
+            and type(projection['cohort_content_passes']) is int and projection['cohort_content_passes'] == 1
+            and type(projection['cohort_hashes_reused_this_binding']) is int
+            and projection['cohort_hashes_reused_this_binding'] == 0
+            and type(projection['local_payload_bytes_read_this_binding']) is int
+            and type(binding.get('bytes_read_this_binding')) is int and binding['bytes_read_this_binding'] > 0
+            and projection['local_payload_bytes_read_this_binding'] == (binding['bytes_read_this_binding'] if rank == 0 else 0)
+            and type(projection['retained_host_bytes']) is int and projection['retained_host_bytes'] > 0
+            and legacy.sha(projection['manifest_sha256'])
+            and projection['manifest_sha256'] == binding.get('manifest_sha256'),
+            'window source content provenance is not the actual shared rank-zero pass')
+
+
 def validate_runtime_records(root, model, operation, *, observer_source):
     """Bind all raw numerical registrations to closed genuine provider VMAs."""
     from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
@@ -2194,8 +2218,7 @@ def validate_runtime_records(root, model, operation, *, observer_source):
                 and any(item['name'].startswith('tf_gguf_') for item in mapped),
                 'complete unique window native provider set required')
         registration = startup['teacher_profile'].get('teacher_execution_registration')
-        require(type(registration) is dict and set(registration) == {'binding', 'numerics', 'contents'},
-                'window actual source/numerical registration missing')
+        _validate_content_projection(registration, operation, rank)
         binding, contents = registration['binding'], registration['contents']
         require(type(binding) is dict and type(binding.get('identity')) is dict
                 and type(contents) is dict and contents and type(registration['numerics']) is dict

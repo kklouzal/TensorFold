@@ -278,3 +278,65 @@ def test_actual_http_service_consumer_requires_the_scoped_complete_capacity_plan
     broken = copy.deepcopy(stats);broken['capacity_plan']['session_capacity']['ranks'].pop()
     with pytest.raises(ValueError,match='eight allocation'):
         window.validate_service(broken,client,'fixture-instance',prepared_manifest=prepared)
+
+
+def test_actual_source37_requested_membership_is_not_capture_sequence():
+    import json
+    from pathlib import Path
+    real = json.loads((Path(__file__).parent/'fixtures/c8-source37-real-c36-order.json').read_text())
+    value, retention = proof(); graph = value['capacity']['multi_graphs']
+    assert real['requested_keys'] != real['captured_keys']
+    assert set(map(tuple,real['requested_keys'])) == set(map(tuple,real['captured_keys']))
+    # Preserve the actual native sequence and every actual byte-chain field.
+    graph['exact_graph_catalogue']['requested_keys'] = real['requested_keys']
+    graph['exact_graph_catalogue']['captured_keys'] = real['captured_keys']
+    budget = real['accounting'][0]['budget_bytes']
+    graph['planned_bytes'] = graph['budget_bytes'] = budget
+    graph['keys'] = [{'bytes':max(0,row['physical_delta_bytes']),'pieces':row['pieces'],'accounting':row}
+                     for row in real['accounting']]
+    graph['bytes'] = graph['settled_bytes'] = graph['room_bytes'] = sum(row['bytes']for row in graph['keys'])
+    graph['pieces'] = sum(row['pieces']for row in graph['keys'])
+    admission = value['capacity']['observed_graph_admission'];admission['agreed_graph_bytes'] = budget
+    for row in admission['observations']:
+        row['graph_room_bytes'] = budget;row['live_after_floor_bytes'] = budget+row['future_service_bytes']
+    graph['observed_graph_admission'] = {k:v for k,v in admission.items()
+        if k not in ('original_header','observed_serving_base_bytes','basis')}
+    admission['observed_serving_base_bytes'] = value['capacity']['budget_bytes']-budget
+    # Only unpublished surrounding fields use the explicit CPU fixture. This
+    # proves the offending predicate and actual captured chain, not hardware fit.
+    window.validate_capacity_proof(value,retention=retention)
+    for fault in ('duplicate','missing','measured_reorder','captured_reorder','prior_chain'):
+        changed = copy.deepcopy(value);record = changed['capacity']['multi_graphs'];cat = record['exact_graph_catalogue']
+        if fault=='duplicate':cat['captured_keys'][-1] = cat['captured_keys'][0]
+        elif fault=='missing':cat['captured_keys'].pop()
+        elif fault=='measured_reorder':record['keys'][0],record['keys'][1] = record['keys'][1],record['keys'][0]
+        elif fault=='captured_reorder':cat['captured_keys'][0],cat['captured_keys'][1] = cat['captured_keys'][1],cat['captured_keys'][0]
+        else:record['keys'][1]['accounting']['prior_bytes'] += 1
+        with pytest.raises(ValueError):window.validate_capacity_proof(changed,retention=retention)
+
+
+@pytest.mark.parametrize('rank',[0,7])
+@pytest.mark.parametrize('capacity',[False,True])
+def test_shared_content_reader_uses_actual_producer_registration_shape(rank,capacity):
+    operation = {'capacity_contract':window.CAPACITY_CONTRACT} if capacity else {}
+    binding = {'manifest_sha256':'a'*64,'bytes_read_this_binding':4096}
+    projection = {'schema':'tensorfold.shared-execution-content-projection-v1','issuer_rank':0,
+        'local_authority_owned':rank==0,'cohort_content_passes':1,
+        'local_payload_bytes_read_this_binding':4096 if rank==0 else 0,
+        'cohort_hashes_reused_this_binding':0,'manifest_sha256':'a'*64,'retained_host_bytes':512}
+    registration = {'binding':binding,'numerics':{},'contents':{},'content_projection':projection}
+    if capacity:registration['capacity_projection']={}
+    window._validate_content_projection(registration,operation,rank)
+    for key,values in {'cohort_content_passes':[True,False,1.0,None],
+                      'cohort_hashes_reused_this_binding':[False,True,0.0,None],
+                      'retained_host_bytes':[True,False,0,-1,512.0,None],
+                      'local_payload_bytes_read_this_binding':[False,True,0.0,None],
+                      'issuer_rank':[False,True,0.0,None]}.items():
+        for invalid in values:
+            altered=copy.deepcopy(registration);altered['content_projection'][key]=invalid
+            with pytest.raises(ValueError):window._validate_content_projection(altered,operation,rank)
+    for key in ('content_projection', 'capacity_projection' if capacity else 'numerics'):
+        altered=copy.deepcopy(registration);altered.pop(key)
+        with pytest.raises(ValueError):window._validate_content_projection(altered,operation,rank)
+    altered=copy.deepcopy(registration);altered['unknown_projection']={}
+    with pytest.raises(ValueError):window._validate_content_projection(altered,operation,rank)

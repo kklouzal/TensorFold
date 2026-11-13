@@ -158,6 +158,69 @@ without claiming a one-rank model plan or full State admission. The corrected
 tools have not yet passed a newly installed image and model-level five-window
 GPU capture; those remain separate gates.
 
+## Full32 ISO4 capacity gate
+
+`tools/v100_full32_q4_gate.py` is a separate versioned ordinary-API capacity
+operation. Its fixed region is SC117 TP8/ETP4, ISO4
+`rotorquant-iso4-sm70-v1`,32 resident262,144-token logical windows with the
+actual MTP4 physical tail, P256 and E160. The C40 catalogue contains every C36
+key plus verify/MTP32-row32-participant and160-row32-participant keys. No key,
+context, resident slot or required workspace is silently removed to fit.
+The independent original numerical provider profile and explicit grouped4
+expert path are retained. This is not a numerical-equivalence or Q4 quality
+certificate, and the existing C8 teacher remains24-Q8.
+
+The closed operation pins the application image/source/installed-check/wheel,
+the separate current read-only tools source, exact profile/model paths, ordinary
+NUMA authority, resources, health baseline and output. The shared capacity
+producer/consumer comes from the newly bound tools snapshot; the literal
+Source37 application image can remain unchanged. `--validate` checks DATA only.
+`--run` additionally requires a separately sealed Root GO for the exact
+operation SHA, image, both source identities and current boot. Internal worker
+and supervisor modes are fixed launcher boundaries, not alternate execution
+plans or arbitrary Python entrypoints.
+The declared `models_root` is mounted read-only at that same absolute container
+path, and both target and MTP arguments retain it. Shortening `/models/hf/hub`
+to `/models` changes generated GGUF `config.json` path content and cannot reuse
+the original profile hash. Model roots cannot shadow runtime mounts or protected
+application paths. The original mismatched DATA packet remains blocked.
+Tool-origin checks retain every observed helper and alias. A colliding
+`tensorfold.*` module must match its logical path under the selected installed
+wheel root and that wheel's exact member content; host validation separately
+uses authenticated frozen application sources. A shared basename alone never
+grants tool or application authority. Whole-wheel/FD/SDK checks remain required.
+
+Each worker enters the installed CLI's existing typed qualification hook with
+E160. Before the ordinary listener, it records the actual32 distinct State
+owners and full materialization, all-rank allocation baselines and future
+service promises, C40 captures/settlement/private storage/current usable memory,
+exact KV codec, retention, real startup provider binding, process PID/UID/GID
+and source origins. Whole installed application/wheel, FD and protected SDK
+checks precede the ordinary constructor; application identity is rechecked
+after its positive close. The real shared32-Q4 validator consumes this proof.
+No header or eight-active snapshot substitutes for32 actual owners.
+
+The callback then returns normally: followers enter their ordinary follow
+loop and rank0 reaches ordinary HTTP READY with zero inference requests. The
+Host consumes all eight proofs, binds all24 bootstrap/post-CUDA/ready NUMA
+receipts to their actual worker PIDs, verifies capability-zero process facts,
+then uses the existing owned supervisor/child graceful retirement. Nonzero
+close, timeout, cleanup, changed evidence/source or result publication failures
+cannot become a pass. All model resources must retire before owned removal.
+Setup failure is durably journaled with the existing bounded qualification
+failure publisher before fatal notification; journal and notification errors
+remain attached to the original failure. Requested and captured key sets must
+be identical, while per-key accounting retains actual capture order. The final
+tool snapshot must include that corrected shared consumer; an old CPU fixture
+with both lists sorted cannot authorize native DATA.
+
+The earlier assessment's independent kernel `map_files` origin requirement
+belongs to later CAP40 teacher acceptance. This allocation/graph-fit gate uses
+ordinary capability-zero source-bound origins, as the existing ragged transport
+does; it never relabels those as CAP40/VMA proof. Native full32/C40 fit, actual
+history contents, model/codec quality, teacher acceptance and matched P3 retain
+their distinct gates. CPU DTO/fault tests do not qualify hardware capacity.
+
 ## Full-window graph headroom
 
 The 2026-11-13 user authority permits otherwise unused memory to fund graphs
@@ -2002,3 +2065,37 @@ private-pool fields, while paired retention comparison includes only validated
 unchanged capacity/recovery promises. Focused CPU contract and preserved legacy/reader controls pass on genuine Source37
 SDK/application origins without an application overlay. Native/model capacity and
 quality remain unrun; no physical capacity or performance result is inferred.
+
+## Generic native Host CPU and memory-node allowance
+
+The existing `tensorfold.native-contract-host-v1` resources may include both
+`cpuset_cpus` and `cpuset_mems`, using sorted distinct integer ID lists (1–4,096
+IDs each, nonnegative signed-64-bit range). The pair is optional; a partial pair,
+invalid values, or an attempt to override the prepared model's sealed `numa`
+plan fails before Docker effects. The same Host create/inspect admission owns
+these masks for generic CPU and CUDA routes. Docker must admit the actual host
+CPU/node IDs; this software contract does not claim arbitrary hardware support
+or per-tensor placement. Source controls cover malformed masks, command binding,
+inspect mismatches and unchanged default/model behavior. Actual component GPU
+execution remains a separate gate with its own immutable image and authorization.
+
+The teacher setup failure path now uses the existing atomic diagnostic publisher
+before fatal TP notification. A retained Source37 C36 fixture reproduces the
+requested-versus-captured ordering mismatch: membership is unordered, while
+per-key accounting remains tied to the actual capture order and byte chain.
+Duplicate/missing keys and reordered accounting remain failures. The historical
+first exception is unknown; this source correction does not authorize a retry.
+
+The shared content projection corrects the C8 consumer assumption that every
+rank owns a local issued authority. The supported same-host protocol hashes on
+rank zero, broadcasts verified content, and checks every rank's opened identities.
+The immutable projection preserves that ownership split, checks current binding
+identity/generation and input lifetime, and refuses closed or poisoned state.
+Its bounded old/new retention forecast is included in ordinary host workspace
+before admission; no new collective, hash pass or materialized memory credit is
+introduced. Actual Source37 failure journals remain unchanged; their nullable
+unused diagnostic ledger fields are not the live integer-only ledger.
+
+A tool-only shared-content reader correction rejects boolean-as-integer
+provenance and validates the complete producer registration shape. The reviewed
+application source is unchanged; this guard does not require another image.

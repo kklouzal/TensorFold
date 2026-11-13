@@ -50,6 +50,9 @@ def document(spec, state=None):
     if "verification_launcher" in spec:
         value["HostConfig"].update(CapAdd=["CAP_CHECKPOINT_RESTORE"], CapDrop=["ALL"])
         value["NetworkSettings"] = {"Networks": {"none": {}}}
+    if 'cpuset_cpus' in r:
+        value['HostConfig'].update(CpusetCpus=','.join(map(str, r['cpuset_cpus'])),
+                                  CpusetMems=','.join(map(str, r['cpuset_mems'])))
     return value
 
 
@@ -224,6 +227,51 @@ class Contracts(unittest.TestCase):
                      "timeouts": {"run": 30, "poll": .01, "monitor": 1, "retire": 1},
                      "disk_bytes": {"start": 0, "running": 0},
                      "diagnostics": {"sample_limit": 128, "process_limit": 16, "read_limit_bytes": 4096}}
+
+    def test_explicit_resource_affinity_is_created_and_admitted_for_cpu_and_cuda(self):
+        for ids in (U[:], []):
+            with self.subTest(ids=ids):
+                spec = copy.deepcopy(self.spec)
+                spec['uuids'] = ids
+                spec['environment']['CUDA_VISIBLE_DEVICES'] = ','.join(ids)
+                spec['environment']['NVIDIA_VISIBLE_DEVICES'] = ','.join(ids) if ids else 'void'
+                spec['resources'].update(cpuset_cpus=[0, 1, 2, 3, 32, 33, 34, 35], cpuset_mems=[0])
+                host.validate_spec(spec)
+                argv = host.create_argv(spec, self.output)
+                self.assertEqual(argv[argv.index('--cpuset-cpus') + 1], '0,1,2,3,32,33,34,35')
+                self.assertEqual(argv[argv.index('--cpuset-mems') + 1], '0')
+                actual = document(spec)
+                host.admit(actual, spec, CID)
+                for key, value in (('CpusetCpus', ''), ('CpusetCpus', '0,1'), ('CpusetMems', '1')):
+                    changed = copy.deepcopy(actual)
+                    changed['HostConfig'][key] = value
+                    with self.assertRaisesRegex(ValueError, 'cgroup allowance'):
+                        host.admit(changed, spec, CID)
+        self.assertNotIn('--cpuset-cpus', host.create_argv(self.spec, self.output))
+        self.assertNotIn('--cpuset-mems', host.create_argv(self.spec, self.output))
+        host.admit(document(self.spec), self.spec, CID)
+
+    def test_resource_affinity_requires_both_bounded_canonical_id_lists(self):
+        bad = ([], [True], [-1], [1 << 63], [1, 0], [0, 0], [0, '1'], (0,), list(range(4097)), None)
+        for key in ('cpuset_cpus', 'cpuset_mems'):
+            for value in bad:
+                with self.subTest(key=key, value=value):
+                    spec = copy.deepcopy(self.spec)
+                    spec['resources'].update(cpuset_cpus=[0], cpuset_mems=[0])
+                    spec['resources'][key] = value
+                    with self.assertRaises(ValueError):
+                        host.validate_spec(spec)
+            spec = copy.deepcopy(self.spec)
+            spec['resources'][key] = [0]
+            with self.assertRaisesRegex(ValueError, 'resource contract'):
+                host.validate_spec(spec)
+
+    def test_generic_resource_affinity_cannot_override_model_numa_authority(self):
+        spec = self.verification_spec()
+        spec['numa'] = {}  # Refuse the competing authority before reading its payload.
+        spec['resources'].update(cpuset_cpus=[0], cpuset_mems=[0])
+        with self.assertRaisesRegex(ValueError, 'sealed model NUMA plan'):
+            host.validate_spec(spec)
 
     def verification_spec(self):
         spec = copy.deepcopy(self.spec)

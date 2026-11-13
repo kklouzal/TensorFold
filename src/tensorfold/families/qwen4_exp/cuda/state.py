@@ -51,6 +51,7 @@ class Buffers:
             raise ValueError('HC writeback capture policy must be an explicit boolean')
         self.owner_role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
         self.row_sampling_scratch = None
+        self.gathered_readback = None
         self.hc_writeback_target_eager = w.meta.get('hc_writeback_target_eager', False)
         if type(self.hc_writeback_target_eager) is not bool:
             raise ValueError('HC target-eager policy must be an explicit boolean')
@@ -197,6 +198,10 @@ class Buffers:
             self.g_moe = torch.empty((world * rows * c.hidden,), dtype=f32, device=dev)
             self.cand = torch.empty((head_rows, 2 * CAND + 1), dtype=f32, device=dev)
             self.cand_all = torch.empty((world * head_rows * (2 * CAND + 1),), dtype=f32, device=dev)
+        readbacks = getattr(w, '_private_gathered_readbacks', None)
+        if readbacks is not None and self.owner_role in readbacks:
+            self.gathered_readback = readbacks[self.owner_role]
+            self.gathered_readback.bind(w, self)
         sampling = getattr(w, '_private_row_sampling', None)
         if sampling is not None:
             if self.owner_role not in sampling or world != 8 or head_columns == 0:

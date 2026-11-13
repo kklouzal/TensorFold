@@ -1,0 +1,915 @@
+{
+  "schema": "tensorfold.real-Source37-C36-order-fixture-v1",
+  "provenance": {
+    "application_source": "da40c2f6b65a63dd7bf734a9872169981f4eb31a",
+    "tool_source": "c092b6c31d72efc5b1e81c24cb801899ad1e0149",
+    "original_console_sha256": "dfceb9ac777fad5249ff8d1ecfa2adeecb4e0d0771da9329233983b067f51c4d",
+    "scope": "Actualretiredfailedrun rank0 captureorder/accounting only; notcompletecapacity/model/qualityproof. No invented unpublished fields."
+  },
+  "requested_keys": [
+    [
+      "mtp",
+      1,
+      1
+    ],
+    [
+      "mtp",
+      2,
+      1
+    ],
+    [
+      "mtp",
+      2,
+      2
+    ],
+    [
+      "mtp",
+      3,
+      1
+    ],
+    [
+      "mtp",
+      3,
+      3
+    ],
+    [
+      "mtp",
+      4,
+      1
+    ],
+    [
+      "mtp",
+      4,
+      4
+    ],
+    [
+      "mtp",
+      5,
+      1
+    ],
+    [
+      "mtp",
+      5,
+      5
+    ],
+    [
+      "mtp",
+      6,
+      6
+    ],
+    [
+      "mtp",
+      7,
+      7
+    ],
+    [
+      "mtp",
+      8,
+      8
+    ],
+    [
+      "mtp",
+      10,
+      2
+    ],
+    [
+      "mtp",
+      16,
+      16
+    ],
+    [
+      "mtp",
+      20,
+      4
+    ],
+    [
+      "mtp",
+      24,
+      24
+    ],
+    [
+      "mtp",
+      28,
+      8
+    ],
+    [
+      "mtp",
+      40,
+      8
+    ],
+    [
+      "mtp",
+      80,
+      16
+    ],
+    [
+      "mtp",
+      120,
+      24
+    ],
+    [
+      "verify",
+      1,
+      1
+    ],
+    [
+      "verify",
+      2,
+      1
+    ],
+    [
+      "verify",
+      2,
+      2
+    ],
+    [
+      "verify",
+      3,
+      1
+    ],
+    [
+      "verify",
+      4,
+      1
+    ],
+    [
+      "verify",
+      4,
+      4
+    ],
+    [
+      "verify",
+      5,
+      1
+    ],
+    [
+      "verify",
+      8,
+      8
+    ],
+    [
+      "verify",
+      10,
+      2
+    ],
+    [
+      "verify",
+      16,
+      16
+    ],
+    [
+      "verify",
+      20,
+      4
+    ],
+    [
+      "verify",
+      24,
+      24
+    ],
+    [
+      "verify",
+      28,
+      8
+    ],
+    [
+      "verify",
+      40,
+      8
+    ],
+    [
+      "verify",
+      80,
+      16
+    ],
+    [
+      "verify",
+      120,
+      24
+    ]
+  ],
+  "captured_keys": [
+    [
+      "verify",
+      1,
+      1
+    ],
+    [
+      "mtp",
+      1,
+      1
+    ],
+    [
+      "verify",
+      2,
+      1
+    ],
+    [
+      "mtp",
+      2,
+      1
+    ],
+    [
+      "verify",
+      2,
+      2
+    ],
+    [
+      "mtp",
+      2,
+      2
+    ],
+    [
+      "verify",
+      3,
+      1
+    ],
+    [
+      "mtp",
+      3,
+      1
+    ],
+    [
+      "mtp",
+      3,
+      3
+    ],
+    [
+      "verify",
+      4,
+      1
+    ],
+    [
+      "mtp",
+      4,
+      1
+    ],
+    [
+      "verify",
+      4,
+      4
+    ],
+    [
+      "mtp",
+      4,
+      4
+    ],
+    [
+      "verify",
+      5,
+      1
+    ],
+    [
+      "mtp",
+      5,
+      1
+    ],
+    [
+      "mtp",
+      5,
+      5
+    ],
+    [
+      "mtp",
+      6,
+      6
+    ],
+    [
+      "mtp",
+      7,
+      7
+    ],
+    [
+      "verify",
+      8,
+      8
+    ],
+    [
+      "mtp",
+      8,
+      8
+    ],
+    [
+      "verify",
+      10,
+      2
+    ],
+    [
+      "mtp",
+      10,
+      2
+    ],
+    [
+      "verify",
+      16,
+      16
+    ],
+    [
+      "mtp",
+      16,
+      16
+    ],
+    [
+      "verify",
+      20,
+      4
+    ],
+    [
+      "mtp",
+      20,
+      4
+    ],
+    [
+      "verify",
+      24,
+      24
+    ],
+    [
+      "mtp",
+      24,
+      24
+    ],
+    [
+      "verify",
+      28,
+      8
+    ],
+    [
+      "mtp",
+      28,
+      8
+    ],
+    [
+      "verify",
+      40,
+      8
+    ],
+    [
+      "mtp",
+      40,
+      8
+    ],
+    [
+      "verify",
+      80,
+      16
+    ],
+    [
+      "mtp",
+      80,
+      16
+    ],
+    [
+      "verify",
+      120,
+      24
+    ],
+    [
+      "mtp",
+      120,
+      24
+    ]
+  ],
+  "accounting": [
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 1,
+      "participants": 1,
+      "pieces": 15,
+      "prior_keys": 0,
+      "prior_bytes": 0,
+      "physical_delta_bytes": 138412032,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 25165824,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 1,
+      "participants": 1,
+      "pieces": 2,
+      "prior_keys": 1,
+      "prior_bytes": 138412032,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 2,
+      "participants": 1,
+      "pieces": 15,
+      "prior_keys": 2,
+      "prior_bytes": 142606336,
+      "physical_delta_bytes": 115343360,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 2,
+      "participants": 1,
+      "pieces": 2,
+      "prior_keys": 3,
+      "prior_bytes": 257949696,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 2,
+      "participants": 2,
+      "pieces": 15,
+      "prior_keys": 4,
+      "prior_bytes": 262144000,
+      "physical_delta_bytes": 117440512,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 2,
+      "participants": 2,
+      "pieces": 2,
+      "prior_keys": 5,
+      "prior_bytes": 379584512,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 3,
+      "participants": 1,
+      "pieces": 15,
+      "prior_keys": 6,
+      "prior_bytes": 383778816,
+      "physical_delta_bytes": 117440512,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 3,
+      "participants": 1,
+      "pieces": 2,
+      "prior_keys": 7,
+      "prior_bytes": 501219328,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 3,
+      "participants": 3,
+      "pieces": 2,
+      "prior_keys": 8,
+      "prior_bytes": 505413632,
+      "physical_delta_bytes": 6291456,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 4,
+      "participants": 1,
+      "pieces": 15,
+      "prior_keys": 9,
+      "prior_bytes": 511705088,
+      "physical_delta_bytes": 119537664,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 4,
+      "participants": 1,
+      "pieces": 2,
+      "prior_keys": 10,
+      "prior_bytes": 631242752,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 4,
+      "participants": 4,
+      "pieces": 15,
+      "prior_keys": 11,
+      "prior_bytes": 635437056,
+      "physical_delta_bytes": 121634816,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 4,
+      "participants": 4,
+      "pieces": 2,
+      "prior_keys": 12,
+      "prior_bytes": 757071872,
+      "physical_delta_bytes": 6291456,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 5,
+      "participants": 1,
+      "pieces": 15,
+      "prior_keys": 13,
+      "prior_bytes": 763363328,
+      "physical_delta_bytes": 117440512,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 5,
+      "participants": 1,
+      "pieces": 2,
+      "prior_keys": 14,
+      "prior_bytes": 880803840,
+      "physical_delta_bytes": 6291456,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 5,
+      "participants": 5,
+      "pieces": 2,
+      "prior_keys": 15,
+      "prior_bytes": 887095296,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 6,
+      "participants": 6,
+      "pieces": 2,
+      "prior_keys": 16,
+      "prior_bytes": 891289600,
+      "physical_delta_bytes": 6291456,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 7,
+      "participants": 7,
+      "pieces": 2,
+      "prior_keys": 17,
+      "prior_bytes": 897581056,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 8,
+      "participants": 8,
+      "pieces": 15,
+      "prior_keys": 18,
+      "prior_bytes": 901775360,
+      "physical_delta_bytes": 123731968,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 8,
+      "participants": 8,
+      "pieces": 2,
+      "prior_keys": 19,
+      "prior_bytes": 1025507328,
+      "physical_delta_bytes": 6291456,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 10,
+      "participants": 2,
+      "pieces": 15,
+      "prior_keys": 20,
+      "prior_bytes": 1031798784,
+      "physical_delta_bytes": 125829120,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 10,
+      "participants": 2,
+      "pieces": 2,
+      "prior_keys": 21,
+      "prior_bytes": 1157627904,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 16,
+      "participants": 16,
+      "pieces": 15,
+      "prior_keys": 22,
+      "prior_bytes": 1161822208,
+      "physical_delta_bytes": 130023424,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 2097152,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 16,
+      "participants": 16,
+      "pieces": 2,
+      "prior_keys": 23,
+      "prior_bytes": 1291845632,
+      "physical_delta_bytes": 8388608,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 20,
+      "participants": 4,
+      "pieces": 15,
+      "prior_keys": 24,
+      "prior_bytes": 1300234240,
+      "physical_delta_bytes": 132120576,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 20,
+      "participants": 4,
+      "pieces": 2,
+      "prior_keys": 25,
+      "prior_bytes": 1432354816,
+      "physical_delta_bytes": 6291456,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 24,
+      "participants": 24,
+      "pieces": 15,
+      "prior_keys": 26,
+      "prior_bytes": 1438646272,
+      "physical_delta_bytes": 134217728,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 24,
+      "participants": 24,
+      "pieces": 2,
+      "prior_keys": 27,
+      "prior_bytes": 1572864000,
+      "physical_delta_bytes": 10485760,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 28,
+      "participants": 8,
+      "pieces": 15,
+      "prior_keys": 28,
+      "prior_bytes": 1583349760,
+      "physical_delta_bytes": 138412032,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 28,
+      "participants": 8,
+      "pieces": 2,
+      "prior_keys": 29,
+      "prior_bytes": 1721761792,
+      "physical_delta_bytes": 4194304,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 40,
+      "participants": 8,
+      "pieces": 15,
+      "prior_keys": 30,
+      "prior_bytes": 1725956096,
+      "physical_delta_bytes": 192937984,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 40,
+      "participants": 8,
+      "pieces": 2,
+      "prior_keys": 31,
+      "prior_bytes": 1918894080,
+      "physical_delta_bytes": 6291456,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 80,
+      "participants": 16,
+      "pieces": 15,
+      "prior_keys": 32,
+      "prior_bytes": 1925185536,
+      "physical_delta_bytes": 257949696,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 80,
+      "participants": 16,
+      "pieces": 2,
+      "prior_keys": 33,
+      "prior_bytes": 2183135232,
+      "physical_delta_bytes": 10485760,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "verify",
+      "rows": 120,
+      "participants": 24,
+      "pieces": 15,
+      "prior_keys": 34,
+      "prior_bytes": 2193620992,
+      "physical_delta_bytes": 320864256,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    },
+    {
+      "schema": "tensorfold.exact-graph-key-v1",
+      "rank": 0,
+      "role": "mtp",
+      "rows": 120,
+      "participants": 24,
+      "pieces": 2,
+      "prior_keys": 35,
+      "prior_bytes": 2514485248,
+      "physical_delta_bytes": 16777216,
+      "allocated_delta_bytes": 0,
+      "reserved_delta_bytes": 0,
+      "budget_bytes": 6025920512,
+      "admitted": true
+    }
+  ]
+}

@@ -1,11 +1,26 @@
 # TensorFold fork
 
+A separate maintained full32 ISO4 capacity gate uses the ordinary installed
+API and shared capacity producer. It requires32 actual native-context State
+owners per rank, MTP4/E160 and all40 graph keys, retaining the original36. It
+does not widen the24-Q8 C8 teacher or infer populated-history correctness,
+independent CAP40 origins, model quality or P3. The native v3 run produced all
+eight valid full32 capacity receipts, captured all40 keys and reached ordinary
+READY with zero inference requests. Its post-close SDK audit was interrupted
+during shutdown, so the overall lifecycle gate failed and remains open; see
+[its contract](docs/optimization-validation.md#full32-iso4-capacity-gate).
+The gate preserves the declared absolute model namespace inside its container
+so generated GGUF metadata retains its sealed target and MTP paths.
+Its import-origin checks distinguish authenticated installed application modules
+from tool imports when filenames coincide.
+
 Automatic graph admission for the complete resident SC117 region now derives
 its allowance from observed worst-rank headroom after24 Q8 or32 Q4 full-context
 windows and all remaining service promises. Unused startup reserve can fund
 graphs; required workspace, snapshots, copy overlap and absolute grants remain
-protected. This source policy still needs native capacity/graph verification;
-no new throughput or numerical claim is made. See
+protected. The Q4 v3 run supplies scoped physical-capacity/graph evidence;
+positive lifecycle closure and the Q8 reference are still pending. No new
+throughput or numerical claim is made. See
 [admission scope](docs/optimization-validation.md#full-window-graph-headroom).
 Personal profiles use explicit24/32 ceilings. Uncapped automatic capacity still
 maximizes sessions; graph fit depends on the headroom left by that selection.
@@ -27,14 +42,22 @@ Native kernel, model-quality and performance qualification remain pending.
 The rebuilt Source36 component completed all 18 main native cases with finite
 outputs and preserved initial-state bits, including both split continuations.
 The subsequent stream diagnostic stopped on duplicate declarations of the same
-CUDA symbol. Its unique-name parser correction passes CPU controls; the actual
-stream proof and numerical/model/performance acceptance remain pending.
+CUDA symbol. After its unique-name parser correction, a separate native stream
+run passed the producer/core/consumer ordering controls with three G3 kernels
+on one recorded nondefault stream. The original failed full CLI remains failed;
+numerical/model/performance acceptance remains pending.
 
 Token staging now retains NumPy views of its existing host ID buffers. Target
 and MTP keep their original conversions, DMA fences and buffer payloads. Focused
 CPU contracts and local host-fill comparisons pass; full-model performance
 selection remains pending. Span-filling alternatives that regressed tested
 CPU regions were rejected. See [validation scope](docs/optimization-validation.md#token-staging-host-view-reuse).
+
+An explicit private [gathered sampling readback trial](docs/gathered-readback.md)
+retains paid pinned packet and int64 ID storage for target/MTP sampling. It
+preserves blocking readback and the original sampling/fallback rules. The
+candidate is default-off; native, model quality and matched performance gates
+remain pending.
 
 The explicit private [descriptor upload ring trial](docs/descriptor-upload-ring.md)
 adds a second cold, paid pinned host slot while retaining the same GPU descriptor
@@ -57,11 +80,12 @@ separates requested, source-implemented, qualified and effective behavior.
 
 An explicit [GDN chunk64 component trial](docs/gdn-chunk64-component.md) now
 preserves the original FlashQLA SM70 TileLang generators behind an owned,
-prefill-only API. It is a separate numerical candidate with no serving hook;
-protected-toolchain compilation, native numerical/state checks and integrated
-quality/performance qualification remain pending. It adds no default dependency
+prefill-only API. It is a separate numerical candidate with no serving hook.
+Protected-toolchain component compilation and finite native controls passed;
+integrated model quality and performance qualification remain pending. It adds no default dependency
 or runtime selection. Its fixed native trial includes128-row and129-row
-continuations split after row65; these cases still require actual device execution.
+continuations split after row65; both completed in the historical Source36
+component run, without establishing an accepted error bound.
 
 The [development handoff checkpoint](docs/development-checkpoint.md) records the
 preserved V100 trials, research drafts and known unfinished comparison controls.
@@ -71,16 +95,27 @@ qualification remains separate from the qualified production images.
 The private G3 component now has explicit, default-off owned Half frontend and
 epilogue boundaries: unscaled Half q/k, direct FP32 raw gates, Half-rounded beta
 and a separately funded raw output. The incumbent GDN path remains selected.
-Native boundary math, capacity/span and segmented State integration, full-model
-quality and performance gates remain pending; see the [integration contract](docs/gdn-chunk64-prefill-integration.md).
+The explicit component also binds funded maximum-row spans and segmented State
+cuts without a serving hook or request-time compilation. Source38 passed42 native
+Half-boundary diagnostics and19 Value8 compatibility controls. Source39 passed
+the seven bounded span/State cases and controlled host-failure probe. These
+finite component results do not establish full-model quality, a general error
+bound or performance selection; see the [integration contract](docs/gdn-chunk64-prefill-integration.md).
+
+The maintained G3 trial also has an authored `spans-state` native diagnostic
+phase for bounded cuts, real State banks and exact copy/retirement checks. Its
+matching Source39 native run completed with retained generated sources/cache,
+positive retirement and unchanged GPU health. It does not run or qualify the
+historical18 numerical cases or the stream profiler in that phase.
 
 The GDN chunk64 compiler now requires an explicit immutable owned-TileLang
 attestation, retained wheel and cold hashing credit. It verifies the installed
 package members, protected FFI0.1.16, compiler/header identity and a dedicated
 cache namespace before TileLang import. The unpatched public0.1.10/FFI0.1.16
-tuple is refused after its observed import abort. This is source-level identity
-admission; an actual owned build, matching derived application image and native
-component qualification remain pending. See the [artifact contract](docs/gdn-chunk64-component.md#owned-artifact-admission).
+tuple is refused after its observed import abort. The owned build and matching
+derived application images have actual CPU identity/import admission evidence;
+Source39 also completed the scoped native State controls above. Whole-model
+quality/performance selection remains pending. See the [artifact contract](docs/gdn-chunk64-component.md#owned-artifact-admission).
 
 The closed G3 attestation v2 additionally distinguishes native-build provenance
 from the reviewed Python-only DictAttrs derivation. It verifies the retained
@@ -3103,3 +3138,30 @@ all-rank graph minimum, settled private graph ownership and issued retention.
 The shared proof validator distinguishes full 24-slot Q8 and 32-slot Q4 capacity;
 the C8 teacher operation remains explicitly 24-slot Q8. Focused CPU contract controls pass;
 actual Source37 capacity, numerical quality and performance remain separate gates.
+
+The private generic native-contract Host accepts optional paired resource fields
+`cpuset_cpus` and `cpuset_mems`: nonempty sorted distinct nonnegative integer ID
+lists, bounded to 4,096 entries each. It passes both masks to Docker before worker
+start and checks the inspected CPU/memory cgroup allowance. Omitted fields keep
+the existing quota-only behavior. The prepared model NUMA route retains its
+separate sealed-plan authority and rejects these competing fields. These masks
+restrict CPU and memory-node eligibility; they do not prove per-allocation NUMA
+residency or qualify a native GPU workload. The immediate required region is the
+owned SM70 component gate; other host topologies require actual resource admission.
+
+Private C8 setup failures publish the bounded qualification journal before the
+supervisor can retire the worker. Exact graph completeness compares unique
+requested membership while retaining the real capture/accounting sequence.
+The retired Source37 attempt completed C36 capture but produced no teacher rows;
+its first setup exception was not retained, so no quality baseline is claimed.
+
+Opt-in shared execution binding retains bounded immutable source/library content
+metadata on each rank. Rank zero alone owns issued descriptor authority and
+hashes bytes; followers validate the current shared projection and their opened
+file identities. Projection retention and rebind overlap are paid before host
+admission. CPU controls pass; a fresh application image and model gates remain
+required before any new C8 reference claim.
+
+The private shared-content reader requires plain integer pass, reuse, byte and
+retention counters; JSON booleans cannot satisfy those fields. Its closed
+registration includes the advertised content and selected capacity projections.

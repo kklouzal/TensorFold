@@ -66,6 +66,7 @@ def packet(tmp_path, monkeypatch):
         for name, path in files.items()}}
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(body))
+    engine.capacity_plan["execution_content_projection_resources"] = identity.execution_content_projection_resources(engine.tp)
     return engine, path, body, files
 
 
@@ -332,6 +333,7 @@ def test_rank_zero_hashes_once_only_after_shared_opened_identity_agreement(packe
     monkeypatch.setattr(identity, "_capture", observed_capture)
     for rank, engine in enumerate(engines):
         engine.rank, engine.tp, engine.comm = rank, 2, Comm()
+        engine.capacity_plan["execution_content_projection_resources"] = identity.execution_content_projection_resources(2)
         identity.begin_execution_manifest(engine, path)
     with ThreadPoolExecutor(max_workers=2) as workers:
         futures = [workers.submit(identity.bind_execution_manifest, e, path) for e in engines]
@@ -346,12 +348,26 @@ def test_rank_zero_hashes_once_only_after_shared_opened_identity_agreement(packe
             assert len(captures) == 1
             assert first._execution_input_authority.bytes_read > 0
             assert second._execution_input_authority is None
+            for engine, receipt in zip(engines, results):
+                engine.capacity_plan['execution_profile_binding'] = receipt
+            first_contents, first_projection = identity.execution_source_contents(first)
+            second_contents, second_projection = identity.execution_source_contents(second)
+            assert first_contents == second_contents
+            assert first_projection['local_authority_owned'] is True
+            assert second_projection['local_authority_owned'] is False
+            assert second_projection['local_payload_bytes_read_this_binding'] == 0
+            assert first_projection['local_payload_bytes_read_this_binding'] > 0
+            assert first_projection['retained_host_bytes'] <= identity.execution_content_projection_resources(2)['per_rank_retained_bytes']
             assert not values  # No inventory, outcome, readiness or retirement keys survive.
             for _ in range(12):
                 repeated = [workers.submit(identity.bind_execution_manifest, e, path, rebind=True) for e in engines]
                 results = [future.result(timeout=10) for future in repeated]
                 assert all(result["bytes_read_this_binding"] == 0 for result in results)
                 assert not values
+                for engine, receipt in zip(engines, results):
+                    engine.capacity_plan['execution_profile_binding'] = receipt
+                    _, projection = identity.execution_source_contents(engine)
+                    assert projection['local_payload_bytes_read_this_binding'] == 0
 
 
 def test_new_lazy_library_hashes_only_new_bytes_and_updates_actual_kernel_identity(packet, monkeypatch):
@@ -486,6 +502,7 @@ def _eight_rank_cohort(packet, monkeypatch):
     for rank in range(8):
         engine = copy.copy(template)
         engine.rank, engine.tp, engine.comm = rank, 8, NS(store=store)
+        engine.capacity_plan = {**template.capacity_plan, "execution_content_projection_resources":identity.execution_content_projection_resources(8)}
         engine.multi = copy.copy(template.multi)
         engine.multi.states = copy.deepcopy(template.multi.states)
         engine.multi.controller = AdaptiveController(slots=1, row_budget=1, proposal_limit=0, prefill_tokens=256)
@@ -893,3 +910,83 @@ def test_refusal_diagnostic_failure_preserves_original_primary_and_contains_coho
     assert caught.value is primary
     assert BaseException.__cause__.__get__(primary, type(primary)) is diagnostic
     assert notified == [primary]
+
+
+def test_shared_projection_refuses_replaced_binding_mutation_close_and_poison(packet):
+    from dataclasses import FrozenInstanceError, replace
+    engine, path, _, _ = packet
+    identity.begin_execution_manifest(engine, path)
+    result = identity.bind_execution_manifest(engine, path)
+    engine.capacity_plan['execution_profile_binding'] = result
+    contents, provenance = identity.execution_source_contents(engine)
+    assert set(contents) == {'source/source.py','library/kernel.so'}
+    assert provenance['local_authority_owned'] is True
+    view = engine._execution_content_projection
+    with pytest.raises(FrozenInstanceError):view.records = ()
+    for fault in ('closed','closing','poison','controller','generation','records','authority'):
+        old_controller = engine.multi.controller.identity
+        old_authority = engine._execution_input_authority
+        engine._execution_content_projection = view
+        if fault == 'closed':engine._closed = True
+        elif fault == 'closing':engine._closing = True
+        elif fault == 'poison':engine._execution_manifest_uncertain = True
+        elif fault == 'controller':engine.multi.controller.identity = None
+        elif fault == 'generation':engine._execution_content_projection = replace(view,generation=view.generation+1)
+        elif fault == 'records':engine._execution_content_projection = replace(view,records=())
+        else:engine._execution_input_authority = None
+        with pytest.raises(ValueError):identity.execution_source_contents(engine)
+        engine._closed = engine._closing = engine._execution_manifest_uncertain = False
+        engine.multi.controller.identity = old_controller
+        engine._execution_input_authority = old_authority
+    engine._execution_content_projection = view
+    source = engine._execution_bind_local['files']['source/source.py']['path']
+    from pathlib import Path
+    Path(source).write_bytes(b'changed actual source')
+    with pytest.raises(ValueError,match='changed'):identity.execution_source_contents(engine)
+
+
+def test_shared_projection_requires_original_precommit_host_forecast(packet):
+    engine,path,_,_ = packet
+    identity.begin_execution_manifest(engine,path)
+    engine.capacity_plan.pop('execution_content_projection_resources')
+    with pytest.raises(ValueError,match='host admission'):identity.bind_execution_manifest(engine,path)
+    assert getattr(engine,'_execution_content_projection',None) is None
+
+
+def test_projection_forecast_bounds_actual_records_and_rebind_overlap(packet):
+    engine,path,_,_ = packet
+    identity.begin_execution_manifest(engine,path)
+    receipt = identity.bind_execution_manifest(engine,path)
+    engine.capacity_plan['execution_profile_binding'] = receipt
+    old = engine._execution_content_projection
+    budget = identity.execution_content_projection_resources(1)
+    assert 0 < old.retained_bytes <= budget['per_rank_retained_bytes']
+    assert budget['per_rank_rebind_peak_bytes'] == 2*budget['per_rank_retained_bytes']
+    rebound = identity.bind_execution_manifest(engine,path,rebind=True)
+    engine.capacity_plan['execution_profile_binding'] = rebound
+    assert engine._execution_content_projection is not old
+    current = engine._execution_content_projection
+    engine._execution_content_projection = old
+    with pytest.raises(ValueError):identity.execution_source_contents(engine)
+    engine._execution_content_projection = current
+    _, projection = identity.execution_source_contents(engine)
+    assert projection['cohort_content_passes'] == 0 and projection['local_payload_bytes_read_this_binding'] == 0
+
+
+def test_actual_eight_rank_followers_read_shared_metadata_without_local_issuance(packet, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    engines,path,values,poison,_ = _eight_rank_cohort(packet,monkeypatch)
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        receipts=[f.result(timeout=10)for f in [workers.submit(identity.bind_execution_manifest,e,path)for e in engines]]
+    assert not values and not poison
+    shared=None
+    for rank,(engine,receipt) in enumerate(zip(engines,receipts)):
+        engine.capacity_plan['execution_profile_binding']=receipt
+        contents,projection=identity.execution_source_contents(engine)
+        if shared is None:shared=contents
+        assert contents==shared and contents
+        assert projection['issuer_rank']==0 and projection['cohort_content_passes']==1
+        assert projection['local_authority_owned']is(rank==0)
+        assert (projection['local_payload_bytes_read_this_binding']>0) is(rank==0)
+        assert bool(engine._execution_input_authorities)is(rank==0)
+        assert (engine._execution_input_authority is not None)is(rank==0)

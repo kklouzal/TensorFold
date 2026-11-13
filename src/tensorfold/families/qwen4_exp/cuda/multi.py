@@ -2388,7 +2388,7 @@ class MultiDecoder:
                     and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
                 chosen = choose_gathered(self.w, self.buf.cand_all, logits.shape[0],
                                          [position for group in positions for position in group], samplings[0],
-                                         logits=logits, plan=self._sample_plan)
+                                         logits=logits, plan=self._sample_plan, readback=self.buf.gathered_readback)
                 sampled = [chosen[a0:a1] for a0, a1 in zip(starts, starts[1:])]
             else:
                 sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
@@ -2726,7 +2726,7 @@ class MultiDecoder:
                     and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
                 chosen, probabilities = choose_gathered(
                     self.w, self.mbuf.cand_all, len(positions), positions, samplings[0], with_prob=True,
-                    logits=logits, plan=self._draft_plan)
+                    logits=logits, plan=self._draft_plan, readback=self.mbuf.gathered_readback)
                 return list(zip(chosen, probabilities))
             picks = []
             for row, (position, sampling) in enumerate(zip(positions, samplings)):

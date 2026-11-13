@@ -86,7 +86,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "prepared_router", "coordinate_staging"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "gathered_readback", "prepared_router", "coordinate_staging"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -186,6 +186,14 @@ def parse_preparation(value):
         from .row_sampling import POLICY
         if row_sampling != POLICY or not value['trial']:
             raise ValueError('row sampling scratch requires its explicit versioned private trial')
+    readback = value.get('gathered_readback')
+    if readback is not None:
+        from .gathered_readback import POLICY
+        if (type(readback) is not dict or set(readback) != {'policy', 'host_budget_bytes'}
+                or readback['policy'] != POLICY or not value['trial']
+                or type(readback['host_budget_bytes']) is not int
+                or not 0 < readback['host_budget_bytes'] < 2**63):
+            raise ValueError('gathered readback requires its explicit trial policy and aggregate host credit')
     capture = value.get('native_gdn_capture', False)
     if type(capture) is not bool or capture and not value['trial']:
         raise ValueError('native GDN capture requires an explicit boolean unqualified trial')
@@ -209,6 +217,7 @@ def parse_preparation(value):
             **({'coordinate_staging': coordinate_staging} if coordinate_staging is not None else {}),
             **({'descriptor_upload': descriptor_upload} if descriptor_upload is not None else {}),
             **({'row_sampling_scratch': row_sampling} if row_sampling is not None else {}),
+            **({'gathered_readback': dict(readback)} if readback is not None else {}),
             **({'gdn_value8_capture': True} if value8 else {}),
             **({'native_hc_writeback_capture': True} if hc_capture else {}),
             **({'native_hc_writeback_target_eager': True} if hc_eager else {}),
@@ -240,6 +249,14 @@ class OwnerPreparation:
         self.role_rows = {role: role_rows[role] for role in ("decode", "mtp", "prefill") if role in role_rows}
         self.buckets = {role: row_buckets(rows, self.specification["row_buckets"].get(role))
                         for role, rows in self.role_rows.items()}
+        self.gathered_readback_forecast = {}
+        if self.specification.get('gathered_readback') is not None:
+            from .gathered_readback import layout
+            self.gathered_readback_forecast = {role: layout(8, rows) for role, rows in self.role_rows.items()
+                                               if role in ('decode', 'mtp')}
+            needed = sum(cost['host_payload_bytes'] for cost in self.gathered_readback_forecast.values())
+            if needed > self.specification['gathered_readback']['host_budget_bytes']:
+                raise MemoryError('gathered readback roles exceed their explicit aggregate host credit')
         self.manifest_sha256 = manifest_sha256
         self.workspaces, self.graphs = {}, {}
         self.head_comm = None
@@ -249,6 +266,7 @@ class OwnerPreparation:
         self.prepared_router = None
         self.prepared_m32 = None
         self.row_sampling = {}
+        self.gathered_readbacks = {}
         self.coordinate_stages = {}
         self.phases = []
         self.before = self.after = None
@@ -369,6 +387,7 @@ class OwnerPreparation:
                 if (self.specification.get('native_family') is not None
                         or self.specification.get('prepared_linears') is not None
                         or self.specification.get('row_sampling_scratch') is not None
+                        or self.specification.get('gathered_readback') is not None
                         or self.specification.get('prepared_router') is not None
                         or self.specification.get('coordinate_staging') is not None):
                     if (not getattr(engine, '_owned_expert_requested', False)
@@ -636,6 +655,10 @@ class OwnerPreparation:
                 if buffers.row_sampling_scratch is not self.row_sampling[role]:
                     raise RuntimeError('serving role did not adopt its paid sampling scratch')
                 buffers.row_sampling_scratch.validate_bindings(weights, buffers)
+            if role in self.gathered_readbacks:
+                if buffers.gathered_readback is not self.gathered_readbacks[role]:
+                    raise RuntimeError('serving role did not adopt its paid gathered readback')
+                buffers.gathered_readback.validate_bindings(weights, buffers.cand_all)
             if self.prepared_m32 is not None and role in self.prepared_m32.role_rows:
                 if buffers.padded_linears is not self.prepared_m32.buffers.get(role):
                     raise RuntimeError('serving role did not adopt its paid prepared M32 buffers')
@@ -887,8 +910,12 @@ class OwnerPreparation:
                    if self.reference_arithmetic_request is not None else {}),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
+                **({'gathered_readback_host_forecast': deepcopy(self.gathered_readback_forecast)}
+                   if self.gathered_readback_forecast else {}),
                 **({'coordinate_staging': {role: stage.pinned_host_bytes for role, stage in self.coordinate_stages.items()}}
                    if self.coordinate_stages else {}),
+                **({'gathered_readback': {role: owner.record() for role, owner in self.gathered_readbacks.items()}}
+                   if self.gathered_readbacks else {}),
                 **({'row_sampling_scratch': {role: scratch.record() for role, scratch in self.row_sampling.items()}}
                    if self.row_sampling else {}),
                 **({'aten_operator_identity': deepcopy(self.aten_operator_identity),
@@ -923,6 +950,30 @@ class OwnerPreparation:
                 "included_in_physical_free_baseline": True, "future_owner_persistent_bytes": 0,
                 "qualification": "UNQUALIFIED: source-built foundation and real SM70 model/quality/performance gates required"}
 
+    def gathered_host_payload_bytes(self):
+        return sum(cost['host_payload_bytes'] for cost in self.gathered_readback_forecast.values())
+
+    def allocate_gathered_readbacks(self, engine, device):
+        """After complete host-capacity admission, before weights/States bind."""
+        if not self.gathered_readback_forecast:
+            return
+        if self.closed or not self.prepared or self.gathered_readbacks:
+            raise RuntimeError('gathered readback allocation requires one admitted prepared owner')
+        from .gathered_readback import GatheredReadback
+
+        def allocate():
+            for role, cost in self.gathered_readback_forecast.items():
+                owner = object.__new__(GatheredReadback)
+                self.gathered_readbacks[role] = owner
+                owner.__init__(engine.tp, self.role_rows[role], role, device)
+                if owner.cost != cost:
+                    raise ValueError('gathered readback allocation differs from admitted host forecast')
+            return {role: owner.record() for role, owner in self.gathered_readbacks.items()}
+
+        peers = self._phase(engine, 'allocate-gathered-readbacks', allocate, may_refuse=False)
+        if any(peer != peers[0] for peer in peers):
+            raise ValueError('gathered readback allocations differ across TP8 ranks')
+
     def close(self):
         if self.closed:
             return
@@ -932,6 +983,7 @@ class OwnerPreparation:
         finish((graph.close for graph in (*self.graphs.values(), *self.reference_arithmetic.values())))
         finish((owner.close for owner in self.workspaces.values()))
         finish((scratch.close for scratch in self.row_sampling.values()))
+        finish((owner.close for owner in self.gathered_readbacks.values()))
         finish(stage.close_host for stage in self.coordinate_stages.values())
         if self.dense_owner is not None:
             self.dense_owner.close()

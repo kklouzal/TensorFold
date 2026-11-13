@@ -6,7 +6,7 @@ VLK [1,6,128,128]; initial and final must be distinct. Only one sequence,
 Hq2/Hv6/D128, full-prefix retention and 128-thread SM70 kernels are admitted.
 This component neither updates conv history nor publishes a State bank.
 
-Cold preparation validates and allocates once, compiles before binding, and
+Cold preparation funds a maximum row capacity, allocates once and compiles before binding. Each binding accepts a contiguous logical span within capacity and
 retains all operands. Bound invocation is serial on the preparation CUDA stream;
 rebind after any tensor replacement. No concurrent reuse, resize or storage
 mutation is permitted until the stream has completed. CUDA failure poisons the
@@ -148,7 +148,11 @@ class Prepared:
             raise RuntimeError("G3 binding must precede capture")
         if torch.cuda.current_stream(self.device).cuda_stream != self.stream:
             raise RuntimeError("G3 bind must use its preparation stream")
-        r = self.layout.rows
+        if self.error is not None:
+            raise RuntimeError("G3 preparation is poisoned after a launch failure") from self.error
+        r = q.shape[1] if type(q) is torch.Tensor and q.dim() == 4 else 0
+        if type(r) is not int or not 1 <= r <= self.layout.rows:
+            raise ValueError("G3 logical span must be positive and within funded maximum rows")
         specs = [(q, (1,r,2,128), torch.float16), (k, (1,r,2,128), torch.float16),
                  (v, (1,r,6,128), torch.float16), (raw_log_gate, (1,r,6), torch.float32),
                  (beta, (1,r,6), torch.float32), (initial, (1,6,128,128), torch.float32),
@@ -167,7 +171,16 @@ class Prepared:
             if any(lo < _span(other)[1] and _span(other)[0] < hi
                    for other in reads + writes[:i] if other.numel()):
                 raise ValueError("G3 writes must not alias inputs, another write or initial state")
-        return Bound(self, (q,k,v,raw_log_gate,beta,initial,output,final))
+        # The pinned generated q/k/v/output copies use 16-byte vector traffic.
+        # Half row strides (512/1536 bytes) preserve it at arbitrary row cuts.
+        for tensor in (q,k,v,output):
+            if tensor.data_ptr() % 16:
+                raise ValueError("G3 Half span requires 16-byte base alignment")
+        operands = (q,k,v,raw_log_gate,beta,initial,output,final)
+        scratch = (self.a[:,:r],self.gsum[:,:r])
+        owners = (*operands,self.a,self.gsum,self.h,*self.metadata,*scratch)
+        return Bound(self,operands,r,scratch,owners,tuple(map(_signature,owners)),
+                     (self.a,self.gsum,self.h,*self.metadata),(output,final))
 
 
 def _span(tensor):
@@ -175,10 +188,20 @@ def _span(tensor):
     return start, start + tensor.numel() * tensor.element_size()
 
 
+def _signature(tensor):
+    return (tensor.data_ptr(),tuple(tensor.shape),tuple(tensor.stride()),tensor.dtype,tensor.device)
+
+
 @dataclass(frozen=True)
 class Bound:
     prepared: Prepared
     operands: tuple
+    rows: int
+    scratch: tuple
+    owners: tuple
+    signatures: tuple
+    prepared_owners: tuple
+    result: tuple
 
     def run(self):
         """Enqueue on the original stream; caller waits before host use/retirement.
@@ -200,18 +223,31 @@ class Bound:
             raise RuntimeError("G3 is an inference-only numerical trial")
         if torch.cuda.current_stream(p.device).cuda_stream != p.stream:
             raise RuntimeError("G3 cannot execute on a different stream")
+        if p.error is not None:
+            raise RuntimeError("G3 preparation is poisoned after a launch failure") from p.error
+        current = (p.a,p.gsum,p.h,*p.metadata)
+        if (len(current) != len(self.prepared_owners)
+                or any(now is not original for now,original in zip(current,self.prepared_owners))
+                or tuple(map(_signature,self.owners)) != self.signatures):
+            raise RuntimeError("G3 bound operand/workspace view storage or layout changed")
         q,k,v,g,b,initial,output,final = self.operands
-        cu,offsets,dummy,has_initial = p.metadata
+        a,gsum = self.scratch
+        cu,offsets,dummy,has_initial = self.prepared_owners[3:]
         # TVM-FFI launches consume TVMFFIEnvGetStream. Bind that supported
         # thread-local context explicitly; the pinned TileLang adapter's prose
         # about a Torch stream thunk does not implement such a thunk. The FFI
         # context restores the caller's prior stream even if a launch raises.
-        with p.stream_context(p.ffi_device, p.stream):
-            p.cumsum(g, p.gsum, p.layout.chunks)
-            p.kkt(k, b, p.a, p.layout.chunks)
-            p.core(q,k,v,p.a,p.gsum,b,initial,cu,offsets,dummy,cu,dummy,has_initial,output,p.h,final)
-        torch.autograd.graph.increment_version((output, final, p.gsum, p.a))
-        return output, final
+        try:
+            with p.stream_context(p.ffi_device, p.stream):
+                p.cumsum(g, gsum, (self.rows+63)//64)
+                p.kkt(k, b, a, (self.rows+63)//64)
+                p.core(q,k,v,a,gsum,b,initial,cu,offsets,dummy,cu,dummy,has_initial,output,self.prepared_owners[2],final)
+            torch.autograd.graph.increment_version((output, final, gsum, a))
+        except BaseException as error:
+            p.error = error
+            raise
+        return self.result
+
 
 
 def prepare(rows, device, *, workspace_budget_bytes, compiler, cuts=()):
@@ -220,7 +256,10 @@ def prepare(rows, device, *, workspace_budget_bytes, compiler, cuts=()):
     No hidden global cache or fallback. Caller supplies a budget in addition to
     ordinary model admission. Runtime allocator/compiler retention is separate
     from tensor payload and must be measured/contained in the trial process.
-    No kernel runs here. Failure releases local tensors through normal Python
+    The generator row dimensions are dynamic: row/span changes do not compile
+    kernels. Nonvarlen/non-CP/nonindexed kernels derive live sequence/chunk
+    bounds from input shapes; cu/offset capacity metadata is not read in that
+    configuration and is immutable across spans. No kernel runs here. Failure releases local tensors through normal Python
     ownership; successful return retains all scratch and compiled launchers.
     """
     plan = layout(rows, cuts=cuts)
@@ -264,6 +303,7 @@ def prepare(rows, device, *, workspace_budget_bytes, compiler, cuts=()):
         p.layout, p.device, p.compiler_report = plan, device, report
         p.stream = torch.cuda.current_stream(device).cuda_stream
         p.owner = threading.current_thread()
+        p.error = None
         p.ffi_device = tvm_ffi.device(str(device))
         p.stream_context = tvm_ffi.use_raw_stream
         p.a = torch.empty((1,rows,6,64), dtype=torch.float16, device=device)

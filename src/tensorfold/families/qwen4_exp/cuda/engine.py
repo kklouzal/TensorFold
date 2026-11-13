@@ -1466,6 +1466,11 @@ class FlashNextEngine:
                 media_resources["shared_host_payload_bound"])
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + (
                 media_resources["vision_loading_host_payload_bound"])
+        if owner_preparation is not None and owner_preparation.gathered_readback_forecast:
+            # All same-host ranks retain their own packet/ID owners. Nothing
+            # has materialized yet: charge the aggregate once before allocation.
+            host_capacity['host_workspace_bytes'] = host_capacity.get('host_workspace_bytes', 0) + (
+                tp * owner_preparation.gathered_host_payload_bytes())
         if self._owned_qualification_host:
             # Private observer input persists through loading and serving; no materialized credit.
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + self._owned_qualification_host[0]
@@ -1473,6 +1478,12 @@ class FlashNextEngine:
             # Dedicated diagnostic tensors persist through serving. Charge
             # before capacity admission; never borrow floor or service credit.
             numeric_capacity["device_workspace_bytes"] = numeric_capacity.get("device_workspace_bytes", 0) + self._owned_qualification_device[0]
+        content_projection_resources = None
+        if execution_profile_manifest is not None:
+            from .execution_identity import execution_content_projection_resources
+            content_projection_resources = execution_content_projection_resources(tp)
+            host_capacity['host_workspace_bytes'] = host_capacity.get('host_workspace_bytes',0) + (
+                content_projection_resources['global_host_bytes'])
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision and not media_requested, rank, workspace),
                                    weight_rule,
@@ -1486,6 +1497,8 @@ class FlashNextEngine:
                                    **({"preallocated_device_bytes": nvfp4_preallocated
                                        + (owner_preparation.committed_bytes() or 0 if owner_preparation is not None else 0)}
                                       if owner_preparation is not None or nvfp4_source else {}))
+        if content_projection_resources is not None:
+            self.capacity_plan['execution_content_projection_resources'] = content_projection_resources
         if retention_header is not None:
             self.capacity_plan["retention_header"] = retention_header.record()
             self.capacity_plan["retention_store"] = {"use_libuv": self._store_use_libuv,
@@ -1497,6 +1510,7 @@ class FlashNextEngine:
                 "resources": media_resources, "encoder_rank": self.media_profile.execution.encoder_rank,
                 "numerics": self._media_numeric_scope.record(), "qualification": "pending actual V100 model/media gates"}
         if owner_preparation is not None:
+            owner_preparation.allocate_gathered_readbacks(self, torch.device("cuda", torch.cuda.current_device()))
             self.capacity_plan["owner_preparation"] = owner_preparation.record()
         if self.expert_partition is not None and tp == 8:
             self.capacity_plan["expert_parallel"] = {**self.expert_partition.identity(),
@@ -1722,6 +1736,8 @@ class FlashNextEngine:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
             if owner_preparation.specification.get('coordinate_staging') is not None:
                 w._private_coordinate_stages = owner_preparation.coordinate_stages
+            if owner_preparation.gathered_readbacks:
+                w._private_gathered_readbacks = owner_preparation.gathered_readbacks
             if owner_preparation.row_sampling:
                 w._private_row_sampling = owner_preparation.row_sampling
             if owner_preparation.prepared_m32 is not None:
@@ -2938,6 +2954,7 @@ class FlashNextEngine:
 
     def _close_resources(self, *, preserve_transport: bool = False) -> None:
         """After request drain, keep owners intact until their device fence."""
+        self.__dict__.pop('_execution_content_projection',None)
         catalog = getattr(self, "retention_catalog", None)
         if catalog is not None:
             self._withdraw_retention_catalog(catalog)

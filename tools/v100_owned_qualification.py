@@ -4555,7 +4555,8 @@ def worker(argv):
                     if model_observer is not None:
                         _attach_teacher_native_observer(engine, model_observer)
                 except BaseException as primary:
-                    _owned_model_failure(engine, primary, model_setup_errors)
+                    engine._abort_comm = True
+                    _publish_qualification_failure(engine, selected.out, primary, selected.execution_rows)
             if router_prepared is not None:
                 try:
                     prepare_router_rows(engine, router_prepared, selected.out)

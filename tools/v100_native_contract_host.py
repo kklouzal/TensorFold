@@ -190,6 +190,9 @@ def validate_spec(raw):
                 "entrypoint", "argv", "resources", "health_baseline", "timeouts", "disk_bytes", "diagnostics"}
     require(type(raw) is dict and set(raw) in (required, required | {"verification_launcher"},
             required | {"verification_launcher", "numa"}) and raw["schema"] == SCHEMA, "invalid native host schema/fields")
+    require(not ('numa' in raw and type(raw['resources']) is dict
+                 and any(key in raw['resources'] for key in ('cpuset_cpus', 'cpuset_mems'))),
+            'resource affinity cannot override the sealed model NUMA plan')
     require(type(raw["name"]) is str and re.fullmatch(r"[a-z][a-z0-9-]{0,62}", raw["name"]), "invalid attempt name")
     require(type(raw["image_id"]) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", raw["image_id"]), "immutable image required")
     ids = raw["uuids"]
@@ -256,7 +259,15 @@ def validate_spec(raw):
     require(inner_identity is not None and inner_identity["sha256"] == argv[5]
             and inner_identity["bytes"] == int(argv[7]), "inner spec bytes/SHA not bound to mounted input")
     resources = raw["resources"]
-    require(type(resources) is dict and set(resources) == {"nano_cpus", "memory_bytes", "memory_swap_bytes", "ipc", "tmpfs", "ulimits"}, "invalid resource contract")
+    resource_fields = {"nano_cpus", "memory_bytes", "memory_swap_bytes", "ipc", "tmpfs", "ulimits"}
+    affinity_fields = {"cpuset_cpus", "cpuset_mems"}
+    require(type(resources) is dict and set(resources) in (resource_fields, resource_fields | affinity_fields), "invalid resource contract")
+    if "cpuset_cpus" in resources:
+        for key in affinity_fields:
+            values = resources[key]
+            require(type(values) is list and 0 < len(values) <= 4096
+                    and all(type(value) is int and 0 <= value < 2**63 for value in values)
+                    and values == sorted(set(values)), 'affinity requires bounded sorted distinct nonnegative IDs')
     for key in ("nano_cpus", "memory_bytes", "memory_swap_bytes"):
         require(type(resources[key]) is int and 0 < resources[key] < 2**63, "positive resource bound required")
     require(resources["memory_swap_bytes"] == resources["memory_bytes"], "native contract requires zero swap")
@@ -426,6 +437,9 @@ def create_argv(spec, output):
         bundle = _numa_authority(spec)
         argv.extend(('--cpuset-cpus', bundle['cpuset_cpus'], '--cpuset-mems', bundle['cpuset_mems'],
                      '--security-opt', 'seccomp='+spec['numa']['seccomp']['path']))
+    elif 'cpuset_cpus' in r:
+        argv.extend(('--cpuset-cpus', ','.join(map(str, r['cpuset_cpus'])),
+                     '--cpuset-mems', ','.join(map(str, r['cpuset_mems']))))
     for key, value in sorted(r["tmpfs"].items()):
         argv.extend(("--tmpfs", key + ":" + value))
     for item in r["ulimits"]:
@@ -480,6 +494,10 @@ def admit(document, spec, cid):
         require(h.get('CpusetCpus') == numa_bundle['cpuset_cpus']
                 and h.get('CpusetMems') == numa_bundle['cpuset_mems'],
                 'actual NUMA CPU/memory cgroup allowance differs from the sealed plan')
+    elif 'cpuset_cpus' in r:
+        require(h.get('CpusetCpus') == ','.join(map(str, r['cpuset_cpus']))
+                and h.get('CpusetMems') == ','.join(map(str, r['cpuset_mems'])),
+                'actual CPU/memory cgroup allowance differs from explicit resource affinity')
     requests = h.get("DeviceRequests")
     if spec["uuids"]:
         require(type(requests) is list and len(requests) == 1 and requests[0]["DeviceIDs"] == spec["uuids"]

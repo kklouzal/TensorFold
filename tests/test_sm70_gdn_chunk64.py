@@ -263,8 +263,8 @@ def test_bound_nondefault_ffi_scope_restores_after_success_or_launch_failure(mon
     prepared=SimpleNamespace(device=SimpleNamespace(index=0),owner=threading.current_thread(),stream=17,
                              stream_context=stream_context,ffi_device="ffi-cuda:0",
                              metadata=("cu","offsets","dummy","has_initial"),layout=SimpleNamespace(chunks=2),
-                             gsum="gsum",a="A",h="h",cumsum=kernel("cumsum"),kkt=kernel("kkt"),core=kernel("core"))
-    bound=g3.Bound(prepared,tuple(range(8)))
+                             gsum="gsum",a="A",h="h",error=None,cumsum=kernel("cumsum"),kkt=kernel("kkt"),core=kernel("core"))
+    bound=g3.Bound(prepared,tuple(range(8)),65,("A","gsum"),(),(),("A","gsum","h","cu","offsets","dummy","has_initial"),(6,7))
     if failure is None:
         assert bound.run()==(6,7)
         assert calls==["cumsum","kkt","core","versions"]
