@@ -1450,7 +1450,11 @@ Ordinary serving, graph defaults and absent-observer dispatch remain unchanged.
 
 Each rank preallocates signed integer rows and bounded replay-binding slots.
 The admitted event credit also bounds retained graph proxies; insufficient
-binding credit fails before installation. Host grant computation includes those
+binding credit fails before installation. Declared binding slots use the shared
+versioned172-byte credit, derived from verified host CPython3.14 (172 bytes) and
+SDK CPython3.12 (164 bytes) footprints. Each runtime must fit within that credit
+before retained allocation; its measured footprint is recorded separately.
+Host/worker declared resource specifications remain exactly equal. Host grant computation includes those
 bindings, report materialization and bounded histogram/JSON encoding. Event
 exhaustion makes the diagnostic incomplete while executing model work exactly
 once. Existing supervised host obligations, frozen-source checks, finite plan,

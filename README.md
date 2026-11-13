@@ -1,5 +1,11 @@
 # TensorFold fork
 
+The explicit private [descriptor upload ring trial](docs/descriptor-upload-ring.md)
+adds a second cold, paid pinned host slot while retaining the same GPU descriptor
+slab and attention math. It waits on a slot only when that host storage is reused.
+The default remains one slot; native/model/NUMA, output quality and matched
+performance qualification of the trial are pending.
+
 Development is now governed by the [canonical ProviderOne implementation design](ProviderOne%20Implementation%20Docs/ProviderOne_V100_Adaptive_Inference_Design.md)
 and its unchanged companion documents in [ProviderOne Implementation Docs](ProviderOne%20Implementation%20Docs/).
 SC117/V100 is the immediate delivery priority while selected existing profiles,
@@ -371,8 +377,9 @@ differences; selection remains held.
 The existing finite commit diagnostic also supports an explicit
 [graph-attempt histogram](docs/benchmarking.md#bounded-graph-attempt-histogram):
 role, total rows, participants, hit/miss/error reason, and replay API call/return
-counts. It binds only the selected diagnostic instance, adds no CUDA/profiler
-operations, and leaves ordinary graph dispatch unchanged. Host counters do not
+counts. A versioned binding credit keeps host/SDK grants identical and rejects
+underfunded runtime footprints before allocation. It binds only the selected
+diagnostic instance, adds no CUDA/profiler operations, and leaves ordinary graph dispatch unchanged. Host counters do not
 prove GPU completion; native diagnostic integration remains pending.
 Private [scheduler diagnostics](docs/benchmarking.md#bounded-scheduler-diagnostics)
 capture finite CPU/CUDA windows without Python stacks and report export sizes

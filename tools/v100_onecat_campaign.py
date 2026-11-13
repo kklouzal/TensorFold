@@ -796,7 +796,7 @@ def commit_trace_receipts(output, source, spec):
         requested = record.get("requested", {})
         if any(requested.get(key) != spec[key] for key in
                (("maximum_events", "retained_event_bytes", "serialization_bytes", "nvtx", "global_host_obligation_bytes")
-                + (('graph_attempts', 'maximum_graph_bindings', 'graph_binding_slot_bytes') if spec.get('graph_attempts', False) else ()))):
+                + (('graph_attempts', 'maximum_graph_bindings', 'graph_binding_slot_bytes', 'graph_binding_credit_policy') if spec.get('graph_attempts', False) else ()))):
             raise ValueError("commit diagnostic differs from the admitted finite request")
         events = record.get("events")
         if type(events) is not list or len(events) > spec["maximum_events"]:
@@ -811,6 +811,8 @@ def commit_trace_receipts(output, source, spec):
         if spec.get('graph_attempts', False):
             if (record.get('roles') != list(GRAPH_ROLES) or record.get('outcomes') != list(GRAPH_OUTCOMES)
                     or record.get('reasons') != list(GRAPH_REASONS) or record.get('histogram') != graph_histogram(events)
+                    or type(record.get('graph_binding_runtime_slot_bytes')) is not int
+                    or not 0 < record['graph_binding_runtime_slot_bytes'] <= spec['graph_binding_slot_bytes']
                     or type(record.get('graph_bindings')) is not int
                     or not 0 < record['graph_bindings'] <= spec['maximum_graph_bindings']):
                 raise ValueError('graph attempt histogram/binding credit differs from exact recorded events')

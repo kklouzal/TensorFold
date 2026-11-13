@@ -10,6 +10,13 @@ import sys
 import time
 
 
+# Versioned declared credit, shared across the host/SDK boundary. Verified
+# current footprints: CPython3.14 =48+80+36+8=172 bytes; SDK3.12 =164.
+# Runtime measurements validate admission; they never redefine the wire credit.
+GRAPH_BINDING_CREDIT_POLICY = 'graph-attempt-binding-credit-v1'
+GRAPH_BINDING_SLOT_BYTES = 172
+
+
 GRAPH_COLUMNS = ('role', 'total_rows', 'participants', 'outcome', 'reason', 'replay_calls', 'replay_returns')
 GRAPH_ROLES = ('verify', 'mtp')
 GRAPH_OUTCOMES = ('miss', 'hit', 'error')
@@ -41,6 +48,18 @@ class _ReplayWitness:
 COLUMNS = ('stream_sid', 'begin_ns', 'end_ns', 'committed_before', 'committed_after', 'committed_delta')
 
 
+def _binding_slot_bytes():
+    return (sys.getsizeof(_ReplayWitness(None, None)) + sys.getsizeof((None, 0, None, None))
+            + sys.getsizeof(sys.maxsize) + (sys.getsizeof([None]) - sys.getsizeof([])))
+
+
+def _binding_credit_admission():
+    actual = _binding_slot_bytes()
+    if type(actual) is not int or not 0 < actual <= GRAPH_BINDING_SLOT_BYTES:
+        raise ValueError('graph binding runtime footprint exceeds the versioned declared credit')
+    return actual
+
+
 def resources(max_events, *, graph_attempts=False):
     if type(graph_attempts) is not bool:
         raise ValueError('graph attempt selection must be explicit boolean')
@@ -50,12 +69,13 @@ def resources(max_events, *, graph_attempts=False):
     if graph_attempts:
         # At most one proxy/binding tuple per event-credit slot, including the
         # preallocated reference slot and a bounded native index integer.
-        binding_bytes = (sys.getsizeof(_ReplayWitness(None, None)) + sys.getsizeof((None, 0, None, None))
-                         + sys.getsizeof(sys.maxsize) + (sys.getsizeof([None]) - sys.getsizeof([])))
+        _binding_credit_admission()  # Fail before retained storage/model preparation.
+        binding_bytes = GRAPH_BINDING_SLOT_BYTES
         return {'maximum_events': max_events, 'maximum_graph_bindings': max_events,
                 'retained_event_bytes': max_events * (len(columns) * 8 + binding_bytes),
                 'serialization_bytes': max_events * (len(columns) * 160 + 1024) + 16384,
                 'graph_binding_slot_bytes': binding_bytes,
+                'graph_binding_credit_policy': GRAPH_BINDING_CREDIT_POLICY,
                 'scope': 'diagnostic host rows/bindings/histogram storage;no GPU allowance'}
     return {'maximum_events': max_events, 'retained_event_bytes': max_events * len(COLUMNS) * 8,
             # Native signed integers take at most20 digits. Reserve a second
@@ -69,6 +89,7 @@ class CommitTrace:
         if graph_attempts and marker is not None:
             raise ValueError('graph attempt mode does not issue CUDA/NVTX markers')
         self.resources = resources(max_events, graph_attempts=graph_attempts)
+        self._graph_runtime_slot_bytes = _binding_credit_admission() if graph_attempts else None
         self._graph_attempts = graph_attempts
         self._columns = GRAPH_COLUMNS if graph_attempts else COLUMNS
         self._rows = array('q', [0]) * (max_events * len(self._columns))
@@ -304,6 +325,7 @@ class CommitTrace:
                 'columns': list(GRAPH_COLUMNS), 'events': events, 'histogram': histogram,
                 'roles': list(GRAPH_ROLES), 'outcomes': list(GRAPH_OUTCOMES), 'reasons': list(GRAPH_REASONS),
                 'graph_bindings': self._graph_binding_count,
+                'graph_binding_runtime_slot_bytes': self._graph_runtime_slot_bytes,
                 'scope': 'Host graph attempts and replay API calls/returns;not GPU completion/activity or P3. '
                          'C1/C8 plan N>=2 belongs to C8;N1 mixes C1 warmup/timed and C8 tails.'}
 

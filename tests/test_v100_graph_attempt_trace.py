@@ -152,7 +152,17 @@ def test_closed_rank_histogram_bound_and_source_are_required(monkeypatch, tmp_pa
     result = campaign.commit_trace_receipts(output, source, campaign.commit_diagnostic_spec(8, False, True))
     assert len(result) == 8 and result[0]['multi_participant_attempts'] == 1
     path = output / 'qualification/commit-trace-rank-7.json'
-    row = json.loads(path.read_text()); row['histogram'][0]['attempts'] += 1; path.write_text(json.dumps(row))
+    original = json.loads(path.read_text())
+    row = {**original, 'graph_binding_runtime_slot_bytes': spec['graph_binding_slot_bytes'] + 1}
+    path.write_text(json.dumps(row))
+    with pytest.raises(ValueError, match='histogram/binding credit'):
+        campaign.commit_trace_receipts(output, source, campaign.commit_diagnostic_spec(8, False, True))
+    row = json.loads(json.dumps(original))
+    row['requested']['graph_binding_credit_policy'] = 'unversioned'
+    path.write_text(json.dumps(row))
+    with pytest.raises(ValueError, match='admitted finite request'):
+        campaign.commit_trace_receipts(output, source, campaign.commit_diagnostic_spec(8, False, True))
+    row = original; row['histogram'][0]['attempts'] += 1; path.write_text(json.dumps(row))
     with pytest.raises(ValueError, match='histogram'):
         campaign.commit_trace_receipts(output, source, campaign.commit_diagnostic_spec(8, False, True))
 
@@ -177,3 +187,33 @@ def test_campaign_forwards_graph_mode_only_with_finite_unprofiled_matrix():
     with pytest.raises(ValueError, match='finite C1/C8'):
         campaign.model_arguments(ModelArmTests().settings(), plan, smoke_only=True,
             diagnostic_commit_events=1024, diagnostic_graph_attempts=True)
+
+
+@pytest.mark.parametrize('footprint', [164, 172])
+def test_declared_graph_credit_is_identical_for_verified_host_and_sdk_footprints(monkeypatch, footprint):
+    from tools import v100_commit_trace as module
+    monkeypatch.setattr(module, '_binding_slot_bytes', lambda: footprint)
+    budget = module.resources(16384, graph_attempts=True)
+    assert budget['graph_binding_slot_bytes'] == 172
+    assert budget['graph_binding_credit_policy'] == 'graph-attempt-binding-credit-v1'
+    assert budget['retained_event_bytes'] == 3735552
+    trace = module.CommitTrace(4, graph_attempts=True)
+    assert trace.report()['graph_binding_runtime_slot_bytes'] == footprint
+    assert trace.resources['graph_binding_slot_bytes'] == 172
+
+
+@pytest.mark.parametrize('footprint', [173, 0, None, True])
+def test_runtime_binding_extent_cannot_underfund_credit_or_allocate_first(monkeypatch, footprint):
+    from tools import v100_commit_trace as module
+    monkeypatch.setattr(module, '_binding_slot_bytes', lambda: footprint)
+    monkeypatch.setattr(module, 'array', lambda *_: pytest.fail('retained allocation preceded admission'))
+    with pytest.raises(ValueError, match='runtime footprint'):
+        module.CommitTrace(4, graph_attempts=True)
+
+
+def test_legacy_commit_mode_never_uses_or_changes_graph_binding_credit(monkeypatch):
+    from tools import v100_commit_trace as module
+    monkeypatch.setattr(module, '_binding_slot_bytes', lambda: pytest.fail('legacy mode measured graph bindings'))
+    assert module.resources(4)['retained_event_bytes'] == 4 * 6 * 8
+    assert 'graph_binding_credit_policy' not in module.resources(4)
+    assert module.CommitTrace(4).report()['schema'] == 'tensorfold.commit-batch-diagnostic-v1'
