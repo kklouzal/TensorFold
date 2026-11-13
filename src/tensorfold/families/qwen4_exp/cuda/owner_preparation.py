@@ -1036,9 +1036,12 @@ class OwnerPreparation:
                 raise ValueError('gathered readback allocation role observations differ')
             for role,record in peer.items():
                 if (type(record) is not dict or type(record.get('host_metadata_bytes')) is not int
-                        or not 0<record['host_metadata_bytes']<=self.gathered_readback_forecast[role]['host_metadata_bound_bytes']):
+                        or not 0<record['host_metadata_bytes']<=self.gathered_readback_forecast[role]['host_metadata_bound_bytes']
+                        or type(record.get('host_metadata_walk_scratch_bytes')) is not int
+                        or not 0<record['host_metadata_walk_scratch_bytes']<=self.gathered_readback_forecast[role]['host_traversal_scratch_bound_bytes']):
                     raise ValueError('gathered readback allocation metadata exceeds its common bound')
-            comparable.append({role:{key:value for key,value in record.items() if key!='host_metadata_bytes'}
+            comparable.append({role:{key:value for key,value in record.items()
+                                     if key not in ('host_metadata_bytes','host_metadata_walk_scratch_bytes')}
                                for role,record in peer.items()})
         if any(peer != comparable[0] for peer in comparable):
             raise ValueError('gathered readback allocations differ across TP8 ranks')

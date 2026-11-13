@@ -101,12 +101,14 @@ def metadata_forecast(world,rows,role):
     size=(1<<(8*struct.calcsize('N')))-1
     prototype.ids_pointer=_fresh_int(pointer)
     prototype.metadata_bound_bytes=_fresh_int(size)
+    prototype.metadata_scratch_bound_bytes=_fresh_int(size)
     elements=prototype.cost['pinned_host_bytes']//4
     prototype.host_signature=_signature_bound(elements,prototype.cost['pinned_host_bytes'],'cpu')
     prototype.packet_signature=_signature_bound(elements,size,'cuda')
     prototype.buffer=weakref.ref(prototype)  # Header only; its target is borrowed.
-    bound,_scratch=_metadata_size(prototype)
-    result={'host_metadata_bound_bytes':bound,'host_setup_metadata_peak_bytes':_fresh_int(size)}
+    bound,walk_peak=_metadata_size(prototype)
+    result={'host_metadata_bound_bytes':bound,'host_traversal_scratch_bound_bytes':walk_peak-bound,
+            'host_setup_metadata_peak_bytes':_fresh_int(size)}
     # Dictionary conversion and decimal pointer construction are setup-only.
     setup=_metadata_size(prototype,old_dictionary,result)[1]+max(
         sys.getsizeof(str(size)),sys.getsizeof(str(pointer)),sys.getsizeof([1]))
@@ -125,7 +127,7 @@ def forecast(world,role_rows):
 
 def forecast_resources(costs):
     """One-rank explicit peak; serial setup retires before ordinary service."""
-    headers=_metadata_size(costs)[0] if costs else 0
+    headers,forecast_walk_peak=_metadata_size(costs) if costs else (0,0)
     metadata=sum(cost['host_metadata_bound_bytes'] for cost in costs.values())
     payload=sum(cost['host_payload_bytes'] for cost in costs.values())
     peak=prefix=headers
@@ -135,9 +137,13 @@ def forecast_resources(costs):
         # present in the prototype. The forecast map itself is paid once.
         peak=max(peak,prefix+cost['host_metadata_bound_bytes']+cost['host_setup_metadata_peak_bytes'])
         prefix+=cost['host_payload_bytes']+cost['host_metadata_bound_bytes']
+    persistent=payload+metadata+headers
+    scratch=max([forecast_walk_peak-headers,
+        *(cost['host_traversal_scratch_bound_bytes']for cost in costs.values())])
     return {'host_payload_bytes':payload,'host_metadata_bound_bytes':metadata,
         'forecast_metadata_bytes':headers,'host_persistent_bytes':payload+metadata+headers,
-        'host_admission_bytes':max(peak,payload+metadata+headers),
+        'host_observation_scratch_bound_bytes':scratch,
+        'host_admission_bytes':max(peak,persistent+scratch),
         'scope':'controlled headers and payload; native allocator/interpreter/copy internals separately observed'}
 
 
@@ -152,7 +158,7 @@ class GatheredReadback:
         self.weights = self.buffer = self.packet = self.comm = None
         self.original_words = self.original_ids = None
         self.host_signature = self.packet_signature = None
-        self.ids_pointer = self.metadata_bound_bytes = 0
+        self.ids_pointer = self.metadata_bound_bytes = self.metadata_scratch_bound_bytes = 0
         self.world, self.rows, self.role = world, rows, role
         self.device = torch.device(device)
         self.cost = layout(world, rows)
@@ -161,7 +167,10 @@ class GatheredReadback:
 
     def __init__(self, world, rows, role, device):
         self._initialize(world,rows,role,device)
-        self.metadata_bound_bytes=metadata_forecast(world,rows,role)['host_metadata_bound_bytes']
+        planned=metadata_forecast(world,rows,role)
+        self.metadata_bound_bytes=planned['host_metadata_bound_bytes']
+        self.metadata_scratch_bound_bytes=planned['host_traversal_scratch_bound_bytes']
+        del planned  # No prototype/forecast result survives payload allocation.
         self.host = torch.empty(self.cost['pinned_host_bytes'] // 4, dtype=torch.float32,
                                 pin_memory=self.device.type == 'cuda')
         self.words = self.host.numpy()
@@ -177,8 +186,10 @@ class GatheredReadback:
 
     def _check_metadata(self):
         try:
-            if self.metadata_bytes()>self.metadata_bound_bytes:
+            measured,peak=_metadata_size(self)
+            if (measured>self.metadata_bound_bytes or peak-measured>self.metadata_scratch_bound_bytes):
                 raise MemoryError('gathered readback metadata exceeds its pre-materialization bound')
+            return measured,peak-measured
         except BaseException:
             self.poisoned=True
             raise
@@ -247,8 +258,11 @@ class GatheredReadback:
             self.lock.release()
 
     def record(self):
+        metadata,scratch=self._check_metadata()
         return {'policy': POLICY, 'role': self.role, 'world': self.world, 'rows': self.rows,
-                'host_metadata_bytes': self.metadata_bytes(),'host_metadata_bound_bytes':self.metadata_bound_bytes,
+                'host_metadata_bytes':metadata,'host_metadata_bound_bytes':self.metadata_bound_bytes,
+                'host_metadata_walk_scratch_bytes':scratch,
+                'host_metadata_walk_scratch_bound_bytes':self.metadata_scratch_bound_bytes,
                 **self.cost, 'bound': self.bound, 'closed': self.closed, 'poisoned': self.poisoned,
                 'qualification': 'private-unqualified; native/model/P3 pending',
                 'metadata_scope':'controlled retained Python/NumPy/Tensor headers; disjoint payload charged once',

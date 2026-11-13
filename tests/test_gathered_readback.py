@@ -280,7 +280,7 @@ def test_materialized_or_bound_metadata_exhaustion_poison_and_retire(monkeypatch
     from tensorfold.families.qwen4_exp.cuda import gathered_readback as source
     owner=object.__new__(GatheredReadback)
     with monkeypatch.context()as patch:
-        patch.setattr(source,'metadata_forecast',lambda *a:{'host_metadata_bound_bytes':1})
+        patch.setattr(source,'metadata_forecast',lambda *a:{'host_metadata_bound_bytes':1,'host_traversal_scratch_bound_bytes':1})
         with pytest.raises(MemoryError,match='pre-materialization bound'):owner.__init__(8,1,'decode','cpu')
     assert owner.poisoned and not owner.closed
     owner.close();assert owner.closed and owner.host is owner.ids is owner.words is None
@@ -289,6 +289,39 @@ def test_materialized_or_bound_metadata_exhaustion_poison_and_retire(monkeypatch
     with pytest.raises(MemoryError,match='pre-materialization bound'):owner.bind(w,b)
     assert owner.poisoned
     with pytest.raises(RuntimeError,match='binds once'):owner.bind(w,b)
+    owner.close()
+
+
+@pytest.mark.parametrize('rows',[120,160])
+def test_all_live_payloads_remain_funded_during_real_header_and_forecast_walks(rows):
+    from tensorfold.families.qwen4_exp.cuda.gathered_readback import _metadata_size
+    costs=forecast(8,{'decode':rows,'mtp':rows});resource=forecast_resources(costs)
+    assert resource['host_persistent_bytes']>=resource['host_payload_bytes']
+    # At bind/record time both roles' complete payloads are still alive. Even
+    # empty traversal containers are additional concurrent storage, not a
+    # replacement for those payloads (the previous persistent-only maximum).
+    assert resource['host_admission_bytes']>=resource['host_persistent_bytes']+resource['host_observation_scratch_bound_bytes']
+    assert resource['host_observation_scratch_bound_bytes']>=sys.getsizeof([])+sys.getsizeof(set())
+    forecast_bytes,forecast_peak=_metadata_size(costs)
+    assert forecast_peak-forecast_bytes<=resource['host_observation_scratch_bound_bytes']
+    owners=[]
+    try:
+        for role in ('decode','mtp'):
+            _w,_b,owner,_=fixture(rows,rows,role);owners.append(owner)
+            measured,peak=_metadata_size(owner)
+            record=owner.record()
+            assert measured==record['host_metadata_bytes']
+            assert peak-measured==record['host_metadata_walk_scratch_bytes']
+            assert peak-measured<=record['host_metadata_walk_scratch_bound_bytes']<=resource['host_observation_scratch_bound_bytes']
+    finally:
+        for owner in owners:owner.close()
+
+
+def test_record_walk_exhaustion_is_detected_and_poisoned_before_publication():
+    _w,_b,owner,_=fixture()
+    owner.metadata_scratch_bound_bytes=0
+    with pytest.raises(MemoryError,match='pre-materialization bound'):owner.record()
+    assert owner.poisoned
     owner.close()
 
 

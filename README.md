@@ -1,7 +1,7 @@
 # TensorFold fork
 
 The opt-in gathered sampler readback now reserves controlled header/forecast
-metadata and cold setup overlap alongside packet/ID payloads. Payload-only
+metadata, cold setup overlap and observation scratch alongside live packet/ID payloads. Payload-only
 credit is insufficient. The chooser is unchanged; the new runtime image and
 actual CUDA header-bound gate remain pending.
 
