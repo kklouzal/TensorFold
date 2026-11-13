@@ -65,3 +65,15 @@ are checked before probe mutation. The pre-listener callback writes
 `ragged-replay-rank-N.json` on every rank and uses the existing fatal observer
 path on any failure. All 24 States must remain clean and idle afterward. No
 new serving option or model/context reduction is introduced.
+
+Each rank's existing oracle receipt also exports bounded before/after accounting:
+all 32 original-plus-requested captures and their admission observations, original
+settled graph/pool records, unchanged AUTO budget and full-window/service
+commitments, and all 24 actual empty State frontiers/generations. A separately
+labelled fresh quiescent CUDA sample records free/allocated/reserved bytes and
+checks the unchanged default device floor. Capture-settlement allocator values
+retain their original startup timing. Both metadata trees and encoding bounds
+are admitted before Engine construction. Missing/declined keys, inconsistent
+charges, changed commitments or an insufficient fresh floor fail before the
+listener. This export is source implemented; actual all-eight-rank execution
+remains pending.

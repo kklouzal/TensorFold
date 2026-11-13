@@ -2978,3 +2978,8 @@ now compares actual `ExactStateGraphs` target/MTP `(28,8)` replay against eager
 execution on the same idle TP8 decoder using ordinary State reset/restaging and
 bounded short-prefix CPU references. Its native execution is pending; this
 adds no full-window, quality or performance qualification.
+
+The private ragged component receipt now includes all eight ranks' bounded
+capture/settlement and full-window accounting through the existing per-rank
+oracle path, with separately timed quiescent CUDA samples. Source controls do
+not qualify an installed image or establish graph fit; native execution is pending.

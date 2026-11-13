@@ -415,6 +415,9 @@ def _ragged_resources(args, cli, path):
             or str(args.parallel).lower() == 'auto' or cli._parallel(args.parallel) != 24
             or args.context != 262144):
         raise ValueError('ragged oracle requires explicit MTP4/graphs/24/full262144 before construction')
+    if any(os.environ.get(name) for name in ('TENSORFOLD_MEMORY_RESERVE_GIB',
+            'TENSORFOLD_CUDA_MEMORY_RESERVE_GIB', 'TENSORFOLD_CUDA_MEMORY_LIMIT_GB', 'TENSORFOLD_MULTI_GRAPH_MIB')):
+        raise ValueError('ragged oracle requires unchanged default memory floors and AUTO graphs')
     digest = _ragged_input(path)
     cfg = Config.read(cli._config_dir(args.model))
     if cfg.nv % 8 or cfg.nk % 8 or cfg.head_dim % 32 or cfg.index_ratio != 4:
@@ -425,12 +428,169 @@ def _ragged_resources(args, cli, path):
     # field/scalar and source/receipt trees use the existing JSON payload policy.
     base = _history_resources(8 * (8 * cfg.layers + 32) + 128, 4096)
     source_bytes = Path(__file__).stat().st_size + Path(_ragged_module().__file__).stat().st_size
-    per_rank = base['per_rank_payload_bytes'] + 3 * payload + source_bytes
+    #32 per-key rows,24 State capacities and8 fixed headers, each<=1KiB.
+    # Pay separate before/after trees and their bounded serializer payloads.
+    accounting = _history_resources(32 + 24 + 8, 4096)
+    # Size enforcement builds ASCII JSON plus bytes for both final sections;
+    # fund this eager encoding separately from the inherited streaming writer.
+    accounting_encoding = 4 * accounting['receipt_bytes_limit']
+    accounting_host = 2 * accounting['per_rank_payload_bytes'] + accounting_encoding
+    per_rank = base['per_rank_payload_bytes'] + 3 * payload + source_bytes + accounting_host
     if 8 * per_rank > sys.maxsize:
         raise ValueError('ragged oracle host obligation exceeds host size domain')
     return {**base, 'per_rank_payload_bytes': per_rank, 'global_host_obligation_bytes': 8 * per_rank,
             'snapshot_payload_bytes': payload, 'input_sha256': digest, 'additional_device_bytes': 0,
+            'accounting_bytes_limit': accounting['receipt_bytes_limit'], 'accounting_host_bytes': accounting_host,
+            'accounting_eager_encoding_bytes': accounting_encoding,
             'diagnostic_only': True, 'P3_valid': False}
+
+
+def _ragged_accounting(record, capacity, *, rank, graph_budget, sample, states):
+    """Bounded projection of authoritative owner/capacity records, never a grant.
+
+    Capture-settlement allocator fields retain their original startup timing;
+    sample is a separate fresh, quiescent before/after-probe CUDA observation.
+    """
+    from tensorfold.cuda.capacity import cuda_reserve_bytes
+    from tensorfold.families.qwen4_exp.cuda.exact_graph_policy import parse_policy
+
+    def integers(source, names, *, signed=()):
+        result = {}
+        for name in names:
+            value = source[name]
+            if type(value) is not int or not (-(2**63) if name in signed else 0) <= value < 2**63:
+                raise ValueError('ragged accounting has invalid integer: ' + name)
+            result[name] = value
+        return result
+
+    # The fixed component retains the default 24-State/depth4 catalogue and
+    # requests only these two additions; it cannot silently select a subset.
+    expected = {(role, count * rows, count) for count in (1, 2, 4, 8, 16, 24)
+                for rows in (range(1, 6) if count == 1 else (1, 5)) for role in ('verify', 'mtp')}
+    expected.update({('verify', 28, 8), ('mtp', 28, 8)})
+    if type(rank) is not int or not 0 <= rank < 8 or type(graph_budget) is not int or graph_budget <= 0:
+        raise ValueError('ragged accounting requires actual rank and positive integer graph budget')
+    catalogue = record['exact_graph_catalogue']
+    if catalogue['policy'] != 'observed-demand-v1' or catalogue['declined_keys']:
+        raise ValueError('ragged accounting requires observed demand without declined keys')
+    shapes = {}
+    for name in ('available_keys', 'requested_keys', 'selected_keys', 'captured_keys'):
+        keys = catalogue[name]
+        if type(keys) is not list or len(keys) != 32 or {tuple(key) for key in keys} != expected:
+            raise ValueError('ragged accounting requires all original30 and both requested ragged keys: ' + name)
+        shapes[name] = [list(key) for key in keys]
+    policy = parse_policy({'policy': catalogue['policy'], 'keys': shapes['requested_keys'],
+                           'evidence_sha256': catalogue['evidence_sha256']})
+    totals = integers(record, ('verify_keys', 'mtp_keys', 'bytes', 'settled_bytes', 'room_bytes', 'budget_bytes', 'pieces'),
+                      signed=('settled_bytes',))
+    if (totals['verify_keys'] != 16 or totals['mtp_keys'] != 16 or not totals['budget_bytes']
+            or totals['budget_bytes'] != graph_budget or totals['room_bytes'] > graph_budget
+            or totals['room_bytes'] != max(totals['bytes'], totals['settled_bytes'])
+            or record['stopped'] is not None or record['rejected'] is not None
+            or record['capture_during_serving'] is not False):
+        raise ValueError('ragged accounting graph owner did not settle within its unchanged grant')
+    measured = record['keys']
+    if type(measured) is not list or len(measured) != 32:
+        raise ValueError('ragged accounting requires exactly32 measured keys')
+    observations, order, charged, pieces = [], [], 0, 0
+    for index, item in enumerate(measured):
+        observed = item['accounting']
+        item_fields = integers(item, ('bytes', 'pieces'))
+        row = integers(observed, ('rank', 'rows', 'participants', 'pieces', 'prior_keys', 'prior_bytes',
+            'physical_delta_bytes', 'allocated_delta_bytes', 'reserved_delta_bytes', 'budget_bytes'),
+            signed=('physical_delta_bytes', 'allocated_delta_bytes', 'reserved_delta_bytes'))
+        key = (observed['role'], row['rows'], row['participants'])
+        if (observed['schema'] != 'tensorfold.exact-graph-key-v1' or observed['admitted'] is not True
+                or key not in expected or row['rank'] != rank or row['prior_keys'] != index
+                or row['prior_bytes'] != charged or row['budget_bytes'] != graph_budget or row['pieces'] <= 0
+                or item_fields['bytes'] != max(0, row['physical_delta_bytes']) or item_fields['pieces'] != row['pieces']):
+            raise ValueError('ragged accounting per-key observations disagree with their owner')
+        charged += item_fields['bytes']
+        pieces += row['pieces']
+        order.append(list(key))
+        observations.append({'role': key[0], **row, 'admitted': True})
+    if order != shapes['captured_keys'] or charged != totals['bytes'] or pieces != totals['pieces']:
+        raise ValueError('ragged accounting measured/captured census differs')
+    allocator = record['allocator']
+    pool = integers(allocator, ('physical_free_bytes', 'available_after_floor_bytes', 'reserved_bytes', 'allocated_bytes'))
+    for name in ('backend', 'accounting'):
+        value = allocator[name]
+        if type(value) is not str or not 0 < len(value) <= 64:
+            raise ValueError('ragged accounting requires bounded allocator identity')
+        pool[name] = value
+    pool['private_pool_spare_bytes'] = _feature_integer(allocator['private_pool_spare_bytes'], 'pool spare', optional=True)
+    if pool['allocated_bytes'] > pool['reserved_bytes']:
+        raise ValueError('ragged accounting allocator counters are inconsistent')
+    baseline = capacity['allocation_baseline']
+    baseline_fields = integers(baseline, ('device_total_bytes', 'effective_device_floor_bytes'))
+    current = integers(sample, ('physical_free_bytes', 'device_total_bytes', 'allocated_bytes', 'reserved_bytes',
+        'observed_at_unix_ns', 'start_monotonic_ns', 'end_monotonic_ns'))
+    floor = cuda_reserve_bytes(baseline_fields['device_total_bytes'])
+    if (current['device_total_bytes'] != baseline_fields['device_total_bytes']
+            or baseline_fields['effective_device_floor_bytes'] != floor
+            or not floor <= current['physical_free_bytes'] <= current['device_total_bytes']
+            or current['allocated_bytes'] > current['reserved_bytes']
+            or current['start_monotonic_ns'] > current['end_monotonic_ns']):
+        raise ValueError('ragged accounting quiescent sample violates the unchanged device floor')
+    startup = capacity['multi_graphs']
+    if (startup['automatic'] is not True or startup['captured'] is not True or startup['reason'] is not None
+            or any(startup[name] != value for name, value in totals.items())
+            or any(startup['allocator'][name] != value for name, value in pool.items())):
+        raise ValueError('ragged accounting differs from the original AUTO startup owner')
+    windows = capacity['kv_full_windows']
+    commitments = integers(windows, ('requested', 'reserved', 'stream_slots', 'context_window', 'cache_slots_each', 'workspace_bytes'))
+    capacities = windows['startup_capacities']
+    future = integers(startup['future_service'], ('growth_bytes', 'copy_overlap_bytes', 'snapshot_bytes',
+        'transient_bytes', 'workspace_bytes', 'future_bytes'))
+    if (any(commitments[name] != 24 for name in ('requested', 'reserved', 'stream_slots'))
+            or windows['materialized'] is not True or commitments['context_window'] != 262144
+            or type(capacities) is not list or len(capacities) != 24
+            or any(type(n) is not int or n != commitments['cache_slots_each'] or n < 262144 for n in capacities)
+            or any(capacity[name] != 262144 for name in ('native_window', 'requested_context', 'context_window'))
+            or commitments['workspace_bytes'] != 2 * 2**30
+            or capacity['resource_ledger_bytes']['serving_workspace'] != commitments['workspace_bytes']
+            or future['workspace_bytes'] != commitments['workspace_bytes'] or future['growth_bytes'] != 0):
+        raise ValueError('ragged accounting changed full24/native context or service workspace')
+    if type(states) is not list or len(states) != 24:
+        raise ValueError('ragged accounting requires all24 actual State records')
+    state_rows = [integers(row, ('slot', 'logical_context', 'capacity', 'pos', 'mtp_len', 'slot_generation')) for row in states]
+    if (len({row['slot'] for row in state_rows}) != 24
+            or [row['capacity'] for row in state_rows] != capacities
+            or any(row['logical_context'] != 262144 or row['pos'] or row['mtp_len'] for row in state_rows)):
+        raise ValueError('ragged accounting actual States differ from full reserved clean idle windows')
+    return {'schema': 'tensorfold.native-ragged-accounting-v1', 'rank': rank,
+            'capture_settlement': {**totals, 'allocator': pool, 'keys': observations},
+            'catalogue': {'policy': policy['policy'], 'evidence_sha256': policy['evidence_sha256'], **shapes, 'declined_keys': []},
+            'capacity': {**commitments, 'startup_capacities': list(capacities), 'future_service': future,
+                         **baseline_fields, 'graph_admission': 'AUTO'},
+            'actual_states': state_rows, 'quiescent_sample': current,
+            'scope': 'capture-settlement records plus separate fresh probe-boundary observation; not a reservation or P3 evidence'}
+
+
+def _ragged_accounting_snapshot(engine, resources):
+    import torch
+    decoder, owner = engine.multi, engine.multi.graphs
+    if (owner is None or not owner.admitted or owner.failure is not None or owner.pending
+            or decoder.graph_request is not None or decoder.graph_budget != owner.budget
+            or len(owner.verify) != 16 or len(owner.mtp) != 16 or len(owner.measured) != 32
+            or len(owner.bound.available_keys) != 32 or len(owner.bound.requested_keys) != 32
+            or len(decoder.states) != 24 or len(decoder.free) != 24 or decoder.full_windows != 24
+            or decoder.full_resident is not True or decoder.streams or decoder.filling or decoder.kept or decoder.held):
+        raise ValueError('ragged accounting requires the original admitted AUTO graph owner')
+    torch.cuda.synchronize(engine.w.device)
+    started, observed = time.monotonic_ns(), time.time_ns()
+    free, total = map(int, torch.cuda.mem_get_info(engine.w.device))
+    sample = {'physical_free_bytes': free, 'device_total_bytes': total,
+              'allocated_bytes': int(torch.cuda.memory_allocated(engine.w.device)),
+              'reserved_bytes': int(torch.cuda.memory_reserved(engine.w.device)),
+              'start_monotonic_ns': started, 'end_monotonic_ns': time.monotonic_ns(), 'observed_at_unix_ns': observed}
+    states = [{'slot': st.history_slot, 'logical_context': st.logical_context, 'capacity': st.capacity,
+               'pos': st.pos, 'mtp_len': st.mtp_len, 'slot_generation': st.slot_generation} for st in decoder.states]
+    record = _ragged_accounting(owner.record(), engine.capacity_plan, rank=engine.rank,
+                                graph_budget=decoder.graph_budget, sample=sample, states=states)
+    if len(json.dumps(record, allow_nan=False).encode()) > resources['accounting_bytes_limit']:
+        raise ValueError('ragged accounting exceeds its preadmitted metadata bound')
+    return record
 
 
 def prepare_ragged_replay(engine, resources, output):
@@ -438,7 +598,11 @@ def prepare_ragged_replay(engine, resources, output):
     if (engine._owned_qualification_host != expected or engine.context_window != 262144
             or engine.retention_catalog.host_resources.baseline_host_bytes < expected[0]):
         raise ValueError('ragged replay obligation is absent from original full-window admission')
+    context = engine.multi.buf.input_preparation_context
+    before = context.prepare('ragged-accounting-before', lambda: _ragged_accounting_snapshot(engine, resources))
     report = _ragged_module().qualify(engine.multi, snapshot_payload_bytes=resources['snapshot_payload_bytes'])
+    after = context.prepare('ragged-accounting-after', lambda: _ragged_accounting_snapshot(engine, resources))
+    report['accounting'] = {'before_probe': before, 'after_probe': after}
     report.update({'input_sha256': resources['input_sha256'], 'resources': resources,
                    'runtime_sources': _graph_use_sources(engine, engine.multi.graphs)})
     target = Path(output) / f'ragged-replay-rank-{engine.rank}.json'
