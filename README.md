@@ -7,19 +7,24 @@ does not widen the24-Q8 C8 teacher or infer populated-history correctness,
 independent CAP40 origins, model quality or P3. The native v3 run produced all
 eight valid full32 capacity receipts, captured all40 keys and reached ordinary
 READY with zero inference requests. Its post-close SDK audit was interrupted
-during shutdown, so the overall lifecycle gate failed and remains open; see
+during shutdown, so v3 remains an overall failure. The corrected v4 run passed
+all eight capacity/READY proofs and full SDK postchecks, exited0 and retired
+with unchanged GPU health. This verifies the declared capacity/lifecycle region,
+not populated-history correctness, quality or throughput; see
 [its contract](docs/optimization-validation.md#full32-iso4-capacity-gate).
 The gate preserves the declared absolute model namespace inside its container
 so generated GGUF metadata retains its sealed target and MTP paths.
 Its import-origin checks distinguish authenticated installed application modules
 from tool imports when filenames coincide.
+Full32 retirement pays the required post-close SDK audit within the existing
+operation deadline; expiry and cleanup failures remain failed outcomes.
 
 Automatic graph admission for the complete resident SC117 region now derives
 its allowance from observed worst-rank headroom after24 Q8 or32 Q4 full-context
 windows and all remaining service promises. Unused startup reserve can fund
 graphs; required workspace, snapshots, copy overlap and absolute grants remain
 protected. The Q4 v3 run supplies scoped physical-capacity/graph evidence;
-positive lifecycle closure and the Q8 reference are still pending. No new
+positive Q4 lifecycle closure is verified; the Q8 reference is still pending. No new
 throughput or numerical claim is made. See
 [admission scope](docs/optimization-validation.md#full-window-graph-headroom).
 Personal profiles use explicit24/32 ceilings. Uncapped automatic capacity still
@@ -3165,3 +3170,8 @@ required before any new C8 reference claim.
 The private shared-content reader requires plain integer pass, reuse, byte and
 retention counters; JSON booleans cannot satisfy those fields. Its closed
 registration includes the advertised content and selected capacity projections.
+
+The private C8 HTTP reader distinguishes uncaptured OwnerPreparation bucket
+graphs (`graph_rows=0`) from the decoder's separately proven E120/C36 step
+graphs. Retained actual Source40 HTTP telemetry covers the full service and
+fresh-registration reader contract; app telemetry and graph execution are unchanged.

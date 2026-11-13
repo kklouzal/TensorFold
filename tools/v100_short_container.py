@@ -7,8 +7,10 @@ This owns no model, HTTP, profile, or qualification policy.
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
+import time
 
 
 class OwnedContainer:
@@ -39,12 +41,19 @@ class OwnedContainer:
         publish(argv, result)
         return cid
 
-    def retire(self):
+    def retire(self, *, wait_timeout_s=None):
         """Attempt every required retirement step without logging/formatting.
 
         Exact-CID SIGKILL is containment after failed normal retirement; its
         original error remains in the preallocated slots and prevents success.
         """
+        if wait_timeout_s is not None and (isinstance(wait_timeout_s,bool) or not isinstance(wait_timeout_s,(int,float))
+                or not math.isfinite(wait_timeout_s) or wait_timeout_s<0):
+            raise ValueError('retirement wait must be finite and nonnegative')
+        # No explicit budget preserves the existing90-second Docker wait.
+        # A caller's remaining operation allowance also pays inspect/SIGINT
+        # command latency; never restart it after those commands return.
+        deadline=None if wait_timeout_s is None else time.monotonic()+wait_timeout_s
         if self.cid is None:
             return
         running = True
@@ -59,7 +68,7 @@ class OwnedContainer:
             except BaseException as error:
                 self.errors[1] = error
             try:
-                self._run(self.wait, 90)
+                self._run(self.wait,90 if deadline is None else max(0,deadline-time.monotonic()))
             except BaseException as error:
                 self.errors[2] = error
                 try:

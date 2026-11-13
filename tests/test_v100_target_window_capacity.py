@@ -269,7 +269,7 @@ def test_actual_http_service_consumer_requires_the_scoped_complete_capacity_plan
         'server':{'instance_id':'fixture-instance'},
         'load':{'requests_in_flight':0,'requests_running':0,'requests_waiting':0},
         'runtime':{'execution':{'execution_families':{'effective':families,'trial':families,
-            'native_prepared':True,'graph_rows':120}},'capacity_plan':{'execution_profile_binding':binding}}}
+            'native_prepared':True,'graph_rows':0}},'capacity_plan':{'execution_profile_binding':binding}}}
     prepared = {'manifest_canonical_sha256':'c'*64,'manifest_artifact_files':7,'manifest_artifact_bytes':10}
     assert window.validate_service(stats,client,'fixture-instance',prepared_manifest=prepared)['resident_capacity'] == 24
     old = {k:v for k,v in client.items()if k != 'capacity_contract'}

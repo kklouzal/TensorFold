@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -291,7 +292,19 @@ def _serve_with_postcheck(cli,args,wheel,installed):
     return result
 
 
-def container_argv(spec,bundle,operator,output,operation_sha):
+def _monotonic_offset_ns():
+    # Linux time namespaces may have distinct identities but the same epoch.
+    # Their kernel-provided monotonic offset, not namespace inode, governs it.
+    rows=[line.split() for line in Path('/proc/self/timens_offsets').read_text().splitlines()]
+    require(len(rows)==2 and {row[0] for row in rows}=={'monotonic','boottime'}
+        and all(len(row)==3 for row in rows),'kernel time namespace offset interface differs')
+    seconds,nanoseconds=next(row[1:] for row in rows if row[0]=='monotonic')
+    seconds,nanoseconds=int(seconds),int(nanoseconds)
+    require(0<=nanoseconds<1_000_000_000,'kernel monotonic offset is invalid')
+    return seconds*1_000_000_000+nanoseconds
+
+
+def container_argv(spec,bundle,operator,output,operation_sha,operation_deadline):
     # Reuse ordinary UID1000/Cap0/no-network/NUMA/memlock/static environment,
     # replacing only the fixed supervised worker prefix and declared profile.
     adapter={'model':spec['model'],'resources':spec['resources'],'numa':spec['numa'],'image':spec['image']}
@@ -308,7 +321,10 @@ def container_argv(spec,bundle,operator,output,operation_sha):
     # The fixed supervisor entry dispatch below retains launch_cuda_tp's child
     # lifetime/failure-FD behavior while selecting this reviewed worker module.
     supervisor=['/opt/venv/bin/python','-B','/tools/v100_full32_q4_gate.py','--supervise',
-        '--operation','/operator/operation.json','--operation-sha256',operation_sha,'--',*supervisor[3:]]
+        '--operation','/operator/operation.json','--operation-sha256',operation_sha,
+        '--operation-deadline-monotonic',str(operation_deadline),
+        '--operation-clock-offset-ns',str(_monotonic_offset_ns()),
+        '--operation-boot-id',Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'--',*supervisor[3:]]
     return argv[:marker]+['--entrypoint',supervisor[0],spec['image'],*supervisor[1:]]
 
 
@@ -401,7 +417,7 @@ def run(spec,go,operation_sha,operation_raw,*,owner_factory=ordinary.lifetime.Ow
     campaign.publish(output/'inputs.json',{'operation':spec,'operation_sha256':operation_sha,'root_go':go,'installed':installed,
         'application_source_uid':app['source_uid'],'tools_source_uid':tools['source_uid'],'image_binding':binding,'scope':'full32 capacity/C40 fit only; ordinary Cap0, no teacher/P3 claim'})
     try:
-        argv=container_argv(spec,bundle,operator,output,operation_sha)
+        argv=container_argv(spec,bundle,operator,output,operation_sha,started+spec['resources']['operation_timeout_s'])
         owner.create(argv,lambda command,result:campaign.publish(output/'create.json',{'argv':command,'cid':result.stdout.decode().strip()}))
         ordinary.command(['docker','start',owner.cid]);deadline=min(started+spec['resources']['startup_timeout_s'],
             started+spec['resources']['operation_timeout_s'])
@@ -422,7 +438,7 @@ def run(spec,go,operation_sha,operation_raw,*,owner_factory=ordinary.lifetime.Ow
         pids=[r['PID'] for r in rows];caps=output/'capabilities';caps.mkdir()
         campaign.logged(['docker','exec',owner.cid,'/opt/venv/bin/python','-B','-c',ordinary._CAPS,json.dumps(pids)],caps,30)
     except BaseException as error:primary=error
-    try:owner.retire()
+    try:owner.retire(wait_timeout_s=max(0,started+spec['resources']['operation_timeout_s']-time.monotonic()))
     except BaseException as error:errors.append(error)
     errors.extend(e for e in owner.errors if e is not None)
     for action in (lambda:campaign.verify_source(app_root/'source',app['files']),
@@ -469,18 +485,32 @@ def main(argv=None):
     mode.add_argument('--run',action='store_true');mode.add_argument('--validate',action='store_true')
     parser.add_argument('--operation',required=True,type=Path);parser.add_argument('--operation-sha256',required=True)
     parser.add_argument('--root-go',type=Path);parser.add_argument('tail',nargs=argparse.REMAINDER)
+    parser.add_argument('--operation-deadline-monotonic',type=float)
+    parser.add_argument('--operation-clock-offset-ns',type=int)
+    parser.add_argument('--operation-boot-id')
     args=parser.parse_args(argv)
     raw=read(args.operation,OPERATION_LIMIT)
     require(hashlib.sha256(raw).hexdigest()==args.operation_sha256,'external operation identity differs')
     spec=object_json(raw)
     if args.worker:return worker(args.operation,args.operation_sha256,args.tail[1:] if args.tail[:1]==['--'] else args.tail)
     if args.supervise:
+        deadline=args.operation_deadline_monotonic
+        require(deadline is not None and math.isfinite(deadline) and deadline>=0
+            and deadline<=time.monotonic()+spec['resources']['operation_timeout_s'],
+            'supervisor requires the existing bounded operation deadline')
+        require(args.operation_clock_offset_ns==_monotonic_offset_ns()
+            and args.operation_boot_id==Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+            'host and container operation clocks must share the declared boot and monotonic offset')
+        require(time.monotonic()<deadline,'operation deadline expired before rank acquisition')
         if __package__:from . import launch_cuda_tp
         else:import launch_cuda_tp
         prefix=[sys.executable,'-B',str(Path(__file__)),'--worker','--operation',str(args.operation),
             '--operation-sha256',args.operation_sha256,'--']
         tail=args.tail[1:] if args.tail[:1]==['--'] else args.tail
-        return launch_cuda_tp.main(tail,_command_prefix=prefix)
+        return launch_cuda_tp.main(tail,_command_prefix=prefix,
+            _retirement_grace=max(0,deadline-time.monotonic()),
+            _shutdown_probe=lambda stopping:stopping or time.monotonic()>=deadline,
+            _failure_probe=lambda:time.monotonic()>=deadline)
     validate_operation(spec)
     if args.validate:print(json.dumps({'validated':True,'schema':SCHEMA,'operation_sha256':args.operation_sha256}));return 0
     require(args.root_go is not None,'run requires separate sealed Root GO')

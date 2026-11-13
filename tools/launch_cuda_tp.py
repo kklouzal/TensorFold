@@ -10,6 +10,7 @@ Arguments after ``--`` are passed to ``tensorfold serve`` on every rank.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import signal
 import sys
@@ -19,7 +20,11 @@ from tensorfold.cuda.cohort import FAILURE_FD_ENV
 from tensorfold.cuda.expert_launch import supervise
 
 
-def main(argv=None, *, _command_prefix=None, _shutdown_probe=None, _failure_probe=None) -> int:
+def main(argv=None, *, _command_prefix=None, _shutdown_probe=None, _failure_probe=None,
+         _retirement_grace=30.0) -> int:
+    if (isinstance(_retirement_grace,bool) or not isinstance(_retirement_grace,(int,float))
+            or not math.isfinite(_retirement_grace) or _retirement_grace<0):
+        raise ValueError('private retirement grace must be finite and nonnegative')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpus", required=True, help="Comma-separated visible CUDA device IDs or UUIDs, rank order")
     parser.add_argument("--numa-plan", help="Absolute sealed GPU-UUID/NUMA rank plan; required by the V100 NUMA recipe")
@@ -98,7 +103,7 @@ def main(argv=None, *, _command_prefix=None, _shutdown_probe=None, _failure_prob
         for index, signum in enumerate((signal.SIGINT, signal.SIGTERM)):
             previous[index] = signal.getsignal(signum)
             signal.signal(signum, stop)
-        result = supervise(commands, environments, grace=30.0, failure_probe=failed,
+        result = supervise(commands, environments, grace=_retirement_grace, failure_probe=failed,
                            pass_fds=(write_fd,), shutdown_probe=normal_stop,
                            shutdown_rank=len(commands) - 1)
     except BaseException as error:

@@ -214,12 +214,49 @@ be identical, while per-key accounting retains actual capture order. The final
 tool snapshot must include that corrected shared consumer; an old CPU fixture
 with both lists sorted cannot authorize native DATA.
 
+Full32 retirement includes the mandatory whole-application/FD/protected-SDK
+postcheck after ordinary resource close. The fixed supervisor receives the
+host-established operation deadline and verifies that both processes share
+the same Linux boot and kernel monotonic offset before sharing that clock. Its private
+grace is the remaining operation allowance at entry, with an absolute deadline
+failure probe; the Host's final wait uses the actual remaining allowance at
+retirement. No new full timeout is granted after expiry. Timeout preserves a
+failure and uses the existing exact-CID containment path.
+An expired operation is refused before entering the launcher; the existing
+acquisition stop probe also prevents further rank acquisition if it expires
+during startup. Acquired ranks still retire through the original supervisor.
+Other launcher and
+short-container callers retain their30/90-second defaults. A full32 run that
+reached capacity/C40 and READY but was interrupted during its postcheck remains
+an overall failure; successful allocation is only a separately named subclaim.
+
 The earlier assessment's independent kernel `map_files` origin requirement
 belongs to later CAP40 teacher acceptance. This allocation/graph-fit gate uses
 ordinary capability-zero source-bound origins, as the existing ragged transport
 does; it never relabels those as CAP40/VMA proof. Native full32/C40 fit, actual
 history contents, model/codec quality, teacher acceptance and matched P3 retain
 their distinct gates. CPU DTO/fault tests do not qualify hardware capacity.
+
+The actual 2026-11-13 v4 operation
+`88d142f541c3b7905873796d3141a89ea769d25641af7c55fec9f4dd97d254e0`
+completed on the installed Source37 image `119b8595...` with separately sealed
+tools source `6429243b` and UID `7a2f9450...`. All eight ranks supplied validated
+32-State receipts: logical context262,144, physical capacity262,149, ISO4
+key/value identity, all40 keys/314 pieces, and ordinary READY with zero inference
+requests. Each rank charged3,128,950,784 graph bytes within8,327,872,512 bytes.
+The retained plan preserved2,147,483,648 workspace bytes and4,138,123,264 total
+future-service bytes; rank0's sampled physical free memory was9,318,170,624 bytes.
+All24 NUMA stage receipts matched actual worker PIDs and ordinary Cap0 facts.
+
+The full worker SDK postchecks and graceful close completed. The owning CLI
+and container exited0 after601.76 seconds, with no OOM, primary or cleanup
+errors. The exact container was removed, frozen evidence remained held, and
+all eight GPUs' health and empty-context checks matched the pre-run baseline.
+The owning receipt is `Root-actual-complete-milestone-v1.json` in build-cache
+packet `full32-q4-native-DATA-20261113-v4`. Prior v3 remains failed. This closes
+the declared allocation/graph-fit/ordinary-lifecycle gate; it does not certify
+populated maximum-length histories, model/codec quality, teacher acceptance,
+prefill/decode token/s or a selected implementation winner.
 
 ## Full-window graph headroom
 
@@ -2099,3 +2136,11 @@ unused diagnostic ledger fields are not the live integer-only ledger.
 A tool-only shared-content reader correction rejects boolean-as-integer
 provenance and validates the complete producer registration shape. The reviewed
 application source is unchanged; this guard does not require another image.
+
+Source40 reached all eight typed full-window/shared-content setups, C36 capture,
+NUMA ready and the listening server, then failed before POST on a reader
+assumption. OwnerPreparation reports zero bucket-graph rows for its explicitly
+uncaptured graph family; that field does not describe MultiDecoder step graphs.
+The corrected tool reader keeps the separate typed E120/C36 proof and validates
+every remaining service/registration predicate against portable actual captured
+HTTP fields. No app change, row truncation or missing graph check is introduced.

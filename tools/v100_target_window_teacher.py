@@ -1798,7 +1798,8 @@ def validate_service(stats, spec, instance, *, prepared_manifest):
             and all(expert.get(k) == expected[k] for k in ('tp', 'pp', 'etp', 'ep'))
             and families['effective'] == {'kernel_family': expected['kernel_family'], 'graph_family': expected['graph_family']}
             and families.get('trial') == {k: expected[k] for k in ('kernel_family', 'graph_family')}
-            and families.get('native_prepared') is True and families.get('graph_rows') == 120,
+            and families.get('native_prepared') is True and expected['graph_family'] == 'uncaptured'
+            and type(families.get('graph_rows')) is int and families['graph_rows'] == 0,
             'actual window HTTP service differs from full MTP/graph preparation')
     require(type(prepared_manifest) is dict and binding.get('manifest_sha256') == prepared_manifest['manifest_canonical_sha256']
             and all(type(binding.get(key)) is int for key in

@@ -1,6 +1,8 @@
 """Closed full32 capacity operation and ordinary lifecycle boundaries; no CUDA evidence."""
 import hashlib
 import json
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace as NS
 
@@ -84,7 +86,7 @@ def test_one_exact_root_authorization_cannot_be_reused(operation,field):
 
 
 def test_ordinary_container_retains_existing_numapassthrough_and_explicit_worker_supervisor(operation,tmp_path):
-    argv=gate.container_argv(operation,{'cpuset_cpus':'1-8','cpuset_mems':'0-1'},tmp_path/'operator',tmp_path/'out','f'*64)
+    argv=gate.container_argv(operation,{'cpuset_cpus':'1-8','cpuset_mems':'0-1'},tmp_path/'operator',tmp_path/'out','f'*64,123.0)
     assert '--privileged' not in argv and '--cap-add' not in argv and '--pid' not in argv
     assert argv[argv.index('--user')+1]=='1000:1000' and argv[argv.index('--network')+1]=='none'
     assert argv[argv.index('--runtime')+1]=='nvidia' and '--read-only' in argv
@@ -107,10 +109,101 @@ def test_supervisor_keeps_actual_child_owner_and_failurechannel(operation,tmp_pa
     digest=hashlib.sha256(raw).hexdigest();calls=[]
     monkeypatch.setattr(launch_cuda_tp,'main',lambda argv,**kwargs:calls.append((argv,kwargs)) or 0)
     tail=['--gpus',','.join(operation['model']['gpus']),'--',*gate.serve_argv(operation)]
-    assert gate.main(['--supervise','--operation',str(path),'--operation-sha256',digest,'--',*tail])==0
+    deadline=time.monotonic()+1
+    assert gate.main(['--supervise','--operation',str(path),'--operation-sha256',digest,
+        '--operation-deadline-monotonic',str(deadline),'--operation-clock-offset-ns',str(gate._monotonic_offset_ns()),'--operation-boot-id',Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'--',*tail])==0
     assert calls[0][0]==tail
     prefix=calls[0][1]['_command_prefix']
     assert '--worker' in prefix and prefix[-1]=='--' and prefix[prefix.index('--operation-sha256')+1]==digest
+    assert 0<calls[0][1]['_retirement_grace']<=1
+    assert calls[0][1]['_failure_probe']() is False
+
+
+@pytest.mark.parametrize('expired',[False,True])
+def test_supervisor_deadline_is_not_renewed_and_clock_epoch_is_required(operation,tmp_path,monkeypatch,expired):
+    from tools import launch_cuda_tp
+    raw=json.dumps(operation).encode();path=tmp_path/'operation.json';path.write_bytes(raw)
+    digest=hashlib.sha256(raw).hexdigest();calls=[]
+    monkeypatch.setattr(launch_cuda_tp,'main',lambda *a,**kw:calls.append(kw)or 0)
+    deadline=time.monotonic()+(-1 if expired else 1)
+    args=['--supervise','--operation',str(path),'--operation-sha256',digest,
+        '--operation-deadline-monotonic',str(deadline),'--operation-boot-id',Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'--operation-clock-offset-ns']
+    with pytest.raises(ValueError,match='monotonic offset'):gate.main([*args,str(gate._monotonic_offset_ns()+1),'--','model'])
+    assert not calls
+    if expired:
+        with pytest.raises(ValueError,match='expired before rank acquisition'):
+            gate.main([*args,str(gate._monotonic_offset_ns()),'--','model'])
+        assert not calls
+    else:
+        gate.main([*args,str(gate._monotonic_offset_ns()),'--','model'])
+        assert calls[0]['_retirement_grace']>0
+        assert calls[0]['_failure_probe']() is False
+        assert calls[0]['_shutdown_probe'](False) is False
+        assert calls[0]['_shutdown_probe'](True) is True
+
+
+def test_deadline_during_real_acquisition_stops_before_next_child_and_retires_first(operation,tmp_path,monkeypatch):
+    from tools import launch_cuda_tp
+    from tensorfold.cuda import expert_launch
+    raw=json.dumps(operation).encode();path=tmp_path/'operation.json';path.write_bytes(raw)
+    digest=hashlib.sha256(raw).hexdigest();clock=[time.monotonic()];deadline=clock[0]+1
+    monkeypatch.setattr(gate,'time',NS(monotonic=lambda:clock[0]))
+    children=[];popen=expert_launch.subprocess.Popen;main=launch_cuda_tp.main
+    def acquire(*args,**kwargs):
+        child=popen(*args,**kwargs);children.append(child);clock[0]=deadline
+        return child
+    def launch(tail,**kwargs):
+        # Exercise the real supervisor with harmless CPU children. The first
+        # acquisition deterministically consumes the remaining grant.
+        kwargs['_command_prefix']=[sys.executable,'-B','-c','import time;time.sleep(5)']
+        return main(['--gpus','0,1','--','model'],**kwargs)
+    monkeypatch.setattr(expert_launch.subprocess,'Popen',acquire)
+    monkeypatch.setattr(launch_cuda_tp,'main',launch)
+    with pytest.raises(RuntimeError,match='startup cancelled before cohort acquisition'):
+        gate.main(['--supervise','--operation',str(path),'--operation-sha256',digest,
+            '--operation-deadline-monotonic',str(deadline),'--operation-clock-offset-ns',str(gate._monotonic_offset_ns()),
+            '--operation-boot-id',Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'--','model'])
+    assert len(children)==1 and children[0].returncode is not None
+
+
+@pytest.mark.parametrize('outcome',['positive','postcheck_failure','deadline'])
+def test_actual_supervised_close_keeps_long_postcheck_and_nonzero_outcome(tmp_path,outcome):
+    from tools import launch_cuda_tp
+    # Emulate ordinary HTTP's one shutdown interrupt, resource close, then the
+    # required postcheck with that handler still active. The postcheck exceeds
+    # the short surrogate old grace; it must complete under the paid deadline.
+    script=r'''
+import sys,signal,time
+from pathlib import Path
+root=Path(sys.argv[1]);rank=int(sys.argv[sys.argv.index('--rank')+1]);mode=sys.argv[2]
+def stop(*args):raise KeyboardInterrupt
+signal.signal(signal.SIGTERM,stop)
+(root/('ready'+str(rank))).write_text('ready')
+if rank==0:
+ try:
+  while True:time.sleep(.01)
+ except KeyboardInterrupt:(root/'closed').write_text('closed')
+else:
+ while not (root/'closed').exists():time.sleep(.01)
+time.sleep(1 if mode=='deadline' else .25)
+(root/('audited'+str(rank))).write_text('checked')
+raise SystemExit(7 if mode=='postcheck_failure' and rank==0 else 0)
+'''
+    start=time.monotonic()
+    result=launch_cuda_tp.main(['--gpus','0,1','--','model'],
+        _command_prefix=[sys.executable,'-B','-c',script,str(tmp_path),outcome],
+        _shutdown_probe=lambda stopping:all((tmp_path/('ready'+str(rank))).exists()for rank in range(2)),
+        _retirement_grace=.1 if outcome=='deadline' else 2)
+    assert time.monotonic()-start<5
+    assert (result==0) is (outcome=='positive')
+    if outcome=='positive':assert all((tmp_path/('audited'+str(rank))).exists()for rank in range(2))
+    elif outcome=='postcheck_failure':assert (tmp_path/'audited0').exists()
+
+
+@pytest.mark.parametrize('grace',[-1,True,float('nan'),float('inf')])
+def test_private_launch_grace_refuses_invalid_bound_before_acquisition(grace):
+    from tools import launch_cuda_tp
+    with pytest.raises(ValueError,match='retirement grace'):launch_cuda_tp.main([],_retirement_grace=grace)
 
 
 def valid_rows(output,spec,app,tools):
@@ -220,7 +313,8 @@ def test_ordinary_ready_retirement_retains_failures_and_never_forces_success(ope
         def create(self,argv,publish):
             self.cid=cid;publish(argv,NS(stdout=(cid+'\n').encode()))
             valid_rows(output,{**operation,'_operation_sha256':digest},app,tools)
-        def retire(self):
+        def retire(self,*,wait_timeout_s):
+            assert 0<=wait_timeout_s<=operation['resources']['operation_timeout_s']
             self.retired=True;self.state={'Status':'exited','Pid':0,'ExitCode':7 if fault=='nonzero_close' else 0,'OOMKilled':False}
             if fault=='cleanup':self.errors.append(RuntimeError('owned cleanup failed'))
         def exit_code(self,primary):return int(primary is not None or bool(self.errors) or self.state['ExitCode']!=0)

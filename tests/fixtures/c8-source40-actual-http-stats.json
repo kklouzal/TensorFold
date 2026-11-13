@@ -1,0 +1,3066 @@
+{
+  "schema": "tensorfold.actual-Source40-C8-HTTP-contract-fixture-v1",
+  "provenance": {
+    "app_source": "991c028294a18d5a8df625357773651b467b0203",
+    "tool_source": "946110420d7795a919d2ecf6c2f2cee965e5b7da",
+    "scope": "Actualretiredfailedrun readonlyHTTPstats fields used byFULLvalidate_service; valuesunchanged, unrelatedtelemetry omitted. No GPU/model/qualitycompletion claim.",
+    "retained_result_sha256": "117db86ec09d8543eceee19c8eebf3b1b3b366edb8842ad7b682a41e0afa77e0",
+    "raw_response_sha256": "6d9658e5c1277ac01b3032158926cec925d8fa60acc605f0f8ef5539b613ad74"
+  },
+  "stats": {
+    "object": "tensorfold.stats",
+    "server": {
+      "version": "0.6.6",
+      "backend": "cuda",
+      "instance_id": "67d6ee870c7e4f0090384f27ef7e373f",
+      "started_unix_s": 1794603277.681,
+      "source_revision": null
+    },
+    "model": {
+      "id": "providerone-sc117-expert21-teacher",
+      "aliases": [],
+      "model_type": "qwen4_exp",
+      "context_length": 262144,
+      "default_max_tokens": 128,
+      "kv_dtype": "int8",
+      "mtp_drafts": 4,
+      "vision": false,
+      "thinking_default": false
+    },
+    "load": {
+      "requests_in_flight": 0,
+      "requests_running": 0,
+      "requests_waiting": 0,
+      "lanes": {
+        "decode": 0,
+        "prefill": 0,
+        "memory_wait": 0
+      },
+      "held_for_memory": false,
+      "http_connections_in_use": 1,
+      "stream_tokens": []
+    },
+    "capacity_plan": {
+      "native_window": 262144,
+      "requested_context": 262144,
+      "context_window": 262144,
+      "cache_slots": 262149,
+      "budget_bytes": 33248772096,
+      "startup_peak_bytes_estimate": 9688256512,
+      "serving_peak_bytes_estimate": 33248772096,
+      "total_bytes_estimate": 33248772096,
+      "full_window_headroom": {
+        "policy": "full-window-physical-headroom-v1",
+        "required_sessions": 24,
+        "logical_context": 262144,
+        "unused_device_floor_bytes": 0,
+        "execution_workspace": "unchanged complete geometry and runtime minimum2GiB",
+        "initial_admission": "actual physical free/remaining absolute grant; no unused4GiB reservation"
+      },
+      "session_capacity": {
+        "policy": "fixed-context-worst-rank-v1",
+        "evidence": "header-plan-unqualified",
+        "context_tokens": 262144,
+        "configured_ceiling": 24,
+        "resident_capacity": 24,
+        "full_context_commitments": 24,
+        "binding_ranks": [],
+        "limiting_resource": "administrator-ceiling",
+        "ranks": [
+          {
+            "rank": 0,
+            "budget_bytes": 33248772096,
+            "resident_weight_bytes": 9654702080,
+            "loading_overlap_bytes": 33554432,
+            "session_execution_bytes": 17789069868,
+            "next_session_execution_bytes": 18374691392,
+            "resource_ledger_bytes": {
+              "attention_scratch": 134098560,
+              "device_library_workspace": 74346624,
+              "execution_arenas": 833187136,
+              "expert_routing_extra": 0,
+              "graphs": 0,
+              "history": 11788266120,
+              "kv_cohort_workspace": 1728,
+              "migration_overlap_limit": 0,
+              "replacement_overlap": 0,
+              "retained_device_dependencies": 491520,
+              "retained_recovery": 1522486784,
+              "serving_workspace": 2147483648,
+              "session_state": 708438912,
+              "slot_metadata": 78628,
+              "sm70_native_workspace": 580190208
+            },
+            "allocation_baseline": {
+              "observed_at_unix_ns": 1794603022411640558,
+              "physical_free_bytes": 33248772096,
+              "device_total_bytes": 34072559616,
+              "effective_device_floor_bytes": 0,
+              "preallocated_project_bytes": 99301376,
+              "usable_serving_budget_bytes": 33248772096,
+              "allocator_allocated_bytes": 99301376,
+              "allocator_reserved_bytes": 121634816,
+              "absolute_grant_cap_bytes": null,
+              "remaining_absolute_grant_bytes": null
+            }
+          },
+          {
+            "rank": 1,
+            "budget_bytes": 33248772096,
+            "resident_weight_bytes": 9654702080,
+            "loading_overlap_bytes": 33554432,
+            "session_execution_bytes": 17789069868,
+            "next_session_execution_bytes": 18374621760,
+            "resource_ledger_bytes": {
+              "attention_scratch": 134098560,
+              "device_library_workspace": 74346624,
+              "execution_arenas": 833187136,
+              "expert_routing_extra": 0,
+              "graphs": 0,
+              "history": 11788266120,
+              "kv_cohort_workspace": 1728,
+              "migration_overlap_limit": 0,
+              "replacement_overlap": 0,
+              "retained_device_dependencies": 491520,
+              "retained_recovery": 1522486784,
+              "serving_workspace": 2147483648,
+              "session_state": 708438912,
+              "slot_metadata": 78628,
+              "sm70_native_workspace": 580190208
+            },
+            "allocation_baseline": {
+              "observed_at_unix_ns": 1794603022085623090,
+              "physical_free_bytes": 33248772096,
+              "device_total_bytes": 34072559616,
+              "effective_device_floor_bytes": 0,
+              "preallocated_project_bytes": 99301376,
+              "usable_serving_budget_bytes": 33248772096,
+              "allocator_allocated_bytes": 99301376,
+              "allocator_reserved_bytes": 121634816,
+              "absolute_grant_cap_bytes": null,
+              "remaining_absolute_grant_bytes": null
+            }
+          },
+          {
+            "rank": 2,
+            "budget_bytes": 33248772096,
+            "resident_weight_bytes": 9654702080,
+            "loading_overlap_bytes": 33554432,
+            "session_execution_bytes": 17789069868,
+            "next_session_execution_bytes": 18374621760,
+            "resource_ledger_bytes": {
+              "attention_scratch": 134098560,
+              "device_library_workspace": 74346624,
+              "execution_arenas": 833187136,
+              "expert_routing_extra": 0,
+              "graphs": 0,
+              "history": 11788266120,
+              "kv_cohort_workspace": 1728,
+              "migration_overlap_limit": 0,
+              "replacement_overlap": 0,
+              "retained_device_dependencies": 491520,
+              "retained_recovery": 1522486784,
+              "serving_workspace": 2147483648,
+              "session_state": 708438912,
+              "slot_metadata": 78628,
+              "sm70_native_workspace": 580190208
+            },
+            "allocation_baseline": {
+              "observed_at_unix_ns": 1794603022432591981,
+              "physical_free_bytes": 33248772096,
+              "device_total_bytes": 34072559616,
+              "effective_device_floor_bytes": 0,
+              "preallocated_project_bytes": 99301376,
+              "usable_serving_budget_bytes": 33248772096,
+              "allocator_allocated_bytes": 99301376,
+              "allocator_reserved_bytes": 121634816,
+              "absolute_grant_cap_bytes": null,
+              "remaining_absolute_grant_bytes": null
+            }
+          },
+          {
+            "rank": 3,
+            "budget_bytes": 33248772096,
+            "resident_weight_bytes": 9654702080,
+            "loading_overlap_bytes": 33554432,
+            "session_execution_bytes": 17789069868,
+            "next_session_execution_bytes": 18374621760,
+            "resource_ledger_bytes": {
+              "attention_scratch": 134098560,
+              "device_library_workspace": 74346624,
+              "execution_arenas": 833187136,
+              "expert_routing_extra": 0,
+              "graphs": 0,
+              "history": 11788266120,
+              "kv_cohort_workspace": 1728,
+              "migration_overlap_limit": 0,
+              "replacement_overlap": 0,
+              "retained_device_dependencies": 491520,
+              "retained_recovery": 1522486784,
+              "serving_workspace": 2147483648,
+              "session_state": 708438912,
+              "slot_metadata": 78628,
+              "sm70_native_workspace": 580190208
+            },
+            "allocation_baseline": {
+              "observed_at_unix_ns": 1794603022525836227,
+              "physical_free_bytes": 33248772096,
+              "device_total_bytes": 34072559616,
+              "effective_device_floor_bytes": 0,
+              "preallocated_project_bytes": 99301376,
+              "usable_serving_budget_bytes": 33248772096,
+              "allocator_allocated_bytes": 99301376,
+              "allocator_reserved_bytes": 121634816,
+              "absolute_grant_cap_bytes": null,
+              "remaining_absolute_grant_bytes": null
+            }
+          },
+          {
+            "rank": 4,
+            "budget_bytes": 33248772096,
+            "resident_weight_bytes": 9654702080,
+            "loading_overlap_bytes": 33554432,
+            "session_execution_bytes": 17789069868,
+            "next_session_execution_bytes": 18374693912,
+            "resource_ledger_bytes": {
+              "attention_scratch": 134098560,
+              "device_library_workspace": 74346624,
+              "execution_arenas": 833187136,
+              "expert_routing_extra": 0,
+              "graphs": 0,
+              "history": 11788266120,
+              "kv_cohort_workspace": 1728,
+              "migration_overlap_limit": 0,
+              "replacement_overlap": 0,
+              "retained_device_dependencies": 491520,
+              "retained_recovery": 1522486784,
+              "serving_workspace": 2147483648,
+              "session_state": 708438912,
+              "slot_metadata": 78628,
+              "sm70_native_workspace": 580190208
+            },
+            "allocation_baseline": {
+              "observed_at_unix_ns": 1794603022776228321,
+              "physical_free_bytes": 33248772096,
+              "device_total_bytes": 34072559616,
+              "effective_device_floor_bytes": 0,
+              "preallocated_project_bytes": 99301376,
+              "usable_serving_budget_bytes": 33248772096,
+              "allocator_allocated_bytes": 99301376,
+              "allocator_reserved_bytes": 121634816,
+              "absolute_grant_cap_bytes": null,
+              "remaining_absolute_grant_bytes": null
+            }
+          },
+          {
+            "rank": 5,
+            "budget_bytes": 33248772096,
+            "resident_weight_bytes": 9654702080,
+            "loading_overlap_bytes": 33554432,
+            "session_execution_bytes": 17789069868,
+            "next_session_execution_bytes": 18357841792,
+            "resource_ledger_bytes": {
+              "attention_scratch": 134098560,
+              "device_library_workspace": 74346624,
+              "execution_arenas": 833187136,
+              "expert_routing_extra": 0,
+              "graphs": 0,
+              "history": 11788266120,
+              "kv_cohort_workspace": 1728,
+              "migration_overlap_limit": 0,
+              "replacement_overlap": 0,
+              "retained_device_dependencies": 491520,
+              "retained_recovery": 1522486784,
+              "serving_workspace": 2147483648,
+              "session_state": 708438912,
+              "slot_metadata": 78628,
+              "sm70_native_workspace": 580190208
+            },
+            "allocation_baseline": {
+              "observed_at_unix_ns": 1794603022585866570,
+              "physical_free_bytes": 33248772096,
+              "device_total_bytes": 34072559616,
+              "effective_device_floor_bytes": 0,
+              "preallocated_project_bytes": 99301376,
+              "usable_serving_budget_bytes": 33248772096,
+              "allocator_allocated_bytes": 99301376,
+              "allocator_reserved_bytes": 121634816,
+              "absolute_grant_cap_bytes": null,
+              "remaining_absolute_grant_bytes": null
+            }
+          },
+          {
+            "rank": 6,
+            "budget_bytes": 33248772096,
+            "resident_weight_bytes": 9654702080,
+            "loading_overlap_bytes": 33554432,
+            "session_execution_bytes": 17789069868,
+            "next_session_execution_bytes": 18357841792,
+            "resource_ledger_bytes": {
+              "attention_scratch": 134098560,
+              "device_library_workspace": 74346624,
+              "execution_arenas": 833187136,
+              "expert_routing_extra": 0,
+              "graphs": 0,
+              "history": 11788266120,
+              "kv_cohort_workspace": 1728,
+              "migration_overlap_limit": 0,
+              "replacement_overlap": 0,
+              "retained_device_dependencies": 491520,
+              "retained_recovery": 1522486784,
+              "serving_workspace": 2147483648,
+              "session_state": 708438912,
+              "slot_metadata": 78628,
+              "sm70_native_workspace": 580190208
+            },
+            "allocation_baseline": {
+              "observed_at_unix_ns": 1794603022268221649,
+              "physical_free_bytes": 33248772096,
+              "device_total_bytes": 34072559616,
+              "effective_device_floor_bytes": 0,
+              "preallocated_project_bytes": 99301376,
+              "usable_serving_budget_bytes": 33248772096,
+              "allocator_allocated_bytes": 99301376,
+              "allocator_reserved_bytes": 121634816,
+              "absolute_grant_cap_bytes": null,
+              "remaining_absolute_grant_bytes": null
+            }
+          },
+          {
+            "rank": 7,
+            "budget_bytes": 33248772096,
+            "resident_weight_bytes": 9654702080,
+            "loading_overlap_bytes": 33554432,
+            "session_execution_bytes": 17789069868,
+            "next_session_execution_bytes": 18357841792,
+            "resource_ledger_bytes": {
+              "attention_scratch": 134098560,
+              "device_library_workspace": 74346624,
+              "execution_arenas": 833187136,
+              "expert_routing_extra": 0,
+              "graphs": 0,
+              "history": 11788266120,
+              "kv_cohort_workspace": 1728,
+              "migration_overlap_limit": 0,
+              "replacement_overlap": 0,
+              "retained_device_dependencies": 491520,
+              "retained_recovery": 1522486784,
+              "serving_workspace": 2147483648,
+              "session_state": 708438912,
+              "slot_metadata": 78628,
+              "sm70_native_workspace": 580190208
+            },
+            "allocation_baseline": {
+              "observed_at_unix_ns": 1794603022578844371,
+              "physical_free_bytes": 33248772096,
+              "device_total_bytes": 34072559616,
+              "effective_device_floor_bytes": 0,
+              "preallocated_project_bytes": 99301376,
+              "usable_serving_budget_bytes": 33248772096,
+              "allocator_allocated_bytes": 99301376,
+              "allocator_reserved_bytes": 121634816,
+              "absolute_grant_cap_bytes": null,
+              "remaining_absolute_grant_bytes": null
+            }
+          }
+        ]
+      },
+      "kv_full_windows": {
+        "requested": 24,
+        "reserved": 24,
+        "stream_slots": 24,
+        "context_window": 262144,
+        "cache_slots_each": 262149,
+        "auxiliary": "mtp",
+        "workspace_bytes": 2147483648,
+        "policy": "resident-full-windows-v2",
+        "materialized": true,
+        "startup_capacities": [
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149,
+          262149
+        ],
+        "allocated_cache_bytes": 11788266120,
+        "ranks": [
+          {
+            "rank": 0,
+            "materialized": true,
+            "allocated_cache_bytes": 11788266120,
+            "torch_allocated_bytes": 22852573696,
+            "torch_reserved_bytes": 23657971712,
+            "startup_capacities": [
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149
+            ]
+          },
+          {
+            "rank": 1,
+            "materialized": true,
+            "allocated_cache_bytes": 11788266120,
+            "torch_allocated_bytes": 22852573696,
+            "torch_reserved_bytes": 23657971712,
+            "startup_capacities": [
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149
+            ]
+          },
+          {
+            "rank": 2,
+            "materialized": true,
+            "allocated_cache_bytes": 11788266120,
+            "torch_allocated_bytes": 22852573696,
+            "torch_reserved_bytes": 23657971712,
+            "startup_capacities": [
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149
+            ]
+          },
+          {
+            "rank": 3,
+            "materialized": true,
+            "allocated_cache_bytes": 11788266120,
+            "torch_allocated_bytes": 22852573696,
+            "torch_reserved_bytes": 23657971712,
+            "startup_capacities": [
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149
+            ]
+          },
+          {
+            "rank": 4,
+            "materialized": true,
+            "allocated_cache_bytes": 11788266120,
+            "torch_allocated_bytes": 22852573696,
+            "torch_reserved_bytes": 23657971712,
+            "startup_capacities": [
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149
+            ]
+          },
+          {
+            "rank": 5,
+            "materialized": true,
+            "allocated_cache_bytes": 11788266120,
+            "torch_allocated_bytes": 22852573696,
+            "torch_reserved_bytes": 23657971712,
+            "startup_capacities": [
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149
+            ]
+          },
+          {
+            "rank": 6,
+            "materialized": true,
+            "allocated_cache_bytes": 11788266120,
+            "torch_allocated_bytes": 22852573696,
+            "torch_reserved_bytes": 23657971712,
+            "startup_capacities": [
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149
+            ]
+          },
+          {
+            "rank": 7,
+            "materialized": true,
+            "allocated_cache_bytes": 11788266120,
+            "torch_allocated_bytes": 22852573696,
+            "torch_reserved_bytes": 23657971712,
+            "startup_capacities": [
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149,
+              262149
+            ]
+          }
+        ]
+      },
+      "execution_envelope": {
+        "target_rows": 120,
+        "max_proposals": 4,
+        "prefill_tokens": 256,
+        "method": "mtp",
+        "evidence": "source-bounded-unqualified"
+      },
+      "observed_graph_admission": {
+        "original_header": {
+          "native_window": 262144,
+          "requested_context": 262144,
+          "context_window": 262144,
+          "cache_slots": 262149,
+          "budget_bytes": 33248772096,
+          "weight_bytes_estimate": 9654702080,
+          "loading_bytes_estimate": 33554432,
+          "cache_workspace_bytes_estimate": 17789069868,
+          "startup_peak_bytes_estimate": 9688256512,
+          "serving_peak_bytes_estimate": 27443771948,
+          "total_bytes_estimate": 27443771948,
+          "full_mapped_working_set_bytes_estimate": 27443771948
+        },
+        "policy": "full-window-physical-headroom-v1",
+        "agreed_graph_bytes": 6025920512,
+        "observations": [
+          {
+            "rank": 0,
+            "graph_room_bytes": 6025920512,
+            "live_after_floor_bytes": 9695657984,
+            "future_service_bytes": 3669737472
+          },
+          {
+            "rank": 1,
+            "graph_room_bytes": 6025920512,
+            "live_after_floor_bytes": 9695657984,
+            "future_service_bytes": 3669737472
+          },
+          {
+            "rank": 2,
+            "graph_room_bytes": 6025920512,
+            "live_after_floor_bytes": 9695657984,
+            "future_service_bytes": 3669737472
+          },
+          {
+            "rank": 3,
+            "graph_room_bytes": 6025920512,
+            "live_after_floor_bytes": 9695657984,
+            "future_service_bytes": 3669737472
+          },
+          {
+            "rank": 4,
+            "graph_room_bytes": 6025920512,
+            "live_after_floor_bytes": 9695657984,
+            "future_service_bytes": 3669737472
+          },
+          {
+            "rank": 5,
+            "graph_room_bytes": 6025920512,
+            "live_after_floor_bytes": 9695657984,
+            "future_service_bytes": 3669737472
+          },
+          {
+            "rank": 6,
+            "graph_room_bytes": 6025920512,
+            "live_after_floor_bytes": 9695657984,
+            "future_service_bytes": 3669737472
+          },
+          {
+            "rank": 7,
+            "graph_room_bytes": 6025920512,
+            "live_after_floor_bytes": 9695657984,
+            "future_service_bytes": 3669737472
+          }
+        ],
+        "full_slots": 24,
+        "capacity": 262149,
+        "future_service": {
+          "growth_bytes": 0,
+          "copy_overlap_bytes": 0,
+          "snapshot_bytes_each": 14637056,
+          "snapshot_bytes": 1522253824,
+          "transient_bytes": 3471360,
+          "workspace_bytes": 2147483648,
+          "future_bytes": 3669737472
+        },
+        "header_room_bytes": 5805000148,
+        "private_spare_credit_bytes": 0,
+        "admitted_project_budget_bytes": 33248772096,
+        "live_reserve_bytes": 0,
+        "basis": "current physical spare after all materialized windows and full service promises; unused startup floor fungible",
+        "graph_outside_allocator_bytes": 2506096640,
+        "observed_serving_base_bytes": 27222851584
+      },
+      "multi_graphs": {
+        "planned_bytes": 6025920512,
+        "original_requested": true,
+        "whole_round_requested": true,
+        "captured": true,
+        "reason": null,
+        "automatic": true,
+        "initial_live_bytes": 9695657984,
+        "header_room_bytes": 5805000148,
+        "future_service": {
+          "growth_bytes": 0,
+          "copy_overlap_bytes": 0,
+          "snapshot_bytes_each": 14637056,
+          "snapshot_bytes": 1522253824,
+          "transient_bytes": 3471360,
+          "workspace_bytes": 2147483648,
+          "future_bytes": 3669737472
+        },
+        "observed_graph_admission": {
+          "policy": "full-window-physical-headroom-v1",
+          "agreed_graph_bytes": 6025920512,
+          "observations": [
+            {
+              "rank": 0,
+              "graph_room_bytes": 6025920512,
+              "live_after_floor_bytes": 9695657984,
+              "future_service_bytes": 3669737472
+            },
+            {
+              "rank": 1,
+              "graph_room_bytes": 6025920512,
+              "live_after_floor_bytes": 9695657984,
+              "future_service_bytes": 3669737472
+            },
+            {
+              "rank": 2,
+              "graph_room_bytes": 6025920512,
+              "live_after_floor_bytes": 9695657984,
+              "future_service_bytes": 3669737472
+            },
+            {
+              "rank": 3,
+              "graph_room_bytes": 6025920512,
+              "live_after_floor_bytes": 9695657984,
+              "future_service_bytes": 3669737472
+            },
+            {
+              "rank": 4,
+              "graph_room_bytes": 6025920512,
+              "live_after_floor_bytes": 9695657984,
+              "future_service_bytes": 3669737472
+            },
+            {
+              "rank": 5,
+              "graph_room_bytes": 6025920512,
+              "live_after_floor_bytes": 9695657984,
+              "future_service_bytes": 3669737472
+            },
+            {
+              "rank": 6,
+              "graph_room_bytes": 6025920512,
+              "live_after_floor_bytes": 9695657984,
+              "future_service_bytes": 3669737472
+            },
+            {
+              "rank": 7,
+              "graph_room_bytes": 6025920512,
+              "live_after_floor_bytes": 9695657984,
+              "future_service_bytes": 3669737472
+            }
+          ],
+          "full_slots": 24,
+          "capacity": 262149,
+          "future_service": {
+            "growth_bytes": 0,
+            "copy_overlap_bytes": 0,
+            "snapshot_bytes_each": 14637056,
+            "snapshot_bytes": 1522253824,
+            "transient_bytes": 3471360,
+            "workspace_bytes": 2147483648,
+            "future_bytes": 3669737472
+          },
+          "header_room_bytes": 5805000148,
+          "private_spare_credit_bytes": 0,
+          "admitted_project_budget_bytes": 33248772096,
+          "live_reserve_bytes": 0,
+          "basis": "all materialized full GPU windows plus unchanged snapshots/copy-overlap/workspace; unused startup floor fungible",
+          "graph_outside_allocator_bytes": 2506096640
+        },
+        "materialized_full_windows": {
+          "slots": 24,
+          "capacities": [
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149,
+            262149
+          ],
+          "cache_bytes": 11788266120
+        },
+        "floor_tokens": 256,
+        "floor_extra_bytes": 0,
+        "verify_keys": 16,
+        "mtp_keys": 20,
+        "bytes": 2531262464,
+        "settled_bytes": 2529165312,
+        "room_bytes": 2531262464,
+        "budget_bytes": 6025920512,
+        "capture_s": 54.899,
+        "stopped": null,
+        "rejected": null,
+        "allocator": {
+          "backend": "native",
+          "accounting": "native-pool-inactive",
+          "physical_free_bytes": 7145521152,
+          "available_after_floor_bytes": 2850553856,
+          "reserved_bytes": 23683137536,
+          "allocated_bytes": 22852573696,
+          "private_pool_spare_bytes": 25165824
+        },
+        "pieces": 280,
+        "keys": [
+          {
+            "key": [
+              "verify",
+              "(1, 1)"
+            ],
+            "pieces": 15,
+            "bytes": 138412032,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 1,
+              "participants": 1,
+              "pieces": 15,
+              "prior_keys": 0,
+              "prior_bytes": 0,
+              "physical_delta_bytes": 138412032,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 25165824,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(1, 1)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 1,
+              "participants": 1,
+              "pieces": 2,
+              "prior_keys": 1,
+              "prior_bytes": 138412032,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(2, 1)"
+            ],
+            "pieces": 15,
+            "bytes": 115343360,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 2,
+              "participants": 1,
+              "pieces": 15,
+              "prior_keys": 2,
+              "prior_bytes": 142606336,
+              "physical_delta_bytes": 115343360,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(2, 1)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 2,
+              "participants": 1,
+              "pieces": 2,
+              "prior_keys": 3,
+              "prior_bytes": 257949696,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(2, 2)"
+            ],
+            "pieces": 15,
+            "bytes": 117440512,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 2,
+              "participants": 2,
+              "pieces": 15,
+              "prior_keys": 4,
+              "prior_bytes": 262144000,
+              "physical_delta_bytes": 117440512,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(2, 2)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 2,
+              "participants": 2,
+              "pieces": 2,
+              "prior_keys": 5,
+              "prior_bytes": 379584512,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(3, 1)"
+            ],
+            "pieces": 15,
+            "bytes": 117440512,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 3,
+              "participants": 1,
+              "pieces": 15,
+              "prior_keys": 6,
+              "prior_bytes": 383778816,
+              "physical_delta_bytes": 117440512,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(3, 1)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 3,
+              "participants": 1,
+              "pieces": 2,
+              "prior_keys": 7,
+              "prior_bytes": 501219328,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(3, 3)"
+            ],
+            "pieces": 2,
+            "bytes": 6291456,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 3,
+              "participants": 3,
+              "pieces": 2,
+              "prior_keys": 8,
+              "prior_bytes": 505413632,
+              "physical_delta_bytes": 6291456,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(4, 1)"
+            ],
+            "pieces": 15,
+            "bytes": 119537664,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 4,
+              "participants": 1,
+              "pieces": 15,
+              "prior_keys": 9,
+              "prior_bytes": 511705088,
+              "physical_delta_bytes": 119537664,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(4, 1)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 4,
+              "participants": 1,
+              "pieces": 2,
+              "prior_keys": 10,
+              "prior_bytes": 631242752,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(4, 4)"
+            ],
+            "pieces": 15,
+            "bytes": 121634816,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 4,
+              "participants": 4,
+              "pieces": 15,
+              "prior_keys": 11,
+              "prior_bytes": 635437056,
+              "physical_delta_bytes": 121634816,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(4, 4)"
+            ],
+            "pieces": 2,
+            "bytes": 6291456,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 4,
+              "participants": 4,
+              "pieces": 2,
+              "prior_keys": 12,
+              "prior_bytes": 757071872,
+              "physical_delta_bytes": 6291456,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(5, 1)"
+            ],
+            "pieces": 15,
+            "bytes": 117440512,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 5,
+              "participants": 1,
+              "pieces": 15,
+              "prior_keys": 13,
+              "prior_bytes": 763363328,
+              "physical_delta_bytes": 117440512,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(5, 1)"
+            ],
+            "pieces": 2,
+            "bytes": 6291456,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 5,
+              "participants": 1,
+              "pieces": 2,
+              "prior_keys": 14,
+              "prior_bytes": 880803840,
+              "physical_delta_bytes": 6291456,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(5, 5)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 5,
+              "participants": 5,
+              "pieces": 2,
+              "prior_keys": 15,
+              "prior_bytes": 887095296,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(6, 6)"
+            ],
+            "pieces": 2,
+            "bytes": 6291456,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 6,
+              "participants": 6,
+              "pieces": 2,
+              "prior_keys": 16,
+              "prior_bytes": 891289600,
+              "physical_delta_bytes": 6291456,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(7, 7)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 7,
+              "participants": 7,
+              "pieces": 2,
+              "prior_keys": 17,
+              "prior_bytes": 897581056,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(8, 8)"
+            ],
+            "pieces": 15,
+            "bytes": 123731968,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 8,
+              "participants": 8,
+              "pieces": 15,
+              "prior_keys": 18,
+              "prior_bytes": 901775360,
+              "physical_delta_bytes": 123731968,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(8, 8)"
+            ],
+            "pieces": 2,
+            "bytes": 6291456,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 8,
+              "participants": 8,
+              "pieces": 2,
+              "prior_keys": 19,
+              "prior_bytes": 1025507328,
+              "physical_delta_bytes": 6291456,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(10, 2)"
+            ],
+            "pieces": 15,
+            "bytes": 125829120,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 10,
+              "participants": 2,
+              "pieces": 15,
+              "prior_keys": 20,
+              "prior_bytes": 1031798784,
+              "physical_delta_bytes": 125829120,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(10, 2)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 10,
+              "participants": 2,
+              "pieces": 2,
+              "prior_keys": 21,
+              "prior_bytes": 1157627904,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(16, 16)"
+            ],
+            "pieces": 15,
+            "bytes": 130023424,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 16,
+              "participants": 16,
+              "pieces": 15,
+              "prior_keys": 22,
+              "prior_bytes": 1161822208,
+              "physical_delta_bytes": 130023424,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 2097152,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(16, 16)"
+            ],
+            "pieces": 2,
+            "bytes": 8388608,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 16,
+              "participants": 16,
+              "pieces": 2,
+              "prior_keys": 23,
+              "prior_bytes": 1291845632,
+              "physical_delta_bytes": 8388608,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(20, 4)"
+            ],
+            "pieces": 15,
+            "bytes": 132120576,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 20,
+              "participants": 4,
+              "pieces": 15,
+              "prior_keys": 24,
+              "prior_bytes": 1300234240,
+              "physical_delta_bytes": 132120576,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(20, 4)"
+            ],
+            "pieces": 2,
+            "bytes": 6291456,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 20,
+              "participants": 4,
+              "pieces": 2,
+              "prior_keys": 25,
+              "prior_bytes": 1432354816,
+              "physical_delta_bytes": 6291456,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(24, 24)"
+            ],
+            "pieces": 15,
+            "bytes": 134217728,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 24,
+              "participants": 24,
+              "pieces": 15,
+              "prior_keys": 26,
+              "prior_bytes": 1438646272,
+              "physical_delta_bytes": 134217728,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(24, 24)"
+            ],
+            "pieces": 2,
+            "bytes": 10485760,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 24,
+              "participants": 24,
+              "pieces": 2,
+              "prior_keys": 27,
+              "prior_bytes": 1572864000,
+              "physical_delta_bytes": 10485760,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(28, 8)"
+            ],
+            "pieces": 15,
+            "bytes": 138412032,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 28,
+              "participants": 8,
+              "pieces": 15,
+              "prior_keys": 28,
+              "prior_bytes": 1583349760,
+              "physical_delta_bytes": 138412032,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(28, 8)"
+            ],
+            "pieces": 2,
+            "bytes": 4194304,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 28,
+              "participants": 8,
+              "pieces": 2,
+              "prior_keys": 29,
+              "prior_bytes": 1721761792,
+              "physical_delta_bytes": 4194304,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(40, 8)"
+            ],
+            "pieces": 15,
+            "bytes": 192937984,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 40,
+              "participants": 8,
+              "pieces": 15,
+              "prior_keys": 30,
+              "prior_bytes": 1725956096,
+              "physical_delta_bytes": 192937984,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(40, 8)"
+            ],
+            "pieces": 2,
+            "bytes": 6291456,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 40,
+              "participants": 8,
+              "pieces": 2,
+              "prior_keys": 31,
+              "prior_bytes": 1918894080,
+              "physical_delta_bytes": 6291456,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(80, 16)"
+            ],
+            "pieces": 15,
+            "bytes": 257949696,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 80,
+              "participants": 16,
+              "pieces": 15,
+              "prior_keys": 32,
+              "prior_bytes": 1925185536,
+              "physical_delta_bytes": 257949696,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(80, 16)"
+            ],
+            "pieces": 2,
+            "bytes": 10485760,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 80,
+              "participants": 16,
+              "pieces": 2,
+              "prior_keys": 33,
+              "prior_bytes": 2183135232,
+              "physical_delta_bytes": 10485760,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "verify",
+              "(120, 24)"
+            ],
+            "pieces": 15,
+            "bytes": 320864256,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "verify",
+              "rows": 120,
+              "participants": 24,
+              "pieces": 15,
+              "prior_keys": 34,
+              "prior_bytes": 2193620992,
+              "physical_delta_bytes": 320864256,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          },
+          {
+            "key": [
+              "mtp",
+              "(120, 24)"
+            ],
+            "pieces": 2,
+            "bytes": 16777216,
+            "accounting": {
+              "schema": "tensorfold.exact-graph-key-v1",
+              "rank": 0,
+              "role": "mtp",
+              "rows": 120,
+              "participants": 24,
+              "pieces": 2,
+              "prior_keys": 35,
+              "prior_bytes": 2514485248,
+              "physical_delta_bytes": 16777216,
+              "allocated_delta_bytes": 0,
+              "reserved_delta_bytes": 0,
+              "budget_bytes": 6025920512,
+              "admitted": true
+            }
+          }
+        ],
+        "capture_scope": "exact-row-gpu-pieces-with-eager-state-handoffs",
+        "replay_hits": 36,
+        "replay_misses": 0,
+        "serving_hits": {
+          "verify": 0,
+          "mtp": 0
+        },
+        "serving_misses": {
+          "verify": 0,
+          "mtp": 0
+        },
+        "native_gdn_capture": true,
+        "gdn_value8_capture": false,
+        "gdn_value8_workspace": null,
+        "exact_graph_catalogue": {
+          "policy": "observed-demand-v1",
+          "evidence_sha256": "6b9c498c3cff4e40e02f2db0a73730ca4fa91fc0db8838da739de7c539b09b5f",
+          "available_keys": [
+            [
+              "verify",
+              1,
+              1
+            ],
+            [
+              "mtp",
+              1,
+              1
+            ],
+            [
+              "verify",
+              2,
+              1
+            ],
+            [
+              "mtp",
+              2,
+              1
+            ],
+            [
+              "verify",
+              3,
+              1
+            ],
+            [
+              "mtp",
+              3,
+              1
+            ],
+            [
+              "verify",
+              4,
+              1
+            ],
+            [
+              "mtp",
+              4,
+              1
+            ],
+            [
+              "verify",
+              5,
+              1
+            ],
+            [
+              "mtp",
+              5,
+              1
+            ],
+            [
+              "verify",
+              2,
+              2
+            ],
+            [
+              "mtp",
+              2,
+              2
+            ],
+            [
+              "verify",
+              10,
+              2
+            ],
+            [
+              "mtp",
+              10,
+              2
+            ],
+            [
+              "verify",
+              4,
+              4
+            ],
+            [
+              "mtp",
+              4,
+              4
+            ],
+            [
+              "verify",
+              20,
+              4
+            ],
+            [
+              "mtp",
+              20,
+              4
+            ],
+            [
+              "verify",
+              8,
+              8
+            ],
+            [
+              "mtp",
+              8,
+              8
+            ],
+            [
+              "verify",
+              40,
+              8
+            ],
+            [
+              "mtp",
+              40,
+              8
+            ],
+            [
+              "verify",
+              16,
+              16
+            ],
+            [
+              "mtp",
+              16,
+              16
+            ],
+            [
+              "verify",
+              80,
+              16
+            ],
+            [
+              "mtp",
+              80,
+              16
+            ],
+            [
+              "verify",
+              24,
+              24
+            ],
+            [
+              "mtp",
+              24,
+              24
+            ],
+            [
+              "verify",
+              120,
+              24
+            ],
+            [
+              "mtp",
+              120,
+              24
+            ],
+            [
+              "mtp",
+              3,
+              3
+            ],
+            [
+              "mtp",
+              5,
+              5
+            ],
+            [
+              "mtp",
+              6,
+              6
+            ],
+            [
+              "mtp",
+              7,
+              7
+            ],
+            [
+              "mtp",
+              28,
+              8
+            ],
+            [
+              "verify",
+              28,
+              8
+            ]
+          ],
+          "requested_keys": [
+            [
+              "mtp",
+              1,
+              1
+            ],
+            [
+              "mtp",
+              2,
+              1
+            ],
+            [
+              "mtp",
+              2,
+              2
+            ],
+            [
+              "mtp",
+              3,
+              1
+            ],
+            [
+              "mtp",
+              3,
+              3
+            ],
+            [
+              "mtp",
+              4,
+              1
+            ],
+            [
+              "mtp",
+              4,
+              4
+            ],
+            [
+              "mtp",
+              5,
+              1
+            ],
+            [
+              "mtp",
+              5,
+              5
+            ],
+            [
+              "mtp",
+              6,
+              6
+            ],
+            [
+              "mtp",
+              7,
+              7
+            ],
+            [
+              "mtp",
+              8,
+              8
+            ],
+            [
+              "mtp",
+              10,
+              2
+            ],
+            [
+              "mtp",
+              16,
+              16
+            ],
+            [
+              "mtp",
+              20,
+              4
+            ],
+            [
+              "mtp",
+              24,
+              24
+            ],
+            [
+              "mtp",
+              28,
+              8
+            ],
+            [
+              "mtp",
+              40,
+              8
+            ],
+            [
+              "mtp",
+              80,
+              16
+            ],
+            [
+              "mtp",
+              120,
+              24
+            ],
+            [
+              "verify",
+              1,
+              1
+            ],
+            [
+              "verify",
+              2,
+              1
+            ],
+            [
+              "verify",
+              2,
+              2
+            ],
+            [
+              "verify",
+              3,
+              1
+            ],
+            [
+              "verify",
+              4,
+              1
+            ],
+            [
+              "verify",
+              4,
+              4
+            ],
+            [
+              "verify",
+              5,
+              1
+            ],
+            [
+              "verify",
+              8,
+              8
+            ],
+            [
+              "verify",
+              10,
+              2
+            ],
+            [
+              "verify",
+              16,
+              16
+            ],
+            [
+              "verify",
+              20,
+              4
+            ],
+            [
+              "verify",
+              24,
+              24
+            ],
+            [
+              "verify",
+              28,
+              8
+            ],
+            [
+              "verify",
+              40,
+              8
+            ],
+            [
+              "verify",
+              80,
+              16
+            ],
+            [
+              "verify",
+              120,
+              24
+            ]
+          ],
+          "selected_keys": [
+            [
+              "verify",
+              1,
+              1
+            ],
+            [
+              "mtp",
+              1,
+              1
+            ],
+            [
+              "verify",
+              2,
+              1
+            ],
+            [
+              "mtp",
+              2,
+              1
+            ],
+            [
+              "verify",
+              3,
+              1
+            ],
+            [
+              "mtp",
+              3,
+              1
+            ],
+            [
+              "verify",
+              4,
+              1
+            ],
+            [
+              "mtp",
+              4,
+              1
+            ],
+            [
+              "verify",
+              5,
+              1
+            ],
+            [
+              "mtp",
+              5,
+              1
+            ],
+            [
+              "verify",
+              2,
+              2
+            ],
+            [
+              "mtp",
+              2,
+              2
+            ],
+            [
+              "verify",
+              10,
+              2
+            ],
+            [
+              "mtp",
+              10,
+              2
+            ],
+            [
+              "verify",
+              4,
+              4
+            ],
+            [
+              "mtp",
+              4,
+              4
+            ],
+            [
+              "verify",
+              20,
+              4
+            ],
+            [
+              "mtp",
+              20,
+              4
+            ],
+            [
+              "verify",
+              8,
+              8
+            ],
+            [
+              "mtp",
+              8,
+              8
+            ],
+            [
+              "verify",
+              40,
+              8
+            ],
+            [
+              "mtp",
+              40,
+              8
+            ],
+            [
+              "verify",
+              16,
+              16
+            ],
+            [
+              "mtp",
+              16,
+              16
+            ],
+            [
+              "verify",
+              80,
+              16
+            ],
+            [
+              "mtp",
+              80,
+              16
+            ],
+            [
+              "verify",
+              24,
+              24
+            ],
+            [
+              "mtp",
+              24,
+              24
+            ],
+            [
+              "verify",
+              120,
+              24
+            ],
+            [
+              "mtp",
+              120,
+              24
+            ],
+            [
+              "mtp",
+              3,
+              3
+            ],
+            [
+              "mtp",
+              5,
+              5
+            ],
+            [
+              "mtp",
+              6,
+              6
+            ],
+            [
+              "mtp",
+              7,
+              7
+            ],
+            [
+              "mtp",
+              28,
+              8
+            ],
+            [
+              "verify",
+              28,
+              8
+            ]
+          ],
+          "captured_keys": [
+            [
+              "verify",
+              1,
+              1
+            ],
+            [
+              "mtp",
+              1,
+              1
+            ],
+            [
+              "verify",
+              2,
+              1
+            ],
+            [
+              "mtp",
+              2,
+              1
+            ],
+            [
+              "verify",
+              2,
+              2
+            ],
+            [
+              "mtp",
+              2,
+              2
+            ],
+            [
+              "verify",
+              3,
+              1
+            ],
+            [
+              "mtp",
+              3,
+              1
+            ],
+            [
+              "mtp",
+              3,
+              3
+            ],
+            [
+              "verify",
+              4,
+              1
+            ],
+            [
+              "mtp",
+              4,
+              1
+            ],
+            [
+              "verify",
+              4,
+              4
+            ],
+            [
+              "mtp",
+              4,
+              4
+            ],
+            [
+              "verify",
+              5,
+              1
+            ],
+            [
+              "mtp",
+              5,
+              1
+            ],
+            [
+              "mtp",
+              5,
+              5
+            ],
+            [
+              "mtp",
+              6,
+              6
+            ],
+            [
+              "mtp",
+              7,
+              7
+            ],
+            [
+              "verify",
+              8,
+              8
+            ],
+            [
+              "mtp",
+              8,
+              8
+            ],
+            [
+              "verify",
+              10,
+              2
+            ],
+            [
+              "mtp",
+              10,
+              2
+            ],
+            [
+              "verify",
+              16,
+              16
+            ],
+            [
+              "mtp",
+              16,
+              16
+            ],
+            [
+              "verify",
+              20,
+              4
+            ],
+            [
+              "mtp",
+              20,
+              4
+            ],
+            [
+              "verify",
+              24,
+              24
+            ],
+            [
+              "mtp",
+              24,
+              24
+            ],
+            [
+              "verify",
+              28,
+              8
+            ],
+            [
+              "mtp",
+              28,
+              8
+            ],
+            [
+              "verify",
+              40,
+              8
+            ],
+            [
+              "mtp",
+              40,
+              8
+            ],
+            [
+              "verify",
+              80,
+              16
+            ],
+            [
+              "mtp",
+              80,
+              16
+            ],
+            [
+              "verify",
+              120,
+              24
+            ],
+            [
+              "mtp",
+              120,
+              24
+            ]
+          ],
+          "declined_keys": []
+        },
+        "eager_owner_inserts": 212,
+        "capture_during_serving": false,
+        "local_hc": {
+          "captured": false,
+          "reason": "not requested"
+        }
+      },
+      "resource_ledger_bytes": {
+        "session_state": 708438912,
+        "retained_recovery": 1522486784,
+        "execution_arenas": 833187136,
+        "slot_metadata": 78628,
+        "history": 11788266120,
+        "replacement_overlap": 0,
+        "serving_workspace": 2147483648,
+        "graphs": 0,
+        "attention_scratch": 134098560,
+        "sm70_native_workspace": 580190208,
+        "kv_cohort_workspace": 1728,
+        "expert_routing_extra": 0,
+        "migration_overlap_limit": 0,
+        "retained_device_dependencies": 491520,
+        "device_library_workspace": 74346624
+      },
+      "expert_parallel": {
+        "tp": 8,
+        "pp": 1,
+        "etp": 4,
+        "ep": 2,
+        "rank": 0,
+        "expert_first": 0,
+        "expert_count": 256,
+        "intermediate_first": 0,
+        "intermediate_width": 160,
+        "mapping": "contiguous-expert-groups-contiguous-width-lanes-v1",
+        "implementation": "owned-etp4-native-slots-v1",
+        "qualification": "software controls; per-degree V100 model/numerical/resource/performance gates pending"
+      }
+    },
+    "runtime": {
+      "execution": {
+        "execution_families": {
+          "effective": {
+            "graph_family": "uncaptured",
+            "kernel_family": "sm70-paged-owner-rn-ex2-p2051-v1"
+          },
+          "native_prepared": true,
+          "prepared_kernel_family": "sm70-paged-owner-rn-ex2-p2051-v1",
+          "graph_rows": 0,
+          "trial": {
+            "kernel_family": "sm70-paged-owner-rn-ex2-p2051-v1",
+            "graph_family": "uncaptured"
+          }
+        }
+      },
+      "capacity_plan": {
+        "execution_profile_binding": {
+          "bytes_read_this_binding": 89989472664,
+          "content_passes": 1,
+          "content_projection_generation": 1,
+          "evidence_receipts": 0,
+          "hashes_reused_this_binding": 0,
+          "identity": {
+            "codec": "0176b4ea5aa83eb71909cd52ce1cfaeb8d001ffea12d8c6bf7a881b37fce9752",
+            "context_tokens": 262144,
+            "draft": "cd6ff9f37b4caf01e3f6290edb340ee75bb302d5a33313c54ef3c0d059604582",
+            "history_layout": "unique",
+            "kernel_build": "ada04358ac4c6d1a19411a3e30bfead039258ebabfbfcbcbf60e9cfeddf7b183",
+            "method": "mtp",
+            "numerics": "05fe520b73602513fb7b44f3c63adcd22f9613cf987be1a82024740072a57958",
+            "placement": "52ad0d95e38b1de8e4ebb6770a4cc3f16b469aa8818fea16c59e3d08b7a600d0",
+            "resident_sessions": 24,
+            "retention": "1c24d12b8ee9d4255e81bdf553443848a84c794c596d5a53c2e1586866ec50f3",
+            "runtime": "11b0ce0383441b19220b7dfd0ea52e62c1f6e48e5e85f242e962de3250490fda",
+            "source": "65d0911cc197c369809869aa577ba2aa0b96ebb82d86c760491e9596ee508feb",
+            "target": "f81b38635f793d3d7c8f1ba11ab515d7fa449afc5325e141010bef6a1354e144",
+            "target_weight_encoding": "9aacac3cd980cc83aae3ddd714a5094e1209d81dde0fec34cd4f13dfe46714a7",
+            "tokenizer": "c65168579787096bbf6e690c1c8ab0df4f3b3143b8da52480afb4f895c955c4b",
+            "topology": "c84cb99271a63866285557b60a4eb679d0105bc68ca54d9afec45ec00a4647de"
+          },
+          "manifest_sha256": "c102498bbb1949437a1c45ac18fe742bb29c9c109b4d58d304fd2f2664709179",
+          "profiles_installed": false,
+          "schema": "tensorfold.execution-profile-manifest",
+          "shared_immutable_same_host": true,
+          "verified_input_bytes": 86670165073,
+          "verified_input_files": 7,
+          "version": 1
+        }
+      }
+    }
+  },
+  "client": {
+    "schema": "tensorfold.target-window-teacher-client-v4",
+    "teacher_plan_sha256": "f292831094b169c8672d084c6eb1d710d673b1159b56ed1323e96609c6fe25a5",
+    "base": "http://127.0.0.1:8000",
+    "model": "providerone-sc117-expert21-teacher",
+    "expected_service": {
+      "context_tokens": 262144,
+      "resident_capacity": 24,
+      "configured_ceiling": 24,
+      "kv_dtype": "int8",
+      "kernel_family": "sm70-paged-owner-rn-ex2-p2051-v1",
+      "graph_family": "uncaptured",
+      "tp": 8,
+      "pp": 1,
+      "etp": 4,
+      "ep": 2
+    },
+    "readiness_timeout_s": 3600,
+    "whole_timeout_s": 3900,
+    "socket_timeout_s": 300,
+    "response_bytes": 1048576,
+    "teacher_scope": "rn12-p256-e120-c8-mtp4-forced-window-v1",
+    "prepared_execution": {
+      "kernel_family": "sm70-paged-owner-rn-ex2-p2051-v1",
+      "graph_family": "uncaptured",
+      "graph_budget_bytes": 0,
+      "trial": true,
+      "collective_family": "tp8-allgather-v1",
+      "row_buckets": {},
+      "rn_heads_per_block": 12,
+      "native_gdn_capture": true,
+      "native_hc_writeback_capture": true,
+      "exact_graph_policy": {
+        "policy": "observed-demand-v1",
+        "keys": [
+          [
+            "mtp",
+            1,
+            1
+          ],
+          [
+            "mtp",
+            2,
+            1
+          ],
+          [
+            "mtp",
+            2,
+            2
+          ],
+          [
+            "mtp",
+            3,
+            1
+          ],
+          [
+            "mtp",
+            3,
+            3
+          ],
+          [
+            "mtp",
+            4,
+            1
+          ],
+          [
+            "mtp",
+            4,
+            4
+          ],
+          [
+            "mtp",
+            5,
+            1
+          ],
+          [
+            "mtp",
+            5,
+            5
+          ],
+          [
+            "mtp",
+            6,
+            6
+          ],
+          [
+            "mtp",
+            7,
+            7
+          ],
+          [
+            "mtp",
+            8,
+            8
+          ],
+          [
+            "mtp",
+            10,
+            2
+          ],
+          [
+            "mtp",
+            16,
+            16
+          ],
+          [
+            "mtp",
+            20,
+            4
+          ],
+          [
+            "mtp",
+            24,
+            24
+          ],
+          [
+            "mtp",
+            28,
+            8
+          ],
+          [
+            "mtp",
+            40,
+            8
+          ],
+          [
+            "mtp",
+            80,
+            16
+          ],
+          [
+            "mtp",
+            120,
+            24
+          ],
+          [
+            "verify",
+            1,
+            1
+          ],
+          [
+            "verify",
+            2,
+            1
+          ],
+          [
+            "verify",
+            2,
+            2
+          ],
+          [
+            "verify",
+            3,
+            1
+          ],
+          [
+            "verify",
+            4,
+            1
+          ],
+          [
+            "verify",
+            4,
+            4
+          ],
+          [
+            "verify",
+            5,
+            1
+          ],
+          [
+            "verify",
+            8,
+            8
+          ],
+          [
+            "verify",
+            10,
+            2
+          ],
+          [
+            "verify",
+            16,
+            16
+          ],
+          [
+            "verify",
+            20,
+            4
+          ],
+          [
+            "verify",
+            24,
+            24
+          ],
+          [
+            "verify",
+            28,
+            8
+          ],
+          [
+            "verify",
+            40,
+            8
+          ],
+          [
+            "verify",
+            80,
+            16
+          ],
+          [
+            "verify",
+            120,
+            24
+          ]
+        ],
+        "evidence_sha256": "6b9c498c3cff4e40e02f2db0a73730ca4fa91fc0db8838da739de7c539b09b5f"
+      }
+    },
+    "selector": {
+      "gu": "incumbent",
+      "down": "tensorfold",
+      "iq2_source": "active-frame",
+      "prefill_method": "tensorfold"
+    },
+    "execution_manifest_sha256": "b253f81696890fa8abca04568e3959540f396d0684c9941d10b07257a09c3eea",
+    "numa": {
+      "schema": "tensorfold.prepared-teacher-numa-input-v1",
+      "placement_source": {
+        "bytes": 28662,
+        "sha256": "1976281f4f46c3a3d19cc2329abb12c3160235c82ccea389b8fda541387cf1a7"
+      },
+      "plan": {
+        "path": "/operator/numa-plan.json",
+        "bytes": 5604,
+        "sha256": "3cc8727d085e5b091cb7d42ec2dfe9e889df0f53b3e1254d8073cd7680a284ca"
+      },
+      "baseline_seccomp": {
+        "path": "/operator/numa-baseline-seccomp.json",
+        "bytes": 11173,
+        "sha256": "3f618386b3ca11e81971e1b54112a32c0bdf15364d16db697140e25796fbd169"
+      },
+      "seccomp": {
+        "path": "/operator/numa-seccomp.json",
+        "bytes": 12196,
+        "sha256": "b12f33af771b828b9a1adc27a5290dee3c90008563871d39d57ce9f31ddaa459"
+      },
+      "seccomp_manifest": {
+        "path": "/operator/numa-seccomp-manifest.json",
+        "bytes": 18156,
+        "sha256": "ec3bd52fbebcc5243e964da8984b4c55dd7701d4aeb3eea3ec8ecf057ca66e3a"
+      }
+    },
+    "numerical_trial": {
+      "native_family": false,
+      "prepared_linears": false,
+      "owned_q8_window_prepare": false
+    },
+    "mtp_confidence": 0.7,
+    "preparation_contract": "source30-rn12-candidates-v1",
+    "capacity_contract": "full-window-physical-headroom-v1"
+  },
+  "profile": {
+    "schema": "tensorfold.execution-profile-manifest",
+    "version": 1,
+    "artifacts": {
+      "target/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf": {
+        "size": 55063448064,
+        "sha256": "40f369eca301ec6ea318dbb671b3132c26a2f0b89aa5458a7051b33215ee296c"
+      },
+      "target/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf": {
+        "size": 28800138432,
+        "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+      },
+      "metadata/config.json": {
+        "size": 4949,
+        "sha256": "f349925614ef3aa0678e28463f260ad707d977c1ff14d7ea7eb680cdeebfb359"
+      },
+      "metadata/generation_config.json": {
+        "size": 267,
+        "sha256": "520f0512d7b558c8849d144615a805ab19dbd5cbded930aabb455c2827e4a5f2"
+      },
+      "metadata/tokenizer.json": {
+        "size": 19990371,
+        "sha256": "7b6b3e0e8caa705198c91d4925d545bb4067e72aa46ada04c6e3bb71ae498919"
+      },
+      "metadata/tokenizer_config.json": {
+        "size": 14734,
+        "sha256": "4f313e67319dabead27d1ff3a6d494f1b79421d73788417a5e598149e0e643ec"
+      },
+      "draft/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf": {
+        "size": 2786568256,
+        "sha256": "5ff54097406a905cf3a724c709124ceb0e3e10235ee862298969e91c96fa96e6"
+      }
+    },
+    "preparation": {
+      "kernel_family": "sm70-paged-owner-rn-ex2-p2051-v1",
+      "graph_family": "uncaptured",
+      "graph_budget_bytes": 0,
+      "trial": true,
+      "collective_family": "tp8-allgather-v1",
+      "row_buckets": {},
+      "rn_heads_per_block": 12,
+      "native_gdn_capture": true,
+      "native_hc_writeback_capture": true,
+      "exact_graph_policy": {
+        "policy": "observed-demand-v1",
+        "keys": [
+          [
+            "mtp",
+            1,
+            1
+          ],
+          [
+            "mtp",
+            2,
+            1
+          ],
+          [
+            "mtp",
+            2,
+            2
+          ],
+          [
+            "mtp",
+            3,
+            1
+          ],
+          [
+            "mtp",
+            3,
+            3
+          ],
+          [
+            "mtp",
+            4,
+            1
+          ],
+          [
+            "mtp",
+            4,
+            4
+          ],
+          [
+            "mtp",
+            5,
+            1
+          ],
+          [
+            "mtp",
+            5,
+            5
+          ],
+          [
+            "mtp",
+            6,
+            6
+          ],
+          [
+            "mtp",
+            7,
+            7
+          ],
+          [
+            "mtp",
+            8,
+            8
+          ],
+          [
+            "mtp",
+            10,
+            2
+          ],
+          [
+            "mtp",
+            16,
+            16
+          ],
+          [
+            "mtp",
+            20,
+            4
+          ],
+          [
+            "mtp",
+            24,
+            24
+          ],
+          [
+            "mtp",
+            28,
+            8
+          ],
+          [
+            "mtp",
+            40,
+            8
+          ],
+          [
+            "mtp",
+            80,
+            16
+          ],
+          [
+            "mtp",
+            120,
+            24
+          ],
+          [
+            "verify",
+            1,
+            1
+          ],
+          [
+            "verify",
+            2,
+            1
+          ],
+          [
+            "verify",
+            2,
+            2
+          ],
+          [
+            "verify",
+            3,
+            1
+          ],
+          [
+            "verify",
+            4,
+            1
+          ],
+          [
+            "verify",
+            4,
+            4
+          ],
+          [
+            "verify",
+            5,
+            1
+          ],
+          [
+            "verify",
+            8,
+            8
+          ],
+          [
+            "verify",
+            10,
+            2
+          ],
+          [
+            "verify",
+            16,
+            16
+          ],
+          [
+            "verify",
+            20,
+            4
+          ],
+          [
+            "verify",
+            24,
+            24
+          ],
+          [
+            "verify",
+            28,
+            8
+          ],
+          [
+            "verify",
+            40,
+            8
+          ],
+          [
+            "verify",
+            80,
+            16
+          ],
+          [
+            "verify",
+            120,
+            24
+          ]
+        ],
+        "evidence_sha256": "6b9c498c3cff4e40e02f2db0a73730ca4fa91fc0db8838da739de7c539b09b5f"
+      }
+    }
+  }
+}

@@ -41,6 +41,35 @@ def bind(owner):
 
 
 class Tests(unittest.TestCase):
+    def test_explicit_remaining_wait_never_renews_an_expired_deadline(self):
+        for remaining in (0,2.5):
+            with self.subTest(remaining=remaining):
+                docker=Docker();observed=[]
+                def run(argv,**kwargs):
+                    if argv[1]=='wait':observed.append(kwargs['timeout'])
+                    return docker(argv,**kwargs)
+                owner=OwnedContainer(run);bind(owner);owner.retire(wait_timeout_s=remaining)
+                self.assertEqual(len(observed),1);self.assertTrue(0<=observed[0]<=remaining)
+                self.assertEqual(owner.exit_code(None),0)
+
+    def test_remaining_wait_pays_inspect_and_stop_command_latency(self):
+        from unittest.mock import patch
+        docker=Docker();observed=[]
+        def run(argv,**kwargs):
+            if argv[1]=='wait':observed.append(kwargs['timeout'])
+            return docker(argv,**kwargs)
+        owner=OwnedContainer(run);bind(owner)
+        with patch('tools.v100_short_container.time.monotonic',side_effect=[100,105]):
+            owner.retire(wait_timeout_s=9)
+        self.assertEqual(observed,[4]);self.assertEqual(owner.exit_code(None),0)
+
+    def test_invalid_retirement_wait_refuses_before_docker_effects(self):
+        for remaining in (-1,True,float('nan'),float('inf')):
+            with self.subTest(remaining=remaining):
+                docker=Docker();owner=OwnedContainer(docker)
+                with self.assertRaises(ValueError):owner.retire(wait_timeout_s=remaining)
+                self.assertEqual(docker.calls,[])
+
     def test_client_failed_kill_still_gets_final_wait(self):
         from unittest.mock import Mock
         process = Mock()
