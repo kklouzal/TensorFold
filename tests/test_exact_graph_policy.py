@@ -31,3 +31,12 @@ def test_subset_is_canonical_copied_and_idempotent():
 def test_invalid_authority_geometry_and_duplicates_fail(change):
     with pytest.raises(ValueError, match='exact graph subset'):
         parse_policy({**deepcopy(policy()), **change})
+
+
+def test_observed_demand_accepts_ragged_totals_without_widening_legacy_policy():
+    request = {**policy(), 'policy': 'observed-demand-v1',
+               'keys': [['verify', 28, 8], ['mtp', 3, 3]]}
+    assert parse_policy(request)['keys'] == [['mtp', 3, 3], ['verify', 28, 8]]
+    assert parse_policy(parse_policy(request)) == parse_policy(request)
+    with pytest.raises(ValueError):
+        parse_policy({**request, 'policy': 'paid-subset-v1'})

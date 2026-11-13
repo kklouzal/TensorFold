@@ -6,6 +6,13 @@ slab and attention math. It waits on a slot only when that host storage is reuse
 The default remains one slot; native/model/NUMA, output quality and matched
 performance qualification of the trial are pending.
 
+An explicit private [canonical row sampling scratch trial](docs/row-sampling-scratch.md)
+reuses a cold aligned FP32 score row and writes standard Torch top-k/ID/LSE
+outputs into the existing candidate packet. Default sampling and all codec
+status/readback checks remain unchanged. The focused193-control CPU gate passes;
+native packet, graph/model quality and matched performance qualification remain
+pending.
+
 Development is now governed by the [canonical ProviderOne implementation design](ProviderOne%20Implementation%20Docs/ProviderOne_V100_Adaptive_Inference_Design.md)
 and its unchanged companion documents in [ProviderOne Implementation Docs](ProviderOne%20Implementation%20Docs/).
 SC117/V100 is the immediate delivery priority while selected existing profiles,
@@ -460,6 +467,15 @@ enabling the broader optimized profile; the ordinary default remains unchanged.
 The private launcher validates each worker's requested and configured router
 policy before model preparation and service publication.
 GPU component results retain a separate unresolved graph-fixture failure.
+
+The private preparation selector `prepared_router: owned-serial-router-v1`
+(`v100_onecat_campaign.py inputs --prepared-router owned-serial-router-v1`)
+adds a separate resident serial-logit trial for decode and MTP with2–256 rows.
+It binds the actual model weights and role buffers before serving, retains the
+R1 serial reference and prefill path, and leaves the existing process selector,
+top-k and expert weights unchanged. A fresh native build, exact logits/routing
+oracles, full-model quality and matched performance remain pending. See the
+[prepared router contract](docs/v100-adaptive-validation.md#prepared-per-owner-serial-router-trial).
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
 owner and plain ByteLevel tokenizer before using the pinned CPython payload
@@ -1342,6 +1358,16 @@ screen was 3, measuring 50.41/53.92/54.67 decode tokens/s with two fully allocat
 262,140-token windows. MTP's three-slot run retained a repeated prefix that the
 two-slot DSpark run evicted; these screens do not isolate a method-only gain.
 Compose exposes method/checkpoint/depth/confidence and equal full-window counts.
+
+A prepared decode/MTP M32 trial can now compose with the existing named dense
+vendor owner for **prefill only** (`cublas`, `cublaslt` or `cutlass`). Overlapping
+decode roles and BitBLAS combinations remain refused. Both owners bind serially
+before States with each opaque commitment counted once; actual distinct MTP
+faces on prefill absorption keep their original provider. Complete aligned
+prefill M32 inputs can borrow the existing sealed plan without a staging copy;
+tails and unsupported alignments retain paid staging. This is an unqualified
+numerical combination, including fused Concat faces, with no speed/bit-identity
+claim. [Composition contract](docs/owned-prepared-m32.md#vendor-prefill-composition).
 
 A separate default-off `preparation.prepared_linears=owned-prepared-m32-v1`
 RN-owner trial extends existing prepared Dense/Concat M32 buffers through120
@@ -2919,3 +2945,10 @@ it supplies no tolerance, model-accuracy acceptance or throughput claim.
 C8/MTP4 target-window and graph execution require their own versioned capture
 and remain pending. See [optimization validation](docs/optimization-validation.md)
 for the source and CPU-control scope.
+
+The private `observed-demand-v1` exact-graph policy can request bounded
+ragged row totals and participant counts absent from the original 30-key
+catalogue. Cold preparation seeds real compact State segments; runtime State
+handoffs remain live. Default and `paid-subset-v1` catalogues are unchanged.
+Native replay, output quality, live budget fit and performance remain pending
+for the new shapes. See [demand capture](docs/observed-graph-demand.md).

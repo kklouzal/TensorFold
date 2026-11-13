@@ -504,7 +504,9 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
     m = layer.moe
     if getattr(m.experts, "kernel", "qmm") in ("gguf", "sm70_dense"):
         buf = b.moe
-        moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill)
+        prepared_router = getattr(b, 'router_logits', None)
+        if prepared_router is None or not prepared_router.run(b.mixed[:R], m.router, buf.logits[:R]):
+            moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill)
         moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
         owned = getattr(b, "owned_experts", None)
         if w.meta.get("owned_expert_plan") is not None:
@@ -677,6 +679,11 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
                offset: int = 0) -> None:
     """Gather each rank's top CAND values, global ids as int32 bits and log-sum-exp into b.cand_all [world, R, 2 CAND + 1] inside the step graph, avoiding a sampling collective."""
 
+    scratch = getattr(b, 'row_sampling_scratch', None)
+    if scratch is not None:
+        scratch.pack(w, b, logits, R, id_map=id_map, offset=offset)
+        w.comm.all_gather(b.cand[:R], b.cand_all[:b.world * R * (2 * CAND + 1)])
+        return
     lf = logits.float()
     kept = min(CAND, lf.shape[-1])
     c = b.cand[:R]

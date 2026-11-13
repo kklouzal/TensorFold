@@ -65,11 +65,35 @@ class ExactStateGraphs:
         available = tuple((role, count * rows, count) for count, rows in shapes
                           for role in (('verify', 'mtp') if self.dec.mbuf is not None else ('verify',)))
         requested = available if self.requested_policy is None else self.requested_policy['keys']
+        from .exact_graph_policy import DEMAND_POLICY
+        if self.requested_policy is not None and self.requested_policy['policy'] == DEMAND_POLICY:
+            # Only the explicit demand policy extends the cold shape registry.
+            # Default and paid-subset order/geometry remain unchanged.
+            for role, total, count in requested:
+                source = self.dec.buf if role == 'verify' else self.dec.mbuf
+                if (source is None or not 1 <= count <= maximum
+                        or not count <= total <= count * width or total > source.rows
+                        or total > self.dec.buf.rows):
+                    raise ValueError('observed graph demand exceeds the actual startup row/State envelope')
+            available = tuple(dict.fromkeys((*available, *requested)))
+            # State storage consumers and MTP last rows are staged at replay;
+            # the captured GPU program depends on total rows and participants.
+            # A balanced, compact real-State layout seeds each requested key.
+            plans = []
+            for _role, total, count in requested:
+                base, extra = divmod(total, count)
+                lengths = tuple(base + (index < extra) for index in range(count))
+                item = count, lengths
+                if item not in plans:
+                    plans.append(item)
+            shapes = tuple(plans)
         if not requested or not set(requested).issubset(available):
             raise ValueError('exact graph subset contains a key outside the actual startup catalogue')
         self.available_keys, self.requested_keys = available, tuple(requested)
         self.selected_keys = frozenset(requested)
-        self.declined_keys = {key: 'excluded by paid-subset policy' for key in available if key not in self.selected_keys}
+        excluded = ('excluded by observed-demand policy' if self.requested_policy is not None
+                    and self.requested_policy['policy'] == DEMAND_POLICY else 'excluded by paid-subset policy')
+        self.declined_keys = {key: excluded for key in available if key not in self.selected_keys}
         return shapes
 
     def _native_frame(self, segs, source, *, capture=False):
@@ -107,6 +131,13 @@ class ExactStateGraphs:
         if kind not in ("verify", "mtp") or not segs:
             raise ValueError("exact graph key requires a target or MTP frame")
         source = self.dec.buf if kind == "verify" else self.dec.mbuf
+        sampling = getattr(source, 'row_sampling_scratch', None)
+        if sampling is not None:
+            try:
+                sampling.validate_bindings(self.dec.w, source)
+            except BaseException as error:
+                from .input_preparation import reject_prepared
+                reject_prepared(source, error)
         if source is None:
             raise ValueError("MTP graphs require the selected MTP buffers")
         cursor = 0
@@ -366,15 +397,20 @@ class ExactStateGraphs:
         self.preparing = True
         try:
             for count, rows in shapes:
-                verify = ('verify', count * rows, count) in self.selected_keys
-                mtp = ('mtp', count * rows, count) in self.selected_keys
+                lengths = (rows,) * count if type(rows) is int else rows
+                total = sum(lengths)
+                verify = ('verify', total, count) in self.selected_keys
+                mtp = ('mtp', total, count) in self.selected_keys
                 if not verify and not mtp:
                     continue
                 active = list(reversed(states))[:count]
-                private = [(state, index * rows, (index + 1) * rows) for index, state in enumerate(active)]
+                private, cursor = [], 0
+                for state, length in zip(active, lengths):
+                    private.append((state, cursor, cursor + length))
+                    cursor += length
                 self._reset_warm_states(private)
                 segs = stage(self.dec.w, self.dec.buf,
-                             [(state, [0] * rows) for state in active], late=True)
+                             [(state, [0] * length) for state, length in zip(active, lengths)], late=True)
                 if self.dec.buf.ple_late is not None:
                     stage_late(self.dec.w, self.dec.buf)
                 result = self.forward('verify', segs) if verify else None
@@ -386,7 +422,7 @@ class ExactStateGraphs:
                     compute(self.dec.w, segs, self.dec.buf, check=False)
                 _kv_check(segs, comm=self.dec.w.comm)
                 if mtp:
-                    windows = [(state, [0] * rows, self.dec.buf.streams[first:last])
+                    windows = [(state, [0] * (last - first), self.dec.buf.streams[first:last])
                                for state, first, last in segs]
                     self._reset_warm_states(segs)
                     mseg = mtp_stage(self.dec.mbuf, windows)

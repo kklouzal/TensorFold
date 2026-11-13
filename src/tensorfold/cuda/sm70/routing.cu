@@ -163,3 +163,8 @@ void routing_logits_cuda(const at::Tensor& x, const at::Tensor& weight, at::Tens
         output.data_ptr<float>(), x.stride(0));
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
+
+void routing_prepare_logits_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits));
+}

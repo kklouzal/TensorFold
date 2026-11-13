@@ -1,4 +1,6 @@
 """Qualified SM70 router preserves every original serial FP32 logit and Half gate boundary."""
+from types import SimpleNamespace as NS
+
 import pytest
 import torch
 
@@ -214,3 +216,133 @@ def test_exact_router_bound_six_lane_capture_matches_logical_rows_at_actual_geom
     monkeypatch.setattr(padded_linears, "_ENABLED", True)
     monkeypatch.setattr(routing_native, "_NATIVE_LOGITS", True)
     _qualify_six_lanes(actual_router_weights(), "int8")
+
+
+def prepared_fixture(x, weight, role):
+    """Real owner/role binding; reuse the unchanged serial GEMV oracle above."""
+    count = x.shape[0]
+    cap = routing_native.prepare_serial_router(x.device, {'decode': count, 'mtp': count})
+    other = weight.clone()
+    target, draft = (weight, other) if role == 'decode' else (other, weight)
+    weights = NS(device=x.device, cfg=NS(hidden=2560, experts=512, top_k=10, execution_dtype='float16'),
+        layers=[NS(moe=NS(router=target))], mtp=NS(layer=NS(moe=NS(router=draft))))
+    cap.bind_weights(weights)
+    buffers = NS(owner_role=role, rows=count, prefill=False, mixed=x,
+                 moe=NS(logits=torch.empty((count, 513), dtype=torch.float32, device=x.device)))
+    bound = cap.bind_buffers(buffers)
+    return cap, bound, buffers.moe.logits
+
+
+def expert_weight_packet(logits, *, reference):
+    buf = NS(act=torch.empty((), dtype=torch.float16, device=logits.device), selection=None,
+        pick=torch.empty((logits.shape[0], 11), dtype=torch.int32, device=logits.device),
+        wts=torch.empty((logits.shape[0], 11), dtype=torch.float32, device=logits.device))
+    (moe._torch_select_rows if reference else moe.select_rows)(logits, buf, 10, 512)
+    return buf.pick, buf.wts
+
+
+def check_prepared(x, weight, role):
+    cap, bound, out = prepared_fixture(x, weight, role)
+    before = out._version
+    expected = serial_logits(x, weight)
+    invoked = []
+    native_call = cap.logits
+    def traced(*args):
+        invoked.append((role, args[0].shape[0]))
+        return native_call(*args)
+    cap.logits = traced
+    if not bound.run(x, weight, out):
+        moe.router(x, weight, out, independent_rows=True)
+    torch.cuda.synchronize()
+    exact(out, expected)
+    assert out._version-before == x.shape[0]
+    assert invoked == ([(role, x.shape[0])] if x.shape[0] > 1 else [])
+    actual, original = expert_weight_packet(out, reference=False), expert_weight_packet(expected, reference=True)
+    assert torch.equal(actual[0], original[0])
+    exact(actual[1], original[1])
+    torch.cuda.synchronize()
+    cap.close()
+    return out
+
+
+@pytest.mark.parametrize('rows', [1, 2, 3, 8, 24, 32, 33, 37, 64, 120, 256])
+@pytest.mark.parametrize('role', ['decode', 'mtp'])
+@pytest.mark.parametrize('weight_precision', ['half-derived', 'float32'])
+@torch.no_grad()
+def test_prepared_router_exact_serial_logits_and_expert_weight_packet(rows, role, weight_precision):
+    generator = torch.Generator(device='cuda').manual_seed(1407)
+    x = torch.randn((rows, 2560), generator=generator, device='cuda', dtype=torch.float16)*.7
+    dtype = torch.float16 if weight_precision == 'half-derived' else torch.float32
+    weight = (torch.randn((513, 2560), generator=generator, device='cuda', dtype=dtype)*.03).float()
+    check_prepared(x, weight, role)
+
+
+@pytest.mark.parametrize('rows', [2, 33, 37, 120, 256])
+@torch.no_grad()
+def test_prepared_router_seed113_half_boundary_packet_keeps_negative_gemm_control(rows):
+    generator = torch.Generator(device='cuda').manual_seed(113)
+    three = torch.randn((3, 2560), generator=generator, device='cuda', dtype=torch.float16)*.7
+    weight = (torch.randn((513, 2560), generator=generator, device='cuda', dtype=torch.float16)*.03).float()
+    x = three.repeat((rows+2)//3, 1)[:rows]
+    expected = serial_logits(x, weight)
+    assert routes(expected)[1][1, 0].item() == .1453857421875
+    assert routes(three.float() @ weight.T)[1][1, 0].item() != routes(expected)[1][1, 0].item()
+    check_prepared(x, weight, 'mtp')
+
+
+@pytest.mark.parametrize('kind', ['ties', 'negative-zero', 'infinity', 'nan'])
+@torch.no_grad()
+def test_prepared_router_adverse_bits_and_stable_expert_weights(kind):
+    x = torch.ones((37, 2560), dtype=torch.float16, device='cuda')
+    weight = torch.ones((513, 2560), dtype=torch.float32, device='cuda')
+    if kind == 'ties':
+        weight.zero_()
+    elif kind == 'negative-zero':
+        x.fill_(-0.)
+    elif kind == 'infinity':
+        x[33, 17] = torch.inf
+        weight[3, 24] = -torch.inf
+    else:
+        x[33, 17] = torch.nan
+        weight[3, 24] = torch.nan
+    check_prepared(x, weight, 'decode')
+
+
+@pytest.mark.parametrize('rows', [5, 33, 120, 256])
+@torch.no_grad()
+def test_prepared_router_graph_uses_live_bound_input_and_weight_owners(rows):
+    generator = torch.Generator(device='cuda').manual_seed(307)
+    x = torch.randn((rows, 2560), generator=generator, device='cuda', dtype=torch.float16)
+    weight = torch.randn((513, 2560), generator=generator, device='cuda', dtype=torch.float32)*.02
+    _cap, bound, out = prepared_fixture(x, weight, 'mtp')
+    assert bound.run(x, weight, out)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        assert bound.run(x, weight, out)
+    for scale in (.75, -.125):
+        x.mul_(scale)
+        weight.mul_(.5)
+        graph.replay()
+        torch.cuda.synchronize()
+        exact(out, serial_logits(x, weight))
+    del graph
+    _cap.close()
+
+
+@torch.no_grad()
+def test_prepared_native_extent_is_separate_and_whole_output_aliases_reject():
+    x = torch.zeros((33, 2560), dtype=torch.float16, device='cuda')
+    weight = torch.zeros((513, 2560), dtype=torch.float32, device='cuda')
+    out = torch.empty((33, 513), device='cuda')
+    cap = routing_native.prepare_serial_router(x.device, {'decode': 33})
+    with pytest.raises(RuntimeError, match='at most32'):
+        cap.module.logits(x, weight, out)
+    cap.module.prepared_logits(x, weight, out)
+    for rows in (0, 1, 257):
+        with pytest.raises(RuntimeError, match='2..256'):
+            cap.module.prepared_logits(torch.empty((rows, 2560), dtype=torch.float16, device=x.device),
+                weight, torch.empty((rows, 513), device=x.device))
+    with pytest.raises(RuntimeError, match='overlap'):
+        cap.module.prepared_logits(x, weight, weight.reshape(-1)[:33*513].reshape(33, 513))
+    torch.cuda.synchronize()
+    cap.close()

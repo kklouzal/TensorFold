@@ -2527,3 +2527,69 @@ Maximum admitted activity, full histories, complete physical peaks, media/state
 continuation and matched quality/performance require their separate gates.
 The canonical preparation is unchanged: C06 is not adopted, no runtime switch
 or profile ladder is added, and these component results claim no token/s gain.
+
+## Prepared per-owner serial-router trial
+
+The separate private preparation field `prepared_router: owned-serial-router-v1`
+selects a resident operator on each actual Weights/decode/MTP Buffers owner.
+The campaign `inputs` command accepts `--prepared-router owned-serial-router-v1`;
+its default omits this field. This requires an explicit unqualified trial in
+the private TP8/ETP4 HC4/reference-profile NONE/MTP region. It does not set
+`_NATIVE_LOGITS`, the import-time environment selector, top-k or expert weights.
+Existing `native-serial-v1` policy guards and its native0..32-row entry remain
+unchanged; the new prepared entry separately admits2..256 rows. R0/R1 retain
+the incumbent serial reference and prefill retains `independent_rows=False`.
+
+The operator accepts Half inputs of width2560, unchanged512-byte-aligned
+contiguous F32 router weights513x2560 and disjoint F32 output rows513. Target
+and MTP weights are separately retained and checked before any State is
+allocated; unsupported explicit layouts fail cold rather than copy, pad or
+silently substitute weights. Fixed mixed/logit buffers bind to their actual
+role and capacity. Replaced pointers, foreign role weights and closed owners
+cannot dispatch. Unsupported autograd contexts keep the reference fallback.
+There is no new GPU workspace or weight cache. Same-stream ordering and the
+caller's buffer/weight lifetime cover the native write and subsequent selection;
+close occurs after serving work retires.
+
+Module loading and `cudaFuncGetAttributes(serial_logits)` residency occur
+between the original OwnerPreparation physical before/after snapshots before
+State admission. Post-load weight binding does metadata validation only and
+retires its distributed phase through the existing failure contract. All
+function calls use the retained callable on serving paths; they do not invoke
+Python capability queries, supports_logits or extension loading. The native
+boundary keeps its cached device, shape, dtype, alignment and disjointness
+checks. Raw output writes publish R mutation versions for R rows, matching the
+original R separate row-view copy_ calls; inference tensors have no counter.
+
+The CUDA serial arithmetic remains shared and unchanged: eight outputs per
+CTA, sixteen lanes/output, five K512 tiles with explicit `__fmaf_rn`, then the
+same tile accumulation and sixteen-lane left fold under the pinned compiler
+flags. Its row grid already supported the new extent; the binding and prepared
+ownership policy change. Source identity alone does not prove every bit or
+throughput equivalence, so metadata declares the required exact pinned serial
+logit/routing contract and leaves reference bit qualification pending.
+
+Source26 C8 GEMV/copy enclosures and the actual independent_rows loop motivate
+this finite candidate; they do not prove every profiled GEMV belongs to routing
+or establish a percentage gain. Keep the ordinary serial and oldv1 paths as
+references. Native gates retain the seed113 Half-boundary packet and negative
+GEMM control, compare all F32 logit bits and stable top-k/softmax/shared/expert
+weights, cover actual decode/MTP rows1/2/3/8/24/32/33/37/64/120/256 with Half-derived
+and full-F32 weights, adverse ties/zeros/nonfinite operands, live graph replay,
+and separate native extent/alias rejection. Those gates require a fresh owned
+native build. Installed full24/full-context/MTP4 functional and conditional
+quality, actual role/row invocation evidence and matched unprofiled end-to-end
+prefill/decode/tail comparisons remain pending. Cold capability metadata never
+serves as invocation, numerical or performance evidence; no winner is selected.
+
+The final bounded CPU control batch used immutable S27 SDK image
+`sha256:739b48da1fb5fa2cb8601cee98359cd1e69598cb31e112b6e2dc21fc7ed98e0d`,
+with normal installed package/FD extension imported before a read-only canonical
+source overlay. UID1000, runc, no network/GPU and a 2-CPU/4-GiB Node1 envelope
+passed **198 cases and 38 subtests**, without skips. Baseline-aware Ruff found
+no new diagnostics, and 105 native oracle cases collected without executing
+CUDA. All 13 affected source files held their recorded hashes throughout;
+the container exited 0 without OOM and was removed. These controls include
+exact Weights adoption, Half-only binding, role ownership, closed-owner
+rejection and row mutation publication. They certify host controls only;
+the native/model/quality/performance gates above remain pending.

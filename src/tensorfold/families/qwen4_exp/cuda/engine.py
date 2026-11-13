@@ -1685,6 +1685,8 @@ class FlashNextEngine:
             w.meta.update(history_layout="unique", attention_degree=history_placement.degree)
         if owner_preparation is not None:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
+            if owner_preparation.row_sampling:
+                w._private_row_sampling = owner_preparation.row_sampling
             if owner_preparation.prepared_m32 is not None:
                 w._private_prepared_m32 = owner_preparation.prepared_m32
                 from .padded_linears import owned_numerical_identity
@@ -1692,6 +1694,9 @@ class FlashNextEngine:
             if owner_preparation.native_family is not None:
                 w._private_native_family = owner_preparation.native_family
                 w.meta['private_native_family_policy'] = owner_preparation.native_family.record()
+            if owner_preparation.prepared_router is not None:
+                w._private_prepared_router = owner_preparation.prepared_router
+                w.meta['private_prepared_router_policy'] = owner_preparation.prepared_router.record()
             if self._reference_owner_tiles_requested:
                 w.meta["reference_tile_preparation"] = dict(owner_preparation.reference_preparation)
         if self._indexer_history_session is not None:
@@ -1791,6 +1796,7 @@ class FlashNextEngine:
         if owner_preparation is not None:
             # Resolve actual weight contracts and their opaque CUDA residency
             # before any State allocation or numerical namespace publication.
+            owner_preparation.bind_router_weights(self, w)
             owner_preparation.bind_dense_weights(self, w)
             self.capacity_plan["owner_preparation"] = owner_preparation.record()
         if self.position_profile is not None:

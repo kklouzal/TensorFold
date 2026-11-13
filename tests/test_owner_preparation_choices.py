@@ -383,3 +383,70 @@ def test_native_family_q8_windows_and_prepared_panels_select_independently(mask)
         role_rows={'decode': 120, 'mtp': 120, 'prefill': 256}, manifest_sha256='a' * 64)
     assert set(selected.numerical_selection or {}) == expected
     assert preparation.parse_preparation(selected.specification) == selected.specification
+
+
+def composed_spec(backend='cublas', roles=None):
+    from tensorfold.families.qwen4_exp.cuda.padded_linears import OWNED_POLICY
+    return {**spec(), 'kernel_family': preparation.RN_KERNEL_FAMILY, 'rn_heads_per_block': 12,
+        'prepared_linears': OWNED_POLICY,
+        'dense_projections': {'backend': backend, 'geometry': 'fixed-m32',
+                              'roles': ['prefill'] if roles is None else roles, 'panel_rows': 32}}
+
+
+@pytest.mark.parametrize('backend', ['cublas', 'cublaslt', 'cutlass'])
+def test_only_nonoverlap_vendor_prefill_can_compose_with_prepared_m32(backend):
+    selected = preparation.OwnerPreparation(composed_spec(backend),
+        role_rows={'decode': 120, 'mtp': 120, 'prefill': 256}, manifest_sha256='a' * 64)
+    numeric = selected.numerical_selection
+    assert numeric['dense_projections']['roles'] == ['prefill']
+    assert numeric['prepared_linears']['roles'] == ['decode', 'mtp']
+    assert numeric['projection_role_composition']['reference_bit_identity'] is False
+    for roles in (['decode'], ['decode', 'prefill']):
+        with pytest.raises(ValueError, match='competing dense'):
+            preparation.parse_preparation(composed_spec(backend, roles))
+    value = composed_spec()
+    value['dense_projections'] = {**hc_spec(), 'roles': ['prefill']}
+    with pytest.raises(ValueError, match='competing dense'):
+        preparation.parse_preparation(value)
+
+
+@pytest.mark.parametrize('second_unproven', [False, True, 'gap'])
+def test_composed_owners_bind_serially_and_commit_each_opaque_delta_once(monkeypatch, second_unproven):
+    selected = preparation.OwnerPreparation(composed_spec(),
+        role_rows={'decode': 120, 'mtp': 120, 'prefill': 256}, manifest_sha256='a' * 64)
+    selected.prepared, selected.outside_active_bytes = True, 7
+    selected.before = {'torch_allocated_bytes': 0, 'torch_reserved_bytes': 0, 'physical_free_bytes': 1000}
+    selected.after = {'torch_allocated_bytes': 0, 'torch_reserved_bytes': 0, 'physical_free_bytes': 993}
+    calls = []
+    def bind(name, committed, outside, scratch):
+        def run(weights):
+            calls.append(name)
+            before = ({'torch_allocated_bytes': 0, 'torch_reserved_bytes': 0, 'physical_free_bytes': 993}
+                      if name == 'prefill' else {'allocated': 10, 'reserved': 10,
+                                                'free': 980 if second_unproven == 'gap' else 981})
+            after = ({'torch_allocated_bytes': 10, 'torch_reserved_bytes': 10, 'physical_free_bytes': 981}
+                     if name == 'prefill' else {'allocated': 27, 'reserved': 27,
+                                               'free': 960 if second_unproven == 'gap' else 961})
+            return {'binding_memory': {'committed_delta_bytes': committed,
+                'outside_active_delta_bytes': outside, 'cold_temporary_bytes': scratch,
+                'before': before, 'after': after}}
+        return NS(bind_weights=run)
+    selected.dense_owner = bind('prefill', 12, 2, 100)
+    selected.prepared_m32 = bind('decode+mtp', None if second_unproven is True else 20, 3, 200)
+    selected._phase = lambda engine, name, operation, **kwargs: operation()
+    monkeypatch.setattr(execution_identity, '_retire_store', lambda *a, **k: None)
+    if second_unproven:
+        with pytest.raises(ValueError, match='unproven'):
+            selected.bind_dense_weights(NS(), NS())
+        assert selected.dense_binding_memory is None and selected.committed_bytes() is None
+        assert selected.outside_active_bytes == 7
+    else:
+        selected.bind_dense_weights(NS(), NS())
+        assert selected.dense_binding_memory['committed_delta_bytes'] == 32
+        assert selected.dense_binding_memory['outside_active_delta_bytes'] == 5
+        assert selected.dense_binding_memory['cold_temporary_bytes'] == 200
+        assert selected.outside_active_bytes == 12 and selected.committed_bytes() == 39
+        assert set(selected.dense_binding_memory['owners']) == {'dense_projections', 'prepared_linears'}
+    assert calls == ['prefill', 'decode+mtp']
+    with pytest.raises(RuntimeError, match='one live prepared'):
+        selected.bind_dense_weights(NS(), NS())

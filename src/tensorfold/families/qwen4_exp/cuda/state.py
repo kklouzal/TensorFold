@@ -50,6 +50,7 @@ class Buffers:
         if type(self.hc_writeback_graph_only) is not bool:
             raise ValueError('HC writeback capture policy must be an explicit boolean')
         self.owner_role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
+        self.row_sampling_scratch = None
         self.hc_writeback_target_eager = w.meta.get('hc_writeback_target_eager', False)
         if type(self.hc_writeback_target_eager) is not bool:
             raise ValueError('HC target-eager policy must be an explicit boolean')
@@ -147,6 +148,10 @@ class Buffers:
         # the experts' prefill arithmetic for decode windows too (``moe_prefill``): their rows can share a pass's launch
         self.moe = moe_mod.MoEBuffers(rows, _MoECfg(c), dev, prefill=prefill if moe_prefill is None else moe_prefill,
                                       tile=grouped.PREFILL_TILE if prefill else (8 if bf == torch.float16 else grouped.window_tile(dev)))
+        self.router_logits = None
+        prepared_router = getattr(w, '_private_prepared_router', None)
+        if prepared_router is not None and not prefill:
+            self.router_logits = prepared_router.bind_buffers(self)
         selection = w.meta.get("moe_selection_prepared")
         if selection is not None and rows <= 256 and c.experts == 512 and c.top_k == 10 and bf == torch.float16:
             self.moe.selection = selection.bind(self.moe)
@@ -180,6 +185,12 @@ class Buffers:
             self.g_moe = torch.empty((world * rows * c.hidden,), dtype=f32, device=dev)
             self.cand = torch.empty((head_rows, 2 * CAND + 1), dtype=f32, device=dev)
             self.cand_all = torch.empty((world * head_rows * (2 * CAND + 1),), dtype=f32, device=dev)
+        sampling = getattr(w, '_private_row_sampling', None)
+        if sampling is not None:
+            if self.owner_role not in sampling or world != 8 or head_columns == 0:
+                raise ValueError('sampling scratch requires its admitted output-owning TP8 Buffer role')
+            self.row_sampling_scratch = sampling[self.owner_role]
+            self.row_sampling_scratch.bind(w, self)
         # n-gram embedding
         nrow = rows * 2 * c.heads_per_ngram
         dh = c.ple_dim // (2 * c.heads_per_ngram)

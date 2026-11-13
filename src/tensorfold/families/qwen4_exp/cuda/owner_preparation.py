@@ -86,7 +86,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "prepared_router"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -142,9 +142,16 @@ def parse_preparation(value):
     prepared_linears = value.get('prepared_linears')
     if prepared_linears is not None:
         from .padded_linears import OWNED_POLICY
+        overlapping_dense = dense is not None and (dense.backend not in ('cublas', 'cublaslt', 'cutlass')
+                                                    or dense.roles != ('prefill',))
         if (prepared_linears != OWNED_POLICY or not value['trial'] or not rn
-                or value['graph_family'] != UNCAPTURED or request is not None or dense is not None):
+                or value['graph_family'] != UNCAPTURED or request is not None or overlapping_dense):
             raise ValueError('prepared M32 requires its explicit RN trial without competing dense/reference arithmetic')
+    prepared_router = value.get('prepared_router')
+    if prepared_router is not None:
+        from tensorfold.cuda.sm70.routing_native import PREPARED_LOGITS_POLICY
+        if prepared_router != PREPARED_LOGITS_POLICY or not value['trial']:
+            raise ValueError('prepared serial router requires its explicit versioned unqualified trial')
     native_family = value.get('native_family')
     if native_family is not None:
         from tensorfold.cuda.sm70.owned_family import POLICY
@@ -165,6 +172,11 @@ def parse_preparation(value):
         from .descriptor_upload import POLICY
         if descriptor_upload != POLICY or not value['trial']:
             raise ValueError('descriptor upload ring requires its explicit versioned private trial')
+    row_sampling = value.get('row_sampling_scratch')
+    if row_sampling is not None:
+        from .row_sampling import POLICY
+        if row_sampling != POLICY or not value['trial']:
+            raise ValueError('row sampling scratch requires its explicit versioned private trial')
     capture = value.get('native_gdn_capture', False)
     if type(capture) is not bool or capture and not value['trial']:
         raise ValueError('native GDN capture requires an explicit boolean unqualified trial')
@@ -184,7 +196,9 @@ def parse_preparation(value):
             **({'owned_q8_window_prepare': True} if q8_window else {}),
             **({'owned_q8_window_dispatch': 'grid-v1'} if q8_dispatch == 'grid-v1' else {}),
             **({'prepared_linears': prepared_linears} if prepared_linears is not None else {}),
+            **({'prepared_router': prepared_router} if prepared_router is not None else {}),
             **({'descriptor_upload': descriptor_upload} if descriptor_upload is not None else {}),
+            **({'row_sampling_scratch': row_sampling} if row_sampling is not None else {}),
             **({'gdn_value8_capture': True} if value8 else {}),
             **({'native_hc_writeback_capture': True} if hc_capture else {}),
             **({'native_hc_writeback_target_eager': True} if hc_eager else {}),
@@ -222,7 +236,9 @@ class OwnerPreparation:
         self.comm = self._open_head = None
         self.source_foundation = None
         self.native_family = None
+        self.prepared_router = None
         self.prepared_m32 = None
+        self.row_sampling = {}
         self.phases = []
         self.before = self.after = None
         self.graph_physical_bytes = 0
@@ -313,7 +329,12 @@ class OwnerPreparation:
             def prepared_contract():
                 from tensorfold.cuda.sm70.foundation_headers import selected_identity
 
-                if self.numerical_selection is not None and (
+                if self.specification.get('row_sampling_scratch') is not None and (
+                        engine.tp != 8 or type(text.get('vocab_size')) is not int
+                        or text['vocab_size'] < 8 or text['vocab_size'] % 8):
+                    raise ValueError('row sampling scratch requires the original evenly sharded TP8 vocabulary')
+
+                if (self.numerical_selection is not None or self.specification.get('row_sampling_scratch') is not None) and (
                         getattr(engine, 'position_profile', None) is None
                         or getattr(getattr(engine, 'method_geometry', None), 'method', None) not in ('none', 'mtp')):
                     raise ValueError('new owner numerics require the bound NONE/MTP coordinate region')
@@ -335,7 +356,9 @@ class OwnerPreparation:
                         engine, '_gdn_value8_capture_enabled', False):
                     raise ValueError('Value8 capture requires the fixed private native GDN graph region')
                 if (self.specification.get('native_family') is not None
-                        or self.specification.get('prepared_linears') is not None):
+                        or self.specification.get('prepared_linears') is not None
+                        or self.specification.get('row_sampling_scratch') is not None
+                        or self.specification.get('prepared_router') is not None):
                     if (not getattr(engine, '_owned_expert_requested', False)
                             or getattr(engine, '_owned_expert_admin_requested', True)
                             or getattr(engine, 'sm70_profile', None) != 'reference'
@@ -376,6 +399,14 @@ class OwnerPreparation:
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
+            if self.specification.get('prepared_router') is not None:
+                def router_prepare():
+                    from tensorfold.cuda.sm70.routing_native import prepare_serial_router
+                    self.prepared_router = prepare_serial_router(device, self.role_rows)
+                    return self.prepared_router.record()
+                router_records = self._phase(engine, 'serial-router-prepare', router_prepare, may_refuse=False)
+                if any(record != router_records[0] for record in router_records):
+                    raise ValueError('serial router preparation differs across TP8 ranks')
             if self.specification.get('native_family') is not None:
                 def family_prepare():
                     from tensorfold.cuda.sm70.owned_family import prepare
@@ -451,7 +482,14 @@ class OwnerPreparation:
                            if self.flash_artifact is not None else {}))
                     owner.configure_native_transport(self.specification["collective_family"],
                                                      self.head_comm or engine.comm)
-                    return owner.allocation_record()
+                    record = owner.allocation_record()
+                    if self.specification.get('row_sampling_scratch') is not None:
+                        from .row_sampling import RowSamplingScratch
+                        scratch = object.__new__(RowSamplingScratch)
+                        self.row_sampling[role] = scratch
+                        scratch.__init__(text['vocab_size'] // engine.tp, rows, role, device)
+                        record['row_sampling_scratch'] = scratch.record()
+                    return record
 
                 records = self._phase(engine, "allocate-" + role, allocate, may_refuse=False)
                 self.allocations[role] = records
@@ -561,6 +599,8 @@ class OwnerPreparation:
             raise ValueError("selected source foundation differs from native preparation")
         for graphs in (*self.graphs.values(), *self.reference_arithmetic.values()):
             graphs.validate_adoption()
+        if self.prepared_router is not None:
+            self.prepared_router.validate_adoption(weights, decoder)
         for owner in self.workspaces.values():
             if (owner.native_kernel_family != self.specification["kernel_family"]
                     or owner.native_heads_per_block != self.specification.get("rn_heads_per_block")):
@@ -573,6 +613,10 @@ class OwnerPreparation:
                 raise RuntimeError("serving buffers did not adopt their preallocated owner workspace")
             if getattr(buffers, 'native_family', None) is not self.native_family:
                 raise RuntimeError('serving buffers did not adopt their prepared native family capability')
+            if self.row_sampling:
+                if buffers.row_sampling_scratch is not self.row_sampling[role]:
+                    raise RuntimeError('serving role did not adopt its paid sampling scratch')
+                buffers.row_sampling_scratch.validate_bindings(weights, buffers)
             if self.prepared_m32 is not None and role in self.prepared_m32.role_rows:
                 if buffers.padded_linears is not self.prepared_m32.buffers.get(role):
                     raise RuntimeError('serving role did not adopt its paid prepared M32 buffers')
@@ -593,6 +637,9 @@ class OwnerPreparation:
     @property
     def numerical_selection(self):
         selected = {}
+        if self.specification.get('prepared_router') is not None:
+            from tensorfold.cuda.sm70.routing_native import prepared_logits_identity
+            selected['prepared_router'] = prepared_logits_identity()
         if self.specification.get('prepared_linears') is not None:
             from .padded_linears import owned_numerical_identity
             selected['prepared_linears'] = owned_numerical_identity()
@@ -627,6 +674,13 @@ class OwnerPreparation:
         if self.specification.get('dense_projections') is not None:
             _, selected_dense = _dense_backend(self.specification['dense_projections'])
             selected['dense_projections'] = selected_dense.numerical_identity
+            if self.specification.get('prepared_linears') is not None:
+                selected['projection_role_composition'] = {
+                    'policy': 'disjoint-vendor-prefill-prepared-m32-v1',
+                    'prefill': 'dense_projections-target-faces-only',
+                    'decode_and_mtp': 'prepared_linears;unowned-outputs-retain-incumbent',
+                    'mtp_prefill_distinct_faces': 'incumbent-provider',
+                    'reference_bit_identity': False, 'qualification': 'private-unqualified'}
         return selected or None
 
     @property
@@ -637,6 +691,19 @@ class OwnerPreparation:
         return (self.aten_temporary_extra_bytes + dense['future_temporary_bytes']
                 + (dense['cold_temporary_bytes'] if self.dense_binding_memory is None else 0))
 
+    def bind_router_weights(self, engine, weights):
+        """Validate retained model router owners before any State is allocated."""
+        if self.prepared_router is None:
+            return
+        if not self.prepared or self.closed:
+            raise RuntimeError('serial router requires live pre-State preparation')
+        def bind():
+            self.prepared_router.bind_weights(weights)
+            return self.prepared_router.record()
+        stage = 'serial-router-weight-binding'
+        self._phase(engine, stage, bind, may_refuse=False)
+        self._retire_weight_binding(engine, stage)
+
     def bind_dense_weights(self, engine, weights):
         """Isolate post-weight/pre-State code residency from the early baseline."""
         if self.dense_owner is None and self.prepared_m32 is None:
@@ -646,19 +713,58 @@ class OwnerPreparation:
         self.dense_binding_started = True
         stage = 'dense-projections-weight-binding'
         def bind():
-            owner = self.dense_owner if self.dense_owner is not None else self.prepared_m32
-            record = owner.bind_weights(weights)
-            memory = record['binding_memory']
-            for name in ('committed_delta_bytes', 'outside_active_delta_bytes'):
-                if type(memory.get(name)) is not int or memory[name] < 0:
-                    raise ValueError('dense binding residency is unproven; State admission must stop')
-            self.dense_binding_memory = deepcopy(memory)
+            # Both nonoverlapping owners bind serially, before States. Each
+            # measures from the previous settled endpoint; sum commitment once,
+            # never charge the preallocated vendor arenas as future Buffer bytes.
+            records, memories = {}, {}
+            for name, owner in (('dense_projections', self.dense_owner), ('prepared_linears', self.prepared_m32)):
+                if owner is None:
+                    continue
+                records[name] = owner.bind_weights(weights)
+                memory = records[name]['binding_memory']
+                for field in ('committed_delta_bytes', 'outside_active_delta_bytes'):
+                    if type(memory.get(field)) is not int or memory[field] < 0:
+                        raise ValueError('dense binding residency is unproven; State admission must stop')
+                memories[name] = deepcopy(memory)
             if self.outside_active_bytes is None:
                 raise ValueError('dense binding requires the original absolute-cap preparation proof')
+            if len(memories) == 1:
+                memory = next(iter(memories.values()))
+                result = next(iter(records.values()))
+            else:
+                def endpoint(name, value):
+                    fields = (('torch_allocated_bytes', 'torch_reserved_bytes', 'physical_free_bytes')
+                              if name == 'dense_projections' else ('allocated', 'reserved', 'free'))
+                    observed = tuple(value.get(field) for field in fields)
+                    if any(type(number) is not int or number < 0 for number in observed):
+                        raise ValueError('serial dense binding endpoint is unproven')
+                    return observed
+                first, last = next(iter(memories)), next(reversed(memories))
+                before = endpoint(first, memories[first]['before'])
+                after = endpoint(last, memories[last]['after'])
+                active, reserved = after[0] - before[0], after[1] - before[1]
+                outside = before[2] - after[2] - reserved
+                committed = sum(m['committed_delta_bytes'] for m in memories.values())
+                outside_sum = sum(m['outside_active_delta_bytes'] for m in memories.values())
+                if active < 0 or outside < 0 or active + outside != committed or outside != outside_sum:
+                    raise ValueError('serial dense binding aggregate footprint is unproven')
+                memory = {'owners': memories, 'before': dict(zip(('allocated','reserved','free'), before)),
+                    'after': dict(zip(('allocated','reserved','free'), after)),
+                    'committed_delta_bytes': committed, 'outside_active_delta_bytes': outside_sum,
+                    'cold_temporary_bytes': max(m.get('cold_temporary_bytes', 0) for m in memories.values()),
+                    'scope': 'serial nonoverlap owner binding;enclosing physical endpoints reconcile sums once;temporary peak is maximum'}
+                result = {'owners': records, 'binding_memory': memory}
+            # Publish only after every selected owner has a proven endpoint.
+            # A failure leaves dense_binding_memory=None and commitment unknown.
+            self.dense_binding_memory = memory
             self.outside_active_bytes += memory['outside_active_delta_bytes']
-            return record
-        from .execution_identity import _fatal, _retire_store
+            return result
         self._phase(engine, stage, bind, may_refuse=False)
+        self._retire_weight_binding(engine, stage)
+
+    @staticmethod
+    def _retire_weight_binding(engine, stage):
+        from .execution_identity import _fatal, _retire_store
         try:
             _retire_store(engine, _CHANNEL, stages=(stage,))
         except BaseException as primary:
@@ -747,11 +853,14 @@ class OwnerPreparation:
                    if self.specification["kernel_family"] == RN_KERNEL_FAMILY else {}),
                 "roles": dict(self.role_rows),
                 **({'native_family': self.native_family.record()} if self.native_family is not None else {}),
+                **({'prepared_router': self.prepared_router.record()} if self.prepared_router is not None else {}),
                 **({'prepared_linears': self.prepared_m32.record()} if self.prepared_m32 is not None else {}),
                 **({"reference_arithmetic_source_sha256": self.reference_arithmetic_source}
                    if self.reference_arithmetic_request is not None else {}),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
+                **({'row_sampling_scratch': {role: scratch.record() for role, scratch in self.row_sampling.items()}}
+                   if self.row_sampling else {}),
                 **({'aten_operator_identity': deepcopy(self.aten_operator_identity),
                     'aten_tensor_requirements': deepcopy(self.aten_requirements)}
                    if self.aten_requirements else {}),
@@ -792,10 +901,13 @@ class OwnerPreparation:
             construction.retire_bindings(self)
         finish((graph.close for graph in (*self.graphs.values(), *self.reference_arithmetic.values())))
         finish((owner.close for owner in self.workspaces.values()))
+        finish((scratch.close for scratch in self.row_sampling.values()))
         if self.dense_owner is not None:
             self.dense_owner.close()
         if self.prepared_m32 is not None:
             self.prepared_m32.close()
+        if self.prepared_router is not None:
+            self.prepared_router.close()
         if self.flash_artifact is not None:
             self.flash_artifact.close()
             self.flash_artifact = None

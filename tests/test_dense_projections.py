@@ -241,3 +241,166 @@ def test_forward_and_hc_hooks_preserve_role_output_dtype_and_reference_exclusion
         assert decoder.mbuf.dense_linears == 'independent-reference'
     finally:
         owner.close()
+
+
+def _prefill_only(native, *, rows=40, method=False, method_hidden=8):
+    from copy import deepcopy
+    weights, decoder, text = fixtures(prefill_rows=rows)
+    if method:
+        weights.mtp = SimpleNamespace(fc_e=GGUFDense(torch.ones(method_hidden, method_hidden).half()),
+            fc_h=GGUFDense(torch.ones(method_hidden, method_hidden).half()), layer=deepcopy(weights.layers[0]), mixer=deepcopy(weights.mixer))
+    selection = dense.Selection('cublas', 'fixed-m32', ('prefill',), 32)
+    owner = dense.Owner.prepare(selection, text, {'prefill': rows}, 'cpu', register=lambda owner: None)
+    owner.bind_weights(weights)
+    owner.adopt(weights, decoder)
+    return owner, weights, decoder
+
+
+def _aligned_half(shape, alignment=256):
+    count = 1
+    for size in shape:
+        count *= size
+    storage = torch.empty(count + alignment, dtype=torch.float16)
+    shift = ((-storage.data_ptr()) % alignment) // storage.element_size()
+    return storage[shift:shift + count].view(*shape)
+
+
+def test_prefill_full_m32_source_borrows_sealed_plan_and_tail_still_stages(native):
+    owner, weights, decoder = _prefill_only(native)
+    try:
+        x = _aligned_half((40, 2)); x.fill_(1)
+        arena = owner._arenas['prefill']['input']; arena.fill_(123)
+        count = len(native[1])
+        result = decoder.pbuf.dense_linears.matmul(x, weights.layers[0].attn_hc.up, decoder.pbuf.up)
+        expected = (x.float() @ weights.layers[0].attn_hc.up.weight.float().T).half()
+        assert torch.equal(result, expected) and len(native[1]) == count
+        pad = arena[:32 * 2].view(32, 2)
+        assert torch.all(pad[:8] == 1) and torch.all(pad[8:] == 123)
+        assert not hasattr(decoder.buf, 'dense_linears')
+        assert decoder.mbuf.dense_linears == 'independent-reference'
+    finally:
+        owner.close()
+    assert decoder.pbuf.dense_linears is None
+
+
+def test_prefill_declines_actual_distinct_method_faces_but_unknown_faces_still_fail(native):
+    owner, weights, decoder = _prefill_only(native, method=True)
+    try:
+        from tensorfold.families.qwen4_exp.cuda import forward
+        b, method = decoder.pbuf, weights.mtp
+        calls = len(native[0])
+        x, out = torch.ones(3, 8).half(), torch.empty(3, 8).half()
+        result = forward._mm(x, method.fc_e, None, out, b)
+        assert torch.equal(result, x @ method.fc_e.weight.T) and len(native[0]) == calls
+        assert b.dense_linears.matmul(x, method.layer.attn.proj, torch.empty(3, 16).half()) is None
+        with pytest.raises(ValueError, match='cold call catalogue'):
+            b.dense_linears.matmul(x, GGUFDense(torch.ones(8, 8).half()), out)
+        # A target alias is not accidentally excluded by the method catalogue.
+        assert weights.layers[0].attn.proj in b.dense_linears.faces
+    finally:
+        frame = decoder.pbuf.dense_linears
+        owner.close()
+    assert frame.excluded == frozenset()
+
+
+def test_actual_mtp_compute_absorption_uses_existing_provider_on_prefill_buffers(native, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import mtp
+    owner, weights, decoder = _prefill_only(native, method=True, method_hidden=32)
+    b, m, n = decoder.pbuf, weights.mtp, 3
+    weights.cfg = SimpleNamespace(hidden=32, streams=2, eps=1e-6)
+    weights.comm = None
+    for name, shape in {'mtp_e':(40,32), 'mixed':(40,32), 'mtp_eo':(40,32), 'mtp_in':(40,64),
+        'mtp_hn':(40,64), 'mtp_hs':(80,32), 'h':(40,64)}.items():
+        setattr(b, name, torch.ones(shape).half())
+    b.ids = torch.zeros(40,dtype=torch.int32)
+    b.xs_mixed, b.mtp_xh = torch.zeros(40,1), torch.zeros(40,2)
+    b.split = None
+    m.norm_e, m.norm_h = torch.ones(32), torch.ones(64)
+    monkeypatch.setattr(mtp, '_embed', lambda w, ids, copies, out: out.fill_(1))
+    monkeypatch.setattr(mtp, '_kv_begin', lambda segs: None)
+    monkeypatch.setattr(mtp, '_kv_check', lambda *a, **k: None)
+    monkeypatch.setattr(mtp, 'layer_forward', lambda *a, **k: None)
+    monkeypatch.setattr(mtp, 'finish', lambda *a, **k: None)
+    monkeypatch.setattr(mtp._family(b), 'rmsnorm', lambda x, w, eps, out, xs: (out.copy_(x), xs))
+    monkeypatch.setattr(mtp._family(b), 'add_streams', lambda *a: None)
+    before = len(native[0])
+    try:
+        assert mtp.mtp_compute(weights, [(SimpleNamespace(),0,n)], b, logits=False) is None
+        assert len(native[0]) == before and torch.all(b.mtp_eo[:n] == 32)
+    finally:
+        owner.close()
+
+
+def test_composed_adoption_handoff_and_retirement_keep_all_buffer_roles_disjoint(native, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import owner_preparation as preparation
+    from tensorfold.cuda.sm70 import foundation_headers
+    from tests.test_owner_preparation_choices import composed_spec
+    weights, decoder, text = fixtures()
+    vendor = dense.Owner.prepare(dense.Selection('cublas','fixed-m32',('prefill',),32),
+        text, {'prefill':40}, 'cpu', register=lambda owner:None)
+    vendor.bind_weights(weights)
+    selected = preparation.OwnerPreparation(composed_spec(),
+        role_rows={'decode':120,'mtp':120,'prefill':40}, manifest_sha256='a'*64)
+    selected.prepared = True
+    selected.source_foundation = {'id':'CPU-fixture'}
+    selected.dense_owner = vendor
+    decode_plan, mtp_plan = object(), object()
+    retired = []
+    selected.prepared_m32 = SimpleNamespace(role_rows={'decode':120,'mtp':120},
+        buffers={'decode':decode_plan,'mtp':mtp_plan},close=lambda:retired.append('m32'))
+    decoder.buf.padded_linears = decode_plan
+    decoder.mbuf.padded_linears = mtp_plan
+    decoder.mbuf.dense_linears = None
+    decoder.pbuf.padded_linears = None
+    for role,b in (('decode',decoder.buf),('mtp',decoder.mbuf),('prefill',decoder.pbuf)):
+        selected.workspaces[role] = workspace = SimpleNamespace(native_kernel_family=preparation.RN_KERNEL_FAMILY,
+            native_heads_per_block=12,bind_native_states=lambda states:None,close=lambda:None)
+        b.history_owner = workspace
+    decoder.states=[]
+    decoder.controller=SimpleNamespace(configure_execution_families=lambda **kwargs:None)
+    decoder.apply_execution_family=lambda:None
+    weights.meta['owner_workspaces']=selected.workspaces
+    monkeypatch.setattr(foundation_headers,'selected_identity',lambda:selected.source_foundation)
+    selected.adopt(weights,decoder)
+    assert decoder.pbuf.dense_linears is vendor._frames['prefill']
+    assert not hasattr(decoder.buf,'dense_linears') and decoder.mbuf.dense_linears is None
+    assert decoder.buf.padded_linears is decode_plan and decoder.mbuf.padded_linears is mtp_plan
+    assert decoder.pbuf.padded_linears is None
+    assert selected.requires_worker_handoff
+    selected.handoff_to_current_thread()
+    selected.close()
+    assert vendor.closed and retired==['m32'] and decoder.pbuf.dense_linears is None
+
+
+def test_prefill_misaligned_full_panel_retains_paid_input_staging(native):
+    owner, weights, decoder = _prefill_only(native)
+    try:
+        x = _aligned_half((33,2))[1:]; x.fill_(1)
+        arena = owner._arenas['prefill']['input']; arena.fill_(123)
+        assert dense._alignment(x) < dense._alignment(arena)
+        owner._frames['prefill'].matmul(x,weights.layers[0].attn_hc.up,decoder.pbuf.up[:32])
+        assert torch.all(arena[:64] == 1)
+    finally:
+        owner.close()
+
+
+def test_prefill_concat_uses_existing_joined_face_without_copying_original_weight_bank(native):
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFConcat
+    weights, decoder, text = fixtures()
+    matrix = GGUFConcat((GGUFDense(torch.ones(32,8).half()), GGUFDense(torch.full((32,8),2).half())))
+    assert matrix.fused is not None
+    joined = matrix.fused.weight
+    assert all(part.weight.untyped_storage().data_ptr()==joined.untyped_storage().data_ptr()for part in matrix.parts)
+    weights.layers[0].attn.proj=matrix
+    decoder.pbuf.pa=torch.zeros(40,64).half()
+    owner=dense.Owner.prepare(dense.Selection('cublas','fixed-m32',('prefill',),32),
+        text,{'prefill':40},'cpu',register=lambda owner:None)
+    try:
+        owner.bind_weights(weights);owner.adopt(weights,decoder)
+        assert owner._bound['prefill'][matrix] is joined
+        source=_aligned_half((40,8));source.fill_(1)
+        result=decoder.pbuf.dense_linears.matmul(source,matrix,decoder.pbuf.pa)
+        assert torch.all(result[:,:32]==8)and torch.all(result[:,32:]==16)
+        assert owner._bound['prefill'][matrix] is joined
+    finally:
+        owner.close()

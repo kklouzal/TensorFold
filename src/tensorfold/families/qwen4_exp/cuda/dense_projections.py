@@ -396,7 +396,7 @@ class Frame:
                     if self.backend != 'cutlass' and _alignment(target) != _alignment(padded_out):
                         continue
                     direct_targets[target.data_ptr()] = (target, self._prepare_plan(source, face.weight, target))
-                value = ('fixed', face.weight, source, padded_out, scratch_plan,
+                value = ('fixed', face.weight, source, padded_out, scratch_plan, _alignment(source),
                          MappingProxyType(direct_targets))
             else:
                 plans = tuple([None] + [self._prepare_plan(x[:r], face.weight, out[:r]) for r in range(1, limit + 1)])
@@ -430,6 +430,21 @@ class Frame:
                 add(layer.ple.value, b.ple_emb, b.ple_vals)
         hc(w.mixer)
         add(w.head, b.mixed, b.logits)
+        if self.role == 'prefill' and getattr(w, 'mtp', None) is not None:
+            # MTP prompt absorption borrows pbuf. Only actual distinct method
+            # faces decline: unknown target matrices still fail closed, and a
+            # shared target alias remains in its target contract. The supported
+            # shared-GGUF importer aliases embedding/head, not these MTP faces.
+            method = w.mtp
+            method_faces = [method.fc_e, method.fc_h, method.mixer.down, method.mixer.up]
+            for hc_value in (method.layer.attn_hc, method.layer.mlp_hc):
+                method_faces.extend((hc_value.down, hc_value.up))
+            body = method.layer.gdn if method.layer.linear else method.layer.attn
+            method_faces.extend((body.proj, body.out if method.layer.linear else body.o))
+            if method.layer.ple is not None:
+                method_faces.extend((method.layer.ple.key, method.layer.ple.value))
+            self.excluded.update(matrix for matrix in method_faces
+                                 if type(matrix) in self._types and matrix not in self.faces)
         self.faces = MappingProxyType(self.faces)
         self.domains = MappingProxyType(self.domains)
         self.excluded = frozenset(self.excluded)
@@ -463,15 +478,21 @@ class Frame:
             count = min(self.panel_rows, rows - start)
             source, target = x[start:start + count], out[start:start + count]
             if value[0] == 'fixed':
-                _, weight, padded_x, padded_out, plan, direct_targets = value
-                # The inactive rows retain initialized previous inputs; GEMM
-                # rows are independent, and only the active rows are consumed.
-                padded_x[:count].copy_(source)
+                _, weight, padded_x, padded_out, plan, input_alignment, direct_targets = value
+                # A complete prefill M32 face can borrow the live input under
+                # the already sealed plan's exact stride/dtype/alignment class.
+                # Tails and other domains retain initialized paid staging.
+                direct_source = (self.role == 'prefill' and count == 32
+                    and tuple(source.stride()) == tuple(padded_x.stride())
+                    and _alignment(source) >= input_alignment)
+                if not direct_source:
+                    padded_x[:count].copy_(source)
+                operand = source if direct_source else padded_x
                 direct = direct_targets.get(target.data_ptr())
                 if direct is not None:
-                    direct[1].run(padded_x, weight, direct[0])
+                    direct[1].run(operand, weight, direct[0])
                 else:
-                    plan.run(padded_x, weight, padded_out)
+                    plan.run(operand, weight, padded_out)
                     target.copy_(padded_out[:count])
             else:
                 _, weight, plans = value
@@ -494,12 +515,13 @@ class Frame:
     def record(self):
         return {'role': self.role, 'rows': self.rows, 'geometry': self.geometry,
             'panel_rows': self.panel_rows, 'call_sites': list(self.calls), 'reference_faces': len(self.excluded),
-            'input_pad': 'one explicit prefix copy per fixed-M32 panel; initialized inactive rows not consumed',
+            'input_pad': 'complete aligned prefill M32 borrows source;other panels copy active prefix into initialized staging',
             'output_pad': 'direct full-M32 owned targets where admitted, otherwise explicit active-row copy',
             'HC_decode_partials': 'Float32', 'MTP': 'reference-provider-unmodified'}
 
     def close(self):
         self.faces = self.domains = self.partial_outputs = MappingProxyType({})
+        self.excluded = frozenset()
         self.arena = {}
         self._context = self._buffers = self._weights = self._prepare_plan = None
         self.bound_faces = None

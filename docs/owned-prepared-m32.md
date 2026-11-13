@@ -4,8 +4,9 @@ Select `preparation.prepared_linears: owned-prepared-m32-v1` in an explicit
 `trial: true` private RN owner manifest. The campaign `inputs` command exposes
 `--prepared-linears owned-prepared-m32-v1`; its `model` command consumes the
 resulting manifest through `settings.profile_manifest`. This candidate is omitted
-by default and cannot be combined with `dense_projections` or reference arithmetic
-islands. It can be compared independently or combined with the separate native
+by default and can compose only with `dense_projections` roles `["prefill"]` for the supported
+`cublas`, `cublaslt` and `cutlass` backends. Overlapping decode roles, BitBLAS
+combinations and reference arithmetic islands remain refused. It can be compared independently or combined with the separate native
 family selection.
 
 The private TP8/ETP4, HC4/D2560, bound NONE/MTP region preserves RN attention,
@@ -45,3 +46,38 @@ output/unchanged teacher quality and uninstrumented matched throughput remain
 required before selection. Compare against both the original provider and the
 existing paid `dense_projections` candidate; neither implementation's superiority
 is established by source size or eliminated copies.
+
+
+## Vendor prefill composition
+
+Use the existing `dense_projections` selection with explicit `roles: ["prefill"]`
+and `prepared_linears: owned-prepared-m32-v1`. No new backend or GEMM is added.
+Dense/Concat prefill uses the existing vendor-owner face; `GGUFConcat.fused`
+already owns the joined FP16 storage and its parts alias that allocation. This
+selection creates no second weight bank. A fused whole-N GEMM may differ from
+original per-part products, so the complete profile remains an explicit
+unqualified numerical trial requiring native/model/quality and matched P3 gates.
+
+The vendor owner prepares and pays its persistent prefill arenas before physical
+admission. Prepared M32 pays only its existing decode/MTP Buffer forecast through
+ordinary geometry. Both actual-weight bindings run serially before State creation;
+their independently settled opaque commitment deltas are summed once, while
+serial temporary peak is the maximum. No final commitment is published if either
+owner cannot prove its endpoint. Adoption attaches vendor frames only to pbuf and
+prepared buffers only to decode/MTP. The existing vendor thread handoff and
+post-graph retirement contract remain required.
+
+MTP prompt absorption also borrows pbuf. Cold prefill adoption records only its
+actual distinct MTP FC, HC and layer faces as reference exclusions. Unknown
+matrices still fail closed; target aliases remain eligible target faces. This
+preserves the supported shared-GGUF method path without applying vendor prefill
+to an unprepared MTP face. These exclusions release their tensor references on
+positive frame retirement.
+
+For a complete32-row contiguous prefill input, the existing fixed-M32 plan can
+read its live source directly when its stride and alignment satisfy the already
+sealed scratch-input contract. It uses the same plan, weight, full N and output
+selection. No runtime plan discovery or new arena is introduced. Partial tails,
+other strides and insufficient alignment retain the paid initialized input
+staging and original output fallback. The ordinary provider, decode vendor path
+and optional direct-CUTLASS geometry keep their established dispatch.

@@ -582,3 +582,65 @@ def test_subset_warm_eagerly_produces_fresh_target_HC_for_selected_MTP_only_shap
                       ('reset', 5), ('target-stage', 5), ('eager-target-HC', 5), ('status', 5),
                       ('reset', 5), ('MTP-stage-valid-HC', 5), ('capture', 'mtp', 5), ('status', 5)]
     assert not graph.preparing
+
+
+def test_observed_demand_extends_only_explicit_cold_shapes():
+    request = {'policy': 'observed-demand-v1',
+               'keys': [['mtp', 3, 3], ['verify', 28, 8]], 'evidence_sha256': 'd' * 64}
+    graph, states = owner(slots=24, rows=120, policy=request)
+    plans = graph._catalogue(states)
+    assert plans == ((3, (1, 1, 1)), (8, (4, 4, 4, 4, 3, 3, 3, 3)))
+    assert set(graph.requested_keys) == {('mtp', 3, 3), ('verify', 28, 8)}
+    assert len(graph.available_keys) == 32
+    assert graph.selected_keys == frozenset(graph.requested_keys)
+
+
+@pytest.mark.parametrize('key', [['verify', 41, 8], ['verify', 28, 25], ['verify', 7, 8], ['mtp', 6, 1]])
+def test_observed_demand_bounds_fail_before_warm_mutation(monkeypatch, key):
+    request = {'policy': 'observed-demand-v1', 'keys': [key], 'evidence_sha256': 'e' * 64}
+    graph, states = owner(slots=24, rows=120, policy=request)
+    monkeypatch.setattr(graph, '_reset_warm_states', lambda *_: pytest.fail('invalid demand mutated State'))
+    with pytest.raises(ValueError, match='observed graph demand'):
+        graph.warm(states)
+    assert not graph.preparing and graph.selected_keys is None
+
+
+def test_ragged_warm_stages_matching_target_and_mtp_spans(monkeypatch):
+    import torch
+    request = {'policy': 'observed-demand-v1', 'keys': [['verify', 28, 8], ['mtp', 28, 8]],
+               'evidence_sha256': 'f' * 64}
+    graph, states = owner(slots=8, rows=40, policy=request)
+    source = graph.dec.buf
+    source.ple_late = None
+    source.streams = torch.full((40, 2), -1, dtype=torch.float16)
+    staged = []
+    def stage_target(weights, buffers, windows, **kwargs):
+        result, at = [], 0
+        for state, tokens in windows:
+            result.append((state, at, at + len(tokens)))
+            at += len(tokens)
+        staged.append(tuple(end - begin for _, begin, end in result))
+        return result
+    def capture(role, segs):
+        assert (role, segs[-1][2], len(segs)) in graph.selected_keys
+        if role == 'verify':
+            for _, begin, end in segs:
+                source.streams[begin:end].fill_(begin)
+        return object()
+    def stage_mtp(buffers, windows):
+        result, at = [], 0
+        for state, tokens, hidden in windows:
+            assert hidden.shape[0] == len(tokens)
+            assert torch.equal(hidden, torch.full_like(hidden, at))
+            result.append((state, at, at + len(tokens)))
+            at += len(tokens)
+        staged.append(tuple(end - begin for _, begin, end in result))
+        return result
+    monkeypatch.setattr(graph, '_reset_warm_states', lambda *_: None)
+    monkeypatch.setattr(exact_graphs, 'stage', stage_target)
+    monkeypatch.setattr(exact_graphs, 'mtp_stage', stage_mtp)
+    monkeypatch.setattr(exact_graphs, '_kv_check', lambda *a, **kw: None)
+    monkeypatch.setattr(graph, 'forward', capture)
+    graph.warm(states)
+    assert staged == [(4, 4, 4, 4, 3, 3, 3, 3)] * 2
+    assert not graph.preparing
