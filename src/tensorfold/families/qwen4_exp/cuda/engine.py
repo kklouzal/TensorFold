@@ -1683,6 +1683,9 @@ class FlashNextEngine:
             w.meta.update(history_layout="unique", attention_degree=history_placement.degree)
         if owner_preparation is not None:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
+            if owner_preparation.native_family is not None:
+                w._private_native_family = owner_preparation.native_family
+                w.meta['private_native_family_policy'] = owner_preparation.native_family.record()
             if self._reference_owner_tiles_requested:
                 w.meta["reference_tile_preparation"] = dict(owner_preparation.reference_preparation)
         if self._indexer_history_session is not None:

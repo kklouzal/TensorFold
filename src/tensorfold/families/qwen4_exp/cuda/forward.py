@@ -29,6 +29,10 @@ from .state import ATT_ROWS, CAND, Buffers, State, KVNumericError, _MoECfg
 from .weights import HC, LayerW, Weights
 
 
+def _family(b):
+    return getattr(b, 'native_family', None) or glue
+
+
 def _gather(w: Weights, b: Buffers, part: torch.Tensor, flat: torch.Tensor, R: int) -> torch.Tensor:
     """All ranks' fp32 partials [R, D] in rank order: [world, R, D] (summed rank 0 first by the consumer)."""
 
@@ -85,7 +89,7 @@ def _hc_writeback(b, h, hout, pss, streams, mode, branch=None, inject=None, y=No
             allowed = b.split is None
         if allowed and prepared.run(h, hout, pss, streams, mode, branch, inject, y, wts):
             return
-    return glue.hc_writeback(h, hout, pss, streams, mode, branch=branch, inject=inject, y=y, wts=wts)
+    return _family(b).hc_writeback(h, hout, pss, streams, mode, branch=branch, inject=inject, y=y, wts=wts)
 
 
 def hc_block(hc: HC, b: Buffers, R: int, eps: float, streams: int, low: int, mode: int, inject_prev,
@@ -121,12 +125,12 @@ def _readout(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: i
 def _readout_b16(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject) -> None:
     """The read-out on the bf16 kernels: norm, down, activation and inject gates, up, the mix; same bits per row."""
 
-    glue.hc_normed(h[:R], b.pss[:R], hc.scale, b.normed[:R], b.xs_normed[:R], streams, eps)
+    _family(b).hc_normed(h[:R], b.pss[:R], hc.scale, b.normed[:R], b.xs_normed[:R], streams, eps)
     got = bf16.matmul(b.normed[:R], hc.down.b, out=torch.empty((R, hc.down.n), dtype=torch.float32,
                                                                device=h.device), f32=True)
-    glue.hc_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
+    _family(b).hc_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
     _mm(b.act[:R], hc.up, b.xs_act[:R], b.up[:R], b)
-    glue.hc_mix(b.up[:R], b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
+    _family(b).hc_mix(b.up[:R], b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
 
 
 def _readout_plain(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject,
@@ -138,7 +142,7 @@ def _readout_plain(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, stre
         if handled is not False:  # Legacy F16 plans return None after handling.
             return
     if not normed:
-        glue.hc_normed(h[:R], b.pss[:R], hc.scale, b.normed[:R], b.xs_normed[:R], streams, eps)
+        _family(b).hc_normed(h[:R], b.pss[:R], hc.scale, b.normed[:R], b.xs_normed[:R], streams, eps)
     _down_act(hc, b, R, streams, low, inject)
     if b.prefill and R >= 512 and streams == 4 and low == 320 and isinstance(hc.up, qmm.Q4) and hc.up.n == 10240:
         upmix = _hc_fuser(h.device, upmix=True)
@@ -147,7 +151,7 @@ def _readout_plain(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, stre
             return
     _mm(b.act[:R], hc.prefill_up if b.prefill and hc.prefill_up is not None else hc.up,
         b.xs_act[:R], b.up[:R], b)
-    glue.hc_mix(b.up[:R], b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
+    _family(b).hc_mix(b.up[:R], b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
 
 
 def _down_act(hc: HC, b: Buffers, R: int, streams: int, low: int, inject) -> None:
@@ -171,9 +175,9 @@ def _down_act(hc: HC, b: Buffers, R: int, streams: int, low: int, inject) -> Non
             if got is None:
                 got = hc.down.partials(b.normed[:R])  # fp32 slices [SK, R, N] summed in order
     if got.dim() == 3:
-        glue.hc_reduce_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
+        _family(b).hc_reduce_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
     else:
-        glue.hc_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
+        _family(b).hc_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
 
 
 Seg = tuple[State, int, int]     # a stream's committed state and its rows [a0, a1) of the window
@@ -259,7 +263,7 @@ def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts:
             end = n if cut is None else cut.row
             conv = st.conv[li].clone()
             if start:
-                shift_windows(conv[None], p[None, :start], start, c.conv_dim)
+                shift_windows(conv[None], p[None, :start], start, c.conv_dim, family=getattr(b, "native_family", None))
             gdn_mod.chain(p[start:end], conv, g.conv, st.rec[cur, li], g.a_log, g.dt_bias, g.norm, c.eps,
                           end - start, b.prefill_gdn_scratch, st.rec[1 - cur, li], b.gout[a0 + start:a0 + end],
                           b.gxs[a0 + start:a0 + end], a_neg=g.a_neg)
@@ -269,10 +273,10 @@ def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts:
                     cut.rec, cut.conv = torch.empty_like(st.rec[0]), torch.empty_like(st.conv)
                 cut.rec[li].copy_(st.rec[cur, li])
                 cut.conv[li].copy_(st.conv[li])
-                shift_windows(cut.conv[li:li + 1], p[None, :end], end, c.conv_dim)
+                shift_windows(cut.conv[li:li + 1], p[None, :end], end, c.conv_dim, family=getattr(b, "native_family", None))
             start = end
         st.cur[li] = cur
-        shift_windows(st.conv[li:li + 1], p[None], n, c.conv_dim)
+        shift_windows(st.conv[li:li + 1], p[None], n, c.conv_dim, family=getattr(b, "native_family", None))
         return
     b.conv_ptr.fill_(st.conv[li].data_ptr())
     q, k, v, gt, beta = gdn_io.front(p, b.conv_ptr, b.sid[:n], b.windows[:n], g.conv, g.a_log, g.dt_bias, c.nk)
@@ -288,10 +292,10 @@ def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts:
                 cut.rec, cut.conv = torch.empty_like(st.rec[0]), torch.empty_like(st.conv)
             cut.rec[li].copy_(st.rec[cur, li])
             cut.conv[li].copy_(st.conv[li])
-            shift_windows(cut.conv[li:li + 1], b.proj[0:1, a0:a0 + end], end, c.conv_dim)
+            shift_windows(cut.conv[li:li + 1], b.proj[0:1, a0:a0 + end], end, c.conv_dim, family=getattr(b, "native_family", None))
             start = end
     st.cur[li] = cur
-    shift_windows(st.conv[li:li + 1], b.proj[0:1, a0:a1], n, c.conv_dim)
+    shift_windows(st.conv[li:li + 1], b.proj[0:1, a0:a1], n, c.conv_dim, family=getattr(b, "native_family", None))
 
 
 def _out_proj(w: Weights, b: Buffers, x: torch.Tensor, q: qmm.Q4, xs: torch.Tensor, R: int):
@@ -347,12 +351,12 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
             o = b.attn_o[:R]
         else:
             o = attention_layer(layer, w, segs, b, R, mtp=mtp)
-        glue.attn_gate(o, b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
+        _family(b).attn_gate(o, b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
         return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
     step = None if b.prefill or b.h.dtype == torch.float16 else getattr(b, "attn_step", None)
     if step is not None:
         o = attn_multi.layer(layer, w, b, step, scale)
-        glue.attn_gate(o[:R], b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
+        _family(b).attn_gate(o[:R], b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
         return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
     for st, a0, a1 in segs:
         cache, ikc, pooled, pos, host_pos = _caches(layer, st, mtp)
@@ -427,7 +431,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
         if len(segs) > 1:                       # the scratch output is the next stream's too
             b.attn_o[a0:a1].copy_(o[:a1 - a0])
     o = b.attn_o if b.prefill or len(segs) > 1 else o
-    glue.attn_gate(o[:R], b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
+    _family(b).attn_gate(o[:R], b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
     return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
 
 
@@ -445,7 +449,7 @@ def ple_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
         _mm(emb, p.key, None, b.ple_keys[:R], b)
         _mm(emb, p.value, None, b.ple_vals[:R], b)
     elif getattr(p.table, "bits", 4) == 16:           # the published revision's rows: bf16, nothing to unpack
-        glue.ple_embed_bf16(R, b.ple_v, p.ngram.heads, p.ngram.dims, b.ple_emb[:R], b.xs_ple[:R],
+        _family(b).ple_embed_bf16(R, b.ple_v, p.ngram.heads, p.ngram.dims, b.ple_emb[:R], b.xs_ple[:R],
                             scale=getattr(p.table, "weight_scale", 1.0))
         _mm(b.ple_emb[:R], p.key, b.xs_ple[:R], b.ple_keys[:R], b)
         _mm(b.ple_emb[:R], p.value, b.xs_ple[:R], b.ple_vals[:R], b)
@@ -454,7 +458,7 @@ def ple_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
                        scale=getattr(p.table, "weight_scale", 1.0))
         _mm(b.ple_emb[:R], p.key, b.xs_ple[:R], b.ple_keys[:R], b)
         _mm(b.ple_emb[:R], p.value, b.xs_ple[:R], b.ple_vals[:R], b)
-    glue.ple_gate(b.ple_keys[:R], b.ple_vals[:R], b.h[:R], p.norm_key, p.norm_query, b.ple_gated[:R],
+    _family(b).ple_gate(b.ple_keys[:R], b.ple_vals[:R], b.h[:R], p.norm_key, p.norm_query, b.ple_gated[:R],
                   b.ple_pss[:R], c.eps, c.streams, valid_rows=getattr(b, "graph_rows", None),
                   independent_rows=not b.prefill)
     if b.split is not None:                           # a captured forward: each stream's tail runs between pieces
@@ -468,7 +472,7 @@ def ple_conv_streams(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers)
 
     c, p = w.cfg, layer.ple
     for st, a0, a1 in segs:
-        glue.ple_conv(b.ple_gated[a0:a1], b.ple_pss[a0:a1], p.norm_conv, st.ple_tail, p.conv, b.h[a0:a1],
+        _family(b).ple_conv(b.ple_gated[a0:a1], b.ple_pss[a0:a1], p.norm_conv, st.ple_tail, p.conv, b.h[a0:a1],
                       b.h[a0:a1], b.ple_nrow[a0:a1], c.eps, c.streams, c.ngram_size)
 
 
@@ -514,7 +518,7 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
             execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
         if w.comm is None:
             return 2, buf.y[:R], buf.wts[:R]
-        glue.moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)
+        _family(b).moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)
         return 3, _gather(w, b, b.part_moe, b.g_moe, R), None
     if getattr(m.experts, "kernel", "qmm") == "expert_parallel":
         buf = b.moe
@@ -533,7 +537,7 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
         buf = moe_mod.moe(b.mixed[:R], m.router, m.experts, b.moe, w.cfg.top_k, w.cfg.experts)
     if w.comm is None:
         return 2, buf.y[:R], buf.wts[:R]
-    glue.moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)
+    _family(b).moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)
     return 3, _gather(w, b, b.part_moe, b.g_moe, R), None
 
 
@@ -1138,13 +1142,13 @@ def _shift_windows(OLD, NEW, keep, OLD_L, NEW_L, NEW_ROW, C: tl.constexpr, T: tl
     tl.store(OLD + li * OLD_L + j[:, None] * C + ch[None, :], rows, mask=ok[:, None])
 
 
-def shift_windows(old: torch.Tensor, new: torch.Tensor, keep: int, channels: int) -> None:
+def shift_windows(old: torch.Tensor, new: torch.Tensor, keep: int, channels: int, *, family=None) -> None:
     """old [L, T, C] (in place), new [L, R, W >= C] (the first C columns of each row are the window's)."""
 
     if old.dtype == torch.float16:
         from tensorfold.cuda.sm70.family_ops import shift_windows as half_shift
 
-        return half_shift(old, new, keep, channels)
+        return (half_shift if family is None else family.shift_windows)(old, new, keep, channels)
     layers, taps, _ = old.shape
     block = 256
     _shift_windows[(layers, triton.cdiv(channels, block))](
@@ -1177,13 +1181,13 @@ def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, st
                 if keep < R:
                     gdn_mod.replay(st.rec[cur, li], st.scratch[li], keep, st.rec[1 - cur, li])
                 st.cur[li] = 1 - cur
-            shift_windows(st.conv, b.proj[:, at:at + R], keep, c.conv_dim)
+            shift_windows(st.conv, b.proj[:, at:at + R], keep, c.conv_dim, family=getattr(b, "native_family", None))
         if st.ple_last is not None:
             history, tokens = st.ple_last
             st.ple_history = np.concatenate([history, tokens[:keep]])[-(c.ngram_size - 1):]
             st.ple_last = None
             tail = st.ple_tail
-            shift_windows(tail[None], b.ple_nrow[None, at:at + R], keep, tail.shape[1])
+            shift_windows(tail[None], b.ple_nrow[None, at:at + R], keep, tail.shape[1], family=getattr(b, "native_family", None))
         st.set_pos(st.pos + keep)
         if getattr(w, "dspark", None) is not None:
             w.dspark.commit(st, keep)
@@ -1204,7 +1208,7 @@ def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int, *, m
     if st.ple_last is not None:
         before, tokens = st.ple_last
         history = np.concatenate([before, tokens[:cut.row]])[-(c.ngram_size - 1):]
-        shift_windows(tail[None], b.ple_nrow[None, cut.at:cut.at + cut.row], cut.row, tail.shape[1])
+        shift_windows(tail[None], b.ple_nrow[None, cut.at:cut.at + cut.row], cut.row, tail.shape[1], family=getattr(b, "native_family", None))
     media = {}
     if getattr(st, "media_profile_identity", None) is not None and not defer_media:
         from .media_mtp import snapshot_state

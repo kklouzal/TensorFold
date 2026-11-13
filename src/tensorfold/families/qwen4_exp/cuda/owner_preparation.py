@@ -86,7 +86,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -139,6 +139,12 @@ def parse_preparation(value):
     hc_eager = value.get('native_hc_writeback_target_eager', False)
     if type(hc_eager) is not bool or hc_eager and not value['trial']:
         raise ValueError('native target-eager HC writeback requires an explicit boolean unqualified trial')
+    native_family = value.get('native_family')
+    if native_family is not None:
+        from tensorfold.cuda.sm70.owned_family import POLICY
+        if (native_family != POLICY or not value['trial'] or not rn
+                or value['graph_family'] != UNCAPTURED or request is not None):
+            raise ValueError('native family requires its explicit RN owner trial without reference arithmetic')
     capture = value.get('native_gdn_capture', False)
     if type(capture) is not bool or capture and not value['trial']:
         raise ValueError('native GDN capture requires an explicit boolean unqualified trial')
@@ -154,6 +160,7 @@ def parse_preparation(value):
             **({'flash_tiles': flash_tiles.as_dict()} if flash else {}),
             **({'dense_projections': dense.as_dict()} if dense is not None else {}),
             **({'native_gdn_capture': True} if capture else {}),
+            **({'native_family': native_family} if native_family is not None else {}),
             **({'gdn_value8_capture': True} if value8 else {}),
             **({'native_hc_writeback_capture': True} if hc_capture else {}),
             **({'native_hc_writeback_target_eager': True} if hc_eager else {}),
@@ -190,6 +197,7 @@ class OwnerPreparation:
         self.head_comm = None
         self.comm = self._open_head = None
         self.source_foundation = None
+        self.native_family = None
         self.phases = []
         self.before = self.after = None
         self.graph_physical_bytes = 0
@@ -298,6 +306,16 @@ class OwnerPreparation:
                 if self.specification.get('gdn_value8_capture', False) and not getattr(
                         engine, '_gdn_value8_capture_enabled', False):
                     raise ValueError('Value8 capture requires the fixed private native GDN graph region')
+                if self.specification.get('native_family') is not None:
+                    if (not getattr(engine, '_owned_expert_requested', False)
+                            or getattr(engine, '_owned_expert_admin_requested', True)
+                            or getattr(engine, 'sm70_profile', None) != 'reference'
+                            or getattr(engine, 'expert_partition', None) is None
+                            or engine.expert_partition.etp != 4 or engine.tp != 8
+                            or int(text['hidden_size']) != 2560 or int(text.get('hc_count', 4)) != 4
+                            or self.reference_tiles_requested
+                            or getattr(engine, '_local_hc_readout_requested', False)):
+                        raise ValueError('native family requires the private TP8/ETP4 HC4 reference-owner region')
                 self.source_foundation = selected_identity()
                 if self.reference_tiles_requested:
                     from tensorfold.cuda.sm70.reference_owner_tiles import prepare
@@ -329,6 +347,14 @@ class OwnerPreparation:
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
+            if self.specification.get('native_family') is not None:
+                def family_prepare():
+                    from tensorfold.cuda.sm70.owned_family import prepare
+                    self.native_family = prepare(device)
+                    return self.native_family.record()
+                family_records = self._phase(engine, 'native-family-prepare', family_prepare, may_refuse=False)
+                if any(record != family_records[0] for record in family_records):
+                    raise ValueError('native family preparation differs across TP8 ranks')
             if self.flash_validated is not None:
                 def flash_load():
                     from tensorfold.cuda.sm70.flash_v100_artifact import load_native
@@ -510,6 +536,8 @@ class OwnerPreparation:
                 continue
             if buffers.history_owner is not self.workspaces[role]:
                 raise RuntimeError("serving buffers did not adopt their preallocated owner workspace")
+            if getattr(buffers, 'native_family', None) is not self.native_family:
+                raise RuntimeError('serving buffers did not adopt their prepared native family capability')
             buffers.owner_graphs = self.graphs.get(role)
         # Every owner frame is bounded by its adopted workspace, even when a
         # larger model batch is split into several such attention operations.
@@ -527,6 +555,9 @@ class OwnerPreparation:
     @property
     def numerical_selection(self):
         selected = {}
+        if self.specification.get('native_family') is not None:
+            from tensorfold.cuda.sm70.owned_family import numerical_identity
+            selected['native_family'] = numerical_identity()
         if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS, POLICY
             selected['attention'] = {'family': ATEN_KERNEL_FAMILY, 'operator': POLICY,
@@ -662,6 +693,7 @@ class OwnerPreparation:
                 **({"rn_numerical_identity": deepcopy(self.rn_numerical_identity)}
                    if self.specification["kernel_family"] == RN_KERNEL_FAMILY else {}),
                 "roles": dict(self.role_rows),
+                **({'native_family': self.native_family.record()} if self.native_family is not None else {}),
                 **({"reference_arithmetic_source_sha256": self.reference_arithmetic_source}
                    if self.reference_arithmetic_request is not None else {}),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},

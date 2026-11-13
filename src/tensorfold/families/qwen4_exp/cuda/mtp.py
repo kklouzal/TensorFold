@@ -8,8 +8,8 @@ import torch
 
 from tensorfold.cleanup import rollback
 
-from . import glue, history_runtime
-from .forward import _embed, _mm, _kv_begin, _kv_check, candidates, finish, layer_forward
+from . import history_runtime
+from .forward import _family, _embed, _mm, _kv_begin, _kv_check, candidates, finish, layer_forward
 from .state import Buffers, State
 from .weights import Weights
 
@@ -174,11 +174,11 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
             # records allocator lifetime when the source allocation was made
             # on another stream; consumers use this operation's stream.
             next_inputs.record_stream(torch.cuda.current_stream(next_inputs.device))
-    en, xe = glue.rmsnorm(b.mtp_e[:n], m.norm_e, c.eps, out=b.mixed[:n], xs=b.xs_mixed[:n])
+    en, xe = _family(b).rmsnorm(b.mtp_e[:n], m.norm_e, c.eps, out=b.mixed[:n], xs=b.xs_mixed[:n])
     _mm(en, m.fc_e, xe, b.mtp_eo[:n], b)
-    hn, xh = glue.rmsnorm(b.mtp_in[:n], m.norm_h, c.eps, out=b.mtp_hn[:n], xs=b.mtp_xh[:n])
+    hn, xh = _family(b).rmsnorm(b.mtp_in[:n], m.norm_h, c.eps, out=b.mtp_hn[:n], xs=b.mtp_xh[:n])
     _mm(hn.view(n * c.streams, c.hidden), m.fc_h, xh.view(n * c.streams, c.hidden // 32), b.mtp_hs[:n * c.streams], b)
-    glue.add_streams(b.mtp_eo[:n], b.mtp_hs[:n * c.streams], b.h[:n], c.streams)
+    _family(b).add_streams(b.mtp_eo[:n], b.mtp_hs[:n * c.streams], b.h[:n], c.streams)
     pending = layer_forward(m.layer, w, segs, b, n, None, mtp=True, context=context)
     finish(w, m.mixer, b, n, pending, logits=False)
     # The archive copy precedes every possible validation/return branch. The

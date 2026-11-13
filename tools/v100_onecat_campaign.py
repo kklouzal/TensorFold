@@ -392,7 +392,7 @@ from tensorfold import hub
 from tensorfold.families.qwen4_exp.cuda.execution_identity import artifact_files
 sys.path.insert(0,'/tools')
 from bench_concurrent import prepare_matrix
-target,mtp,model,profile,inputs,tokens,reps,levels=sys.argv[1:]
+target,mtp,model,profile,inputs,tokens,reps,levels,native_family=sys.argv[1:]
 prepared=hub.resolve(target,download=False)
 engine=SimpleNamespace(model_dir=prepared,method_geometry=SimpleNamespace(method='mtp'),
                        mtp_model_dir=pathlib.Path(mtp),media_profile=None)
@@ -408,6 +408,8 @@ for name,path in sorted(files.items()):
 manifest={'schema':'tensorfold.execution-profile-manifest','version':1,'artifacts':artifacts,
           'preparation':{'kernel_family':'sm70-paged-owner-rn-ex2-p2051-v1','graph_family':'uncaptured',
                          'graph_budget_bytes':0,'trial':True,'collective_family':'tp8-allgather-v1','rn_heads_per_block':12}}
+if native_family:
+    manifest['preparation']['native_family']=native_family
 matrix=prepare_matrix(prepared,model,profile,[int(n) for n in levels.split(',')],[int(inputs)],int(tokens),int(reps))
 for name,value in [('profile.json',manifest),('matrix.json',matrix)]:
     with (pathlib.Path('/evidence')/name).open('x') as out:
@@ -433,7 +435,9 @@ def installed_check_receipt(directory, source_uid, image_id):
 
 
 def inputs(root, output, selected_image, installed_check, models, target, mtp, cache, model_name,
-           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout):
+           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None):
+    if native_family not in (None, 'owned-native-family-v1'):
+        raise ValueError('native family inputs require the explicit private numerical policy')
     record = frozen(root)
     binding = immutable_image(selected_image)
     accepted = installed_check_receipt(installed_check, record["source_uid"], binding["id"])
@@ -454,7 +458,7 @@ def inputs(root, output, selected_image, installed_check, models, target, mtp, c
             "-v", str(root / "source/tools") + ":/tools:ro", "-v", str(output) + ":/evidence:rw",
             "-w", "/tmp", "--entrypoint", "/opt/venv/bin/python", binding["reference"], "-B", "-c", _PREPARE_INPUTS,
             "/models/" + target, "/models/" + mtp, model_name, profile, str(input_tokens), str(tokens),
-            str(repetitions), levels]
+            str(repetitions), levels, native_family or ""]
     container(argv, output, timeout)
     publish(output / "inputs.json", {"source_uid": record["source_uid"], "image_binding": binding,
             "manifest": identity(output / "profile.json"), "matrix": identity(output / "matrix.json"),
@@ -1132,7 +1136,11 @@ def numa_receipts(root, source, output, bundle):
 
 
 def model(root, output, selected_image, settings_path, installed_check, cpus, memory, timeout, startup_timeout, smoke_only,
-          diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False, scheduler_diagnostic_grants=None):
+          diagnostic_commit_events=None, diagnostic_commit_nvtx=False, *, cublas_workspace_cache="inherit", diagnostic_graph_pieces=False, scheduler_diagnostic_grants=None, smoke_before_matrix=False):
+    if type(smoke_before_matrix) is not bool or smoke_before_matrix and smoke_only:
+        raise ValueError("smoke-before-matrix requires matrix mode and a boolean selection")
+    if smoke_before_matrix and (diagnostic_commit_events is not None or scheduler_diagnostic_grants is not None):
+        raise ValueError("smoke-before-matrix cannot precede a finite instrumented window plan")
     workspace = cublas_workspace_configuration(cublas_workspace_cache)
     if type(diagnostic_graph_pieces) is not bool:
         raise ValueError("graph piece diagnostic selection must be boolean")
@@ -1247,6 +1255,8 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
             "installed_check": accepted, "numa": numa_staged,
             "cublas_workspace_cache": workspace, "controller_source": controller_source,
             "diagnostic_graph_pieces": diagnostic_graph_pieces,
+            "smoke_before_matrix": smoke_before_matrix,
+            "smoke_client_sha256": hashlib.sha256(_SMOKE.encode()).hexdigest() if smoke_only or smoke_before_matrix else None,
             **({"bitblas_hc_exports": hc_staged} if hc_staged is not None else {}),
             **({'flash_v100_exports': flash_staged} if flash_staged is not None else {}),
             "commit_diagnostic": commit, "scheduler_diagnostic":None if diagnostic is None else diagnostic.as_dict(),
@@ -1281,6 +1291,10 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
                 str(remaining), plan["profile"]], readiness, remaining + 5)
         numa_evidence = numa_receipts(root, record, output, numa)
         publish(output / 'numa-readiness.json', numa_evidence)
+        if smoke_before_matrix:
+            smoke_client = output / "smoke-client"
+            smoke_client.mkdir()
+            logged(["docker", "exec", owner.cid, "/opt/venv/bin/python", "-B", "-c", _SMOKE, plan["model"]], smoke_client, timeout)
         if smoke_only:
             logged(["docker", "exec", owner.cid, "/opt/venv/bin/python", "-B", "-c", _SMOKE, plan["model"]], client, timeout)
         else:
@@ -1358,6 +1372,10 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
                 "exit_code": int(failed), "primary": None if primary is None else repr(primary),
                 "cleanup": [repr(error) for error in errors], "elapsed_s": time.monotonic() - started,
                 "graph_use": graph_evidence,
+                "smoke_before_matrix": smoke_before_matrix,
+                "clients": {name: {file: identity(output / name / file)
+                    for file in ("command.json", "command-result.json") if (output / name / file).is_file()}
+                    for name in ("smoke-client", "client") if (output / name).is_dir()},
                 "numa": numa_evidence,
                 "cublas_workspace_cache": workspace, "controller_source": controller_source,
             "diagnostic_graph_pieces": diagnostic_graph_pieces,
@@ -1400,6 +1418,8 @@ def main(argv=None):
             item.add_argument("--settings", type=Path, required=True)
             item.add_argument("--installed-check", type=Path, required=True)
             item.add_argument("--startup-timeout", type=int, default=600)
+            item.add_argument("--smoke-before-matrix", action="store_true",
+                              help="run the finite serial/MTP checks before the ordinary matrix in the same resident model; use the same warmup for comparisons")
             item.add_argument("--smoke-only", action="store_true", help="serial/MTP known answers and bounded continuation only; no benchmark timings")
             item.add_argument("--diagnostic-graph-pieces", action="store_true",
                               help="startup per-piece signed allocation observations; unsynchronized snapshots, diagnostic only, never P3")
@@ -1424,6 +1444,8 @@ def main(argv=None):
             item.add_argument("--tokens", type=int, default=128)
             item.add_argument("--reps", type=int, default=3)
             item.add_argument("--levels", default="1,2,4,8,16,24")
+            item.add_argument('--native-family', choices=('owned-native-family-v1',),
+                              help='explicit unqualified per-engine native family numerics; default keeps existing family')
     args = parser.parse_args(argv)
     if args.command != "freeze" and (args.cpus <= 0 or args.timeout <= 0):
         parser.error("CPU count and command timeout must be positive")
@@ -1440,14 +1462,15 @@ def main(argv=None):
     elif args.command == "inputs":
         inputs(args.source.absolute(), args.out.absolute(), args.image, args.installed_check.absolute(), args.models, args.target, args.mtp,
                args.cache.absolute(), args.name, args.profile, args.input_tokens, args.tokens, args.reps,
-               args.levels, args.cpus, args.memory, args.timeout)
+               args.levels, args.cpus, args.memory, args.timeout, native_family=args.native_family)
     else:
         model(args.source.absolute(), args.out.absolute(), args.image, args.settings.absolute(), args.installed_check.absolute(),
               args.cpus, args.memory, args.timeout, args.startup_timeout, args.smoke_only,
               args.diagnostic_commit_events, args.diagnostic_commit_nvtx,
               cublas_workspace_cache=args.cublas_workspace_cache,
               diagnostic_graph_pieces=args.diagnostic_graph_pieces,
-              **({'scheduler_diagnostic_grants':args.scheduler_diagnostic_grants}if args.scheduler_diagnostic_grants is not None else {}))
+              **({'scheduler_diagnostic_grants':args.scheduler_diagnostic_grants}if args.scheduler_diagnostic_grants is not None else {}),
+              **({'smoke_before_matrix':True} if args.smoke_before_matrix else {}))
     return 0
 
 

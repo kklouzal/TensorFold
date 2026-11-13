@@ -1308,6 +1308,16 @@ screen was 3, measuring 50.41/53.92/54.67 decode tokens/s with two fully allocat
 two-slot DSpark run evicted; these screens do not isolate a method-only gain.
 Compose exposes method/checkpoint/depth/confidence and equal full-window counts.
 
+A private, default-off `preparation.native_family=owned-native-family-v1` RN-owner
+trial now binds the existing native HC, RMS, PLE, attention-output gate, MTP add,
+MoE partial and short-window shift operations per Weights/Buffers. It preserves
+the selected TP8/ETP4 expert, paged-attention and dense providers. Entry-point
+warmup and physical residency accounting precede State admission; the manifest
+records separate numerical identity. This changes the family arithmetic and
+requires native operator, full-model quality, MTP/graph, capacity and matched
+throughput qualification. It does not establish a speedup or enable the broader
+optimized profile. [Trial contract and pending gates](docs/owned-native-family.md).
+
 The explicit `TENSORFOLD_SM70_PROFILE=optimized` profile selects canonical
 packed experts through R32, prepared linears, native family operations and
 admitted graphs. It requires the pinned TP8 Flash Next geometry. Native
@@ -2847,3 +2857,10 @@ prefill pass and its decode before publishing FIFO admission. Its temporary
 prompt/order owners retire before that policy transition; warmup errors stop
 startup instead of publishing an unwarmed slot. Actual model output and
 performance qualification remain pending.
+
+The private comparison controller accepts `model --smoke-before-matrix` to run
+the existing finite serial/MTP checks and then the ordinary throughput matrix
+in one resident model. Both clients retain separate logs and outcomes; use the
+same preceding checks and warmup on both arms. This workflow adds no model
+quality or performance qualification. It cannot precede a finite instrumented
+window plan.

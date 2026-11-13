@@ -3867,12 +3867,40 @@ def _publish_qualification_failure(engine, output, primary, requested_rows):
     raise_failures(primary, [error for error in errors if error is not None])
 
 
+def _native_family_receipt(engine):
+    preparation = getattr(engine, '_owner_preparation', None)
+    requested = None if preparation is None else preparation.specification.get('native_family')
+    actual = getattr(getattr(engine, 'w', None), '_private_native_family', None)
+    if requested is None:
+        if actual is not None:
+            raise ValueError('unrequested native family capability is bound')
+        return None
+    if actual is None or actual is not preparation.native_family:
+        raise ValueError('native family weights differ from the actual prepared owner')
+    record = actual.record()
+    if record['policy'] != requested or engine.w.meta.get('private_native_family_policy') != record:
+        raise ValueError('native family numerical metadata differs from its actual capability')
+    decoder = engine.multi
+    roles = {}
+    for role, buffers in (('decode', decoder.buf), ('mtp', decoder.mbuf), ('prefill', decoder.pbuf)):
+        if buffers is not None:
+            if getattr(buffers, 'native_family', None) is not actual:
+                raise ValueError('native family role did not adopt the prepared capability')
+            roles[role] = {'rows': buffers.rows, 'bound': True}
+    return {'requested': requested, 'actual': record, 'roles': roles,
+            'scope': 'prepared capability and binding;not kernel invocation evidence',
+            'invocation_evidence': False, 'P3_valid': False}
+
+
 def publish_receipt(engine, output, *, dense_implementation=None, half_request=None, router_request=None, empty_request=None,
                     execution_rows=None, reference_tiles=False, normalization_parity=None, gdn_batch_parity=None, q8_preparation_parity=None, grouped_gate_up=None, onecat_gu=None, prepared_features=None,
                     teacher_profile=None):
     try:
         from tensorfold import cli
         receipt = bound_receipt(engine)
+        family = _native_family_receipt(engine)
+        if family is not None:
+            receipt['native_family'] = family
         q8_preparation = _owned_q8_preparation_receipt(engine)
         if q8_preparation is not None:
             receipt['owned_q8_preparation'] = q8_preparation

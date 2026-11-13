@@ -100,6 +100,9 @@ class Buffers:
         head_rows = 0 if head_columns == 0 else ENDS if prefill else rows
         bf, f32 = execution_dtype(w), torch.float32
         self.execution_dtype = bf
+        self.native_family = getattr(w, '_private_native_family', None)
+        if self.native_family is not None and (bf != torch.float16 or dev != self.native_family.device):
+            raise ValueError('native family Buffers differ from prepared FP16 device ownership')
         from .padded_linears import create as padded_linears
 
         self.padded_linears = padded_linears(w, rows, prefill=prefill, dtype=bf,

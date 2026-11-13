@@ -547,5 +547,48 @@ class FiniteSmokeCoverageTests(unittest.TestCase):
             self.run_client(continuation_drift=True)
 
 
+class NativeFamilyInputTests(unittest.TestCase):
+    def test_cli_passes_explicit_numerical_choice_to_manifest_generator(self):
+        argv = ['inputs', '--source', '/source', '--out', '/out', '--image', 'image',
+                '--installed-check', '/check', '--models', '/models', '--target', 'target',
+                '--mtp', 'mtp', '--cache', '/cache', '--name', 'model']
+        for requested in (None, 'owned-native-family-v1'):
+            with patch.object(campaign, 'inputs') as selected:
+                campaign.main(argv + ([] if requested is None else ['--native-family', requested]))
+                self.assertEqual(selected.call_args.kwargs['native_family'], requested)
+        with patch.object(campaign, 'inputs'), self.assertRaises(SystemExit):
+            campaign.main(argv + ['--native-family', 'optimized'])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class SmokeBeforeMatrixTests(unittest.TestCase):
+    def test_cli_selects_combined_workflow_without_changing_default(self):
+        argv = ["model", "--source", "/source", "--out", "/out", "--image", "image",
+                "--settings", "/settings.json", "--installed-check", "/checked"]
+        with patch.object(campaign, "model") as model:
+            self.assertEqual(campaign.main(argv + ["--smoke-before-matrix"]), 0)
+            self.assertIs(model.call_args.kwargs["smoke_before_matrix"], True)
+            self.assertIs(model.call_args.args[-3], False)
+        with patch.object(campaign, "model") as model:
+            self.assertEqual(campaign.main(argv), 0)
+            self.assertNotIn("smoke_before_matrix", model.call_args.kwargs)
+
+    def test_invalid_or_instrumented_combinations_fail_before_loading(self):
+        cases = [
+            {"smoke_before_matrix": 1},
+            {"smoke_before_matrix": True, "diagnostic_commit_events": 32},
+            {"smoke_before_matrix": True, "scheduler_diagnostic_grants": Path("/unused")},
+        ]
+        for selection in cases:
+            with self.subTest(selection=selection), patch.object(campaign, "frozen") as frozen:
+                with self.assertRaisesRegex(ValueError, "smoke-before-matrix"):
+                    campaign.model(None, None, None, None, None, 1, "1g", 1, 1, False, **selection)
+                frozen.assert_not_called()
+        with patch.object(campaign, "frozen") as frozen:
+            with self.assertRaisesRegex(ValueError, "matrix mode"):
+                campaign.model(None, None, None, None, None, 1, "1g", 1, 1, True,
+                               smoke_before_matrix=True)
+            frozen.assert_not_called()
