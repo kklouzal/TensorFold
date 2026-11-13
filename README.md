@@ -40,7 +40,9 @@ maximizes sessions; graph fit depends on the headroom left by that selection.
 The private [Value8 registered-batch candidate](docs/value8-c32.md) now admits
 up to32 States and160 verification rows in source. It reuses the existing paid
 GDN Q workspace and retains the same per-State arithmetic. The candidate stays
-default-off; new32-State native, model/quality and performance gates are pending.
+default-off. Source41 passed73 native component cases, including32-State frames
+and captured accepted prefixes, with independent incumbent/kernel provenance
+and clean retirement. Integrated model/quality and performance gates remain pending.
 
 The standalone GDN native trial has a maintained resource/cache envelope in
 `tools/v100_gdn_native_envelope.py`. It preserves kernel failures through
@@ -3208,3 +3210,8 @@ existing receipt is never replaced. Other teacher output writes are unchanged.
 The private C8 teacher permits FIFO cold prefill only after all eight requests
 are admitted. Joined decode waits for a separate complete forced-window boundary;
 scheduler readiness can reach that boundary before the window is enabled.
+
+The private C8 native-retirement observer binds the installed WindowTeacher.
+Its exact planned case set, rounds, frame count and failure state decide capture
+completion before post-close native/SDK observation; positive engine retirement
+and graph coverage remain separate required checks. Legacy teacher behavior is unchanged.

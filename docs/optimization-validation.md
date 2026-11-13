@@ -2206,3 +2206,11 @@ readiness. Joined streams stay blocked while any peer fills and inside the final
 prefill transaction. Between rounds the complete cohort advertises readiness so
 the next teacher boundary can prepare all eight forced windows. Scheduler and
 MultiDecoder algorithms, graph policies and numerical contracts are unchanged.
+
+C8 teardown uses its actual target-window observer rather than the legacy frame
+observer. Capture completeness requires the exact planned eight case IDs, all
+rounds and frames, and no recorded capture failure. The native/source/SDK
+observer runs after actual resource fences but before outer close marks the
+engine and teacher closed. Required graph replay coverage, positive retirement
+and primary/cleanup transport remain enforced. The failed r4 run retained all
+prefill/window data but is not a complete baseline or quality result.

@@ -44,6 +44,17 @@ Focused CPU controls cover32-State table extents, row/workspace exhaustion,
 last-unselected-State alias rejection, changed owner order/parity and paid-Q
 capture binding. Added native controls compare32-,96-ragged- and160-row frames
 against the unchanged incumbent/scalar oracle, changed frames and every
-accepted prefix1..5 through capture/replay. Native32 execution, integrated
-full32 model/quality and matched performance remain pending. Previous native
-passes apply only to their recorded source/envelope and are not relabeled.
+accepted prefix1..5 through capture/replay.
+
+The Source41 V100 native run on image `8ff2eb4c` (application source `a052c5b8`)
+passed all73 component cases in175.492 seconds, with no failures, errors or
+skips. Its70 numerical/capture records bind distinct candidate and
+incumbent binaries through actual kernel VMA-backed file descriptors;22 records
+exercise32 participants, including32-,96- and160-row frames and all accepted
+prefixes. Three additional controls check alias refusal and the33-participant
+boundary. Source/SDK postchecks, owning CLI/container exit, generated-binary
+retention, container removal and unchanged GPU health completed positively.
+This is a component result with G3 grouping disabled; integrated full32 model
+quality, populated maximum-history behavior and matched performance remain
+pending. The candidate remains default-off. Earlier failed staging attempts
+are retained separately and are not relabeled as passes.

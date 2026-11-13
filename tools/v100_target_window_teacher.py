@@ -1116,6 +1116,17 @@ class WindowTeacher:
             self.finished.add(case['case_id'])
         return self.originals['finish'](done)
 
+    def native_capture_complete(self):
+        """Capture is complete before inner resource close sets Engine._closed."""
+        require(type(self.finished) is set and type(self.round_index) is int
+                and type(self.frame_index) is int
+                and (self.failed is None or isinstance(self.failed, BaseException)),
+                'typed target-window capture completion required')
+        return (self.failed is None and len(self.finished) == ACTIVE
+                and self.finished == {case['case_id'] for case in self.prepared['data']['sequences']}
+                and self.round_index == len(self.prepared['data']['rounds'])
+                and self.frame_index == self.prepared['resources']['maximum_total_frames'])
+
     def close(self):
         require(not self.close_attempted, 'target-window Engine.close cannot retry uncertain retirement')
         self.close_attempted = True
@@ -1150,8 +1161,7 @@ class WindowTeacher:
                 except BaseException as error:  # noqa: BLE001 - finish every callback restoration before propagating cleanup failures
                     errors.append(error)
         try:
-            require(retired and len(self.finished) == ACTIVE and self.round_index == len(self.prepared['data']['rounds'])
-                    and self.frame_index == self.prepared['resources']['maximum_total_frames'],
+            require(retired and self.native_capture_complete(),
                     'target-window teacher lacks complete requests/windows/frames/retirement')
             # Global counts may include prefill. Only window deltas above can
             # prove actual eight-participant verify/MTP graph execution.

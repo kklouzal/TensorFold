@@ -3376,9 +3376,17 @@ def _attach_owned_model_observer(engine, selected, *, role, complete, summary=No
         engine.close = closing
 
 
-def _attach_teacher_native_observer(engine, selected):
-    return _attach_owned_model_observer(engine, selected, role='teacher',
-        complete=lambda: engine._owned_teacher_frames.finished and engine._owned_teacher_frames.failed is None)
+def _attach_teacher_native_observer(engine, selected, *, window=False):
+    if window:
+        observer = engine._owned_target_window_teacher
+        def complete():
+            if engine._owned_target_window_teacher is not observer:
+                raise ValueError('target-window native observer owner changed before retirement')
+            return observer.native_capture_complete()
+    else:
+        def complete():
+            return engine._owned_teacher_frames.finished and engine._owned_teacher_frames.failed is None
+    return _attach_owned_model_observer(engine, selected, role='teacher', complete=complete)
 
 
 def _teacher_file(path, root, *, rank=None):
@@ -4553,7 +4561,9 @@ def worker(argv):
                     teacher_profile = prepare_owned_teacher(engine, teacher, selected.out,
                         hc_graphs=not args.no_graphs)['actual_profile']
                     if model_observer is not None:
-                        _attach_teacher_native_observer(engine, model_observer)
+                        _attach_teacher_native_observer(engine, model_observer, window=
+                            teacher.get('prepared_expert_operation', {}).get('teacher_scope')
+                            in _model_contract().WINDOW_TEACHER_SCOPES)
                 except BaseException as primary:
                     engine._abort_comm = True
                     _publish_qualification_failure(engine, selected.out, primary, selected.execution_rows)
