@@ -169,7 +169,7 @@ class FlashNextEngine:
                 self._verify_numa_placement("ready", expected_rank=rank)
             except BaseException as primary:
                 self._abort_comm = True
-                def retire_startup():
+                def retire_startup(primary=primary):
                     finish((lambda: diagnostic.report(primary), self._rollback_startup))
                 rollback(self, primary, retire_startup)
 
@@ -1474,10 +1474,11 @@ class FlashNextEngine:
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + (
                 media_resources["vision_loading_host_payload_bound"])
         if owner_preparation is not None and owner_preparation.gathered_readback_forecast:
-            # All same-host ranks retain their own packet/ID owners. Nothing
-            # has materialized yet: charge the aggregate once before allocation.
+            # All same-host ranks retain their own packet/ID owners. Payloads
+            # are not materialized yet. Fund headers/forecast and serial setup
+            # overlap as well, once, before the ordinary host-capacity gate.
             host_capacity['host_workspace_bytes'] = host_capacity.get('host_workspace_bytes', 0) + (
-                tp * owner_preparation.gathered_host_payload_bytes())
+                tp * owner_preparation.gathered_host_resources()['host_admission_bytes'])
         if self._owned_qualification_host:
             # Private observer input persists through loading and serving; no materialized credit.
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + self._owned_qualification_host[0]

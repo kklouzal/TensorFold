@@ -190,6 +190,44 @@ without claiming a one-rank model plan or full State admission. The corrected
 tools have not yet passed a newly installed image and model-level five-window
 GPU capture; those remain separate gates.
 
+## Gathered readback host metadata
+
+The readback packet and int64 ID payload forecast remains unchanged. For the
+C8 role envelope120 decode plus120 MTP rows it is990,720 bytes per rank; that
+number excludes metadata. The owner now derives a controlled-header bound from
+the pinned runtime's actual Python/Torch/NumPy types using zero-logical-payload
+CPU prototypes and the same complete cold initializer as real owners. It
+includes the distinct NumPy `words.base` Tensor header, actor/dictionary/lock,
+cost and signature objects, weakref and device headers. Identity/pointer
+integers use native pointer width, packet-storage extent uses `size_t`, and
+packet shape is explicitly one-dimensional. Borrowed weights, communicator
+and device packet are excluded; shared aliases are counted once. No CUDA
+context or packet payload is constructed by the forecast.
+
+The retained forecast map is separately counted. Admission covers the maximum
+of ordinary persistent payload/headers and sequential constructor/prototype
+overlap while prior roles remain live. The engine charges eight times that
+one-rank allowance exactly once before materialization; the explicit
+`host_budget_bytes` must cover it. Actual post-materialization and post-bind
+headers must fit the admitted bound or startup fails and the owner is poisoned.
+Different observed per-rank header sizes may share one verified bound; their
+raw observations remain retained. This adds no metadata traversal to borrowing
+or sampling. Existing copy, domain, tie, fallback and lifetime rules remain.
+
+These are controlled Python/NumPy/Tensor headers, not a bound on native
+allocator/interpreter/copy internals or the original chooser's per-row
+temporaries. A new runtime image, actual CUDA header checks and whole-model
+resource/quality gates remain required before adoption. The fixed default
+without readback is unchanged. Source-component CPU checks over the genuine
+Source40 SDK pass129 controls, including real CPU owners and maximum native
+pointer/storage-size metadata domains. Only three owned runtime modules are
+source-mounted; the installed FD owner is loaded first and source-matched.
+The initial121-test pass was followed by a pre-existing Ruff F821 on a valid
+synchronous exception callback; explicit default capture clarifies that
+lifetime, with the seven existing startup-failure controls and one new malformed
+peer control passing. Scoped Ruff is clear. Neither these checks nor the
+zero-payload prototypes qualify actual CUDA headers or an installed new app.
+
 ## Campaign preparation DATA
 
 `v100_onecat_campaign.py inputs --preparation PATH --preparation-sha256 SHA`

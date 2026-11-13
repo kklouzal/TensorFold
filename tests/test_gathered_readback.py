@@ -1,5 +1,8 @@
 """CPU host/ownership controls; no CUDA DMA, collective or performance claim."""
 from types import SimpleNamespace as NS
+import copy
+import ctypes
+import sys
 
 import numpy as np
 import pytest
@@ -7,7 +10,8 @@ import torch
 
 from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.families.qwen4_exp.cuda import decode
-from tensorfold.families.qwen4_exp.cuda.gathered_readback import POLICY, GatheredReadback, layout
+from tensorfold.families.qwen4_exp.cuda.gathered_readback import (
+    POLICY, GatheredReadback, layout, forecast, forecast_resources, metadata_forecast)
 from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation, parse_preparation
 from tensorfold.families.qwen4_exp.cuda.state import CAND
 
@@ -164,7 +168,8 @@ def test_default_off_and_aggregate_host_credit_before_allocation():
     base={'kernel_family':'sm70-paged-owner-rn-ex2-p2051-v1','graph_family':'uncaptured',
           'graph_budget_bytes':0,'rn_heads_per_block':12,'trial':True}
     assert 'gathered_readback' not in parse_preparation(base)
-    selected={**base,'gathered_readback':{'policy':POLICY,'host_budget_bytes':4128*5}}
+    need=forecast_resources(forecast(8,{'decode':3,'mtp':2}))['host_admission_bytes']
+    selected={**base,'gathered_readback':{'policy':POLICY,'host_budget_bytes':need}}
     assert parse_preparation(selected)['gathered_readback']==selected['gathered_readback']
     OwnerPreparation(selected,role_rows={'decode':3,'mtp':2,'prefill':16},manifest_sha256='a'*64)
     with pytest.raises(MemoryError,match='aggregate host credit'):
@@ -175,13 +180,16 @@ def test_default_off_and_aggregate_host_credit_before_allocation():
 
 
 def test_forecast_is_retained_and_host_allocation_deferred_until_complete_admission(monkeypatch):
+    costs=forecast(8,{'decode':3,'mtp':2})
+    need=forecast_resources(costs)['host_admission_bytes']
     base={'kernel_family':'sm70-paged-owner-rn-ex2-p2051-v1','graph_family':'uncaptured',
           'graph_budget_bytes':0,'rn_heads_per_block':12,'trial':True,
-          'gathered_readback':{'policy':POLICY,'host_budget_bytes':4128*5}}
+          'gathered_readback':{'policy':POLICY,'host_budget_bytes':need}}
     owner=OwnerPreparation(base,role_rows={'decode':3,'mtp':2,'prefill':16},manifest_sha256='a'*64)
     assert owner.gathered_readbacks=={}
     assert owner.gathered_host_payload_bytes()==4128*5
-    assert owner.gathered_readback_forecast=={'decode':layout(8,3),'mtp':layout(8,2)}
+    assert owner.gathered_readback_forecast==costs
+    assert owner.gathered_host_resources()['host_admission_bytes']==need
     with pytest.raises(RuntimeError,match='admitted prepared owner'):
         owner.allocate_gathered_readbacks(NS(tp=8),'cpu')
     owner.prepared=True
@@ -193,3 +201,114 @@ def test_forecast_is_retained_and_host_allocation_deferred_until_complete_admiss
         owner.allocate_gathered_readbacks(NS(tp=8),'cpu')
     for readback in owner.gathered_readbacks.values():
         readback.close()
+
+
+def test_payload_only_credit_is_no_longer_mistaken_for_complete_header_funding():
+    base={'kernel_family':'sm70-paged-owner-rn-ex2-p2051-v1','graph_family':'uncaptured',
+          'graph_budget_bytes':0,'rn_heads_per_block':12,'trial':True,
+          'gathered_readback':{'policy':POLICY,'host_budget_bytes':990720}}
+    costs=forecast(8,{'decode':120,'mtp':120})
+    resource=forecast_resources(costs)
+    assert resource['host_payload_bytes']==990720
+    assert resource['host_admission_bytes']>=resource['host_persistent_bytes']>990720
+    with pytest.raises(MemoryError,match='aggregate host credit'):
+        OwnerPreparation(base,role_rows={'decode':120,'mtp':120,'prefill':256},manifest_sha256='a'*64)
+    base['gathered_readback']['host_budget_bytes']=resource['host_admission_bytes']
+    OwnerPreparation(base,role_rows={'decode':120,'mtp':120,'prefill':256},manifest_sha256='a'*64)
+
+
+def test_forecast_uses_zero_payload_cpu_headers_and_never_initializes_cuda(monkeypatch):
+    empty=torch.empty;array=np.empty;calls=[]
+    def tensor(shape,*args,**kwargs):
+        assert shape==0 and kwargs.get('device')=='cpu';calls.append('tensor')
+        return empty(shape,*args,**kwargs)
+    def numpy(shape,*args,**kwargs):
+        assert shape==0;calls.append('numpy')
+        return array(shape,*args,**kwargs)
+    monkeypatch.setattr(torch,'empty',tensor);monkeypatch.setattr(np,'empty',numpy)
+    assert not torch.cuda.is_initialized()
+    resource=forecast_resources(forecast(8,{'decode':120,'mtp':120}))
+    assert calls==['tensor','numpy','tensor','numpy']
+    assert resource['host_metadata_bound_bytes']>0 and resource['forecast_metadata_bytes']>0
+    assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize('rows',[1,3,120,160,256])
+def test_real_owner_headers_and_size_pointer_domains_fit_the_bound(rows):
+    w,b,owner,_=fixture(rows,rows)
+    declared=metadata_forecast(8,rows,'decode')
+    assert owner.words.base is not owner.host and type(owner.words.base)is torch.Tensor
+    assert 0<owner.metadata_bytes()<=declared['host_metadata_bound_bytes']==owner.metadata_bound_bytes
+    # Alias references retain no second copy of their headers/payload.
+    measured=owner.metadata_bytes();saved=owner.original_words;owner.original_words=None
+    assert owner.metadata_bytes()==measured;owner.original_words=saved
+    # Independently construct the full native pointer/storage-size domains.
+    def integer(width):return int.from_bytes(b'\xff'*width,'little')
+    def signature(previous,size):
+        return (integer(ctypes.sizeof(ctypes.c_void_p)),integer(ctypes.sizeof(ctypes.c_void_p)),
+            tuple(list(previous[2])),tuple(list(previous[3])),previous[4],previous[5],
+            integer(ctypes.sizeof(ctypes.c_void_p)),size)
+    owner.host_signature=signature(owner.host_signature,owner.cost['pinned_host_bytes'])
+    owner.packet_signature=signature(owner.packet_signature,integer(ctypes.sizeof(ctypes.c_size_t)))
+    owner.ids_pointer=integer(ctypes.sizeof(ctypes.c_void_p))
+    assert owner.metadata_bytes()<=owner.metadata_bound_bytes
+    owner.close()
+
+
+def test_distinct_numpy_base_cost_and_signature_objects_are_counted():
+    _w,_b,owner,_=fixture()
+    measured=owner.metadata_bytes();cost=owner.cost
+    owner.cost=None
+    expected=sys.getsizeof(cost)+sum(sys.getsizeof(value)for value in cost.values())
+    assert measured-owner.metadata_bytes()==expected
+    owner.cost=cost
+    assert owner.record()['host_metadata_bytes']==measured
+    assert owner.record()['host_metadata_bound_bytes']>=measured
+    owner.close()
+
+
+def test_binding_refuses_non_vector_packet_before_mutating_owner():
+    w,b,owner,_=fixture()
+    owner.bound=False;owner.weights=owner.packet=None
+    b.cand_all=b.cand_all.view(8,-1)
+    with pytest.raises(ValueError,match='actual TP8 Half packet'):owner.bind(w,b)
+    assert owner.bound is False and owner.weights is owner.packet is None
+    owner.close()
+
+
+def test_materialized_or_bound_metadata_exhaustion_poison_and_retire(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import gathered_readback as source
+    owner=object.__new__(GatheredReadback)
+    with monkeypatch.context()as patch:
+        patch.setattr(source,'metadata_forecast',lambda *a:{'host_metadata_bound_bytes':1})
+        with pytest.raises(MemoryError,match='pre-materialization bound'):owner.__init__(8,1,'decode','cpu')
+    assert owner.poisoned and not owner.closed
+    owner.close();assert owner.closed and owner.host is owner.ids is owner.words is None
+    w,b,owner,_=fixture()
+    owner.bound=False;owner.metadata_bound_bytes=1
+    with pytest.raises(MemoryError,match='pre-materialization bound'):owner.bind(w,b)
+    assert owner.poisoned
+    with pytest.raises(RuntimeError,match='binds once'):owner.bind(w,b)
+    owner.close()
+
+
+@pytest.mark.parametrize('overflow',[False,True,'wrong_record'])
+def test_peer_header_observations_may_vary_only_within_the_common_paid_bound(monkeypatch,overflow):
+    costs=forecast(8,{'decode':3,'mtp':2})
+    base={'kernel_family':'sm70-paged-owner-rn-ex2-p2051-v1','graph_family':'uncaptured',
+          'graph_budget_bytes':0,'rn_heads_per_block':12,'trial':True,
+          'gathered_readback':{'policy':POLICY,'host_budget_bytes':forecast_resources(costs)['host_admission_bytes']}}
+    owner=OwnerPreparation(base,role_rows={'decode':3,'mtp':2,'prefill':16},manifest_sha256='a'*64);owner.prepared=True
+    def phase(engine,name,operation,**kwargs):
+        observed=operation()
+        peers=[copy.deepcopy(observed)for _ in range(8)]
+        if overflow=='wrong_record':peers[-1]['decode']='not an owner record'
+        else:peers[-1]['decode']['host_metadata_bytes']=(costs['decode']['host_metadata_bound_bytes']+1 if overflow else 1)
+        return peers
+    monkeypatch.setattr(owner,'_phase',phase)
+    try:
+        if overflow:
+            with pytest.raises(ValueError,match='metadata exceeds'):owner.allocate_gathered_readbacks(NS(tp=8),'cpu')
+        else:owner.allocate_gathered_readbacks(NS(tp=8),'cpu')
+    finally:
+        for item in owner.gathered_readbacks.values():item.close()

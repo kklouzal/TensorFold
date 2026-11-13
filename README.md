@@ -1,5 +1,10 @@
 # TensorFold fork
 
+The opt-in gathered sampler readback now reserves controlled header/forecast
+metadata and cold setup overlap alongside packet/ID payloads. Payload-only
+credit is insufficient. The chooser is unchanged; the new runtime image and
+actual CUDA header-bound gate remain pending.
+
 The private V100 campaign input producer accepts complete preparation DATA via
 `inputs --preparation PATH --preparation-sha256 SHA`. The installed runtime
 validates and normalizes it before model hashing; it cannot be mixed with the

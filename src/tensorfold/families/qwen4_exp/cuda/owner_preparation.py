@@ -258,10 +258,10 @@ class OwnerPreparation:
                         for role, rows in self.role_rows.items()}
         self.gathered_readback_forecast = {}
         if self.specification.get('gathered_readback') is not None:
-            from .gathered_readback import layout
-            self.gathered_readback_forecast = {role: layout(8, rows) for role, rows in self.role_rows.items()
-                                               if role in ('decode', 'mtp')}
-            needed = sum(cost['host_payload_bytes'] for cost in self.gathered_readback_forecast.values())
+            from .gathered_readback import forecast
+            self.gathered_readback_forecast = forecast(8,{role:rows for role,rows in self.role_rows.items()
+                                                         if role in ('decode','mtp')})
+            needed = self.gathered_host_resources()['host_admission_bytes']
             if needed > self.specification['gathered_readback']['host_budget_bytes']:
                 raise MemoryError('gathered readback roles exceed their explicit aggregate host credit')
         self.manifest_sha256 = manifest_sha256
@@ -957,6 +957,8 @@ class OwnerPreparation:
                 "allocations": deepcopy(self.allocations),
                 **({'gathered_readback_host_forecast': deepcopy(self.gathered_readback_forecast)}
                    if self.gathered_readback_forecast else {}),
+                **({'gathered_readback_host_resources': self.gathered_host_resources()}
+                   if self.gathered_readback_forecast else {}),
                 **({'coordinate_staging': {role: stage.pinned_host_bytes for role, stage in self.coordinate_stages.items()}}
                    if self.coordinate_stages else {}),
                 **({'gathered_readback': {role: owner.record() for role, owner in self.gathered_readbacks.items()}}
@@ -998,6 +1000,17 @@ class OwnerPreparation:
     def gathered_host_payload_bytes(self):
         return sum(cost['host_payload_bytes'] for cost in self.gathered_readback_forecast.values())
 
+    def gathered_host_resources(self):
+        """One-rank explicit headers/payload peak; setup retires before service.
+
+        Per-role constructors run serially. An already materialized role stays
+        live while the next role's empty actor/prototype is prepared; no array
+        payload is counted as prototype/header storage. The retained forecast
+        itself is a separate object graph, paid once rather than hidden.
+        """
+        from .gathered_readback import forecast_resources
+        return forecast_resources(self.gathered_readback_forecast)
+
     def allocate_gathered_readbacks(self, engine, device):
         """After complete host-capacity admission, before weights/States bind."""
         if not self.gathered_readback_forecast:
@@ -1011,12 +1024,23 @@ class OwnerPreparation:
                 owner = object.__new__(GatheredReadback)
                 self.gathered_readbacks[role] = owner
                 owner.__init__(engine.tp, self.role_rows[role], role, device)
-                if owner.cost != cost:
+                if ({key:cost[key] for key in owner.cost} != owner.cost
+                        or owner.metadata_bound_bytes!=cost['host_metadata_bound_bytes']):
                     raise ValueError('gathered readback allocation differs from admitted host forecast')
             return {role: owner.record() for role, owner in self.gathered_readbacks.items()}
 
         peers = self._phase(engine, 'allocate-gathered-readbacks', allocate, may_refuse=False)
-        if any(peer != peers[0] for peer in peers):
+        comparable=[]
+        for peer in peers:
+            if type(peer) is not dict or set(peer)!=set(self.gathered_readback_forecast):
+                raise ValueError('gathered readback allocation role observations differ')
+            for role,record in peer.items():
+                if (type(record) is not dict or type(record.get('host_metadata_bytes')) is not int
+                        or not 0<record['host_metadata_bytes']<=self.gathered_readback_forecast[role]['host_metadata_bound_bytes']):
+                    raise ValueError('gathered readback allocation metadata exceeds its common bound')
+            comparable.append({role:{key:value for key,value in record.items() if key!='host_metadata_bytes'}
+                               for role,record in peer.items()})
+        if any(peer != comparable[0] for peer in comparable):
             raise ValueError('gathered readback allocations differ across TP8 ranks')
 
     def close(self):
