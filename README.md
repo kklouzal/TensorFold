@@ -2963,6 +2963,10 @@ choices and keep paths. Native matching-image execution and model quality remain
 unverified; configured depth is distinct from observed proposal/graph coverage.
 Focused source CPU controls verify gold proposal continuation under deliberately
 wrong low-confidence samples and actual eight-State MTP staging IDs/coordinates.
+An explicit versioned RN12 preparation contract also describes the current
+observed-demand catalogue, router/sampling/coordinate/descriptor transport and
+Q8 grid/vendor numerical trials; source controls remain separate from native
+and model quality qualification.
 See [optimization validation](docs/optimization-validation.md) for the controls,
 resource bounds and evidence limits.
 
@@ -2993,3 +2997,10 @@ inference client, benchmark or observer mix. It requires a sealed operation,
 separately bound current-boot Root GO and the exact installed source/image.
 Host boundary checks remain distinct from the recorded Source30 all-eight native
 component result. No inference client or throughput measurement ran in that gate.
+
+
+The private [v2 ragged component gate](docs/observed-graph-demand.md#version2-hot-mtp-component-extension)
+retains the qualified Source30 `(28,8)` cases and adds controlled MTP single-row
+groups with 3, 5, 6 and 7 participants. Its closed catalogue requires all previous
+32 keys plus those four; native 36-key fit/replay and conditional quality remain
+pending. Application/kernel bytes and ordinary service defaults are unchanged.

@@ -27,14 +27,14 @@ class GateTests(unittest.TestCase):
 
     def make_spec(self):
         closure = {name: self.sealed(name, b'controlled host helper fixture\n') for name in gate.HELPERS}
-        oracle = {'schema': 'tensorfold.native-ragged-replay-input-v1', 'key': [28, 8],
+        oracle = {'schema': 'tensorfold.native-ragged-replay-input-v2', 'key': [28, 8],
                   'layouts': [[5, 5, 5, 5, 5, 1, 1, 1], [1, 5, 2, 4, 5, 3, 4, 4]],
-                  'slots': 10, 'maximum_context_rows': 10, 'comparison': 'bit-exact'}
+                  'slots': 10, 'maximum_context_rows': 10, 'comparison': 'bit-exact', 'mtp_single_row_groups': [3, 5, 6, 7]}
         demand = self.sealed('demand.json', {'schema': 'tensorfold.source27.actual-graph-demand-result-v1',
                                            'all8_event_and_histogram_census_identical': True})
         keys = [[role, n * rows, n] for n in (1, 2, 4, 8, 16, 24)
                 for rows in (range(1, 6) if n == 1 else (1, 5)) for role in ('verify', 'mtp')]
-        keys += [['verify', 28, 8], ['mtp', 28, 8]]
+        keys += [['verify', 28, 8], ['mtp', 28, 8], *[['mtp', n, n] for n in (3, 5, 6, 7)]]
         prep = {'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1', 'graph_family': 'uncaptured',
                 'graph_budget_bytes': 0, 'trial': True, 'collective_family': 'tp8-allgather-v1',
                 'rn_heads_per_block': 12, 'native_gdn_capture': True, 'native_hc_writeback_capture': True,
@@ -161,7 +161,7 @@ class GateTests(unittest.TestCase):
         policy = gate.object_json(Path(self.spec['profile']['path']).read_bytes())['preparation']['exact_graph_policy']
         layouts = gate.object_json(Path(self.spec['oracle']['path']).read_bytes())['layouts']
         for rank in range(8):
-            accounting = {'schema': 'tensorfold.native-ragged-accounting-v1', 'rank': rank,
+            accounting = {'schema': 'tensorfold.native-ragged-accounting-v2', 'rank': rank,
                 'catalogue': {**{name: policy['keys'] for name in ('available_keys', 'requested_keys', 'selected_keys', 'captured_keys')},
                     'evidence_sha256': self.spec['demand']['sha256'], 'declined_keys': []},
                 'capture_settlement': {'room_bytes': 1, 'budget_bytes': 2},
@@ -169,10 +169,11 @@ class GateTests(unittest.TestCase):
                              'workspace_bytes': 2 * 2**30, 'effective_device_floor_bytes': 4 * 2**30},
                 'quiescent_sample': {'physical_free_bytes': 8 * 2**30},
                 'actual_states': [{'logical_context': 262144, 'capacity': 262149, 'pos': 0, 'mtp_len': 0}] * 24}
-            row = {'schema': 'tensorfold.native-ragged-replay-oracle-v1', 'rank': rank,
+            row = {'schema': 'tensorfold.native-ragged-replay-oracle-v2', 'rank': rank,
                 'input_sha256': self.spec['oracle']['sha256'], 'runtime_sources': sources,
                 'resources': {'global_host_obligation_bytes': 123},
                 'cases': [{'exact': True, 'lengths': counts, 'rows': 28, 'participants': 8, 'slots': list(range(8))} for counts in layouts],
+                'mtp_cases': [{'exact': True, 'rows': n, 'participants': n, 'lengths': [1] * n, 'slots': list(range(n)), 'input_positions': [2 + i % 2 for i in range(n)]} for n in (3, 5, 6, 7)],
                 'accounting': {'before_probe': accounting, 'after_probe': accounting}}
             (directory / f'ragged-replay-rank-{rank}.json').write_text(json.dumps(row))
             startup = {'rank': rank, 'world': 8, 'state_count': 24, 'capability': [7, 0],

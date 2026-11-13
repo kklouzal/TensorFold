@@ -393,9 +393,10 @@ def _ragged_input(path):
         raw = source.read(limit + 1)
     if len(raw) > limit:
         raise ValueError('ragged replay input exceeds fixed byte bound')
-    expected = {'schema': 'tensorfold.native-ragged-replay-input-v1', 'key': [28, 8],
+    expected = {'schema': 'tensorfold.native-ragged-replay-input-v2', 'key': [28, 8],
                 'layouts': [list(counts) for counts in _ragged_module().LAYOUTS],
-                'slots': 10, 'maximum_context_rows': 10, 'comparison': 'bit-exact'}
+                'slots': 10, 'maximum_context_rows': 10, 'comparison': 'bit-exact',
+                'mtp_single_row_groups': list(_ragged_module().MTP_SINGLE_ROW_GROUPS)}
     def pairs(items):
         result = {}
         for key, value in items:
@@ -428,9 +429,9 @@ def _ragged_resources(args, cli, path):
     # field/scalar and source/receipt trees use the existing JSON payload policy.
     base = _history_resources(8 * (8 * cfg.layers + 32) + 128, 4096)
     source_bytes = Path(__file__).stat().st_size + Path(_ragged_module().__file__).stat().st_size
-    #32 per-key rows,24 State capacities and8 fixed headers, each<=1KiB.
+    #36 per-key rows,24 State capacities and8 fixed headers, each<=1KiB.
     # Pay separate before/after trees and their bounded serializer payloads.
-    accounting = _history_resources(32 + 24 + 8, 4096)
+    accounting = _history_resources(36 + 24 + 8, 4096)
     # Size enforcement builds ASCII JSON plus bytes for both final sections;
     # fund this eager encoding separately from the inherited streaming writer.
     accounting_encoding = 4 * accounting['receipt_bytes_limit']
@@ -463,11 +464,11 @@ def _ragged_accounting(record, capacity, *, rank, graph_budget, sample, states):
             result[name] = value
         return result
 
-    # The fixed component retains the default 24-State/depth4 catalogue and
-    # requests only these two additions; it cannot silently select a subset.
+    # Retain the original32 catalogue and add only the four observed hot MTP
+    # groups; this version cannot silently select a smaller subset.
     expected = {(role, count * rows, count) for count in (1, 2, 4, 8, 16, 24)
                 for rows in (range(1, 6) if count == 1 else (1, 5)) for role in ('verify', 'mtp')}
-    expected.update({('verify', 28, 8), ('mtp', 28, 8)})
+    expected.update({('verify', 28, 8), ('mtp', 28, 8), *(('mtp', n, n) for n in (3, 5, 6, 7))})
     if type(rank) is not int or not 0 <= rank < 8 or type(graph_budget) is not int or graph_budget <= 0:
         raise ValueError('ragged accounting requires actual rank and positive integer graph budget')
     catalogue = record['exact_graph_catalogue']
@@ -476,22 +477,22 @@ def _ragged_accounting(record, capacity, *, rank, graph_budget, sample, states):
     shapes = {}
     for name in ('available_keys', 'requested_keys', 'selected_keys', 'captured_keys'):
         keys = catalogue[name]
-        if type(keys) is not list or len(keys) != 32 or {tuple(key) for key in keys} != expected:
-            raise ValueError('ragged accounting requires all original30 and both requested ragged keys: ' + name)
+        if type(keys) is not list or len(keys) != 36 or {tuple(key) for key in keys} != expected:
+            raise ValueError('ragged accounting requires original32 and all four hot MTP groups: ' + name)
         shapes[name] = [list(key) for key in keys]
     policy = parse_policy({'policy': catalogue['policy'], 'keys': shapes['requested_keys'],
                            'evidence_sha256': catalogue['evidence_sha256']})
     totals = integers(record, ('verify_keys', 'mtp_keys', 'bytes', 'settled_bytes', 'room_bytes', 'budget_bytes', 'pieces'),
                       signed=('settled_bytes',))
-    if (totals['verify_keys'] != 16 or totals['mtp_keys'] != 16 or not totals['budget_bytes']
+    if (totals['verify_keys'] != 16 or totals['mtp_keys'] != 20 or not totals['budget_bytes']
             or totals['budget_bytes'] != graph_budget or totals['room_bytes'] > graph_budget
             or totals['room_bytes'] != max(totals['bytes'], totals['settled_bytes'])
             or record['stopped'] is not None or record['rejected'] is not None
             or record['capture_during_serving'] is not False):
         raise ValueError('ragged accounting graph owner did not settle within its unchanged grant')
     measured = record['keys']
-    if type(measured) is not list or len(measured) != 32:
-        raise ValueError('ragged accounting requires exactly32 measured keys')
+    if type(measured) is not list or len(measured) != 36:
+        raise ValueError('ragged accounting requires exactly36 measured keys')
     observations, order, charged, pieces = [], [], 0, 0
     for index, item in enumerate(measured):
         observed = item['accounting']
@@ -558,7 +559,7 @@ def _ragged_accounting(record, capacity, *, rank, graph_budget, sample, states):
             or [row['capacity'] for row in state_rows] != capacities
             or any(row['logical_context'] != 262144 or row['pos'] or row['mtp_len'] for row in state_rows)):
         raise ValueError('ragged accounting actual States differ from full reserved clean idle windows')
-    return {'schema': 'tensorfold.native-ragged-accounting-v1', 'rank': rank,
+    return {'schema': 'tensorfold.native-ragged-accounting-v2', 'rank': rank,
             'capture_settlement': {**totals, 'allocator': pool, 'keys': observations},
             'catalogue': {'policy': policy['policy'], 'evidence_sha256': policy['evidence_sha256'], **shapes, 'declined_keys': []},
             'capacity': {**commitments, 'startup_capacities': list(capacities), 'future_service': future,
@@ -572,8 +573,8 @@ def _ragged_accounting_snapshot(engine, resources):
     decoder, owner = engine.multi, engine.multi.graphs
     if (owner is None or not owner.admitted or owner.failure is not None or owner.pending
             or decoder.graph_request is not None or decoder.graph_budget != owner.budget
-            or len(owner.verify) != 16 or len(owner.mtp) != 16 or len(owner.measured) != 32
-            or len(owner.bound.available_keys) != 32 or len(owner.bound.requested_keys) != 32
+            or len(owner.verify) != 16 or len(owner.mtp) != 20 or len(owner.measured) != 36
+            or len(owner.bound.available_keys) != 36 or len(owner.bound.requested_keys) != 36
             or len(decoder.states) != 24 or len(decoder.free) != 24 or decoder.full_windows != 24
             or decoder.full_resident is not True or decoder.streams or decoder.filling or decoder.kept or decoder.held):
         raise ValueError('ragged accounting requires the original admitted AUTO graph owner')

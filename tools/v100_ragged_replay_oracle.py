@@ -16,6 +16,7 @@ from tensorfold.families.qwen4_exp.cuda.mtp import mtp_compute, mtp_stage
 # Startup seeds (4,4,4,4,3,3,3,3). Neither alternate is that layout.
 LAYOUTS = ((5, 5, 5, 5, 5, 1, 1, 1), (1, 5, 2, 4, 5, 3, 4, 4))
 SEED_LENGTHS = (1, 2, 3, 4, 3, 1, 2, 3)
+MTP_SINGLE_ROW_GROUPS = (3, 5, 6, 7)
 
 
 def snapshot_payload(cfg, *, world=8):
@@ -23,7 +24,10 @@ def snapshot_payload(cfg, *, world=8):
 
     One result tree holds at most eight short State records, 28/8 local
     vocabulary rows, HC rows, candidates and committed prefixes. The caller
-    pays both trees and the transfer peak. Full-window
+    pays both trees and the transfer peak. Sequential hot single-row probes
+    have at most seven State/logit/candidate rows, fourteen HC rows and five valid history
+    rows, all bounded by this existing 8-State/28+8-row/10-history envelope.
+    Full-window
     caches and weights never enter this calculation or a reference copy.
     """
     from tensorfold.families.qwen4_exp.cuda.state import CAND
@@ -39,7 +43,9 @@ def snapshot_payload(cfg, *, world=8):
     outputs = 36 * ((cfg.vocab + world - 1) // world) * 4
     outputs += 56 * cfg.streams * cfg.hidden * 2
     outputs += world * 36 * (2 * CAND + 1) * 4 + 8 * 4
-    return 8 * (rec + conv + ple + kv + indexer) + outputs
+    # Three int32 words/State cover target/MTP committed positions plus the
+    # separately held live MTP input position in a smaller single-row probe.
+    return 8 * (rec + conv + ple + kv + indexer + 3 * 4) + outputs
 
 
 def _prepare(decoder, label, operation):
@@ -66,6 +72,7 @@ def _cpu(value):
 def _state(state):
     """Only valid short prefixes; shared arena offsets belong to each cache."""
     result = {'pos': state.pos, 'mtp_len': state.mtp_len, 'cur': tuple(state.cur),
+              'pos_dev': _cpu(state.pos_dev), 'mtp_pos': _cpu(state.mtp_pos),
               'rec': _cpu(state.rec[state.cur[0]]) if state.cur else _cpu(state.rec),
               'conv': _cpu(state.conv), 'ple_tail': _cpu(state.ple_tail),
               'ple_history': None if state.ple_history is None else state.ple_history.tolist()}
@@ -120,6 +127,7 @@ def _runtime_payload(decoder):
     state_bytes = []
     for st in decoder.free:
         value = nbytes(st.rec[0]) + nbytes(st.conv) + nbytes(st.ple_tail)
+        value += nbytes(st.pos_dev) + 2 * nbytes(st.mtp_pos)
         for cache in (*st.kc, st.mtp_kc):
             rows = sum(count for _logical, _physical, count in cache._spans(0, 10))
             value += rows * cache.pair.row_bytes(1, cache.head_dim)
@@ -138,11 +146,11 @@ def _runtime_payload(decoder):
     return sum(sorted(state_bytes, reverse=True)[:8]) + outputs
 
 
-def _run(decoder, states, counts, *, captured):
+def _seed(decoder, states):
     w, b, mb = decoder.w, decoder.buf, decoder.mbuf
     # Two genuine eager commits establish unequal contexts and mixed GDN banks.
-    seed = SEED_LENGTHS
-    for active, lengths in ((states, seed), (states[::2], (1,) * 4)):
+    seed = SEED_LENGTHS[:len(states)]
+    for active, lengths in ((states, seed), (states[::2], (1,) * len(states[::2]))):
         seed_windows = [(st, [(19 * i + row + 7) % w.cfg.vocab for row in range(n)])
                         for i, (st, n) in enumerate(zip(active, lengths))]
         segs = _stage(decoder, seed_windows)
@@ -164,6 +172,11 @@ def _run(decoder, states, counts, *, captured):
     parity = tuple(tuple(st.cur) for st in states)
     if not any(value != parity[0] for value in parity):
         raise AssertionError('ragged oracle did not establish mixed GDN parity')
+
+
+def _run(decoder, states, counts, *, captured):
+    w, b, mb = decoder.w, decoder.buf, decoder.mbuf
+    _seed(decoder, states)
     windows = [(st, [(31 * i + row + 11) % w.cfg.vocab for row in range(n)])
                for i, (st, n) in enumerate(zip(states, counts))]
     segs = _stage(decoder, windows)
@@ -198,6 +211,48 @@ def _run(decoder, states, counts, *, captured):
     return result
 
 
+def _run_mtp(decoder, states, counts, *, captured):
+    """One genuine next-row MTP frame on each unequal nonempty State history."""
+    w, b, mb = decoder.w, decoder.buf, decoder.mbuf
+    if counts != (1,) * len(states):
+        raise ValueError('hot MTP probes require exactly one row per State')
+    _seed(decoder, states)
+    windows = [(st, [(31 * i + 11) % w.cfg.vocab]) for i, st in enumerate(states)]
+    segs = _stage(decoder, windows)
+    compute(w, segs, b, check=False)  # Original eager target conditioning, never a new target graph key.
+    _kv_check(segs, comm=w.comm, workspace=getattr(decoder, 'kv_cohort', None))
+    for st, first, last in segs:
+        commit(w, st, b, 1, 1, at=first)
+    def positions():
+        result = {}
+        for i, st in enumerate(states):
+            value = _cpu(st.mtp_pos)
+            if value.item() != st.mtp_len or st.mtp_len <= 0:
+                raise AssertionError('hot MTP input must use its actual live nonzero GPU frontier')
+            result[f'mtp/input_position/{i}'] = value
+        return result
+    result = _prepare(decoder, 'ragged-hot-mtp-positions', positions)
+    result['conditioning/streams'] = _cpu(b.streams[:len(states)])
+    mseg = _prepare(decoder, 'ragged-oracle-hot-mtp', lambda: mtp_stage(mb,
+        [(st, [(tokens[0] + 1) % w.cfg.vocab], b.streams[first:last])
+         for (st, tokens), (_st, first, last) in zip(windows, segs)]))
+    out = decoder.graphs.mtp_step(mseg) if captured else mtp_compute(w, mseg, mb, check=False)
+    if out is None:
+        raise AssertionError('requested single-row MTP group fell back to eager')
+    _kv_check(mseg, comm=w.comm, workspace=getattr(decoder, 'kv_cohort', None))
+    from tensorfold.families.qwen4_exp.cuda.state import CAND
+    words = w.comm.world * len(states) * (2 * CAND + 1)
+    result.update({'mtp/logits': _cpu(out), 'mtp/streams': _cpu(mb.streams[:len(states)]),
+                   'mtp/last': _cpu(mb.last[:len(states)]),
+                   'mtp/candidates': _cpu(mb.cand_all[:words].view(torch.int32))})
+    for i, (st, _first, _last) in enumerate(mseg):
+        st.set_mtp_len(st.mtp_len + 1)
+        if not 0 < st.pos == st.mtp_len <= 10:
+            raise AssertionError('single-row MTP group lost its matching live short-context frontier')
+        result.update({f'state/{i}/{name}': value for name, value in _state(st).items()})
+    return result
+
+
 def qualify(decoder, *, snapshot_payload_bytes):
     """Mutates only empty original slots; success resets them for later admission.
 
@@ -223,8 +278,9 @@ def qualify(decoder, *, snapshot_payload_bytes):
             raise ValueError('ragged oracle requires prepaid snapshot payload and Q8 KV')
         if _runtime_payload(decoder) > snapshot_payload_bytes:
             raise ValueError('actual ragged oracle tensor plan exceeds prepaid header bound')
-        if not all((role, 28, 8) in graphs.bound.captured_keys for role in ('verify', 'mtp')):
-            raise ValueError('ragged oracle requires both requested (28,8) keys actually captured')
+        required = [('verify', 28, 8), ('mtp', 28, 8), *(('mtp', n, n) for n in MTP_SINGLE_ROW_GROUPS)]
+        if not all(key in graphs.bound.captured_keys for key in required):
+            raise ValueError('ragged oracle requires both (28,8) roles and all four hot MTP groups captured')
         if (graphs.bound.requested_policy is None
                 or graphs.bound.requested_policy['policy'] != 'observed-demand-v1'):
             raise ValueError('ragged oracle requires the explicit observed-demand policy')
@@ -232,30 +288,35 @@ def qualify(decoder, *, snapshot_payload_bytes):
     slots = _prepare(decoder, 'ragged-oracle-admit', validate)
     hits = dict(decoder.graphs.bound.serving_hits)
     bindings = tuple(decoder.graphs.bound.bindings)
-    receipts = []
+    receipts, mtp_receipts = [], []
+    plans = [('both', tuple(reversed(slots[2 * i:2 * i + 8])), counts) for i, counts in enumerate(LAYOUTS)]
+    plans += [('mtp', tuple(reversed(slots[1:n + 1])), (1,) * n) for n in MTP_SINGLE_ROW_GROUPS]
     with torch.inference_mode():
-        for case, counts in enumerate(LAYOUTS):
-            # Different eight-slot subsets in reverse order exercise pointer and
-            # last-row remapping, independently of the balanced cold seed.
-            states = tuple(reversed(slots[2 * case:2 * case + 8]))
+        for role, states, counts in plans:
+            runner = _run if role == 'both' else _run_mtp
             def reset(states=states):
                 for st in states:
                     st.reset(decoder.w)  # ordinary new-sequence generation publication
             _prepare(decoder, 'ragged-oracle-reset', reset)
             generations = tuple(st.slot_generation for st in states)
-            expected = _run(decoder, states, counts, captured=False)
+            expected = runner(decoder, states, counts, captured=False)
             _prepare(decoder, 'ragged-oracle-reset', reset)
             def generation_check(states=states, generations=generations):
                 if tuple(st.slot_generation for st in states) != tuple(n + 1 for n in generations):
                     raise AssertionError('ragged oracle reset did not advance slot generations')
             _prepare(decoder, 'ragged-oracle-generation', generation_check)
-            actual = _run(decoder, states, counts, captured=True)
+            actual = runner(decoder, states, counts, captured=True)
             if any(sum(v.numel() * v.element_size() for v in result.values()
                        if isinstance(v, torch.Tensor)) > snapshot_payload_bytes for result in (expected, actual)):
                 raise AssertionError('ragged oracle exceeded prepaid tensor payload')
             _prepare(decoder, 'ragged-oracle-compare', lambda actual=actual, expected=expected: _equal(actual, expected))
-            receipts.append({'rows': 28, 'participants': 8, 'lengths': list(counts),
-                             'slots': [st.history_slot for st in states], 'exact': True})
+            receipt = {'rows': sum(counts), 'participants': len(states), 'lengths': list(counts),
+                       'slots': [st.history_slot for st in states], 'exact': True}
+            if role == 'mtp':
+                receipt['input_positions'] = [int(actual[f'mtp/input_position/{i}'].item()) for i in range(len(states))]
+                mtp_receipts.append(receipt)
+            else:
+                receipts.append(receipt)
             del expected, actual
             _prepare(decoder, 'ragged-oracle-reset', reset)
         _kv_check([(st, 0, 1) for st in decoder.states], comm=decoder.w.comm,
@@ -267,10 +328,11 @@ def qualify(decoder, *, snapshot_payload_bytes):
             if tuple(decoder.graphs.bound.bindings) != bindings:
                 raise AssertionError('ragged oracle changed startup graph bindings')
             for role in ('verify', 'mtp'):
-                if decoder.graphs.bound.serving_hits[role] - hits[role] != len(LAYOUTS):
+                expected_hits = len(LAYOUTS) + (len(MTP_SINGLE_ROW_GROUPS) if role == 'mtp' else 0)
+                if decoder.graphs.bound.serving_hits[role] - hits[role] != expected_hits:
                     raise AssertionError('ragged oracle did not replay every captured role')
         _prepare(decoder, 'ragged-oracle-complete', complete)
-    return {'schema': 'tensorfold.native-ragged-replay-oracle-v1', 'cases': receipts,
+    return {'schema': 'tensorfold.native-ragged-replay-oracle-v2', 'cases': receipts, 'mtp_cases': mtp_receipts,
             'comparison': 'bit-exact eager versus captured same fixed tokens',
             'scope': 'short-context component; not full-context, quality or P3 qualification',
             'rank': decoder.w.comm.rank, 'snapshot_payload_bytes': snapshot_payload_bytes}

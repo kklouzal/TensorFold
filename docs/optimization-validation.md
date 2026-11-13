@@ -1759,3 +1759,37 @@ D13 review, the exact operation gate and an exclusive eight-GPU lease. Old
 Source22/preboot authority is not authority for this protocol. Complete native
 capacity, forced-corpus metrics and candidate selection remain unrun until those
 gates complete.
+
+
+### Versioned C8 preparation investigation contract
+
+`preparation_contract: source30-rn12-candidates-v1` is an explicit extension on
+both the operation and its client. Omitting it preserves the original closed
+v4 preparation validation, three numerical booleans and 21 expert selectors.
+The extension retains RN12, uncaptured inner attention, TP8, all24 native
+windows, P256/E120 and the separate outer ExactStateGraphs owner. Its canonical
+observed-demand catalogue uses the actual24-State,120-row,depth4 envelope;
+configured keys and evidence hashes do not establish capture, replay or fit.
+
+The finite options cover prepared serial routing, row sampling scratch, int64
+coordinate staging, the pinned descriptor ring and Q8 grid dispatch, plus the
+existing native-family/M32/Q8 axes, target-eager HC, GDN Value8 and supported
+cuBLAS/cuBLASLt/CUTLASS dense roles. Prepared M32 only composes with vendor
+prefill. Transport contract labels state the intended arithmetic contract;
+they do not certify bit identity or quality. Vendor and other numerical choices
+remain distinct numerical trials. The actual runtime owner parser and numerical
+selection must match the source-bound profile and issued registration.
+The extension requires a newly canonicalized manifest from the actual runtime
+`parse_preparation` result, including explicit owner defaults and sorted graph
+keys. Preserve any deployed raw manifest as provenance and bind the new manifest
+SHA in both plan and operation; the raw Source30 profile omits `row_buckets`
+and is not silently accepted as canonical DATA.
+
+Paired comparison preserves raw profiles, retention payloads, source identities,
+provider VMAs and paid resources in both positive owners. Only declared finite
+preparation differences are excluded when checking unrelated invariants; changed
+axes are reported explicitly. Unknown fields and unrelated catalogue, geometry
+or retention changes fail. Flash/BitBLAS external bundles are excluded: campaign
+staging is not a closed teacher asset/lifetime authority. ATen/Flash numerical
+families require their own explicit contract rather than a transport toggle.
+Native, installed-image and actual quality gates remain separate.

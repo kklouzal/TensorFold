@@ -33,8 +33,8 @@ The controlled native component oracle is
 `tools/v100_ragged_replay_oracle.py:qualify(decoder, snapshot_payload_bytes=...)`. Invoke it on every TP8
 rank of the same loaded idle decoder after cold capture and before request
 admission. It requires actual `ExactStateGraphs` with both `(28,8)` role keys
-captured under `observed-demand-v1`; it never captures or substitutes an eager
-fallback. It reuses ten existing empty slots, ordinary generation/reset and
+captured under `observed-demand-v1`, plus the four explicitly requested hot MTP
+groups below in v2; it never captures or substitutes an eager fallback. It reuses ten existing empty slots, ordinary generation/reset and
 staging, and compares two reordered eight-slot subsets with different unequal
 row distributions against eager execution of the same fixed tokens. Real
 commits establish unequal contexts and both GDN banks. It checks exact target
@@ -43,7 +43,8 @@ partial commits, valid local KV spans, compact indexer tails and pools. Only
 short valid prefixes and committed recurrence are copied to CPU; there are no
 full-window State clones or additional weights. A failure propagates to the
 existing caller's cohort/process containment; successful slots reset before
-admission. The Source30 native execution below passed this gate on all eight ranks.
+admission. The Source30 native execution below passed v1's two `(28,8)` cases
+on all eight ranks. The added v2 MTP groups require their own native result.
 It is a short-context component check, not qualification of all 24 windows,
 conditional model quality or P3 performance. The caller must retain its actual
 image/source/native identities and all eight returned rank receipts.
@@ -53,7 +54,7 @@ Use the existing supervised `tools/v100_owned_qualification.py` parent with
 The input is a closed object (maximum 4096 bytes):
 
 ```json
-{"schema":"tensorfold.native-ragged-replay-input-v1","key":[28,8],"layouts":[[5,5,5,5,5,1,1,1],[1,5,2,4,5,3,4,4]],"slots":10,"maximum_context_rows":10,"comparison":"bit-exact"}
+{"schema":"tensorfold.native-ragged-replay-input-v2","key":[28,8],"layouts":[[5,5,5,5,5,1,1,1],[1,5,2,4,5,3,4,4]],"slots":10,"maximum_context_rows":10,"comparison":"bit-exact","mtp_single_row_groups":[3,5,6,7]}
 ```
 
 This operation requires explicit TP8/ETP4, MTP depth4, 24 resident full
@@ -67,7 +68,7 @@ path on any failure. All 24 States must remain clean and idle afterward. No
 new serving option or model/context reduction is introduced.
 
 Each rank's existing oracle receipt also exports bounded before/after accounting:
-all 32 original-plus-requested captures and their admission observations, original
+all 36 original-plus-requested captures and their admission observations, original
 settled graph/pool records, unchanged AUTO budget and full-window/service
 commitments, and all 24 actual empty State frontiers/generations. A separately
 labelled fresh quiescent CUDA sample records free/allocated/reserved bytes and
@@ -78,7 +79,7 @@ charges, changed commitments or an insufficient fresh floor fail before the
 listener. The Source30 result below includes actual all-eight-rank execution.
 
 `tools/v100_ragged_replay_gate.py` is the standalone host owner. Its closed
-`tensorfold.native-ragged-gate-operation-v1` DATA binds immutable source/image,
+`tensorfold.native-ragged-gate-operation-v2` DATA binds immutable source/image,
 actual installed-check file identities, read-only profile/oracle/demand assets,
 ordinary NUMA authority, host resources, GPU/link/Xid baseline and its separately
 frozen host-helper closure. A separate `tensorfold.native-ragged-gate-root-go-v1`
@@ -155,3 +156,30 @@ or model-accuracy result. The separate legacy six-lane exact-output failure
 remains unresolved. Non-bucket MTP participant counts 3/5/6/7, other requested
 shapes, full-history behavior, conditional quality and matched regional
 performance still require their own evidence.
+
+
+## Version2 hot MTP component extension
+
+The current v2 tools preserve both original `(28,8)` verifier/MTP cases and
+add MTP `(3,3)`, `(5,5)`, `(6,6)` and `(7,7)`. These four non-bucket participant
+counts accounted for 72 recorded Source27 misses. The closed profile requires
+all 32 previous keys plus these four, with 16 verifier and 20 MTP captures on
+every rank; no additional-key fit or quality result is inferred from v1.
+
+Each added probe uses a reordered original State subset, real target/MTP seed
+history and one eager target conditioning row, followed by eager-versus-captured
+MTP over the same fixed next IDs. The actual GPU input-position words must match
+the live nonzero State frontiers and are compared alongside complete candidate
+packets, logits, HC, committed cache/indexer prefixes and GPU frontier words.
+A one-row MTP frame commits its complete row; truncated target acceptance remains
+covered by the unchanged `(28,8)` cases. Ordinary reset/generation checks and
+all-24 empty-State retirement remain mandatory.
+
+The probes execute sequentially, keeping at most two result trees. At most seven
+States/logit/candidate rows and fourteen HC rows, with at most five valid history rows,
+fit the original eight-State, 28+8-row, ten-history-row reference envelope. Three
+int32 position words per State add 96 bytes to its one-tree tensor bound; the
+36-key metadata and eager encoding bounds are separately admitted before Engine
+construction. No new State/weight bank, device workspace, kernel or numerical
+tolerance is introduced. V2 source controls do not qualify these four new native
+capture shapes; a separately sealed all-eight-rank execution is still required.

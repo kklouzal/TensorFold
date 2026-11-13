@@ -6,7 +6,7 @@ only execution path of the native component gate.
 import pytest
 import torch
 
-from tools.v100_ragged_replay_oracle import LAYOUTS, SEED_LENGTHS, _equal
+from tools.v100_ragged_replay_oracle import LAYOUTS, MTP_SINGLE_ROW_GROUPS, SEED_LENGTHS, _equal
 
 
 def test_layouts_preserve_requested_key_and_change_cold_last_row_maps():
@@ -44,9 +44,9 @@ def test_fixed_operation_input_is_closed_bounded_and_duplicate_free(tmp_path):
     import json
 
     from tools.v100_owned_qualification import _ragged_input
-    data = {'schema': 'tensorfold.native-ragged-replay-input-v1', 'key': [28, 8],
+    data = {'schema': 'tensorfold.native-ragged-replay-input-v2', 'key': [28, 8],
             'layouts': [list(counts) for counts in LAYOUTS], 'slots': 10,
-            'maximum_context_rows': 10, 'comparison': 'bit-exact'}
+            'maximum_context_rows': 10, 'comparison': 'bit-exact', 'mtp_single_row_groups': list(MTP_SINGLE_ROW_GROUPS)}
     path = tmp_path / 'input.json'
     path.write_text(json.dumps(data))
     assert len(_ragged_input(path)) == 64
@@ -74,7 +74,7 @@ def accounting_inputs(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     keys = [['verify', n, 1] for n in (1, 2, 3, 4, 5)] + [['mtp', n, 1] for n in (1, 2, 3, 4, 5)]
     keys += [[role, n * width, n] for n in (2, 4, 8, 16, 24) for width in (1, 5) for role in ('verify', 'mtp')]
-    keys += [['verify', 28, 8], ['mtp', 28, 8]]
+    keys += [['verify', 28, 8], ['mtp', 28, 8], *[['mtp', n, n] for n in MTP_SINGLE_ROW_GROUPS]]
     measured = [{'bytes': 1, 'pieces': 2, 'accounting': {
         'schema': 'tensorfold.exact-graph-key-v1', 'rank': 0, 'role': role, 'rows': rows, 'participants': count,
         'pieces': 2, 'prior_keys': i, 'prior_bytes': i, 'physical_delta_bytes': 1,
@@ -83,8 +83,8 @@ def accounting_inputs(monkeypatch):
     allocator = {'backend': 'native', 'accounting': 'native-pool-inactive', 'physical_free_bytes': 8 * 2**30,
                  'available_after_floor_bytes': 4 * 2**30, 'reserved_bytes': 100, 'allocated_bytes': 90,
                  'private_pool_spare_bytes': 5}
-    record = {'verify_keys': 16, 'mtp_keys': 16, 'bytes': 32, 'settled_bytes': 30, 'room_bytes': 32,
-              'budget_bytes': 100, 'pieces': 64, 'stopped': None, 'rejected': None,
+    record = {'verify_keys': 16, 'mtp_keys': 20, 'bytes': 36, 'settled_bytes': 34, 'room_bytes': 36,
+              'budget_bytes': 100, 'pieces': 72, 'stopped': None, 'rejected': None,
               'capture_during_serving': False, 'keys': measured, 'allocator': allocator,
               'exact_graph_catalogue': {'policy': 'observed-demand-v1', 'evidence_sha256': 'a' * 64,
                   **{name: copy.deepcopy(keys) for name in ('available_keys', 'requested_keys', 'selected_keys', 'captured_keys')},
@@ -113,13 +113,13 @@ def test_accounting_projects_actual_selected_fields_and_keeps_phase_distinction(
     record, capacity, sample, states = accounting_inputs
     record['unused_large_archive'] = 'unrelated' * 10000
     result = _ragged_accounting(record, capacity, rank=0, graph_budget=100, sample=sample, states=states)
-    assert result['capture_settlement']['settled_bytes'] == 30
+    assert result['capture_settlement']['settled_bytes'] == 34
     assert result['capture_settlement']['allocator']['allocated_bytes'] == 90
     assert result['quiescent_sample']['allocated_bytes'] == 100
-    assert len(result['capture_settlement']['keys']) == 32
+    assert len(result['capture_settlement']['keys']) == 36
     assert len(result['actual_states']) == 24
     assert 'unused_large_archive' not in result
-    assert len(json.dumps(result).encode()) < 4096 + 64 * 1024
+    assert len(json.dumps(result).encode()) < 4096 + 68 * 1024
 
 
 @pytest.mark.parametrize('case', ['declined', 'missing', 'duplicate', 'budget', 'rank', 'charge',
@@ -172,16 +172,16 @@ def test_accounting_metadata_is_paid_in_pre_engine_host_credit(tmp_path, monkeyp
     for name in ('TENSORFOLD_MEMORY_RESERVE_GIB', 'TENSORFOLD_CUDA_MEMORY_RESERVE_GIB',
                  'TENSORFOLD_CUDA_MEMORY_LIMIT_GB', 'TENSORFOLD_MULTI_GRAPH_MIB'):
         monkeypatch.delenv(name, raising=False)
-    data = {'schema': 'tensorfold.native-ragged-replay-input-v1', 'key': [28, 8],
+    data = {'schema': 'tensorfold.native-ragged-replay-input-v2', 'key': [28, 8],
             'layouts': [list(counts) for counts in LAYOUTS], 'slots': 10,
-            'maximum_context_rows': 10, 'comparison': 'bit-exact'}
+            'maximum_context_rows': 10, 'comparison': 'bit-exact', 'mtp_single_row_groups': list(MTP_SINGLE_ROW_GROUPS)}
     path = tmp_path / 'input.json'
     path.write_text(json.dumps(data))
     args = SimpleNamespace(draft_method='mtp', mtp_drafts=4, no_drafts=False, no_graphs=False,
                            parallel=24, context=262144, model='header-fixture')
     cli = SimpleNamespace(_parallel=lambda n: n, _config_dir=lambda _model: tmp_path)
     paid = _ragged_resources(args, cli, path)
-    expected = _history_resources(32 + 24 + 8, 4096)
+    expected = _history_resources(36 + 24 + 8, 4096)
     assert paid['accounting_bytes_limit'] == expected['receipt_bytes_limit']
     assert paid['accounting_eager_encoding_bytes'] == 4 * expected['receipt_bytes_limit']
     assert paid['accounting_host_bytes'] == 2 * expected['per_rank_payload_bytes'] + paid['accounting_eager_encoding_bytes']
@@ -190,3 +190,15 @@ def test_accounting_metadata_is_paid_in_pre_engine_host_credit(tmp_path, monkeyp
     monkeypatch.setenv('TENSORFOLD_CUDA_MEMORY_RESERVE_GIB', '0')
     with pytest.raises(ValueError, match='unchanged default'):
         _ragged_resources(args, cli, path)
+
+
+def test_hot_single_row_probe_envelope_is_dominated_by_existing_ragged_reference():
+    assert MTP_SINGLE_ROW_GROUPS == (3, 5, 6, 7)
+    for n in MTP_SINGLE_ROW_GROUPS:
+        contexts = [value + (index % 2 == 0) for index, value in enumerate(SEED_LENGTHS[:n])]
+        assert 0 < min(contexts) < max(contexts)
+        assert max(contexts) + 1 <= 10  # one conditioning and one corresponding MTP row
+        assert n < 8 and n < 28
+        # Both role HC/candidate/logit frames and all valid State prefixes are
+        # smaller; only three explicit int32 position words/State were added.
+        assert 2 * n < 56 and n < 36

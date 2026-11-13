@@ -24,7 +24,7 @@ else:
     import v100_onecat_campaign as campaign
     import v100_short_container as lifetime
 
-SCHEMA = 'tensorfold.native-ragged-gate-operation-v1'
+SCHEMA = 'tensorfold.native-ragged-gate-operation-v2'
 SHA = re.compile('[0-9a-f]{64}')
 HEALTH = {
     'gpu': ['nvidia-smi', '--query-gpu=index,uuid,ecc.errors.uncorrected.volatile.total,ecc.errors.uncorrected.aggregate.total,retired_pages.single_bit_ecc.count,retired_pages.double_bit.count,retired_pages.pending', '--format=csv,noheader'],
@@ -136,9 +136,10 @@ def validate_operation(value):
         require(Path(row['path']).resolve() == Path(__file__).with_name(name).resolve() == loaded[name].resolve(),
                 'actual imported host controller helper origin differs')
     oracle = object_json(asset(value['oracle'], 4096))
-    expected_oracle = {'schema': 'tensorfold.native-ragged-replay-input-v1', 'key': [28, 8],
+    expected_oracle = {'schema': 'tensorfold.native-ragged-replay-input-v2', 'key': [28, 8],
         'layouts': [[5, 5, 5, 5, 5, 1, 1, 1], [1, 5, 2, 4, 5, 3, 4, 4]],
-        'slots': 10, 'maximum_context_rows': 10, 'comparison': 'bit-exact'}
+        'slots': 10, 'maximum_context_rows': 10, 'comparison': 'bit-exact',
+        'mtp_single_row_groups': [3, 5, 6, 7]}
     require(json.dumps(oracle, sort_keys=True) == json.dumps(expected_oracle, sort_keys=True), 'closed native oracle DATA differs')
     demand = object_json(asset(value['demand'], 1 << 20))
     require(demand.get('schema') == 'tensorfold.source27.actual-graph-demand-result-v1'
@@ -150,12 +151,12 @@ def validate_operation(value):
     fields(policy, ('policy', 'keys', 'evidence_sha256'))
     keys = {(role, n * rows, n) for n in (1, 2, 4, 8, 16, 24)
             for rows in (range(1, 6) if n == 1 else (1, 5)) for role in ('verify', 'mtp')}
-    keys.update({('verify', 28, 8), ('mtp', 28, 8)})
+    keys.update({('verify', 28, 8), ('mtp', 28, 8), *(('mtp', n, n) for n in (3, 5, 6, 7))})
     require(policy['policy'] == 'observed-demand-v1' and policy['evidence_sha256'] == value['demand']['sha256']
-            and type(policy['keys']) is list and len(policy['keys']) == 32
+            and type(policy['keys']) is list and len(policy['keys']) == 36
             and all(type(k) is list and len(k) == 3 and type(k[0]) is str
                     and all(type(n) is int for n in k[1:]) for k in policy['keys'])
-            and {tuple(k) for k in policy['keys']} == keys, 'all original30 plus only two ragged keys required')
+            and {tuple(k) for k in policy['keys']} == keys, 'all original32 plus only four hot MTP groups required')
     expected_preparation = {'kernel_family': 'sm70-paged-owner-rn-ex2-p2051-v1', 'graph_family': 'uncaptured',
         'graph_budget_bytes': 0, 'trial': True, 'collective_family': 'tp8-allgather-v1', 'rn_heads_per_block': 12,
         'native_gdn_capture': True, 'native_hc_writeback_capture': True, 'native_family': 'owned-native-family-v1',
@@ -244,15 +245,23 @@ def collect(output, spec, frozen):
     for rank in range(8):
         path = output / 'qualification' / f'ragged-replay-rank-{rank}.json'
         row = object_json(read(path.absolute(), 8 << 20))
-        require(row['schema'] == 'tensorfold.native-ragged-replay-oracle-v1' and row['rank'] == rank
+        require(row['schema'] == 'tensorfold.native-ragged-replay-oracle-v2' and row['rank'] == rank
                 and row['input_sha256'] == spec['oracle']['sha256'] and len(row['cases']) == 2
                 and all(case['exact'] is True for case in row['cases'])
                 and [case['lengths'] for case in row['cases']] == expected_layouts
                 and all(case['rows'] == 28 and case['participants'] == 8 and len(set(case['slots'])) == 8 for case in row['cases'])
                 and row['runtime_sources'] == expected_sources, 'native oracle rank receipt differs')
+        require(len(row['mtp_cases']) == 4 and [case['participants'] for case in row['mtp_cases']] == [3, 5, 6, 7]
+                and all(case['exact'] is True and case['rows'] == case['participants']
+                        and case['lengths'] == [1] * case['participants']
+                        and len(set(case['slots'])) == case['participants']
+                        and len(case['input_positions']) == case['participants']
+                        and len(set(case['input_positions'])) > 1
+                        and all(type(pos) is int and 0 < pos <= 4 for pos in case['input_positions']) for case in row['mtp_cases']),
+                'all four actual single-row hot MTP group receipts required')
         for phase in ('before_probe', 'after_probe'):
             accounting = row['accounting'][phase]
-            require(accounting['rank'] == rank and accounting['schema'] == 'tensorfold.native-ragged-accounting-v1'
+            require(accounting['rank'] == rank and accounting['schema'] == 'tensorfold.native-ragged-accounting-v2'
                     and accounting['catalogue']['evidence_sha256'] == spec['demand']['sha256']
                     and sorted(accounting['catalogue']['captured_keys']) == sorted(expected_keys)
                     and all(sorted(accounting['catalogue'][name]) == sorted(expected_keys) for name in ('requested_keys', 'selected_keys', 'available_keys'))
@@ -382,7 +391,7 @@ def run(spec, output, *, root_go, operation_sha, owner_factory=lifetime.OwnedCon
             errors.append(error)
     failed = owner.exit_code(primary) or bool(errors)
     try:
-        campaign.publish(output / 'result.json', {'schema': 'tensorfold.native-ragged-gate-result-v1', 'cid': owner.cid,
+        campaign.publish(output / 'result.json', {'schema': 'tensorfold.native-ragged-gate-result-v2', 'cid': owner.cid,
             'state': owner.state, 'server_log': 'logs/console.log', 'exit_code': int(failed), 'primary': None if primary is None else repr(primary),
             'cleanup': [repr(error) for error in errors], 'oracle_receipts': receipts,
             'elapsed_s': time.monotonic() - started, 'removed': removed, 'P3_valid': False, 'quality_qualified': False})

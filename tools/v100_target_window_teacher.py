@@ -836,7 +836,7 @@ class WindowTeacher:
                 'writer': 'existing-owned-full-vocabulary-npy-writer', 'qualification': False, 'P3_valid': False}
 
 
-def validate_preparation(value, trial):
+def _legacy_validate_preparation(value, trial):
     numerical.validate_trial(trial)
     require(type(value) is dict, 'complete explicit window preparation required')
     extra = {'native_gdn_capture', 'native_hc_writeback_capture', 'exact_graph_policy'}
@@ -862,11 +862,102 @@ def validate_preparation(value, trial):
     return value
 
 
+PREPARATION_CONTRACT = 'source30-rn12-candidates-v1'
+TRANSPORT_OPTIONS = {'prepared_router': 'owned-serial-router-v1',
+    'row_sampling_scratch': 'canonical-row-scratch-v1',
+    'coordinate_staging': 'owned-host-int64-coordinates-v1',
+    'descriptor_upload': 'pinned-descriptor-ring2-v1', 'owned_q8_window_dispatch': 'grid-v1'}
+NUMERICAL_OPTIONS = {'dense_projections', 'native_hc_writeback_target_eager', 'gdn_value8_capture'}
+PREPARATION_OPTIONS = set(TRANSPORT_OPTIONS) | NUMERICAL_OPTIONS | set(numerical.AXES)
+
+
+def validate_preparation(value, trial, contract=None):
+    if contract is None:
+        return _legacy_validate_preparation(value, trial)
+    require(contract == PREPARATION_CONTRACT, 'unsupported versioned C8 preparation contract')
+    numerical.validate_trial(trial)
+    require(type(value) is dict and value.get('native_gdn_capture') is True
+            and value.get('native_hc_writeback_capture') is True,
+            'actual native target/MTP capture preparation required')
+    require('row_buckets' in value and 'collective_family' in value,
+            'versioned C8 preparation requires a canonical manifest with explicit owner defaults')
+    extras = {'native_gdn_capture', 'native_hc_writeback_capture', 'exact_graph_policy', *TRANSPORT_OPTIONS, *NUMERICAL_OPTIONS}
+    numerical.preparation_projection({k: v for k, v in value.items() if k not in extras}, trial)
+    # The outer Host is deliberately Torch-absent. These finite DATA domains
+    # are rechecked by the actual runtime owner parser before admission; no
+    # runtime implementation, provider loading or numeric identity is duplicated.
+    for key, expected in TRANSPORT_OPTIONS.items():
+        require(key not in value or type(value[key]) is str and value[key] == expected,
+                'unsupported explicit C8 transport policy: '+key)
+    require('owned_q8_window_dispatch' not in value or trial['owned_q8_window_prepare'],
+            'Q8 grid dispatch requires its explicit Q8 window axis')
+    for key in NUMERICAL_OPTIONS - {'dense_projections'}:
+        require(key not in value or value[key] is True, 'explicit C8 numerical selection must be true: '+key)
+    dense = value.get('dense_projections')
+    if dense is not None:
+        require(type(dense) is dict and set(dense) == {'backend', 'geometry', 'roles', 'panel_rows'}
+                and dense['backend'] in ('cublas', 'cublaslt', 'cutlass')
+                and dense['geometry'] in ('fixed-m32', 'direct')
+                and (dense['backend'] == 'cutlass' or dense['geometry'] == 'fixed-m32')
+                and type(dense['roles']) is list and dense['roles'] and all(type(role) is str and role in ('decode', 'prefill') for role in dense['roles'])
+                and len(set(dense['roles'])) == len(dense['roles'])
+                and type(dense['panel_rows']) is int and 0 < dense['panel_rows'] <= (1 << 31)-1
+                and (dense['geometry'] != 'fixed-m32' or dense['panel_rows'] == 32),
+                'C8 vendor dense selection differs from its supported runtime contract')
+        require(not trial['prepared_linears'] or dense['roles'] == ['prefill'],
+                'prepared M32 and vendor dense projections must retain disjoint roles')
+    require('dense_projections' not in value or dense is not None, 'absent vendor selection must be omitted')
+    policy = value.get('exact_graph_policy')
+    require(type(policy) is dict and set(policy) == {'policy', 'keys', 'evidence_sha256'}
+            and policy['policy'] in ('paid-subset-v1', 'observed-demand-v1') and legacy.sha(policy['evidence_sha256'])
+            and type(policy['keys']) is list and policy['keys'], 'explicit bounded exact graph policy required')
+    keys = []
+    for row in policy['keys']:
+        require(type(row) is list and len(row) == 3 and row[0] in ('verify', 'mtp')
+                and all(type(n) is int for n in row[1:]) and 1 <= row[2] <= 24
+                and row[2] <= row[1] <= min(5*row[2], 120),
+                'exact graph demand exceeds actual C8 teacher State/row/depth envelope')
+        if policy['policy'] == 'paid-subset-v1':
+            require(row[2] in (1, 2, 4, 8, 16, 24)
+                    and row[1] in (range(1, 6) if row[2] == 1 else (row[2], 5*row[2])),
+                    'paid graph key differs from the unchanged original catalogue')
+        keys.append(tuple(row))
+    require(keys == sorted(set(keys)) and any(k[0] == 'verify' and k[2] == 8 for k in keys)
+            and any(k[0] == 'mtp' and k[2] == 8 for k in keys),
+            'canonical unique catalogue and actual eight-participant target/MTP keys required')
+    return value
+
+
+def _preparation_contract(value):
+    if 'preparation_contract' not in value:
+        return None
+    require(value['preparation_contract'] == PREPARATION_CONTRACT, 'unknown C8 preparation contract')
+    return value['preparation_contract']
+
+
+def _expected_preparation_numerics(operation):
+    if _preparation_contract(operation) is None:
+        return numerical.expected_numerics(operation['numerical_trial'], mtp=True)
+    from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
+    owner = OwnerPreparation(operation['prepared_execution'], role_rows={'decode': 120, 'mtp': 120, 'prefill': 256},
+                             manifest_sha256=operation['execution_manifest_sha256'] if 'execution_manifest_sha256' in operation
+                             else operation['execution_manifest']['sha256'])
+    require(owner.specification == operation['prepared_execution'], 'C8 preparation DATA must equal actual canonical owner parsing')
+    return owner.numerical_selection
+
+
+def _validate_preparation_numerics(value, operation):
+    expected = _expected_preparation_numerics(operation)
+    require(type(value) is dict and ('owner_preparation_numerics' in value) == (expected is not None)
+            and value.get('owner_preparation_numerics') == expected,
+            'actual C8 preparation numerical registration differs from its runtime owner')
+
+
 def validate_operation(value):
     required = {'teacher_plan', 'teacher_client', 'model_entrypoint', 'model_assets', 'mtp_artifact',
                 'frontend_root', 'frontend_assets', 'execution_manifest', 'prepared_execution', 'numerical_trial',
                 'selector', 'numa', 'teacher_scope', 'mtp_confidence', 'output_grants'}
-    require(type(value) is dict and set(value) == required and value['teacher_scope'] == SCOPE,
+    require(type(value) is dict and set(value) in (required, required | {'preparation_contract'}) and value['teacher_scope'] == SCOPE,
             'closed C8 MTP4 forced-window operation required')
     for name in ('teacher_plan', 'teacher_client', 'execution_manifest'):
         identity(value[name])
@@ -885,7 +976,7 @@ def validate_operation(value):
             'actual pinned compatible shared-Q8 MTP artifact required')
     require(type(value['mtp_confidence']) in (int, float) and math.isfinite(value['mtp_confidence'])
             and 0 <= value['mtp_confidence'] <= 1, 'explicit valid MTP confidence required')
-    validate_preparation(value['prepared_execution'], value['numerical_trial'])
+    validate_preparation(value['prepared_execution'], value['numerical_trial'], _preparation_contract(value))
     grants = value['output_grants']
     require(type(grants) is dict and set(grants) == {'frame_bytes', 'metadata_bytes', 'disk_bytes', 'whole_timeout_s'}
             and all(type(grants[k]) is int and 0 < grants[k] < 2**63 for k in ('frame_bytes', 'metadata_bytes', 'disk_bytes'))
@@ -906,13 +997,15 @@ def validate_sources(value):
 
 def validate_teacher_client(value):
     extra = {'teacher_scope', 'prepared_execution', 'numerical_trial', 'selector', 'numa', 'execution_manifest_sha256', 'mtp_confidence'}
+    if type(value) is dict and 'preparation_contract' in value:
+        extra.add('preparation_contract')
     required = {'schema', 'teacher_plan_sha256', 'base', 'model', 'expected_service', 'readiness_timeout_s',
                 'whole_timeout_s', 'socket_timeout_s', 'response_bytes', *extra}
     require(type(value) is dict and set(value) == required and value['schema'] == CLIENT_SCHEMA
             and value['teacher_scope'] == SCOPE and value['expected_service'] == SERVICE
             and all(type(value['expected_service'][k]) is type(v) for k, v in SERVICE.items())
             and legacy.sha(value['execution_manifest_sha256']), 'closed versioned C8 window client required')
-    validate_preparation(value['prepared_execution'], value['numerical_trial'])
+    validate_preparation(value['prepared_execution'], value['numerical_trial'], _preparation_contract(value))
     require(value['selector'] in selectors(), 'explicit window expert selection required')
     validate_numa(value['numa'])
     require(type(value['mtp_confidence']) in (int, float) and math.isfinite(value['mtp_confidence'])
@@ -934,6 +1027,7 @@ def validate_teacher_operation_plan(operation, plan, client, *, profile=None, **
             and plan['identity']['profile_sha256'] == operation['execution_manifest']['sha256']
             and plan['mtp_confidence'] == operation['mtp_confidence'],
             'window plan and actual candidate profile differ')
+    require(_preparation_contract(client) == _preparation_contract(operation), 'C8 client/operation preparation contract differs')
     require(client['teacher_plan_sha256'] == operation['teacher_plan']['sha256']
             and client['execution_manifest_sha256'] == operation['execution_manifest']['sha256']
             and all(client[key] == operation[key] for key in
@@ -1036,6 +1130,9 @@ def runtime_profile(engine, operation):
             'actual full MTP4 prepared owner differs from window authority')
     graph_counts(engine.multi.graphs)
     numerical.validate_engine(engine, operation)
+    if _preparation_contract(operation) is not None:
+        require(prepared.prepared and not prepared.closed, 'actual admitted C8 preparation must be live')
+        _validate_preparation_numerics(engine._execution_bind_local['numerics'], operation)
     pair = engine.kv_pair
     require((pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec) == (8, 0, 8, 0),
             'actual ordinary Q8 target history required')
@@ -1279,7 +1376,7 @@ def client_credit(teacher, client_bytes):
 
 
 def validate_startup(row, selected):
-    validate_preparation(selected['prepared_execution'], selected['numerical_trial'])
+    validate_preparation(selected['prepared_execution'], selected['numerical_trial'], _preparation_contract(selected))
     profile, windows = row.get('teacher_profile', {}), row.get('teacher_windows', {})
     require(type(row.get('rank')) is int and 0 <= row['rank'] < WORLD and row.get('world') == WORLD
             and all(type(profile.get(k)) is int for k in ('rank', 'world', 'target_banks', 'mtp_banks'))
@@ -1316,7 +1413,7 @@ def validate_startup(row, selected):
     frames._candidate_plan_identity(projection, None if selector['gu'] == 'incumbent' else selector['gu'],
         selector['down'], selector['iq2_source'], selector['prefill_method'], teacher_scope=numa.SCOPE)
     registration = profile.get('teacher_execution_registration', {})
-    numerical.validate_numerics(registration.get('numerics'), selected['numerical_trial'], mtp=True)
+    _validate_preparation_numerics(registration.get('numerics'), selected)
     from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
     raw = profile.get('numerical_trial_retention')
     require(type(raw) is dict and registration.get('binding', {}).get('identity', {}).get('retention') == digest(raw)
@@ -1654,6 +1751,64 @@ def _comparison_side(selected, control):
     return side
 
 
+def preparation_changes(reference, candidate):
+    require(_preparation_contract(reference) == _preparation_contract(candidate), 'paired C8 preparation contracts differ')
+    if _preparation_contract(reference) is None:
+        return None
+    for operation in (reference, candidate):
+        validate_preparation(operation['prepared_execution'], operation['numerical_trial'], _preparation_contract(operation))
+    old, new = reference['prepared_execution'], candidate['prepared_execution']
+    require(not any(key in old for key in PREPARATION_OPTIONS), 'original C8 preparation reference must leave all candidate options off')
+    changes = {key: {'classification': 'transport-contract' if key in TRANSPORT_OPTIONS else 'numerical',
+                     'reference': old.get(key), 'candidate': new.get(key)}
+               for key in PREPARATION_OPTIONS if old.get(key) != new.get(key)}
+    require({k: v for k, v in old.items() if k not in changes} == {k: v for k, v in new.items() if k not in changes},
+            'candidate changed an unrelated C8 preparation policy')
+    return changes
+
+
+def _comparison_retention(row, operation, changes):
+    if changes is None:
+        return numerical._normalized_retention(row, operation)
+    from copy import deepcopy
+
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+    profile = row['teacher_profile']
+    raw = profile['numerical_trial_retention']
+    require(profile['teacher_execution_registration']['binding']['identity']['retention'] == digest(raw),
+            'raw C8 preparation retention must retain its actual issued identity')
+    owner = raw.get('owner_preparation')
+    require(type(owner) is dict and owner.get('specification') == {
+            k: v for k, v in operation['prepared_execution'].items() if k != 'trial'},
+            'C8 preparation retention differs from the explicit profile')
+    normalized = deepcopy(raw)
+    selected = operation['prepared_execution']
+    owner = normalized['owner_preparation']
+    owner['specification'] = {k: v for k, v in owner['specification'].items() if k not in changes}
+    for key in ('native_family', 'prepared_linears', 'prepared_router', 'coordinate_staging', 'row_sampling_scratch', 'dense_projections'):
+        require((key in owner) == (key in selected), 'unrequested or missing C8 retained capability: '+key)
+        if key in changes:
+            owner.pop(key, None)
+    allocations = owner.get('allocations')
+    require(type(allocations) is dict and set(allocations) == {'decode', 'mtp', 'prefill'},
+            'actual C8 preparation allocation roles required')
+    for records in allocations.values():
+        require(type(records) is list and len(records) == WORLD
+                and all(type(record) is dict and type(record.get('rank')) is int and record['rank'] == rank
+                        for rank, record in enumerate(records)),
+                'actual eight-rank C8 preparation allocation records required')
+        for allocation in records:
+            if 'row_sampling_scratch' in changes:
+                allocation.pop('row_sampling_scratch', None)
+            if 'descriptor_upload' in changes:
+                # Only the three descriptor host extents vary with the selected ring.
+                # Raw paid allocations remain in the owning startup/retention record.
+                allocation.pop('host_staging_bytes', None)
+                allocation.pop('pinned_host_staging_bytes', None)
+                allocation.pop('host_metadata_bytes', None)
+    return normalized
+
+
 def compare(reference, candidate, *, control, output):
     if __package__:
         from . import v100_target_window_evidence as shards
@@ -1661,6 +1816,7 @@ def compare(reference, candidate, *, control, output):
         import v100_target_window_evidence as shards
     left, right = _comparison_side(reference, control), _comparison_side(candidate, control)
     a, b = left['inner']['operation'], right['inner']['operation']
+    changes = preparation_changes(a, b)
     require(not any(a['numerical_trial'].values()) and a['selector'] == selectors()[0],
             'window comparison requires its all-off original expert control')
     require(left['inner']['image_id_declared'] == right['inner']['image_id_declared'], 'same immutable window image required')
@@ -1678,12 +1834,13 @@ def compare(reference, candidate, *, control, output):
         require(profile.get('preparation') == operation['prepared_execution']
                 and side['authority']['plan']['identity']['profile_sha256'] == operation['execution_manifest']['sha256'],
                 'window profile/forced plan must name its own exact authority')
-        normalized.append({**profile, 'preparation': {k: v for k, v in profile['preparation'].items() if k not in numerical.AXES}})
+        normalized.append({**profile, 'preparation': {k: v for k, v in profile['preparation'].items()
+            if k not in (numerical.AXES if changes is None else changes)}})
     require(normalized[0] == normalized[1], 'window comparison changed unrelated profile artifacts or preparation')
     for rank in range(WORLD):
         old, new = left['proofs'], right['proofs']
-        require(numerical._normalized_retention(old['startups'][rank], a) ==
-                numerical._normalized_retention(new['startups'][rank], b), 'unrelated window retention policy changed')
+        require(_comparison_retention(old['startups'][rank], a, changes) ==
+                _comparison_retention(new['startups'][rank], b, changes), 'unrelated window retention policy changed')
         registrations = [side['registrations'][rank] for side in (old, new)]
         numbers = []
         for registration, operation in zip(registrations, (a, b)):
@@ -1704,6 +1861,13 @@ def compare(reference, candidate, *, control, output):
         require(all(name in new_native and new_native[name]['sha256'] == row['sha256'] for name, row in old_native.items()),
                 'window trial changed a baseline native provider')
         allowed = []
+        if changes is not None:
+            if b['prepared_execution'].get('prepared_router') is not None:
+                allowed.append('tf_sm70_routing_')
+            if b['prepared_execution'].get('dense_projections') is not None:
+                allowed.extend(('tf_sm70_dense_', 'tf_sm70_prefill_dense_'))
+            if any(b['prepared_execution'].get(key) for key in ('native_hc_writeback_target_eager', 'gdn_value8_capture')):
+                allowed.append('tf_sm70_family_')
         if b['numerical_trial']['native_family'] or b['numerical_trial']['owned_q8_window_prepare']:
             allowed.append('tf_sm70_family_')
         if b['selector']['gu'] not in ('incumbent', 'tensorfold'):
@@ -1723,6 +1887,10 @@ def compare(reference, candidate, *, control, output):
                   actual_profiles=[side['proofs']['startups'][0]['teacher_profile'] for side in (left, right)],
                   numa_evidence=[left['model']['numa'], right['model']['numa']],
                   scope='forced production C8 target windows with actual MTP/graph records; target-logit metrics only; no held-out accuracy, MTP-head KL or free-generation acceptance')
+    if changes is not None:
+        report['preparation_contract'] = PREPARATION_CONTRACT
+        report['preparation_changes'] = changes
+        report['preparation_comparison_scope'] = 'Declared finite experiment variables only; raw profiles, paid retention and issued identities remain in both positive owners. Transport contracts are not measured equivalence or quality acceptance.'
     frames._owned_teacher_json(Path(output)/'owned-comparison.json', report, 8 << 20, control)
     (Path(output)/'owned-comparison.json').chmod(0o444)
     return report
