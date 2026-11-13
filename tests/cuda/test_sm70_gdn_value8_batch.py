@@ -37,7 +37,7 @@ def identity(old, candidate):
 
 def frame(static, b, states, rows, count, iteration):
     chosen = list(reversed(states))[:count] if iteration else states[:count]
-    lengths = ([1, 5] if iteration == 0 else [3, 3]) if (rows, count) == (6, 2) else [rows//count]*count
+    lengths = ([1, 5]*(count//2) if iteration == 0 else [3]*count) if (rows, count) in ((6, 2), (96, 32)) else [rows//count]*count
     end, segs = 0, []
     for state, size in zip(chosen, lengths):
         segs.append((state, end, end+size))
@@ -51,12 +51,12 @@ def plans(candidate, table, b, workspace):
                 b.gout[:table.rows], b.gxs[:table.rows], workspace) for layer in range(table.static.lin)]
 
 
-@pytest.mark.parametrize('rows,count', [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 2), (120, 24)])
+@pytest.mark.parametrize('rows,count', [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (6, 2), (120, 24), (32, 32), (96, 32), (160, 32)])
 @pytest.mark.parametrize('pattern', ['random', 'masked'])
 @pytest.mark.parametrize('negative', [False, True])
 def test_actual_batch_and_scalar_bits_saved_state_ragged_owners_parity_masks(component, rows, count, pattern, negative, record_property):
     old, candidate = component
-    static, states, b, weight, norm, bias, log, neg = incumbent_controls.setup(6, pattern, width=5)
+    static, states, b, weight, norm, bias, log, neg = incumbent_controls.setup(6, pattern, width=5, slots=max(24,count))
     workspace = gdn_value8.allocate_workspace(b.rows, 'cuda', device_budget_bytes=1024*b.rows)
     workspace.q.fill_(-91)
     parameter = neg if negative else log
@@ -92,14 +92,14 @@ def test_actual_batch_and_scalar_bits_saved_state_ragged_owners_parity_masks(com
         'Q_capacity_bytes': workspace.q.numel()*workspace.q.element_size()}))
 
 
-@pytest.mark.parametrize('count', [1, 24])
+@pytest.mark.parametrize('count', [1, 24, 32])
 @pytest.mark.parametrize('keep', [1, 2, 3, 4, 5])
 @pytest.mark.parametrize('negative', [False, True])
 def test_side_capture_changed_actor_frames_and_every_MTP4_accepted_prefix(component, count, keep, negative, record_property):
     from tensorfold.families.qwen4_exp.cuda.forward import commit
 
     old, candidate = component
-    static, states, b, weight, norm, bias, log, neg = incumbent_controls.setup(6, 'random', width=5)
+    static, states, b, weight, norm, bias, log, neg = incumbent_controls.setup(6, 'random', width=5, slots=max(24,count))
     for state in states:
         state.kv_check = lambda: None
         state.ple_last, state.pos = None, 0
@@ -190,3 +190,14 @@ def test_cpp_rejects_Q_weight_read_alias_before_any_kernel_mutation(component, o
     with pytest.raises(RuntimeError, match='Q aliases'):
         bound.chain_prepared(weight, neg, bias, norm, 1e-6, negative_decay=True)
     incumbent_controls.exact(workspace.q, before)
+
+
+def test_native_33_participant_boundary_refuses_before_descriptor_access(component):
+    _,candidate=component
+    _static,_states,b,weight,norm,bias,log,_neg=incumbent_controls.setup(6,'random',width=5,slots=32)
+    pointers=torch.zeros((8,33),dtype=torch.int64,device='cuda')
+    starts=torch.zeros((34,),dtype=torch.int32,device='cuda')
+    q=gdn_value8.allocate_workspace(33,'cuda',device_budget_bytes=33*1024)
+    with pytest.raises(RuntimeError,match='registered batch pointer layout'):
+        candidate.module.batch_chain(b.proj[0,:33],weight,log,bias,norm,1e-6,
+                                     pointers,starts,1,b.gout[:33],b.gxs[:33],q.q,False)

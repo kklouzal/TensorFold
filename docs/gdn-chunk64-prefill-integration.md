@@ -1,10 +1,11 @@
-# G3 prefill integration contract (private boundaries; no engine hook)
+# G3 private target-prefill integration contract
 
 The standalone component is an intermediate numerical trial. Actual native
 verification precedes the serving hook; this design does not claim a selected
-profile, numerical equivalence or qualified performance. The explicit
-`cuda.sm70.gdn_chunk64_half` frontend/epilogue is implemented as an unqualified
-component; its native build/math and full-model gates remain pending.
+profile, numerical equivalence or qualified performance. Source39's standalone
+seven-case State/span/copy controls passed and retired on its actual protected
+SM70 image; this does not qualify the new accepted-target group or a model.
+`cuda.sm70.gdn_chunk64_half` and the default-off group remain numerical trials.
 Current native chain/Value8 paths remain independently usable.
 
 ## Guarded frontend and epilogue
@@ -83,7 +84,8 @@ a valid epilogue operand. Typed weights/producers must establish finite inputs
 and finite nonpositive raw gates; this owner introduces no synchronizing GPU
 value discovery or boolean numerical attestation.
 
-This fixed-capacity boundary component has no engine selector or forward hook.
+The standalone fixed-capacity boundary does not select engine behavior; the
+separate private group policy below is the only opt-in target hook.
 It prepares kernels once, binds outside requests and performs no device
 allocation/compilation during submission. Independent CPU boundary diagnostics
 retain cast points and direct-gate underflow cases without a tolerance or CUDA
@@ -97,7 +99,8 @@ serving dispatch; its native and model gates still block selection.
 passes a shifted conv clone per span, alternates two recurrent banks, copies
 cut states and advances the convolution tail. The core keeps interior
 cut policy outside its primitive API; `gdn_chunk64_prefill` now binds a
-segmented candidate explicitly, with no engine hook. Its contract is:
+segmented candidate explicitly; the private group policy below adds the
+accepted-target hook. Its contract is:
 
 1. Validate all cut rows (strictly ascending, strictly inside the prompt) and
    funded cut-rec/conv destinations before any frontend/core writes. Prepare
@@ -187,7 +190,7 @@ staging or absorb.
 Full model continuation/output/PPL/MTP acceptance, graph behavior and all
 required-region capacity and end-to-end performance gates precede selection.
 
-## Native span/State diagnostics
+## Standalone native span/State diagnostics
 
 The maintained `tools/v100_gdn_chunk64_trial.py --phase spans-state` is a
 separate bounded native diagnostic phase. It leaves the historical18 main
@@ -197,6 +200,8 @@ application/GDN artifact, protected Compiler/OwnedArtifact
 closure, the maintained native envelope and a separate Root GPU/resource
 and health authorization. Source38's installed old core wrapper does not qualify
 this phase. No GPU, profiler or build is triggered by authoring or CPU controls.
+The new group path requires its own matching artifact, native group controls
+and separate GPU/resource authorization; the standalone result does not qualify it.
 
 The finite census is `(rows,cut)`:63/31,64/3,65/1,129/63,129/64,129/65,
 131/65. Both independent owners fund maximum capacity131 once. Two real
@@ -265,3 +270,67 @@ Owning receipts are `Root-native61-actual-milestone-v1.json` under the Source38
 under Source39's `gdn-spans-state-proposal-v1` packet in the build cache.
 These component results do not select G3 or Value8 for serving and provide no
 prefill/decode token/s, full-context capacity or model/PPL acceptance claim.
+
+## Private accepted-target group integration (implemented, unqualified)
+
+The optional `preparation.g3_prefill` object selects policy
+`g3-target-prefill-half-raw-v1`; absence leaves the incumbent numerical and
+preparation policy unchanged. It requires `trial:true`, the original PP1
+TP8/ETP4 adaptive full24-Q8/full32-Q4 NONE/MTP text profile and the protected
+owned GDN image. Managed profile switching, media and separate speculative
+providers remain outside this first private mode; requested absent capability
+fails during cold preparation, with no package installation or library fallback.
+The exact object fields are `policy`, `tensor_budget_bytes`,
+`journal_host_budget_bytes`, `cold_host_budget_bytes`,
+`warmup_device_budget_bytes`, `cuda_home`, `nvcc_sha256`, and `artifact`.
+`artifact` is the existing closed OwnedArtifact descriptor: attestation
+path/bytes/SHA, owned wheel path, aggregate hash-byte credit and optional retained
+native base wheel. These are actual operator-issued identities, never booleans.
+No public serving flag is added and existing closed RN12/ATen teacher versions
+do not admit this new numerical family as transport.
+
+The owner prepares one actual compiled core and one Half frontend/raw slab at
+`actual_pbuf.rows`, not attention's min(P,256) role envelope. Tensor payload is
+4936P+21 bytes once per rank, independent of layer/segment count. The selected
+mode omits the old shared prefill replay allocation2608P whose sole consumer is
+the incumbent Half chain; decode State scratch and MTP absorb stay unchanged.
+AtP256 the new payload is1,263,637 bytes and the net tensor increase595,989;
+36 independent owners would instead allocate45,490,932 bytes before subtracting
+that one old replay slab. These are structural byte counts, not a measured
+throughput/startup gain. Source39 observed duplicate KKT/core compilation in its
+two-owner diagnostic; production uses one prepare call and no per-layer compile.
+
+The bounded accepted-target group is created before `_kv_begin`; it validates
+packed unique States and cuts, owns a fixed layer/segment journal and registers
+one group reader on every participating State. It preserves the original
+projection/weight/conv/state owners and per-segment cut destinations. Same-actor
+stream order allows each complete frontend/core/epilogue to finish consuming
+scratch before the next queued segment/layer overwrites it. No CPU wait occurs
+inside those submissions. The group never calls `kv_check` per layer: pending
+Q8/Q4 status is preserved until the unchanged final whole-frame check. Only
+after that authoritative check may normal group retirement release the journal.
+Token-position commit and retained snapshot publication remain with the existing
+caller. The pbuf target-frame marker is cleared before its ordinary MTP absorb.
+
+Cut tensors use the existing POINTS/recovery snapshot category, are allocated
+before layer submission and transfer through Cut to the existing snapshot and
+retention owners. They are not recycled when the group event retires. Failure
+poisons all affected States and retains the group; it propagates into the
+existing cohort fatal/drain path before any local stream wait can deadlock a
+peer collective. Primary and retirement failures remain owning outcomes.
+
+Cold preparation checks explicit tensor/warmup/host credits, warms the complete
+native path before graph admission, and joins the existing settled GPU physical
+commitment. Journal host credit is reserved in aggregate acrossTP8; already
+allocated root-list bytes are excluded from future host credit once. The Python
+header charge is scoped explicitly; Torch/FFI/compiler private retention still
+requires actual peak/RSS/model-resource qualification. No exact RSS claim is
+inferred from Python `sizeof`. Cold positive completion and an explicit
+Scheduler worker handoff preserve the compiled owner thread/stream contract.
+Decode/MTP graph selection and all existing expert selectors remain unchanged.
+
+The group path, real packed-State pending-status lifecycle, worker handoff,
+full24/full32 fit, closed G3 model/quality contract and all end-to-end P3 regions
+remain unqualified. The single-frame API and seven-case native oracle remain
+available independently. No source implementation alone selects this mode for
+ordinary serving or provides numerical tolerance/quality acceptance.

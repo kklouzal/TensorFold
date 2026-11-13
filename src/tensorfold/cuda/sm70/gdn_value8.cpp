@@ -106,7 +106,8 @@ void batch_chain(const at::Tensor& p, const at::Tensor& weight, const at::Tensor
     const auto* props=at::cuda::getDeviceProperties(p.get_device());
     TORCH_CHECK(props->major==7 && props->minor==0,"value8 batch requires SM70");
     TORCH_CHECK(pointers.is_cuda() && pointers.device()==device && pointers.scalar_type()==at::kLong
-        && pointers.dim()==2 && pointers.size(0)==8 && pointers.size(1)>0 && pointers.size(1)<=24
+        // Each State is an independent grid-z slice; no per-batch shared array.
+        && pointers.dim()==2 && pointers.size(0)==8 && pointers.size(1)>0 && pointers.size(1)<=32
         && pointers.stride(1)==1 && pointers.stride(0)>=pointers.size(1),"value8 registered batch pointer layout");
     TORCH_CHECK(pointers.stride(0)<=(std::numeric_limits<int64_t>::max()-pointers.size(1))/7,
                 "value8 descriptor span overflow");

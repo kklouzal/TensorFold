@@ -894,6 +894,12 @@ class FlashNextEngine:
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec)
                      or sm70 and self.kv_pair.key.quantized or indexer_history == "ram")
         rows0 = chunk or PREFILL_ROWS
+        g3_requested = owner_specification is not None and owner_specification.get('g3_prefill') is not None
+        if g3_requested and (not full_window_headroom or not source_is_gguf or media_requested or managed
+                or dspark_model_dir is not None or dflash2_model_dir is not None
+                or self.expert_partition is None or self.expert_partition.etp != 4
+                or (getattr(self,'_stage_identity',None) or {}).get('pipeline_parallel_size',1) != 1):
+            raise ValueError('private G3 prefill requires original PP1 TP8/ETP4 full24-Q8/full32-Q4 NONE/MTP text admission')
         if self._reference_owner_tiles_requested and (owner_specification is None or self.sm70_profile != "reference"):
             raise ValueError("reference tiles require explicit pre-budget owner preparation")
         history_plan = None
@@ -941,7 +947,8 @@ class FlashNextEngine:
                      **({"mtp": min(bound, ATT_ROWS)} if mtp else {}), "prefill": min(rows0, ATT_ROWS)}
             owner_preparation = OwnerPreparation(owner_specification, role_rows=roles,
                                                   manifest_sha256=preparation_manifest_sha,
-                **({"reference_tiles": True} if self._reference_owner_tiles_requested else {}))
+                **({"reference_tiles": True} if self._reference_owner_tiles_requested else {}),
+                **({'g3_rows':rows0,'g3_segments':rows0} if g3_requested else {}))
             self._owner_preparation = owner_preparation
             owner_preparation.prepare(self, text, self.kv_pair, page_tokens=history_placement.page_tokens,
                                       device=torch.device("cuda", torch.cuda.current_device()))
@@ -1255,7 +1262,7 @@ class FlashNextEngine:
             # The half prompt chain owns full-piece replay inputs, independent
             # of each sequence's small decode scratch. They remain live beside
             # the serving cache and the loader's shared GGUF workspaces.
-            sm70_prefill_bytes = _sm70_prefill_gdn_bytes(text, tp, rows0)
+            sm70_prefill_bytes = 0 if g3_requested else _sm70_prefill_gdn_bytes(text, tp, rows0)
             options["device_workspace_bytes"] = options.get("device_workspace_bytes", 0) + sm70_prefill_bytes
             status_device = status_host = 0
             if tp > 1 and concurrent and not adaptive_sessions:
@@ -1478,6 +1485,10 @@ class FlashNextEngine:
             # Dedicated diagnostic tensors persist through serving. Charge
             # before capacity admission; never borrow floor or service credit.
             numeric_capacity["device_workspace_bytes"] = numeric_capacity.get("device_workspace_bytes", 0) + self._owned_qualification_device[0]
+        if g3_requested:
+            host_capacity['host_workspace_bytes'] = host_capacity.get('host_workspace_bytes',0) + (
+                tp*(owner_preparation.g3_prefill.request.journal_host_budget_bytes
+                    - owner_preparation.g3_prefill.facts['journal_root_bytes']))
         content_projection_resources = None
         if execution_profile_manifest is not None:
             from .execution_identity import execution_content_projection_resources
@@ -1849,6 +1860,7 @@ class FlashNextEngine:
         if owner_preparation is not None:
             # Resolve actual weight contracts and their opaque CUDA residency
             # before any State allocation or numerical namespace publication.
+            owner_preparation.bind_g3_weights(self, w)
             owner_preparation.bind_router_weights(self, w)
             owner_preparation.bind_dense_weights(self, w)
             self.capacity_plan["owner_preparation"] = owner_preparation.record()
@@ -1915,6 +1927,14 @@ class FlashNextEngine:
                 self.capacity_plan['native_gdn_batch']['value8_capture'] = {
                     'policy': 'value8-registered-batch-v1',
                     'scope': 'private-exact-capture-only; eager-native-batch',
+                    'participants_capacity': self.multi.round_tables.slots,
+                    'row_capacity': self.multi.buf.rows,
+                    'window_capacity': self.multi.round_tables.width,
+                    'registered_table_device_bytes': (self.multi.round_tables.i32.nbytes
+                                                       + self.multi.round_tables.i64.nbytes),
+                    'registered_table_pinned_bytes': (self.multi.round_tables.h32.nbytes
+                                                       + self.multi.round_tables.h64.nbytes),
+                    'table_accounting': 'existing native-GDN tables; no second allocation/credit',
                     'q_workspace': 'reuse-decoder-scratch-q',
                     'reused_q_bytes': self.multi.gdn.q.numel() * self.multi.gdn.q.element_size(),
                     'additional_device_bytes': 0,

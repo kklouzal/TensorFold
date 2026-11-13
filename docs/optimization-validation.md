@@ -158,6 +158,44 @@ without claiming a one-rank model plan or full State admission. The corrected
 tools have not yet passed a newly installed image and model-level five-window
 GPU capture; those remain separate gates.
 
+## Campaign preparation DATA
+
+`v100_onecat_campaign.py inputs --preparation PATH --preparation-sha256 SHA`
+accepts one complete preparation object from the existing execution-manifest
+schema. Both arguments are required together and exclude `--native-family`,
+`--prepared-linears`, `--prepared-router` and `--coordinate-staging`; omitting
+them retains the existing default and four independent flag paths. The request
+uses the existing16-MiB execution-manifest bound, a regular non-symlink file and
+an external lowercase SHA256. The CPU input container receives a read-only
+mount and authenticates the exact bytes before model discovery/hashing. The
+installed strict JSON reader rejects duplicate/nonfinite/malformed DATA, then
+`owner_preparation.parse_preparation` owns selection and normalization. There is
+no alternate runtime parser or profile implementation.
+
+The producer writes the normalized preparation into its generated profile and
+retains the request bytes/hash and normalized selection in input evidence. It
+rechecks the original request and retained copy after production. Complete
+objects can describe existing dense, attention, capture and paid transport
+trials while preserving the runtime's overlap/family/role refusals. Explicit
+tensor/host credits remain caller authority; successful input generation does
+not establish actual residency, capacity, capture support, quality or P3.
+BitBLAS/Flash exports still require the existing model-stage sealed bundles
+and fixed `/operator/...` paths. G3 DATA remains explicitly refused until its
+separate integration and quality authority is admitted.
+
+This path leaves the expert21 selector set, teacher schemas and numerical
+acceptance gates unchanged. Q8 retains its24 full windows and required
+C1/2/4/8/16/24 regions; Q4/ISO4 retains its separate32-window/C32 region. Matrix,
+profile, provider and workload identities remain distinct and must match in
+later comparisons. Generate model metadata using the same model namespace that
+the campaign will serve; another route's `config.json` hash is not reusable.
+The source-mounted producer contracts pass64 CPU controls and38 subtests using
+the genuine Source40 installed parser/strict JSON reader. Artifact/matrix
+inputs in these checks are explicitly bounded metadata fixtures, not model or
+SDK qualification. The first AST publication-boundary fixture failure remains
+recorded; only its11 affected controls were rerun after correction. New
+native/quality/performance combinations remain pending.
+
 ## Full32 ISO4 capacity gate
 
 `tools/v100_full32_q4_gate.py` is a separate versioned ordinary-API capacity
@@ -2144,3 +2182,27 @@ uncaptured graph family; that field does not describe MultiDecoder step graphs.
 The corrected tool reader keeps the separate typed E120/C36 proof and validates
 every remaining service/registration predicate against portable actual captured
 HTTP fields. No app change, row truncation or missing graph check is introduced.
+
+C8 client lifecycle: the actual bounded immutable-file reader now accepts the
+cooperative control used by admission and final completion reads, checking before
+and after the bounded storage read. In-flight storage reads remain cooperative,
+not forcibly interruptible. Main admission failures become visible to the cohort
+supervisor before draining accepted HTTP callbacks. The retained Source40 r2
+admission failure remains failed; a new tool/DATA review and Root GPU authority
+are required for another model attempt.
+
+C8 admission publication uses the existing bounded JSON writer in an exclusively
+owned staging directory, closes and syncs that payload, then links it atomically
+to the final receipt without replacement and syncs the parent directory. Cleanup
+preserves primary and retirement failures. The link shares the same payload
+blocks; no second JSON payload is retained. A paused real-writer control checks
+that the client-visible final path remains absent until the record is complete.
+Historical failed model attempts and partial files remain unchanged.
+
+C8 FIFO liveness separates cold-prefill eligibility from forced-decode eligibility.
+The original decoder predicate remains authoritative for each phase. Before all
+eight admissions no prompt work runs; filling prompts then retain original FIFO
+readiness. Joined streams stay blocked while any peer fills and inside the final
+prefill transaction. Between rounds the complete cohort advertises readiness so
+the next teacher boundary can prepare all eight forced windows. Scheduler and
+MultiDecoder algorithms, graph policies and numerical contracts are unchanged.

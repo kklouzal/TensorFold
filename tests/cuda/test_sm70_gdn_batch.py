@@ -85,8 +85,8 @@ def exact(actual, expected):
     assert torch.equal(actual.contiguous().view(torch.uint8), expected.contiguous().view(torch.uint8))
 
 
-def setup(nv, pattern, *, width=3, static_type=RoundTables):
-    nk, layers, slots = nv//3, 2, 24
+def setup(nv, pattern, *, width=3, static_type=RoundTables, slots=24):
+    nk, layers = nv//3, 2
     channels, pw = widths(nk, nv)
     gen = torch.Generator(device='cuda').manual_seed(725+nv)
     def half(shape):

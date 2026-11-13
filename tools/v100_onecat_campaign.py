@@ -32,6 +32,7 @@ else:
     from worker_lifetime import raise_failures
 
 CORE = "sha256:829ebca249664e8014bbc883305d8ae7f15edcab3fea7b8b620a19c8e17f150e"
+EXECUTION_MANIFEST_LIMIT = 16 << 20
 
 
 def identity(path):
@@ -392,7 +393,24 @@ from tensorfold import hub
 from tensorfold.families.qwen4_exp.cuda.execution_identity import artifact_files
 sys.path.insert(0,'/tools')
 from bench_concurrent import prepare_matrix
-target,mtp,model,profile,inputs,tokens,reps,levels,native_family,prepared_linears,prepared_router,coordinate_staging=sys.argv[1:]
+target,mtp,model,profile,inputs,tokens,reps,levels,native_family,prepared_linears,prepared_router,coordinate_staging,preparation_path,preparation_sha256=sys.argv[1:]
+selection=None
+if bool(preparation_path)!=bool(preparation_sha256) or preparation_path and any(
+        (native_family,prepared_linears,prepared_router,coordinate_staging)):
+    raise ValueError('complete preparation DATA requires its SHA256 and excludes legacy preparation flags')
+if preparation_path:
+    from v100_onecat_campaign import EXECUTION_MANIFEST_LIMIT, _bounded_numa_file
+    from tensorfold.tensor_file import _metadata_object
+    from tensorfold.families.qwen4_exp.cuda.owner_preparation import parse_preparation
+    raw=_bounded_numa_file(pathlib.Path(preparation_path),maximum=EXECUTION_MANIFEST_LIMIT)
+    if hashlib.sha256(raw).hexdigest()!=preparation_sha256:
+        raise ValueError('preparation DATA differs from its external SHA256 authority')
+    requested=_metadata_object(raw,preparation_path)
+    if 'g3_prefill' in requested:
+        raise ValueError('G3 campaign preparation remains pending its separate integration/quality authority')
+    selection=parse_preparation(requested)
+    if selection is None:
+        raise ValueError('preparation DATA must select an explicit preparation object')
 prepared=hub.resolve(target,download=False)
 engine=SimpleNamespace(model_dir=prepared,method_geometry=SimpleNamespace(method='mtp'),
                        mtp_model_dir=pathlib.Path(mtp),media_profile=None)
@@ -416,6 +434,8 @@ if prepared_router:
     manifest['preparation']['prepared_router']=prepared_router
 if coordinate_staging:
     manifest['preparation']['coordinate_staging']=coordinate_staging
+if selection is not None:
+    manifest['preparation']=selection
 matrix=prepare_matrix(prepared,model,profile,[int(n) for n in levels.split(',')],[int(inputs)],int(tokens),int(reps))
 for name,value in [('profile.json',manifest),('matrix.json',matrix)]:
     with (pathlib.Path('/evidence')/name).open('x') as out:
@@ -441,7 +461,23 @@ def installed_check_receipt(directory, source_uid, image_id):
 
 
 def inputs(root, output, selected_image, installed_check, models, target, mtp, cache, model_name,
-           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None, prepared_linears=None, prepared_router=None, coordinate_staging=None):
+           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None, prepared_linears=None, prepared_router=None, coordinate_staging=None,
+           preparation=None, preparation_sha256=None):
+    if (preparation is None)!=(preparation_sha256 is None):
+        raise ValueError('preparation DATA requires both a path and its external SHA256')
+    request=None
+    if preparation is not None:
+        if any(value is not None for value in (native_family,prepared_linears,prepared_router,coordinate_staging)):
+            raise ValueError('complete preparation DATA cannot be combined with legacy preparation flags')
+        if (type(preparation_sha256) is not str or len(preparation_sha256)!=64
+                or any(c not in '0123456789abcdef' for c in preparation_sha256)):
+            raise ValueError('preparation DATA requires an exact lowercase SHA256')
+        preparation=Path(preparation)
+        if ':' in str(preparation):
+            raise ValueError('preparation path cannot contain a Docker mount separator')
+        request=_bounded_numa_file(preparation,maximum=EXECUTION_MANIFEST_LIMIT)
+        if hashlib.sha256(request).hexdigest()!=preparation_sha256:
+            raise ValueError('preparation DATA differs from its external SHA256 authority')
     if coordinate_staging not in (None, 'owned-host-int64-coordinates-v1'):
         raise ValueError('coordinate staging inputs require the explicit private policy')
     if prepared_linears not in (None, 'owned-prepared-m32-v1'):
@@ -460,6 +496,9 @@ def inputs(root, output, selected_image, installed_check, models, target, mtp, c
             raise ValueError("qualification input artifacts must belong to the read-only model mount")
     output.mkdir(parents=True, exist_ok=False)
     cache.mkdir(parents=True, exist_ok=True)
+    if request is not None:
+        (output/'preparation-request.json').write_bytes(request)
+        (output/'preparation-request.json').chmod(0o444)
     argv = ["docker", "create", "--name", "tf-onecat-inputs-" + uuid.uuid4().hex[:12],
             "--runtime", "runc", "--network", "none", "--read-only", "--user", f"{os.getuid()}:{os.getgid()}",
             "--cpus", str(cpus), "--memory", memory, "--memory-swap", memory,
@@ -468,14 +507,21 @@ def inputs(root, output, selected_image, installed_check, models, target, mtp, c
             "-e", "TF_GGUF_ASSETS_DIR=/cache/gguf_assets", "-e", "HF_HUB_OFFLINE=1",
             "-v", str(models) + ":/models:ro", "-v", str(cache) + ":/cache:rw",
             "-v", str(root / "source/tools") + ":/tools:ro", "-v", str(output) + ":/evidence:rw",
+            *([] if request is None else ['-v',str(preparation)+':/operator/preparation.json:ro']),
             "-w", "/tmp", "--entrypoint", "/opt/venv/bin/python", binding["reference"], "-B", "-c", _PREPARE_INPUTS,
             "/models/" + target, "/models/" + mtp, model_name, profile, str(input_tokens), str(tokens),
-            str(repetitions), levels, native_family or "", prepared_linears or "", prepared_router or "", coordinate_staging or ""]
+            str(repetitions), levels, native_family or "", prepared_linears or "", prepared_router or "", coordinate_staging or "",
+            '/operator/preparation.json' if request is not None else '',preparation_sha256 or '']
     container(argv, output, timeout)
+    if request is not None and (_bounded_numa_file(preparation,maximum=EXECUTION_MANIFEST_LIMIT)!=request
+            or (output/'preparation-request.json').read_bytes()!=request):
+        raise ValueError('preparation DATA changed through input production')
     publish(output / "inputs.json", {"source_uid": record["source_uid"], "image_binding": binding,
             "manifest": identity(output / "profile.json"), "matrix": identity(output / "matrix.json"),
             "installed_check": accepted,
-            "quality_accepted": False, "P3_accepted": False})
+            "quality_accepted": False, "P3_accepted": False,
+            **({'preparation_request':{'path':str(preparation),'bytes':len(request),'sha256':preparation_sha256},
+                'normalized_preparation':json.loads((output/'profile.json').read_text())['preparation']} if request is not None else {})})
     verify_source(root / "source", record["files"])
 
 
@@ -1223,7 +1269,7 @@ def model(root, output, selected_image, settings_path, installed_check, cpus, me
         **({'diagnostic_graph_attempts': True} if diagnostic_graph_attempts else {}),
         **({'scheduler_diagnostic':diagnostic}if diagnostic is not None else {}))
     manifest = Path(settings["profile_manifest"]).resolve(strict=True)
-    if manifest.stat().st_size > 16 << 20:
+    if manifest.stat().st_size > EXECUTION_MANIFEST_LIMIT:
         raise ValueError("execution manifest exceeds bounded operator metadata")
     profile_identity = identity(manifest)
     hc_exports = _hc_exports(root, record, settings, json.loads(manifest.read_text()))
@@ -1496,6 +1542,10 @@ def main(argv=None):
                               help='private paid int64 text-coordinate host staging trial (default: ordinary issuance)')
             item.add_argument('--prepared-router', choices=('owned-serial-router-v1',),
                               help='explicit unqualified resident serial logits for decode/MTP2..256; R1 and prefill stay reference')
+            item.add_argument('--preparation',type=Path,
+                              help='complete bounded preparation DATA; normalized by the installed runtime parser; excludes the four legacy preparation flags')
+            item.add_argument('--preparation-sha256',
+                              help='external lowercase SHA256 for --preparation; explicit numerical/resource/quality gates still apply')
     args = parser.parse_args(argv)
     if args.command != "freeze" and (args.cpus <= 0 or args.timeout <= 0):
         parser.error("CPU count and command timeout must be positive")
@@ -1513,7 +1563,8 @@ def main(argv=None):
         inputs(args.source.absolute(), args.out.absolute(), args.image, args.installed_check.absolute(), args.models, args.target, args.mtp,
                args.cache.absolute(), args.name, args.profile, args.input_tokens, args.tokens, args.reps,
                args.levels, args.cpus, args.memory, args.timeout, native_family=args.native_family,
-               prepared_linears=args.prepared_linears, prepared_router=args.prepared_router, coordinate_staging=args.coordinate_staging)
+               prepared_linears=args.prepared_linears, prepared_router=args.prepared_router, coordinate_staging=args.coordinate_staging,
+               preparation=None if args.preparation is None else args.preparation.absolute(),preparation_sha256=args.preparation_sha256)
     else:
         model(args.source.absolute(), args.out.absolute(), args.image, args.settings.absolute(), args.installed_check.absolute(),
               args.cpus, args.memory, args.timeout, args.startup_timeout, args.smoke_only,

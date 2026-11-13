@@ -99,16 +99,16 @@ class MultiDecoder:
             raise ValueError('exact graph subset requires the private exact owned graph profile')
         self.native_gdn_capture = native_gdn_capture
         if gdn_value8_prepared is not None:
-            from tensorfold.cuda.sm70.gdn_value8 import Prepared
+            from tensorfold.cuda.sm70.gdn_value8 import MAX_BATCH_ROWS, MAX_BATCH_STATES, MAX_BATCH_WINDOW, Prepared
 
             if (not native_gdn_capture or type(gdn_value8_prepared) is not Prepared
                     or gdn_value8_prepared.batch_ready is not True or gdn_value8_prepared.device != torch.device(w.device)
                     or gdn_value8_prepared.device.type != 'cuda'
                     or execution_dtype(w) != torch.float16 or (w.cfg.nk, w.cfg.nv) != (2, 6)
-                    or type(slots) is not int or not 0 < slots <= 24
-                    or type(depth) is not int or not 0 <= depth <= 4
+                    or type(slots) is not int or not 0 < slots <= MAX_BATCH_STATES
+                    or type(depth) is not int or not 0 <= depth < MAX_BATCH_WINDOW
                     or not any(layer.linear for layer in w.layers)):
-                raise ValueError('value8 capture requires resident Half H2/HV6 native exact GDN with at most24States/five-row windows')
+                raise ValueError('value8 capture requires resident Half H2/HV6 native exact GDN with at most32States/five-row windows')
         self.gdn_value8_prepared = gdn_value8_prepared
         self.gdn_value8_workspace = None
         budget = (multi_graphs.budget_bytes() if graphs or hc_graphs else 0) if graph_budget is ... else graph_budget
@@ -143,8 +143,8 @@ class MultiDecoder:
         rows = slots * (depth + 1) if execution_rows is None else execution_rows
         if type(rows) is not int or not depth + 1 <= rows <= slots * (depth + 1):
             raise ValueError("execution_rows must hold one complete verification window within the resident envelope")
-        if gdn_value8_prepared is not None and rows > 120:
-            raise ValueError('value8 capture requires its actual at-most120-row decode envelope')
+        if gdn_value8_prepared is not None and rows > MAX_BATCH_ROWS:
+            raise ValueError('value8 capture requires its actual at-most160-row decode envelope')
         self.controller = None
         self.execution_manifest_installer = None
         self.poison_control = None

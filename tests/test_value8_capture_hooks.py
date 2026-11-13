@@ -35,11 +35,12 @@ def test_optional_value8_rejects_unsupported_envelope_before_buffer_allocation(m
     elif fault == 'heads':
         w.cfg.nv = 12
     elif fault == 'slots':
-        args['slots'] = 25
+        args['slots'] = 33
     elif fault == 'depth':
         args['depth'] = 5
     elif fault == 'rows':
-        args['execution_rows'] = 121
+        args['execution_rows'] = 161
+        args['slots'] = 32
     else:
         args['gdn_value8_prepared'] = Prepared(object(), torch.device('cuda:1'), True)
     monkeypatch.setattr(multi, 'Buffers', lambda *a, **kw: pytest.fail('unsupported value8 reached Buffer allocation'))
@@ -78,10 +79,10 @@ def test_global_Q_reuse_wraps_already_paid_storage_and_old_readers_are_outside_h
         for compare in ast.walk(branch.test))
 
 
-def graph_fixture(monkeypatch):
+def graph_fixture(monkeypatch, *, slots=2):
     from tests.test_sm70_gdn_value8_batch import setup
 
-    static, b, states, _, prepared, calls = setup(monkeypatch, layers=2)
+    static, b, states, _, prepared, calls = setup(monkeypatch, layers=2, slots=slots)
     b.rotor_lookup = False
     for state in states:
         state.image_positions = None
@@ -291,3 +292,18 @@ def test_returned_pieces_remain_in_explicit_close_journal_across_transfer_failur
     assert source.gdn_value8_capture is None
     multi_graphs.RoundGraphs.close(outer)
     assert events == ['reset-borrower'] and not outer.pending and not graph.value8_bindings and graph.closed
+
+
+def test_32_state_exact_catalogue_and_cold_views_reuse_paid_E160_Q(monkeypatch):
+    graph,b,states,_=graph_fixture(monkeypatch,slots=32)
+    graph._catalogue(states)
+    assert ('verify',32,32) in graph.available_keys and ('verify',160,32) in graph.available_keys
+    graph.preparing=True
+    segs=[(state,index*5,(index+1)*5) for index,state in enumerate(states)]
+    monkeypatch.setattr(torch,'empty',lambda *args,**kwargs:pytest.fail('cold view binding allocated extra Q'))
+    graph._native_frame(segs,b,capture=True)
+    assert len(b.gdn_value8_ready)==2
+    assert all(bound.participants==32 and bound.rows==160 and bound.workspace.q is graph.dec.gdn.q
+               for bound in b.gdn_value8_ready)
+    assert graph.record()['gdn_value8_workspace']['reused_bytes']==163840
+    assert graph.record()['gdn_value8_workspace']['additional_device_bytes']==0

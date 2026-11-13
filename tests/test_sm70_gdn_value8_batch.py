@@ -41,7 +41,7 @@ def plan(static, b, states, workspace, kernel, *, segs=None):
 
 @pytest.mark.parametrize('rows,count,width,bound,preload', [
     (1, 1, 5, 1, 1), (5, 1, 5, 5, 5), (6, 2, 5, 5, 5),
-    (5, 2, 3, 3, 4), (24, 24, 5, 1, 1), (120, 24, 5, 5, 5)])
+    (5, 2, 3, 3, 4), (24, 24, 5, 1, 1), (120, 24, 5, 5, 5), (32, 32, 5, 1, 1), (33, 32, 5, 2, 2), (96, 32, 5, 5, 5), (160, 32, 5, 5, 5)])
 def test_launch_bound_depends_only_on_exact_key_and_registered_width(rows, count, width, bound, preload):
     facts = gdn_value8.batch_layout(rows, count, width)
     assert facts['max_window_rows'] == bound and facts['preload_rows'] == preload
@@ -58,7 +58,7 @@ def test_new_batch_resource_facts_are_directly_publishable_on_strict_control_cha
     assert json.loads(canonical_runtime_json(facts, max_bytes=4096)) == facts
 
 
-@pytest.mark.parametrize('args', [(0, 0, 5), (1, 0, 5), (121, 24, 5), (25, 25, 1),
+@pytest.mark.parametrize('args', [(0, 0, 5), (1, 0, 5), (121, 24, 5), (161, 32, 5), (33, 33, 1),
                                   (1, 1, 6), (1, True, 5), (1., 1, 5)])
 def test_empty_and_unsupported_batch_geometry_refused(args):
     with pytest.raises(ValueError, match='nonempty bounded'):
@@ -177,3 +177,34 @@ def test_inference_mutation_domain_is_preserved_for_indirect_registered_outputs(
     with torch.inference_mode():
         bound.chain_prepared(*weights, 1e-6)
     assert len(calls) == 1
+
+
+def test_registered_32_state_tables_and_full_row_credit_are_exact(monkeypatch):
+    static,b,states,workspace,kernel,_=setup(monkeypatch,slots=32,layers=2)
+    assert static.i32.numel()==static.h32.numel()==1505
+    assert static.i64.numel()==static.h64.numel()==8*2*32
+    assert static.i32.nbytes==6020 and static.i64.nbytes==4096
+    assert workspace.q.nbytes==163840 and workspace.capacity==160
+    segs=[(state,index*5,(index+1)*5) for index,state in enumerate(states)]
+    bound,frame=plan(static,b,states,workspace,kernel,segs=segs)
+    assert bound.participants==32 and bound.rows==160 and bound.max_window_rows==5
+    assert bound.pointers.shape==(8,32) and bound.pointers.stride(0)==64
+    assert bound.starts.tolist()==list(range(0,161,5))
+    changed=list(reversed(states))
+    for state in states:
+        state.cur=[1-value for value in state.cur]
+    fresh=static.native_frame([(state,i*5,(i+1)*5) for i,state in enumerate(changed)],b)
+    bound.validate_frame(fresh)
+    assert bound.pointers[1,0].item()==changed[0].rec[changed[0].cur[0],0].data_ptr()
+    assert frame.static is fresh.static
+    with pytest.raises(MemoryError):
+        gdn_value8.allocate_workspace(160,'cpu',device_budget_bytes=163839)
+
+
+def test_32_state_binding_checks_unselected_last_state_alias(monkeypatch):
+    static,b,states,_,kernel,calls=setup(monkeypatch,slots=32)
+    workspace=gdn_value8.Workspace(states[-1].scratch[0].k[:1],1)
+    frame=static.native_frame([(states[0],0,1)],b,allow_single=True)
+    with pytest.raises(ValueError,match='overlaps registered inference storage'):
+        kernel.batch_prepare(frame,0,b.proj[0,:1],b.gout[:1],b.gxs[:1],workspace)
+    assert not calls

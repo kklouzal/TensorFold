@@ -1302,20 +1302,28 @@ def teacher_frames(case, first_logits, advance):
         yield step, token, current
 
 
-def _owned_teacher_read(path, maximum):
+def _owned_teacher_read(path, maximum, control=None):
     if __package__:
         from .gb10_io import owned_descriptor, borrowed_stream, stamp
     else:
         from gb10_io import owned_descriptor, borrowed_stream, stamp
+    if control is not None:
+        control.check()
     with owned_descriptor(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC) as fd:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= maximum:
             raise ValueError('bounded immutable teacher input required')
         with borrowed_stream(fd) as stream:
+            if control is not None:
+                control.check()
             raw = stream.read(before.st_size)
+            if control is not None:
+                control.check()
         if (len(raw) != before.st_size or stamp(os.fstat(fd)) != stamp(before)
                 or stamp(os.stat(path, follow_symlinks=False)) != stamp(before)):
             raise ValueError('teacher input changed while reading')
+    if control is not None:
+        control.check()
     return raw
 
 
@@ -1377,6 +1385,46 @@ def _owned_teacher_json(path, value, maximum, control=None):
         os.fsync(directory)
         if control is not None:
             control.check()
+
+
+def _owned_teacher_publish(path, value, maximum, control=None):
+    """Complete bounded JSON, then atomically publish one exclusive receipt.
+
+    The staging directory proves ownership even if the existing writer fails
+    after creating a partial payload. A hard link adds no second payload copy.
+    Never remove a final receipt on failure after its publication.
+    """
+    if __package__:
+        from .gb10_io import owned_descriptor
+        from .worker_lifetime import raise_failures
+    else:
+        from gb10_io import owned_descriptor
+        from worker_lifetime import raise_failures
+    path = Path(path)
+    staging = path.with_name('.' + path.name + '.pending')
+    staging.mkdir(mode=0o700)  # Exclusive: a failed prior owner is not reused.
+    temporary = staging/'payload.json'
+    primary, errors = None, [None, None]
+    try:
+        _owned_teacher_json(temporary, value, maximum, control)
+        if control is not None:
+            control.check()
+        os.link(temporary, path, follow_symlinks=False)  # Atomic, no clobber.
+        with owned_descriptor(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC) as directory:
+            os.fsync(directory)
+            if control is not None:
+                control.check()
+    except BaseException as error:  # noqa: BLE001 - preserve primary and independent publication retirements.
+        primary = error
+    try:
+        temporary.unlink(missing_ok=True)
+    except BaseException as error:  # noqa: BLE001 - preserve primary and independent publication retirements.
+        errors[0] = error
+    try:
+        staging.rmdir()
+    except BaseException as error:  # noqa: BLE001 - preserve primary and independent publication retirements.
+        errors[1] = error
+    raise_failures(primary, errors)
 
 
 def owned_teacher_resources(input_bytes, reference_bytes, vocab, frames, *, policy=None):

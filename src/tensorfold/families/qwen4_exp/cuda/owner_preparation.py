@@ -86,7 +86,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "gathered_readback", "prepared_router", "coordinate_staging"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "gathered_readback", "prepared_router", "coordinate_staging", "g3_prefill"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -194,6 +194,12 @@ def parse_preparation(value):
                 or type(readback['host_budget_bytes']) is not int
                 or not 0 < readback['host_budget_bytes'] < 2**63):
             raise ValueError('gathered readback requires its explicit trial policy and aggregate host credit')
+    g3 = value.get('g3_prefill')
+    if 'g3_prefill' in value:
+        from .gdn_prefill_policy import Request
+        if not value['trial']:
+            raise ValueError('G3 target-prefill requires its explicit unqualified numerical trial')
+        g3 = Request.parse(g3).as_dict()
     capture = value.get('native_gdn_capture', False)
     if type(capture) is not bool or capture and not value['trial']:
         raise ValueError('native GDN capture requires an explicit boolean unqualified trial')
@@ -209,6 +215,7 @@ def parse_preparation(value):
             **({'flash_tiles': flash_tiles.as_dict()} if flash else {}),
             **({'dense_projections': dense.as_dict()} if dense is not None else {}),
             **({'native_gdn_capture': True} if capture else {}),
+            **({'g3_prefill': g3} if g3 is not None else {}),
             **({'native_family': native_family} if native_family is not None else {}),
             **({'owned_q8_window_prepare': True} if q8_window else {}),
             **({'owned_q8_window_dispatch': 'grid-v1'} if q8_dispatch == 'grid-v1' else {}),
@@ -227,7 +234,7 @@ def parse_preparation(value):
 
 
 class OwnerPreparation:
-    def __init__(self, specification, *, role_rows, manifest_sha256, reference_tiles=False):
+    def __init__(self, specification, *, role_rows, manifest_sha256, reference_tiles=False, g3_rows=None, g3_segments=None):
         self.specification = parse_preparation(specification)
         if self.specification is None or not isinstance(role_rows, dict) or not {"decode", "prefill"} <= role_rows.keys():
             raise ValueError("native preparation requires the actual decode and prefill envelopes")
@@ -273,6 +280,8 @@ class OwnerPreparation:
         self.graph_physical_bytes = 0
         self.prepared = self.closed = False
         self.allocations = {}
+        self.g3_prefill = None
+        self.g3_rows,self.g3_segments = g3_rows,g3_segments
         self.private_spare_bytes = None
         self.outside_active_bytes = None
         self.aten_requirements, self.aten_operator_identity = {}, None
@@ -333,6 +342,9 @@ class OwnerPreparation:
                     "head_dim": text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"],
                     "index_budget": text.get("indexer_budget", 2048),
                     "index_ratio": text.get("indexer_compress_ratio", 4)}
+        if self.specification.get('g3_prefill') is not None:
+            contract['g3_target_geometry'] = {'rows':self.g3_rows,'segments':self.g3_segments,
+                'linear_layers':sum(kind == 'linear_attention' for kind in text.get('layer_types',()))}
         import json
 
         contract = json.loads(canonical_runtime_json(contract, max_bytes=4 << 20))
@@ -446,6 +458,18 @@ class OwnerPreparation:
                 family_records = self._phase(engine, 'native-family-prepare', family_prepare, may_refuse=False)
                 if any(record != family_records[0] for record in family_records):
                     raise ValueError('native family preparation differs across TP8 ranks')
+            if self.specification.get('g3_prefill') is not None:
+                from .gdn_prefill_policy import Owner, Request, forecast
+                request = Request.parse(self.specification['g3_prefill'])
+                facts = forecast(text,self.g3_rows,self.g3_segments,request)
+                self.g3_prefill = Owner(request,facts)  # Journal before any fallible native work.
+                host = self._phase(engine,'g3-cold-host-admission',
+                    lambda: self.g3_prefill.admit_host() if engine.rank == 0 else None,may_refuse=False)
+                self.g3_prefill.host_admission = deepcopy(host[0])
+                def g3_prepare():
+                    self.g3_prefill.prepare(device,self.native_family)
+                    return self.g3_prefill.record()
+                self._phase(engine,'g3-target-prefill-prepare',g3_prepare,may_refuse=False)
             if self.flash_validated is not None:
                 def flash_load():
                     from tensorfold.cuda.sm70.flash_v100_artifact import load_native
@@ -663,6 +687,8 @@ class OwnerPreparation:
                 if buffers.padded_linears is not self.prepared_m32.buffers.get(role):
                     raise RuntimeError('serving role did not adopt its paid prepared M32 buffers')
             buffers.owner_graphs = self.graphs.get(role)
+        if self.g3_prefill is not None:
+            self.g3_prefill.adopt(weights,decoder)
         # Every owner frame is bounded by its adopted workspace, even when a
         # larger model batch is split into several such attention operations.
         graph_rows = decoder.buf.rows if self.graphs else 0
@@ -679,6 +705,13 @@ class OwnerPreparation:
     @property
     def numerical_selection(self):
         selected = {}
+        if self.specification.get('g3_prefill') is not None:
+            selected['g3_prefill'] = {'policy':'g3-target-prefill-half-raw-v1',
+                'scope':'accepted-target-prefill-only;decode-and-mtp-unchanged',
+                'qk':'normalized-unscaled-Half;core-scale-once',
+                'gate':'direct-raw-fp32;typed-A_log-or-A_neg',
+                'beta':'Half-sigmoid-widened-fp32','workspace':'one-actor-stream-slab',
+                'qualification':'unqualified-numerical-trial'}
         if self.specification.get('coordinate_staging') is not None:
             selected['coordinate_staging'] = {'policy': self.specification['coordinate_staging'],
                 'qualification': 'private-unqualified', 'coordinates': 'same-int64-final-rows'}
@@ -737,6 +770,15 @@ class OwnerPreparation:
             return self.aten_temporary_extra_bytes
         return (self.aten_temporary_extra_bytes + dense['future_temporary_bytes']
                 + (dense['cold_temporary_bytes'] if self.dense_binding_memory is None else 0))
+
+    def bind_g3_weights(self, engine, weights):
+        if self.g3_prefill is not None:
+            self._phase(engine,'g3-target-weight-bind',lambda: self._bind_g3(weights),may_refuse=False)
+            self._retire_weight_binding(engine,'g3-target-weight-bind')
+
+    def _bind_g3(self, weights):
+        self.g3_prefill.bind_weights(weights)
+        return self.g3_prefill.record()
 
     def bind_router_weights(self, engine, weights):
         """Validate retained model router owners before any State is allocated."""
@@ -823,9 +865,11 @@ class OwnerPreparation:
 
     @property
     def requires_worker_handoff(self):
-        return self.dense_owner is not None or self.flash_artifact is not None
+        return self.dense_owner is not None or self.flash_artifact is not None or self.g3_prefill is not None
 
     def handoff_to_current_thread(self):
+        if self.g3_prefill is not None:
+            self.g3_prefill.handoff_to_current_thread()
         if self.dense_owner is not None:
             self.dense_owner.handoff_to_current_thread()
         if self.flash_artifact is not None:
@@ -904,6 +948,7 @@ class OwnerPreparation:
                    if self.specification["kernel_family"] == RN_KERNEL_FAMILY else {}),
                 "roles": dict(self.role_rows),
                 **({'native_family': self.native_family.record()} if self.native_family is not None else {}),
+                **({'g3_prefill': self.g3_prefill.record()} if self.g3_prefill is not None else {}),
                 **({'prepared_router': self.prepared_router.record()} if self.prepared_router is not None else {}),
                 **({'prepared_linears': self.prepared_m32.record()} if self.prepared_m32 is not None else {}),
                 **({"reference_arithmetic_source_sha256": self.reference_arithmetic_source}
@@ -985,6 +1030,8 @@ class OwnerPreparation:
         finish((scratch.close for scratch in self.row_sampling.values()))
         finish((owner.close for owner in self.gathered_readbacks.values()))
         finish(stage.close_host for stage in self.coordinate_stages.values())
+        if self.g3_prefill is not None:
+            self.g3_prefill.close()
         if self.dense_owner is not None:
             self.dense_owner.close()
         if self.prepared_m32 is not None:

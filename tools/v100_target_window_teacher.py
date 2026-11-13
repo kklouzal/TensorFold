@@ -682,16 +682,25 @@ class WindowTeacher:
                 'forced windows require unique fresh States with no prefix reuse')
         self.streams[stream.sid] = (case, stream)
         self.by_state[id(stream.st)] = stream
-        frames._owned_teacher_json(self.directory/f'admission-{index}.json', {
+        frames._owned_teacher_publish(self.directory/f'admission-{index}.json', {
             'schema': 'tensorfold.target-window-teacher-admission-v1', 'index': index,
             'case_id': case['case_id'], 'worker_PID': frames.os.getpid(), 'rank': self.engine.rank,
             'input_sha256': self.prepared['input_sha256'], 'state': self._snapshot(stream)}, 1 << 20)
         return result
 
     def runnable(self, stream):
-        ready = len(self.streams) == ACTIVE and not self.decoder.filling and all(
+        if len(self.streams) != ACTIVE:
+            return False  # Keep the explicit all-eight cold admission barrier.
+        if stream.sid in self.decoder.fills:
+            return self.originals['_runnable'](stream)  # Original cold prefill can make progress.
+        ready = not self.decoder.filling and all(
             current.sid in self.decoder.streams and current.out for _, current in self.streams.values())
-        return getattr(self, 'window_enabled', False) and ready and self.originals['_runnable'](stream)
+        # Scheduler readiness runs before rounded enables the forced window.
+        # Inside a prefill round, keep newly joined decode streams gated until
+        # the next rounded boundary prepares all eight complete windows.
+        return (ready and self.round_index < len(self.prepared['data']['rounds'])
+                and (self.thread is None or getattr(self, 'window_enabled', False))
+                and self.originals['_runnable'](stream))
 
     def _first_sample(self, original, slot, logits, positions, sampling, **kwargs):
         if slot.w is not self.engine.w or id(slot.st) not in self.by_state:
@@ -1911,6 +1920,12 @@ class WindowClient:
                 self.cancelled.wait(.05)
         except BaseException as error:  # noqa: BLE001 - cancel producers and drain every accepted HTTP callback
             primary = error
+            # Publish before cancellation/drain: an accepted HTTP request can
+            # still be waiting for all eight admissions at the worker barrier.
+            # The owning supervisor must observe this main-thread failure now.
+            with self.lock:
+                if self._error is None:
+                    self._error = error
             self.cancelled.set()
         drain(tasks, primary=primary)  # No resource/result publication before every HTTP callback completes.
         require(len(tasks) == ACTIVE and all(row is not None for row in results), 'all eight forced HTTP outcomes required')

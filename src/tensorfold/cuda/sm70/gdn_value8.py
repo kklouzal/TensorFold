@@ -10,7 +10,8 @@ import hashlib
 from pathlib import Path
 
 MAX_ROWS = 65535  # The preprocessing/output kernels use CUDA grid dimension y.
-MAX_BATCH_STATES, MAX_BATCH_WINDOW = 24, 5
+MAX_BATCH_STATES, MAX_BATCH_WINDOW = 32, 5
+MAX_BATCH_ROWS = MAX_BATCH_STATES * MAX_BATCH_WINDOW
 
 
 def layout(rows):
@@ -46,7 +47,7 @@ def batch_layout(rows, participants, width):
     if (any(type(value) is not int for value in (rows, participants, width))
             or not 1 <= participants <= MAX_BATCH_STATES or not 1 <= width <= MAX_BATCH_WINDOW
             or not participants <= rows <= participants*width):
-        raise ValueError('value8 batch requires nonempty bounded 24-State/five-row windows')
+        raise ValueError('value8 batch requires nonempty bounded 32-State/five-row windows')
     bound = min(width, rows-participants+1)
     return {'rows': rows, 'participants': participants, 'max_window_rows': bound,
             'preload_rows': next(value for value in (1, 2, 4, 5) if bound <= value),

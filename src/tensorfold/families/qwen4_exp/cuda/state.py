@@ -176,7 +176,7 @@ class Buffers:
         # Prompt chunks can exceed decode max_rows. Their temporary replay rows
         # are shared layer-by-layer; committed State scratch stays decode-sized.
         self.prefill_gdn_scratch = (gdn_mod.GDNScratch(rows, dev, c.nk, c.nv, dtype=bf)
-                                   if prefill and bf == torch.float16 else None)
+                                   if prefill and bf == torch.float16 and getattr(w,'_private_g3_prefill',None) is None else None)
         if prefill:                    # the DeltaNet rows' conv taps ([conv state (3) | the chunk's rows]) and stream
             self.windows = (torch.arange(rows, dtype=torch.int32, device=dev)[:, None]
                             + torch.arange(c.conv_kernel, dtype=torch.int32, device=dev)).contiguous()

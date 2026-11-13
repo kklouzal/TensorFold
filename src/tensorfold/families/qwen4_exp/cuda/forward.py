@@ -257,6 +257,13 @@ def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts:
     inside, ascending) splits the chain: the rows before it, its state copied out, then on from it."""
 
     n, p, cur = a1 - a0, b.proj[0, a0:a1], st.cur[li]
+    g3 = getattr(b,'g3_prefill_owner',None)
+    if g3 is not None:
+        frame = getattr(b,'g3_target_frame',None)
+        if frame is None or p.dtype != torch.float16:
+            raise RuntimeError('selected G3 requires its explicit accepted-target-prefill frame')
+        g3.submit(frame,g,st,li,b,a0,a1,c)
+        return
     if p.dtype == torch.float16:
         start = 0
         for cut in (*cuts, None):
@@ -875,7 +882,16 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
     graph_taps = runtime is not None and getattr(b, "dspark_graph", False)
     capture = (runtime.begin_graph(b, R) if graph_taps else runtime.begin(segs, b)) if runtime is not None else None
     dflash_capture = dflash2.begin(segs, b) if dflash2 is not None else None
+    g3_owner = getattr(b,'g3_prefill_owner',None) if b.prefill else None
+    g3_frame = None
+    if g3_owner is not None:
+        if not check or getattr(b,'g3_target_frame',None) is not None:
+            raise ValueError('private G3 requires one accepted target frame with the original final codec check')
+        g3_frame = g3_owner.begin(w,b,segs,cuts)
+        b.g3_target_frame = g3_frame
     try:
+        if g3_frame is not None:
+            g3_frame.target_started()
         if archive:
             history_runtime.begin(segs, prefill=b.prefill)
         # The exact owner validated this live frame and retired transfer
@@ -904,8 +920,13 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
         if archive:
             history_runtime.enqueue(segs, prefill=b.prefill)
             history_runtime.submitted(segs, prefill=b.prefill)
+        if g3_frame is not None:
+            g3_frame.seal()
         if check:
             _kv_check(segs, comm=w.comm)
+        if g3_frame is not None:
+            g3_frame.mark_validated()
+            g3_frame.wait_native_reuse()  # One accepted-piece boundary; never inside a layer/segment.
         if runtime is not None:
             if graph_taps:
                 runtime.finish_graph_capture(capture, segs, b)
@@ -915,6 +936,10 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
             dflash2.finish(dflash_capture, segs)
         return result
     except BaseException as primary:
+        if g3_frame is not None:
+            # Retain borrowers for the existing cohort fatal/drain path. A
+            # local stream wait here can deadlock before peers abort NCCL.
+            g3_frame.fail(primary)
         if runtime is not None:
             try:
                 runtime.abort(capture, segs)
@@ -928,6 +953,9 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
                 from tensorfold.cleanup import raise_failures
                 raise_failures(primary, [cleanup])
         raise
+    finally:
+        if g3_frame is not None:
+            b.g3_target_frame = None  # MTP absorb reuses pbuf after this target phase.
 
 
 def _kv_begin(segs: Sequence[Seg]) -> None:

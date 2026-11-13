@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The private V100 campaign input producer accepts complete preparation DATA via
+`inputs --preparation PATH --preparation-sha256 SHA`. The installed runtime
+validates and normalizes it before model hashing; it cannot be mixed with the
+four existing preparation flags. This exposes existing opt-in candidate fields,
+not quality/performance acceptance or G3 selection. See
+[the producer contract](docs/optimization-validation.md#campaign-preparation-data).
+
 A separate maintained full32 ISO4 capacity gate uses the ordinary installed
 API and shared capacity producer. It requires32 actual native-context State
 owners per rank, MTP4/E160 and all40 graph keys, retaining the original36. It
@@ -29,6 +36,11 @@ throughput or numerical claim is made. See
 [admission scope](docs/optimization-validation.md#full-window-graph-headroom).
 Personal profiles use explicit24/32 ceilings. Uncapped automatic capacity still
 maximizes sessions; graph fit depends on the headroom left by that selection.
+
+The private [Value8 registered-batch candidate](docs/value8-c32.md) now admits
+up to32 States and160 verification rows in source. It reuses the existing paid
+GDN Q workspace and retains the same per-State arithmetic. The candidate stays
+default-off; new32-State native, model/quality and performance gates are pending.
 
 The standalone GDN native trial has a maintained resource/cache envelope in
 `tools/v100_gdn_native_envelope.py`. It preserves kernel failures through
@@ -107,11 +119,19 @@ the seven bounded span/State cases and controlled host-failure probe. These
 finite component results do not establish full-model quality, a general error
 bound or performance selection; see the [integration contract](docs/gdn-chunk64-prefill-integration.md).
 
+A separate default-off private `g3_prefill` preparation policy now connects the
+candidate to explicit accepted target-prefill frames, using one funded slab and
+one pass-boundary retirement across packed States/layers. It preserves the final
+codec check, existing decode/MTP paths and retained cuts. This group integration
+is unqualified; native group, full24/full32 model/quality/resource and performance
+gates remain pending. See the [integration contract](docs/gdn-chunk64-prefill-integration.md).
+
 The maintained G3 trial also has an authored `spans-state` native diagnostic
 phase for bounded cuts, real State banks and exact copy/retirement checks. Its
-matching Source39 native run completed with retained generated sources/cache,
-positive retirement and unchanged GPU health. It does not run or qualify the
-historical18 numerical cases or the stream profiler in that phase.
+matching Source39 native run completed on image `59d619d0` (source `361cb6b1`)
+with retained generated sources/cache, positive retirement and unchanged GPU
+health. This does not qualify the new group integration, historical18 numerical
+cases or stream profiler in that phase, full-model quality, capacity or P3.
 
 The GDN chunk64 compiler now requires an explicit immutable owned-TileLang
 attestation, retained wheel and cold hashing credit. It verifies the installed
@@ -3175,3 +3195,16 @@ The private C8 HTTP reader distinguishes uncaptured OwnerPreparation bucket
 graphs (`graph_rows=0`) from the decoder's separately proven E120/C36 step
 graphs. Retained actual Source40 HTTP telemetry covers the full service and
 fresh-registration reader contract; app telemetry and graph execution are unchanged.
+
+The private C8 bounded file reader accepts the existing cooperative read control.
+Ordered-admission failures are published to the owning supervisor before HTTP
+cancellation and drain; accepted callbacks retain their owners until completion.
+CPU lifecycle controls do not establish a model or quality result.
+
+C8 admission receipts publish complete bounded JSON with an atomic exclusive
+hard link. The client cannot observe an in-progress final receipt, and an
+existing receipt is never replaced. Other teacher output writes are unchanged.
+
+The private C8 teacher permits FIFO cold prefill only after all eight requests
+are admitted. Joined decode waits for a separate complete forced-window boundary;
+scheduler readiness can reach that boundary before the window is enabled.
