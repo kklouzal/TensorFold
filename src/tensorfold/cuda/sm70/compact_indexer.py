@@ -60,7 +60,8 @@ def publish(source, destination, at, generations, expected, status, layer):
 # for interpretation, this tuple for host packing. Both are checked at load.
 ROUND_LANE_FIELDS = ("ENABLE", "RING_RAW", "RING_COORDS", "PROTECTED", "PROTECTED_COORDS", "STAGE_RAW",
                      "STAGE_COORDS", "POOLED", "GENERATIONS", "STATUS", "EXPECTED_SLOT", "EXPECTED_OWNER",
-                     "POSITION", "FIRST", "ROWS", "POOLED_ROWS")
+                     "POSITION", "FIRST", "ROWS", "POOLED_ROWS", "PROPOSAL_RAW", "PROPOSAL_COORDS", "PROPOSAL_OFFSET",
+                     "RING_COMMIT")
 ROUND_LANE_WORDS = len(ROUND_LANE_FIELDS)
 ROUND_GROUPS = 16
 

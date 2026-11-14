@@ -23,7 +23,8 @@ __global__ void publish_kernel(const uint8_t* source, uint8_t* destination, int6
 namespace lane {
 enum Word : int {
     ENABLE = 0, RING_RAW, RING_COORDS, PROTECTED, PROTECTED_COORDS, STAGE_RAW, STAGE_COORDS, POOLED,
-    GENERATIONS, STATUS, EXPECTED_SLOT, EXPECTED_OWNER, POSITION, FIRST, ROWS, POOLED_ROWS, COUNT
+    GENERATIONS, STATUS, EXPECTED_SLOT, EXPECTED_OWNER, POSITION, FIRST, ROWS, POOLED_ROWS,
+    PROPOSAL_RAW, PROPOSAL_COORDS, PROPOSAL_OFFSET, RING_COMMIT, COUNT
 };
 }
 constexpr int RATIO = 4, DIM = 128, GROUPS = 16;
@@ -64,6 +65,14 @@ __global__ void round_stage_kernel(const __half* ik, const int64_t* tables, __ha
         int64_t* protect_coords = word<int64_t>(t, lane::PROTECTED_COORDS);
         for (int at = threadIdx.x; at < RATIO * DIM; at += blockDim.x) protect[at] = ring[at];
         for (int at = threadIdx.x; at < RATIO * 3; at += blockDim.x) protect_coords[at] = ring_coords[at];
+        // MTP proposal span: the new rows also enter the speculative archive.
+        const int64_t offset = t[lane::PROPOSAL_OFFSET];
+        if (offset >= 0) {
+            __half* proposal = word<__half>(t, lane::PROPOSAL_RAW) + offset * DIM;
+            int64_t* proposal_coords = word<int64_t>(t, lane::PROPOSAL_COORDS) + offset * 3;
+            for (int64_t at = threadIdx.x; at < rows * DIM; at += blockDim.x) proposal[at] = ik[first * DIM + at];
+            for (int64_t at = threadIdx.x; at < rows * 3; at += blockDim.x) proposal_coords[at] = stage_coords[at];
+        }
     }
     const int64_t group0 = start / RATIO, groups = (start + rows) / RATIO - group0;
     for (int at = threadIdx.x; at < GROUPS * RATIO * DIM; at += blockDim.x) {
@@ -111,6 +120,33 @@ __global__ void round_publish_kernel(const __half* values, const int64_t* tables
             if (current && fits) pooled[(group0 + group) * DIM + col] = ok ? value : __float2half(0.f);
         }
         if (__syncthreads_or(bad) && !threadIdx.x) latch(status, 16, layer);
+    }
+    // MTP commit of the window end: the ring keeps only the incomplete last
+    // group's raw rows (older rows from the protected ring), zeros elsewhere.
+    if (t[lane::RING_COMMIT] && current) {
+        const int64_t end = start + rows, count = end % RATIO;
+        const __half* protect = word<const __half>(t, lane::PROTECTED);
+        const int64_t* protect_coords = word<const int64_t>(t, lane::PROTECTED_COORDS);
+        const __half* stage = word<const __half>(t, lane::STAGE_RAW);
+        const int64_t* stage_coords = word<const int64_t>(t, lane::STAGE_COORDS);
+        __half* ring = word<__half>(t, lane::RING_RAW);
+        int64_t* ring_coords = word<int64_t>(t, lane::RING_COORDS);
+        for (int at = threadIdx.x; at < RATIO * (DIM + 3); at += blockDim.x) {
+            const bool coordinate = at >= RATIO * DIM;
+            const int item = coordinate ? at - RATIO * DIM : at;
+            const int slot = coordinate ? item / 3 : item / DIM, col = coordinate ? item % 3 : item % DIM;
+            const int64_t position = end - count + ((slot - (end - count) % RATIO) % RATIO + RATIO) % RATIO;
+            const bool live = position < end;
+            if (coordinate) {
+                ring_coords[item] = !live ? 0 : position < start ? protect_coords[slot * 3 + col]
+                                                                  : stage_coords[(position - start) * 3 + col];
+            } else {
+                ring[item] = !live ? __float2half_rn(0.f) : position < start ? protect[slot * DIM + col]
+                                                                              : stage[(position - start) * DIM + col];
+            }
+        }
+    } else if (t[lane::RING_COMMIT] && !threadIdx.x) {
+        latch(status, 32, layer);
     }
 }
 }

@@ -57,9 +57,9 @@ class ExactStateGraphs:
         # Verify keys additionally captured with their unique-history attention
         # inside the graph (OwnerBuffers round tables). Piecewise keys remain
         # for frames outside the round selector bound.
-        self.round_pieces = {}
-        self.round_hits = 0
-        self.round_reason = None
+        self.round_pieces = {"verify": {}, "mtp": {}}
+        self.round_hits = {"verify": 0, "mtp": 0}
+        self.round_reason = {}
         flag = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUND_CAPTURE", "1")
         if flag not in ("0", "1"):
             raise ValueError("round attention capture flag must be 0 or 1")
@@ -193,16 +193,17 @@ class ExactStateGraphs:
         comm.all_gather(send, result)
         return bool(result.min().item())
 
-    def _round_ready(self, segs):
-        """None when this decoder's verify keys capture attention inside the round graph."""
+    def _round_ready(self, kind, segs):
+        """None when this role's keys capture attention inside the round graph."""
         if not self.round_enabled:
             return "disabled by TENSORFOLD_PRIVATE_SM70_ROUND_CAPTURE=0"
-        workspace = getattr(self.dec.buf, "history_owner", None)
+        source = self.dec.buf if kind == "verify" else self.dec.mbuf
+        workspace = getattr(source, "history_owner", None)
         if workspace is None:
-            return "no unique-history decode owner"
-        reason = workspace.round_capture_reason(self.dec.buf, self.dec.w)
+            return "no unique-history owner"
+        reason = workspace.round_capture_reason(source, self.dec.w)
         if reason is None:
-            workspace.prepare_round(segs[0][0].att_index)
+            workspace.prepare_round(segs[0][0].att_index if kind == "verify" else {self.dec.w.mtp.layer.index: 0})
         return reason
 
     def _capture(self, kind, key, segs, source, *, round_tables=False):
@@ -300,7 +301,7 @@ class ExactStateGraphs:
         owner.bytes += took
         owner.room_bytes += took
         if round_tables:
-            self.round_pieces[key] = pieces
+            self.round_pieces[kind][key] = pieces
             self.captured_keys.append((kind + "-round", *key))
             return pieces
         (owner.verify if kind == "verify" else owner.mtp)[key] = pieces
@@ -355,21 +356,21 @@ class ExactStateGraphs:
         pieces = (self.owner.verify if kind == "verify" else self.owner.mtp).get(key)
         if pieces is None and self.preparing and self.selected_keys is not None and (kind, *key) in self.selected_keys:
             pieces = self._capture(kind, key, segs, source)
-            if pieces is not None and kind == "verify":
-                if self.round_reason is None:
-                    self.round_reason = self._round_ready(segs) or False
-                if self.round_reason is False:
+            if pieces is not None:
+                if kind not in self.round_reason:
+                    self.round_reason[kind] = self._round_ready(kind, segs) or False
+                if self.round_reason[kind] is False:
                     self._capture(kind, key, segs, source, round_tables=True)
             if pieces is not None:
                 # Capture preparation reset/restaged these same actual slots.
                 # Validate the newly issued frame before the first replay too.
                 validate(source, segs)
-        if kind == "verify" and pieces is not None:
+        if pieces is not None:
             from .history_owner import round_context_fits
 
-            whole = self.round_pieces.get(key)
-            if whole is not None and round_context_fits(segs, self.dec.w.cfg.index_ratio):
-                return self._replay_round(whole, segs, source)
+            whole = self.round_pieces[kind].get(key)
+            if whole is not None and round_context_fits(segs, self.dec.w.cfg.index_ratio, mtp=kind == "mtp"):
+                return self._replay_round(kind, whole, segs, source)
         if pieces is None:
             self.misses += 1
             if not self.preparing:
@@ -390,7 +391,7 @@ class ExactStateGraphs:
             self.dec._failed_graphs, self.dec._memory_error = self.owner, error
             raise
 
-    def _replay_round(self, pieces, segs, source):
+    def _replay_round(self, kind, pieces, segs, source):
         workspace = source.history_owner
         try:
             _kv_begin(segs)
@@ -401,9 +402,9 @@ class ExactStateGraphs:
                     self._insert(insert, segs, source)
             workspace.finish_round(source, segs)
             self.hits += 1
-            self.round_hits += 1
+            self.round_hits[kind] += 1
             if not self.preparing:
-                self.serving_hits["verify"] += 1
+                self.serving_hits[kind] += 1
             return pieces.out
         except BaseException as error:
             self.owner.retain_failure(error)
@@ -504,8 +505,8 @@ class ExactStateGraphs:
         for (kind, key), pieces in tuple(self.bindings.items()):
             for graph in pieces.graphs:
                 graph.reset()
-            if kind == "verify-round":
-                self.round_pieces.pop(key, None)
+            if kind.endswith("-round"):
+                self.round_pieces[kind[:-len("-round")]].pop(key, None)
             else:
                 (self.owner.verify if kind == "verify" else self.owner.mtp).pop(key, None)
             del self.bindings[(kind, key)]
@@ -531,5 +532,7 @@ class ExactStateGraphs:
                 "gdn_value8_workspace": deepcopy(self.value8_workspace_record),
                 "exact_graph_catalogue": catalogue,
                 "eager_owner_inserts": self.owner_inserts, "capture_during_serving": False,
-                "round_attention": {"captured_keys": len(self.round_pieces), "replay_hits": self.round_hits,
-                                    "unavailable": self.round_reason or None}}
+                "round_attention": {role: {"captured_keys": len(self.round_pieces[role]),
+                                           "replay_hits": self.round_hits[role],
+                                           "unavailable": self.round_reason.get(role) or None}
+                                    for role in ("verify", "mtp")}}

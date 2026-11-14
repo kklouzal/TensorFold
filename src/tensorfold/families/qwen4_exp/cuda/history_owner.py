@@ -36,13 +36,14 @@ if _PRIVATE_EMPTY_PREFIX not in ("inherit", "cpu-empty-v1"):
 ROUND_SELECTOR_BLOCKS = 4096
 
 
-def round_context_fits(segments, ratio):
+def round_context_fits(segments, ratio, *, mtp=False):
     """The captured selector/pooling bounds: at most ROUND_SELECTOR_BLOCKS
     groups of context, at most 16 pooled groups per segment window and the
     eager owner's fixed 16-row pooled normalization shape (capacity >= 64)."""
     from tensorfold.cuda.sm70.compact_indexer import ROUND_GROUPS
 
-    return all(state.pos + last - first <= ROUND_SELECTOR_BLOCKS * ratio and last - first <= 4 * ROUND_GROUPS - 3
+    return all((state.mtp_len if mtp else state.pos) + last - first <= ROUND_SELECTOR_BLOCKS * ratio
+               and last - first <= 4 * ROUND_GROUPS - 3
                and state.compact_indexer is not None and state.compact_indexer.capacity // 4 >= ROUND_GROUPS
                for state, first, last in segments)
 
@@ -1151,22 +1152,25 @@ class OwnerBuffers:
         from .owner_execution import RN_KERNEL_FAMILY
 
         c = weights.cfg
+        role = self.owned_q8_window_role
+        prefix = "mtp" if role == "mtp" else "target"
         stage = getattr(buffers, "compact_indexer_stage", None)
-        position = getattr(buffers, "target_indexer_position", None)
+        position = getattr(buffers, prefix + "_indexer_position", None)
+        storage = getattr(buffers, prefix + "_indexer_coordinate_storage", None)
         module = self.owned_q8_window_preparation
         if self.native_kernel_family != RN_KERNEL_FAMILY or self.descriptors is None or self.native_states is None:
             return "round capture requires the prepared RN owner family and State catalogue"
-        if (self.prefill or self.owned_q8_window_role != "decode" or self.owned_q8_window_dispatch != "grid-v1"
+        if (self.prefill or role not in ("decode", "mtp") or self.owned_q8_window_dispatch != "grid-v1"
                 or module is None or not callable(getattr(module, "owned_q8_prepare_rows", None))):
-            return "round capture requires the grid owned Q8 decode window"
+            return "round capture requires the grid owned Q8 decode/MTP window"
         if (buffers.owner_graph_family != "uncaptured" or buffers.owner_kernel_family != self.native_kernel_family
-                or buffers.owner_role != "decode" or buffers.history_owner is not self):
-            return "round capture requires the uncaptured decode owner role"
+                or buffers.owner_role != role or buffers.history_owner is not self):
+            return "round capture requires the uncaptured decode/MTP owner role"
         if (self.native_pair is None or (self.native_pair.key.bits, self.native_pair.key.codec,
                                          self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
             return "round capture requires ordinary Q8 history"
-        if (stage is None or position is None or buffers.target_indexer_coordinate_storage is None
-                or buffers.target_indexer_coordinate_storage is not stage.coordinates
+        if (stage is None or position is None or storage is None
+                or storage is not (stage.mtp_coordinates if role == "mtp" else stage.coordinates)
                 or buffers.rows > self.rows or c.index_ratio != 4 or c.index_dim != 128
                 or self.idw != c.index_budget + c.index_ratio or c.index_budget % c.index_ratio):
             return "round capture requires the compact coordinate stage within one owner chunk"
@@ -1224,6 +1228,7 @@ class OwnerBuffers:
 
         if self.round_device is None or self.closed:
             raise RuntimeError("round tables were not prepared before serving")
+        mtp = self.owned_q8_window_role == "mtp"
         rows = segments[-1][2]
         bucket = self.native_bucket(rows)
         if len(segments) > rows or rows > self.rows:
@@ -1237,8 +1242,8 @@ class OwnerBuffers:
         lanes[:, :len(segments)] = 0
         stage = buffers.compact_indexer_stage
         self.wait_native_reuse()
-        stage.begin(mtp=False)
-        epoch = stage.target_epoch
+        stage.begin(mtp=mtp)
+        epoch = stage.mtp_epoch if mtp else stage.target_epoch
         live_base = self.round_live.data_ptr()
         ordinals = self.round_ordinals
         for lane, (state, first, last) in enumerate(segments):
@@ -1246,13 +1251,15 @@ class OwnerBuffers:
             if registered is None or registered[0] is not state or registered[1] != self._storage_signature(
                     self._state_storage(state)):
                 raise RuntimeError("round descriptor points outside its retained canonical storage catalogue")
-            if state.att_index != ordinals:
+            if not mtp and state.att_index != ordinals:
                 raise ValueError("round tables require the prepared attention ordinal map")
+            if mtp and not hasattr(state, "mtp_kc"):
+                raise ValueError("MTP round tables require the selected resident MTP cache")
             slot, owner = state.slot_generation, state.history_generation
             if (type(slot) is not int or type(owner) is not int
                     or not 0 <= slot <= 2**63 - 1 or not 0 <= owner <= 2**63 - 1):
                 raise OverflowError("native descriptor generation exceeds signed int64")
-            count, pos = last - first, state.pos
+            count, pos = last - first, state.mtp_len if mtp else state.pos
             if type(pos) is not int or not 0 <= pos <= state.capacity - count or state.compact_indexer is None:
                 raise ValueError("append range must fit the promised logical history")
             indexer = state.compact_indexer
@@ -1262,11 +1269,12 @@ class OwnerBuffers:
             live_pointer = live_base + 4 * lane
             placement, include_mtp = state.history_placement, hasattr(state, "mtp_kc")
             generations, status, position = (state.history_generations.data_ptr(), state.kv_status.data_ptr(),
-                                             state.pos_dev.data_ptr())
-            for ai in range(len(ordinals)):
-                cache, table = state.kc[ai], state.pooled[ai]
+                                             (state.mtp_pos if mtp else state.pos_dev).data_ptr())
+            for index in range(len(ordinals)):
+                ai = placement.target_layers if mtp else index
+                cache, table = (state.mtp_kc, state.mtp_pooled) if mtp else (state.kc[ai], state.pooled[ai])
                 index_owner = placement.indexer_owner(state.history_slot, ai, include_mtp=include_mtp)
-                block = desc[ai, first:last]
+                block = desc[index, first:last]
                 block[:] = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
                             cache.page_offsets.data_ptr(), generations, status, position, live_pointer, slot, owner,
                             state.capacity, cache.capacity, cache.page_offsets.numel(), 0, index_owner)
@@ -1276,26 +1284,37 @@ class OwnerBuffers:
                     raise ValueError("compact indexer ownership differs from its canonical placement")
                 if entry is None:
                     continue
-                pooled[ai, first:last] = table.data_ptr()
+                pooled[index, first:last] = table.data_ptr()
                 entry.validate_append(pos, count, expected)
                 entry.wait_native_reuse()
-                raw, axes, _ = stage.span(ai, first, last, mtp=False)
-                lanes[ai, lane] = (1, entry.raw.data_ptr(), entry.coordinates.data_ptr(), entry.protected.data_ptr(),
-                                   entry.protected_coordinates.data_ptr(), raw.data_ptr(), axes.data_ptr(),
-                                   table.data_ptr(), generations, status, slot, owner, position, first, count,
-                                   table.shape[0])
-                entry.span = Span(pos, raw, axes, stage, epoch, False, expected)
-            state.target_tentative_length = pos + count
-        stage.wait(mtp=False)
+                raw, axes, _ = stage.span(ai, first, last, mtp=mtp)
+                offset = -1 if entry.base is None else pos - entry.base
+                lanes[index, lane] = (1, entry.raw.data_ptr(), entry.coordinates.data_ptr(), entry.protected.data_ptr(),
+                                      entry.protected_coordinates.data_ptr(), raw.data_ptr(), axes.data_ptr(),
+                                      table.data_ptr(), generations, status, slot, owner, position, first, count,
+                                      table.shape[0], entry.proposal_raw.data_ptr(),
+                                      entry.proposal_coordinates.data_ptr(), offset, int(mtp))
+                entry.span = Span(pos, raw, axes, stage, epoch, mtp, expected)
+                if mtp:
+                    # Cache.begin/pool/prepare_commit/publish_commit host effects of
+                    # one MTP window; the captured publish writes the committed ring.
+                    if offset >= 0:
+                        entry.proposal_count = offset + count
+                    entry.n = entry.span.resolved = pos + count
+            if not mtp:
+                state.target_tentative_length = pos + count
+        stage.wait(mtp=mtp)
         self.round_device.copy_(self.round_host, non_blocking=True)
         self.round_done.record(torch.cuda.current_stream(self.queries.device))
         self._round_pending = True
 
     def finish_round(self, buffers, segments):
         """Publish the replayed round's stream ownership exactly as eager layers marked theirs."""
-        buffers.compact_indexer_stage.mark(mtp=False)
+        mtp = self.owned_q8_window_role == "mtp"
+        buffers.compact_indexer_stage.mark(mtp=mtp)
         for state, _, _ in segments:
-            for entry in state.compact_indexer.entries[:len(self.round_ordinals)]:
+            indexer = state.compact_indexer
+            for entry in (indexer.entries[-1:] if mtp else indexer.entries[:len(self.round_ordinals)]):
                 if entry is not None:
                     entry._mark()
         self.mark_native_submitted()
@@ -1451,12 +1470,14 @@ def captured_attention_layer(layer, weights, participants, buffers, total_rows):
     rows, bucket = total_rows, owner.native_bucket(total_rows)
     desc = owner.round_desc[ai, :bucket]
     module = owner.owned_q8_window_preparation
-    position = buffers.target_indexer_position
+    mtp = owner.owned_q8_window_role == "mtp"
+    position = buffers.mtp_indexer_position if mtp else buffers.target_indexer_position
+    coordinates = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
     projection = buffers.pa[:rows]
     at = 2 * c.heads * c.head_dim + 2 * c.head_dim + c.index_heads * c.index_dim
     ik = owner.round_ik[:rows]
     module.guard_rows_owned(projection[:, at:at + c.index_dim], ik, desc, 16, layer.index)
-    module.owned_q8_prepare_rows(projection, buffers.target_indexer_coordinates[:rows], a.q_scale, a.k_scale,
+    module.owned_q8_prepare_rows(projection, coordinates[:rows], a.q_scale, a.k_scale,
         a.iq_scale, position.inv_freq, buffers.q[:rows], buffers.iq[:rows], desc, owner.native_page_tokens,
         layer.index, c.heads, c.index_heads, c.index_dim, c.eps, position.amplitude,
         position.sections[1], position.sections[2])

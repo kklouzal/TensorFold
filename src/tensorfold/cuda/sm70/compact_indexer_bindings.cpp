@@ -36,12 +36,12 @@ void publish(const T& source, T destination, int64_t at, const T& generations,
     if (source.numel()) compact_publish_cuda(source, destination, at * stride, generations, slot, owner, status, layer);
 }
 
-// Round-table lanes: [lanes, 16] int64 words owned by the canonical round owner.
+// Round-table lanes: [lanes, 20] int64 words owned by the canonical round owner.
 // Every pointer word references a retained State/staging tensor; capacity was
 // validated on the host before the table was published.
 void check_round(const T& tables, const T& owner) {
     TORCH_CHECK(tables.is_cuda() && tables.device() == owner.device() && tables.is_contiguous()
-        && tables.scalar_type() == at::kLong && tables.dim() == 2 && tables.size(1) == 16,
+        && tables.scalar_type() == at::kLong && tables.dim() == 2 && tables.size(1) == 20,
         "compact round lane table geometry");
 }
 
