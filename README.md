@@ -634,6 +634,24 @@ MLX prompt chunks follow rendered token sequences and recognized message boundar
 
 Persistent prefix snapshots use format 2 and explicit current-model registries. Malformed, legacy, mismatched or unregistered snapshots rebuild through ordinary prefill. Stored class names do not import code. Snapshot identity hashes selected model/draft trees and installed runtime inputs, including native libraries; model inputs must remain immutable. Explicitly trusted checkpoint Python uses a process-specific namespace. `--snapshot-dir none` disables persistent reuse and these persistence hashes. CUDA engines own separate prompt states and do not use MLX disk snapshots. See the [recipe book](docs/recipes/README.md).
 
+### MLX environment switches
+
+These read once at startup on Apple Silicon; defaults are the qualified paths.
+
+- `TF_NEMOTRON_MTP=/path/mtp-4bit.safetensors` loads that Nemotron-H MTP head instead of
+  searching the model directory and the default cache; `TF_NEMOTRON_MTP=0` loads none.
+- `TF_ROW_ATTENTION=1` lets the row decoder (GPUs without tensor units) verify draft trees with
+  row-exact tree attention; the default verifies chains query by query.
+- `TF_MOE_ROWS=rows` runs Qwen3.6 MoE rows one at a time instead of one batched gather
+  (same bits; reference/comparison path).
+- `TF_COPY_ROWS=N` caps the copy-draft window of a lone stream (0: the first window; at most 128).
+- `TF_FLASH_FUSED=0` loads Flash Next without the fused decode (no MTP drafts).
+- `TF_FLASH_DENSE=lane|rows|matrix` and `TF_FLASH_PREFILL=0` select Flash Next dense and
+  reference-prefill kernels (see the Flash Next recipe).
+- Diagnostics, off by default: `TF_DRAFT_PROFILE=1`, `TF_FAMILY_PROFILE=1` (host time per
+  phase), `TF_FAMILY_ROUND_LOG=path`, `TF_DRAFT_LOG=path` (input to
+  `tools/fit_draft_calibration.py`), `TF_DRAFT_CAPTURE=dir`, `TF_TREE_TRACE=path`.
+
 ## KV cache formats
 
 Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider admits `fp16` (its CLI default), `int8`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4`, and the distinct compact `rotorquant-planar4-sm70-v1`, with supported independent sides. The compact format requires its own V100 qualification. Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70.
