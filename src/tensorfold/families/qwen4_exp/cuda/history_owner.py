@@ -503,8 +503,17 @@ def partial_statistics(query, cache, selected, visible, scale, *, tile_preparer=
     return maximum, denominator
 
 
+def peer_order(cache):
+    """The four KV-group peers in descriptor MERGE_ORDER (first owned logical page) order."""
+    return tuple(j ^ (cache.merge_order >> (2 * j) & 3) for j in range(4))
+
+
 def merge_statistics(maxima, denominators, *, status=None, layer=0):
-    """Global softmax normalization before the target's FP16 probability cast."""
+    """Global softmax normalization before the target's FP16 probability cast.
+
+    The four peers arrive in the row's ``peer_order``: the denominator sum then
+    follows the logical history, not the session slot's rank rotation.
+    """
     maximum = maxima.amax(0)
     safe = torch.where(torch.isfinite(maximum), maximum, 0)
     factor = torch.where(torch.isfinite(maxima), torch.exp(maxima - safe[None]), 0)
@@ -1742,10 +1751,11 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
 
             global_normalization = merge_global_statistics(partials, owner.partial, owner.global_stats,
                 group_start, [(state.kv_status, first, last) for state, _, first, last, _, _ in selected_segments],
-                layer.index)
+                layer.index, orders=[peer_order(state.mtp_kc if mtp else state.kc[ai])
+                                     for state, ai, _, _, _, _ in selected_segments])
         for state, cache, row, query, ids, visible in jobs:
             if global_normalization is None:
-                pieces = partials[group_start:group_start + 4, row]
+                pieces = partials[[group_start + peer for peer in peer_order(cache)], row]
                 maximum, denominator = merge_statistics(pieces[..., 0], pieces[..., 1],
                                                          status=state.kv_status, layer=layer.index)
             else:
@@ -1772,10 +1782,11 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
         local_heads = slice((rank % 4) * c.heads, (rank % 4 + 1) * c.heads)
         for state, ai, first, last, _, _ in selected_segments:
             cache = state.mtp_kc if mtp else state.kc[ai]
+            order = peer_order(cache)
             for row in range(first, last):
                 pieces = value_parts[group_start:group_start + 4, row, local_heads]
-                result = pieces[0]
-                for peer in range(1, 4):
+                result = pieces[order[0]]
+                for peer in order[1:]:
                     result = result + pieces[peer]
                 if cache.value_format.codec:
                     ops._rotor_rotate(result[None], buffers.attn_o[base + row:base + row + 1],

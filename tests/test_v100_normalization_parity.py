@@ -7,7 +7,7 @@ import torch
 from tools import v100_owned_qualification as owned
 from tensorfold.cuda.sm70 import reference_owner_tiles as runtime
 from tensorfold.families.qwen4_exp.cuda.history_owner import merge_statistics
-from tests.test_sm70_global_normalization import aligned_workspace, sample
+from tests.test_sm70_global_normalization import aligned_workspace, rank_orders, sample
 
 pytestmark = pytest.mark.torch
 
@@ -47,8 +47,8 @@ def fixture(tmp_path, monkeypatch, *, fault=None, shared_status=False, rows=5, m
     cut = min(2, rows)
     ranges = [(status, 0, cut)] + ([(second, cut, rows)] if cut < rows else [])
     made, saved, failures = [], {}, []
-    def candidate(*args):
-        result = runtime.merge_global_statistics(*args)
+    def candidate(*args, **kwargs):
+        result = runtime.merge_global_statistics(*args, **kwargs)
         if fault == 'input':
             args[0].flatten()[0] = 19.
         made.append(result)
@@ -77,8 +77,8 @@ def test_same_input_shadow_status_and_return_identity_preserved(tmp_path, monkey
     # An independent call on cloned statuses checks that the oracle never mutates
     # the candidate's actual State status words.
     expected_ranges = [(s.clone(), first, last) for s, first, last in ranges]
-    runtime.merge_global_statistics(data, aligned_workspace(5, 'cpu'), torch.empty_like(output), 0, expected_ranges, 17)
-    returned = module.merge_global_statistics(data, local, output, 0, ranges, 17)
+    runtime.merge_global_statistics(data, aligned_workspace(5, 'cpu'), torch.empty_like(output), 0, expected_ranges, 17, orders=rank_orders(expected_ranges))
+    returned = module.merge_global_statistics(data, local, output, 0, ranges, 17, orders=rank_orders(ranges))
     assert returned is made[0] and all(a is b for a, b in zip(returned, made[0]))
     assert all(torch.equal(a[0], b[0]) for a, b in zip(ranges, expected_ranges))
     assert not failures and not saved
@@ -89,7 +89,7 @@ def test_same_input_shadow_status_and_return_identity_preserved(tmp_path, monkey
     assert witness.closed and not witness.roles and witness.engine is None and witness.observations is None
     assert module.merge_global_statistics is not witness
     with pytest.raises(RuntimeError, match='already retired'):
-        old_callback(data, local, output, 0, ranges, 17)
+        old_callback(data, local, output, 0, ranges, 17, orders=rank_orders(ranges))
     assert not failures
     assert (witness.directory / 'summary.json').exists()
 
@@ -99,9 +99,9 @@ def test_wrong_original_bit_or_status_or_input_change_captures_before_fatal(tmp_
     engine, witness, module, data, local, output, ranges, made, saved, failures = fixture(tmp_path, monkeypatch, fault=fault)
     before = [s.clone() for s, _, _ in ranges]
     expected_ranges = [(s.clone(), first, last) for s, first, last in ranges]
-    runtime.merge_global_statistics(data, aligned_workspace(5, 'cpu'), torch.empty_like(output), 0, expected_ranges, 17)
+    runtime.merge_global_statistics(data, aligned_workspace(5, 'cpu'), torch.empty_like(output), 0, expected_ranges, 17, orders=rank_orders(expected_ranges))
     with pytest.raises(RuntimeError, match='raw-bit/status parity mismatch') as caught:
-        module.merge_global_statistics(data, local, output, 0, ranges, 17)
+        module.merge_global_statistics(data, local, output, 0, ranges, 17, orders=rank_orders(ranges))
     assert len(made) == 1 and failures == [caught.value]
     assert set(saved) == {'gathered-before', 'gathered-after', 'new-max', 'new-den', 'old-max', 'old-den',
                           'status-before', 'status-new', 'status-old'}
@@ -114,7 +114,7 @@ def test_wrong_original_bit_or_status_or_input_change_captures_before_fatal(tmp_
 
 def test_same_status_pointer_is_one_shadow_owner(tmp_path, monkeypatch):
     _, _, module, data, local, output, ranges, _, _, failures = fixture(tmp_path, monkeypatch, shared_status=True)
-    module.merge_global_statistics(data, local, output, 0, ranges, 17)
+    module.merge_global_statistics(data, local, output, 0, ranges, 17, orders=rank_orders(ranges))
     assert not failures
 
 
@@ -185,7 +185,7 @@ def test_candidate_primary_survives_publish_failure_and_notification_still_occur
     witness.original = fail
     monkeypatch.setattr(witness, '_publish', lambda: (_ for _ in ()).throw(cleanup))
     with pytest.raises(OSError) as caught:
-        module.merge_global_statistics(data, local, output, 0, ranges, 17)
+        module.merge_global_statistics(data, local, output, 0, ranges, 17, orders=rank_orders(ranges))
     assert caught.value is primary and failures == [primary]
     assert caught.value.__cause__ is cleanup
     assert witness.roles and not witness.active
@@ -252,7 +252,7 @@ def test_detected_wrong_bit_remains_primary_and_capture_runs_when_publication_fa
     original_publish = witness._publish
     monkeypatch.setattr(witness, '_publish', lambda: (_ for _ in ()).throw(publication))
     with pytest.raises(RuntimeError, match='raw-bit/status parity mismatch') as caught:
-        module.merge_global_statistics(data, local, output, 0, ranges, 17)
+        module.merge_global_statistics(data, local, output, 0, ranges, 17, orders=rank_orders(ranges))
     assert failures == [caught.value] and caught.value.__cause__ is publication
     assert len(saved) == 9 and (witness.directory / 'mismatch.json').exists()
     assert witness.failed and not witness.active

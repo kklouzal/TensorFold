@@ -48,6 +48,11 @@ def sample(rows, device, group, phase=0):
     return data
 
 
+def rank_orders(ranges):
+    """Plain rank order for every State range (descriptor MERGE_ORDER word 0)."""
+    return [(0, 1, 2, 3)] * len(ranges)
+
+
 def statuses(rows, device):
     ends = sorted(set([0, min(2, rows), min(7, rows), rows]))
     return [(torch.tensor(([2, 9] if i == 1 else [0, -2]), dtype=torch.int32, device=device), first, last)
@@ -76,7 +81,7 @@ def test_global_batch_matches_unchanged_scalar_shapes_status_and_storage(rows, g
     expected = scalar_oracle(data, group, expected_status, 37)
     workspace = aligned_workspace(rows, 'cpu')
     output = torch.full((rows + 3, 12, 2), 19., dtype=torch.float32)
-    actual = merge_global_statistics(data, workspace, output, group, actual_status, 37)
+    actual = merge_global_statistics(data, workspace, output, group, actual_status, 37, orders=rank_orders(actual_status))
     for a, e in zip(actual, expected):
         assert_bits(a, e)
     for (a, _, _), (e, _, _) in zip(actual_status, expected_status):
@@ -90,6 +95,38 @@ def test_global_batch_matches_unchanged_scalar_shapes_status_and_storage(rows, g
     workspace.fill_(-777.)
     for a, e in zip(actual, expected):
         assert_bits(a, e)
+
+
+@pytest.mark.parametrize('group', [0, 4])
+def test_peer_merge_order_makes_slot_rotations_bitwise_identical(group):
+    """Regression: the reference owner summed peers in rank order, so a session slot's
+    rank rotation of page residues changed the FP32 denominators (and values) past 256 rows."""
+    rows = 6
+    torch.manual_seed(3)
+    residues = torch.randn((4, rows, 12, 2))
+    residues[..., 0].mul_(4)
+    residues[..., 1].abs_().mul_(1000).add_(.1)
+    residues[:, :, :, 1] *= torch.tensor([1., 1e-4, 1e4, 3.])[:, None, None]
+    results, scalar, plain = [], [], []
+    for base in range(4):
+        order = tuple(base ^ residue for residue in range(4))
+        data = torch.zeros((8, rows, 12, 2))
+        for residue in range(4):
+            data[group + (base ^ residue)] = residues[residue]
+        ranges = statuses(rows, 'cpu')
+        results.append(merge_global_statistics(data, aligned_workspace(rows, 'cpu'), torch.empty((rows, 12, 2)),
+                                               group, ranges, 5, orders=[order] * len(ranges)))
+        pieces = data[[group + peer for peer in order]]
+        scalar.append([merge_statistics(pieces[:, row, :, 0], pieces[:, row, :, 1]) for row in range(rows)])
+        plain.append(merge_global_statistics(data, aligned_workspace(rows, 'cpu'), torch.empty((rows, 12, 2)),
+                                             group, statuses(rows, 'cpu'), 5, orders=rank_orders(ranges)))
+    for result, row_results in zip(results, scalar):
+        for actual, expected in zip(result, results[0]):
+            assert_bits(actual, expected)
+        for row, (maximum, denominator) in enumerate(row_results):
+            assert_bits(maximum, results[0][0][row])
+            assert_bits(denominator, results[0][1][row])
+    assert any(not torch.equal(p[1], plain[0][1]) for p in plain[1:])  # rank order is rotation-sensitive
 
 
 @pytest.mark.parametrize('failure', ['input-alias', 'output-alias', 'status-alias', 'missing-range', 'small-workspace'])
@@ -111,7 +148,7 @@ def test_invalid_phase_storage_refuses_before_writing(failure):
         workspace = workspace[:10]
     before = output.clone()
     with pytest.raises(ValueError):
-        merge_global_statistics(data, workspace, output, 0, ranges, 1)
+        merge_global_statistics(data, workspace, output, 0, ranges, 1, orders=rank_orders(ranges))
     assert_bits(output, before)
 
 
@@ -157,7 +194,7 @@ def test_valid_mass_keeps_unrelated_error_and_unset_layer_unchanged():
     ranges = statuses(5, 'cpu')
     ranges[0][0].copy_(torch.tensor([1, -2], dtype=torch.int32))
     before = [s.clone() for s, _, _ in ranges]
-    out = merge_global_statistics(data, aligned_workspace(5, 'cpu'), torch.empty((5, 12, 2)), 4, ranges, 19)
+    out = merge_global_statistics(data, aligned_workspace(5, 'cpu'), torch.empty((5, 12, 2)), 4, ranges, 19, orders=rank_orders(ranges))
     assert_bits(out[0], torch.zeros((5, 12)))
     assert_bits(out[1], torch.full((5, 12), 4.))
     for (status, _, _), expected in zip(ranges, before):
@@ -194,7 +231,7 @@ def test_actual_reference_layer_selects_batch_and_preserves_four_phase_order(mon
     state = NS(history_placement=HistoryPlacement(8, 2, 12), history_slot=1, pos=0,
                att_index={0: 0}, graph_rows=None, kv_status=torch.tensor([0, -2], dtype=torch.int32),
                history_generations=torch.tensor([0, 0], dtype=torch.int64), slot_generation=0, history_generation=0,
-               kc=[NS(capacity=0, value_format=NS(codec=0, quantized=False))])
+               kc=[NS(capacity=0, merge_order=0, value_format=NS(codec=0, quantized=False))])
     buffers = NS(history_owner=owner, owner_kernel_family='torch-reference', owner_graph_family='uncaptured',
                  owner_graphs=None, q=torch.zeros((rows, 3, 256)), pa=None,
                  compact_indexer_stage=NS(begin=lambda **kw: events.append('stage')),
@@ -203,10 +240,10 @@ def test_actual_reference_layer_selects_batch_and_preserves_four_phase_order(mon
     monkeypatch.setattr(h, 'prepare', lambda *a, **kw: events.append('prepare'))
     monkeypatch.setattr(h, 'merge_statistics', lambda *a, **kw: pytest.fail('selected owner fell back to scalar merge'))
     original = tile_module.merge_global_statistics
-    def batch(*a):
+    def batch(*a, **kw):
         assert events.count('gather') == 3
         events.append('batch')
-        return original(*a)
+        return original(*a, **kw)
     monkeypatch.setattr(tile_module, 'merge_global_statistics', batch)
     actual = h._attention_layer(NS(index=0), weights, [(state, 0, rows)], buffers, rows)
     assert events == ['validate', 'stage', 'prepare', 'gather', 'gather', 'gather', 'batch', 'gather']

@@ -220,7 +220,7 @@ def global_normalization_workspace_bytes(rows):
     return ((floats * 4 + bools + 3) // 4 + 5) * 4
 
 
-def merge_global_statistics(gathered, workspace, output, group_start, status_ranges, layer):
+def merge_global_statistics(gathered, workspace, output, group_start, status_ranges, layer, *, orders):
     """Batch independent normalization work; retain each scalar reduction ABI.
 
     The caller has submitted the statistics gather on this stream. `workspace`
@@ -228,6 +228,9 @@ def merge_global_statistics(gathered, workspace, output, group_start, status_ran
     until every reduction/pointwise consumer is enqueued. Final M/S live in the
     separate paid `output` slab through all later tile/PV consumers. No device
     Tensor allocation occurs here. This is partial A21, not grouped QSA/top-k.
+    ``orders`` gives each status range's four-peer merge order (the rows'
+    descriptor MERGE_ORDER): denominators sum in logical page order, never in
+    the session slot's rank rotation.
     """
     if gathered.ndim != 4 or type(status_ranges) not in (tuple, list):
         raise ValueError("global reference normalization requires row statistics and reusable State ranges")
@@ -260,6 +263,9 @@ def merge_global_statistics(gathered, workspace, output, group_start, status_ran
         cursor = last
     if cursor != rows:
         raise ValueError("global reference normalization status ranges do not cover rows")
+    if (type(orders) not in (tuple, list) or len(orders) != len(status_ranges)
+            or any(type(order) is not tuple or sorted(order) != [0, 1, 2, 3] for order in orders)):
+        raise ValueError("global reference normalization needs one four-peer merge order per State range")
     raw = workspace.view(-1)
     maxima = raw[:rows * stride].as_strided((rows, heads), (stride, 1))
     denominators = raw[rows * stride:2 * rows * stride].as_strided((rows, heads), (stride, 1))
@@ -291,13 +297,16 @@ def merge_global_statistics(gathered, workspace, output, group_start, status_ran
     torch.abs(maxima, out=absolute[:, 0])
     torch.lt(absolute[:, 0], torch.inf, out=finite_max)
     torch.where(finite_max, maxima, zero, out=maximum)
-    peer_maxima = pieces[..., 0].permute(1, 0, 2)
-    torch.abs(peer_maxima, out=absolute)
-    torch.lt(absolute, torch.inf, out=finite_peer)
-    torch.sub(peer_maxima, maximum[:, None], out=product)
-    torch.exp(product, out=product)
-    torch.where(finite_peer, product, zero, out=product)
-    torch.mul(product, pieces[..., 1].permute(1, 0, 2), out=product)
+    # Column j of product/finite_peer holds the range's j-th peer in merge order.
+    for (_, first, last), order in zip(status_ranges, orders):
+        for j, peer in enumerate(order):
+            peer_maxima = pieces[peer, first:last, :, 0]
+            torch.abs(peer_maxima, out=absolute[first:last, j])
+            torch.lt(absolute[first:last, j], torch.inf, out=finite_peer[first:last, j])
+            torch.sub(peer_maxima, maximum[first:last], out=product[first:last, j])
+            torch.exp(product[first:last, j], out=product[first:last, j])
+            torch.where(finite_peer[first:last, j], product[first:last, j], zero, out=product[first:last, j])
+            torch.mul(product[first:last, j], pieces[peer, first:last, :, 1], out=product[first:last, j])
     for row in range(rows):
         torch.sum(product[row], dim=0, out=denominators[row])
     torch.abs(denominators, out=absolute[:, 0])

@@ -1755,7 +1755,7 @@ class _NormalizationParity:
             'performance_qualification': 'invalid: per-helper diagnostic comparison fence',
             'counts': {key: dict(value) for key, value in self.counts.items()}}
 
-    def __call__(self, gathered, workspace, output, group_start, status_ranges, layer):
+    def __call__(self, gathered, workspace, output, group_start, status_ranges, layer, *, orders):
         import torch
         if self.closed:
             raise RuntimeError('normalization parity callback already retired')
@@ -1796,11 +1796,11 @@ class _NormalizationParity:
             for i, status in enumerate(unique):
                 entry['before'][i].copy_(status)
                 entry['shadow'][i].copy_(entry['before'][i])
-            result = self.original(gathered, workspace, output, group_start, status_ranges, layer)
+            result = self.original(gathered, workspace, output, group_start, status_ranges, layer, orders=orders)
             old = entry['old'][:2 * rows * 12].view(2, rows, 12)
-            for index, first, last in mapped:
+            for (index, first, last), order in zip(mapped, orders):
                 for row in range(first, last):
-                    pieces = snapshot[group_start:group_start + 4, row]
+                    pieces = snapshot[[group_start + peer for peer in order], row]
                     maximum, denominator = self.scalar(pieces[..., 0], pieces[..., 1],
                         status=entry['shadow'][index], layer=layer)
                     old[0, row].copy_(maximum)
