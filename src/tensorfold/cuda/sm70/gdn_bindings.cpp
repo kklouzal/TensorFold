@@ -14,6 +14,11 @@ void sm70_gdn_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&
 void sm70_gdn_replay_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
                           const at::Tensor&, int64_t, at::Tensor&);
 
+void sm70_gdn_split_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
+                               const at::Tensor&, const at::Tensor&, const at::Tensor&, double, int64_t,
+                               at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&,
+                               at::Tensor&, const std::optional<at::Tensor>&, bool);
+
 void sm70_gdn_prepare_batch_cuda(int64_t);
 void sm70_gdn_batch_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
         const at::Tensor&, double, const at::Tensor&, const at::Tensor&, at::Tensor&, at::Tensor&, bool);
@@ -49,11 +54,14 @@ void saved_check(const at::Tensor& key, const at::Tensor& value, const at::Tenso
 }
 }  // namespace
 
-void chain(const at::Tensor& projection, const at::Tensor& conv, const at::Tensor& weight,
-           const at::Tensor& initial, const at::Tensor& log, const at::Tensor& bias,
-           const at::Tensor& norm, double eps, int64_t rows, at::Tensor output, at::Tensor sums,
-           at::Tensor final, at::Tensor keys, at::Tensor values, at::Tensor decay, at::Tensor beta,
-           std::optional<at::Tensor> keep_rows, bool negative_decay) {
+namespace {
+// chain_kernel's complete operand contract, shared by the serial chain and its prefill split form.
+void chain_checks(const at::Tensor& projection, const at::Tensor& conv, const at::Tensor& weight,
+                  const at::Tensor& initial, const at::Tensor& log, const at::Tensor& bias,
+                  const at::Tensor& norm, double eps, int64_t rows, const at::Tensor& output,
+                  const at::Tensor& sums, const at::Tensor& final, const at::Tensor& keys,
+                  const at::Tensor& values, const at::Tensor& decay, const at::Tensor& beta,
+                  const std::optional<at::Tensor>& keep_rows) {
     state_check(initial, projection.device());
     state_check(final, projection.device());
     TORCH_CHECK(rows >= 0 && rows <= std::numeric_limits<int>::max(), "invalid GDN row count");
@@ -78,10 +86,10 @@ void chain(const at::Tensor& projection, const at::Tensor& conv, const at::Tenso
         check(*keep_rows, at::kInt, device, "live GDN rows");
         TORCH_CHECK(keep_rows->numel() == 1, "live GDN rows requires one device integer");
     }
-    const at::Tensor* reads[] = {&projection, &conv, &weight, &initial, &log, &bias, &norm};
+    const at::Tensor* const reads[] = {&projection, &conv, &weight, &initial, &log, &bias, &norm};
     const int64_t read_count[] = {rows * projection.size(1), conv.numel(), weight.numel(), initial.numel(),
                                   log.numel(), bias.numel(), norm.numel()};
-    at::Tensor* writes[] = {&output, &sums, &final, &keys, &values, &decay, &beta};
+    const at::Tensor* const writes[] = {&output, &sums, &final, &keys, &values, &decay, &beta};
     const int64_t write_count[] = {rows * nv * 128, rows * nv * 4, final.numel(), rows * nk * 128,
                                    rows * nv * 128, rows * nv, rows * nv};
     for (int write = 0; write < 7; ++write) {
@@ -95,9 +103,32 @@ void chain(const at::Tensor& projection, const at::Tensor& conv, const at::Tenso
             TORCH_CHECK(!tensorfold::overlaps(*writes[write], *writes[other], write_count[write], write_count[other]),
                         "GDN outputs must be mutually disjoint");
     }
-    c10::cuda::CUDAGuard guard(device);
+}
+}  // namespace
+
+void chain(const at::Tensor& projection, const at::Tensor& conv, const at::Tensor& weight,
+           const at::Tensor& initial, const at::Tensor& log, const at::Tensor& bias,
+           const at::Tensor& norm, double eps, int64_t rows, at::Tensor output, at::Tensor sums,
+           at::Tensor final, at::Tensor keys, at::Tensor values, at::Tensor decay, at::Tensor beta,
+           std::optional<at::Tensor> keep_rows, bool negative_decay) {
+    chain_checks(projection, conv, weight, initial, log, bias, norm, eps, rows, output, sums, final,
+                 keys, values, decay, beta, keep_rows);
+    c10::cuda::CUDAGuard guard(projection.device());
     sm70_gdn_chain_cuda(projection, conv, weight, initial, log, bias, norm, eps, rows, output, sums,
                          final, keys, values, decay, beta, keep_rows, negative_decay);
+}
+
+// The same contract and bitwise results as chain, computed by gdn_prefill_split.cu's multi-block recurrence.
+void split_chain(const at::Tensor& projection, const at::Tensor& conv, const at::Tensor& weight,
+                 const at::Tensor& initial, const at::Tensor& log, const at::Tensor& bias,
+                 const at::Tensor& norm, double eps, int64_t rows, at::Tensor output, at::Tensor sums,
+                 at::Tensor final, at::Tensor keys, at::Tensor values, at::Tensor decay, at::Tensor beta,
+                 std::optional<at::Tensor> keep_rows, bool negative_decay) {
+    chain_checks(projection, conv, weight, initial, log, bias, norm, eps, rows, output, sums, final,
+                 keys, values, decay, beta, keep_rows);
+    c10::cuda::CUDAGuard guard(projection.device());
+    sm70_gdn_split_chain_cuda(projection, conv, weight, initial, log, bias, norm, eps, rows, output, sums,
+                              final, keys, values, decay, beta, keep_rows, negative_decay);
 }
 
 // Private descriptor ABI: NativeTables owns and validates every pointee/span
@@ -157,6 +188,7 @@ void replay(const at::Tensor& initial, const at::Tensor& keys, const at::Tensor&
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("chain", &chain);
+    module.def("split_chain", &split_chain);
     module.def("replay", &replay);
     module.def("batch_chain", &batch_chain);
     module.def("prepare_batch", &sm70_gdn_prepare_batch_cuda);

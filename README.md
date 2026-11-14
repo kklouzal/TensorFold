@@ -3167,6 +3167,17 @@ bitwise the per-layer replay) and a vectorized greedy gathered-candidate chooser
 then gave 48.7/61.7/82.7/112.5/129.7/142.7 tok/s at C1/C2/C4/C8/C16/C24 on the
 same setup (C1 oracle unchanged).
 
+SM70 GDN prompt chunks of 64 or more rows (outside graph capture) now run
+`cuda/sm70/gdn_prefill_split.cu`, a three-kernel form of the serial chain kernel
+that spreads each value head's state rows over the whole GPU instead of one
+1024-thread block per head. Its outputs, sums, final state and replay saves are
+bitwise the serial kernel's (isolated V100 check over four chained 1024-row chunks
+and edge cases); a TP8 1024-row chunk takes 0.66 ms instead of 5.40 ms. Shorter
+decode chains and captured graphs keep the serial kernel. Descriptive cold C1
+prefill on the setup above (seeds 601/602/611, 1024-row chunks) rose from
+1468/1517/1502 to 1686/1782/1842 tok/s at 4K tokens and from 2054/2101/2094 to
+2505/2514/2533 tok/s at 16K; the C1 greedy oracle is unchanged.
+
 A controlled [native ragged replay oracle](docs/observed-graph-demand.md)
 now compares actual `ExactStateGraphs` target/MTP `(28,8)` replay against eager
 execution on the same idle TP8 decoder using ordinary State reset/restaging and

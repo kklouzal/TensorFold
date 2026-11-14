@@ -4,6 +4,8 @@ from functools import lru_cache
 import hashlib
 from pathlib import Path
 
+SPLIT_MIN_ROWS = 64  # prompt-chunk sized GDN chains; see chain()
+
 
 @lru_cache(maxsize=1)
 def extension():
@@ -13,7 +15,7 @@ def extension():
 
     prepared = _native()  # Retain the selected SM70/toolkit/ABI admission and identity.
     root = Path(__file__).parent
-    sources = [root / "gdn_bindings.cpp", root / "gdn.cu"]
+    sources = [root / "gdn_bindings.cpp", root / "gdn.cu", root / "gdn_prefill_split.cu"]
     identity = hashlib.sha256(prepared.__name__.encode())
     headers = [root.parent / "kernels/tensor_contracts.cuh"]
     for source in [*sources, *headers]:
@@ -25,8 +27,17 @@ def extension():
 
 def chain(p, conv, weight, initial, decay_parameter, bias, norm, eps, rows, scratch, final, output, sums,
           *, negative_decay=False):
-    return extension().chain(p, conv, weight, initial, decay_parameter, bias, norm, eps, rows, output, sums, final,
-                             scratch.k, scratch.v, scratch.g, scratch.b, getattr(scratch, "keep_rows", None), negative_decay)
+    import torch
+
+    # Prompt chunks run the multi-block form (gdn_prefill_split.cu: bitwise chain's results, 7x faster per 1024-row
+    # chunk on V100). Short (decode) chains keep the single-launch serial kernel: its three launches measured no
+    # integrated gain there (C8 decode 114 vs 117-120 tok/s). The split form takes a caching-allocator workspace,
+    # so graph captures keep the serial kernel too.
+    native = extension()
+    split = rows >= SPLIT_MIN_ROWS and not torch.cuda.is_current_stream_capturing()
+    run = native.split_chain if split else native.chain
+    return run(p, conv, weight, initial, decay_parameter, bias, norm, eps, rows, output, sums, final,
+               scratch.k, scratch.v, scratch.g, scratch.b, getattr(scratch, "keep_rows", None), negative_decay)
 
 
 def replay(initial, scratch, rows, final):
