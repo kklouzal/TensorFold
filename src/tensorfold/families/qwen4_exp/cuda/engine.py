@@ -2711,6 +2711,11 @@ class FlashNextEngine:
     def supports_logprobs(self) -> bool:
         return self.tp == 1
 
+    @property
+    def supports_teacher_forcing(self) -> bool:
+        """Private ``TeacherForcing`` scoring: the concurrent scheduler forces the reply and scores every row."""
+        return self.scheduler is not None and getattr(self.w, "dflash2", None) is None
+
     def _serial(self, prompt: list[int], max_tokens: int, sampling, on_tokens, constraint=None,
                 stop_eos: bool = True, probabilities=None, token_limit=None) -> dict[str, Any]:
         """One token a round from a fresh prefill in the serial engine's own state (no drafts, no kept states)."""
@@ -3107,7 +3112,10 @@ class FlashNextEngine:
                 max_tokens = self._limit(prompt, max_tokens)
                 if token_limit is not None and not callable(token_limit):
                     raise ValueError("token_limit must be a pure callable returning a prefix/stop decision")
-                if probabilities is not None and not self.supports_logprobs:
+                forced = getattr(probabilities, "forced", None) is not None
+                if forced and (scheduler is None or not self.supports_teacher_forcing):
+                    raise ValueError("teacher forcing requires the concurrent scheduler without DFlash2")
+                if probabilities is not None and not forced and not self.supports_logprobs:
                     raise ValueError("logprobs are supported on one GPU only")
                 if probabilities is not None and constraint is not None:
                     raise ValueError("logprobs do not support structured output")
