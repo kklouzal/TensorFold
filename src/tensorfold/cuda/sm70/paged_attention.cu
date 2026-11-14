@@ -308,39 +308,86 @@ __device__ __forceinline__ float rn_warp_sum(float value) {
     return value;  // Only lane zero's full tree is consumed.
 }
 
+// Each head has one FULL warp: lane l consumes l+32*t, t=0..7 in
+// increasing order. K decode is cooperatively reused across H heads; changing
+// H never changes an individual dot's eight FMAs/five RN shuffle additions.
+//
+// Key tiles are spread over RN_SPLITS CTAs per (row, head block). A key's score
+// and a probability are per-key values; the order-dependent online (m, l)
+// recurrence of the serial form (tile maxima, then per-tile masses summed in key
+// order, then denominator = denominator * alpha + mass tile by tile) runs in
+// rn_fold_kernel over the stored scores with the same operations in the same
+// order. A descriptor fault (-2) in tile t stopped the serial kernel before tile
+// t: every CTA finds the first faulting tile among the tiles up to its own and
+// never decodes, scores or publishes from it or any later tile.
+constexpr int RN_TILES = (RN_MAX_SELECTED + TILE - 1) / TILE, RN_SPLITS = 16;
+
 template<int H> struct RNStorage {
     __half query[H * DIM];
     __half key[TILE * DIM];
     int64_t physical[TILE];
-    float scores[H * TILE];
 };
 
-// Each head has one FULL warp: lane l consumes l+32*t, t=0..7 in
-// increasing order. K decode is cooperatively reused across H heads; changing
-// H never changes an individual dot's eight FMAs/five RN shuffle additions.
-template<int H, bool Probability>
-__global__ void rn_qk_kernel(const __half* queries, const int* selections, const int64_t* table,
-        const float* global, float* statistics, __half* probability, int rows, int width, int group,
-        int page_tokens, const int* layer_word, int codec) {
-    __shared__ RNStorage<H> storage;
-    __shared__ int end, count, enabled, invalid;
-    __shared__ const int* ids;
-    const int row = blockIdx.x, head_base = blockIdx.y * H;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, head = head_base + warp;
-    const int layer = *layer_word;
-    const int64_t* descriptor = table + int64_t(row) * WORDS;
-    if (Probability) {
-        for (int at = threadIdx.x; at < H * RN_MAX_SELECTED; at += H * 32)
-            probability[(int64_t(row) * HEADS + head_base + at / RN_MAX_SELECTED) * RN_MAX_SELECTED
-                        + at % RN_MAX_SELECTED] = __float2half_rn(0.f);
-    } else if (!lane) {
-        statistics[(int64_t(row) * HEADS + head) * 2] = -CUDART_INF_F;
-        statistics[(int64_t(row) * HEADS + head) * 2 + 1] = 0.f;
-    }
-    if (!threadIdx.x)
-        enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
+// First tile (< limit) holding a descriptor fault, else limit; local_row latches the fault.
+__device__ __forceinline__ int rn_first_fault(const int64_t* descriptor, const int* ids, int count, int end,
+                                             int page_tokens, int layer, int limit, int* shared) {
+    if (!threadIdx.x) *shared = limit;
     __syncthreads();
-    if (!enabled) return;  // CTA-uniform: no partial-warp shuffle participation.
+    for (int at = threadIdx.x; at < min(count, limit * TILE); at += blockDim.x) {
+        if (local_row(descriptor, ids == nullptr ? at : ids[at], end, page_tokens, layer) == -2)
+            atomicMin(shared, at / TILE);
+    }
+    __syncthreads();
+    return *shared;
+}
+
+// One tile's 32 scores per head (warp) into scores[warp * TILE + key]; NaN marks keys without a local row.
+template<int H>
+__device__ __forceinline__ void rn_tile_scores(RNStorage<H>& storage, const int64_t* descriptor, const int* ids,
+        int first, int count, int end, int page_tokens, int layer, int codec, float* scores) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    if (threadIdx.x < TILE) {
+        const int at = first + threadIdx.x;
+        const int logical = at < count ? (ids == nullptr ? at : ids[at]) : -1;
+        storage.physical[threadIdx.x] = local_row(descriptor, logical, end, page_tokens, layer);
+    }
+    __syncthreads();
+    for (int at = threadIdx.x; at < TILE * DIM; at += H * 32) {
+        const int64_t physical = storage.physical[at / DIM];
+        __half value = __float2half_rn(0.f);
+        if (physical >= 0) {
+            value = tf_sm70::decoded_half(pointer<const void>(descriptor[meta::K_DATA]),
+                pointer<const void>(descriptor[meta::K_METADATA]), codec ? 4 : 8, codec,
+                physical * DIM + at % DIM);
+            if (!isfinite(__half2float(value))) {
+                latch(descriptor, 2, layer);
+                value = __float2half_rn(0.f);
+            }
+        }
+        storage.key[at] = value;
+    }
+    __syncthreads();
+    #pragma unroll 4
+    for (int key = 0; key < TILE; ++key) {
+        float value = 0.f;
+        const bool valid = storage.physical[key] >= 0;
+        if (valid) {
+            #pragma unroll
+            for (int t = 0; t < 8; ++t) {
+                const int col = lane + t * 32;
+                value = __fmaf_rn(__half2float(storage.query[warp * DIM + col]),
+                                 __half2float(storage.key[key * DIM + col]), value);
+            }
+            value = rn_warp_sum(value);
+        }
+        if (!lane) scores[key] = valid ? __fmul_rn(value, .0625f) : CUDART_NAN_F;
+    }
+    __syncthreads();  // storage.key/physical are reused by the next tile
+}
+
+template<int H>
+__device__ __forceinline__ void rn_load_query(RNStorage<H>& storage, const __half* queries, int rows, int row,
+                                              int group, int head_base, const int64_t* descriptor, int layer) {
     for (int at = threadIdx.x; at < H * DIM; at += H * 32) {
         const int h = head_base + at / DIM, col = at % DIM;
         __half value = queries[((int64_t(group + h / 3) * rows + row) * 3 + h % 3) * DIM + col];
@@ -351,87 +398,148 @@ __global__ void rn_qk_kernel(const __half* queries, const int* selections, const
         storage.query[at] = value;
     }
     __syncthreads();
-    float maximum = -CUDART_INF_F, denominator = 0.f;
-    for (int first = 0; first < count; first += TILE) {
-        if (!threadIdx.x) invalid = 0;
-        __syncthreads();
-        if (threadIdx.x < TILE) {
-            const int at = first + threadIdx.x;
-            const int logical = at < count ? (ids == nullptr ? at : ids[at]) : -1;
-            storage.physical[threadIdx.x] = local_row(descriptor, logical, end, page_tokens, layer);
-            if (storage.physical[threadIdx.x] == -2) atomicExch(&invalid, 1);
-        }
-        __syncthreads();
-        if (invalid) return;
-        for (int at = threadIdx.x; at < TILE * DIM; at += H * 32) {
-            const int64_t physical = storage.physical[at / DIM];
-            __half value = __float2half_rn(0.f);
-            if (physical >= 0) {
-                value = tf_sm70::decoded_half(pointer<const void>(descriptor[meta::K_DATA]),
-                    pointer<const void>(descriptor[meta::K_METADATA]), codec ? 4 : 8, codec,
-                    physical * DIM + at % DIM);
-                if (!isfinite(__half2float(value))) {
-                    latch(descriptor, 2, layer);
-                    value = __float2half_rn(0.f);
-                }
-            }
-            storage.key[at] = value;
-        }
-        __syncthreads();
-        #pragma unroll
-        for (int key = 0; key < TILE; ++key) {
-            float value = 0.f;
-            if (storage.physical[key] >= 0) {
-                #pragma unroll
-                for (int t = 0; t < 8; ++t) {
-                    const int col = lane + t * 32;
-                    value = __fmaf_rn(__half2float(storage.query[warp * DIM + col]),
-                                     __half2float(storage.key[key * DIM + col]), value);
-                }
-                value = rn_warp_sum(value);
-            }
-            if (!lane) storage.scores[warp * TILE + key] = __fmul_rn(value, .0625f);
-        }
-        __syncthreads();
-        if (!lane) {
-            if (Probability) {
-                const float m = global[(int64_t(row) * HEADS + head) * 2];
-                const float l = global[(int64_t(row) * HEADS + head) * 2 + 1];
-                if (!isfinite(m) || !isfinite(l) || l <= 0.f) latch(descriptor, 16, layer);
-                else {
-                    #pragma unroll
-                    for (int key = 0; key < TILE; ++key) {
-                        if (first + key < count && storage.physical[key] >= 0) {
-                            const float p = __fdiv_rn(rn_exp(__fsub_rn(storage.scores[warp * TILE + key], m), descriptor, layer), l);
-                            const __half result = __float2half_rn(p);
-                            if (!isfinite(p) || !isfinite(__half2float(result))) latch(descriptor, 16, layer);
-                            probability[(int64_t(row) * HEADS + head) * RN_MAX_SELECTED + first + key] = result;
-                        }
-                    }
-                }
-            } else {
-                float tile_max = -CUDART_INF_F;
-                #pragma unroll
-                for (int key = 0; key < TILE; ++key)
-                    if (storage.physical[key] >= 0) tile_max = fmaxf(tile_max, storage.scores[warp * TILE + key]);
-                const float next_max = fmaxf(maximum, tile_max);
-                if (isfinite(next_max)) {
-                    const float alpha = isfinite(maximum) ? rn_exp(__fsub_rn(maximum, next_max), descriptor, layer) : 0.f;
-                    float mass = 0.f;
-                    #pragma unroll
-                    for (int key = 0; key < TILE; ++key)
-                        if (storage.physical[key] >= 0)
-                            mass = __fadd_rn(mass, rn_exp(__fsub_rn(storage.scores[warp * TILE + key], next_max), descriptor, layer));
-                    denominator = __fadd_rn(__fmul_rn(denominator, alpha), mass);
-                }
-                maximum = next_max;
-            }
-        }
-        __syncthreads();
+}
+
+// Statistics pass, part 1: scores of this CTA's tiles into scores[row][head][key].
+template<int H>
+__global__ void rn_scores_kernel(const __half* queries, const int* selections, const int64_t* table,
+        float* scores, int rows, int width, int group, int page_tokens, const int* layer_word, int codec) {
+    __shared__ RNStorage<H> storage;
+    __shared__ int end, count, enabled, fault;
+    __shared__ const int* ids;
+    const int row = blockIdx.x, head_base = blockIdx.y * H, split = blockIdx.z;
+    const int warp = threadIdx.x >> 5;
+    const int layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    if (!threadIdx.x)
+        enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
+    __syncthreads();
+    if (!enabled) return;
+    rn_load_query(storage, queries, rows, row, group, head_base, descriptor, layer);  // latches as the serial form
+    const int tiles = (count + TILE - 1) / TILE;
+    if (split >= tiles) return;
+    const int last = split + (tiles - 1 - split) / RN_SPLITS * RN_SPLITS;
+    const int stop = rn_first_fault(descriptor, ids, count, end, page_tokens, layer, last + 1, &fault);
+    if (split >= stop) return;
+    float* head_scores = scores + (int64_t(row) * HEADS + head_base + warp) * RN_TILES * TILE;
+    for (int tile = split; tile < stop; tile += RN_SPLITS)
+        rn_tile_scores(storage, descriptor, ids, tile * TILE, count, end, page_tokens, layer, codec,
+                       head_scores + tile * TILE);
+}
+
+// Statistics pass, part 2: one warp per head folds the stored scores in the serial kernel's order.
+__global__ void rn_fold_kernel(const int* selections, const int64_t* table, const float* scores, float* statistics,
+        int rows, int width, int page_tokens, const int* layer_word) {
+    __shared__ int end, count, enabled, fault;
+    __shared__ const int* ids;
+    __shared__ float tile_mass[HEADS][RN_TILES], tile_alpha[HEADS][RN_TILES], tile_next[HEADS][RN_TILES];
+    const int row = blockIdx.x, head = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    const int layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    float* out = statistics + (int64_t(row) * HEADS + head) * 2;
+    if (!threadIdx.x)
+        enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
+    __syncthreads();
+    const int tiles = enabled ? (count + TILE - 1) / TILE : 0;
+    const int stop = enabled ? rn_first_fault(descriptor, ids, count, end, page_tokens, layer, tiles, &fault) : 0;
+    if (!enabled || stop < tiles) {  // the serial kernel's initial values (no tile ran, or it returned at a fault)
+        if (!lane) { out[0] = -CUDART_INF_F; out[1] = 0.f; }
+        return;
     }
-    if (!Probability && !lane) {
-        statistics[(int64_t(row) * HEADS + head) * 2] = maximum;
-        statistics[(int64_t(row) * HEADS + head) * 2 + 1] = denominator;
+    const float* head_scores = scores + (int64_t(row) * HEADS + head) * RN_TILES * TILE;
+    float carry = -CUDART_INF_F;  // running maximum before this group of 32 tiles
+    for (int base = 0; base < tiles; base += 32) {
+        const int tile = base + lane;
+        float tile_max = -CUDART_INF_F;
+        if (tile < tiles) {
+            for (int key = 0; key < TILE; ++key) {
+                const float s = head_scores[tile * TILE + key];
+                if (!isnan(s)) tile_max = fmaxf(tile_max, s);
+            }
+        }
+        float next = fmaxf(carry, tile_max);  // inclusive max scan: maxima are exact in any order
+        #pragma unroll
+        for (int offset = 1; offset < 32; offset <<= 1) {
+            const float other = __shfl_up_sync(0xffffffffu, next, offset);
+            if (lane >= offset) next = fmaxf(next, other);
+        }
+        float before = __shfl_up_sync(0xffffffffu, next, 1);
+        if (!lane) before = carry;
+        if (tile < tiles) {
+            float mass = 0.f, alpha = 0.f;
+            if (isfinite(next)) {
+                alpha = isfinite(before) ? rn_exp(__fsub_rn(before, next), descriptor, layer) : 0.f;
+                for (int key = 0; key < TILE; ++key) {
+                    const float s = head_scores[tile * TILE + key];
+                    if (!isnan(s)) mass = __fadd_rn(mass, rn_exp(__fsub_rn(s, next), descriptor, layer));
+                }
+            }
+            tile_mass[head][tile] = mass;
+            tile_alpha[head][tile] = alpha;
+            tile_next[head][tile] = next;
+        }
+        carry = __shfl_sync(0xffffffffu, next, 31);
+    }
+    __syncwarp();
+    if (!lane) {
+        float maximum = -CUDART_INF_F, denominator = 0.f;
+        for (int tile = 0; tile < tiles; ++tile) {
+            const float next = tile_next[head][tile];
+            if (isfinite(next)) denominator = __fadd_rn(__fmul_rn(denominator, tile_alpha[head][tile]), tile_mass[head][tile]);
+            maximum = next;
+        }
+        out[0] = maximum;
+        out[1] = denominator;
+    }
+}
+
+// Probability pass: each CTA zeroes and then publishes its own tiles' Half P.
+template<int H>
+__global__ void rn_probability_kernel(const __half* queries, const int* selections, const int64_t* table,
+        const float* global, __half* probability, int rows, int width, int group, int page_tokens,
+        const int* layer_word, int codec) {
+    __shared__ RNStorage<H> storage;
+    __shared__ float scores[H * TILE];
+    __shared__ int end, count, enabled, fault;
+    __shared__ const int* ids;
+    const int row = blockIdx.x, head_base = blockIdx.y * H, split = blockIdx.z;
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, head = head_base + warp;
+    const int layer = *layer_word;
+    const int64_t* descriptor = table + int64_t(row) * WORDS;
+    for (int tile = split; tile < RN_TILES; tile += RN_SPLITS)
+        for (int at = threadIdx.x; at < H * TILE; at += H * 32) {
+            const int key = tile * TILE + at % TILE;
+            if (key < RN_MAX_SELECTED)
+                probability[(int64_t(row) * HEADS + head_base + at / TILE) * RN_MAX_SELECTED + key] = __float2half_rn(0.f);
+        }
+    if (!threadIdx.x)
+        enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
+    __syncthreads();
+    if (!enabled) return;
+    rn_load_query(storage, queries, rows, row, group, head_base, descriptor, layer);  // latches as the serial form
+    const int tiles = (count + TILE - 1) / TILE;
+    if (split >= tiles) return;
+    const int last = split + (tiles - 1 - split) / RN_SPLITS * RN_SPLITS;
+    const int stop = rn_first_fault(descriptor, ids, count, end, page_tokens, layer, last + 1, &fault);
+    if (split >= stop) return;
+    const float m = global[(int64_t(row) * HEADS + head) * 2];
+    const float l = global[(int64_t(row) * HEADS + head) * 2 + 1];
+    const bool usable = isfinite(m) && isfinite(l) && l > 0.f;
+    for (int tile = split; tile < stop; tile += RN_SPLITS) {
+        rn_tile_scores(storage, descriptor, ids, tile * TILE, count, end, page_tokens, layer, codec,
+                       scores + warp * TILE);
+        if (!usable) {
+            if (!lane) latch(descriptor, 16, layer);
+        } else {
+            const int key = tile * TILE + lane;
+            const float s = scores[warp * TILE + lane];
+            if (key < count && !isnan(s)) {
+                const float p = __fdiv_rn(rn_exp(__fsub_rn(s, m), descriptor, layer), l);
+                const __half result = __float2half_rn(p);
+                if (!isfinite(p) || !isfinite(__half2float(result))) latch(descriptor, 16, layer);
+                probability[(int64_t(row) * HEADS + head) * RN_MAX_SELECTED + key] = result;
+            }
+        }
     }
 }
 
@@ -643,11 +751,24 @@ void launch_rn_qk(const T& queries, const T& selected, const T& table, const T& 
                   int group, int page_tokens, const T& layer, int codec) {
     const int rows = int(queries.size(1));
     if (!rows) return;
-    rn_qk_kernel<H, P><<<dim3(rows, HEADS / H), H * 32, 0, at::cuda::getCurrentCUDAStream()>>>(
-        reinterpret_cast<const __half*>(queries.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
-        P ? global.data_ptr<float>() : nullptr, P ? nullptr : output.data_ptr<float>(),
-        P ? reinterpret_cast<__half*>(output.data_ptr()) : nullptr, rows, int(selected.size(2)), group,
-        page_tokens, layer.data_ptr<int>(), codec);
+    auto stream = at::cuda::getCurrentCUDAStream();
+    const dim3 grid(rows, HEADS / H, RN_SPLITS);
+    const auto* q = reinterpret_cast<const __half*>(queries.data_ptr());
+    if (P) {
+        rn_probability_kernel<H><<<grid, H * 32, 0, stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+            global.data_ptr<float>(), reinterpret_cast<__half*>(output.data_ptr()), rows, int(selected.size(2)), group,
+            page_tokens, layer.data_ptr<int>(), codec);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        return;
+    }
+    // Stream-ordered scratch (a capture's private pool inside graphs): rows x heads x 2051-key scores.
+    auto scores = at::empty({rows, HEADS, RN_TILES * TILE}, queries.options().dtype(at::kFloat));
+    rn_scores_kernel<H><<<grid, H * 32, 0, stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+        scores.data_ptr<float>(), rows, int(selected.size(2)), group, page_tokens, layer.data_ptr<int>(), codec);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    rn_fold_kernel<<<rows, HEADS * 32, 0, stream>>>(selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+        scores.data_ptr<float>(), output.data_ptr<float>(), rows, int(selected.size(2)), page_tokens,
+        layer.data_ptr<int>());
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
