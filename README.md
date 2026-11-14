@@ -1805,6 +1805,28 @@ libraries are still content-hashed. Manifests must declare `{size, header_sha256
 artifacts. Nothing is cached on disk; golden output identical; C1 decode and 4000-token
 prefill unchanged or faster.
 
+Tensor-parallel scheduler control frames now travel over same-host FIFOs
+(`cuda/control_pipes.py`): rank 0 sends each command and collects each follower's
+acknowledgment through one FIFO pair per follower; the rendezvous Store is used once at
+startup, followers on another host keep the Store protocol, and a closed pipe end reports a
+departed rank (including a leader that dies before its first command) instead of waiting.
+The per-operation state digest uses the C JSON encoder. Descriptive same-day runs (Source40
+`cf8c0ff6` + overlays, 8x V100 TP8/ETP4, MTP4 conf 0.7, 64-token prompts, 400 greedy tokens,
+seeds 501/601/602/611, two passes each) moved C1 decode from a mean of 49.1 to 52.9 tok/s with
+every seed/pass pair improving; C8 unchanged; the C1 greedy oracle is unchanged.
+
+SM70 decode verify kernels: the MoE router computes up to eight rows per CTA from one register
+copy of the FP32 router weights, bitwise equal to the per-row FP32 GEMV reference, and is
+selected by default. Decode-sized expert grouping is one kernel. The RN decode attention QK pass
+spreads key tiles over 16 CTAs per row and replays the serial (m, l) recurrence in its original
+order (bitwise; 5.6-13x faster per layer from 200 to 2048 keys). The TP8 shared expert runs as a
+two-launch FFN (`cuda/sm70/shared_ffn`) with the reference operation boundaries; only the FP32
+summation order changed, and its error against FP64 equals the cuBLAS program's. Descriptive runs
+(same setup): verify graph 28.1 -> ~20.4 ms and 2730 -> 1567 kernels; C1 about 49.5 -> 56 tok/s;
+C8 115 -> 134-137; 3000-token prompts 55 -> 75 tok/s. The C1 greedy oracle is unchanged by the
+bitwise parts; the shared-expert change alters one of six oracle prompts after 90 characters
+(coherent); teacher-forced quality comparison pending.
+
 SM70 decode-size (<=32-row) grouped MoE down projections now take the staged
 integer path on the rank-sliced ETP4 banks that SC117 actually holds. A 160-column
 slice of a 640-column IQ4_NL or Q2_0 row is 90 or 54 bytes, a stride that is 2
