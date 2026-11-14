@@ -264,11 +264,35 @@ class Arena:
                     out=out[first:stop], grouping=self.grouping[:words], **candidate_scratch)
             return out
         if self.grouping is None:
-            return bank.forward_partitioned_native_candidate(x, picks,
-                local=self.local[:rows], activation=self.activation[:rows].view(-1, 160), out=out)
+            return _native(bank, x, picks, local=self.local[:rows],
+                           activation=self.activation[:rows].view(-1, 160), out=out)
         from tensorfold.cuda.sm70.gguf_ops import grouped_workspace_words
 
         words = grouped_workspace_words(rows * picks.shape[1], self.plan.partition.count)
-        return bank.forward_partitioned_native_candidate(x, picks,
-            local=self.local[:rows], activation=self.activation[:rows].view(-1, 160), out=out,
-            grouping=self.grouping[:words], _gate_up=self.plan._reference_gate_up)
+        return _native(bank, x, picks, local=self.local[:rows],
+                       activation=self.activation[:rows].view(-1, 160), out=out, grouping=self.grouping[:words],
+                       _gate_up=self.plan._reference_gate_up)
+
+
+def _native(bank, x, picks, **scratch):
+    """The bank's native ETP4 candidate; calls of up to 32 rows take the two-launch shared-expert FFN.
+
+    The shared FFN keeps the reference program's operation boundaries (FP32 sums, SiLU and product, one FP16
+    rounding, FP32 output) with a fixed per-row summation order (numerics-changing versus the padded-M32 cuBLAS
+    reference: a different FP32 summation order). Prompt pieces of up to 32 rows take it too, as they took the
+    same padded-M32 program as decode before, so a token's shared output does not depend on whether it was
+    prefilled or decoded (a prefix-cache hit re-decodes prompt tail tokens). Larger prompt pieces and unsupported
+    geometry keep the bank's own path.
+    """
+    from tensorfold.cuda.sm70 import gguf_ops, shared_ffn
+    from .gguf_weights import GGUFDense
+
+    shared = bank.shared
+    if not (len(shared) == 3 and all(type(m) is GGUFDense for m in shared)
+            and shared_ffn.selected(x, *(m.weight for m in shared))):
+        return bank.forward_partitioned_native_candidate(x, picks, **scratch)
+    part = bank.partition
+    if part is None or part.etp != 4 or part.width != 160 or part.world != 8:
+        raise ValueError("owned native candidate requires an explicit TP8/ETP4 bank")
+    return gguf_ops.experts_owned(x, picks, bank.gate, bank.up, bank.down, first=part.first, experts=part.experts,
+                                  width=bank.width, shared=shared_ffn.run(x, *(m.weight for m in shared)), **scratch)
