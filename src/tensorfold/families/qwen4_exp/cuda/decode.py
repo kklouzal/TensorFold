@@ -549,6 +549,10 @@ WARM_TAIL = 18      # a partial chunk after a full one: neither its rows nor the
 def warm(e: Engine) -> None:
     """Prefill a synthetic prompt (a full chunk, then a partial one cut at the kept point a row before its end) and empty the state, so no request compiles or loads a prompt kernel."""
 
+    if e.w.meta.get("execution_provider") == "sm70" and e.buf.h.dtype == torch.float16:
+        from tensorfold.cuda.sm70.gdn_replay_many import extension
+
+        extension()  # commit's batched GDN replay loads before any request
     prompt = [0] * min(e.prefill_rows + WARM_TAIL + 1, e.capacity)
     prefill(e, prompt, None, keep_at=entry_end(prompt))
     e.kept = None

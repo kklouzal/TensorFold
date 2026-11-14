@@ -1136,6 +1136,7 @@ class State:
         other.dflash2 = None
         other.media_input_span = None  # operational producer leases never become a cloned reader
         other.mtp_boundary = None
+        other._gdn_replay_table = None  # the source's rec/scratch pointer cache: never retained by a clone
         for name, value in vars(self).items():
             if self.compact_indexer is not None and name in ("ikc", "mtp_ikc"):
                 continue

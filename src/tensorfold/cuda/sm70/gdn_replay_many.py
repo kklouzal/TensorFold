@@ -18,11 +18,13 @@ CUDA_FLAGS = ("-O3", "--fmad=false")
 @lru_cache(maxsize=1)
 def extension():
     from tensorfold.cuda import build
+    from .provider import _native
     from .source_cache import stage_sources
 
+    prepared = _native()  # The selected SM70/toolkit/ABI admission and identity, as gdn_native.
     root = Path(__file__).parent
     sources = [root / "gdn_replay_many.cu"]
-    digest = hashlib.sha256(repr(CUDA_FLAGS).encode())
+    digest = hashlib.sha256(prepared.__name__.encode() + repr(CUDA_FLAGS).encode())
     for source in sources:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=[], source_root=root.parent)
@@ -64,7 +66,7 @@ def replay_state(state, rows):
     rec, cur = state.rec, state.cur
     if (not isinstance(rec, torch.Tensor) or not rec.is_cuda or rec.dtype != torch.float32 or rec.dim() != 5
             or not rec.is_contiguous() or rec.shape[0] != 2 or not 1 <= rec.shape[1] <= 64
-            or len(cur) != rec.shape[1] or any(parity not in (0, 1) for parity in cur) or not 1 <= rows):
+            or len(cur) != rec.shape[1] or any(parity not in (0, 1) for parity in cur) or not 1 <= rows <= 1024):
         return False
     table = _table(state, rows)
     if table is None:
