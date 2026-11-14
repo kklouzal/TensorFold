@@ -3195,8 +3195,17 @@ time per call at 1/5/32 rows 31-36/102/717-733 us -> 8.2-8.6/31-32/130-146 us
 outputs against FP64). Descriptive single runs on the setup above
 (seeds 501/601/602/611, C1) moved decode from 49.5/49.6/50.0/41.6 to
 51.5/48.6/52.4/43.7 tok/s; C8 (rows above 32 keep the prefill kernel) was
-119.7/113.1 before and 116.8/114.8 after. The C1 greedy oracle changes late in
-one of six prompts (coherent; re-recorded).
+119.7/113.1 before and 116.8/114.8 after. As first committed, a token's down output
+depended on its call's row count (Split 4 at 1-2 rows and Split 1 at 3-32 rows summed
+K in different orders), so time-adaptive draft counts made C1 greedy output differ
+between runs on one server (3 golden passes: 2 of 3 differed in two prompts). Both
+splits now form the same four-part summation tree, so outputs are bitwise
+independent of the row count (`test_decode_rows_do_not_depend_on_the_call_row_count`)
+and three golden passes on one server are identical; Split 4 now serves up to 9 rows.
+Down time per call at 3/5/9/10/20/32 rows moved from 20/33/61/70/102/146 us to
+15/30/63/72/106/150 us (IQ4_NL) and from 20/26/57/61/91/129 us to 15/27/58/74/109/149 us
+(Q2_0). The C1 greedy oracle differs from the pre-change record late in two of six
+prompts (coherent; re-recorded).
 
 A controlled [native ragged replay oracle](docs/observed-graph-demand.md)
 now compares actual `ExactStateGraphs` target/MTP `(28,8)` replay against eager

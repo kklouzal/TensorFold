@@ -74,3 +74,35 @@ def test_sliced_down_matches_fp64_within_the_quantization_bound(down_kind, colum
     assert torch.isfinite(out[r, s]).all() and torch.all(error <= bound), (error - bound).max().item()
     if down_kind == 42:  # FP16-exact coefficients take the unquantized FP32 path
         assert torch.all(error <= 200 * 2.0 ** -23 * magnitude + 2.0 ** -126)
+
+
+@pytest.mark.parametrize("down_kind,columns,offset", [(20, 160, 0), (42, 192, 32), (8, 160, 0)],
+                         ids=["iq4nl", "q2_0-o32", "q8_0"])
+def test_decode_rows_do_not_depend_on_the_call_row_count(down_kind, columns, offset):
+    """A token's expert outputs are the same bits whether it is decoded alone or among up to 32 rows, and on repeat."""
+    generator = torch.Generator(device="cuda").manual_seed(4242 + down_kind + offset)
+    gate = bank(21, E * W, D, 0, 0.004, generator)
+    up = bank(21, E * W, D, 0, 0.004, generator)
+    down = bank(down_kind, E * D, columns, offset, 0.004 if down_kind == 8 else 0.02, generator)
+    x = (torch.randn(32, D, device="cuda", generator=generator) * 0.5).half()
+    weights = torch.exp(torch.randn(512, device="cuda", generator=generator))
+    picks = torch.multinomial(weights.expand(32, 512), 10, replacement=False, generator=generator)
+    picks = torch.cat([picks, torch.full((32, 1), 512, device="cuda")], 1)
+
+    def run(rows):
+        out = torch.empty(rows, 11, D, dtype=torch.float32, device="cuda")
+        gguf_ops.experts_owned(x[:rows], picks[:rows], gate, up, down, first=0, experts=512, width=W,
+                               shared=torch.zeros(rows, D, device="cuda"),
+                               local=torch.empty(rows, 11, dtype=torch.long, device="cuda"),
+                               activation=torch.empty(rows * 11, W, dtype=torch.half, device="cuda"), out=out,
+                               grouping=torch.empty(gguf_ops.grouped_workspace_words(rows * 11, E),
+                                                    dtype=torch.int32, device="cuda"),
+                               _gate_up=gguf_ops._GroupedGateUp(4))
+        return out
+
+    full = run(32)
+    assert torch.equal(run(32).view(torch.int32), full.view(torch.int32)), "repeat"
+    for rows in range(1, 32):
+        out = run(rows)
+        bad = [r for r in range(rows) if not torch.equal(out[r].view(torch.int32), full[r].view(torch.int32))]
+        assert not bad, f"{rows}-row call differs from the 32-row call at rows {bad}"

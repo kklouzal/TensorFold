@@ -1750,7 +1750,7 @@ void launch_gate_up_decode(const __half* x, int rows, const PackedView& gate, co
 // Down: Split consecutive lanes share one hidden output row (32 / Split rows per warp); lane part p
 // takes the eight-coefficient chunks p, p + Split, ... of K = 160 for every pair of the tile
 // (activations quantized once per CTA, as above), and the parts combine by shuffle. Split 4 trades
-// per-CTA overhead for parallelism at 1-2 rows; Split 1 serves larger batches. Each warp stages its
+// per-CTA overhead for parallelism at small row counts; Split 1 serves larger batches. Each warp stages its
 // rows' raw bytes (a word-aligned superset of the 160-column span) with every load in flight first.
 // Rank-sliced ETP4 banks have 2 mod 4 row strides (5 IQ4_NL or 3 Q2_0 blocks of 18 bytes), so a row's
 // span may start 2 bytes into its first staged word; every block then still starts halfword aligned,
@@ -1762,11 +1762,12 @@ int down_row_bytes(const PackedView& v) {  // padded to an odd word count: confl
     return 4 * (words | 1);
 }
 
-template <int Kind, int Block, int Bytes, int Split>
+// Chunks part, part + 4, ... of K = 160 (one Split-4 lane part), accumulated in order into acc.
+template <int Kind, int Block, int Bytes>
 __device__ __forceinline__ void down_int(const uint8_t* raw, int skip, int offset, int part, const uint4* xq,
                                          const float* xs, int n, const int8_t* kvs, float (&acc)[DECODE_PAIRS]) {
     #pragma unroll
-    for (int chunk = part; chunk < 20; chunk += Split) {
+    for (int chunk = part; chunk < 20; chunk += 4) {
         const int col = offset + chunk * 8;
         int q0, q1;
         const float d = int8_block<Kind>(raw + (col / Block) * Bytes - skip, col % Block, q0, q1, kvs);
@@ -1781,11 +1782,11 @@ __device__ __forceinline__ void down_int(const uint8_t* raw, int skip, int offse
 // worsen it. These coefficients are formed exactly in FP32 and multiply the unquantized FP16
 // activations with FP32 FMAs; other kinds keep the faster integer path, which removes their larger
 // FP16 coefficient rounding.
-template <int Kind, int Block, int Bytes, int Split>
+template <int Kind, int Block, int Bytes>
 __device__ __forceinline__ void down_exact(const uint8_t* raw, int skip, int offset, int part, const float4* xf,
                                            int n, const int8_t* kvs, float (&acc)[DECODE_PAIRS]) {
     #pragma unroll
-    for (int chunk = part; chunk < 20; chunk += Split) {
+    for (int chunk = part; chunk < 20; chunk += 4) {
         const int col = offset + chunk * 8;
         int q0, q1;
         const float d = int8_block<Kind>(raw + (col / Block) * Bytes - skip, col % Block, q0, q1, kvs);
@@ -1887,22 +1888,43 @@ void expert_down160_decode(const __half* activation, PackedView down, int dims, 
         }
     }
     __syncthreads();
-    float acc[DECODE_PAIRS] = {};
     const uint8_t* mine = raw + row * row_bytes + int(((row0 + row) * down.stride + skip) & 3);
-    if constexpr (Exact) {
-        down_exact<42, 64, 18, Split>(mine, skip, down.offset, part, xf, count, kvs, acc);
-    } else {
-        switch (down.kind) {  // the launcher admits only integer kinds with a staged span
-#define TF_DOWN_CASE(K, B, BYTES) case K: down_int<K, B, BYTES, Split>(mine, skip, down.offset, part, xq, xs, count, kvs, acc); break;
-            TF_INT_KINDS(TF_DOWN_CASE)
+    auto accumulate = [&](int chunks, float (&sum)[DECODE_PAIRS]) {  // one Split-4 lane part's chunks
+        if constexpr (Exact) {
+            down_exact<42, 64, 18>(mine, skip, down.offset, chunks, xf, count, kvs, sum);
+        } else {
+            switch (down.kind) {  // the launcher admits only integer kinds with a staged span
+#define TF_DOWN_CASE(K, B, BYTES) case K: down_int<K, B, BYTES>(mine, skip, down.offset, chunks, xq, xs, count, kvs, sum); break;
+                TF_INT_KINDS(TF_DOWN_CASE)
 #undef TF_DOWN_CASE
+            }
         }
+    };
+    // Row-count independence: every output is ((s0 + s1) + (s2 + s3)), s_c the in-order sum of chunks
+    // c, c + 4, ... Split 4 computes s_part per lane and adds them by butterfly; Split 1 computes the
+    // four in turn, so a token's outputs are the same bits whichever Split its call's row count selects.
+    static_assert(Split == 1 || Split == 4, "both Splits form the four-part summation tree");
+    float acc[DECODE_PAIRS] = {};
+    if constexpr (Split == 4) {
+        accumulate(part, acc);
+    } else {
+        float s[DECODE_PAIRS] = {}, t[DECODE_PAIRS] = {};
+        accumulate(0, acc);
+        accumulate(1, s);
+        #pragma unroll
+        for (int p = 0; p < DECODE_PAIRS; ++p) acc[p] = acc[p] + s[p];
+        #pragma unroll
+        for (int p = 0; p < DECODE_PAIRS; ++p) s[p] = 0.0f;
+        accumulate(2, s);
+        accumulate(3, t);
+        #pragma unroll
+        for (int p = 0; p < DECODE_PAIRS; ++p) acc[p] = acc[p] + (s[p] + t[p]);
     }
     #pragma unroll
     for (int p = 0; p < DECODE_PAIRS; ++p) {
         if (p < count) {  // CTA uniform
             #pragma unroll
-            for (int offset = 1; offset < Split; offset *= 2)
+            for (int offset = 1; offset < Split; offset *= 2)  // Split 4, part 0: (s0 + s1) + (s2 + s3)
                 acc[p] += __shfl_xor_sync(0xffffffff, acc[p], offset);
             if (part == 0) {
                 const float value = acc[p] + 0.0f;
@@ -1926,7 +1948,9 @@ void launch_down_decode(const __half* activation, int rows, const PackedView& do
         #undef TF_GROUPED_DOWN
         return;
     }
-    const bool narrow = rows <= 2;  // measured crossover (SC117 IQ4_NL/Q2_0 banks, V100)
+    // Split choice is a speed-only decision (both form the same summation tree; see the kernel):
+    // measured crossover on sliced SC117 IQ4_NL/Q2_0 banks (V100), Split 4 faster through 9 rows.
+    const bool narrow = rows <= 9;
     const dim3 grid(dims / (DOWN_WARPS * (narrow ? 8 : 32)), group.max_tiles);
     const int bytes = DOWN_WARPS * (narrow ? 8 : 32) * row_bytes;
     // Wide spans (Q8_0 rank slices: 172-byte rows) exceed the 48 KiB default shared memory.
