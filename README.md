@@ -10,11 +10,8 @@ deployment status per hardware target, the eight-V100 (SM70) development status,
 cross-cutting validation checkpoints, and operations. Status notes keep their
 recorded source/image, hardware, workload and quality scope; unrun checks remain pending.
 
-Development is now governed by the [canonical ProviderOne implementation design](ProviderOne%20Implementation%20Docs/ProviderOne_V100_Adaptive_Inference_Design.md)
-and its unchanged companion documents in [ProviderOne Implementation Docs](ProviderOne%20Implementation%20Docs/).
-SC117/V100 is the immediate delivery priority while selected existing profiles,
-including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
-separates requested, source-implemented, qualified and effective behavior.
+Development is governed by the ProviderOne implementation design, with SC117/V100 as the
+immediate delivery priority; see [Development governance](#development-governance-and-repository-status).
 
 ## Start here
 
@@ -42,7 +39,8 @@ separates requested, source-implemented, qualified and effective behavior.
 | --- | --- |
 | Apple Silicon/macOS | MLX backend; Python 3.11 or newer. Package requirements currently constrain MLX to `>=0.32.2,<0.32.4` and mlx-lm to `>=0.31.3,<0.33`. |
 | Linux/NVIDIA AMD64 | Native AMD64 container and CUDA backend. The separate-VRAM trials used an RTX PRO 2000 Blackwell with 16 GB VRAM and 64 GB system RAM. |
-| Linux/NVIDIA ARM64 | Native ARM64 container and CUDA backend; earlier deployment trials used DGX Spark/GB10 unified memory. |
+| Linux/NVIDIA ARM64 | Native ARM64 container and CUDA backend; the GB10 deployments use DGX Spark/GB10 unified memory. |
+| Linux/NVIDIA V100 (SM70), AMD64 | Separate source-built CUDA 12.x/SM70 stack through the [V100 source-foundation workflow](deploy/v100/source-foundation.md); CUDA13 official wheels do not provide V100 qualification. See [V100 status](#v100-sm70-adaptive-development-status). |
 
 `--backend auto` selects MLX on macOS and CUDA elsewhere; model-family support still applies. The required native file-owner extension supports Linux and macOS. Native Windows is outside the current runtime contract.
 
@@ -144,6 +142,10 @@ docker build --network=none \
   -t tensorfold-v100:source-builder-cu1292 .
 ```
 
+That command builds the source producer, not a serving image. Complete the
+source workflow's framework build/export, installed audit and native/model gates
+before deployment. CUDA13 official wheels do not provide V100 qualification.
+
 The refreshed V100 nightly source compiled in the64-job bootstrap and its exact
 owned05adb fork passed five-path precommit lint/finalization. Its SDK image is
 built, and the installed restricted FP32 Triton FMA component and cache-profile
@@ -151,9 +153,6 @@ inheritance checks passed. Selected Q8 TP8/ETP4/MTP4 startup and two exact short
 NCCL 2.32.6 on all eight ranks. Full SC117 multimodal/full-history/performance
 and existing Q03 limitations remain explicitly unqualified future coverage.
 
-That command builds the source producer, not a serving image. Complete the
-source workflow's framework build/export, installed audit and native/model gates
-before deployment. CUDA13 official wheels do not provide V100 qualification.
 The refreshed CPU media producer reuses the protected published Transformers
 provider and builds exactly the CPU TorchVision/PyAV wheels. Its 103 preparation/
 ownership controls and six CPU build/export stages passed. Final core/media
@@ -273,7 +272,7 @@ A healthy listener alone is insufficient: consume a complete generation. Check r
 
 ### GB10 Compose profile
 
-[deploy/gb10/compose.yaml](deploy/gb10/compose.yaml) is a deployment-specific GB10 profile: a captured model path, 114 GiB memory, host CPU affinity, four slots, a 1,048,576-token YaRN-4 context and `rotorquant8-norm` for both K and V. It is not a portable 16 GB GPU configuration. Review its memory, affinity, mounts, networking and flags before running it. `HF_CACHE`, `KERNEL_CACHE` and `TENSORFOLD_IMAGE` override its paths/image; its health check allows 15 minutes for initial compilation/loading. It sets `TENSORFOLD_FAILURE_CAPTURE_DIR` to a bounded directory under the kernel cache, where a reply that ended inside its think block is captured (redacted request, token IDs, statistics); a normal reply's request is never logged or captured. See the [deployment guide](deploy/gb10/README.md).
+[deploy/gb10/compose.yaml](deploy/gb10/compose.yaml) is a deployment-specific GB10 Flash Next profile: a captured model path, 114 GiB memory, host CPU affinity, four slots, a 1,048,576-token YaRN-4 context and `rotorquant8-norm` for both K and V. It is not a portable 16 GB GPU configuration. Review its memory, affinity, mounts, networking and flags before running it. `HF_CACHE`, `KERNEL_CACHE` and `TENSORFOLD_IMAGE` override its paths/image; its health check allows 15 minutes for initial compilation/loading. It sets `TENSORFOLD_FAILURE_CAPTURE_DIR` to a bounded directory under the kernel cache, where a reply that ended inside its think block is captured (redacted request, token IDs, statistics); a normal reply's request is never logged or captured. See the [deployment guide](deploy/gb10/README.md).
 
 ```bash
 docker compose -f deploy/gb10/compose.yaml config --quiet
@@ -284,18 +283,18 @@ docker compose -f deploy/gb10/compose.yaml logs --tail 100 -f tensorfold
 
 Four slots share weights and an expert cache; they do not guarantee four simultaneous full-size contexts fit.
 
-The GB10 Compose profile uses the shared local model store at `HF_CACHE=/models/hf`.
+That profile uses the shared local model store at `HF_CACHE=/models/hf`.
 It mounts the existing private token separately through `HF_TOKEN_FILE`, read-only,
 with host-path creation disabled. Override both variables for a different host
 layout; model data and authentication remain separate. See the
 [model-location settings](deploy/gb10/README.md#local-model-and-authentication-paths).
 
-The GB10 Compose profile uses a separate cache directory for the Python image,
+It uses a separate cache directory for the Python image,
 preserving the previous image's compiled cache for rollback. See the
 [GB10 cache and deployment guide](deploy/gb10/README.md) for the captured host
 paths and the source-specific cache override.
 
-The GB10 Gemma profile defaults to its native 262,144-token context, a 16 GiB
+The GB10 Gemma profile, [compose.gemma4.yaml](deploy/gb10/compose.gemma4.yaml), defaults to its native 262,144-token context, a 16 GiB
 host-memory reserve, ten build/compute threads and CPUs `5-9,15-19`. Thinking is
 enabled by default with no server-side thinking-token limit; Harness controls
 thinking and budgets per request. Explicit environment overrides remain available.
@@ -306,7 +305,8 @@ with an 8 GiB host-memory reserve. Its immutable runtime and measured tradeoffs
 are recorded separately from the historical affine/YaRN deployment.
 The earlier [2026-10-18 deployment receipt](deploy/gb10/deployment-nvfp4-20261018.json)
 records that Flash Next service's LAN acceptance at `http://192.168.1.50:8888/v1`, full-token
-serial/MTP identity, image/video and strict tool calls, before the Gemma switch above.
+serial/MTP identity, image/video and strict tool calls, before the GB10 service
+switched to [Gemma 4](#gb10-gemma-4).
 Forty retired TensorFold containers were removed with their logs preserved.
 
 ## Apple Silicon and source installation
@@ -364,7 +364,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Qwen3.8 Flash Next | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` | MLX, CUDA | Included MTP and context copies |
 | GLM-5.3-Flash | `Vontra/GLM-5.3-Flash-MLX-4bit-MTP` | MLX on a 256 GB Mac; CUDA with two ranks | MTP; optional DFlash2 on CUDA |
 | Gemma 4 E4B | `DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking` | CUDA BF16 candidate; [recipe](docs/recipes/gemma-4-e4b.md) | Native Google assistant and EAGLE3 candidates; comparison pending, neither is DFlash |
-| Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4 | MLX; initial CUDA trial | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
+| Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4; ModelOpt NVFP4 ([recipe](docs/recipes/gemma-4-26b-modelopt.md)) | MLX; initial CUDA trial | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
 | Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |
 | Qwen3.8-27B EXL3, experimental | `turboderp/Qwen3.8-27B-exl3`, branches `3.00bpw` / `4.00bpw` | CUDA | DFlash2 and context copies |
@@ -525,7 +525,7 @@ sections below; `tensorfold serve --help` remains authoritative.
 | Flags | Default / contract |
 | --- | --- |
 | `--max-pending-requests-per-principal N` | CUDA only; unset: no separate principal cap. Requires a finite `--max-pending-requests` cap. The principal comes from authentication, and its logical request claim spans preparation, generation subruns and retirement. |
-| `--dflash-head-w4a16` | Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: original-BF16 private W4A16 proposal head; requires enabled DFlash and `--drafter-bits 8`; default off. See [W4A16 head](#gb10-gemma-4-26b-a4b-deployment-checkpoints). |
+| `--dflash-head-w4a16` | Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: original-BF16 private W4A16 proposal head; requires enabled DFlash and `--drafter-bits 8`; default off. See [W4A16 head](#gemma-4-selection-screens). |
 | `--lossless-head` | Gemma 4 ModelOpt MoE on CUDA: losslessly pack the tied BF16 embedding/output head; default off. Cannot combine with `--delta4-head`. |
 | `--spark-global-gqa`, `--spark-sampled-q` | Experimental Gemma 4 ModelOpt Sparkulator global GQA (requires explicit `--context` ≤ 131072) and sampled proposals (target sampling unchanged); default off, model gates pending. |
 | `--no-graphs` | Flash Next CUDA: execute whole forwards eagerly; required by the initial SM70 media profile. |
@@ -780,18 +780,25 @@ settings. A later image or configuration requires its own qualification.
 
 #### GB10 Gemma 4 26B-A4B deployment checkpoints
 
-Current production on port `8888` is the accepted W4A16 DFlash D4 policy with
-sampled-verification clipping: container `3cc80341`, image `b579387b`, source UID
-`ae8d40be`, config fingerprint `1e7d619d`, restored2026-11-06T05:35:53.382963622Z. The ordinary native CLI
+Current production on port `8888` is container `0aa83b4b`, runtime `e0bdd6b4` /
+source UID `1c166686`, from the [2026-11-11 foundation refresh](#pinned-container-stack)
+with the [shared-prefix cache replacement](#gemma-shared-prefix-cache). It keeps the
+same fixed profile: the accepted W4A16 DFlash D4 policy with sampled-verification
+clipping (`production-current` selects `deploy-w4-clipping-20261105-v1`). Comparative
+P3 for that cutover was explicitly deferred by the user; no gain or equivalence is
+claimed. The replaced shared-prefix service `7ea` (runtime `d992ac68`) is retained
+stopped for rollback.
+
+That policy was first activated in container `3cc80341`, image `b579387b`, source UID
+`ae8d40be`, config fingerprint `1e7d619d`, restored 2026-11-06T05:35:53.382963622Z. The ordinary native CLI
 explicitly enables `--dflash-head-w4a16 --drafter-bits 8` alongside
 `--prepare-global-prompt --delta4-head --clip-sampled-verification` (reuse16).
 Companion transformer FP8,
 BF16 KV,131072 context, original model/drafter revisions, aliases, port, vision,
 thinking and Google template are preserved; A8 and proposal graphs remain disabled.
-`production-current` selects `deploy-w4-clipping-20261105-v1`. The prior W4
-container `4b15d567` and earlier Shared/FP8 container `ffd9c363` remain stopped
-and retained for rollback;
-both speech services remain healthy. NativeReady, math4 and actual header/CLI
+At that activation the prior W4 container `4b15d567` and earlier Shared/FP8
+container `ffd9c363` were stopped and retained for rollback, and both speech
+services remained healthy. NativeReady, math4 and actual header/CLI
 readback establish activation of the existing policy.
 
 The earlier723 W4 CLI bridge passed441 existing source checks and31 new flag checks, static/diff
@@ -817,8 +824,6 @@ VRAM-saving or global-optimality claim follows. The CLI flag defaults off for
 other launches and only supports Gemma4 CT NVFP4/ModelOpt MoE CUDA; it does not
 enable trig, persistent cache, draft graphs, clipping or native-A8 proposals.
 See [deployment evidence and estimates](docs/gemma4-cuda-validation.md#shared-global-prompt-scratch-cli).
-The recorded image/source artifacts predate this documentation-only status
-update; these prose edits do not describe a new build.
 
 #### Gemma 4 selection screens
 
@@ -854,8 +859,7 @@ preserve prior launches. It does not enable A8, clipping, draft graphs or change
 target/transformer/vision/KV math. Source/installed/component/model/P3 evidence
 for the prior internal policy is retained. The new frontend build, installed
 checks and actual production readback are complete as recorded above; the
-full API failure and separate cancellation witness are scoped above. This documentation-only
-status update does not describe another image build.
+full API failure and separate cancellation witness are scoped above.
 See [CLI policy and qualification](docs/gemma4-cuda-validation.md#w4a16-private-head-cli).
 
 **W4A16 depth2/3 screen (not selected for broad production):** the current
@@ -883,7 +887,7 @@ inventory on the newae8d/b579 image; only five Python CLI/constructor files
 changed, with native/sampler and772 other runtime files unchanged. Actual
 production room-one sampled verification,14 directed checks, math4, aliases,
 pointer and speech health passed; deployment receipt050a/READY1a3b and D13a3be
-retain the exact cutover proof. The image predates this documentation update.
+retain the exact cutover proof.
 These checks do not relabel the earlier723 full-API aggregate failure or its
 observed-active cancellation witness as new-image coverage.
 See [scope and qualification](docs/gemma4-cuda-validation.md#sampled-verification-clipping-accepted-trade).
@@ -897,7 +901,7 @@ with better startup observations but no Torch memory gain. These benefits do
 not justify this design's decode trade under the current objective. At that closeout, canonical
 runtime and the26 independent N64 oracles were restored to the accepted baseline;
 prototype source, tests, failures and results remain archived. Accepted W4D4/N64
-production now uses the separately qualified clipping CLI imageae8d/b579. See [results and limits](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
+production then used the separately qualified clipping CLI image ae8d/b579. See [results and limits](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
 
 **Eight-warp NT2 investigation (not selected):** source6dea/imageef88 passed63
 native cases and exact real-trained-bank chain checks. M2 chain latency was
@@ -911,8 +915,7 @@ warm request had no M2 exposure, so that gain is retained without causal credit
 to NT2. Other mixed regions remain uncertain. Row-two eight-warp is not selected;
 this establishes no global inferiority, equivalence or noise claim. At that closeout, the seven
 runtime files and maintained26 independent N64 oracles were restored to accepted
-bea344 bytes, with only experiment-specific CPU controls removed. Accepted
-production remains ae8d/b579 W4D4/N64 with clipping enabled. Historical Git,
+bea344 bytes, with only experiment-specific CPU controls removed. Accepted production then remained ae8d/b579 W4D4/N64 with clipping enabled. Historical Git,
 images, fixtures, failures and results remain intact; row-two four-warp N128
 remained open at that closeout. See [results and limits](docs/gemma4-cuda-validation.md#eight-warp-and-row-two-nt2-candidates).
 
@@ -956,7 +959,7 @@ and identical observed Torch memory maxima;
 the broad ON default was not selected. Scoped T0-code/T1-short pilot changes
 were +0.674%/+0.956%; these are not established wins or regional offsets.
 Narrower policy evidence remains open. There is no CLI or HTTP activation,
-and current production remains unchanged.
+and production was unchanged.
 See [kernel contracts](docs/cuda-kernel-contracts.md).
 
 The ordered combine-to-MoE-tail prototype completed exact component59 and
@@ -992,9 +995,8 @@ slower than the old snapshot service; replay-seed and complete-cell costs are
 reported separately. The user prioritizes full caching and accepts the observed
 small cold-request delay; this is not an equivalence or whole-feature speedup
 claim. Those observations retain their `d992ac68` identity. The public service
-now uses refreshed runtime `e0bdd6b4` / source UID `1c166686` with the same fixed
-profile, after functional qualification and explicit user deferral of comparative
-P3. The replaced service and earlier rollback artifacts remain preserved. The
+now runs it on refreshed runtime `e0bdd6b4`; see
+[current production](#gb10-gemma-4-26b-a4b-deployment-checkpoints). The
 prior 256-entry snapshot mitigation remains an unselected historical checkpoint.
 
 The replacement reuses compatible partial prefixes, retains separate conversation
@@ -1026,8 +1028,7 @@ or measured performance claim.
   The immutable GB10 `f913d5f0` capture passed installed CPU, native word/lookup/tiling/FP8/graph,
   isolated failure, and same-image full-model equivalence gates. Recorded process CUDA allocation
   counters were lower. The later `6a1a9716`/`38670db4` capture also passed the new-source component,
-  same-head full-model and scoped K/KV service quality gates described below. This is not a total
-  physical RAM or speed claim; documentation-only checkpoint changes are not a newly tested image.
+  same-head full-model and scoped K/KV service quality gates described below. This is not a total physical RAM or speed claim.
   See the historical [Delta4 numerical/memory scope](docs/gemma4-cuda-validation.md#experimental-delta4-tied-table-integration)
   and the [later quality and incomplete performance scope](docs/gemma4-persistent-global-cache.md#qualification-checkpoint-2026-11-03).
 - CT Gemma has a separate default-off constructor investigation, `global_cache="k"` or `"kv"`,
@@ -1047,14 +1048,6 @@ or measured performance claim.
   observed-active cancellation/recovery passed. P3 remains unmeasured/traffic-blocked and no winner is
   selected. [Exact qualification and limits](docs/gemma4-persistent-global-cache.md#prompt-consumption-qualification-07d1664f).
 
-- `tools/gemma4_cuda_proposal_qualify.py --plan PLAN --out NEW_DIRECTORY` compares the finite Gemma proposal
-  policies on an operator-sealed 48/8,451-token prompt pair. Its plan binds the immutable image, source hashes,
-  inputs, sampling and request order. Probability-byte and complete-sequence proofs run separately from timing;
-  every failed, partial and unrun outcome remains in the report. A screen does not select a production winner.
-  Its six-seed, 256-token holdout prepares both policies in full proof requests, warms each prompt once, then
-  times balanced ABBA/BAAB blocks with the complete prompt cached. It does not precondition every position by
-  generating the identical completion first; timed sample counts and correctness gates remain unchanged.
-
 - Gemma has a separate default-off internal `dflash_graph=True` constructor candidate for private-FP8
   DFlash blocks2..16. It captures only unchanged companion logits, retains one replaceable exact-geometry
   graph and returns a fresh owning FP32 clone; actual-q/readback/draws/accepted append remain outside.
@@ -1062,13 +1055,15 @@ or measured performance claim.
   / runtime `d83610b5` passed 519 source CPU tests (15 documented CUDA skips), 188 installed CPU tests
   and 37 native GPU tests without skips. Same-image graph OFF/ON matched 11 real prefills through
   committed131071, 17 probes, two target-teacher comparisons and 13 generation cases with no witness gaps;
-  both workers retired safely. These image identities precede this documentation-only update;
-  runtime/test bytes are unchanged. HTTP/media/cancellation, usable full-window reply room and controlled
+  both workers retired safely. HTTP/media/cancellation, usable full-window reply room and controlled
   performance remain pending. Production traffic during correctness and private-cache reuse exclude
   speed/startup comparisons; no production deployment or winner is selected.
   See [DFlash graph ownership and pending gates](docs/gemma4-dflash-graphs.md).
 
 #### 2026-11-01 ModelOpt 26B-A4B checkpoint
+
+Production later moved to the AEON compressed-tensors NVFP4 export described above;
+these ModelOpt notes retain their original scope.
 
 The 2026-11-01 standalone production checkpoint on port `8888` ran
 [`llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4`](docs/recipes/gemma-4-26b-modelopt.md)
@@ -1152,8 +1147,7 @@ and vision remain intact. Existing ModelOpt lossless support is unchanged.
 The separate `--delta4-head` flag activates the existing lossless Delta4
 table on Gemma CT NVFP4 MoE CUDA, at fixed reuse16 and default off. It is mutually
 exclusive with ModelOpt's `--lossless-head`. The owner accepted the observed
-decode/CPU-startup tradeoff and authorized the completed 2026-11-03 native CLI
-cutover described above; independent performance confirmation remains separate.
+decode/CPU-startup tradeoff and authorized the completed 2026-11-03 native CLI cutover (see [deployment checkpoints](#gb10-gemma-4-26b-a4b-deployment-checkpoints)); independent performance confirmation remains separate.
 See the [AEON validation scope](docs/recipes/gemma-4-26b-modelopt.md#aeon-compressed-tensors-replacement-under-validation).
 
 ModelOpt MoE source admits an explicitly supplied DFlash companion with normal
@@ -1261,15 +1255,6 @@ retain their original checkpoint and runtime scope.
 
 **Gemma4/MoE integration candidate (2026-10-19):** Gemma text decode and DFlash verification now use CUDA graphs over the lane's persistent KV state; prefill and visual blocks remain eager. Startup captures each verification width at the smallest attention grid; larger grids capture on first use and retain their outputs until engine retirement. The accompanying Qwen CT graph path shares its fixed attention buffers with prefill and retained prompt states, with separately owned copies when conversations switch. These changes remain pending final integrated native GB10, full-context, quality and HTTP performance qualification under VBoost 0. Historical results below keep their original source, image and host configuration. See [the candidate's validation scope](docs/gemma4-cuda-validation.md#integration-candidate-2026-10-19).
 
-On GB10, prepared FP8 Gemma DFlash improved the registered cached-decode
-throughput objective by **20.96%** (pointwise 95% interval **15.27–26.94%**) over
-BF16 drafting. All eight required decode cells had positive interval bounds;
-all 6,144 generated token IDs matched the four fixed greedy reference sequences.
-Startup took **14.97% longer**, including provider preparation. The native NVFP4
-GB10 Compose profile selects `--drafter-bits 8`; the general CLI default remains
-`16`, required for the original affine checkpoint's quantized head.
-[Conditions, tradeoffs and raw receipt](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
-
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64
@@ -1311,11 +1296,21 @@ request, preserving the existing launch parameters. [Deployment receipt](deploy/
 Target precision and the
 request's sampling and thinking settings are unchanged. [Conditions and limits](docs/gemma4-cuda-validation.md#sampled-proposal-cpu-repair-2026-10-21).
 
+On GB10, prepared FP8 Gemma DFlash improved the registered cached-decode
+throughput objective by **20.96%** (pointwise 95% interval **15.27–26.94%**) over
+BF16 drafting. All eight required decode cells had positive interval bounds;
+all 6,144 generated token IDs matched the four fixed greedy reference sequences.
+Startup took **14.97% longer**, including provider preparation. The native NVFP4
+GB10 Compose profile selects `--drafter-bits 8`; the general CLI default remains
+`16`, required for the original affine checkpoint's quantized head.
+[Conditions, tradeoffs and raw receipt](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
+
 ### GB10 Flash Next and Qwen
 
 #### GB10 Flash Next configuration: YaRN 4× and RotorQuant8-norm
 
-The GB10 service at **`http://192.168.1.50:8888/v1`** now selects
+Before the GB10 service moved to [Gemma 4](#gb10-gemma-4), the Flash Next service at
+**`http://192.168.1.50:8888/v1`** selected
 **1,048,576 prompt-plus-reply tokens, YaRN factor 4, four request slots and
 `rotorquant8-norm` for both keys and values**. This uses the same pinned ARM64
 image and affine 4-bit/group-32 checkpoint identified below. The canonical
@@ -1407,8 +1402,7 @@ test was **not run**. The earlier 523,882-token retrieval belongs to its origina
 image and is described in the [deployment guide](deploy/gb10/README.md).
 Actual LAN generation, image/video input and media token counting, typed tool
 calls, and xgrammar constraints passed before and after a same-container
-restart. The deployed service is healthy; its old-image rollback remains
-stopped. The [deployment receipt](deploy/gb10/deployment-20261010.json) records
+restart. The deployed service was healthy; its old-image rollback remained stopped. The [deployment receipt](deploy/gb10/deployment-20261010.json) records
 the image, configuration, observations, sample results and evidence hashes.
 
 #### Flash Next NVFP4 on GB10
@@ -1440,7 +1434,7 @@ the subsequently launched immutable runtime and its LAN acceptance checks.
 
 #### Qwen3.8-27B AEON mixed NVFP4 on GB10
 
-**Qwen3.8-27B AEON mixed NVFP4 (2026-10-19):** the CUDA engine reads `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` as it ships: NVFP4 MLPs under their static FP4 activation scales, and FP8 projections with a scale per output channel whose rows are quantized a token at a time onto the FP8 tensor cores (ModelOpt `FP8_PER_CHANNEL_PER_TOKEN`). `--tokenizer` admits the upstream `tokenizer.json` this export altered. On one GB10 with DFlash2, drafted replies equal serial ones token for token, and 512-token replies decoded at **76.4 (code), 30.5 (chat) and 81.1 (JSON) tok/s** greedy on the engine, against 11.2-12.2 serially. The tool, needle and KL gates are pending. [Conditions, prompt rates and GB10 thermal observations](docs/optimization-validation.md#qwen38-27b-aeon-mixed-nvfp4-2026-10-19); see the [27B recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export).
+**2026-10-19:** the CUDA engine reads `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` as it ships: NVFP4 MLPs under their static FP4 activation scales, and FP8 projections with a scale per output channel whose rows are quantized a token at a time onto the FP8 tensor cores (ModelOpt `FP8_PER_CHANNEL_PER_TOKEN`). `--tokenizer` admits the upstream `tokenizer.json` this export altered. On one GB10 with DFlash2, drafted replies equal serial ones token for token, and 512-token replies decoded at **76.4 (code), 30.5 (chat) and 81.1 (JSON) tok/s** greedy on the engine, against 11.2-12.2 serially. The tool, needle and KL gates are pending. [Conditions, prompt rates and GB10 thermal observations](docs/optimization-validation.md#qwen38-27b-aeon-mixed-nvfp4-2026-10-19); see the [27B recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export).
 
 ### RTX PRO 2000 Blackwell (16 GB VRAM / 64 GB RAM)
 
@@ -1629,6 +1623,9 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 
 #### Flash Next mixed GGUF on eight V100s
 
+These Flash Next (Huihui GGUF) results predate the SC117 adaptive target below and
+keep their original source, image and configuration.
+
 **Flash Next on eight V100s (2026-10-24):** the native mixed-GGUF SM70 provider
 uses the existing CUDA engine, scheduler and HTTP API, with FP16 execution and
 FP32 recurrent state. The selected C22 configuration uses **stock MTP depth 3,
@@ -1660,10 +1657,10 @@ INT8-cache quality evidence, not FP16/HF equivalence or full262K quality coverag
 The expert-parallel trial failed quality gates; the TP4 graph-memory trial
 refused startup budget. Both are closed and unselected.
 
-The plain installed service is healthy on port8000; all four benchmark outputs
-and three simultaneous complete responses match the qualified candidate. The
-four closeouts are complete; the optimization goal is paused at the agreed
-stopping point with100tokens/s unmet.
+At that closeout the plain installed service was healthy on port 8000; all four benchmark outputs
+and three simultaneous complete responses matched the qualified candidate. The
+four closeouts were complete; the optimization goal was paused at the agreed
+stopping point with 100 tokens/s unmet.
 
 [Build and selected configuration](deploy/v100/README.md),
 [quality, allocation, workload and experiment evidence](docs/v100-flashnext-validation.md).
@@ -1684,7 +1681,7 @@ Q4 is a lossy choice, not quality-equivalent to INT8. On the fixed broader
 389-step suite, signed128 Q4 measured perplexity ratio **1.00652** and top-1
 agreement **97.43%**; norm-preserving Q4 measured **1.00804** and **97.69%**.
 Both completed all 714 teacher steps but failed the old INT8 comparison gates.
-The host currently selects INT8. [Q4 evidence and limitations](docs/v100-flashnext-validation.md#rotorquant-q4-on-v100).
+The host then selected INT8. [Q4 evidence and limitations](docs/v100-flashnext-validation.md#rotorquant-q4-on-v100).
 
 The optional `--indexer-history ram` path keeps raw FP16 indexer history in
 NUMA-local system memory, with bounded GPU ring/staging buffers; pooled indexer
@@ -1692,7 +1689,7 @@ keys and attention KV stay on the GPU. TP8 live checks passed four full INT8
 windows and eight Q4 windows of 260,060 tokens, including exact same-format
 replies, concurrency, streaming, cancellation and recovery. This establishes
 capacity and those output checks, not a throughput gain or full-context payload
-qualification. The current host selects **INT8, GPU history, three full
+qualification. At that checkpoint the host selected **INT8, GPU history, three full
 262,144-token windows** at the user's request. See the
 [archive deployment procedure](deploy/v100/README.md#numa-local-indexer-archive).
 
@@ -1810,16 +1807,7 @@ The V100 path is being refactored against the
 full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
-gates. Historical results below keep their original source and layout.
-
-This is an authority/source-baseline checkpoint, not a package or runtime
-rebrand. Current TensorFold imports, CLI, native names, images and remotes keep
-their actual identities until a coherent, verified transition. Historical
-receipts and names remain evidence at their original source/image/workload;
-older CPU totals do not qualify this checkout. The legacy V100 design path is
-a pointer, not a second full contract. Companion experiments remain conditional
-under the governing design. Existing untracked `!` drafts are not maintained
-authority and are not part of this checkpoint.
+gates. The historical [Flash Next V100 results](#flash-next-mixed-gguf-on-eight-v100s) keep their original source and layout.
 
 ### Model target, formats and positional contracts
 
@@ -1828,7 +1816,7 @@ specification. Its mixed tensor inventory includes Q2_0, Q6_K, IQ2_S, IQ3_XXS,
 IQ3_S and IQ4_XS; the host and SM70 decoders preserve those original blocks.
 Independent pinned GGML wire checks cover the host decoders. New SM70 device,
 full-model, media and capacity qualification remains pending; historical model
-results below do not qualify this target.
+results in [Flash Next mixed GGUF on eight V100s](#flash-next-mixed-gguf-on-eight-v100s) do not qualify this target.
 The GGUF recurrent importer preserves stored FP32 `A_neg=-exp(A_log)` and its
 coupled value-head permutation; the FP16 chain consumes that representation
 directly. HF-backed providers retain their `A_log` representation. Source
@@ -1986,7 +1974,7 @@ allocation and ownership through worker, socket and error retirement. Its C27
 joint-reservation control passes with unchanged service limits; 591 distinct
 CPU test nodes and 21 subtests passed across the explicitly scoped runtime
 environments. The installed successor subsequently loaded the model, materialized
-32 full-window Q4 States on each rank and completed the partial benchmark below.
+32 full-window Q4 States on each rank and completed the [partial phase benchmark](#sc117-adaptive-path-measurements).
 See [the host-credit scope](docs/v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
 
 Ordinary TP admission now releases completed RPC frame payloads after a
@@ -3146,6 +3134,13 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   across graph reconstruction. Full outputs, proposal counters, cache hits, transition costs and process
   memory are recorded. The target-only head screen does not select a winner; fixed 256-token ignore-EOS
   results require separate normal-EOS validation before promotion.
+- `tools/gemma4_cuda_proposal_qualify.py --plan PLAN --out NEW_DIRECTORY` compares the finite Gemma proposal
+  policies on an operator-sealed 48/8,451-token prompt pair. Its plan binds the immutable image, source hashes,
+  inputs, sampling and request order. Probability-byte and complete-sequence proofs run separately from timing;
+  every failed, partial and unrun outcome remains in the report. A screen does not select a production winner.
+  Its six-seed, 256-token holdout prepares both policies in full proof requests, warms each prompt once, then
+  times balanced ABBA/BAAB blocks with the complete prompt cached. It does not precondition every position by
+  generating the identical completion first; timed sample counts and correctness gates remain unchanged.
 
 Campaign identity and determinism rows now retain the typed token count of each
 required response peer. This exposes partial replies without adding requests or
@@ -3230,6 +3225,21 @@ git merge upstream/python-0.6
 Add the remote only once; merge `upstream/python-0.6`; upstream `main` is a different native engine. Resolve conflicts while preserving fork contracts, update all affected help/tests/docs, run the applicable gates and review the merge before pushing. Rebuild a new image tag and record its source/image IDs. Preserve the previous image and configuration, stop the old service, and start the new image on the intended port. Confirm health and complete generations before removing the old container; restore the previous image/configuration if validation fails. Do not patch installed dependency trees inside a running image.
 
 ## Development governance and repository status
+
+Development is now governed by the [canonical ProviderOne implementation design](ProviderOne%20Implementation%20Docs/ProviderOne_V100_Adaptive_Inference_Design.md)
+and its unchanged companion documents in [ProviderOne Implementation Docs](ProviderOne%20Implementation%20Docs/).
+SC117/V100 is the immediate delivery priority while selected existing profiles,
+including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
+separates requested, source-implemented, qualified and effective behavior.
+
+This is an authority/source-baseline checkpoint, not a package or runtime
+rebrand. Current TensorFold imports, CLI, native names, images and remotes keep
+their actual identities until a coherent, verified transition. Historical
+receipts and names remain evidence at their original source/image/workload;
+older CPU totals do not qualify this checkout. The legacy V100 design path is
+a pointer, not a second full contract. Companion experiments remain conditional
+under the governing design. Existing untracked `!` drafts are not maintained
+authority and are not part of this checkpoint.
 
 The [development handoff checkpoint](docs/development-checkpoint.md) records the
 preserved V100 trials, research drafts and known unfinished comparison controls.
