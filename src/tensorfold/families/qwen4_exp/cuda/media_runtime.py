@@ -359,15 +359,6 @@ class MediaRuntime:
         self.directory = tempfile.mkdtemp(prefix="tensorfold-media-")
         self.directory = Path(self.directory).resolve()
 
-    def frontend_for(self, cancelled):
-        from tensorfold.vision.media_frontend import ReplayMediaFrontend
-
-        self.check_media_health()
-        if self.frontend is None:
-            raise ValueError("only the leader owns CPU media preparation")
-        return ReplayMediaFrontend(self.store, self.executor, self.planner,
-                                   cancelled=cancelled, allow_urls=self.allow_urls)
-
     def check_media_health(self):
         if os.getpid() != self.pid or self.closed or self.producer is None:
             raise RuntimeError("media runtime is retired, unbound or belongs to another process")

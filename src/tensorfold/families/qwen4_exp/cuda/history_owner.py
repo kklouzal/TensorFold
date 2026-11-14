@@ -1242,7 +1242,6 @@ class OwnerBuffers:
         operand the captured layers read. The caller validated the issued
         coordinate frame and replays on the current stream next.
         """
-        from tensorfold.cuda.sm70.paged_attention_descriptor import WORDS
         from .compact_indexer import Span
 
         if self.round_device is None or self.closed:

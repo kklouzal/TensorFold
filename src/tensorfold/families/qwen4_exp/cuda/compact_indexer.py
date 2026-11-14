@@ -47,14 +47,6 @@ def coordinate_rows(state, positions):
     return values.contiguous()
 
 
-def resolve_indexer_coordinates(state, cache_start, rows):
-    if (type(cache_start) is not int or type(rows) is not int or cache_start < 0 or rows < 0
-            or cache_start > state.capacity or rows > state.capacity - cache_start):
-        raise ValueError("indexer coordinate rows must fit their explicit cache span")
-    positions = torch.arange(rows, dtype=torch.int64, device=state.pos_dev.device) + cache_start
-    return coordinate_rows(state, positions)
-
-
 def issue_text_indexer_coordinates(state, position, cache_start, rows, *, max_rows, buffers=None):
     """Issue known text continuation rows, without reading device coordinates.
 

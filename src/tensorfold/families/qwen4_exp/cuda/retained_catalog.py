@@ -149,12 +149,6 @@ class RetainedRequest:
             raise ValueError("retained consumer continuation cannot change after queue admission")
         return self.catalog.claim_resume(self, state=state, stream=stream, continuation=selected, ticket=ticket)
 
-    @property
-    def resident_state(self):
-        self._check()
-        with self.catalog._condition:
-            return self.handle.state if self.handle.phase == "gpu" else None
-
     def _check(self):
         if self.closed or (self not in self.handle.consumers and
                 (self.target_handle is None or self not in self.target_handle.request_holds)):
