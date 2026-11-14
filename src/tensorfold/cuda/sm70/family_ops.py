@@ -209,9 +209,27 @@ def _live_mask(value, valid_rows):
         value.shape[0], *([1] * (value.ndim - 1)))
 
 
+def _guard_fast(value, status, error, layer, valid_rows):
+    """Native one-launch guard for a row-strided matrix; None when the layout is not covered."""
+    if (not value.is_cuda or value.ndim != 2 or value.stride(1) != 1 or value.requires_grad
+            or value.dtype not in (torch.float16, torch.float32)
+            or status.dtype != torch.int32 or status.numel() != 2 or not status.is_contiguous()
+            or valid_rows is not None and (valid_rows.dtype != torch.int32 or valid_rows.numel() < 1)):
+        return None
+    from .family_native import extension
+
+    out = torch.empty(value.shape, dtype=value.dtype, device=value.device)
+    extension().guard_rows(value, out, status, None if valid_rows is None else valid_rows.reshape(-1),
+                           int(error), int(layer))
+    return out
+
+
 def _guard(value, status, error, layer, valid_rows=None):
     if status is None:
         return value
+    fast = _guard_fast(value, status, error, layer, valid_rows)
+    if fast is not None:
+        return fast
     valid = torch.isfinite(value) & (value.abs() <= 2**30)
     live = _live_mask(value, valid_rows)
     bad = ((~valid) if live is None else (~valid & live)).any()

@@ -92,7 +92,10 @@ class InputPreparationContext:
             self._active, self._pure = thread, may_refuse
             self.cohort.multi = None if self._decoder is None else self._decoder()
             try:
-                if self.cohort.comm is None:
+                # Without a refusal policy or publication contract every outcome is either "ok" or a
+                # local _fatal (cohort poison + supervisor notification), so a store agreement would only
+                # be a barrier: five TCP-store round trips per decode round. Agree only what can differ.
+                if self.cohort.comm is None or (contract is None and not may_refuse):
                     try:
                         return operation()
                     except BaseException as error:

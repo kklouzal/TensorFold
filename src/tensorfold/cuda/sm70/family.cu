@@ -880,6 +880,45 @@ void family_ple_conv_cuda(const T& gated, const T& pss, const T& norm, const T& 
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
+// Row guard: replace non-finite or |x| > 2^30 entries by zero and publish the sticky status word
+// (error bits OR'd, first failing layer recorded once). One launch instead of ~10 eager ops.
+__device__ __forceinline__ float guard_float(__half v) { return __half2float(v); }
+__device__ __forceinline__ float guard_float(float v) { return v; }
+template <typename S>
+__global__ void guard_rows_kernel(const S* x, S* out, int* status, const int* valid_rows, int cols, int64_t stride,
+                                  int error, int layer) {
+    const int64_t r = blockIdx.x;
+    int bad = 0;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+        const S v = x[r * stride + c];
+        const float f = guard_float(v);
+        const bool ok = isfinite(f) && fabsf(f) <= 1073741824.f;
+        if (ok) out[r * cols + c] = v;
+        else if constexpr (std::is_same_v<S, __half>) out[r * cols + c] = __float2half(0.f);
+        else out[r * cols + c] = 0.f;
+        bad |= !ok;
+    }
+    bad = __syncthreads_or(bad);
+    if (bad && threadIdx.x == 0 && (valid_rows == nullptr || r < valid_rows[0])) {
+        atomicOr(status, error);
+        atomicCAS(status + 1, -2, layer);
+    }
+}
+void family_guard_rows_cuda(const T& x, T& out, T& status, const O& valid_rows, int error, int layer) {
+    const int rows = int(x.size(0)), cols = int(x.size(1));
+    const int threads = std::min(256, std::max(32, (cols + 31) / 32 * 32));
+    const int* valid = valid_rows ? ptr<int>(*valid_rows) : nullptr;
+    auto stream = at::cuda::getCurrentCUDAStream();
+    if (rows && cols) {
+        if (x.scalar_type() == at::kHalf)
+            guard_rows_kernel<__half><<<rows, threads, 0, stream>>>(ptr<__half>(x), ptr<__half>(out), ptr<int>(status),
+                valid, cols, x.stride(0), error, layer);
+        else
+            guard_rows_kernel<float><<<rows, threads, 0, stream>>>(ptr<float>(x), ptr<float>(out), ptr<int>(status),
+                valid, cols, x.stride(0), error, layer);
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
 void family_add_cuda(const T& embedding, const T& hidden, T& out, int streams) {
     if (out.numel()) add_kernel<<<blocks(out.numel()), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         ptr<__half>(embedding), ptr<__half>(hidden), ptr<__half>(out), out.numel(), embedding.size(1), streams);

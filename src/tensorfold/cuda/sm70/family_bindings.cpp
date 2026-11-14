@@ -24,6 +24,7 @@ void family_ple_embed_cuda(const T&, T&, T&, int, int, int, float);
 void family_ple_gate_cuda(const T&, const T&, const T&, const T&, const T&, T&, T&, const O&, int, float, bool);
 void family_ple_conv_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&, int, int, float);
 void family_add_cuda(const T&, const T&, T&, int);
+void family_guard_rows_cuda(const T&, T&, T&, const O&, int, int);
 void family_partial_cuda(const T&, const T&, T&, int);
 void family_shift_cuda(T&, const T&, int, int);
 void family_prep_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&, T&, T&, T&,
@@ -189,6 +190,20 @@ void ple_conv(const T& gated, const T& pss, const T& norm, const T& tail, const 
                 && tail.sizes() == at::IntArrayRef({(weight.size(1) - 1) * dilation, h.size(1)}), "PLE conv geometry");
     c10::cuda::CUDAGuard guard(h.device()); family_ple_conv_cuda(gated, pss, norm, tail, weight, h, out, nrow,
                                                             streams, dilation, float(eps));
+}
+
+void guard_rows(const T& x, T out, T status, const O& valid_rows, int64_t error, int64_t layer) {
+    TORCH_CHECK(x.is_cuda() && (x.scalar_type() == at::kHalf || x.scalar_type() == at::kFloat) && x.dim() == 2
+                && x.stride(1) == 1 && x.size(0) <= INT32_MAX && x.size(1) <= INT32_MAX, "guard input geometry");
+    TORCH_CHECK(out.device() == x.device() && out.scalar_type() == x.scalar_type() && out.is_contiguous()
+                && out.sizes() == x.sizes(), "guard output geometry");
+    TORCH_CHECK(status.device() == x.device() && status.scalar_type() == at::kInt && status.is_contiguous()
+                && status.numel() == 2, "guard status word");
+    TORCH_CHECK(!valid_rows || (valid_rows->device() == x.device() && valid_rows->scalar_type() == at::kInt
+                && valid_rows->numel() >= 1), "guard live-row count");
+    TORCH_CHECK(error > 0 && error <= INT32_MAX && layer >= INT32_MIN && layer <= INT32_MAX, "guard status values");
+    at::assert_no_overlap(out, x); at::assert_no_overlap(status, x); at::assert_no_overlap(status, out);
+    c10::cuda::CUDAGuard guard(x.device()); family_guard_rows_cuda(x, out, status, valid_rows, int(error), int(layer));
 }
 
 void add(const T& embedding, const T& streams_in, T out, int streams) {
@@ -549,6 +564,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("prepare_owned_q8", &family_owned_q8_prepare_resident_cuda);
     m.def("owned_q8_prepare", &owned_q8_prepare<false>);
     m.def("owned_q8_prepare_window", &owned_q8_prepare<true>);
+    m.def("guard_rows", &guard_rows);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
     m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);

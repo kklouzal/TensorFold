@@ -30,7 +30,7 @@ from .weight_types import AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Wei
 
 STAGING_BYTES = 32 << 20
 DECODE_BYTES = 32 << 20
-MATMUL_ROWS = 32  # Fixed M preserves a row's reduction policy across prompt/decode batch sizes.
+MATMUL_ROWS = 32  # Decode-sized calls (<=32 rows) keep a fixed-M tile; larger calls use one GEMM.
 PLE_PREFETCH_WORKERS = 8
 
 
@@ -204,6 +204,12 @@ class GGUFDense:
             out = torch.empty((x.shape[0], self.n), dtype=dtype, device=x.device)
         if out.shape != (x.shape[0], self.n) or out.device != x.device:
             raise ValueError("GGUF linear output has the wrong shape or device")
+        if x.shape[0] > MATMUL_ROWS:
+            # Multi-tile (prefill) rows: one GEMM. Padded M32 tiles cost five launches per tile per
+            # linear and dominated prefill; the design permits reduction-order differences.
+            if dtype == torch.float32:
+                return torch.mm(x, self.weight.T, out_dtype=torch.float32, out=out)
+            return torch.mm(x, self.weight.T, out=out)
         # Existing native32 is the candidate selector; reference remains the
         # incumbent. Full tiles may reuse the already-defined prepared path,
         # never a larger GEMM or a changed output leading dimension. Whole-call
@@ -289,7 +295,7 @@ class GGUFConcat:
     def matmul(self, x, *, out=None, f32=False):
         if self.implementation not in ("reference", "fused", "native32"):
             raise ValueError("unknown GGUF stacked projection implementation")
-        if self.implementation == "fused":
+        if self.implementation == "fused" or (self.fused is not None and x.shape[0] > MATMUL_ROWS):
             return self.matmul_fused(x, out=out, f32=f32)
         if self.implementation == "native32" and x.shape[0] <= 32:
             return self.matmul_native32(x, out=out, f32=f32)
