@@ -12,11 +12,12 @@ from pathlib import Path
 
 import torch
 
-# Selected rows (V100, 48 distinct layers in one graph, us/layer new vs padded-M32 reference): width 80 (SC117
-# TP8) 6.5/10.9/22.0/38.2 vs 42.8/38.3/38.0/38.9 at 1/5/16/32 rows; width 128 8.7/14.3/31.5/56.5 vs 43.7/39.9/38.5/39.1
-# (the per-row loops lose at 32 rows above width 80).
-def _row_limit(width):
-    return 32 if width <= 80 else 16
+# Every call of 1..32 rows takes this program: a row limit below 32 would compute a token's shared output with
+# different arithmetic depending on how many rows share its call (decode/verify row counts vary run to run).
+# V100, 48 distinct layers in one graph, us/layer new vs padded-M32 reference: width 80 (SC117 TP8, the only width
+# the owned ETP4 path binds) 6.5/10.9/22.0/38.2 vs 42.8/38.3/38.0/38.9 at 1/5/16/32 rows; width 128
+# 8.7/14.3/31.5/56.5 vs 43.7/39.9/38.5/39.1.
+MAX_ROWS = 32
 
 
 CUDA_FLAGS = ("-O3", "--fmad=false")
@@ -25,12 +26,14 @@ CUDA_FLAGS = ("-O3", "--fmad=false")
 @lru_cache(maxsize=1)
 def extension():
     from tensorfold.cuda import build
+    from .provider import _native
     from .source_cache import stage_sources
 
+    prepared = _native()  # The selected SM70/toolkit/ABI admission and identity, as gdn_native.
     root = Path(__file__).parent
     sources = [root / "shared_ffn_bindings.cpp", root / "shared_ffn.cu"]
     header = root.parent / "kernels/tensor_contracts.cuh"
-    digest = hashlib.sha256(repr(CUDA_FLAGS).encode())
+    digest = hashlib.sha256(prepared.__name__.encode() + repr(CUDA_FLAGS).encode())
     for source in [*sources, header]:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=[header])
@@ -40,7 +43,7 @@ def extension():
 
 def selected(x, gate, up, down):
     """Decode rows on SM70 with the supported geometry; other calls keep the reference program."""
-    return (x.is_cuda and x.dtype == torch.float16 and x.ndim == 2 and 1 <= x.shape[0] <= _row_limit(gate.shape[0])
+    return (x.is_cuda and x.dtype == torch.float16 and x.ndim == 2 and 1 <= x.shape[0] <= MAX_ROWS
             and x.shape[1] % 256 == 0 and x.shape[1] <= 2560 and x.stride(1) == 1 and x.stride(0) % 8 == 0
             and x.data_ptr() % 16 == 0 and gate.shape == up.shape == (down.shape[1], x.shape[1])
             and 2 <= gate.shape[0] <= 256 and gate.shape[0] % 2 == 0 and down.shape[0] % 32 == 0

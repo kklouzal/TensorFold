@@ -25,8 +25,6 @@ def padded(x, weight):
 @pytest.mark.parametrize("rows", [1, 2, 5, 16, 32])
 @pytest.mark.parametrize("case", ["normal", "large", "small", "outlier"])
 def test_error_matches_the_reference_program_and_rows_are_independent(width, rows, case):
-    if rows > 16 and width > 80:
-        pytest.skip("wider shared experts keep the reference above 16 rows")
     generator = torch.Generator(device="cuda").manual_seed(rows * 7 + width + len(case))
     scale = {"normal": 1.0, "large": 8.0, "small": 0.01, "outlier": 1.0}[case]
     x = torch.randn(rows, 2560, device="cuda", generator=generator) * scale
