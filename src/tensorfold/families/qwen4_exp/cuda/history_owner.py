@@ -804,6 +804,31 @@ class OwnerBuffers:
     def _storage_signature(tensors):
         return tuple((tensor.data_ptr(), tuple(tensor.shape), tensor.dtype, tensor.device) for tensor in tensors)
 
+    @classmethod
+    def _round_storage_retained(cls, state, registered, mtp):
+        """Whether every catalogued tensor a round table points at is unchanged.
+
+        A role's round descriptors reference only its controls and caches: the
+        MTP role its generations/status/MTP position and resident MTP cache, the
+        target role its generations/status/position and every target cache. The
+        role's entries of the bound ``_state_storage`` signature are compared
+        exactly (same layout: controls, then five tensors per target cache, then
+        the MTP cache); the other role's storage is checked by its own tables.
+        """
+        include_mtp = hasattr(state, "mtp_kc")
+        controls = 4 if include_mtp else 3
+        if mtp:
+            cache = state.mtp_kc
+            tensors = (state.history_generations, state.kv_status, state.mtp_pos,
+                       cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets)
+            expected = registered[:2] + registered[3:4] + registered[-5:]
+        else:
+            tensors = [state.history_generations, state.kv_status, state.pos_dev]
+            for cache in state.kc:
+                tensors.extend((cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets))
+            expected = registered[:3] + registered[controls:controls + 5 * len(state.kc)]
+        return len(registered) == controls + 5 * (len(state.kc) + include_mtp) and expected == cls._storage_signature(tensors)
+
     def bind_native_states(self, states):
         """Retain every address owner through graph/operation retirement.
 
@@ -1299,14 +1324,14 @@ class OwnerBuffers:
                     or getattr(state, "graph_rows", None) is not None or state.history_placement is None):
                 raise ValueError("round tables require contiguous exact unique-history segments")
             cursor = last
+            if mtp and not hasattr(state, "mtp_kc"):
+                raise ValueError("MTP round tables require the selected resident MTP cache")
             registered = self.native_states.get(id(state))
-            if registered is None or registered[0] is not state or registered[1] != self._storage_signature(
-                    self._state_storage(state)):
+            if registered is None or registered[0] is not state or not self._round_storage_retained(
+                    state, registered[1], mtp):
                 raise RuntimeError("round descriptor points outside its retained canonical storage catalogue")
             if not mtp and state.att_index != ordinals:
                 raise ValueError("round tables require the prepared attention ordinal map")
-            if mtp and not hasattr(state, "mtp_kc"):
-                raise ValueError("MTP round tables require the selected resident MTP cache")
             slot, owner = state.slot_generation, state.history_generation
             if (type(slot) is not int or type(owner) is not int
                     or not 0 <= slot <= 2**63 - 1 or not 0 <= owner <= 2**63 - 1):
