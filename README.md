@@ -1827,6 +1827,14 @@ C8 115 -> 134-137; 3000-token prompts 55 -> 75 tok/s. The C1 greedy oracle is un
 bitwise parts; the shared-expert change alters one of six oracle prompts after 90 characters
 (coherent); teacher-forced quality comparison pending.
 
+Text coordinate frames (decode verify, MTP refresh and each MTP draft step) are written
+directly into the compact indexer's coordinate storage: each window is validated as in the
+paid host-coordinate stage, then written with one asynchronous H2D copy without a stream
+synchronization, and its proof is bound to the written storage after all writes; media frames
+keep issued device sources and the packed copy. Same-server A/B on 3db2bc68 (m-profile7h):
+C1 decode over seeds 501/601/602/611 x2 rose from 58.97 to 62.28 tok/s (8/8 pairs positive),
+C8 from 143.5/138.2 to 152.9/150.6 tok/s; greedy golden outputs identical.
+
 SM70 decode-size (<=32-row) grouped MoE down projections now take the staged
 integer path on the rank-sliced ETP4 banks that SC117 actually holds. A 160-column
 slice of a 640-column IQ4_NL or Q2_0 row is 90 or 54 bytes, a stride that is 2
