@@ -62,6 +62,7 @@ def test_view_matches_independent_tensor_rows_and_zero_tails(mtp, base, count, m
                 position.data_ptr(), live, state.slot_generation, state.history_generation,
                 state.capacity, cache.capacity, cache.page_offsets.numel(), row - first,
                 state.history_placement.indexer_owner(state.history_slot, ai, include_mtp=True),
+                cache.merge_order,
             ), dtype=torch.int64))
         lane += 1
     def no_tensor(*_args, **_kwargs):

@@ -48,6 +48,26 @@ __device__ __forceinline__ bool active(const int64_t* descriptor, int layer) {
     return true;
 }
 
+// Cross-peer merge order of a row's four KV-group owners. Field j (2 bits) of
+// MERGE_ORDER holds (peer_j XOR j), so 0 is plain rank order. The owner orders
+// peers by the first logical page each owns: the FP32 reduction order is then a
+// function of the logical history, never of which session slot (and therefore
+// which rank rotation) holds it. Returns false (latched) for a non-permutation.
+__device__ __forceinline__ bool merge_order(const int64_t* descriptor, int layer, int (&peers)[4]) {
+    const int64_t word = descriptor[tf_sm70_paged::MERGE_ORDER];
+    int seen = 0;
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        peers[j] = j ^ int((word >> (2 * j)) & 3);
+        seen |= 1 << peers[j];
+    }
+    if (word < 0 || word > 255 || seen != 15) {
+        latch(descriptor, 32, layer);
+        return false;
+    }
+    return true;
+}
+
 // Active row's visible end, selected count and sparse ids (nullptr = dense 0..end-1).
 __device__ __forceinline__ bool domain(const int64_t* descriptor, const int* selections,
                                       int rows, int width, int row, int page_tokens,

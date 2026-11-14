@@ -39,9 +39,9 @@ def test_header_only_native_workspace_has_exact_bytes_and_safe_inactive_views():
     before = workspace.nbytes
     workspace.prepare_native(pair=get_pair("int8"))
     expected = native_owner_workspace_bytes(7)
-    assert workspace.nbytes - before == expected["device_bytes"] == 228 * 7 + 4
-    assert workspace.descriptors_host.nbytes == 128 * 7
-    assert expected["host_staging_bytes"] == 128 * 7 + expected["host_metadata_bytes"]
+    assert workspace.nbytes - before == expected["device_bytes"] == 236 * 7 + 4
+    assert workspace.descriptors_host.nbytes == 136 * 7
+    assert expected["host_staging_bytes"] == 136 * 7 + expected["host_metadata_bytes"]
     assert workspace.native_states is None
     workspace.clear_native_inputs(7)
     views = workspace.native_views(7)
@@ -143,7 +143,7 @@ def test_descriptor_words_name_retained_storage_and_zero_every_inactive_row():
                              state.kv_status.data_ptr(), state.pos_dev.data_ptr()]
         assert words[9:14] == [state.slot_generation, state.history_generation, 257,
                                cache.capacity, cache.page_offsets.numel()]
-        assert words[14:] == [offset, state.history_placement.indexer_owner(state.history_slot, 0)]
+        assert words[14:] == [offset, state.history_placement.indexer_owner(state.history_slot, 0), cache.merge_order]
     assert workspace.descriptors[0, 8] == workspace.descriptors[2, 8]
     assert workspace.descriptors[0, 8] != workspace.descriptors[3, 8]
     assert workspace.lane_rows[:2].tolist() == [3, 2]

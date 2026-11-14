@@ -50,6 +50,7 @@ def test_pinned_words_match_original_rows_across_producer_streams(mtp, base, cou
                     position.data_ptr(), live, state.slot_generation, state.history_generation,
                     state.capacity, cache.capacity, cache.page_offsets.numel(), row - first,
                     state.history_placement.indexer_owner(state.history_slot, ai, include_mtp=True),
+                    cache.merge_order,
                 ), dtype=torch.int64))
             lane += 1
         main = torch.cuda.current_stream()

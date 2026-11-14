@@ -49,6 +49,39 @@ def test_every_logical_head_row_has_one_owner_and_target_quartets_balance(degree
         assert counts == [sessions * 13 // 8] * 8
 
 
+@pytest.mark.parametrize("degree", [1, 2, 4])
+def test_cross_peer_merge_order_follows_logical_pages_not_session_slot(degree):
+    """Regression: the FP32 cross-peer sums were taken in rank order, so a slot's
+    rank rotation reordered >=3 page-residue partials (rows past 256 at degree 4)."""
+    from tensorfold.families.qwen4_exp.cuda.history_owner import merge_order
+
+    placement = HistoryPlacement(8, 2, 12, degree=degree)
+
+    def decode(word):
+        assert 0 <= word < 256
+        peers = [j ^ (word >> (2 * j) & 3) for j in range(4)]
+        assert sorted(peers) == [0, 1, 2, 3]
+        return peers
+
+    for head in (0, 1):
+        for layer in range(placement.target_layers + 1):
+            width = placement.group_size if layer == placement.target_layers else degree
+            for pages in (1, 2, 3, 4, 9):
+                residues = set()
+                for slot in range(8):
+                    owners = [placement.kv_owner(slot, layer, head, page) for page in range(pages)]
+                    peers = decode(merge_order(owners))
+                    # The j-th summand is the peer holding page j's residue class.
+                    holders = [owners[page] % 4 for page in range(min(pages, width))]
+                    assert peers[:len(holders)] == holders
+                    assert peers[len(holders):] == sorted(set(range(4)) - set(holders))
+                    residues.add(tuple(owners[page] % 4 for page in range(pages)))
+                assert len(residues) > 1  # slots really rotate owners
+    # Migration mixes maps: order still follows first owned logical pages.
+    assert decode(merge_order([6, 6, 5, 7, 4])) == [2, 1, 3, 0]
+    assert merge_order([0, 1, 2, 3]) == 0
+
+
 def test_placement_rejects_unsupported_shapes_before_allocation():
     for args in ((4, 2, 12), (8, 4, 12), (8, 2, 0)):
         with pytest.raises(ValueError):

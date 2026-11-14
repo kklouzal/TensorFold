@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <limits>
 #include <cstdint>
+#include "paged_attention_descriptor.cuh"
 
 using T = at::Tensor;
 using O = std::optional<T>;
@@ -282,7 +283,7 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
 // which retains every referenced State tensor through capture/replay retirement.
 void check_descriptors(const T& descriptors, const T& owner, int64_t rows) {
     check(descriptors, owner, at::kLong, "owner descriptors");
-    TORCH_CHECK(descriptors.dim() == 2 && descriptors.size(0) >= rows && descriptors.size(1) == 16,
+    TORCH_CHECK(descriptors.dim() == 2 && descriptors.size(0) >= rows && descriptors.size(1) == tf_sm70_paged::WORD_COUNT,
                 "owner descriptor table geometry");
 }
 

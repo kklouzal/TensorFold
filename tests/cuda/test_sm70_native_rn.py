@@ -297,6 +297,11 @@ def enclosure_fixture(authority, case):
     pages = (max(end, max(selected) + 1) + 127) // 128
     logical = pages * 128
     owners = tuple(None if not 0 <= value < end else phase ^ (value // 128 % 4) for value in selected)
+    # Canonical cross-peer order: by each peer's first logical page (descriptor MERGE_ORDER).
+    first_pages = {}
+    for page in range(pages):
+        first_pages.setdefault(phase ^ (page % 4), page)
+    peer_order = tuple(sorted(range(4), key=lambda peer: (peer not in first_pages, first_pages.get(peer, peer))))
     q_a = tuple((1 if col % 2 else 0x8001) if mode == 'tiny' else
                 ((0x8000 if col % 2 else 0) if mode == 'zero' else
                  ((0x5400 if col == 0 else 0) if mode == 'sharp' else (0x3C00, 0xB800, 0x3400, 0xB000)[col % 4]))
@@ -340,7 +345,8 @@ def enclosure_fixture(authority, case):
                 scales.view(torch.int16 if codec == 0 else torch.int32)[at].fill_(_signed16(scale) if codec == 0 else scale)
         packed.append(NS(k=data_k, v=data_v, ks=scales_k, vs=scales_v, offsets=offsets, physical=physical))
     return NS(name=name, count=count, heads=heads, codec=codec, sparse=sparse, mode=mode, group=group,
-              phase=phase, selected=selected, end=end, logical=logical, owners=owners,
+              phase=phase, selected=selected, end=end, logical=logical, owners=owners, peer_order=peer_order,
+              merge_word=sum((peer ^ j) << (2 * j) for j, peer in enumerate(peer_order)),
               queries=(q_a, q_b), keys=keys, values=values, packed=packed)
 
 
@@ -390,7 +396,7 @@ def test_whole_native_phases_fit_independent_decoded_operator_enclosures(case, r
     reports = tuple(oracle.attention_head_enclosure(q, fixture.keys, fixture.values, fixture.owners,
                     sparse=fixture.sparse, finish='q8-h32' if fixture.codec == 0 else 'compact-linear',
                     codec_rows=None if finish is None else finish['coefficient_rows'],
-                    source_receipt=authority.receipt) for q in fixture.queries)
+                    source_receipt=authority.receipt, peer_order=fixture.peer_order) for q in fixture.queries)
     if fixture.mode == 'sharp':
         from fractions import Fraction
         assert any(0 < bound.lo <= bound.hi < Fraction(1, 2**14)
@@ -419,7 +425,8 @@ def test_whole_native_phases_fit_independent_decoded_operator_enclosures(case, r
         state.layer = torch.tensor([3], dtype=torch.int32, device='cuda')
         state.table = torch.tensor([[state.k.data_ptr(), state.v.data_ptr(), state.ks.data_ptr(), state.vs.data_ptr(),
             state.offsets.data_ptr(), state.generations.data_ptr(), state.status.data_ptr(), state.position.data_ptr(),
-            state.live.data_ptr(), 0, 0, fixture.logical, packed.physical, len(packed.offsets), 0, 0]], dtype=torch.int64, device='cuda')
+            state.live.data_ptr(), 0, 0, fixture.logical, packed.physical, len(packed.offsets), 0, 0,
+            fixture.merge_word]], dtype=torch.int64, device='cuda')
         state.stats = torch.empty((1, 12, 2), dtype=torch.float32, device='cuda')
         state.global_stats = torch.empty_like(state.stats)
         state.values = torch.empty((1, 12, 256), dtype=torch.float32, device='cuda')

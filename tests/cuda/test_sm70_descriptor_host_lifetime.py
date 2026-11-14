@@ -16,6 +16,7 @@ import weakref
 import pytest
 import torch
 
+from tensorfold.cuda.sm70.paged_attention import DESCRIPTOR_BYTES
 from tensorfold.cuda.sm70.software_binding import issue_source_binding, verify_source_binding
 from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
 from tensorfold.families.qwen4_exp.cuda.state import State
@@ -72,6 +73,7 @@ def _words(owner, segments, layer, base, count, *, mtp=False):
                 position.data_ptr(), live, state.slot_generation, state.history_generation,
                 state.capacity, cache.capacity, cache.page_offsets.numel(), row - first,
                 state.history_placement.indexer_owner(state.history_slot, ai, include_mtp=True),
+                cache.merge_order,
             ), dtype=torch.int64)
         lane += 1
     return expected
@@ -247,7 +249,7 @@ def test_alternating_tables_keep_pinned_identity_and_capacity_geometry(actual_ta
             assert owner.descriptor_host_words is view and owner.descriptors_host.data_ptr() == pointer
         for snapshot, expected in results:
             assert torch.equal(snapshot.cpu(), expected)
-        assert owner.native_record()["pinned_descriptor_bytes"] == 128 * rows
+        assert owner.native_record()["pinned_descriptor_bytes"] == DESCRIPTOR_BYTES * rows
     except BaseException as error:
         primary = error
     _finish(primary, owner)

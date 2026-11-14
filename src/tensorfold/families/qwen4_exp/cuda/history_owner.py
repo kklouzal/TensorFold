@@ -118,7 +118,7 @@ class OwnedKVCache(KVCache):
     """Packed local pages; logical positions remain independent of rank offsets."""
 
     __slots__ = ("placement", "slot", "layer", "rank", "logical_capacity", "offsets", "page_offsets",
-                 "arena", "reserved_rows", "owners", "page_class")
+                 "arena", "reserved_rows", "owners", "page_class", "merge_order")
 
     def __init__(self, rows, kv_heads, head_dim, device, *, pair, placement, slot, layer, rank,
                  arena=None, arena_offset=0, owners=None):
@@ -143,6 +143,7 @@ class OwnedKVCache(KVCache):
                 offsets.append(-1)
         self.offsets = tuple(offsets)
         self.page_offsets = torch.tensor(offsets, dtype=torch.int64, device=device)
+        self.merge_order = merge_order(self.owners)
         self.arena, self.reserved_rows = arena, owned
         if arena is None:
             super().__init__(owned, kv_heads, head_dim, device, pair=pair)
@@ -236,6 +237,24 @@ class OwnedKVCache(KVCache):
         offsets = self.page_offsets[page]
         valid = (logical >= 0) & (logical < self.logical_capacity) & (offsets >= 0)
         return (offsets + safe % self.placement.page_tokens).clamp_min(0), valid
+
+
+def merge_order(owners):
+    """Descriptor MERGE_ORDER word for one KV-head group's page-owner map.
+
+    Peers are reduced in the order of the first logical page each owns (peers
+    owning none last, in rank order). The cross-peer FP32 sums then follow the
+    logical history, so a sequence's numerics do not depend on its session
+    slot, whose rotation decides which rank holds which page residue. Field j
+    (2 bits) stores peer_j XOR j: rank order encodes as 0.
+    """
+    first = {}
+    for page, owner in enumerate(owners):
+        first.setdefault(owner % 4, page)
+        if len(first) == 4:
+            break
+    peers = sorted(first, key=first.get) + [peer for peer in range(4) if peer not in first]
+    return sum((peer ^ j) << (2 * j) for j, peer in enumerate(peers))
 
 
 def allocate_target_caches(rows, head_dim, device, *, pair, placement, slot, rank):
@@ -710,7 +729,7 @@ class OwnerBuffers:
         # table exists; a reordered interface cannot quietly reinterpret addresses.
         expected = ("K_DATA", "V_DATA", "K_METADATA", "V_METADATA", "PAGE_OFFSETS", "GENERATIONS",
                     "STATUS", "POSITION", "LIVE_ROWS", "EXPECTED_SLOT", "EXPECTED_OWNER",
-                    "LOGICAL_CAPACITY", "PHYSICAL_ROWS", "PAGE_COUNT", "ROW_OFFSET", "INDEXER_OWNER")
+                    "LOGICAL_CAPACITY", "PHYSICAL_ROWS", "PAGE_COUNT", "ROW_OFFSET", "INDEXER_OWNER", "MERGE_ORDER")
         if ABI_VERSION != 1 or WORD_BYTES != 8 or FIELDS != expected:
             raise RuntimeError("native descriptor packing differs from its generated schema")
         prepared_buckets = self.native_buckets if buckets is None and self.native_buckets else row_buckets(self.rows, buckets)
@@ -881,7 +900,8 @@ class OwnerBuffers:
                 words = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
                          cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
                          position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
-                         state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner)
+                         state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner,
+                         cache.merge_order)
                 self.descriptor_host_words[row - base] = words
         if ring is None:
             self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
@@ -1300,7 +1320,8 @@ class OwnerBuffers:
                 block = desc[index, first:last]
                 block[:] = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
                             cache.page_offsets.data_ptr(), generations, status, position, live_pointer, slot, owner,
-                            state.capacity, cache.capacity, cache.page_offsets.numel(), 0, index_owner)
+                            state.capacity, cache.capacity, cache.page_offsets.numel(), 0, index_owner,
+                            cache.merge_order)
                 block[:, 14] = np.arange(count)
                 entry = indexer.entries[ai]
                 if (entry is not None) != (index_owner == self.rank):
@@ -2098,6 +2119,7 @@ def migrate_next_bundle(state):
                 cache.page_offsets[page].fill_(offsets[page])
                 cache.offsets = tuple(offsets)
                 cache.owners[page] = rank // 4 * 4 + new
+                cache.merge_order = merge_order(cache.owners)
             next_generation = state.history_generation + 1
             generations = getattr(state, "history_generations", None)
             if generations is not None:

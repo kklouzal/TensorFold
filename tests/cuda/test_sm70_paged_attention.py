@@ -51,7 +51,7 @@ def shard(degree, rank, *, rows=2, group=0, sparse=True, key=(8, 0), value=(8, 0
     layer = torch.tensor([3], dtype=torch.int32, device="cuda")
     records = [[k.data_ptr(), v.data_ptr(), ks.data_ptr(), vs.data_ptr(), page_offsets.data_ptr(),
                 generations.data_ptr(), status.data_ptr(), position.data_ptr(), live.data_ptr(),
-                0, 0, logical, physical, 4, row, 0] for row in range(rows)]
+                0, 0, logical, physical, 4, row, 0, 0] for row in range(rows)]
     descriptor = torch.tensor(records, dtype=torch.int64, device="cuda")
     # Row0dense has7keys, so this fixture uses one dense row at end8 below.
     if not sparse:
@@ -162,6 +162,56 @@ def test_global_normalization_precedes_half_rounding_with_unequal_shard_mass():
                                layer=state.layer, value_bits=8, value_codec=0)
         assert state.status.cpu().tolist() == [0, -2]
         assert torch.equal(state.out, expected)
+
+
+def _merges(state, stats, values, word):
+    state.table[:, operator.DESCRIPTOR_WORDS - 1] = word
+    plain, rn = torch.empty_like(state.global_stats), torch.empty_like(state.global_stats)
+    operator.merge_statistics(stats, state.table, plain, group_start=0, page_tokens=128, layer=state.layer)
+    operator.rn_merge_statistics(stats, state.table, rn, group_start=0, page_tokens=128, layer=state.layer)
+    out = torch.empty_like(state.out)
+    operator.merge_values(values, state.table, out, rank=0, page_tokens=128, layer=state.layer,
+                          value_bits=8, value_codec=0)
+    return plain, rn, out
+
+
+def test_cross_peer_merges_follow_descriptor_order_so_slot_rotation_is_bitwise_invariant():
+    """Regression (slot-dependent logprobs past 256 rows): a session slot rotates which rank
+    holds each page residue. Merging in MERGE_ORDER (residue order) must make every rotation
+    bitwise identical; plain rank order demonstrably does not for >=3 contributing peers."""
+    state = shard(4, 0)
+    generator = torch.Generator(device="cuda").manual_seed(7)
+    residue_stats = torch.empty((4, 2, 12, 2), dtype=torch.float32, device="cuda")
+    residue_stats[..., 0] = torch.randn((4, 2, 12), device="cuda", generator=generator) * 3
+    residue_stats[..., 1] = torch.rand((4, 2, 12), device="cuda", generator=generator) * 50 + 0.5
+    residue_stats[3, 0, :, 0], residue_stats[3, 0, :, 1] = -torch.inf, 0  # row 0: three peers hold pages
+    # FP32 order-sensitive values that survive the Half output: (2^25 + 1) - 2^25 = 0, but 2^25 - 2^25 + 1 = 1.
+    residue_values = torch.tensor([2.**25, 1., -2.**25, 0.], device="cuda").view(4, 1, 1, 1).expand(4, 2, 12, 256)
+    results, rank_order = [], []
+    for base in range(4):
+        stats = torch.zeros((8, 2, 12, 2), dtype=torch.float32, device="cuda")
+        values = torch.zeros((8, 2, 12, 256), dtype=torch.float32, device="cuda")
+        for residue in range(4):
+            stats[base ^ residue], values[base ^ residue] = residue_stats[residue], residue_values[residue]
+        results.append(_merges(state, stats, values, base * 0x55))
+        rank_order.append(_merges(state, stats, values, 0))
+        assert state.status.cpu().tolist() == [0, -2]
+    for result in results[1:]:
+        assert all(torch.equal(a, b) for a, b in zip(result, results[0]))
+    assert all(torch.equal(a, b) for a, b in zip(results[0], rank_order[0]))  # base 0 is rank order
+    for part in range(3):  # the fixture detects order: rank order differs for some rotation and row
+        assert any(not torch.equal(order[part], rank_order[0][part]) for order in rank_order[1:])
+
+
+@pytest.mark.parametrize("word", [1, 0x5A, 256, -1])
+def test_non_permutation_merge_order_is_a_contained_descriptor_failure(word):
+    state = shard(4, 0)
+    stats = torch.zeros((8, 2, 12, 2), dtype=torch.float32, device="cuda")
+    stats[..., 1] = 1
+    values = torch.ones((8, 2, 12, 256), dtype=torch.float32, device="cuda")
+    plain, rn, out = _merges(state, stats, values, word)
+    assert state.status.cpu().tolist() == [32, 3]
+    assert (plain[..., 1] == 1).all() and (rn[..., 1] == 1).all() and (out == 0).all()
 
 
 def test_invalid_page_offset_is_contained_before_packed_cache_access():

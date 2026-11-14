@@ -493,13 +493,13 @@ def _local_statistics(scores, owner, owners):
     return maximum, denominator
 
 
-def _merge_statistics(locals_):
+def _merge_statistics(locals_, peer_order=(0, 1, 2, 3)):
     active = [maximum for maximum, _ in locals_ if maximum is not None]
     if not active:
         raise ValueError("globally empty attention is invalid")
     maximum = _maximum(active)
     denominator = Bounds(0, 0)
-    for local_max, mass in locals_:  # Exact four-peer order, no tree substitute.
+    for local_max, mass in (locals_[peer] for peer in peer_order):  # Exact four-peer order, no tree substitute.
         if local_max is not None:
             if mass.lo <= 0:
                 raise Unresolved("local statistics may violate mass invariant")
@@ -576,7 +576,7 @@ def _finish_linear(values, rows, *, rounded=True):
 
 def attention_head_enclosure(query, keys, values, owners, *, sparse=False,
                              finish="q8-h32", codec_rows=None, source_receipt=None,
-                             fraction_product_limit=None):
+                             fraction_product_limit=None, peer_order=(0, 1, 2, 3)):
     """One head's whole candidate-value certificate, from working Half bits.
 
     V2 legal dense/sparse count<=2051. owners gives independent canonical
@@ -585,7 +585,10 @@ def attention_head_enclosure(query, keys, values, owners, *, sparse=False,
     Query/keys are snapshotted and reused, establishing QK-pass identity and
     max-dominance correlation. Returned bounds are numeric, not signed-zero or
     descriptor/state/mask correctness proof. Full output is 256 coordinates.
+    peer_order is the descriptor MERGE_ORDER sequence of the cross-peer sums.
     """
+    if sorted(peer_order) != [0, 1, 2, 3]:
+        raise ValueError("peer merge order must be a permutation of the four peers")
     if type(sparse) is not bool or not 1 <= len(keys) <= MAX_SELECTED:
         raise ValueError("V2 NativeRN selected-count domain exceeded")
     if len(query) != 256 or len(values) != len(keys) or len(owners) != len(keys):
@@ -618,7 +621,7 @@ def attention_head_enclosure(query, keys, values, owners, *, sparse=False,
     scores = tuple(Bounds(*qk_enclosure(query, key)) if owner is not None else None
                    for key, owner in zip(keys, owners))
     locals_ = tuple(_local_statistics(scores, owner, owners) for owner in range(4))
-    maximum, denominator = _merge_statistics(locals_)
+    maximum, denominator = _merge_statistics(locals_, peer_order)
     probabilities = []
     for score in scores:
         if score is None:
@@ -630,8 +633,8 @@ def attention_head_enclosure(query, keys, values, owners, *, sparse=False,
                                for col in range(256)) for peer in range(4))
     folded = []
     for col in range(256):
-        result = local_values[0][col]
-        for peer in (1, 2, 3):
+        result = local_values[peer_order[0]][col]
+        for peer in peer_order[1:]:
             result = rn_add(result, local_values[peer][col])
         folded.append(result)
     if finish == "q8-h32" and codec_rows is None:

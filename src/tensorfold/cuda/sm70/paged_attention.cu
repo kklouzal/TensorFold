@@ -151,8 +151,9 @@ __global__ void merge_kernel(const float* gathered, const int64_t* table, float*
     __syncthreads();
     if (head >= HEADS) return;
     float maximum = -CUDART_INF_F, denominator = 0.f;
-    bool valid = true;
-    if (enabled) {
+    int peers[4];
+    bool valid = !enabled || merge_order(descriptor, layer, peers);
+    if (enabled && valid) {
         #pragma unroll
         for (int peer = 0; peer < 4; ++peer) {
             const int64_t at = ((int64_t(group + peer) * rows + row) * HEADS + head) * 2;
@@ -163,8 +164,8 @@ __global__ void merge_kernel(const float* gathered, const int64_t* table, float*
         }
         if (isfinite(maximum)) {
             #pragma unroll
-            for (int peer = 0; peer < 4; ++peer) {
-                const int64_t at = ((int64_t(group + peer) * rows + row) * HEADS + head) * 2;
+            for (int j = 0; j < 4; ++j) {
+                const int64_t at = ((int64_t(group + peers[j]) * rows + row) * HEADS + head) * 2;
                 const float m = gathered[at], l = gathered[at + 1];
                 if (isfinite(m)) denominator = __fadd_rn(denominator, __fmul_rn(expf(__fsub_rn(m, maximum)), l));
             }
@@ -264,11 +265,16 @@ __global__ void merge_values_kernel(const float* gathered, const int64_t* table,
         output[destination] = __float2half_rn(0.f);
         return;
     }
+    int peers[4];
+    if (!merge_order(descriptor, layer, peers)) {  // latched; status forbids publication
+        output[destination] = __float2half_rn(0.f);
+        return;
+    }
     const int group = rank / 4 * 4, head = rank % 4 * 3 + local_head;
-    float value = gathered[((int64_t(group) * rows + row) * HEADS + head) * DIM + col];
+    float value = gathered[((int64_t(group + peers[0]) * rows + row) * HEADS + head) * DIM + col];
     #pragma unroll
-    for (int peer = 1; peer < 4; ++peer)
-        value = __fadd_rn(value, gathered[((int64_t(group + peer) * rows + row) * HEADS + head) * DIM + col]);
+    for (int j = 1; j < 4; ++j)
+        value = __fadd_rn(value, gathered[((int64_t(group + peers[j]) * rows + row) * HEADS + head) * DIM + col]);
     if (codec == 9) {
         value = tf_rq4::rotate_component<9, true>(value, col, rotated);
     } else if (codec == 10) {
@@ -553,8 +559,9 @@ __global__ void rn_merge_kernel(const float* gathered, const int64_t* table, flo
     __syncthreads();
     if (head >= HEADS) return;
     float maximum = -CUDART_INF_F, denominator = 0.f;
-    bool valid = true;
-    if (enabled) {
+    int peers[4];
+    bool valid = !enabled || merge_order(descriptor, layer, peers);
+    if (enabled && valid) {
         #pragma unroll
         for (int peer = 0; peer < 4; ++peer) {
             const int64_t at = ((int64_t(group + peer) * rows + row) * HEADS + head) * 2;
@@ -564,8 +571,8 @@ __global__ void rn_merge_kernel(const float* gathered, const int64_t* table, flo
         }
         if (isfinite(maximum)) {
             #pragma unroll
-            for (int peer = 0; peer < 4; ++peer) {
-                const int64_t at = ((int64_t(group + peer) * rows + row) * HEADS + head) * 2;
+            for (int j = 0; j < 4; ++j) {
+                const int64_t at = ((int64_t(group + peers[j]) * rows + row) * HEADS + head) * 2;
                 if (isfinite(gathered[at]))
                     denominator = __fadd_rn(denominator, __fmul_rn(rn_exp(__fsub_rn(gathered[at], maximum), descriptor, layer), gathered[at + 1]));
             }

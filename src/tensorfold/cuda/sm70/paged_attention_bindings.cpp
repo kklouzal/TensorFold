@@ -43,7 +43,7 @@ int rows_of(const T& queries) {
 void controls(const T& table, const T& owner, int rows, int group, int page_tokens, const T& layer) {
     check(table, owner, at::kLong, "owner row descriptors");
     TORCH_CHECK(table.dim() == 2 && table.size(0) == rows && table.size(1) == WORDS,
-                "one 16-word descriptor per query row required");
+                "one WORD_COUNT-word descriptor per query row required");
     TORCH_CHECK(group == 0 || group == 4, "KV-head group starts at rank zero or four");
     TORCH_CHECK(page_tokens > 0 && page_tokens % 4 == 0, "history pages require positive complete pooling groups");
     check(layer, owner, at::kInt, "current layer");

@@ -5,7 +5,7 @@
 namespace tf_sm70_paged {
 constexpr int ABI_VERSION = 1;
 constexpr int WORD_BYTES = 8;
-constexpr const char* SCHEMA_ID = "tf-sm70-paged-ab240bc99602926f8c5b2feddc8cb7c5c9f93cafeed6cc975a904059def2908f";
+constexpr const char* SCHEMA_ID = "tf-sm70-paged-28a8078f656c3e86f24bc601168c4b7c3db7bd3b52147753fdd157728c677c22";
 static_assert(sizeof(int64_t) == WORD_BYTES);
 static_assert(sizeof(uintptr_t) == WORD_BYTES);
 enum Word : int {
@@ -25,6 +25,7 @@ enum Word : int {
     PAGE_COUNT = 13,
     ROW_OFFSET = 14,
     INDEXER_OWNER = 15,
-    WORD_COUNT = 16
+    MERGE_ORDER = 16,
+    WORD_COUNT = 17
 };
 }  // namespace tf_sm70_paged

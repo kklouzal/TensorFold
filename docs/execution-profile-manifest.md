@@ -112,7 +112,10 @@ Optional `collective_family` defaults to `tp8-allgather-v1`. The distinct
 and `[4,5,6,7]`, before capacity planning or weight loading. Each process joins
 its own group. Native queries, softmax statistics and normalized PV use that
 group; target weights and canonical indexer selections still use TP8. The native
-kernels keep global rank indices and the same four rank FP32 merge order.
+kernels keep global rank indices and the same four-peer FP32 merge order: each
+row's descriptor `MERGE_ORDER` word orders peers by the first logical page each
+owns, so the sums do not depend on which session slot (rank rotation) holds a
+sequence.
 No communicator is created or changed in response to active request count.
 The actual subgroup residency is measured with all other preparation before
 the capacity baseline. All finite native bucket shapes and datatypes warm

@@ -3,7 +3,7 @@
 Layout-exact synthetic owner state for one KV-head group (ranks 0..3):
 unique-history Q8 pages ([phys,1,256] int8 codes, [phys,1,8] FP16 group
 scales, -1 page offsets for foreign pages, owner = 1 ^ (page % degree)),
-canonical selections [8,rows,idw+2], 16-word descriptors and gathered FP16
+canonical selections [8,rows,idw+2], 17-word descriptors and gathered FP16
 queries. Both pipelines share the RN statistics merge and value merge:
 
   RN : rn_local_statistics -> rn_merge -> rn_probabilities -> rn_partial_values
@@ -62,6 +62,10 @@ def build(first, degree, generator):
             k[rows, 0], v[rows, 0], k_scale[rows, 0], v_scale[rows, 0] = kc[source], vc[source], ks[source], vs[source]
         caches.append(dict(k=k, v=v, ks=k_scale, vs=v_scale, offsets=offsets.to(device), physical=physical,
                            status=torch.tensor([0, -2], dtype=torch.int32, device=device)))
+    # Descriptor MERGE_ORDER: peers by their first logical page, field j = peer_j ^ j.
+    peer_order = sorted(range(4), key=lambda peer: next(
+        (page for page in range(pages) if 1 ^ (page % degree) == peer), pages + peer))
+    merge_word = sum((peer ^ j) << (2 * j) for j, peer in enumerate(peer_order))
     temperature = torch.linspace(0.5, 4.0, HEADS, device=device)
     q = torch.randn(WORLD, ROWS, 3, DIM, device=device, generator=generator)
     q[:4] *= temperature.view(4, 1, 3, 1)
@@ -88,7 +92,7 @@ def build(first, degree, generator):
     tables = [torch.tensor([[c["k"].data_ptr(), c["v"].data_ptr(), c["ks"].data_ptr(), c["vs"].data_ptr(),
                              c["offsets"].data_ptr(), generations.data_ptr(), c["status"].data_ptr(),
                              position.data_ptr(), live.data_ptr(), SLOT_GENERATION, HISTORY_GENERATION, capacity,
-                             c["physical"], pages, row, OWNER] for row in range(ROWS)],
+                             c["physical"], pages, row, OWNER, merge_word] for row in range(ROWS)],
                            dtype=torch.int64, device=device) for c in caches]
     return dict(q=q, selections=selections, caches=caches, tables=tables, keep=(position, live, generations),
                 logical=(kc, ks, vc, vs))
