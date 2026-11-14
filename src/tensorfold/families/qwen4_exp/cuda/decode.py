@@ -132,8 +132,13 @@ def _choose_gathered_host(values, tokens, norms, positions, sampling, with_prob,
     if not np.isfinite(norms).any(axis=0).all():
         raise ValueError("a complete vocabulary row needs at least one finite score")
     greedy = sampling is None or sampling.temperature <= 0
+    if greedy:
+        chosen = _greedy_gathered(values, tokens, plan)
+        if chosen is None or not with_prob:
+            return chosen
+        return chosen, _gathered_probabilities(values, tokens, norms, chosen)
     need_source = False
-    k = 1 if greedy else int(sampling.top_k)
+    k = int(sampling.top_k)
     if not need_source:
         for row in range(len(positions)):
             v = values[:, row].reshape(-1)
@@ -151,6 +156,10 @@ def _choose_gathered_host(values, tokens, norms, positions, sampling, with_prob,
     chosen = _tp_choose(values, tokens, positions, sampling)
     if not with_prob:
         return chosen
+    return chosen, _gathered_probabilities(values, tokens, norms, chosen)
+
+
+def _gathered_probabilities(values, tokens, norms, chosen):
     lse = norms.astype(np.float64)
     top = lse.max(axis=0)
     total = top + np.log(np.exp(lse - top).sum(axis=0))
@@ -160,7 +169,36 @@ def _choose_gathered_host(values, tokens, norms, positions, sampling, with_prob,
         if not len(hit):
             raise ValueError("selected gathered token is absent from its exact score packet")
         probs.append(float(np.exp(float(values[:, row].reshape(-1)[hit[0]]) - total[row])))
-    return chosen, probs
+    return probs
+
+
+def _greedy_gathered(values, tokens, plan):
+    """All rows at once: the per-row truncation test and _tp_choose's greedy rule.
+
+    None when a row's tied cutoff may hide omitted IDs (the caller reads the
+    original source). Otherwise each row's maximum real score with the lowest
+    global ID among its ties, after the same real-score/unique-ID checks.
+    Callers already rejected NaN/+inf scores (valid_scores above).
+    """
+    world, rows, width = values.shape
+    flat = values.transpose(1, 0, 2).reshape(rows, world * width)
+    ids = tokens.transpose(1, 0, 2).reshape(rows, world * width)
+    cutoff = flat.max(axis=1)                      # np.partition's k=1 cutoff without NaN
+    edge = values.min(axis=2)
+    incomplete = (np.ones(world, dtype=bool) if plan is None
+                  else np.asarray([int(size) > CAND for size in plan.widths], dtype=bool))
+    if (incomplete[:, None] & np.isfinite(edge) & (edge >= cutoff[None, :])).any():
+        return None
+    real = ids >= 0
+    masked = np.where(real, flat, -np.inf)
+    best = masked.max(axis=1)
+    if not np.isfinite(best).all():
+        raise ValueError("sampling needs finite scores or -inf masks, with one finite score per complete row")
+    distinct = np.sort(np.where(real, ids, -1 - np.arange(world * width, dtype=ids.dtype)), axis=1)
+    if (distinct[:, 1:] == distinct[:, :-1]).any():
+        raise ValueError("gathered global token IDs must be distinct")
+    tied = real & (masked == best[:, None])
+    return np.where(tied, ids, np.iinfo(np.int64).max).min(axis=1).tolist()
 
 
 def _gathered_fits(sampling: Sampling | None) -> bool:

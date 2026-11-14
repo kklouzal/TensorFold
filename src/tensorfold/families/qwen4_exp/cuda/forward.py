@@ -1217,9 +1217,16 @@ def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, st
             w.dflash2.validate_commit(st, keep)  # before recurrence, tails or target positions mutate
         n = 0 if b.prefill else len(st.cur)          # a prompt chunk's DeltaNet layers committed during the forward
         if n:
+            # FP16 SM70 States replay all layers in one launch (bitwise the per-layer replay).
+            many = False
+            if (states and keep < R and b.h.dtype == torch.float16 and st.rec.is_cuda
+                    and w.meta.get("execution_provider") == "sm70"):
+                from tensorfold.cuda.sm70.gdn_replay_many import replay_state
+
+                many = replay_state(st, keep)
             for li in range(n if states else 0):
                 cur = st.cur[li]
-                if keep < R:
+                if keep < R and not many:
                     gdn_mod.replay(st.rec[cur, li], st.scratch[li], keep, st.rec[1 - cur, li])
                 st.cur[li] = 1 - cur
             shift_windows(st.conv, b.proj[:, at:at + R], keep, c.conv_dim, family=getattr(b, "native_family", None))

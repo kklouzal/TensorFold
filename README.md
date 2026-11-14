@@ -3162,6 +3162,10 @@ conf 0.7, 64-token prompts, 400 greedy tokens, 79-key catalogue) moved aggregate
 decode from 47.3/25.2/35.0/52.4/73.1 tok/s to 47.3/58.6/77.0/103.0/127.7 tok/s at
 C1/C2/C4/C8/C24 (C16 124.2). The C1 greedy oracle is unchanged; concurrent
 outputs were not C1-identical before or after (batch-dependent numerics).
+A one-launch-per-State GDN accepted-prefix replay (`cuda/sm70/gdn_replay_many`,
+bitwise the per-layer replay) and a vectorized greedy gathered-candidate chooser
+then gave 48.7/61.7/82.7/112.5/129.7/142.7 tok/s at C1/C2/C4/C8/C16/C24 on the
+same setup (C1 oracle unchanged).
 
 A controlled [native ragged replay oracle](docs/observed-graph-demand.md)
 now compares actual `ExactStateGraphs` target/MTP `(28,8)` replay against eager

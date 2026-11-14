@@ -939,6 +939,10 @@ class MultiDecoder:
     def warm(self) -> None:
         """A synthetic greedy request through prefill (a full chunk, then a partial one cut at the kept point), its drafts and one round, then forgotten, so no request compiles or loads a kernel."""
 
+        if self.w.meta.get("execution_provider") == "sm70" and self.buf.h.dtype == torch.float16:
+            from tensorfold.cuda.sm70.gdn_replay_many import extension
+
+            extension()  # commit's batched GDN replay; the synthetic round need not reach it
         s = Stream([0] * min(self.prefill_rows + WARM_TAIL + 1, self.capacity - self.depth - 2), 2,
                    stop_eos=False)
         self.admit(s)
@@ -2274,9 +2278,12 @@ class MultiDecoder:
         # Acceptance, commits and outputs read only the real rows (accept() sees
         # the real window); padded rows are tentative rows that are never kept.
         width = self.depth + 1
+        # Padded rows count as submitted rows in the controller's observations
+        # and must fit its row budget like the real rows the plan selected.
         pad = (dflash is None and not grammars and not (self.filling and self.converged)
+               and (plan is None or width * len(live) <= plan["row_budget"])
                and not self.buf.rotor_lookup and all(s.st.image_positions is None for s in live)
-               and all(len(s.drafts) < width for s in live)
+               and all(len(s.drafts) < width and s.st.pos + width <= s.st.capacity for s in live)
                and self._full_width("verify", sum(1 + len(s.drafts) for s in live), len(live)))
 
         def prepare_decode():
@@ -2632,8 +2639,8 @@ class MultiDecoder:
         logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
         if self.controller is not None:
             self.controller.work_observations.mtp(
-                segs, role="refresh", zero_proposal_rows=sum(len(keep) for stream, _, keep in todo
-                                                            if room[stream.sid] == 0))
+                segs, role="refresh", zero_proposal_rows=sum(end - begin for (stream, _, _), (_, begin, end)
+                                                            in zip(todo, segs) if room[stream.sid] == 0))
 
         def absorbed():                                  # the absorb's entries, once its status words are valid
             for (s, _, keep), (st, a0, a1) in zip(todo, segs):
