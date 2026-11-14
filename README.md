@@ -2649,6 +2649,7 @@ The maintained HC native gate now defines15 cases through the real typed factory
 with target E120/P256 windows and explicit full-path VMA-backed FD checks for
 all three HC libraries and protected cudart. The new native run remains pending;
 component diagnostics are not full-model quality or performance acceptance.
+See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates).
 
 ### CUDA graph policies
 
@@ -2887,7 +2888,7 @@ and graph coverage remain separate required checks. Legacy teacher behavior is u
 
 ### Diagnostics
 
-See [candidate status](docs/development-checkpoint.md#additional-v100-library-candidates). The private campaign runner's
+The private campaign runner's
 `--diagnostic-graph-pieces` records signed startup allocations at capture-piece
 boundaries without synchronizing each piece. Those observations can include
 asynchronous allocation effects and are excluded from performance qualification.
@@ -2992,11 +2993,14 @@ Those historical results retain their original source and workload scope.
 
 ## Validation checkpoints
 
+Cross-cutting software checkpoints, newest first. V100-specific checkpoints are in
+[V100 CPU and installed-software checkpoints](#v100-cpu-and-installed-software-checkpoints).
+
 **Verification checkpoint (2026-10-19):** source `808408aa` passed all four ARM64/AMD64 installed-image audits and 10,357 installed ARM64 CPU tests (206 documented skips). The GB10 component batch passed 426 tests with four skips on `5cc6dbe3`, whose production and native-test bytes equal `808408aa`. AMD64 CPU and desktop native runs were interrupted when work stopped; full-model API, context, quality and performance qualification remain pending. [Exact checkpoint and limits](docs/verification-rejection-checkpoint-20261019.json).
 
 **Installed integration checkpoint (2026-10-19):** source `cefd26d3` passed 10,164 installed CPU tests on each of ARM64 and AMD64, and 303 native checks on GB10 (204 documented CPU skips per host; two deliberate-device-trap skips on GB10). All five installed 4k HTTP profiles also completed their identity/mechanics controls: 48 benchmark replies of 512 tokens, 12 greedy and 12 sampled serial/draft comparisons, and 36 repeated pairs. Completed-answer/tool quality, longer context and comparative performance remain pending. Current GB10 runs use VBoost 0 and the host's ten-CPU container partition. Preserve that affinity policy; historical twenty-CPU results keep their recorded conditions.
 
-Installed local checks passed **7,994 CPU cases** and cover **2,049 distinct CUDA cases** through the full non-matrix run and complete corrected module. Both trained EXL3 registration policies, strict tools, concurrent replies, three-format exactness and the installed Harness launcher passed. The [desktop receipt](docs/verification-desktop-report-20261017.json) records the corrected fixtures and exact images. Actual two-GPU and mixed-architecture execution require separate hardware qualification.
+**Desktop installed checks (2026-10-17):** installed local checks passed **7,994 CPU cases** and cover **2,049 distinct CUDA cases** through the full non-matrix run and complete corrected module. Both trained EXL3 registration policies, strict tools, concurrent replies, three-format exactness and the installed Harness launcher passed. The [desktop receipt](docs/verification-desktop-report-20261017.json) records the corrected fixtures and exact images. Actual two-GPU and mixed-architecture execution require separate hardware qualification.
 
 **CUDA correctness remediation (2026-10-17):** Qwen MoE private cache copies retain their attention arena identity. Stored-layout Triton QMM and prompt attention now express the selected CUDA FMA order explicitly; legacy Triton results can change where compiler-dependent contraction broke the promised parity. GLM weighted BF16 experts retain their family's separately rounded slot sum, while Flash Next's default FP32 FMA path stays unchanged. The Flash Next n-gram sum test uses independent exact arithmetic and checks the consuming kernel. GLM fixtures now exercise distinct vocabulary shards with native integer token IDs, and interrupted-build tests follow the pinned Torch lock protocol. [Arithmetic and buffer contracts](docs/cuda-kernel-contracts.md) describe the affected boundaries; source/image-specific [verification](docs/optimization-validation.md#cuda-failure-remediation-2026-10-17) records the gates and limits. Final installed-image checks passed **7,642 CPU and 2,012 CUDA tests**, plus full-checkpoint API and three-format exactness checks; the [receipt](docs/verification-cuda-remediation-20261017.json) identifies the qualified source and images.
 
@@ -3179,13 +3183,6 @@ Source installations print a live throughput line when attached to a terminal. R
 
 The [verification Docker target](deploy/gb10/Dockerfile) adds pinned pytest, Git for the isolated editable-update regression, maintained tests/tools, `CHANGELOG.md` and the statistics API reference, readable by unprivileged test workers. Git installation is bracketed by full foundation audits in that target:
 
-Source `16ae6dfc` exposed the missing Git prerequisite in its full installed CPU
-run. Git-provisioned ARM verification images have since been rebuilt and audited.
-The later broad CPU run and focused fixture repairs retain their separate
-[results](docs/gb10-nvfp4-validation.md#composite-checks-and-remaining-scope);
-a clean full-suite rerun for the final composed source remains pending. The
-earlier missing-Git failure is preserved. The runtime service image does not need Git.
-
 ```bash
 # Keep the selected input-preparation variables in this shell.
 docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target verification \
@@ -3200,6 +3197,15 @@ docker run --rm --network none -e NVIDIA_VISIBLE_DEVICES=void --entrypoint pytho
   python3 -m pytest -o pythonpath=tests -q tests/test_http_service_limits.py
 ```
 
+This command uses the baked tests with pytest's development `src` path overridden; it does not replace an installed-wheel origin/audit proof. GPU, distributed, model-quality, performance and native-origin gates require their declared hardware and controlled receipts. Missing or skipped hardware checks remain unrun. Follow [CONTRIBUTING.md](CONTRIBUTING.md), [the runbook](RUNBOOK.md), [family interfaces](src/tensorfold/families/README.md) and [kernel layout](src/tensorfold/kernels/README.md) before changing numerical or ownership contracts.
+
+Source `16ae6dfc` exposed the missing Git prerequisite in its full installed CPU
+run. Git-provisioned ARM verification images have since been rebuilt and audited.
+The later broad CPU run and focused fixture repairs retain their separate
+[results](docs/gb10-nvfp4-validation.md#composite-checks-and-remaining-scope);
+a clean full-suite rerun for the final composed source remains pending. The
+earlier missing-Git failure is preserved. The runtime service image does not need Git.
+
 The completed installed-origin Linux CPU qualification used normal verification image `sha256:aeef439e98eb2c885e5c131105e2d9b612410e81336d6fa63c36078eb6522b64`, with the Source06 wheel `80f1…` above, Python 3.12 and pytest 8.4.2. A read-only qualified fixture supplied maintained tests/tools while the package and native provider remained the normal installed copies. The qualified Source06 manifest contained **387 modules**; its **386-path Linux inventory** completed in **25 successful chunks**, totaling **6,369 cases**: **6,214 non-skipped passes**, **zero failures/errors**, and **155 explicit skips**. One additional Apple-only module with two tests was excluded off target. Skips remain unrun for their declared targets; CPU source/fake controls do not qualify GPU/model numerics, Apple execution or true two-GPU behavior.
 
 The successful evidence combines 16 original chunks, eight corrected-fixture reruns and one final Dense EXL3 cleanup-fixture rerun, each retaining its original source/fixture identity. The full 1,033-file read-only fixture passed native UID-1000 readability/hash checks before and after the final rerun. Current baseline generation and CLI/API evidence is recorded above. The closed notification, full-request expert-arena and aggregate-room-clipping decisions retain the original policies. The selected Rotor7 native/model proofs and completed frozen shipping qualification remain separate from this Source06 Linux CPU snapshot.
@@ -3207,8 +3213,6 @@ The successful evidence combines 16 original chunks, eight corrected-fixture rer
 The selected Rotor7 source adds [a maintained native GPU test module](tests/cuda/test_rotor_lookup_exact.py); the earlier 6,214 CPU passes do not certify every module or decoder path in the changed current tree. Its native/model evidence is separate; the fresh installed-origin and shipping results are recorded above.
 
 The verification target copies the maintained changelog into `/opt/TensorFold`. The completed CPU results above used the qualified read-only fixture; they do not certify this packaging change. The frozen verification image passed those baked update/public-permissions checks without a checkout mount, as recorded above.
-
-This command uses the baked tests with pytest's development `src` path overridden; it does not replace an installed-wheel origin/audit proof. GPU, distributed, model-quality, performance and native-origin gates require their declared hardware and controlled receipts. Missing or skipped hardware checks remain unrun. Follow [CONTRIBUTING.md](CONTRIBUTING.md), [the runbook](RUNBOOK.md), [family interfaces](src/tensorfold/families/README.md) and [kernel layout](src/tensorfold/kernels/README.md) before changing numerical or ownership contracts.
 
 ### Keep the fork and upstream changes manageable
 
