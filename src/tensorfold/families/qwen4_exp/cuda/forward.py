@@ -34,9 +34,19 @@ def _family(b):
 
 
 def _gather(w: Weights, b: Buffers, part: torch.Tensor, flat: torch.Tensor, R: int) -> torch.Tensor:
-    """All ranks' fp32 partials [R, D] in rank order: [world, R, D] (summed rank 0 first by the consumer)."""
+    """All ranks' fp32 partials [R, D] in rank order: [world, R, D] (summed rank 0 first by the consumer).
+
+    Where the communicator's small row all-reduce admits the shape it returns [1, R, D] FP16: the same
+    rank-ordered FP32 sums, rounded once to FP16 as every mode-3 consumer rounds them first (bitwise the
+    same branch), while each rank receives about a quarter of the gathered bytes.
+    """
 
     d = part.shape[1]
+    reduce = getattr(w.comm, "all_reduce_rows", None)
+    if reduce is not None:
+        summed = flat[:R * d // 2].view(torch.float16).view(R, d)
+        if reduce(part[:R], summed):
+            return summed.view(1, R, d)
     out = flat[:b.world * R * d]
     w.comm.all_gather(part[:R], out)
     return out.view(b.world, R, d)

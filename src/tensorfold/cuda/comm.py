@@ -65,6 +65,15 @@ def _guard_owned_server(port):
         raise ValueError("adaptive unique profile cannot establish daemon ownership with active native agent-store reuse")
 
 
+
+# Small row all-reduce for tensor-parallel partials (small_gather.cu); TF_SMALL_ALLREDUCE=0 keeps the gather.
+_SMALL_ALLREDUCE = os.environ.get("TF_SMALL_ALLREDUCE", "1") != "0"
+# Its two dependent phases cost a fixed ~14 us on 8x V100-SXM2 (isolated in-graph, [rows, 2560] FP32): the
+# gather is faster at 1-2 rows (6.6-7.6/8.1-9.4 us) and slower from five (5/8/16 rows 18.1/22-23/60 us vs
+# 14.1-14.2/14.4-14.8/22.2-22.4 us). In serving (cross-rank skew included) the median five-row call took
+# 16.7 vs 18.6 us; four rows is about break-even, so the gather keeps them.
+_SMALL_ALLREDUCE_MIN_ROWS = 5
+
 class _TCPStoreOrigin:
     """Process-local factory provenance, retained with its exact native Store.
 
@@ -470,6 +479,34 @@ class NCCL:
             if self.closed or not self._opened:
                 raise RuntimeError("all_gather: communicator admission is closed")
             self._all_gather(send, recv)
+
+    def all_reduce_rows(self, send: torch.Tensor, recv: torch.Tensor) -> bool:
+        """Rank-ordered FP32 sums of every rank's [rows, dims] partials, rounded once to FP16 into recv.
+
+        The sums are bitwise what a consumer of the all-gathered partials forms (rank 0 first, then
+        each rank in order, FP32) followed by one FP16 rounding. Only the small-collective path
+        implements it: returns False (nothing submitted) when it is unavailable or the shape does not
+        fit its mailboxes, and the caller keeps the all-gather. Same borrowing contract as all_gather.
+        """
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("all_reduce_rows: communicator admission is closed")
+            small = self.small_gather
+            if small is None or not _SMALL_ALLREDUCE:
+                return False
+            if (not isinstance(send, torch.Tensor) or not isinstance(recv, torch.Tensor) or send.ndim != 2
+                    or send.dtype != torch.float32 or recv.dtype != torch.float16 or recv.shape != send.shape
+                    or send.device != self.device or recv.device != self.device
+                    or not send.is_contiguous() or not recv.is_contiguous()):
+                raise ValueError("all_reduce_rows: contiguous FP32 [rows, dims] input and FP16 output required")
+            rows, dims = send.shape
+            if rows < _SMALL_ALLREDUCE_MIN_ROWS or small.reduce_lines(rows, dims) == 0:
+                return False
+            a, b = send.data_ptr(), recv.data_ptr()
+            if a < b + recv.numel() * 2 and b < a + send.numel() * 4:
+                raise ValueError("all_reduce_rows: input and output must not overlap")
+            small.allreduce(a, b, rows, dims, torch._C._cuda_getCurrentRawStream(self.device.index))
+            return True
 
     def _all_gather(self, send: torch.Tensor, recv: torch.Tensor) -> None:
         """Submit while the caller holds this communicator's lifetime lease."""

@@ -161,6 +161,32 @@ def routes(width: list[dict[int, int]], world: int, split: int):
     return direct, forward
 
 
+def reduce_routes(direct, forward, world: int, split: int, rank: int):
+    """The all-reduce's scatter relays, from the gather routes (identical on every rank).
+
+    Rank s's residue-k lines for a non-neighbour owner j travel through the relay that the gather
+    assigns to s's residue-k lines for j. Returns (via[k * world + j] for this rank, ordinal[s * world + j],
+    regions): ordinal numbers each source's non-neighbours, the transit region of that pair on its relays.
+    """
+    ordinal = [-1] * (world * world)
+    regions = 0
+    for source in range(world):
+        far = [j for j in range(world) if j != source and not direct[source] >> j & 1]
+        for index, j in enumerate(far):
+            ordinal[source * world + j] = index
+        regions = max(regions, len(far))
+    via = [-1] * (split * world)
+    for k in range(split):
+        for j in range(world):
+            if ordinal[rank * world + j] < 0:
+                continue
+            relays = [m for m in range(world) if forward[m][k][rank] >> j & 1]
+            if len(relays) != 1:
+                raise RuntimeError("small all-reduce relay routes are ambiguous")
+            via[k * world + j] = relays[0]
+    return via, ordinal, regions
+
+
 def store_prefix(key: str, nonce: str) -> str:
     """Store namespace of one communicator open.
 
@@ -222,6 +248,7 @@ def open_small_gather(store, key: str, rank: int, world: int, capacity: int, non
             try:
                 incoming = sum(1 << r for r in range(world) if direct[r] >> rank & 1)
                 native.connect(handles, direct[rank], incoming, [mask for row in forward[rank] for mask in row])
+                native.connect_reduce(*reduce_routes(direct, forward, world, split, rank))
             except RuntimeError as error:
                 print(f"[tensorfold] rank {rank} cannot map small all-gather peers: {error}", flush=True)
                 ok = False

@@ -3,7 +3,9 @@
 Each rank is a separate process with one visible GPU (``small_gather_worker.py``),
 as in tensor-parallel serving. Checks bitwise equality with NCCL and with a
 deterministic oracle (eager, in place, offset storage, capacity edge, NCCL above
-capacity) and varying-data CUDA-graph replays, once from a fresh generation
+capacity) and varying-data CUDA-graph replays; the row all-reduce against the
+gathered partials summed in rank order and rounded to FP16 (eager and replayed
+between gathers), once from a fresh generation
 sequence and once seeded just before the 32-bit generation wrap.
 ``TF_TEST_SMALL_GATHER_WORLD`` selects the rank count (default: all visible
 GPUs, at most 8); the visible GPUs must form a cohort with NVLink routes.
@@ -73,4 +75,4 @@ def test_small_gather_matches_nccl_bitwise_eager_and_in_graph(seed):
         pytest.skip("the visible GPUs lack the NVLink routes the small all-gather requires")
     assert [report["errors"] for report in reports] == [[]] * world
     assert all(report["capacity"] == small_gather.MAX_CAPACITY and report["eager_cases"] > 0
-               and report["graph_replays"] == 200 for report in reports)
+               and report["graph_replays"] == 200 and report["reduced_shapes"] >= 5 for report in reports)

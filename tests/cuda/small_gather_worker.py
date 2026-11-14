@@ -122,6 +122,55 @@ def main():
         report["errors"].append(f"graph: {int(bad)} mismatching gathers over {replays} replays")
     report["graph_replays"] = replays
     del graph
+
+    # Row all-reduce: bitwise the gathered partials summed in rank order (FP32), rounded once to FP16;
+    # eager at every admitted row count, then captured between gathers and replayed.
+    def oracle(part):
+        gathered = torch.empty(world * part.numel(), device=device)
+        gather(part, gathered, False)
+        gathered = gathered.view(world, *part.shape)
+        total = gathered[0].clone()
+        for peer in range(1, world):
+            total = total + gathered[peer]
+        return total.half()
+
+    reduced = 0
+    for rows in (1, 3, 4, 5, 8, 16, 22, 23, 40):
+        generator = torch.Generator(device=device)
+        generator.manual_seed(rows * 101 + rank)
+        part = torch.randn(rows, 2560, device=device, generator=generator) * (10.0 ** (rows % 5 - 2))
+        part[:, ::7] = -0.0
+        got = torch.empty(rows, 2560, dtype=torch.float16, device=device)
+        if comm.all_reduce_rows(part, got):
+            reduced += 1
+            if not same(got, oracle(part)):
+                report["errors"].append(f"all-reduce {rows} rows")
+    report["reduced_shapes"] = reduced
+    part = torch.randn(5, 2560, device=device)
+    got = torch.empty(5, 2560, dtype=torch.float16, device=device)
+    want, mixed = oracle(part), torch.empty(world * 1001, dtype=torch.float16, device=device)
+    filler = torch.empty(1001, dtype=torch.float16, device=device)
+    fill(filler, rank, 7)
+
+    def reduce_body():
+        for _ in range(3):
+            comm.all_reduce_rows(part, got)
+            comm.all_gather(filler, mixed)
+
+    with torch.cuda.stream(side):
+        reduce_body()
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=side):
+        reduce_body()
+    for _ in range(50):
+        got.zero_()
+        graph.replay()
+        bad += (got.view(torch.int16) != want.view(torch.int16)).any().to(torch.int64)
+    torch.cuda.synchronize()
+    if int(bad):
+        report["errors"].append(f"all-reduce graph: {int(bad)} mismatching replays")
+    del graph
     comm.close()
     print(json.dumps(report), flush=True)
 
