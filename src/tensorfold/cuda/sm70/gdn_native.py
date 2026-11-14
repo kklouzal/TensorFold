@@ -17,7 +17,7 @@ def extension():
     root = Path(__file__).parent
     sources = [root / "gdn_bindings.cpp", root / "gdn.cu", root / "gdn_prefill_split.cu"]
     identity = hashlib.sha256(prepared.__name__.encode())
-    headers = [root.parent / "kernels/tensor_contracts.cuh"]
+    headers = [root.parent / "kernels/tensor_contracts.cuh", root / "gdn_common.cuh"]
     for source in [*sources, *headers]:
         identity.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=headers, source_root=root.parent)
@@ -29,7 +29,7 @@ def chain(p, conv, weight, initial, decay_parameter, bias, norm, eps, rows, scra
           *, negative_decay=False):
     import torch
 
-    # Prompt chunks run the multi-block form (gdn_prefill_split.cu: bitwise chain's results, 7x faster per 1024-row
+    # Prompt chunks run the multi-block form (gdn_prefill_split.cu: bitwise chain's results, ~8x faster per 1024-row
     # chunk on V100). Short (decode) chains keep the single-launch serial kernel: its three launches measured no
     # integrated gain there (C8 decode 114 vs 117-120 tok/s). The split form takes a caching-allocator workspace,
     # so graph captures keep the serial kernel too.

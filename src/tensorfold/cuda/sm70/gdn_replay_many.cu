@@ -1,7 +1,7 @@
 // One launch replays every recurrent layer of one State: grid (value head, layer).
 //
 // Per (layer, value head) the work is gdn.cu's replay_kernel unchanged: the same
-// ``update`` delta-rule step (copied verbatim; compiled with --fmad=false as gdn.cu),
+// ``update`` delta-rule step (gdn_common.cuh; compiled with --fmad=false as gdn.cu),
 // the same row order and the same FP32 state layout, so the results are bitwise
 // those of the per-layer replay calls. Layer l reads State.rec[cur_l, l] and writes
 // State.rec[1 - cur_l, l]; its saved rows come from a per-State device table of the
@@ -13,32 +13,9 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 
+#include "gdn_common.cuh"
+
 namespace {
-
-constexpr int DK = 128, DV = 128;
-
-__device__ __forceinline__ float warp_sum(float x) {
-    for (int o = 16; o; o >>= 1) x += __shfl_xor_sync(0xffffffffu, x, o);
-    return x;
-}
-
-// Identical to gdn.cu ``update``.
-__device__ __forceinline__ void update(float (&s)[4][4], const float (&kk)[4], const float* vrow, int warp,
-                                       float g, float beta) {
-#pragma unroll
-    for (int j = 0; j < 4; ++j) {
-        float kv = 0.0f;
-#pragma unroll
-        for (int i = 0; i < 4; ++i) {
-            s[j][i] = s[j][i] * g;
-            kv = kv + s[j][i] * kk[i];
-        }
-        kv = warp_sum(kv);
-        const float delta = (vrow[warp * 4 + j] - kv) * beta;
-#pragma unroll
-        for (int i = 0; i < 4; ++i) s[j][i] = s[j][i] + kk[i] * delta;
-    }
-}
 
 template <int NK, int NV>
 __global__ void __launch_bounds__(1024) replay_many_kernel(

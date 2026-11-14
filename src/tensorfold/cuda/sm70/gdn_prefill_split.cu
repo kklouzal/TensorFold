@@ -27,20 +27,9 @@
 #include <cstdint>
 #include <optional>
 
+#include "gdn_common.cuh"
+
 namespace {
-
-constexpr int DK = 128, DV = 128, TAPS = 4;
-
-__device__ __forceinline__ float bf(float x) { return __half2float(__float2half_rn(x)); }
-
-__device__ __forceinline__ float warp_sum(float x) {
-    for (int o = 16; o; o >>= 1) x += __shfl_xor_sync(0xffffffffu, x, o);
-    return x;
-}
-
-__device__ __forceinline__ float sigmoidf_(float x) { return 1.0f / (1.0f + expf(-x)); }
-
-__device__ __forceinline__ float softplusf_(float x) { return x > 20.0f ? x : log1pf(expf(x)); }
 
 // Block (row r, slot): slots [0, nk) q heads, [nk, 2nk) k heads, [2nk, 2nk + nv) v heads; 128 threads.
 template <bool NegativeDecay>
@@ -93,112 +82,65 @@ __global__ void __launch_bounds__(128) front_kernel(
     else k_out[((size_t)r * nk + slot - nk) * DK + t] = x;
 }
 
-// One warp a value row (E = 4 columns a lane), W warps (rows) a block, D steps prefetched.
+// One warp a value row (lane l owns columns 4l..4l+3, chain_kernel's mapping), W warps (rows) a block, D steps
+// prefetched.
 constexpr int W = 4, D = 4;
 __global__ void __launch_bounds__(32 * W) rows_kernel(
         const float* __restrict__ q, const float* __restrict__ k, const __half* __restrict__ v,
         const float* __restrict__ g, const float* __restrict__ beta, const float* __restrict__ state_in,
         float* __restrict__ state_out, __half* __restrict__ y, int rows, int nk, int nv,
         const int* __restrict__ keep_rows) {
-    constexpr int L = 32, RPW = 1, E = DK / L, E4 = E / 4, G = 32 / L, ROWS_BLOCK = W * G * RPW;
-    constexpr int BLOCKS_HEAD = DV / ROWS_BLOCK;
-    static_assert(E == 4 && DV % ROWS_BLOCK == 0, "one float4 a lane, whole blocks a head");
+    static_assert(DK == 32 * 4 && DV % W == 0, "one float4 a lane, whole blocks a head");
+    constexpr int BLOCKS_HEAD = DV / W;
     const int hv = blockIdx.x / BLOCKS_HEAD, hk = hv / (nv / nk);
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, grp = lane / L, sub = lane % L;
-    // row j of this lane group: base + grp + j * G (lane groups interleave within a warp's rows)
-    const int base = (blockIdx.x % BLOCKS_HEAD) * ROWS_BLOCK + warp * G * RPW + grp;
-    const size_t sbase = (size_t)hv * DV * DK;
-    float s[RPW][E];
-#pragma unroll
-    for (int j = 0; j < RPW; ++j)
-#pragma unroll
-        for (int e4 = 0; e4 < E4; ++e4) {
-            const float4 x = *reinterpret_cast<const float4*>(
-                state_in + sbase + (size_t)(base + j * G) * DK + sub * E + 4 * e4);
-            s[j][4 * e4] = x.x; s[j][4 * e4 + 1] = x.y; s[j][4 * e4 + 2] = x.z; s[j][4 * e4 + 3] = x.w;
-        }
+    const int lane = threadIdx.x & 31, row = (blockIdx.x % BLOCKS_HEAD) * W + (threadIdx.x >> 5);
+    float4* const state_at = reinterpret_cast<float4*>(state_out + ((size_t)hv * DV + row) * DK) + lane;
+    float4 s = reinterpret_cast<const float4*>(state_in + ((size_t)hv * DV + row) * DK)[lane];
     const int live = keep_rows ? max(0, min(rows, *keep_rows)) : rows;
-    auto store = [&]() {
-#pragma unroll
-        for (int j = 0; j < RPW; ++j)
-#pragma unroll
-            for (int e4 = 0; e4 < E4; ++e4)
-                *reinterpret_cast<float4*>(state_out + sbase + (size_t)(base + j * G) * DK + sub * E + 4 * e4) =
-                    make_float4(s[j][4 * e4], s[j][4 * e4 + 1], s[j][4 * e4 + 2], s[j][4 * e4 + 3]);
-    };
-    if (state_out != nullptr && !live) store();
+    if (state_out != nullptr && !live) *state_at = s;
 
     // the ring: step r's inputs live in slot r % D
-    float4 kr[D][E4], qr[D][E4];
-    float gr[D], br[D], vr[D][RPW];
-    auto fetch = [&](float4 (&kd)[E4], float4 (&qd)[E4], float& gd, float& bd, float (&vd)[RPW], int r) {
-        const float4* kp = reinterpret_cast<const float4*>(k + ((size_t)r * nk + hk) * DK + sub * E);
-        const float4* qp = reinterpret_cast<const float4*>(q + ((size_t)r * nk + hk) * DK + sub * E);
-#pragma unroll
-        for (int e4 = 0; e4 < E4; ++e4) { kd[e4] = __ldg(kp + e4); qd[e4] = __ldg(qp + e4); }
-        gd = __ldg(g + (size_t)r * nv + hv);
-        bd = __ldg(beta + (size_t)r * nv + hv);
-        const __half* vp = v + ((size_t)r * nv + hv) * DV + base;
-#pragma unroll
-        for (int j = 0; j < RPW; ++j) vd[j] = __half2float(__ldg(vp + j * G));
+    float4 kr[D], qr[D];
+    float gr[D], br[D], vr[D];
+    auto fetch = [&](int d, int r) {
+        kr[d] = __ldg(reinterpret_cast<const float4*>(k + ((size_t)r * nk + hk) * DK) + lane);
+        qr[d] = __ldg(reinterpret_cast<const float4*>(q + ((size_t)r * nk + hk) * DK) + lane);
+        gr[d] = __ldg(g + (size_t)r * nv + hv);
+        br[d] = __ldg(beta + (size_t)r * nv + hv);
+        vr[d] = __half2float(__ldg(v + ((size_t)r * nv + hv) * DV + row));
     };
 #pragma unroll
     for (int d = 0; d < D; ++d)
-        if (d < rows) fetch(kr[d], qr[d], gr[d], br[d], vr[d], d);
+        if (d < rows) fetch(d, d);
 
     for (int r0 = 0; r0 < rows; r0 += D) {
 #pragma unroll
         for (int d = 0; d < D; ++d) {
             const int r = r0 + d;
             if (r < rows) {
-                float kk[E], qq[E], vv[RPW];
-#pragma unroll
-                for (int e4 = 0; e4 < E4; ++e4) {
-                    kk[4 * e4] = kr[d][e4].x; kk[4 * e4 + 1] = kr[d][e4].y;
-                    kk[4 * e4 + 2] = kr[d][e4].z; kk[4 * e4 + 3] = kr[d][e4].w;
-                    qq[4 * e4] = qr[d][e4].x; qq[4 * e4 + 1] = qr[d][e4].y;
-                    qq[4 * e4 + 2] = qr[d][e4].z; qq[4 * e4 + 3] = qr[d][e4].w;
-                }
-                const float gt = gr[d], bt = br[d];
-#pragma unroll
-                for (int j = 0; j < RPW; ++j) vv[j] = vr[d][j];
-                if (r + D < rows) fetch(kr[d], qr[d], gr[d], br[d], vr[d], r + D);
+                const float kk[4] = {kr[d].x, kr[d].y, kr[d].z, kr[d].w};
+                const float qq[4] = {qr[d].x, qr[d].y, qr[d].z, qr[d].w};
+                const float gt = gr[d], bt = br[d], vt = vr[d];
+                if (r + D < rows) fetch(d, r + D);
                 // chain_kernel's update(): decay, read (k), correct toward v; then the read-out (q)
-                float kv[RPW];
+                float st[4] = {s.x, s.y, s.z, s.w}, kv = 0.0f;
 #pragma unroll
-                for (int j = 0; j < RPW; ++j) {
-                    kv[j] = 0.0f;
-#pragma unroll
-                    for (int e = 0; e < E; ++e) {
-                        s[j][e] = s[j][e] * gt;
-                        kv[j] = kv[j] + s[j][e] * kk[e];
-                    }
+                for (int e = 0; e < 4; ++e) {
+                    st[e] = st[e] * gt;
+                    kv = kv + st[e] * kk[e];
                 }
+                kv = warp_sum(kv);
+                const float delta = (vt - kv) * bt;
+                float out = 0.0f;
 #pragma unroll
-                for (int o = L / 2; o; o >>= 1)
-#pragma unroll
-                    for (int j = 0; j < RPW; ++j) kv[j] += __shfl_xor_sync(0xffffffffu, kv[j], o);
-                float out[RPW];
-#pragma unroll
-                for (int j = 0; j < RPW; ++j) {
-                    const float delta = (vv[j] - kv[j]) * bt;
-                    out[j] = 0.0f;
-#pragma unroll
-                    for (int e = 0; e < E; ++e) {
-                        s[j][e] = s[j][e] + kk[e] * delta;
-                        out[j] = out[j] + s[j][e] * qq[e];
-                    }
+                for (int e = 0; e < 4; ++e) {
+                    st[e] = st[e] + kk[e] * delta;
+                    out = out + st[e] * qq[e];
                 }
-#pragma unroll
-                for (int o = L / 2; o; o >>= 1)
-#pragma unroll
-                    for (int j = 0; j < RPW; ++j) out[j] += __shfl_xor_sync(0xffffffffu, out[j], o);
-                if (sub == 0) {
-                    __half* yp = y + ((size_t)r * nv + hv) * DV + base;
-#pragma unroll
-                    for (int j = 0; j < RPW; ++j) yp[j * G] = __float2half_rn(out[j]);
-                }
-                if (state_out != nullptr && r + 1 == live) store();
+                s = make_float4(st[0], st[1], st[2], st[3]);
+                out = warp_sum(out);
+                if (lane == 0) y[((size_t)r * nv + hv) * DV + row] = __float2half_rn(out);
+                if (state_out != nullptr && r + 1 == live) *state_at = s;
             }
         }
     }
@@ -250,26 +192,22 @@ void sm70_gdn_split_chain_cuda(const at::Tensor& P, const at::Tensor& cs, const 
     TORCH_CHECK(nv == 6 || nv == 12 || nv == 24 || nv == 48, "gdn split: 48, 24, 12 or 6 value heads");
     // The replay saves (validated rows-capable by the binding) double as the recurrence's inputs; normalized q
     // takes a stream-ordered workspace from the caching allocator.
-    const at::Tensor& k_ws = k_save;
-    const at::Tensor& v_ws = v_save;
-    const at::Tensor& g_ws = g_save;
-    const at::Tensor& b_ws = b_save;
     at::Tensor q_ws = at::empty({std::max<int64_t>(rows, 1), nk, DK}, P.options().dtype(at::kFloat));
-    TORCH_CHECK(n == 0 || (ptr<float>(k_ws) && ptr<__half>(v_ws) && ptr<float>(g_ws) && ptr<float>(b_ws)),
+    TORCH_CHECK(n == 0 || (ptr<float>(k_save) && ptr<__half>(v_save) && ptr<float>(g_save) && ptr<float>(b_save)),
                 "gdn split: the replay saves carry the recurrence inputs");
-    TORCH_CHECK((n == 0 || aligned16(k_ws.data_ptr())) && aligned16(q_ws.data_ptr())
+    TORCH_CHECK((n == 0 || aligned16(k_save.data_ptr())) && aligned16(q_ws.data_ptr())
                 && aligned16(state_in.data_ptr()) && (!ptr<float>(state_out) || aligned16(state_out.data_ptr())),
                 "gdn split: 16-byte aligned keys and states");
     if (n > 0) {
         const dim3 front_grid(n, 2 * nk + nv);
         auto front = negative_decay ? front_kernel<true> : front_kernel<false>;
         front<<<front_grid, 128, 0, stream>>>(ptr<__half>(P), ptr<__half>(cs), ptr<__half>(cw),
-            ptr<float>(decay_parameter), ptr<float>(dt_bias), nk, nv, ptr<float>(q_ws), ptr<float>(k_ws),
-            ptr<__half>(v_ws), ptr<float>(g_ws), ptr<float>(b_ws));
+            ptr<float>(decay_parameter), ptr<float>(dt_bias), nk, nv, ptr<float>(q_ws), ptr<float>(k_save),
+            ptr<__half>(v_save), ptr<float>(g_save), ptr<float>(b_save));
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
     rows_kernel<<<nv * (DV / W), 32 * W, 0, stream>>>(
-        ptr<float>(q_ws), ptr<float>(k_ws), ptr<__half>(v_ws), ptr<float>(g_ws), ptr<float>(b_ws),
+        ptr<float>(q_ws), ptr<float>(k_save), ptr<__half>(v_save), ptr<float>(g_save), ptr<float>(b_save),
         ptr<float>(state_in), ptr<float>(state_out), ptr<__half>(out), n, nk, nv,
         keep_rows ? ptr<int>(*keep_rows) : nullptr);
     C10_CUDA_KERNEL_LAUNCH_CHECK();

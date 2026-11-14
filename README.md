@@ -3172,7 +3172,9 @@ SM70 GDN prompt chunks of 64 or more rows (outside graph capture) now run
 that spreads each value head's state rows over the whole GPU instead of one
 1024-thread block per head. Its outputs, sums, final state and replay saves are
 bitwise the serial kernel's (isolated V100 check over four chained 1024-row chunks
-and edge cases); a TP8 1024-row chunk takes 0.66 ms instead of 5.40 ms. Shorter
+and edge cases; maintained by `tests/cuda/test_sm70_gdn_split.py`, which passes on
+V100 in the SM70 image); a TP8 1024-row chunk takes 0.64-0.72 ms instead of
+4.6-5.4 ms (GPU-state dependent; 6.4-8.2x in the same run). Shorter
 decode chains and captured graphs keep the serial kernel. Descriptive cold C1
 prefill on the setup above (seeds 601/602/611, 1024-row chunks) rose from
 1468/1517/1502 to 1686/1782/1842 tok/s at 4K tokens and from 2054/2101/2094 to

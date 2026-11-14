@@ -24,10 +24,11 @@ def extension():
     prepared = _native()  # The selected SM70/toolkit/ABI admission and identity, as gdn_native.
     root = Path(__file__).parent
     sources = [root / "gdn_replay_many.cu"]
+    headers = [root / "gdn_common.cuh"]
     digest = hashlib.sha256(prepared.__name__.encode() + repr(CUDA_FLAGS).encode())
-    for source in sources:
+    for source in [*sources, *headers]:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
-    staged = stage_sources(sources, headers=[], source_root=root.parent)
+    staged = stage_sources(sources, headers=headers, source_root=root.parent)
     return build.load("tf_sm70_gdn_replay_many_" + digest.hexdigest()[:20], staged, need=(7, 0),
                       extra_cuda_cflags=list(CUDA_FLAGS), extra_cflags=["-O3"])
 
