@@ -366,8 +366,8 @@ Native collection/execution, TP8 full24/full32 adoption, model/quality and P3
 remain separate required gates.
 
 The CPU fixture/real redispatch controls pass11 tests on the Source41 protected
-SDK without CUDA visibility or application overlay. The new CUDA test has not
-been collected or executed. A first combined gate preserved Ruff's read-only
+SDK without CUDA visibility or application overlay. Native execution was still
+unrun at that authoring checkpoint. A first combined gate preserved Ruff's read-only
 cache failure after the11 passes; a subsequent static-only gate fixed that
 procedure and passed scoped Ruff. Formatting retained exact ASTs. No numerical
 or native result follows from these CPU checks.
@@ -380,9 +380,13 @@ compiler-library bytes/SHA against the owned admission report. The pinned public
 pathname-backed through that proof and restores its prior flag in `finally`.
 Owned compiler inspection precedes the TileLang/TVM import; the extra cold hash
 pass is diagnostic overhead. There is no SDK patch or deleted-path relaxation.
-The proposal sets ordinary `TMPDIR=/cache`, retaining the debug objects and
-actual generated DSOs inside the same paid1GiB compiler cache before unmount;
-`/tmp` remains a separate2GiB process scratch grant.
+The Host requested ordinary `TMPDIR=/cache`, but the completed process used
+`/tmp/tvm-debug-mode-tempdirs` for the actual JIT libraries. Both the1GiB cache
+and2GiB `/tmp` scratch were declared. Actual VMA-backed FD records establish
+the loaded paths and payload identities; independently rehashed cache copies
+retain identical bytes/SHA256 for all three libraries. Their cache paths and
+inodes are not labeled as the actual loaded backings. Environment configuration
+alone does not prove the effective temporary directory or payload retention.
 
 Every completed State cohort, its final chosen-order borrower, projections and
 parameters are released before the next allocation RHS. Each independent
@@ -395,8 +399,8 @@ validate refusal/protocol behavior and grant no native provider authority.
 An additional real installed CPU control invokes the actual image's `nm` through
 an inherited held FD for its genuine `_fd_owner` ELF, finds `PyInit__fd_owner`,
 checks unchanged file metadata and proves descriptor closure. It passes without
-CUDA visibility. This verifies that evidence-tool boundary; generated G3 native
-DSOs remain unobserved until the separately authorized native run.
+CUDA visibility. This verifies that evidence-tool boundary; the separate native
+run below supplies the actual G3 provider observations.
 
 The export probe uses the existing bounded `v100_adaptive_qualification.capture`
 process-group owner with an optional caller-owned `pass_fds` tuple. Its old
@@ -405,3 +409,28 @@ truncation, timeout and nonzero status, and retains the input FD until positive
 process-group retirement and the final metadata check. Three refusal controls,
 two actual passed-FD output/timeout controls and the affected actual installed
 `nm` control pass; earlier CPU scopes are not repeated for this repair.
+
+### Completed packed-group component run
+
+The matching Source41 image `8ff2eb4c` (application `a052c5b8`, procedure
+`233b0e4a`) passed one native pytest item containing all12 packed frames in
+311.526 seconds. The Q8 and ISO4 cases exercised tails63/64/65 and packed24/32
+P256 shapes with changed ordering/history and actor handoff. All472 State/layer
+measurements were finite;404 cuts produced808 exact actual-source layer copies.
+Pending-status, epoch, alias, budget, one-event/one-slab, refusal and controlled
+failure/drain assertions passed. Event observations cover the component's event
+API; they are not a count of every runtime wait.
+
+Eight required providers, including three actual callee DSOs, were bound through the
+strict VMA-backed FD/export checks. All60 cache files (12,172,995 bytes) were
+retained and rehashed before container removal, including copies matching the
+actual JIT payloads. Source/SDK postchecks, owning CLI/container exit, removal,
+cache unmount and unchanged all-eight-GPU health/context checks passed. The
+initial compiler-environment guard failure remains separate failed evidence;
+its corrected packet passed a full CPU compiler inspection before native use.
+
+Observed maximum incumbent-State error was approximately7.430e-5 and output
+error0.001953125. These finite diagnostics establish no numerical tolerance or
+model-quality equivalence. The fixture has two GDN layers and no real TP8 model
+adoption authority. Ordinary HTTP/full-model integration, populated full-history
+quality and all matched performance/selection gates remain pending.

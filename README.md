@@ -53,8 +53,9 @@ and clean retirement. Integrated model/quality and performance gates remain pend
 
 The maintained packed-group G3 native test now authors real Q8/ISO4 State,
 actor-handoff, pending-codec, cut-copy and one-slab controls against the matching
-Source41 GDN artifact. Its11 CPU fixture and13 evidence-boundary controls pass; the new CUDA test remains
-unrun and does not qualify TP8 model adoption, quality or performance. The
+Source41 GDN artifact. Its native suite passed12 packed frames,472 State/layer
+measurements and808 exact cut-layer copies, with loaded-binary provenance and
+clean retirement. TP8 model adoption, quality and performance remain pending. The
 [finite native contract](docs/gdn-chunk64-prefill-integration.md#packed-group-native-diagnostics)
 preserves the separate standalone seven-case oracle.
 
