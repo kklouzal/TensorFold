@@ -81,7 +81,16 @@ def workspace_bytes_from_text(text, rows, world, *, enabled=None, prefill=False,
 
 
 class PaddedLinears:
-    """All storage is owned before capture; only bounded reshape/slice views escape."""
+    """All storage is owned before capture; only bounded reshape/slice views escape.
+
+    Padding-row contract: output rows at or past a call's row count hold
+    unspecified (possibly stale or nonfinite) values. The small-row kernel
+    leaves them unwritten; the padded M32 product computes them from stale
+    padding inputs, so no consumer could rely on them before either. Escaping
+    views (``tensor``, ``partials``) are sliced to logical rows; inside, only
+    the panel GEMMs read padding rows, and a GEMM output row depends only on
+    the same input row, so padding never reaches a row a call defines.
+    """
 
     def __init__(self, w, rows, *, head_columns=None, linear_layers=None, owned_panels=False):
         self.rows, self.device = rows, w.device
@@ -205,7 +214,7 @@ class PaddedLinears:
         """Logical rows through the small-row kernel; padded M32 panel product otherwise.
 
         The small-row kernel writes only the ``count`` logical rows; padding rows
-        keep their previous (never consumed) contents.
+        keep their previous contents (class padding-row contract).
         """
         small = getattr(matrix, "matmul_small", None)
         if small is None or small(panel[:count], destination[:count], self.small) is None:

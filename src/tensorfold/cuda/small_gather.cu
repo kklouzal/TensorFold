@@ -13,15 +13,35 @@
 // neighbour) or the one relay assigned to that line, which is an NVLink
 // neighbour of both ends and forwards the line as soon as it receives it.
 //
-// Reuse ordering: a writer reaches call g+2 only after its call g+1 received
-// every rank's g+1 data, so each destination had already started call g+1 and
-// (stream order) finished every read of call g on the same parity. A reader
-// clears each consumed line to zero, so a slot holds either zero or the line of
-// its pending call; generation wrap cannot match stale data. Generations skip 0.
+// Generations: state[0] holds the last completed generation (0 = none). The
+// next is state[0] + 1, except that 0xFFFFFFFF is followed by 2: generations
+// are never 0 (the cleared-slot value) and consecutive calls always alternate
+// parity (odd 0xFFFFFFFF -> even 2; wrapping to 1 would repeat odd parity).
+//
+// Reuse ordering: consecutive calls use disjoint parity slots, so call g+1
+// never writes a slot that call g may still read. A writer reaches the next
+// call of g's parity (g+2 in sequence) only after its own call g+1 received every
+// rank's g+1 data, so each destination had already started call g+1 and (stream
+// order) finished every read of call g. A reader clears each consumed line to
+// zero, so a slot holds either zero or the line of its pending call; a stale
+// line therefore never matches, whatever generation values wrap reuses.
 //
 // Requirement: on each rank, calls on one communicator are stream-ordered (each
 // starts after the previous completes). Consecutive eager calls, or calls in the
-// same capture, on different streams are joined here with an event.
+// same capture, on different streams are joined here with an event. Every rank
+// issues the same sequence of calls on a communicator.
+//
+// Progress and residency: a receiving block spins until its peers publish, so
+// every launch must eventually have all its blocks running. One launch is
+// bounded to half of the device's resident blocks (occupancy x SMs / 2): on an
+// otherwise idle device its whole grid is co-resident, and two communicators'
+// spinning launches on concurrent streams (e.g. tensor- and expert-parallel
+// groups, dispatched in any order) also fit together. When other kernels hold
+// SMs, the row order below (sender, NVLink sources, relayed sources) still
+// progresses provided blocks of a launch are dispatched in blockIdx order;
+// that is observed hardware behaviour, not a documented CUDA guarantee. More
+// than two concurrently spinning communicators per device are unsupported (as
+// for NCCL kernels on concurrent streams).
 #include <torch/extension.h>
 #include <cuda_runtime.h>
 
@@ -36,6 +56,10 @@ namespace {
 constexpr int kMaxWorld = 8;
 constexpr int kThreads = 256;
 constexpr int kSplit = 4;  // relayed lines are assigned to relays by line index % kSplit
+// Per-rank payload ceiling: at 256 KiB the measured in-graph latency already
+// equals NCCL's on 8x V100-SXM2 and NCCL is faster beyond (README), so larger
+// mailboxes would only cost memory (4 * world * capacity bytes per rank).
+constexpr long long kMaxCapacityBytes = 256 * 1024;
 
 struct Params {
   const unsigned char* send;
@@ -89,7 +113,7 @@ __global__ void __launch_bounds__(kThreads) small_gather_kernel(Params p) {
   __shared__ uint32_t shared_generation;
   if (threadIdx.x == 0) {
     uint32_t next = *reinterpret_cast<volatile uint32_t*>(p.state) + 1u;
-    shared_generation = next == 0u ? 1u : next;
+    shared_generation = next == 0u ? 2u : next;  // Skip 0 and keep parity alternating (header).
   }
   __syncthreads();
   const uint32_t generation = shared_generation;
@@ -97,7 +121,7 @@ __global__ void __launch_bounds__(kThreads) small_gather_kernel(Params p) {
   // Row order[0] == rank publishes this rank's lines; every other row receives
   // (and relays) one source's lines. Rows are ordered sender, NVLink sources,
   // relayed sources: a row waits only on earlier classes of rows elsewhere, so
-  // in-order block dispatch progresses even when the grid is not resident.
+  // blockIdx-order dispatch progresses even when the grid is not resident (header).
   const int source = p.order[blockIdx.y];
   const long long slot_base = (parity_base + source) * p.capacity;
   const long long stride = (long long)gridDim.x * blockDim.x;
@@ -150,8 +174,8 @@ class SmallGather {
  public:
   SmallGather(int64_t rank, int64_t world, int64_t capacity_bytes) {
     TORCH_CHECK(world >= 2 && world <= kMaxWorld && rank >= 0 && rank < world, "small all-gather requires 2..8 ranks");
-    TORCH_CHECK(capacity_bytes > 0 && capacity_bytes % 8 == 0 && capacity_bytes <= (1ll << 30),
-                "small all-gather capacity must be a positive multiple of 8 bytes up to 1 GiB");
+    TORCH_CHECK(capacity_bytes > 0 && capacity_bytes % 8 == 0 && capacity_bytes <= kMaxCapacityBytes,
+                "small all-gather capacity must be a positive multiple of 8 bytes up to ", kMaxCapacityBytes);
     rank_ = int(rank);
     world_ = int(world);
     capacity_lines_ = capacity_bytes / 8;
@@ -183,7 +207,10 @@ class SmallGather {
     int per_sm = 0, sms = 0;
     check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, small_gather_kernel, kThreads, 0), "occupancy");
     check(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device_), "SM count");
-    row_blocks_ = std::max(1, per_sm * sms / world_);  // whole grid resident on an otherwise idle device
+    // At most half the device's resident blocks per launch (header: two
+    // communicators stay co-resident). At the 256 KiB ceiling a row needs 128
+    // blocks; fewer only loop more lines per thread.
+    row_blocks_ = std::max(1, per_sm * sms / (2 * world_));
   }
   ~SmallGather() {
     try {
@@ -279,14 +306,29 @@ class SmallGather {
     tail_capture_ = capture;
   }
 
+  // Test-only: start the generation sequence after `last` (every rank seeds the
+  // same value) so wrap handling is exercised. Only before the first gather.
+  void seed_generation(int64_t last) {
+    TORCH_CHECK(!has_tail_ && !released_ && last >= 0 && last <= 0xFFFFFFFFll,
+                "small all-gather generation is seeded once before any gather");
+    const uint32_t value = uint32_t(last);
+    check(cudaMemcpy(state_, &value, sizeof(value), cudaMemcpyHostToDevice), "generation seed");
+  }
+
   // Ends spinning kernels; their outputs are undefined. Teardown only.
   void abort() {
     if (abort_host_ != nullptr) *reinterpret_cast<volatile int*>(abort_host_) = 1;
+    aborted_ = true;
   }
 
-  // Callers fence the device first. No rank reads a peer mailbox, and every
-  // write into this mailbox was consumed by a completed call here, so no
-  // cross-process barrier is needed before release.
+  // Callers fence the device first, so no local kernel uses any mapping. In an
+  // ordinary close every rank issued the same calls, so every write into this
+  // mailbox was consumed by a completed local call and no peer still writes it.
+  // After abort() peers may still be inside (or not yet past) a gather that
+  // writes this mailbox through their IPC mapping. The CUDA documentation does
+  // not define freeing an allocation that another process still has mapped, so
+  // an aborted communicator deliberately retains its own mailbox (bounded:
+  // 4 * world * capacity bytes per aborted communicator) until process exit.
   void release() {
     if (released_) return;
     released_ = true;
@@ -295,7 +337,7 @@ class SmallGather {
     for (void* mapped : opened_) keep(cudaIpcCloseMemHandle(mapped));
     opened_.clear();
     if (tail_ != nullptr) keep(cudaEventDestroy(tail_));
-    if (own_ != nullptr) keep(cudaFree(own_));
+    if (own_ != nullptr && !aborted_) keep(cudaFree(own_));  // Retained after abort (above).
     if (state_ != nullptr) keep(cudaFree(state_));
     if (abort_host_ != nullptr) keep(cudaFreeHost(abort_host_));
     tail_ = nullptr;
@@ -322,7 +364,7 @@ class SmallGather {
   cudaEvent_t tail_ = nullptr;
   cudaStream_t tail_stream_ = nullptr;
   unsigned long long tail_capture_ = 0;
-  bool has_tail_ = false, connected_ = false, released_ = false;
+  bool has_tail_ = false, connected_ = false, released_ = false, aborted_ = false;
 };
 
 }  // namespace
@@ -335,6 +377,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def_property_readonly_static("split", [](py::object) { return kSplit; })
       .def("connect", &SmallGather::connect)
       .def("gather", &SmallGather::gather)
+      .def("seed_generation", &SmallGather::seed_generation)
+      .def_property_readonly_static("max_capacity", [](py::object) { return kMaxCapacityBytes; })
       .def("abort", &SmallGather::abort)
       .def("release", &SmallGather::release);
 }

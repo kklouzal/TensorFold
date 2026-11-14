@@ -1,19 +1,17 @@
 """Tensor-core (mma.m8n8k4) local phases for SM70 unique-history prompt attention.
 
-Unselected candidate family; no runtime dispatch selects it. It replaces the
-per-row RN local phases with one CTA per query row that shares every compacted
-local K/V tile across the twelve GQA heads of the KV head. Only ordinary Q8
-(bits 8, codec 0) caches are supported. Descriptor/selection/status semantics
-and the four collective formats are those of ``paged_attention``:
+Selected by ``history_owner`` for prefill owners of the RN family with ordinary
+Q8 (bits 8, codec 0) caches unless ``TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION=0``.
+It replaces the per-row RN local statistics/probability/value phases with one
+CTA per query row that shares every compacted local K/V tile across the twelve
+GQA heads of the KV head. Descriptor/selection/status semantics (shared device
+helpers in ``paged_attention_device.cuh``) and the statistics/value collective
+formats are those of ``paged_attention``:
 
-* ``local_statistics``  -> [rows,12,2] FP32 (m, l); drop-in for rn_local_statistics.
-* ``partial_values``    -> [rows,12,256] FP32 globally normalized local partial
-  from merged (M, L); drop-in for rn_probabilities + rn_partial_values. The
-  (M, L) must come from this family's ``local_statistics`` (identical scores),
-  otherwise s - M > 0 latches status 16 exactly as in the RN family.
-* ``fused_local``       -> (m, l) plus UNNORMALIZED local sum exp(s - m) v in one
-  pass; after the ordinary statistics gather/merge, ``weight_values`` publishes
-  the same globally normalized [rows,12,256] partial for the value gather.
+* ``fused_local``   -> (m, l) [rows,12,2] FP32 plus the UNNORMALIZED local sum
+  exp(s - m) v [rows,12,256] FP32 in one pass.
+* ``weight_values`` -> after the ordinary statistics gather and RN merge, the
+  globally normalized [rows,12,256] local partial for the value gather.
 
 Arithmetic: exact Q8 codes (c + 0.5) and FP16 queries in the tensor core, FP32
 group scales applied after each 32-dim group dot (K) or folded into FP16 P with
@@ -40,7 +38,7 @@ def extension():
     prepared = _native()
     root = Path(__file__).parent
     sources = [root / "prompt_attention_bindings.cpp", root / "prompt_attention.cu"]
-    headers = [root / "paged_attention_descriptor.cuh"]
+    headers = [root / "paged_attention_descriptor.cuh", root / "paged_attention_device.cuh"]
     digest = hashlib.sha256(prepared.__name__.encode())
     for source in [*sources, *headers]:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
@@ -61,22 +59,6 @@ def _controls(group_start, page_tokens, key_bits, key_codec):
         raise ValueError("history pages require positive int32 complete pooling groups")
     if (key_bits, key_codec) != (8, 0) or type(key_bits) is not int or type(key_codec) is not int:
         raise ValueError("tensor-core prompt attention supports only ordinary Q8")
-
-
-def local_statistics(queries, selections, row_table, out, *, group_start, page_tokens, layer,
-                     key_bits=8, key_codec=0):
-    _controls(group_start, page_tokens, key_bits, key_codec)
-    extension().local_statistics(queries, selections, row_table, out, group_start, page_tokens, layer,
-                                 key_bits, key_codec)
-    return out
-
-
-def partial_values(queries, selections, row_table, global_statistics, out, *, group_start, page_tokens,
-                   layer, key_bits=8, key_codec=0):
-    _controls(group_start, page_tokens, key_bits, key_codec)
-    extension().partial_values(queries, selections, row_table, global_statistics, out, group_start,
-                               page_tokens, layer, key_bits, key_codec)
-    return out
 
 
 def fused_local(queries, selections, row_table, statistics, unnormalized, *, group_start, page_tokens,

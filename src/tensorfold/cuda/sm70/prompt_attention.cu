@@ -6,14 +6,15 @@
 // (src/kernels/cuda/qsa_prompt_attn.cu, MIT license, llama.cpp-derived).
 // Everything else (descriptor/selection domain, failure status, unique-page
 // compaction, the Q8 exact-code arithmetic and the output formats) belongs to
-// TensorFold's owner contract and mirrors paged_attention.cu's RN family:
+// TensorFold's owner contract and mirrors paged_attention.cu's RN family
+// (shared device helpers: paged_attention_device.cuh):
 //
-//   stats   [rows,12,2] FP32 (m, l): m = max local score, l = sum exp(s - m),
-//           s = dot(q, k) * 2^-4, empty local set = (-inf, 0).
-//   values  [rows,12,256] FP32 globally normalized local partial
-//           sum_i P_i v_i with P_i = exp(s_i - M) / L from merged (M, L).
-//   fused   one pass: stats plus the UNNORMALIZED local sum_i exp(s_i - m) v_i;
-//           weight_kernel later scales it by exp(m - M) / L.
+//   fused   one pass: (m, l) [rows,12,2] FP32 with m = max local score,
+//           l = sum exp(s - m), s = dot(q, k) * 2^-4, empty local set =
+//           (-inf, 0); plus the UNNORMALIZED local sum_i exp(s_i - m) v_i
+//           [rows,12,256] FP32.
+//   weight  after the statistics gather/merge, scales it by exp(m - M) / L
+//           into the globally normalized local partial of the RN family.
 //
 // Arithmetic: Q is the gathered FP16 query (exact in the tensor core). K and V
 // enter the tensor core as their exact Q8 codes plus one half, (c + 0.5),
@@ -30,6 +31,7 @@
 #include <math_constants.h>
 #include <cstdint>
 #include "paged_attention_descriptor.cuh"
+#include "paged_attention_device.cuh"
 
 using T = at::Tensor;
 
@@ -41,110 +43,21 @@ constexpr int KW = DIM + 16;   // bytes per K row: 68 words == 4 mod 32 (conflic
 constexpr int SW = CH + 4;     // floats per score row
 constexpr unsigned FULL = 0xffffffffu;
 namespace meta = tf_sm70_paged;
-enum Mode : int { STATS = 0, VALUES = 1, FUSED = 2 };
+using namespace tf_sm70_paged_device;
 
-// ---- Descriptor domain: identical semantics to paged_attention.cu -----------
-// (Duplicated because that file's helpers have internal linkage; integration
-// should hoist both copies into one shared header.)
-template<typename V> __device__ __forceinline__ V* pointer(int64_t word) {
-    return reinterpret_cast<V*>(uintptr_t(word));
-}
-
-__device__ __forceinline__ void latch(const int64_t* descriptor, int bits, int layer) {
-    int* status = pointer<int>(descriptor[meta::STATUS]);
-    if (status == nullptr) {
-        asm volatile("trap;");  // A live descriptor lost its required failure owner.
-        return;
-    }
-    atomicOr(status, bits);
-    atomicCAS(status + 1, -2, layer);
-}
-
-__device__ __forceinline__ bool active(const int64_t* descriptor, int layer) {
-    const int* live = pointer<const int>(descriptor[meta::LIVE_ROWS]);
-    if (live == nullptr) return false;
-    const int count = *live;
-    const int64_t within = descriptor[meta::ROW_OFFSET];
-    if (count < 0 || within < 0) {
-        latch(descriptor, 32, layer);
-        return false;
-    }
-    if (within >= count) return false;
-    const int64_t* generations = pointer<const int64_t>(descriptor[meta::GENERATIONS]);
-    if (generations == nullptr || descriptor[meta::EXPECTED_SLOT] < 0 || descriptor[meta::EXPECTED_OWNER] < 0
-            || generations[0] != descriptor[meta::EXPECTED_SLOT] || generations[1] != descriptor[meta::EXPECTED_OWNER]) {
-        latch(descriptor, 32, layer);
-        return false;
-    }
-    return true;
-}
-
-__device__ __forceinline__ bool domain(const int64_t* descriptor, const int* selections, int rows, int width,
-                                      int row, int page_tokens, int layer, int& end, int& count, const int*& ids) {
-    if (!active(descriptor, layer)) return false;
-    const int* position = pointer<const int>(descriptor[meta::POSITION]);
-    const int64_t logical = descriptor[meta::LOGICAL_CAPACITY], physical = descriptor[meta::PHYSICAL_ROWS],
-                  pages = descriptor[meta::PAGE_COUNT], owner = descriptor[meta::INDEXER_OWNER];
-    // Q8 tiles move 16-byte payload/scale rows; misaligned storage is a descriptor fault.
+// Shared owner domain plus this family's envelope: Q8 tiles move 16-byte
+// payload/scale rows (misaligned storage is a descriptor fault) and the
+// compacted list holds at most MAX_SELECTED keys (never truncated).
+__device__ __forceinline__ bool tc_domain(const int64_t* descriptor, const int* selections, int rows, int width,
+                                         int row, int page_tokens, int layer, int& end, int& count, const int*& ids) {
+    if (!domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids)) return false;
     const uint64_t alignment = uint64_t(descriptor[meta::K_DATA] | descriptor[meta::V_DATA]
                                         | descriptor[meta::K_METADATA] | descriptor[meta::V_METADATA]) & 15u;
-    if (position == nullptr || logical <= 0 || logical > INT32_MAX || physical < 0 || physical > INT32_MAX
-            || pages != (logical + page_tokens - 1) / page_tokens || owner < 0 || owner >= 8
-            || descriptor[meta::PAGE_OFFSETS] == 0 || alignment
-            || (physical && (descriptor[meta::K_DATA] == 0 || descriptor[meta::V_DATA] == 0
-                             || descriptor[meta::K_METADATA] == 0 || descriptor[meta::V_METADATA] == 0))) {
+    if (alignment || count > MAX_SELECTED) {
         latch(descriptor, 32, layer);
         return false;
-    }
-    const int64_t visible = int64_t(*position) + descriptor[meta::ROW_OFFSET] + 1;
-    if (visible <= 0 || visible > logical) {
-        latch(descriptor, 32, layer);
-        return false;
-    }
-    const int* selection = selections + (owner * rows + row) * int64_t(width);
-    const int sparse = selection[width - 1], selected = selection[width - 2];
-    if ((sparse != 0 && sparse != 1) || selected < 0 || selected > width - 2) {
-        latch(descriptor, 32, layer);
-        return false;
-    }
-    end = int(visible);
-    count = sparse ? selected : end;
-    ids = sparse ? selection : nullptr;
-    if (count > MAX_SELECTED) {
-        latch(descriptor, 32, layer);
-        return false;  // Same fixed envelope as the RN family; never truncate.
     }
     return true;
-}
-
-__device__ __forceinline__ int64_t local_row(const int64_t* descriptor, int logical, int end, int page_tokens, int layer) {
-    if (logical < 0 || logical >= end) return -1;
-    const int page = logical / page_tokens, within = logical % page_tokens;
-    if (page >= descriptor[meta::PAGE_COUNT]) {
-        latch(descriptor, 32, layer);
-        return -2;
-    }
-    const int64_t offset = pointer<const int64_t>(descriptor[meta::PAGE_OFFSETS])[page];
-    if (offset == -1) return -1;
-    if (offset < -1 || descriptor[meta::PHYSICAL_ROWS] <= within || offset > descriptor[meta::PHYSICAL_ROWS] - 1 - within) {
-        latch(descriptor, 32, layer);
-        return -2;
-    }
-    return offset + within;
-}
-
-// RN family exponential: exp(x) = ex2(RN(x * log2e)), x <= 0.
-__device__ __forceinline__ float rn_exp(float x, const int64_t* descriptor, int layer) {
-    if (x == -CUDART_INF_F) return 0.f;
-    if (!isfinite(x) || x > 0.f) {
-        latch(descriptor, 16, layer);
-        return 0.f;  // Defined failed-row scratch; status forbids accepted publication.
-    }
-    if (x == 0.f) return 1.f;
-    const float exponent = __fmul_rn(x, __int_as_float(0x3fb8aa3b));
-    float result;
-    asm volatile("ex2.approx.f32 %0, %1;" : "=f"(result) : "f"(exponent));
-    return result;
 }
 
 // ---- Volta tensor-core primitives -------------------------------------------
@@ -197,7 +110,6 @@ struct Prefetch {
     uint4 k[4], v[4], scale;
 };
 
-template<bool Values>
 __device__ __forceinline__ void fetch(Prefetch& f, const Shared& S, int first, int n, const int8_t* kdata,
                                       const int8_t* vdata, const __half* kmeta, const __half* vmeta) {
     const int t = threadIdx.x;
@@ -207,29 +119,26 @@ __device__ __forceinline__ void fetch(Prefetch& f, const Shared& S, int first, i
         const int at = first + (t >> 4) + 8 * s;
         f.k[s] = at < n ? __ldg(reinterpret_cast<const uint4*>(kdata + int64_t(S.list[at]) * DIM) + (t & 15)) : zero;
     }
-    if (Values) {
-        #pragma unroll
-        for (int e = 0; e < 4; ++e) {
-            const int at = first + 4 * (t >> 4) + e;
-            f.v[e] = at < n ? __ldg(reinterpret_cast<const uint4*>(vdata + int64_t(S.list[at]) * DIM) + (t & 15)) : zero;
-        }
+    #pragma unroll
+    for (int e = 0; e < 4; ++e) {
+        const int at = first + 4 * (t >> 4) + e;
+        f.v[e] = at < n ? __ldg(reinterpret_cast<const uint4*>(vdata + int64_t(S.list[at]) * DIM) + (t & 15)) : zero;
     }
     f.scale = zero;
-    if (t < (Values ? 2 * CH : CH)) {
+    if (t < 2 * CH) {
         const int at = first + (t & (CH - 1));
         if (at < n)
             f.scale = __ldg(reinterpret_cast<const uint4*>((t < CH ? kmeta : vmeta) + int64_t(S.list[at]) * 8));
     }
 }
 
-template<bool Values>
 __device__ __forceinline__ void stage(Shared& S, const Prefetch& f, int first, int n,
                                       const int64_t* descriptor, int layer) {
     const int t = threadIdx.x;
     #pragma unroll
     for (int s = 0; s < 4; ++s)
         *reinterpret_cast<uint4*>(&S.k[(t >> 4) + 8 * s][(t & 15) * 16]) = f.k[s];
-    if (Values) {
+    {
         // Thread owns keys 4cq..4cq+3 x dims 16dg..16dg+15: 4x4 byte transposes.
         const int cq = t >> 4, dg = t & 15;
         const uint32_t* in0 = reinterpret_cast<const uint32_t*>(&f.v[0]);
@@ -252,7 +161,7 @@ __device__ __forceinline__ void stage(Shared& S, const Prefetch& f, int first, i
         for (int part = 0; part < 4; ++part)
             destination[part ^ swizzle] = make_uint4(out[4 * part], out[4 * part + 1], out[4 * part + 2], out[4 * part + 3]);
     }
-    if (t < (Values ? 2 * CH : CH)) {
+    if (t < 2 * CH) {
         const int cell = t & (CH - 1);
         const bool key = t < CH, live = first + cell < n;
         const __half* scale = reinterpret_cast<const __half*>(&f.scale);
@@ -270,29 +179,26 @@ __device__ __forceinline__ void stage(Shared& S, const Prefetch& f, int first, i
     }
 }
 
-template<int MODE>
-__global__ void __launch_bounds__(THREADS, 2) tc_kernel(const __half* queries, const int* selections,
-        const int64_t* table, const float* global, float* statistics, float* values, int rows, int width,
+__global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries, const int* selections,
+        const int64_t* table, float* statistics, float* values, int rows, int width,
         int group, int page_tokens, const int* layer_word) {
-    constexpr bool Values = MODE != STATS;
     __shared__ Shared S;
     __shared__ int end, count, enabled, invalid;
     __shared__ const int* ids;
     const int row = blockIdx.x, t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int layer = *layer_word;
     const int64_t* descriptor = table + int64_t(row) * WORDS;
-    float* row_values = Values ? values + int64_t(row) * HEADS * DIM : nullptr;
-    if (MODE != VALUES && t < HEADS * 2)
+    float* row_values = values + int64_t(row) * HEADS * DIM;
+    if (t < HEADS * 2)
         statistics[int64_t(row) * HEADS * 2 + t] = t % 2 ? 0.f : -CUDART_INF_F;
     if (!t) {
         invalid = 0;
-        enabled = domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
+        enabled = tc_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     }
     __syncthreads();
     if (!enabled) {
-        if (Values)
-            for (int i = t; i < HEADS * DIM / 4; i += THREADS)
-                reinterpret_cast<float4*>(row_values)[i] = make_float4(0.f, 0.f, 0.f, 0.f);
+        for (int i = t; i < HEADS * DIM / 4; i += THREADS)
+            reinterpret_cast<float4*>(row_values)[i] = make_float4(0.f, 0.f, 0.f, 0.f);
         return;  // CTA-uniform.
     }
 
@@ -337,9 +243,8 @@ __global__ void __launch_bounds__(THREADS, 2) tc_kernel(const __half* queries, c
         __syncthreads();
     }
     if (invalid) {  // Uniform: read after the final barrier above.
-        if (Values)
-            for (int i = t; i < HEADS * DIM / 4; i += THREADS)
-                reinterpret_cast<float4*>(row_values)[i] = make_float4(0.f, 0.f, 0.f, 0.f);
+        for (int i = t; i < HEADS * DIM / 4; i += THREADS)
+            reinterpret_cast<float4*>(row_values)[i] = make_float4(0.f, 0.f, 0.f, 0.f);
         return;
     }
 
@@ -352,14 +257,7 @@ __global__ void __launch_bounds__(THREADS, 2) tc_kernel(const __half* queries, c
     const int crow = (lane & 1) + 4 * (lane >> 4), ccol = lane & 2;
     // Softmax ownership: row r = t / 8 (rows 12..15 = warp 3, padding), 4 keys per lane.
     const int srow = t >> 3, sub = t & 7;
-    float m = -CUDART_INF_F, l = 0.f, gm = 0.f, gl = 1.f;
-    bool global_ok = true;
-    if (MODE == VALUES && srow < HEADS) {
-        gm = global[(int64_t(row) * HEADS + srow) * 2];
-        gl = global[(int64_t(row) * HEADS + srow) * 2 + 1];
-        global_ok = isfinite(gm) && isfinite(gl) && gl > 0.f;
-        if (!global_ok && !sub && n) latch(descriptor, 16, layer);
-    }
+    float m = -CUDART_INF_F, l = 0.f;
     float acc[2][2][8];
     #pragma unroll
     for (int rb = 0; rb < 2; ++rb)
@@ -369,12 +267,12 @@ __global__ void __launch_bounds__(THREADS, 2) tc_kernel(const __half* queries, c
             for (int i = 0; i < 8; ++i) acc[rb][nt][i] = 0.f;
 
     Prefetch f;
-    if (n) fetch<Values>(f, S, 0, n, kdata, vdata, kmeta, vmeta);
+    if (n) fetch(f, S, 0, n, kdata, vdata, kmeta, vmeta);
     for (int first = 0; first < n; first += CH) {
         __syncthreads();  // Previous chunk's readers have retired every tile.
-        stage<Values>(S, f, first, n, descriptor, layer);
+        stage(S, f, first, n, descriptor, layer);
         __syncthreads();
-        if (first + CH < n) fetch<Values>(f, S, first + CH, n, kdata, vdata, kmeta, vmeta);
+        if (first + CH < n) fetch(f, S, first + CH, n, kdata, vdata, kmeta, vmeta);
 
         // Scores: warp w = keys 8w..8w+7, QP = dims 64qp..64qp+63 (two scale groups,
         // separate chains), k order rotated by qp for conflict-free shared loads.
@@ -424,12 +322,7 @@ __global__ void __launch_bounds__(THREADS, 2) tc_kernel(const __half* queries, c
                 const int key = sub * 4 + j;
                 x[j] = key < live ? S.s[srow][key] : -CUDART_INF_F;
             }
-            if (MODE == VALUES) {
-                #pragma unroll
-                for (int j = 0; j < 4; ++j)
-                    S.s[srow][sub * 4 + j] = global_ok && x[j] != -CUDART_INF_F
-                        ? __fdiv_rn(rn_exp(__fsub_rn(x[j], gm), descriptor, layer), gl) : 0.f;
-            } else {
+            {
                 float tile = fmaxf(fmaxf(x[0], x[1]), fmaxf(x[2], x[3]));
                 #pragma unroll
                 for (int o = 1; o < 8; o <<= 1) tile = fmaxf(tile, __shfl_xor_sync(FULL, tile, o));
@@ -450,18 +343,16 @@ __global__ void __launch_bounds__(THREADS, 2) tc_kernel(const __half* queries, c
                     l = __fadd_rn(__fmul_rn(l, alpha), mass);
                 }
                 m = next;
-                if (MODE == FUSED) {
-                    #pragma unroll
-                    for (int j = 0; j < 4; ++j) S.s[srow][sub * 4 + j] = e[j];
-                    if (!sub) S.alpha[srow] = alpha;
-                }
+                #pragma unroll
+                for (int j = 0; j < 4; ++j) S.s[srow][sub * 4 + j] = e[j];
+                if (!sub) S.alpha[srow] = alpha;
             }
-        } else if (Values) {
+        } else {
             #pragma unroll
             for (int j = 0; j < 4; ++j) S.s[srow][sub * 4 + j] = 0.f;
         }
 
-        if (Values) {
+        {
             __syncthreads();
             // P.V: warp w = dims 64w.., QP = 16 dims 64w+16qp.. (one scale group g),
             // k = 32 keys in steps of 4. P carries V scale * 2^(14-e), exact range.
@@ -509,11 +400,7 @@ __global__ void __launch_bounds__(THREADS, 2) tc_kernel(const __half* queries, c
             }
             #pragma unroll
             for (int rb = 0; rb < 2; ++rb) {
-                float scale[2] = {1.f, 1.f};
-                if (MODE == FUSED) {
-                    scale[0] = S.alpha[rb * 8 + crow];
-                    scale[1] = S.alpha[rb * 8 + crow + 2];
-                }
+                const float scale[2] = {S.alpha[rb * 8 + crow], S.alpha[rb * 8 + crow + 2]};
                 #pragma unroll
                 for (int nt = 0; nt < 2; ++nt)
                     #pragma unroll
@@ -523,11 +410,11 @@ __global__ void __launch_bounds__(THREADS, 2) tc_kernel(const __half* queries, c
         }
     }
 
-    if (MODE != VALUES && warp < 3 && !sub) {
+    if (warp < 3 && !sub) {
         statistics[(int64_t(row) * HEADS + srow) * 2] = m;
         statistics[(int64_t(row) * HEADS + srow) * 2 + 1] = l;
     }
-    if (Values) {
+    {
         bool bad = false;
         #pragma unroll
         for (int rb = 0; rb < 2; ++rb)
@@ -581,25 +468,14 @@ __global__ void weight_kernel(const float* unnormalized, const float* local, con
 }
 }  // namespace
 
-void sm70_prompt_attention_cuda(int mode, const T& queries, const T& selected, const T& table, const T& global,
-                                T& statistics, T& values, int group, int page_tokens, const T& layer) {
+void sm70_prompt_attention_fused_cuda(const T& queries, const T& selected, const T& table, T& statistics,
+                                      T& unnormalized, int group, int page_tokens, const T& layer) {
     const int rows = int(queries.size(1));
     if (!rows) return;
-    const auto stream = at::cuda::getCurrentCUDAStream();
-    const __half* q = reinterpret_cast<const __half*>(queries.data_ptr());
-    const int width = int(selected.size(2));
-    float* stats = mode == VALUES ? nullptr : statistics.data_ptr<float>();
-    float* out = mode == STATS ? nullptr : values.data_ptr<float>();
-    const float* merged = mode == VALUES ? global.data_ptr<float>() : nullptr;
-    if (mode == STATS)
-        tc_kernel<STATS><<<rows, THREADS, 0, stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
-            merged, stats, out, rows, width, group, page_tokens, layer.data_ptr<int>());
-    else if (mode == VALUES)
-        tc_kernel<VALUES><<<rows, THREADS, 0, stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
-            merged, stats, out, rows, width, group, page_tokens, layer.data_ptr<int>());
-    else
-        tc_kernel<FUSED><<<rows, THREADS, 0, stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
-            merged, stats, out, rows, width, group, page_tokens, layer.data_ptr<int>());
+    fused_kernel<<<rows, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        reinterpret_cast<const __half*>(queries.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+        statistics.data_ptr<float>(), unnormalized.data_ptr<float>(), rows,
+        int(selected.size(2)), group, page_tokens, layer.data_ptr<int>());
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

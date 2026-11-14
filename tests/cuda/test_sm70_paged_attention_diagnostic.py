@@ -33,6 +33,7 @@ def source_identity():
     names = [__file__, oracle.__file__, operator.__file__,
              root / "src/tensorfold/cuda/sm70/paged_attention.cu",
              root / "src/tensorfold/cuda/sm70/paged_attention_descriptor.cuh",
+             root / "src/tensorfold/cuda/sm70/paged_attention_device.cuh",
              root / "src/tensorfold/cuda/sm70/packed_kv_decode.cuh",
              root / "src/tensorfold/cuda/sm70/paged_attention_bindings.cpp",
              root / "src/tensorfold/cuda/sm70/paged_attention_descriptor.py",

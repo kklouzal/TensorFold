@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import glob
+import hashlib
 import importlib.util
 import os
 import re
@@ -413,7 +414,9 @@ class NCCL:
 
                 capacity = configured_capacity()
             if capacity:
-                self.small_gather = open_small_gather(self.store, key, rank, world, capacity)
+                # Every rank holds the same unique ID, and each open draws a new one.
+                nonce = hashlib.sha256(bytes(uid.internal)).hexdigest()[:32]
+                self.small_gather = open_small_gather(self.store, key, rank, world, capacity, nonce)
                 self.small_gather_bytes = capacity if self.small_gather is not None else 0
                 if self.small_gather is None and rank == 0:
                     print("[tensorfold] small all-gather unavailable for this cohort's topology; using NCCL", flush=True)

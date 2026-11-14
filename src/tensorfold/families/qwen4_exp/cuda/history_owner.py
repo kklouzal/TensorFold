@@ -24,8 +24,14 @@ from tensorfold.cuda.sm70.attention_backends import (OWNER_FAMILY as ATEN_KERNEL
                                                     FLASH_OWNER_FAMILY as FLASH_KERNEL_FAMILY)
 
 
-# Component-only, process-fixed trial. Ordinary serving retains the incumbent.
+# Process-fixed prefill local attention for RN-family Q8 owners: "fused-v1"
+# (default) selects the tensor-core prompt_attention phases; "0" keeps the RN
+# per-row local phases.
 _PROMPT_ATTENTION = os.environ.get("TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION", "fused-v1")
+if _PROMPT_ATTENTION not in ("0", "fused-v1"):
+    raise ValueError("TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION requires 0 or fused-v1")
+
+# Component-only, process-fixed trial. Ordinary serving retains the incumbent.
 _PRIVATE_EMPTY_PREFIX = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX", "inherit")
 if _PRIVATE_EMPTY_PREFIX not in ("inherit", "cpu-empty-v1"):
     raise ValueError("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX requires inherit or cpu-empty-v1")
@@ -1116,14 +1122,13 @@ class OwnerBuffers:
             return self.aten_tiles.run(self, rows, views, OWNER_MAX_KEYS)
         bits, codec = self.native_pair.key.bits, self.native_pair.key.codec
         common = {"group_start": self.rank // 4 * 4, "page_tokens": self.native_page_tokens, "layer": self.native_layer}
-        if (self.native_kernel_family == native.RN_KERNEL_FAMILY and self.prefill and (bits, codec) == (8, 0)
-                and _PROMPT_ATTENTION != "0"):
+        if self._prompt_attention_selected():
             # Prefill rows: tensor-core local attention over only this rank's selected pages (one pass
             # for (m, l) and the unnormalized local sum), then the unchanged stats/values collectives.
             from tensorfold.cuda.sm70 import prompt_attention as prompt
 
-            stats_words = 8 * rows * 12 * 2
-            unnormalized = self.partials.reshape(-1)[stats_words:stats_words + rows * 12 * 256].view(rows, 12, 256)
+            first, count = self._prompt_unnormalized_extent(rows)
+            unnormalized = self.partials.reshape(-1)[first:first + count].view(rows, 12, 256)
             prompt.fused_local(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
                                unnormalized, group_start=common["group_start"],
                                page_tokens=self.native_page_tokens, layer=self.native_layer)
@@ -1416,7 +1421,33 @@ class OwnerBuffers:
         self.native_comm = None
         self.closed, self._base_ready = True, False
 
+    def _prompt_attention_selected(self):
+        """Prefill RN-family owners over ordinary Q8 pages use the tensor-core local phases."""
+        from .owner_execution import RN_KERNEL_FAMILY
+        pair = self.native_pair
+        return (_PROMPT_ATTENTION == "fused-v1" and self.prefill and self.native_kernel_family == RN_KERNEL_FAMILY
+                and pair is not None and (pair.key.bits, pair.key.codec) == (8, 0))
+
+    @staticmethod
+    def _prompt_unnormalized_extent(rows):
+        """FP32 (first element, count) of the unnormalized local sum inside ``partials``.
+
+        It follows the gathered statistics prefix [8, rows, 12, 2], which the
+        statistics gather writes while the sum is live, and is consumed by
+        ``weight_values`` before the value gather overwrites ``partials``.
+        """
+        return 8 * rows * 12 * 2, rows * 12 * 256
+
     def native_record(self):
+        prompt_record = {}
+        if self._prompt_attention_selected():
+            from tensorfold.cuda.sm70.prompt_attention import FAMILY as PROMPT_FAMILY
+            first, count = self._prompt_unnormalized_extent(self.rows)
+            prompt_record = {"kernel_family": PROMPT_FAMILY, "merge_family": self.native_kernel_family,
+                             "prompt_unnormalized_borrow_offset_bytes": first * 4,
+                             "prompt_unnormalized_borrow_bytes": count * 4,
+                             "prompt_unnormalized_additional_device_bytes": 0,
+                             "prompt_unnormalized_source": "PV receive slab owner.partials after gathered statistics"}
         return {"prepared": self.descriptors is not None,
                 **({'owned_q8_window_preparation': {
                     'policy': ('owned-q8-window-grid-preparation-v1' if self.owned_q8_window_dispatch == 'grid-v1'
@@ -1433,7 +1464,8 @@ class OwnerBuffers:
                 **({"kernel_family": self.native_kernel_family, "rn_heads_per_block": self.native_heads_per_block,
                     "rn_probability_borrow_bytes": self.rows * 12 * 2051 * 2,
                     "rn_probability_additional_device_bytes": 0, "rn_probability_source": "PV receive slab owner.partials"}
-                   if self.native_heads_per_block is not None else {}),
+                   if self.native_heads_per_block is not None and not prompt_record else {}),
+                **prompt_record,
                 "attention_members": list(range(self.rank // 4 * 4, self.rank // 4 * 4 + 4))
                                      if self.native_comm is not None and self.native_comm.world == 4 else list(range(8)),
                 "native_rows": list(self.native_buckets),

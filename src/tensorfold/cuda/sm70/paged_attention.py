@@ -80,8 +80,8 @@ def extension():
     prepared = _native()
     root = Path(__file__).parent
     sources = [root / "paged_attention_bindings.cpp", root / "paged_attention.cu"]
-    headers = [root / name for name in ("paged_attention_descriptor.cuh", "packed_kv_decode.cuh",
-                                       "rotorquant_q4.cuh", "rotorquant_q4_tables.cuh")]
+    headers = [root / name for name in ("paged_attention_descriptor.cuh", "paged_attention_device.cuh",
+                                       "packed_kv_decode.cuh", "rotorquant_q4.cuh", "rotorquant_q4_tables.cuh")]
     digest = hashlib.sha256(prepared.__name__.encode())
     for source in [*sources, *headers]:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
@@ -190,7 +190,8 @@ def rn_partial_values(probability, selections, row_table, out, *, page_tokens, l
 def rn_preparation_identity():
     """Startup source policy, not proof of actual PTX/SASS or quality bounds."""
     root = Path(__file__).parent
-    sources = (root / "paged_attention.py", root / "paged_attention_bindings.cpp", root / "paged_attention.cu")
+    sources = (root / "paged_attention.py", root / "paged_attention_bindings.cpp", root / "paged_attention.cu",
+               root / "paged_attention_device.cuh")
     return {"kernel_family": RN_KERNEL_FAMILY, "graph_family": RN_GRAPH_FAMILY,
             "algorithm": RN_ALGORITHM, "log2e_bits": RN_LOG2E_BITS, "max_selected": RN_MAX_SELECTED,
             "max_dense": RN_MAX_SELECTED, "qk_heads_per_block_choices": [1, 4, 12], "pv_columns_per_block": 64,

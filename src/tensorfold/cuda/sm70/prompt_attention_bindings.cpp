@@ -1,4 +1,4 @@
-// Bounded caller-owned buffers for the SM70 tensor-core prompt attention local phases.
+// Bounded caller-owned buffers for the SM70 tensor-core prompt attention fused local phase and weighting.
 #include <torch/extension.h>
 #include <ATen/MemoryOverlap.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -8,7 +8,7 @@
 
 using T = at::Tensor;
 
-void sm70_prompt_attention_cuda(int, const T&, const T&, const T&, const T&, T&, T&, int, int, const T&);
+void sm70_prompt_attention_fused_cuda(const T&, const T&, const T&, T&, T&, int, int, const T&);
 void sm70_prompt_attention_weight_cuda(const T&, const T&, const T&, const T&, T&, const T&);
 
 namespace {
@@ -71,33 +71,6 @@ void distinct(const T& output, std::initializer_list<const T*> inputs) {
 }
 }  // namespace
 
-void local_statistics(const T& queries, const T& selected, const T& table, T output,
-                      int group, int page_tokens, const T& layer, int bits, int codec) {
-    const int rows = rows_of(queries);
-    controls(table, queries, rows, group, page_tokens, layer);
-    selections(selected, queries, rows);
-    statistics(output, queries, rows);
-    q8(bits, codec);
-    distinct(output, {&queries, &selected, &table, &layer});
-    c10::cuda::CUDAGuard guard(queries.device());
-    T unused;
-    sm70_prompt_attention_cuda(0, queries, selected, table, unused, output, unused, group, page_tokens, layer);
-}
-
-void partial_values(const T& queries, const T& selected, const T& table, const T& global, T output,
-                    int group, int page_tokens, const T& layer, int bits, int codec) {
-    const int rows = rows_of(queries);
-    controls(table, queries, rows, group, page_tokens, layer);
-    selections(selected, queries, rows);
-    statistics(global, queries, rows);
-    values(output, queries, rows, "partial values");
-    q8(bits, codec);
-    distinct(output, {&queries, &selected, &table, &global, &layer});
-    c10::cuda::CUDAGuard guard(queries.device());
-    T unused;
-    sm70_prompt_attention_cuda(1, queries, selected, table, global, unused, output, group, page_tokens, layer);
-}
-
 void fused_local(const T& queries, const T& selected, const T& table, T stats, T unnormalized,
                  int group, int page_tokens, const T& layer, int bits, int codec) {
     const int rows = rows_of(queries);
@@ -109,8 +82,7 @@ void fused_local(const T& queries, const T& selected, const T& table, T stats, T
     distinct(stats, {&queries, &selected, &table, &layer, &unnormalized});
     distinct(unnormalized, {&queries, &selected, &table, &layer});
     c10::cuda::CUDAGuard guard(queries.device());
-    T unused;
-    sm70_prompt_attention_cuda(2, queries, selected, table, unused, stats, unnormalized, group, page_tokens, layer);
+    sm70_prompt_attention_fused_cuda(queries, selected, table, stats, unnormalized, group, page_tokens, layer);
 }
 
 void weight_values(const T& unnormalized, const T& local, const T& global, const T& table, T output, const T& layer) {
@@ -137,8 +109,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.attr("descriptor_abi") = tf_sm70_paged::ABI_VERSION;
     module.attr("descriptor_words") = int(tf_sm70_paged::WORD_COUNT);
     module.attr("descriptor_schema_id") = tf_sm70_paged::SCHEMA_ID;
-    module.def("local_statistics", &local_statistics);
-    module.def("partial_values", &partial_values);
     module.def("fused_local", &fused_local);
     module.def("weight_values", &weight_values);
 }
