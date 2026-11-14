@@ -232,7 +232,7 @@ peer control passing. Scoped Ruff is clear. Neither these checks nor the
 zero-payload prototypes qualify actual CUDA headers or an installed new app.
 The first accounting checkpoint omitted traversal scratch concurrent with all
 materialized roles. D13 found that peak; it is corrected and retained as a
-historical defect. The current45 readback controls include all-live role and
+historical defect. The45-control readback batch includes all-live role and
 forecast walks plus scratch exhaustion; unrelated passed controls are reused.
 An isolated cold-first test then exposed setup estimates depending on prior
 same-class split-dictionary history. The prototype now uses an unshared complete
