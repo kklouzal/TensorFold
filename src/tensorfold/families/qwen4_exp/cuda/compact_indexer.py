@@ -9,7 +9,7 @@ members; completed raw keys are never a context-growing history.
 
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 
 import torch
@@ -62,7 +62,9 @@ def issue_text_indexer_coordinates(state, position, cache_start, rows, *, max_ro
             or rows > state.capacity - cache_start or type(state.rope_delta) is not int):
         raise ValueError("text coordinate issuance requires its bounded admitted host row/context recipe")
     stage = None if buffers is None else getattr(buffers, 'compact_indexer_stage', None)
-    if stage is not None and getattr(stage, 'host_coordinates', False):
+    if stage is not None:
+        # A frame owner stages the recipe: paid pinned rows, or direct storage
+        # writes when every window of its frame is text (Staging.write_text).
         return _TextCoordinates(stage, position, state.coordinate_profile_identity,
             state.slot_generation, state.media_identity, cache_start, rows, state.rope_delta)
     values = np.arange(cache_start, cache_start + rows, dtype=np.int64) + state.rope_delta
@@ -187,23 +189,32 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
     try:
         stage.begin(mtp=mtp)
         text = any(type(transfer.source) is _TextCoordinates for transfer in transfers)
-        if text:
+        direct = (text and not stage.host_coordinates
+                  and all(type(transfer.source) is _TextCoordinates for transfer in transfers))
+        host = text and stage.host_coordinates
+        if host:
             transfers = stage.issue_host(transfers, position, candidate, mtp=mtp)
+        elif text and not direct:
+            transfers = _issue_device_text(transfers, max_rows=buffers.rows, device=storage.device)
         with ExitStack() as readers:
             for owner in owners:
                 readers.enter_context(owner.staging.reading(mtp=owner.mtp))
-            readers.enter_context(stage.reading(mtp=mtp, borrowers=tuple(transfer.source.tensor for transfer in transfers)))
-            primary = secondary = None
-            try:
-                issued = copy_coordinate_batch(transfers, owner=candidate, max_rows=buffers.rows)
-            except BaseException as error:  # noqa: BLE001 - retire issued DMA even on cancellation
-                primary = error
-            if text:
+            readers.enter_context(stage.reading(mtp=mtp, borrowers=() if direct else
+                                                tuple(transfer.source.tensor for transfer in transfers)))
+            if direct:
+                issued = stage.write_text(transfers, position, candidate)
+            else:
+                primary = secondary = None
                 try:
-                    stage.host_submitted(mtp=mtp)
-                except BaseException as error:  # noqa: BLE001 - preserve primary and uncertain DMA ownership
-                    secondary = error
-            raise_failures(primary, () if secondary is None else (secondary,))
+                    issued = copy_coordinate_batch(transfers, owner=candidate, max_rows=buffers.rows)
+                except BaseException as error:  # noqa: BLE001 - retire issued DMA even on cancellation
+                    primary = error
+                if host:
+                    try:
+                        stage.host_submitted(mtp=mtp)
+                    except BaseException as error:  # noqa: BLE001 - preserve primary and uncertain DMA ownership
+                        secondary = error
+                raise_failures(primary, () if secondary is None else (secondary,))
             object.__setattr__(candidate, "issued", tuple((*record, value) for record, value in zip(metadata, issued)))
             object.__setattr__(candidate, "signature", _signature(storage))
             values = storage[:count]
@@ -238,6 +249,45 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
     object.__setattr__(candidate, "active", True)
     setattr(buffers, prefix + "_indexer_coordinates", values)
     setattr(buffers, prefix + "_indexer_frame", candidate)
+
+
+def _text_bounds(recipe, transfer, position, staging):
+    """Validate one text recipe against its frame transfer; its inclusive coordinate bounds."""
+    from .position_coordinates import _context, _position
+    from ..position_profile import MAX_POSITION
+
+    if (recipe.staging is not staging or recipe.position is not position
+            or recipe.rows != transfer.row_count or recipe.start != transfer.row_start
+            or (recipe.profile, recipe.generation, recipe.media) !=
+               (transfer.profile_identity, transfer.generation, transfer.media_identity)):
+        raise ValueError('text coordinate recipe differs from its current admitted frame')
+    _context(recipe.profile, recipe.generation, recipe.media)
+    low, high = recipe.start + recipe.delta, recipe.start + recipe.delta + recipe.rows - 1
+    _position(position).validate_span(recipe.start, recipe.rows,
+        coordinate_min=(low,) * 3, coordinate_max=(high,) * 3)
+    # The validated signed-int31 domain proves conversion before writes.
+    if not 0 <= low <= high < MAX_POSITION:
+        raise ValueError('text coordinates exceed signed-int31 device positions')
+    return low, high
+
+
+def _issue_device_text(transfers, *, max_rows, device):
+    """A frame mixing text recipes with other issued windows: issue each recipe's
+    actual rows as an immutable device source for the frame's packed copy."""
+    import numpy as np
+    from .position_coordinates import issue_coordinates
+
+    result = []
+    for transfer in transfers:
+        recipe = transfer.source
+        if type(recipe) is _TextCoordinates:
+            values = np.arange(recipe.start, recipe.start + recipe.rows, dtype=np.int64) + recipe.delta
+            source = issue_coordinates(np.repeat(values[:, None], 3, axis=1), position=recipe.position,
+                profile_identity=recipe.profile, generation=recipe.generation, media_identity=recipe.media,
+                row_start=recipe.start, max_rows=max_rows, device=device)
+            transfer = replace(transfer, source=source)
+        result.append(transfer)
+    return tuple(result)
 
 
 def _validate_frame(buffers, segments, *, mtp):
@@ -449,7 +499,7 @@ class Staging:
         Dedicated host completion protects pinned writes; stream dependencies
         on the raw/coordinate arena alone cannot authorize CPU reuse.
         """
-        from .position_coordinates import _context, _issued, _position
+        from .position_coordinates import _issued
 
         self.host_wait(mtp=mtp)
         host = self._host[int(mtp)]
@@ -466,19 +516,7 @@ class Staging:
             if type(recipe) is not _TextCoordinates:
                 pending.append((transfer, None, None, None))
                 continue
-            if (recipe.staging is not self or recipe.position is not position
-                    or recipe.rows != transfer.row_count or recipe.start != transfer.row_start
-                    or (recipe.profile, recipe.generation, recipe.media) !=
-                       (transfer.profile_identity, transfer.generation, transfer.media_identity)):
-                raise ValueError('text coordinate recipe differs from its current admitted frame')
-            _context(recipe.profile, recipe.generation, recipe.media)
-            low, high = recipe.start + recipe.delta, recipe.start + recipe.delta + recipe.rows - 1
-            _position(position).validate_span(recipe.start, recipe.rows,
-                coordinate_min=(low,) * 3, coordinate_max=(high,) * 3)
-            # The validated signed-int31 domain proves conversion before writes.
-            from ..position_profile import MAX_POSITION
-            if not 0 <= low <= high < MAX_POSITION:
-                raise ValueError('text coordinates exceed signed-int31 device positions')
+            low, high = _text_bounds(recipe, transfer, position, self)
             offset = transfer.destination.storage_offset() // 3
             source = host[offset:offset + recipe.rows]
             if source.shape != (recipe.rows, 3):
@@ -496,6 +534,40 @@ class Staging:
                 transfer = replace(transfer, source=issued, source_owner=owner)
             result.append(transfer)
         return tuple(result)
+
+    def write_text(self, transfers, position, owner):
+        """Write an all-text frame's known rows straight into its storage windows.
+
+        Every recipe is validated (as ``issue_host`` does) before any write. Each
+        window's rows leave a fresh pageable host array through one stream-ordered
+        asynchronous copy: the CUDA runtime stages pageable host bytes before the
+        call returns, so no host buffer outlives this call and no stream wait is
+        needed. Proofs bind each written storage slice after all writes (their
+        shared storage version is final), with the recipe's exact bounds and the
+        frame owner, exactly as a packed copy publishes its destination proofs.
+        """
+        import numpy as np
+        from .position_coordinates import _issued
+        from tensorfold.cuda.sm70.tensor_mutation import require_mutation_budget
+
+        bounds = []
+        for transfer in transfers:
+            destination = transfer.destination
+            bounds.append(_text_bounds(transfer.source, transfer, position, self))
+            if (destination.shape != (transfer.row_count, 3) or destination.dtype != torch.int64
+                    or not destination.is_contiguous()):
+                raise ValueError('text coordinate destination must match the final row/integer layout')
+            require_mutation_budget(destination, len(transfers))
+        tracked = torch.is_inference_mode_enabled()
+        with torch.inference_mode(False) if tracked else nullcontext():
+            for transfer, (low, _high) in zip(transfers, bounds):
+                values = np.arange(low, low + transfer.row_count, dtype=np.int64)
+                rows = torch.from_numpy(np.repeat(values[:, None], 3, axis=1))
+                transfer.destination.copy_(rows, non_blocking=transfer.destination.is_cuda)
+        return tuple(_issued(transfer.destination, position, profile_identity=transfer.source.profile,
+                             generation=transfer.source.generation, media_identity=transfer.source.media,
+                             row_start=transfer.row_start, minimum=(low,) * 3, maximum=(high,) * 3, owner=owner)
+                     for transfer, (low, high) in zip(transfers, bounds))
 
     @property
     def pinned_host_bytes(self):

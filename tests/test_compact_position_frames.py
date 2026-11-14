@@ -461,3 +461,48 @@ def test_actual_target_and_mtp_host_staging_preserve_ids_and_boundary_coordinate
     assert b.ids.tolist()==[5,6,9,10] and actual==segments
     expected=[[7,21,31]if boundary else [7]*3,[8]*3,[12]*3,[13]*3]
     assert result.tolist()==expected
+
+
+@pytest.mark.parametrize("mtp", [False, True])
+def test_unpaid_text_frame_writes_storage_directly_and_binds_final_proofs(monkeypatch, mtp):
+    from tensorfold.families.qwen4_exp.cuda import position_coordinates as issuer
+
+    b, p, states, _windows, segments = prepared(mtp=mtp)
+    monkeypatch.setattr(issuer, "issue_coordinates",
+                        lambda *a, **kw: pytest.fail("an all-text frame issued intermediate device rows"))
+    validate = validate_mtp_indexer_frame if mtp else validate_target_indexer_frame
+    prefix = "mtp" if mtp else "target"
+    old = None
+    for turn in range(2):
+        states[0].rope_delta = turn
+        stage_text_indexer_frame(b, segments, mtp=mtp)
+        values = validate(b, segments)
+        assert values.tolist() == [[7 + turn] * 3, [8 + turn] * 3, [12] * 3, [13] * 3]
+        frame = getattr(b, prefix + "_indexer_frame")
+        assert frame is not old and (old is None or not old.active)
+        for st, first, last, start, issued in frame.issued:
+            assert issued.tensor._version == values._version
+            issued.proof.validate(issued.tensor, p, profile_identity=st.coordinate_profile_identity,
+                generation=st.slot_generation, media_identity=st.media_identity,
+                row_start=start, row_count=last - first, owner=frame)
+        old = frame
+    getattr(b, prefix + "_indexer_coordinate_storage")[0, 0] = 99
+    with pytest.raises(ValueError, match="stale, mutated"):
+        validate(b, segments)
+
+
+def test_unpaid_text_mixed_with_issued_media_window_keeps_actual_coordinates():
+    b, p, states, windows, segments = prepared()
+    recipe = issue_text_indexer_coordinates(states[1], p, 12, 2, max_rows=b.rows, buffers=b)
+    stage_target_indexer_frame(b, segments, (windows[0], CoordinateWindow(2, 4, recipe, p)))
+    assert validate_target_indexer_frame(b, segments).tolist() == [[7, 21, 31], [8, 22, 32], [12] * 3, [13] * 3]
+
+
+def test_invalid_unpaid_text_recipe_stops_before_any_frame_write():
+    b, _p, states, _, segments = prepared()
+    before = b.target_indexer_coordinate_storage._version
+    states[1].rope_delta = -1000
+    with pytest.raises(ValueError):
+        stage_text_indexer_frame(b, segments)
+    assert b.target_indexer_coordinate_storage._version == before
+    assert b.target_indexer_frame is None
