@@ -22,7 +22,11 @@ from tensorfold.file_io import FileStreams
 
 
 _ISSUED = object()
-_READ_BYTES = 1 << 20
+# Startup content passes hash multi-GiB checkpoints while the same process runs
+# Python-heavy setup. hashlib/os.read release the GIL per call; small blocks
+# make every block wait for the GIL again (measured on SM70 hosts: 1 MiB blocks
+# fall from ~0.4 to ~0.06 GB/s beside a busy thread, 64 MiB blocks keep ~0.3).
+_READ_BYTES = 64 << 20
 
 
 def canonical_runtime_json(value: Any, *, max_bytes=1 << 20, max_depth=64, max_nodes=65536) -> str:
@@ -240,6 +244,7 @@ def _hash_descriptor(fd, size):
             raise ValueError("model execution input was truncated during hashing")
         hasher.update(block)
         read += len(block)
+        block = None  # Retire this block before the next read allocates its successor.
     if os.read(fd, 1):
         raise ValueError("model execution input grew during hashing")
     return hasher.hexdigest(), read
@@ -440,8 +445,8 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
     checks. Reuse requires identical runtime/input/stat identities and a caller
     guarantee that inputs have stayed immutable since the prior capture.
     ``hash_workers=2`` authorizes two startup-only managed threads and at most
-    two descriptor owners. Each unchanged reader retains up to two 1MiB byte
-    blocks across os.read assignment (4MiB total, 2MiB extra versus serial).
+    two descriptor owners. Each reader retains one 64MiB byte block at a time
+    (128MiB total, 64MiB extra versus serial).
     Thread/allocator RSS and I/O contention require actual owner measurements;
     these payload extents are not physical process-memory bounds.
     """

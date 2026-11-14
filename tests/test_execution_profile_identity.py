@@ -80,7 +80,9 @@ def test_exact_content_pass_is_opt_in_then_current_process_authority_reuses_hash
     assert first["verified_input_files"] == len(files)
     assert first["content_passes"] == 1
     assert first["identity"]["draft"] == "none"
-    assert engine._execution_input_authority.bytes_read > sum(p.stat().st_size for p in files.values())
+    # The binding's own content pass (started with the preload identities) read every input byte.
+    assert first["bytes_read_this_binding"] > sum(p.stat().st_size for p in files.values())
+    assert first["hashes_reused_this_binding"] == 0
     second = identity.bind_execution_manifest(engine, path, rebind=True)
     assert second["identity"] == first["identity"]
     assert second["content_passes"] == second["bytes_read_this_binding"] == 0

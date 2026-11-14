@@ -607,7 +607,7 @@ class FlashNextEngine:
             from .owner_preparation import parse_preparation
 
             self.model_dir = Path(model_dir)
-            manifest = begin_execution_manifest(self, execution_profile_manifest)
+            manifest = begin_execution_manifest(self, execution_profile_manifest, rank=rank)
             owner_specification = parse_preparation(manifest.get("preparation"))
             preparation_manifest_sha = self._execution_preload["manifest"]
             if owner_specification is not None:

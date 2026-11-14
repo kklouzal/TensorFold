@@ -1791,6 +1791,18 @@ prefill on the setup above (seeds 601/602/611, 1024-row chunks) rose from
 1468/1517/1502 to 1686/1782/1842 tok/s at 4K tokens and from 2054/2101/2094 to
 2505/2514/2533 tok/s at 16K; the C1 greedy oracle is unchanged.
 
+SM70 GGUF startup (2026-11-14, SC117 IQ3_S TP8/ETP4 MTP4 with an execution-profile
+manifest, 8x V100, warm page cache) fell from about 445 s to 296 s to ready. Pre-weight
+setup went from 58.8 s to 17.1 s (the GGUF header is parsed from memory and reused in
+process only after an exact header-byte and size check; the Triton library digest runs
+outside the shared driver lock; cheaper header audit). Weight loading went from 39.3 s to
+17.1 s (pinned page-cache staging with byte-exact row selection on the device). The 79-key
+exact-graph capture now takes about 60 s (n-gram prime constants are cached instead of
+recomputed per State reset). With `--execution-profile-manifest`, rank 0's checkpoint
+content pass starts with startup and overlaps loading and capture; its SHA-256 of the 55 GB
+shard remains the critical path. Nothing is cached on disk; golden output identical; C1
+decode and 4000-token prefill unchanged or faster.
+
 SM70 decode-size (<=32-row) grouped MoE down projections now take the staged
 integer path on the rank-sliced ETP4 banks that SC117 actually holds. A 160-column
 slice of a 640-column IQ4_NL or Q2_0 row is 90 or 54 bytes, a stride that is 2

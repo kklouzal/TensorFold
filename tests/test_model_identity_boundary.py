@@ -88,7 +88,9 @@ class IdentityControls(unittest.TestCase):
             value = real_read(fd, count)
             reads.append((count, len(value)))
             return value
-        with patch('tensorfold.engine.model_identity.os.read', side_effect=read):
+        # A 1 MiB block keeps this small fixture multichunk; production blocks are larger.
+        with patch('tensorfold.engine.model_identity.os.read', side_effect=read), \
+                patch('tensorfold.engine.model_identity._READ_BYTES', 1 << 20):
             receipt = self.capture({'empty': empty, 'large': large},
                                    max_file_bytes=len(raw), max_total_bytes=len(raw))
         self.assertEqual(receipt.bytes_read, len(raw))

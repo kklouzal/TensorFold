@@ -9,7 +9,13 @@ This implementation's distributed verification contract is one Linux host and
 container, with immutable shared read-only checkpoint and qualification mounts.
 Every rank must observe the same host identity and the same opened checkpoint
 file device, inode, size, modification time and change time. Rank zero streams
-the complete content once, using a bounded 1 MiB read buffer. All ranks verify
+the complete content once, reading 64 MiB blocks (one live block per hashing
+worker, two workers). It starts this checkpoint/metadata/draft content pass on a
+startup thread as soon as the preload identities are captured, so the multi-GiB
+SHA-256 overlaps weight loading and graph capture; binding joins it, rechecks
+every opened identity and declared digest, and hashes only the source and
+loaded-library inputs observed at binding. The receipt still reports one content
+pass with all bytes read by this binding. All ranks verify
 their opened identities again before publication. A different mount, changed
 file, incomplete inventory or mismatched checksum rejects the manifest.
 Normal serving on other hardware does not acquire this optional restriction.

@@ -19,6 +19,7 @@ import platform
 import selectors
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -242,7 +243,41 @@ def artifact_files(engine):
     return result, checkpoint
 
 
-def begin_execution_manifest(engine, path):
+class _ContentPass:
+    """Rank 0's initial checkpoint content pass, started when the inputs are first identified.
+
+    Hashing the multi-GiB GGUF shards is sequential SHA-256 per file (minutes on
+    one core) and only rank 0 performs it, after warmup. Starting the identical
+    capture here overlaps it with weight loading and graph capture. Binding
+    consumes it once: it joins the thread, re-verifies every stat identity
+    against its own opened inputs and the declared digests, and hashes only the
+    inputs observed later. The startup-only thread holds at most the capture's
+    own two hashing workers/descriptors and always finishes its bounded pass.
+    """
+
+    def __init__(self, files):
+        self.files = dict(files)
+        self.result = self.error = None
+        self.thread = threading.Thread(target=self._run, name="tensorfold-content-pass", daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        try:
+            sizes = [os.stat(path).st_size for path in self.files.values()]
+            self.result = capture_model_identity(self.files, runtime_identity={"schema": SCHEMA, "version": VERSION},
+                authorize=lambda name, path: path.resolve(strict=True),
+                max_file_bytes=max(sizes), max_total_bytes=sum(sizes), hash_workers=2)
+        except BaseException as error:
+            self.error = error
+
+    def take(self):
+        self.thread.join()
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def begin_execution_manifest(engine, path, *, rank=None):
     """Capture opened input identities before the loader can observe weights."""
     manifest = _json(Path(path).expanduser().resolve(strict=True))
     _manifest_schema(manifest)
@@ -250,6 +285,11 @@ def begin_execution_manifest(engine, path):
     stats = _opened_stats(files)
     _expected_files(manifest, files, stats)
     engine._execution_preload = {"manifest": digest(manifest), "artifacts": stats}
+    # Only rank 0 performs the initial binding's content pass; a DFlash2
+    # pairing binds its own issued authority instead.
+    rank = getattr(engine, "rank", 0) if rank is None else rank
+    engine._execution_content_pass = (_ContentPass(files) if rank == 0
+        and getattr(engine, "dflash2_model_dir", None) is None else None)
     return manifest
 
 
@@ -1155,8 +1195,18 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
             authorities, contents, read, reused = _capture_reusing(capture_files, union, expected, prior)
             authority = authorities[0]
         else:
-            authority, contents = _capture(capture_files, union, expected)
-            authorities, read, reused = (authority,), authority.bytes_read, 0
+            started = getattr(engine, "_execution_content_pass", None)
+            engine._execution_content_pass = None
+            if started is None:
+                authority, contents = _capture(capture_files, union, expected)
+                authorities, read, reused = (authority,), authority.bytes_read, 0
+            else:
+                # This binding's own content pass, begun with the preload identities.
+                early = started.take()
+                authorities, contents, read, reused = _capture_reusing(capture_files, union, expected, (early,))
+                if reused != len(early.files):
+                    raise ValueError("startup content pass differs from the bound execution input closure")
+                authority, read, reused = authorities[0], read + early.bytes_read, 0
         context.update(authority=authority, authorities=authorities)
         return {"contents": contents, "bytes_read": read, "hashes_reused": reused}
 
