@@ -715,14 +715,21 @@ class Cache:
         count = length % RATIO
         result, coords = torch.zeros_like(self.raw), torch.zeros_like(self.coordinates)
         if count:
+            # Tail rows 0..count-1 hold positions first..length-1 (first is a
+            # RATIO multiple): those before ``start`` come from the protected
+            # tail at the same row, later ones from the span's raw rows.
+            first = length - count
+            old = max(0, min(count, start - first))
+            fresh = first + old - start
+            if fresh + count - old > len(raw):
+                raise ValueError("compact cut extends past its captured raw rows")
             with self.reading((protected, protected_coordinates, raw, coordinates), span=active_span):
-                positions = torch.arange(length - count, length, device=self.raw.device, dtype=torch.int64)
-                old = positions < start
-                source = (positions - start).clamp(0, max(0, len(raw) - 1))
-                values = torch.where(old[:, None], protected.index_select(0, positions % RATIO), raw.index_select(0, source))
-                axes = torch.where(old[:, None], protected_coordinates.index_select(0, positions % RATIO), coordinates.index_select(0, source))
-                result.index_copy_(0, positions % RATIO, values)
-                coords.index_copy_(0, positions % RATIO, axes)
+                if old:
+                    result[:old].copy_(protected[:old])
+                    coords[:old].copy_(protected_coordinates[:old])
+                if old < count:
+                    result[old:count].copy_(raw[fresh:fresh + count - old])
+                    coords[old:count].copy_(coordinates[fresh:fresh + count - old])
         return result, coords
 
     def pool(self, pooled, weight, inv_freq, eps, sections, scale):
