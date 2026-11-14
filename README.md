@@ -2571,9 +2571,12 @@ collectives, model quality and matched performance qualification remain pending.
 
 The private preparation selector `prepared_router: owned-serial-router-v1`
 (`v100_onecat_campaign.py inputs --prepared-router owned-serial-router-v1`)
-adds a separate resident serial-logit trial for decode and MTP with2–256 rows.
+adds a separate resident serial-logit trial for decode and MTP with 1–256 rows
+(up to eight rows per CTA share one register copy of the FP32 router tile; each
+row keeps the serial operation sequence, so logits are bitwise the per-row
+reference at every row count, `tests/cuda/test_sm70_router_rows.py`).
 It binds the actual model weights and role buffers before serving, retains the
-R1 serial reference and prefill path, and leaves the existing process selector,
+prefill path, and leaves the existing process selector,
 top-k and expert weights unchanged. The Source28 native component gate passed
 its exact logits/routing and sampling-packet checks; full-model quality,
 the separate graph failure and matched performance remain pending. See the

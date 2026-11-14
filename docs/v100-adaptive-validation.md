@@ -2537,8 +2537,9 @@ its default omits this field. This requires an explicit unqualified trial in
 the private TP8/ETP4 HC4/reference-profile NONE/MTP region. It does not set
 `_NATIVE_LOGITS`, the import-time environment selector, top-k or expert weights.
 Existing `native-serial-v1` policy guards and its native0..32-row entry remain
-unchanged; the new prepared entry separately admits2..256 rows. R0/R1 retain
-the incumbent serial reference and prefill retains `independent_rows=False`.
+unchanged; the new prepared entry separately admits 1..256 rows (R1 included: the
+multi-row kernel keeps each row's serial operation sequence). Empty work retains
+the incumbent and prefill retains `independent_rows=False`.
 
 The operator accepts Half inputs of width2560, unchanged512-byte-aligned
 contiguous F32 router weights513x2560 and disjoint F32 output rows513. Target
