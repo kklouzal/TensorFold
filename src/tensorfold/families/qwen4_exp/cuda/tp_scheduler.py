@@ -90,6 +90,14 @@ class TensorParallelDecoder:
 
     def __init__(self, decoder, engine):
         self.decoder, self.engine, self.comm = decoder, engine, decoder.w.comm
+        # Same-host peers exchange commands/ACKs through FIFOs (control_pipes);
+        # the communicator declares the capability, other peers keep the Store.
+        self.pipes = None
+        if getattr(self.comm, "control_pipes", False) and self.comm.world > 1:
+            from tensorfold.cuda.control_pipes import ControlPipes
+
+            self.pipes = ControlPipes(self.comm.store, self.comm.rank, self.comm.world,
+                                      timeout_s=timedelta(hours=1).total_seconds())
         self.sequence = 0
         self.next_wire = 0
         self.requests = {}
@@ -663,10 +671,9 @@ class TensorParallelDecoder:
         if self.admission_policy == "fifo":
             record.append([self.admission_policy, [(wire, stream.admission_ticket, stream.principal)
                                                   for wire, stream in self.requests.items()]])
-        digest = hashlib.sha256()
-        for chunk in json.JSONEncoder(sort_keys=True, separators=(",", ":")).iterencode(record):
-            digest.update(chunk.encode("utf-8"))
-        return digest.hexdigest()
+        # One C-encoder pass (iterencode is the pure-Python encoder, ~0.5 ms per
+        # round at C1); the record is a bounded per-request summary.
+        return hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def _dispatch(self, body, source=None):
         self.prefix_operation = body["sequence"]
@@ -907,28 +914,37 @@ class TensorParallelDecoder:
             reserve_rpc(source, len(text))  # Before sequence/publication, never a partial RPC grow.
         self.sequence += 1
         try:
-            messages = [self._key(sequence, peer) for peer in range(1, self.comm.world)]
-            set_many = getattr(self.comm.store, "multi_set", None)
-            if callable(set_many):
-                set_many(messages, [text] * len(messages))
-            else:
-                for key in messages:
-                    self.comm.store.set(key, text)
+            piped = () if self.pipes is None else self.pipes.piped()
+            stored = [peer for peer in range(1, self.comm.world) if peer not in piped]
+            if piped:
+                self.pipes.send(text.encode("ascii"))  # bounded_json emits ASCII only
+            messages = [self._key(sequence, peer) for peer in stored]
+            if messages:
+                set_many = getattr(self.comm.store, "multi_set", None)
+                if callable(set_many):
+                    set_many(messages, [text] * len(messages))
+                else:
+                    for key in messages:
+                        self.comm.store.set(key, text)
             text = None
             result, error, status = self._execute(body, source)
             if self.failure is not None:
                 raise RuntimeError("tensor-parallel control publication failed; retire all rank owners") from self.failure
-            keys = [self._ack_key(sequence, peer) for peer in range(1, self.comm.world)]
-            self.comm.store.wait(keys, timedelta(hours=1))
-            get_many = getattr(self.comm.store, "multi_get", None)
-            payloads = get_many(keys) if callable(get_many) else [self.comm.store.get(key) for key in keys]
-            if len(payloads) != len(keys):
-                raise RuntimeError("tensor-parallel scheduler received an incomplete acknowledgment batch")
-            for peer, (key, payload) in enumerate(zip(keys, payloads), 1):
+            acknowledged = list(zip(sorted(piped), self.pipes.acknowledgments())) if piped else []
+            keys = [self._ack_key(sequence, peer) for peer in stored]
+            if keys:
+                self.comm.store.wait(keys, timedelta(hours=1))
+                get_many = getattr(self.comm.store, "multi_get", None)
+                payloads = get_many(keys) if callable(get_many) else [self.comm.store.get(key) for key in keys]
+                if len(payloads) != len(keys):
+                    raise RuntimeError("tensor-parallel scheduler received an incomplete acknowledgment batch")
+                acknowledged += zip(stored, payloads, keys)
+            for peer, payload, *key in acknowledged:
                 if type(payload) is not bytes or len(payload) > MAX_MESSAGE_BYTES:
                     raise ValueError("tensor-parallel acknowledgment requires at most 96 MiB of bytes")
                 remote = json.loads(payload)
-                self.comm.store.delete_key(key)
+                if key:
+                    self.comm.store.delete_key(key[0])
                 if remote != status:
                     failure = RuntimeError(f"tensor-parallel scheduler diverged on rank {peer}: {remote} != {status}")
                     if isinstance(source, BaseException):
@@ -1141,9 +1157,27 @@ class TensorParallelDecoder:
         if self.comm.rank != 0:
             raise RuntimeError("only rank zero sends scheduler shutdown")
         _check_protocol_advance(self.sequence, "stop")
+        text = json.dumps({"kind": "stop", "abort": self.failure is not None or self.engine._abort_comm})
+        piped = ()
+        if self.pipes is not None:
+            if self.pipes.broken:
+                # An interrupted frame leaves the stream unparseable: closing
+                # it makes every piped peer read end-of-file and abort.
+                self.pipes.close()
+                self.engine._abort_comm = True
+            else:
+                from tensorfold.cuda.control_pipes import PeerDeparted
+
+                piped = self.pipes.piped()
+                try:
+                    self.pipes.send(text.encode("ascii"))
+                except PeerDeparted:
+                    # A departed peer needs no stop; the others read end-of-file.
+                    self.pipes.close()
+                    self.engine._abort_comm = True
         for peer in range(1, self.comm.world):
-            self.comm.store.set(self._key(self.sequence, peer), json.dumps(
-                {"kind": "stop", "abort": self.failure is not None or self.engine._abort_comm}))
+            if peer not in piped:
+                self.comm.store.set(self._key(self.sequence, peer), text)
         self.sequence += 1
 
     def receive(self):
@@ -1151,6 +1185,8 @@ class TensorParallelDecoder:
         from tensorfold.cuda.store_wait import timed_out
 
         _check_protocol_advance(self.sequence, "receive")
+        if self.pipes is not None and self.pipes.joined:
+            return self._receive_piped()
         key = self._key(self.sequence, self.comm.rank)
         while True:
             try:
@@ -1175,13 +1211,36 @@ class TensorParallelDecoder:
             return None
         return body
 
+    def _receive_piped(self):
+        while True:
+            try:
+                payload = self.pipes.receive(timedelta(hours=1).total_seconds())
+                break
+            except TimeoutError:
+                with self.engine._lifecycle:
+                    if self.engine._closing:
+                        return None
+        if payload is None:  # The leader's process closed its command end.
+            self.engine._abort_comm = True
+            return None
+        body = json.loads(payload)
+        body["sequence"] = self.sequence
+        self.sequence += 1
+        if body["kind"] == "stop":
+            self.engine._abort_comm = self.engine._abort_comm or bool(body.get("abort"))
+            return None
+        return body
+
     def apply(self, body):
         from tensorfold.cuda.rank_protocol import bounded_json
 
         try:
             _result, error, status = self._execute(body)
-            self.comm.store.set(self._ack_key(body["sequence"], self.comm.rank),
-                                bounded_json(status, separators=(",", ":")))
+            acknowledgment = bounded_json(status, separators=(",", ":"))
+            if self.pipes is not None and self.pipes.joined:
+                self.pipes.acknowledge(acknowledgment.encode("ascii"))
+            else:
+                self.comm.store.set(self._ack_key(body["sequence"], self.comm.rank), acknowledgment)
         except BaseException as failure:
             self._poison_control(failure)
             raise

@@ -286,6 +286,10 @@ def _library() -> ctypes.CDLL:
 
 
 class NCCL:
+    # Peers that share this rank's host may exchange scheduler control frames
+    # through FIFOs rendezvoused over ``store`` (tensorfold.cuda.control_pipes).
+    control_pipes = True
+
     def __init__(self) -> None:
         """An empty valid owner; journal it before calling one-shot ``open``."""
         self._close_lock = threading.Lock()

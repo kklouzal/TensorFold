@@ -314,8 +314,12 @@ def native_sync_fixed_payload(*, world, ram, slots, fd_limit=None, host_bytes=0)
     # _round has one alternative decode boundary plus <=slots joined prompts.
     # _pass has only joins. All these keys retire before the enclosing ACK.
     prefix_keys = (slots + 1) * peers
-    rpc_keys = 2 * peers  # Command and ACK, both publisher-retired in FIFO.
-    bootstrap_keys = 2 * world + 2  # UID, backend W, loading W, endpoint nonce.
+    # Command and ACK, both publisher-retired in FIFO; peers joined through
+    # control pipes use none, so this bounds the Store-protocol peers.
+    rpc_keys = 2 * peers
+    # UID, backend W, loading W, endpoint nonce, and the control-pipe
+    # rendezvous (directory + W-1 peer answers, retired before the first command).
+    bootstrap_keys = 3 * world + 2
     actor_keys = 8 * world  # <=4W outcomes plus two retirement waves of2W.
     worker_keys = 8 * world if ram else 0
     data_keys = world * world + world if ram else 0  # ACKs and open chunks.

@@ -50,8 +50,8 @@ class BatchStore(Store):
 class Decoder:
     """Stateful multi-request stand-in with deliberately different private rank choices."""
 
-    def __init__(self, rank, world, store):
-        self.w = SimpleNamespace(comm=SimpleNamespace(rank=rank, world=world, store=store))
+    def __init__(self, rank, world, store, *, pipes=False):
+        self.w = SimpleNamespace(comm=SimpleNamespace(rank=rank, world=world, store=store, control_pipes=pipes))
         self.rank = rank
         self.prefill_rows = 16
         self.points = lambda prompt: [rank + 1]
@@ -98,10 +98,12 @@ class Decoder:
         return streams
 
 
-@pytest.fixture(params=[Store, BatchStore], ids=["individual-store-operations", "batched-store-operations"])
+@pytest.fixture(params=[(Store, False), (BatchStore, False), (Store, True)],
+                ids=["individual-store-operations", "batched-store-operations", "control-pipes"])
 def cohort(request):
-    store = request.param()
-    peers = [TensorParallelDecoder(Decoder(rank, 8, store), SimpleNamespace(
+    kind, pipes = request.param
+    store = kind()
+    peers = [TensorParallelDecoder(Decoder(rank, 8, store, pipes=pipes), SimpleNamespace(
         _abort_comm=False, _closing=False, _lifecycle=threading.Condition())) for rank in range(8)]
     errors = []
 
@@ -799,3 +801,71 @@ def test_managed_noroom_preserves_raw_frames_for_existing_error_outcome_certifie
     assert sorted(rank for rank, value in observed) == list(range(8))
     assert all(peer._operation_error is None for peer in cohort)
     root.finish([first, second])
+
+
+def _piped_pair():
+    store = BatchStore()
+    leader_engine = SimpleNamespace(_abort_comm=False)
+    peer_engine = SimpleNamespace(_abort_comm=False, _closing=False, _lifecycle=threading.Condition())
+    leader = TensorParallelDecoder(Decoder(0, 2, store, pipes=True), leader_engine)
+    peer = TensorParallelDecoder(Decoder(1, 2, store, pipes=True), peer_engine)
+    return store, leader, peer
+
+
+def test_control_pipes_carry_operations_without_store_keys():
+    store, leader, peer = _piped_pair()
+    assert leader.pipes.piped() == {1} and peer.pipes.joined
+    assert store.data == {}  # Rendezvous keys retire before the first command.
+    thread = threading.Thread(target=lambda: peer.apply(peer.receive()))
+    thread.start()
+    leader.round()
+    thread.join(5)
+    assert not thread.is_alive() and store.data == {}
+    leader.shutdown()
+    assert peer.receive() is None and not peer.engine._abort_comm
+
+
+def test_departed_leader_releases_a_waiting_piped_peer():
+    _store, leader, peer = _piped_pair()
+    leader.pipes.piped()
+    leader.pipes.close()
+    assert peer.receive() is None and peer.engine._abort_comm
+
+
+def test_departed_piped_peer_poisons_the_leader_instead_of_waiting():
+    _store, leader, peer = _piped_pair()
+    leader.pipes.piped()
+    peer.pipes.close()
+    with pytest.raises(Exception):
+        leader.round()
+    assert leader.failure is not None and leader.engine._abort_comm
+    leader.shutdown()  # A broken channel closes instead of writing a stop frame.
+
+
+def test_peer_without_the_leader_directory_keeps_the_store_protocol(monkeypatch):
+    from tensorfold.cuda import control_pipes
+
+    store = BatchStore()
+    leader = TensorParallelDecoder(Decoder(0, 2, store, pipes=True), SimpleNamespace(_abort_comm=False))
+    real_open = control_pipes.os.open
+    monkeypatch.setattr(control_pipes.os, "open", lambda path, *args: (_ for _ in ()).throw(
+        FileNotFoundError(2, "other host")) if "command-" in str(path) else real_open(path, *args))
+    peer = TensorParallelDecoder(Decoder(1, 2, store, pipes=True), SimpleNamespace(
+        _abort_comm=False, _closing=False, _lifecycle=threading.Condition()))
+    monkeypatch.undo()
+    assert not peer.pipes.joined and leader.pipes.piped() == frozenset()
+    thread = threading.Thread(target=lambda: peer.apply(peer.receive()))
+    thread.start()
+    leader.round()
+    thread.join(5)
+    assert not thread.is_alive()
+    leader.shutdown()
+    assert peer.receive() is None and store.data == {}
+
+
+def test_stop_after_a_piped_peer_departed_closes_instead_of_raising():
+    _store, leader, peer = _piped_pair()
+    leader.pipes.piped()
+    peer.pipes.close()
+    leader.shutdown()
+    assert leader.engine._abort_comm
