@@ -5,6 +5,7 @@ GGUF/ggml format: https://github.com/ggml-org/ggml (MIT).
 """
 
 from dataclasses import dataclass
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -299,6 +300,26 @@ class GGUFCheckpoint:
         if metadata.get("split.tensors.count", len(tensors)) != len(tensors) or not tensors:
             raise ValueError("GGUF checkpoint tensor count is incomplete")
         return cls(MappingProxyType(metadata), MappingProxyType(tensors), paths)
+
+
+def header_sha256(path):
+    """SHA-256 of one shard's exact parsed header bytes: metadata and tensor directory.
+
+    This binds the container's architecture, tokenizer, quantization types,
+    shapes and payload offsets without reading tensor payloads. The parsed
+    inventory reuses the in-process cache under its exact header-byte check.
+    """
+    path = Path(path).resolve(strict=True)
+    checkpoint = GGUFCheckpoint.open(path)
+    with _OPENED_LOCK:
+        cached = _OPENED.get(checkpoint.paths)
+    if cached is not None and cached[1] is checkpoint and path in checkpoint.paths:
+        header = cached[0][checkpoint.paths.index(path)][1]
+    else:
+        consumed = []
+        _shard(path, consumed)
+        header = consumed[0][1]
+    return hashlib.sha256(header).hexdigest()
 
 
 def resolve_gguf(path):

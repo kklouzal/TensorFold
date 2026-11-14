@@ -37,11 +37,12 @@ def inputs(flags=(False, False, False)):
     client.update(schema=window.CLIENT_SCHEMA, teacher_scope=window.SCOPE, prepared_execution=copy.deepcopy(prep),
         numerical_trial=copy.deepcopy(trial), numa=copy.deepcopy(numa), mtp_confidence=0.7)
     profile = {'schema': 'tensorfold.execution-profile-manifest', 'version': 1, 'preparation': copy.deepcopy(prep),
-        'artifacts': {**{'target/'+Path(item['path']).name: {'size': item['bytes'], 'sha256': item['sha256']}
+        # GGUF containers are header-identified; the engine checks the digest against the opened file.
+        'artifacts': {**{'target/'+Path(item['path']).name: {'size': item['bytes'], 'header_sha256': '3'*64}
                          for item in operation['model_assets']},
                       **{'metadata/'+Path(item['path']).name: {'size': item['bytes'], 'sha256': item['sha256']}
                          for item in operation['frontend_assets'] if Path(item['path']).name != 'ready.json'},
-                      'draft/'+Path(mtp['path']).name: {'size': mtp['bytes'], 'sha256': mtp['sha256']}}}
+                      'draft/'+Path(mtp['path']).name: {'size': mtp['bytes'], 'header_sha256': '3'*64}}}
     return operation, plan, client, profile
 
 
@@ -380,6 +381,7 @@ def test_complete_runtime_artifact_correspondence_rejects_stale_or_partial_profi
     if fault == 'size':
         profile['artifacts'][name]['size'] += 1
     elif fault == 'sha256':
+        # Metadata: a stale content digest. GGUF: a full-content digest the header contract does not admit.
         profile['artifacts'][name]['sha256'] = '0'*64
     elif fault == 'missing':
         del profile['artifacts'][name]

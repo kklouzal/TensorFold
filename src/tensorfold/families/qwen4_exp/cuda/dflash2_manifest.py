@@ -132,8 +132,11 @@ def preflight_pairing(manifest, *, files, target_config, draft_plan, context, kv
     """
     prepared = prepare_pairing_inputs(manifest, files=files, target_config=target_config, draft_plan=draft_plan,
                                       context=context, kv_identity=kv_identity, target_numerics=target_numerics)
+    from .execution_identity import header_identified
+
     capture = capture_model_identity if capture is None else capture
-    authority = capture(files, runtime_identity={"schema": SCHEMA, "version": VERSION},
+    authority = capture({name: path for name, path in files.items() if not header_identified(name)},
+        runtime_identity={"schema": SCHEMA, "version": VERSION},
         authorize=authorize, max_file_bytes=max_file_bytes, max_total_bytes=max_total_bytes,
         reuse=reuse, reuse_is_immutable=reuse is not None)
     return bind_pairing(prepared, authority)
@@ -177,11 +180,13 @@ def prepare_pairing_inputs(manifest, *, files, target_config, draft_plan, contex
     if (tokenizer_name not in metadata_names or section["target_config_file"] not in metadata_names
             or Path(files[section["draft_weights"]]).resolve() != draft_plan.path.resolve()):
         raise ValueError("DFlash2 actual tokenizer or draft file is outside the declared input role")
+    from .execution_identity import check_artifact_record
+
     for name, item in expected.items():
-        if (not isinstance(item, dict) or set(item) != {"size", "sha256"} or type(item["size"]) is not int
-                or item["size"] < 0 or not isinstance(item["sha256"], str) or len(item["sha256"]) != 64
-                or any(char not in "0123456789abcdef" for char in item["sha256"])):
-            raise ValueError("DFlash2 artifact size/SHA256 is invalid: " + name)
+        try:
+            check_artifact_record(name, item)
+        except ValueError:
+            raise ValueError("DFlash2 artifact size/SHA256 is invalid: " + name) from None
     if expected[tokenizer_name]["size"] > MAX_HEADER_BYTES:
         raise ValueError("DFlash2 tokenizer metadata exceeds the existing checkpoint metadata bound")
     if expected[section["draft_config"]]["sha256"] != draft_plan.config_sha256:
@@ -213,12 +218,16 @@ def bind_pairing(prepared, authority):
     tokenizer_name = section["tokenizer_file"]
     roles = ("target_artifacts", "metadata_artifacts", "draft_config", "draft_weights", "target_config_file", "tokenizer_file")
     declared = {key: value for key, value in section.items() if key not in roles}
+    from .execution_identity import header_identified
+
+    # Header-identified GGUF containers are verified at execution-profile binding.
+    hashed = {name: path for name, path in files.items() if not header_identified(name)}
     if (authority.runtime_json != canonical_runtime_json({"schema": SCHEMA, "version": VERSION})
             or {item.logical_name: item.path for item in authority.files} !=
-                {name: str(path.resolve(strict=True)) for name, path in files.items()}):
+                {name: str(path.resolve(strict=True)) for name, path in hashed.items()}):
         raise ValueError("DFlash2 content authority differs from its actual runtime/input closure")
     observed = {item.logical_name: {"size": item.size, "sha256": item.sha256} for item in authority.files}
-    if observed != expected:
+    if observed != {name: expected[name] for name in hashed}:
         raise ValueError("DFlash2 actual content differs from the named pinned closure")
     actual_config = DFlash2Config.from_dict(read_metadata_json(files[section["draft_config"]]), block=draft_plan.config.block)
     if actual_config != draft_plan.config:

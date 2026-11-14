@@ -2,7 +2,6 @@
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-import hashlib
 import json
 import threading
 from types import SimpleNamespace
@@ -36,13 +35,14 @@ def packet(tmp_path):
     (metadata / "tokenizer_config.json").write_text(json.dumps({"chat_template": "{{messages}}"}))
     tokenizer = Tokenizer(models.WordLevel({"token" + str(i): i for i in range(c.vocab)}, unk_token="token0"))
     tokenizer.save(str(metadata / "tokenizer.json"))
-    target_file = tmp_path / "tiny.gguf"
-    target_file.write_bytes(b"fixture content only; not a model or a quality result")
+    from gguf_fixture import tiny_model
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import artifact_record
+
+    target_file = tiny_model(tmp_path / "tiny.gguf")
     files = {"target/tiny.gguf": target_file,
              "draft/config.json": draft / "config.json", "draft/model.safetensors": draft / "model.safetensors",
              **{"metadata/" + path.name: path for path in metadata.iterdir()}}
-    artifacts = {name: {"size": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-                 for name, path in files.items()}
+    artifacts = {name: artifact_record(name, path) for name, path in files.items()}
     numerics = {"execution_dtype": "float16", "recurrent_state_dtype": "float32",
                 "rope": RopeParameters.from_config(target).metadata()}
     contract = pairing_contract(c, target_config=target,
@@ -70,7 +70,8 @@ def test_preload_closure_contract_and_issued_authority_reuse_never_grant_eligibi
     assert "requires-independent-live" in binding.receipt()["eligible_execution"]
     binding.verify_unchanged()
     reused = preflight_pairing(manifest, reuse=binding.authority, **params)
-    assert reused.authority.bytes_read == 0 and reused.authority.hashes_reused == len(params["files"])
+    # The GGUF target is header-identified, never content-hashed.
+    assert reused.authority.bytes_read == 0 and reused.authority.hashes_reused == len(params["files"]) - 1
     assert reused.identity == binding.identity
     weights = load_shard(binding.plan, device="cpu", source_authority=binding.authority, chunk_bytes=4096)
     assert weights.nbytes == binding.plan.resident_bytes
@@ -172,7 +173,8 @@ def test_cpu_pairing_phase_refusal_cannot_strand_other_ranks_in_content_exchange
             else:
                 assert all(not hasattr(engine, "_owned_expert_plan") for engine in engines)
             assert all(plan.source_sha256 == manifest["artifacts"]["draft/model.safetensors"]["sha256"] for plan in plans)
-            assert sum(engine._dflash_pairing.authority.bytes_read for engine in engines) == params["max_total_bytes"]
+            hashed = sum(record["size"] for name, record in manifest["artifacts"].items() if not name.endswith(".gguf"))
+            assert sum(engine._dflash_pairing.authority.bytes_read for engine in engines) == hashed
             assert all(engine._dflash_pairing.authority.bytes_read == 0 for engine in engines[1:])
             repeated = [workers.submit(prepare, engine) for engine in engines]
             assert all(task.result(timeout=10).source_sha256 == plans[0].source_sha256 for task in repeated)

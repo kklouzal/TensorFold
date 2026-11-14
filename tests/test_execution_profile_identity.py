@@ -29,9 +29,11 @@ def test_backend_tuning_inputs_bind_without_exposing_values_or_process_labels():
 
 @pytest.fixture
 def packet(tmp_path, monkeypatch):
-    files = {}
-    for name, value in {"target/weights.gguf": b"all original checkpoint bytes",
-                        "metadata/config.json": b"{}", "metadata/tokenizer.json": b"{}",
+    from gguf_fixture import tiny_model
+
+    (tmp_path / "target").mkdir()
+    files = {"target/weights.gguf": tiny_model(tmp_path / "target" / "weights.gguf")}
+    for name, value in {"metadata/config.json": b"{}", "metadata/tokenizer.json": b"{}",
                         "metadata/tokenizer_config.json": b"{}"}.items():
         path = tmp_path / name
         path.parent.mkdir(exist_ok=True)
@@ -62,8 +64,8 @@ def packet(tmp_path, monkeypatch):
                 capacity_plan={"execution_envelope": {"target_rows": 1}}, points=None,
                 context_window=128, streams=1)
     body = {"schema": identity.SCHEMA, "version": 1, "artifacts": {
-        name: {"size": path.stat().st_size, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-        for name, path in files.items()}}
+        name: identity.artifact_record(name, path) for name, path in files.items()}}
+    assert set(body["artifacts"]["target/weights.gguf"]) == {"size", "header_sha256"}
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(body))
     engine.capacity_plan["execution_content_projection_resources"] = identity.execution_content_projection_resources(engine.tp)
@@ -80,13 +82,16 @@ def test_exact_content_pass_is_opt_in_then_current_process_authority_reuses_hash
     assert first["verified_input_files"] == len(files)
     assert first["content_passes"] == 1
     assert first["identity"]["draft"] == "none"
-    # The binding's own content pass (started with the preload identities) read every input byte.
-    assert first["bytes_read_this_binding"] > sum(p.stat().st_size for p in files.values())
+    # GGUF payloads are never read: the content pass covers metadata, source and libraries.
+    hashed = [p for name, p in files.items() if not name.endswith(".gguf")]
+    hashed += [engine.model_dir / "source.py", engine.model_dir / "kernel.so"]
+    assert first["bytes_read_this_binding"] == sum(p.stat().st_size for p in hashed)
+    assert first["header_identified_files"] == 1
     assert first["hashes_reused_this_binding"] == 0
     second = identity.bind_execution_manifest(engine, path, rebind=True)
     assert second["identity"] == first["identity"]
     assert second["content_passes"] == second["bytes_read_this_binding"] == 0
-    assert second["hashes_reused_this_binding"] == len(files) + 2
+    assert second["hashes_reused_this_binding"] == len(hashed)
     assert engine.multi.controller.record()["profile_identity"] == first["identity"]
 
 
@@ -98,7 +103,7 @@ def test_checkpoint_manifest_cannot_omit_inputs_or_authorize_unrelated_files(pac
     elif change == "extra":
         body["artifacts"]["target/unused"] = {"size": 1, "sha256": "0" * 64}
     elif change == "wrong-hash":
-        body["artifacts"]["target/weights.gguf"]["sha256"] = "0" * 64
+        body["artifacts"]["target/weights.gguf"]["header_sha256"] = "0" * 64
     else:
         body["artifacts"]["target/weights.gguf"]["size"] += 1
     path.write_text(json.dumps(body))

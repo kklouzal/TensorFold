@@ -19,7 +19,6 @@ import platform
 import selectors
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -243,41 +242,7 @@ def artifact_files(engine):
     return result, checkpoint
 
 
-class _ContentPass:
-    """Rank 0's initial checkpoint content pass, started when the inputs are first identified.
-
-    Hashing the multi-GiB GGUF shards is sequential SHA-256 per file (minutes on
-    one core) and only rank 0 performs it, after warmup. Starting the identical
-    capture here overlaps it with weight loading and graph capture. Binding
-    consumes it once: it joins the thread, re-verifies every stat identity
-    against its own opened inputs and the declared digests, and hashes only the
-    inputs observed later. The startup-only thread holds at most the capture's
-    own two hashing workers/descriptors and always finishes its bounded pass.
-    """
-
-    def __init__(self, files):
-        self.files = dict(files)
-        self.result = self.error = None
-        self.thread = threading.Thread(target=self._run, name="tensorfold-content-pass", daemon=True)
-        self.thread.start()
-
-    def _run(self):
-        try:
-            sizes = [os.stat(path).st_size for path in self.files.values()]
-            self.result = capture_model_identity(self.files, runtime_identity={"schema": SCHEMA, "version": VERSION},
-                authorize=lambda name, path: path.resolve(strict=True),
-                max_file_bytes=max(sizes), max_total_bytes=sum(sizes), hash_workers=2)
-        except BaseException as error:
-            self.error = error
-
-    def take(self):
-        self.thread.join()
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-
-def begin_execution_manifest(engine, path, *, rank=None):
+def begin_execution_manifest(engine, path):
     """Capture opened input identities before the loader can observe weights."""
     manifest = _json(Path(path).expanduser().resolve(strict=True))
     _manifest_schema(manifest)
@@ -285,11 +250,6 @@ def begin_execution_manifest(engine, path, *, rank=None):
     stats = _opened_stats(files)
     _expected_files(manifest, files, stats)
     engine._execution_preload = {"manifest": digest(manifest), "artifacts": stats}
-    # Only rank 0 performs the initial binding's content pass; a DFlash2
-    # pairing binds its own issued authority instead.
-    rank = getattr(engine, "rank", 0) if rank is None else rank
-    engine._execution_content_pass = (_ContentPass(files) if rank == 0
-        and getattr(engine, "dflash2_model_dir", None) is None else None)
     return manifest
 
 
@@ -345,9 +305,12 @@ def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context, pr
             ready = exchange("preflight", preflight)
             if any(value != ready[0] for value in ready[1:]):
                 raise _ManifestRefusal("DFlash2 ranks prepared different pairing manifests or numerical contracts")
-            expected = local["expected"]
+            # GGUF containers are header-identified at profile binding; the
+            # shared content pass covers the draft and metadata inputs.
+            hashed = {name: path for name, path in local["files"].items() if not header_identified(name)}
+            expected = {name: local["expected"][name] for name in hashed}
             prior = getattr(engine, "_dflash_pairing", None)
-            authority = capture_shared_model_identity(local["files"], runtime_identity={"schema": SCHEMA, "version": VERSION},
+            authority = capture_shared_model_identity(hashed, runtime_identity={"schema": SCHEMA, "version": VERSION},
                 authorize=lambda name, path: path.resolve(strict=True),
                 max_file_bytes=max(item["size"] for item in expected.values()),
                 max_total_bytes=sum(item["size"] for item in expected.values()),
@@ -398,13 +361,49 @@ def _expected_files(manifest, files, stats):
     if not isinstance(expected, dict) or set(expected) != set(files):
         raise ValueError("manifest artifacts must equal the actual complete target/draft/tokenizer inventory")
     for name, record in expected.items():
-        if (not isinstance(record, dict) or set(record) != {"size", "sha256"}
-                or type(record["size"]) is not int or record["size"] < 0
-                or not isinstance(record["sha256"], str) or len(record["sha256"]) != 64
-                or any(c not in "0123456789abcdef" for c in record["sha256"])
-                or record["size"] != stats[name]["stat"][2]):
+        check_artifact_record(name, record)
+        if record["size"] != stats[name]["stat"][2]:
             raise ValueError("manifest artifact size or SHA256 is invalid for " + name)
     return expected
+
+
+def header_identified(name):
+    """GGUF weight containers are bound by size and exact header bytes, not payload content."""
+    return name.endswith(".gguf")
+
+
+def check_artifact_record(name, record):
+    """``{size, header_sha256}`` for GGUF containers; ``{size, sha256}`` (full content) otherwise."""
+    key = "header_sha256" if header_identified(name) else "sha256"
+    if (not isinstance(record, dict) or set(record) != {"size", key}
+            or type(record["size"]) is not int or record["size"] < 0 or not _sha(record[key])):
+        raise ValueError("manifest artifact size or SHA256 is invalid for " + name)
+
+
+def artifact_record(name, path):
+    """The manifest record the loader verifies for one actual input file."""
+    from tensorfold.gguf_file import header_sha256
+
+    path = Path(path)
+    with _regular_stream(path) as stream:
+        before = _stat(os.fstat(stream.fileno()))
+        if header_identified(name):
+            record = {"size": before[2], "header_sha256": header_sha256(path)}
+        else:
+            record = {"size": before[2], "sha256": hashlib.file_digest(stream, "sha256").hexdigest()}
+        if _stat(os.fstat(stream.fileno())) != before or _stat(os.stat(path)) != before:
+            raise ValueError("execution input changed while its identity was read: " + name)
+    return record
+
+
+def _header_records(files, before, expected):
+    """Verify header-identified inputs against their declared records and opened identities."""
+    records = {name: artifact_record(name, path) for name, path in sorted(files.items())}
+    if any(records[name] != expected[name] for name in records):
+        raise ValueError("execution profile checkpoint header identity differs from its declared SHA256")
+    if _opened_stats(files) != before:
+        raise ValueError("execution profile inputs changed during the header identity pass")
+    return records
 
 
 def _source_files():
@@ -1186,27 +1185,21 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
         if engine.rank != 0:
             return None
         union, expected = context["union"], context["expected"]
-        capture_files = {name: Path(value["path"]) for name, value in union.items()}
+        headers = {name: Path(value["path"]) for name, value in union.items() if header_identified(name)}
+        capture_files = {name: Path(value["path"]) for name, value in union.items() if name not in headers}
+        hashed = {name: union[name] for name in capture_files}
+        hashed_expected = {name: record for name, record in expected.items() if name in capture_files}
         pairing = getattr(engine, "_dflash_pairing", None)
         if rebind or pairing is not None:
             prior = engine._execution_input_authorities if rebind else (pairing.authority,)
             if rebind and (not prior or prior[0] is not engine._execution_input_authority):
                 raise ValueError("current-process execution input authority was replaced")
-            authorities, contents, read, reused = _capture_reusing(capture_files, union, expected, prior)
+            authorities, contents, read, reused = _capture_reusing(capture_files, hashed, hashed_expected, prior)
             authority = authorities[0]
         else:
-            started = getattr(engine, "_execution_content_pass", None)
-            engine._execution_content_pass = None
-            if started is None:
-                authority, contents = _capture(capture_files, union, expected)
-                authorities, read, reused = (authority,), authority.bytes_read, 0
-            else:
-                # This binding's own content pass, begun with the preload identities.
-                early = started.take()
-                authorities, contents, read, reused = _capture_reusing(capture_files, union, expected, (early,))
-                if reused != len(early.files):
-                    raise ValueError("startup content pass differs from the bound execution input closure")
-                authority, read, reused = authorities[0], read + early.bytes_read, 0
+            authority, contents = _capture(capture_files, hashed, hashed_expected)
+            authorities, read, reused = (authority,), authority.bytes_read, 0
+        contents.update(_header_records(headers, {name: union[name] for name in headers}, expected))
         context.update(authority=authority, authorities=authorities)
         return {"contents": contents, "bytes_read": read, "hashes_reused": reused}
 
@@ -1258,6 +1251,7 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
                 "manifest_sha256": local["manifest"],
                 "content_projection_generation":context["content_projection"].generation, "verified_input_files": len(context["artifacts"]),
                 "verified_input_bytes": sum(v["stat"][2] for v in context["artifact_stats"].values()),
+                "header_identified_files": sum(map(header_identified, context["artifacts"])),
                 "content_passes": int(not rebind), "shared_immutable_same_host": True,
                 "bytes_read_this_binding": outcome["bytes_read"], "hashes_reused_this_binding": outcome["hashes_reused"],
                 "evidence_receipts": len(context["evidence"]),

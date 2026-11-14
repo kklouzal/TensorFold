@@ -1598,19 +1598,28 @@ def validate_teacher_operation_plan(operation, plan, client, *, profile=None, **
             and all(client[key] == operation[key] for key in
                     ('teacher_scope', 'prepared_execution', 'numerical_trial', 'selector', 'numa', 'mtp_confidence')),
             'window client/operation/plan identity differs')
-    from tensorfold.families.qwen4_exp.cuda.execution_identity import _METADATA
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import _METADATA, check_artifact_record, header_identified
 
     # Match the runtime loader's inventory using already validated held assets.
     # ready.json belongs to frontend preparation, not runtime model metadata.
-    expected = {'target/' + Path(item['path']).name: {'size': item['bytes'], 'sha256': item['sha256']}
-                for item in operation['model_assets']}
-    expected.update({'metadata/' + Path(item['path']).name: {'size': item['bytes'], 'sha256': item['sha256']}
-                     for item in operation['frontend_assets'] if Path(item['path']).name in _METADATA})
+    # GGUF containers carry {size, header_sha256}; the engine verifies that
+    # header digest against the actual opened file when it binds the manifest.
+    held = {'target/' + Path(item['path']).name: item for item in operation['model_assets']}
+    held.update({'metadata/' + Path(item['path']).name: item
+                 for item in operation['frontend_assets'] if Path(item['path']).name in _METADATA})
     item = operation['mtp_artifact']
-    expected['draft/' + Path(item['path']).name] = {'size': item['bytes'], 'sha256': item['sha256']}
-    require(type(profile['artifacts']) is dict and profile['artifacts'] == expected
-            and all(type(record) is dict and type(record.get('size')) is int
-                    for record in profile['artifacts'].values()),
+    held['draft/' + Path(item['path']).name] = item
+    artifacts = profile['artifacts']
+    def matches(name, record):
+        try:
+            check_artifact_record(name, record)
+        except ValueError:
+            return False
+        item = held[name]
+        return record['size'] == item['bytes'] and (header_identified(name) or record['sha256'] == item['sha256'])
+    require(type(artifacts) is dict and set(artifacts) == set(held)
+            and all(type(record) is dict and type(record.get('size')) is int and matches(name, record)
+                    for name, record in artifacts.items()),
             'canonical manifest artifacts differ from actual held target/MTP/runtime frontend content')
     projected = resources(operation['teacher_plan']['bytes'], plan)
     require(operation['output_grants']['frame_bytes'] == projected['max_total_frame_file_bytes']
@@ -2108,10 +2117,14 @@ def prepare_input(operation, teacher, plan_path):
     require(len(control) <= 8 << 20, 'window control metadata exceeds bound')
     sizes.append(len(control))
     from tensorfold.families.qwen4_exp.cuda.execution_identity import digest
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import check_artifact_record
     artifacts = payloads['execution_manifest'].get('artifacts')
-    require(type(artifacts) is dict and artifacts and all(type(row) is dict and type(row.get('size')) is int
-            and row['size'] >= 0 and legacy.sha(row.get('sha256')) for row in artifacts.values()),
-            'actual window manifest artifact census differs')
+    require(type(artifacts) is dict and artifacts, 'actual window manifest artifact census differs')
+    try:
+        for name, row in artifacts.items():
+            check_artifact_record(name, row)
+    except ValueError:
+        require(False, 'actual window manifest artifact census differs')
     bundle = load_inputs(operation['numa'])
     sizes.extend(len(raw) for raw in bundle['raw'].values())
     return {'operation': operation, 'control': control, 'sizes': sizes, 'numa_bundle': bundle,

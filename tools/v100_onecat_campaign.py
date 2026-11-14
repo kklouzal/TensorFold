@@ -415,14 +415,8 @@ prepared=hub.resolve(target,download=False)
 engine=SimpleNamespace(model_dir=prepared,method_geometry=SimpleNamespace(method='mtp'),
                        mtp_model_dir=pathlib.Path(mtp),media_profile=None)
 files,_=artifact_files(engine)
-artifacts={}
-for name,path in sorted(files.items()):
-    before=path.stat()
-    with path.open('rb') as stream: digest=hashlib.file_digest(stream,'sha256').hexdigest()
-    after=path.stat()
-    if (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
-        raise RuntimeError('model artifact changed during qualification input preparation')
-    artifacts[name]={'size':before.st_size,'sha256':digest}
+from tensorfold.families.qwen4_exp.cuda.execution_identity import artifact_record
+artifacts={name:artifact_record(name,path) for name,path in sorted(files.items())}
 manifest={'schema':'tensorfold.execution-profile-manifest','version':1,'artifacts':artifacts,
           'preparation':{'kernel_family':'sm70-paged-owner-rn-ex2-p2051-v1','graph_family':'uncaptured',
                          'graph_budget_bytes':0,'trial':True,'collective_family':'tp8-allgather-v1','rn_heads_per_block':12}}

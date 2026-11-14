@@ -51,6 +51,18 @@ def test_discovery_reuses_inventory_once_and_preserves_second_shard(tmp_path, mo
     assert reads == [first, second]
 
 
+def test_header_digest_binds_metadata_and_directory_not_payload(tmp_path):
+    source = tiny_model(tmp_path / "source.gguf")
+    fields = dict(gguf_file.GGUFCheckpoint.open(source).metadata)
+    path = tmp_path / "one.gguf"
+    write(path, [("token_embd.weight", (32, 1), 0, [0] * 128)], fields)
+    base = gguf_file.header_sha256(path)
+    write(path, [("token_embd.weight", (32, 1), 0, [1] * 128)], fields)
+    assert gguf_file.header_sha256(path) == base  # Payload bytes are not part of the header identity.
+    write(path, [("token_embd.weight", (32, 1), 0, [0] * 128)], {**fields, "tensorfold.test.marker": 1})
+    assert gguf_file.header_sha256(path) != base
+
+
 def test_inventory_handoff_supports_mtp_tensor_validation_without_reopen(tmp_path, monkeypatch):
     from test_flashnext_gguf_mtp import fixture as mtp_fixture
 

@@ -8,16 +8,18 @@ An empty table enables identity capture; it does not qualify any execution plan.
 This implementation's distributed verification contract is one Linux host and
 container, with immutable shared read-only checkpoint and qualification mounts.
 Every rank must observe the same host identity and the same opened checkpoint
-file device, inode, size, modification time and change time. Rank zero streams
-the complete content once, reading 64 MiB blocks (one live block per hashing
-worker, two workers). It starts this checkpoint/metadata/draft content pass on a
-startup thread as soon as the preload identities are captured, so the multi-GiB
-SHA-256 overlaps weight loading and graph capture; binding joins it, rechecks
-every opened identity and declared digest, and hashes only the source and
-loaded-library inputs observed at binding. The receipt still reports one content
-pass with all bytes read by this binding. All ranks verify
+file device, inode, size, modification time and change time. GGUF weight
+containers (`target/` shards and a GGUF `draft/`) are bound by exact size and the
+SHA-256 of their parsed header bytes: all metadata (architecture, tokenizer,
+quantization settings) and the complete tensor directory (names, types, shapes,
+payload offsets). Tensor payload bytes are not read or hashed; the opened file
+identities, checked on every rank before loading and again at binding, stand in
+for payload immutability. Every other input (prepared metadata, non-GGUF draft
+files, installed TensorFold source and actually loaded native libraries) is
+content-hashed once by rank zero at binding, in 64 MiB reads. All ranks verify
 their opened identities again before publication. A different mount, changed
-file, incomplete inventory or mismatched checksum rejects the manifest.
+file, incomplete inventory, mismatched header digest or mismatched checksum
+rejects the manifest.
 Normal serving on other hardware does not acquire this optional restriction.
 
 The administrator owns the qualification packet and the external experiments
@@ -34,7 +36,7 @@ version `1`, and these fields:
 
 | Field | Meaning |
 | --- | --- |
-| `artifacts` | Exact logical filename to `{size, sha256}` map |
+| `artifacts` | Exact logical filename to `{size, header_sha256}` for `.gguf` files, `{size, sha256}` (full content) otherwise |
 | `evidence` | Optional list of `{path, sha256}` receipt references relative to the packet |
 | `profiles` | Optional `tensorfold.execution-profiles` version 1 table |
 | `preparation` | Optional fixed native attention workspace/partial-graph preparation; see below |
@@ -47,13 +49,16 @@ selected stock MTP or DSpark `config.json` and `model.safetensors`. Additional
 undeclared inputs and omitted inputs both fail. The engine captures file
 identities before weight loading and verifies they remain unchanged afterward.
 
-The effective identity includes SHA256 digests for target, draft, tokenizer,
+The effective identity includes SHA256 digests for target and draft artifact
+records (GGUF header digests, other files' content digests), tokenizer,
 codec, numerical settings, installed TensorFold source, actually loaded native
 and runtime libraries, runtime dependencies/settings, hardware topology,
 retention contract, target weight encodings and actual stationary placement.
 It also includes context tokens, resident sessions, history layout and method.
-`draft: "none"` means there is no separate selected draft artifact; target
-bytes and the method still bind any target-contained capability.
+`draft: "none"` means there is no separate selected draft artifact; the target
+records and the method still bind any target-contained capability. The binding
+receipt counts `header_identified_files`; `bytes_read_this_binding` covers only
+content-hashed inputs.
 The tokenizer digest also includes any startup-captured tokenizer override and
 both compiled chat-template routes, with padding/truncation disabled as in the
 actual CUDA tokenizer. An override filename alone is never its identity.
