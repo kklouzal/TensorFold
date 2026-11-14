@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import glob
 import importlib.util
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -165,8 +164,7 @@ class DFlashDrafter:
             import mlx.nn as nn
 
             head = self._matmul_head()
-            if os.environ.get("TF_DRAFT_VOCAB", "") != "full" and isinstance(head, nn.QuantizedLinear) \
-                    and "bias" not in head and not getattr(head, "_lane_tiled", False):
+            if isinstance(head, nn.QuantizedLinear) and "bias" not in head and not getattr(head, "_lane_tiled", False):
                 n = int(head["weight"].shape[0])
                 spans = [(a, min(b, n)) for a, b in self.draft_vocab if a < n]
                 if sum(b - a for a, b in spans) < n:
@@ -182,8 +180,7 @@ class DFlashDrafter:
         if getattr(self, "_sub", False) is False:
             self._sub = None
             head = self._matmul_head()
-            if (os.environ.get("TF_DRAFT_VOCAB", "") != "full" and getattr(head, "_lane_tiled", False)
-                    and getattr(head, "_lane_sbt", None) is not None):
+            if getattr(head, "_lane_tiled", False) and getattr(head, "_lane_sbt", None) is not None:
                 n = int(head["weight"].shape[0])
                 nt = int(getattr(head, "_lane_nt", 32))
                 # whole tiles of the head's layout: a span's ends round outward to its tile width

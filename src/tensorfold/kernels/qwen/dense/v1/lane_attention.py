@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import mlx.core as mx
 
 MAX_QUERIES = 128
-TILES_PER_GROUP = int(os.environ.get("TF_ATTN_TILES", "16"))    # Each threadgroup shares key reads across 16-row tiles; 24 tiles overflow P staging.
+TILES_PER_GROUP = 16   # Each threadgroup shares key reads across 16-row tiles; 24 tiles overflow P staging.
 CHUNK = 512            # keys per chunk (fixed: part of the arithmetic)
 TILE = 64              # keys per tile (fixed: part of the arithmetic)
 
@@ -124,8 +123,6 @@ _PV_REGISTERS = """    opO.run(Pin, bVlo, Olo);
     opO.run(Pin, bVhi, Ohi);"""
 assert _P_STORE in _PARTIAL and _PV_THREADGROUP in _PARTIAL
 _PARTIAL_DIRECT = _PARTIAL.replace(_P_STORE, _P_REGISTERS).replace(_PV_THREADGROUP, _PV_REGISTERS)
-# TF_ATTN_DIRECT_P=0 uses threadgroup-memory P with the same bits.
-DIRECT_P = os.environ.get("TF_ATTN_DIRECT_P", "1") != "0"
 
 def _single_half(source: str) -> str:
     """Head dimension 128 (Nemotron-H): the output in one 128-column half; the 256 kernels run two."""
@@ -146,7 +143,6 @@ def _single_half(source: str) -> str:
     return out
 
 
-_PARTIAL_128 = _single_half(_PARTIAL)
 _PARTIAL_DIRECT_128 = _single_half(_PARTIAL_DIRECT)
 
 
@@ -187,9 +183,8 @@ def _named(base: str, source: str) -> str:
 
 def _kernel(name: str) -> Any:
     if name not in _kernels:
-        if name in ("partial", "partial_direct", "partial_128", "partial_direct_128"):
-            source = {"partial": _PARTIAL, "partial_direct": _PARTIAL_DIRECT, "partial_128": _PARTIAL_128,
-                      "partial_direct_128": _PARTIAL_DIRECT_128}[name]
+        if name in ("partial_direct", "partial_direct_128"):
+            source = {"partial_direct": _PARTIAL_DIRECT, "partial_direct_128": _PARTIAL_DIRECT_128}[name]
             _kernels[name] = mx.fast.metal_kernel(
                 name=_named("lane_attention_" + name, source), input_names=["Qp", "K", "V", "scale", "dims"],
                 output_names=["PO", "PM", "PL"], source=source, header=_HEADER,
@@ -203,7 +198,7 @@ def _kernel(name: str) -> Any:
 
 def _partial(qp: mx.array, keys: mx.array, values: mx.array, sc: mx.array, dims: mx.array, *, G: int, D: int, SG: int,
              SGA: int, HKV: int, nch: int, RP: int) -> Any:
-    return _kernel(("partial_direct" if DIRECT_P else "partial") + ("_128" if D == 128 else ""))(
+    return _kernel("partial_direct" + ("_128" if D == 128 else ""))(
         inputs=[qp, keys, values, sc, dims], template=[("G", G), ("D", D), ("SG", SG), ("CK", CHUNK), ("TK", TILE)],
         grid=(HKV * 32 * SG, nch, -(-SGA // SG)), threadgroup=(32 * SG, 1, 1),
         output_shapes=[(HKV * nch * RP * D,), (HKV * nch * RP,), (HKV * nch * RP,)],

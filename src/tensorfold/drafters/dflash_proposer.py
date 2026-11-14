@@ -16,8 +16,6 @@ from .dflash_tree import best_first_tree, lattice_gain
 
 _DRAFT_PROFILE = os.environ.get("TF_DRAFT_PROFILE", "") == "1"
 _DRAFT_STAGES: dict[str, dict[str, float]] = {}
-# TF_DRAFT_LEAN selects lean attention with "1", vendor with "0", or alternating lattices with "alt".
-_DRAFT_LEAN = os.environ.get("TF_DRAFT_LEAN", "1")
 
 
 class DFlashProposer:
@@ -217,13 +215,13 @@ class DFlashProposer:
     tree_edge = 0.6
     tree_noise = 0.7
     # A backed copy replaces the tree when long enough; shorter copies become branches.
-    copy_match = int(os.environ.get("TF_COPY_MATCH", "8"))
+    copy_match = 8
     # A copied token's log-probability as a tree score.
     copy_logp = -0.06
     # Path scores follow tree pop order, with copy_logp per copied token; None means no lattice.
     last_scores: list[float] | None = None
     # Add ngram_weight * log P(child | last three path tokens) from the stream's committed context.
-    ngram_weight = float(os.environ.get("TF_NGRAM_WEIGHT", "0.1"))
+    ngram_weight = 0.1
     # Use the prior only while its cumulative true-token log-probability gain exceeds this gate; None always enables it.
     ngram_gate: float | None = 1.0
     # layers after which the drafter's graph so far is sent to the GPU while Python builds the rest
@@ -395,16 +393,13 @@ class DFlashProposer:
         t1 = time.perf_counter() if prof else 0.0
         parts = self._compiled_parts()
         masks: dict = {}                            # one attention mask a lattice per layer kind (_dflash_attend)
-        self._lattices = getattr(self, "_lattices", 0) + 1
-        lean = _DRAFT_LEAN == "1" or (_DRAFT_LEAN == "alt" and self._lattices % 2 == 0)
         for i, (layer, cache) in enumerate(zip(model.layers, self.cache)):
             if parts is None:
                 h = layer(h, h_ctx, model.rope, cache)
             else:                                   # DFlash2DecoderLayer.__call__, its fixed-shape parts compiled
                 pre, post = parts[i]
                 xn, kernel = pre(h)
-                attended = (_dflash_attend(layer.self_attn, xn, h_ctx, model.rope, cache, masks) if lean
-                            else layer.self_attn(xn, h_ctx, model.rope, cache))
+                attended = _dflash_attend(layer.self_attn, xn, h_ctx, model.rope, cache, masks)
                 h = post(h, attended, kernel)
             if i in self.async_layers:
                 mx.async_eval(h)
@@ -418,12 +413,12 @@ class DFlashProposer:
         mx.async_eval(cands, unary, hproj, *(() if capture is None else (capture,)))
         if prof:
             t3 = time.perf_counter()
-            acc = _DRAFT_STAGES.setdefault("lean" if lean else "vendor", {})
+            acc = _DRAFT_STAGES.setdefault("lean", {})
             for key, value in (("context", t1 - t0), ("layers", t2 - t1), ("head+topk", t3 - t2)):
                 acc[key] = acc.get(key, 0.0) + value * 1e3
             acc["n"] = acc.get("n", 0) + 1
             if acc["n"] % 200 == 0:
-                print(f"[lanes] drafter build ms/round ({'lean' if lean else 'vendor'} attention): "
+                print("[lanes] drafter build ms/round (lean attention): "
                       + ", ".join(f"{k} {v / acc['n']:.2f}" for k, v in acc.items() if k != "n"), flush=True)
         return cands, unary, hproj
 

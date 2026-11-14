@@ -230,8 +230,7 @@ def load_drafter(model: Any, drafter: str, drafter_bits: int = 4) -> Any:
     if getattr(model, "_tensorfold_lanes", False):
         from tensorfold.kernels.qwen.dense.v1 import lane_qmm
 
-        lane_qmm.install(loaded.model, rows=lane_qmm.MAX_ROWS, tile=os.environ.get("TF_LANE_TILE", "1") != "0",
-                         wide=True)
+        lane_qmm.install(loaded.model, rows=lane_qmm.MAX_ROWS, tile=True, wide=True)
         lane_qmm.warm(loaded.model)
         hidden = mx.zeros((1, 16, int(loaded.model.config.hidden_size)), dtype=mx.bfloat16)
         mx.eval(*(a for a in loaded.candidate_logits(hidden) if a is not None))     # the draft head, compiled now
@@ -245,8 +244,7 @@ def install_lane_kernels(model: Any) -> None:
     from tensorfold.kernels.qwen.dense.v1 import exact_attention, lane_attention, lane_fuse, lane_qmm
 
     exact_attention.install()      # verify windows attend query by query, as one-row steps do
-    # TF_LANE_TILE=0 keeps MLX's weight layout without changing results.
-    lane_qmm.install(model, rows=lane_qmm.MAX_ROWS, tile=os.environ.get("TF_LANE_TILE", "1") != "0", wide=True)
+    lane_qmm.install(model, rows=lane_qmm.MAX_ROWS, tile=True, wide=True)
     warmed = lane_qmm.warm(model)
     lane_fuse.enabled = True
     fused = lane_fuse.build(model)          # stacks share the weights' memory: no second copy

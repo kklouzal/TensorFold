@@ -571,7 +571,7 @@ def find_mtp_head(model_dir: Path, choice: str = "") -> Path | None:
     from tensorfold.families.nemotron_h.mtp import DEFAULT_DIR
 
     choice = choice or os.environ.get("TF_NEMOTRON_MTP", "")
-    if choice == "0" or os.environ.get("TF_MTP_ROUNDS", "1") == "0":
+    if choice == "0":
         return None
     if choice:
         return Path(choice).expanduser()

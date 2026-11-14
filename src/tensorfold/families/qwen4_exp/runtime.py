@@ -67,21 +67,13 @@ class FlashNext:
             self.mtp_fused = FusedDecode(_MTPModelView(model, head))
             select_by_kernels(head.layers)
             mx.eval(*self._mtp_scales)
-            import os
+            from tensorfold.families.qwen4_exp.draft_head import draft_ids
 
-            # TF_FLASH_DRAFT_VOCAB=0 scores the full vocabulary; TF_FLASH_QUEUED=0 reads each chained draft immediately.
-            self._draft_ids = self._draft_cut_ids = None
-            if os.environ.get("TF_FLASH_DRAFT_VOCAB", "1") != "0":
-                from tensorfold.families.qwen4_exp.draft_head import draft_ids
-
-                ids = draft_ids(vocab=model.lm_head.weight.shape[0])
-                ids.flags.writeable = False
-                self._draft_cut_ids = ids
-                self._draft_ids = mx.array(ids)
-            self.queued_chains = os.environ.get("TF_FLASH_QUEUED", "1") != "0"
+            ids = draft_ids(vocab=model.lm_head.weight.shape[0])
+            ids.flags.writeable = False
+            self._draft_cut_ids = ids
+            self._draft_ids = mx.array(ids)
             self.mtp_step_ms = self._time_mtp_step()
-
-    queued_chains = False
 
     def _warm_sparse(self) -> None:
         """The sparse attention kernels' decode variants built at load, not inside the first long request."""
@@ -366,13 +358,6 @@ class FlashNext:
             return []
         prepared = (self._draft_head, self._draft_ids) if count > 1 else None
         streams = out[keep - 1:keep]
-        if not self.queued_chains:
-            drafts = [int(first.item() if isinstance(first, mx.array) else first)]
-            for j in range(1, count):
-                mixed, streams = self._mtp_step([drafts[-1]], streams, mtp_cache)
-                mtp_cache.drafted += 1
-                drafts.append(int(self._draft_draw(mixed, sampling, [position + j], prepared=prepared).item()))
-            return drafts
         # Keep ``first`` and chained draws on the GPU until the next round builds its inputs.
         head = (first.reshape(1).astype(mx.uint32) if isinstance(first, mx.array)
                 else mx.array([int(first)], dtype=mx.uint32))
@@ -601,16 +586,14 @@ def last_row_layer(layer: Any, x: mx.array, cache: Any) -> mx.array:
 
 def load(model_dir: Path, *, drafts: int | None = None, ple_on_ssd: bool = False,
          ssd_experts: float | None = None) -> tuple[FlashNext, Any]:
-    """Load with an MTP draft cap from ``drafts`` or TF_FLASH_MTP, defaulting to 3; zero disables drafts."""
-
-    import os
+    """Load with an MTP draft cap from ``drafts``, defaulting to 3; zero disables drafts."""
 
     from tensorfold.families.qwen4_exp import MODELS, decode
     from tensorfold.families.qwen4_exp import model as q4
     from tensorfold.families.qwen4_exp import mtp as mtp_module
 
     model, tokenizer = q4.load(Path(model_dir), ple_on_ssd=ple_on_ssd, ssd_experts=ssd_experts)
-    drafts = int(os.environ.get("TF_FLASH_MTP", "3")) if drafts is None else int(drafts)
+    drafts = 3 if drafts is None else int(drafts)
     head = mtp_module.load(Path(model_dir), model.args) if drafts > 0 and model.__dict__.get("fused") else None
     missed = decode.unreadable(model, head) if decode.DENSE == "lane" else {}   # simd_qmm checks a shape on first use
     if missed:

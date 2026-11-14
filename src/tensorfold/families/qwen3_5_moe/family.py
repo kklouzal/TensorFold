@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -42,17 +41,16 @@ class Qwen36Family(Qwen35Family):
         except ValueError as exc:                 # another model's layer: its shapes or names differ
             raise SystemExit(f"[tensorfold] {mtp_path} is not this checkpoint's MTP layer: {exc}") from None
         self.drafts = int(drafts)
-        if os.environ.get("TF_QWEN36_DRAFT_VOCAB", "1") != "0":      # 0 scores the full vocabulary
-            import mlx.core as mx
+        import mlx.core as mx
 
-            from tensorfold.families.qwen4_exp.draft_head import draft_ids
+        from tensorfold.families.qwen4_exp.draft_head import draft_ids
 
-            ids = draft_ids(vocab=int(self.lm_head.weight.shape[0]))
-            ids.flags.writeable = False
-            self._draft_cut_ids, self._draft_ids = ids, mx.array(ids)
+        ids = draft_ids(vocab=int(self.lm_head.weight.shape[0]))
+        ids.flags.writeable = False
+        self._draft_cut_ids, self._draft_ids = ids, mx.array(ids)
         self.mtp_step_ms = self._time_mtp_step()
-        vocab = "every token" if self._draft_ids is None else f"{int(self._draft_ids.shape[0]):,} draft ids"
-        print(f"[tensorfold] MTP drafts from {Path(mtp_path).name}: up to {self.drafts} a round over {vocab}, a "
+        print(f"[tensorfold] MTP drafts from {Path(mtp_path).name}: up to {self.drafts} a round over "
+              f"{int(ids.shape[0]):,} draft ids, a "
               f"chained draft {self.mtp_step_ms:.2f} ms; measured round costs pick each round's drafted depth",
               flush=True)
 
