@@ -869,3 +869,15 @@ def test_stop_after_a_piped_peer_departed_closes_instead_of_raising():
     peer.pipes.close()
     leader.shutdown()
     assert leader.engine._abort_comm
+
+
+def test_leader_departing_before_its_first_command_releases_a_waiting_piped_peer():
+    # The leader opens the command write ends only at its first command; until then a peer
+    # learns of the leader's death from its acknowledgment pipe losing its only reader.
+    _store, leader, peer = _piped_pair()
+    leader.pipes.close()
+    released = []
+    thread = threading.Thread(target=lambda: released.append(peer.receive()), daemon=True)
+    thread.start()
+    thread.join(5)
+    assert not thread.is_alive() and released == [None] and peer.engine._abort_comm

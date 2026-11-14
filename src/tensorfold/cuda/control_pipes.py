@@ -20,8 +20,9 @@ A peer that cannot open the directory (another host) keeps the Store protocol;
 the leader serves each peer through the transport that peer declared.
 
 Process death closes the pipe ends: a peer reads end-of-file when the leader
-departs, and the leader reads end-of-file (or EPIPE on write) when a peer
-departs, so neither waits for a dead process. Waits are bounded by the same
+departs (or, before the leader's first command opened the command pipe, sees its
+acknowledgment pipe lose the leader's read end), and the leader reads end-of-file
+(or EPIPE on write) when a peer departs, so neither waits for a dead process. Waits are bounded by the same
 timeout the Store protocol used. A send or read interrupted mid-frame leaves the
 stream unusable; such a channel is marked broken and only closed afterwards.
 """
@@ -256,8 +257,16 @@ class ControlPipes:
             raise RuntimeError("tensor-parallel control pipes are broken; retire the cohort")
         poller = select.poll()
         poller.register(self.reader, select.POLLIN)
-        if not poller.poll(int(timeout_s * 1000)):
+        # The leader opens the command write ends only at its first command, and a FIFO
+        # reports no hang-up to a reader that never had a writer. The acknowledgment pipe
+        # has had the leader's read end since rendezvous: POLLERR on this write end means
+        # that reader is gone, i.e. the leader departed, before or between commands.
+        poller.register(self.writer, 0)
+        events = poller.poll(int(timeout_s * 1000))
+        if not events:
             raise TimeoutError("tensor-parallel command wait timed out")
+        if not any(descriptor == self.reader for descriptor, _ in events):
+            return None
         try:
             return self._frame(self.reader, time.monotonic() + self.timeout_s, departed=None)
         except BaseException:
