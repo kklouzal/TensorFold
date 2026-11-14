@@ -42,8 +42,8 @@ license to those weights.
 
 ## MLX and mlx-lm adaptations
 
-The DeltaNet implementations in `src/tensorfold/kernels/qwen/dense/v1/lane_gdn.py` and
-`lane_tree.py` adapt mlx-lm's `qwen3_5` and `gated_delta` model math and kernels under its MIT License.
+The DeltaNet implementation in `src/tensorfold/kernels/qwen/dense/v1/lane_tree.py` adapts
+mlx-lm's `qwen3_5` and `gated_delta` model math and kernels under its MIT License.
 
 ## Qwen Flash Next
 

@@ -6,6 +6,7 @@ selection/ownership only; native numerical and performance gates are separate.
 from __future__ import annotations
 
 import ast
+from copy import copy
 from operator import index
 from pathlib import Path
 import sys
@@ -14,10 +15,218 @@ from typing import Any, Sequence
 import unittest
 from unittest.mock import patch
 
-from test_mlx_lane_gdn_boundary import Array, Core
-
 ROOT = Path(__file__).resolve().parents[1]
 BASE = ROOT / "src/tensorfold/kernels/qwen/dense/v1"
+
+
+# Shape/expression-label MLX fakes (no numerical emulation).
+def broadcast(*shapes):
+    result = []
+    width = max(map(len, shapes), default=0)
+    for axis in range(1, width + 1):
+        values = {s[-axis] for s in shapes if len(s) >= axis} - {1}
+        if len(values) > 1:
+            raise ValueError("incompatible broadcast")
+        result.append(next(iter(values), 1))
+    return tuple(reversed(result))
+
+
+class Array:
+    def __init__(self, value, dtype="float32", *, shape=None):
+        self.dtype = dtype
+        self.values = value if isinstance(value, list) else None
+        self.payload = tuple(value) if isinstance(value, list) else value
+        self.shape = tuple(shape) if shape is not None else (len(value),)
+        self.fail_write = False
+
+    @property
+    def ndim(self):
+        return len(self.shape)
+
+    @property
+    def size(self):
+        value = 1
+        for dimension in self.shape:
+            value *= dimension
+        return value
+
+    @property
+    def itemsize(self):
+        return 2 if self.dtype in ("bfloat16", "float16") else 8 if self.dtype in ("float64", "int64") else 4
+
+    @property
+    def nbytes(self):
+        return self.size * self.itemsize
+
+    def tolist(self):
+        return list(self.values)
+
+    def __copy__(self):
+        value = Array(self.payload, self.dtype, shape=self.shape)
+        value.values = list(self.values) if self.values is not None else None
+        value.fail_write = self.fail_write
+        return value
+
+    def astype(self, dtype):
+        return Array(("cast", self.payload, dtype), dtype, shape=self.shape)
+
+    def reshape(self, *shape):
+        if len(shape) == 1 and isinstance(shape[0], tuple):
+            shape = shape[0]
+        shape = list(shape)
+        if -1 in shape:
+            known = 1
+            for value in shape:
+                if value != -1:
+                    known *= value
+            shape[shape.index(-1)] = self.size // known
+        return Array(("reshape", self.payload), self.dtype, shape=shape)
+
+    def transpose(self, *axes):
+        return Array(("transpose", self.payload, axes), self.dtype, shape=tuple(self.shape[a] for a in axes))
+
+    def __getitem__(self, key):
+        keys = key if isinstance(key, tuple) else (key,)
+        if Ellipsis in keys:
+            at = keys.index(Ellipsis)
+            used = sum(part is not None and part is not Ellipsis for part in keys)
+            keys = keys[:at] + (slice(None),) * (self.ndim - used) + keys[at + 1:]
+        output, axis = [], 0
+        for part in keys:
+            if part is None:
+                output.append(1)
+            else:
+                dimension = self.shape[axis]
+                axis += 1
+                if isinstance(part, Array):
+                    output.extend(part.shape)
+                elif isinstance(part, slice):
+                    output.append(len(range(*part.indices(dimension))))
+        output.extend(self.shape[axis:])
+        return Array(("get", self.payload, repr(key)), self.dtype, shape=output)
+
+    def __setitem__(self, key, value):
+        if self.fail_write:
+            raise OSError("history descriptor update refused")
+        self.payload = ("write", self.payload, value.payload)
+
+    def _binary(self, value, operation):
+        other = value if isinstance(value, Array) else Array(value, shape=())
+        dtype = "float64" if "float64" in (self.dtype, other.dtype) else self.dtype
+        result = Array((operation, self.payload, other.payload), dtype, shape=broadcast(self.shape, other.shape))
+        if operation == "sub" and self.values is not None and not isinstance(value, Array):
+            result.values = [item - value for item in self.values]
+        return result
+
+    def __add__(self, value):
+        return self._binary(value, "add")
+
+    def __sub__(self, value):
+        return self._binary(value, "sub")
+
+    def __mul__(self, value):
+        return self._binary(value, "mul")
+
+    __rmul__ = __mul__
+
+    def __lt__(self, value):
+        result = self._binary(value, "lt")
+        result.dtype = "bool"
+        return result
+
+    def __matmul__(self, value):
+        shape = broadcast(self.shape[:-2], value.shape[:-2]) + (self.shape[-2], value.shape[-1])
+        return Array(("matmul", self.payload, value.payload), self.dtype, shape=shape)
+
+    def sum(self, axis=-1, keepdims=False):
+        shape = list(self.shape)
+        if keepdims:
+            shape[axis] = 1
+        else:
+            del shape[axis]
+        return Array(("sum", self.payload), self.dtype, shape=shape)
+
+
+class DType(str):
+    @property
+    def size(self):
+        return 2 if self in ("float16", "bfloat16") else 8 if self == "float64" else 4
+
+
+class Core:
+    array, float32, float16, bfloat16, int32 = Array, "float32", "float16", "bfloat16", "int32"
+    uint32, uint8 = "uint32", "uint8"
+    floating, integer, gpu = "floating", "integer", "gpu"
+
+    def __init__(self):
+        self.allocations = 0
+        self.fail_allocate_at = None
+        self.native = []
+        self.metal = SimpleNamespace(is_available=lambda: True)
+        self.fast = SimpleNamespace(rms_norm=lambda a, *_: a)
+
+    @staticmethod
+    def issubdtype(dtype, category):
+        return dtype in (("float16", "bfloat16", "float32", "float64") if category == "floating" else ("int32", "int64", "uint32"))
+
+    @staticmethod
+    def result_type(*dtypes):
+        types = {str(dtype) for dtype in dtypes}
+        return DType("float64" if "float64" in types else "float32" if "float32" in types
+                     or {"float16", "bfloat16"} <= types else next(iter(types)))
+
+    def zeros(self, shape, dtype):
+        self.allocations += 1
+        if self.allocations == self.fail_allocate_at:
+            raise MemoryError("bounded fixture allocation")
+        return Array("zero", dtype, shape=shape)
+
+    @staticmethod
+    def contiguous(value):
+        return copy(value)
+
+    @staticmethod
+    def concatenate(values, axis=0):
+        shape = list(values[0].shape)
+        shape[axis] = sum(value.shape[axis] for value in values)
+        return Array(("concatenate", tuple(value.payload for value in values)), values[0].dtype, shape=shape)
+
+    @staticmethod
+    def repeat(value, repeat, axis):
+        shape = list(value.shape)
+        shape[axis] *= repeat
+        return Array(("repeat", value.payload, repeat), value.dtype, shape=shape)
+
+    @staticmethod
+    def exp(value):
+        return Array(("exp", value.payload), value.dtype, shape=value.shape)
+
+    @staticmethod
+    def arange(count):
+        return Array(list(range(count)), "int32")
+
+    broadcast_shapes = staticmethod(broadcast)
+
+    @staticmethod
+    def split(value, cuts, axis):
+        bounds = [0, *cuts, value.shape[axis]]
+        result = []
+        for a, b in zip(bounds, bounds[1:]):
+            shape = list(value.shape)
+            shape[axis] = b - a
+            result.append(Array(("split", value.payload, a, b), value.dtype, shape=shape))
+        return result
+
+    @staticmethod
+    def stack(values, axis):
+        shape = list(values[0].shape)
+        shape.insert(axis, len(values))
+        return Array(("stack", tuple(v.payload for v in values)), values[0].dtype, shape=shape)
+
+    def native_kernel(self, **kwargs):
+        self.native.append(kwargs)
+        return [Array("native result", dtype, shape=shape)
+                for dtype, shape in zip(kwargs["output_dtypes"], kwargs["output_shapes"])]
 
 
 def extract(filename, names, scope):
