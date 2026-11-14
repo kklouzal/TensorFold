@@ -17,6 +17,7 @@ from tensorfold import cli_args
 from tensorfold.server import stacks, thinking_notes
 from tensorfold.server.memory_budget import MEMORY_FRACTION
 from tensorfold.serve_options import (
+    CUDA_HEAD_OPTIONS as _CUDA_HEAD_OPTIONS,
     check as _check_serve_options,
     check_numbers as _check_serve_numbers,
     prepare_service_options as _prepare_service_options,
@@ -431,13 +432,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     options.update(_model_overrides(args))
     if getattr(args, "draft_method", "auto") != "auto":
         options["draft_method"] = args.draft_method
-    for option, capability in (("lossless_head", "CUDA_LOSSLESS_HEAD"),
-                               ("delta4_head", "CUDA_DELTA4_HEAD"),
-                               ("prepare_global_prompt", "CUDA_PREPARE_GLOBAL_PROMPT"),
-                               ("dflash_head_w4a16", "CUDA_DFLASH_HEAD_W4A16"),
-                               ("clip_sampled_verification", "CUDA_CLIP_SAMPLED_VERIFICATION"),
-                               ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
-                               ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
+    for option, capability in _CUDA_HEAD_OPTIONS:
         if getattr(args, option, False) and getattr(family.package, capability, False):
             options[option] = True
     if getattr(args, "prefix_cache_bytes", None) is not None:

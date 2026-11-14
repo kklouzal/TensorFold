@@ -10,6 +10,15 @@ import threading
 from pathlib import Path
 from typing import Any
 
+# Boolean Gemma 4 CUDA serve options and the family capability that admits each one.
+CUDA_HEAD_OPTIONS = (("lossless_head", "CUDA_LOSSLESS_HEAD"),
+                     ("delta4_head", "CUDA_DELTA4_HEAD"),
+                     ("prepare_global_prompt", "CUDA_PREPARE_GLOBAL_PROMPT"),
+                     ("dflash_head_w4a16", "CUDA_DFLASH_HEAD_W4A16"),
+                     ("clip_sampled_verification", "CUDA_CLIP_SAMPLED_VERIFICATION"),
+                     ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
+                     ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q"))
+
 
 def check_numbers(args: argparse.Namespace) -> None:
     """Validate CLI floats before downloads or accelerator/resource acquisition.
@@ -396,13 +405,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         cache_config = read_config(config_dir if config_dir is not None else args.model)
         family.package.check_cuda_prefix_cache_metadata(cache_config)
     head_config = None
-    for option, capability in (("lossless_head", "CUDA_LOSSLESS_HEAD"),
-                               ("delta4_head", "CUDA_DELTA4_HEAD"),
-                               ("prepare_global_prompt", "CUDA_PREPARE_GLOBAL_PROMPT"),
-                               ("dflash_head_w4a16", "CUDA_DFLASH_HEAD_W4A16"),
-                               ("clip_sampled_verification", "CUDA_CLIP_SAMPLED_VERIFICATION"),
-                               ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
-                               ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
+    for option, capability in CUDA_HEAD_OPTIONS:
         value = getattr(args, option, False)
         flag = "--" + option.replace("_", "-")
         if type(value) is not bool:
