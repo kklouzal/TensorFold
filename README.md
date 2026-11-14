@@ -3151,6 +3151,18 @@ eight GPUs, with 24 full-context allocations and all 32 requested keys fitting
 the unchanged AUTO grant. Other shapes, full-history execution, conditional
 quality and performance remain pending. See [demand capture](docs/observed-graph-demand.md).
 
+With an `observed-demand-v1` catalogue that captures full-width keys
+`(participants * (depth + 1), participants)`, multi-request decode pads verify
+and batched MTP-refresh windows to depth + 1 rows whenever the round's exact key
+is absent, so variable draft counts replay captured graphs instead of running
+eagerly. Padded rows are never accepted; see
+[full-width frames](docs/observed-graph-demand.md#full-width-multi-request-frames).
+Descriptive single runs (Source40 `cf8c0ff6` + overlays, 8x V100 TP8/ETP4, MTP4
+conf 0.7, 64-token prompts, 400 greedy tokens, 79-key catalogue) moved aggregate
+decode from 47.3/25.2/35.0/52.4/73.1 tok/s to 47.3/58.6/77.0/103.0/127.7 tok/s at
+C1/C2/C4/C8/C24 (C16 124.2). The C1 greedy oracle is unchanged; concurrent
+outputs were not C1-identical before or after (batch-dependent numerics).
+
 A controlled [native ragged replay oracle](docs/observed-graph-demand.md)
 now compares actual `ExactStateGraphs` target/MTP `(28,8)` replay against eager
 execution on the same idle TP8 decoder using ordinary State reset/restaging and

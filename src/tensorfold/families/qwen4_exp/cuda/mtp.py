@@ -15,22 +15,26 @@ from .weights import Weights
 
 
 def mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Tensor | tuple[torch.Tensor, ...]]], *,
-              indexer_coordinates: tuple | None = None) -> list:
+              indexer_coordinates: tuple | None = None, last_rows: Sequence[int] | None = None) -> list:
     """Own all MTP input/window preparation before any dependent collective."""
     context = getattr(b, "input_preparation_context", None)
+    run = lambda: _mtp_stage(b, windows, indexer_coordinates=indexer_coordinates, last_rows=last_rows)
     if context is not None:
-        return context.prepare("mtp-stage", lambda: _mtp_stage(b, windows, indexer_coordinates=indexer_coordinates))
+        return context.prepare("mtp-stage", run)
     if getattr(b, "mtp_indexer_position", None) is not None:
         raise RuntimeError("bound MTP staging requires its installed cohort preparation owner")
-    return _mtp_stage(b, windows, indexer_coordinates=indexer_coordinates)
+    return run()
 
 
 def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Tensor | tuple[torch.Tensor, ...]]], *,
-              indexer_coordinates: tuple | None = None) -> list:
+              indexer_coordinates: tuple | None = None, last_rows: Sequence[int] | None = None) -> list:
     """Stage original next IDs and complete HC inputs under one buffer event.
 
     A deferred window may provide two HC spans (the previous boundary and the
     current target chunk), avoiding a concatenated embedding/feature archive.
+    ``last_rows`` (one count per window, default its whole length) selects the
+    row whose draft logits each window reports; later rows of a padded window
+    are tentative cache rows that the next refresh or proposal overwrites.
     Explicit coordinates describe those hidden/cache rows, never next IDs.
     Strided HC reads are supported. Sources aliasing any staged destination
     are snapshotted before writes unless their semantic layout exactly matches
@@ -55,6 +59,11 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
                 or sum(part.shape[0] for part in parts) != len(next_tokens)):
             raise ValueError("MTP staging requires one complete HC window in at most two owned spans")
         pieces.append(parts)
+    if last_rows is None:
+        last_rows = [a1 - a0 for _, a0, a1 in segs]
+    elif (len(last_rows) != len(segs) or len(segs) < 2
+          or any(type(count) is not int or not 1 <= count <= a1 - a0 for count, (_, a0, a1) in zip(last_rows, segs))):
+        raise ValueError("MTP last rows require one in-window count per window of a batched frame")
     n = segs[-1][2]
     if indexer_coordinates is None and any(getattr(st, "media_input_span", None) is not None
                                            for st, _begin, _end in segs):
@@ -91,7 +100,7 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
                 copy[1] = copy[1].clone()
         b.ids_host_array[:n] = [int(t) for _, next_tokens, _ in windows for t in next_tokens]
         b.ids[:n].copy_(b.ids_host[:n], non_blocking=True)
-        b.last_host_array[:len(segs)] = [a1 - 1 for _, _, a1 in segs]
+        b.last_host_array[:len(segs)] = [a0 + count - 1 for (_, a0, _), count in zip(segs, last_rows)]
         b.last[:len(segs)].copy_(b.last_host[:len(segs)], non_blocking=True)
         for destination, source, _overlap in copies:
             destination.copy_(source, non_blocking=True)

@@ -232,3 +232,30 @@ This establishes the requested 36-key fit and controlled short-history replay
 checks only. It is not full-history, conditional accuracy, token-throughput or
 candidate-adoption evidence. The legacy six-lane failure and other catalogue,
 operator, model-quality and matched performance gates remain open.
+
+## Full-width multi-request frames
+
+Multi-request decode rounds have variable verify and MTP-refresh row totals
+(one row plus each request's drafts, which vary with the confidence stop), so an
+exact `(rows, participants)` catalogue cannot cover them. When a round's exact
+key was not captured but its full-width key `(participants * (depth + 1),
+participants)` was, `MultiDecoder` pads every verify window to depth + 1 rows
+and every batched MTP refresh window to depth + 1 rows
+(`ExactStateGraphs.full_width`). Padded rows repeat the window's last real
+input; they are ordinary tentative rows past the real window, as rejected
+drafts are. `accept()` sees only the real window, commits keep only accepted
+rows, and each MTP refresh reports draft logits from its real last row
+(`mtp_stage(last_rows=...)`). Grammar-constrained, mixed prefill, rotor-lookup,
+image and media rounds keep their exact frames. Single-window MTP frames never
+pad (their head reads the physical last row).
+
+The catalogue for this mode is: verify and MTP `(r,1)` for r = 1..5, verify and
+MTP `(5p,p)` for p = 2..24, and MTP proposal keys `(k,k)` for k = 1..24
+(79 keys). Evidence (Source40 image `cf8c0ff6` plus source overlays, TP8/ETP4,
+MTP4 conf 0.7, 64-token prompts, 400 greedy tokens, single descriptive runs):
+see the README throughput table. A control build that captured only the
+full-width C1 verify key `(5,1)` (so every C1 round with fewer than four drafts
+was padded) reproduced the six-prompt 160-token greedy oracle bit-identically,
+showing padded rows leave real-row target logits unchanged. Concurrent greedy
+outputs already differed from C1 outputs before this change (batch-size
+dependent numerics); padding does not make them C1-identical.

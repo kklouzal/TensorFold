@@ -2269,10 +2269,22 @@ class MultiDecoder:
         self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
         t0 = time.perf_counter() if draft_started is None else draft_started
+        # A multi-request round whose exact row count has no captured key pads
+        # every window to depth + 1 rows when that full-width key is captured.
+        # Acceptance, commits and outputs read only the real rows (accept() sees
+        # the real window); padded rows are tentative rows that are never kept.
+        width = self.depth + 1
+        pad = (dflash is None and not grammars and not (self.filling and self.converged)
+               and not self.buf.rotor_lookup and all(s.st.image_positions is None for s in live)
+               and all(len(s.drafts) < width for s in live)
+               and self._full_width("verify", sum(1 + len(s.drafts) for s in live), len(live)))
+
         def prepare_decode():
             windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
+            staged = windows if not pad else [(st, tokens + [tokens[-1]] * (width - len(tokens)))
+                                              for st, tokens in windows]
             # N-gram rows are read behind the target layers before their layer.
-            segs = stage(self.w, self.buf, windows, late=True)
+            segs = stage(self.w, self.buf, staged, late=True)
             if self.native_gdn_capture:
                 frame = self.round_tables.native_frame(segs, self.buf, allow_single=True)
                 if frame is None:
@@ -2586,6 +2598,18 @@ class MultiDecoder:
         todo = [(s, a0, keep) for s, a0, keep in streams if self.mbuf is not None]
         if not todo:
             return
+        # As in the verify frame, a batched refresh without its exact captured
+        # key pads each window to depth + 1 rows (repeating its last real input);
+        # draft logits come from each window's real last row, and the padded
+        # cache rows lie past mtp_len, where the next proposal or refresh writes.
+        width = self.depth + 1
+        pad = (len(todo) > 1 and any(room[s.sid] > 0 for s, _, _ in todo)
+               and all(len(keep) <= width and s.st.mtp_len - s.st.mtp_drafted + width <= s.st.capacity
+                       for s, _, keep in todo)
+               and all(getattr(s.st, "media_profile_identity", None) is None
+                       and getattr(s.st, "mtp_boundary", None) is None for s, _, _ in todo)
+               and self._full_width("mtp", sum(len(keep) for _, _, keep in todo), len(todo)))
+
         def prepare_refresh():
             for s, _, _ in todo:
                 st = s.st
@@ -2593,7 +2617,14 @@ class MultiDecoder:
                     st.set_mtp_len(st.mtp_len - st.mtp_drafted)
                     st.mtp_drafted = 0
             windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
-            return mtp_stage(self.mbuf, windows)
+            if not pad:
+                return mtp_stage(self.mbuf, windows)
+            padded = []
+            for st, keep, rows in windows:
+                extra = width - len(keep)
+                padded.append((st, list(keep) + [keep[-1]] * extra,
+                               rows if not extra else (rows, rows[-1:].expand(extra, -1))))
+            return mtp_stage(self.mbuf, padded, last_rows=[len(keep) for _, keep, _ in windows])
 
         context = getattr(self.mbuf, "input_preparation_context", None)
         segs = prepare_refresh() if context is None else context.prepare("mtp-refresh-window", prepare_refresh)
@@ -2609,7 +2640,7 @@ class MultiDecoder:
                 st.set_mtp_len(st.mtp_len + len(keep))
 
         words = KVWords(segs, self.kv_host, absorbed)    # its status words join the first draft's readback
-        active = [(s, a1 - 1) for (s, _, _), (_, _, a1) in zip(todo, segs)]
+        active = [(s, a0 + len(keep) - 1) for (s, _, keep), (_, a0, _) in zip(todo, segs)]
         taking = [index for index, (s, _) in enumerate(active) if room[s.sid] > 0]
         if not taking:
             words.settle()
@@ -2667,6 +2698,11 @@ class MultiDecoder:
 
             words = KVWords(segs, self.kv_host, chained)  # the next pick's readback checks them (a step has one)
             active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
+
+    def _full_width(self, kind, rows, participants):
+        """Whether this frame pads to the captured depth + 1 rows per participant."""
+        full = getattr(getattr(getattr(self, "graphs", None), "bound", None), "full_width", None)
+        return full is not None and full(kind, rows, participants)
 
     def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None) -> torch.Tensor | None:
         """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
