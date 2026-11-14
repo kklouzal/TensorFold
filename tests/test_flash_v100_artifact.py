@@ -1,6 +1,5 @@
 """Sealed artifact boundaries and explicit FD/role ownership; no native math proof."""
 import hashlib
-import json
 from pathlib import Path
 import subprocess
 import sys

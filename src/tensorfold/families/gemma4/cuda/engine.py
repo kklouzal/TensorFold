@@ -44,12 +44,6 @@ def _prefill_end(start: int, length: int, width: int, blocks) -> int:
     return end
 
 
-def _media_key(vision) -> tuple:
-    if vision is None:
-        return ()
-    return (tuple(vision.image_hashes), tuple(vision.video_hashes), tuple(vision.blocks))
-
-
 def _accepted(sampled, inputs, room: int, eos) -> list[int]:
     """Sample after the anchor; a proposal survives only its parent's choice."""
     chosen = []

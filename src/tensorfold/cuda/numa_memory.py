@@ -138,10 +138,6 @@ def configure_gpu_numa(device, *, torch_module=None):
     return discover_gpu_uuid(torch_module.cuda.get_device_properties(device).uuid)
 
 
-def ensure_copy_thread_local(placement):
-    return placement.scope()
-
-
 def backing_bytes(size, *, page_size=None):
     if type(size) is not int or size < 0:
         raise ValueError("host byte extent must be a nonnegative integer")
@@ -298,12 +294,6 @@ class HostAllocator:
     def _retired(self, owner):
         with self._lock:
             self.buffers = [item for item in self.buffers if item is not owner]
-
-    def allocate_archive(self, shape, dtype, **kwargs):
-        return self(shape, dtype, pinned=False, **kwargs)
-
-    def allocate_pinned(self, shape, dtype, **kwargs):
-        return self(shape, dtype, pinned=True, **kwargs)
 
     @property
     def receipt(self):

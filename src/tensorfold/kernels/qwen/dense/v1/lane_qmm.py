@@ -155,7 +155,6 @@ _COOP_TEMPLATE = r"""
 """
 _MAIN = tensor_source(_MAIN_TEMPLATE)
 _MAIN_TILED = tensor_source(_MAIN_TEMPLATE, tiled=True)
-_COOP = tensor_source(_COOP_TEMPLATE, coop=True)
 
 _kernels: dict[str, Any] = {}
 

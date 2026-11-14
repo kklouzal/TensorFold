@@ -32,13 +32,6 @@ def _slot_pattern(literals):
     return re.compile("|".join(re.escape(k) for k, _ in sorted(literals, key=lambda p: -len(p[0]))))
 
 
-def restore_literals(text, literals):
-    if not literals:
-        return text
-    values = dict(literals)
-    return _slot_pattern(literals).sub(lambda match: values.get(match.group(), match.group()), text)
-
-
 def _restored_origin(text, literals):
     """Media output: expanded trusted syntax plus the same opaque literal slots."""
     values, pieces, at = dict(literals), [], 0

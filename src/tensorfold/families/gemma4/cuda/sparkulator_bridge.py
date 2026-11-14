@@ -21,19 +21,10 @@ class BridgeSnapshot:
 
 class SparkulatorState:
     def __init__(self, owner, target_state):
-        self._initialize(owner.target, target_state, owner.context_limit, owner)
-
-    @classmethod
-    def from_target(cls, target, target_state, context_limit):
-        """Real-main-only recorder/conditioner; no assistant model or fake head."""
-        value = cls.__new__(cls)
-        value._initialize(target, target_state, context_limit, None)
-        return value
-
-    def _initialize(self, target, target_state, context_limit, owner):
         from .forward import Gemma4Target
         from .state import State
 
+        target, context_limit = owner.target, owner.context_limit
         if not isinstance(target, Gemma4Target) or not isinstance(target_state, State):
             raise ValueError("Sparkulator conditioning requires actual main target/state owners")
         from transformers import Gemma4TextConfig

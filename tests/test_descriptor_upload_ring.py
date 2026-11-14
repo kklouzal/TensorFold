@@ -7,7 +7,6 @@ import torch
 from tensorfold.families.qwen4_exp.cuda import descriptor_upload as upload
 from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
 from tensorfold.families.qwen4_exp.cuda.owner_preparation import parse_preparation
-from tensorfold.families.qwen4_exp.kv_formats import get_pair
 from tests.test_native_owner_adapter import _weights
 
 

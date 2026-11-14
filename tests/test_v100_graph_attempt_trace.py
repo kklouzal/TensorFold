@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from tools.v100_commit_trace import CommitTrace, resources, graph_histogram
+from tools.v100_commit_trace import CommitTrace, graph_histogram
 from tests.test_flashnext_exact_graphs import owner
 
 

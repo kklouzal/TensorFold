@@ -123,11 +123,6 @@ def prepare_region(client, name, content, legacy_ids=None, *, source_content_sha
             'chat_equals_raw': opened == raw, 'frame_prefix_tokens': prefix}
 
 
-def prepare_nonces(client):
-    return {key: client.tokens('nonce-' + key, {'model': 'gemma4-26b-a4b',
-        'prompt': f' Qualification nonce shared-prefix-{key}. ', 'add_special_tokens': False}) for key in NONCES}
-
-
 def cold_raw(region, nonce):
     prefix, raw = region['frame_prefix_tokens'], region['raw_ids']
     if region['name'] == 'short':

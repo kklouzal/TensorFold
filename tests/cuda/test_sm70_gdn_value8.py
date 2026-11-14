@@ -1,5 +1,4 @@
 """Unselected value8 native candidate against the unchanged native GDN oracle."""
-from types import SimpleNamespace
 import hashlib
 from pathlib import Path
 import json

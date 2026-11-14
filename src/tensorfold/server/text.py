@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from tensorfold.markup_lex import CALL_MARKS as _CALLS, markup_regions, partial_call_suffix, unquoted_find
@@ -12,8 +11,6 @@ _THINK_END = "</think>"
 # (what a reply writes to open its think block, what closes it): Qwen's prompt opens the block; Gemma 4's reply does
 THINK_MARKERS = ("", _THINK_END)
 CHANNEL_MARKERS = ("<|channel>thought", "<channel|>")
-# Qwen closers doubled after a call: markup the end parser collapses (``normalize_qwen_tool_markup``), never text
-_STRAY_QWEN_CLOSES_RE = re.compile(r"(?:\s*</tool_call>)*")
 
 
 def _partial_tag(text: str, tag: str) -> int:
