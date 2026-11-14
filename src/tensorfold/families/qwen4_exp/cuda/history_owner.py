@@ -25,6 +25,7 @@ from tensorfold.cuda.sm70.attention_backends import (OWNER_FAMILY as ATEN_KERNEL
 
 
 # Component-only, process-fixed trial. Ordinary serving retains the incumbent.
+_PROMPT_ATTENTION = os.environ.get("TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION", "fused-v1")
 _PRIVATE_EMPTY_PREFIX = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX", "inherit")
 if _PRIVATE_EMPTY_PREFIX not in ("inherit", "cpu-empty-v1"):
     raise ValueError("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX requires inherit or cpu-empty-v1")
@@ -1115,7 +1116,23 @@ class OwnerBuffers:
             return self.aten_tiles.run(self, rows, views, OWNER_MAX_KEYS)
         bits, codec = self.native_pair.key.bits, self.native_pair.key.codec
         common = {"group_start": self.rank // 4 * 4, "page_tokens": self.native_page_tokens, "layer": self.native_layer}
-        if self.native_kernel_family == native.RN_KERNEL_FAMILY:
+        if (self.native_kernel_family == native.RN_KERNEL_FAMILY and self.prefill and (bits, codec) == (8, 0)
+                and _PROMPT_ATTENTION != "0"):
+            # Prefill rows: tensor-core local attention over only this rank's selected pages (one pass
+            # for (m, l) and the unnormalized local sum), then the unchanged stats/values collectives.
+            from tensorfold.cuda.sm70 import prompt_attention as prompt
+
+            stats_words = 8 * rows * 12 * 2
+            unnormalized = self.partials.reshape(-1)[stats_words:stats_words + rows * 12 * 256].view(rows, 12, 256)
+            prompt.fused_local(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
+                               unnormalized, group_start=common["group_start"],
+                               page_tokens=self.native_page_tokens, layer=self.native_layer)
+            self.gather_native(views["local_stats"], views["all_stats"])
+            native.rn_merge_statistics(views["all_stats"], views["row_table"], views["global_stats"], **common)
+            # all_stats[rank] is this rank's (m, l); local_stats is overwritten by local_values below.
+            prompt.weight_values(unnormalized, views["all_stats"][self.rank], views["global_stats"],
+                                 views["row_table"], views["local_values"], layer=self.native_layer)
+        elif self.native_kernel_family == native.RN_KERNEL_FAMILY:
             native.rn_local_statistics(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
                 key_bits=bits, key_codec=codec, heads_per_block=self.native_heads_per_block, **common)
             self.gather_native(views["local_stats"], views["all_stats"])

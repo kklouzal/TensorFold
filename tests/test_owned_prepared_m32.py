@@ -35,9 +35,9 @@ def test_each_paid_logical_extent_matches_forecast_and_reconciles_before_state(r
 def test_actual_48_layer_forecast_is_not_lost_at_120_row_capacity():
     cfg = metadata()
     cfg['layer_types'] = ['linear_attention'] * 36 + ['full_attention'] * 12
-    assert p.workspace_bytes_from_text(cfg, 120, 8, enabled=True, owned_panels=True) == 3974912
+    assert p.workspace_bytes_from_text(cfg, 120, 8, enabled=True, owned_panels=True) == 3974912 + 2622080  # + small-row split-K workspace
     plan = p.PreparedM32(cfg, {'decode': 120, 'mtp': 120, 'prefill': 256}, 'cpu')
-    assert sum(plan.forecast.values()) == 7949824
+    assert sum(plan.forecast.values()) == 2 * (3974912 + 2622080)
     assert set(plan.role_rows) == {'decode', 'mtp'}
 
 

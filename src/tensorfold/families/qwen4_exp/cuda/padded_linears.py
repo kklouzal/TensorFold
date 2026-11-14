@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import torch
 
+from tensorfold.cuda.sm70 import dense_small
+
 # Private qualification policy; ordinary Buffers and generic matmul remain selected.
 _ENABLED = False
 ROWS = 32
@@ -46,6 +48,7 @@ def workspace_bytes(c, rows, head_width, world, *, enabled=None, prefill=False, 
     maximum_input = max(c.streams * c.hidden, c.ple_dim, c.nv * 128, c.heads * c.head_dim, c.low)
     extra += ROWS * maximum_input * 2
     extra += physical_rows * (c.low + c.low + c.streams) * 4
+    extra += dense_small.workspace_bytes()   # small-row split-K partials and arrival counters
     return extra
 
 
@@ -96,6 +99,8 @@ class PaddedLinears:
         self.partial = {width: torch.zeros((self.physical_rows, width), dtype=torch.float32, device=w.device)
                         for width in (c.low, c.low + c.streams)}
         self.outputs.extend(self.partial.values())
+        # Owned before capture; serves this Buffers' single ordered stream only.
+        self.small = dense_small.Workspace(w.device)
 
     def tensor(self, name, shape, dtype, *, zero=False):
         expected = self.layout.get(name)
@@ -171,7 +176,7 @@ class PaddedLinears:
                 panel = source[start:start + ROWS]
             destination = target[start:start + ROWS]
             version = None if destination.is_inference() else destination._version
-            matrix.matmul_prepared(panel, destination)
+            self._prepared(matrix, panel, destination, count)
             if version is not None and destination._version == version:
                 torch.autograd.graph.increment_version(destination)
         return out
@@ -193,8 +198,18 @@ class PaddedLinears:
                 return None
             source = self.input_storage[:ROWS * matrix.k].view(ROWS, matrix.k)
             source[:x.shape[0]].copy_(x)
-        matrix.matmul_prepared(source, target)
+        self._prepared(matrix, source, target, x.shape[0])
         return out
+
+    def _prepared(self, matrix, panel, destination, count):
+        """Logical rows through the small-row kernel; padded M32 panel product otherwise.
+
+        The small-row kernel writes only the ``count`` logical rows; padding rows
+        keep their previous (never consumed) contents.
+        """
+        small = getattr(matrix, "matmul_small", None)
+        if small is None or small(panel[:count], destination[:count], self.small) is None:
+            matrix.matmul_prepared(panel, destination)
 
     def partials(self, matrix, x):
         owner = self.partial.get(matrix.n)
@@ -226,8 +241,8 @@ def owned_numerical_identity():
     return {'policy': OWNED_POLICY, 'roles': ['decode', 'mtp'], 'prefill': 'unchanged',
             'logical_rows_limit': OWNED_MAX_ROWS, 'panel_rows': ROWS,
             'physical_rows': 'ceil(logical_rows/32)*32',
-            'matmul': 'existing-GGUFDense-dense32-or-GGUFConcat-concat32',
-            'concat': 'original-part-GEMMs;original-order;original-full-N',
+            'matmul': 'sm70-small-m-wmma-stream-v1-logical-rows-else-existing-dense32-or-concat32',
+            'concat': 'joined-weight-small-rows-else-original-part-GEMMs;original-order;original-full-N',
             'inputs': 'fp16', 'outputs': 'existing-fp16-or-fp32',
             'HC_partials': 'fp32', 'reference_bit_identity': False,
             'unsupported_outputs': 'existing-reference-provider',
@@ -280,7 +295,8 @@ class PreparedM32:
             raise ValueError('owned prepared M32 lacks its complete paid field catalogue')
         logical = sum(prod(shape) * size for shape, size in buffers.layout.values())
         payload = sum(value.numel() * value.element_size() for value in
-                      (*buffers.owners.values(), buffers.input_storage, *buffers.partial.values()))
+                      (*buffers.owners.values(), buffers.input_storage, *buffers.partial.values(),
+                       *buffers.small.tensors()))
         if payload - logical != self.forecast[role]:
             raise ValueError('owned prepared M32 allocation differs from its extra-byte forecast')
         self.reconciled_bytes[role] = payload - logical

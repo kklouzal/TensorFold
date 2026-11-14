@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 from tensorfold.cuda.direct_read import Reader
-from tensorfold.cuda.sm70 import gguf_ops
+from tensorfold.cuda.sm70 import dense_small, gguf_ops
 from tensorfold.cleanup import raise_failures
 
 from tensorfold.gguf_file import FORMATS, PackedTensor, resolve_gguf
@@ -267,6 +267,17 @@ class GGUFDense:
             raise ValueError("prepared GGUF output must not overlap its inputs")
         return gguf_ops.dense32(x, self.weight, out)
 
+    def matmul_small(self, x, out, workspace):
+        """Logical 1..32 rows through the SM70 small-row kernel; None keeps the M32 path."""
+        return _matmul_small(self, self.weight, x, out, workspace)
+
+
+def _matmul_small(owner, weight, x, out, workspace):
+    if (weight is None or not owner.can_matmul_prepared(out.dtype) or not dense_small.selected(x, weight, out)
+            or torch._C._overlaps(out, x) or torch._C._overlaps(out, weight)):
+        return None
+    return dense_small.matmul(x, weight, out, workspace)
+
 
 class GGUFConcat:
     kernel = "gguf"
@@ -356,6 +367,10 @@ class GGUFConcat:
         if torch._C._overlaps(out, x) or any(torch._C._overlaps(out, part.weight) for part in self.parts):
             raise ValueError("prepared GGUF output must not overlap its inputs")
         return gguf_ops.concat32(x, (part.weight for part in self.parts), out)
+
+    def matmul_small(self, x, out, workspace):
+        """One small-row call over the joined weight (parts are its row views)."""
+        return _matmul_small(self, None if self.fused is None else self.fused.weight, x, out, workspace)
 
 
 @dataclass

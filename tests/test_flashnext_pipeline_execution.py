@@ -234,6 +234,7 @@ def test_actual_padded_stage_layout_uses_local_recurrent_count_without_changing_
             actual_extra += shape[0] * (32 - shape[1]) * shape[2] * size
     actual_extra += b.padded_linears.input_storage.numel() * b.padded_linears.input_storage.element_size()
     actual_extra += sum(t.numel() * t.element_size() for t in b.padded_linears.partial.values())
+    actual_extra += sum(t.numel() * t.element_size() for t in b.padded_linears.small.tensors())
     assert padded_linears.workspace_bytes(w.cfg, 3, head_width, 8, enabled=True, linear_layers=18) == actual_extra
     c = w.cfg
     text = dict(hidden_size=c.hidden, hc_count=c.streams, hc_lowrank=c.low, num_attention_heads=c.heads * 8,

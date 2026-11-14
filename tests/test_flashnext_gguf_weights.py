@@ -47,9 +47,11 @@ def test_native32_fulltile_guard_dispatch_and_tail_use_frozen_oracle(rows, monke
         calls.append((source.shape, target.shape))
         return _incumbent_dense_m32(linear, source, target)
     monkeypatch.setattr(linear, "matmul_prepared", prepared)
-    expected = _incumbent_dense_m32(linear, x, torch.empty_like(out))
+    # Up to 32 rows keep the fixed-M tile (prepared full tiles); larger calls are one GEMM.
+    expected = (_incumbent_dense_m32(linear, x, torch.empty_like(out)) if rows <= 32
+                else torch.mm(x, linear.weight.T))
     assert linear.matmul_reference(x, out=out) is out
-    assert len(calls) == rows // 32
+    assert len(calls) == (rows // 32 if rows <= 32 else 0)
     assert torch.equal(out.view(torch.int16), expected.view(torch.int16))
 
 

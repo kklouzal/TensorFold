@@ -40,7 +40,7 @@ def test_preload_geometry_matches_local_buffers_and_owned_storage(world, rows):
         assert live.untyped_storage().data_ptr() == owner.untyped_storage().data_ptr()
         assert owner.is_contiguous()
         assert all(part.is_contiguous() for part in owner.unbind(0)) if live.ndim == 3 else live.is_contiguous()
-    owned = [*buffers.owners.values(), buffers.input_storage, *buffers.partial.values()]
+    owned = [*buffers.owners.values(), buffers.input_storage, *buffers.partial.values(), *buffers.small.tensors()]
     actual = sum(t.numel() * t.element_size() for t in owned) - logical_bytes
     forecast = prepared.workspace_bytes(c, rows, w.head.n, world, enabled=True)
     assert actual == forecast

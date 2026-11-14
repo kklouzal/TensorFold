@@ -298,6 +298,8 @@ class NCCL:
         self._opened = False
         self.native_state_slots_highwater = 0
         self.native_nofile_hard_limit = None
+        self.small_gather = None  # Opt-in native path for small all-gathers (small_gather.py).
+        self.small_gather_bytes = 0
 
     def bind_native_nofile(self, limit: int) -> None:
         """Native socket/vector capacity survives model drains and lower limits."""
@@ -405,6 +407,16 @@ class NCCL:
             self._check(self.lib.ncclCommInitRank(ctypes.byref(self.comm), world, uid, rank))
             if not self.comm.value:
                 raise RuntimeError("NCCL initialization returned no communicator")
+            capacity = 0
+            if world > 1:
+                from .small_gather import configured_capacity, open_small_gather
+
+                capacity = configured_capacity()
+            if capacity:
+                self.small_gather = open_small_gather(self.store, key, rank, world, capacity)
+                self.small_gather_bytes = capacity if self.small_gather is not None else 0
+                if self.small_gather is None and rank == 0:
+                    print("[tensorfold] small all-gather unavailable for this cohort's topology; using NCCL", flush=True)
         finally:
             store = store_origin = None
 
@@ -468,6 +480,10 @@ class NCCL:
                 and source != destination + self.rank * size):
             raise ValueError("all_gather: overlapping input must be this rank's exact receive slice")
         stream = torch._C._cuda_getCurrentRawStream(self.device.index)
+        small = self.small_gather
+        if small is not None and 0 < size <= self.small_gather_bytes:
+            small.gather(source, destination, size, stream)
+            return
         self._check(self.lib.ncclAllGather(source, destination, count, _DTYPES[dtype],
                                            self.comm, stream))
 
@@ -496,6 +512,8 @@ class NCCL:
                     torch.cuda.synchronize(self.device)
                     fenced = True
                 else:
+                    if self.small_gather is not None:
+                        self.small_gather.abort()  # Spinning small gathers exit; their outputs are undefined.
                     # Rank zero's listener departure wakes its idle peer, which
                     # then enters the same failed-operation teardown policy.
                     self._retire_store()
@@ -510,6 +528,9 @@ class NCCL:
                 self.comm = ctypes.c_void_p()
             if self.device is not None and not fenced:
                 torch.cuda.synchronize(self.device)
+            if self.small_gather is not None:
+                small, self.small_gather = self.small_gather, None
+                small.release()  # After the device fence: no small gather is in flight on this rank.
             self._retire_store()
             self.retired = True
 
