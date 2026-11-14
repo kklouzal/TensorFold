@@ -56,6 +56,48 @@ class Reader:
         raw = self._buffered(path, offset, n)
         return raw.to(device) if cuda else raw
 
+    def read_staged(self, path: str | Path, offset: int, n: int, device: str | torch.device) -> torch.Tensor:
+        """Bytes [offset, offset + n) of ``path`` as a new uint8 CUDA tensor, read through the page cache.
+
+        Buffered reads (shared page cache across same-host ranks) land in this reader's two reused
+        page-locked pieces, and each piece's upload is queued on the current stream without waiting, so
+        the next read overlaps it. The result is ordered on that stream; ``close`` retires the pieces.
+        """
+
+        if type(offset) is not int or type(n) is not int or offset < 0 or n < 0:
+            raise ValueError("checkpoint byte offsets and lengths must be nonnegative integers")
+        if torch.device(device).type != "cuda" or not hasattr(os, "preadv"):
+            raise ValueError("staged checkpoint reads require a CUDA destination and positional reads")
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            byte_range(offset, n, os.fstat(fd).st_size, path)
+            self._pieces()
+            out = torch.empty((n,), dtype=torch.uint8, device=device)
+            stream = torch.cuda.current_stream(out.device)
+            at = 0
+            while at < n:
+                take = min(PIECE, n - at)
+                slot = self.staging[self.turn]
+                self.turn ^= 1
+                piece, copied = slot
+                if copied is not None:
+                    copied.synchronize()          # the piece's previous copy has finished
+                self._fill(fd, memoryview(piece.numpy())[:take], offset + at, take, path)
+                out[at:at + take].copy_(piece[:take], non_blocking=True)
+                slot[1] = torch.cuda.Event()
+                slot[1].record(stream)
+                at += take
+            return out
+        finally:
+            os.close(fd)
+
+    def _pieces(self) -> None:
+        if not self.staging:
+            for _ in range(2):                    # pinned blocks need not be page-aligned: align the pieces here
+                block = torch.empty((PIECE + 3 * ALIGN,), dtype=torch.uint8, pin_memory=True)
+                lead = -block.data_ptr() % ALIGN
+                self.staging.append([block[lead:lead + PIECE + 2 * ALIGN], None])
+
     def close(self) -> None:
         """Give the pinned staging back to the system, not to the host allocator's cache."""
 
@@ -121,11 +163,7 @@ class Reader:
         try:
             size = os.fstat(fd).st_size
             byte_range(offset, n, size, path)
-            if not self.staging:
-                for _ in range(2):                # pinned blocks need not be page-aligned: align the pieces here
-                    block = torch.empty((PIECE + 3 * ALIGN,), dtype=torch.uint8, pin_memory=True)
-                    lead = -block.data_ptr() % ALIGN
-                    self.staging.append([block[lead:lead + PIECE + 2 * ALIGN], None])
+            self._pieces()
             end = _up(size)
             out = torch.empty((n,), dtype=torch.uint8, device=device)
             stream = torch.cuda.current_stream(out.device)   # the copies' stream, whichever device is current

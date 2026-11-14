@@ -38,8 +38,20 @@ def _ranges(indices):
     """Keep arbitrary converter permutations as a small ordered list of row runs."""
     if type(indices) is range and indices.step == 1:
         return ((indices.start, indices.stop - indices.start),) if indices.start < indices.stop else ()
+    values = indices if isinstance(indices, (list, tuple)) else list(indices)
+    if not values:
+        return ()
+    array = np.array(values)
+    if (array.ndim == 1 and array.dtype.kind == "i"
+            and -(1 << 62) < int(array.min()) and int(array.max()) < 1 << 62):
+        # Vectorized run detection over machine integers (expert row lists are
+        # long); the bound keeps every adjacent difference exact in int64.
+        breaks = np.flatnonzero(np.diff(array) != 1) + 1
+        starts = np.concatenate(([0], breaks))
+        counts = np.diff(np.concatenate((starts, [len(array)])))
+        return tuple(zip(array[starts].tolist(), counts.tolist()))
     result = []
-    for index in indices:
+    for index in values:
         if result and result[-1][0] + result[-1][1] == index:
             lo, count = result[-1]
             result[-1] = lo, count + 1
@@ -1048,6 +1060,7 @@ def _packed(plan, reader, device, *, _onecat_owner=None):
         max_rows = min(max_rows // 160 * 160, sink.max_rows)
         if max_rows < 160:
             raise MemoryError("cold GU chunk cannot hold a complete expert")
+    staged = result.device if sink is None and result.device.type == "cuda" and hasattr(reader, "read_staged") else None
     runs = []
     for first, count in plan.row_ranges:
         for start in range(first, first + count, max_rows):
@@ -1064,16 +1077,25 @@ def _packed(plan, reader, device, *, _onecat_owner=None):
             group.append(runs[at])
             lo, hi = min(lo, begin), max(hi, begin + count)
             at += 1
-        raw = reader.read(plan.source.path, plan.source.offset + lo * plan.source.row_bytes,
-                          (hi - lo) * plan.source.row_bytes, "cpu").reshape(hi - lo, plan.source.row_bytes)
-        indices = torch.tensor([index - lo for begin, count in group for index in range(begin, begin + count)],
-                               dtype=torch.int64)
-        parts = [raw[:, begin:begin + length].index_select(0, indices) for begin, length in plan.byte_segments]
+        span = (plan.source.offset + lo * plan.source.row_bytes, (hi - lo) * plan.source.row_bytes)
+        # Without a host consumer, the whole read span is uploaded through the reader's reused pinned
+        # pieces and the byte-exact row/segment selection runs on the device.
+        raw = (reader.read(plan.source.path, *span, "cpu") if staged is None else
+               reader.read_staged(plan.source.path, *span, staged)).reshape(hi - lo, plan.source.row_bytes)
+        rows = sum(count for _, count in group)
+        if len(group) == 1 and group[0][0] == lo and rows == hi - lo:
+            parts = [raw[:, begin:begin + length] for begin, length in plan.byte_segments]
+        else:
+            indices = torch.tensor([index - lo for begin, count in group for index in range(begin, begin + count)],
+                                   dtype=torch.int64)
+            if staged is not None:
+                indices = indices.to(staged)
+            parts = [raw[:, begin:begin + length].index_select(0, indices) for begin, length in plan.byte_segments]
         selected = parts[0].contiguous() if len(parts) == 1 else torch.cat(parts, dim=1)
         if sink is not None:
             sink.consume(selected, destination)
-        result[destination:destination + indices.numel()].copy_(selected.to(device))
-        destination += indices.numel()
+        result[destination:destination + rows].copy_(selected.to(device))
+        destination += rows
     return GGUFPacked(result, plan.source.ggml_type, plan.n, plan.k, plan.column_offset)
 
 
