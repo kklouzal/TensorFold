@@ -3265,6 +3265,9 @@ and its unchanged companion documents in [ProviderOne Implementation Docs](Provi
 SC117/V100 is the immediate delivery priority while selected existing profiles,
 including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
 separates requested, source-implemented, qualified and effective behavior.
+The [same-hardware 1Cat-vLLM optimization survey](docs/onecat-friend-v100-optimizations.md)
+catalogues a separately tuned 8x V100 1Cat-vLLM deployment (Flash-Next and DeepSeek-V4.1):
+verified gains, rejected paths and a ranked TensorFold adoption list.
 
 This is an authority/source-baseline checkpoint, not a package or runtime
 rebrand. Current TensorFold imports, CLI, native names, images and remotes keep
