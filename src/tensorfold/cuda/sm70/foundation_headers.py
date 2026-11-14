@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import stat
 import threading
 
 from tensorfold.cleanup import raise_failures
@@ -55,11 +56,15 @@ def _compiler_options(kwargs, roots):
                 raise ValueError("selected foundation rejects unbound header/preprocessor options in " + key)
 
 
-def _stat(path):
-    value = path.stat()
-    if path.is_symlink() or not path.is_file():
+def _identity(value):
+    # One lstat: a symlink or any non-regular entry is refused, so it equals stat.
+    if not stat.S_ISREG(value.st_mode):
         raise ValueError("selected foundation inputs must be ordinary canonical files")
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _stat(path):
+    return _identity(os.lstat(path))
 
 
 def _read(path, consume):
@@ -112,17 +117,23 @@ def _inventory(roots):
     for root in roots:
         if root.is_symlink() or root.resolve(strict=True) != root or not root.is_dir():
             raise ValueError("selected foundation include roots must be canonical directories")
-        for directory, subdirs, names in os.walk(root, followlinks=False):
+        pending = [str(root)]
+        while pending:
+            directory = pending.pop()
             directories += 1
             if directories > _MAX_HEADERS:
                 raise ValueError("selected foundation include directory inventory exceeds its bound")
-            if any((Path(directory) / name).is_symlink() for name in subdirs):
-                raise ValueError("selected foundation include tree contains a directory symlink")
-            for name in names:
-                path = Path(directory) / name
-                files[str(path)] = _stat(path)
-                if len(files) > _MAX_HEADERS:
-                    raise ValueError("selected foundation header inventory exceeds its bound")
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    # DirEntry type checks do not follow links; its stat is one lstat.
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(entry.path)
+                        continue
+                    if entry.is_symlink() and entry.is_dir():
+                        raise ValueError("selected foundation include tree contains a directory symlink")
+                    files[str(Path(entry.path))] = _identity(entry.stat(follow_symlinks=False))
+                    if len(files) > _MAX_HEADERS:
+                        raise ValueError("selected foundation header inventory exceeds its bound")
     return files
 
 
@@ -153,11 +164,16 @@ class SelectedHeaders:
             raise ValueError("selected foundation include roots must be distinct absolute directories")
         files = _inventory(self.roots)
         declared = {}
+        # Path.is_relative_to on normalized absolute paths, as string prefixes
+        # (the receipt lists tens of thousands of artifacts).
+        prefixes = tuple(str(root) if str(root).endswith("/") else str(root) + "/" for root in self.roots)
+        exact = {str(root) for root in self.roots}
         for artifact in value["artifacts"]:
             if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
                 raise ValueError("selected foundation artifact record is malformed")
             target = Path(artifact["path"])
-            if any(target.is_relative_to(root) for root in self.roots):
+            normalized = str(target)
+            if normalized in exact or normalized.startswith(prefixes):
                 size, sha = artifact.get("bytes"), artifact.get("sha256")
                 if (str(target) in declared or type(size) is not int or size < 0 or not isinstance(sha, str)
                         or len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha)):
@@ -167,10 +183,10 @@ class SelectedHeaders:
             raise ValueError("selected foundation receipt must cover the complete bounded include inventory")
         records, self.stats = [], {str(path): before}
         for filename, (size, expected) in sorted(declared.items()):
-            actual, stat = _sha256(Path(filename), size)
+            actual, identity = _sha256(Path(filename), size)
             if actual != expected:
                 raise ValueError("selected foundation header digest differs from the protected receipt")
-            self.stats[filename] = stat
+            self.stats[filename] = identity
             records.append({"path": filename, "bytes": size, "sha256": actual})
         self.manifest_sha256 = hashlib.sha256(raw).hexdigest()
         self.headers_sha256 = hashlib.sha256(json.dumps(records, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

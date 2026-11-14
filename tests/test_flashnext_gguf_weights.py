@@ -167,13 +167,14 @@ def test_model_plan_reuses_inventory_without_changing_json_rope_eos_authority(tm
     rope = replace(native.rope, theta=30000.0) if override else None
     expected = Config.read(selected, rope=rope, eos_token_ids=[17])
     reads, original = [], gguf_file._shard
-    def counted(path):
+    def counted(path, *rest):
         reads.append(path)
-        return original(path)
+        return original(path, *rest)
     monkeypatch.setattr(gguf_file, "_shard", counted)
+    monkeypatch.setattr(gguf_file, "_OPENED", {})  # Count parses of a fresh process.
     weights, _planner = model_plan(selected, (3, 8), rope=rope, eos_token_ids=[17],
                                    expert_tensor_parallel_size=4)
-    assert reads == [source] * (1 if prepared else 2)
+    assert reads == [source]  # An unchanged reopen reuses the parsed inventory.
     full = weights.meta["full"]
     assert full == replace(expected, quant="gguf", execution_dtype="float16", ple_eos=13)
     assert full.eos == (17,) and full.ple_eos == 13
@@ -201,12 +202,13 @@ def test_split_model_plan_reuses_metadata_inventory_and_preserves_selected_secon
         write(path, groups[index], {**inventory.metadata, "split.no": index, "split.count": 2,
                                     "split.tensors.count": len(inventory.tensors)})
     reads, original = [], gguf_file._shard
-    def counted(path):
+    def counted(path, *rest):
         reads.append(path)
-        return original(path)
+        return original(path, *rest)
     monkeypatch.setattr(gguf_file, "_shard", counted)
+    monkeypatch.setattr(gguf_file, "_OPENED", {})
     weights, _ = model_plan(shards[1], (3, 8), expert_tensor_parallel_size=4)
-    assert reads == shards * 2
+    assert reads == shards
     assert weights.meta["gguf_entrypoint"] == str(shards[1])
 
 

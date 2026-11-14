@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import stat
 import struct
+import threading
 from types import MappingProxyType
 
 FORMATS = MappingProxyType({
@@ -26,6 +27,9 @@ FORMATS = MappingProxyType({
 _SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
 
 
+_STRUCTS = {fmt: struct.Struct("<" + fmt) for fmt in (*_SCALARS.values(), "Q", "I")}
+
+
 _SPLIT = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf")
 
 
@@ -33,26 +37,73 @@ _HEADER_LIMIT = 64 << 20
 
 
 class _Header:
+    """Bounded little-endian GGUF header cursor over bytes read ahead in growing chunks.
+
+    Parsing from memory (bulk struct unpacking for scalar arrays) keeps the
+    multi-hundred-thousand-entry tokenizer tables off a per-element file-read path.
+    """
+
+    _CHUNK = 1 << 20
+
     def __init__(self, stream):
         self.stream = stream
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
             raise ValueError("GGUF inputs must be regular files")
         self.size = info.st_size
+        self.limit = min(self.size, _HEADER_LIMIT)
+        self.data = bytearray()
+        self.pos = 0
+
+    def _need(self, length):
+        end = self.pos + length
+        if length < 0 or end > self.limit:
+            raise ValueError("truncated or oversized GGUF header")
+        while len(self.data) < end:
+            want = min(self.limit, max(end, 2 * len(self.data), self._CHUNK)) - len(self.data)
+            chunk = self.stream.read(want)
+            if not chunk:
+                raise ValueError("short GGUF header read")
+            self.data += chunk
+        return end
 
     def read(self, length):
-        if length < 0 or self.stream.tell() + length > min(self.size, _HEADER_LIMIT):
-            raise ValueError("truncated or oversized GGUF header")
-        data = self.stream.read(length)
-        if len(data) != length:
-            raise ValueError("short GGUF header read")
+        end = self._need(length)
+        data = bytes(self.data[self.pos:end])
+        self.pos = end
         return data
 
     def number(self, fmt):
-        return struct.unpack("<" + fmt, self.read(struct.calcsize("<" + fmt)))[0]
+        layout = _STRUCTS[fmt]
+        end = self._need(layout.size)
+        value = layout.unpack_from(self.data, self.pos)[0]
+        self.pos = end
+        return value
 
     def string(self):
-        return self.read(self.number("Q")).decode("utf-8")
+        length = self.number("Q")
+        end = self._need(length)
+        value = self.data[self.pos:end].decode("utf-8")
+        self.pos = end
+        return value
+
+    def _strings(self, count):
+        # string() repeated with the cursor in locals; _need() keeps every bound and short-read check.
+        unpack, data, pos, values = _STRUCTS["Q"].unpack_from, self.data, self.pos, []
+        append = values.append
+        for _ in range(count):
+            if pos + 8 > len(data):
+                self.pos = pos
+                self._need(8)
+            length = unpack(data, pos)[0]
+            end = pos + 8 + length
+            if end > len(data):
+                self.pos = pos
+                self._need(8 + length)
+            append(data[pos + 8:end].decode("utf-8"))
+            pos = end
+        self.pos = pos
+        return tuple(values)
 
     def value(self, kind):
         if kind == 8:
@@ -61,11 +112,17 @@ class _Header:
             element, count = self.number("I"), self.number("Q")
             if element == 9 or element not in (*_SCALARS, 8) or count > 1_000_000:
                 raise ValueError("unsupported or oversized GGUF metadata array")
-            # Check the minimum encoded span before allocating the Python list.
-            minimum = 8 if element == 8 else struct.calcsize("<" + _SCALARS[element])
-            if count * minimum > min(self.size, _HEADER_LIMIT) - self.stream.tell():
+            # Check the minimum encoded span before allocating the Python tuple.
+            minimum = 8 if element == 8 else _STRUCTS[_SCALARS[element]].size
+            if count * minimum > self.limit - self.pos:
                 raise ValueError("truncated GGUF metadata array")
-            return tuple(self.value(element) for _ in range(count))
+            if element == 8:
+                return self._strings(count)
+            layout = struct.Struct(f"<{count}{_SCALARS[element]}")
+            end = self._need(layout.size)
+            values = layout.unpack_from(self.data, self.pos)
+            self.pos = end
+            return values
         if kind not in _SCALARS:
             raise ValueError(f"unknown GGUF metadata type {kind}")
         return self.number(_SCALARS[kind])
@@ -119,9 +176,9 @@ class PackedTensor:
         return reader.read(self.path, offset, length, device).reshape(count, self.row_bytes)
 
 
-def _shard(path):
-    # Reject a FIFO/device by its opened descriptor without first blocking on it.
-    with open(path, "rb", opener=lambda name, flags: os.open(name, flags | getattr(os, "O_NONBLOCK", 0))) as stream:
+def _shard(path, consumed=None):
+    """(metadata, tensors) of one shard; ``consumed`` receives (file size, parsed header bytes)."""
+    with _open_shard(path) as stream:
         header = _Header(stream)
         if header.read(4) != b"GGUF" or header.number("I") != 3:
             raise ValueError("GGUF inventory requires little-endian GGUF version 3")
@@ -150,7 +207,7 @@ def _shard(path):
             if any(d <= 0 for d in shape) or shape[-1] % block or offset % alignment:
                 raise ValueError(f"{name}: invalid shape, quantization block, or aligned offset")
             entries.append((name, shape, kind, offset, math.prod(shape) // block * size))
-        data = (stream.tell() + alignment - 1) // alignment * alignment
+        data = (header.pos + alignment - 1) // alignment * alignment
         result, end = [], data
         for name, shape, kind, offset, length in sorted(entries, key=lambda t: t[3]):
             begin = data + offset
@@ -158,7 +215,34 @@ def _shard(path):
                 raise ValueError(f"{name}: overlapping or truncated GGUF tensor payload")
             result.append(PackedTensor(name, shape, kind, path, begin, length))
             end = begin + length
+        if consumed is not None:
+            consumed.append((header.size, bytes(header.data[:header.pos])))
         return metadata, result
+
+
+# Startup reopens the same checkpoints many times (configuration, admission,
+# planning, loading). A shard's inventory is a pure function of its path, file
+# size and the header bytes the parser consumed, so an immutable parsed result
+# is reused in-process only after those exact bytes are reread and compared
+# equal (no timestamp trust). Bounded to a target and its companion; nothing is
+# persisted.
+_OPENED = {}
+_OPENED_LIMIT = 2
+_OPENED_LOCK = threading.Lock()
+
+
+def _open_shard(path):
+    # Reject a FIFO/device by its opened descriptor without first blocking on it.
+    return open(path, "rb", opener=lambda name, flags: os.open(name, flags | getattr(os, "O_NONBLOCK", 0)))
+
+
+def _unchanged(paths, consumed):
+    for path, (size, header) in zip(paths, consumed):
+        with _open_shard(path) as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size != size or stream.read(len(header)) != header:
+                return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -179,9 +263,24 @@ class GGUFCheckpoint:
             paths = tuple(path.with_name(f"{stem}-{i:05d}-of-{count:05d}.gguf") for i in range(1, count + 1))
         else:
             paths = (path,)
+        with _OPENED_LOCK:
+            cached = _OPENED.get(paths)
+        if cached is not None and _unchanged(paths, cached[0]):
+            return cached[1]
+        consumed = []
+        result = cls._parse(paths, consumed)
+        with _OPENED_LOCK:
+            _OPENED.pop(paths, None)
+            _OPENED[paths] = (tuple(consumed), result)
+            while len(_OPENED) > _OPENED_LIMIT:
+                del _OPENED[next(iter(_OPENED))]
+        return result
+
+    @classmethod
+    def _parse(cls, paths, consumed):
         metadata, tensors = {}, {}
         for index, shard in enumerate(paths):
-            fields, entries = _shard(shard)
+            fields, entries = _shard(shard, consumed)
             if len(paths) > 1 and (fields.get("split.no") != index or fields.get("split.count") != len(paths)):
                 raise ValueError("GGUF split metadata does not match the complete ordered shard set")
             for key, value in fields.items():

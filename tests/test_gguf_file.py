@@ -31,17 +31,23 @@ def test_discovery_reuses_inventory_once_and_preserves_second_shard(tmp_path, mo
     original = gguf_file._shard
     reads = []
 
-    def counted(path):
+    def counted(path, *rest):
         reads.append(path)
-        return original(path)
+        return original(path, *rest)
 
     monkeypatch.setattr(gguf_file, "_shard", counted)
+    monkeypatch.setattr(gguf_file, "_OPENED", {})
     config = checkpoint_metadata.read_config(second)
     assert reads == [first, second]
     assert config["gguf_entrypoint"] == str(second)
     assert config["text_config"]["gguf_entrypoint"] == str(second)
     reads.clear()
     assert metadata_config(second) == config
+    assert reads == []  # Unchanged shards: the parsed inventory is reused.
+    # Any change to a shard's parsed header bytes reparses the complete set.
+    write(second, [("token_embd.weight", (32, 1), 0, [0] * 128)],
+          {**common, "split.no": 1, "tensorfold.test.marker": 1})
+    assert gguf_file.GGUFCheckpoint.open(second).metadata["tensorfold.test.marker"] == 1
     assert reads == [first, second]
 
 

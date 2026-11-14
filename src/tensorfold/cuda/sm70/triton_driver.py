@@ -279,6 +279,14 @@ def prepare_driver(*, timeout_s, fma_geometry=None):
         raise ValueError('Triton3.2 startup requires the validated SC117 FP32 FMA geometry')
     configured = os.environ.get('TRITON_CACHE_DIR')
     root = _cache_root(triton, selected, configured)
+    if selected is not None:
+        # The compiler's process-cached installation digest hashes the whole
+        # libtriton.so (~1.9 s). It reads only installed files and publishes
+        # nothing, so ranks compute it concurrently before the serialized
+        # publication lock instead of one after another inside it.
+        from triton.compiler.compiler import triton_key
+
+        triton_key()
     with _cache_lock(root, timeout_s):
         from triton.runtime import driver
 

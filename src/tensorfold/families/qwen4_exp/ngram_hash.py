@@ -3,6 +3,7 @@ checkpoint's table sizes and layer multipliers derive from them, so both backend
 
 from __future__ import annotations
 
+from functools import lru_cache
 import math
 
 import numpy as np
@@ -32,7 +33,10 @@ def _is_prime(value: int) -> bool:
     return True
 
 
+@lru_cache(maxsize=4096)
 def _nth_prime_after(start: int, count: int) -> int:
+    # Pure and deterministic; trial division costs milliseconds per head and
+    # every State reset rebuilds its n-gram constants, so results are cached.
     prime = start
     for _ in range(count):
         prime += 1
