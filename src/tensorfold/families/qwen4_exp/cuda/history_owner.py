@@ -572,7 +572,7 @@ class OwnerBuffers:
         self.round_device = self.round_host = self.round_words = self.round_done = None
         self.round_desc = self.round_pooled = self.round_lanes = self.round_live = None
         self.round_ik = None
-        self.round_ordinals = None
+        self.round_ordinals = self._round_host_views = None
         self._round_pending = False
         self.closed = False
 
@@ -1239,11 +1239,16 @@ class OwnerBuffers:
         lanes[:, :len(segments)] = 0
         stage = buffers.compact_indexer_stage
         self.wait_native_reuse()
-        stage.begin(mtp=mtp)
-        epoch = stage.mtp_epoch if mtp else stage.target_epoch
         live_base = self.round_live.data_ptr()
         ordinals = self.round_ordinals
+        # Validate every segment and ordinal while only filling the private
+        # pinned tables; State/cache host effects apply after all checks pass.
+        appends, tentative, cursor = [], [], 0
         for lane, (state, first, last) in enumerate(segments):
+            if (type(first) is not int or type(last) is not int or first != cursor or not first < last
+                    or getattr(state, "graph_rows", None) is not None or state.history_placement is None):
+                raise ValueError("round tables require contiguous exact unique-history segments")
+            cursor = last
             registered = self.native_states.get(id(state))
             if registered is None or registered[0] is not state or registered[1] != self._storage_signature(
                     self._state_storage(state)):
@@ -1291,16 +1296,23 @@ class OwnerBuffers:
                                       table.data_ptr(), generations, status, slot, owner, position, first, count,
                                       table.shape[0], entry.proposal_raw.data_ptr(),
                                       entry.proposal_coordinates.data_ptr(), offset, int(mtp))
-                entry.span = Span(pos, raw, axes, stage, epoch, mtp, expected)
-                if mtp:
-                    # Cache.begin/pool/prepare_commit/publish_commit host effects of
-                    # one MTP window; the captured publish writes the committed ring.
-                    if offset >= 0:
-                        entry.proposal_count = offset + count
-                    entry.n = entry.span.resolved = pos + count
-            if not mtp:
-                state.target_tentative_length = pos + count
-        stage.wait(mtp=mtp)
+                appends.append((entry, pos, count, raw, axes, expected, offset))
+            tentative.append((state, pos + count))
+        if cursor != rows:
+            raise ValueError("round segments do not cover the execution rows")
+        stage.begin(mtp=mtp)
+        epoch = stage.mtp_epoch if mtp else stage.target_epoch
+        for entry, pos, count, raw, axes, expected, offset in appends:
+            entry.span = Span(pos, raw, axes, stage, epoch, mtp, expected)
+            if mtp:
+                # Cache.begin/pool/prepare_commit/publish_commit host effects of
+                # one MTP window; the captured stage kernel writes the committed ring.
+                if offset >= 0:
+                    entry.proposal_count = offset + count
+                entry.n = entry.span.resolved = pos + count
+        if not mtp:
+            for state, length in tentative:
+                state.target_tentative_length = length
         self.round_device.copy_(self.round_host, non_blocking=True)
         self.round_done.record(torch.cuda.current_stream(self.queries.device))
         self._round_pending = True
@@ -1338,6 +1350,8 @@ class OwnerBuffers:
                 if device_owned:
                     torch.cuda.synchronize(self.device)
             finish((fence, self.descriptor_upload_ring.drain))
+        if self.round_device is not None:
+            self.round_device.zero_()  # No retained State pointer outlives the catalogue.
         if self.descriptors is not None:
             self.descriptors.zero_()
             if self.lane_rows is not None:
@@ -1380,7 +1394,8 @@ class OwnerBuffers:
         self.descriptor_upload_ring = None
         self.round_device = self.round_host = self.round_words = self.round_done = None
         self.round_desc = self.round_pooled = self.round_lanes = self.round_live = None
-        self.round_ik = None
+        self.round_ik = self.round_ordinals = self._round_host_views = None
+        self._round_pending = False
         self.native_comm = None
         self.closed, self._base_ready = True, False
 
@@ -1434,8 +1449,10 @@ class OwnerBuffers:
 
     @property
     def nbytes(self):
+        # Round table views share round_device; the pinned slab is host memory.
         return (sum(value.nbytes for name, value in vars(self).items()
-                    if isinstance(value, torch.Tensor) and name != "descriptors_host")
+                    if isinstance(value, torch.Tensor) and name not in (
+                        "descriptors_host", "round_host", "round_desc", "round_pooled", "round_lanes", "round_live"))
                 + (0 if self.aten_tiles is None else self.aten_tiles.requirements['persistent_bytes'])
                 + (0 if self.flash_tiles is None else self.flash_tiles.requirements['persistent_bytes']))
 

@@ -57,8 +57,8 @@ def publish(source, destination, at, generations, expected, status, layer):
     destination[at:at + len(source)].copy_(source)
 
 
-# Round-table lane words; the device enum in compact_indexer.cu is authoritative
-# for interpretation, this tuple for host packing. Both are checked at load.
+# Round-table lane words: host packing order of the device enum lane::Word in
+# compact_indexer.cu (keep both in the same order; check_round fixes the width).
 ROUND_LANE_FIELDS = ("ENABLE", "RING_RAW", "RING_COORDS", "PROTECTED", "PROTECTED_COORDS", "STAGE_RAW",
                      "STAGE_COORDS", "POOLED", "GENERATIONS", "STATUS", "EXPECTED_SLOT", "EXPECTED_OWNER",
                      "POSITION", "FIRST", "ROWS", "POOLED_ROWS", "PROPOSAL_RAW", "PROPOSAL_COORDS", "PROPOSAL_OFFSET",

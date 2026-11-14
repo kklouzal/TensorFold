@@ -201,10 +201,7 @@ class ExactStateGraphs:
         workspace = getattr(source, "history_owner", None)
         if workspace is None:
             return "no unique-history owner"
-        reason = workspace.round_capture_reason(source, self.dec.w)
-        if reason is None:
-            workspace.prepare_round(segs[0][0].att_index if kind == "verify" else {self.dec.w.mtp.layer.index: 0})
-        return reason
+        return workspace.round_capture_reason(source, self.dec.w)
 
     def _capture(self, kind, key, segs, source, *, round_tables=False):
         if not self.preparing:
@@ -229,6 +226,10 @@ class ExactStateGraphs:
         before = free_bytes()
         before_allocated = int(torch.cuda.memory_allocated(self.dec.w.device))
         before_reserved = int(torch.cuda.memory_reserved(self.dec.w.device))
+        if round_tables:
+            # The once-per-round tables are charged to this role's first round key.
+            source.history_owner.prepare_round(segs[0][0].att_index if kind == "verify"
+                                               else {self.dec.w.mtp.layer.index: 0})
         try:
             source.exact_graph_handoffs = True
             source.owner_round_capture = round_tables
@@ -269,6 +270,15 @@ class ExactStateGraphs:
         took = max(0, physical_delta)
         admitted = self._agree(owner.room_bytes + took <= owner.budget)
         error = None
+        if not admitted and round_tables:
+            # The optional round variant never displaces the piecewise key that
+            # already serves this shape: release it and keep serving piecewise.
+            for graph in pieces.graphs:
+                graph.reset()
+            del self.bindings[(kind + "-round", key)]
+            self.declined_keys[(kind + "-round", *key)] = 'round variant exceeded admitted graph budget'
+            owner.room_bytes += took  # A reset pool may retain it; never re-advertise that memory.
+            return None
         if not admitted:
             # A graph pool can retain reserved memory after reset; do not
             # advertise that unproven memory as an admissible eager fallback.
