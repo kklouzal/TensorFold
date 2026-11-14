@@ -517,9 +517,7 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
     m = layer.moe
     if getattr(m.experts, "kernel", "qmm") in ("gguf", "sm70_dense"):
         buf = b.moe
-        prepared_router = getattr(b, 'router_logits', None)
-        if prepared_router is None or not prepared_router.run(b.mixed[:R], m.router, buf.logits[:R]):
-            moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill)
+        moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill)
         moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
         owned = getattr(b, "owned_experts", None)
         if w.meta.get("owned_expert_plan") is not None:

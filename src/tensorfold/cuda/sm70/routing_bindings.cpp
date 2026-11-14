@@ -8,7 +8,6 @@ void routing_select_cuda(const at::Tensor&, at::Tensor&);
 void routing_route_cuda(const at::Tensor&, at::Tensor&, at::Tensor&);
 void routing_logits_cuda(const at::Tensor&, const at::Tensor&, at::Tensor&);
 void routing_prepare_route_cuda();
-void routing_prepare_logits_cuda();
 
 void select_experts(const at::Tensor& logits, at::Tensor indices) {
     TORCH_CHECK(logits.is_cuda() && logits.scalar_type() == at::kFloat && logits.dim() == 2
@@ -44,7 +43,6 @@ void route_experts(const at::Tensor& logits, at::Tensor picks, at::Tensor weight
     routing_route_cuda(logits, picks, weights);
 }
 
-template<bool PREPARED>
 void router_logits(const at::Tensor& x, const at::Tensor& weight, at::Tensor output) {
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2
                 && x.size(0) >= 1 && x.size(0) <= 256
@@ -53,10 +51,6 @@ void router_logits(const at::Tensor& x, const at::Tensor& weight, at::Tensor out
     TORCH_CHECK(weight.device() == x.device() && weight.scalar_type() == at::kFloat
                 && weight.sizes() == at::IntArrayRef({513, 2560}) && weight.is_contiguous(),
                 "SM70 serial router requires contiguous FP32 weights513x2560");
-    if constexpr (PREPARED) {
-        TORCH_CHECK(reinterpret_cast<std::uintptr_t>(weight.data_ptr<float>()) % 512 == 0,
-                    "prepared serial router requires512-byte aligned weights");
-    }
     TORCH_CHECK(output.device() == x.device() && output.scalar_type() == at::kFloat
                 && output.sizes() == at::IntArrayRef({x.size(0), 513}) && output.is_contiguous(),
                 "SM70 serial router output requires contiguous matching FP32 rows");
@@ -69,9 +63,7 @@ void router_logits(const at::Tensor& x, const at::Tensor& weight, at::Tensor out
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("prepare_route", &routing_prepare_route_cuda, "Resolve routing function residency before physical admission");
-    module.def("prepare_logits", &routing_prepare_logits_cuda, "Resolve serial logit function residency before State admission");
-    module.def("logits", &router_logits<false>, "1..256 FP16 decode rows with the serial FP32 GEMV arithmetic");
-    module.def("prepared_logits", &router_logits<true>, "Prepared 1..256-row serial FP32 GEMV trial");
+    module.def("logits", &router_logits, "1..256 FP16 decode rows with the serial FP32 GEMV arithmetic");
     module.def("route", &route_experts, "Stable selection and Torch-rounded FP16 routing weights");
     module.def("select", &select_experts, "Stable integer-key top-k selection for 512 SM70 experts");
 }

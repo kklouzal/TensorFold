@@ -13,7 +13,7 @@ from tools import v100_onecat_campaign as campaign
 BASE = {'kernel_family':'sm70-paged-owner-rn-ex2-p2051-v1','graph_family':'uncaptured',
         'graph_budget_bytes':0,'trial':True,'collective_family':'tp8-allgather-v1','rn_heads_per_block':12}
 FLAGS = {'native_family':'owned-native-family-v1','prepared_linears':'owned-prepared-m32-v1',
-         'prepared_router':'owned-serial-router-v1','coordinate_staging':'owned-host-int64-coordinates-v1'}
+         'coordinate_staging':'owned-host-int64-coordinates-v1'}
 
 
 def invoke(tmp_path,**selection):

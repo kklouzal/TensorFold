@@ -852,8 +852,11 @@ default (`routing_native._NATIVE_LOGITS = True`, independent of the
 reference/optimized profile) for eligible decode rows 1–256: the multi-row
 kernel is bitwise the per-row FP32 GEMV reference
 (`tests/cuda/test_sm70_router_rows.py`) and faster at every measured row
-count. The selector below and the prepared per-owner trial therefore select
-the same arithmetic; the history that follows describes the original trial.
+count. The environment selector below and the prepared per-owner trial selected
+the same arithmetic and were removed; the history that follows describes the
+original trials. A manifest with `prepared_router` is now rejected as unknown
+preparation, and the private launcher rejects an explicit
+`TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS` request (selector absent: `legacy-inherited`).
 
 `TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS=native-serial-v1` selects the existing
 native router-logit operator independently of the broader execution profile.
@@ -2537,6 +2540,9 @@ The canonical preparation is unchanged: C06 is not adopted, no runtime switch
 or profile ladder is added, and these component results claim no token/s gain.
 
 ## Prepared per-owner serial-router trial
+
+Removed (2026-11-14): the default native router logits use the same arithmetic;
+see [the update above](#independent-serial-router-trial). History follows.
 
 The separate private preparation field `prepared_router: owned-serial-router-v1`
 selects a resident operator on each actual Weights/decode/MTP Buffers owner.

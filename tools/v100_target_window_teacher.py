@@ -1261,8 +1261,7 @@ ATEN_SCOPE = legacy.ATEN_WINDOW_TEACHER_SCOPE
 ATEN_FAMILY = 'aten-cutlass-q8-normalized-lse-owner-v1'
 ATEN_PANEL_ROWS = 16
 ATEN_LAYOUTS = ('native-gqa-v1', 'fixed12-head-as-query-lse-v1')
-TRANSPORT_OPTIONS = {'prepared_router': 'owned-serial-router-v1',
-    'row_sampling_scratch': 'canonical-row-scratch-v1',
+TRANSPORT_OPTIONS = {'row_sampling_scratch': 'canonical-row-scratch-v1',
     'coordinate_staging': 'owned-host-int64-coordinates-v1',
     'descriptor_upload': 'pinned-descriptor-ring2-v1', 'owned_q8_window_dispatch': 'grid-v1'}
 NUMERICAL_OPTIONS = {'dense_projections', 'native_hc_writeback_target_eager', 'gdn_value8_capture'}
@@ -2539,7 +2538,7 @@ def _preparation_retention(row, operation, changes):
     selected = operation['prepared_execution']
     owner = normalized['owner_preparation']
     owner['specification'] = {k: v for k, v in owner['specification'].items() if k not in changes}
-    for key in ('native_family', 'prepared_linears', 'prepared_router', 'coordinate_staging', 'row_sampling_scratch', 'dense_projections'):
+    for key in ('native_family', 'prepared_linears', 'coordinate_staging', 'row_sampling_scratch', 'dense_projections'):
         require((key in owner) == (key in selected), 'unrequested or missing C8 retained capability: '+key)
         if key in changes:
             owner.pop(key, None)
@@ -2623,8 +2622,6 @@ def compare(reference, candidate, *, control, output):
                 'window trial changed a baseline native provider')
         allowed = []
         if changes is not None:
-            if b['prepared_execution'].get('prepared_router') is not None:
-                allowed.append('tf_sm70_routing_')
             if b['prepared_execution'].get('dense_projections') is not None:
                 allowed.extend(('tf_sm70_dense_', 'tf_sm70_prefill_dense_'))
             if any(b['prepared_execution'].get(key) for key in ('native_hc_writeback_target_eager', 'gdn_value8_capture')):

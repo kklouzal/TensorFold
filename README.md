@@ -2593,28 +2593,19 @@ status/readback checks remain unchanged. The focused193-control CPU gate and
 13 Source28 SM70 packet/map/changed-input graph cases pass; actual eight-rank
 collectives, model quality and matched performance qualification remain pending.
 
-The private preparation selector `prepared_router: owned-serial-router-v1`
-(`v100_onecat_campaign.py inputs --prepared-router owned-serial-router-v1`)
-adds a separate resident serial-logit trial for decode and MTP with 1–256 rows
-(up to eight rows per CTA share one register copy of the FP32 router tile; each
-row keeps the serial operation sequence, so logits are bitwise the per-row
-reference at every row count, `tests/cuda/test_sm70_router_rows.py`).
-It binds the actual model weights and role buffers before serving, retains the
-prefill path, and leaves the existing process selector,
-top-k and expert weights unchanged. The Source28 native component gate passed
-its exact logits/routing and sampling-packet checks; full-model quality,
-the separate graph failure and matched performance remain pending. See the
-[prepared router contract](docs/v100-adaptive-validation.md#prepared-per-owner-serial-router-trial).
-
-An independent private [serial-router selector](docs/v100-adaptive-validation.md#independent-serial-router-trial)
-isolates the existing native decode-logit operator for qualification, without
-enabling the broader optimized profile; the ordinary default remains unchanged.
-The private launcher validates each worker's requested and configured router
-policy before model preparation and service publication.
-GPU component results retain a separate unresolved graph-fixture failure.
-The Source28 short-context fixture now selects eligible reference attention;
-its separate six-lane exact-output mismatch remains unresolved. A separate
-native component gate passed 58 prepared-router and 13 sampling-scratch checks.
+SM70 decode router logits use the native multi-row serial kernel by default for
+1–256 rows (up to eight rows per CTA share one register copy of the FP32 router
+tile; each row keeps the serial operation sequence, so logits are bitwise the
+per-row FP32 GEMV reference at every row count, `tests/cuda/test_sm70_router_rows.py`
+and `tests/cuda/test_sm70_router_logits.py`). Prefill keeps the batched reference
+GEMM, and other devices, geometries and layouts keep the per-row reference. The
+former private selectors for the same arithmetic, the
+`TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS` environment variable and the
+`prepared_router: owned-serial-router-v1` preparation field (with the campaign's
+`--prepared-router`), are removed; manifests carrying the field are rejected as
+unknown preparation. The private launcher records the selector as absent
+(`legacy-inherited`) and rejects an explicit request. History:
+[serial-router trial](docs/v100-adaptive-validation.md#independent-serial-router-trial).
 
 The private launcher can also [select Dense alone for a controlled trial](docs/benchmarking.md#prepare-once-load-once-run-the-complete-short-matrix),
 with per-rank selection receipts; this does not promote a new runtime default.

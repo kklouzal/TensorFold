@@ -393,10 +393,10 @@ from tensorfold import hub
 from tensorfold.families.qwen4_exp.cuda.execution_identity import artifact_files
 sys.path.insert(0,'/tools')
 from bench_concurrent import prepare_matrix
-target,mtp,model,profile,inputs,tokens,reps,levels,native_family,prepared_linears,prepared_router,coordinate_staging,preparation_path,preparation_sha256=sys.argv[1:]
+target,mtp,model,profile,inputs,tokens,reps,levels,native_family,prepared_linears,coordinate_staging,preparation_path,preparation_sha256=sys.argv[1:]
 selection=None
 if bool(preparation_path)!=bool(preparation_sha256) or preparation_path and any(
-        (native_family,prepared_linears,prepared_router,coordinate_staging)):
+        (native_family,prepared_linears,coordinate_staging)):
     raise ValueError('complete preparation DATA requires its SHA256 and excludes legacy preparation flags')
 if preparation_path:
     from v100_onecat_campaign import EXECUTION_MANIFEST_LIMIT, _bounded_numa_file
@@ -424,8 +424,6 @@ if native_family:
     manifest['preparation']['native_family']=native_family
 if prepared_linears:
     manifest['preparation']['prepared_linears']=prepared_linears
-if prepared_router:
-    manifest['preparation']['prepared_router']=prepared_router
 if coordinate_staging:
     manifest['preparation']['coordinate_staging']=coordinate_staging
 if selection is not None:
@@ -455,13 +453,13 @@ def installed_check_receipt(directory, source_uid, image_id):
 
 
 def inputs(root, output, selected_image, installed_check, models, target, mtp, cache, model_name,
-           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None, prepared_linears=None, prepared_router=None, coordinate_staging=None,
+           profile, input_tokens, tokens, repetitions, levels, cpus, memory, timeout, *, native_family=None, prepared_linears=None, coordinate_staging=None,
            preparation=None, preparation_sha256=None):
     if (preparation is None)!=(preparation_sha256 is None):
         raise ValueError('preparation DATA requires both a path and its external SHA256')
     request=None
     if preparation is not None:
-        if any(value is not None for value in (native_family,prepared_linears,prepared_router,coordinate_staging)):
+        if any(value is not None for value in (native_family,prepared_linears,coordinate_staging)):
             raise ValueError('complete preparation DATA cannot be combined with legacy preparation flags')
         if (type(preparation_sha256) is not str or len(preparation_sha256)!=64
                 or any(c not in '0123456789abcdef' for c in preparation_sha256)):
@@ -478,8 +476,6 @@ def inputs(root, output, selected_image, installed_check, models, target, mtp, c
         raise ValueError('prepared M32 inputs require the explicit private numerical policy')
     if native_family not in (None, 'owned-native-family-v1'):
         raise ValueError('native family inputs require the explicit private numerical policy')
-    if prepared_router not in (None, 'owned-serial-router-v1'):
-        raise ValueError('serial router inputs require the explicit private numerical policy')
     record = frozen(root)
     binding = immutable_image(selected_image)
     accepted = installed_check_receipt(installed_check, record["source_uid"], binding["id"])
@@ -504,7 +500,7 @@ def inputs(root, output, selected_image, installed_check, models, target, mtp, c
             *([] if request is None else ['-v',str(preparation)+':/operator/preparation.json:ro']),
             "-w", "/tmp", "--entrypoint", "/opt/venv/bin/python", binding["reference"], "-B", "-c", _PREPARE_INPUTS,
             "/models/" + target, "/models/" + mtp, model_name, profile, str(input_tokens), str(tokens),
-            str(repetitions), levels, native_family or "", prepared_linears or "", prepared_router or "", coordinate_staging or "",
+            str(repetitions), levels, native_family or "", prepared_linears or "", coordinate_staging or "",
             '/operator/preparation.json' if request is not None else '',preparation_sha256 or '']
     container(argv, output, timeout)
     if request is not None and (_bounded_numa_file(preparation,maximum=EXECUTION_MANIFEST_LIMIT)!=request
@@ -1534,10 +1530,8 @@ def main(argv=None):
                               help='explicit unqualified per-engine native family numerics; default keeps existing family')
             item.add_argument('--coordinate-staging', choices=('owned-host-int64-coordinates-v1',),
                               help='private paid int64 text-coordinate host staging trial (default: ordinary issuance)')
-            item.add_argument('--prepared-router', choices=('owned-serial-router-v1',),
-                              help='explicit unqualified resident serial logits for decode/MTP2..256; R1 and prefill stay reference')
             item.add_argument('--preparation',type=Path,
-                              help='complete bounded preparation DATA; normalized by the installed runtime parser; excludes the four legacy preparation flags')
+                              help='complete bounded preparation DATA; normalized by the installed runtime parser; excludes the three legacy preparation flags')
             item.add_argument('--preparation-sha256',
                               help='external lowercase SHA256 for --preparation; explicit numerical/resource/quality gates still apply')
     args = parser.parse_args(argv)
@@ -1557,7 +1551,7 @@ def main(argv=None):
         inputs(args.source.absolute(), args.out.absolute(), args.image, args.installed_check.absolute(), args.models, args.target, args.mtp,
                args.cache.absolute(), args.name, args.profile, args.input_tokens, args.tokens, args.reps,
                args.levels, args.cpus, args.memory, args.timeout, native_family=args.native_family,
-               prepared_linears=args.prepared_linears, prepared_router=args.prepared_router, coordinate_staging=args.coordinate_staging,
+               prepared_linears=args.prepared_linears, coordinate_staging=args.coordinate_staging,
                preparation=None if args.preparation is None else args.preparation.absolute(),preparation_sha256=args.preparation_sha256)
     else:
         model(args.source.absolute(), args.out.absolute(), args.image, args.settings.absolute(), args.installed_check.absolute(),

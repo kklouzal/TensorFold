@@ -1240,7 +1240,7 @@ def test_router_attestation_preserves_process_request_and_actual_inherited_polic
     if configured is None:
         monkeypatch.delattr(routing_native, '_PRIVATE_SERIAL_LOGITS', raising=False)
     else:
-        monkeypatch.setattr(routing_native, '_PRIVATE_SERIAL_LOGITS', configured)
+        monkeypatch.setattr(routing_native, '_PRIVATE_SERIAL_LOGITS', configured, raising=False)
     monkeypatch.setattr(routing_native, '_NATIVE_LOGITS', inherited)
     monkeypatch.setattr(owned, 'bound_receipt', lambda _: {})
     calls = []
@@ -1283,7 +1283,7 @@ def test_router_attestation_fails_closed_at_both_boundaries_without_mutation(
     else:
         monkeypatch.setenv(name, requested)
     initial = requested if requested in ('inherit', 'native-serial-v1') else 'inherit'
-    monkeypatch.setattr(routing_native, '_PRIVATE_SERIAL_LOGITS', initial)
+    monkeypatch.setattr(routing_native, '_PRIVATE_SERIAL_LOGITS', initial, raising=False)
     monkeypatch.setattr(routing_native, '_NATIVE_LOGITS', False)
     monkeypatch.setattr(owned, 'bound_receipt', lambda _: {})
     engine = NS(rank=3, _abort_comm=False, comm=NS(ready=lambda _: pytest.fail('router mismatch reached ready')))
@@ -1291,7 +1291,7 @@ def test_router_attestation_fails_closed_at_both_boundaries_without_mutation(
         if absent:
             monkeypatch.delattr(routing_native, field, raising=False)
         else:
-            monkeypatch.setattr(routing_native, field, bad)
+            monkeypatch.setattr(routing_native, field, bad, raising=False)
     def serve(args):
         assert stage == 'publication', 'corrupt router metadata reached constructor'
         corrupt()

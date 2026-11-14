@@ -24,7 +24,7 @@ def reference(x, weight):
 
 @pytest.mark.parametrize("rows", [1, 2, 3, 5, 7, 8, 9, 16, 17, 32])
 @pytest.mark.parametrize("case", ["normal", "large", "small", "zeros_outlier"])
-def test_prepared_rows_match_the_serial_reference_bitwise(rows, case):
+def test_native_rows_match_the_serial_reference_bitwise(rows, case):
     generator = torch.Generator(device="cuda").manual_seed(rows * 31 + len(case))
     weight = torch.randn(513, 2560, device="cuda", generator=generator) * 0.02
     scale = {"normal": 1.0, "large": 30.0, "small": 1e-3, "zeros_outlier": 1.0}[case]
@@ -33,8 +33,8 @@ def test_prepared_rows_match_the_serial_reference_bitwise(rows, case):
         x[:, ::7] = 0
         x[0, 5] = 60000.0
     out = torch.empty(rows, 513, device="cuda")
-    routing_native.extension().prepared_logits(x, weight, out)
+    routing_native.extension().logits(x, weight, out)
     assert torch.equal(out.view(torch.int32), reference(x, weight).view(torch.int32))
     last = torch.empty(1, 513, device="cuda")
-    routing_native.extension().prepared_logits(x[-1:].contiguous(), weight, last)
+    routing_native.extension().logits(x[-1:].contiguous(), weight, last)
     assert torch.equal(last.view(torch.int32), out[-1:].view(torch.int32)), "row result depends on the row count"

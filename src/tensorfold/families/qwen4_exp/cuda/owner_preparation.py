@@ -87,7 +87,7 @@ def parse_preparation(value):
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
             or set(value).difference(required | {"row_buckets", "collective_family", "reference_arithmetic", "rn_heads_per_block",
-                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "gathered_readback", "prepared_router", "coordinate_staging", "g3_prefill"})
+                                               "aten_tiles", "flash_tiles", "dense_projections", "native_gdn_capture", "exact_graph_policy", "native_hc_writeback_capture", "native_hc_writeback_target_eager", "gdn_value8_capture", "native_family", "owned_q8_window_prepare", "owned_q8_window_dispatch", "prepared_linears", "descriptor_upload", "row_sampling_scratch", "gathered_readback", "coordinate_staging", "g3_prefill"})
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or type(value["kernel_family"]) is not str or value["kernel_family"] not in NATIVE_FAMILIES
             or value["graph_family"] != UNCAPTURED and value["graph_family"] != graph_family_for(value["kernel_family"])
@@ -152,11 +152,6 @@ def parse_preparation(value):
         if (prepared_linears != OWNED_POLICY or not value['trial'] or not rn
                 or value['graph_family'] != UNCAPTURED or request is not None or overlapping_dense):
             raise ValueError('prepared M32 requires its explicit RN trial without competing dense/reference arithmetic')
-    prepared_router = value.get('prepared_router')
-    if prepared_router is not None:
-        from tensorfold.cuda.sm70.routing_native import PREPARED_LOGITS_POLICY
-        if prepared_router != PREPARED_LOGITS_POLICY or not value['trial']:
-            raise ValueError('prepared serial router requires its explicit versioned unqualified trial')
     native_family = value.get('native_family')
     if native_family is not None:
         from tensorfold.cuda.sm70.owned_family import POLICY
@@ -221,7 +216,6 @@ def parse_preparation(value):
             **({'owned_q8_window_prepare': True} if q8_window else {}),
             **({'owned_q8_window_dispatch': 'grid-v1'} if q8_dispatch == 'grid-v1' else {}),
             **({'prepared_linears': prepared_linears} if prepared_linears is not None else {}),
-            **({'prepared_router': prepared_router} if prepared_router is not None else {}),
             **({'coordinate_staging': coordinate_staging} if coordinate_staging is not None else {}),
             **({'descriptor_upload': descriptor_upload} if descriptor_upload is not None else {}),
             **({'row_sampling_scratch': row_sampling} if row_sampling is not None else {}),
@@ -271,7 +265,6 @@ class OwnerPreparation:
         self.comm = self._open_head = None
         self.source_foundation = None
         self.native_family = None
-        self.prepared_router = None
         self.prepared_m32 = None
         self.row_sampling = {}
         self.gathered_readbacks = {}
@@ -401,7 +394,6 @@ class OwnerPreparation:
                         or self.specification.get('prepared_linears') is not None
                         or self.specification.get('row_sampling_scratch') is not None
                         or self.specification.get('gathered_readback') is not None
-                        or self.specification.get('prepared_router') is not None
                         or self.specification.get('coordinate_staging') is not None):
                     if (not getattr(engine, '_owned_expert_requested', False)
                             or getattr(engine, '_owned_expert_admin_requested', True)
@@ -443,14 +435,6 @@ class OwnerPreparation:
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
-            if self.specification.get('prepared_router') is not None:
-                def router_prepare():
-                    from tensorfold.cuda.sm70.routing_native import prepare_serial_router
-                    self.prepared_router = prepare_serial_router(device, self.role_rows)
-                    return self.prepared_router.record()
-                router_records = self._phase(engine, 'serial-router-prepare', router_prepare, may_refuse=False)
-                if any(record != router_records[0] for record in router_records):
-                    raise ValueError('serial router preparation differs across TP8 ranks')
             if self.specification.get('native_family') is not None:
                 def family_prepare():
                     from tensorfold.cuda.sm70.owned_family import prepare
@@ -658,8 +642,6 @@ class OwnerPreparation:
             raise ValueError("selected source foundation differs from native preparation")
         for graphs in (*self.graphs.values(), *self.reference_arithmetic.values()):
             graphs.validate_adoption()
-        if self.prepared_router is not None:
-            self.prepared_router.validate_adoption(weights, decoder)
         for owner in self.workspaces.values():
             if (owner.native_kernel_family != self.specification["kernel_family"]
                     or owner.native_heads_per_block != self.specification.get("rn_heads_per_block")):
@@ -716,9 +698,6 @@ class OwnerPreparation:
         if self.specification.get('coordinate_staging') is not None:
             selected['coordinate_staging'] = {'policy': self.specification['coordinate_staging'],
                 'qualification': 'private-unqualified', 'coordinates': 'same-int64-final-rows'}
-        if self.specification.get('prepared_router') is not None:
-            from tensorfold.cuda.sm70.routing_native import prepared_logits_identity
-            selected['prepared_router'] = prepared_logits_identity()
         if self.specification.get('prepared_linears') is not None:
             from .padded_linears import owned_numerical_identity
             selected['prepared_linears'] = owned_numerical_identity()
@@ -780,19 +759,6 @@ class OwnerPreparation:
     def _bind_g3(self, weights):
         self.g3_prefill.bind_weights(weights)
         return self.g3_prefill.record()
-
-    def bind_router_weights(self, engine, weights):
-        """Validate retained model router owners before any State is allocated."""
-        if self.prepared_router is None:
-            return
-        if not self.prepared or self.closed:
-            raise RuntimeError('serial router requires live pre-State preparation')
-        def bind():
-            self.prepared_router.bind_weights(weights)
-            return self.prepared_router.record()
-        stage = 'serial-router-weight-binding'
-        self._phase(engine, stage, bind, may_refuse=False)
-        self._retire_weight_binding(engine, stage)
 
     def bind_dense_weights(self, engine, weights):
         """Isolate post-weight/pre-State code residency from the early baseline."""
@@ -950,7 +916,6 @@ class OwnerPreparation:
                 "roles": dict(self.role_rows),
                 **({'native_family': self.native_family.record()} if self.native_family is not None else {}),
                 **({'g3_prefill': self.g3_prefill.record()} if self.g3_prefill is not None else {}),
-                **({'prepared_router': self.prepared_router.record()} if self.prepared_router is not None else {}),
                 **({'prepared_linears': self.prepared_m32.record()} if self.prepared_m32 is not None else {}),
                 **({"reference_arithmetic_source_sha256": self.reference_arithmetic_source}
                    if self.reference_arithmetic_request is not None else {}),
@@ -1068,8 +1033,6 @@ class OwnerPreparation:
             self.dense_owner.close()
         if self.prepared_m32 is not None:
             self.prepared_m32.close()
-        if self.prepared_router is not None:
-            self.prepared_router.close()
         if self.flash_artifact is not None:
             self.flash_artifact.close()
             self.flash_artifact = None

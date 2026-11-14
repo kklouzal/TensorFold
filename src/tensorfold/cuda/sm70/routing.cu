@@ -210,14 +210,3 @@ void routing_logits_cuda(const at::Tensor& x, const at::Tensor& weight, at::Tens
                           stream);
 }
 
-void routing_prepare_logits_cuda() {
-    cudaFuncAttributes attributes;
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<1>));
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<2>));
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<3>));
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<4>));
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<5>));
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<6>));
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<7>));
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<8>));
-}

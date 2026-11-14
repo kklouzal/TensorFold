@@ -571,20 +571,6 @@ class PreparedM32InputTests(unittest.TestCase):
             self.assertEqual(selected.call_args.kwargs['prepared_linears'], 'owned-prepared-m32-v1')
             self.assertIsNone(selected.call_args.kwargs['native_family'])
 
-    def test_cli_prepared_router_is_independent_and_default_off(self):
-        argv = ['inputs', '--source', '/source', '--out', '/out', '--image', 'image',
-                '--installed-check', '/check', '--models', '/models', '--target', 'target',
-                '--mtp', 'mtp', '--cache', '/cache', '--name', 'model']
-        for policy in (None, 'owned-serial-router-v1'):
-            with patch.object(campaign, 'inputs') as selected:
-                campaign.main(argv + ([] if policy is None else ['--prepared-router', policy]))
-                self.assertEqual(selected.call_args.kwargs['prepared_router'], policy)
-                self.assertIsNone(selected.call_args.kwargs['native_family'])
-                self.assertIsNone(selected.call_args.kwargs['prepared_linears'])
-        with patch.object(campaign, 'inputs'), self.assertRaises(SystemExit):
-            campaign.main(argv + ['--prepared-router', 'native-serial-v1'])
-
-
     def test_cli_coordinate_staging_is_explicit_and_default_off(self):
         argv = ['inputs', '--source', '/source', '--out', '/out', '--image', 'image',
                 '--installed-check', '/check', '--models', '/models', '--target', 'target',
@@ -593,7 +579,7 @@ class PreparedM32InputTests(unittest.TestCase):
             with patch.object(campaign, 'inputs') as selected:
                 campaign.main(argv + ([] if policy is None else ['--coordinate-staging', policy]))
                 self.assertEqual(selected.call_args.kwargs['coordinate_staging'], policy)
-                self.assertIsNone(selected.call_args.kwargs['prepared_router'])
+                self.assertNotIn('prepared_router', selected.call_args.kwargs)
         with patch.object(campaign, 'inputs'), self.assertRaises(SystemExit):
             campaign.main(argv + ['--coordinate-staging', 'unknown'])
 

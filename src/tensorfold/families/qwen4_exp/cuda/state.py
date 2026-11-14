@@ -161,10 +161,6 @@ class Buffers:
         # the experts' prefill arithmetic for decode windows too (``moe_prefill``): their rows can share a pass's launch
         self.moe = moe_mod.MoEBuffers(rows, _MoECfg(c), dev, prefill=prefill if moe_prefill is None else moe_prefill,
                                       tile=grouped.PREFILL_TILE if prefill else (8 if bf == torch.float16 else grouped.window_tile(dev)))
-        self.router_logits = None
-        prepared_router = getattr(w, '_private_prepared_router', None)
-        if prepared_router is not None and not prefill:
-            self.router_logits = prepared_router.bind_buffers(self)
         selection = w.meta.get("moe_selection_prepared")
         if selection is not None and rows <= 256 and c.experts == 512 and c.top_k == 10 and bf == torch.float16:
             self.moe.selection = selection.bind(self.moe)
