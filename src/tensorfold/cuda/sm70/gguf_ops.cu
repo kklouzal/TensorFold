@@ -1278,6 +1278,57 @@ __global__ void expert_gate_up_grouped(const __half* x, PackedView gate, PackedV
     }
 }
 
+// Prefill-sized tiles: decode each gate/up coefficient once per <=16-pair expert tile into
+// shared memory and accumulate on tensor cores (FP32 accumulators). Same activation ABI as
+// expert_gate_up_grouped; only the reduction order differs (the design permits that).
+__global__ void expert_gate_up_wmma(const __half* x, PackedView gate, PackedView up,
+                                    int slots, OwnedGrouping group, __half* activation) {
+    namespace wmma = nvcuda::wmma;
+    const int tile = blockIdx.y;
+    if (tile >= *group.total) return; // CTA-uniform, before any warp participation.
+    const int expert = group.tiles[3 * tile], begin = group.tiles[3 * tile + 1];
+    const int count = group.tiles[3 * tile + 2], first = blockIdx.x * 16;
+    __shared__ __align__(32) __half ga[256], ua[256], bb[256];
+    __shared__ __align__(32) float gc[256], uc[256];
+    __shared__ int64_t rows[16];
+    if (threadIdx.x < 16)
+        rows[threadIdx.x] = threadIdx.x < count ? int64_t(group.pairs[begin + threadIdx.x] / slots) * 2560 : -1;
+    __syncwarp();
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> gacc, uacc;
+    wmma::fill_fragment(gacc, 0.0f);
+    wmma::fill_fragment(uacc, 0.0f);
+    const int64_t source = int64_t(expert) * 160 + first;
+    for (int base = 0; base < 2560; base += 16) {
+        for (int i = threadIdx.x; i < 256; i += 32) {
+            const int r = i / 16, k = i % 16;
+            ga[i] = __float2half_rn(coefficient(gate, source + r, base + k));
+            ua[i] = __float2half_rn(coefficient(up, source + r, base + k));
+            // B is column-major: column r is pair r's input row.
+            bb[i] = rows[r] >= 0 ? x[rows[r] + base + k] : __float2half_rn(0.0f);
+        }
+        __syncwarp();
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> b;
+        wmma::load_matrix_sync(b, bb, 16);
+        wmma::load_matrix_sync(a, ga, 16);
+        wmma::mma_sync(gacc, a, b, gacc);
+        wmma::load_matrix_sync(a, ua, 16);
+        wmma::mma_sync(uacc, a, b, uacc);
+        __syncwarp();
+    }
+    wmma::store_matrix_sync(gc, gacc, 16, wmma::mem_row_major);
+    wmma::store_matrix_sync(uc, uacc, 16, wmma::mem_row_major);
+    __syncwarp();
+    for (int i = threadIdx.x; i < 256; i += 32) {
+        const int row = i / 16, col = i % 16;
+        if (col < count) {
+            const float g = gc[i], u = uc[i];
+            activation[int64_t(group.pairs[begin + col]) * 160 + first + row] =
+                __float2half_rn((g / (1.0f + expf(-g))) * u);
+        }
+    }
+}
+
 template <bool F32, int Kind = -1>
 __global__ void expert_down160_grouped(const __half* activation, PackedView down,
                                       int dims, OwnedGrouping group, void* output) {
@@ -1446,7 +1497,9 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
         C10_CUDA_KERNEL_LAUNCH_CHECK();
         const dim3 grid(160 / EXPERT_WARPS, group.max_tiles);
         auto input = reinterpret_cast<const __half*>(x.data_ptr());
-        if (gate_up_rows == 2)
+        if (x.size(0) > 32)  // prefill: tensor-core tiles amortize coefficient decoding over the tile's pairs
+            expert_gate_up_wmma<<<dim3(10, group.max_tiles), 32, 0, stream>>>(input, g, u, int(picks.size(1)), group, act);
+        else if (gate_up_rows == 2)
             expert_gate_up_grouped<2><<<grid, EXPERT_WARPS * 32, 0, stream>>>(input, g, u, int(picks.size(1)), group, act);
         else
             expert_gate_up_grouped<4><<<grid, EXPERT_WARPS * 32, 0, stream>>>(input, g, u, int(picks.size(1)), group, act);
@@ -1600,6 +1653,7 @@ void gguf_prepare_owned_gate_up() {
  RESIDENT(initialize_owned_gu_slots<int32_t>);RESIDENT(initialize_owned_gu_slots<int64_t>);
  RESIDENT(group_owned_routes<int32_t>);RESIDENT(group_owned_routes<int64_t>);
  RESIDENT(group_owned_prefix);RESIDENT(group_owned_scatter);RESIDENT(expert_gate_up_grouped<4>);
+ RESIDENT(expert_gate_up_wmma);
  #undef RESIDENT
 }
 void gguf_prepare_owned_from_activation() {
@@ -1609,6 +1663,7 @@ void gguf_prepare_owned_from_activation() {
     RESIDENT(group_owned_prefix); RESIDENT(group_owned_scatter);
     RESIDENT(expert_down160_grouped<true,7>); RESIDENT(expert_down160_grouped<true,-1>);
     RESIDENT(expert_down160_grouped<false,7>); RESIDENT(expert_down160_grouped<false,-1>);
+    RESIDENT(expert_gate_up_wmma);
     RESIDENT(publish_owned<int32_t,true>); RESIDENT(publish_owned<int32_t,false>);
     RESIDENT(publish_owned<int64_t,true>); RESIDENT(publish_owned<int64_t,false>);
     RESIDENT(publish_activation_status<true>); RESIDENT(publish_activation_status<false>);
