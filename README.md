@@ -1835,6 +1835,12 @@ keep issued device sources and the packed copy. Same-server A/B on 3db2bc68 (m-p
 C1 decode over seeds 501/601/602/611 x2 rose from 58.97 to 62.28 tok/s (8/8 pairs positive),
 C8 from 143.5/138.2 to 152.9/150.6 tok/s; greedy golden outputs identical.
 
+Per-layer tensor-parallel partials of 5-22 rows are reduced with a small row all-reduce on the
+NVLink mailboxes (`comm.all_reduce_rows`: rank-ordered FP32 sums rounded once to FP16, bitwise the
+gathered consumer's result) instead of being all-gathered as FP32; `TF_SMALL_ALLREDUCE=0` keeps
+the gather. Single runs on 8x V100 TP8/ETP4: C4 113/109 -> 118/121 tok/s, C8 144/146 -> 148/148,
+C1 unchanged, greedy oracle identical.
+
 SM70 decode-size (<=32-row) grouped MoE down projections now take the staged
 integer path on the rank-sliced ETP4 banks that SC117 actually holds. A 160-column
 slice of a 640-column IQ4_NL or Q2_0 row is 90 or 54 bytes, a stride that is 2
