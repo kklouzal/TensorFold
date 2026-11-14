@@ -36,7 +36,8 @@ def test_explicit_profile_selects_same_engine_operators_and_memory_policy(policy
     assert policy.module.configure(text(),tp=8,torch=torch)==profile
     enabled=profile=="optimized"
     assert policy.family._NATIVE_FAMILY==policy.family._NATIVE_ATTENTION==enabled
-    assert policy.routing._NATIVE_LOGITS==policy.padded._ENABLED==enabled
+    assert policy.padded._ENABLED==enabled
+    assert policy.routing._NATIVE_LOGITS is True  # bitwise the reference: selected in both profiles
     assert policy.proposal._ENABLED==policy.context._ENABLED==enabled
     assert policy.weights.GGUFExperts.implementation==("packed_exact" if enabled else "reference")
     assert policy.weights.GGUFConcat.implementation==("native32" if enabled else "reference")

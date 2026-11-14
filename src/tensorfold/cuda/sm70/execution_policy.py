@@ -153,7 +153,7 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     graph_policy = graph_inputs() if tp > 1 else None
     if record_graph_inputs is not None:
         record_graph_inputs(graph_policy)
-    from . import family_ops, routing_native
+    from . import family_ops
     from tensorfold.families.qwen4_exp.cuda import (
         dspark_context_graphs, dspark_proposal_graphs, gguf_prefill, gguf_weights, padded_linears,
     )
@@ -170,7 +170,7 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
         if not compatible:
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
     family_ops._NATIVE_FAMILY = family_ops._NATIVE_ATTENTION = enabled
-    routing_native._NATIVE_LOGITS = padded_linears._ENABLED = enabled
+    padded_linears._ENABLED = enabled  # routing_native keeps its bitwise-reference native logits in both
     gguf_weights.GGUFExperts.implementation = "packed_exact" if enabled else "reference"
     gguf_weights.GGUFConcat.implementation = "native32" if enabled else "reference"
     gguf_prefill.WORKSPACE_BUDGET_BYTES = (1 << 30) if enabled else None

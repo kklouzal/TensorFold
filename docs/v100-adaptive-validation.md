@@ -847,6 +847,14 @@ Gate: `router-four-row-GPU-replay-v1/actual-router-row-replay-gate-v1.json`, SHA
 
 ## Independent serial-router trial
 
+Update (2026-11-14): the native serial router logits are now selected by
+default (`routing_native._NATIVE_LOGITS = True`, independent of the
+reference/optimized profile) for eligible decode rows 1–256: the multi-row
+kernel is bitwise the per-row FP32 GEMV reference
+(`tests/cuda/test_sm70_router_rows.py`) and faster at every measured row
+count. The selector below and the prepared per-owner trial therefore select
+the same arithmetic; the history that follows describes the original trial.
+
 `TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS=native-serial-v1` selects the existing
 native router-logit operator independently of the broader execution profile.
 The import-time default `inherit` preserves that profile's existing flag;

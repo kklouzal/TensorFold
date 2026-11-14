@@ -4,8 +4,11 @@ import hashlib
 import os
 from pathlib import Path
 
-# Qualified explicitly by a prepared execution policy; ordinary routing remains selected.
-_NATIVE_LOGITS = False
+# Selected by default: the native serial logits are bitwise the per-row FP32 GEMV reference at 1..256
+# rows (tests/cuda/test_sm70_router_rows.py) and faster at every measured row count (V100, 48 layers in one
+# graph: 1/5/16 rows 9.8/17.2/30.4 us vs 17.3/60.0/194 us per layer). The per-row reference remains the
+# fallback for other devices, geometries and layouts.
+_NATIVE_LOGITS = True
 # Process-fixed operator-only trial; it never enables top-k, padding or other family kernels.
 _PRIVATE_SERIAL_LOGITS = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS", "inherit")
 if _PRIVATE_SERIAL_LOGITS not in ("inherit", "native-serial-v1"):
@@ -16,7 +19,7 @@ def supports_logits(x, weight, out):
     import torch
 
     if (not (_NATIVE_LOGITS or _PRIVATE_SERIAL_LOGITS == "native-serial-v1") or not x.is_cuda or x.dtype != torch.float16 or x.ndim != 2
-            or not 1 < x.shape[0] <= 32 or x.shape[1] != 2560 or x.stride(1) != 1 or x.stride(0) < 2560
+            or not 0 < x.shape[0] <= 256 or x.shape[1] != 2560 or x.stride(1) != 1 or x.stride(0) < 2560
             or weight.dtype != torch.float32 or weight.device != x.device or weight.shape != (513, 2560)
             or not weight.is_contiguous() or weight.data_ptr() % 512
             or out.dtype != torch.float32 or out.device != x.device or out.shape != (x.shape[0], 513)

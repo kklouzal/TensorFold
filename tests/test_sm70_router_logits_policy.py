@@ -1,4 +1,4 @@
-"""Exact router qualification stays explicit, decode-only and on matching storage."""
+"""Native router logits: selected by default on matching decode storage (bitwise the per-row reference)."""
 from types import SimpleNamespace as NS
 import os
 import subprocess
@@ -31,7 +31,11 @@ def operands(monkeypatch):
     return x, weight, output
 
 
-def test_exact_router_policy_is_disabled_by_default_and_does_not_probe_cuda(monkeypatch):
+def test_native_router_is_selected_by_default():
+    assert routing_native._NATIVE_LOGITS is True
+
+
+def test_disabled_router_policy_does_not_probe_cuda(monkeypatch):
     monkeypatch.setattr(routing_native, "_NATIVE_LOGITS", False)
     monkeypatch.setattr(routing_native, "_PRIVATE_SERIAL_LOGITS", "inherit")
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *args: pytest.fail("disabled policy probes CUDA"))
@@ -42,7 +46,7 @@ def test_matching_serial_decode_geometry_selects_without_retained_workspace(monk
     assert routing_native.supports_logits(*operands(monkeypatch))
 
 
-@pytest.mark.parametrize("mismatch", ["zero", "one", "large", "width", "bf16", "cpu", "input_stride",
+@pytest.mark.parametrize("mismatch", ["zero", "large", "width", "bf16", "cpu", "input_stride",
     "input_row_overlap", "half_weight", "weight_shape", "weight_stride", "weight_alignment", "weight_device",
     "output_shape", "output_type", "output_stride", "output_device", "new_gpu", "alias"])
 @pytest.mark.parametrize("private", [False, True])
@@ -51,8 +55,8 @@ def test_unqualified_storage_or_device_retains_original_router(monkeypatch, mism
     if private:
         monkeypatch.setattr(routing_native, "_NATIVE_LOGITS", False)
         monkeypatch.setattr(routing_native, "_PRIVATE_SERIAL_LOGITS", "native-serial-v1")
-    if mismatch in ("zero", "one", "large"):
-        rows = {"zero": 0, "one": 1, "large": 33}[mismatch]
+    if mismatch in ("zero", "large"):
+        rows = {"zero": 0, "large": 257}[mismatch]
         x.shape, output.shape = (rows, 2560), (rows, 513)
     elif mismatch == "width":
         x.shape = (3, 2559)
