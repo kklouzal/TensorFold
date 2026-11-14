@@ -1448,7 +1448,7 @@ __global__ void expert_down160_grouped(const __half* activation, PackedView down
 }
 
 // Decode-size (<=32 rows) grouped experts: one 16-pair tile of one expert per CTA row (blockIdx.y).
-// Integer path (decode-size only): every eight coefficients of the supported formats are exactly
+// Integer path (decode-size only; Q2_0 down excepted, see down_exact): every eight coefficients of the supported formats are exactly
 // d * q[j], with d the format's FP32 scale expression from value() and q[j] a signed 8-bit integer.
 // Inputs are quantized per 32-element block to int16 (x ~= s * xq, s = amax / 32767, |error| <=
 // amax / 65534) and split into a signed high and an unsigned low byte, so each eight-coefficient
@@ -1752,10 +1752,13 @@ void launch_gate_up_decode(const __half* x, int rows, const PackedView& gate, co
 // (activations quantized once per CTA, as above), and the parts combine by shuffle. Split 4 trades
 // per-CTA overhead for parallelism at 1-2 rows; Split 1 serves larger batches. Each warp stages its
 // rows' raw bytes (a word-aligned superset of the 160-column span) with every load in flight first.
+// Rank-sliced ETP4 banks have 2 mod 4 row strides (5 IQ4_NL or 3 Q2_0 blocks of 18 bytes), so a row's
+// span may start 2 bytes into its first staged word; every block then still starts halfword aligned,
+// which is all int8_block requires. The extra 2 bytes are staged for those banks.
 int down_row_bytes(const PackedView& v) {  // padded to an odd word count: conflict-free row strides
-    if (!int_kind(v.kind) || v.offset % 8 || v.stride % 4 || reinterpret_cast<uintptr_t>(v.data) % 4) return 0;
+    if (!int_kind(v.kind) || v.offset % 8 || v.stride % 2 || reinterpret_cast<uintptr_t>(v.data) % 4) return 0;
     const int first = v.offset / v.block * v.bytes / 4 * 4, end = ((v.offset + 159) / v.block + 1) * v.bytes;
-    const int words = (end - first + 3) / 4;
+    const int words = (end - first + (v.stride % 4) + 3) / 4;
     return 4 * (words | 1);
 }
 
@@ -1773,13 +1776,51 @@ __device__ __forceinline__ void down_int(const uint8_t* raw, int skip, int offse
     }
 }
 
-template <bool F32, int Split>
+// Q2_0 down (Exact): d * q with q in {-1, 0, 1, 2} is exact in FP16, so the reference path is already
+// FP32-exact up to its sums (~1e-7 vs FP64) and the int16 input quantization above (~3e-5) would
+// worsen it. These coefficients are formed exactly in FP32 and multiply the unquantized FP16
+// activations with FP32 FMAs; other kinds keep the faster integer path, which removes their larger
+// FP16 coefficient rounding.
+template <int Kind, int Block, int Bytes, int Split>
+__device__ __forceinline__ void down_exact(const uint8_t* raw, int skip, int offset, int part, const float4* xf,
+                                           int n, const int8_t* kvs, float (&acc)[DECODE_PAIRS]) {
+    #pragma unroll
+    for (int chunk = part; chunk < 20; chunk += Split) {
+        const int col = offset + chunk * 8;
+        int q0, q1;
+        const float d = int8_block<Kind>(raw + (col / Block) * Bytes - skip, col % Block, q0, q1, kvs);
+        // Byte j biased by 128 becomes the low byte of 2^23 + (q + 128); subtracting 2^23 + 128 is
+        // exact (I2F runs at a quarter of the FADD rate), and so is the product with d.
+        const uint32_t u0 = uint32_t(q0) ^ 0x80808080u, u1 = uint32_t(q1) ^ 0x80808080u;
+        float c[8];
+        #pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            c[j] = (__uint_as_float(__byte_perm(u0, 0x4B000000u, 0x7540 + j)) - 8388736.0f) * d;
+            c[4 + j] = (__uint_as_float(__byte_perm(u1, 0x4B000000u, 0x7540 + j)) - 8388736.0f) * d;
+        }
+        #pragma unroll
+        for (int p = 0; p < DECODE_PAIRS; ++p) {
+            if (p < n) {
+                const float4 a = xf[p * 40 + chunk * 2], b = xf[p * 40 + chunk * 2 + 1];
+                float v = acc[p];
+                v = fmaf(c[0], a.x, v); v = fmaf(c[1], a.y, v); v = fmaf(c[2], a.z, v); v = fmaf(c[3], a.w, v);
+                v = fmaf(c[4], b.x, v); v = fmaf(c[5], b.y, v); v = fmaf(c[6], b.z, v); v = fmaf(c[7], b.w, v);
+                acc[p] = v;
+            }
+        }
+    }
+}
+
+template <bool F32, int Split, bool Exact>
 __global__ __launch_bounds__(DOWN_WARPS * 32)
 void expert_down160_decode(const __half* activation, PackedView down, int dims, OwnedGrouping group,
                            void* output, int row_bytes) {
     extern __shared__ __align__(16) uint8_t down_smem[];
-    __shared__ uint4 xq[DECODE_PAIRS * 20];
-    __shared__ float xs[DECODE_PAIRS * 5];
+    // Exact: FP32 activations [pair][160]; otherwise int16 hi/lo chunks [pair][20] and block scales.
+    __shared__ __align__(16) uint8_t xsm[Exact ? DECODE_PAIRS * 640 : DECODE_PAIRS * (20 * 16 + 5 * 4)];
+    float4* xf = reinterpret_cast<float4*>(xsm);
+    uint4* xq = reinterpret_cast<uint4*>(xsm);
+    float* xs = reinterpret_cast<float*>(xsm + DECODE_PAIRS * 20 * 16);
     __shared__ int8_t kvs[16];
     __shared__ int pairs[DECODE_PAIRS];
     const int tile = blockIdx.y;
@@ -1802,11 +1843,14 @@ void expert_down160_decode(const __half* activation, PackedView down, int dims, 
             #pragma unroll
             for (int j = 0; j < 8; ++j) {
                 const int i = base + 32 * j;
-                // The padded tail word may lie past the row's span but never past the bank's row end.
+                // Word-aligned global words from the row's span start rounded down. A leading word may
+                // begin in the previous row (start % 4 != 0 implies a previous row exists); a word
+                // reaching past the row end is loaded only up to it (stride is even), never beyond.
                 const int r = i / words, word = i % words;
-                const int64_t at = (row0 + r) * down.stride + skip + 4 * word;
-                if (i < total && at + 4 <= (row0 + r + 1) * down.stride)
-                    w[j] = __ldg(reinterpret_cast<const uint32_t*>(down.data + at));
+                const int64_t at = (((row0 + r) * down.stride + skip) & ~int64_t(3)) + 4 * word;
+                const int64_t end = (row0 + r + 1) * down.stride;
+                if (i < total && at + 4 <= end) w[j] = __ldg(reinterpret_cast<const uint32_t*>(down.data + at));
+                else if (i < total && at < end) w[j] = __ldg(reinterpret_cast<const uint16_t*>(down.data + at));
                 else w[j] = 0;
             }
             #pragma unroll
@@ -1816,25 +1860,43 @@ void expert_down160_decode(const __half* activation, PackedView down, int dims, 
     }
     __syncthreads();
     const bool vector = (reinterpret_cast<uintptr_t>(activation) & 15) == 0;
-    // Whole warps run quantize8 (its shuffles); a 32-block's four chunks share a warp as 20 % 4 == 0.
-    for (int item = thread; item < (count * 20 + 31) / 32 * 32; item += DOWN_WARPS * 32) {
-        const int p = item / 20, chunk = item % 20;
-        const bool valid = item < count * 20;
-        const uint4 h = valid ? load8(activation + int64_t(pairs[p]) * 160 + chunk * 8, vector) : make_uint4(0, 0, 0, 0);
-        uint4 packed;
-        const float scale = quantize8(h, packed);
-        if (valid) {
-            xq[item] = packed;
-            if (chunk % 4 == 0) xs[p * 5 + chunk / 4] = scale;
+    if constexpr (Exact) {
+        for (int item = thread; item < count * 20; item += DOWN_WARPS * 32) {
+            const int p = item / 20, chunk = item % 20;
+            const uint4 h = load8(activation + int64_t(pairs[p]) * 160 + chunk * 8, vector);
+            const float2 f0 = __half22float2(*reinterpret_cast<const __half2*>(&h.x));
+            const float2 f1 = __half22float2(*reinterpret_cast<const __half2*>(&h.y));
+            const float2 f2 = __half22float2(*reinterpret_cast<const __half2*>(&h.z));
+            const float2 f3 = __half22float2(*reinterpret_cast<const __half2*>(&h.w));
+            xf[2 * item] = make_float4(f0.x, f0.y, f1.x, f1.y);
+            xf[2 * item + 1] = make_float4(f2.x, f2.y, f3.x, f3.y);
+        }
+    } else {
+        // Whole warps run quantize8 (its shuffles); a 32-block's four chunks share a warp as 20 % 4 == 0.
+        for (int item = thread; item < (count * 20 + 31) / 32 * 32; item += DOWN_WARPS * 32) {
+            const int p = item / 20, chunk = item % 20;
+            const bool valid = item < count * 20;
+            const uint4 h = valid ? load8(activation + int64_t(pairs[p]) * 160 + chunk * 8, vector)
+                                  : make_uint4(0, 0, 0, 0);
+            uint4 packed;
+            const float scale = quantize8(h, packed);
+            if (valid) {
+                xq[item] = packed;
+                if (chunk % 4 == 0) xs[p * 5 + chunk / 4] = scale;
+            }
         }
     }
     __syncthreads();
     float acc[DECODE_PAIRS] = {};
-    const uint8_t* mine = raw + row * row_bytes;
-    switch (down.kind) {  // the launcher admits only integer kinds with a staged span
+    const uint8_t* mine = raw + row * row_bytes + int(((row0 + row) * down.stride + skip) & 3);
+    if constexpr (Exact) {
+        down_exact<42, 64, 18, Split>(mine, skip, down.offset, part, xf, count, kvs, acc);
+    } else {
+        switch (down.kind) {  // the launcher admits only integer kinds with a staged span
 #define TF_DOWN_CASE(K, B, BYTES) case K: down_int<K, B, BYTES, Split>(mine, skip, down.offset, part, xq, xs, count, kvs, acc); break;
-        TF_INT_KINDS(TF_DOWN_CASE)
+            TF_INT_KINDS(TF_DOWN_CASE)
 #undef TF_DOWN_CASE
+        }
     }
     #pragma unroll
     for (int p = 0; p < DECODE_PAIRS; ++p) {
@@ -1867,10 +1929,17 @@ void launch_down_decode(const __half* activation, int rows, const PackedView& do
     const bool narrow = rows <= 2;  // measured crossover (SC117 IQ4_NL/Q2_0 banks, V100)
     const dim3 grid(dims / (DOWN_WARPS * (narrow ? 8 : 32)), group.max_tiles);
     const int bytes = DOWN_WARPS * (narrow ? 8 : 32) * row_bytes;
-    #define TF_DOWN_LAUNCH(F, S) expert_down160_decode<F, S><<<grid, DOWN_WARPS * 32, bytes, stream>>>( \
-        activation, down, dims, group, output, row_bytes)
-    if (f32) { if (narrow) TF_DOWN_LAUNCH(true, 4); else TF_DOWN_LAUNCH(true, 1); }
-    else { if (narrow) TF_DOWN_LAUNCH(false, 4); else TF_DOWN_LAUNCH(false, 1); }
+    // Wide spans (Q8_0 rank slices: 172-byte rows) exceed the 48 KiB default shared memory.
+    #define TF_DOWN_LAUNCH(F, S, E) do { \
+        if (bytes > 32 * 1024) C10_CUDA_CHECK(cudaFuncSetAttribute( \
+            expert_down160_decode<F, S, E>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes)); \
+        expert_down160_decode<F, S, E><<<grid, DOWN_WARPS * 32, bytes, stream>>>( \
+            activation, down, dims, group, output, row_bytes); } while (0)
+    #define TF_DOWN_SPLIT(F, E) do { if (narrow) TF_DOWN_LAUNCH(F, 4, E); else TF_DOWN_LAUNCH(F, 1, E); } while (0)
+    const bool exact = down.kind == 42;
+    if (f32) { if (exact) TF_DOWN_SPLIT(true, true); else TF_DOWN_SPLIT(true, false); }
+    else { if (exact) TF_DOWN_SPLIT(false, true); else TF_DOWN_SPLIT(false, false); }
+    #undef TF_DOWN_SPLIT
     #undef TF_DOWN_LAUNCH
 }
 
@@ -2348,8 +2417,10 @@ void gguf_prepare_owned_from_activation() {
 #define RESIDENT(...) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes,__VA_ARGS__))
     RESIDENT(group_owned_routes<int32_t>); RESIDENT(group_owned_routes<int64_t>);
     RESIDENT(group_owned_prefix); RESIDENT(group_owned_scatter);
-    RESIDENT((expert_down160_decode<true,1>)); RESIDENT((expert_down160_decode<true,4>));
-    RESIDENT((expert_down160_decode<false,1>)); RESIDENT((expert_down160_decode<false,4>));
+    RESIDENT((expert_down160_decode<true,1,false>)); RESIDENT((expert_down160_decode<true,4,false>));
+    RESIDENT((expert_down160_decode<false,1,false>)); RESIDENT((expert_down160_decode<false,4,false>));
+    RESIDENT((expert_down160_decode<true,1,true>)); RESIDENT((expert_down160_decode<true,4,true>));
+    RESIDENT((expert_down160_decode<false,1,true>)); RESIDENT((expert_down160_decode<false,4,true>));
     RESIDENT((expert_down160_grouped<true,7>)); RESIDENT((expert_down160_grouped<true,-1>));
     RESIDENT((expert_down160_grouped<false,7>)); RESIDENT((expert_down160_grouped<false,-1>));
     RESIDENT(expert_gate_up_prefill);

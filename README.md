@@ -3180,6 +3180,24 @@ prefill on the setup above (seeds 601/602/611, 1024-row chunks) rose from
 1468/1517/1502 to 1686/1782/1842 tok/s at 4K tokens and from 2054/2101/2094 to
 2505/2514/2533 tok/s at 16K; the C1 greedy oracle is unchanged.
 
+SM70 decode-size (<=32-row) grouped MoE down projections now take the staged
+integer path on the rank-sliced ETP4 banks that SC117 actually holds. A 160-column
+slice of a 640-column IQ4_NL or Q2_0 row is 90 or 54 bytes, a stride that is 2
+mod 4, so every such bank previously fell back to the one-warp WMMA kernel
+(`expert_down160_grouped`, ~3.2 ms per C1 verify on one rank); halfword-aligned
+staging admits these strides. IQ4_NL (and other non-Q2_0 kinds) keep the int16
+activation/dp4a path; Q2_0, whose FP16 coefficients were already exact, forms
+exact FP32 coefficients and multiplies unquantized activations so its error does
+not rise. Isolated V100 check on sliced banks (FP32 output, error vs FP64 on the
+kernel's own activation): IQ4_NL 2.1e-4 -> 3.0e-5, Q2_0 3.3e-7 -> 1-2e-7; down
+time per call at 1/5/32 rows 31-36/102/717-733 us -> 8.2-8.6/31-32/130-146 us
+(`tests/cuda/test_sm70_decode_down_slices.py` bounds sliced IQ4_NL/Q2_0/Q8_0
+outputs against FP64). Descriptive single runs on the setup above
+(seeds 501/601/602/611, C1) moved decode from 49.5/49.6/50.0/41.6 to
+51.5/48.6/52.4/43.7 tok/s; C8 (rows above 32 keep the prefill kernel) was
+119.7/113.1 before and 116.8/114.8 after. The C1 greedy oracle changes late in
+one of six prompts (coherent; re-recorded).
+
 A controlled [native ragged replay oracle](docs/observed-graph-demand.md)
 now compares actual `ExactStateGraphs` target/MTP `(28,8)` replay against eager
 execution on the same idle TP8 decoder using ordinary State reset/restaging and
