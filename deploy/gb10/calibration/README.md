@@ -15,7 +15,8 @@ conversion, verified preserved BF16 payloads and exercised the packed target
 with the original BF16 Google assistant in protected development-source runs.
 The corrected focused 39-case GPU regression suite also passed. These are
 separate evidence stages, not installed serving or final quality/performance
-qualification; see [current evidence](EVIDENCE.md).
+qualification; see [current evidence](EVIDENCE.md) and the
+[test-only application integration](TEST-ENV-INTEGRATION.md).
 
 The public `tensorfold quantize plan` CLI remains planning-only. Execution here
 used experimental coordinator/operator interfaces, not a newly supported public

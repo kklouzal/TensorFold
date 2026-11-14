@@ -5,6 +5,14 @@ CUDA stream. Their native wrappers check tensor metadata, device identity,
 kernel dimension ranges, and known write/read overlap before launch. These
 checks do not synchronize device data or change floating-point operations.
 
+Narrower CUDA contracts live in their own notes:
+[B16 linear and prompt](cuda-b16-contracts.md),
+[Qwen3.5 FP8 prompt admission](cuda-fp8-prefill-contracts.md),
+[indexed checkpoint startup](cuda-indexed-header-startup.md),
+[Flash Next ownership](cuda-flashnext-lifecycle.md),
+[Nemotron sampling](cuda-nemotron-sampling.md) and the
+[native qualification evidence](cuda-extra-native-evidence.md) for those packets.
+
 ## SM70 FP16 execution policy
 
 The `cuda.sm70` provider stores activations as FP16, with FP32 reductions and

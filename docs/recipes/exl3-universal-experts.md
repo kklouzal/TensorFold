@@ -8,7 +8,7 @@ the three EXL3 codebooks (`3inst`, `mcg`, `mul1`) — mixed freely inside one la
 The accompanying [EXL3 weights](exl3.md) recipe has the format and the dense linear layer.
 
 Measured on MiMo-V2.6-Flash-RL-EXL3 `2.50bpw` (`mul1`, experts at 2/3/4/5 bits), one DGX Spark (GB10),
-exclusive GPU, `tools/mimo_exl3_bench.py`, medians of 5 reps x 30 iters x 2 sets, SM clock 2405-2489 MHz
+exclusive GPU, `tools/mimo_exl3_bench.py` (a measurement script not kept in this repository), medians of 5 reps x 30 iters x 2 sets, SM clock 2405-2489 MHz
 during the run. GB/s is over the distinct experts' trellis bytes actually read (gate + up + down) per call.
 
 | Layer (widths) | Rows | this kernel | CUDA graph | ExLlamaV3 `exl3_moe_mixedk` | ExLlamaV3 `exl3_moe_coop` |
@@ -28,12 +28,12 @@ two are within 2%: this work does not beat `exl3_moe_coop` on uniform layers, it
 
 * Grid `(uids, n_tiles, mats * SK * member_tiles)`, 128 threads (4 warps) per program, `NT` 16x16 trellis
   tiles per program per step, K split `SK` ways for the reduction, `mats` handles gate/up/down of the layer.
-* `__exl3x_lane_map<K2>` computes, once per program, the word and shift each lane needs for the `j`-th of
-  its 8 values. The 16-bit state of value `p` of a 16x16 tile ends at bit
+* `LaneMap<K2>` (`experts_grouped.cuh`) computes, once per program, the word and shift each lane needs for
+  the `j`-th of its 8 values. The 16-bit state of value `p` of a 16x16 tile ends at bit
   `end(p) = (p >> 1) * K2 + (K2 or K2 >> 1)` when `p` is odd/even, so window `w` of the 8-value group
   is a fixed shift of a 64-bit word merge, and a group of `GV` values never spans more than two
-  32-bit words (proved by enumeration over every `K2` in 1..16 and asserted at compile time by
-  `exl3x_check_gv`, which is why `GV` degrades gracefully: 8 for `K2<=8`, 4 for 9..12, 2 for 13..14).
+  32-bit words (`tests/cuda/test_exl3_experts.py` checks every `K2`), which is why `Fmt<K2>::GV`
+  degrades gracefully: 2 for `K2>=13`, 4 for `K2` 7 and 9..12, 8 otherwise.
 * Pair decode `cb_pair` is one `half2` op sequence per two values: `3inst` is a multiply-add then a
   mask/xor plus `__hadd2`, `mcg` the same with the other multiplier, `mul1` an `__dp4a` byte sum then
   `__hfma2`. Both halves come out of one 32-bit result, so two values cost ~5 instructions and the

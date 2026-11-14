@@ -4,7 +4,8 @@
 schemas from its recorded predecessor. This source change affects only the
 shared IO imports, durable JSON publication, and `Host.command` resource/error
 handling. It does not authorize a controller, Docker, model, GPU or service
-lifecycle action.
+lifecycle action. The companion [progress IO scope](gb10-progress-io.md) covers
+`tools/gb10_progress.py`.
 
 `Host.command` keeps the inherited descriptors, one client launch, bounded
 stdout/stderr, selector loop, command deadline and five-second failure-retirement

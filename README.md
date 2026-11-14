@@ -1,5 +1,8 @@
 # TensorFold fork
 
+To build, run or configure TensorFold, go to [Start here](#start-here). The notes before that
+section record current development and validation status.
+
 The opt-in gathered sampler readback now reserves controlled header/forecast
 metadata, cold setup overlap and observation scratch alongside live packet/ID payloads. Payload-only
 credit is insufficient. The chooser is unchanged; the new runtime image and
