@@ -466,7 +466,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | --- | --- |
 | `--parallel N\|auto` | `auto`: MLX up to 8 while projected memory fits; GGUF GPU-history CUDA computes full-context resident capacity; other CUDA providers use 1. On the adaptive path, an integer is an admission ceiling. |
 | `--draft-method auto\|none\|mtp\|dspark` | Flash Next CUDA selects an implemented method; `none` omits drafter resources. DFlash is separate and not yet a Flash Next serving choice. |
-| `--execution-profile-manifest FILE` | Opt-in GGUF SM70 content/runtime binding and verified execution-profile receipts. Hashes actual inputs once; normal startup does not do this work. See the [manifest contract](docs/execution-profile-manifest.md). |
+| `--execution-profile-manifest FILE` | Opt-in GGUF SM70 input/runtime binding and verified execution-profile receipts. GGUF shards are bound by size and header digest (payloads are not hashed); metadata, source and loaded libraries are hashed once; normal startup does not do this work. See the [manifest contract](docs/execution-profile-manifest.md). |
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
 | `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` with an original or losslessly packed BF16 tied target head: private FP8 copies of its companion projections and head. Gemma FP8 prepares its selected prompt and lane providers during initialization after validating those copies; build failures abort startup. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
@@ -1792,16 +1792,18 @@ prefill on the setup above (seeds 601/602/611, 1024-row chunks) rose from
 2505/2514/2533 tok/s at 16K; the C1 greedy oracle is unchanged.
 
 SM70 GGUF startup (2026-11-14, SC117 IQ3_S TP8/ETP4 MTP4 with an execution-profile
-manifest, 8x V100, warm page cache) fell from about 445 s to 296 s to ready. Pre-weight
-setup went from 58.8 s to 17.1 s (the GGUF header is parsed from memory and reused in
-process only after an exact header-byte and size check; the Triton library digest runs
-outside the shared driver lock; cheaper header audit). Weight loading went from 39.3 s to
-17.1 s (pinned page-cache staging with byte-exact row selection on the device). The 79-key
-exact-graph capture now takes about 60 s (n-gram prime constants are cached instead of
-recomputed per State reset). With `--execution-profile-manifest`, rank 0's checkpoint
-content pass starts with startup and overlaps loading and capture; its SHA-256 of the 55 GB
-shard remains the critical path. Nothing is cached on disk; golden output identical; C1
-decode and 4000-token prefill unchanged or faster.
+manifest, 8x V100, warm page cache and extension cache) fell from about 445 s to 124 s to
+ready. Pre-weight setup went from 58.8 s to 17.4 s (the GGUF header is parsed from memory and
+reused in process only after an exact header-byte and size check; the Triton library digest
+runs outside the shared driver lock; cheaper header audit). Weight loading went from 39.3 s to
+16.8 s (pinned page-cache staging with byte-exact row selection on the device). The 79-key
+exact-graph capture now takes about 50 s (n-gram prime constants are cached instead of
+recomputed per State reset). `--execution-profile-manifest` no longer SHA-256-hashes GGUF
+payloads (previously ~170-270 s on the 55 GB shard): GGUF artifacts are bound by size, opened
+file identity and the digest of their exact header bytes; metadata, source and loaded
+libraries are still content-hashed. Manifests must declare `{size, header_sha256}` for `.gguf`
+artifacts. Nothing is cached on disk; golden output identical; C1 decode and 4000-token
+prefill unchanged or faster.
 
 SM70 decode-size (<=32-row) grouped MoE down projections now take the staged
 integer path on the rank-sliced ETP4 banks that SC117 actually holds. A 160-column
