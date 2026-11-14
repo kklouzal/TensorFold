@@ -546,6 +546,7 @@ class OwnerBuffers:
         self.descriptor_upload = self.native_done = None
         self.descriptor_upload_ring = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
+        self._native_stream = None
         self.native_comm = self.native_collective = None
         self._native_transport_configured = self._native_family_configured = False
         self.reference_transport_rows = 0
@@ -791,7 +792,9 @@ class OwnerBuffers:
             state.history_native_readers.add(self)
 
     def wait_native_reuse(self):
-        if self._native_pending:
+        # Same-stream reuse is already ordered after the recorded consumers; only a different
+        # (e.g. capture or side) stream needs the event wait.
+        if self._native_pending and torch._C._cuda_getCurrentRawStream(self.queries.device.index) != self._native_stream:
             torch.cuda.current_stream(self.queries.device).wait_event(self.native_done)
 
     def stage_native_descriptors(self, segments, layer, base, count, *, mtp=False, bucket_rows=None):
@@ -928,6 +931,18 @@ class OwnerBuffers:
     def native_views(self, rows):
         if self.descriptors is None or type(rows) is not int or not 1 <= rows <= self.rows:
             raise ValueError("native views require a prepared bounded row bucket")
+        # Views over the persistent slabs are rebuilt only when a slab is (re)allocated.
+        key = (rows, self.native_kernel_family, *(None if t is None else t.data_ptr() for t in (
+            self.queries, self.selections, self.partial, self.partials, self.descriptors, self.global_stats)))
+        cache = self.__dict__.setdefault("_native_view_cache", {})
+        views = cache.get(rows)
+        if views is not None and views[0] == key:
+            return views[1]
+        views = self._native_views(rows)
+        cache[rows] = (key, views)
+        return views
+
+    def _native_views(self, rows):
         q = self.queries.reshape(-1)[:8 * rows * 3 * 256].view(8, rows, 3, 256)
         selection = self.selections.reshape(-1)[:8 * rows * self.selection.shape[1]].view(8, rows, self.selection.shape[1])
         local_stats = self.partial.reshape(-1)[:rows * 12 * 2].view(rows, 12, 2)
@@ -1100,6 +1115,7 @@ class OwnerBuffers:
     def mark_native_submitted(self):
         if self.native_done is not None:
             self.native_done.record(torch.cuda.current_stream(self.queries.device))
+            self._native_stream = torch._C._cuda_getCurrentRawStream(self.queries.device.index)
             self._native_pending = True
 
     def retire_native(self):

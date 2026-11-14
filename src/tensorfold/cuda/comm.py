@@ -467,7 +467,7 @@ class NCCL:
         if (source < destination + size * self.world and destination < source + size
                 and source != destination + self.rank * size):
             raise ValueError("all_gather: overlapping input must be this rank's exact receive slice")
-        stream = torch.cuda.current_stream(self.device).cuda_stream
+        stream = torch._C._cuda_getCurrentRawStream(self.device.index)
         self._check(self.lib.ncclAllGather(source, destination, count, _DTYPES[dtype],
                                            self.comm, stream))
 

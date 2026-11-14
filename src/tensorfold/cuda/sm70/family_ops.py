@@ -1161,9 +1161,12 @@ def owned_q8_prepare_window(module, projection, coordinates, weights, cache, sta
     # Check full-window aliases before any row mutates; no tensor data is read.
     reads = (projection, coordinates, a.q_scale, a.k_scale, a.iq_scale, frequency,
              cache.page_offsets, state.history_generations)
-    for index, output in enumerate(outputs):
-        if any(torch._C._overlaps(output, other) for other in (*reads, *outputs[:index])):
-            raise ValueError('owned Q8 window operands must be separately owned')
+    # The grid binding receives the whole window and asserts these same write/read and
+    # write/write disjointness relations natively, so only the leaf loop needs this pass.
+    if dispatch != 'grid-v1':
+        for index, output in enumerate(outputs):
+            if any(torch._C._overlaps(output, other) for other in (*reads, *outputs[:index])):
+                raise ValueError('owned Q8 window operands must be separately owned')
     at = 2 * c.heads * c.head_dim + 2 * c.head_dim + c.index_heads * c.index_dim
     ik = _guard(projection[:, at:at + c.index_dim], state.kv_status, 16, layer.index)
     # Grid validates/launches the complete window in its native boundary. The
