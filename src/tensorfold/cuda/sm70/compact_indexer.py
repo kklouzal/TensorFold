@@ -14,10 +14,11 @@ def extension():
     prepared = _native()
     root = Path(__file__).parent
     sources = [root / "compact_indexer_bindings.cpp", root / "compact_indexer.cu"]
+    headers = [root / "torch_reduce.cuh"]
     digest = hashlib.sha256(prepared.__name__.encode())
-    for source in sources:
+    for source in [*sources, *headers]:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
-    return build.load("tf_sm70_compact_indexer_" + digest.hexdigest()[:20], stage_sources(sources), need=(7, 0),
+    return build.load("tf_sm70_compact_indexer_" + digest.hexdigest()[:20], stage_sources(sources, headers=headers), need=(7, 0),
                       extra_cuda_cflags=["-O3", "--fmad=false"], extra_cflags=["-O3"])
 
 
@@ -66,13 +67,14 @@ ROUND_LANE_WORDS = len(ROUND_LANE_FIELDS)
 ROUND_GROUPS = 16
 
 
-def round_stage(ik, lanes, raw, coordinates, layer):
+def round_stage(ik, lanes, layer):
     """Captured once per layer; the owner retains every lane pointee through replay retirement."""
-    extension().round_stage(ik, lanes, raw, coordinates, layer)
+    extension().round_stage(ik, lanes, layer)
 
 
-def round_publish(values, lanes, layer):
-    extension().round_publish(values, lanes, layer)
+def round_pool(ik, lanes, weight, frequency, eps, scale, sections, layer):
+    """The eager owner's complete-group pooling and publication (mean, RMSNorm, M-RoPE, guard)."""
+    extension().round_pool(ik, lanes, weight, frequency, eps, scale, sections[1], sections[2], layer)
 
 
 def prepare(device):

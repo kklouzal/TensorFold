@@ -571,7 +571,7 @@ class OwnerBuffers:
         self.reference_transport_rows = 0
         self.round_device = self.round_host = self.round_words = self.round_done = None
         self.round_desc = self.round_pooled = self.round_lanes = self.round_live = None
-        self.round_ik = self.round_raw = self.round_coords = self.round_values = None
+        self.round_ik = None
         self.round_ordinals = None
         self._round_pending = False
         self.closed = False
@@ -1179,7 +1179,7 @@ class OwnerBuffers:
     def prepare_round(self, ordinals):
         """Allocate the round tables once at idle startup (before any round capture)."""
         from tensorfold.cuda.sm70.paged_attention_descriptor import WORDS
-        from tensorfold.cuda.sm70.compact_indexer import ROUND_LANE_WORDS, ROUND_GROUPS
+        from tensorfold.cuda.sm70.compact_indexer import ROUND_LANE_WORDS
 
         if self.round_device is not None:
             if self.round_ordinals != ordinals:
@@ -1209,9 +1209,6 @@ class OwnerBuffers:
                                   self.round_words[l0:l0 + ln].reshape(layers, rows, ROUND_LANE_WORDS),
                                   self.round_words[c0:c0 + cn].view(np.int32))
         self.round_ik = torch.zeros((rows, 128), dtype=torch.float16, device=device)
-        self.round_raw = torch.zeros((rows, ROUND_GROUPS, 4, 128), dtype=torch.float16, device=device)
-        self.round_coords = torch.zeros((rows, ROUND_GROUPS, 3), dtype=torch.int64, device=device)
-        self.round_values = torch.zeros((rows, ROUND_GROUPS, 128), dtype=torch.float16, device=device)
         self.round_ordinals = dict(ordinals)
 
     def stage_round(self, buffers, segments):
@@ -1383,7 +1380,7 @@ class OwnerBuffers:
         self.descriptor_upload_ring = None
         self.round_device = self.round_host = self.round_words = self.round_done = None
         self.round_desc = self.round_pooled = self.round_lanes = self.round_live = None
-        self.round_ik = self.round_raw = self.round_coords = self.round_values = None
+        self.round_ik = None
         self.native_comm = None
         self.closed, self._base_ready = True, False
 
@@ -1458,11 +1455,10 @@ def captured_attention_layer(layer, weights, participants, buffers, total_rows):
     Issues exactly the device work of the eager native owner layer for the
     grid owned-Q8 decode window, reading State operands from the round tables
     that OwnerBuffers.stage_round publishes before each replay. Arithmetic is
-    the eager operators' own (shared native bodies; the same Torch pooling
-    operators at the same 16-row normalization shape).
+    the eager operators' own (shared native bodies; the pooling kernel keeps
+    each eager Torch operator's rounding at its 16-row normalization shape).
     """
     from tensorfold.cuda.sm70 import compact_indexer as compact
-    from tensorfold.cuda.sm70.compact_indexer import ROUND_GROUPS
 
     c, a, owner = weights.cfg, layer.attn, buffers.history_owner
     rank = weights.meta["rank"]
@@ -1482,18 +1478,9 @@ def captured_attention_layer(layer, weights, participants, buffers, total_rows):
         layer.index, c.heads, c.index_heads, c.index_dim, c.eps, position.amplitude,
         position.sections[1], position.sections[2])
     lanes = owner.round_lanes[ai, :participants]
-    compact.round_stage(ik, lanes, owner.round_raw[:participants], owner.round_coords[:participants], layer.index)
-    groups = torch.arange(ROUND_GROUPS, device=ik.device)
-    for lane in range(participants):
-        raw = owner.round_raw[lane].float()
-        total = raw[:, 0]
-        for member in range(1, 4):
-            total = total + raw[:, member]
-        value = ops.rms((total / 4).half(), a.ik_scale, c.eps)
-        value = ops.rotary(value, position.inv_freq, groups, rope=owner.round_coords[lane], length=ROUND_GROUPS,
-                           sections=position.sections, scale=position.amplitude)
-        owner.round_values[lane].copy_(value)
-    compact.round_publish(owner.round_values[:participants], lanes, layer.index)
+    compact.round_stage(ik, lanes, layer.index)
+    compact.round_pool(ik, lanes, a.ik_scale, position.inv_freq, c.eps, position.amplitude, position.sections,
+                       layer.index)
     selection = owner.selection[:bucket]
     module.qsa_rows_owned(buffers.iq, desc, owner.round_pooled[ai, :bucket], selection, rank, c.index_ratio,
                           c.index_budget, ROUND_SELECTOR_BLOCKS, layer.index)
