@@ -116,55 +116,108 @@ void routing_route_cuda(const at::Tensor& logits, at::Tensor& picks, at::Tensor&
 namespace {
 // Match the qualified pinned cuBLAS serial GEMV: eight outputs/CTA, sixteen
 // lanes/output, five K512 tiles, then a left-fold of the sixteen lane totals.
-__global__ void serial_logits(const __half* x, const float* weight, float* output,
-                              int64_t input_stride) {
-    __shared__ float input[512];
-    __shared__ float partial[128];
+// Each CTA serves NR (<= 8) consecutive rows with one register copy of its weight
+// tile, so the FP32 weights are read once per row group instead of once per row;
+// the rows' independent FMA chains interleave. Every row's operation sequence is
+// the serial one and does not depend on the call's row count.
+template <int NR>
+__global__ void __launch_bounds__(128) serial_logits(const __half* x, const float* weight, float* output,
+                                                     int64_t input_stride, int first_row) {
+    __shared__ float input[NR][512];
+    __shared__ float partial[NR][128];
     const int thread = threadIdx.x, lane = thread & 15, group = thread >> 4;
-    const int expert = blockIdx.x * 8 + group, row = blockIdx.y;
-    float total = 0.0f;
+    const int expert = blockIdx.x * 8 + group;
+    const bool active = expert < 513;
+    const int first = first_row + blockIdx.y * NR;
+    const float* row_weight = weight + int64_t(active ? expert : 0) * 2560 + lane;
+    float total[NR];
+    #pragma unroll
+    for (int r = 0; r < NR; ++r) total[r] = 0.0f;
     #pragma unroll 1
     for (int tile = 0; tile < 2560; tile += 512) {
+        float w[32];
         #pragma unroll
-        for (int offset = thread; offset < 512; offset += 128) {
-            const float value = __half2float(x[int64_t(row) * input_stride + tile + offset]);
-            float scaled;
-            asm volatile("mul.rn.f32 %0, %1, 0f3f800000;" : "=f"(scaled) : "f"(value));
-            input[offset] = scaled;
-        }
-        __syncthreads();
-        float value = 0.0f;
-        if (expert < 513) {
+        for (int step = 0; step < 32; ++step) w[step] = active ? row_weight[tile + step * 16] : 0.0f;
+        #pragma unroll
+        for (int r = 0; r < NR; ++r) {
             #pragma unroll
-            for (int step = 0; step < 32; ++step) {
-                const int column = tile + lane + step * 16;
-                value = __fmaf_rn(weight[expert * 2560 + column], input[lane + step * 16], value);
+            for (int offset = thread; offset < 512; offset += 128) {
+                const float value = __half2float(x[int64_t(first + r) * input_stride + tile + offset]);
+                float scaled;
+                asm volatile("mul.rn.f32 %0, %1, 0f3f800000;" : "=f"(scaled) : "f"(value));
+                input[r][offset] = scaled;
             }
         }
-        total = __fadd_rn(total, value);
+        __syncthreads();
+        float value[NR];
+        #pragma unroll
+        for (int r = 0; r < NR; ++r) value[r] = 0.0f;
+        #pragma unroll
+        for (int step = 0; step < 32; ++step) {
+            #pragma unroll
+            for (int r = 0; r < NR; ++r) value[r] = __fmaf_rn(w[step], input[r][lane + step * 16], value[r]);
+        }
+        #pragma unroll
+        for (int r = 0; r < NR; ++r) total[r] = __fadd_rn(total[r], value[r]);
         __syncthreads();
     }
-    partial[thread] = total;
+    #pragma unroll
+    for (int r = 0; r < NR; ++r) partial[r][thread] = total[r];
     __syncthreads();
-    if (lane == 0 && expert < 513) {
-        float value = partial[group * 16];
+    if (lane == 0 && active) {
         #pragma unroll
-        for (int part = 1; part < 16; ++part)
-            value = __fadd_rn(value, partial[group * 16 + part]);
-        output[row * 513 + expert] = value;
+        for (int r = 0; r < NR; ++r) {
+            float value = partial[r][group * 16];
+            #pragma unroll
+            for (int part = 1; part < 16; ++part)
+                value = __fadd_rn(value, partial[r][group * 16 + part]);
+            output[int64_t(first + r) * 513 + expert] = value;
+        }
+    }
+}
+
+template <int NR>
+void launch_logits(const __half* x, const float* weight, float* output, int64_t stride, int first, int groups,
+                   cudaStream_t stream) {
+    serial_logits<NR><<<dim3(65, groups), 128, 0, stream>>>(x, weight, output, stride, first);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void launch_rows(const __half* x, const float* weight, float* output, int64_t stride, int first, int rows,
+                 int groups, cudaStream_t stream) {
+    switch (rows) {
+        case 1: return launch_logits<1>(x, weight, output, stride, first, groups, stream);
+        case 2: return launch_logits<2>(x, weight, output, stride, first, groups, stream);
+        case 3: return launch_logits<3>(x, weight, output, stride, first, groups, stream);
+        case 4: return launch_logits<4>(x, weight, output, stride, first, groups, stream);
+        case 5: return launch_logits<5>(x, weight, output, stride, first, groups, stream);
+        case 6: return launch_logits<6>(x, weight, output, stride, first, groups, stream);
+        case 7: return launch_logits<7>(x, weight, output, stride, first, groups, stream);
+        default: return launch_logits<8>(x, weight, output, stride, first, groups, stream);
     }
 }
 }  // namespace
 
 void routing_logits_cuda(const at::Tensor& x, const at::Tensor& weight, at::Tensor& output) {
-    if (!x.size(0)) return;
-    serial_logits<<<dim3(65, x.size(0)), 128, 0, at::cuda::getCurrentCUDAStream()>>>(
-        reinterpret_cast<const __half*>(x.data_ptr<at::Half>()), weight.data_ptr<float>(),
-        output.data_ptr<float>(), x.stride(0));
-    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    const int rows = int(x.size(0));
+    if (!rows) return;
+    auto stream = at::cuda::getCurrentCUDAStream();
+    const auto* input = reinterpret_cast<const __half*>(x.data_ptr<at::Half>());
+    // Up to eight rows: one launch; more: groups of eight, then one launch for the remainder.
+    const int full = rows > 8 ? rows / 8 : 0, rest = rows - 8 * full;
+    if (full) launch_rows(input, weight.data_ptr<float>(), output.data_ptr<float>(), x.stride(0), 0, 8, full, stream);
+    if (rest) launch_rows(input, weight.data_ptr<float>(), output.data_ptr<float>(), x.stride(0), 8 * full, rest, 1,
+                          stream);
 }
 
 void routing_prepare_logits_cuda() {
     cudaFuncAttributes attributes;
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<1>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<2>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<3>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<4>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<5>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<6>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<7>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, serial_logits<8>));
 }

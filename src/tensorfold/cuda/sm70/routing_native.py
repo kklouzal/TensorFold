@@ -141,10 +141,10 @@ PREPARED_LOGITS_POLICY = 'owned-serial-router-v1'
 
 def prepared_logits_identity():
     return {'policy': PREPARED_LOGITS_POLICY, 'supported_roles': ['decode', 'mtp'],
-            'input': 'fp16[2..256,2560]', 'weight': 'aligned512-contiguous-fp32[513,2560]',
+            'input': 'fp16[1..256,2560]', 'weight': 'aligned512-contiguous-fp32[513,2560]',
             'output': 'fp32[rows,513]', 'arithmetic': 'existing-serial-gemv-five-k512-tiles-16-lane-left-fold',
             'compiler': '-O3,--fmad=false;explicit-__fmaf_rn',
-            'one_row': 'existing-serial-reference', 'prefill': 'existing-independent_rows-false',
+            'prefill': 'existing-independent_rows-false',
             'selection_and_expert_weights': 'existing-selected-provider-unchanged',
             'required_contract': 'exact-pinned-serial-logit-and-routing-bits',
             'reference_bit_identity': False, 'qualification': 'private-unqualified'}
@@ -256,8 +256,8 @@ class _BoundSerialRouter:
         if owner.closed:
             raise RuntimeError('prepared serial router owner is closed')
         rows = x.shape[0]
-        if rows < 2:
-            return False  # R1 retains the serial reference; empty work also stays incumbent.
+        if rows < 1:
+            return False  # Empty work stays incumbent; one row is the same serial arithmetic.
         if (torch.is_grad_enabled() or any(t.requires_grad for t in (x, weight, output))
                 or output.is_inference() and not torch.is_inference_mode_enabled()
                 or any(t.is_conj() or t.is_neg() for t in (x, weight, output))):

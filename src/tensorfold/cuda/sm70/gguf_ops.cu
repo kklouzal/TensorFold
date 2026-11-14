@@ -1236,6 +1236,57 @@ __global__ void group_owned_scatter(const int64_t* local, int count, OwnedGroupi
     }
 }
 
+// Decode-sized grouping (pairs <= GROUP_PREFIX_THREADS) in one CTA: the counts reset, routes, prefix,
+// scatter and (optionally) the non-owned activation initialization of the separate kernels above, with
+// the same outputs (ordinals still come from atomic arrival order, which never reaches arithmetic).
+template <typename Index>
+__global__ __launch_bounds__(GROUP_PREFIX_THREADS) void group_owned_decode(
+        const Index* global, int64_t* local, int count, int first, int experts, OwnedGrouping group,
+        __half* unowned_activation) {
+    __shared__ int warp_counts[GROUP_PREFIX_THREADS / 32], warp_tiles[GROUP_PREFIX_THREADS / 32];
+    const int t = threadIdx.x, lane = t % 32, warp = t / 32;
+    if (t < experts) group.counts[t] = 0;
+    __syncthreads();
+    int expert = -1;
+    if (t < count) {
+        const auto id = global[t];
+        expert = id >= first && id < int64_t(first) + experts ? int(id - first) : -1;
+        local[t] = expert;
+        if (expert >= 0) group.ordinal[t] = atomicAdd(group.counts + expert, 1);
+    }
+    __syncthreads();
+    const int n = t < experts ? group.counts[t] : 0, tiles = (n + 15) / 16;
+    int counts = n, tile_sum = tiles;
+    for (int delta = 1; delta < 32; delta *= 2) {
+        const int c = __shfl_up_sync(0xffffffff, counts, delta), s = __shfl_up_sync(0xffffffff, tile_sum, delta);
+        if (lane >= delta) { counts += c; tile_sum += s; }
+    }
+    if (lane == 31) { warp_counts[warp] = counts; warp_tiles[warp] = tile_sum; }
+    __syncthreads();
+    for (int w = 0; w < warp; ++w) { counts += warp_counts[w]; tile_sum += warp_tiles[w]; }
+    if (t < experts) {
+        const int offset = counts - n, base = tile_sum - tiles;
+        group.offsets[t] = offset;
+        for (int i = 0; i < tiles; ++i) {
+            group.tiles[3 * (base + i)] = t;
+            group.tiles[3 * (base + i) + 1] = offset + 16 * i;
+            group.tiles[3 * (base + i) + 2] = min(16, n - 16 * i);
+        }
+        if (t == experts - 1) {
+            group.offsets[experts] = counts;
+            *group.total = tile_sum;
+        }
+    }
+    __syncthreads();
+    if (expert >= 0) group.pairs[group.offsets[expert] + group.ordinal[t]] = t;
+    if (unowned_activation) {
+        __syncthreads();   // local[] of every pair is published above
+        for (int at = t; at < count * 160; at += GROUP_PREFIX_THREADS)
+            if (local[at / 160] < 0)
+                unowned_activation[at] = __float2half_rn(__int_as_float(0x7fffffff));
+    }
+}
+
 // The incumbent writes half NaN for every non-owned local slot. Preserve that
 // scratch contract without reading any bank, including on changing graph routes.
 __global__ void initialize_unowned_gate_up(const int64_t* local, __half* activation, int pairs) {
@@ -2257,7 +2308,17 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     if (!picks.numel()) return;
     auto stream = at::cuda::getCurrentCUDAStream();
     const int blocks = int((picks.numel() + 127) / 128);
-    if (grouping.defined()) {
+    // Decode rows with the grouped gate/up: one grouping CTA also initializes the non-owned slots.
+    const bool fused_grouping = grouping.defined() && gate_up_rows && !supplied_activation
+                                && x.size(0) <= 32 && pairs <= GROUP_PREFIX_THREADS;
+    if (fused_grouping) {
+        auto act = reinterpret_cast<__half*>(activation.data_ptr());
+        if (picks.scalar_type() == at::kLong)
+            group_owned_decode<<<1, GROUP_PREFIX_THREADS, 0, stream>>>(picks.data_ptr<int64_t>(),
+                local.data_ptr<int64_t>(), pairs, int(first), experts, group, act);
+        else group_owned_decode<<<1, GROUP_PREFIX_THREADS, 0, stream>>>(picks.data_ptr<int32_t>(),
+                local.data_ptr<int64_t>(), pairs, int(first), experts, group, act);
+    } else if (grouping.defined()) {
         C10_CUDA_CHECK(cudaMemsetAsync(group.counts, 0, experts * sizeof(int), stream));
         if (picks.scalar_type() == at::kLong)
             group_owned_routes<<<blocks, 128, 0, stream>>>(picks.data_ptr<int64_t>(), local.data_ptr<int64_t>(),
@@ -2277,9 +2338,11 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     if (!supplied_activation) {
     if (gate_up_rows) {
         auto act = reinterpret_cast<__half*>(activation.data_ptr());
-        const int init_blocks = std::min((pairs * 160 + 127) / 128, 65535);
-        initialize_unowned_gate_up<<<init_blocks, 128, 0, stream>>>(local.data_ptr<int64_t>(), act, pairs);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        if (!fused_grouping) {
+            const int init_blocks = std::min((pairs * 160 + 127) / 128, 65535);
+            initialize_unowned_gate_up<<<init_blocks, 128, 0, stream>>>(local.data_ptr<int64_t>(), act, pairs);
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
+        }
         auto input = reinterpret_cast<const __half*>(x.data_ptr());
         if (x.size(0) > 32)  // prefill: tensor-core tiles amortize coefficient decoding over the tile's pairs
             expert_gate_up_prefill<<<dim3(5, group.max_tiles), PREFILL_THREADS, 0, stream>>>(

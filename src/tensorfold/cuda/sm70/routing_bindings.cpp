@@ -47,9 +47,9 @@ void route_experts(const at::Tensor& logits, at::Tensor picks, at::Tensor weight
 template<bool PREPARED>
 void router_logits(const at::Tensor& x, const at::Tensor& weight, at::Tensor output) {
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2
-                && x.size(0) <= (PREPARED ? 256 : 32) && (!PREPARED || x.size(0) >= 2)
+                && x.size(0) <= (PREPARED ? 256 : 32) && (!PREPARED || x.size(0) >= 1)
                 && x.size(1) == 2560 && x.stride(1) == 1 && x.stride(0) >= 2560,
-                PREPARED ? "prepared SM70 serial router requires2..256 channel-contiguous FP16 rows of2560"
+                PREPARED ? "prepared SM70 serial router requires1..256 channel-contiguous FP16 rows of2560"
                          : "SM70 serial router requires at most32 channel-contiguous FP16 rows of2560");
     TORCH_CHECK(weight.device() == x.device() && weight.scalar_type() == at::kFloat
                 && weight.sizes() == at::IntArrayRef({513, 2560}) && weight.is_contiguous(),
@@ -72,7 +72,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
     module.def("prepare_route", &routing_prepare_route_cuda, "Resolve routing function residency before physical admission");
     module.def("prepare_logits", &routing_prepare_logits_cuda, "Resolve serial logit function residency before State admission");
     module.def("logits", &router_logits<false>, "FP16 decode rows with the qualified serial FP32 GEMV arithmetic");
-    module.def("prepared_logits", &router_logits<true>, "Prepared2..256-row serial FP32 GEMV trial");
+    module.def("prepared_logits", &router_logits<true>, "Prepared 1..256-row serial FP32 GEMV trial");
     module.def("route", &route_experts, "Stable selection and Torch-rounded FP16 routing weights");
     module.def("select", &select_experts, "Stable integer-key top-k selection for 512 SM70 experts");
 }
