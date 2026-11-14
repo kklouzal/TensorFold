@@ -1066,6 +1066,8 @@ Setup:
 - Model: huihui UD-Q4_K_XL-V2.
 - Prompt: 8183 tokens, 512 out, T=0, ignore_eos. The prompt is a repetitive synthetic "warehouse" text (high acceptance).
 - Requests: 1 warmup, then 2 measured.
+- Metrics (re-checked 2026-11-14): C1 = output tok/s after the first chunk (prefill excluded); C2/C6 = `aggregate_overlap_decode_tps`
+  (window in which all streams decode).
 
 | Arm | Spec | Graphs | Decode tok/s |
 |---|---|---|---|
