@@ -40,6 +40,7 @@ from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import CUTS, POINTS, pass_limit
 from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room
 from .speculation import MethodGeometry
+from . import teacher_scoring
 from .state import ENDS, Buffers, KVNumericError, State, execution_dtype
 
 FIRST, STEP = 256, 8192          # rows an idle slot keeps; rows a stream's caches grow by at a time
@@ -1418,6 +1419,8 @@ class MultiDecoder:
 
         reuse = reuse_allowed(self.w, s.sampling, draft=s.draft, vision=s.vision,
                               position=len(s.prompt), kv_pair=self.kv_pair)
+        if teacher_scoring.forced(s) is not None:
+            reuse = False                                # a scoring request computes (and scores) every prompt row
         retained = getattr(s, "retention_request", None)
         window = getattr(s, "retention_window", None)
         if (window is None and getattr(self, "admission_policy", "legacy") == "fifo"
@@ -1895,7 +1898,23 @@ class MultiDecoder:
         self._read_ahead(pieces)
         windows = [(s.st, s.prompt[a:a + n]) for s, a, n in pieces]
         segs = stage(self.w, self.pbuf, windows)
+        self.pbuf.score_rows = self._score_rows(pieces, segs)
         return windows, segs, self._end_rows(pieces, segs), self._cuts(pieces, segs)
+
+    @staticmethod
+    def _score_rows(pieces, segs):
+        """Private teacher scoring: each scoring request's pass rows with a next prompt token (forward._score_rows)."""
+
+        plan = []
+        for (s, a, n), (_, a0, a1) in zip(pieces, segs):
+            if teacher_scoring.forced(s) is None:
+                continue
+            if a1 - a0 != n:
+                raise ValueError("a scored prompt piece differs from its pass rows")
+            last = min(a + n, len(s.prompt) - 1)          # the prompt's final row is the reply's head (prompt-end)
+            if last > a:
+                plan.append((a0, s.prompt[a + 1:last + 1], list(range(a + 1, last + 1)), s.probabilities))
+        return plan or None
 
     def _read_ahead(self, pieces) -> None:
         """Overlap the next piece's n-gram reads with this pass."""
@@ -2095,7 +2114,9 @@ class MultiDecoder:
                 replay = getattr(self.w, "dflash2", None) is not None and bool(s.owed)
                 if s.constraint is not None and not replay:  # replay advances the canonical grammar without a draw
                     logits = s.constraint.mask(logits, None, self.w.meta.get("vocab_offset", 0))
-                first = (s.owed[0] if replay else e.sample(logits, [len(s.prompt)], s.sampling,
+                forced = teacher_scoring.forced(s)
+                first = (s.owed[0] if replay else forced[0] if forced is not None else
+                         e.sample(logits, [len(s.prompt)], s.sampling,
                          **({"gathered": False} if getattr(self.w, "dflash2", None) is not None else {}))[0])
                 limit, terminal = (1, False) if replay else self._prefix_limits([s], [[first]])[0]
                 if not limit:
@@ -2105,7 +2126,11 @@ class MultiDecoder:
                     joined.append(s)
                     continue
                 if s.probabilities is not None and not replay:
-                    capture(logits, [first], [len(s.prompt)], s.probabilities)
+                    if self.w.comm is not None or forced is not None:
+                        teacher_scoring.capture(self.w, logits, [first], [len(s.prompt)], s.probabilities,
+                                                origins=["prompt-end"] if forced is not None else None)
+                    else:
+                        capture(logits, [first], [len(s.prompt)], s.probabilities)
                 if s.constraint is not None:
                     s.constraint.advance([first])
             except Exception as exc:                         # noqa: BLE001  it fails alone; the others go on
@@ -2412,6 +2437,12 @@ class MultiDecoder:
             else:
                 sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
                            for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
+        for i, s in enumerate(live):
+            forced = teacher_scoring.forced(s)
+            if forced is not None:                       # teacher scoring: the target "samples" the forced reply
+                done = len(s.out)
+                sampled[i] = [forced[done + r] if done + r < len(forced) else token
+                              for r, token in enumerate(sampled[i])]
         if dflash is None:
             paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                      for s, (_, tokens), rows in zip(live, windows, sampled)]
@@ -2431,8 +2462,14 @@ class MultiDecoder:
                  for (path, end), new, (count, _stop) in zip(paths, proposed, boundaries)]
         for s, (_, tokens), (_, a0, _), (path, end), pos in zip(live, windows, segs, paths, positions):
             if s.probabilities is not None and path and not (dflash is not None and s.owed):
-                capture(logits, [tokens[r] for r in path[1:]] + [end], [pos[r] for r in path],
-                        s.probabilities, rows=[a0 + r for r in path])
+                if self.w.comm is not None or teacher_scoring.forced(s) is not None:
+                    teacher_scoring.capture(self.w, logits, [tokens[r] for r in path[1:]] + [end],
+                                            [pos[r] for r in path], s.probabilities, rows=[a0 + r for r in path],
+                                            origins=([(r, len(tokens)) for r in path]
+                                                     if teacher_scoring.forced(s) is not None else None))
+                else:
+                    capture(logits, [tokens[r] for r in path[1:]] + [end], [pos[r] for r in path],
+                            s.probabilities, rows=[a0 + r for r in path])
         if not half:
             for s, rows in zip(live, gdn_multi.keep(tables, [len(path) for path, _ in paths])):
                 self.held[s.sid] = rows                  # the next round's trees fold these rows in first

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import traceback
 import uuid
@@ -157,6 +158,8 @@ def make_handler(app: App):
                 return self._json(200, reply)
             if path.endswith("/decisions"):
                 return self._post_decisions()
+            if path == "/v1/tensorfold/score" and os.environ.get("TENSORFOLD_PRIVATE_SCORE") == "1":
+                return self._post_decisions("teacher_score")    # private teacher scoring, off unless enabled
             if anthropic.route(self.path):
                 return anthropic.post(self, app)
             if responses.route(self.path) == "":         # a Response: this handler's chat completion, translated
@@ -367,8 +370,8 @@ def make_handler(app: App):
                 payload["stop_sequence"] = result["stop_sequence"]
             self._json(200, payload)
 
-        def _post_decisions(self) -> None:
-            decide = getattr(app, "decisions", None)
+        def _post_decisions(self, method: str = "decisions") -> None:
+            decide = getattr(app, method, None)
             if decide is None:
                 if not self._discard_body():
                     return

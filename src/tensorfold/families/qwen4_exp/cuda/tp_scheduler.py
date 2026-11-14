@@ -137,8 +137,8 @@ class TensorParallelDecoder:
         if validate is not None:
             validate(stream)
         owner = media_requests.runtime(getattr(self.decoder, "vision", None))
-        if ((stream.vision is not None and owner is None)
-                or stream.probabilities is not None or stream.penalties is not None):
+        if ((stream.vision is not None and owner is None) or stream.penalties is not None
+                or (stream.probabilities is not None and getattr(stream.probabilities, "forced", None) is None)):
             raise ValueError("tensor-parallel Flash Next requests do not support vision, logprobs or penalties")
         if stream.vision is not None and (tuple(stream.prompt) != stream.vision.token_ids
                 or stream.vision.plan.profile_identity != owner.identity):
@@ -455,8 +455,8 @@ class TensorParallelDecoder:
 
         sampling = stream.sampling
         owner = media_requests.runtime(getattr(self.decoder, "vision", None))
-        if ((stream.vision is not None and owner is None)
-                or stream.probabilities is not None or stream.penalties is not None):
+        if ((stream.vision is not None and owner is None) or stream.penalties is not None
+                or (stream.probabilities is not None and getattr(stream.probabilities, "forced", None) is None)):
             raise ValueError("tensor-parallel Flash Next requests do not support vision, logprobs or penalties")
         wire_sampling = None if sampling is None else [sampling.seed, sampling.temperature, sampling.top_k,
                                                        sampling.top_p, sampling.min_p]
@@ -469,6 +469,8 @@ class TensorParallelDecoder:
                 "grammar": pack(stream.constraint), "owed": stream.owed, "carry": stream.carry,
                 "token_limit": stream.token_limit is not None, "profile_epoch": stream.profile_epoch,
                 "committed_output_tokens": stream.committed_output_tokens}
+        if stream.probabilities is not None:      # private teacher scoring: every rank forces and gathers alike
+            result["teacher"] = [stream.probabilities.top, stream.probabilities.forced]
         if self.admission_policy == "fifo":
             ticket = getattr(stream, "admission_ticket", None)
             if type(ticket) is not int or not 0 <= ticket < 1 << 63:
@@ -516,6 +518,11 @@ class TensorParallelDecoder:
                       owed=list(body["owed"]), carry=body["carry"], profile_epoch=body["profile_epoch"],
                       committed_output_tokens=body["committed_output_tokens"])
         stream._tp_token_limit = bool(body.get("token_limit", False))
+        if body.get("teacher") is not None:
+            from tensorfold.engine.probabilities import TeacherForcing
+
+            top, forced = body["teacher"]
+            stream.probabilities = TeacherForcing(int(top), stream.prompt, forced)
         if self.admission_policy == "fifo":
             ticket = body["admission_ticket"]
             if type(ticket) is not int or not 0 <= ticket < 1 << 63:

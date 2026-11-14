@@ -667,6 +667,9 @@ def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = Tr
     c = w.cfg
     b.streams[:R].copy_(b.h[:R])
     _writeback(b.streams, b, R, c, pending)
+    if b.prefill and mixer is w.mixer and getattr(b, "score_rows", None):
+        plan, b.score_rows = b.score_rows, None           # one pass's plan, consumed by its one head
+        _score_rows(w, mixer, b, R, plan)
     if b.prefill:
         if len(ends) > 1:
             at = torch.tensor(list(ends), dtype=torch.long, device=b.pss.device)
@@ -686,6 +689,34 @@ def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = Tr
     if w.comm is not None and getattr(w, "dflash2", None) is None:
         candidates(w, b, out, R, offset=int(w.meta["vocab_offset"]))
     return out
+
+
+def _score_rows(w: Weights, mixer: HC, b: Buffers, R: int, plan) -> None:
+    """Private teacher-forced scoring of prompt rows (``teacher_scoring``), before the ends path reuses pss/logits.
+
+    ``plan`` lists (first pass row, targets, positions, sink). Each group of up to ENDS rows takes the ends path's
+    own read-out and head (the rows' pss copied to the front, as ``finish`` does), so the scored logits are what
+    this pass would serve had those rows ended prompts. pss is restored; streams and the KV are only read.
+    """
+
+    from .state import ENDS
+    from .teacher_scoring import shard_logprobs
+
+    c = w.cfg
+    saved = b.pss[:R].clone()
+    try:
+        for first, targets, positions, sink in plan:
+            if first < 0 or first + len(targets) > R:
+                raise ValueError("scored prompt rows lie outside the pass")
+            for at in range(0, len(targets), ENDS):
+                k = min(ENDS, len(targets) - at)
+                b.pss[:k].copy_(saved[first + at:first + at + k])
+                _readout(mixer, b, b.streams[first + at:first + at + k], k, c.eps, c.streams, c.low, None)
+                out = _mm(b.mixed[:k], w.head, b.xs_mixed[:k], b.logits[:k], b)
+                values, ids, scores = shard_logprobs(w, out, targets[at:at + k], sink.top)
+                sink.add_prompt(positions[at:at + k], targets[at:at + k], values, ids, scores)
+    finally:
+        b.pss[:R].copy_(saved)
 
 
 def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: torch.Tensor | None = None,
