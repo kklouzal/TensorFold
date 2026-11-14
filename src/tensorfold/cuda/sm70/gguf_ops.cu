@@ -1278,53 +1278,235 @@ __global__ void expert_gate_up_grouped(const __half* x, PackedView gate, PackedV
     }
 }
 
-// Prefill-sized tiles: decode each gate/up coefficient once per <=16-pair expert tile into
-// shared memory and accumulate on tensor cores (FP32 accumulators). Same activation ABI as
-// expert_gate_up_grouped; only the reduction order differs (the design permits that).
-__global__ void expert_gate_up_wmma(const __half* x, PackedView gate, PackedView up,
-                                    int slots, OwnedGrouping group, __half* activation) {
+// Prefill-sized experts: eight consecutive coefficients of one quant block are decoded per
+// thread with the exact value() expressions (then the coefficient() FP16 boundary), once per
+// <=64-pair group of an expert, and multiplied on tensor cores with FP32 accumulators.
+// Only the reduction order differs from the SIMT grouped kernels.
+constexpr int PREFILL_PAIRS = 64, PREFILL_THREADS = 256, PREFILL_LD = 72;
+
+__device__ __forceinline__ uint32_t pack_half2(float low, float high) {
+    return uint32_t(__half_as_ushort(__float2half_rn(low)))
+        | (uint32_t(__half_as_ushort(__float2half_rn(high))) << 16);
+}
+
+__device__ __forceinline__ uint4 pack8(const float (&v)[8]) {
+    return make_uint4(pack_half2(v[0], v[1]), pack_half2(v[2], v[3]),
+                      pack_half2(v[4], v[5]), pack_half2(v[6], v[7]));
+}
+
+// Packs value(p, Kind, i + j), j < 8, where i % 8 == 0 and all eight lie in block p.
+template <int Kind>
+__device__ __forceinline__ uint4 decode8_block(const uint8_t* p, int i) {
+    static_assert(Kind == 8 || Kind == 18 || Kind == 20 || Kind == 21 || Kind == 22 || Kind == 23 || Kind == 42,
+                  "specialized eight-coefficient decode");
+    float v[8];
+    if constexpr (Kind == 8) {
+        const float d = half_value(p);
+        #pragma unroll
+        for (int j = 0; j < 8; ++j) v[j] = d * float(int8_t(p[2 + i + j]));
+    } else if constexpr (Kind == 20) {
+        const float d = half_value(p);
+        const int shift = 4 * (i / 16);
+        #pragma unroll
+        for (int j = 0; j < 8; ++j) v[j] = d * float(tf_kvalues_iq4nl[(p[2 + i % 16 + j] >> shift) & 15]);
+    } else if constexpr (Kind == 42) {
+        const float d = half_value(p);
+        const uint32_t bits = uint32_t(p[2 + i / 4]) | (uint32_t(p[3 + i / 4]) << 8);
+        #pragma unroll
+        for (int j = 0; j < 8; ++j) v[j] = float(int((bits >> (2 * j)) & 3) - 1) * d;
+    } else if constexpr (Kind == 23) {
+        const int group = i / 32, element = i % 32;
+        const int scale = int(((p[4 + group / 2] >> (4 * (group % 2))) & 15)
+                             | (((u16(p + 2) >> (2 * group)) & 3) << 4)) - 32;
+        const float d = half_value(p) * float(scale);
+        const int shift = 4 * (element / 16);
+        #pragma unroll
+        for (int j = 0; j < 8; ++j)
+            v[j] = d * float(tf_kvalues_iq4nl[(p[8 + group * 16 + element % 16 + j] >> shift) & 15]);
+    } else if constexpr (Kind == 22) {
+        const int group = i / 32, sub = (i % 32) / 8;
+        const int code = p[2 + group * 4 + sub] | ((uint32_t(p[66 + group]) << (8 - 2 * sub)) & 0x300);
+        const uint64_t grid = tf_iq2s_grid[code];
+        const int scale = (p[74 + group] >> (4 * (sub / 2))) & 15;
+        const float d = (half_value(p) * (0.5f + float(scale))) * 0.25f;
+        const int signs = p[34 + group * 4 + sub];
+        #pragma unroll
+        for (int j = 0; j < 8; ++j)
+            v[j] = (d * float(int((grid >> (8 * j)) & 255))) * ((signs & (1 << j)) ? -1.0f : 1.0f);
+    } else if constexpr (Kind == 18) {
+        const int group = i / 32, sub = (i % 32) / 8;
+        const uint32_t auxiliary = u32(p + 66 + group * 4);
+        const int signs = tf_ksigns_iq2xs[(auxiliary >> (7 * sub)) & 127];
+        const uint32_t grid0 = tf_iq3xxs_grid[p[2 + group * 8 + sub * 2]];
+        const uint32_t grid1 = tf_iq3xxs_grid[p[3 + group * 8 + sub * 2]];
+        const float d = (half_value(p) * (0.5f + float(auxiliary >> 28))) * 0.5f;
+        #pragma unroll
+        for (int j = 0; j < 8; ++j)
+            v[j] = (d * float(((j < 4 ? grid0 : grid1) >> (8 * (j % 4))) & 255))
+                * ((signs & (1 << j)) ? -1.0f : 1.0f);
+    } else if constexpr (Kind == 21) {
+        const int group = i / 32, sub = (i % 32) / 8;
+        const uint32_t high = p[66 + group];
+        const uint32_t grid0 = tf_iq3s_grid[p[2 + group * 8 + sub * 2] | ((high << (8 - 2 * sub)) & 256)];
+        const uint32_t grid1 = tf_iq3s_grid[p[3 + group * 8 + sub * 2] | ((high << (7 - 2 * sub)) & 256)];
+        const int scale = (p[106 + group / 2] >> (4 * (group % 2))) & 15;
+        const float d = half_value(p) * float(1 + 2 * scale);
+        const int signs = p[74 + group * 4 + sub];
+        #pragma unroll
+        for (int j = 0; j < 8; ++j)
+            v[j] = (d * float(((j < 4 ? grid0 : grid1) >> (8 * (j % 4))) & 255))
+                * ((signs & (1 << j)) ? -1.0f : 1.0f);
+    }
+    return pack8(v);
+}
+
+template <int Kind, int Block, int Bytes>
+__device__ __forceinline__ uint4 decode8_kind(const uint8_t* row, int col) {
+    return decode8_block<Kind>(row + int64_t(col / Block) * Bytes, col % Block);
+}
+
+// Remaining kinds and unaligned views: out of line, keeping the specialized loops compact.
+__device__ __noinline__ uint4 decode8_generic(PackedView bank, int64_t row, int column) {
+    float v[8];
+    #pragma unroll
+    for (int j = 0; j < 8; ++j) v[j] = coefficient(bank, row, column + j);
+    return pack8(v);
+}
+
+// Coefficients (row, column .. column + 7) of a bank as eight FP16 values, bitwise equal to
+// coefficient(bank, row, column + j). The kind switch is uniform across the CTA.
+__device__ __forceinline__ uint4 decode8(const PackedView& bank, int64_t row, int column) {
+    const int col = column + bank.offset;
+    const uint8_t* r = bank.data + row * bank.stride;
+    if (col % 8 == 0) {
+        switch (bank.kind) {
+            case 8: return decode8_kind<8, 32, 34>(r, col);
+            case 18: return decode8_kind<18, 256, 98>(r, col);
+            case 20: return decode8_kind<20, 32, 18>(r, col);
+            case 21: return decode8_kind<21, 256, 110>(r, col);
+            case 22: return decode8_kind<22, 256, 82>(r, col);
+            case 23: return decode8_kind<23, 256, 136>(r, col);
+            case 42: return decode8_kind<42, 64, 18>(r, col);
+        }
+    }
+    return decode8_generic(bank, row, column);
+}
+
+// Grouping tiles are consecutive 16-pair slices of each expert. Only the tile opening each
+// 64-pair group leads (CTA-uniform return), so every pair is computed by exactly one CTA.
+__device__ __forceinline__ bool prefill_group(const OwnedGrouping& group, int tile,
+                                              int& expert, int& begin, int& count) {
+    if (tile >= *group.total) return false;
+    expert = group.tiles[3 * tile];
+    begin = group.tiles[3 * tile + 1];
+    const int at = begin - group.offsets[expert];
+    if (at % PREFILL_PAIRS) return false;
+    count = min(PREFILL_PAIRS, group.counts[expert] - at);
+    return true;
+}
+
+// CTA = (32 intermediate outputs, <=64 pairs of one expert); K steps of 64, double-buffered:
+// step s+1's activations are requested before step s's MMAs and its coefficients decoded
+// after them, so one barrier per step separates producers from consumers.
+__global__ __launch_bounds__(PREFILL_THREADS)
+void expert_gate_up_prefill(const __half* x, PackedView gate, PackedView up,
+                            int slots, OwnedGrouping group, __half* activation) {
     namespace wmma = nvcuda::wmma;
-    const int tile = blockIdx.y;
-    if (tile >= *group.total) return; // CTA-uniform, before any warp participation.
-    const int expert = group.tiles[3 * tile], begin = group.tiles[3 * tile + 1];
-    const int count = group.tiles[3 * tile + 2], first = blockIdx.x * 16;
-    __shared__ __align__(32) __half ga[256], ua[256], bb[256];
-    __shared__ __align__(32) float gc[256], uc[256];
-    __shared__ int64_t rows[16];
-    if (threadIdx.x < 16)
-        rows[threadIdx.x] = threadIdx.x < count ? int64_t(group.pairs[begin + threadIdx.x] / slots) * 2560 : -1;
-    __syncwarp();
+    constexpr int M = 32, N = PREFILL_PAIRS, K = 64, LD = PREFILL_LD, STAGE = (2 * M + N) * LD;
+    constexpr int LOADS = N * (K / 8) / PREFILL_THREADS;
+    int expert, begin, count;
+    if (!prefill_group(group, blockIdx.y, expert, begin, count)) return;
+    const int first = blockIdx.x * M;
+    __shared__ __align__(32) __half smem[2 * STAGE];  // per stage: gate A | up A | B; reused for C
+    __shared__ int rows[N], pairs[N];
+    const int thread = threadIdx.x, warp = thread / 32;
+    if (thread < N) {
+        const int pair = thread < count ? group.pairs[begin + thread] : -1;
+        pairs[thread] = pair;
+        rows[thread] = pair >= 0 ? (pair / slots) * 2560 : -1;
+    }
+    __syncthreads();
+    const bool vector = (reinterpret_cast<uintptr_t>(x) & 15) == 0;
+    // Decode item: one (row, 8-column chunk) of gate and of up per thread per step.
+    const int drow = thread / 8, dchunk = thread % 8;
+    const int64_t source = int64_t(expert) * 160 + first + drow;
+    int brow[LOADS];
+    #pragma unroll
+    for (int j = 0; j < LOADS; ++j) brow[j] = rows[(thread + j * PREFILL_THREADS) / 8];
+    const int bpart = thread % 8;
+    auto load_b = [&](int base, uint4 (&b)[LOADS]) {
+        #pragma unroll
+        for (int j = 0; j < LOADS; ++j) {
+            b[j] = make_uint4(0, 0, 0, 0);
+            if (brow[j] >= 0) {
+                const __half* src = x + brow[j] + base + bpart * 8;
+                if (vector) b[j] = *reinterpret_cast<const uint4*>(src);
+                else {
+                    const auto* s = reinterpret_cast<const unsigned short*>(src);
+                    b[j] = make_uint4(s[0] | (uint32_t(s[1]) << 16), s[2] | (uint32_t(s[3]) << 16),
+                                      s[4] | (uint32_t(s[5]) << 16), s[6] | (uint32_t(s[7]) << 16));
+                }
+            }
+        }
+    };
+    auto store = [&](__half* stage, const uint4& gv, const uint4& uv, const uint4 (&b)[LOADS]) {
+        *reinterpret_cast<uint4*>(stage + drow * LD + dchunk * 8) = gv;
+        *reinterpret_cast<uint4*>(stage + (M + drow) * LD + dchunk * 8) = uv;
+        #pragma unroll
+        for (int j = 0; j < LOADS; ++j) {
+            const int item = thread + j * PREFILL_THREADS;
+            *reinterpret_cast<uint4*>(stage + (2 * M + item / 8) * LD + bpart * 8) = b[j];
+        }
+    };
+    const int mtile = warp % 2, ntile = warp / 2;
+    const bool active = ntile * 16 < count;
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> gacc, uacc;
     wmma::fill_fragment(gacc, 0.0f);
     wmma::fill_fragment(uacc, 0.0f);
-    const int64_t source = int64_t(expert) * 160 + first;
-    for (int base = 0; base < 2560; base += 16) {
-        for (int i = threadIdx.x; i < 256; i += 32) {
-            const int r = i / 16, k = i % 16;
-            ga[i] = __float2half_rn(coefficient(gate, source + r, base + k));
-            ua[i] = __float2half_rn(coefficient(up, source + r, base + k));
-            // B is column-major: column r is pair r's input row.
-            bb[i] = rows[r] >= 0 ? x[rows[r] + base + k] : __float2half_rn(0.0f);
-        }
-        __syncwarp();
-        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
-        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> b;
-        wmma::load_matrix_sync(b, bb, 16);
-        wmma::load_matrix_sync(a, ga, 16);
-        wmma::mma_sync(gacc, a, b, gacc);
-        wmma::load_matrix_sync(a, ua, 16);
-        wmma::mma_sync(uacc, a, b, uacc);
-        __syncwarp();
+    {
+        uint4 b[LOADS];
+        load_b(0, b);
+        store(smem, decode8(gate, source, dchunk * 8), decode8(up, source, dchunk * 8), b);
     }
-    wmma::store_matrix_sync(gc, gacc, 16, wmma::mem_row_major);
-    wmma::store_matrix_sync(uc, uacc, 16, wmma::mem_row_major);
-    __syncwarp();
-    for (int i = threadIdx.x; i < 256; i += 32) {
-        const int row = i / 16, col = i % 16;
-        if (col < count) {
+    __syncthreads();
+    for (int base = 0, stage = 0; base < 2560; base += K, stage ^= 1) {
+        const bool next = base + K < 2560;
+        uint4 b[LOADS];
+        if (next) load_b(base + K, b);
+        if (active) {
+            const __half* ga = smem + stage * STAGE;
+            const __half* ua = ga + M * LD;
+            const __half* bx = ga + 2 * M * LD;
+            #pragma unroll
+            for (int k = 0; k < K; k += 16) {
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> bf;
+                // B is column-major: column n is pair n's input row.
+                wmma::load_matrix_sync(bf, bx + ntile * 16 * LD + k, LD);
+                wmma::load_matrix_sync(a, ga + mtile * 16 * LD + k, LD);
+                wmma::mma_sync(gacc, a, bf, gacc);
+                wmma::load_matrix_sync(a, ua + mtile * 16 * LD + k, LD);
+                wmma::mma_sync(uacc, a, bf, uacc);
+            }
+        }
+        if (next)
+            store(smem + (stage ^ 1) * STAGE, decode8(gate, source, base + K + dchunk * 8),
+                  decode8(up, source, base + K + dchunk * 8), b);
+        __syncthreads();
+    }
+    // C is staged column-major (pair-major) so each pair's outputs are contiguous.
+    float* gc = reinterpret_cast<float*>(smem);
+    float* uc = gc + M * N;
+    if (active) {
+        wmma::store_matrix_sync(gc + ntile * 16 * M + mtile * 16, gacc, M, wmma::mem_col_major);
+        wmma::store_matrix_sync(uc + ntile * 16 * M + mtile * 16, uacc, M, wmma::mem_col_major);
+    }
+    __syncthreads();
+    for (int i = thread; i < M * N; i += PREFILL_THREADS) {
+        const int pair = i / M;
+        if (pair < count) {
             const float g = gc[i], u = uc[i];
-            activation[int64_t(group.pairs[begin + col]) * 160 + first + row] =
-                __float2half_rn((g / (1.0f + expf(-g))) * u);
+            activation[int64_t(pairs[pair]) * 160 + first + i % M] = __float2half_rn((g / (1.0f + expf(-g))) * u);
         }
     }
 }
@@ -1368,6 +1550,74 @@ __global__ void expert_down160_grouped(const __half* activation, PackedView down
             if constexpr (F32) static_cast<float*>(output)[at] = value;
             else static_cast<__half*>(output)[at] = __float2half_rn(value);
         }
+    }
+}
+
+// Prefill-sized down projection: CTA = (256 hidden outputs, <=64 pairs of one expert), whole
+// K=160 resident. Activations are loaded once per CTA; each 64-row slice of coefficients is
+// decoded once into shared memory. Output rounding/canonicalization match the grouped kernel.
+template <bool F32>
+__global__ __launch_bounds__(PREFILL_THREADS)
+void expert_down160_prefill(const __half* activation, PackedView down,
+                            int dims, OwnedGrouping group, void* output) {
+    namespace wmma = nvcuda::wmma;
+    constexpr int M = 64, N = PREFILL_PAIRS, K = 160, LD = K + 8, SPAN = 256;
+    int expert, begin, count;
+    if (!prefill_group(group, blockIdx.y, expert, begin, count)) return;
+    __shared__ __align__(32) __half bx[N * LD];
+    __shared__ __align__(32) __half aa[M * LD];  // reused as column-major FP32 C [N][M]
+    __shared__ int pairs[N];
+    const int thread = threadIdx.x, warp = thread / 32;
+    if (thread < N) pairs[thread] = thread < count ? group.pairs[begin + thread] : -1;
+    __syncthreads();
+    for (int item = thread; item < N * (K / 8); item += PREFILL_THREADS) {
+        const int pair = item / (K / 8), part = item % (K / 8);
+        uint4 value = make_uint4(0, 0, 0, 0);
+        if (pairs[pair] >= 0) value = *reinterpret_cast<const uint4*>(activation + int64_t(pairs[pair]) * 160 + part * 8);
+        *reinterpret_cast<uint4*>(bx + pair * LD + part * 8) = value;
+    }
+    const int ntile = warp / 2, mpair = warp % 2;  // each warp owns m-tiles 2*mpair, 2*mpair+1 of one n-tile
+    const bool active = ntile * 16 < count;
+    float* cc = reinterpret_cast<float*>(aa);
+    for (int first = blockIdx.x * SPAN; first < blockIdx.x * SPAN + SPAN; first += M) {
+        for (int item = thread; item < M * (K / 8); item += PREFILL_THREADS) {
+            const int row = item / (K / 8), part = item % (K / 8);
+            *reinterpret_cast<uint4*>(aa + row * LD + part * 8) =
+                decode8(down, int64_t(expert) * dims + first + row, part * 8);
+        }
+        __syncthreads();
+        wmma::fragment<wmma::accumulator, 16, 16, 16, float> c0, c1;
+        if (active) {
+            wmma::fill_fragment(c0, 0.0f);
+            wmma::fill_fragment(c1, 0.0f);
+            #pragma unroll
+            for (int k = 0; k < K; k += 16) {
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
+                wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> b;
+                // B is column-major: each independent original pair owns one column.
+                wmma::load_matrix_sync(b, bx + ntile * 16 * LD + k, LD);
+                wmma::load_matrix_sync(a, aa + (2 * mpair) * 16 * LD + k, LD);
+                wmma::mma_sync(c0, a, b, c0);
+                wmma::load_matrix_sync(a, aa + (2 * mpair + 1) * 16 * LD + k, LD);
+                wmma::mma_sync(c1, a, b, c1);
+            }
+        }
+        __syncthreads();
+        if (active) {
+            wmma::store_matrix_sync(cc + ntile * 16 * M + (2 * mpair) * 16, c0, M, wmma::mem_col_major);
+            wmma::store_matrix_sync(cc + ntile * 16 * M + (2 * mpair + 1) * 16, c1, M, wmma::mem_col_major);
+        }
+        __syncthreads();
+        for (int i = thread; i < M * N; i += PREFILL_THREADS) {
+            const int pair = i / M;
+            if (pair < count) {
+                const float value = fmaf(1.0f, cc[i], 0.0f) + 0.0f;
+                const int64_t at = int64_t(pairs[pair]) * dims + first + i % M;
+                if constexpr (F32) static_cast<float*>(output)[at] = value;
+                else static_cast<__half*>(output)[at] = __float2half_rn(value);
+            }
+        }
+        __syncthreads();
     }
 }
 }
@@ -1498,7 +1748,8 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
         const dim3 grid(160 / EXPERT_WARPS, group.max_tiles);
         auto input = reinterpret_cast<const __half*>(x.data_ptr());
         if (x.size(0) > 32)  // prefill: tensor-core tiles amortize coefficient decoding over the tile's pairs
-            expert_gate_up_wmma<<<dim3(10, group.max_tiles), 32, 0, stream>>>(input, g, u, int(picks.size(1)), group, act);
+            expert_gate_up_prefill<<<dim3(5, group.max_tiles), PREFILL_THREADS, 0, stream>>>(
+                input, g, u, int(picks.size(1)), group, act);
         else if (gate_up_rows == 2)
             expert_gate_up_grouped<2><<<grid, EXPERT_WARPS * 32, 0, stream>>>(input, g, u, int(picks.size(1)), group, act);
         else
@@ -1514,7 +1765,14 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
         auto act = reinterpret_cast<const __half*>(activation.data_ptr());
         #define GROUPED_DOWN(FLOAT, KIND) \
             expert_down160_grouped<FLOAT, KIND><<<grid, 32, 0, stream>>>(act, d, dims, group, output.data_ptr())
-        if (output.scalar_type() == at::kFloat) {
+        const bool prefill = x.size(0) > 32 && (reinterpret_cast<uintptr_t>(act) & 15) == 0;
+        if (prefill && output.scalar_type() == at::kFloat)
+            expert_down160_prefill<true><<<dim3(dims / 256, group.max_tiles), PREFILL_THREADS, 0, stream>>>(
+                act, d, dims, group, output.data_ptr());
+        else if (prefill)
+            expert_down160_prefill<false><<<dim3(dims / 256, group.max_tiles), PREFILL_THREADS, 0, stream>>>(
+                act, d, dims, group, output.data_ptr());
+        else if (output.scalar_type() == at::kFloat) {
             if (d.kind == 7) GROUPED_DOWN(true, 7);
             else GROUPED_DOWN(true, -1);
         } else {
@@ -1653,7 +1911,7 @@ void gguf_prepare_owned_gate_up() {
  RESIDENT(initialize_owned_gu_slots<int32_t>);RESIDENT(initialize_owned_gu_slots<int64_t>);
  RESIDENT(group_owned_routes<int32_t>);RESIDENT(group_owned_routes<int64_t>);
  RESIDENT(group_owned_prefix);RESIDENT(group_owned_scatter);RESIDENT(expert_gate_up_grouped<4>);
- RESIDENT(expert_gate_up_wmma);
+ RESIDENT(expert_gate_up_prefill);
  #undef RESIDENT
 }
 void gguf_prepare_owned_from_activation() {
@@ -1663,7 +1921,8 @@ void gguf_prepare_owned_from_activation() {
     RESIDENT(group_owned_prefix); RESIDENT(group_owned_scatter);
     RESIDENT(expert_down160_grouped<true,7>); RESIDENT(expert_down160_grouped<true,-1>);
     RESIDENT(expert_down160_grouped<false,7>); RESIDENT(expert_down160_grouped<false,-1>);
-    RESIDENT(expert_gate_up_wmma);
+    RESIDENT(expert_gate_up_prefill);
+    RESIDENT(expert_down160_prefill<true>); RESIDENT(expert_down160_prefill<false>);
     RESIDENT(publish_owned<int32_t,true>); RESIDENT(publish_owned<int32_t,false>);
     RESIDENT(publish_owned<int64_t,true>); RESIDENT(publish_owned<int64_t,false>);
     RESIDENT(publish_activation_status<true>); RESIDENT(publish_activation_status<false>);
