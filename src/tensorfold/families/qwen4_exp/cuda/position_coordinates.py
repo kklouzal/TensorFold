@@ -9,6 +9,7 @@ All operations belong to the request coordinator and its ordered device stream.
 
 from dataclasses import dataclass
 import os
+import re
 import weakref
 
 import numpy as np
@@ -20,8 +21,11 @@ from tensorfold.cuda.sm70.tensor_mutation import require_mutation_budget
 _ISSUER = object()  # Immutable process-local provenance, not serialized authority.
 
 
+_HEX64 = re.compile("[0-9a-f]{64}")
+
+
 def _digest(value):
-    return type(value) is str and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+    return type(value) is str and _HEX64.fullmatch(value) is not None
 
 
 def _position(position):

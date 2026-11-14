@@ -59,12 +59,13 @@ def _validate_gathered_padding(values: np.ndarray, tokens: np.ndarray, plan: Sam
         return
     if len(plan.widths) != tokens.shape[0]:
         raise ValueError("graph-gathered shard owner differs from the packet's rank count")
-    for rank, size in enumerate(plan.widths):
-        kept = min(CAND, int(size))
-        if ((tokens[rank, :, :kept] < 0).any()
-                or (tokens[rank, :, kept:] != -1).any()
-                or not np.isneginf(values[rank, :, kept:]).all()):
-            raise ValueError("graph-gathered padding differs from the immutable vocabulary shard widths")
+    # All ranks at once: columns below a rank's kept width hold real IDs, the
+    # rest are -1 IDs with -inf scores.
+    kept = np.minimum(CAND, np.asarray([int(size) for size in plan.widths], dtype=np.int64))
+    real = (np.arange(tokens.shape[2]) < kept[:, None])[:, None, :]
+    if (((tokens < 0) & real).any() or ((tokens != -1) & ~real).any()
+            or (~np.isneginf(values) & ~real).any()):
+        raise ValueError("graph-gathered padding differs from the immutable vocabulary shard widths")
 
 
 def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Sequence[int], sampling: Sampling | None,
