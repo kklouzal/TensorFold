@@ -56,6 +56,24 @@ def publish(source, destination, at, generations, expected, status, layer):
     destination[at:at + len(source)].copy_(source)
 
 
+# Round-table lane words; the device enum in compact_indexer.cu is authoritative
+# for interpretation, this tuple for host packing. Both are checked at load.
+ROUND_LANE_FIELDS = ("ENABLE", "RING_RAW", "RING_COORDS", "PROTECTED", "PROTECTED_COORDS", "STAGE_RAW",
+                     "STAGE_COORDS", "POOLED", "GENERATIONS", "STATUS", "EXPECTED_SLOT", "EXPECTED_OWNER",
+                     "POSITION", "FIRST", "ROWS", "POOLED_ROWS")
+ROUND_LANE_WORDS = len(ROUND_LANE_FIELDS)
+ROUND_GROUPS = 16
+
+
+def round_stage(ik, lanes, raw, coordinates, layer):
+    """Captured once per layer; the owner retains every lane pointee through replay retirement."""
+    extension().round_stage(ik, lanes, raw, coordinates, layer)
+
+
+def round_publish(values, lanes, layer):
+    extension().round_publish(values, lanes, layer)
+
+
 def prepare(device):
     """Load and exercise the one byte-copy kernel before the capacity baseline."""
     import torch

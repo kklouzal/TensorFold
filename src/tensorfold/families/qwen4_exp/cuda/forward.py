@@ -350,7 +350,13 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     if getattr(b, "history_owner", None) is not None:
         from .history_owner import attention_layer
 
-        if b.split is not None:
+        if b.split is not None and not mtp and getattr(b, "owner_round_capture", False):
+            # Round capture: State operands come from the owner's round tables,
+            # published once per replay by OwnerBuffers.stage_round.
+            from .history_owner import captured_attention_layer
+
+            o = captured_attention_layer(layer, w, len(segs), b, R)
+        elif b.split is not None:
             # The packed-history owner validates the current issued coordinates
             # and live State bounds between graph pieces. No padded row or
             # captured host position may stand in for this handoff.

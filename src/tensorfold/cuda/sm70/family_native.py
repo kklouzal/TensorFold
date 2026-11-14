@@ -34,7 +34,8 @@ def extension():
     sources = [root / "family_bindings.cpp", root / "family.cu"]
     identity = hashlib.sha256(prepared.__name__.encode())
     headers = [root / "torch_reduce.cuh", root.parent / "kernels/tensor_contracts.cuh",
-               root / "rotorquant_q4.cuh", root / "rotorquant_q4_tables.cuh", root / "qsa_select512.cuh"]
+               root / "rotorquant_q4.cuh", root / "rotorquant_q4_tables.cuh", root / "qsa_select512.cuh",
+               root / "paged_attention_descriptor.cuh"]
     for source in [*sources, *headers]:
         identity.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=headers)

@@ -54,6 +54,16 @@ class ExactStateGraphs:
         self.captured_keys = []
         self.selected_keys = None
         self.declined_keys = {}
+        # Verify keys additionally captured with their unique-history attention
+        # inside the graph (OwnerBuffers round tables). Piecewise keys remain
+        # for frames outside the round selector bound.
+        self.round_pieces = {}
+        self.round_hits = 0
+        self.round_reason = None
+        flag = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUND_CAPTURE", "1")
+        if flag not in ("0", "1"):
+            raise ValueError("round attention capture flag must be 0 or 1")
+        self.round_enabled = flag == "1"
 
     def _catalogue(self, states):
         """Original finite shape order; selection never changes live capacity."""
@@ -183,7 +193,19 @@ class ExactStateGraphs:
         comm.all_gather(send, result)
         return bool(result.min().item())
 
-    def _capture(self, kind, key, segs, source):
+    def _round_ready(self, segs):
+        """None when this decoder's verify keys capture attention inside the round graph."""
+        if not self.round_enabled:
+            return "disabled by TENSORFOLD_PRIVATE_SM70_ROUND_CAPTURE=0"
+        workspace = getattr(self.dec.buf, "history_owner", None)
+        if workspace is None:
+            return "no unique-history decode owner"
+        reason = workspace.round_capture_reason(self.dec.buf, self.dec.w)
+        if reason is None:
+            workspace.prepare_round(segs[0][0].att_index)
+        return reason
+
+    def _capture(self, kind, key, segs, source, *, round_tables=False):
         if not self.preparing:
             raise RuntimeError("exact graph capture is restricted to idle startup")
         if self.selected_keys is None or (kind, *key) not in self.selected_keys:
@@ -208,6 +230,7 @@ class ExactStateGraphs:
         before_reserved = int(torch.cuda.memory_reserved(self.dec.w.device))
         try:
             source.exact_graph_handoffs = True
+            source.owner_round_capture = round_tables
             source.gdn_capture_operands = (source.gdn_capture_ready_operands
                 if kind == 'verify' and self.native_gdn_capture else None)
             source.gdn_value8_capture = (source.gdn_value8_ready
@@ -232,10 +255,11 @@ class ExactStateGraphs:
                 pieces = owner._pieces(run, source, retain_pending=True)
             # _pieces keeps its original borrower journal until this transfer.
             # Publish before any flag cleanup, device fence or memory query.
-            self.bindings[(kind, key)] = pieces
+            self.bindings[(kind + "-round" if round_tables else kind, key)] = pieces
             owner.pending.remove(pieces)
         finally:
             source.exact_graph_handoffs = False
+            source.owner_round_capture = False
             source.gdn_capture_operands = None
             source.gdn_value8_capture = None
             source.gdn_value8_ready = None
@@ -255,8 +279,8 @@ class ExactStateGraphs:
             if not admitted:
                 self.declined_keys[(kind, *key)] = 'captured key exceeded admitted graph budget'
             observation = {"schema": "tensorfold.exact-graph-key-v1", "rank": getattr(self.dec.w.comm, 'rank', 0),
-                "role": kind, "rows": key[0], "participants": key[1], "pieces": len(pieces.graphs),
-                "prior_keys": len(owner.measured), "prior_bytes": owner.room_bytes,
+                "role": kind + "-round" if round_tables else kind, "rows": key[0], "participants": key[1],
+                "pieces": len(pieces.graphs), "prior_keys": len(owner.measured), "prior_bytes": owner.room_bytes,
                 "physical_delta_bytes": physical_delta, "allocated_delta_bytes": int(torch.cuda.memory_allocated(self.dec.w.device)) - before_allocated,
                 "reserved_delta_bytes": int(torch.cuda.memory_reserved(self.dec.w.device)) - before_reserved,
                 "budget_bytes": owner.budget, "admitted": admitted}
@@ -275,6 +299,10 @@ class ExactStateGraphs:
             raise error
         owner.bytes += took
         owner.room_bytes += took
+        if round_tables:
+            self.round_pieces[key] = pieces
+            self.captured_keys.append((kind + "-round", *key))
+            return pieces
         (owner.verify if kind == "verify" else owner.mtp)[key] = pieces
         self.captured_keys.append((kind, *key))
         return pieces
@@ -327,10 +355,21 @@ class ExactStateGraphs:
         pieces = (self.owner.verify if kind == "verify" else self.owner.mtp).get(key)
         if pieces is None and self.preparing and self.selected_keys is not None and (kind, *key) in self.selected_keys:
             pieces = self._capture(kind, key, segs, source)
+            if pieces is not None and kind == "verify":
+                if self.round_reason is None:
+                    self.round_reason = self._round_ready(segs) or False
+                if self.round_reason is False:
+                    self._capture(kind, key, segs, source, round_tables=True)
             if pieces is not None:
                 # Capture preparation reset/restaged these same actual slots.
                 # Validate the newly issued frame before the first replay too.
                 validate(source, segs)
+        if kind == "verify" and pieces is not None:
+            from .history_owner import round_context_fits
+
+            whole = self.round_pieces.get(key)
+            if whole is not None and round_context_fits(segs, self.dec.w.cfg.index_ratio):
+                return self._replay_round(whole, segs, source)
         if pieces is None:
             self.misses += 1
             if not self.preparing:
@@ -345,6 +384,26 @@ class ExactStateGraphs:
             self.hits += 1
             if not self.preparing:
                 self.serving_hits[kind] += 1
+            return pieces.out
+        except BaseException as error:
+            self.owner.retain_failure(error)
+            self.dec._failed_graphs, self.dec._memory_error = self.owner, error
+            raise
+
+    def _replay_round(self, pieces, segs, source):
+        workspace = source.history_owner
+        try:
+            _kv_begin(segs)
+            workspace.stage_round(source, segs)
+            for graph, insert in zip(pieces.graphs, pieces.inserts + [None]):
+                replay(graph, self.dec.w.comm)
+                if insert is not None:
+                    self._insert(insert, segs, source)
+            workspace.finish_round(source, segs)
+            self.hits += 1
+            self.round_hits += 1
+            if not self.preparing:
+                self.serving_hits["verify"] += 1
             return pieces.out
         except BaseException as error:
             self.owner.retain_failure(error)
@@ -445,7 +504,10 @@ class ExactStateGraphs:
         for (kind, key), pieces in tuple(self.bindings.items()):
             for graph in pieces.graphs:
                 graph.reset()
-            (self.owner.verify if kind == "verify" else self.owner.mtp).pop(key, None)
+            if kind == "verify-round":
+                self.round_pieces.pop(key, None)
+            else:
+                (self.owner.verify if kind == "verify" else self.owner.mtp).pop(key, None)
             del self.bindings[(kind, key)]
         # The outer owner retires pending/partial captures before this method.
         # Keep every plan if any graph reset fails, including failed-capture
@@ -468,4 +530,6 @@ class ExactStateGraphs:
                 "gdn_value8_capture": self.value8_prepared is not None,
                 "gdn_value8_workspace": deepcopy(self.value8_workspace_record),
                 "exact_graph_catalogue": catalogue,
-                "eager_owner_inserts": self.owner_inserts, "capture_during_serving": False}
+                "eager_owner_inserts": self.owner_inserts, "capture_during_serving": False,
+                "round_attention": {"captured_keys": len(self.round_pieces), "replay_hits": self.round_hits,
+                                    "unavailable": self.round_reason or None}}

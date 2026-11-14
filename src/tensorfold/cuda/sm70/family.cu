@@ -11,11 +11,13 @@
 #include "torch_reduce.cuh"
 #include "rotorquant_q4.cuh"
 #include "qsa_select512.cuh"
+#include "paged_attention_descriptor.cuh"
 
 using T = at::Tensor;
 using O = std::optional<T>;
 
 namespace {
+namespace owner_words = tf_sm70_paged;
 constexpr int THREADS = 256;
 __device__ __forceinline__ float half_round(float x) { return __half2float(__float2half_rn(x)); }
 __device__ __forceinline__ float sigmoid(float x) { return 1.f / (1.f + expf(-x)); }
@@ -386,22 +388,17 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
 
 // Operation-owned unique-history Q8 decode. Independent State window rows; explicit issued
 // coordinates and a current owned-page table, never contiguous logical KV.
-__global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordinates,
+// One window row (blockIdx.x = output unit). window_start/window_rows describe
+// this row's own State window; start is its logical row inside that window.
+__device__ __forceinline__ void owned_q8_prepare_row(const __half* p, const int64_t* coordinates,
         const float* qw, const float* kw, const float* iw, const float* freq,
         __half* queries, __half* iq, int8_t* kc, int8_t* vc, __half* ks, __half* vs,
         const int64_t* offsets, const int64_t* generations, int* status,
-        int64_t expected_slot, int64_t expected_owner, int64_t start, int64_t logical,
-        int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
-        int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
+        int64_t expected_slot, int64_t expected_owner, int64_t window_start, int64_t window_rows,
+        int64_t start, int64_t logical, int64_t physical, int page_tokens, int layer, int qheads,
+        int index_heads, int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
     __shared__ float shared[512], normalized[256];
     __shared__ int64_t destination;
-    const int row = blockIdx.y;
-    const int64_t window_start = start;
-    p += int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim);
-    coordinates += int64_t(row) * 3;
-    queries += int64_t(row) * qheads * 256;
-    iq += int64_t(row) * index_heads * index_dim;
-    start += row;
     const int unit = blockIdx.x, col = threadIdx.x;
     if (!col) {
         destination = -2;
@@ -420,8 +417,8 @@ __global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordina
                 // destination's preimage in every active page, so malformed
                 // overlapping pages cannot create concurrent payload stores.
                 // Both colliding rows reject before *any* of their CTA writes.
-                if (gridDim.y > 1) {
-                    const int64_t end = window_start + gridDim.y;
+                if (window_rows > 1) {
+                    const int64_t end = window_start + window_rows;
                     for (int64_t page = window_start / page_tokens; page <= (end - 1) / page_tokens; ++page) {
                         const int64_t other_offset = offsets[page];
                         if (other_offset < 0 || other_offset > destination) continue;
@@ -494,6 +491,61 @@ __global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordina
             if (!(col & 31)) (kind == 1 ? ks : vs)[destination * 8 + col / 32] = __float2half_rn(stored);
         }
     }
+}
+
+__global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordinates,
+        const float* qw, const float* kw, const float* iw, const float* freq,
+        __half* queries, __half* iq, int8_t* kc, int8_t* vc, __half* ks, __half* vs,
+        const int64_t* offsets, const int64_t* generations, int* status,
+        int64_t expected_slot, int64_t expected_owner, int64_t start, int64_t logical,
+        int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
+        int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
+    const int row = blockIdx.y;
+    owned_q8_prepare_row(p + int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim),
+        coordinates + int64_t(row) * 3, qw, kw, iw, freq, queries + int64_t(row) * qheads * 256,
+        iq + int64_t(row) * index_heads * index_dim, kc, vc, ks, vs, offsets, generations, status,
+        expected_slot, expected_owner, start, gridDim.y, start + row, logical, physical, page_tokens, layer,
+        qheads, index_heads, index_dim, rotary_half, eps, rope_scale, section1, section2);
+}
+
+template<typename V> __device__ __forceinline__ V* word_pointer(int64_t word) {
+    return reinterpret_cast<V*>(uintptr_t(word));
+}
+
+// Round-table variant: every State-dependent operand and the device row
+// position come from the row's owner descriptor (paged_attention_descriptor.cuh),
+// so one captured launch serves any admitted State/generation. Inactive rows
+// (null live pointer) touch nothing; malformed live rows latch 32 like the
+// original host validation would refuse them.
+__global__ void owned_q8_prepare_rows_kernel(const __half* p, const int64_t* coordinates,
+        const float* qw, const float* kw, const float* iw, const float* freq,
+        __half* queries, __half* iq, const int64_t* descriptors, int page_tokens, int layer, int qheads,
+        int index_heads, int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
+    const int row = blockIdx.y;
+    const int64_t* d = descriptors + int64_t(row) * owner_words::WORD_COUNT;
+    const int* live = word_pointer<const int>(d[owner_words::LIVE_ROWS]);
+    if (live == nullptr) return;
+    int* status = word_pointer<int>(d[owner_words::STATUS]);
+    const int* position = word_pointer<const int>(d[owner_words::POSITION]);
+    const int64_t within = d[owner_words::ROW_OFFSET], rows = *live;
+    if (status == nullptr) { asm volatile("trap;"); return; }
+    if (position == nullptr || within < 0 || within >= rows || d[owner_words::GENERATIONS] == 0
+            || d[owner_words::PAGE_OFFSETS] == 0 || d[owner_words::K_DATA] == 0 || d[owner_words::V_DATA] == 0
+            || d[owner_words::K_METADATA] == 0 || d[owner_words::V_METADATA] == 0
+            || d[owner_words::PAGE_COUNT] != (d[owner_words::LOGICAL_CAPACITY] + page_tokens - 1) / page_tokens) {
+        if (!blockIdx.x && !threadIdx.x) { atomicOr(status, 32); atomicCAS(status + 1, -2, layer); }
+        return;
+    }
+    const int64_t window_start = *position;
+    owned_q8_prepare_row(p + int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim),
+        coordinates + int64_t(row) * 3, qw, kw, iw, freq, queries + int64_t(row) * qheads * 256,
+        iq + int64_t(row) * index_heads * index_dim,
+        word_pointer<int8_t>(d[owner_words::K_DATA]), word_pointer<int8_t>(d[owner_words::V_DATA]),
+        word_pointer<__half>(d[owner_words::K_METADATA]), word_pointer<__half>(d[owner_words::V_METADATA]),
+        word_pointer<const int64_t>(d[owner_words::PAGE_OFFSETS]), word_pointer<const int64_t>(d[owner_words::GENERATIONS]),
+        status, d[owner_words::EXPECTED_SLOT], d[owner_words::EXPECTED_OWNER], window_start, rows,
+        window_start + within, d[owner_words::LOGICAL_CAPACITY], d[owner_words::PHYSICAL_ROWS], page_tokens, layer,
+        qheads, index_heads, index_dim, rotary_half, eps, rope_scale, section1, section2);
 }
 
 // Keep the qualified raw/INT8 prep_kernel above intact. This separate Q4
@@ -739,19 +791,19 @@ __global__ void qsa_dense_kernel(const void* position, bool pos_long, int* spars
     if (row < rows) { sparse[row] = 0; counts[row] = position_value(position, pos_long) + row + 1; }
 }
 
+// One selector row: query/sparse/count/ids/scores are already this row's views.
 template<int ITEMS>
-__global__ void qsa_rows_kernel(const __half* query, const __half* pooled, const void* position, bool pos_long,
-                               int* sparse, int* counts, int* ids, float* scores,
-                               int heads, int dim, int ratio, int budget, int blocks, int id_stride, int score_stride) {
+__device__ __forceinline__ void qsa_select_row(const __half* query, const __half* pooled, int end,
+                                               int* sparse, int* counts, int* ids, float* scores,
+                                               int heads, int dim, int ratio, int budget, int blocks) {
     using Sort = cub::BlockRadixSort<unsigned long long, THREADS, ITEMS>;
     __shared__ union Storage {
         unsigned long long keys[THREADS * ITEMS];
         typename Sort::TempStorage sort;
     } storage;
-    const int row = blockIdx.x, lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
-    const int end = position_value(position, pos_long) + row + 1;
+    const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     const int complete = end / ratio, top = budget / ratio;
-    if (!threadIdx.x) { sparse[row] = complete > top; counts[row] = complete > top ? budget + end % ratio : end; }
+    if (!threadIdx.x) { *sparse = complete > top; *counts = complete > top ? budget + end % ratio : end; }
     // This test uses the device position, so a captured context bucket remains
     // cheap until a request actually crosses the sparse-attention threshold.
     if (complete <= top) return;
@@ -761,7 +813,7 @@ __global__ void qsa_rows_kernel(const __half* query, const __half* pooled, const
             for (int head = 0; head < heads; ++head) {
                 float dot = 0.f;
                 for (int col = lane; col < dim; col += 32)
-                    dot = dot + __half2float(query[(int64_t(row) * heads + head) * dim + col]) *
+                    dot = dot + __half2float(query[head * dim + col]) *
                                 __half2float(pooled[int64_t(block) * dim + col]);
                 dot = warp_sum(dot);
                 score = score + (dot < 0.f ? 0.f : dot);
@@ -778,7 +830,7 @@ __global__ void qsa_rows_kernel(const __half* query, const __half* pooled, const
             // Nonfinite/range qualification is a separate numerical gate.
             storage.keys[block] = valid ? ((static_cast<unsigned long long>(__float_as_uint(score)) + 1ULL) << 32)
                                           | (0xffffffffu - static_cast<unsigned int>(block)) : 0ULL;
-            if (block < blocks) scores[int64_t(row) * score_stride + block] = valid ? score : -CUDART_INF_F;
+            if (scores && block < blocks) scores[block] = valid ? score : -CUDART_INF_F;
         }
     }
     __syncthreads();
@@ -798,10 +850,49 @@ __global__ void qsa_rows_kernel(const __half* query, const __half* pooled, const
     for (int item = 0; item < ITEMS; ++item) {
         const int rank = threadIdx.x * ITEMS + item;
         if (rank < top) for (int offset = 0; offset < ratio; ++offset)
-            ids[int64_t(row) * id_stride + rank * ratio + offset] = static_cast<int>(keys[item]) * ratio + offset;
+            ids[rank * ratio + offset] = static_cast<int>(keys[item]) * ratio + offset;
     }
     for (int offset = threadIdx.x; offset < ratio; offset += blockDim.x)
-        ids[int64_t(row) * id_stride + budget + offset] = complete * ratio + offset;
+        ids[budget + offset] = complete * ratio + offset;
+}
+
+template<int ITEMS>
+__global__ void qsa_rows_kernel(const __half* query, const __half* pooled, const void* position, bool pos_long,
+                               int* sparse, int* counts, int* ids, float* scores,
+                               int heads, int dim, int ratio, int budget, int blocks, int id_stride, int score_stride) {
+    const int row = blockIdx.x;
+    const int end = position_value(position, pos_long) + row + 1;
+    qsa_select_row<ITEMS>(query + int64_t(row) * heads * dim, pooled, end, sparse + row, counts + row,
+                          ids + int64_t(row) * id_stride, scores + int64_t(row) * score_stride,
+                          heads, dim, ratio, budget, blocks);
+}
+
+// Round-table selector writing the canonical selection wire row directly:
+// [0, budget + ratio) ids, then the selected count, then the sparse flag.
+// Only the row's indexer owner selects; every other row is zeroed exactly as
+// the original zero-filled selection slab. pooled_rows[row] is the row's
+// State/layer pooled base, recorded beside its descriptor.
+template<int ITEMS>
+__global__ void qsa_rows_owned_kernel(const __half* query, const int64_t* descriptors, const int64_t* pooled_rows,
+                                      int* selection, int width, int rank, int heads, int dim, int ratio,
+                                      int budget, int blocks, int layer) {
+    const int row = blockIdx.x;
+    const int64_t* d = descriptors + int64_t(row) * owner_words::WORD_COUNT;
+    int* out = selection + int64_t(row) * width;
+    const int* live = word_pointer<const int>(d[owner_words::LIVE_ROWS]);
+    const int* position = word_pointer<const int>(d[owner_words::POSITION]);
+    const __half* pooled = word_pointer<const __half>(pooled_rows[row]);
+    for (int col = threadIdx.x; col < width; col += blockDim.x) out[col] = 0;
+    if (live == nullptr || d[owner_words::INDEXER_OWNER] != rank) return;
+    __syncthreads();
+    if (position == nullptr || pooled == nullptr) {
+        int* status = word_pointer<int>(d[owner_words::STATUS]);
+        if (status != nullptr && !threadIdx.x) { atomicOr(status, 32); atomicCAS(status + 1, -2, layer); }
+        return;
+    }
+    const int end = int(*position + d[owner_words::ROW_OFFSET] + 1);
+    qsa_select_row<ITEMS>(query + int64_t(row) * heads * dim, pooled, end, out + width - 1, out + width - 2,
+                          out, nullptr, heads, dim, ratio, budget, blocks);
 }
 
 template<typename V> V* ptr(const T& x) { return reinterpret_cast<V*>(x.data_ptr()); }
@@ -900,6 +991,27 @@ __global__ void guard_rows_kernel(const S* x, S* out, int* status, const int* va
     }
     bad = __syncthreads_or(bad);
     if (bad && threadIdx.x == 0 && (valid_rows == nullptr || r < valid_rows[0])) {
+        atomicOr(status, error);
+        atomicCAS(status + 1, -2, layer);
+    }
+}
+// The same row guard with each row's sticky status owner taken from its owner
+// descriptor. Inactive descriptor rows still sanitize but publish no status.
+__global__ void guard_rows_owned_kernel(const __half* x, __half* out, const int64_t* descriptors, int cols,
+                                        int64_t stride, int error, int layer) {
+    const int64_t r = blockIdx.x;
+    int bad = 0;
+    for (int c = threadIdx.x; c < cols; c += blockDim.x) {
+        const __half v = x[r * stride + c];
+        const float f = guard_float(v);
+        const bool ok = isfinite(f) && fabsf(f) <= 1073741824.f;
+        out[r * cols + c] = ok ? v : __float2half(0.f);
+        bad |= !ok;
+    }
+    bad = __syncthreads_or(bad);
+    const int64_t* d = descriptors + r * owner_words::WORD_COUNT;
+    int* status = word_pointer<int>(d[owner_words::STATUS]);
+    if (bad && threadIdx.x == 0 && d[owner_words::LIVE_ROWS] != 0 && status != nullptr) {
         atomicOr(status, error);
         atomicCAS(status + 1, -2, layer);
     }
@@ -1072,5 +1184,34 @@ void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const 
         offsets.data_ptr<int64_t>(), generations.data_ptr<int64_t>(), status.data_ptr<int>(), slot, owner, start,
         logical, physical, page_tokens, layer, qheads, index_heads, index_dim, freq.numel(), eps, amplitude,
         section1, section2);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void family_owned_q8_prepare_rows_cuda(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
+        const T& freq, T& q, T& iq, const T& descriptors, int page_tokens, int layer, int qheads, int index_heads,
+        int index_dim, float eps, float amplitude, int section1, int section2) {
+    if (p.size(0)) owned_q8_prepare_rows_kernel<<<dim3(qheads + 2 + index_heads, p.size(0)), THREADS, 0,
+                                                   at::cuda::getCurrentCUDAStream()>>>(
+        ptr<__half>(p), axes.data_ptr<int64_t>(), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(freq),
+        ptr<__half>(q), ptr<__half>(iq), descriptors.data_ptr<int64_t>(), page_tokens, layer, qheads, index_heads,
+        index_dim, freq.numel(), eps, amplitude, section1, section2);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void family_qsa_rows_owned_cuda(const T& query, const T& descriptors, const T& pooled_rows, T& selection,
+                                int rank, int ratio, int budget, int blocks, int layer) {
+    const int rows = int(selection.size(0));
+    if (rows) qsa_rows_owned_kernel<16><<<rows, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        ptr<__half>(query), descriptors.data_ptr<int64_t>(), pooled_rows.data_ptr<int64_t>(),
+        selection.data_ptr<int>(), int(selection.size(1)), rank, int(query.size(1)), int(query.size(2)),
+        ratio, budget, blocks, layer);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void family_guard_rows_owned_cuda(const T& x, T& out, const T& descriptors, int error, int layer) {
+    const int rows = int(x.size(0)), cols = int(x.size(1));
+    const int threads = std::min(256, std::max(32, (cols + 31) / 32 * 32));
+    if (rows && cols) guard_rows_owned_kernel<<<rows, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+        ptr<__half>(x), ptr<__half>(out), descriptors.data_ptr<int64_t>(), cols, x.stride(0), error, layer);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

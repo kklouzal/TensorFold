@@ -14,6 +14,7 @@ import sys
 import traceback
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 
 from tensorfold.cuda.sm70 import family_ops as ops
@@ -27,6 +28,23 @@ from tensorfold.cuda.sm70.attention_backends import (OWNER_FAMILY as ATEN_KERNEL
 _PRIVATE_EMPTY_PREFIX = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX", "inherit")
 if _PRIVATE_EMPTY_PREFIX not in ("inherit", "cpu-empty-v1"):
     raise ValueError("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX requires inherit or cpu-empty-v1")
+
+
+# The captured selector sorts at most this many pooled groups per row (the
+# native qsa_rows bound). Longer contexts use the eager owner layers, whose
+# selector switches to the shape-dependent Torch reference there.
+ROUND_SELECTOR_BLOCKS = 4096
+
+
+def round_context_fits(segments, ratio):
+    """The captured selector/pooling bounds: at most ROUND_SELECTOR_BLOCKS
+    groups of context, at most 16 pooled groups per segment window and the
+    eager owner's fixed 16-row pooled normalization shape (capacity >= 64)."""
+    from tensorfold.cuda.sm70.compact_indexer import ROUND_GROUPS
+
+    return all(state.pos + last - first <= ROUND_SELECTOR_BLOCKS * ratio and last - first <= 4 * ROUND_GROUPS - 3
+               and state.compact_indexer is not None and state.compact_indexer.capacity // 4 >= ROUND_GROUPS
+               for state, first, last in segments)
 
 
 def _first_page_empty(cache, visible_end):
@@ -550,6 +568,11 @@ class OwnerBuffers:
         self.native_comm = self.native_collective = None
         self._native_transport_configured = self._native_family_configured = False
         self.reference_transport_rows = 0
+        self.round_device = self.round_host = self.round_words = self.round_done = None
+        self.round_desc = self.round_pooled = self.round_lanes = self.round_live = None
+        self.round_ik = self.round_raw = self.round_coords = self.round_values = None
+        self.round_ordinals = None
+        self._round_pending = False
         self.closed = False
 
     def __init__(self, weights, rows, scratch, *, prefill=False):
@@ -1055,12 +1078,14 @@ class OwnerBuffers:
             torch.cuda.synchronize(self.device)
         self.reference_transport_rows = self.rows
 
-    def native_run(self, rows, *, key_capacity=None):
+    def native_run(self, rows, *, key_capacity=None, row_table=None):
         """The same preallocated partial-attention pipeline for eager and graphs.
 
         The caller owns a serialized same-stream owner frame through final
         output consumption/mark_native_submitted. Kernel issue order, not a CPU
         boolean or the temporary P view, retires receive-slab phase consumers.
+        ``row_table`` selects one layer of the captured round descriptor table
+        instead of the per-layer eager slab (RN family only).
         """
         from tensorfold.cuda.sm70 import paged_attention as native
 
@@ -1068,6 +1093,9 @@ class OwnerBuffers:
             raise ValueError("native owner execution shape was not prepared before admission")
         if self.comm is None or self.comm.world != 8 or self.comm.rank != self.rank:
             raise ValueError("native owner execution requires its active TP8 communicator")
+        if row_table is not None and (self.native_kernel_family != native.RN_KERNEL_FAMILY
+                                      or row_table.shape != (rows, self.descriptors.shape[1])):
+            raise ValueError("round descriptor tables require the RN family and one bucket of rows")
         if self.native_kernel_family == FLASH_KERNEL_FAMILY:
             if self.flash_tiles is None:
                 raise RuntimeError('Flash owner frame was not prepared before serving')
@@ -1075,6 +1103,8 @@ class OwnerBuffers:
                 raise ValueError('Flash owner requires its fixed2051 compacted envelope')
             return self.flash_tiles.run(self, rows)
         views = self.native_views(rows)
+        if row_table is not None:
+            views = {**views, "row_table": row_table}
         if self.native_kernel_family == ATEN_KERNEL_FAMILY:
             from tensorfold.cuda.sm70.attention_backends import OWNER_MAX_KEYS
             if self.aten_tiles is None:
@@ -1107,6 +1137,168 @@ class OwnerBuffers:
         native.merge_values(views["all_values"], views["row_table"], views["out"], rank=self.rank,
                              page_tokens=self.native_page_tokens, layer=self.native_layer, value_bits=bits, value_codec=codec)
         return views["out"]
+
+    # -- captured round tables -------------------------------------------------------------------------------
+    # The decode owner can publish every State-dependent attention operand for a
+    # whole target verify round as device tables written once per round: owner
+    # descriptors for each attention ordinal, the row pooled bases and compact
+    # indexer lanes. Captured layers then read only these fixed slabs, so one
+    # graph per (rows, participants) serves any admitted State. Positions stay
+    # device data (State.pos_dev); generations are rewritten every round.
+
+    def round_capture_reason(self, buffers, weights):
+        """None when this decode workspace can capture its attention inside the round graph."""
+        from .owner_execution import RN_KERNEL_FAMILY
+
+        c = weights.cfg
+        stage = getattr(buffers, "compact_indexer_stage", None)
+        position = getattr(buffers, "target_indexer_position", None)
+        module = self.owned_q8_window_preparation
+        if self.native_kernel_family != RN_KERNEL_FAMILY or self.descriptors is None or self.native_states is None:
+            return "round capture requires the prepared RN owner family and State catalogue"
+        if (self.prefill or self.owned_q8_window_role != "decode" or self.owned_q8_window_dispatch != "grid-v1"
+                or module is None or not callable(getattr(module, "owned_q8_prepare_rows", None))):
+            return "round capture requires the grid owned Q8 decode window"
+        if (buffers.owner_graph_family != "uncaptured" or buffers.owner_kernel_family != self.native_kernel_family
+                or buffers.owner_role != "decode" or buffers.history_owner is not self):
+            return "round capture requires the uncaptured decode owner role"
+        if (self.native_pair is None or (self.native_pair.key.bits, self.native_pair.key.codec,
+                                         self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
+            return "round capture requires ordinary Q8 history"
+        if (stage is None or position is None or buffers.target_indexer_coordinate_storage is None
+                or buffers.target_indexer_coordinate_storage is not stage.coordinates
+                or buffers.rows > self.rows or c.index_ratio != 4 or c.index_dim != 128
+                or self.idw != c.index_budget + c.index_ratio or c.index_budget % c.index_ratio):
+            return "round capture requires the compact coordinate stage within one owner chunk"
+        return None
+
+    def prepare_round(self, ordinals):
+        """Allocate the round tables once at idle startup (before any round capture)."""
+        from tensorfold.cuda.sm70.paged_attention_descriptor import WORDS
+        from tensorfold.cuda.sm70.compact_indexer import ROUND_LANE_WORDS, ROUND_GROUPS
+
+        if self.round_device is not None:
+            if self.round_ordinals != ordinals:
+                raise ValueError("round tables are prepared for one attention ordinal map")
+            return
+        layers, rows = len(ordinals), self.rows
+        if layers < 1 or sorted(ordinals.values()) != list(range(layers)):
+            raise ValueError("round tables need the complete target attention ordinal map")
+        sizes = (layers * rows * WORDS, layers * rows, layers * rows * ROUND_LANE_WORDS, (rows + 1) // 2)
+        total = sum(sizes)
+        device = self.queries.device
+        self.round_device = torch.zeros((total,), dtype=torch.int64, device=device)
+        self.round_host = torch.zeros((total,), dtype=torch.int64, pin_memory=True)
+        self.round_words = self.round_host.numpy()
+        self.round_done = torch.cuda.Event()
+        views, at = [], 0
+        for size in sizes:
+            views.append((at, size))
+            at += size
+        (d0, dn), (p0, pn), (l0, ln), (c0, cn) = views
+        self.round_desc = self.round_device[d0:d0 + dn].view(layers, rows, WORDS)
+        self.round_pooled = self.round_device[p0:p0 + pn].view(layers, rows)
+        self.round_lanes = self.round_device[l0:l0 + ln].view(layers, rows, ROUND_LANE_WORDS)
+        self.round_live = self.round_device[c0:c0 + cn].view(torch.int32)
+        self._round_host_views = (self.round_words[d0:d0 + dn].reshape(layers, rows, WORDS),
+                                  self.round_words[p0:p0 + pn].reshape(layers, rows),
+                                  self.round_words[l0:l0 + ln].reshape(layers, rows, ROUND_LANE_WORDS),
+                                  self.round_words[c0:c0 + cn].view(np.int32))
+        self.round_ik = torch.zeros((rows, 128), dtype=torch.float16, device=device)
+        self.round_raw = torch.zeros((rows, ROUND_GROUPS, 4, 128), dtype=torch.float16, device=device)
+        self.round_coords = torch.zeros((rows, ROUND_GROUPS, 3), dtype=torch.int64, device=device)
+        self.round_values = torch.zeros((rows, ROUND_GROUPS, 128), dtype=torch.float16, device=device)
+        self.round_ordinals = dict(ordinals)
+
+    def stage_round(self, buffers, segments):
+        """Once-per-round host bookkeeping and one table upload for a captured verify round.
+
+        Performs the per-layer host duties of the eager owner (catalogue,
+        generation and append-frontier validation, compact spans and staging
+        epoch, tentative target length) once, then publishes every State
+        operand the captured layers read. The caller validated the issued
+        coordinate frame and replays on the current stream next.
+        """
+        from tensorfold.cuda.sm70.paged_attention_descriptor import WORDS
+        from .compact_indexer import Span
+
+        if self.round_device is None or self.closed:
+            raise RuntimeError("round tables were not prepared before serving")
+        rows = segments[-1][2]
+        bucket = self.native_bucket(rows)
+        if len(segments) > rows or rows > self.rows:
+            raise ValueError("round frame exceeds its prepared owner chunk")
+        desc, pooled, lanes, live = self._round_host_views
+        if self._round_pending:
+            self.round_done.synchronize()  # Retire only the prior host-to-device DMA of this pinned slab.
+            self._round_pending = False
+        desc[:, :bucket] = 0
+        pooled[:, :bucket] = 0
+        lanes[:, :len(segments)] = 0
+        stage = buffers.compact_indexer_stage
+        self.wait_native_reuse()
+        stage.begin(mtp=False)
+        epoch = stage.target_epoch
+        live_base = self.round_live.data_ptr()
+        ordinals = self.round_ordinals
+        for lane, (state, first, last) in enumerate(segments):
+            registered = self.native_states.get(id(state))
+            if registered is None or registered[0] is not state or registered[1] != self._storage_signature(
+                    self._state_storage(state)):
+                raise RuntimeError("round descriptor points outside its retained canonical storage catalogue")
+            if state.att_index != ordinals:
+                raise ValueError("round tables require the prepared attention ordinal map")
+            slot, owner = state.slot_generation, state.history_generation
+            if (type(slot) is not int or type(owner) is not int
+                    or not 0 <= slot <= 2**63 - 1 or not 0 <= owner <= 2**63 - 1):
+                raise OverflowError("native descriptor generation exceeds signed int64")
+            count, pos = last - first, state.pos
+            if type(pos) is not int or not 0 <= pos <= state.capacity - count or state.compact_indexer is None:
+                raise ValueError("append range must fit the promised logical history")
+            indexer = state.compact_indexer
+            indexer._wait_transfer()
+            expected = (slot, owner)
+            live[lane] = count
+            live_pointer = live_base + 4 * lane
+            placement, include_mtp = state.history_placement, hasattr(state, "mtp_kc")
+            generations, status, position = (state.history_generations.data_ptr(), state.kv_status.data_ptr(),
+                                             state.pos_dev.data_ptr())
+            for ai in range(len(ordinals)):
+                cache, table = state.kc[ai], state.pooled[ai]
+                index_owner = placement.indexer_owner(state.history_slot, ai, include_mtp=include_mtp)
+                block = desc[ai, first:last]
+                block[:] = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
+                            cache.page_offsets.data_ptr(), generations, status, position, live_pointer, slot, owner,
+                            state.capacity, cache.capacity, cache.page_offsets.numel(), 0, index_owner)
+                block[:, 14] = np.arange(count)
+                entry = indexer.entries[ai]
+                if (entry is not None) != (index_owner == self.rank):
+                    raise ValueError("compact indexer ownership differs from its canonical placement")
+                if entry is None:
+                    continue
+                pooled[ai, first:last] = table.data_ptr()
+                entry.validate_append(pos, count, expected)
+                entry.wait_native_reuse()
+                raw, axes, _ = stage.span(ai, first, last, mtp=False)
+                lanes[ai, lane] = (1, entry.raw.data_ptr(), entry.coordinates.data_ptr(), entry.protected.data_ptr(),
+                                   entry.protected_coordinates.data_ptr(), raw.data_ptr(), axes.data_ptr(),
+                                   table.data_ptr(), generations, status, slot, owner, position, first, count,
+                                   table.shape[0])
+                entry.span = Span(pos, raw, axes, stage, epoch, False, expected)
+            state.target_tentative_length = pos + count
+        stage.wait(mtp=False)
+        self.round_device.copy_(self.round_host, non_blocking=True)
+        self.round_done.record(torch.cuda.current_stream(self.queries.device))
+        self._round_pending = True
+
+    def finish_round(self, buffers, segments):
+        """Publish the replayed round's stream ownership exactly as eager layers marked theirs."""
+        buffers.compact_indexer_stage.mark(mtp=False)
+        for state, _, _ in segments:
+            for entry in state.compact_indexer.entries[:len(self.round_ordinals)]:
+                if entry is not None:
+                    entry._mark()
+        self.mark_native_submitted()
 
     def handoff_native_thread(self):
         if self.flash_tiles is not None:
@@ -1170,6 +1362,9 @@ class OwnerBuffers:
         self.descriptor_host_words = None
         self.descriptor_upload = self.native_done = None
         self.descriptor_upload_ring = None
+        self.round_device = self.round_host = self.round_words = self.round_done = None
+        self.round_desc = self.round_pooled = self.round_lanes = self.round_live = None
+        self.round_ik = self.round_raw = self.round_coords = self.round_values = None
         self.native_comm = None
         self.closed, self._base_ready = True, False
 
@@ -1236,6 +1431,62 @@ def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False)
         return _attention_layer(layer, weights, segments, buffers, total_rows, mtp=mtp)
     with buffers.compact_indexer_stage.reading(mtp=mtp):
         return _attention_layer(layer, weights, segments, buffers, total_rows, mtp=mtp)
+
+
+def captured_attention_layer(layer, weights, participants, buffers, total_rows):
+    """One target attention layer inside a verify round capture.
+
+    Issues exactly the device work of the eager native owner layer for the
+    grid owned-Q8 decode window, reading State operands from the round tables
+    that OwnerBuffers.stage_round publishes before each replay. Arithmetic is
+    the eager operators' own (shared native bodies; the same Torch pooling
+    operators at the same 16-row normalization shape).
+    """
+    from tensorfold.cuda.sm70 import compact_indexer as compact
+    from tensorfold.cuda.sm70.compact_indexer import ROUND_GROUPS
+
+    c, a, owner = weights.cfg, layer.attn, buffers.history_owner
+    rank = weights.meta["rank"]
+    ai = owner.round_ordinals[layer.index]
+    rows, bucket = total_rows, owner.native_bucket(total_rows)
+    desc = owner.round_desc[ai, :bucket]
+    module = owner.owned_q8_window_preparation
+    position = buffers.target_indexer_position
+    projection = buffers.pa[:rows]
+    at = 2 * c.heads * c.head_dim + 2 * c.head_dim + c.index_heads * c.index_dim
+    ik = owner.round_ik[:rows]
+    module.guard_rows_owned(projection[:, at:at + c.index_dim], ik, desc, 16, layer.index)
+    module.owned_q8_prepare_rows(projection, buffers.target_indexer_coordinates[:rows], a.q_scale, a.k_scale,
+        a.iq_scale, position.inv_freq, buffers.q[:rows], buffers.iq[:rows], desc, owner.native_page_tokens,
+        layer.index, c.heads, c.index_heads, c.index_dim, c.eps, position.amplitude,
+        position.sections[1], position.sections[2])
+    lanes = owner.round_lanes[ai, :participants]
+    compact.round_stage(ik, lanes, owner.round_raw[:participants], owner.round_coords[:participants], layer.index)
+    groups = torch.arange(ROUND_GROUPS, device=ik.device)
+    for lane in range(participants):
+        raw = owner.round_raw[lane].float()
+        total = raw[:, 0]
+        for member in range(1, 4):
+            total = total + raw[:, member]
+        value = ops.rms((total / 4).half(), a.ik_scale, c.eps)
+        value = ops.rotary(value, position.inv_freq, groups, rope=owner.round_coords[lane], length=ROUND_GROUPS,
+                           sections=position.sections, scale=position.amplitude)
+        owner.round_values[lane].copy_(value)
+    compact.round_publish(owner.round_values[:participants], lanes, layer.index)
+    selection = owner.selection[:bucket]
+    module.qsa_rows_owned(buffers.iq, desc, owner.round_pooled[ai, :bucket], selection, rank, c.index_ratio,
+                          c.index_budget, ROUND_SELECTOR_BLOCKS, layer.index)
+    query_all = owner.queries.reshape(-1)[:8 * bucket * c.heads * c.head_dim].view(8, bucket, c.heads, c.head_dim)
+    send = query_all[rank]
+    send[:rows].copy_(buffers.q[:rows])
+    send[rows:].zero_()
+    owner.gather_native(send, query_all)
+    selections = owner.selections.reshape(-1)[:8 * bucket * selection.shape[1]].view(8, bucket, selection.shape[1])
+    weights.comm.all_gather(selection, selections)
+    owner.native_layer.fill_(layer.index)
+    output = owner.native_run(bucket, row_table=desc)[:rows]
+    buffers.attn_o[:rows].copy_(output)
+    return buffers.attn_o[:rows]
 
 
 def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False):

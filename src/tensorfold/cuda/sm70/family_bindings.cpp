@@ -48,6 +48,11 @@ void family_owned_q8_prepare_cuda(const T&, const T&, const T&, const T&, const 
     T&, T&, T&, T&, const T&, const T&, T&, int64_t, int64_t, int64_t, int64_t, int64_t,
     int, int, int, int, int, float, float, int, int);
 
+void family_owned_q8_prepare_rows_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&,
+    const T&, int, int, int, int, int, float, float, int, int);
+void family_qsa_rows_owned_cuda(const T&, const T&, const T&, T&, int, int, int, int, int);
+void family_guard_rows_owned_cuda(const T&, T&, const T&, int, int);
+
 namespace {
 void check(const T& tensor, const T& owner, at::ScalarType dtype, const char* name) {
     TORCH_CHECK(tensor.is_cuda() && tensor.device() == owner.device() && tensor.scalar_type() == dtype
@@ -271,6 +276,71 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
     family_owned_q8_prepare_cuda(p, axes, qw, kw, iw, freq, q, iq, k, v, ks, vs, offsets, generations,
         status, slot, owner, start, logical, physical, page_tokens, layer, qheads, index_heads, index_dim,
         float(eps), float(amplitude), section1, section2);
+}
+
+// Round-table entries. Descriptor rows are produced by the canonical owner,
+// which retains every referenced State tensor through capture/replay retirement.
+void check_descriptors(const T& descriptors, const T& owner, int64_t rows) {
+    check(descriptors, owner, at::kLong, "owner descriptors");
+    TORCH_CHECK(descriptors.dim() == 2 && descriptors.size(0) >= rows && descriptors.size(1) == 16,
+                "owner descriptor table geometry");
+}
+
+void owned_q8_prepare_rows(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
+        const T& freq, T q, T iq, const T& descriptors, int page_tokens, int layer, int qheads,
+        int index_heads, int index_dim, double eps, double amplitude, int section1, int section2) {
+    check_half(p); epsilon(eps);
+    TORCH_CHECK(p.dim() == 2 && p.size(0) >= 1 && p.size(0) <= 256
+        && qheads == 3 && index_heads > 0 && index_heads <= 256
+        && index_dim > 0 && index_dim <= 256 && index_dim % 32 == 0
+        && p.size(1) == 2 * qheads * 256 + 512 + (index_heads + 1) * index_dim, "owned Q8 projection geometry");
+    for (const auto* x : {&q, &iq}) same_half(*x, p);
+    for (const auto* x : {&qw, &kw, &iw, &freq}) check(*x, p, at::kFloat, "owned Q8 weights");
+    check(axes, p, at::kLong, "owned Q8 coordinates");
+    check_descriptors(descriptors, p, p.size(0));
+    const int64_t rows = p.size(0);
+    TORCH_CHECK(q.numel() == rows * qheads * 256 && iq.numel() == rows * index_heads * index_dim
+        && axes.dim() == 2 && axes.size(0) == rows && axes.size(1) == 3
+        && qw.numel() == 256 && kw.numel() == 256 && iw.numel() == index_dim && freq.dim() == 1
+        && freq.numel() > 0 && freq.numel() * 2 <= std::min(256, index_dim)
+        && page_tokens > 0 && page_tokens % 4 == 0 && layer >= -1 && section1 >= 0 && section2 >= 0
+        && section1 <= 256 && section2 <= 256 && std::isfinite(amplitude) && amplitude > 0
+        && std::isfinite(float(amplitude)), "owned Q8 row-table geometry");
+    const T* writes[] = {&q, &iq};
+    const T* reads[] = {&p, &axes, &qw, &kw, &iw, &freq, &descriptors};
+    for (int i = 0; i < 2; ++i) {
+        for (const auto* read : reads) at::assert_no_overlap(*writes[i], *read);
+        for (int j = 0; j < i; ++j) at::assert_no_overlap(*writes[i], *writes[j]);
+    }
+    c10::cuda::CUDAGuard guard(p.device());
+    family_owned_q8_prepare_rows_cuda(p, axes, qw, kw, iw, freq, q, iq, descriptors, page_tokens, layer,
+        qheads, index_heads, index_dim, float(eps), float(amplitude), section1, section2);
+}
+
+void qsa_rows_owned(const T& query, const T& descriptors, const T& pooled_rows, T selection,
+                    int rank, int ratio, int budget, int blocks, int layer) {
+    check_half(query);
+    check(selection, query, at::kInt, "QSA selection wire rows");
+    check(pooled_rows, query, at::kLong, "QSA pooled row pointers");
+    const int64_t rows = selection.size(0);
+    check_descriptors(descriptors, query, rows);
+    TORCH_CHECK(query.dim() == 3 && query.size(0) >= rows && query.size(2) > 0 && query.size(2) <= 256
+                && query.size(2) % 32 == 0 && rank >= 0 && rank < 8 && ratio > 0 && budget > 0
+                && budget % ratio == 0 && blocks > 0 && blocks <= 4096 && selection.dim() == 2
+                && selection.size(1) == budget + ratio + 2 && pooled_rows.numel() >= rows,
+                "QSA owned selector geometry");
+    c10::cuda::CUDAGuard guard(query.device());
+    family_qsa_rows_owned_cuda(query, descriptors, pooled_rows, selection, rank, ratio, budget, blocks, layer);
+}
+
+void guard_rows_owned(const T& x, T out, const T& descriptors, int64_t error, int64_t layer) {
+    check_half(out);
+    TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2 && x.stride(1) == 1 && out.is_contiguous() && out.sizes() == x.sizes()
+                && out.scalar_type() == at::kHalf && out.device() == x.device(), "owned guard rows geometry");
+    check_descriptors(descriptors, x, x.size(0));
+    at::assert_no_overlap(out, x);
+    c10::cuda::CUDAGuard guard(x.device());
+    family_guard_rows_owned_cuda(x, out, descriptors, int(error), int(layer));
 }
 
 void prep(const T& projection, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
@@ -573,4 +643,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("qsa_dense", &qsa_dense);
     m.def("qsa_rows", &qsa_rows);
     m.def("qsa_select512", &qsa_select512);
+    m.def("owned_q8_prepare_rows", &owned_q8_prepare_rows);
+    m.def("qsa_rows_owned", &qsa_rows_owned);
+    m.def("guard_rows_owned", &guard_rows_owned);
 }

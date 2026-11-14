@@ -5,6 +5,8 @@
 
 using T = at::Tensor;
 void compact_publish_cuda(const T&, T&, int64_t, const T&, int64_t, int64_t, T&, int);
+void compact_round_stage_cuda(const T&, const T&, T&, T&, int);
+void compact_round_publish_cuda(const T&, const T&, int);
 
 void publish(const T& source, T destination, int64_t at, const T& generations,
              int64_t slot, int64_t owner, T status, int layer) {
@@ -34,4 +36,37 @@ void publish(const T& source, T destination, int64_t at, const T& generations,
     if (source.numel()) compact_publish_cuda(source, destination, at * stride, generations, slot, owner, status, layer);
 }
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) { module.def("publish", &publish); }
+// Round-table lanes: [lanes, 16] int64 words owned by the canonical round owner.
+// Every pointer word references a retained State/staging tensor; capacity was
+// validated on the host before the table was published.
+void check_round(const T& tables, const T& owner) {
+    TORCH_CHECK(tables.is_cuda() && tables.device() == owner.device() && tables.is_contiguous()
+        && tables.scalar_type() == at::kLong && tables.dim() == 2 && tables.size(1) == 16,
+        "compact round lane table geometry");
+}
+
+void round_stage(const T& ik, const T& tables, T raw, T coords, int layer) {
+    check_round(tables, ik);
+    TORCH_CHECK(ik.is_cuda() && ik.is_contiguous() && ik.scalar_type() == at::kHalf && ik.dim() == 2 && ik.size(1) == 128
+        && raw.is_cuda() && raw.is_contiguous() && raw.scalar_type() == at::kHalf
+        && raw.numel() == tables.size(0) * 16 * 4 * 128 && coords.is_cuda() && coords.is_contiguous()
+        && coords.scalar_type() == at::kLong && coords.numel() == tables.size(0) * 16 * 3
+        && raw.device() == ik.device() && coords.device() == ik.device(), "compact round stage geometry");
+    at::assert_no_overlap(raw, ik);
+    c10::cuda::CUDAGuard guard(ik.device());
+    compact_round_stage_cuda(ik, tables, raw, coords, layer);
+}
+
+void round_publish(const T& values, const T& tables, int layer) {
+    check_round(tables, values);
+    TORCH_CHECK(values.is_cuda() && values.is_contiguous() && values.scalar_type() == at::kHalf
+        && values.numel() == tables.size(0) * 16 * 128, "compact round publication geometry");
+    c10::cuda::CUDAGuard guard(values.device());
+    compact_round_publish_cuda(values, tables, layer);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+    module.def("publish", &publish);
+    module.def("round_stage", &round_stage);
+    module.def("round_publish", &round_publish);
+}
