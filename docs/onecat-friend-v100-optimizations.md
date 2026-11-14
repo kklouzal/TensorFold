@@ -37,6 +37,11 @@ file; **contradiction** = the friend's own gate disagrees with what was adopted.
 - Their CPU governor is `performance` with C-states on (prefill +1-3%, decode neutral for them because their host is off the
   critical path; C-states off was worse). Ours is `powersave` by user decision; since our decode is host-bound, an A/B would
   be informative but needs user approval.
+- **Completeness audit (Appendix E, same day):** every mirrored artifact (165 patch numbers, 52 overlays, 131 snapshots/trees,
+  ~1030 result-run names, 722 top-level files, the Oct 23-24 TP8 research phase) is mapped in
+  `build-cache/friend-1cat/COVERAGE.md`. Biggest additions: their first phase was **stock 1Cat on TP8 + MTP2 (our layout):
+  C1 77-83, C2 136, C6 234 tok/s** (E.2); MTP4 = MTP2 speed at TP8 C1; per-stage rows->ms curve; power by phase; real MoE
+  routing skew; 266/201/210 failure mechanisms; upstream #1489 now carries opt-in analogs of their DS41 PP host-path work (E.5).
 
 ## 2. How they structured the deployment (architecture we have not tried)
 
@@ -60,7 +65,7 @@ All friend rows: UD-Q4_K_XL, same server model. Full list with labels in Appendi
 |---|---|---|---|---|---|---|---|---|---|
 | tp4-baseline | TP4 | MTP4 | fp16 | 99.1 | 201.0 | 124.3 | - | 713 / 714 | R/tp4-* (best C1 ever; "original" expert storage, batching collapses) |
 | tp4-canonical-mtp3 / -mtp2 / -nomtp | TP4 | 3 / 2 / none | fp16 | 88.2 / 82.5 / 64.9 | 344.9 / 372.8 / 283.7 | 318.3 / 324.5 / 440.3 | - | - | R/tp4-canonical-* |
-| tp8-nomtp | TP8 | none | fp8 | 31.7 | 153.7 | 54.3 | - | 664 / 686 | not like-for-like (eager, compile 0); dropped; TP8+MTP impossible with stock draft (Q8_0 640/8 not divisible by 32) |
+| tp8-nomtp | TP8 | none | fp8 | 31.7 | 153.7 | 54.3 | - | 664 / 686 | not like-for-like (eager, compile 0); dropped; TP8+MTP impossible with the Q8_0 GGUF draft on runtime 4d57473d (640/8 not divisible by 32). **Scope (Appendix E.2): on stock runtime 6a143197 with the BF16 stock MTP, TP8 + MTP2/MTP4 worked: C1 77.2/76.5 (final MTP2 83.5), C2 136.4, C6 (FP8 KV) 233.6; TP8 no-MTP with FULL graphs 47.8** |
 | h-pp-tiers / h-pp-nomtp | PP2xTP4 | tiers 4:2,3:5,2:11,0 / none | planar4 | 81.5 / 61.0 | - | 413.2 / 456.5 | 665.1 / 695.9 | - | seq21 |
 | m-d0 (tiers + depth-0 patches 50-52) | PP2xTP4 | tiers | planar4 | 91.5 | - | 600.9 | 843.3 | - | seq28 (candidate only; NaN bug) |
 | cand6 (Oct 31 production) | PP2xTP4 | none | planar4 | **82.1** | **460.9** | **721.4** | **981.7** | 6853 / 8262 | R/seq49-gate.json |
@@ -70,7 +75,8 @@ All friend rows: UD-Q4_K_XL, same server model. Full list with labels in Appendi
 Readings: (a) at C8 they are 3-4x ours **with or without MTP**, so speculation policy alone does not explain our C8 gap;
 (b) their MTP tables show fixed depth 4 collapsing with concurrency (TP4 MTP4 c16 124 vs no-MTP 440), MTP2 best at c8, and
 load-dependent tiers (patch 05) +11.6% c8 over fixed depth 4 (pp-mtp4 310.6 vs tiers 346.5); fixed depth 2 cliffs at c12
-when rows exceed captured graphs; (c) their best no-spec C1 (82-83) equals our 1Cat target, reached through structure + MoE
+(cause unexplained: the arm captured [3,6,12,24,48] so 36 rows fit; it ran without PP balance and both arms were bimodal,
+Appendix E.3.3); (c) their best no-spec C1 (82-83) equals our 1Cat target, reached through structure + MoE
 kernels, not speculation.
 
 DS41 trajectory (VERIFIED, Appendix C section 2): base multi-user port c1 57.3 / c8 273.3 / c32 455.8 -> +110 expert-major MoE
@@ -131,7 +137,7 @@ StreamDecoder generated-ids-only (490), no per-pass `empty_cache` (321).
 
 | Path | Their result | Evidence |
 |---|---|---|
-| TP8 for Flash-Next | 31.7 / 153.7 / 54.3 (c1/c8/c16), prefill 664/686; dropped (config not like-for-like) | R/tp8-* |
+| TP8 for Flash-Next | 31.7 / 153.7 / 54.3 (c1/c8/c16), prefill 664/686; dropped (config not like-for-like). NOTE: their earlier stock-1Cat TP8 + MTP2 reached C1 83.5 / C2 136.4 / C6 233.6 (E.2), so TP8 itself was not the failure | R/tp8-*, extra/logs/bench-*.json |
 | saw4 / k4v3 KV codecs | 54.7/138.1/187.0 and 73.1/318.1/347.9 vs planar4 76.8/309.1/349.5 | R/final-* |
 | rotor4 KV without a TC prefill path | prefill -37/-39% until patch 40 | R/final-planar4-tiers |
 | Fused rotor rotations (104) | c1 -3%, c32 -1.1% | R/seq47.log |
@@ -156,6 +162,27 @@ StreamDecoder generated-ids-only (490), no per-pass `empty_cache` (321).
 | Sync host saves of KV/state inside the step (231 rev 3) | c4 x 128K -11% (async rev 4 -2.2%) | seqram4-t1 |
 | Large fused attention with 82 KB smem, 1 CTA/SM (138) | prefill -13% (26 KB / 3 CTAs/SM version +23%) | seqds5 / seqdsnext1b |
 | Expert cache on disk (23) | load 335 s -> 52 s but 77 GB; owner later wanted it off | seq22 (for us: user decision, ledger) |
+| *Added by the completeness audit (Appendix E):* | | |
+| Low-priority CUDA stream for background prefill/GEMM beside decode (201) | decode c16 720.3 -> 24.8 tok/s (x0.034); background kept 91% of its TFLOP/s | R/seqqcap-1.log, R/q-lo-big-* |
+| Async scheduling 266, all revisions | rev1 c1 x0.557 + hang; rev2 hang at batch end; rev3 c8 x0.878 / c16 x0.905 / c32 x0.927 (c1 x1.101); remaining top-k/top-p fence on the sampling rank | R/seqasched-t1*.log |
+| Layer-sliced long prefill (210 dsls rev1-5) | rev4 NCCL deadlock (per-rank slice plans -> unequal collective counts); rev5 decode during 128K prefill x5.35 but steady c4x128K x0.34; in prod 8 min then removed | R/seqdsls-*.log |
+| Fused 2-launch decode sparse attention (250) / dense wm fix (251) | -1.1 to -1.8% (noise 0.4%) | R/seqdattn-t1.log, seqscreen-3.log |
+| Direct IQ2 MMA for prefill MoE (245) | 1.14x at 2K falling to 0.89-0.94x at large T; numerics l2rel ~1.2%; screen 0.00% | R/seqiq2mma-1.log, seqscreen-1.log |
+| Skew-tuned EM3 schedule / skew-fitted 340 rules | x0.994-0.999 / no changed entries | R/seqskewmoe-2.log, seqk340skew-2.log |
+| Decode-rate-floor prefill share (287) | GO=False: TTFT p95 x0.84 but decode x1.14 worse, gap > 2 s | R/seqdsshare-3/-4.log |
+| Tool-call separator round-trip fix (440) | uncached tokens/turn x0.797 but window TTFT median x1.37 (not positive); not adopted | R/seqdsreply-2.log |
+| GPU clock lock under 230 W cap | prefill +0.24-0.65% only | R/seqdstune-1.log |
+| PP layer split other than 20/20 (DS41) / 190 PF_SYNC, PF_SRC_TOPK | best split illegal under layer constraints; PF arms -0.25..-1.09% c8 | R/seqppbal-1/-3.log |
+| PP2xTP4 before host fixes vs TP4 single engine / vs 2xTP4 DP | decode c1 47.2 vs 62.0 (-24%); c32 560.8 vs 831.9 (67% of DP2) | R/p300-planar4-nomtp-*, R/prof-tp4-nomtp-*, R/c32_compare.log |
+| Compact per-route MoE grid band up to 16/32 rows (72) | c32 876.2 / 875.7 vs 898.2 (band 1,8) | R/seq35.log, seq37.log |
+| NCCL_PROTO allreduce:simple(+allgather) / custom all-reduce off | noise / c16 -1.2% | R/seq48.log, R/e4-nocar-* |
+| Time-paced prefill 80/100 ms, decode-first | 128K TTFT 165.1 / 75.5 / 32.1 s vs 19.7 s | R/seqqcap-2.log |
+| KV codecs: rotor3_planar, rotor4_plain, rotor4_hadamard, saw4 long ctx, k4v3 | PPL +2.27% (fail) / +1.09% / start crash without LAUNCH_BLOCKING / 250K needle 657.9 vs 116.4 s / passed (+1.22%, +9% tokens) but never adopted | R/kv-*-quality.json, R/final-* |
+| torch.compile fullgraph (TP8 Flash-Next); eager TP8 | FLA device_index graph break -> start failure; eager ~6-7 tok/s vs 47.8 graphs | extra/logs/startup-graphs-failed.log, smoke-eager.json |
+| MTP4 instead of MTP2 at TP8 C1 | 76.51 vs 77.15 tok/s despite 2.64 vs 2.26 committed tok/step | extra/logs/bench-mtp4/-mtp2.json, extra/research/metrics-* |
+| PP2xTP4 + MTP4 on stock 6a143197 | 3 failed starts (PPMissingLayer .mlp, HC shape assert, "1"+EOS output) | extra/logs/startup-pipeline4-attempt*.log |
+| In-server ncu of graph-replayed decode | 0 decode results, prefill windows time out | R/seqncu-1.log |
+| Vision tower enabled for text serving | c1 -3.9%, c16 -1.8% | R/pp2tp4-vision-* |
 
 ## 7. Items needing a user decision
 
@@ -197,6 +224,8 @@ appendix's own "top adoptable" ranking differs from section 5, section 5 is the 
   timeline after Oct 31 + q* overlays (qcap, qovl, qpfx, qtrim, qtune, qshare, qcycle2, qsched).
 - Appendix C: DS41 patches 80-90, 110-197, 220-276 + multi-user architecture + concurrency trajectory.
 - Appendix D: DS41 patches 277, 300-503 (cycle 2) + verification of the production numbers + production configuration.
+- Appendix E: completeness audit additions (Oct 23-24 TP8 research phase, Qwen perf/MTP/KV-codec/equivalence details, thin and
+  new DS41 items, snapshot evolution, upstream #1489 check, corrections) + Coverage section.
 
 Patch numbers that do not exist: 08, 09, 107-109. Category index (patch numbers):
 - Host path / scheduler: 17, 18, 20, 21, 22, 26, 27, 52, 135, 137, 173, 183, 185, 186, 187, 262, 266, 269, 271, 273-275, 277, 300-302, 350, 351, 480, 481.
@@ -340,7 +369,8 @@ policy; it is our per-round cost (host ~16 ms + verify 25 ms) vs their ~22 ms/st
    (`proposal_limit` effective value; server/runtime.py already exposes it live) + multi.py `_proposal_limit()`;
    tier from active stream count, enter-heavier immediately / lighter after bound-H. Expected: no effect at C1; gains at
    C16/C32 where verifying 1+k rows/stream is compute-bound (their data: MTP -10% c16, -4.5% c32 vs none; tiers +11.6% c8
-   vs fixed depth 4; fixed depth 2 cliffs at c12 when rows exceed captured graphs). At our C8 (host-bound) uncertain.
+   vs fixed depth 4; fixed depth 2 cliffs at c12, cause unexplained (E.3.3); a depth-0 tier inside a spec server ran c12 278 vs no-MTP 313,
+   so depth 0 must cost nothing or it loses; at TP8 C1 MTP2 = MTP4 in tok/s, E.2). At our C8 (host-bound) uncertain.
 4. Padded-row MoE masking (19) for multi-stream padded verify windows (multi.py:2301-2311). Friend: neutral on dense graph
    sizes; ours pads to depth+1 per stream (up to ~2x rows at C8). Measure expert-union widening (rows 40 vs ~18) before
    building; cost if positive: one tiny kernel after routing, weight 0 for pad rows (outputs unchanged since pad rows
@@ -362,7 +392,8 @@ policy; it is our per-round cost (host ~16 ms + verify 25 ms) vs their ~22 ms/st
 - Patch 19 neutral (not in prod); patch 21 neutral (kept); patch 07 QSA-short graphs no-op; patch 17 within noise.
 - MTP in production: loses c16/c32 (413.2 vs 456.5; 665.1 vs 695.9); with 50-52 still behind at c16/c32 (600.9/843.3 vs
   611.4/876.6) and NaN bug at TIERS=0 start -> deferred (owner decision 2026-10-30).
-- Fixed MTP depth 2: c12 217.1 / c16 260.6 vs no-MTP 312.5 / 397.2 (graph-size cliff). Fixed depth 4 c8 310.6 vs tiers 346.5.
+- Fixed MTP depth 2: c12 217.1 / c16 260.6 vs no-MTP 312.5 / 397.2 ("graph-size cliff" per their notes; NOT supported by
+  the config: captures [3,6,12,24,48] cover 36 rows; arm lacked PP balance; bimodal runs; see Appendix E.3.3). Fixed depth 4 c8 310.6 vs tiers 346.5.
 - Layer partition 25/23 (mixed: c32 +2%, c8 -4%, c16 -2%) and 22/26 (worse) -> keep 24/24.
 - Performance governor + C-states off: c32 842 vs 875, prefill down.
 - DP2 instead of PP: +1-3% throughput but 2.56x less KV and no single 512K pool -> PP chosen.
@@ -989,3 +1020,442 @@ covered above only at status level.
 - Does TF per-round host path contain O(context) copies at 262K ctx (480 analogue)? Not measured in dec4 (C1 at short ctx).
 - No c1es8 512/512 decode table exists; production numbers quoted are c1es6 (+older image for C16).
 - Why production enabled 491/410/274 despite failing/negative gates (owner decisions, not evidence).
+
+## Appendix E: completeness audit additions (read-only, 2026-11-14)
+
+Method: every mirrored artifact was listed and mapped to a catalogue location, or marked THIN or NEW. The matrix is
+`build-cache/friend-1cat/COVERAGE.md`; the five helper reports are appended to it verbatim, with evidence paths for every
+number. The mirror gained three areas:
+- `snap-history/`: all 123 `lp-snap-*` snapshots plus the 8 early `local-patches*` trees, sha256-deduplicated.
+- `extra/`: research, logs, iq2mma, kern340, screen and smaller dirs.
+
+`extra/` paths below are relative to `build-cache/friend-1cat/`. Line references "Lnnn" point to the pre-audit catalogue.
+Labels: VERIFIED means the number comes from a result file; claim means it comes from text only.
+
+### E.1 Corrections to this catalogue
+
+1. **TP8 + MTP was not impossible.** The claim at section 3 and section 6 (TP8 row) is now scoped in place. It holds only for
+   the Q8_0 GGUF draft on runtime 4d57473d.
+   - Their first phase (Oct 23-24, E.2) ran stock 1Cat 6a143197 on TP8 with the BF16 stock MTP. Results:
+     - C1: MTP2 77.15, MTP4 76.51, final MTP2 83.48 tok/s.
+     - No-MTP with FULL graphs: 47.76 tok/s.
+   - The 31.7 tok/s TP8 row is an eager / compile-0 configuration.
+   - TP8 + MTP2 was in fact their first selected production setup.
+2. **The fixed-MTP2 "c12 graph-size cliff" is unexplained.** The claim at L72, L343 and L365 is now corrected in place.
+   - runtime.pp-mtp2.json captures [3,6,12,24,48] with max-num-seqs 16, so c12 (36 rows) fits a captured graph.
+   - The arm ran without PP balance (patch 18).
+   - Both the MTP and no-MTP arms were bimodal. For example, the c10 MTP2 runs were 413.2 / 402.0 / 182.6 tok/s
+     (R/crossover.txt, top/seq3.sh).
+   - The tier table `4:2,3:5,2:11,0` was derived from this one noisy crossover and never retuned.
+3. **"MTP acceptance not recorded" is wrong for phase 1.** Prometheus counters exist in `extra/research/metrics-*.txt`
+   (E.2). No acceptance counters exist for the later PP2 phase, and the "median ~2.5" in TODO.md is a claim.
+4. **Owner-override flags in their result files.** In `bench/results/ds41/*-t1.json`, the top-level `positive` can be an
+   owner override; the screen result is `screen_positive`. The dmoe file shows this: `positive: true` and `owner_keep`, but
+   `screen_positive: false`. Our L675 "NOT POSITIVE" is correct.
+5. **iq2s screen (245) verdict is internally inconsistent.**
+   - The verdict reads "no chunk >= 1.02x", yet the same file shows micro 1.19x / 1.28x at 1K / 2K chunks
+     (`bench/results/ds41/iq2s-t1.json`).
+   - The whole-layer integrated result is negative (E.4.6), so the "NOT" status stands.
+
+### E.2 Phase 1 (Oct 23-24): stock 1Cat 6a143197, TP8, the same layout family as TensorFold (NEW)
+
+Evidence: `extra/logs/bench-*.json`, `smoke-*.json`, `startup-*.log`, `concurrency*-mtp2.json`, `fp8-c6-bench-6.json`, and
+`extra/research/{final-report,status,benchmark-summary}.json`, `metrics-*.txt`, `runtime-*.json`.
+
+Setup:
+- Model: huihui UD-Q4_K_XL-V2.
+- Prompt: 8183 tokens, 512 out, T=0, ignore_eos. The prompt is a repetitive synthetic "warehouse" text (high acceptance).
+- Requests: 1 warmup, then 2 measured.
+
+| Arm | Spec | Graphs | Decode tok/s |
+|---|---|---|---|
+| eager | none | enforce_eager | smoke only, 5.6-7.3 |
+| graphs | none | FULL [1], compile mode 0 | **47.76** (47.89 / 47.63) |
+| mtp4 | MTP4 | FULL [5] | **76.51** |
+| mtp2 | MTP2 | FULL [3] | **77.15** |
+| verified / final | MTP2 | FULL [3] | **83.48** |
+| C2 aggregate | MTP2 | FULL_DECODE_ONLY [3,6] | **136.40** |
+| C6 aggregate, FP8 KV, 1024 out | MTP2 (FP8-scaled draft) | FDO [3..18] | **233.55** (38.9 per request; TTFT 74 s) |
+| C3 | MTP2 | - | killed (SIGTERM), no result |
+
+**Acceptance.** Taken from the vllm:spec_decode counters (after minus before):
+
+| Run | Accepted per step | Per position |
+|---|---|---|
+| MTP4 | 1.64 (2.64 committed tok/step) | 0.718 / 0.454 / 0.281 / 0.189 |
+| MTP2 | 1.26 (2.26 committed) | 0.737 / 0.524 |
+| C6 FP8 | 1.08 | 0.669 / 0.412 |
+
+- MTP4 commits about 17% more tokens per step than MTP2 but is not faster at C1. Positions 3-4 are too weak to pay for the
+  wider draft and verify.
+- The draft is the stock (not abliterated) MTP from RadixArk/Qwen3.8-Flash-Next-NVFP4 @7b719225. The target is abliterated,
+  so absolute acceptance is not comparable to ours. The MTP2-vs-MTP4 shape is the transferable part.
+
+**Failed starts:**
+- torch.compile: graph break on FLA `device_index` (logs/startup-graphs-failed.log).
+- MTP4 attempt 1: native SM70 GDN spec replay needs TP4 head geometry, "requires the mixed-QKV verifier".
+- PP2xTP4 + MTP4: three attempts, failing with PPMissingLayer `.mlp`, an HC shape assert, and output "1"+EOS.
+
+**FP8 KV six-stream arm:**
+- Scales: per-layer per-tensor, max_abs/448, then a power-of-two ceiling of 1.25x, from 9 calibration requests with zero
+  saturation.
+- The MTP layer's K max_abs is 93.0, against at most 11.1 for target layers.
+- At 258K context the pool holds 1,429,889 tokens, which is only 5.54 full-context streams, so they reduced context to
+  237,598 to fit six.
+
+**Other results:**
+- Long-context retrieval: 261,625 tokens passed in 378.7 s.
+- Power during TP8 decode: median about 112-150 W while busy, 217-242 W only in prefill bursts. These are nvidia-smi
+  samples, not an A/B.
+
+**Model survey:**
+- OrcaRouter NVFP4 was gated (they had no token).
+- leoncca AWQ-g32 (137 GB) was surveyed and not chosen; no reason is recorded.
+- huihui GGUF was chosen because it is public. Its routed experts are Q4_K/Q5_K for gate/up and Q5_1/Q8_0 for down, heavier
+  than our IQ3_S.
+
+**DSpark/DFlash:**
+- Not attempted on V100: it needs SGLang aux-state hooks that 1Cat lacked.
+- The H100 model card reports native MTP at 7 steps beating DSpark beyond 32K context (4.13 vs 3.46 committed tokens per
+  verify step).
+- TensorFold already has `families/qwen4_exp/cuda/dspark_*` and `dflash2_*`.
+
+**`research/tensorfold-integration*-review.json`:** they reviewed TensorFold branches (base 437e61e5, then python-0.6 @94d84f51).
+- These files are metadata only: 31 files reviewed, no native V100 run, no performance result, preparation and arm build
+  "UNRUN", CUDA 12.9.2 selected.
+- The findings are in `/home/kklouzal/TensorFold-iCat-V100-integration-handoff-final.md` on their host. That file was not
+  mirrored and is not on ours. Ask the friend for it.
+
+**Upstream 1Cat v1.5.1 notes** (`research/1cat-release.json`):
+- #694: one per-step pageable H2D sync cost about 17% of decode (57.46 -> 69.15). This supports rank 4/5.
+- #754: Flash-Next prefix prefill +66-75% from fewer forwards at state boundaries. Check our prefill chunking against GDN
+  checkpoint boundaries.
+
+**`misc/1cat-vllm-old-tree.diff` (NEW, low value):**
+- A GGUF loader `kv_scales_safetensors` overlay that loads calibrated FP8 KV scales.
+- `LOCAL_KV_LAYOUT_REPORT`: a binary search for the largest context that fits six streams at block granularity.
+- Superseded by rotor4. Not performance work.
+
+**TensorFold relevance (highest-value new evidence in the audit):**
+- Untuned 1Cat on our TP8 layout reaches C1 77-83 and C2 136, against our C1 ~50 and C8 ~114-123.
+- So the gap is per-round structure, not TP8 vs PP: a whole decode+draft step in one FULL graph per stream-count bucket,
+  on-device greedy verify, and no host work between draft and verify. This strengthens ranks 1, 3 and 4.
+- The cheap experiment is live `proposal_limit` 2 vs 4 at C1 as well as C2-C8 (`server/runtime.py`, `multi.py
+  _proposal_limit`, `adaptive_controller.py`). Rank 2 previously argued this only for C4-C8.
+
+### E.3 Qwen/Flash-Next additions (PP2xTP4 phase)
+
+#### E.3.1 Per-stage GPU time vs rows (NEW, VERIFIED)
+
+Source: R/prof/p36-c{1,8,16,32}/profiler_out_*.txt, image -local15, torch profiler.
+
+| Rows per micro-batch | Non-NCCL ms per 24-layer forward | MoE | Attention | HCX collective | Dense/head | GDN |
+|---|---|---|---|---|---|---|
+| 1 | 7.27 | 2.29 | 0.84 | 1.03 | 1.64 | 0.23 |
+| 4 | 9.51 | 3.74 | 1.22 | 1.19 | 1.67 | 0.35 |
+| 8 | 13.37 | 6.75 | 1.84 | 1.89 | 1.31 | 0.50 |
+| 16 | 18.51 | 8.20 | 3.12 | 2.92 | 2.01 | 0.86 |
+
+- 16x the rows cost 2.5x the time. The table reproduces measured throughput: c32 predicted ~865 vs 860.2 measured, c1 ~68
+  vs 67.8.
+- Decode TP collectives are their fused `hcx_kernel` (21-61 us per call), not NCCL. NCCL carries only the PP hand-off.
+- Prefill at 32K: "Command Buffer Full" is 17-23% of the time, meaning prefill is GPU-bound.
+- TensorFold: build the same rows-to-ms table for our verify path (5/10/20/40 rows, `multi.py`). MoE
+  (`onecat_moe_gu/down.cu`) is the first suspect. This supports ranks 6-7.
+
+#### E.3.2 Power by phase at a 300 W limit (NEW, VERIFIED)
+
+Source: R/p300-*-power.csv, R/seq14.log.
+
+| Phase | Mean draw per GPU |
+|---|---|
+| Decode c1 | 86-99 W |
+| Decode c8 | 108-112 W |
+| Decode c12 | 126-143 W |
+| Decode c16 | 136-152 W |
+| Prefill 32K | 199-217 W (max 271 W) |
+
+- The GPUs never throttled; the SM clock held at 1530 MHz.
+- 19-23% of busy samples were above 150 W.
+- Prefill rose 8-10% across the cap change while decode stayed flat, but that comparison crosses images.
+
+Related DS41 results:
+- 230 W vs a 300 W reference: about -9% per user at c16 x 200K (seqlong230; the reference run was not interleaved).
+- Clock lock under the cap: +0.24-0.65% prefill only (seqdstune-1).
+
+Reading for section 7 item 1: our 150 W cap mostly costs prefill and wide verify, less so narrow decode. An nvidia-smi sample
+during one of our C8 runs (read-only) would settle it.
+
+#### E.3.3 MTP tiers curve, depth-0 cliff and KV cost (THIN -> detailed)
+
+- **Tiers curve.** R/pp-mtp-tiers-06 at c1/2/4/8/12/16: 89.7 / 140.3 / 232.6 / 331.5 / **278.1** / 366.3 tok/s.
+- **Depth-0 cliff.** At c12 the tier is depth 0, which ran below no-MTP 313.5 (cross-image) and below its own c8.
+  - So a depth-0 state inside a speculation server is a cliff, not neutral.
+  - Before building automatic depth tiers, check that our `proposal_limit` 0 pays no draft upkeep.
+- **KV cost of MTP.** MTP costs about 14% of the KV pool (planar4 7.26M vs 8.45M tokens; fp16 2.33M vs 2.71M; h-pp 7.61M vs
+  8.85M; from the *-kv.txt files).
+- **Run spread.** MTP runs are bimodal (c8 403.0 / 264.9 / 263.9).
+- Graph-cliff correction: see E.1 item 2.
+
+#### E.3.4 KV-codec quality matrix (NEW, VERIFIED)
+
+Source: R/kv-*-quality.json and R/ppl-*. Setup: TP4, WikiText-2 with 8 x 2048 tokens (16,376 scored); FP16 reference PPL
+3.5185.
+
+| Codec | PPL | vs FP16 |
+|---|---|---|
+| planar4 | 3.5074 | -0.3% |
+| iso4 | 3.5245 | +0.2% |
+| isofull | 3.5199 | +0.04% |
+| plain, no rotation | 3.5569 | +1.09% |
+| hadamard | 3.5260 | start crash unless CUDA_LAUNCH_BLOCKING=1 |
+| saw4_k | 3.5419 | 250K needle 657.9 s vs 116 s |
+| saw4_kv | 3.5464 | |
+| rotor3_planar | 3.5985 | **+2.27%, failed the 2% screen** |
+| k4v3_planar | 3.5616 | +1.22%, +9% tokens (7.91M vs 7.26M), never adopted |
+| rotor8 | 3.5010 / 3.5186 | about equal to FP16 |
+
+- Differences under about 0.5% are not resolvable with 16K scored tokens.
+- TensorFold has planar/iso 4- and 3-bit formats, but no K4/V3 split. K4/V3 is the usable middle point if KV capacity ever
+  binds. Validate with our KL gate, not their PPL.
+
+#### E.3.5 Equivalence methodology and results (THIN -> detailed)
+
+Tool: `bench/mtp_equiv.py` (8 prompts x 256 tokens, greedy or seeded sampled). It reports the index of the first differing
+token and has no pass threshold.
+
+**Results:**
+- No-MTP is not batch-invariant: c1 vs c8 gives 0-3 of 8 identical, with token-0 flips. The per-row-count tuned decode
+  split profile changes outputs by up to 9.8e-4. Fixed splits are bitwise invariant (R/rotor4-sanitizer/stress logs).
+- MTP vs no-MTP gives 0-4 of 8 identical.
+- A restart of the same config gives 0-8 of 8 (x-base2 vs x-base: 0/8).
+
+**Judgement:** they accepted MTP and several patches on that noise floor, never on exactness. Lessons for us:
+- Specify exactness per fixed split plan.
+- Keep a same-server control and a restart control next to any output diff.
+- Report the first-divergence index.
+
+#### E.3.6 Other Qwen phase items
+
+**PP before host fixes** (NEW, VERIFIED). On 10-29, PP2xTP4 lost decode to a single TP4 engine:
+
+| Concurrency | PP2xTP4 | TP4 |
+|---|---|---|
+| c1 | 47.2 | 62.0 |
+| c8 | 235.8 | 262.4 |
+| c16 | 375.1 | 399.5 |
+
+- PP won only prefill (+41..77%) and KV capacity (4.5x).
+- Against DP2 (two TP4 engines) at 32 users: 560.8 vs 831.9, i.e. 67% (R/c32_compare.log).
+- After patches 17-22 and 27, PP reached 97-99% of DP2.
+- Order for our layout decision: host off the critical path first, topology second.
+
+**Benchmark definition** (THIN). `bench_speed.py` measures:
+- the delta of the server `vllm:generation_tokens_total` counter over the steady window [max first token, min last token];
+- unique 512-token prompts, thinking xhigh, T 0.6, 1 warmup + 3 repeats.
+
+Our `tools/bench_concurrent.py` default includes ramp and tail. For like-for-like comparisons use its `--mixed` steady
+window. Our metric probably overstates the gap somewhat, but cannot explain 3-4x.
+
+**NCCL settings** (THIN -> numbers, seq33/39/41/48). Decode is insensitive because decode collectives are HCX, not NCCL.
+- NCCL_MAX_CTAS 6 -> 8 or unset: prefill +1.4%.
+- PROTO LL128/Simple and allreduce/allgather Simple: noise.
+
+This does not transfer to our decode, because our decode all-gathers are NCCL. The transferable lessons:
+- do not cap CTAs;
+- fuse the collective into the graph.
+
+**Patch 72 compact-grid band** (THIN). Per-route grid: +6.3% at 8 rows per micro-batch, -2.5% at 16 rows.
+
+**Low-concurrency curve** at an early build (R/mb-q-c*.json): 63.0 / 123.6 / 205.0. c1 -> c2 is nearly free on PP2, because
+each user gets its own micro-batch.
+
+**Intermittent warmup crash** (NEW, unresolved):
+- About 1 in 5 starts: Xid 43 at the PIECEWISE->FULL capture switch, with rotor KV.
+- Six causes were ruled out: rotor kernels, zeroer, >2 GiB tensors, cuBLAS, block geometry, custom all-reduce.
+- Production relies on a 3-attempt retry.
+
+**Production config chronology** (from runtime.production*-prev.json):
+
+| Date | Change |
+|---|---|
+| 10-30 | MTP tiers default |
+| 10-30 | MTP removed; max-num-seqs 16 -> 32 |
+| 10-30 to 10-31 | 70-79 / 101 / 103 / 105 added; NCCL_MAX_CTAS 8 |
+| 11-03 | 270 image guard |
+| 11-07 | 400 + dense capture grid [1..8,10,12,14,16]. The Oct 31 gate (82.1 / 981.7) ran with power-of-two captures. |
+
+**Environment never A/B'd:** expandable_segments, CUBLAS_WORKSPACE_CONFIG :16:8, MALLOC_MMAP_THRESHOLD_ 4 MiB,
+VLLM_QWEN4EXP_PLE_HOST_GIB 8 (per-layer embeddings in host RAM), gpu-memory-utilization 0.93, mamba-ssm-cache float32.
+
+**Open TODO items never done:**
+- The drafter + lm_head on stage 1 unbalances PP under MTP; a re-sweep of the split was proposed and never run.
+- The patch-40 decode routing check costs about 3% per QSA call.
+
+### E.4 DS41 additions (thin -> detailed, and new)
+
+1. **266 async scheduling** (all revisions failed):
+   - rev1: c1 x0.557, then hangs.
+   - rev2: hangs at the end of a batch.
+   - rev3: c1 x1.101, but c8 x0.878, c16 x0.905, c32 x0.927. The stage-0 c8 cycle went from 11.30 to 12.87 ms because the
+     top-k/top-p fence stayed on the sampling rank.
+   - Hang mechanism (their design notes, offline analysis): hand-offs were posted from helper threads after the next step had
+     launched; a lazy kernel load or cudaFree in that window closes a cross-stage cycle.
+   - Lesson for rank 1: run-ahead pays only once every per-step host fence is gone, and hand-offs must be posted in launch
+     order.
+2. **201 prio_probe** (NEW): see the section 6 row. A low-priority stream does not protect decode on V100: priority orders
+   CTA dispatch only, and long GEMM CTAs hold the SMs.
+3. **Real routing skew** (NEW; skewmoe, k340skew, 450 rev3 counters, R/estats-snaps, R/seqskewmoe-2.log):
+   - Production routing touches 13-26% fewer distinct experts than the uniform model at 8-32 rows. At M=32: 111.8 vs 152.0
+     experts per layer, -26.5% routed bytes.
+   - EM3 kernel time with real routing is 12-18% lower at M >= 8.
+   - The top 10% of experts take 13-25% of routed ids; the effective expert count is about 185-277 of 384.
+   - TensorFold: rank 6 (expert-major MoE for multi-row verify) is worth more than its uniform estimate. Microbenchmark it
+     on recorded routing ids. Skew-specific schedule tuning gave nothing.
+4. **210 dsls, layer-sliced long prefill** (5 revisions):
+   - rev1: garbage output (MoE layer counter).
+   - rev4: NCCL deadlock, because each TP rank picked its own slice plan from local timings, giving unequal collective counts.
+   - rev5: decode during a 128K prefill x5.35 better, but steady c4 x 128K x0.34 and a crash arm. It was adopted at 01:25 on
+     11-03 and removed at 01:33. It is the only GO-then-production-out patch.
+   - Lesson for lockstep TP8: decide adaptive policies once, broadcast them, and verify agreement.
+5. **250 / 251**: the fused decode sparse attention was 4 -> 2 launches, giving -1.1 to -1.8%. 251 is a test fix; its
+   candidate was never faster than 112.
+6. **245 iq2mma** (`extra/iq2mma/REPORT.md`, R/seqiq2mma-1.log):
+   - Whole layer: 1.139x at 2K falling to 0.935x at 32K.
+   - Numerics check failed (l2rel about 1.2%).
+   - Not positive against the tuned patch 140. DeepSeek-only.
+7. **287 share_floor**: GO=False (see the section 6 row). 288 worker_gc is the same mechanism as 483: no gain.
+8. **420 + 430 multimodal API path**:
+   - The API server re-scanned the whole prompt once per image (N^2).
+   - With linear matching, API CPU went from 9.27 to 1.40 s per request on 242-image requests, and median TTFT from 20.6 to
+     14.5 s. 420 alone gave decode x0.908.
+   - In production via the hookfix1 modules (R/seqdsimgkeep-2.log).
+   - TensorFold: check `media_plan.py` and `vision/qwen_processing.py` for per-image prompt re-scans.
+   - Also flagged: our `families/qwen4_exp/cuda/multi.py:1500` calls `empty_cache()` on image admission without a media
+     runtime. They measured about 33 ms of GPU idle per such call.
+9. **440 tool_sep** (NEW, reply2 overlay only):
+   - A DSML "\n\n" separator came back as content and was re-rendered differently, which broke reply-prefix reuse on every
+     tool turn.
+   - The fix gave uncached tokens per turn x0.797. The window was not positive (TTFT median x1.37), so it was not adopted.
+   - TensorFold: statically check that `cuda/chat_template.py`, `cuda/reply_text.py` and `engine/tool_draft.py` round-trip
+     exactly.
+10. **460 cold experts**: the estimated cold-list hit and miss rates are in helper B 2.10. Upstream #1489 now has its own
+    host expert pool with async eviction and predictive prefetch (`VLLM_V41_ASYNC_EVICT`, `VLLM_V41_PREFETCH`).
+11. **231 restart identity bug**:
+    - rev1 lost the whole restart-durable store, because one vLLM env var gets a fresh uuid4 per launch and the identity
+      digest hashed the environment.
+    - Lesson for any restart-durable cache of ours: hash an explicit list of settings.
+12. **Host idle at long context** (R/seqdsprof6.log, R/seqdsprof5.log):
+    - Before patch 173, a decode-graph step at c4 x 128K took 116.4 ms wall vs 8.57 ms GPU.
+    - After the host O(context) fixes, c4 x 128K went from 67 to 173 tok/s.
+    - TensorFold: time one round at 128K vs 4K (open question at the end of Appendix D).
+13. **Methodology:**
+    - In-server ncu of graph-replayed decode yields nothing (0 results, 67 min of downtime).
+    - An interleaved same-server A/B overturned a 3% cross-restart "regression" (pfxfix2-dec).
+    - A per-GPU min-free-memory adoption gate caught a 175 MiB headroom regression.
+    - Combo adoption gates are in helper B 2.12.
+14. **PP split for DS41** (seqppbal): the best alternative split (21/19) predicted +2-5% decode and -3.2% prefill, and is
+    illegal under the layer constraints. 190 PF_SYNC / PF_SRC_TOPK: no gain.
+15. **Rollbacks with a recorded cause:**
+    - Uncensored GGUF re-split: invalid split.count, rolled back.
+    - A postcrash restart on 11-10.
+    - The full list is in helper B 2.19.
+
+### E.5 Upstream check: friend base 4d57473 (#1299) vs our upstream copy bcd581d (#1489)
+
+Method: for each production patch, the `*_OLD` anchor text it replaces was searched in our copy. Full table: COVERAGE.md
+section 3, part 4.
+
+**Fix not upstream (anchor still present):** 02-04, 06, 07, 15-17, 19, 21, 23-25, 28, 50/51, 60, 70, 72, 73, 76, 78, 79,
+101-106, 112, 135, 140, 141, 184, 186, 187, 194, 197, 230, 231, 257, 270.
+
+**Changed, or upstream analog** (opt-in, default off; none of these flags appears in the friend's material, so they are
+probably new since #1299):
+
+| Upstream flag | Behaviour | Friend patch |
+|---|---|---|
+| `VLLM_V41_PP_MICRO` | ceil(decoders/pp) per step | 18 |
+| `PP_AHEAD` | queue steps ahead | 22/137 |
+| `FAST_READD` | 512-token tail re-add | 173/480 |
+| `STAGED_PREP` | no prep sync | 350 |
+| `PP_RECV_SIDE` / `PP_SEND_DEFER` | PP receive and send handling | 135/26 |
+| `STEP_TIMING` | per-step timing | 255/300 |
+| `PIN_CORES` | core pinning (the friend measured c8 -12.3%) | - |
+
+Model-level changes in #1489:
+- Native DS41 PP (SupportsPP) and the 1M context contract.
+- Expert-major EM5/EM7 on by default.
+
+Readable reference: `onecat-upstream-baseline-20261112/source/vllm/v1/core/sched/scheduler.py:76-82,315-335` and
+`gpu_model_runner.py:1140-1150`.
+
+**Patch 27 sampler sync:** upstream still has `reference_rows.any()` (topk_topp_triton.py:1204). Its new
+`VLLM_V41_TOPP_NO_FENCE` is approximate; its comment measures the sync at 38 vs 26 ms per round. The friend's patch 27 is
+the exact alternative. This is second-source confirmation of rank 4.
+
+**Qwen HCX:** upstream `HCX_BATCH_M` dropped from 40 to 8 rows, with the comment "2.5 ms/round slower at eight" for batched
+HCX. This matches the friend's patch-100 rejection and bears on our HC/HCX multi-row verify (rank 16).
+
+**Not checkable by anchor** (anchored in the friend's own modules): 185, 269, 271-277, 390-502.
+
+### E.6 Snapshot evolution (snap-history/, 131 trees)
+
+- **Timeline:** compressed in COVERAGE.md section 3, part 2. Snapshots are parallel experiment branches cut from production,
+  not a linear chain.
+- **Early patches:** no early patch (01-28, Oct 29-30 trees) was ever dropped. 14 saw4 is installed but never enabled.
+  `misc/mtp-patches` is byte-identical to 01-05.
+- **README rows later removed:** 200, 201, 202, 210, 245, 250, 251, 264, 265, 266, 287, 288. All are now dispositioned in this
+  catalogue.
+- **Overlay-only items** (never in a snapshot): 330-332, 400, 420/430 (in production via hookfix1), 440, 503, 510/511, qsched.
+- **Lessons from revision history:**
+  - 112: the first gates were invalid because sm_70 rejects a 96 KiB dynamic shared-memory opt-in when static shared memory
+    is non-zero. Their fix checks every instantiation against ptxas limits; apply the same check to our SM70 kernels.
+  - 195: NO-GO at c1 x0.976, then a MIN-rows band brought it to x1.020.
+  - 197: a c8 0/8 output diff was batching noise; the CPU proof was bit-identical.
+
+### E.7 New findings ranked by expected value for TensorFold
+
+1. **Stock 1Cat on TP8 + MTP2:** C1 77-83, C2 136, C6 234 tok/s (E.2). Our gap is round structure, not layout. This raises
+   confidence in ranks 1, 3 and 4.
+2. **Per-stage rows-to-ms curve** (E.3.1). Build ours for verify at 5-40 rows. MoE is the first suspect, and real routing skew
+   makes expert-major MoE worth more (E.4.3).
+3. **`proposal_limit` 2 vs 4 at C1 and C2-C8**, a live knob with no code needed (E.2). Also check that depth 0 has no upkeep
+   (E.3.3).
+4. **Power cap 150 W:** their decode draws 86-152 W and prefill 199-271 W (E.3.2). The cost is concentrated in prefill and
+   wide verify. User decision.
+5. **Run-ahead preconditions** (266 rev3, E.4.1; upstream PP_AHEAD and STAGED_PREP, E.5): remove every per-step host fence
+   first, and post hand-offs in launch order.
+6. **Benchmark definition:** compare on the steady-window aggregate (E.3.6).
+7. **Do not overlap prefill and decode on a low-priority stream** (201, x0.034). Our serial fill is right.
+8. **Lockstep TP rules:** adaptive decisions must be central and broadcast (210 rev4).
+9. **Round-trip exactness of tool-call templates** (440); per-image prompt re-scans (430); `empty_cache` on image admission.
+10. **K4/V3 KV** as a capacity option: +1.2% PPL, +9% tokens (E.3.4). Test hygiene: decode-garbage and batch-invariance checks
+    in the style of their rotor sanitizer.
+11. **Ask the friend** for `TensorFold-iCat-V100-integration-handoff-final.md`. They reviewed TensorFold; the verdict is not in
+    our mirror.
+
+## Coverage
+
+Pre-audit, the catalogue named 144 of 165 patch numbers in a table row and 37 of 52 overlays by name. None of the 130
+non-production snapshots/trees, the Oct 23-24 research/logs phase, or about 470 of 1030 result-run names was mapped.
+
+After this audit, every item below is mapped to a section, or explicitly dispositioned as operational or N/A, in
+`build-cache/friend-1cat/COVERAGE.md`:
+- **165/165 patch numbers.** 201 and 440 were NEW; 210, 245, 250, 251, 266, 287, 420 and 430 were thin and are now
+  detailed in E.4.
+- **52/52 overlays:** reply2 was NEW; asched, imgkeep2 and ram2/ram5 were thin.
+- **131/131 snapshot trees,** in the E.6 timeline.
+- **All result-run groups** (about 100 experiment groups; the remainder are operational logs).
+- **722/722 top-level files,** by class: 232 seq*.sh drivers map to their result runs; runtime/compose/production pointers
+  are configs; STATUS/TODO/TONIGHT were cross-checked.
+- **misc/mtp-patches, misc/1cat-vllm-old-tree.diff.**
+- **extra/:** research, logs, iq2mma, kern340, screen, maintenance (operational), build-l8, dsfloor2, dstune-gen,
+  numa-image, qcap.
+
+Not mirrored, by design (MANIFEST.md): 11 startup logs over 10 MB, model weights, wheels, compile and expert caches, backups.
+
+Remaining verification gaps:
+- The phase alignment in the power data is approximate.
+- The p36 rows-to-ms table was taken under the torch profiler on an intermediate image.
+- Phase-1 acceptance comes from one synthetic prompt.
+- The upstream "new since #1299" claim is inferred from flag absence; the #1299 tree was not copied.
