@@ -210,21 +210,31 @@ __global__ void __launch_bounds__(256) w4_expert_down(const float* __restrict__ 
 }
 
 // Exact FP16 weights e2m1 * e4m3 (rowmul applied by the caller's GEMM epilogue): out[N, K] half.
+template <bool VECTOR_STORE>
 __global__ void w4_dequant(const uint8_t* __restrict__ codes, const uint8_t* __restrict__ scales, int64_t N, int K,
                            half* __restrict__ out) {
-    const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;  // one group of 16 per thread
-    const int groups = K >> 4;
-    if (i >= N * groups) return;
-    const int64_t row = i / groups;
-    const int g = (int)(i % groups);
-    const uint2 w = reinterpret_cast<const uint2*>(codes + row * (K >> 1))[g];
-    const float sc = scale_e4m3(scales[i]);
-    float f[16];
-    decode8(w.x, f);
-    decode8(w.y, f + 8);
-    half* o = out + row * K + g * 16;
+    const int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;  // eight coefficients per thread
+    if (i >= N * (K >> 3)) return;
+    const uint32_t w = reinterpret_cast<const uint32_t*>(codes)[i];
+    const float sc = scale_e4m3(scales[i >> 1]);
+    float f[8];
+    decode8(w, f);
+    half* o = out + i * 8;
+    if constexpr (VECTOR_STORE) {
+        // Each instruction writes adjacent 16-byte groups across the warp.
+        uint32_t words[4];
 #pragma unroll
-    for (int q = 0; q < 16; ++q) o[q] = __float2half_rn(f[q] * sc);  // exact: <= 7 significant bits in range
+        for (int pair = 0; pair < 4; ++pair) {
+            const int q = pair * 2;
+            words[pair] = uint32_t(__half_as_ushort(__float2half_rn(f[q] * sc)))
+                | (uint32_t(__half_as_ushort(__float2half_rn(f[q + 1] * sc))) << 16);
+        }
+        *reinterpret_cast<uint4*>(o) = make_uint4(words[0], words[1], words[2], words[3]);
+    } else {
+        // Contiguous output views may begin at any half offset; retain that contract.
+#pragma unroll
+        for (int q = 0; q < 8; ++q) o[q] = __float2half_rn(f[q] * sc);  // exact: <= 7 significant bits in range
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- BF16 GEMV
@@ -903,6 +913,32 @@ __global__ void attn_merge(const float* __restrict__ po, const float* __restrict
     }
 }
 
+// The owner constructs a unique pair->padded-row map with -1 for absent local experts.
+// Preserve the original separate Torch multiply/add operations, including signed zeros
+// and exceptional weights for absent slots; neither FMA nor skipping absent slots is valid.
+__global__ void expert_prompt_combine(const float* y, const int64_t* dest, const float* weights,
+                                      const int* local, const float* rowmul,
+                                      int D, int slots, float* out, int64_t ldo) {
+    const int row = blockIdx.y;
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= D) return;
+    const int64_t pair = int64_t(row) * slots;
+    const int64_t first = dest[pair];
+    // Scale only real gathered pairs, with a separately rounded multiplication
+    // exactly as the former full padded tensor mul_. Missing pairs were +0 after
+    // that operation, so they must not read or apply an expert row multiplier.
+    const float first_value = first < 0 ? 0.0f
+        : __fmul_rn(y[first * D + col], rowmul[int64_t(local[pair]) * D + col]);
+    float acc = __fmul_rn(first_value, weights[pair]);
+    for (int s = 1; s < slots; ++s) {
+        const int64_t at = dest[pair + s];
+        const float value = at < 0 ? 0.0f
+            : __fmul_rn(y[at * D + col], rowmul[int64_t(local[pair + s]) * D + col]);
+        acc = __fadd_rn(acc, __fmul_rn(value, weights[pair + s]));
+    }
+    out[int64_t(row) * ldo + col] = acc;
+}
+
 }  // namespace g4
 
 // ================================================================================================ launchers
@@ -970,9 +1006,43 @@ void w4_expert_down_cuda(const Tensor& act, int64_t M, int64_t slots, const Tens
 }
 
 void w4_dequant_cuda(const Tensor& codes, const Tensor& scales, int64_t N, int64_t K, Tensor& out) {
-    const int64_t total = N * (K / 16);
-    g4::w4_dequant<<<(total + 255) / 256, 256, 0, stream()>>>(cptr<uint8_t>(codes), cptr<uint8_t>(scales), N,
-        (int)K, ptr<half>(out));
+    const int64_t total = N * (K / 8);
+    if (reinterpret_cast<uintptr_t>(out.data_ptr()) % alignof(uint4) == 0)
+        g4::w4_dequant<true><<<(total + 255) / 256, 256, 0, stream()>>>(cptr<uint8_t>(codes), cptr<uint8_t>(scales), N,
+            (int)K, ptr<half>(out));
+    else
+        g4::w4_dequant<false><<<(total + 255) / 256, 256, 0, stream()>>>(cptr<uint8_t>(codes), cptr<uint8_t>(scales), N,
+            (int)K, ptr<half>(out));
+}
+
+void expert_prompt_combine_cuda(const Tensor& y, const Tensor& dest, const Tensor& weights,
+                               const Tensor& local, const Tensor& rowmul, Tensor& out) {
+    TORCH_CHECK(y.is_cuda() && dest.device() == y.device() && weights.device() == y.device()
+                && local.device() == y.device() && rowmul.device() == y.device() && out.device() == y.device(),
+                "expert prompt combine requires tensors on one CUDA device");
+    TORCH_CHECK(y.scalar_type() == at::kFloat && weights.scalar_type() == at::kFloat
+                && out.scalar_type() == at::kFloat && rowmul.scalar_type() == at::kFloat
+                && dest.scalar_type() == at::kLong && local.scalar_type() == at::kInt,
+                "expert prompt combine requires FP32 values, int64 destinations and int32 local experts");
+    TORCH_CHECK(y.dim() == 2 && dest.dim() == 2 && weights.sizes() == dest.sizes()
+                && local.sizes() == dest.sizes() && rowmul.dim() == 2 && out.dim() == 2,
+                "expert prompt combine requires matrices and matching destination/weight shapes");
+    TORCH_CHECK(y.is_contiguous() && dest.is_contiguous() && weights.is_contiguous()
+                && local.is_contiguous() && rowmul.is_contiguous()
+                && out.stride(1) == 1 && out.stride(0) >= out.size(1),
+                "expert prompt combine requires contiguous inputs and disjoint contiguous output rows");
+    TORCH_CHECK(y.size(0) > 0 && y.size(1) == g4::MAXD && dest.size(0) > 0 && dest.size(0) <= 1024
+                && dest.size(1) == 8 && out.size(0) == dest.size(0) && out.size(1) == y.size(1),
+                "expert prompt combine requires 1..1024 rows, 8 slots and hidden width 2816");
+    TORCH_CHECK(rowmul.size(0) > 0 && rowmul.size(1) == y.size(1) && y.size(0) % rowmul.size(0) == 0,
+                "expert prompt combine requires one multiplier row per padded expert");
+    // Destination values are owned routing output: -1 or a valid row of y, proved when
+    // building dest from the unique sorted pairs. Every valid pair's local ID selects
+    // that padded row's expert; absent IDs are never dereferenced. No host sync is needed.
+    const dim3 grid((y.size(1) + 255) / 256, dest.size(0));
+    g4::expert_prompt_combine<<<grid, 256, 0, stream()>>>(cptr<float>(y), cptr<int64_t>(dest),
+        cptr<float>(weights), cptr<int>(local), cptr<float>(rowmul), (int)y.size(1), (int)dest.size(1),
+        ptr<float>(out), out.stride(0));
 }
 
 namespace {

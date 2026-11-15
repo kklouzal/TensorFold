@@ -162,6 +162,84 @@ def test_gemma4_kernels():
         assert int(kp[pos % 2048]) == pos
 
 
+@pytest.mark.parametrize("K", [16, 176, 272, 2816])
+@pytest.mark.parametrize("offset", [0, 1, 8])
+def test_gemma4_dequant_all_finite_codes_and_output_alignment(K, offset):
+    from tensorfold.cuda.sm70.gemma4_native import extension
+
+    # Every signed finite E4M3 scale crossed with all sixteen E2M1 codes,
+    # including both signed zeros. Shapes include actual narrow TP slices and
+    # non-full launch blocks. An offset of one half requires scalar stores.
+    scale_bytes = torch.tensor([b for b in range(256) if b & 0x7f != 0x7f], dtype=torch.uint8)
+    N = scale_bytes.numel()
+    low = (torch.arange(K // 2) * 2 % 16).to(torch.uint8)
+    codes = (low | ((low + 1) << 4)).expand(N, -1).contiguous()
+    scales = scale_bytes[:, None].expand(-1, K // 16).contiguous()
+    expected = dequant(codes, scales, torch.ones(N)).half()
+    storage = torch.full((N * K + offset + 8,), 3.0, dtype=torch.float16, device="cuda")
+    out = storage[offset:offset + N * K].view(N, K)
+    extension().w4_dequant(codes.cuda(), scales.cuda(), N, K, out)
+    assert torch.equal(out.cpu().view(torch.int16), expected.view(torch.int16))
+    assert torch.all(storage[:offset] == 3)
+    assert torch.all(storage[offset + N * K:] == 3)
+
+
+@pytest.mark.parametrize("rows", [17, 1024])
+def test_gemma4_expert_prompt_combine_preserves_slot_arithmetic(rows):
+    from tensorfold.cuda.sm70.gemma4_native import extension
+
+    torch.manual_seed(43)
+    dev = torch.device("cuda")
+    D, slots, experts, width = 2816, 8, 64, 8
+    padded_rows = experts * width
+    y = torch.randn(padded_rows, D, device=dev)
+    dest = torch.randint(-1, padded_rows, (rows, slots), device=dev)
+    weights = torch.randn(rows, slots, device=dev)
+    rowmul = torch.randn(experts, D, device=dev)
+    # All absent slots must multiply positive zero, including negative and nonfinite
+    # weights. The first product, rather than a +0 accumulator, preserves -0 results.
+    dest[:2].fill_(-1)
+    weights[0].fill_(-1)
+    weights[1].fill_(1)
+    weights[1, 3] = float("inf")
+    # A multiply-add contraction would produce a nonzero residual in this column.
+    dest[2].fill_(-1)
+    dest[2, 0], dest[2, 1] = 0, 1
+    weights[2].zero_()
+    weights[2, 0], weights[2, 1] = 1, 1 - 2 ** -23
+    y[0, 0], y[1, 0] = -1, 1 + 2 ** -23
+    rowmul[0].fill_(1)
+    # Tiny values cover gradual underflow as well as ordinary finite results.
+    y[2].fill_(torch.finfo(torch.float32).tiny / 2)
+    dest[3].fill_(2)
+    weights[3].fill_(0.5)
+    # Adversarial scales are applied only to real pairs, in a separate rounded
+    # multiply before route weights. Preserve NaN behavior and signed zeros.
+    rowmul[-1, :4] = torch.tensor([float("nan"), float("inf"), -0.0, -1.0], device=dev)
+    dest[4].fill_(padded_rows - 1)
+    y[-1, :4] = torch.tensor([1.0, 0.0, 1.0, 0.0], device=dev)
+    local = torch.where(dest < 0, -1, dest // width).to(torch.int32)
+
+    # Original production expression is the independent arithmetic/order oracle.
+    scaled = (y.view(experts, width, D) * rowmul[:, None, :]).view(padded_rows, D)
+    pairs = torch.zeros((rows * slots, D), device=dev)
+    flat = dest.reshape(-1)
+    present = flat >= 0
+    pairs[present] = scaled[flat[present]]
+    pairs = pairs.view(rows, slots, D)
+    expected = pairs[:, 0] * weights[:, 0:1]
+    for s in range(1, slots):
+        expected = expected + pairs[:, s] * weights[:, s:s + 1]
+
+    storage = torch.full((rows, 2, D), 123.0, device=dev)
+    out = storage[:, 1]
+    extension().expert_prompt_combine(y, dest, weights, local, rowmul, out)
+    assert torch.equal(torch.isnan(out), torch.isnan(expected))
+    finite = ~torch.isnan(expected)
+    assert torch.equal(out.view(torch.int32)[finite], expected.view(torch.int32)[finite])
+    assert torch.all(storage[:, 0] == 123)
+
+
 def test_gemma4_fused_router_matches_logits_and_routing():
     from tensorfold.cuda.sm70.gemma4_native import extension
     ext = extension()

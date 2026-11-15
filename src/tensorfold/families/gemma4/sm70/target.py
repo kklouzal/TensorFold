@@ -310,11 +310,11 @@ class Target:
         self.ext.w4_dequant(ed.codes, ed.scales, E * D, ew, dn16)
         gu = torch.bmm(padded, gu16.transpose(1, 2), out_dtype=torch.float32).mul_(eg.rowmul[:, None, :])
         act = (torch.nn.functional.gelu(gu[..., :ew], approximate="tanh") * gu[..., ew:]).half()
-        y = torch.bmm(act, dn16.transpose(1, 2), out_dtype=torch.float32).mul_(ed.rowmul[:, None, :])
-        pair_out = torch.zeros((pairs, D), dtype=torch.float32, device=self.device)
-        pair_out[order] = y.view(E * width, D)[dest]
-        pair_out = pair_out.view(rows, c.top_k, D)
-        acc = pair_out[:, 0] * weights[:, 0:1]
-        for s in range(1, c.top_k):
-            acc = acc + pair_out[:, s] * weights[:, s:s + 1]
-        out.copy_(acc)
+        y = torch.bmm(act, dn16.transpose(1, 2), out_dtype=torch.float32)
+        # Each retained original pair occurs once in order; dest is in [0, E * width).
+        # Missing local pairs stay -1. Gather directly into the slot-ordered sum instead
+        # of materializing [rows, top_k, D] and a separate tensor for every arithmetic step.
+        pair_dest = torch.full((pairs,), -1, dtype=torch.int64, device=self.device)
+        pair_dest[order] = dest
+        self.ext.expert_prompt_combine(y.view(E * width, D), pair_dest.view(rows, c.top_k), weights,
+                                      local, ed.rowmul, out)

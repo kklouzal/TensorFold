@@ -253,3 +253,33 @@ def test_undecided_empty_and_whitespace_call_headers_stay_withheld_until_disprov
     assert split_gemma_thinking(raw, finished=True) == ('Reason. ', call)
     disproved = THOUGHT_OPEN + '\n' + opener + ' 9 days' + THOUGHT_CLOSE + 'Answer'
     assert split_gemma_thinking(disproved, finished=True) == (opener + ' 9 days', 'Answer')
+
+
+@pytest.mark.parametrize('prefix', ['Ordinary words. ', "日本語 🦉 apostrophe's ", 'x <unknown> y ~~ z\n  '])
+@pytest.mark.parametrize('literal,kind', [
+    ('"quoted <tool_call> data"', 'string'),
+    ('`inline <tool_call> data`', 'code'),
+    ('<|"|>native <channel|> data<|"|>', 'string'),
+    ('<Ns:tool_call>body</Ns:tool_call>', 'call'),
+])
+def test_ordinary_prefix_keeps_absolute_lexical_region_offsets(prefix, literal, kind):
+    suffix = ' ordinary tail'
+    regions = markup_regions(prefix + literal + suffix, finished=True)
+    assert [(region.kind, region.start, region.end) for region in regions] == [
+        (kind, len(prefix), len(prefix) + len(literal))]
+
+
+def test_bulk_ordinary_text_stops_at_trusted_answer_boundary_and_native_channel():
+    prefix = 'Reasoning with ordinary Unicode 日本語. '
+    answer = 'Answer stays visible. '
+    raw = prefix + answer + '<|channel>thought\nHidden<channel|>Visible'
+    expected = (prefix + 'Hidden', answer + 'Visible')
+    assert split_gemma_thinking(raw, finished=True, expect_thinking=True,
+                                answer_start=len(prefix)) == expected
+    previous = ('', '')
+    for end in range(len(raw) + 1):
+        options = {'answer_start': len(prefix)} if end >= len(prefix) else {}
+        current = split_gemma_thinking(raw[:end], finished=False, expect_thinking=True, **options)
+        assert all(now.startswith(before) for before, now in zip(previous, current))
+        previous = current
+    assert previous == expected

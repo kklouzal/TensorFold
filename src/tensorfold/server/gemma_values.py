@@ -169,6 +169,8 @@ def _safe_join(parts):
         total += len(previous[0])
         if previous[2] != current[1]:
             boundaries.append(total)
+    if not boundaries:
+        return text  # No removed source gap can have manufactured a call opener.
     split = set()
     for region in markup_regions(text):
         if region.kind != 'call':
@@ -461,8 +463,17 @@ def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
         if marker is not None:
             at += len(marker)
             continue
-        emit(text[at])
-        at += 1
+        # Ordinary source characters share one mode until a control opener,
+        # lexical region or trusted answer boundary. Coalescing adjacent source
+        # spans preserves every discontinuity used by _safe_join below.
+        stop = text.find('<', at + 1)
+        stop = len(text) if stop < 0 else stop
+        if index + 1 < len(region_starts):
+            stop = min(stop, region_starts[index + 1])
+        if answer_start is not None and not answer_started and at < answer_start:
+            stop = min(stop, answer_start)
+        emit(text[at:stop])
+        at = stop
     if answer_start is not None and not answer_started and at == answer_start:
         if unframed:
             reason.extend(pending)

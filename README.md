@@ -1641,6 +1641,16 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 
 #### Gemma 4 26B-A4B AEON NVFP4 on eight V100s (2026-11-15)
 
+The [throughput checkpoint](docs/gemma4-sm70-throughput-20261115.md) adds exact
+vectorized prompt-weight decoding, ordered expert-output fusion and faster
+streaming markup scans. Against `98c535f6` with the same pre-existing local
+communication changes, three matched DFlash HTTP requests per case measured
+54.9% higher throughput at 4,010 prompt tokens and 53.5% at 16,010 tokens;
+all 15 replies and token counts matched. These are warmed-model, fresh-prompt
+measurements at 32K allocated context, not cold-start or full-context qualification.
+The note records source identity, runtime, numerical checks and outstanding work;
+the older measurements below retain their original scope.
+
 `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` (revision `90c8601b`) with
 `z-lab/gemma-4-26B-A4B-it-DFlash` (`77d42027`) runs on the eight-V100-SXM2-32GB
 host through `tools/launch_cuda_tp.py` and `--tp 8`

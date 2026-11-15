@@ -18,6 +18,7 @@ _PARAMETER_OPEN = re.compile(r'<parameter=([^>\s]+)>', re.IGNORECASE)
 _DSML_PARAMETER_CLOSE = re.compile(r'</｜DSML｜parameter>')
 _FUNCTION = re.compile(r'<function=[^>\s]+>', re.IGNORECASE)
 _NAMESPACE = re.compile(r'<([A-Za-z_][\w.-]*):tool_call>', re.IGNORECASE)
+_REGION_START = re.compile(r'[<"`~]')
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +222,12 @@ def markup_regions(text: str, *, finished=False, call_headers=None) -> list[Mark
     """Ordered nonoverlapping code/string/call spans; an unfinished span ends at EOF."""
     result, at = [], 0
     while at < len(text):
+        # Only these characters can enter any branch below. Search ordinary
+        # spans in C while retaining the original recognition and end rules.
+        candidate = _REGION_START.search(text, at)
+        if candidate is None:
+            break
+        at = candidate.start()
         char = text[at]
         if text.startswith(GEMMA_STRING, at) or char == '"':
             end = _quote_end(text, at)

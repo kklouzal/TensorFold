@@ -11,6 +11,7 @@ void w4_expert_gateup_cuda(const Tensor&, int64_t, int64_t, const Tensor&, const
 void w4_expert_down_cuda(const Tensor&, int64_t, int64_t, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
                          const Tensor&, int64_t, int64_t, Tensor&, int64_t);
 void w4_dequant_cuda(const Tensor&, const Tensor&, int64_t, int64_t, Tensor&);
+void expert_prompt_combine_cuda(const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&, Tensor&);
 void bf16_rows_cuda(const Tensor&, int64_t, const Tensor&, int64_t, int64_t, Tensor&, int64_t, double);
 void i8_rows_cuda(const Tensor&, int64_t, const Tensor&, const Tensor&, int64_t, int64_t, Tensor&, int64_t, double);
 void router_cuda(const Tensor&, int64_t, const Tensor&, int64_t, int64_t, Tensor&, Tensor&, int64_t, const Tensor&,
@@ -34,6 +35,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("w4_expert_gateup", &w4_expert_gateup_cuda);
     m.def("w4_expert_down", &w4_expert_down_cuda);
     m.def("w4_dequant", &w4_dequant_cuda);
+    m.def("expert_prompt_combine", &expert_prompt_combine_cuda);
     m.def("bf16_rows", &bf16_rows_cuda);
     m.def("i8_rows", &i8_rows_cuda);
     m.def("router", &router_cuda);

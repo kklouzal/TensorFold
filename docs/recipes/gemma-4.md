@@ -104,6 +104,11 @@ one serial and one DFlash round graph per previously accepted row count. Refused
 `--lossless-head`, `--prefix-cache-bytes`, `--spark-global-gqa` and `--spark-sampled-q`. See [the README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)
 for the measured scope.
 
+The [2026-11-15 throughput checkpoint](../gemma4-sm70-throughput-20261115.md)
+records exact prompt-kernel and streaming-parser optimizations, matched HTTP
+measurements and their source/validation limits. It adds no serving flag or
+numerical-profile change; full native-context qualification remains pending.
+
 ## Experimental exact Delta4 tied table
 
 The native CT constructor accepts `delta4_head=False` by default. Explicit
