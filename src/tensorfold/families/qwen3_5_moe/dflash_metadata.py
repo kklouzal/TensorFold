@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 
 from tensorfold.checkpoint_metadata import read_json
+from tensorfold.drafters.dflash_metadata import shapes as companion_shapes
 from tensorfold.families.qwen4_exp.rope import RopeParameters
 
 
@@ -86,21 +87,7 @@ class DraftConfig:
     def read(cls, directory):
         return cls.from_dict(read_json(directory, "config.json", required=True))
 
-    def shapes(self):
-        out = {"fc.weight": (self.hidden, len(self.tap_layers) * self.hidden),
-               "hidden_norm.weight": (self.hidden,), "norm.weight": (self.hidden,)}
-        for i in range(self.layers):
-            base = f"layers.{i}."
-            out.update({base + key: shape for key, shape in {
-                "input_layernorm.weight": (self.hidden,), "post_attention_layernorm.weight": (self.hidden,),
-                "self_attn.q_norm.weight": (self.head_dim,), "self_attn.k_norm.weight": (self.head_dim,),
-                "self_attn.q_proj.weight": (self.heads * self.head_dim, self.hidden),
-                "self_attn.k_proj.weight": (self.kv_heads * self.head_dim, self.hidden),
-                "self_attn.v_proj.weight": (self.kv_heads * self.head_dim, self.hidden),
-                "self_attn.o_proj.weight": (self.hidden, self.heads * self.head_dim),
-                "mlp.gate_proj.weight": (self.width, self.hidden), "mlp.up_proj.weight": (self.width, self.hidden),
-                "mlp.down_proj.weight": (self.hidden, self.width)}.items()})
-        return out
+    shapes = companion_shapes
 
 
 def checked_headers(directory):
