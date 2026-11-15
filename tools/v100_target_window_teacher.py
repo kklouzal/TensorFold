@@ -2068,12 +2068,8 @@ def validate_model_result(value):
 
 
 def validate_host_result(value, expected):
-    result = legacy._validate_host_result(value, expected, schema=HOST_RESULT_SCHEMA, mode=MODE,
-                                          result_validator=validate_model_result)
-    require(result['teacher_plan_sha256'] == expected['operation']['teacher_plan']['sha256']
-            and result['teacher_client_sha256'] == expected['operation']['teacher_client']['sha256'],
-            'window result plan/client identity differs')
-    return result
+    return legacy._validate_bound_teacher_result(value, expected, schema=HOST_RESULT_SCHEMA, mode=MODE,
+        result_validator=validate_model_result, binding_error='window result plan/client identity differs')
 
 
 def validate_completed_teacher_host(value, *, authority_sha256, authority_bytes, image_id=None):

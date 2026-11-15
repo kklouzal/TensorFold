@@ -231,12 +231,8 @@ def validate_host_operation(host, inner):
 
 
 def validate_host_result(value, expected):
-    result = legacy._validate_host_result(value, expected, schema=HOST_RESULT_SCHEMA, mode=MODE,
-                                          result_validator=validate_model_result)
-    require(result['teacher_plan_sha256'] == expected['operation']['teacher_plan']['sha256']
-            and result['teacher_client_sha256'] == expected['operation']['teacher_client']['sha256'],
-            'prepared result DATA binding differs')
-    return result
+    return legacy._validate_bound_teacher_result(value, expected, schema=HOST_RESULT_SCHEMA, mode=MODE,
+        result_validator=validate_model_result, binding_error='prepared result DATA binding differs')
 
 
 def validate_completed_teacher_host(value, *, authority_sha256, authority_bytes, image_id=None):

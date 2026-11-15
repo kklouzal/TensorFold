@@ -432,10 +432,8 @@ def _validate_model_host(host, inner, *, schema, mode):
 
 
 def validate_host_result(value, expected):
-    result = _validate_host_result(value, expected, schema=HOST_RESULT_SCHEMA, mode=MODE, result_validator=validate_model_result)
-    require(result['teacher_plan_sha256'] == expected['operation']['teacher_plan']['sha256']
-            and result['teacher_client_sha256'] == expected['operation']['teacher_client']['sha256'],
-            'owned teacher final result has different input identity')
+    _validate_bound_teacher_result(value, expected, schema=HOST_RESULT_SCHEMA, mode=MODE,
+        result_validator=validate_model_result, binding_error='owned teacher final result has different input identity')
     return value
 
 
@@ -618,3 +616,11 @@ def validate_benchmark_host_result(value, expected):
             and sum(row['bytes'] for row in result['trace'].values()) <= operation['trace']['disk_bytes'],
             'actual trace threshold/artifact grant differs')
     return value
+
+
+def _validate_bound_teacher_result(value, expected, *, schema, mode, result_validator, binding_error):
+    """Validate the host envelope and bind its teacher result to the declared inputs."""
+    result = _validate_host_result(value, expected, schema=schema, mode=mode, result_validator=result_validator)
+    require(result['teacher_plan_sha256'] == expected['operation']['teacher_plan']['sha256']
+            and result['teacher_client_sha256'] == expected['operation']['teacher_client']['sha256'], binding_error)
+    return result
