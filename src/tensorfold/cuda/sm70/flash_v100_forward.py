@@ -26,7 +26,7 @@ import threading
 
 import torch
 
-from tensorfold.cleanup import raise_failures
+from tensorfold.cleanup import close_on_exit, raise_failures
 from .prefill_dense import _plain
 
 SOURCE_COMMIT = '0ababf82e3836c1786d7937c6002670ca4ecda62'
@@ -118,14 +118,7 @@ class Prepared:
         self._check()
         return self
 
-    def __exit__(self, kind, primary, traceback):
-        try:
-            self.close()
-        except BaseException as cleanup:
-            if primary is None:
-                raise
-            raise_failures(primary, [cleanup])
-        return False
+    __exit__ = close_on_exit
 
 
 def prepare(module, q, k, v, out, lse, *, scale=0.0625):

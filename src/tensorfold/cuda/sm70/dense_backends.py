@@ -23,7 +23,7 @@ import weakref
 
 import torch
 
-from tensorfold.cleanup import raise_failures
+from tensorfold.cleanup import close_on_exit, raise_failures
 from .prefill_dense import _plain
 
 
@@ -138,14 +138,7 @@ class Context:
         self._check()
         return self
 
-    def __exit__(self, kind, primary, traceback):
-        try:
-            self.close()
-        except BaseException as cleanup:
-            if primary is None:
-                raise
-            raise_failures(primary, [cleanup])
-        return False
+    __exit__ = close_on_exit
 
 
 class Prepared:

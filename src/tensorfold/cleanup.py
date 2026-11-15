@@ -124,6 +124,21 @@ def raise_failures(primary, errors):
         raise primary from failure
 
 
+def close_on_exit(self, kind, primary, traceback):
+    """Context exit for owners whose close method controls retirement.
+
+    Never suppress the body error; preserve it when retirement also fails.
+    Bind directly as __exit__ so no forwarding frame is added.
+    """
+    try:
+        self.close()
+    except BaseException as cleanup:
+        if primary is None:
+            raise
+        raise_failures(primary, [cleanup])
+    return False
+
+
 def rollback(owner, primary, close):
     """Close a partial constructor; unresolved ownership stays with its error.
 

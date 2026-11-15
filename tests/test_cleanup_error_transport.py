@@ -8,6 +8,38 @@ from tensorfold import cleanup
 
 
 class CleanupTransportTests(unittest.TestCase):
+    def test_context_exit_preserves_primary_and_closes_once(self):
+        for error_type in (RuntimeError, KeyboardInterrupt):
+            for body_fails in (False, True):
+                for close_fails in (False, True):
+                    with self.subTest(error_type=error_type, body=body_fails, close=close_fails):
+                        primary = error_type('body')
+                        secondary = error_type('close')
+                        calls = []
+
+                        class Owner:
+                            __exit__ = cleanup.close_on_exit
+
+                            def __enter__(self):
+                                return self
+
+                            def close(self):
+                                calls.append('close')
+                                if close_fails:
+                                    raise secondary
+
+                        caught = None
+                        try:
+                            with Owner():
+                                if body_fails:
+                                    raise primary
+                        except BaseException as error:
+                            caught = error
+                        self.assertEqual(calls, ['close'])
+                        self.assertIs(caught, primary if body_fails else secondary if close_fails else None)
+                        if body_fails and close_fails:
+                            self.assertIs(primary.__cause__, secondary)
+
     def test_nullable_slots_select_only_real_errors_without_changing_sequence(self):
         self.assertIsNone(cleanup.raise_failures(None, [None] * 5))
         first, second = OSError('first'), ValueError('second')
