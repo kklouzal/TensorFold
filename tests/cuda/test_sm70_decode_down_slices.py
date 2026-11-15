@@ -38,7 +38,7 @@ def bank(kind, rows, cols, offset, scale, generator):
 
 @pytest.mark.parametrize("down_kind,columns,offset", [(20, 160, 0), (42, 192, 0), (42, 192, 32), (8, 160, 0)],
                          ids=["iq4nl", "q2_0-o0", "q2_0-o32", "q8_0"])
-@pytest.mark.parametrize("rows", [1, 2, 5, 20, 32])
+@pytest.mark.parametrize("rows", [1, 2, 5, 20, 32, 40, 64])
 def test_sliced_down_matches_fp64_within_the_quantization_bound(down_kind, columns, offset, rows):
     generator = torch.Generator(device="cuda").manual_seed(1000 * down_kind + rows + offset)
     gate = bank(21, E * W, D, 0, 0.004, generator)
@@ -79,15 +79,15 @@ def test_sliced_down_matches_fp64_within_the_quantization_bound(down_kind, colum
 @pytest.mark.parametrize("down_kind,columns,offset", [(20, 160, 0), (42, 192, 32), (8, 160, 0)],
                          ids=["iq4nl", "q2_0-o32", "q8_0"])
 def test_decode_rows_do_not_depend_on_the_call_row_count(down_kind, columns, offset):
-    """A token's expert outputs are the same bits whether it is decoded alone or among up to 32 rows, and on repeat."""
+    """A token's expert outputs are the same bits whether it is decoded alone or among up to 64 rows, and on repeat."""
     generator = torch.Generator(device="cuda").manual_seed(4242 + down_kind + offset)
     gate = bank(21, E * W, D, 0, 0.004, generator)
     up = bank(21, E * W, D, 0, 0.004, generator)
     down = bank(down_kind, E * D, columns, offset, 0.004 if down_kind == 8 else 0.02, generator)
-    x = (torch.randn(32, D, device="cuda", generator=generator) * 0.5).half()
+    x = (torch.randn(64, D, device="cuda", generator=generator) * 0.5).half()
     weights = torch.exp(torch.randn(512, device="cuda", generator=generator))
-    picks = torch.multinomial(weights.expand(32, 512), 10, replacement=False, generator=generator)
-    picks = torch.cat([picks, torch.full((32, 1), 512, device="cuda")], 1)
+    picks = torch.multinomial(weights.expand(64, 512), 10, replacement=False, generator=generator)
+    picks = torch.cat([picks, torch.full((64, 1), 512, device="cuda")], 1)
 
     def run(rows):
         out = torch.empty(rows, 11, D, dtype=torch.float32, device="cuda")
@@ -100,9 +100,9 @@ def test_decode_rows_do_not_depend_on_the_call_row_count(down_kind, columns, off
                                _gate_up=gguf_ops._GroupedGateUp(4))
         return out
 
-    full = run(32)
-    assert torch.equal(run(32).view(torch.int32), full.view(torch.int32)), "repeat"
-    for rows in range(1, 32):
+    full = run(64)
+    assert torch.equal(run(64).view(torch.int32), full.view(torch.int32)), "repeat"
+    for rows in range(1, 64):
         out = run(rows)
         bad = [r for r in range(rows) if not torch.equal(out[r].view(torch.int32), full[r].view(torch.int32))]
-        assert not bad, f"{rows}-row call differs from the 32-row call at rows {bad}"
+        assert not bad, f"{rows}-row call differs from the 64-row call at rows {bad}"

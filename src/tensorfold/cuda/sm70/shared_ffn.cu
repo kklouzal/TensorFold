@@ -1,4 +1,4 @@
-// SM70 decode shared-expert SwiGLU FFN for 1..32 FP16 rows (shared_ffn.py).
+// SM70 decode shared-expert SwiGLU FFN for 1..64 FP16 rows (shared_ffn.py).
 //
 //   act[r, c] = fp16(silu(sum_k x[r,k] gate[c,k]) * sum_k x[r,k] up[c,k])     (FP32 sums, FP32 SiLU/product)
 //   out[r, n] = sum_c act[r,c] down[n,c]                                      (FP32 sums, FP32 output)
@@ -15,7 +15,7 @@
 #include <cstdint>
 
 namespace {
-constexpr int MAX_ROWS = 32;
+constexpr int MAX_ROWS = 64;
 constexpr int MAX_K_CHUNKS = 10;   // K <= 2560 (8 halves per lane per chunk)
 
 __device__ __forceinline__ float warp_sum(float value) {
@@ -129,7 +129,7 @@ void shared_ffn(const at::Tensor& x, const at::Tensor& gate, const at::Tensor& u
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == half && x.dim() == 2 && 1 <= rows && rows <= MAX_ROWS
                 && x.stride(1) == 1 && x.stride(0) % 8 == 0 && x.data_ptr<at::Half>() != nullptr
                 && reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0,
-                "shared FFN input must be 1..32 16-byte aligned channel-contiguous FP16 rows");
+                "shared FFN input must be 1..64 16-byte aligned channel-contiguous FP16 rows");
     TORCH_CHECK(k % 256 == 0 && k / 256 <= MAX_K_CHUNKS, "shared FFN requires K a multiple of 256, at most 2560");
     for (const at::Tensor* w : {&gate, &up})
         TORCH_CHECK(w->device() == x.device() && w->scalar_type() == half && w->is_contiguous()

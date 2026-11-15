@@ -16,13 +16,18 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_
 
 
 def padded(x, weight):
-    panel = torch.zeros((32, weight.shape[1]), dtype=torch.float16, device=x.device)
-    panel[:x.shape[0]].copy_(x)
-    return torch.mm(panel, weight.T, out_dtype=torch.float32)[:x.shape[0]]
+    """The reference program: zero-padded M32 panels, FP32 output."""
+    outs = []
+    for first in range(0, x.shape[0], 32):
+        count = min(32, x.shape[0] - first)
+        panel = torch.zeros((32, weight.shape[1]), dtype=torch.float16, device=x.device)
+        panel[:count].copy_(x[first:first + count])
+        outs.append(torch.mm(panel, weight.T, out_dtype=torch.float32)[:count])
+    return torch.cat(outs)
 
 
 @pytest.mark.parametrize("width", [80, 128, 256])
-@pytest.mark.parametrize("rows", [1, 2, 5, 16, 32])
+@pytest.mark.parametrize("rows", [1, 2, 5, 16, 32, 40, 64])
 @pytest.mark.parametrize("case", ["normal", "large", "small", "outlier"])
 def test_error_matches_the_reference_program_and_rows_are_independent(width, rows, case):
     generator = torch.Generator(device="cuda").manual_seed(rows * 7 + width + len(case))

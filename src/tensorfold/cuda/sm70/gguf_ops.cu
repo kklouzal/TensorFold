@@ -1507,6 +1507,12 @@ __global__ void expert_down160_grouped(const __half* activation, PackedView down
 // FP32 accumulator. Versus the reference (FP16-rounded d*q times FP16 x, FP32 sums) this removes the
 // coefficient rounding and adds the much smaller input quantization; non-finite inputs stay non-finite.
 constexpr int DECODE_PAIRS = 16, GU_WARPS = 8, GU_SLICE = 4, GU_RAW = 2720;
+// Grouped owned calls of up to this many rows take the decode gate/up and down kernels (16-pair tiles,
+// int16-quantized activations); larger ones take the tensor-core prefill tiles. Whole owned-expert call,
+// V100, IQ3_S gate/up + IQ4_NL down, skewed routing: 33/40/48/64 rows 568/609/698/774 us (prefill) vs
+// 359/428/439/547 us (decode), max error vs FP64 4.5e-4 vs 2.4e-4 (the decode kernels' own level at
+// 17-32 rows, 2.2-2.8e-4).
+constexpr int DECODE_MAX_ROWS = 64;
 constexpr int DOWN_WARPS = 8;
 
 __host__ __device__ constexpr bool int_kind(int kind) {
@@ -2310,7 +2316,7 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     const int blocks = int((picks.numel() + 127) / 128);
     // Decode rows with the grouped gate/up: one grouping CTA also initializes the non-owned slots.
     const bool fused_grouping = grouping.defined() && gate_up_rows && !supplied_activation
-                                && x.size(0) <= 32 && pairs <= GROUP_PREFIX_THREADS;
+                                && x.size(0) <= DECODE_MAX_ROWS && pairs <= GROUP_PREFIX_THREADS;
     if (fused_grouping) {
         auto act = reinterpret_cast<__half*>(activation.data_ptr());
         if (picks.scalar_type() == at::kLong)
@@ -2344,7 +2350,7 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
         auto input = reinterpret_cast<const __half*>(x.data_ptr());
-        if (x.size(0) > 32)  // prefill: tensor-core tiles amortize coefficient decoding over the tile's pairs
+        if (x.size(0) > DECODE_MAX_ROWS)  // prefill: tensor-core tiles amortize coefficient decoding over the tile's pairs
             expert_gate_up_prefill<<<dim3(5, group.max_tiles), PREFILL_THREADS, 0, stream>>>(
                 input, g, u, int(picks.size(1)), group, act);
         else  // the 2- and 4-row selectors share one decode-size kernel (per-row results are slice independent)
@@ -2357,7 +2363,7 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     }
     if (grouping.defined()) {
         auto act = reinterpret_cast<const __half*>(activation.data_ptr());
-        const bool prefill = x.size(0) > 32 && (reinterpret_cast<uintptr_t>(act) & 15) == 0;
+        const bool prefill = x.size(0) > DECODE_MAX_ROWS && (reinterpret_cast<uintptr_t>(act) & 15) == 0;
         if (prefill && output.scalar_type() == at::kFloat)
             expert_down160_prefill<true><<<dim3(dims / 256, group.max_tiles), PREFILL_THREADS, 0, stream>>>(
                 act, d, dims, group, output.data_ptr());

@@ -275,12 +275,12 @@ class Arena:
 
 
 def _native(bank, x, picks, **scratch):
-    """The bank's native ETP4 candidate; calls of up to 32 rows take the two-launch shared-expert FFN.
+    """The bank's native ETP4 candidate; calls of up to 64 rows take the two-launch shared-expert FFN.
 
     The shared FFN keeps the reference program's operation boundaries (FP32 sums, SiLU and product, one FP16
     rounding, FP32 output) with a fixed per-row summation order (numerics-changing versus the padded-M32 cuBLAS
-    reference: a different FP32 summation order). Prompt pieces of up to 32 rows take it too, as they took the
-    same padded-M32 program as decode before, so a token's shared output does not depend on whether it was
+    reference: a different FP32 summation order). Prompt pieces of up to 64 rows take it too, as they took the
+    same reference program as decode before, so a token's shared output does not depend on whether it was
     prefilled or decoded (a prefix-cache hit re-decodes prompt tail tokens). Larger prompt pieces and unsupported
     geometry keep the bank's own path.
     """
