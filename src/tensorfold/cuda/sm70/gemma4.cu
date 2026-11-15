@@ -745,7 +745,7 @@ struct AttnSmem {
 template <int D, int AC>
 __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, int R, int H, const half* __restrict__ kc,
         const half* __restrict__ vc, const int* __restrict__ key_pos, int S, const int* __restrict__ pos0, int window,
-        int noncausal, float scale, int chunks, int cps, float* __restrict__ po, float* __restrict__ pm, float* __restrict__ pl, int Rpad) {
+        int noncausal, float scale, int chunks, float* __restrict__ po, float* __restrict__ pm, float* __restrict__ pl, int Rpad) {
     constexpr int QLD = AttnSmem<D, AC>::QLD, PLD = AttnSmem<D, AC>::PLD;
     extern __shared__ __align__(32) unsigned char smem[];
     half* qs = reinterpret_cast<half*>(smem);
@@ -1190,12 +1190,11 @@ void attn_launch(const Tensor& q, int64_t R, int64_t H, const Tensor& kc, const 
         C10_CUDA_CHECK(cudaFuncSetAttribute(g4::attn_split<D, AC>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes));
         configured = true;
     }
-    const int64_t cps = (chunks + splits - 1) / splits;
     const dim3 grid(splits, (R + 15) / 16);
     g4::attn_split<D, AC><<<grid, 128, bytes, stream()>>>(cptr<half>(q), (int)R, (int)H, cptr<half>(kc), cptr<half>(vc),
         key_pos.has_value() ? cptr<int>(*key_pos) : nullptr, (int)S, cptr<int>(pos0), (int)window, (int)noncausal,
         (float)scale, (int)chunks,
-        (int)cps, ptr<float>(po), ptr<float>(pm), ptr<float>(pl), (int)Rpad);
+        ptr<float>(po), ptr<float>(pm), ptr<float>(pl), (int)Rpad);
 }
 }  // namespace
 
