@@ -1650,16 +1650,20 @@ in-kernel, FP16 activations into projections (W4A16, as 1Cat-vLLM on SM70; the
 checkpoint's calibrated FP4 activation math is SM12-only), FP32 residual stream,
 norms and cross-rank sums, FP16 KV, original BF16 tied head and router.
 
-Measured on source `eda379e2` (working-tree snapshot in image `cf8c0ff6`), C1,
-greedy, `--parallel 1`, context 32768, non-streaming timing
-((N-1)/(T(256)-T(1))), single runs, descriptive rather than qualified:
+Measured on source `6979425e` (working-tree snapshot in image `cf8c0ff6`),
+`TF_SMALL_GATHER_BYTES=262144`, C1, greedy, `--parallel 1`, context 32768,
+streaming chat with thinking off (decode = (N-1) / first-to-last content delta,
+512 tokens); single runs, descriptive rather than qualified:
 
 | Path | Decode tok/s | Cold prefill tok/s |
 | --- | --- | --- |
-| Serial, CUDA graphs | 98 (prose chat), 102 (code chat), 112 (raw story) | 2,332 at 4K, 2,402 at 16K |
-| DFlash depth 4 (`--draft-rows 5 --drafter-bits 8`) | 146 (prose chat), 244 (code chat), 300 (raw story) | same |
+| Serial, CUDA graphs | 189 (prose), 190 (list) | 2,388 at 4K, 2,414 at 16K |
+| DFlash depth 4 (`--draft-rows 5 --drafter-bits 8`) | 320 (code), 210 (prose), 202 (list) | same |
+| DFlash `--draft-rows 8` | 307 (code), 174 (prose), 166 (list) | same |
 | 1Cat-vLLM v1.5.2, TP1 (its only loading layout), no drafter | 65 | 527 at 4K |
 
+The earlier `eda379e2` measurement (non-streaming timing) was 98-112 serial and
+146-300 DFlash tok/s.
 Greedy serial and DFlash replies were identical on five prompts x 256 tokens;
 staged one-row and five-row target forwards produce bitwise-equal logits and
 taps. On the Gemma-tokenized quality corpus (7,517 teacher-forced tokens), mean

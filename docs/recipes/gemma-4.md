@@ -87,13 +87,14 @@ softcap once. Decode/verify rows use FP32-activation GEMVs; prompt rows use exac
 weights on cuBLAS tensor cores. Bit identity with GB10 is not claimed.
 
 ```sh
-python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/gemma4-nvfp4 --backend cuda \
+TF_SMALL_GATHER_BYTES=262144 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/gemma4-nvfp4 --backend cuda \
   --precision checkpoint --drafter /models/gemma4-dflash --drafter-bits 8 --draft-rows 5 \
   --parallel 1 --context 262144 --name gemma4-26b-a4b --thinking --thinking-budget 0 \
   --chat-template deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja --host 0.0.0.0 --port 8000
 ```
 
-`--drafter-bits` is `16` (original BF16 companion, default) or `8` (private per-row INT8 W8A16 copies);
+`TF_SMALL_GATHER_BYTES=262144` selects the NVLink small all-gather for the per-layer FP32 partial exchanges
+(measured 6.2 -> 5.0 ms per serial decode step). `--drafter-bits` is `16` (original BF16 companion, default) or `8` (private per-row INT8 W8A16 copies);
 `--draft-rows` 2-16 (default 5). Greedy requests draft; sampled requests and requests with grammar
 constraints or penalties currently decode serially. `--no-graphs` selects eager execution. Startup captures
 one serial and one DFlash round graph per previously accepted row count. Refused on this provider:
