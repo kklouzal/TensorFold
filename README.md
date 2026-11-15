@@ -1908,6 +1908,11 @@ C1 unchanged, greedy oracle identical. The all-reduce admits rows while its mail
 C8 153.3 vs 147.7 tok/s mean of 5 and 4 runs (C1 and C4 unchanged within noise, greedy oracle
 identical), so 262144 is the measured choice for SC117 TP8 serving with the all-reduce.
 
+The [2026-11-15 pending-experiment closeout](docs/verification-sc117-optimization-closeout-20261115.md)
+retains the verified runtime: quantized dense and fused-HC prototypes were not adopted, and the
+device draft chooser had identical measured quality but mixed workload performance. Its queued
+A/B used 131072-byte mailboxes and does not qualify the recommended 262144-byte configuration.
+
 SM70 decode-size (<=32-row) grouped MoE down projections now take the staged
 integer path on the rank-sliced ETP4 banks that SC117 actually holds. A 160-column
 slice of a 640-column IQ4_NL or Q2_0 row is 90 or 54 bytes, a stride that is 2
