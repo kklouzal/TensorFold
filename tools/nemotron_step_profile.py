@@ -20,26 +20,17 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .nemotron_common import chat_ids
+else:
+    from nemotron_common import chat_ids
+
 PROMPT = ("Write a 700-word short story about a lighthouse keeper who receives a letter forty years late. "
           "Continuous prose, no headings or lists.")
 WINDOWS = (2, 4, 8, 16)
 ATTENTION = "attn qkv+sdpa+o_proj"
 
 
-def chat_ids(tokenizer: Any, prompt: str) -> list[int]:
-    """The chat template's token ids for one user message, thinking off (a flat list under transformers 4 or 5)."""
-
-    messages = [{"role": "user", "content": prompt}]
-    kwargs = {"add_generation_prompt": True, "tokenize": True, "enable_thinking": False}
-    try:
-        out = tokenizer.apply_chat_template(messages, return_dict=False, **kwargs)
-    except TypeError:
-        out = tokenizer.apply_chat_template(messages, **kwargs)
-    if isinstance(out, dict):
-        out = out["input_ids"]
-    if out and isinstance(out[0], (list, tuple)):
-        out = out[0]
-    return [int(t) for t in out]
 
 
 def timed(fn: Any, reps: int) -> list[float]:

@@ -8,22 +8,17 @@ from __future__ import annotations
 
 import argparse
 
+if __package__:
+    from .cuda_benchmark import timed
+else:
+    from cuda_benchmark import timed
+
 import torch
 import triton
 
 from tensorfold.families.glm5_next.cuda import latent, sparse
 
 
-def timed(fn, reps):
-    fn()
-    torch.cuda.synchronize()
-    a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-    a.record()
-    for _ in range(reps):
-        fn()
-    b.record()
-    torch.cuda.synchronize()
-    return a.elapsed_time(b) / reps
 
 
 def main() -> None:

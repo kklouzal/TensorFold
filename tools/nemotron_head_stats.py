@@ -20,6 +20,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+if __package__:
+    from .nemotron_common import chat_ids
+else:
+    from nemotron_common import chat_ids
+
 PROMPTS = (
     "Write a 700-word short story about a lighthouse keeper who receives a letter forty years late. Continuous "
     "prose, no headings or lists.",
@@ -42,20 +47,6 @@ M5_MTP_MS = 0.6
 
 
 # -- measurement -----------------------------------------------------------------------------------------------------
-def chat_ids(tokenizer: Any, prompt: str) -> list[int]:
-    """The chat template's token ids for one user message, thinking off (a flat list under transformers 4 or 5)."""
-
-    messages = [{"role": "user", "content": prompt}]
-    kwargs = {"add_generation_prompt": True, "tokenize": True, "enable_thinking": False}
-    try:
-        out = tokenizer.apply_chat_template(messages, return_dict=False, **kwargs)
-    except TypeError:
-        out = tokenizer.apply_chat_template(messages, **kwargs)
-    if isinstance(out, dict):
-        out = out["input_ids"]
-    if out and isinstance(out[0], (list, tuple)):
-        out = out[0]
-    return [int(t) for t in out]
 
 
 def common_prefix(a: list[int], b: list[int]) -> int:
