@@ -1664,10 +1664,11 @@ Greedy serial and DFlash replies were identical on five prompts x 256 tokens;
 staged one-row and five-row target forwards produce bitwise-equal logits and
 taps. On the Gemma-tokenized quality corpus (7,517 teacher-forced tokens), mean
 per-token |log-probability difference| from an independent exact FP32 W4A16
-reference is 0.364 (chat 0.105) versus 1Cat's 0.434 (chat 0.144). Pending:
-image/video input, `--parallel` above 1, native 262,144-token qualification,
-streaming cadence (SSE deltas currently arrive in bursts) and sampled-request
-drafting (sampled requests currently decode serially).
+reference is 0.364 (chat 0.105) versus 1Cat's 0.434 (chat 0.144). Chat SSE streams per verified round; raw `/v1/completions` streams of Gemma
+arrive at the end because the shared App holds Gemma answer text until its
+channel boundary resolves (App behavior, not specific to this provider). Pending:
+image/video input, `--parallel` above 1, native 262,144-token qualification and
+sampled-request drafting (sampled requests currently decode serially).
 
 #### Flash Next mixed GGUF on eight V100s
 
