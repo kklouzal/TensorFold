@@ -10,7 +10,6 @@ from __future__ import annotations
 import struct
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
