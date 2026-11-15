@@ -1481,3 +1481,130 @@ or caller-level media exclusion—are outside this attempt histogram. In the
 specified C1/C8 plan, participant counts at least2 identify C8 work; count1 mixes
 C1 warmup/measured work and C8 tails. No cohort label is inferred for those rows.
 All rates from this instrumented run remain diagnostic, never P3 acceptance.
+
+## Serving matrix: prefill and decode across concurrency and prompt length
+
+`tools/matrix_benchmark.py` measures an OpenAI-compatible server over the whole
+serving matrix and scores a candidate against a reference on all of it. The
+standard axes are concurrency **C = 1, 2, 4, 8, 16, 24, 32** and prompt lengths
+**4K, 8K, 16K, 32K and 64K** (4,096 to 65,536 rendered prompt tokens, exactly),
+in two decoding modes:
+
+- `greedy`: `temperature: 0` (on Gemma 4 SM70 this is the DFlash path);
+- `sampled`: no sampling fields, so the server's defaults apply (Gemma 4:
+  temperature 1.0, top-k 64, top-p 0.95), with a fixed per-request `seed`
+  derived from the prompt key (on Gemma 4 SM70 this is serial decoding).
+
+Every request is a streamed chat completion with thinking off, `ignore_eos` and a
+fixed 512-token output. A cell's C requests start together behind a barrier
+(`sync`); `--stagger-ms X` starts request i at i·X ms instead, a separate arrival
+REGION with its own prompt keys.
+
+### Prompts
+
+1. `corpus` freezes the text: `README.md`, `docs/**/*.md` and `src/**/*.py` at
+   a pinned commit, in path order with file headers, with the tokenizer's special
+   token strings neutralized (`<` becomes `‹`) so no excerpt injects turn or
+   channel markers. A manifest records the commit and SHA-256.
+2. `plan` (needs `transformers`; run it in the serving image) cuts one prompt per
+   (mode, arrival, C, length, repeat, slot) plus one C1 warmup prompt per mode and
+   length: a header naming the prompt key, an excerpt starting at a key-hashed
+   line of the corpus, and a fixed summarization request. The excerpt is
+   adjusted until the served chat template renders exactly the target token count.
+   Every prompt is therefore unique (no prefix-cache reuse within or across cells,
+   repeats or modes) yet identical across arms. The plan stores character spans,
+   token counts and SHA-256s, not text.
+3. `run` regenerates each prompt from the corpus, checks its hash, and rejects a
+   cell (status `invalid`) if a reply's prompt or completion token count differs
+   from the plan, any prompt token came from a prefix cache, or `/stats` totals do
+   not describe exactly that cell's requests (another client). Failed and invalid
+   cells are retained and never enter the scores.
+
+### Metrics
+
+Per request: TTFT = first streamed text piece − send; prefill tok/s = prompt
+tokens / TTFT; decode tok/s = (completion tokens − 1) / (last piece − first
+piece). DFlash pieces can carry several tokens, so client decode is a
+text-arrival estimate; the TensorFold per-request `tensorfold` object (engine
+`prefill_s`, `decode_s`, `decode_tps`, rounds, drafted/accepted) is stored beside
+it, and `/stats` totals are differenced around each cell. Per cell repeat:
+
+- `prefill_agg_tps` = all prompt tokens / (last request's first piece − first send);
+  at C1 this is prompt tokens / TTFT;
+- `decode_median_tps` = median request decode tok/s;
+- `total_tps` = (prompt + completion tokens) / makespan and `output_tps`
+  (reported, not scored).
+
+Cells the server cannot run are recorded, not measured: `pending` when C exceeds
+`/stats` `limits.lanes` (or `--lanes`), `infeasible` when length + output exceeds
+the served context or C × (length + output) exceeds `--kv-tokens`. The JSON keeps
+every request's raw arrivals, usage and server statistics, the tool, plan and
+corpus hashes, the served source digest (`--source-dir`), `/v1/models`, `/stats`,
+`nvidia-smi` identity and CPU governor.
+
+### Scoring rule (predeclared)
+
+`compare REFERENCE CANDIDATE` (each a comma-separated list of result files whose
+repeats are pooled per cell) scores only `prefill_agg_tps` and
+`decode_median_tps`, separately:
+
+1. Per cell, the ratio of geometric means over repeats with a 95% t interval on
+   log ratios: paired by repeat when both arms ran the same repeats (repeat r uses
+   identical prompts in both arms, which removes content-dependent draft
+   acceptance from the comparison), otherwise Welch. A cell is a **gain** if the
+   lower bound exceeds 1, a **regression** if the upper bound is below 1, else
+   **uncertain** (neither a win nor a tie).
+2. Aggregate per metric: geometric mean of per-cell ratios (with a combined
+   interval), worst cell and its interval, and gain/regression/uncertain counts.
+3. Verdict: any regression in any cell, metric or mode **rejects** the candidate
+   whatever the aggregate (a REGION-specific selection is a separate decision);
+   **superior** needs at least one gain, no regression and every
+   reference-measured cell present in the candidate; otherwise **incomplete** or
+   **uncertain**. Uncertain cells with a point ratio below 1 need more repeats
+   before adoption.
+
+No gain threshold is applied. Use at least five repeats; run reference and
+candidate on the same host state, interleaving sessions when drift is suspected.
+
+### Running it on Gemma 4 SM70
+
+```bash
+M=/models/hf/hub/models--AEON-7--Gemma-4-26B-A4B-it-Uncensored-NVFP4/snapshots/90c8601b1a439497bc15d8fba9e52990b45ea0cb
+python3 tools/matrix_benchmark.py corpus --commit 0913d721 --tokenizer $M --out corpus.txt
+# in the serving image (transformers available):
+python tools/matrix_benchmark.py plan --corpus corpus.txt --tokenizer $M \
+  --template gemma4-chat-template-google-4d7ae498.jinja --out plan-v1.json --jobs 16
+# against a server launched as in the recipe, with --context 66048:
+python3 tools/matrix_benchmark.py run --model gemma4-26b-a4b --plan plan-v1.json --corpus corpus.txt \
+  --label SOURCE-AND-CONFIG --source-dir SERVED_SRC --out result.json --reps 5
+python3 tools/matrix_benchmark.py summary result.json
+python3 tools/matrix_benchmark.py compare reference.json candidate.json --json comparison.json
+```
+
+The matrix server uses the [eight-V100 recipe](recipes/gemma-4.md#eight-v100s-tp8etp4)
+with `--context 66048`, the smallest allocation that admits a 65,536-token
+prompt plus 512 output tokens. Decode attention spans the allocation, so the
+context is part of the REGION: compare only results with the same context.
+
+### Gemma 4 SM70 baseline at `0913d721` (2026-11-15)
+
+Source `0913d721` exported with `git archive` and mounted read-only into image
+`cf8c0ff6…`; eight V100-SXM2-32GB (150 W cap, driver 580.178.04, governor
+`powersave`), TP8/ETP4, `--parallel 1`, `--context 66048`, FP16 KV, DFlash
+`--drafter-bits 8 --draft-rows 5`, `TF_SMALL_GATHER_BYTES=262144`, plan `plan-v1`
+(SHA-256 `b88d3803…`, corpus `a7de57cc…`). Five repeats after one warmup request
+per mode and length; geometric means with 95% intervals over repeats. All 50
+measured requests matched planned token counts with zero cached prompt tokens.
+
+| Mode | Metric | 4K | 8K | 16K | 32K | 64K |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| greedy (DFlash) | prefill tok/s | 4,970 (4,925–5,016) | 4,885 (4,768–5,005) | 4,807 (4,747–4,868) | 4,460 (4,377–4,545) | 3,862 (3,814–3,910) |
+| greedy (DFlash) | decode tok/s | 235.0 (219.8–251.3) | 222.3 (214.4–230.6) | 213.4 (196.9–231.4) | 204.9 (194.4–215.9) | 182.6 (172.6–193.2) |
+| sampled (serial) | prefill tok/s | 5,084 (4,926–5,248) | 4,950 (4,852–5,050) | 4,749 (4,696–4,802) | 4,473 (4,431–4,515) | 3,926 (3,895–3,958) |
+| sampled (serial) | decode tok/s | 185.7 (181.5–190.0) | 177.3 (174.8–179.8) | 173.8 (171.9–175.7) | 165.3 (165.0–165.5) | 152.8 (152.5–153.2) |
+
+C = 2–32 are pending: the Gemma 4 SM70 engine serves one lane. Greedy decode
+varies with each repeat's prompt content (draft acceptance), which the paired
+comparison removes; sampled decode varies by about 1%. Client and engine decode
+rates agreed within 0.1 tok/s. These are warmed, fresh-prompt C1 measurements of
+a source-mounted tree, not an installed-image qualification.
