@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tensorfold.engine.prefix_lookup import _resume as resume_prefix
+
 from ..kv_formats import kv_dtype as engine_kv_dtype
 
 import json
@@ -2678,14 +2680,7 @@ class FlashNextEngine:
             raise ValueError(f"a prompt of {len(prompt)} tokens leaves no room in the {self.context_window}-token context")
         return max(1, min(max_tokens, room))
 
-    def _resume(self, prompt: list[int]):
-        """The longest kept state the prompt extends (with at least one new token), or None."""
-
-        best = None
-        for ids, snap in self.cache:
-            if len(ids) < len(prompt) and prompt[:len(ids)] == ids and (best is None or len(ids) > len(best[0])):
-                best = (ids, snap)
-        return best
+    _resume = resume_prefix
 
     def _start_from(self, hit) -> None:
         """Before a prefill: resuming overwrites the cache rows past the kept prefix, so the states that extend it go; a fresh prompt overwrites them all."""

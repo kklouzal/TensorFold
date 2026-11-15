@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tensorfold.engine.prefix_lookup import _resume as resume_prefix
+
 import hashlib
 import json
 import time
@@ -222,14 +224,7 @@ class NemotronEngine:
         return request
 
     # -- prefix reuse ----------------------------------------------------------------------------------------------
-    def _resume(self, prompt: list[int]):
-        """The longest kept state the prompt extends (with at least one new token), or None."""
-
-        best = None
-        for ids, snap in self.cache:
-            if len(ids) < len(prompt) and prompt[:len(ids)] == ids and (best is None or len(ids) > len(best[0])):
-                best = (ids, snap)
-        return best
+    _resume = resume_prefix
 
     def _remember(self, ids: list[int], snap: dict) -> None:
         self.cache = [c for c in self.cache if c[0] != ids][-1:] + [(ids, snap)]

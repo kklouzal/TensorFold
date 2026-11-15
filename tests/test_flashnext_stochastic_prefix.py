@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from tensorfold.engine.exact_sampling import Sampling
-from tensorfold.families.qwen4_exp.cuda import prefix_policy
+from tensorfold.families.qwen4_exp.cuda import prefix_policy, teacher_scoring
 from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
 from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
 from tensorfold.families.qwen4_exp.kv_formats import get_pair
@@ -48,7 +48,7 @@ def method(owner,name,namespace):
     cls=next(node for node in tree.body if isinstance(node,ast.ClassDef) and node.name==owner.__name__)
     fn=next(node for node in cls.body if isinstance(node,ast.FunctionDef) and node.name==name)
     fn.decorator_list=[]
-    namespace={"__package__":"tensorfold.families.qwen4_exp.cuda",**namespace}
+    namespace={"__package__":"tensorfold.families.qwen4_exp.cuda", "teacher_scoring": teacher_scoring, **namespace}
     exec(compile(ast.Module(body=[fn],type_ignores=[]),str(path)+"[declared-prefix-policy]","exec"),namespace)
     return namespace[name]
 
@@ -70,7 +70,7 @@ def test_actual_admit_borrow_changes_only_reuse_and_keeps_drafter(monkeypatch,pr
     w=weights(profile=profile)
     provider=w.dspark
     decoder=NS(w=w,capacity=8192,depth=3,streams={},_slot_for=slot,kv_pair=get_pair("int8"))
-    stream=NS(prompt=[11]*79,count=128,draft=True,vision=None,sampling=sampling)
+    stream=NS(prompt=[11]*79,count=128,draft=True,vision=None,sampling=sampling,probabilities=None)
     with pytest.raises(StopBorrow):
         admit(decoder,stream)
     assert borrowed==[(stream.prompt,reuse)]
@@ -145,7 +145,7 @@ def test_rotor_admit_declines_only_borrowing_and_retains_drafting():
 
     decoder = NS(w=weights(), capacity=8192, depth=3, streams={}, _slot_for=slot,
                  kv_pair=get_pair("rotorquant-signed128-4"))
-    stream = NS(prompt=[11] * 128, count=128, draft=True, vision=None, sampling=Sampling(17, 0))
+    stream = NS(prompt=[11] * 128, count=128, draft=True, vision=None, sampling=Sampling(17, 0), probabilities=None)
     with pytest.raises(StopBorrow):
         admit(decoder, stream)
     assert borrowed == [False]

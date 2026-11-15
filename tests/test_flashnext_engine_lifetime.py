@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from tensorfold.cuda.scheduler import Scheduler
+from tensorfold.engine.prefix_lookup import _resume as resume_prefix
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen4_exp/cuda/engine.py"
@@ -20,12 +21,14 @@ def engine_type():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FlashNextEngine")
     keep = {"close", "_close_resources", "_begin_request", "_prune_requests", "_end_request", "_retire_request", "generate", "follow",
             "_limit", "context_window", "_resume", "supports_logprobs"}
-    body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in keep]
+    body = [n for n in cls.body if (isinstance(n, ast.FunctionDef) and n.name in keep)
+            or (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "_resume"
+                                                for t in n.targets))]
     unit = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                            ast.ClassDef(name="Engine", bases=[], keywords=[], body=body, decorator_list=[])],
                       type_ignores=[])
     ast.fix_missing_locations(unit)
-    namespace = {"threading": threading}
+    namespace = {"threading": threading, "resume_prefix": resume_prefix}
     exec(compile(unit, str(SOURCE), "exec"), namespace)
     return namespace["Engine"]
 
