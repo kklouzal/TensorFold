@@ -124,6 +124,15 @@ class DFlash:
             return out
         return torch.mm(x, self._w32(key, w).t())
 
+    def _reduce(self, part, name):
+        """Cross-rank sum of a row-parallel partial: decode rows all-gather (small-collective path) and sum."""
+        if part.shape[0] > DECODE_ROWS:
+            self.t.all_reduce(part)
+            return part
+        parts = self.t._buf(name, (self.t.world,) + tuple(part.shape))
+        self.t.comm.all_gather(part, parts)
+        return parts.sum(0)
+
     def _rms(self, x, w):
         out = torch.empty_like(x)
         self.ext.rms(x, x.shape[0], w, x.shape[1], self.cfg.eps, 1.0, out)
@@ -191,15 +200,11 @@ class DFlash:
             self.t._attention(q, rows, H, d, self.k[i], self.v[i], None, slots,
                               cfg.sliding_window if layer["sliding"] else 0, att, noncausal=not layer["causal"],
                               pos=pos, scale=d ** -0.5)
-            o = self._linear(att, layer["o"], f"o{i}")
-            self.t.all_reduce(o)
-            x = x + o
+            x = x + self._reduce(self._linear(att, layer["o"], f"o{i}"), "dflash_o")
             h = self._rms(x, layer["post_norm"])
             gu = self._linear(h, layer["gate_up"], f"gu{i}")
             act = torch.nn.functional.silu(gu[:, :self.width]) * gu[:, self.width:]
-            dn = self._linear(act.contiguous(), layer["down"], f"down{i}")
-            self.t.all_reduce(dn)
-            x = x + dn
+            x = x + self._reduce(self._linear(act.contiguous(), layer["down"], f"down{i}"), "dflash_down")
         h = self._rms(x[1:].contiguous(), self.norm)
         out = torch.empty((n, self.t.shard), dtype=torch.float32, device=self.device)
         ext.bf16_rows(h, n, self.t.w.head, self.t.shard, cfg.hidden, out, self.t.shard, self.t.c.softcap)

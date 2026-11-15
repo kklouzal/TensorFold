@@ -89,7 +89,8 @@ class Target:
             self.inverse[kind] = inv.contiguous()
         self.shard = c.vocab // self.world
         self._scratch = {}
-        self.frozen = False        # set after graph capture: captured scratch must never be reallocated
+        self.frozen = False
+        self.router_counter = torch.zeros(1, dtype=torch.int32, device=self.device)   # fused router's last-block count        # set after graph capture: captured scratch must never be reallocated
 
     # ------------------------------------------------------------------------------------------ state
     def make_state(self, context: int | None = None) -> State:
@@ -123,7 +124,7 @@ class Target:
                    pos=None, scale=1.0):
         R = rows * heads
         rpad = -(-R // 16) * 16
-        chunks = -(-slots // CHUNK)
+        chunks = -(-slots // (64 if R <= 16 else CHUNK))    # the native kernel's keys per chunk for this tile count
         if splits is None:
             tiles = rpad // 16
             splits = max(1, min(chunks, -(-160 // tiles)))
@@ -226,15 +227,17 @@ class Target:
             o_src, o_world = self._reduce(o_red, "o_parts", prompt)
             ext.attn_tail(o_src, rows, o_world, rows * D, h, n["post_attn"], n["pre_ff"], n["pre_ff2"], n["router_scale"],
                           self.router_root, c.eps, dense_in, expert_in, router_in)
+            dense_out, routed_out = red[:, 0], red[:, 1]
+            width = self.w.dense_width
             # routing (identical on every rank)
             if prompt:
                 torch.mm(router_in, layer.router.float().t(), out=logits_e)
+                ext.route(logits_e, rows, c.experts, c.top_k, n["expert_scale"], self.w.expert_first,
+                          self.w.expert_count, ids_sel, weights_sel, local_sel)
             else:
-                ext.bf16_rows(router_in, rows, layer.router, c.experts, D, logits_e, c.experts, 0.0)
-            ext.route(logits_e, rows, c.experts, c.top_k, n["expert_scale"], self.w.expert_first,
-                      self.w.expert_count, ids_sel, weights_sel, local_sel)
-            dense_out, routed_out = red[:, 0], red[:, 1]
-            width = self.w.dense_width
+                ext.router(router_in, rows, layer.router, c.experts, D, logits_e, self.router_counter, c.top_k,
+                           n["expert_scale"], self.w.expert_first, self.w.expert_count, ids_sel, weights_sel,
+                           local_sel)
             if prompt:
                 gu = self._matmul_prompt(dense_in, layer.gate_up)
                 act = (torch.nn.functional.gelu(gu[:, :width], approximate="tanh") * gu[:, width:]).half()

@@ -91,8 +91,9 @@ class Gemma4SM70Engine:
             from .graphs import Graphs
             # Grow every prompt scratch to its admitted maximum before capture freezes the scratch set.
             warm = min(PROMPT_ROWS, self.context_window - 16)
-            self._run(OP_FORWARD, 0, warm, F_LOGITS_ALL | F_RESET | (F_APPEND if self.head is not None else 0),
-                      [0] * warm)
+            # (The scoring op sizes the all-row logits scratch without gathering full-vocabulary rows.)
+            self._run(OP_FORWARD, 0, warm, F_SCORE | F_RESET | (F_APPEND if self.head is not None else 0),
+                      [0] * (warm + 1))
             # ... and every decode-arithmetic scratch to its widest (DECODE_ROWS) eager forward.
             self._run(OP_FORWARD, 0, DECODE_ROWS, F_LOGITS_ALL | F_RESET | (F_APPEND if self.head is not None else 0),
                       [0] * DECODE_ROWS)
@@ -297,16 +298,25 @@ class Gemma4SM70Engine:
             eos = tuple(self.eos) if stop_eos else ()
             stopped = bool(on_tokens([first]))
             previous = committed = 0
+            # The App's per-token work (detokenize, stream, gates) for round k runs while round k+1 executes on
+            # the GPU: each round launches before its predecessor's tokens are handed to on_tokens. A stop
+            # reported then leaves one already-launched round, whose state the next request resets.
+            pending = None
             while drafts and not stopped and len(out) < max_tokens and out[-1] not in eos:
                 room = max_tokens - len(out)
                 start = len(prompt) + len(out) - 1
                 count = min(self.max_draft, room - 1)
                 if self.graphs is not None and count == self.max_draft:
                     logits, proposals = self._announce(OP_GROUND, 0, 0, 0, [start, out[-1], previous, committed])
-                    inputs = [out[-1], *proposals.tolist()]
                 else:
-                    logits, inputs = self._announce(OP_ROUND, start, 0, 0,
-                                                    [start, out[-1], count, previous, committed])
+                    logits, proposals = self._announce(OP_ROUND, start, 0, 0,
+                                                       [start, out[-1], count, previous, committed])
+                if pending is not None:
+                    stopped = bool(on_tokens(pending))
+                    pending = None
+                    if stopped:
+                        break
+                inputs = [out[-1], *(proposals.tolist() if hasattr(proposals, "tolist") else proposals[1:])]
                 if forced is not None:
                     sampled = forced[len(out):len(out) + len(inputs)]
                 else:
@@ -321,7 +331,7 @@ class Gemma4SM70Engine:
                 drafted += len(inputs) - 1
                 accepted += len(chosen) - 1
                 out.extend(chosen)
-                stopped = bool(on_tokens(chosen))
+                pending = chosen
             while (not drafts and not stopped and len(out) < max_tokens and out[-1] not in eos
                    and not (constraint is not None and constraint.finished)):
                 position = len(prompt) + len(out) - 1
@@ -329,6 +339,11 @@ class Gemma4SM70Engine:
                     logits = self._announce(OP_GSERIAL, 0, 0, 0, [position, out[-1]])
                 else:
                     logits = self._announce(OP_FORWARD, position, 1, F_LOGITS_ALL, [out[-1]])
+                if pending is not None:
+                    stopped = bool(on_tokens(pending))
+                    pending = None
+                    if stopped:
+                        break
                 if probabilities is not None:
                     self._score(probabilities, None, logits, position, origin=(0, 1))
                 logits = self._shape(logits, constraint, history)
@@ -340,7 +355,9 @@ class Gemma4SM70Engine:
                     history.extend([token])
                 out.append(token)
                 rounds += 1
-                stopped = bool(on_tokens([token]))
+                pending = [token]
+            if pending is not None and not stopped:
+                stopped = bool(on_tokens(pending))
             decoded_s = time.perf_counter() - decoded
         return {"prefill_s": round(prefill_s, 4), "decode_s": round(decoded_s, 4),
                 "queue_s": round(started - queued, 4), "cached": 0, "drafts": drafts, "rounds": rounds,

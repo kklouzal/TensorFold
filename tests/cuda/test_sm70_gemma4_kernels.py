@@ -124,7 +124,7 @@ def test_gemma4_kernels():
         else:
             kpos = torch.arange(S, dtype=torch.int32)
         qpos = torch.tensor([pos0 + r // H for r in range(rows * H)])
-        R = rows * H; rpad = -(-R // 16) * 16; chunks = S // 256
+        R = rows * H; rpad = -(-R // 16) * 16; chunks = S // (64 if R <= 16 else 256)
         for splits in (1, min(chunks, 7)):
             po = torch.empty(splits, rpad, D, device=dev); pm = torch.empty(splits, rpad, device=dev); pl = torch.empty_like(pm)
             out = torch.empty(R, D, device=dev)
@@ -155,3 +155,30 @@ def test_gemma4_kernels():
         vv = x[m, (Hq + 1) * D:].double(); vv = vv / torch.sqrt((vv * vv).mean() + 1e-6)
         check(f"v m{m}", vc[pos % 2048], vv, 2e-3)
         assert int(kp[pos % 2048]) == pos
+
+
+def test_gemma4_fused_router_matches_logits_and_routing():
+    from tensorfold.cuda.sm70.gemma4_native import extension
+    ext = extension()
+    dev = torch.device("cuda")
+    torch.manual_seed(1)
+    E, K = 128, 2816
+    w = (torch.randn(E, K) * 0.05).bfloat16()
+    scale = (torch.rand(E) + 0.5).bfloat16()
+    counter = torch.zeros(1, dtype=torch.int32, device=dev)
+    for M in (1, 5, 16):
+        x = torch.randn(M, K)
+        logits = torch.empty(M, E, device=dev)
+        ids = torch.empty(M, 8, dtype=torch.int32, device=dev)
+        wv = torch.empty(M, 8, device=dev)
+        loc = torch.empty_like(ids)
+        for _ in range(2):                       # the last block resets the counter for the next launch
+            ext.router(x.to(dev), M, w.to(dev), E, K, logits, counter, 8, scale.to(dev), 64, 64, ids, wv, loc)
+        ref = x.double() @ w.double().T
+        check(f"router logits M{M}", logits, ref, 1e-5)
+        p = torch.softmax(logits.double().cpu(), -1)
+        tv, ti = torch.topk(p, 8, -1)
+        assert torch.equal(ids.cpu().long(), ti)
+        check(f"router weights M{M}", wv, tv / tv.sum(-1, keepdim=True) * scale.double()[ti], 1e-6)
+        assert torch.equal(loc.cpu(), torch.where(ti >= 64, ti - 64, -1).int())
+        assert int(counter.item()) == 0
