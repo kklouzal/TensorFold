@@ -178,3 +178,12 @@ class ChunkQueue:
             mx.eval(*self.last)
         self.last = arrays
 
+
+def combine_experts(w: mx.array, y: mx.array, dtype: Any) -> mx.array:
+    """Routed outputs [R, k, D] weighted and summed in fp32 in slot (ascending expert) order, elementwise."""
+
+    y = y.astype(mx.float32)
+    acc = w[:, 0:1] * y[:, 0]
+    for j in range(1, int(y.shape[1])):
+        acc = acc + w[:, j:j + 1] * y[:, j]
+    return acc.astype(dtype)

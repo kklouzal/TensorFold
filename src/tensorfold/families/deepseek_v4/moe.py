@@ -11,7 +11,7 @@ from tensorfold.families.deepseek_v4 import config as C
 from tensorfold.families.deepseek_v4.config import Config, row_kernel
 from tensorfold.families.deepseek_v4.dense import dense
 from tensorfold.kernels import inputs
-from tensorfold.families.glm5_next.linear import Q, per_row
+from tensorfold.families.glm5_next.linear import combine_experts, Q, per_row
 from tensorfold.kernels.deepseek.v4 import moe as V4MK
 from tensorfold.kernels.deepseek.v4 import rows as RK
 from tensorfold.kernels.glm.flash.v1 import kernels as K
@@ -116,15 +116,7 @@ class MoE:
             y = _scatter_unsort(y, order, idx.shape)
         return y.squeeze(-2)
 
-    @staticmethod
-    def combine(w: mx.array, y: mx.array, dtype: Any) -> mx.array:
-        """Routed outputs [R, k, D] weighted and summed in fp32 in slot (ascending expert) order, elementwise."""
-
-        y = y.astype(mx.float32)
-        acc = w[:, 0:1] * y[:, 0]
-        for j in range(1, int(y.shape[1])):
-            acc = acc + w[:, j:j + 1] * y[:, j]
-        return acc.astype(dtype)
+    combine = staticmethod(combine_experts)
 
     def expert_rows(self, x: mx.array, idx: mx.array) -> mx.array:
         """A window's rows through their experts, each pick with its one-row call's bits, each expert read once."""

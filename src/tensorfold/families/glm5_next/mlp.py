@@ -8,7 +8,7 @@ import mlx.core as mx
 
 from tensorfold.families.glm5_next import config as C
 from tensorfold.families.glm5_next.config import Config, row_kernel
-from tensorfold.families.glm5_next.linear import ChunkQueue, Q, kernel_q, per_row, project, silu
+from tensorfold.families.glm5_next.linear import combine_experts, ChunkQueue, Q, kernel_q, per_row, project, silu
 from tensorfold.kernels.glm.flash.v1 import moe as MK
 from tensorfold.kernels.glm.flash.v1 import kernels as K
 from tensorfold.kernels.glm.flash.v1 import prompt as PK
@@ -168,13 +168,7 @@ class MoE:
         act = swiglu(g, u, self.cfg.swiglu_limit)
         return K.expert_qmv(act, idx, group, self.down, per_pick=True)
 
-    @staticmethod
-    def combine(w: mx.array, y: mx.array, dtype: Any) -> mx.array:
-        y = y.astype(mx.float32)                                        # [R, k, D]
-        acc = w[:, 0:1] * y[:, 0]
-        for j in range(1, int(y.shape[1])):
-            acc = acc + w[:, j:j + 1] * y[:, j]
-        return acc.astype(dtype)
+    combine = staticmethod(combine_experts)
 
     def __call__(self, x: mx.array, rows_exact: bool) -> mx.array:
         if "streamer" in self.__dict__:                                 # routed experts from the slot pool
