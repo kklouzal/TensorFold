@@ -218,3 +218,39 @@ def test_non_cuda_prompt_phase_uses_only_the_actual_generation_turn():
     assert not opened(subject, [1, 8, 2, 3, 4, 7, 1, 6])
     assert not opened(subject, [1, 6, 2, 3, 4, 5])
     assert opened(subject, [1, 6, 2, 9, 4])  # Unknown native channels are non-final too.
+
+
+def _raw(instance, prompt):
+    deltas = []
+    result = instance.run({'prompt': prompt, 'stream': True}, False, lambda value: deltas.append(value) or True)
+    contents = [(value or {}).get('content', '') for value in deltas]
+    return result, [text for text in contents if text]
+
+
+def test_raw_completion_without_open_channel_streams_each_round(tmp_path):
+    # No template frames a raw prompt: unless the prompt itself opened a channel, visible text is not held
+    # for an answer boundary that can only resolve at the end of the reply.
+    instance = replay(tmp_path, 'Visible answer.')
+    result, contents = _raw(instance, 'Hi')
+    assert result['content'] == 'Visible answer.'
+    assert ''.join(contents) == 'Visible answer.'
+    assert len(contents) == len('Visible answer.')       # one delta per generated token, not one at the end
+
+
+def test_raw_completion_ending_inside_an_open_thought_keeps_the_holdback(tmp_path):
+    instance = replay(tmp_path, 'notes<channel|>Answer.')
+    result, contents = _raw(instance, 'Hi<|channel>thought\n')
+    assert result['content'] == 'Answer.'
+    assert 'notes' not in ''.join(contents)
+
+
+def test_raw_prompt_channel_detection_uses_real_tokens_and_a_short_header():
+    from tensorfold.server.gemma_values import prompt_ids_open_thought
+    from tests.test_gemma_api_contract import GemmaTokenizer
+
+    tok = GemmaTokenizer()
+    assert prompt_ids_open_thought(tok, tok.encode('Hi<|channel>thought\n').ids)
+    assert prompt_ids_open_thought(tok, tok.encode('Hi<|channel>').ids)
+    assert not prompt_ids_open_thought(tok, tok.encode('Hi').ids)
+    assert not prompt_ids_open_thought(tok, tok.encode('Hi<|channel>thought\nnotes<channel|>').ids)
+    assert not prompt_ids_open_thought(tok, tok.encode('Hi<|channel>thought\nlong body text').ids)

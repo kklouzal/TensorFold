@@ -134,6 +134,27 @@ def prompt_opens_thought(prompt: str) -> bool:
     return re.fullmatch(r'[ \t]*[^\s]*\s*', suffix) is not None
 
 
+def prompt_ids_open_thought(tok, ids, *, header_tokens: int = 64) -> bool:
+    """``prompt_opens_thought`` for a raw (untemplated) token prompt: its last real ``<|channel>`` token is followed
+    only by a short header, with no control token after it. Typed text spelling a marker is not a channel."""
+    opener = tok.token_to_id('<|channel>')
+    if opener is None:
+        return False
+    tail = []
+    for token in reversed(ids):
+        if token == opener:
+            break
+        tail.append(token)
+        if len(tail) > header_tokens:
+            return False
+    else:
+        return False
+    controls = {tok.token_to_id(marker) for marker in _CONTROL} - {None}
+    if any(token in controls for token in tail):
+        return False
+    return prompt_opens_thought('<|channel>' + tok.decode(tail[::-1], skip_special_tokens=False))
+
+
 _LOGGER = logging.getLogger(__name__)
 _CHANNEL = re.compile(r'<\|channel>|<channel\|>')
 

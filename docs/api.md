@@ -488,6 +488,11 @@ On CUDA, when the rendered Gemma 4 prompt ends inside the thought channel it ope
 Google's current template does this after tool results with thinking on. The reply's text before `<channel|>` is
 `reasoning_content`.
 
+A raw Gemma 4 `/v1/completions` prompt has no template framing: its reply text streams as each round is verified.
+Only a raw prompt whose own last real `<|channel>` token is followed by nothing but a short header (no
+control token) starts its reply inside that channel; that reply keeps the chat path's holdback, and its text
+before `<channel|>` is not returned. A marker typed as ordinary text is not a channel.
+
 A tool call written before the think block closes is the reply's tool call when the reply ends inside the block,
 on both backends; the reasoning stops where the call starts, and streamed reasoning never carries the call's markup.
 A call only mentioned while thinking, with the block closed after it, stays reasoning.

@@ -1098,6 +1098,11 @@ class App:
                 del encoded
         if not prompt:
             raise RequestError("rendered prompt is empty")
+        if not chat and self.thinking_markers == CHANNEL_MARKERS:
+            # A raw prompt is not template-framed: only a prompt that itself ends inside an opened native channel
+            # starts its reply in that channel (and keeps the answer boundary's holdback).
+            from tensorfold.server.gemma_values import prompt_ids_open_thought
+            thought_open = prompt_ids_open_thought(self.tok, prompt)
         # sampling is resolved here, so a malformed control is refused before a stream opens
         return PreparedRequest(prompt, max_tokens, tools, thinking, self.sampling_for(body, prompt),
                                ignore_eos=ignore_eos, stop=stop, grammar=compiled, think_budget=budget, calls=calls,
@@ -1495,7 +1500,8 @@ class App:
             native_starts = tuple(t for t in (self.tok.token_to_id("<|channel>"), self.tok.token_to_id("<|think|>"))
                                   if t is not None) if gemma else ()
             grammar_state = [None]  # request-owned boundary, independent of producer/rank matcher copies
-            if gemma and prepared.grammar is None:
+            if gemma and prepared.grammar is None and (chat or prepared.thought_open):
+                # Raw completions stream visible text directly unless their prompt left a channel open.
                 grammar_state[0] = grammar.AnswerBoundary(None, think_end=self.tok.token_to_id(markers[1]),
                     think_starts=native_starts, thought_open=prepared.thought_open, decode=self.tok.decode,
                     answer_headers=tuple("<|tool_call>call:" + tool_spec_name(t) + "{" for t in tools))

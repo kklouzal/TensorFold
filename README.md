@@ -1664,9 +1664,8 @@ Greedy serial and DFlash replies were identical on five prompts x 256 tokens;
 staged one-row and five-row target forwards produce bitwise-equal logits and
 taps. On the Gemma-tokenized quality corpus (7,517 teacher-forced tokens), mean
 per-token |log-probability difference| from an independent exact FP32 W4A16
-reference is 0.364 (chat 0.105) versus 1Cat's 0.434 (chat 0.144). Chat SSE streams per verified round; raw `/v1/completions` streams of Gemma
-arrive at the end because the shared App holds Gemma answer text until its
-channel boundary resolves (App behavior, not specific to this provider). Pending:
+reference is 0.364 (chat 0.105) versus 1Cat's 0.434 (chat 0.144). Chat and raw-completion SSE stream per verified round (a raw prompt that ends
+inside an opened channel keeps the chat holdback; [API](docs/api.md)). Pending:
 image/video input, `--parallel` above 1, native 262,144-token qualification and
 sampled-request drafting (sampled requests currently decode serially).
 

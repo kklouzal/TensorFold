@@ -99,7 +99,7 @@ constraints or penalties currently decode serially. `--no-graphs` selects eager 
 one serial and one DFlash round graph per previously accepted row count. Refused on this provider:
 `--vision`, `--parallel` above 1, `--kv-dtype` other than the FP16 default, and the GB10-only options
 `--delta4-head`, `--prepare-global-prompt`, `--dflash-head-w4a16`, `--clip-sampled-verification`,
-`--lossless-head`. See [the README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)
+`--lossless-head`, `--prefix-cache-bytes`, `--spark-global-gqa` and `--spark-sampled-q`. See [the README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)
 for the measured scope.
 
 ## Experimental exact Delta4 tied table
