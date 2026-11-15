@@ -99,7 +99,7 @@ def test_native_source_closure_reuses_the_owned_codec_decoder_and_pins_sm70(monk
         assert operator.extension() is first and len(built) == 1
     finally:
         operator.extension.cache_clear()
-    assert {path.name for path in staged[0][1]} == {"paged_attention_descriptor.cuh", "paged_attention_device.cuh",
+    assert {path.name for path in staged[0][1]} == {"paged_attention_host.cuh", "paged_attention_descriptor.cuh", "paged_attention_device.cuh",
                                                   "packed_kv_decode.cuh", "rotorquant_q4.cuh",
                                                   "rotorquant_q4_tables.cuh"}
     assert built[0][1]["need"] == (7, 0)

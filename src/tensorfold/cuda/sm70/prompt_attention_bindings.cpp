@@ -4,7 +4,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <cstdint>
-#include "paged_attention_descriptor.cuh"
+#include "paged_attention_host.cuh"
 
 using T = at::Tensor;
 
@@ -12,13 +12,10 @@ void sm70_prompt_attention_fused_cuda(const T&, const T&, const T&, T&, T&, int,
 void sm70_prompt_attention_weight_cuda(const T&, const T&, const T&, const T&, T&, const T&);
 
 namespace {
-constexpr int WORLD = 8, HEADS = 12, DIM = 256, WORDS = tf_sm70_paged::WORD_COUNT;
-
-void check(const T& value, const T& owner, at::ScalarType dtype, const char* name) {
-    TORCH_CHECK(value.is_cuda() && value.device() == owner.device() && value.scalar_type() == dtype
-                && value.is_contiguous() && !value.is_neg() && !value.is_conj(),
-                name, " needs resolved contiguous same-device storage with declared dtype");
-}
+constexpr int WORLD = 8, HEADS = 12, DIM = 256;
+using tf_sm70_paged_host::check;
+using tf_sm70_paged_host::controls;
+using tf_sm70_paged_host::selections;
 
 void sm70(const T& owner) {
     const auto* properties = at::cuda::getDeviceProperties(owner.get_device());
@@ -31,23 +28,6 @@ int rows_of(const T& queries) {
     TORCH_CHECK(queries.dim() == 4 && queries.size(0) == WORLD && queries.size(1) <= 65535
                 && queries.size(2) == 3 && queries.size(3) == DIM, "queries require [8,rows<=65535,3,256]");
     return int(queries.size(1));
-}
-
-void controls(const T& table, const T& owner, int rows, int group, int page_tokens, const T& layer) {
-    check(table, owner, at::kLong, "owner row descriptors");
-    TORCH_CHECK(table.dim() == 2 && table.size(0) == rows && table.size(1) == WORDS,
-                "one WORD_COUNT-word descriptor per query row required");
-    TORCH_CHECK(group == 0 || group == 4, "KV-head group starts at rank zero or four");
-    TORCH_CHECK(page_tokens > 0 && page_tokens % 4 == 0, "history pages require positive complete pooling groups");
-    check(layer, owner, at::kInt, "current layer");
-    TORCH_CHECK(layer.dim() == 1 && layer.numel() == 1, "current layer requires a stable int32[1] owner");
-}
-
-void selections(const T& selected, const T& owner, int rows) {
-    check(selected, owner, at::kInt, "canonical selections");
-    TORCH_CHECK(selected.dim() == 3 && selected.size(0) == WORLD && selected.size(1) == rows
-                && selected.size(2) >= 2 && selected.size(2) <= INT32_MAX,
-                "canonical selections require [8,rows,id_width+2]");
 }
 
 void statistics(const T& value, const T& owner, int rows) {

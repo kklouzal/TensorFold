@@ -12,8 +12,9 @@ kernel:
 - `src/tensorfold/cuda/exl3/linear.py`, `linear.cu` — a row-invariant linear layer for 1 to 128 rows;
 - `python -m tensorfold.cuda.exl3.inspect MODEL_DIR` — what a checkpoint holds, from its headers alone.
 
-The GLM-5.3-Flash engine keeps its own tuned `families/glm5_next/cuda/exl3.py` (4-bit `mcg`, routed experts
-only); it stays as it is.
+The GLM-5.3-Flash engine uses the shared `cuda/exl3/experts.py` routed pipeline. Its earlier
+`families/glm5_next/cuda/exl3_mm.py` and `exl3.cu` implementation remains an independent 4-bit `mcg`
+reference for `tests/cuda/test_exl3_experts.py`; keep it separate from the implementation it checks.
 
 ## What a family has to say
 

@@ -38,7 +38,7 @@ def extension():
     prepared = _native()
     root = Path(__file__).parent
     sources = [root / "prompt_attention_bindings.cpp", root / "prompt_attention.cu"]
-    headers = [root / "paged_attention_descriptor.cuh", root / "paged_attention_device.cuh"]
+    headers = [root / "paged_attention_host.cuh", root / "paged_attention_descriptor.cuh", root / "paged_attention_device.cuh"]
     digest = hashlib.sha256(prepared.__name__.encode())
     for source in [*sources, *headers]:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
