@@ -13,7 +13,7 @@ MODELS = ("TensorFold/GLM-5.3-Flash-MLX-4bit-MTP", "Mia-AiLab/GLM-5.3-Flash-EXL3
 DRAFTER = "incoai/GLM-5.3-Flash-DFlash2"   # the CUDA engine's optional draft model; the Mac engine drafts with MTP
 KERNEL_PACKAGE = "tensorfold.kernels.glm.flash.v1"
 # the prompt experts' sorted gather (Flash Next's prompt matmuls), hashed into snapshot keys
-KERNEL_DEPENDENCIES = ("tensorfold.kernels.qwen.flash_next.v1.prefill_mm",)
+KERNEL_DEPENDENCIES = ("tensorfold.kernels.qdot", "tensorfold.kernels.qwen.flash_next.v1.prefill_mm",)
 KERNEL_VERSION = "v1"
 # the storage formats each engine reads: MLX affine on a Mac; that or EXL3 routed experts on CUDA
 QUANT_METHODS = {"mlx": ("mlx",), "cuda": ("mlx", "exl3")}

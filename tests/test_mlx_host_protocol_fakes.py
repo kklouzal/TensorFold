@@ -141,3 +141,24 @@ def test_actual_all_family_kernel_metadata_imports_are_scoped_and_numerical_laye
     for name, module in list(sys.modules.items()):
         if name.startswith("tensorfold.") and module is not before.get(name) and isinstance(module, ModuleType):
             assert all(value is not nn for value in vars(module).values())
+
+
+def test_shared_qdot_source_invalidates_each_consuming_family_version(monkeypatch):
+    from tensorfold import families
+    from tensorfold.kernels import qdot
+
+    source = Path(qdot.__file__).resolve()
+    read_bytes = Path.read_bytes
+    with cli_protocol(monkeypatch, "qdot-version-contract"):
+        consumers = [families.families()[name] for name in ("gemma4", "glm5_next", "deepseek_v4")]
+        before = [families.kernel_version(family, None) for family in consumers]
+
+        def changed(path):
+            content = read_bytes(path)
+            return content + b"\n# source identity changed\n" if path.resolve() == source else content
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "read_bytes", changed)
+            after = [families.kernel_version(family, None) for family in consumers]
+        assert all(old != new for old, new in zip(before, after))
+        assert [families.kernel_version(family, None) for family in consumers] == before

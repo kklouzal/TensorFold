@@ -27,7 +27,7 @@ QUANT_METHODS = {"cuda": ("mlx", "compressed-tensors", "modelopt", None), "mlx":
 KERNEL_PACKAGE = "tensorfold.kernels.gemma.v1"
 KERNEL_VERSION = "v1"
 # the decode projections run another family's matmul kernels
-KERNEL_DEPENDENCIES = ("tensorfold.kernels.qwen.dense.v1.lane_qmm", "tensorfold.kernels.nemotron.lightning.v1.rows")
+KERNEL_DEPENDENCIES = ("tensorfold.kernels.qdot", "tensorfold.kernels.qwen.dense.v1.lane_qmm", "tensorfold.kernels.nemotron.lightning.v1.rows")
 
 
 def check(model_dir: str | Path) -> None:

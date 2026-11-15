@@ -15,7 +15,7 @@ DRAFTER = "TensorFold/DeepSeek-V4-Flash-DSpark-MLX"
 KERNEL_PACKAGE = "tensorfold.kernels.deepseek.v4"
 KERNEL_VERSION = "v1"
 # the shared GLM-5.3 pieces this engine runs (hyper-connections, row linears), hashed into snapshot keys
-KERNEL_DEPENDENCIES = ("tensorfold.kernels.glm.flash.v1", "tensorfold.families.glm5_next.linear",
+KERNEL_DEPENDENCIES = ("tensorfold.kernels.qdot", "tensorfold.kernels.glm.flash.v1", "tensorfold.families.glm5_next.linear",
                        "tensorfold.families.glm5_next.model")
 QUANT_METHODS = {"mlx": ("mlx",)}
 # buffers of 200 ops and 200 MB, so a prompt chunk's memory frees as it runs; no TF32: row kernels repeat fp32
