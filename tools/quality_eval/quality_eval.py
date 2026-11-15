@@ -41,11 +41,15 @@ def _sha(path: Path) -> str:
 
 def tokenize(args) -> None:
     from transformers import AutoTokenizer
-    from tensorfold.server.text import render_prompt_ids
+    from tensorfold.server.text import CHANNEL_MARKERS, render_prompt_ids
 
     corpus_path, tok_dir = Path(args.corpus), Path(args.tokenizer)
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
     tok = AutoTokenizer.from_pretrained(str(tok_dir))
+    # Exported padding/truncation are batch settings, not the model's tokenization (as in
+    # tensorfold.token_metadata.load_tokenizer); AEON Gemma 4 ships left padding to 4096.
+    tok.backend_tokenizer.no_padding()
+    tok.backend_tokenizer.no_truncation()
     docs = []
     for doc in corpus["documents"]:
         if doc["kind"] == "chat":
@@ -54,9 +58,16 @@ def tokenize(args) -> None:
                 raise SystemExit(f"{doc['id']}: a chat document ends with the assistant reply it scores")
             prompt = render_prompt_ids(tok, messages[:-1], enable_thinking=False, add_generation_prompt=True)
             full = render_prompt_ids(tok, messages, enable_thinking=False, add_generation_prompt=False)
-            if full[:len(prompt)] != prompt:
-                raise SystemExit(f"{doc['id']}: the rendered conversation does not extend its generation prompt")
-            continuation = full[len(prompt):]
+            if full[:len(prompt)] == prompt:
+                continuation = full[len(prompt):]
+            else:
+                # Gemma 4 (thinking off) opens the reply with an empty thought channel that its
+                # history rendering omits: score the history reply after the served prompt.
+                at = next(i for i, (a, b) in enumerate(zip(prompt, full)) if a != b)
+                opener, closer = CHANNEL_MARKERS
+                if tok.decode(prompt[at:]) != f"{opener}\n{closer}":
+                    raise SystemExit(f"{doc['id']}: the rendered conversation does not extend its generation prompt")
+                continuation = full[at:]
         else:
             ids = [int(t) for t in tok(doc["text"], add_special_tokens=False)["input_ids"]]
             cut = len(ids) - min(CONTINUATION_TOKENS, len(ids) // 3)
