@@ -159,16 +159,58 @@ reference through `prompt_logprobs`.
 ```bash
 # once per corpus version and tokenizer (needs transformers + tensorfold: serving image)
 python tools/quality_eval/quality_eval.py tokenize --corpus tools/quality_eval/corpus-v1.json \
-  --tokenizer MODEL_DIR --out corpus-v1.MODEL.tokens.json
+  --tokenizer MODEL_DIR [--chat-template SERVED_TEMPLATE] --out corpus-v1.MODEL.tokens.json
 python3 tools/quality_eval/quality_eval.py score --tokens TOKENS.json --out A.json --label REF --repeat 2
 python3 tools/quality_eval/quality_eval.py score --tokens TOKENS.json --out B.json --label CAND --repeat 2
 python3 tools/quality_eval/quality_eval.py compare A.json B.json --out quality.json
 ```
 
-Frozen corpora: `tools/quality_eval/corpus-v1.json` (16 documents, chat and
-prose), tokenized as `corpus-v1.tokens.json` (SC117 tokenizer) and
-`corpus-v1.gemma4.tokens.json` (Gemma 4 tokenizer). Both runs must score the
-same token file (checked by SHA-256).
+Documents with `messages` are chat documents: the conversation before the final
+assistant message is rendered by the chat template with thinking off and the
+final reply is scored; `--chat-template` uses the served template file instead of
+the checkpoint's (its SHA-256 is recorded in the token file). Documents with
+`text` are tokenized raw (no BOS); their last min(192, n/3) tokens are the
+continuation. A document's `kind` is its stratum in `compare`'s per-kind means.
+Both runs must score the same token file (checked by SHA-256).
+
+Frozen corpora:
+
+- `tools/quality_eval/corpus-v1.json` (16 documents, chat and prose), tokenized
+  as `corpus-v1.tokens.json` (SC117 tokenizer) and `corpus-v1.gemma4.tokens.json`
+  (Gemma 4 tokenizer). About 2,600 decode positions: too few to resolve a
+  numerics change near the margin (a Gemma 4 SM70 candidate scored decode
+  d −0.0049, CI [−0.0132, +0.0022], `inconclusive`).
+- `tools/quality_eval/corpus-v2.gemma4.json` (Gemma 4; sha256 `b38fa75f…`),
+  tokenized as `corpus-v2.gemma4.tokens.json` (sha256 `94f299f4…`; AEON Gemma 4
+  26B-A4B tokenizer, served Google template `gemma4-chat-template-google-4d7ae498.jinja`).
+  268 documents, 239,608 prompt-pass and 101,168 decode positions:
+
+  | Stratum (`kind`) | Docs | Decode positions | Source |
+  | --- | ---: | ---: | --- |
+  | `chat-general` / `chat-math` / `chat-code` | 32 / 30 / 40 | 12,543 / 16,867 / 26,588 | self-written; some system prompts and two-turn chats |
+  | `chat-multilingual` | 34 | 13,905 | self-written, 20 languages |
+  | `chat-repo` / `chat-repo-long` | 26 / 10 | 9,125 / 3,870 | "continue this file" over repository excerpts; long prompts 4K–15K tokens |
+  | `text-prose` / `text-math` / `text-multilingual` | 26 / 14 / 22 | 4,962 / 2,674 / 4,156 | self-written raw text |
+  | `text-repo-doc(-long)` / `text-repo-code(-long)` | 16 / 18 | 3,040 / 3,438 | raw repository excerpts, five of 12K–15K tokens |
+
+  Self-written documents were written for this repository; repository excerpts
+  come from TensorFold's own Apache-2.0 files at commit `5a0d38b6`
+  (third-party and vendored files excluded). Tokenizing takes about 45 CPU
+  minutes (each chat render costs ~8 s); do it once per corpus version.
+
+Size rationale for v2: in the v1 A/B the document-blocked SE equalled the naive
+per-token SE (0.0041 vs 0.0040), so decode differences behave as nearly
+independent tokens with rare 1–3.5 nat outliers (MoE routing flips); the 95%
+half-width is about 1.96·sd/√N. With the observed per-token sd of d (0.21 overall;
+by kind 0.03 chat, 0.04 multilingual, 0.16 math, 0.27 prose, 0.31 code), v2's
+101K decode positions give an expected half-width of about **±0.0013–0.0014
+nats/token** for a change of that kind (v1: ±0.008), well inside M = 0.005.
+A change with larger per-token differences widens the interval in proportion
+to its sd; the bootstrap interval, not this estimate, decides.
+
+Run time (TP8 Gemma 4 SM70, `--parallel 1`, DFlash draft rows 3): about 13
+minutes per repeat, estimated from v1's rates (~160 decode positions/s, ~1,900
+prompt tokens/s), so `--repeat 2` fits in under 30 minutes plus server start.
 
 `score` reports mean NLL (nats/token) and perplexity separately for the
 **prefill** and **decode** paths; `--repeat N` also checks that repeats are

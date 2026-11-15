@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Teacher-forced output-quality evaluation of a served model, and A/B comparison of two runs.
 
-  tokenize --corpus corpus-v1.json --tokenizer DIR --out corpus-v1.tokens.json
+  tokenize --corpus corpus-v1.json --tokenizer DIR [--chat-template FILE] --out corpus-v1.tokens.json
       Freeze a corpus into token IDs (needs ``transformers`` and ``tensorfold``; run it once per corpus version,
-      e.g. inside the serving image). Chat documents use TensorFold's served template renderer, thinking off.
+      e.g. inside the serving image). Chat documents (``messages``) use TensorFold's served template renderer,
+      thinking off; text documents (``text``) are tokenized raw, without BOS.
   score --tokens corpus-v1.tokens.json --out RUN.json [--url http://127.0.0.1:8000] [--backend tensorfold|vllm]
         [--top 20] [--repeat 1] [--model NAME]
       TensorFold: POST /v1/tensorfold/score (the server must run with TENSORFOLD_PRIVATE_SCORE=1). Every
@@ -50,9 +51,14 @@ def tokenize(args) -> None:
     # tensorfold.token_metadata.load_tokenizer); AEON Gemma 4 ships left padding to 4096.
     tok.backend_tokenizer.no_padding()
     tok.backend_tokenizer.no_truncation()
+    template = None
+    if args.chat_template:
+        # The served template (``serve --chat-template``) replaces the checkpoint's, as the server does.
+        template = Path(args.chat_template)
+        tok.chat_template = template.read_text(encoding="utf-8")
     docs = []
     for doc in corpus["documents"]:
-        if doc["kind"] == "chat":
+        if "messages" in doc:                        # chat document (v1 kind "chat"; v2 kinds "chat-*")
             messages = doc["messages"]
             if messages[-1]["role"] != "assistant":
                 raise SystemExit(f"{doc['id']}: a chat document ends with the assistant reply it scores")
@@ -78,7 +84,9 @@ def tokenize(args) -> None:
     out = {"schema": SCHEMA_TOKENS, "version": 1, "corpus": corpus_path.name, "corpus_sha256": _sha(corpus_path),
            "corpus_version": corpus["version"],
            "tokenizer_sha256": _sha(tok_dir / "tokenizer.json"),
-           "tokenizer_config_sha256": _sha(tok_dir / "tokenizer_config.json"), "documents": docs}
+           "tokenizer_config_sha256": _sha(tok_dir / "tokenizer_config.json"),
+           **({"chat_template": template.name, "chat_template_sha256": _sha(template)} if template else {}),
+           "documents": docs}
     Path(args.out).write_text(json.dumps(out, separators=(",", ":")) + "\n", encoding="utf-8")
     total = sum(len(d["prompt"]) + len(d["continuation"]) for d in docs)
     print(f"{len(docs)} documents, {total} tokens "
@@ -311,6 +319,7 @@ def main(argv=None) -> None:
     p = sub.add_parser("tokenize")
     p.add_argument("--corpus", required=True)
     p.add_argument("--tokenizer", required=True, help="directory holding tokenizer.json and tokenizer_config.json")
+    p.add_argument("--chat-template", help="the served chat template file (default: the checkpoint's own)")
     p.add_argument("--out", required=True)
     p.set_defaults(run=tokenize)
     p = sub.add_parser("score")
