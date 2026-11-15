@@ -40,7 +40,7 @@ class Gemma4SM70Engine:
 
     def __init__(self, model_dir: Path, *, rank: int, tp: int, master: str, master_port: int,
                  context: int | None = None, context_explicit: bool | None = None, drafter: str = "",
-                 drafter_bits: int = 8, depth: int | None = None, no_drafts: bool = False, streams: int = 1,
+                 drafter_bits: int = 16, depth: int | None = None, no_drafts: bool = False, streams: int = 1,
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None, graphs: bool = True) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config

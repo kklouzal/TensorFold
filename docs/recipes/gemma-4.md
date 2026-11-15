@@ -67,6 +67,41 @@ The example's five rows permit four DFlash proposals. A bounded GB10 comparison 
 Measured on an M4 Pro with 64 GB (273 GB/s) and MLX 0.31.2, with `mlx-community/gemma-4-26b-a4b-it-4bit`.
 Packages: `src/tensorfold/families/gemma4/` and `src/tensorfold/kernels/gemma/v1/`.
 
+## Eight V100s (TP8/ETP4)
+
+The AEON compressed-tensors NVFP4 export also runs on eight V100-SXM2-32GB GPUs (SM70, one host) through
+the separate provider in `src/tensorfold/families/gemma4/sm70/`, selected by `--tp 8`. Every rank is an
+ordinary `tensorfold serve` process supervised by `tools/launch_cuda_tp.py`; rank 0 serves HTTP and drives
+the others over same-host control pipes.
+
+Layout: sliding attention TP8 (two query heads and one KV head per rank), full attention two query heads
+per rank with its KV head replicated over four ranks, dense MLP 272/256 rows per rank, routed experts
+ETP4 x EP2 (64 experts per rank, intermediate slice 176). Decode rows all-gather FP32 partials and sum them
+in rank order; prompt rows all-reduce. The DFlash companion is split the same way (four query heads, one
+KV head, MLP 704 per rank) and borrows the vocabulary-parallel BF16 target head.
+
+Arithmetic (`gemma4-sm70-w4a16-v1`): exact original FP4/E4M3 weights decoded in-kernel, FP16 activations
+into projections (W4A16; the checkpoint's FP4 activation calibration requires SM12 FP4 tensor cores),
+FP32 residual stream, norms and reductions, FP16 KV, WMMA split-key attention, BF16 head with the final
+softcap once. Decode/verify rows use FP32-activation GEMVs; prompt rows use exactly dequantized FP16
+weights on cuBLAS tensor cores. Bit identity with GB10 is not claimed.
+
+```sh
+python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/gemma4-nvfp4 --backend cuda \
+  --precision checkpoint --drafter /models/gemma4-dflash --drafter-bits 8 --draft-rows 5 \
+  --parallel 1 --context 262144 --name gemma4-26b-a4b --thinking --thinking-budget 0 \
+  --chat-template deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja --host 0.0.0.0 --port 8000
+```
+
+`--drafter-bits` is `16` (original BF16 companion, default) or `8` (private per-row INT8 W8A16 copies);
+`--draft-rows` 2-16 (default 5). Greedy requests draft; sampled requests and requests with grammar
+constraints or penalties currently decode serially. `--no-graphs` selects eager execution. Startup captures
+one serial and one DFlash round graph per previously accepted row count. Refused on this provider:
+`--vision`, `--parallel` above 1, `--kv-dtype` other than the FP16 default, and the GB10-only options
+`--delta4-head`, `--prepare-global-prompt`, `--dflash-head-w4a16`, `--clip-sampled-verification`,
+`--lossless-head`. See [the README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)
+for the measured scope.
+
 ## Experimental exact Delta4 tied table
 
 The native CT constructor accepts `delta4_head=False` by default. Explicit

@@ -364,7 +364,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Qwen3.8 Flash Next | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` | MLX, CUDA | Included MTP and context copies |
 | GLM-5.3-Flash | `Vontra/GLM-5.3-Flash-MLX-4bit-MTP` | MLX on a 256 GB Mac; CUDA with two ranks | MTP; optional DFlash2 on CUDA |
 | Gemma 4 E4B | `DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking` | CUDA BF16 candidate; [recipe](docs/recipes/gemma-4-e4b.md) | Native Google assistant and EAGLE3 candidates; comparison pending, neither is DFlash |
-| Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4; ModelOpt NVFP4 ([recipe](docs/recipes/gemma-4-26b-modelopt.md)) | MLX; initial CUDA trial | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
+| Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4; ModelOpt NVFP4 ([recipe](docs/recipes/gemma-4-26b-modelopt.md)) | MLX; initial CUDA trial; AEON-7 NVFP4 on eight V100s with `--tp 8` ([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)) | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
 | Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |
 | Qwen3.8-27B EXL3, experimental | `turboderp/Qwen3.8-27B-exl3`, branches `3.00bpw` / `4.00bpw` | CUDA | DFlash2 and context copies |
@@ -469,7 +469,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--execution-profile-manifest FILE` | Opt-in GGUF SM70 input/runtime binding and verified execution-profile receipts. GGUF shards are bound by size and header digest (payloads are not hashed); metadata, source and loaded libraries are hashed once; normal startup does not do this work. See the [manifest contract](docs/execution-profile-manifest.md). |
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
-| `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` with an original or losslessly packed BF16 tied target head: private FP8 copies of its companion projections and head. Gemma FP8 prepares its selected prompt and lane providers during initialization after validating those copies; build failures abort startup. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
+| `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` with an original or losslessly packed BF16 tied target head: private FP8 copies of its companion projections and head. Gemma FP8 prepares its selected prompt and lane providers during initialization after validating those copies; build failures abort startup. Gemma affine checkpoints with a quantized tied head retain `16`. On eight V100s (`--tp 8`) Gemma DFlash takes `16` (original BF16, default) or `8` (private per-row INT8 W8A16 copies of the companion projections; the BF16 target head is shared). Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
 | `--clip-sampled-verification` | Gemma4 non-dense CUDA with enabled DFlash: explicitly clip sampled target verification to remaining room, preserving full proposal sampling. Default off; no precision/geometry/classifier change. |
 | `--delta4-head` | Gemma CT NVFP4 MoE on CUDA only: lossless tied BF16 Delta4 storage using fixed reuse16, default off. Preserves the existing drafter/vision/template/context selections. Cannot combine with ModelOpt's separate `--lossless-head`; no graph, clipping or cache candidate is enabled. |
 | `--prepare-global-prompt` | Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: one admitted context-sized shared BF16 global-prompt K/V scratch pair, default off. At the AEON131072 profile this is512 MiB. Does not enable trig, persistent cache, draft graphs or clipping. |
@@ -480,7 +480,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--decode-share F` | MLX default `0.25`, leaving replies progressing during chunked prefill. Flash Next CUDA shared rounds default 0; a positive share sizes prompt passes to allow decoding inside them. |
 | `--prefill-fp8`, `--no-prefill-fp8` | CUDA supported prompt kernels; default BF16 activations. FP8 prefill explicitly reduces activation precision. |
 | `--precision checkpoint\|full` | CUDA NVFP4 default `checkpoint`: checkpoint-native math when supported, with the documented stored-weight path otherwise. `full` uses BF16 activations against stored weights. |
-| `--tp N` | Default 1; tensor-parallel counts remain family-specific. Matching checkpoint/configuration is required across ranks. |
+| `--tp N` | Default 1; tensor-parallel counts remain family-specific. Matching checkpoint/configuration is required across ranks. `--tp 8` also selects the eight-V100 Gemma 4 26B-A4B CT NVFP4 provider (TP8 attention/dense, ETP4 x EP2 experts; [recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)). |
 | `--expert-ranks 1\|2\|3\|4` | Default 1. Flash Next affine4/NVFP4 RAM experts, same-host NCCL; requires `--tp 1` and `--vram-experts`. Rank zero owns backbone/state; followers own disjoint routed experts. |
 | `--expert-shards COUNTS` | Unset. Comma-separated positive expert counts, one per expert rank, summing to checkpoint `num_experts`; contiguous ownership permits asymmetric splits. |
 | `--rank N` | Default 0; valid tensor/expert rank index. Rank zero serves HTTP. The [expert launcher](docs/desktop-report-remediation.md#same-host-expert-ranks) supplies topology arguments. |
@@ -1638,6 +1638,36 @@ That functional operation took **359.99 s**, including model startup, prompt war
 All scoped candidate, source, build, native, packaging and fresh API gates are complete. The performance tables retain their original Source06/private comparison identities and limits. This closing result update changes documentation only; it leaves the qualified runtime code unchanged. A subsequent rebuild must record its own artifact IDs rather than reuse these digests as aliases.
 
 ### Eight V100s (SM70)
+
+#### Gemma 4 26B-A4B AEON NVFP4 on eight V100s (2026-11-15)
+
+`AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` (revision `90c8601b`) with
+`z-lab/gemma-4-26B-A4B-it-DFlash` (`77d42027`) runs on the eight-V100-SXM2-32GB
+host through `tools/launch_cuda_tp.py` and `--tp 8`
+([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)). Numerical profile
+`gemma4-sm70-w4a16-v1`: original FP4 codes and E4M3 block scales decoded exactly
+in-kernel, FP16 activations into projections (W4A16, as 1Cat-vLLM on SM70; the
+checkpoint's calibrated FP4 activation math is SM12-only), FP32 residual stream,
+norms and cross-rank sums, FP16 KV, original BF16 tied head and router.
+
+Measured on source `eda379e2` (working-tree snapshot in image `cf8c0ff6`), C1,
+greedy, `--parallel 1`, context 32768, non-streaming timing
+((N-1)/(T(256)-T(1))), single runs, descriptive rather than qualified:
+
+| Path | Decode tok/s | Cold prefill tok/s |
+| --- | --- | --- |
+| Serial, CUDA graphs | 98 (prose chat), 102 (code chat), 112 (raw story) | 2,332 at 4K, 2,402 at 16K |
+| DFlash depth 4 (`--draft-rows 5 --drafter-bits 8`) | 146 (prose chat), 244 (code chat), 300 (raw story) | same |
+| 1Cat-vLLM v1.5.2, TP1 (its only loading layout), no drafter | 65 | 527 at 4K |
+
+Greedy serial and DFlash replies were identical on five prompts x 256 tokens;
+staged one-row and five-row target forwards produce bitwise-equal logits and
+taps. On the Gemma-tokenized quality corpus (7,517 teacher-forced tokens), mean
+per-token |log-probability difference| from an independent exact FP32 W4A16
+reference is 0.364 (chat 0.105) versus 1Cat's 0.434 (chat 0.144). Pending:
+image/video input, `--parallel` above 1, native 262,144-token qualification,
+streaming cadence (SSE deltas currently arrive in bursts) and sampled-request
+drafting (sampled requests currently decode serially).
 
 #### Flash Next mixed GGUF on eight V100s
 
