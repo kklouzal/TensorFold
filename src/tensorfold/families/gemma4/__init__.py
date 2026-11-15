@@ -168,11 +168,41 @@ def check_cuda_prefix_cache_metadata(config, *, flag="--prefix-cache-bytes"):
         raise ValueError(f"{flag} requires Gemma 4 MoE on CUDA")
 
 
+SM70_OPTIONS = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "eos_token_ids", "chat_template_file",
+                "chat_template_name", "vision", "kv_dtype", "expert_tensor_parallel_size"}
+
+
+def _sm70_engine(model_dir, *, drafter, rank, master, master_port, no_drafts, context, **options):
+    """Eight-V100 TP8/ETP4 provider for the AEON CT NVFP4 26B-A4B checkpoint (families/gemma4/sm70)."""
+    unsupported = sorted(set(options) - SM70_OPTIONS)
+    if unsupported:
+        raise ValueError("Gemma4 on eight V100s (--tp 8) does not implement: " + ", ".join(unsupported))
+    if options.get("vision"):
+        raise ValueError("Gemma4 --tp 8 (SM70) does not serve image/video input yet; drop --vision")
+    if options.get("kv_dtype", "fp16") not in ("fp16", "bf16"):
+        raise ValueError("Gemma4 --tp 8 keeps FP16 KV (SM70 has no BF16 tensor cores); drop --kv-dtype")
+    if options.get("expert_tensor_parallel_size", 4) != 4:
+        raise ValueError("Gemma4 --tp 8 uses ETP4 x EP2 experts (--expert-tensor-parallel-size 4)")
+    from tensorfold.families import quant_method, read_config
+    if quant_method(read_config(model_dir)) != "compressed-tensors":
+        raise ValueError("Gemma4 --tp 8 serves the compressed-tensors NVFP4 export")
+    from .sm70.engine import Gemma4SM70Engine
+    rows = options.get("draft_rows")
+    return Gemma4SM70Engine(Path(model_dir), rank=rank, tp=8, master=master, master_port=master_port,
+                            context=context, drafter="" if no_drafts else drafter, no_drafts=no_drafts,
+                            depth=None if rows is None else rows - 1, streams=options.get("parallel", 1),
+                            **{k: options[k] for k in ("context_explicit", "drafter_bits", "eos_token_ids",
+                                                       "chat_template_file", "chat_template_name") if k in options})
+
+
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0,
                 master: str = "", master_port: int = 29551, no_drafts: bool = False,
                 context: int | None = None, **options: Any):
     """Original mixed4/6 affine or CT NVFP4 target, DFlash (BF16, or private FP8 copies at --drafter-bits 8) and
     native image/video input."""
+    if tp == 8:
+        return _sm70_engine(model_dir, drafter=drafter, rank=rank, master=master, master_port=master_port,
+                            no_drafts=no_drafts, context=context, **options)
     if tp != 1 or rank != 0:
         raise ValueError("Gemma4 CUDA currently runs on one GPU; use --tp 1 --rank 0")
     allowed = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "vision", "vision_urls",
