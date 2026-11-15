@@ -88,14 +88,14 @@ weights on cuBLAS tensor cores. Bit identity with GB10 is not claimed.
 
 ```sh
 TF_SMALL_GATHER_BYTES=262144 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/gemma4-nvfp4 --backend cuda \
-  --precision checkpoint --drafter /models/gemma4-dflash --drafter-bits 8 --draft-rows 4 \
+  --precision checkpoint --drafter /models/gemma4-dflash --drafter-bits 8 --draft-rows 3 \
   --parallel 1 --context 262144 --name gemma4-26b-a4b --thinking --thinking-budget 0 \
   --chat-template deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja --host 0.0.0.0 --port 8000
 ```
 
 `TF_SMALL_GATHER_BYTES=262144` selects the NVLink small all-gather for the per-layer FP32 partial exchanges
 (measured 6.2 -> 5.0 ms per serial decode step). `--drafter-bits` is `16` (original BF16 companion, default) or `8` (private per-row INT8 W8A16 copies);
-`--draft-rows` 2-16 (default 5); greedy DFlash replies equal serial replies bitwise for 2-8 rows (wider
+`--draft-rows` 2-16 (default 3); greedy DFlash replies equal serial replies bitwise for 2-8 rows (wider
 verify blocks use 256-key attention chunks). On the C1 greedy serving matrix (4K-64K prompts, `--context 66048`)
 scored with the server session as the unit, `--draft-rows 3` decoded 3.8% faster in aggregate than 5 with
 identical replies and no prefill regression, and 0.5% faster than 4; 4 rows decoded 3.3% faster than 5 but one

@@ -64,7 +64,7 @@ class Gemma4SM70Engine:
         self.head = None
         if drafter and not no_drafts:
             from .dflash import DFlash
-            block = 5 if depth is None else depth + 1
+            block = 3 if depth is None else depth + 1
             self.head = DFlash(drafter, self.target, context=self.context_window, block=block, bits=drafter_bits)
             self.max_rows = block
             self.max_draft = block - 1

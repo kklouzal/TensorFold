@@ -1702,7 +1702,7 @@ scoring of this sweep paired repeats inside one server process, called 3 and 4
 rows tied and scored process-to-process prefill shifts of about 1% as
 regressions; it is superseded. Every greedy reply was token-identical to the 5-row baseline
 (2–8 rows keep DFlash equal to serial decoding); sampled requests decode serially
-and do not use the drafter. The CLI default remains 5 pending a code change.
+and do not use the drafter. The SM70 provider's default is now 3 rows.
 Scope: long-prompt summaries at C1 only; short chats, C > 1 and the 262,144-token
 context were not re-scored.
 
