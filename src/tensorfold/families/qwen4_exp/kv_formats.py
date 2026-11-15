@@ -211,3 +211,11 @@ def get_pair(shorthand: str = "bf16", key_override: str | None = None,
     key = base if key_override is None else get(key_override)
     value = base if value_override is None else get(value_override)
     return KVPairFormat(key, value)
+
+
+def kv_dtype(self) -> str:
+    """Legacy symmetric cache name; mixed callers use kv_pair."""
+
+    if not self.kv_pair.symmetric:
+        raise ValueError("mixed KV engine has no single dtype; use kv_pair")
+    return self.kv_pair.key_dtype

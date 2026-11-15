@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..kv_formats import kv_dtype as engine_kv_dtype
+
 import time
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -266,13 +268,7 @@ class Engine:
             else:
                 self.graphs = Graphs(self, max_rows=max_rows)
 
-    @property
-    def kv_dtype(self) -> str:
-        """Legacy symmetric cache name; mixed callers use kv_pair."""
-
-        if not self.kv_pair.symmetric:
-            raise ValueError("mixed KV engine has no single dtype; use kv_pair")
-        return self.kv_pair.key_dtype
+    kv_dtype = property(engine_kv_dtype)
 
     def reset(self, *, new_sequence: bool = True) -> None:
         if new_sequence:

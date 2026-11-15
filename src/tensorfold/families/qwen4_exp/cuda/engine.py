@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..kv_formats import kv_dtype as engine_kv_dtype
+
 import json
 import threading
 import time
@@ -2387,13 +2389,7 @@ class FlashNextEngine:
               f"{cache.capacity} experts per lease); "
               f"{reservation} and {retained} snapshots reserved, {headroom / 2**20:g} MiB headroom", flush=True)
 
-    @property
-    def kv_dtype(self) -> str:
-        """Legacy symmetric cache name; mixed callers use kv_pair."""
-
-        if not self.kv_pair.symmetric:
-            raise ValueError("mixed KV engine has no single dtype; use kv_pair")
-        return self.kv_pair.key_dtype
+    kv_dtype = property(engine_kv_dtype)
 
     def _bind_coordinate_profile(self, weights) -> None:
         """Issue one resident-model namespace, before bound State construction.

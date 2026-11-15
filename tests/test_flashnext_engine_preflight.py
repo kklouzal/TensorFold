@@ -167,12 +167,13 @@ def test_compact_gguf_refuses_blackwell_before_provider_setup_or_weight_loading(
     from tests.test_cuda_capacity import small_config
 
     text = small_config()
+    text['num_experts'] = text['n_routed_experts']
     text['head_dim'] = 256
     text['shared_expert_intermediate_size'] = 1024
     (tmp_path / 'config.json').write_text(json.dumps(text))
     # Layout eligibility now reads authoritative source headers before CUDA;
     # keep this hardware-ordering fixture backed by a real GGUF inventory.
-    tiny_model(tmp_path / 'target.gguf')
+    tiny_model(tmp_path / 'target.gguf', experts=text['num_experts'])
     monkeypatch.setattr(gguf, 'resolve_gguf', lambda path: tmp_path / 'target.gguf')
     monkeypatch.setattr(chat_template, 'prepare_chat_template', lambda *a, **kw: None)
     monkeypatch.setattr(qwen4_exp, 'rope_parameters', lambda *a: RopeParameters.from_config(text))
