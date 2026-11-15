@@ -92,8 +92,13 @@ def test_gemma4_kernels():
         q8 = torch.randint(-127, 128, (N, K), dtype=torch.int8); sc = torch.rand(N) * 1e-2 + 1e-4
         x = torch.randn(M, K)
         out = torch.empty(M, N, device=dev)
-        ext.i8_rows(x.to(dev), M, q8.to(dev), sc.to(dev), N, K, out, N)
+        ext.i8_rows(x.to(dev), M, q8.to(dev), sc.to(dev), N, K, out, N, 0.0)
         check(f"i8_rows M{M} N{N} K{K}", out, (x.double() @ q8.double().T) * sc.double(), 1e-5)
+    out = torch.empty(4, 32768, device=dev)                  # proposal head: softcapped INT8 vocabulary rows
+    q8 = torch.randint(-127, 128, (32768, 2816), dtype=torch.int8); sc = torch.rand(32768) * 1e-2 + 1e-4
+    x = torch.randn(4, 2816)
+    ext.i8_rows(x.to(dev), 4, q8.to(dev), sc.to(dev), 32768, 2816, out, 32768, 30.0)
+    check("i8_rows softcap head", out, torch.tanh((x.double() @ q8.double().T) * sc.double() / 30) * 30, 1e-5)
     # route
     M = 6
     logits = torch.randn(M, 128) * 3

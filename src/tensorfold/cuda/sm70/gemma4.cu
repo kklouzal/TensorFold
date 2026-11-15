@@ -289,7 +289,7 @@ __global__ void __launch_bounds__(256) bf16_rows(const float* __restrict__ x, in
 template <int MAXM, int R>
 __global__ void __launch_bounds__(256) i8_rows(const float* __restrict__ x, int64_t ldx, int M,
         const int8_t* __restrict__ w, const float* __restrict__ scale, int N, int K, float* __restrict__ out,
-        int64_t ldo) {
+        int64_t ldo, float softcap) {
     const int n0 = (blockIdx.x * WARPS + (threadIdx.x >> 5)) * R, lane = threadIdx.x & 31;
     if (n0 >= N) return;
     const uint4* rows[R];
@@ -334,8 +334,12 @@ __global__ void __launch_bounds__(256) i8_rows(const float* __restrict__ x, int6
 #pragma unroll
         for (int m = 0; m < MAXM; ++m) {
             if (m < M) {
-                const float v = warp_sum(acc[r][m]);
-                if (lane == 0 && n0 + r < N) out[m * ldo + n0 + r] = v * __ldg(scale + n0 + r);
+                float v = warp_sum(acc[r][m]);
+                if (lane == 0 && n0 + r < N) {
+                    v *= __ldg(scale + n0 + r);
+                    if (softcap > 0.f) v = tanhf(v / softcap) * softcap;
+                    out[m * ldo + n0 + r] = v;
+                }
             }
         }
     }
@@ -459,59 +463,53 @@ __global__ void __launch_bounds__(256) router(const float* __restrict__ x, int64
     __syncthreads();
     if (!last) return;
     __threadfence();
-    // Route each row: softmax over E, stable top-k by probability, renormalized, times per_expert_scale.
-    __shared__ float prob[256];
-    __shared__ float red[8];
-    __shared__ int redi[8];
-    for (int m = 0; m < M; ++m) {
-        const float l = t < E ? __ldcg(logits + m * E + t) : -INFINITY;
-        float mx = l;
+    // Route each row with one warp (rows in parallel): softmax over E <= 256, stable top-k by probability
+    // (lowest expert on ties), renormalized, times per_expert_scale. Lane l holds experts l, l + 32, ...
+    for (int m = warp; m < M; m += 8) {
+        float pr[8];
+        float mx = -INFINITY;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int ee = lane + 32 * j;
+            pr[j] = ee < E ? __ldcg(logits + m * E + ee) : -INFINITY;
+            mx = fmaxf(mx, pr[j]);
+        }
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) mx = fmaxf(mx, __shfl_xor_sync(0xffffffffu, mx, o));
-        if (lane == 0) red[warp] = mx;
-        __syncthreads();
-        mx = red[0];
-        for (int i = 1; i < 8; ++i) mx = fmaxf(mx, red[i]);
-        __syncthreads();
-        const float pe = t < E ? expf(l - mx) : 0.f;
-        float sum = warp_sum(pe);
-        if (lane == 0) red[warp] = sum;
-        __syncthreads();
-        sum = 0.f;
-        for (int i = 0; i < 8; ++i) sum += red[i];
-        __syncthreads();
-        prob[t] = t < E ? pe / sum : -1.f;
-        __syncthreads();
+        float sum = 0.f;
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            pr[j] = lane + 32 * j < E ? expf(pr[j] - mx) : 0.f;
+            sum += pr[j];
+        }
+        sum = warp_sum(sum);
+#pragma unroll
+        for (int j = 0; j < 8; ++j) pr[j] = lane + 32 * j < E ? pr[j] / sum : -1.f;
         float chosen = 0.f, selected_total = 0.f;
         int picked = -1;
         for (int k = 0; k < topk; ++k) {
-            float v = prob[t];
-            int idx = t;
+            float v = pr[0];
+            int idx = lane;
+#pragma unroll
+            for (int j = 1; j < 8; ++j)
+                if (pr[j] > v) { v = pr[j]; idx = lane + 32 * j; }   // ascending index: ties keep the lower one
 #pragma unroll
             for (int o = 16; o > 0; o >>= 1) {
                 const float ov = __shfl_xor_sync(0xffffffffu, v, o);
                 const int oi = __shfl_xor_sync(0xffffffffu, idx, o);
                 if (ov > v || (ov == v && oi < idx)) { v = ov; idx = oi; }
             }
-            if (lane == 0) { red[warp] = v; redi[warp] = idx; }
-            __syncthreads();
-            float bv = red[0];
-            int bi = redi[0];
-            for (int i = 1; i < 8; ++i)
-                if (red[i] > bv || (red[i] == bv && redi[i] < bi)) { bv = red[i]; bi = redi[i]; }
-            selected_total += bv;
-            if (t == k) { chosen = bv; picked = bi; }
-            __syncthreads();
-            if (t == bi) prob[t] = -2.f;
-            __syncthreads();
+            selected_total += v;
+            if (lane == k) { chosen = v; picked = idx; }
+            if ((idx & 31) == lane) pr[idx >> 5] = -2.f;
         }
-        if (t < topk) {
-            ids[m * topk + t] = picked;
-            weights[m * topk + t] = chosen / selected_total * bf16f(scale[picked]);
-            local[m * topk + t] = (picked >= first && picked < first + count) ? picked - first : -1;
+        if (lane < topk) {
+            ids[m * topk + lane] = picked;
+            weights[m * topk + lane] = chosen / selected_total * bf16f(scale[picked]);
+            local[m * topk + lane] = (picked >= first && picked < first + count) ? picked - first : -1;
         }
-        __syncthreads();
     }
+    __syncthreads();
     if (t == 0) *counter = 0;
 }
 
@@ -721,7 +719,7 @@ __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D
 // key_pos: slot -> absolute position (or nullptr: slot index is the position). A key is visible to a query
 // at position p when 0 <= kp <= p and (window == 0 or kp > p - window). Scores are scaled by `scale` (FP32)
 // before masking (Gemma 4 target: 1.0; Qwen3-style DFlash companion: head_dim^-0.5).
-// Block (split, tile) visits chunks [split*cps, min(chunks, (split+1)*cps)) of AC keys (64 for one 16-row
+// Block (split, tile) visits chunks split, split + splits, ... of AC keys (64 for one 16-row
 // tile, else 256) with an online softmax
 // and writes unnormalized partials po[split, r, :], pm/pl[split, r]; attn_merge folds splits in order.
 
@@ -746,7 +744,7 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
     const int split = blockIdx.x, tile = blockIdx.y, t = threadIdx.x, warp = t >> 5;
     const int r0 = tile * 16;
     const int base = *pos0;
-    if (!key_pos && split * cps * AC > base + (R - 1) / H) {
+    if (!key_pos && split * AC > base + (R - 1) / H) {
         // Linear cache: every key of this split is in the future of every query row in the call.
         if (t < 16) {
             pm[(int64_t)split * Rpad + r0 + t] = -INFINITY;
@@ -771,11 +769,10 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
     int qmax = -1, qmin = 0x7fffffff;
     for (int r = 0; r < 16; ++r)
         if (qpos[r] >= 0) { qmax = max(qmax, qpos[r]); qmin = min(qmin, qpos[r]); }
-    const int first = split * cps, last = min(chunks, first + cps);
     const int row = t >> 3, sub = t & 7;   // softmax: 8 threads per query row
     constexpr int COLS = D / 4, FR = COLS / 16;
     bool processed = false;
-    for (int c = first; c < last; ++c) {
+    for (int c = split; c < chunks; c += gridDim.x) {     // interleaved: live keys spread over splits
         const int k0 = c * AC;
         bool ok = false;
         for (int i = t; i < AC; i += 128) {
@@ -991,11 +988,11 @@ void bf16_launch(const Tensor& x, int64_t M, const Tensor& w, int64_t N, int64_t
 }
 template <int R>
 void i8_launch(const Tensor& x, int64_t M, const Tensor& w, const Tensor& scale, int64_t N, int64_t K, Tensor& out,
-               int64_t ldo) {
+               int64_t ldo, double softcap) {
     const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R));
     const int64_t ldx = x.stride(0);
 #define G4_I8(MM) g4::i8_rows<MM, R><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, cptr<int8_t>(w), \
-        cptr<float>(scale), (int)N, (int)K, ptr<float>(out), ldo)
+        cptr<float>(scale), (int)N, (int)K, ptr<float>(out), ldo, (float)softcap)
     if (M <= 1) G4_I8(1); else if (M <= 4) G4_I8(4); else if (M <= 8) G4_I8(8); else G4_I8(16);
 #undef G4_I8
 }
@@ -1008,9 +1005,9 @@ void bf16_rows_cuda(const Tensor& x, int64_t M, const Tensor& w, int64_t N, int6
 }
 
 void i8_rows_cuda(const Tensor& x, int64_t M, const Tensor& w, const Tensor& scale, int64_t N, int64_t K, Tensor& out,
-                  int64_t ldo) {
-    if (N >= 1024) i8_launch<4>(x, M, w, scale, N, K, out, ldo);
-    else i8_launch<2>(x, M, w, scale, N, K, out, ldo);
+                  int64_t ldo, double softcap) {
+    if (N >= 1024) i8_launch<4>(x, M, w, scale, N, K, out, ldo, softcap);
+    else i8_launch<2>(x, M, w, scale, N, K, out, ldo, softcap);
 }
 
 void router_cuda(const Tensor& x, int64_t M, const Tensor& w, int64_t E, int64_t K, Tensor& logits, Tensor& counter,

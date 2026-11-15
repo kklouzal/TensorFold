@@ -80,6 +80,8 @@ class DFlash:
             for layer in self.layers:
                 for key in ("qkv", "o", "gate_up", "down"):
                     layer[key] = self._int8(layer[key])
+            # The proposal head reads a private per-row INT8 copy of this rank's BF16 vocabulary shard.
+            self.head8 = self._int8(target.w.head)
         exponent = torch.arange(0, d, 2, dtype=torch.int64).float() / d
         self.inv_freq = (1.0 / (cfg.rope.theta ** exponent)).to(dev).contiguous()
         alloc = -(-(context + DECODE_ROWS) // CHUNK) * CHUNK
@@ -118,7 +120,7 @@ class DFlash:
             n, k = w[0].shape if isinstance(w, tuple) else w.shape
             out = torch.empty((rows, n), dtype=torch.float32, device=self.device)
             if isinstance(w, tuple):
-                self.ext.i8_rows(x.contiguous(), rows, w[0], w[1], n, k, out, n)
+                self.ext.i8_rows(x.contiguous(), rows, w[0], w[1], n, k, out, n, 0.0)
             else:
                 self.ext.bf16_rows(x.contiguous(), rows, w, n, k, out, n, 0.0)
             return out
@@ -207,5 +209,9 @@ class DFlash:
             x = x + self._reduce(self._linear(act.contiguous(), layer["down"], f"down{i}"), "dflash_down")
         h = self._rms(x[1:].contiguous(), self.norm)
         out = torch.empty((n, self.t.shard), dtype=torch.float32, device=self.device)
-        ext.bf16_rows(h, n, self.t.w.head, self.t.shard, cfg.hidden, out, self.t.shard, self.t.c.softcap)
+        if self.bits == 8:
+            ext.i8_rows(h, n, self.head8[0], self.head8[1], self.t.shard, cfg.hidden, out, self.t.shard,
+                        self.t.c.softcap)
+        else:
+            ext.bf16_rows(h, n, self.t.w.head, self.t.shard, cfg.hidden, out, self.t.shard, self.t.c.softcap)
         return out

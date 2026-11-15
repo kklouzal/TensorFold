@@ -12,7 +12,7 @@ void w4_expert_down_cuda(const Tensor&, int64_t, int64_t, const Tensor&, const T
                          const Tensor&, int64_t, int64_t, Tensor&, int64_t);
 void w4_dequant_cuda(const Tensor&, const Tensor&, int64_t, int64_t, Tensor&);
 void bf16_rows_cuda(const Tensor&, int64_t, const Tensor&, int64_t, int64_t, Tensor&, int64_t, double);
-void i8_rows_cuda(const Tensor&, int64_t, const Tensor&, const Tensor&, int64_t, int64_t, Tensor&, int64_t);
+void i8_rows_cuda(const Tensor&, int64_t, const Tensor&, const Tensor&, int64_t, int64_t, Tensor&, int64_t, double);
 void router_cuda(const Tensor&, int64_t, const Tensor&, int64_t, int64_t, Tensor&, Tensor&, int64_t, const Tensor&,
                  int64_t, int64_t, Tensor&, Tensor&, Tensor&);
 void route_cuda(const Tensor&, int64_t, int64_t, int64_t, const Tensor&, int64_t, int64_t, Tensor&, Tensor&, Tensor&);
