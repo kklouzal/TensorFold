@@ -35,7 +35,7 @@ constant across references and candidates and are not included in this task's
 commit. Therefore these results do not qualify a clean image built from the
 commit alone. The private source archives and manifests retain the exact trees.
 
-The runtime source digest is
+The `ef97c31d` checkpoint's six-file runtime source digest is
 `88d4dea83a5ce68a7b9bbb7d40f4a92692219a1293fe8ac1e2f12ca49f28797d`:
 SHA256 of each path, a NUL byte, and file bytes, in this order:
 `src/tensorfold/cuda/sm70/gemma4.cu`,
@@ -56,7 +56,7 @@ SHA256 of each path, a NUL byte, and file bytes, in this order:
 - Google chat template SHA256
   `ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4`.
 
-## Results and limits
+## Results and limits at ef97c31d
 
 Three matched requests per case used fixed prompts and request order. Each long
 prompt was unique within a run, identical across variants, with zero cached
@@ -99,6 +99,55 @@ and 9.462/9.381 and 9.423/9.396 ms for five-committed-row rounds. Each replay
 completed before pinned input reuse; recorded output probes matched. This is a
 synthetic diagnostic, not attribution of the complete HTTP gain. Earlier tight
 replay loops without safe pinned-buffer reuse are excluded from qualification.
+
+## DFlash context-KV follow-up
+
+The next increment packs each layer's original context K/V rows into an
+immutable bank after the selected BF16 or INT8 preparation. Context append
+projects the common input once, then uses strided layer views for the existing
+cache kernels. Proposal-layer QKV weights and target arithmetic are unchanged.
+INT8-to-FP32 cached preparation also avoids a redundant conversion temporary.
+Larger GEMM shapes can change arithmetic order; acceptance uses measured quality,
+not an assumption of bitwise equivalence for every projection.
+
+Its seven-file runtime digest is
+`bc06443852d9e8717bc8b1550af332a4a2a94f5acfc9fa953d93e7bd22df5add`,
+using the six paths and hashing method above with
+`src/tensorfold/families/gemma4/sm70/dflash.py` inserted immediately after
+`src/tensorfold/families/gemma4/sm70/graphs.py`. The same runtime and dirty-source
+qualification limits apply. Comparisons below use the preserved pre-bank source,
+not the original `98c535f6` baseline, with 32K allocated context.
+
+| Drafter configuration | Code | Prose | Lists | 4K prompt | 16K prompt |
+| --- | --- | --- | --- | --- | --- |
+| INT8, five rows | +0.77% | +2.17% | +0.08% | +2.64% | +0.36% |
+| BF16, sixteen rows | +0.84% | +0.59% | +0.55% | +3.70% | +4.28% |
+
+These are complete-request median throughput differences from three matched
+requests per case. All 15 replies and token counts matched in each configuration;
+all paired BF16 request latencies improved. Small samples do not establish
+universal gains. Repeated INT8 graph diagnostics showed approximately 0.6–1.2%
+round gains; wide BF16 one-committed-row diagnostic results were mixed and are
+not claimed as a win. Selection uses the complete-request results, not a claim
+that every internal timing improved.
+
+Thirteen new native tests passed for packing, strided cache writes, canaries and
+dtype promotion, covering BF16/INT8, two/five layers and 1–1,024 input rows.
+The original and BOS-sensitivity quality corpora produced identical prefill and
+decode scores with five-row drafting for both formats; repeated scores matched.
+The sixteen-row BF16 checks above are native and serving comparisons, not a
+separate teacher-forced corpus qualification at that width. INT8 also matched the
+two long-context stress cases (20,812 prefill and 524 decode positions). Earlier
+24 native tests and parser coverage apply to unchanged code. BF16 long-context
+quality and full 262K qualification are not newly claimed.
+
+Summed post-initialization Torch allocations increased by 30,973,952 bytes
+across eight ranks for the default INT8 configuration; summed reserved and peak
+reserved memory were unchanged. In the wide BF16 comparison, summed allocated
+bytes changed from 37,804,859,392 to 37,866,201,088, reserved from 39,871,053,824
+to 39,845,888,000, peak allocated from 43,297,484,800 to 43,350,962,176, and peak
+reserved from 47,135,588,352 to 47,152,365,568. Sums of per-rank peaks are not
+simultaneous physical peaks. These measurements do not increase a capacity claim.
 
 ## Verification and continuing work
 

@@ -44,6 +44,11 @@ class DFlash:
         self.d = cfg.head_dim
         self.width = cfg.width // world
         self.fc_rows = cfg.hidden // world
+        # Native small-row projections index output rows with signed32 integers.
+        # Check the new combined extent before any bank allocation; no fixed layer
+        # count is imposed beyond the existing metadata and executable size contract.
+        if cfg.layers * 2 * cfg.head_dim > 2**31 - 1:
+            raise ValueError("Gemma DFlash combined context KV projection exceeds signed32 output rows")
         reader = SafeTensors([checkpoint_path(Path(draft_dir), "model.safetensors")])
         get = lambda name: reader.get(name, "cpu")
         dev = self.device
@@ -82,6 +87,11 @@ class DFlash:
                     layer[key] = self._int8(layer[key])
             # The proposal head reads a private per-row INT8 copy of this rank's BF16 vocabulary shard.
             self.head8 = self._int8(target.w.head)
+        # Every layer projects the same normalized target context. Keep this bounded
+        # immutable row bank alive with DFlash; original QKV weights still serve
+        # proposal layers. The actual five-layer bank adds 3.61 MB/rank (bits8,
+        # including FP32 scales), or 7.21 MB/rank (bits16).
+        self.context_kv = self._pack_context_kv()
         exponent = torch.arange(0, d, 2, dtype=torch.int64).float() / d
         self.inv_freq = (1.0 / (cfg.rope.theta ** exponent)).to(dev).contiguous()
         alloc = -(-(context + DECODE_ROWS) // CHUNK) * CHUNK
@@ -108,10 +118,19 @@ class DFlash:
             return (w[0][lo:hi], w[1][lo:hi])
         return w[lo:hi]
 
+    def _pack_context_kv(self):
+        """Immutable layer-major K/V rows, retaining the selected weight representation."""
+        weights = [self._rows(layer["qkv"], self.heads * self.d) for layer in self.layers]
+        if self.bits == 8:
+            return (torch.cat([weight[0] for weight in weights]), torch.cat([weight[1] for weight in weights]))
+        return torch.cat(weights)
+
     def _w32(self, key, w):
         t = self._f32.get(key)
         if t is None:
-            t = self._f32[key] = (w[0].float() * w[1][:, None]) if isinstance(w, tuple) else w.float()
+            # _int8 owns FP32 scales; promotion converts each exactly representable
+            # INT8 value to FP32 before the same multiplication, without a q.float copy.
+            t = self._f32[key] = (w[0] * w[1][:, None]) if isinstance(w, tuple) else w.float()
         return t
 
     def _linear(self, x, w, key):
@@ -162,9 +181,12 @@ class DFlash:
         if pos is None:
             pos = self.pos
             pos.fill_(start)
-        H, d = self.heads, self.d
+        d = self.d
+        projected = self._linear(ctx, self.context_kv, "kv")
         for i, layer in enumerate(self.layers):
-            kv = self._linear(ctx, self._rows(layer["qkv"], H * d), f"kv{i}")
+            # qkv_prep reads the actual row stride. Hq0 writes only K/V caches,
+            # so this slice can also serve as its unused qout without materializing it.
+            kv = projected[:, i * 2 * d:(i + 1) * 2 * d]
             self.ext.qkv_prep(kv, rows, 0, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, pos, kv,
                               self.k[i], self.v[i], None, 0, self.cfg.eps)
         self.length = start + rows

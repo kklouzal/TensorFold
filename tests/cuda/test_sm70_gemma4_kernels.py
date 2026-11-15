@@ -305,6 +305,78 @@ def test_gemma4_prompt_expert_groups_match_uniform_bmm(rows, distribution):
     assert torch.all(storage[:, 0] == 123)
 
 
+@pytest.mark.parametrize("bits", [8, 16])
+@pytest.mark.parametrize("layers,rows", [(2, 5), (5, 1), (5, 5), (5, 16), (5, 17), (5, 1024)])
+@torch.inference_mode()
+def test_gemma4_dflash_context_kv_bank_and_strided_cache(bits, layers, rows):
+    from tensorfold.cuda.sm70.gemma4_native import extension
+    from tensorfold.families.gemma4.sm70.dflash import DFlash
+
+    torch.manual_seed(91)
+    device = torch.device("cuda")
+    D, H, d = 2816, 4, 128
+    draft = DFlash.__new__(DFlash)
+    draft.bits, draft.heads, draft.d = bits, H, d
+    draft.device, draft.ext, draft._f32 = device, extension(), {}
+    draft.layers = []
+    for _ in range(layers):
+        w = (torch.randn((H + 2) * d, D, device=device) * 0.05).bfloat16()
+        draft.layers.append({"qkv": draft._int8(w) if bits == 8 else w})
+    bank = draft._pack_context_kv()
+    tails = [draft._rows(layer["qkv"], H * d) for layer in draft.layers]
+    if bits == 8:
+        assert torch.equal(bank[0], torch.cat([w[0] for w in tails]))
+        assert torch.equal(bank[1], torch.cat([w[1] for w in tails]))
+        explicit = bank[0].float() * bank[1][:, None]
+        assert torch.equal(draft._w32("kv", bank).view(torch.int32), explicit.view(torch.int32))
+    else:
+        assert torch.equal(bank, torch.cat(tails))
+    x = torch.randn(rows, D, device=device)
+    if rows > 16:
+        # Known-answer sparse inputs isolate packing/stride from allowed changes
+        # in the FP32 library GEMM reduction algorithm when output width changes.
+        x.zero_()
+        x[torch.arange(rows, device=device), torch.arange(rows, device=device) % D] = 1.0
+    projected = draft._linear(x, bank, "kv")
+    original = [draft._linear(x, weight, f"reference-kv{i}") for i, weight in enumerate(tails)]
+    assert torch.equal(projected.view(torch.int32), torch.cat(original, dim=1).view(torch.int32))
+    before = projected.clone()
+    pos = torch.tensor([19], dtype=torch.int32, device=device)
+    inv = (1.0 / (10000 ** (torch.arange(0, d, 2, device=device).float() / d))).contiguous()
+    qw = torch.ones(d, dtype=torch.bfloat16, device=device)
+    for i in range(layers):
+        kw = (torch.rand(d, device=device) + 0.5).bfloat16()
+        k = torch.full((rows + 32, d), 123.0, dtype=torch.float16, device=device)
+        v = torch.full_like(k, 124.0)
+        expected_k, expected_v = k.clone(), v.clone()
+        part = projected[:, i * 2 * d:(i + 1) * 2 * d]
+        draft.ext.qkv_prep(part, rows, 0, d, 2, qw, kw, inv, pos, part,
+                           k, v, None, 0, 1e-6)
+        draft.ext.qkv_prep(original[i], rows, 0, d, 2, qw, kw, inv, pos, original[i],
+                           expected_k, expected_v, None, 0, 1e-6)
+        assert torch.equal(k.view(torch.int16), expected_k.view(torch.int16))
+        assert torch.equal(v.view(torch.int16), expected_v.view(torch.int16))
+        assert torch.all(k[:19] == 123) and torch.all(k[19 + rows:] == 123)
+        assert torch.all(v[:19] == 124) and torch.all(v[19 + rows:] == 124)
+    assert torch.equal(projected.view(torch.int32), before.view(torch.int32))  # Hq0 never writes qout
+
+
+def test_gemma4_dflash_int8_prompt_promotion_matches_explicit_float():
+    from tensorfold.families.gemma4.sm70.dflash import DFlash
+
+    values = torch.arange(-128, 128, dtype=torch.int16, device="cuda").to(torch.int8)
+    scales = torch.tensor([0.0, -0.0, torch.finfo(torch.float32).tiny / 2,
+                           torch.finfo(torch.float32).tiny, 2 ** -20, 1.0, 2 ** 20,
+                           torch.finfo(torch.float32).max / 128], device="cuda")
+    q = values.expand(scales.numel(), -1).contiguous()
+    draft = DFlash.__new__(DFlash)
+    draft._f32 = {}
+    actual = draft._w32("promotion", (q, scales))
+    expected = q.float() * scales[:, None]
+    assert actual.dtype == torch.float32
+    assert torch.equal(actual.view(torch.int32), expected.view(torch.int32))
+
+
 def test_gemma4_fused_router_matches_logits_and_routing():
     from tensorfold.cuda.sm70.gemma4_native import extension
     ext = extension()

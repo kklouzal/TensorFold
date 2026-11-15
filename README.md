@@ -1654,6 +1654,12 @@ measurements at 32K allocated context, not cold-start or full-context qualificat
 The note records source identity, runtime, numerical checks and outstanding work;
 the older measurements below retain their original scope.
 
+A subsequent DFlash context-KV packing change measured additional matched HTTP
+gains of 0.08–2.64% with the INT8, five-row drafter and 0.55–4.28% with the BF16,
+16-row drafter. Its [separate validation](docs/gemma4-sm70-throughput-20261115.md#dflash-context-kv-follow-up)
+records quality, added memory and mixed synthetic timing results; these gains
+are not folded into the earlier checkpoint percentages above.
+
 `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` (revision `90c8601b`) with
 `z-lab/gemma-4-26B-A4B-it-DFlash` (`77d42027`) runs on the eight-V100-SXM2-32GB
 host through `tools/launch_cuda_tp.py` and `--tp 8`
