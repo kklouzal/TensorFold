@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tensorfold.cuda.kernels.qmm_tiles import capped_row_tile as bucket
+
 from dataclasses import dataclass
 
 import torch
@@ -111,15 +113,6 @@ def split_k(n: int, k: int, target: int = 160) -> int:
     while sk < 32 and tiles * sk < target and groups % (sk * 2) == 0 and groups // (sk * 2) >= 8:
         sk *= 2
     return sk
-
-
-def bucket(m: int) -> int:
-    """Rows a program takes: 16 to 128, then tiles of 128 (a row's bits never depend on its tile)."""
-
-    for b in (16, 32, 64, 128):
-        if m <= b:
-            return b
-    return 128
 
 
 @triton.jit

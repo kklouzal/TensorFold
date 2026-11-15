@@ -9,3 +9,12 @@ def group_tile(m: int, major: int, minor: int, sms: int) -> int:
     if (major, minor) != (12, 0) or sms < WIDE_SMS or m <= 16:
         return 0
     return 12 if m <= 32 else 11 if m <= 64 else 10 if m <= 96 else 11
+
+
+def capped_row_tile(m: int) -> int:
+    """Rows a program takes: 16 to 128, then tiles of 128 (a row's bits never depend on its tile)."""
+
+    for b in (16, 32, 64, 128):
+        if m <= b:
+            return b
+    return 128

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tensorfold.cuda.kernels.qmm_tiles import capped_row_tile as _tile
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -15,15 +17,6 @@ from . import pdl
 from .pdl import wait as pdl_wait
 
 from . import experts as grouped
-
-
-def _tile(m: int) -> int:
-    """Rows a router program takes: 16 to 128, then tiles of 128 (a row's bits never depend on its tile)."""
-
-    for b in (16, 32, 64, 128):
-        if m <= b:
-            return b
-    return 128
 
 
 @triton.jit

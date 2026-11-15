@@ -78,7 +78,6 @@ _REPLAY_SOURCE = r"""
         const int steps = count[0];
         for (int j = 0; j < steps; ++j) {                    // the accepted path's rows, in order
           const int row = rows[j];
-          auto q_ = q + (row * Hk + hk_idx) * Dk;
           auto k_ = k + (row * Hk + hk_idx) * Dk;
           auto v_ = v + (row * Hv + hv_idx) * Dv;
           const float g_ = static_cast<float>(g[row * Hv + hv_idx]);

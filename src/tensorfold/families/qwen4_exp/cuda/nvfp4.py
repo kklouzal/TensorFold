@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tensorfold.cuda.kernels.qmm_tiles import capped_row_tile as bucket
+
 from dataclasses import dataclass
 
 import torch
@@ -34,7 +36,6 @@ class FP4:
 
     def nbytes(self) -> int:
         return sum(t.numel() * t.element_size() for t in (self.weight, self.scale, self.scale2) if t is not None)
-
 
 
 def _tensor_scale(weight_scale_2) -> float:
@@ -234,15 +235,6 @@ def gpi_for(per: int, want: int) -> int:
         if g <= want and per % g == 0:
             return g
     return 1
-
-
-def bucket(m: int) -> int:
-    """Rows a program takes: 16 to 128, then tiles of 128 (a row's bits never depend on its tile)."""
-
-    for b in (16, 32, 64, 128):
-        if m <= b:
-            return b
-    return 128
 
 
 # -- the matmul kernel -------------------------------------------------------------------------------
