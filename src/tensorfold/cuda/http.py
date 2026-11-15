@@ -230,11 +230,7 @@ def make_handler(app: App):
                 def open_stream() -> None:
                     nonlocal opened
                     if not opened:
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/event-stream")
-                        self.send_header("Cache-Control", "no-cache")
-                        self.send_header("Connection", "close")
-                        self.end_headers()
+                        responses.open_event_stream(self)
                         opened = True
 
                 def write(frame: dict[str, Any] | None) -> None:

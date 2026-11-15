@@ -43,8 +43,15 @@ class FakeTokenizer:
 
     GENERATION_MARKER = [3, 4]  # plays the assistant header + empty think block
 
-    def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: Any) -> list[int]:
+    def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: Any) -> list[int] | str:
         self.template_calls.append(dict(kwargs))
+        if kwargs.get("tokenize", True) is False:
+            # Raw rendering must preserve message text for template capability probes.
+            text = "".join(str(message.get("content", "")) + chr(TOKEN_CHAR_BASE + 1)
+                           for message in messages)
+            if kwargs.get("add_generation_prompt", True):
+                text += self.decode(self.GENERATION_MARKER)
+            return text
         ids: list[int] = []
         for message in messages:
             ids.extend(self._char_ids(str(message.get("content", ""))))

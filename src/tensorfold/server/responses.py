@@ -331,6 +331,15 @@ class Wire:
         pass
 
 
+def open_event_stream(handler: Any) -> None:
+    """Send the common SSE headers; callers own lazy-open state and reply lifecycle."""
+    handler.send_response(200)
+    handler.send_header("Content-Type", "text/event-stream")
+    handler.send_header("Cache-Control", "no-cache")
+    handler.send_header("Connection", "close")
+    handler.end_headers()
+
+
 def _event_writer(handler: Any) -> Callable[[dict[str, Any]], None]:
     """Write one translated stream event to the client: its ``event:`` type line and JSON ``data:`` line."""
 
@@ -345,11 +354,7 @@ def _event_wire(handler: Any, reply: Any, *, store=None) -> Wire:
     (then ``reply.start``) and feeds ``reply.chunk``; the chat stream's comment lines pass through to the client."""
 
     def opened() -> None:
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/event-stream")
-        handler.send_header("Cache-Control", "no-cache")
-        handler.send_header("Connection", "close")
-        handler.end_headers()
+        open_event_stream(handler)
         handler.close_connection = True
         reply.start()
 
