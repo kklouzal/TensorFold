@@ -10,6 +10,8 @@ that pass and publish their actual re-rendered completed history instead.
 
 from __future__ import annotations
 
+from tensorfold.engine.draft_acceptance import accepted_prefix as _accepted
+
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import threading
@@ -44,14 +46,6 @@ def _prefill_end(start: int, length: int, width: int, blocks) -> int:
     return end
 
 
-def _accepted(sampled, inputs, room: int, eos) -> list[int]:
-    """Sample after the anchor; a proposal survives only its parent's choice."""
-    chosen = []
-    for row, token in enumerate(sampled):
-        chosen.append(token)
-        if len(chosen) >= room or token in eos or row + 1 >= len(inputs) or token != inputs[row + 1]:
-            break
-    return chosen
 
 
 class Gemma4Engine:

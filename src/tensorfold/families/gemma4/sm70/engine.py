@@ -7,6 +7,8 @@ own identical kernels and collectives, so all ranks submit the same NCCL sequenc
 
 from __future__ import annotations
 
+from tensorfold.engine.draft_acceptance import accepted_prefix as _accepted
+
 import struct
 import threading
 import time
@@ -21,13 +23,6 @@ _ROUND = struct.Struct("<qqqqq")    # start, anchor, count, previous verify star
 PIPE_TIMEOUT = 600.0
 
 
-def _accepted(sampled, inputs, room: int, eos) -> list[int]:
-    chosen = []
-    for row, token in enumerate(sampled):
-        chosen.append(token)
-        if len(chosen) >= room or token in eos or row + 1 >= len(inputs) or token != inputs[row + 1]:
-            break
-    return chosen
 
 
 class Gemma4SM70Engine:
