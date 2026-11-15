@@ -271,3 +271,15 @@ def test_raw_completion_reply_opening_a_channel_routes_it_as_before(tmp_path, ra
     assert 'notes' not in ''.join(contents)
     if raw.startswith('Visible.'):
         assert contents[0] == 'V'                       # the plain prefix streamed before the opener arrived
+
+
+def test_raw_completion_prefix_before_a_reply_channel_keeps_a_possible_stop_start(tmp_path):
+    # The text before the reply's own opener is final once the opener arrives: an end that could only begin a stop
+    # string (here "EN" of "END") is content, not a held-back partial match.
+    instance = replay(tmp_path, 'Visible EN<|channel>thought\nnotes<channel|>Answer.')
+    deltas = []
+    result = instance.run({'prompt': 'Hi', 'stream': True, 'stop': ['END']}, False,
+                          lambda value: deltas.append(value) or True)
+    contents = ''.join((value or {}).get('content', '') for value in deltas)
+    assert result['content'] == 'Visible ENAnswer.'
+    assert contents == 'Visible ENAnswer.'

@@ -1628,7 +1628,9 @@ class App:
                         start = next((index for index, token in enumerate(new) if token in native_starts), None)
                         if start is not None:
                             stream.add(new[:start])
-                            lazy_prefix[0] = visible(False)[1]
+                            # The text before the opener is final: no held-back partial stop/character
+                            # end (token-level stop cuts already applied to these tokens).
+                            lazy_prefix[0] = visible(True)[1]
                             lazy_base[0] = len(out) - len(new) + start
                             grammar_state[0] = answer_boundary()
                             new = new[start:]
