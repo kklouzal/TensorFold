@@ -531,17 +531,49 @@ def run(args) -> int:
 
 # ---------------------------------------------------------------- scoring
 
-# Two-sided 95% Student t quantiles; non-integer Welch degrees of freedom round down (conservative).
-T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
-        11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
-        20: 2.086, 22: 2.074, 24: 2.064, 26: 2.056, 28: 2.048, 30: 2.042, 40: 2.021, 60: 2.000, 120: 1.980}
+FAMILY_ALPHA = 0.05  # familywise two-sided error over all compared (cell, metric) pairs (Bonferroni)
 
 
-def t975(df: float) -> float:
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction of the regularized incomplete beta function (modified Lentz)."""
+    tiny = 1e-300
+    c, d = 1.0, 1.0 - (a + b) * x / (a + 1.0)
+    d = 1.0 / (d if abs(d) > tiny else tiny)
+    h = d
+    for m in range(1, 400):
+        for numerator in (m * (b - m) * x / ((a + 2 * m - 1) * (a + 2 * m)),
+                          -(a + m) * (a + b + m) * x / ((a + 2 * m) * (a + 2 * m + 1))):
+            d = 1.0 + numerator * d
+            d = 1.0 / (d if abs(d) > tiny else tiny)
+            c = 1.0 + numerator / c
+            c = c if abs(c) > tiny else tiny
+            h *= d * c
+        if abs(d * c - 1.0) < 1e-15:
+            break
+    return h
+
+
+def t_cdf(t: float, df: float) -> float:
+    """Student t cumulative distribution."""
+    x = df / (df + t * t)
+    a, b = df / 2.0, 0.5
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b) + a * math.log(x) + b * math.log1p(-x))
+    ibeta = front * _betacf(a, b, x) / a if x < (a + 1) / (a + b + 2) else 1.0 - front * _betacf(b, a, 1 - x) / b
+    return 1.0 - 0.5 * ibeta if t >= 0 else 0.5 * ibeta
+
+
+def t_half(level: float, df: float) -> float:
+    """Two-sided quantile: P(|T| <= q) = level."""
     if not df >= 1:
         return math.inf
-    floor = max(k for k in T975 if k <= df)
-    return T975[floor] if df < 1e6 else 1.960
+    target = 0.5 + level / 2.0
+    lo, hi = 0.0, 1.0
+    while t_cdf(hi, df) < target:
+        hi *= 2.0
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        lo, hi = (mid, hi) if t_cdf(mid, df) < target else (lo, mid)
+    return hi
 
 
 def load_arm(spec: str) -> dict:
@@ -582,15 +614,16 @@ def log_stats(values: list[float]):
 
 def describe(values: list[float]) -> dict:
     mean, var, n = log_stats(values)
-    half = t975(n - 1) * math.sqrt(var / n) if n > 1 else math.inf
+    half = t_half(0.95, n - 1) * math.sqrt(var / n) if n > 1 else math.inf
     return {"n": n, "geomean": math.exp(mean), "ci95": [math.exp(mean - half), math.exp(mean + half)],
             "cv": statistics.stdev(values) / statistics.fmean(values) if n > 1 else None}
 
 
-def ratio(ref: dict, cand: dict) -> dict:
+def ratio(ref: dict, cand: dict, family: int) -> dict:
     """Candidate/reference ratio of geometric means over repeats ({repeat: value}). Repeat r uses the same prompts
     in both arms, so complete matched repeats are paired (t interval on per-repeat log ratios, n - 1 df); otherwise
-    a Welch t interval on log values."""
+    a Welch t interval on log values. ``ci95`` is the per-cell screen; ``ci_family`` (level 1 - 0.05 / family)
+    decides the class."""
     if set(ref) == set(cand) and len(ref) >= 2:
         diffs = [math.log(cand[r]) - math.log(ref[r]) for r in sorted(ref)]
         d, n = statistics.fmean(diffs), len(diffs)
@@ -600,17 +633,22 @@ def ratio(ref: dict, cand: dict) -> dict:
         mc, vc, nc = log_stats(list(cand.values()))
         d = mc - mr
         if nr < 2 or nc < 2:
-            return {"ratio": math.exp(d), "ci95": [0.0, math.inf], "se2": math.inf, "df": 0, "design": "single",
-                    "class": "uncertain"}
+            return {"ratio": math.exp(d), "ci95": [0.0, math.inf], "ci_family": [0.0, math.inf], "se2": math.inf,
+                    "df": 0, "design": "single", "class": "uncertain", "screen": "uncertain"}
         a, b = vr / nr, vc / nc
         se2 = a + b
         df = se2 * se2 / ((a * a / (nr - 1) if a else 0) + (b * b / (nc - 1) if b else 0)) if se2 > 0 else 1e9
         design = "welch"
-    half = t975(df) * math.sqrt(se2)
-    lo, hi = math.exp(d - half), math.exp(d + half)
-    klass = "gain" if lo > 1 else "regression" if hi < 1 else "uncertain"
-    return {"ratio": math.exp(d), "ci95": [lo, hi], "log": d, "se2": se2, "df": df, "design": design,
-            "class": klass}
+
+    def interval(level):
+        half = t_half(level, df) * math.sqrt(se2)
+        return [math.exp(d - half), math.exp(d + half)]
+
+    def klass(ci):
+        return "gain" if ci[0] > 1 else "regression" if ci[1] < 1 else "uncertain"
+    screen, decide = interval(0.95), interval(1 - FAMILY_ALPHA / family)
+    return {"ratio": math.exp(d), "ci95": screen, "ci_family": decide, "family": family, "log": d, "se2": se2,
+            "df": df, "design": design, "class": klass(decide), "screen": klass(screen)}
 
 
 def cell_values(reps: list[dict], metric: str) -> list[float]:
@@ -685,6 +723,8 @@ def compare(args) -> int:
     missing = sorted(set(ref["cells"]) - set(cand["cells"]), key=sort_key)
     extra = sorted(set(cand["cells"]) - set(ref["cells"]), key=sort_key)
     rows, totals = [], {metric: [] for metric in SCORED}
+    family = max(1, sum(1 for key in common for metric in SCORED
+                        if cell_values(ref["cells"][key], metric) and cell_values(cand["cells"][key], metric)))
     for key in common:
         row = {"cell": key}
         for metric in SCORED:
@@ -692,7 +732,8 @@ def compare(args) -> int:
             if not r or not c:
                 row[metric] = None
                 continue
-            row[metric] = ratio(rep_values(ref["cells"][key], metric), rep_values(cand["cells"][key], metric))
+            row[metric] = ratio(rep_values(ref["cells"][key], metric), rep_values(cand["cells"][key], metric),
+                                family)
             row[metric].update(reference=describe(r)["geomean"], candidate=describe(c)["geomean"])
             totals[metric].append(row[metric])
         rows.append(row)
@@ -707,33 +748,42 @@ def compare(args) -> int:
             se2 = sum(c["se2"] for c in cells) / (k * k)
             denom = sum((c["se2"] / (k * k)) ** 2 / c["df"] for c in cells if c["se2"] > 0)
             df = se2 * se2 / denom if denom else 1e9
-            half = t975(df) * math.sqrt(se2)
+            half = t_half(0.95, df) * math.sqrt(se2)
             ci = [math.exp(mean - half), math.exp(mean + half)]
         else:
             ci = [0.0, math.inf]
         worst = min(cells, key=lambda c: c["ratio"])
         aggregate[metric] = {"cells": k, "geomean_ratio": math.exp(mean), "ci95": ci,
                              "worst_cell_ratio": worst["ratio"], "worst_cell_ci95": worst["ci95"],
+                             "screen_flags": sum(c["screen"] != "uncertain" and c["class"] == "uncertain"
+                                                 for c in cells),
                              "gains": sum(c["class"] == "gain" for c in cells),
                              "regressions": sum(c["class"] == "regression" for c in cells),
                              "uncertain": sum(c["class"] == "uncertain" for c in cells)}
     regressions = [(row["cell"], m) for row in rows for m in SCORED if row[m] and row[m]["class"] == "regression"]
     gains = [(row["cell"], m) for row in rows for m in SCORED if row[m] and row[m]["class"] == "gain"]
+    regressions += [("aggregate", m) for m, value in aggregate.items() if value["ci95"][1] < 1]
+    gains += [("aggregate", m) for m, value in aggregate.items() if value["ci95"][0] > 1]
     if missing:
         verdict = "incomplete: the candidate lacks reference-measured cells"
     elif regressions:
-        verdict = "regression: at least one cell regressed (a whole-matrix gain cannot offset it)"
+        verdict = ("regression: " + ", ".join(f"{cell} {metric}" for cell, metric in regressions) +
+                   " (a gain elsewhere cannot offset it)")
     elif gains:
-        verdict = "superior: gains with no cell regression"
+        verdict = "superior: " + ", ".join(f"{cell} {metric}" for cell, metric in gains) + " gained; no regression"
     else:
         verdict = "uncertain: no established gain or regression"
     if regressions and gains:
         verdict += "; mixed with gains: adopt only with a REGION-specific selection decision"
     result = {"schema": SCHEMA + ".comparison", "reference": ref["files"], "candidate": cand["files"],
-              "rule": "per cell: ratio of geometric means over repeats, 95% t interval on log ratios (paired by "
-                      "repeat when both arms ran the same repeats, else Welch); gain if the lower bound > 1, regression if the upper bound < 1. Aggregate: geometric mean of per-cell "
-                      "ratios per metric. Verdict: any regression rejects; superior needs >= 1 gain and full "
-                      "coverage of reference cells.",
+              "rule": "per cell: ratio of geometric means over repeats, t interval on log ratios (paired by "
+                      "repeat when both arms ran the same repeats, else Welch) at familywise level 1 - 0.05/k over "
+                      "the k compared (cell, metric) pairs (Bonferroni); gain if its lower bound > 1, regression if "
+                      "its upper bound < 1; 95% per-cell screens are reported, not decisive. Aggregate per metric: "
+                      "geometric mean of per-cell ratios with a 95% interval (gain/regression by its bounds). "
+                      "Verdict: any cell or aggregate regression rejects; superior needs a cell or aggregate gain, "
+                      "no regression and full coverage of reference cells.",
+              "family_size": family,
               "verdict": verdict, "aggregate": aggregate, "rows": rows,
               "coverage": {"common": len(common), "missing_in_candidate": missing, "only_in_candidate": extra,
                            "reference_gated": ref["gated"], "candidate_gated": cand["gated"]}}
@@ -754,17 +804,23 @@ def compare(args) -> int:
         if value is None:
             return "n/a"
         mark = {"gain": "+", "regression": "-", "uncertain": "?"}[value["class"]]
-        return f"{value['ratio']:.3f} ({value['ci95'][0]:.3f}-{value['ci95'][1]:.3f}) {mark}"
+        if value["class"] == "uncertain" and value["screen"] != "uncertain":
+            mark += "!"  # the 95% screen alone flags it: more repeats needed
+        lo, hi = value["ci_family"]
+        return f"{value['ratio']:.3f} ({lo:.3f}-{hi:.3f}) {mark}"
     grid([{"cell": key} for key in set(common) | set(missing) | set(extra)], cell, SCORED)
     for metric, value in aggregate.items():
         print(f"{metric}: geomean {value['geomean_ratio']:.3f} ({value['ci95'][0]:.3f}-{value['ci95'][1]:.3f}) over "
-              f"{value['cells']} cells; worst {value['worst_cell_ratio']:.3f}; gains {value['gains']}, "
+              f"{value['cells']} cells; worst {value['worst_cell_ratio']:.3f}; screen-only flags "
+              f"{value['screen_flags']}; gains {value['gains']}, "
               f"regressions {value['regressions']}, uncertain {value['uncertain']}")
     print(f"coverage: {len(common)} common, {len(missing)} missing in candidate, {len(extra)} only in candidate")
     for key in missing:
         print(f"  missing in candidate: {key} ({cand['gated'].get(key, 'not run')})")
     for key in extra:
         print(f"  only in candidate: {key} ({ref['gated'].get(key, 'not run')})")
+    print(f"cell intervals: familywise {1 - FAMILY_ALPHA / family:.5f} over {family} (cell, metric) pairs; "
+          "+ gain, - regression, ? uncertain, ! flagged by the per-cell 95% screen only")
     print("verdict:", verdict)
     return 0
 

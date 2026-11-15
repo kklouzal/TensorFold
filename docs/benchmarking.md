@@ -1548,20 +1548,28 @@ corpus hashes, the served source digest (`--source-dir`), `/v1/models`, `/stats`
 repeats are pooled per cell) scores only `prefill_agg_tps` and
 `decode_median_tps`, separately:
 
-1. Per cell, the ratio of geometric means over repeats with a 95% t interval on
-   log ratios: paired by repeat when both arms ran the same repeats (repeat r uses
+1. Per cell, the ratio of geometric means over repeats with a t interval on log
+   ratios: paired by repeat when both arms ran the same repeats (repeat r uses
    identical prompts in both arms, which removes content-dependent draft
-   acceptance from the comparison), otherwise Welch. A cell is a **gain** if the
-   lower bound exceeds 1, a **regression** if the upper bound is below 1, else
-   **uncertain** (neither a win nor a tie).
-2. Aggregate per metric: geometric mean of per-cell ratios (with a combined
-   interval), worst cell and its interval, and gain/regression/uncertain counts.
-3. Verdict: any regression in any cell, metric or mode **rejects** the candidate
-   whatever the aggregate (a REGION-specific selection is a separate decision);
-   **superior** needs at least one gain, no regression and every
+   acceptance from the comparison), otherwise Welch. The deciding interval is
+   familywise: level 1 − 0.05/k over the k compared (cell, metric) pairs
+   (Bonferroni). A cell is a **gain** if its lower bound exceeds 1, a
+   **regression** if its upper bound is below 1, else **uncertain** (neither a win
+   nor a tie). The per-cell 95% interval is reported as a screen (`!`), never as
+   a decision.
+2. Aggregate per metric: geometric mean of per-cell ratios with a 95% interval,
+   which is a gain or regression by the same bound test; plus the worst cell and
+   gain/regression/uncertain/screen counts.
+3. Verdict: any cell or aggregate regression **rejects** the candidate whatever
+   else improved (a REGION-specific selection is a separate decision);
+   **superior** needs a cell or aggregate gain, no regression and every
    reference-measured cell present in the candidate; otherwise **incomplete** or
-   **uncertain**. Uncertain cells with a point ratio below 1 need more repeats
+   **uncertain**. Screen-flagged or low-ratio uncertain cells need more repeats
    before adoption.
+
+The familywise correction is required: a same-source A/A pair of server
+processes (below) produced one per-cell 95% "regression" among 20 pairs, as
+expected by chance, which the familywise rule does not report.
 
 No gain threshold is applied. Use at least five repeats; run reference and
 candidate on the same host state, interleaving sessions when drift is suspected.
@@ -1608,3 +1616,11 @@ varies with each repeat's prompt content (draft acceptance), which the paired
 comparison removes; sampled decode varies by about 1%. Client and engine decode
 rates agreed within 0.1 tok/s. These are warmed, fresh-prompt C1 measurements of
 a source-mounted tree, not an installed-image qualification.
+
+A second process of the same source and configuration (A/A, five more repeats
+of the same prompts) scored `uncertain` against this baseline: aggregate ratios
+0.999 (0.994–1.004) for prefill and 0.997 (0.994–1.000) for decode; per-cell
+familywise intervals spanned about ±1–3% for most cells and ±4–9% for greedy
+32K prefill, sampled 4K–32K prefill and sampled 4K/8K decode (driven by single
+slow repeats). Effects smaller
+than these per-cell widths need more repeats or rely on the aggregate interval.
