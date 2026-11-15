@@ -371,3 +371,20 @@ class FakeEngine(LaneEngine):
     @staticmethod
     def copy_single_cache(cache: list[Any]) -> list[Any]:
         return [FakeBatchItem([list(r) for r in item.rows]) for item in cache]
+
+
+def scripted_family(script: list[int]):
+    """Emit a scripted continuation after the thinking tests' three-token prompt."""
+
+    class Family(FakeFamily):
+        def hidden(self, inputs: Any, cache: list[Any], parents: Any = None) -> Any:
+            import mlx.core as mx
+            import numpy as np
+
+            history, out = cache[0].rows[0], []
+            for token in np.array(inputs).reshape(-1).tolist():
+                history.append(int(token))
+                out.append(script[min(len(history) - 3, len(script) - 1)])
+            return mx.array(out, dtype=mx.float32).reshape(1, -1, 1)
+
+    return Family()

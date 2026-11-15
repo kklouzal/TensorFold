@@ -19,7 +19,7 @@ def _app(pieces: list[str], script: list[int]):
 
     pytest.importorskip("mlx.core")
     from tensorfold.server.app import ChatApp
-    from tests.lane_fakes import FakeEngine, FakeFamily
+    from tests.lane_fakes import FakeEngine, scripted_family
 
     class Tokenizer:
         eos_token_ids = {EOS}
@@ -36,18 +36,7 @@ def _app(pieces: list[str], script: list[int]):
         def convert_tokens_to_ids(self, token: str) -> int | None:
             return pieces.index(token) if token in pieces else None
 
-    class Family(FakeFamily):
-        def hidden(self, inputs: Any, cache: list[Any], parents: Any = None) -> Any:
-            import mlx.core as mx
-            import numpy as np
-
-            history, out = cache[0].rows[0], []
-            for token in np.array(inputs).reshape(-1).tolist():
-                history.append(int(token))
-                out.append(script[min(len(history) - 3, len(script) - 1)])
-            return mx.array(out, dtype=mx.float32).reshape(1, -1, 1)
-
-    family = Family()
+    family = scripted_family(script)
     return ChatApp(None, Tokenizer(), served_name="fake", lanes=1, max_rows=16, max_draft=4, default_max_tokens=32,
                    checkpoint_slots=0, use_proposer=False, enable_thinking=False,
                    engine_factory=lambda model, **kw: FakeEngine(family, **kw))
