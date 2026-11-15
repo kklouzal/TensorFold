@@ -47,7 +47,7 @@ class Gemma4SM70Engine:
         from tensorfold.cuda.comm import open_comm
         from tensorfold.token_metadata import resolve_eos
         from . import weights as W
-        from .target import Target, PROMPT_ROWS
+        from .target import Target, PROMPT_ROWS, DECODE_ROWS
 
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("Gemma 4 SM70 serving requires --tp 8 (TP8 attention/dense, ETP4 experts)")
@@ -71,11 +71,11 @@ class Gemma4SM70Engine:
         if drafter and not no_drafts:
             from .dflash import DFlash
             block = 5 if depth is None else depth + 1
-            self.head = DFlash(drafter, self.target, context=self.context_window, block=block)
+            self.head = DFlash(drafter, self.target, context=self.context_window, block=block, bits=drafter_bits)
             self.max_rows = block
             self.max_draft = block - 1
         self._taps = None
-        self._gather = torch.empty((tp, 16, self.target.shard), dtype=torch.float32, device="cuda")
+        self._gather = torch.empty(tp * 16 * self.target.shard, dtype=torch.float32, device="cuda")
         from tensorfold.cuda.control_pipes import ControlPipes
         self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
         if rank == 0:
@@ -93,6 +93,9 @@ class Gemma4SM70Engine:
             warm = min(PROMPT_ROWS, self.context_window - 16)
             self._run(OP_FORWARD, 0, warm, F_LOGITS_ALL | F_RESET | (F_APPEND if self.head is not None else 0),
                       [0] * warm)
+            # ... and every decode-arithmetic scratch to its widest (DECODE_ROWS) eager forward.
+            self._run(OP_FORWARD, 0, DECODE_ROWS, F_LOGITS_ALL | F_RESET | (F_APPEND if self.head is not None else 0),
+                      [0] * DECODE_ROWS)
             self.graphs = Graphs(self)
             self.graphs.capture()
             self.target.frozen = True
@@ -181,7 +184,8 @@ class Gemma4SM70Engine:
         if local is None:
             return None
         n = local.shape[0]
-        recv = self._gather[:, :n] if n <= 16 else torch.empty((self.world, n, local.shape[1]), device="cuda")
+        recv = (self._gather[:self.world * n * local.shape[1]].view(self.world, n, local.shape[1]) if n <= 16
+                else torch.empty((self.world, n, local.shape[1]), device="cuda"))
         self.comm.all_gather(local.contiguous(), recv)
         return recv.permute(1, 0, 2).reshape(n, -1)
 
@@ -378,7 +382,4 @@ class Gemma4SM70Engine:
                 return
             self._closed = True
             if self.rank == 0:
-                try:
-                    self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0))
-                except BaseException:
-                    pass
+                self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0))

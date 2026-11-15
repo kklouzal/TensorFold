@@ -19,7 +19,7 @@ from .target import CHUNK, DECODE_ROWS
 
 
 class DFlash:
-    def __init__(self, draft_dir, target, *, context: int, block: int):
+    def __init__(self, draft_dir, target, *, context: int, block: int, bits: int = 8):
         from tensorfold.cuda.direct_read import SafeTensors
         from tensorfold.tensor_file import checkpoint_path
 
@@ -32,6 +32,9 @@ class DFlash:
         world, rank = target.world, target.rank
         if cfg.heads % world or cfg.kv_heads != world or cfg.width % world or cfg.hidden % world:
             raise ValueError("Gemma DFlash TP8 layout needs heads/KV heads/MLP/hidden divisible by 8")
+        if bits not in (8, 16):
+            raise ValueError("Gemma DFlash on SM70 runs BF16 (--drafter-bits 16) or private INT8 W8A16 copies (8)")
+        self.bits = bits
         if not 2 <= block <= min(cfg.block, DECODE_ROWS):
             raise ValueError("Gemma DFlash block must be 2..16 rows")
         self.cfg, self.t, self.ext = cfg, target, target.ext
@@ -71,6 +74,12 @@ class DFlash:
                 "causal": cfg.causal_layers[i],
             })
         reader.close()
+        if bits == 8:
+            # Private symmetric per-output-row INT8 copies (proposal arithmetic only; the target verifies).
+            self.fc = self._int8(self.fc)
+            for layer in self.layers:
+                for key in ("qkv", "o", "gate_up", "down"):
+                    layer[key] = self._int8(layer[key])
         exponent = torch.arange(0, d, 2, dtype=torch.int64).float() / d
         self.inv_freq = (1.0 / (cfg.rope.theta ** exponent)).to(dev).contiguous()
         alloc = -(-(context + DECODE_ROWS) // CHUNK) * CHUNK
@@ -83,17 +92,35 @@ class DFlash:
         self._f32 = {}
 
     # ------------------------------------------------------------------------------------------- helpers
+    @staticmethod
+    def _int8(w):
+        f = w.float()
+        scale = (f.abs().amax(1) / 127).clamp_min(torch.finfo(torch.float32).tiny)
+        q = torch.round(f / scale[:, None]).clamp_(-127, 127).to(torch.int8)
+        return (q.contiguous(), scale.contiguous())
+
+    @staticmethod
+    def _rows(w, lo=0, hi=None):
+        # Output-row slice of a BF16 weight or an (INT8, scale) copy.
+        if isinstance(w, tuple):
+            return (w[0][lo:hi], w[1][lo:hi])
+        return w[lo:hi]
+
     def _w32(self, key, w):
         t = self._f32.get(key)
         if t is None:
-            t = self._f32[key] = w.float()
+            t = self._f32[key] = (w[0].float() * w[1][:, None]) if isinstance(w, tuple) else w.float()
         return t
 
     def _linear(self, x, w, key):
         rows = x.shape[0]
         if rows <= DECODE_ROWS:
-            out = torch.empty((rows, w.shape[0]), dtype=torch.float32, device=self.device)
-            self.ext.bf16_rows(x.contiguous(), rows, w, w.shape[0], w.shape[1], out, w.shape[0], 0.0)
+            n, k = w[0].shape if isinstance(w, tuple) else w.shape
+            out = torch.empty((rows, n), dtype=torch.float32, device=self.device)
+            if isinstance(w, tuple):
+                self.ext.i8_rows(x.contiguous(), rows, w[0], w[1], n, k, out, n)
+            else:
+                self.ext.bf16_rows(x.contiguous(), rows, w, n, k, out, n, 0.0)
             return out
         return torch.mm(x, self._w32(key, w).t())
 
@@ -126,7 +153,7 @@ class DFlash:
             pos.fill_(start)
         H, d = self.heads, self.d
         for i, layer in enumerate(self.layers):
-            kv = self._linear(ctx, layer["qkv"][H * d:], f"kv{i}")
+            kv = self._linear(ctx, self._rows(layer["qkv"], H * d), f"kv{i}")
             self.ext.qkv_prep(kv, rows, 0, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, pos, kv,
                               self.k[i], self.v[i], None, 0, self.cfg.eps)
         self.length = start + rows
@@ -163,7 +190,7 @@ class DFlash:
             att = torch.empty((rows, H * d), dtype=torch.float32, device=self.device)
             self.t._attention(q, rows, H, d, self.k[i], self.v[i], None, slots,
                               cfg.sliding_window if layer["sliding"] else 0, att, noncausal=not layer["causal"],
-                              pos=pos)
+                              pos=pos, scale=d ** -0.5)
             o = self._linear(att, layer["o"], f"o{i}")
             self.t.all_reduce(o)
             x = x + o

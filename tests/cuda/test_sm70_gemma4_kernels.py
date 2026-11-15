@@ -122,7 +122,7 @@ def test_gemma4_kernels():
             po = torch.empty(splits, rpad, D, device=dev); pm = torch.empty(splits, rpad, device=dev); pl = torch.empty_like(pm)
             out = torch.empty(R, D, device=dev)
             ext.attn(q.view(R, D).to(dev), R, H, D, k.to(dev), v.to(dev), kpos.to(dev) if ring else None, S,
-                     torch.tensor([pos0], dtype=torch.int32, device=dev), window, 0, chunks, splits, po, pm, pl, rpad, out)
+                     torch.tensor([pos0], dtype=torch.int32, device=dev), window, 0, 1.0, chunks, splits, po, pm, pl, rpad, out)
             ref = attn_ref(q.view(R, D), k, v, qpos, kpos, window)
             check(f"attn D{D} rows{rows} len{length} win{window} splits{splits}", out, ref, 3e-3)
     # qkv_prep: compare with torch reference

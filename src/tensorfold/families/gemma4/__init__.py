@@ -168,18 +168,19 @@ def check_cuda_prefix_cache_metadata(config, *, flag="--prefix-cache-bytes"):
         raise ValueError(f"{flag} requires Gemma 4 MoE on CUDA")
 
 
+CUDA_TP8 = True   # --tp 8: the eight-V100 TP8/ETP4 provider (families/gemma4/sm70)
 SM70_OPTIONS = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "eos_token_ids", "chat_template_file",
-                "chat_template_name", "vision", "kv_dtype", "expert_tensor_parallel_size"}
+                "chat_template_name", "vision", "kv_dtype", "expert_tensor_parallel_size", "graphs"}
 
 
 def _sm70_engine(model_dir, *, drafter, rank, master, master_port, no_drafts, context, **options):
     """Eight-V100 TP8/ETP4 provider for the AEON CT NVFP4 26B-A4B checkpoint (families/gemma4/sm70)."""
+    if options.get("vision"):
+        raise ValueError("Gemma4 --tp 8 (SM70) does not serve image/video input yet; drop --vision")
     unsupported = sorted(set(options) - SM70_OPTIONS)
     if unsupported:
         raise ValueError("Gemma4 on eight V100s (--tp 8) does not implement: " + ", ".join(unsupported))
-    if options.get("vision"):
-        raise ValueError("Gemma4 --tp 8 (SM70) does not serve image/video input yet; drop --vision")
-    if options.get("kv_dtype", "fp16") not in ("fp16", "bf16"):
+    if options.get("kv_dtype", "fp16") != "fp16":
         raise ValueError("Gemma4 --tp 8 keeps FP16 KV (SM70 has no BF16 tensor cores); drop --kv-dtype")
     if options.get("expert_tensor_parallel_size", 4) != 4:
         raise ValueError("Gemma4 --tp 8 uses ETP4 x EP2 experts (--expert-tensor-parallel-size 4)")
@@ -191,7 +192,7 @@ def _sm70_engine(model_dir, *, drafter, rank, master, master_port, no_drafts, co
     return Gemma4SM70Engine(Path(model_dir), rank=rank, tp=8, master=master, master_port=master_port,
                             context=context, drafter="" if no_drafts else drafter, no_drafts=no_drafts,
                             depth=None if rows is None else rows - 1, streams=options.get("parallel", 1),
-                            **{k: options[k] for k in ("context_explicit", "drafter_bits", "eos_token_ids",
+                            **{k: options[k] for k in ("context_explicit", "drafter_bits", "eos_token_ids", "graphs",
                                                        "chat_template_file", "chat_template_name") if k in options})
 
 

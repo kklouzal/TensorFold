@@ -4,7 +4,8 @@ Every rank runs the identical operation sequence on identical inputs; the leader
 verification forwards (rows <= DECODE_ROWS) use the native W4A16 GEMVs with FP32 activations; prompt
 forwards use exact FP16 dequantized weights on cuBLAS tensor cores (FP32 accumulation and output) with
 FP16 activations. Both share the norm, RoPE/KV, routing and attention kernels. The residual stream is FP32.
-Two FP32 NCCL all-reduces per layer: attention output, and [dense | routed] FFN partials.
+Two cross-rank reductions per layer (attention output, [dense | routed] FFN partials): decode rows all-gather
+the FP32 partials and the tail kernels sum them in rank order; prompt rows use an FP32 NCCL all-reduce.
 """
 
 from __future__ import annotations
@@ -108,17 +109,18 @@ class Target:
 
     # ------------------------------------------------------------------------------------------ helpers
     def _buf(self, name, shape, dtype=torch.float32):
-        t = self._scratch.get(name)
+        key = (name, dtype)
+        t = self._scratch.get(key)
         n = math.prod(shape)
         if t is None or t.numel() < n or t.dtype != dtype:
             if self.frozen and t is not None:
                 raise RuntimeError(f"Gemma 4 scratch {name} would grow after CUDA graph capture")
             t = torch.empty(max(n, 1), dtype=dtype, device=self.device)
-            self._scratch[name] = t
+            self._scratch[key] = t
         return t[:n].view(shape)
 
     def _attention(self, q, rows, heads, d, k, v, key_pos, slots, window, out, *, splits=None, noncausal=False,
-                   pos=None):
+                   pos=None, scale=1.0):
         R = rows * heads
         rpad = -(-R // 16) * 16
         chunks = -(-slots // CHUNK)
@@ -129,7 +131,7 @@ class Target:
         pm = self._buf("attn_pm", (splits, rpad))
         pl = self._buf("attn_pl", (splits, rpad))
         self.ext.attn(q, R, heads, d, k, v, key_pos, slots, self._state.pos if pos is None else pos, window,
-                      1 if noncausal else 0, chunks, splits, po, pm, pl, rpad, out)
+                      1 if noncausal else 0, scale, chunks, splits, po, pm, pl, rpad, out)
 
     def _reduce(self, part, name, prompt):
         """Cross-rank sum source for a tail kernel: (tensor, world). Decode rows all-gather the FP32 partials
@@ -257,15 +259,15 @@ class Target:
             tap = None
             if tap_out is not None and i in self.tap_layers:
                 tap = tap_out[:, self.tap_layers.index(i)]
-            ext.ffn_tail(red_src, rows, red_world, rows * 2 * D, h, n["post_ff1"], n["post_ff2"], n["post_ff"], n["scalar"], following, c.eps,
-                         x, tap)
+            if i + 1 == len(self.w.layers) and prompt:   # the head reads the final norm in FP32 on both paths
+                x = self._buf("x_final", (rows, D))
+            ext.ffn_tail(red_src, rows, red_world, rows * 2 * D, h, n["post_ff1"], n["post_ff2"], n["post_ff"],
+                         n["scalar"], following, c.eps, x, tap)
         state.length += rows
         out = None
         if logits != "none":
             final = x if logits == "all" else x[rows - 1:]
             m = final.shape[0]
-            if prompt:
-                final = final.float()
             out = self._buf("logits", (m, self.shard))
             for start in range(0, m, DECODE_ROWS):
                 stop = min(m, start + DECODE_ROWS)
@@ -274,34 +276,39 @@ class Target:
         return out, tap_out
 
     def _experts_prompt(self, layer, x16, local, weights, out, rows):
-        """Prompt experts: per local expert GEMMs over its (row, slot) pairs; slot-ordered combine."""
+        """Prompt experts: one padded batched GEMM pair over the local experts' (row, slot) pairs, then the
+        slot-ordered weighted combine. One host read (the largest expert population) per layer."""
         c = self.c
         ew = self.w.expert_width
         D = c.hidden
+        E = self.w.expert_count
         pairs = rows * c.top_k
-        y = self._buf("pair_out", (pairs, D))
-        y.zero_()
-        flat = local.reshape(-1)
-        order = torch.argsort(flat, stable=True)
-        counts = torch.bincount(flat[flat >= 0], minlength=self.w.expert_count).cpu().tolist()
+        flat = local.reshape(-1).long()
+        valid = flat >= 0
+        counts = torch.bincount(flat[valid], minlength=E)
+        width = max(1, int(counts.max().item()))
+        order = torch.argsort(torch.where(valid, flat, E), stable=True)        # local pairs grouped by expert
+        starts = torch.cumsum(counts, 0) - counts
+        sorted_e = torch.where(valid, flat, E)[order]
+        keep = sorted_e < E
+        order, sorted_e = order[keep], sorted_e[keep]
+        slot = torch.arange(order.numel(), device=self.device) - starts[sorted_e]
+        dest = sorted_e * width + slot                                          # padded [E, width] position
+        index = torch.full((E * width,), rows, dtype=torch.long, device=self.device)   # pad -> zero row
+        index[dest] = order // c.top_k
+        padded = torch.cat([x16, x16.new_zeros((1, D))]).index_select(0, index).view(E, width, D)
         eg, ed = layer.experts_gate_up, layer.experts_down
-        gu16 = self._buf("e_gu16", (eg.codes.shape[0], 2 * ew, D), torch.float16)
-        dn16 = self._buf("e_dn16", (ed.codes.shape[0], D, ew), torch.float16)
-        self.ext.w4_dequant(eg.codes, eg.scales, eg.codes.shape[0] * 2 * ew, D, gu16)
-        self.ext.w4_dequant(ed.codes, ed.scales, ed.codes.shape[0] * D, ew, dn16)
-        start = int((flat < 0).sum().item())
-        for e, n in enumerate(counts):
-            if not n:
-                continue
-            members = order[start:start + n]
-            start += n
-            xe = x16.index_select(0, members // c.top_k)
-            gu = torch.mm(xe, gu16[e].t(), out_dtype=torch.float32).mul_(eg.rowmul[e])
-            act = (torch.nn.functional.gelu(gu[:, :ew], approximate="tanh") * gu[:, ew:]).half()
-            ye = torch.mm(act, dn16[e].t(), out_dtype=torch.float32).mul_(ed.rowmul[e])
-            y.index_copy_(0, members, ye)
-        y = y.view(rows, c.top_k, D)
-        acc = y[:, 0] * weights[:, 0:1]
+        gu16 = self._buf("e_gu16", (E, 2 * ew, D), torch.float16)
+        dn16 = self._buf("e_dn16", (E, D, ew), torch.float16)
+        self.ext.w4_dequant(eg.codes, eg.scales, E * 2 * ew, D, gu16)
+        self.ext.w4_dequant(ed.codes, ed.scales, E * D, ew, dn16)
+        gu = torch.bmm(padded, gu16.transpose(1, 2), out_dtype=torch.float32).mul_(eg.rowmul[:, None, :])
+        act = (torch.nn.functional.gelu(gu[..., :ew], approximate="tanh") * gu[..., ew:]).half()
+        y = torch.bmm(act, dn16.transpose(1, 2), out_dtype=torch.float32).mul_(ed.rowmul[:, None, :])
+        pair_out = torch.zeros((pairs, D), dtype=torch.float32, device=self.device)
+        pair_out[order] = y.view(E * width, D)[dest]
+        pair_out = pair_out.view(rows, c.top_k, D)
+        acc = pair_out[:, 0] * weights[:, 0:1]
         for s in range(1, c.top_k):
-            acc = acc + y[:, s] * weights[:, s:s + 1]
+            acc = acc + pair_out[:, s] * weights[:, s:s + 1]
         out.copy_(acc)

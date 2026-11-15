@@ -258,6 +258,48 @@ __global__ void __launch_bounds__(256) bf16_rows(const float* __restrict__ x, in
     }
 }
 
+// ---------------------------------------------------------------------------------------------- INT8 GEMV
+// out[m, n] = scale[n] * dot(x[m], q[n]) with symmetric per-row INT8 q (private W8A16 proposal copies). K % 16 == 0.
+template <int MAXM>
+__global__ void __launch_bounds__(256) i8_rows(const float* __restrict__ x, int64_t ldx, int M,
+        const int8_t* __restrict__ w, const float* __restrict__ scale, int N, int K, float* __restrict__ out,
+        int64_t ldo) {
+    const int n = blockIdx.x * WARPS + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+    if (n >= N) return;
+    const uint4* row = reinterpret_cast<const uint4*>(w + (int64_t)n * K);
+    float acc[MAXM];
+#pragma unroll
+    for (int m = 0; m < MAXM; ++m) acc[m] = 0.f;
+    for (int c = lane; c < (K >> 4); c += 32) {
+        const uint4 v = __ldg(row + c);
+        const uint32_t words[4] = {v.x, v.y, v.z, v.w};
+        float f[16];
+#pragma unroll
+        for (int q = 0; q < 16; ++q) f[q] = (float)(int8_t)(words[q >> 2] >> (8 * (q & 3)));
+#pragma unroll
+        for (int m = 0; m < MAXM; ++m) {
+            if (m < M) {
+                const float4* xp = reinterpret_cast<const float4*>(x + m * ldx + c * 16);
+                float d = acc[m];
+#pragma unroll
+                for (int q = 0; q < 4; ++q) {
+                    const float4 a = __ldg(xp + q);
+                    d = fmaf(a.x, f[4 * q], d); d = fmaf(a.y, f[4 * q + 1], d);
+                    d = fmaf(a.z, f[4 * q + 2], d); d = fmaf(a.w, f[4 * q + 3], d);
+                }
+                acc[m] = d;
+            }
+        }
+    }
+#pragma unroll
+    for (int m = 0; m < MAXM; ++m) {
+        if (m < M) {
+            const float v = warp_sum(acc[m]) * __ldg(scale + n);
+            if (lane == 0) out[m * ldo + n] = v;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------------------------- routing
 // One 128-thread block per row (E <= 128): softmax over all experts, stable top-k by probability,
 // renormalized and multiplied by per_expert_scale. local = id - first when owned, else -1.
@@ -523,7 +565,8 @@ __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D
 // q: [R, D] FP16, r = row * H + head (row position = *pos0 + r / H). K/V caches [S, D] FP16 with
 // S % 256 == 0 and every slot initialized (masked keys must hold finite values).
 // key_pos: slot -> absolute position (or nullptr: slot index is the position). A key is visible to a query
-// at position p when 0 <= kp <= p and (window == 0 or kp > p - window).
+// at position p when 0 <= kp <= p and (window == 0 or kp > p - window). Scores are scaled by `scale` (FP32)
+// before masking (Gemma 4 target: 1.0; Qwen3-style DFlash companion: head_dim^-0.5).
 // Block (split, tile) visits chunks [split*cps, min(chunks, (split+1)*cps)) of 256 keys with an online softmax
 // and writes unnormalized partials po[split, r, :], pm/pl[split, r]; attn_merge folds splits in order.
 constexpr int AC = 256;   // keys per chunk
@@ -537,7 +580,7 @@ struct AttnSmem {
 template <int D>
 __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, int R, int H, const half* __restrict__ kc,
         const half* __restrict__ vc, const int* __restrict__ key_pos, int S, const int* __restrict__ pos0, int window,
-        int noncausal, int chunks, int cps, float* __restrict__ po, float* __restrict__ pm, float* __restrict__ pl, int Rpad) {
+        int noncausal, float scale, int chunks, int cps, float* __restrict__ po, float* __restrict__ pm, float* __restrict__ pl, int Rpad) {
     constexpr int QLD = AttnSmem<D>::QLD, PLD = AttnSmem<D>::PLD;
     extern __shared__ __align__(32) unsigned char smem[];
     half* qs = reinterpret_cast<half*>(smem);
@@ -606,7 +649,7 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
                     const int kp = key_pos ? key_pos[key] : key;
                     v = kp >= 0 && kp <= qp && (window == 0 || kp > qp - window);
                 }
-                const float s = v ? ss[row * AC + i] : -INFINITY;
+                const float s = v ? ss[row * AC + i] * scale : -INFINITY;
                 ss[row * AC + i] = s;
                 mx = fmaxf(mx, s);
             }
@@ -759,6 +802,16 @@ void bf16_rows_cuda(const Tensor& x, int64_t M, const Tensor& w, int64_t N, int6
 #undef G4_BF
 }
 
+void i8_rows_cuda(const Tensor& x, int64_t M, const Tensor& w, const Tensor& scale, int64_t N, int64_t K, Tensor& out,
+                  int64_t ldo) {
+    const dim3 grid((N + g4::WARPS - 1) / g4::WARPS);
+    const int64_t ldx = x.stride(0);
+#define G4_I8(MM) g4::i8_rows<MM><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, cptr<int8_t>(w), \
+        cptr<float>(scale), (int)N, (int)K, ptr<float>(out), ldo)
+    if (M <= 1) G4_I8(1); else if (M <= 4) G4_I8(4); else if (M <= 8) G4_I8(8); else G4_I8(16);
+#undef G4_I8
+}
+
 void route_cuda(const Tensor& logits, int64_t M, int64_t E, int64_t topk, const Tensor& scale, int64_t first,
                 int64_t count, Tensor& ids, Tensor& weights, Tensor& local) {
     g4::route<<<M, 128, 0, stream()>>>(cptr<float>(logits), (int)E, (int)topk, cptr<__nv_bfloat16>(scale),
@@ -821,7 +874,7 @@ namespace {
 template <int D>
 void attn_launch(const Tensor& q, int64_t R, int64_t H, const Tensor& kc, const Tensor& vc,
                  const c10::optional<Tensor>& key_pos, int64_t S, const Tensor& pos0, int64_t window, int64_t noncausal,
-                 int64_t chunks, int64_t splits, Tensor& po, Tensor& pm, Tensor& pl, int64_t Rpad) {
+                 double scale, int64_t chunks, int64_t splits, Tensor& po, Tensor& pm, Tensor& pl, int64_t Rpad) {
     static bool configured = false;
     const size_t bytes = g4::AttnSmem<D>::bytes;
     if (!configured) {
@@ -832,17 +885,18 @@ void attn_launch(const Tensor& q, int64_t R, int64_t H, const Tensor& kc, const 
     const dim3 grid(splits, (R + 15) / 16);
     g4::attn_split<D><<<grid, 128, bytes, stream()>>>(cptr<half>(q), (int)R, (int)H, cptr<half>(kc), cptr<half>(vc),
         key_pos.has_value() ? cptr<int>(*key_pos) : nullptr, (int)S, cptr<int>(pos0), (int)window, (int)noncausal,
-        (int)chunks,
+        (float)scale, (int)chunks,
         (int)cps, ptr<float>(po), ptr<float>(pm), ptr<float>(pl), (int)Rpad);
 }
 }  // namespace
 
 void attn_cuda(const Tensor& q, int64_t R, int64_t H, int64_t D, const Tensor& kc, const Tensor& vc,
                const c10::optional<Tensor>& key_pos, int64_t S, const Tensor& pos0, int64_t window, int64_t noncausal,
-               int64_t chunks, int64_t splits, Tensor& po, Tensor& pm, Tensor& pl, int64_t Rpad, Tensor& out) {
-    if (D == 128) attn_launch<128>(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, chunks, splits, po, pm, pl, Rpad);
-    else if (D == 256) attn_launch<256>(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, chunks, splits, po, pm, pl, Rpad);
-    else if (D == 512) attn_launch<512>(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, chunks, splits, po, pm, pl, Rpad);
+               double scale, int64_t chunks, int64_t splits, Tensor& po, Tensor& pm, Tensor& pl, int64_t Rpad,
+               Tensor& out) {
+    if (D == 128) attn_launch<128>(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, scale, chunks, splits, po, pm, pl, Rpad);
+    else if (D == 256) attn_launch<256>(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, scale, chunks, splits, po, pm, pl, Rpad);
+    else if (D == 512) attn_launch<512>(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, scale, chunks, splits, po, pm, pl, Rpad);
     else TORCH_CHECK(false, "attention head width must be 128, 256 or 512");
     const size_t bytes = splits * sizeof(float);
     if (out.scalar_type() == at::kHalf)
