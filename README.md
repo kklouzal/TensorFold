@@ -1676,6 +1676,31 @@ at `--context 66048` measured C1 prefill of 4,970 → 3,862 tok/s and greedy
 DFlash decode of 235 → 183 tok/s from 4K to 64K prompts (sampled serial decode
 186 → 153 tok/s); C > 1 cells await multi-lane serving.
 
+A DFlash depth sweep on that matrix (source `cd227249`, same server settings,
+C1 greedy, five repeats a session; acceptance and engine round time shown from
+4K to 64K) selected `--draft-rows 4`:
+
+| `--draft-rows` | Decode tok/s 4K / 8K / 16K / 32K / 64K | Accepted per round | DFlash round, ms |
+| --- | --- | --- | --- |
+| 2 | 229.1 / 220.0 / 215.5 / 203.2 / 189.9 | 0.66 → 0.59 | 7.25 → 8.35 |
+| 3 | 241.7 / 227.9 / 221.4 / 211.2 / 192.7 | 1.03 → 0.84 | 8.40 → 9.55 |
+| 4 | 241.1 / 229.3 / 219.6 / 210.0 / 189.8 | 1.22 → 0.96 | 9.22 → 10.33 |
+| 5 (current default) | 236.1 / 222.1 / 212.6 / 203.2 / 182.0 | 1.30 → 1.02 | 9.76 → 11.08 |
+
+Rows 3–5 are geometric means over two server sessions (ten repeats); rows 2
+over one. Sweeping upward and stopping at the first slower setting: 3 rows beat 2
+(aggregate decode 1.034, 95% interval 1.025–1.043), 4 rows tied with 3 in both
+sessions (0.995, 0.986–1.005 and 0.986–1.004), and 5 rows were slower than 4
+(0.967, 0.959–0.975, and 0.969, 0.962–0.977), so 6 rows were not run. Against 5 rows,
+4 rows decoded 1.034 (1.025–1.042) and 1.031 (1.024–1.039) faster. Prefill does
+not depend on draft rows: per-session prefill differences of about ±1% changed
+sign between sessions, and two sessions of the identical 5-row setting differed
+just as much. Every greedy reply was token-identical to the 5-row baseline
+(2–8 rows keep DFlash equal to serial decoding); sampled requests decode serially
+and do not use the drafter. The CLI default remains 5 pending a code change.
+Scope: long-prompt summaries at C1 only; short chats, C > 1 and the 262,144-token
+context were not re-scored.
+
 `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` (revision `90c8601b`) with
 `z-lab/gemma-4-26B-A4B-it-DFlash` (`77d42027`) runs on the eight-V100-SXM2-32GB
 host through `tools/launch_cuda_tp.py` and `--tp 8`
