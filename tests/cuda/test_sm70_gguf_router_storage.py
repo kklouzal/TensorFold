@@ -2,7 +2,7 @@
 
 import weakref
 
-import numpy as np
+from flashnext_state_checks import compare_committed_state
 import pytest
 import torch
 
@@ -79,20 +79,6 @@ def test_router_float_storage_preserves_full_forward_and_cached_prefix_state(cac
         for layer, router in zip(weights.layers, routers):
             layer.moe.router = router
 
-    def compare(a, b):
-        assert a.pos == b.pos and a.cur == b.cur
-        for index, parity in enumerate(a.cur):
-            exact(a.rec[parity, index], b.rec[b.cur[index], index])
-        for name in ("conv", "ple_tail"):
-            exact(getattr(a, name), getattr(b, name))
-        for ka, kb in zip(a.kc, b.kc):
-            for name in ("k", "v", "ks", "vs"):
-                exact(getattr(ka, name)[:a.pos], getattr(kb, name)[:b.pos])
-        for name in ("ikc", "pooled"):
-            end = a.pos if name == "ikc" else a.pos // a.ratio
-            for va, vb in zip(getattr(a, name), getattr(b, name)):
-                exact(va[:end], vb[:end])
-        np.testing.assert_array_equal(a.ple_history, b.ple_history)
 
     logits = []
     for routers, state in zip((half, stored), states):
@@ -100,7 +86,7 @@ def test_router_float_storage_preserves_full_forward_and_cached_prefix_state(cac
         logits.append(forward(weights, state, prompt, [3, 7, 5, 9, 2]).clone())
         commit(weights, state, prompt, 5, 5)
     exact(*logits)
-    compare(*states)
+    compare_committed_state(*states, exact=exact)
     tails = [State(weights, 32, 8, cache) for _ in range(2)]
     for source, tail in zip(states, tails):
         tail.copy_prefix(source, 5, 0)
@@ -112,4 +98,4 @@ def test_router_float_storage_preserves_full_forward_and_cached_prefix_state(cac
             logits.append(forward(weights, state, buffers, tokens).clone())
             commit(weights, state, buffers, len(tokens), keep)
         exact(*logits)
-        compare(*tails)
+        compare_committed_state(*tails, exact=exact)

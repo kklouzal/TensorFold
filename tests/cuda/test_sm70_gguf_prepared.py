@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-import numpy as np
+from flashnext_state_checks import compare_committed_state
 import pytest
 import torch
 
@@ -129,20 +129,6 @@ def test_prepared_existing_forward_partial_commit_prefix_copy_and_full_state(cac
     assert original.padded_linears is None and prepared.padded_linears is not None
     assert Buffers(w, 8, 32, prefill=True).padded_linears is None
 
-    def compare(a, b):
-        assert a.pos == b.pos and a.cur == b.cur
-        for index, parity in enumerate(a.cur):
-            exact(a.rec[parity, index], b.rec[b.cur[index], index])
-        for name in ("conv", "ple_tail"):
-            exact(getattr(a, name), getattr(b, name))
-        for ka, kb in zip(a.kc, b.kc):
-            for name in ("k", "v", "ks", "vs"):
-                exact(getattr(ka, name)[:a.pos], getattr(kb, name)[:b.pos])
-        for name in ("ikc", "pooled"):
-            end = a.pos if name == "ikc" else a.pos // a.ratio
-            for va, vb in zip(getattr(a, name), getattr(b, name)):
-                exact(va[:end], vb[:end])
-        np.testing.assert_array_equal(a.ple_history, b.ple_history)
 
     for tokens, keep in (([3, 7, 5], 3), ([11, 12, 13], 2), ([19], 1), ([21, 22, 23], 1)):
         outputs = []
@@ -151,12 +137,12 @@ def test_prepared_existing_forward_partial_commit_prefix_copy_and_full_state(cac
             commit(w, state, buffers, len(tokens), keep)
         exact(*outputs)
         exact(original.streams[:len(tokens)], prepared.streams[:len(tokens)])
-        compare(*states)
+        compare_committed_state(*states, exact=exact)
     copies = [State(w, 32, 8, cache) for _ in range(2)]
     for state, copy in zip(states, copies):
         copy.copy_prefix(state, state.pos, 0)
         copy.restore(state.snapshot())
-    compare(*copies)
+    compare_committed_state(*copies, exact=exact)
 
 
 @pytest.mark.parametrize("cache", ["fp16", "int8"])
