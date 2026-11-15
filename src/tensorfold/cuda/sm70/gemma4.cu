@@ -5,8 +5,10 @@
 // FP16, see decode8); every 16-element group dot product accumulates in FP32 and is scaled once by its
 // block scale, then by the projection's FP32 per-output-row multiplier (1 / weight_global_scale).
 // Activations into decode GEMVs are FP32; tensor-core attention uses FP16 Q/K/V/P with FP32 accumulation.
-// All reductions have a fixed order that does not depend on the number of rows in a call, except the
-// attention key-split count, which the caller fixes per (rows, context bucket).
+// GEMV/norm/routing reductions have a fixed order that does not depend on the number of rows in a call.
+// Attention depends on the call shape: 64-key chunks when rows x local heads <= 16 (one 16-row tile), else
+// 256-key chunks, and the caller's split count. Target decode/verify forwards of <= 8 rows (2 local heads)
+// therefore share serial-decode arithmetic; wider verify blocks and prompt forwards do not.
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <mma.h>

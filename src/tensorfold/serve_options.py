@@ -218,8 +218,10 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         profile_root(serving_root)
     manifest = getattr(args, "execution_profile_manifest", None)
     media_manifest = getattr(args, "media_profile_manifest", None)
-    if getattr(args, "no_graphs", False) and (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"):
-        raise ValueError("--no-graphs is supported by Flash Next on CUDA")
+    if getattr(args, "no_graphs", False) and (backend != "cuda" or (
+            getattr(family, "model_type", "") != "qwen4_exp"
+            and not (getattr(getattr(family, "package", None), "CUDA_TP8", False) and getattr(args, "tp", 1) == 8))):
+        raise ValueError("--no-graphs is supported by Flash Next and Gemma 4 --tp 8 on CUDA")
     if media_manifest is not None:
         from tensorfold.gguf_file import resolve_gguf
 

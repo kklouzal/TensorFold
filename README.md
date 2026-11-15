@@ -1670,8 +1670,12 @@ taps. On the Gemma-tokenized quality corpus (7,517 teacher-forced tokens), mean
 per-token |log-probability difference| from an independent exact FP32 W4A16
 reference is 0.364 (chat 0.105) versus 1Cat's 0.434 (chat 0.144). Chat and raw-completion SSE stream per verified round (a raw prompt that ends
 inside an opened channel keeps the chat holdback; [API](docs/api.md)). Pending:
-image/video input, `--parallel` above 1, native 262,144-token qualification and
-sampled-request drafting (sampled requests currently decode serially).
+image/video input, `--parallel` above 1 and native 262,144-token qualification.
+Sampled requests decode serially: a rejection-sampled DFlash trial (seeded
+replies reproducible) measured 187/123/112 tok/s (code/prose/list) against
+171/154/179 serially, and an adaptive switch to serial did not beat serial
+either, so it was not adopted. `--no-graphs` serves eagerly with the same greedy
+replies.
 
 #### Flash Next mixed GGUF on eight V100s
 

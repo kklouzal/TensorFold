@@ -95,7 +95,8 @@ TF_SMALL_GATHER_BYTES=262144 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6
 
 `TF_SMALL_GATHER_BYTES=262144` selects the NVLink small all-gather for the per-layer FP32 partial exchanges
 (measured 6.2 -> 5.0 ms per serial decode step). `--drafter-bits` is `16` (original BF16 companion, default) or `8` (private per-row INT8 W8A16 copies);
-`--draft-rows` 2-16 (default 5). Greedy requests draft; sampled requests and requests with grammar
+`--draft-rows` 2-16 (default 5); greedy DFlash replies equal serial replies bitwise for 2-8 rows (wider
+verify blocks use 256-key attention chunks). Greedy requests draft; sampled requests and requests with grammar
 constraints or penalties currently decode serially. `--no-graphs` selects eager execution. Startup captures
 one serial and one DFlash round graph per previously accepted row count. Refused on this provider:
 `--vision`, `--parallel` above 1, `--kv-dtype` other than the FP16 default, and the GB10-only options
