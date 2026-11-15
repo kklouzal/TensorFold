@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import hashlib
 from pathlib import Path
 
 import torch
@@ -24,8 +25,14 @@ def _ext():
     from tensorfold.cuda.build import load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_qwen4_exp_gdn", sources=[str(here / "gdn.cpp"), str(here / "gdn.cu")],
-                extra_cuda_cflags=["-O3", "--fmad=false"], verbose=False)
+    sources = [here / "gdn.cpp", here / "gdn.cu"]
+    header = here.parents[2] / "cuda/kernels/gdn_recurrence.cuh"
+    flags = ["-O3", "--fmad=false"]
+    identity = hashlib.sha256(repr(flags).encode())
+    for source in [*sources, header]:
+        identity.update(source.name.encode() + b"\0" + source.read_bytes())
+    return load(name="tensorfold_qwen4_exp_gdn_" + identity.hexdigest()[:20], sources=list(map(str, sources)),
+                extra_cuda_cflags=flags, verbose=False)
 
 
 class GDNScratch:

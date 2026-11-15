@@ -242,7 +242,8 @@ def test_native_extension_declares_its_owned_source_root_with_the_real_stager(mo
     try:
         assert gdn_native.extension() is native and len(calls) == 1
         assert [Path(path).read_bytes() for path in calls[0]] == [
-            (root/'sm70/gdn_bindings.cpp').read_bytes(), (root/'sm70/gdn.cu').read_bytes()]
+            (root/'sm70/gdn_bindings.cpp').read_bytes(), (root/'sm70/gdn.cu').read_bytes(),
+            (root/'sm70/gdn_prefill_split.cu').read_bytes()]
     finally:
         gdn_native.extension.cache_clear()
 

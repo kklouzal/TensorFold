@@ -123,3 +123,27 @@ def test_all_coupled_recurrent_parts_restore_three_value_heads_before_tp(tmp_pat
         assert list(recurrent.conv.indices) == channels
         assert recurrent.out.columns == tuple((head * 128, 128) for head in heads)
         assert recurrent.a_log is None
+
+
+def test_bf16_extension_identity_tracks_shared_recurrence_header(monkeypatch):
+    from tensorfold.cuda import build
+
+    header = Path(gdn.__file__).resolve().parents[3] / "cuda/kernels/gdn_recurrence.cuh"
+    read_bytes = Path.read_bytes
+    calls = []
+    monkeypatch.setattr(build, "load", lambda **kwargs: calls.append(kwargs) or object())
+    gdn._ext.cache_clear()
+    try:
+        gdn._ext()
+        def changed(path):
+            content = read_bytes(path)
+            return content + b"\n// identity probe\n" if path.resolve() == header else content
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "read_bytes", changed)
+            gdn._ext.cache_clear()
+            gdn._ext()
+        assert calls[0]["name"] != calls[1]["name"]
+        assert calls[0]["sources"] == calls[1]["sources"]
+        assert calls[0]["extra_cuda_cflags"] == calls[1]["extra_cuda_cflags"] == ["-O3", "--fmad=false"]
+    finally:
+        gdn._ext.cache_clear()

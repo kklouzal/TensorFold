@@ -26,6 +26,19 @@ def cleanup():
     return module
 
 
+def cohort():
+    """Run the actual stdlib diagnostics, binding only its already-owned cleanup import."""
+    path = ROOT / 'src/tensorfold/cuda/cohort.py'
+    tree = ast.parse(path.read_bytes())
+    imports = [node for node in tree.body if isinstance(node, ast.ImportFrom)
+               and node.module == 'tensorfold.cleanup']
+    assert len(imports) == 1 and [(name.name, name.asname) for name in imports[0].names] == [('raise_failures', None)]
+    tree.body.remove(imports[0])
+    scope = {'__name__': 'opaque_engine_cohort', 'raise_failures': cleanup().raise_failures}
+    exec(compile(tree, str(path), 'exec'), scope)
+    return NS(**scope)
+
+
 def subject():
     helpers = cleanup()
     tree = ast.parse(SOURCE.read_bytes())
@@ -34,6 +47,16 @@ def subject():
                  DEPTH=4, CONFIDENCE=.5, MAX_DEPTH=15, KEEP=8, KEEP_SERIAL=4,
                  finish=helpers.finish, rollback=helpers.rollback, raise_failures=helpers.raise_failures,
                  __package__='tensorfold.families.qwen4_exp.cuda')
+    # Execute the actual shared methods without importing accelerator-facing packages.
+    for path, name, alias in (
+        (ROOT / 'src/tensorfold/families/qwen4_exp/kv_formats.py', 'kv_dtype', 'engine_kv_dtype'),
+        (ROOT / 'src/tensorfold/engine/prefix_lookup.py', '_resume', 'resume_prefix'),
+    ):
+        helper = next(node for node in ast.parse(path.read_bytes()).body
+                      if isinstance(node, ast.FunctionDef) and node.name == name)
+        unit = ast.Module([ast.ImportFrom('__future__', [ast.alias('annotations')], 0), helper], [])
+        exec(compile(ast.fix_missing_locations(unit), str(path), 'exec'), scope)
+        scope[alias] = scope.pop(name)
     exec(compile(ast.fix_missing_locations(ast.Module([ast.ImportFrom('__future__', [ast.alias('annotations')], 0), cls], [])), str(SOURCE), 'exec'), scope)
     return scope['FlashNextEngine']
 
@@ -54,7 +77,10 @@ def roots(error):
 class Controls(unittest.TestCase):
     def setUp(self):
         original = builtins.__import__
+        diagnostics = cohort()
         def guard(name, *args, **kwargs):
+            if name == 'tensorfold.cuda.cohort':
+                return diagnostics
             if name.split('.')[0] in {'torch', 'triton', 'numpy', 'mlx', 'tensorfold', 'cuda', 'cupy', 'ctypes'}:
                 raise AssertionError('actual SDK/native imports forbidden: '+name)
             return original(name, *args, **kwargs)

@@ -17,7 +17,7 @@ def extension():
     root = Path(__file__).parent
     sources = [root / "gdn_bindings.cpp", root / "gdn.cu", root / "gdn_prefill_split.cu"]
     identity = hashlib.sha256(prepared.__name__.encode())
-    headers = [root.parent / "kernels/tensor_contracts.cuh", root / "gdn_common.cuh"]
+    headers = [root.parent / "kernels/gdn_recurrence.cuh", root.parent / "kernels/tensor_contracts.cuh", root / "gdn_common.cuh"]
     for source in [*sources, *headers]:
         identity.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=headers, source_root=root.parent)

@@ -24,7 +24,7 @@ def extension():
     prepared = _native()  # The selected SM70/toolkit/ABI admission and identity, as gdn_native.
     root = Path(__file__).parent
     sources = [root / "gdn_replay_many.cu"]
-    headers = [root / "gdn_common.cuh"]
+    headers = [root.parent / "kernels/gdn_recurrence.cuh", root / "gdn_common.cuh"]
     digest = hashlib.sha256(prepared.__name__.encode() + repr(CUDA_FLAGS).encode())
     for source in [*sources, *headers]:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
