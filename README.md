@@ -15,6 +15,7 @@ immediate delivery priority; see [Development governance](#development-governanc
 
 ## Start here
 
+- **Changing the code? Follow the [testing methodology](docs/testing-methodology.md)**: serving-matrix performance scoring, teacher-forced quality checks, correctness tests and GPU sharing.
 - [Build and run the NVIDIA container](#build-and-run-the-nvidia-container)
 - [Install the fork on Apple Silicon](#apple-silicon-and-source-installation)
 - [Supported models and formats](#supported-models-and-formats)

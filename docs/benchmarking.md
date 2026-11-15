@@ -1,5 +1,8 @@
 # V100 one-session phase matrix
 
+How to test a change, and which of the procedures below decides what, is defined
+in the [testing methodology](testing-methodology.md).
+
 Use the maintained `tools/bench_concurrent.py` matrix mode with the private
 `tools/v100_owned_qualification.py` observer. This attaches to one loaded
 SC117 service for all warmups, levels and repetitions; it never launches or

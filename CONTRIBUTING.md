@@ -54,6 +54,11 @@ tests must work from a fresh checkout without those packets.
 
 ## Development and verification
 
+Follow the [testing methodology](docs/testing-methodology.md) for every change: it
+defines how performance (the whole serving matrix, server sessions as the unit),
+output quality (teacher-forced NLL with a predeclared margin) and correctness are
+tested and what counts as superior, a regression or uncertain.
+
 Use the backend's actual supported environment: Apple Silicon for MLX, or the
 pinned native Linux ARM64/AMD64 container for CUDA. The project requires Python
 3.11 or newer; the reproducible CUDA container uses Python 3.12. A local editable
