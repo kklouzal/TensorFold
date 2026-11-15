@@ -89,8 +89,8 @@ class Target:
             self.inverse[kind] = inv.contiguous()
         self.shard = c.vocab // self.world
         self._scratch = {}
-        self.frozen = False
-        self.router_counter = torch.zeros(1, dtype=torch.int32, device=self.device)   # fused router's last-block count        # set after graph capture: captured scratch must never be reallocated
+        self.frozen = False        # set after graph capture: captured scratch must never be reallocated
+        self.router_counter = torch.zeros(1, dtype=torch.int32, device=self.device)   # fused router's last-block count
 
     # ------------------------------------------------------------------------------------------ state
     def make_state(self, context: int | None = None) -> State:
@@ -206,7 +206,10 @@ class Target:
                 d, kc, vc, kpos = c.global_head_dim, state.full_k[fi], state.full_v[fi], None
                 fi += 1
                 inv, ring, window = self.inverse["full"], 0, 0
-                slots = kc.shape[0] if staged else -(-(state.length + rows) // CHUNK) * CHUNK
+                # Decode/verify rows always span the allocated cache, as graph replays do: the split partition
+                # (keys per split) then equals the staged one, so eager and graph forwards are bitwise equal;
+                # splits wholly after every query exit at once.
+                slots = kc.shape[0] if staged or not prompt else -(-(state.length + rows) // CHUNK) * CHUNK
             proj_n = layer.qkv.n
             if prompt:
                 proj = self._matmul_prompt(x, layer.qkv)
