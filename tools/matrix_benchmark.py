@@ -235,6 +235,14 @@ def server_stats(base: str):
     return stats
 
 
+def server_session(stats) -> dict | None:
+    """The server process identity that makes one result file one scoring unit (``compare``)."""
+    server = (stats or {}).get("server") or {}
+    if not server.get("instance_id"):
+        return None
+    return {"instance_id": server["instance_id"], "started_unix_s": server.get("started_unix_s")}
+
+
 def source_digest(root: Path) -> dict:
     digest, files = hashlib.sha256(), 0
     for path in sorted(p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts):
@@ -377,7 +385,7 @@ def settle_stats(base: str, before, expected: int):
 
 
 def run_cell(base: str, args, plan: dict, corpus: str, mode: str, arrival: str, stagger: float, c: int, length: int,
-             rep, limits) -> dict:
+             rep, limits, session) -> dict:
     keys = [prompt_key(mode, arrival, c, length, rep, slot) for slot in range(c)]
     bodies = []
     for key in keys:
@@ -432,6 +440,10 @@ def run_cell(base: str, args, plan: dict, corpus: str, mode: str, arrival: str, 
     except (RuntimeError, TimeoutError) as error:
         after = None
         problems.append(f"server statistics: {error}")
+    for stats in (before, after):
+        if stats is not None and server_session(stats) != session:
+            problems.append("the server process changed during the run: one result file must be one server session")
+            break
     delta = stats_delta(before, after)
     if delta is not None:
         if delta["prompt_tokens"] != sum(r["usage"]["prompt_tokens"] for r in results) or \
@@ -486,7 +498,8 @@ def run(args) -> int:
               "plan_sha256": sha256(plan_bytes), "corpus_sha256": plan["corpus_sha256"],
               "environment": environment(args), "server_models": models, "server_lanes": lanes,
               "server_context": context, "kv_tokens": args.kv_tokens,
-              "server_stats_start": stats, "warmup": [], "cells": [], "gated": []}
+              "session": server_session(stats), "server_stats_start": stats, "warmup": [], "cells": [],
+              "gated": []}
     for mode in args.modes:
         for c in args.concurrency:
             for length in args.lengths:
@@ -500,7 +513,7 @@ def run(args) -> int:
         for length in args.warmup_lengths if args.warmup_lengths is not None else args.lengths:
             if cell_gate(args, info, 1, length):
                 continue
-            cell = run_cell(base, args, plan, corpus, mode, "warmup", 0.0, 1, length, "w", limits)
+            cell = run_cell(base, args, plan, corpus, mode, "warmup", 0.0, 1, length, "w", limits, report["session"])
             report["warmup"].append(cell)
             failures += cell["status"] == "failed"  # an invalid warmup (e.g. token drift) is still a warmup
             print(json.dumps({"warmup": cell["key"], "status": cell["status"], "problems": cell["problems"]}),
@@ -512,7 +525,8 @@ def run(args) -> int:
                 for length in args.lengths:
                     if cell_gate(args, info, c, length):
                         continue
-                    cell = run_cell(base, args, plan, corpus, mode, arrival, args.stagger_ms, c, length, rep, limits)
+                    cell = run_cell(base, args, plan, corpus, mode, arrival, args.stagger_ms, c, length, rep, limits,
+                                    report["session"])
                     failures += cell["status"] != "measured"
                     report["cells"].append(cell)
                     metrics = cell.get("metrics") or {}
@@ -576,28 +590,39 @@ def t_half(level: float, df: float) -> float:
     return hi
 
 
+def session_of(data: dict, name: str) -> str:
+    """The server process that produced a result: its ``/stats`` instance id, else the file itself."""
+    session = data.get("session") or ((data.get("server_stats_start") or {}).get("server") or {})
+    return session.get("instance_id") or f"file:{name}"
+
+
 def load_arm(spec: str) -> dict:
-    """Pool one arm's result files: cell key -> list of per-repeat cells. Duplicate repeats are an error."""
-    arm = {"files": [], "cells": {}, "gated": {}, "plan": set(), "output_tokens": set()}
+    """One arm's result files grouped by server session: session -> cell key -> {repeat: cell}. Files of the same
+    server process merge; a repeat measured twice in one session is an error."""
+    arm = {"files": [], "sessions": {}, "gated": {}, "plan": set(), "output_tokens": set()}
     for name in spec.split(","):
         data = json.loads(Path(name).read_text(encoding="utf-8"))
         if data.get("schema") != SCHEMA:
             raise ValueError(f"{name}: not a matrix benchmark result")
-        arm["files"].append({"path": name, "label": data["label"], "sha256": sha256(Path(name).read_bytes())})
+        session_id = session_of(data, name)
+        arm["files"].append({"path": name, "label": data["label"], "session": session_id,
+                             "sha256": sha256(Path(name).read_bytes())})
         arm["plan"].add(data["plan_sha256"])
         arm["output_tokens"].add(data["output_tokens"])
+        session = arm["sessions"].setdefault(session_id, {})
         for cell in data["cells"]:
             key = cell_key(cell["mode"], cell["arrival"], cell["c"], cell["length"])
             if cell["status"] != "measured":
                 arm["gated"].setdefault(key, f"{cell['status']}: {'; '.join(cell['problems'][:2])}")
                 continue
-            reps = arm["cells"].setdefault(key, [])
-            if any(r["rep"] == cell["rep"] for r in reps):
-                raise ValueError(f"{name}: duplicate repeat {cell['rep']} of {key}")
-            reps.append(cell)
+            reps = session.setdefault(key, {})
+            if cell["rep"] in reps:
+                raise ValueError(f"{name}: duplicate repeat {cell['rep']} of {key} in server session {session_id}")
+            reps[cell["rep"]] = cell
         for gated in data.get("gated", []):
             arm["gated"].setdefault(cell_key(gated["mode"], gated["arrival"], gated["c"], gated["length"]),
                                     gated["reason"])
+    arm["cells"] = {key for session in arm["sessions"].values() for key in session}
     for key in arm["cells"]:
         arm["gated"].pop(key, None)
     if len(arm["plan"]) != 1 or len(arm["output_tokens"]) != 1:
@@ -605,58 +630,51 @@ def load_arm(spec: str) -> dict:
     return arm
 
 
-def log_stats(values: list[float]):
-    logs = [math.log(v) for v in values]
-    mean = statistics.fmean(logs)
-    var = statistics.variance(logs) if len(logs) > 1 else math.nan
-    return mean, var, len(logs)
+def rep_values(reps: dict, metric: str) -> dict:
+    return {rep: cell["metrics"][metric] for rep, cell in reps.items() if cell["metrics"].get(metric)}
 
 
-def describe(values: list[float]) -> dict:
-    mean, var, n = log_stats(values)
-    half = t_half(0.95, n - 1) * math.sqrt(var / n) if n > 1 else math.inf
-    return {"n": n, "geomean": math.exp(mean), "ci95": [math.exp(mean - half), math.exp(mean + half)],
-            "cv": statistics.stdev(values) / statistics.fmean(values) if n > 1 else None}
-
-
-def ratio(ref: dict, cand: dict, family: int) -> dict:
-    """Candidate/reference ratio of geometric means over repeats ({repeat: value}). Repeat r uses the same prompts
-    in both arms, so complete matched repeats are paired (t interval on per-repeat log ratios, n - 1 df); otherwise
-    a Welch t interval on log values. ``ci95`` is the per-cell screen; ``ci_family`` (level 1 - 0.05 / family)
-    decides the class."""
-    if set(ref) == set(cand) and len(ref) >= 2:
-        diffs = [math.log(cand[r]) - math.log(ref[r]) for r in sorted(ref)]
-        d, n = statistics.fmean(diffs), len(diffs)
-        se2, df, design = statistics.variance(diffs) / n, n - 1, "paired"
+def describe(sessions: list[dict]) -> dict:
+    """Geometric mean of one arm's cell. Each element maps repeat -> value for one server session. With two or more
+    sessions the 95% interval is over session means (the session is the unit); with one it is over repeats and
+    omits between-process variation."""
+    means = [statistics.fmean(math.log(v) for v in values.values()) for values in sessions]
+    values = [v for session in sessions for v in session.values()]
+    if len(sessions) > 1:
+        units, unit = means, "session"
     else:
-        mr, vr, nr = log_stats(list(ref.values()))
-        mc, vc, nc = log_stats(list(cand.values()))
-        d = mc - mr
-        if nr < 2 or nc < 2:
-            return {"ratio": math.exp(d), "ci95": [0.0, math.inf], "ci_family": [0.0, math.inf], "se2": math.inf,
-                    "df": 0, "design": "single", "class": "uncertain", "screen": "uncertain"}
-        a, b = vr / nr, vc / nc
-        se2 = a + b
-        df = se2 * se2 / ((a * a / (nr - 1) if a else 0) + (b * b / (nc - 1) if b else 0)) if se2 > 0 else 1e9
-        design = "welch"
+        units, unit = [math.log(v) for v in values], "repeat"
+    mean, n = statistics.fmean(units), len(units)
+    half = t_half(0.95, n - 1) * math.sqrt(statistics.variance(units) / n) if n > 1 else math.inf
+    return {"n": len(values), "sessions": len(sessions), "unit": unit, "geomean": math.exp(statistics.fmean(means)),
+            "ci95": [math.exp(mean - half), math.exp(mean + half)],
+            "cv": statistics.stdev(values) / statistics.fmean(values) if len(values) > 1 else None}
+
+
+def session_ratio(groups: list[list[float]], family: int) -> dict:
+    """Candidate/reference ratio with the server session as the unit. ``groups`` holds per-session mean log values:
+    [reference sessions, candidate sessions, *calibration groups]. Every group is one identical configuration, so
+    the pooled within-group variance of session means (tau^2, sum(m_g - 1) df) carries both between-process and
+    within-session repeat noise; se^2 = tau^2 (1/m_ref + 1/m_cand). ``ci95`` is a screen; ``ci_family`` (level
+    1 - 0.05 / family) decides the class. Without replicated sessions (df 0) the interval is unbounded."""
+    ref, cand = groups[0], groups[1]
+    d = statistics.fmean(cand) - statistics.fmean(ref)
+    df = sum(len(g) - 1 for g in groups)
+    tau2 = sum((x - statistics.fmean(g)) ** 2 for g in groups for x in g) / df if df else math.inf
+    se2 = tau2 * (1 / len(ref) + 1 / len(cand))
 
     def interval(level):
+        if not math.isfinite(se2):
+            return [0.0, math.inf]
         half = t_half(level, df) * math.sqrt(se2)
         return [math.exp(d - half), math.exp(d + half)]
 
     def klass(ci):
         return "gain" if ci[0] > 1 else "regression" if ci[1] < 1 else "uncertain"
     screen, decide = interval(0.95), interval(1 - FAMILY_ALPHA / family)
-    return {"ratio": math.exp(d), "ci95": screen, "ci_family": decide, "family": family, "log": d, "se2": se2,
-            "df": df, "design": design, "class": klass(decide), "screen": klass(screen)}
-
-
-def cell_values(reps: list[dict], metric: str) -> list[float]:
-    return [r["metrics"][metric] for r in reps if r["metrics"].get(metric)]
-
-
-def rep_values(reps: list[dict], metric: str) -> dict:
-    return {r["rep"]: r["metrics"][metric] for r in reps if r["metrics"].get(metric)}
+    return {"ratio": math.exp(d), "ci95": screen, "ci_family": decide, "family": family, "log": d,
+            "sessions": [len(ref), len(cand)], "tau2": tau2, "se2": se2, "df": df, "design": "session",
+            "class": klass(decide), "screen": klass(screen)}
 
 
 def sort_key(key: str):
@@ -685,15 +703,15 @@ def grid(rows: list[dict], cell, metrics) -> None:
 def summary(args) -> int:
     arm = load_arm(args.arm)
     rows = []
-    for key in sorted(set(arm["cells"]) | set(arm["gated"]), key=sort_key):
+    for key in sorted(arm["cells"] | set(arm["gated"]), key=sort_key):
         if key not in arm["cells"]:
             rows.append({"cell": key, "status": arm["gated"][key]})
             continue
-        reps = arm["cells"][key]
-        row = {"cell": key, "status": "measured", "reps": len(reps)}
+        sessions = [s[key] for s in arm["sessions"].values() if key in s]
+        row = {"cell": key, "status": "measured", "reps": sum(len(s) for s in sessions), "sessions": len(sessions)}
         for metric in SCORED + ("total_tps", "output_tps", "ttft_max_s", "server_decode_median_tps"):
-            values = cell_values(reps, metric)
-            if len(values) == len(reps):
+            values = [rep_values(s, metric) for s in sessions]
+            if all(len(v) == len(s) for v, s in zip(values, sessions)):
                 row[metric] = describe(values)
         rows.append(row)
     if args.json:
@@ -710,50 +728,99 @@ def summary(args) -> int:
         if value is None:
             return "n/a"
         lo, hi = value["ci95"]
-        return f"{value['geomean']:.1f} ({lo:.1f}-{hi:.1f}) n={value['n']}"
+        return f"{value['geomean']:.1f} ({lo:.1f}-{hi:.1f}) n={value['n']}/{value['sessions']}s"
     grid(rows, cell, ("prefill_agg_tps", "decode_median_tps"))
     return 0
 
 
+def json_safe(value):
+    """Unbounded interval ends and variances (no replicated sessions) are written as null."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    return value
+
+
+RULE = ("unit: one server session (process). Per (cell, metric) and session: mean log value over the repeats common "
+        "to every session scored for that cell (identical prompts). Cell ratio = exp(mean candidate session mean - "
+        "mean reference session mean); t interval with se^2 = tau^2 (1/m_ref + 1/m_cand), tau^2 the pooled "
+        "within-group variance of session means over the reference arm, the candidate arm and each calibration "
+        "group (identical-configuration A/A sessions), df = sum(m_g - 1); deciding level familywise 1 - 0.05/k over "
+        "the k compared (cell, metric) pairs (Bonferroni): gain if its lower bound > 1, regression if its upper "
+        "bound < 1; 95% per-cell screens are reported, not decisive; df 0 leaves every interval unbounded. "
+        "Aggregate per metric: per-session score = mean over the compared cells of its cell means (sessions that "
+        "ran every compared cell), same pooling, 95% interval decides. Verdict: any cell or aggregate regression "
+        "rejects; superior needs a cell or aggregate gain, no regression and full coverage of reference cells.")
+
+
 def compare(args) -> int:
     ref, cand = load_arm(args.reference), load_arm(args.candidate)
+    calibration = [load_arm(spec) for spec in args.calibration]
     if ref["plan"] != cand["plan"] or ref["output_tokens"] != cand["output_tokens"]:
         raise ValueError("arms use different prompt plans or output lengths: not comparable")
-    common = sorted(set(ref["cells"]) & set(cand["cells"]), key=sort_key)
-    missing = sorted(set(ref["cells"]) - set(cand["cells"]), key=sort_key)
-    extra = sorted(set(cand["cells"]) - set(ref["cells"]), key=sort_key)
-    rows, totals = [], {metric: [] for metric in SCORED}
-    family = max(1, sum(1 for key in common for metric in SCORED
-                        if cell_values(ref["cells"][key], metric) and cell_values(cand["cells"][key], metric)))
+    for group in calibration:
+        if group["plan"] != ref["plan"] or group["output_tokens"] != ref["output_tokens"]:
+            raise ValueError(f"calibration group {group['files'][0]['path']} uses another plan or output length")
+    arms = [ref, cand, *calibration]
+    seen = {}
+    for index, group in enumerate(arms):
+        for session in group["sessions"]:
+            if seen.setdefault(session, index) != index:
+                raise ValueError(f"server session {session} appears in two arms/groups: a session is one unit")
+    common = sorted(ref["cells"] & cand["cells"], key=sort_key)
+    missing = sorted(ref["cells"] - cand["cells"], key=sort_key)
+    extra = sorted(cand["cells"] - ref["cells"], key=sort_key)
+
+    def session_means(key, metric):
+        """[(group, session, values)] for every session scoring this cell, cut to the repeats they all ran."""
+        found = [(g, sid, rep_values(cells[key], metric)) for g, group in enumerate(arms)
+                 for sid, cells in group["sessions"].items() if key in cells]
+        found = [item for item in found if item[2]]
+        if not any(g == 0 for g, _, _ in found) or not any(g == 1 for g, _, _ in found):
+            return None, []
+        shared = set.intersection(*(set(values) for _, _, values in found))
+        if not shared:
+            raise ValueError(f"{key} {metric}: the sessions share no repeat (run every session on the same repeats)")
+        return sorted(shared), [(g, sid, statistics.fmean(math.log(values[r]) for r in shared))
+                                for g, sid, values in found]
+
+    family = max(1, sum(1 for key in common for metric in SCORED if session_means(key, metric)[0]))
+    rows, per_session = [], {metric: {} for metric in SCORED}
     for key in common:
         row = {"cell": key}
         for metric in SCORED:
-            r, c = cell_values(ref["cells"][key], metric), cell_values(cand["cells"][key], metric)
-            if not r or not c:
+            shared, means = session_means(key, metric)
+            if not shared:
                 row[metric] = None
                 continue
-            row[metric] = ratio(rep_values(ref["cells"][key], metric), rep_values(cand["cells"][key], metric),
-                                family)
-            row[metric].update(reference=describe(r)["geomean"], candidate=describe(c)["geomean"])
-            totals[metric].append(row[metric])
+            groups = [[m for g, _, m in means if g == index] for index in range(len(arms))]
+            row[metric] = session_ratio(groups[:2] + [g for g in groups[2:] if g], family)
+            row[metric].update(reference=math.exp(statistics.fmean(groups[0])),
+                               candidate=math.exp(statistics.fmean(groups[1])), repeats=shared)
+            for g, sid, m in means:
+                per_session[metric].setdefault((g, sid), {})[key] = m
         rows.append(row)
     aggregate = {}
-    for metric, cells in totals.items():
+    for metric in SCORED:
+        cells = [row[metric] for row in rows if row[metric]]
         if not cells:
             continue
-        k = len(cells)
-        mean = statistics.fmean(math.log(c["ratio"]) for c in cells)
-        finite = all(math.isfinite(c.get("se2", math.inf)) for c in cells)
-        if finite:
-            se2 = sum(c["se2"] for c in cells) / (k * k)
-            denom = sum((c["se2"] / (k * k)) ** 2 / c["df"] for c in cells if c["se2"] > 0)
-            df = se2 * se2 / denom if denom else 1e9
-            half = t_half(0.95, df) * math.sqrt(se2)
-            ci = [math.exp(mean - half), math.exp(mean + half)]
+        keys = [row["cell"] for row in rows if row[metric]]
+        groups = [[] for _ in arms]
+        for (g, _), means in per_session[metric].items():
+            if all(key in means for key in keys):
+                groups[g].append(statistics.fmean(means[key] for key in keys))
+        if groups[0] and groups[1]:
+            value = session_ratio(groups[:2] + [g for g in groups[2:] if g], 1)
+            sessions, ratio_, ci, df = value["sessions"], value["ratio"], value["ci95"], value["df"]
         else:
-            ci = [0.0, math.inf]
+            sessions, ratio_, ci, df = [len(groups[0]), len(groups[1])], math.exp(
+                statistics.fmean(c["log"] for c in cells)), [0.0, math.inf], 0
         worst = min(cells, key=lambda c: c["ratio"])
-        aggregate[metric] = {"cells": k, "geomean_ratio": math.exp(mean), "ci95": ci,
+        aggregate[metric] = {"cells": len(cells), "geomean_ratio": ratio_, "ci95": ci, "sessions": sessions, "df": df,
                              "worst_cell_ratio": worst["ratio"], "worst_cell_ci95": worst["ci95"],
                              "screen_flags": sum(c["screen"] != "uncertain" and c["class"] == "uncertain"
                                                  for c in cells),
@@ -773,22 +840,17 @@ def compare(args) -> int:
         verdict = "superior: " + ", ".join(f"{cell} {metric}" for cell, metric in gains) + " gained; no regression"
     else:
         verdict = "uncertain: no established gain or regression"
+        if all(value["df"] == 0 for value in aggregate.values()):
+            verdict += " (no replicated server sessions: run two or more per arm or pass --calibration)"
     if regressions and gains:
         verdict += "; mixed with gains: adopt only with a REGION-specific selection decision"
     result = {"schema": SCHEMA + ".comparison", "reference": ref["files"], "candidate": cand["files"],
-              "rule": "per cell: ratio of geometric means over repeats, t interval on log ratios (paired by "
-                      "repeat when both arms ran the same repeats, else Welch) at familywise level 1 - 0.05/k over "
-                      "the k compared (cell, metric) pairs (Bonferroni); gain if its lower bound > 1, regression if "
-                      "its upper bound < 1; 95% per-cell screens are reported, not decisive. Aggregate per metric: "
-                      "geometric mean of per-cell ratios with a 95% interval (gain/regression by its bounds). "
-                      "Verdict: any cell or aggregate regression rejects; superior needs a cell or aggregate gain, "
-                      "no regression and full coverage of reference cells.",
-              "family_size": family,
+              "calibration": [group["files"] for group in calibration], "rule": RULE, "family_size": family,
               "verdict": verdict, "aggregate": aggregate, "rows": rows,
               "coverage": {"common": len(common), "missing_in_candidate": missing, "only_in_candidate": extra,
                            "reference_gated": ref["gated"], "candidate_gated": cand["gated"]}}
     if args.json:
-        write_json(args.json, result)
+        write_json(args.json, json_safe(result))
 
     by_key = {row["cell"]: row for row in rows}
 
@@ -805,15 +867,17 @@ def compare(args) -> int:
             return "n/a"
         mark = {"gain": "+", "regression": "-", "uncertain": "?"}[value["class"]]
         if value["class"] == "uncertain" and value["screen"] != "uncertain":
-            mark += "!"  # the 95% screen alone flags it: more repeats needed
+            mark += "!"  # the 95% screen alone flags it: more sessions needed
         lo, hi = value["ci_family"]
         return f"{value['ratio']:.3f} ({lo:.3f}-{hi:.3f}) {mark}"
     grid([{"cell": key} for key in set(common) | set(missing) | set(extra)], cell, SCORED)
+    print(f"sessions: reference {len(ref['sessions'])}, candidate {len(cand['sessions'])}, calibration groups "
+          + (", ".join(str(len(group["sessions"])) for group in calibration) or "none"))
     for metric, value in aggregate.items():
         print(f"{metric}: geomean {value['geomean_ratio']:.3f} ({value['ci95'][0]:.3f}-{value['ci95'][1]:.3f}) over "
-              f"{value['cells']} cells; worst {value['worst_cell_ratio']:.3f}; screen-only flags "
-              f"{value['screen_flags']}; gains {value['gains']}, "
-              f"regressions {value['regressions']}, uncertain {value['uncertain']}")
+              f"{value['cells']} cells, sessions {value['sessions'][0]}/{value['sessions'][1]}, df {value['df']}; "
+              f"worst {value['worst_cell_ratio']:.3f}; screen-only flags {value['screen_flags']}; gains "
+              f"{value['gains']}, regressions {value['regressions']}, uncertain {value['uncertain']}")
     print(f"coverage: {len(common)} common, {len(missing)} missing in candidate, {len(extra)} only in candidate")
     for key in missing:
         print(f"  missing in candidate: {key} ({cand['gated'].get(key, 'not run')})")
@@ -860,7 +924,8 @@ def main() -> int:
     p.add_argument("--concurrency", type=int_list, default=[1, 2, 4, 8, 16, 24, 32])
     p.add_argument("--lengths", type=int_list, default=[4096, 8192, 16384, 32768, 65536])
     p.add_argument("--reps", type=int, default=5)
-    p.add_argument("--first-rep", type=int, default=0, help="first repeat index (split one arm over sessions)")
+    p.add_argument("--first-rep", type=int, default=0, help="first repeat index (continue a server session in another file; every scored session "
+                        "must run the same repeats)")
     p.add_argument("--warmup-lengths", type=int_list, help="C=1 warmup requests per mode (default: every length)")
     p.add_argument("--output-tokens", type=int, default=512)
     p.add_argument("--stagger-ms", type=float, default=0.0, help="start request i at i x this many ms")
@@ -880,6 +945,9 @@ def main() -> int:
     p = sub.add_parser("compare", help="score a candidate arm against a reference arm")
     p.add_argument("reference", help="reference result file(s), comma-separated")
     p.add_argument("candidate", help="candidate result file(s), comma-separated")
+    p.add_argument("--calibration", action="append", default=[], metavar="FILES",
+                   help="comma-separated result files of one identical-configuration A/A group (repeatable): extra "
+                        "server sessions for the between-session variance")
     p.add_argument("--json", type=Path)
 
     args = parser.parse_args()

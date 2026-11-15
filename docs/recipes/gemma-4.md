@@ -97,8 +97,9 @@ TF_SMALL_GATHER_BYTES=262144 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6
 (measured 6.2 -> 5.0 ms per serial decode step). `--drafter-bits` is `16` (original BF16 companion, default) or `8` (private per-row INT8 W8A16 copies);
 `--draft-rows` 2-16 (default 5); greedy DFlash replies equal serial replies bitwise for 2-8 rows (wider
 verify blocks use 256-key attention chunks). On the C1 greedy serving matrix (4K-64K prompts, `--context 66048`)
-`--draft-rows 4` (three drafts a round) decoded 3.1-3.4% faster in aggregate than 5 in two sessions, with
-identical replies; 3 rows tied with 4, and 2 and 5 rows were slower (see the
+scored with the server session as the unit, `--draft-rows 3` decoded 3.8% faster in aggregate than 5 with
+identical replies and no prefill regression, and 0.5% faster than 4; 4 rows decoded 3.3% faster than 5 but one
+4K prefill cell scored 1.3% slower, and 2 rows were slower (see the
 [README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)). Greedy requests draft; sampled requests and requests with grammar
 constraints or penalties currently decode serially. `--no-graphs` selects eager execution. Startup captures
 one serial and one DFlash round graph per previously accepted row count. Refused on this provider:

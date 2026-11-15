@@ -1544,35 +1544,59 @@ corpus hashes, the served source digest (`--source-dir`), `/v1/models`, `/stats`
 
 ### Scoring rule (predeclared)
 
-`compare REFERENCE CANDIDATE` (each a comma-separated list of result files whose
-repeats are pooled per cell) scores only `prefill_agg_tps` and
-`decode_median_tps`, separately:
+`compare REFERENCE CANDIDATE [--calibration FILES ...]` scores only
+`prefill_agg_tps` and `decode_median_tps`, separately. Each argument is a
+comma-separated list of result files. The experimental unit is the **server
+session** (one server process): `run` records the `/stats` instance id, files of
+one instance merge, and a result without one counts as its own session.
 
-1. Per cell, the ratio of geometric means over repeats with a t interval on log
-   ratios: paired by repeat when both arms ran the same repeats (repeat r uses
-   identical prompts in both arms, which removes content-dependent draft
-   acceptance from the comparison), otherwise Welch. The deciding interval is
-   familywise: level 1 − 0.05/k over the k compared (cell, metric) pairs
-   (Bonferroni). A cell is a **gain** if its lower bound exceeds 1, a
-   **regression** if its upper bound is below 1, else **uncertain** (neither a win
-   nor a tie). The per-cell 95% interval is reported as a screen (`!`), never as
-   a decision.
-2. Aggregate per metric: geometric mean of per-cell ratios with a 95% interval,
-   which is a gain or regression by the same bound test; plus the worst cell and
-   gain/regression/uncertain/screen counts.
-3. Verdict: any cell or aggregate regression **rejects** the candidate whatever
+1. Per cell and session: the mean log value over the repeats that every session
+   scored for that cell ran (repeat r uses identical prompts everywhere, so
+   content-dependent effects such as draft acceptance cancel). The cell ratio is
+   exp(mean candidate session mean − mean reference session mean).
+2. Its t interval uses se² = τ²(1/m_ref + 1/m_cand), where τ² is the pooled
+   within-group variance of session means over the reference arm, the candidate
+   arm and each `--calibration` group (one group = sessions of one identical
+   configuration, e.g. an A/A pair of the reference), with Σ(m_g − 1) degrees of
+   freedom. τ² therefore carries both repeat noise and process-to-process
+   variation (warm state, allocation layout, clocks). Without replicated sessions
+   (0 df) every interval is unbounded and the verdict is `uncertain`.
+3. The deciding interval is familywise: level 1 − 0.05/k over the k compared
+   (cell, metric) pairs (Bonferroni). A cell is a **gain** if its lower bound
+   exceeds 1, a **regression** if its upper bound is below 1, else **uncertain**
+   (neither a win nor a tie). The per-cell 95% interval is reported as a screen
+   (`!`), never as a decision.
+4. Aggregate per metric: each session's score is the mean of its cell means over
+   the compared cells (sessions that ran all of them); the same pooling gives a
+   95% interval on the geometric mean of cell ratios, which is a gain or
+   regression by the same bound test. Because it is formed per session, a process
+   that is slow in every cell counts once, not as independent cell noise. The
+   worst cell and gain/regression/uncertain/screen counts are reported.
+5. Verdict: any cell or aggregate regression **rejects** the candidate whatever
    else improved (a REGION-specific selection is a separate decision);
    **superior** needs a cell or aggregate gain, no regression and every
    reference-measured cell present in the candidate; otherwise **incomplete** or
-   **uncertain**. Screen-flagged or low-ratio uncertain cells need more repeats
+   **uncertain**. Screen-flagged or low-ratio uncertain cells need more sessions
    before adoption.
 
-The familywise correction is required: a same-source A/A pair of server
-processes (below) produced one per-cell 95% "regression" among 20 pairs, as
-expected by chance, which the familywise rule does not report.
+Required design: at least **two server sessions per arm**, run in alternating
+and then reversed order (for example A B B A, or A B then B A), each session
+running the same repeats after its own warmup, plus any available A/A sessions
+of an identical configuration as `--calibration` groups. Never list one
+session in two arms or groups (refused). No gain threshold is applied; use at
+least five repeats per session.
 
-No gain threshold is applied. Use at least five repeats; run reference and
-candidate on the same host state, interleaving sessions when drift is suspected.
+Why the session is the unit: the first version paired repeats inside one
+server process per arm, so its intervals held only within-process noise. Two
+processes of the identical Gemma 4 configuration (two `--draft-rows 5`
+sessions of the DFlash depth sweep in the README) then scored a familywise prefill "regression" against each
+other: aggregate 0.989 (95% 0.981–0.997). Their per-session 64K prefill means
+differ by 0.7% (sd over identical-configuration sessions) while the
+within-session standard error is 0.23%. Under this rule, with the other
+identical-configuration sessions as calibration (3 df), the same pair scores
+0.989 (0.976–1.003), `uncertain`. The familywise correction itself remains
+required: per-cell 95% intervals produce about one chance "regression" in 20
+pairs.
 
 ### Running it on Gemma 4 SM70
 
@@ -1586,7 +1610,9 @@ python tools/matrix_benchmark.py plan --corpus corpus.txt --tokenizer $M \
 python3 tools/matrix_benchmark.py run --model gemma4-26b-a4b --plan plan-v1.json --corpus corpus.txt \
   --label SOURCE-AND-CONFIG --source-dir SERVED_SRC --out result.json --reps 5
 python3 tools/matrix_benchmark.py summary result.json
-python3 tools/matrix_benchmark.py compare reference.json candidate.json --json comparison.json
+# two or more server sessions per arm, alternating then reversed (A B B A):
+python3 tools/matrix_benchmark.py compare refA.json,refB.json candA.json,candB.json \
+  --calibration aa1.json,aa2.json --json comparison.json
 ```
 
 The matrix server uses the [eight-V100 recipe](recipes/gemma-4.md#eight-v100s-tp8etp4)
@@ -1624,3 +1650,5 @@ familywise intervals spanned about ±1–3% for most cells and ±4–9% for gree
 32K prefill, sampled 4K–32K prefill and sampled 4K/8K decode (driven by single
 slow repeats). Effects smaller
 than these per-cell widths need more repeats or rely on the aggregate interval.
+These intervals came from the former repeat-paired rule; under the session rule
+one session per arm has 0 df, and this pair now serves as a `--calibration` group.

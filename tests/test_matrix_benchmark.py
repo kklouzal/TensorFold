@@ -2,6 +2,8 @@
 import hashlib
 import importlib.util
 import json
+import math
+import statistics
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -134,8 +136,8 @@ def test_prefix_cache_hits_invalidate_the_cell(mb, server, tmp_path):
     assert "prefix cache" in data["cells"][0]["problems"][0]
 
 
-def arm(tmp_path, mb, name, values):
-    """values: {(c, length): [(prefill, decode) per repeat]}"""
+def arm(tmp_path, mb, name, values, session=None, plan="p"):
+    """values: {(c, length): [(prefill, decode) per repeat]}; ``session``: the server instance id (else none)."""
     cells = []
     for (c, length), reps in values.items():
         for rep, (prefill, decode) in enumerate(reps):
@@ -143,15 +145,17 @@ def arm(tmp_path, mb, name, values):
                           "status": "measured", "problems": [],
                           "metrics": {"prefill_agg_tps": prefill, "decode_median_tps": decode}})
     path = tmp_path / name
-    path.write_text(json.dumps({"schema": mb.SCHEMA, "label": name, "plan_sha256": "p", "output_tokens": 512,
-                                "cells": cells, "gated": []}))
+    path.write_text(json.dumps({"schema": mb.SCHEMA, "label": name, "plan_sha256": plan, "output_tokens": 512,
+                                "session": session and {"instance_id": session}, "cells": cells, "gated": []}))
     return str(path)
 
 
-def compare(mb, tmp_path, ref, cand):
+def compare(mb, tmp_path, ref, cand, *calibration):
     out = tmp_path / "cmp.json"
     old = sys.argv
     sys.argv = ["matrix_benchmark.py", "compare", ref, cand, "--json", str(out)]
+    for group in calibration:
+        sys.argv += ["--calibration", group]
     try:
         assert mb.main() == 0
     finally:
@@ -162,22 +166,86 @@ def compare(mb, tmp_path, ref, cand):
 BASE = {(1, 4096): [(5000, 230), (5010, 200), (4990, 250)], (1, 65536): [(3800, 180), (3900, 170), (3850, 190)]}
 
 
+def sessions(tmp_path, mb, prefix, values, shifts):
+    """One result file per server session; session i scales every value by shifts[i] (between-process shift)."""
+    return ",".join(arm(tmp_path, mb, f"{prefix}{i}.json", {key: [(p * f, d * f) for p, d in reps]
+                                                              for key, reps in values.items()}, f"{prefix}{i}")
+                    for i, f in enumerate(shifts))
+
+
+def scaled(values, prefill, decode, cell=None):
+    return {key: [(p * prefill, d * decode) for p, d in reps] if cell in (None, key) else reps
+            for key, reps in values.items()}
+
+
 def test_one_regressed_cell_rejects_despite_aggregate_gain(mb, tmp_path):
-    ref = arm(tmp_path, mb, "ref.json", BASE)
-    better = {key: [(p * 1.2, d * 1.2) for p, d in reps] for key, reps in BASE.items()}
-    better[(1, 65536)] = [(p * 0.98, d * 1.2) for p, d in BASE[(1, 65536)]]
-    result = compare(mb, tmp_path, ref, arm(tmp_path, mb, "cand.json", better))
+    ref = sessions(tmp_path, mb, "ref", BASE, (1.0, 1.002, 0.999))
+    better = scaled(scaled(BASE, 1.2, 1.2), 0.98 / 1.2, 1.0, (1, 65536))
+    result = compare(mb, tmp_path, ref, sessions(tmp_path, mb, "cand", better, (1.001, 0.999, 1.0)))
     assert result["verdict"].startswith("regression")
     assert result["aggregate"]["prefill_agg_tps"]["geomean_ratio"] > 1
     row = next(r for r in result["rows"] if r["cell"].endswith("l65536"))
-    assert row["prefill_agg_tps"]["design"] == "paired" and row["prefill_agg_tps"]["class"] == "regression"
+    assert row["prefill_agg_tps"]["design"] == "session" and row["prefill_agg_tps"]["class"] == "regression"
+    assert row["prefill_agg_tps"]["sessions"] == [3, 3] and row["prefill_agg_tps"]["df"] == 4
 
 
-def test_paired_repeats_resolve_content_noise_and_missing_cells_are_incomplete(mb, tmp_path):
-    ref = arm(tmp_path, mb, "ref.json", BASE)
-    gain = {key: [(p * 1.01, d * 1.01) for p, d in reps] for key, reps in BASE.items()}
-    assert compare(mb, tmp_path, ref, arm(tmp_path, mb, "cand.json", gain))["verdict"].startswith("superior")
-    partial = {(1, 4096): gain[(1, 4096)]}
-    result = compare(mb, tmp_path, ref, arm(tmp_path, mb, "part.json", partial))
+def test_session_is_the_unit_and_missing_cells_are_incomplete(mb, tmp_path):
+    ref = sessions(tmp_path, mb, "ref", BASE, (1.0, 1.002))
+    gain = scaled(BASE, 1.01, 1.01)
+    assert compare(mb, tmp_path, ref, sessions(tmp_path, mb, "cand", gain, (1.0, 0.999)))["verdict"].startswith(
+        "superior")
+    # One session per arm without calibration: repeat noise alone cannot bound process-to-process variation.
+    single = compare(mb, tmp_path, arm(tmp_path, mb, "r.json", BASE, "x"), arm(tmp_path, mb, "c.json", gain, "y"))
+    assert single["verdict"].startswith("uncertain") and "no replicated server sessions" in single["verdict"]
+    # The same single sessions with an A/A calibration group become decidable.
+    calibrated = compare(mb, tmp_path, arm(tmp_path, mb, "r.json", BASE, "x"), arm(tmp_path, mb, "c.json", gain, "y"),
+                         sessions(tmp_path, mb, "aa", BASE, (1.0, 1.001, 0.999)))
+    assert calibrated["verdict"].startswith("superior") and calibrated["aggregate"]["decode_median_tps"]["df"] == 2
+    partial = sessions(tmp_path, mb, "part", {(1, 4096): gain[(1, 4096)]}, (1.0, 0.999))
+    result = compare(mb, tmp_path, ref, partial)
     assert result["verdict"].startswith("incomplete")
     assert result["coverage"]["missing_in_candidate"] == ["v1/greedy/sync/c1/l65536"]
+
+
+def test_files_of_one_server_process_merge_and_a_session_cannot_be_reused(mb, tmp_path):
+    first = {key: reps[:2] for key, reps in BASE.items()}
+    arm_files = arm(tmp_path, mb, "a.json", first, "same") + "," + arm(tmp_path, mb, "b.json", first, "same")
+    with pytest.raises(ValueError, match="duplicate repeat"):
+        mb.load_arm(arm_files)
+    assert len(mb.load_arm(arm(tmp_path, mb, "a.json", BASE, "one") + "," +
+                           arm(tmp_path, mb, "b.json", BASE, "two"))["sessions"]) == 2
+    ref = sessions(tmp_path, mb, "ref", BASE, (1.0, 1.001))
+    with pytest.raises(ValueError, match="appears in two"):
+        compare(mb, tmp_path, ref, sessions(tmp_path, mb, "cand", BASE, (1.0, 1.0)), ref)
+
+
+def test_cross_process_aa_is_not_a_regression(mb, tmp_path):
+    """Regression test: two server processes of one identical Gemma 4 SM70 configuration (rows-5 sessions s and r)
+    differ by about 1% in prefill. Repeat-paired intervals inside one process called that a familywise regression
+    (aggregate 0.989, 95% 0.981-0.997); with the session as the unit and the other identical-configuration session
+    groups as calibration it is uncertain, while the real decode gain of 4 draft rows over 5 stays established."""
+    data = json.loads((Path(__file__).parent / "fixtures" / "matrix_draft_rows_sessions.json").read_text())
+
+    def files(*names):
+        return ",".join(arm(tmp_path, mb, name + ".json",
+                            {(1, int(length)): [tuple(r) for r in reps]
+                             for length, reps in data["sessions"][name]["cells"].items()},
+                            data["sessions"][name]["instance_id"], data["plan_sha256"]) for name in names)
+
+    s, r = data["sessions"]["s"]["cells"], data["sessions"]["r"]["cells"]
+    # The former repeat-paired aggregate on this pair excluded 1: the fixture still holds the false positive.
+    diffs = [[math.log(b[0] / a[0]) for a, b in zip(s[length], r[length])] for length in s]
+    mean = statistics.fmean(statistics.fmean(d) for d in diffs)
+    se = math.sqrt(sum(statistics.variance(d) / len(d) for d in diffs)) / len(diffs)
+    assert math.exp(mean + mb.t_half(0.95, 20) * se) < 1
+
+    result = compare(mb, tmp_path, files("s"), files("r"), files("baseline", "aa"), files("rows4-s", "rows4-r"),
+                     files("rows3-s", "rows3-r"))
+    prefill = result["aggregate"]["prefill_agg_tps"]
+    assert 0.985 < prefill["geomean_ratio"] < 0.993 and prefill["ci95"][0] < 1 < prefill["ci95"][1]
+    assert prefill["df"] == 3 and prefill["regressions"] == 0 and result["verdict"].startswith("uncertain")
+
+    gain = compare(mb, tmp_path, files("s", "r"), files("rows4-s", "rows4-r"), files("baseline", "aa"),
+                   files("rows3-s", "rows3-r"))
+    assert gain["aggregate"]["decode_median_tps"]["ci95"][0] > 1
+    assert gain["aggregate"]["decode_median_tps"]["gains"] == 5

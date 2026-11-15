@@ -1678,7 +1678,7 @@ DFlash decode of 235 → 183 tok/s from 4K to 64K prompts (sampled serial decode
 
 A DFlash depth sweep on that matrix (source `cd227249`, same server settings,
 C1 greedy, five repeats a session; acceptance and engine round time shown from
-4K to 64K) selected `--draft-rows 4`:
+4K to 64K) selects `--draft-rows 3` under the session scoring rule:
 
 | `--draft-rows` | Decode tok/s 4K / 8K / 16K / 32K / 64K | Accepted per round | DFlash round, ms |
 | --- | --- | --- | --- |
@@ -1688,14 +1688,18 @@ C1 greedy, five repeats a session; acceptance and engine round time shown from
 | 5 (current default) | 236.1 / 222.1 / 212.6 / 203.2 / 182.0 | 1.30 → 1.02 | 9.76 → 11.08 |
 
 Rows 3–5 are geometric means over two server sessions (ten repeats); rows 2
-over one. Sweeping upward and stopping at the first slower setting: 3 rows beat 2
-(aggregate decode 1.034, 95% interval 1.025–1.043), 4 rows tied with 3 in both
-sessions (0.995, 0.986–1.005 and 0.986–1.004), and 5 rows were slower than 4
-(0.967, 0.959–0.975, and 0.969, 0.962–0.977), so 6 rows were not run. Against 5 rows,
-4 rows decoded 1.034 (1.025–1.042) and 1.031 (1.024–1.039) faster. Prefill does
-not depend on draft rows: per-session prefill differences of about ±1% changed
-sign between sessions, and two sessions of the identical 5-row setting differed
-just as much. Every greedy reply was token-identical to the 5-row baseline
+over one. Scored with the server session as the unit (each arm's sessions plus
+the other identical-configuration sessions as calibration) and swept upward to
+the first slower setting: 3 rows beat 2 (aggregate decode 1.034, 95% interval
+1.030–1.039), and 4 rows decoded 0.995 (0.992–0.999) of 3 rows, so the sweep
+stops at 3 rows; 5 rows decoded 0.968 (0.964–0.973) of 4. Against 5 rows, 3 rows
+decoded 1.038 (1.033–1.042) faster with every decode cell a gain and no prefill regression
+(superior); 4 rows decoded 1.033 (1.028–1.037) faster, but its 4K prefill cell
+scored 0.987 (familywise 0.975–0.999), so that pair is mixed. Prefill
+aggregates stayed within 0.992–1.003 with intervals including 1. The first
+scoring of this sweep paired repeats inside one server process, called 3 and 4
+rows tied and scored process-to-process prefill shifts of about 1% as
+regressions; it is superseded. Every greedy reply was token-identical to the 5-row baseline
 (2–8 rows keep DFlash equal to serial decoding); sampled requests decode serially
 and do not use the drafter. The CLI default remains 5 pending a code change.
 Scope: long-prompt summaries at C1 only; short chats, C > 1 and the 262,144-token
