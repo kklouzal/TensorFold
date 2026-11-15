@@ -1034,11 +1034,12 @@ void expert_prompt_combine_cuda(const Tensor& y, const Tensor& dest, const Tenso
     TORCH_CHECK(y.size(0) > 0 && y.size(1) == g4::MAXD && dest.size(0) > 0 && dest.size(0) <= 1024
                 && dest.size(1) == 8 && out.size(0) == dest.size(0) && out.size(1) == y.size(1),
                 "expert prompt combine requires 1..1024 rows, 8 slots and hidden width 2816");
-    TORCH_CHECK(rowmul.size(0) > 0 && rowmul.size(1) == y.size(1) && y.size(0) % rowmul.size(0) == 0,
-                "expert prompt combine requires one multiplier row per padded expert");
+    TORCH_CHECK(rowmul.size(0) > 0 && rowmul.size(1) == y.size(1),
+                "expert prompt combine requires one multiplier row per original expert");
     // Destination values are owned routing output: -1 or a valid row of y, proved when
     // building dest from the unique sorted pairs. Every valid pair's local ID selects
-    // that padded row's expert; absent IDs are never dereferenced. No host sync is needed.
+    // that packed row's original expert, even with unequal group widths; absent IDs are
+    // never dereferenced. An all-absent map may use an unread dummy y row. No host sync is needed.
     const dim3 grid((y.size(1) + 255) / 256, dest.size(0));
     g4::expert_prompt_combine<<<grid, 256, 0, stream()>>>(cptr<float>(y), cptr<int64_t>(dest),
         cptr<float>(weights), cptr<int>(local), cptr<float>(rowmul), (int)y.size(1), (int)dest.size(1),

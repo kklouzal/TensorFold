@@ -19,6 +19,13 @@ new installed-image qualification.
 - Skip ordinary text spans in the shared markup lexer and Gemma channel splitter.
   Existing recognition, quoting, withholding and tool-authorization boundaries
   remain in place. No incremental parser state is introduced.
+- Pack experts in contiguous groups of sixteen for prompt chunks of at least
+  64 rows, reducing padding to each group's largest population. Shorter chunks
+  retain the original single-group geometry and scalar count read. Both use the
+  same BMM and ordered-combination implementation; no precision flag changes.
+- Capture integer position/token copies with their decode consumers. Target and
+  drafter share their read-only start position; previous-position copies run only
+  when needed. Replay submits the existing pinned host-to-device input copy.
 
 ## Measured source and environment
 
@@ -29,11 +36,12 @@ commit. Therefore these results do not qualify a clean image built from the
 commit alone. The private source archives and manifests retain the exact trees.
 
 The runtime source digest is
-`5a897588e55ab8bd1f8be60831bd356cb33dbfde9920674481005bda8436d7b1`:
+`88d4dea83a5ce68a7b9bbb7d40f4a92692219a1293fe8ac1e2f12ca49f28797d`:
 SHA256 of each path, a NUL byte, and file bytes, in this order:
 `src/tensorfold/cuda/sm70/gemma4.cu`,
 `src/tensorfold/cuda/sm70/gemma4_bindings.cpp`,
 `src/tensorfold/families/gemma4/sm70/target.py`,
+`src/tensorfold/families/gemma4/sm70/graphs.py`,
 `src/tensorfold/markup_lex.py`,
 `src/tensorfold/server/gemma_values.py`.
 
@@ -56,16 +64,19 @@ tokens. The model was loaded and warmed; these are fresh-prompt results, not
 cold model or cold hardware-cache results. Long-prompt requests generated one
 token; their complete-request latency is a prefill proxy including API overhead.
 
-| DFlash HTTP prompt tokens | Reference median request seconds | Checkpoint median request seconds | Throughput gain |
-| --- | --- | --- | --- |
-| 4,010 | 1.650819 | 1.065797 | 54.9% |
-| 16,010 | 6.711888 | 4.371614 | 53.5% |
+| HTTP mode | Prompt tokens | Reference median request seconds | Checkpoint median request seconds | Throughput gain |
+| --- | --- | --- | --- | --- |
+| DFlash | 4,010 | 1.650819 | 0.923567 | 78.7% |
+| DFlash | 16,010 | 6.711888 | 3.830779 | 75.2% |
+| Serial | 4,010 | 1.647839 | 0.884093 | 86.4% |
+| Serial | 16,010 | 6.690121 | 3.733353 | 79.2% |
 
-All 15 DFlash requests (three generations each of code, prose and lists at 512 tokens plus
+All 15 requests in each mode (three generations each of code, prose and lists at 512 tokens plus
 the six long-prompt requests) matched reference reply text, reasoning and token
 counts. Draft acceptance counts can vary; exact proposal identity is not claimed.
-Short-request complete-throughput medians improved by 1.0–3.9%; the small sample
-does not establish a general decode gain or equivalence bound.
+Short-request complete-throughput medians improved by 1.7–5.2% with DFlash and
+5.8–26.8% serially; these include prefill and parser costs. The small sample does
+not establish a general decode gain or equivalence bound.
 
 An earlier exact vector8/parser increment, before row-scaling fusion, also
 passed all 15 serial requests with identical outputs. Prose/list streaming
@@ -75,20 +86,45 @@ medians improved 21.2% for prose and 18.1% for lists in that comparison. This is
 evidence for removing the observed parser stall, not a universal token-rate
 claim. DFlash SSE deltas may contain multiple tokens and are not per-token clocks.
 
-The final checkpoint's forward-only 4K/16K medians were 3,998/3,843 tokens/s;
-all six final-logit hashes matched the original reference. HTTP measurements
-above are the relevant complete-request result. All samples, including slower
+The preceding `c08ff79b` checkpoint (before grouped packing and captured input
+copies) measured DFlash gains of 54.9%/53.5% and forward-only medians of
+3,998/3,843 tokens/s at 4K/16K; its six final-logit hashes matched the original.
+Those results retain that earlier source scope. All samples, including slower
 first requests, are retained; no regional loss is dismissed by averaging cases.
+
+A separate synchronization-safe ABAB graph diagnostic compared input staging
+alone. The two reference/candidate run means were 4.590/4.492 and 4.588/4.466 ms
+for serial steps, 9.226/9.196 and 9.235/9.202 ms for one-committed-row rounds,
+and 9.462/9.381 and 9.423/9.396 ms for five-committed-row rounds. Each replay
+completed before pinned input reuse; recorded output probes matched. This is a
+synthetic diagnostic, not attribution of the complete HTTP gain. Earlier tight
+replay loops without safe pinned-buffer reuse are excluded from qualification.
 
 ## Verification and continuing work
 
-- Native Gemma kernel suite: 16 passed, including exact scale/code combinations,
+- Native Gemma kernel suite: 24 passed, including exact scale/code combinations,
   aligned/unaligned stores, ordered expert scaling/combination, exceptional
   values, signed zero, subnormals and adjacent-output canaries.
+- Quality acceptance permits different outputs when quality is unchanged or
+  improved. The existing nats/perplexity harness uses a predeclared 0.005
+  nats/token margin and 4,000 document-blocked bootstrap samples, seed zero;
+  established losses, including `worse-within-margin`, are not accepted.
+  G16 scored identically to the original on the 16-document frozen corpus,
+  its separately frozen raw-text BOS sensitivity condition, and two templated
+  4K/16K stress documents. These are separate matched comparisons, not pooled
+  corpora or proof that adding BOS improves calibration. Regional packing plus
+  input staging also matched scores on four short-boundary cases (32, 33, 45
+  and 1,055 prompt tokens); repeated scores matched. Larger-chunk G16 evidence
+  is reused where dispatch is unchanged, with structural integer-copy review
+  for staging. Identity is an observed result, not the general quality gate.
 - Shared parser, tool and grammar suites: 634 passed, six MLX-dependent tests
   skipped on this Linux host. This does not claim native MLX execution.
 - Isolated baseline/candidate parser processes matched 73,050 streaming-prefix,
   flag, trusted-boundary and strict-header records exactly.
+- Three cancellation/recovery cycles cancelled different 33-, 45- and
+  16,518-token prompts after two content deltas, then issued a fresh 32-token
+  request. Its 64-token reply and usage matched the clean reference each time;
+  the test server stopped successfully.
 - Static task-wide review found no unresolved correctness finding in these
   changes. Existing unrelated edits remain preserved.
 
@@ -98,8 +134,12 @@ logs and request JSONL files bind each result. These artifacts are not productio
 dependencies. The first diagnostic's teardown stall and its correction are
 retained; only later runs with successful teardown are clean passes.
 
-The final row-scaling increment's serial HTTP comparison, broader workload and
-full 262,144-token qualification remain pending. Expert-padding reduction and
-other measured bottlenecks remain under investigation. A proposal-only FP16
+Grouping alternatives G8 and G4 were rejected for measured quality losses;
+G2 and the tested G8 cuBLASLt configurations remained inconclusive and were not
+adopted, without claiming they are slower or universally inferior. Native exact
+checks remain appropriate for transformations promising exact arithmetic.
+
+Broader workloads and full 262,144-token qualification remain pending. Other
+measured bottlenecks remain under investigation. A proposal-only FP16
 prefill alternative remains unadopted because its numerical-domain proof is
 unfinished. No capacity, media, concurrency or new-model qualification is added.

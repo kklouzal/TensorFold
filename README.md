@@ -1642,11 +1642,14 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 #### Gemma 4 26B-A4B AEON NVFP4 on eight V100s (2026-11-15)
 
 The [throughput checkpoint](docs/gemma4-sm70-throughput-20261115.md) adds exact
-vectorized prompt-weight decoding, ordered expert-output fusion and faster
-streaming markup scans. Against `98c535f6` with the same pre-existing local
-communication changes, three matched DFlash HTTP requests per case measured
-54.9% higher throughput at 4,010 prompt tokens and 53.5% at 16,010 tokens;
-all 15 replies and token counts matched. These are warmed-model, fresh-prompt
+vectorized prompt-weight decoding, ordered expert-output fusion, regional expert
+packing, captured decode-input copies and faster streaming markup scans. Against
+`98c535f6` with the same pre-existing local communication changes, three matched
+HTTP requests per case measured 78.7%/75.2% higher complete-request throughput
+at 4,010/16,010 prompt tokens with DFlash, and 86.4%/79.2% with serial decoding.
+All 15 replies and token counts matched in each mode. Quality acceptance uses
+the project's nats/perplexity comparisons; identical output is not a requirement.
+These are warmed-model, fresh-prompt
 measurements at 32K allocated context, not cold-start or full-context qualification.
 The note records source identity, runtime, numerical checks and outstanding work;
 the older measurements below retain their original scope.

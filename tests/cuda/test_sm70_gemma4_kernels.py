@@ -240,6 +240,71 @@ def test_gemma4_expert_prompt_combine_preserves_slot_arithmetic(rows):
     assert torch.all(storage[:, 0] == 123)
 
 
+@pytest.mark.parametrize("rows,distribution", [(17, "empty"), (25, "uneven"), (31, "one_group"),
+                                               (63, "uneven"), (64, "uneven"), (65, "one_group"),
+                                               (129, "uneven"), (1024, "balanced")])
+@torch.inference_mode()
+def test_gemma4_prompt_expert_groups_match_uniform_bmm(rows, distribution):
+    from types import SimpleNamespace
+    from tensorfold.cuda.sm70.gemma4_native import extension
+    from tensorfold.families.gemma4.sm70.target import Target
+
+    torch.manual_seed(79)
+    device = torch.device("cuda")
+    E, D, W, slots = 64, 2816, 176, 8
+    target = Target.__new__(Target)
+    target.c = SimpleNamespace(hidden=D, top_k=slots)
+    target.w = SimpleNamespace(expert_width=W, expert_count=E)
+    target.device, target.ext = device, extension()
+    target._scratch, target.frozen = {}, False
+
+    def packed(n, k):
+        return SimpleNamespace(codes=torch.randint(0, 256, (E, n, k // 2), dtype=torch.uint8, device=device),
+                               scales=torch.randint(0x20, 0x38, (E, n, k // 16), dtype=torch.uint8, device=device),
+                               rowmul=torch.rand(E, n, device=device) * 1e-3 + 1e-4)
+
+    eg, ed = packed(2 * W, D), packed(D, W)
+    layer = SimpleNamespace(experts_gate_up=eg, experts_down=ed)
+    x = torch.randn(rows, D, device=device).half()
+    local = (torch.arange(rows * slots, device=device).reshape(rows, slots) % E).int()
+    if distribution == "empty":
+        local.fill_(-1)
+    elif distribution == "one_group":
+        local.copy_(torch.arange(slots, device=device).expand(rows, slots))
+    elif distribution == "uneven":
+        local[::3] = torch.arange(0, E, slots, dtype=torch.int32, device=device)
+        local[::7].fill_(-1)
+    weights = torch.rand(rows, slots, device=device)
+
+    # Retained original uniform-padding BMM expression, with independently built
+    # expert lists: an oracle for packing, group dispatch and FP32 accumulation.
+    flat = local.reshape(-1)
+    pair_ids = [torch.nonzero(flat == expert).flatten() for expert in range(E)]
+    width = max(1, max(ids.numel() for ids in pair_ids))
+    padded = torch.zeros(E, width, D, dtype=torch.float16, device=device)
+    for expert, ids in enumerate(pair_ids):
+        padded[expert, :ids.numel()] = x[ids // slots]
+    gu16 = torch.empty(E, 2 * W, D, dtype=torch.float16, device=device)
+    dn16 = torch.empty(E, D, W, dtype=torch.float16, device=device)
+    target.ext.w4_dequant(eg.codes, eg.scales, E * 2 * W, D, gu16)
+    target.ext.w4_dequant(ed.codes, ed.scales, E * D, W, dn16)
+    gu = torch.bmm(padded, gu16.transpose(1, 2), out_dtype=torch.float32).mul_(eg.rowmul[:, None, :])
+    act = (torch.nn.functional.gelu(gu[..., :W], approximate="tanh") * gu[..., W:]).half()
+    y = torch.bmm(act, dn16.transpose(1, 2), out_dtype=torch.float32).mul_(ed.rowmul[:, None, :])
+    pairs = torch.zeros(rows * slots, D, device=device)
+    for expert, ids in enumerate(pair_ids):
+        pairs[ids] = y[expert, :ids.numel()]
+    pairs = pairs.view(rows, slots, D)
+    expected = pairs[:, 0] * weights[:, 0:1]
+    for slot in range(1, slots):
+        expected = expected + pairs[:, slot] * weights[:, slot:slot + 1]
+    storage = torch.full((rows, 2, D), 123.0, device=device)
+    target._experts_prompt(layer, x, local, weights, storage[:, 1], rows)
+    assert torch.isfinite(expected).all()
+    assert torch.equal(storage[:, 1].view(torch.int32), expected.view(torch.int32)), distribution
+    assert torch.all(storage[:, 0] == 123)
+
+
 def test_gemma4_fused_router_matches_logits_and_routing():
     from tensorfold.cuda.sm70.gemma4_native import extension
     ext = extension()

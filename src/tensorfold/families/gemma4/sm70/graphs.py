@@ -22,7 +22,6 @@ class Graphs:
         self.stage = torch.zeros(4, dtype=torch.int64, device=dev)
         self.pos = torch.zeros(1, dtype=torch.int32, device=dev)          # target start
         self.prev_pos = torch.zeros(1, dtype=torch.int32, device=dev)     # previous verify start (append)
-        self.block_pos = torch.zeros(1, dtype=torch.int32, device=dev)    # drafter committed length
         self.ids = torch.zeros(16, dtype=torch.int64, device=dev)
         self.pool = torch.cuda.graph_pool_handle()
         self.serial = None
@@ -34,11 +33,17 @@ class Graphs:
         h = self.stage_host
         h[0], h[1], h[2] = start, anchor, previous
         self.stage.copy_(h, non_blocking=True)
+
+    def _copy_inputs(self, *, previous=False):
+        # Capture these device copies with their consumers. The target and drafter
+        # both read the same start position; neither mutates this input buffer.
         self.pos.copy_(self.stage[0:1])
-        self.prev_pos.copy_(self.stage[2:3])
-        self.block_pos.copy_(self.stage[0:1])
+        if previous:
+            self.prev_pos.copy_(self.stage[2:3])
+        self.ids[0:1].copy_(self.stage[1:2])
 
     def _serial_body(self):
+        self._copy_inputs()
         e, t = self.e, self.e.target
         st = e._state
         st.pos = self.pos
@@ -46,12 +51,13 @@ class Graphs:
         return e._gathered(local)
 
     def _round_body(self, committed):
+        self._copy_inputs(previous=bool(committed))
         e, t, head = self.e, self.e.target, self.e.head
         st = e._state
         st.pos = self.pos
         if committed:
             head.append(e._taps[:committed], 0, pos=self.prev_pos)
-        local = head.logits(self.stage[1:2], head.block - 1, pos=self.block_pos)
+        local = head.logits(self.stage[1:2], head.block - 1, pos=self.pos)
         n = local.shape[0]
         values, index = local.max(dim=-1)
         packed = torch.stack([values, (index + t.rank * t.shard).float()], -1).contiguous()
@@ -59,7 +65,6 @@ class Graphs:
         t.comm.all_gather(packed, recv)
         best = recv[:, :, 0].argmax(dim=0)
         proposals = recv[best, torch.arange(n, device=t.device), 1].long()
-        self.ids[0:1].copy_(self.stage[1:2])
         self.ids[1:n + 1].copy_(proposals)
         logits, taps = t.forward(self.ids[:n + 1], st, logits="all", taps=True, staged=True)
         e._taps = taps
@@ -114,7 +119,6 @@ class Graphs:
     def run_serial(self, start, token):
         st = self.e._state
         self._stage(start, token, 0)
-        self.ids[0:1].copy_(self.stage[1:2])
         self.serial.replay()
         st.length = start + 1
         return self.serial_logits

@@ -282,8 +282,11 @@ class Target:
         return out, tap_out
 
     def _experts_prompt(self, layer, x16, local, weights, out, rows):
-        """Prompt experts: one padded batched GEMM pair over the local experts' (row, slot) pairs, then the
-        slot-ordered weighted combine. One host read (the largest expert population) per layer."""
+        """Prompt experts: one batch for short chunks, otherwise groups of sixteen.
+
+        One host count read per layer prepares bounded group geometry. Original expert IDs and stable
+        within-expert pair order survive packing; the final combine remains in original top-k slot order.
+        """
         c = self.c
         ew = self.w.expert_width
         D = c.hidden
@@ -292,29 +295,57 @@ class Target:
         flat = local.reshape(-1).long()
         valid = flat >= 0
         counts = torch.bincount(flat[valid], minlength=E)
-        width = max(1, int(counts.max().item()))
+        if rows < 64:
+            # Below the observed 64-row GEMM tile, keep the original geometry
+            # and avoid extra group launches and packing metadata transfers.
+            width = max(1, int(counts.max().item()))
+            groups, bases, packed_rows = [(0, E, width, 0)], None, E * width
+        else:
+            populations = counts.cpu().tolist()
+            groups, bases, packed_rows = [], [], 0
+            for first in range(0, E, 16):
+                end = min(first + 16, E)
+                width = max(populations[first:end])
+                groups.append((first, end, width, packed_rows))
+                bases.extend(packed_rows + expert * width for expert in range(end - first))
+                packed_rows += (end - first) * width
         order = torch.argsort(torch.where(valid, flat, E), stable=True)        # local pairs grouped by expert
         starts = torch.cumsum(counts, 0) - counts
         sorted_e = torch.where(valid, flat, E)[order]
         keep = sorted_e < E
         order, sorted_e = order[keep], sorted_e[keep]
         slot = torch.arange(order.numel(), device=self.device) - starts[sorted_e]
-        dest = sorted_e * width + slot                                          # padded [E, width] position
-        index = torch.full((E * width,), rows, dtype=torch.long, device=self.device)   # pad -> zero row
+        if bases is None:
+            dest = sorted_e * width + slot
+        else:
+            expert_base = torch.tensor(bases, dtype=torch.int64, device=self.device)
+            dest = expert_base[sorted_e] + slot
+        index = torch.full((packed_rows,), rows, dtype=torch.long, device=self.device)   # pad -> zero row
         index[dest] = order // c.top_k
-        padded = torch.cat([x16, x16.new_zeros((1, D))]).index_select(0, index).view(E, width, D)
+        padded = torch.cat([x16, x16.new_zeros((1, D))]).index_select(0, index)
         eg, ed = layer.experts_gate_up, layer.experts_down
         gu16 = self._buf("e_gu16", (E, 2 * ew, D), torch.float16)
         dn16 = self._buf("e_dn16", (E, D, ew), torch.float16)
         self.ext.w4_dequant(eg.codes, eg.scales, E * 2 * ew, D, gu16)
         self.ext.w4_dequant(ed.codes, ed.scales, E * D, ew, dn16)
-        gu = torch.bmm(padded, gu16.transpose(1, 2), out_dtype=torch.float32).mul_(eg.rowmul[:, None, :])
-        act = (torch.nn.functional.gelu(gu[..., :ew], approximate="tanh") * gu[..., ew:]).half()
-        y = torch.bmm(act, dn16.transpose(1, 2), out_dtype=torch.float32)
-        # Each retained original pair occurs once in order; dest is in [0, E * width).
+        # Keep one output allocation, with no group-output concatenation. If this rank has no pairs,
+        # a positive dummy extent satisfies the native boundary; every map entry is -1 so none is read.
+        y = torch.empty((max(packed_rows, 1), D), dtype=torch.float32, device=self.device)
+        for first, end, width, base in groups:
+            if not width:
+                continue
+            stop = base + (end - first) * width
+            x_group = padded[base:stop].view(end - first, width, D)
+            gu = torch.bmm(x_group, gu16[first:end].transpose(1, 2), out_dtype=torch.float32)
+            gu.mul_(eg.rowmul[first:end, None, :])
+            act = (torch.nn.functional.gelu(gu[..., :ew], approximate="tanh") * gu[..., ew:]).half()
+            torch.bmm(act, dn16[first:end].transpose(1, 2), out_dtype=torch.float32,
+                      out=y[base:stop].view(end - first, width, D))
+            del gu, act  # same-stream allocator reuse bounds intermediates to one group
+        # Each retained original pair occurs once in order; dest is in [0, packed_rows).
         # Missing local pairs stay -1. Gather directly into the slot-ordered sum instead
         # of materializing [rows, top_k, D] and a separate tensor for every arithmetic step.
         pair_dest = torch.full((pairs,), -1, dtype=torch.int64, device=self.device)
         pair_dest[order] = dest
-        self.ext.expert_prompt_combine(y.view(E * width, D), pair_dest.view(rows, c.top_k), weights,
+        self.ext.expert_prompt_combine(y, pair_dest.view(rows, c.top_k), weights,
                                       local, ed.rowmul, out)
