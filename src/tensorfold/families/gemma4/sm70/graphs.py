@@ -85,20 +85,25 @@ class Graphs:
 
     @torch.inference_mode()
     def capture(self):
-        """Every rank captures in the same order (the bodies contain collectives)."""
+        """Every rank captures in the same order (the bodies contain collectives).
+
+        Round graphs (block target rows) are captured before the one-row serial graph: decode-only target
+        scratch (FP32 projections/activations, gathered partials) is first created by these bodies and grows
+        with the row count, and a buffer reallocated after a graph captured its address would leave that
+        graph writing freed memory."""
         e = self.e
         st = e._state
         saved_pos = st.pos
         try:
             st.length = 0
             self._stage(0, 0, 0)
-            self.serial, self.serial_logits = self._capture(self._serial_body)
             if e.head is not None:
                 e.head.length = 1
                 for c in range(e.head.block + 1):
                     graph, out = self._capture(lambda c=c: self._round_body(c))
                     self.rounds[c] = graph
                     self.round_out[c] = out
+            self.serial, self.serial_logits = self._capture(self._serial_body)
         finally:
             st.pos = saved_pos
             st.reset()
