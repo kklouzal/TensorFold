@@ -87,6 +87,13 @@ def test_gemma4_kernels():
     out = torch.empty(M, N, device=dev)
     ext.bf16_rows(x.to(dev), M, w.to(dev), N, K, out, N, 30.0)
     check("bf16_rows softcap", out, torch.tanh((x.double() @ w.double().T) / 30) * 30, 1e-5)
+    # i8 rows (DFlash W8A16 proposal copies): K = 704 (down slice), M up to 16
+    for M, N, K in [(1, 352, 16896), (5, 2816, 704), (16, 768, 2816)]:
+        q8 = torch.randint(-127, 128, (N, K), dtype=torch.int8); sc = torch.rand(N) * 1e-2 + 1e-4
+        x = torch.randn(M, K)
+        out = torch.empty(M, N, device=dev)
+        ext.i8_rows(x.to(dev), M, q8.to(dev), sc.to(dev), N, K, out, N)
+        check(f"i8_rows M{M} N{N} K{K}", out, (x.double() @ q8.double().T) * sc.double(), 1e-5)
     # route
     M = 6
     logits = torch.randn(M, 128) * 3
