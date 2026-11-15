@@ -1660,12 +1660,18 @@ gains of 0.08–2.64% with the INT8, five-row drafter and 0.55–4.28% with the 
 records quality, added memory and mixed synthetic timing results; these gains
 are not folded into the earlier checkpoint percentages above.
 
+The [five-row decode follow-up](docs/gemma4-sm70-throughput-20261115.md#five-row-decode-follow-up)
+specializes the native W4, BF16, INT8 and router kernels while retaining their
+arithmetic and other row-count paths. It adds no serving flag or precision change.
+The validation note separates complete-request, prefill and decode timings,
+records both drafter formats, and retains the source-mounted qualification limits.
+
 `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` (revision `90c8601b`) with
 `z-lab/gemma-4-26B-A4B-it-DFlash` (`77d42027`) runs on the eight-V100-SXM2-32GB
 host through `tools/launch_cuda_tp.py` and `--tp 8`
 ([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)). Numerical profile
 `gemma4-sm70-w4a16-v1`: original FP4 codes and E4M3 block scales decoded exactly
-in-kernel, FP16 activations into projections (W4A16, as 1Cat-vLLM on SM70; the
+in-kernel, FP16 prompt-projection inputs and FP32 small-row GEMV inputs (the
 checkpoint's calibrated FP4 activation math is SM12-only), FP32 residual stream,
 norms and cross-rank sums, FP16 KV, original BF16 tied head and router.
 

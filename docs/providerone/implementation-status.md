@@ -378,6 +378,14 @@ measurement gates, not achieved figures or admission caps.
 
 ## Selected existing profiles and historical evidence
 
+The [Gemma 4 V100 source checkpoint](../gemma4-sm70-throughput-20261115.md)
+retains its separate AEON NVFP4/DFlash profile: TP8/ETP4, C1, FP16 KV and 32K
+allocation on eight V100s. Its five-row follow-up records 94 native passes,
+matched quality for INT8/BF16 drafter weights and scoped decode gains. The
+runtime digest, source-mounted image and pre-existing communication changes are
+identified there. This does not qualify a clean installed image, full262144
+execution, additional concurrency or the SC117 capacity/delivery gates above.
+
 The selected GB10 Gemma profile remains source
 `ae8d40bef288d9528aed2b45b06cffecb955e392788c240e89e8ebe45d148e6a`, image
 `b579387bc49a092cd2a0b6f48a4c8f17a23995ce7191bd4d359e42c811c12684`,

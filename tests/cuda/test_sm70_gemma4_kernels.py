@@ -377,6 +377,35 @@ def test_gemma4_dflash_int8_prompt_promotion_matches_explicit_float():
     assert torch.equal(actual.view(torch.int32), expected.view(torch.int32))
 
 
+@pytest.mark.parametrize("outputs,inputs,softcap", [(32768, 2816, 30.0), (2816, 512, 0.0),
+                                                   (1408, 2816, 0.0), (2816, 704, 0.0),
+                                                   (1280, 2816, 0.0), (1025, 32, 30.0),
+                                                   (768, 2816, 0.0)])
+def test_gemma4_bf16_exact_five_matches_unchanged_row_controls(outputs, inputs, softcap):
+    from tensorfold.cuda.sm70.gemma4_native import extension
+
+    torch.manual_seed(125)
+    ext = extension()
+    device = torch.device("cuda")
+    weights = (torch.randn(outputs, inputs, device=device) * 0.05).bfloat16()
+    storage = torch.randn(6, inputs + 8, device=device)
+    x6 = storage[:, :inputs]
+    reference = torch.empty(6, outputs, device=device)
+    # M6 is the unchanged MAXM8 path; M4 is an adjacent unchanged MAXM4 control.
+    # The declared native per-row arithmetic does not depend on row count.
+    ext.bf16_rows(x6, 6, weights, outputs, inputs, reference, outputs, softcap)
+    for rows in (4, 5):
+        x_storage = torch.empty(rows, inputs + 8, device=device)
+        x = x_storage[:, :inputs]
+        x.copy_(x6[:rows])
+        guarded = torch.full((rows + 2, outputs + 8), 123.0, device=device)
+        out = guarded[1:rows + 1, :outputs]
+        ext.bf16_rows(x, rows, weights, outputs, inputs, out, guarded.stride(0), softcap)
+        assert torch.equal(out.view(torch.int32), reference[:rows].view(torch.int32))
+        assert torch.all(guarded[0] == 123) and torch.all(guarded[-1] == 123)
+        assert torch.all(guarded[1:rows + 1, outputs:] == 123)
+
+
 def test_gemma4_fused_router_matches_logits_and_routing():
     from tensorfold.cuda.sm70.gemma4_native import extension
     ext = extension()

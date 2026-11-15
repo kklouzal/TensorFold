@@ -86,7 +86,7 @@ __device__ __forceinline__ void w4_dot(const float* __restrict__ x, int64_t ldx,
         }
 #pragma unroll
         for (int m = 0; m < MAXM; ++m) {
-            if (m < M) {
+            if (MAXM == 5 || m < M) {
                 const float4* xp = reinterpret_cast<const float4*>(x + m * ldx + g * 16);
                 float4 a[4];
 #pragma unroll
@@ -135,7 +135,7 @@ __global__ void __launch_bounds__(256) w4_rows(const float* __restrict__ x, int6
         const int n = n0 + r;
 #pragma unroll
         for (int m = 0; m < MAXM; ++m) {
-            if (m < M) {
+            if (MAXM == 5 || m < M) {
                 float v0 = sub_sum<L>(acc[r][m]);
                 if (GEGLU) {
                     const float v1 = sub_sum<L>(acc[r + R][m]);
@@ -243,6 +243,8 @@ __global__ void w4_dequant(const uint8_t* __restrict__ codes, const uint8_t* __r
 template <int MAXM, int R>
 __global__ void __launch_bounds__(256) bf16_rows(const float* __restrict__ x, int64_t ldx, int M,
         const __nv_bfloat16* __restrict__ w, int N, int K, float* __restrict__ out, int64_t ldo, float softcap) {
+    // MAXM5 is an exact-five specialization, reachable only from M==5 dispatch.
+    // Other templates retain their original runtime row bounds.
     const int n0 = (blockIdx.x * WARPS + (threadIdx.x >> 5)) * R, lane = threadIdx.x & 31;
     if (n0 >= N) return;
     const uint4* rows[R];
@@ -267,7 +269,7 @@ __global__ void __launch_bounds__(256) bf16_rows(const float* __restrict__ x, in
         }
 #pragma unroll
         for (int m = 0; m < MAXM; ++m) {
-            if (m < M) {
+            if (MAXM == 5 || m < M) {
                 const float4* xp = reinterpret_cast<const float4*>(x + m * ldx + c * 8);
                 const float4 a = __ldg(xp), b = __ldg(xp + 1);
 #pragma unroll
@@ -285,7 +287,7 @@ __global__ void __launch_bounds__(256) bf16_rows(const float* __restrict__ x, in
     for (int r = 0; r < R; ++r) {
 #pragma unroll
         for (int m = 0; m < MAXM; ++m) {
-            if (m < M) {
+            if (MAXM == 5 || m < M) {
                 float v = warp_sum(acc[r][m]);
                 if (softcap > 0.f) v = tanhf(v / softcap) * softcap;
                 if (lane == 0 && n0 + r < N) out[m * ldo + n0 + r] = v;
@@ -296,10 +298,11 @@ __global__ void __launch_bounds__(256) bf16_rows(const float* __restrict__ x, in
 
 // ---------------------------------------------------------------------------------------------- INT8 GEMV
 // out[m, n] = scale[n] * dot(x[m], q[n]) with symmetric per-row INT8 q (private W8A16 proposal copies). K % 16 == 0.
-template <int MAXM, int R>
+template <int MAXM, int R, bool EXACT_FIVE>
 __global__ void __launch_bounds__(256) i8_rows(const float* __restrict__ x, int64_t ldx, int M,
         const int8_t* __restrict__ w, const float* __restrict__ scale, int N, int K, float* __restrict__ out,
         int64_t ldo, float softcap) {
+    static_assert(!EXACT_FIVE || MAXM == 5, "exact-five requires its five-row tile");
     const int n0 = (blockIdx.x * WARPS + (threadIdx.x >> 5)) * R, lane = threadIdx.x & 31;
     if (n0 >= N) return;
     const uint4* rows[R];
@@ -321,7 +324,7 @@ __global__ void __launch_bounds__(256) i8_rows(const float* __restrict__ x, int6
         }
 #pragma unroll
         for (int m = 0; m < MAXM; ++m) {
-            if (m < M) {
+            if (EXACT_FIVE || m < M) {
                 const float4* xp = reinterpret_cast<const float4*>(x + m * ldx + c * 16);
                 float4 a[4];
 #pragma unroll
@@ -343,7 +346,7 @@ __global__ void __launch_bounds__(256) i8_rows(const float* __restrict__ x, int6
     for (int r = 0; r < R; ++r) {
 #pragma unroll
         for (int m = 0; m < MAXM; ++m) {
-            if (m < M) {
+            if (EXACT_FIVE || m < M) {
                 float v = warp_sum(acc[r][m]);
                 if (lane == 0 && n0 + r < N) {
                     v *= __ldg(scale + n0 + r);
@@ -443,7 +446,7 @@ __global__ void __launch_bounds__(256) router(const float* __restrict__ x, int64
             }
 #pragma unroll
             for (int m = 0; m < MAXM; ++m) {
-                if (m < M) {
+                if (MAXM == 5 || m < M) {
                     const float4* xp = reinterpret_cast<const float4*>(x + m * ldx + c * 8);
                     const float4 a = __ldg(xp), b = __ldg(xp + 1);
                     float d = acc[m];
@@ -462,7 +465,7 @@ __global__ void __launch_bounds__(256) router(const float* __restrict__ x, int64
     __syncthreads();
     if (t < 2 * MAXM) {
         const int half = t / MAXM, m = t % MAXM, ee = blockIdx.x * 2 + half;
-        if (m < M && ee < E) {
+        if ((MAXM == 5 || m < M) && ee < E) {
             logits[m * E + ee] = ((part[half * 4][m] + part[half * 4 + 1][m]) + part[half * 4 + 2][m])
                                  + part[half * 4 + 3][m];
         }
@@ -475,7 +478,7 @@ __global__ void __launch_bounds__(256) router(const float* __restrict__ x, int64
     __threadfence();
     // Route each row with one warp (rows in parallel): softmax over E <= 256, stable top-k by probability
     // (lowest expert on ties), renormalized, times per_expert_scale. Lane l holds experts l, l + 32, ...
-    for (int m = warp; m < M; m += 8) {
+    for (int m = warp; m < (MAXM == 5 ? 5 : M); m += 8) {
         float pr[8];
         float mx = -INFINITY;
 #pragma unroll
@@ -965,7 +968,17 @@ void w4_rows_launch(const Tensor& x, int64_t M, const Tensor& codes, const Tenso
     const int64_t ldx = x.stride(0);
 #define G4_ROWS(MM) g4::w4_rows<MM, GEGLU, R, L><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, \
         cptr<uint8_t>(codes), cptr<uint8_t>(scales), cptr<float>(rowmul), (int)N, (int)K, ptr<float>(out), ldo)
-    if (M <= 1) G4_ROWS(1); else if (M <= 4) G4_ROWS(4); else if (M <= 8) G4_ROWS(8); else G4_ROWS(16);
+    if (M <= 1) G4_ROWS(1);
+    else if (M <= 4) G4_ROWS(4);
+    else if (M <= 8) {
+        // Only the three actual Gemma projection layouts get an exact-five
+        // instance. Other supported layouts retain their existing row tile.
+        if constexpr ((!GEGLU && ((R == 4 && L == 32) || (R == 2 && L == 16)))
+                      || (GEGLU && R == 1 && L == 32)) {
+            if (M == 5) G4_ROWS(5);
+            else G4_ROWS(8);
+        } else G4_ROWS(8);
+    } else G4_ROWS(16);
 #undef G4_ROWS
 }
 }  // namespace
@@ -1054,7 +1067,12 @@ void bf16_launch(const Tensor& x, int64_t M, const Tensor& w, int64_t N, int64_t
     const int64_t ldx = x.stride(0);
 #define G4_BF(MM) g4::bf16_rows<MM, R><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, \
         cptr<__nv_bfloat16>(w), (int)N, (int)K, ptr<float>(out), ldo, (float)softcap)
-    if (M <= 1) G4_BF(1); else if (M <= 4) G4_BF(4); else if (M <= 8) G4_BF(8); else G4_BF(16);
+    if (M <= 1) G4_BF(1);
+    else if (M <= 4) G4_BF(4);
+    else if (M <= 8) {
+        if (M == 5) G4_BF(5);
+        else G4_BF(8);
+    } else G4_BF(16);
 #undef G4_BF
 }
 template <int R>
@@ -1062,9 +1080,18 @@ void i8_launch(const Tensor& x, int64_t M, const Tensor& w, const Tensor& scale,
                int64_t ldo, double softcap) {
     const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R));
     const int64_t ldx = x.stride(0);
-#define G4_I8(MM) g4::i8_rows<MM, R><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, cptr<int8_t>(w), \
+#define G4_I8(MM, EXACT) g4::i8_rows<MM, R, EXACT><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, cptr<int8_t>(w), \
         cptr<float>(scale), (int)N, (int)K, ptr<float>(out), ldo, (float)softcap)
-    if (M <= 1) G4_I8(1); else if (M <= 4) G4_I8(4); else if (M <= 8) G4_I8(8); else G4_I8(16);
+    if (M <= 1) G4_I8(1, false);
+    else if (M <= 4) G4_I8(4, false);
+    else if (M == 5) {
+        if constexpr (R == 2) G4_I8(5, true);
+        // The two measured wide projection shapes favor fixed-row execution; other
+        // R4 shapes retain the measured bounded tile with runtime row guards.
+        else if (K == 2816 && (N == 1408 || N == 1280)) G4_I8(5, true);
+        else G4_I8(5, false);
+    } else if (M <= 8) G4_I8(8, false);
+    else G4_I8(16, false);
 #undef G4_I8
 }
 }  // namespace
@@ -1089,7 +1116,8 @@ void router_cuda(const Tensor& x, int64_t M, const Tensor& w, int64_t E, int64_t
 #define G4_RT(MM) g4::router<MM><<<grid, 256, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)M, \
         cptr<__nv_bfloat16>(w), (int)E, (int)K, ptr<float>(logits), ptr<int>(counter), (int)topk, \
         cptr<__nv_bfloat16>(scale), (int)first, (int)count, ptr<int>(ids), ptr<float>(weights), ptr<int>(local))
-    if (M <= 1) G4_RT(1); else if (M <= 4) G4_RT(4); else if (M <= 8) G4_RT(8); else G4_RT(16);
+    if (M <= 1) G4_RT(1); else if (M <= 4) G4_RT(4); else if (M == 5) G4_RT(5);
+    else if (M <= 8) G4_RT(8); else G4_RT(16);
 #undef G4_RT
 }
 

@@ -106,7 +106,9 @@ for the measured scope.
 
 The [2026-11-15 throughput checkpoint](../gemma4-sm70-throughput-20261115.md)
 records exact prompt-kernel and streaming-parser optimizations, matched HTTP
-measurements and their source/validation limits. It adds no serving flag or
+measurements and their source/validation limits. Its five-row follow-up also
+specializes native target and drafter projections without changing arithmetic
+or the five-row default. It adds no serving flag or
 numerical-profile change; full native-context qualification remains pending.
 
 ## Experimental exact Delta4 tied table

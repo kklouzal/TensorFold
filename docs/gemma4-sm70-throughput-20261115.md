@@ -26,6 +26,14 @@ new installed-image qualification.
 - Capture integer position/token copies with their decode consumers. Target and
   drafter share their read-only start position; previous-position copies run only
   when needed. Replay submits the existing pinned host-to-device input copy.
+- Specialize five-row native W4, BF16, INT8 and router calls instead of using
+  eight-row accumulator tiles. Exact-five calls remove runtime row guards while
+  preserving coefficient traversal, FMA and reduction order, scales, activations,
+  and router publication/reset. INT8 R4 uses exact-five for the measured
+  1,408-by-2,816 gate/up and 1,280-by-2,816 context-KV matrices; its other five-row
+  calls retain runtime guards in a five-row tile. Other row counts and expert
+  gate/up/down kernels retain their existing paths. This changes neither the
+  five-row drafting default nor the numerical profile.
 
 ## Measured source and environment
 
@@ -149,9 +157,94 @@ to 39,845,888,000, peak allocated from 43,297,484,800 to 43,350,962,176, and pea
 reserved from 47,135,588,352 to 47,152,365,568. Sums of per-rank peaks are not
 simultaneous physical peaks. These measurements do not increase a capacity claim.
 
+## Five-row decode follow-up
+
+This follow-up compares against `db80d763`, retaining its prompt, parser,
+staging and context-KV changes. The model, image, host, TP8/ETP4, FP16 KV and
+32K allocation above remain unchanged. Both drafter weight formats use five-row
+drafting. The seven-file runtime digest is
+`4243ee119b8c224703e98cbc64fc34b376e3f1b1e26901a858f0245bc4edab1e`;
+use the six-file order above with
+`src/tensorfold/families/gemma4/sm70/dflash.py` inserted immediately after
+`graphs.py`. The same pre-existing communication changes remain outside this
+commit, so this is source-mounted qualification, not a clean installed image.
+
+Each process completed 21 fixed requests: three repetitions of code, prose,
+lists, the two one-token prefill proxies, and generation after frozen human
+4,294- and 16,518-token chat prompts. Generation requests produced 512 tokens
+with greedy sampling and EOS stopping disabled. All prompts were uncached.
+The last INT8 comparison used a fresh reference process followed by a candidate;
+an earlier candidate comparison used the retained same-profile reference.
+BF16 used its own fresh reference/candidate pair. All samples remain in the
+private packet; process runs are not pooled as independent per-request samples.
+
+The client reads cumulative server statistics before and after each request,
+outside its timing interval. Idle-state, one-finished-request and token-count
+checks bind each metric delta to that request. Decode throughput is
+`(generated_tokens - 1) / decode_seconds`: the first token belongs to prefill.
+These are engine wall times, including callback overlap, not GPU-only times or
+the older SSE first-to-last-delta metric. Engine times have 0.0001-second
+resolution. The table shows medians of three requests per case from the final
+matched pairs, not peak or tail guarantees.
+
+| Drafter weights | Workload | Reference decode tok/s | Follow-up decode tok/s | Gain |
+| --- | --- | ---: | ---: | ---: |
+| INT8 | Code | 345.1 | 376.7 | 9.2% |
+| INT8 | Prose | 230.2 | 248.5 | 8.0% |
+| INT8 | Lists | 228.0 | 242.6 | 6.4% |
+| INT8 | 4,294-token prompt | 346.7 | 370.9 | 7.0% |
+| INT8 | 16,518-token prompt | 313.2 | 333.5 | 6.5% |
+| BF16 | Code | 353.3 | 380.3 | 7.6% |
+| BF16 | Prose | 233.7 | 251.3 | 7.5% |
+| BF16 | Lists | 228.3 | 239.6 | 5.0% |
+| BF16 | 4,294-token prompt | 357.8 | 380.8 | 6.4% |
+| BF16 | 16,518-token prompt | 314.2 | 329.7 | 4.9% |
+
+The earlier selected-INT8 run also improved decode in all five cases
+(4.4–6.8%). Complete-request gains and separate prefill/decode samples are
+retained in the comparison JSON files. Prefill is a negative control for these
+fixtures: their prompt chunks do not enter the new five-row projection paths,
+and the last-token head uses one row. No additional prefill gain or statistical
+prefill equivalence is claimed from its run-to-run variation. These results do
+not select one drafter format universally over the other.
+
+All 21 replies, usage and round/draft/acceptance counts matched each format's
+reference. The original and separately frozen BOS-sensitivity corpora produced
+identical prefill/decode NLL, perplexity and recorded top-score diagnostics for
+both formats; both repeats matched, with finite diagnostics and unique document
+IDs. This follows the existing quality rule below; output identity is an
+observed result rather than a universal optimization requirement. Long-prompt
+generation checks are not a new full-262K or BF16 long-context teacher-forcing
+qualification.
+
+The final source passed 94 native tests: the existing 37 cases, seven BF16
+five-row cases, 31 additional projection/router cases, and 19 retained attention
+mapping cases. Tests cover adjacent row counts, strides, tails, canaries,
+adverse finite values, router ties and repeated eager/captured counter reset.
+The selected component combination also matched 720 bank/row comparisons
+against retained native implementations. Exact-five was not chosen by register
+count: the faster BF16 variant used more registers. INT8 variants were selected
+by measured projection costs and then checked in complete requests.
+
+A separate safe graph diagnostic matched 1,500 recorded probe/proposal/position
+steps on each of eight ranks. Every replay completed before pinned host inputs
+were reused. Its rank-zero means were 4.465 ms serial (unchanged control),
+8.491 ms for one committed row and 8.606 ms for five committed rows; these are
+synthetic round timings, not serving token rates. Torch allocation/reservation
+counters matched the reference: worst-rank allocated 4,514,367,488 bytes and
+peak allocated 5,455,705,600 bytes; worst-rank reserved 5,144,313,856 bytes and
+peak reserved 6,318,718,976 bytes. No capacity increase is claimed.
+
+Standalone SiLU/residual-normalization fusions and the tested attention-traversal
+variants were not adopted: component improvements did not establish complete
+workload gains. Four-row drafting traded code throughput for prose/list gains,
+so the five-row default remains. Their evidence and independent attention
+oracles are retained without claiming universal inferiority. Compact target
+greedy-result exchange remains an assessed, unimplemented next candidate.
+
 ## Verification and continuing work
 
-- Native Gemma kernel suite: 24 passed, including exact scale/code combinations,
+- Initial prompt-kernel checkpoint: 24 native cases passed, including exact scale/code combinations,
   aligned/unaligned stores, ordered expert scaling/combination, exceptional
   values, signed zero, subnormals and adjacent-output canaries.
 - Quality acceptance permits different outputs when quality is unchanged or

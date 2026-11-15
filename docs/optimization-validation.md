@@ -18,6 +18,19 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Gemma 4 five-row SM70 decode
+
+The [2026-11-15 Gemma checkpoint](gemma4-sm70-throughput-20261115.md#five-row-decode-follow-up)
+records the selected five-row W4/BF16/INT8/router specializations against
+`db80d763`. On eight V100-SXM2-32GB GPUs, TP8/ETP4, C1, 32K allocation and
+five-row DFlash, the final matched INT8 pair measured 6.4–9.2% higher engine
+decode throughput across five workloads; the BF16 pair measured 4.9–7.6%.
+The note retains the earlier INT8 repeat, separate request/prefill metrics,
+sample limits, source digest and pinned runtime. Both formats matched reference
+quality scores and replies; 94 native cases passed. This is source-mounted
+qualification with the recorded pre-existing communication changes, not a clean
+installed-image, full-262K, concurrency or SC117 capacity qualification.
+
 ## Current HC typed-factory native gate
 
 `tests/cuda/test_sm70_bitblas_hc.py` defines15 component cases. The original
