@@ -1,6 +1,5 @@
 """Several streams in one verify window: each row gets its own stream's bits, each stream its serial tokens."""
 
-import random
 import threading
 
 import pytest
@@ -16,11 +15,11 @@ from tensorfold.families.qwen3_5.cuda.decode import prefill, serial_decode  # no
 from tensorfold.families.qwen3_5.cuda.forward import (State, commit, commit_streams, multi_tree_forward,  # noqa: E402
                                                         tree_forward)
 from tensorfold.families.qwen3_5.cuda.draft_tree import allocate  # noqa: E402
-from tensorfold.families.qwen3_5.cuda.multi import ONE, TREE, MultiDecoder, private, viewed  # noqa: E402
+from tensorfold.families.qwen3_5.cuda.multi import MultiDecoder, private, viewed  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
 from qwen_engine_checks import points_after  # noqa: E402
 
-V = 256
+from qwen_tree_oracle import V, _Oracle  # noqa: E402
 
 
 def _model():
@@ -90,38 +89,6 @@ def test_multi_forward_rows_equal_their_streams_windows():
         _same_state(mine, ref)
 
 
-class _Oracle(MultiDecoder):
-    """Proposes trees mixing each prompt's true continuation with wrong tokens, so rounds keep runs of drafts."""
-
-    def __init__(self, w, truth, seed=0, **kw):
-        super().__init__(w, None, max_rows=6, **kw)
-        self.truth, self.rng = truth, random.Random(seed)
-
-    def _mode(self, s, copied):
-        if s.sampling is not None and s.sampling.temperature > 0:
-            # This independent scheduler oracle deliberately supplies arbitrary q-less trees and checks target
-            # choices. Real stochastic DFlash/copy producers use explicit CHAIN/COPY_CHAIN modes instead.
-            copied[s.sid] = []
-            return TREE if s.draft else ONE
-        mode = super()._mode(s, copied)
-        return TREE if s.draft and not copied.get(s.sid) else mode
-
-    def _trees(self, plan, blocks):
-        out = {}
-        for sid, mode, _, _ in plan:
-            if mode != TREE:
-                continue
-            s = self.streams[sid]
-            ref, n = self.truth[tuple(s.prompt)], len(s.out)
-            guesses, parents = [], []
-            for d in range(self.rng.randint(1, 4)):
-                guesses.append(ref[n + d] if n + d < len(ref) and self.rng.random() < 0.8 else self.rng.randrange(1, V))
-                parents.append(d - 1)
-            if self.rng.random() < 0.5:                   # a sibling of the first draft
-                guesses.append(self.rng.randrange(1, V))
-                parents.append(-1)
-            out[sid] = (guesses, parents, [0.3 * (k + 1) for k in range(len(guesses))])
-        return out
 
 
 def _serial(w, prompt, sampling, count):

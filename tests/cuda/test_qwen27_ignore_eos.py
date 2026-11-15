@@ -1,7 +1,6 @@
 """ignore_eos on the 27B: replies decoded past end tokens equal serial decoding, alone and beside streams that stop."""
 
 import dataclasses
-import random
 import threading
 
 import pytest
@@ -16,10 +15,9 @@ from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.decode import draft_decode, prefill, serial_decode  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.engine import KEEP_ONE, Qwen27Engine  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.forward import State  # noqa: E402
-from tensorfold.families.qwen3_5.cuda.multi import ONE, TREE, MultiDecoder  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
 
-V = 256
+from qwen_tree_oracle import V, _Oracle  # noqa: E402
 SAMPLINGS = [None, Sampling(1234, 1.0, 20, 0.95)]
 
 
@@ -178,37 +176,6 @@ def test_engine_decodes_past_end_tokens_and_keeps_only_prompt_ends(sampling):
                                                                    (longer[:-1], len(longer) - 1)]
 
 
-class _Oracle(MultiDecoder):
-    """Trees mixing each prompt's true continuation with wrong tokens (as tests/cuda/test_qwen27_multi.py)."""
-
-    def __init__(self, w, truth, seed=0, **kw):
-        super().__init__(w, None, max_rows=6, **kw)
-        self.truth, self.rng = truth, random.Random(seed)
-
-    def _mode(self, s, copied):
-        if s.sampling is not None and s.sampling.temperature > 0:
-            # A q-less independent target-choice oracle; production stochastic producers use RS mode tags.
-            copied[s.sid] = []
-            return TREE if s.draft else ONE
-        mode = super()._mode(s, copied)
-        return TREE if s.draft and not copied.get(s.sid) else mode
-
-    def _trees(self, plan, blocks):
-        out = {}
-        for sid, mode, _, _ in plan:
-            if mode != TREE:
-                continue
-            s = self.streams[sid]
-            ref, n = self.truth[tuple(s.prompt)], len(s.out)
-            guesses, parents = [], []
-            for d in range(self.rng.randint(1, 4)):
-                guesses.append(ref[n + d] if n + d < len(ref) and self.rng.random() < 0.8 else self.rng.randrange(1, V))
-                parents.append(d - 1)
-            if self.rng.random() < 0.5:
-                guesses.append(self.rng.randrange(1, V))
-                parents.append(-1)
-            out[sid] = (guesses, parents, [0.3 * (k + 1) for k in range(len(guesses))])
-        return out
 
 
 PROMPTS = [[5, 6, 7], [9, 10, 11, 12, 13], [3, 4]]
