@@ -19,3 +19,14 @@ def shapes(self):
             "mlp.gate_proj.weight": (self.width, self.hidden), "mlp.up_proj.weight": (self.width, self.hidden),
             "mlp.down_proj.weight": (self.hidden, self.width)}.items()})
     return out
+
+
+def validate_headers(cfg, found, *, tensor_label, weights_label):
+    """Check the shared inventory without constructing shapes before the count guard."""
+    if len(found) != 11 * cfg.layers + 3:
+        raise ValueError(f"{tensor_label} tensor count differs from its declared architecture")
+    expected = cfg.shapes()
+    if set(found) != set(expected):
+        raise ValueError(f"{tensor_label} tensor inventory differs from its declared architecture")
+    if any(tuple(found[k]["shape"]) != shape or found[k]["dtype"] != "BF16" for k, shape in expected.items()):
+        raise ValueError(f"{weights_label} weights require declared shapes and BF16 storage")

@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass
 
 from tensorfold.checkpoint_metadata import read_json
-from tensorfold.drafters.dflash_metadata import shapes as companion_shapes
+from tensorfold.drafters.dflash_metadata import shapes as companion_shapes, validate_headers
 from tensorfold.families.qwen4_exp.rope import RopeParameters
 
 
@@ -95,13 +95,7 @@ def checked_headers(directory):
 
     cfg = DraftConfig.read(directory)
     found = headers(directory)
-    if len(found) != 11 * cfg.layers + 3:
-        raise ValueError("DFlash checkpoint tensor count differs from its declared architecture")
-    expected = cfg.shapes()
-    if set(found) != set(expected):
-        raise ValueError("DFlash checkpoint tensor inventory differs from its declared architecture")
-    if any(tuple(found[k]["shape"]) != shape or found[k]["dtype"] != "BF16" for k, shape in expected.items()):
-        raise ValueError("DFlash weights require declared shapes and BF16 storage")
+    validate_headers(cfg, found, tensor_label='DFlash checkpoint', weights_label='DFlash')
     return cfg, found
 
 
