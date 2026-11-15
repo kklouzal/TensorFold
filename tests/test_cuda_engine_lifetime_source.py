@@ -10,6 +10,32 @@ from tensorfold.cuda.engine_lifetime import EngineLifetime
 
 
 class EngineLifetimeTests(unittest.TestCase):
+    def test_scheduler_engine_close_retains_failed_owner_and_clears_only_after_success(self):
+        from types import SimpleNamespace
+        from tensorfold.families.qwen3_5.cuda.engine import Qwen27Engine
+        from tensorfold.families.qwen3_5_moe.cuda.engine import Qwen36Engine
+
+        for engine in (Qwen27Engine, Qwen36Engine):
+            with self.subTest(engine=engine.__name__):
+                calls = []
+                failure = KeyboardInterrupt()
+
+                def close():
+                    calls.append('close')
+                    raise failure
+
+                scheduler = SimpleNamespace(close=close)
+                owner = SimpleNamespace(scheduler=scheduler)
+                with self.assertRaises(KeyboardInterrupt) as caught:
+                    engine.close(owner)
+                self.assertIs(caught.exception, failure)
+                self.assertIs(owner.scheduler, scheduler)
+                scheduler.close = lambda: calls.append('close')
+                engine.close(owner)
+                self.assertIsNone(owner.scheduler)
+                engine.close(owner)
+                self.assertEqual(calls, ['close', 'close'])
+
     def test_close_waits_accepted_request_and_rejects_pending_and_future_work(self):
         scope = EngineLifetime()
         entered, release, done = threading.Event(), threading.Event(), threading.Event()

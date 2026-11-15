@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tensorfold.cuda.engine_lifetime import close_scheduler
+
 import math
 import time
 from pathlib import Path
@@ -143,12 +145,7 @@ class Qwen36Engine:
             self.cache.entries = [c for c in self.cache.entries if len(c[0]) <= n or c[0][:n] != best[0]]
         return best
 
-    def close(self) -> None:
-        """Stop the concurrent scheduler's worker, so the engine's GPU memory can go (tests start several engines)."""
-
-        if self.scheduler is not None:
-            self.scheduler.close()
-            self.scheduler = None
+    close = close_scheduler
 
     def generate(self, prompt: list[int], max_tokens: int, sampling, on_tokens: Callable[[list[int]], bool | None],
                  draft: bool = True, stop_eos: bool = True, constraint=None,

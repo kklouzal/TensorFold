@@ -47,3 +47,13 @@ class EngineLifetime:
             if not self.retired:
                 retire()
                 self.retired = True
+
+
+def close_scheduler(self) -> None:
+    """Retire an engine's scheduler; retain it if shutdown fails.
+
+    Directly bound as close by engines whose scheduler owns worker retirement.
+    """
+    if self.scheduler is not None:
+        self.scheduler.close()
+        self.scheduler = None

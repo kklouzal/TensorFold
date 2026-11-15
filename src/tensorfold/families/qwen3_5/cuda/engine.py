@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tensorfold.cuda.engine_lifetime import close_scheduler
+
 import struct
 import time
 from functools import partial
@@ -317,12 +319,7 @@ class Qwen27Engine:
 
         return not (stops and len(prompt) - stops[-1] < MIN_GAP)
 
-    def close(self) -> None:
-        """Stop the concurrent scheduler's worker, so the engine's GPU memory can go (tests start several engines)."""
-
-        if self.scheduler is not None:
-            self.scheduler.close()
-            self.scheduler = None
+    close = close_scheduler
 
     @property
     def penalties_supported(self) -> bool:
