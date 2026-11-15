@@ -254,3 +254,20 @@ def test_raw_prompt_channel_detection_uses_real_tokens_and_a_short_header():
     assert not prompt_ids_open_thought(tok, tok.encode('Hi').ids)
     assert not prompt_ids_open_thought(tok, tok.encode('Hi<|channel>thought\nnotes<channel|>').ids)
     assert not prompt_ids_open_thought(tok, tok.encode('Hi<|channel>thought\nlong body text').ids)
+
+
+@pytest.mark.parametrize('raw,expected', [
+    ('Visible. <|channel>thought\nnotes<channel|>Answer.', 'Visible. Answer.'),
+    ('<|channel>thought\nnotes<channel|>Answer.', 'Answer.'),
+    ('Visible. <|channel>synthesis\nnotes', 'Visible. '),
+])
+def test_raw_completion_reply_opening_a_channel_routes_it_as_before(tmp_path, raw, expected):
+    # Text before the reply's own native opener has already streamed; from the opener on the answer boundary
+    # hides and separates the channel exactly as when it was created at the start.
+    instance = replay(tmp_path, raw)
+    result, contents = _raw(instance, 'Hi')
+    assert result['content'] == expected
+    assert ''.join(contents) == expected
+    assert 'notes' not in ''.join(contents)
+    if raw.startswith('Visible.'):
+        assert contents[0] == 'V'                       # the plain prefix streamed before the opener arrived

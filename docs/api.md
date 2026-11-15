@@ -491,7 +491,9 @@ Google's current template does this after tool results with thinking on. The rep
 A raw Gemma 4 `/v1/completions` prompt has no template framing: its reply text streams as each round is verified.
 Only a raw prompt whose own last real `<|channel>` token is followed by nothing but a short header (no
 control token) starts its reply inside that channel; that reply keeps the chat path's holdback, and its text
-before `<channel|>` is not returned. A marker typed as ordinary text is not a channel.
+before `<channel|>` is not returned. A marker typed as ordinary text is not a channel. When a raw reply itself
+emits a native `<|channel>` or `<|think|>` token, text already streamed stays; from that token on the reply is
+routed as chat replies are, so the channel body is hidden and the answer after `<channel|>` follows.
 
 A tool call written before the think block closes is the reply's tool call when the reply ends inside the block,
 on both backends; the reasoning stops where the call starts, and streamed reasoning never carries the call's markup.

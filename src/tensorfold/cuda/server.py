@@ -1500,11 +1500,17 @@ class App:
             native_starts = tuple(t for t in (self.tok.token_to_id("<|channel>"), self.tok.token_to_id("<|think|>"))
                                   if t is not None) if gemma else ()
             grammar_state = [None]  # request-owned boundary, independent of producer/rank matcher copies
-            if gemma and prepared.grammar is None and (chat or prepared.thought_open):
-                # Raw completions stream visible text directly unless their prompt left a channel open.
-                grammar_state[0] = grammar.AnswerBoundary(None, think_end=self.tok.token_to_id(markers[1]),
+            def answer_boundary():
+                return grammar.AnswerBoundary(None, think_end=self.tok.token_to_id(markers[1]),
                     think_starts=native_starts, thought_open=prepared.thought_open, decode=self.tok.decode,
                     answer_headers=tuple("<|tool_call>call:" + tool_spec_name(t) + "{" for t in tools))
+            # Raw completions have no template framing: they stream visible text directly unless their prompt
+            # left a channel open. A native channel/think start in such a reply starts the same boundary there
+            # (lazy_base/lazy_prefix): text already emitted stays; the rest is routed exactly as before.
+            lazy_raw = gemma and prepared.grammar is None and not chat and not prepared.thought_open
+            lazy_base, lazy_prefix = [0], [""]
+            if gemma and prepared.grammar is None and (chat or prepared.thought_open):
+                grammar_state[0] = answer_boundary()
             forced_close = [None]  # at most one explicit budget event in this logical reply
             answer_stream = (StreamDecoder(self.tok, ends, literal=prepared.grammar is not None)
                              if not (gemma and split_reasoning) and (prepared.grammar is not None or gemma) else None)
@@ -1536,10 +1542,11 @@ class App:
                         allow_tool_calls=bool(tools), answer_start=call_start)
                 elif grammar_state[0] is not None:
                     from tensorfold.token_metadata import decode_presentation
+                    toks = out[lazy_base[0]:] if lazy_base[0] else out
                     offset = grammar_state[0].answer_offset
                     if offset is None:
                         pending = grammar_state[0].pending_answer_offset
-                        prefix = (decode_presentation(self.tok, [t for t in out[:pending] if t not in ends])
+                        prefix = (decode_presentation(self.tok, [t for t in toks[:pending] if t not in ends])
                                   if pending is not None and not finished else raw)
                         answer = ""
                         if gemma and not grammar_state[0].opened_thought:
@@ -1547,19 +1554,21 @@ class App:
                             # close or normal finality proves direct content.
                             prefix = ""
                             if finished:
-                                answer_stream.add(out[answer_fed[0]:])
-                                answer_fed[0] = len(out)
+                                answer_stream.add(toks[answer_fed[0]:])
+                                answer_fed[0] = len(toks)
                                 answer = answer_stream.final()
                     else:
                         close_at = grammar_state[0].thinking_close_offset
                         prefix_end = close_at if close_at is not None else offset
-                        prefix = decode_presentation(self.tok, [t for t in out[:prefix_end] if t not in ends])
-                        answer_stream.add(out[offset + answer_fed[0]:])
-                        answer_fed[0] = max(0, len(out) - offset)
+                        prefix = decode_presentation(self.tok, [t for t in toks[:prefix_end] if t not in ends])
+                        answer_stream.add(toks[offset + answer_fed[0]:])
+                        answer_fed[0] = max(0, len(toks) - offset)
                         answer = answer_stream.final() if finished else answer_stream.text
                     if gemma and not split_reasoning and prepared.grammar is None and answer:
                         from tensorfold.server.gemma_values import _clean_controls
                         answer = _clean_controls(answer, finished=finished)
+                    if lazy_base[0]:
+                        answer = lazy_prefix[0] + answer
                     if split_reasoning:
                         reasoning = split_thinking(prefix, finished=finished, markers=markers)[0]
                         # Preserve the legacy unframed prefix for other model
@@ -1614,6 +1623,15 @@ class App:
                         new = kept
                     else:
                         out.extend(new)
+                    fed = new
+                    if lazy_raw and grammar_state[0] is None:
+                        start = next((index for index, token in enumerate(new) if token in native_starts), None)
+                        if start is not None:
+                            stream.add(new[:start])
+                            lazy_prefix[0] = visible(False)[1]
+                            lazy_base[0] = len(out) - len(new) + start
+                            grammar_state[0] = answer_boundary()
+                            new = new[start:]
                     if grammar_state[0] is not None:
                         for token in new:
                             if grammar_state[0].observed == forced_close[0]:
@@ -1621,6 +1639,7 @@ class App:
                             else:
                                 grammar_state[0].advance([token])
                     stream.add(new)
+                    new = fed
                     reasoning, answer = visible(False)
                     delta: dict[str, Any] = {}
                     if len(reasoning) > sent["reasoning"]:
