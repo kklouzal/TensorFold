@@ -260,10 +260,18 @@ Determinism contracts are binding where promised:
 - **slot**: a request's result does not depend on which lane/slot serves it or
   what runs beside it (golden `checkcN` runs N concurrent copies);
 - **cold vs cached**: a prefix-cache hit should give the same result as a cold
-  prefill. This is currently **open** on SC117: a cold request and its cached
-  repeat differ (at token 46 in [optimization validation](optimization-validation.md)),
-  so cold-vs-repeat goldens (`golden-long1.json`) are not valid oracles yet;
-  serving-matrix prompts are unique, so no cache hit enters a measurement.
+  prefill. On SC117 an exact repeat of a prompt joins from the kept end of its
+  first request, so it replies identically (2026-11-16). The long-context oracle
+  `/home/kklouzal/build-cache/cc-perf-20261114/golden_long.py` (reference
+  `golden-long2.json` beside it; `golden-long1.json` is superseded) sends each of
+  10 prompts (336–6,190 tokens, text and chat) cold and then as its repeat and
+  requires cold == repeat == reference; each round has its own prompt salts, so a
+  round is checked once per server process (`check FILE --round K`, K = 0 or 1).
+  Still open: a prompt that extends a kept point (a next turn, a shared system
+  block) is cut into different prompt pieces than its cold prefill, so it may
+  differ from a cold prefill of the same prompt, and concurrent replies differ from
+  C1 replies (batch numerics; golden `checkcN`). Serving-matrix prompts are unique,
+  so no cache hit enters a measurement.
 
 A failure of a promised determinism contract is a defect, not noise.
 

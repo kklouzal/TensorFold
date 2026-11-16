@@ -166,3 +166,70 @@ def test_invalid_kept_snapshot_stops_before_spare_growth_or_copy():
         dec._slot_for(prefix + [6], True)
     assert dec.free == [spare] and dec.kept == kept
     assert growth == [] and spare.copied is None
+
+
+def _with_end(dec, prefix, source):
+    end_state = {"pos": len(prefix) + 1, "mtp_len": len(prefix), **source.kv_snapshot_metadata()}
+    end = {"token": 7, "state": end_state, "tail": "end-tail", "last": "end-last", "head": "end-head"}
+    dec.kept[0][2]["prompt_end"] = end
+    return end_state
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_an_exact_repeat_resumes_from_the_kept_prompt_end(busy):
+    dec, source, spare, prefix, snap, _ = decoder(busy=busy)
+    end_state = _with_end(dec, prefix, source)
+    st, resume, cached = dec._slot_for(prefix + [7], True)
+    assert st is spare and cached == len(prefix) + 1
+    assert resume == {"state": end_state, "tail": "end-tail", "head": "end-head", "last": "end-last",
+                      "kept": (prefix, snap, "tail")}
+    assert spare.copied == (source, len(prefix) + 1, len(prefix))      # the end's last row is copied too
+
+
+def test_an_exact_repeat_resumes_its_end_in_place_without_a_spare_slot():
+    dec, source, _, prefix, _, _ = decoder()
+    dec.free = []
+    dec.kept = dec.kept[:1]
+    end_state = _with_end(dec, prefix, source)
+    st, resume, cached = dec._slot_for(prefix + [7], True)
+    assert st is source and cached == len(prefix) + 1 and resume["state"] is end_state
+
+
+@pytest.mark.parametrize("tail", [[8], [7, 9]])
+def test_another_prompt_through_the_kept_point_resumes_the_point_not_the_end(tail):
+    dec, source, spare, prefix, snap, _ = decoder()
+    _with_end(dec, prefix, source)
+    st, resume, cached = dec._slot_for(prefix + tail, True)
+    assert st is spare and cached == len(prefix) and resume == {"state": snap, "tail": "tail"}
+    assert spare.copied == (source, len(prefix), 299)
+
+
+@pytest.mark.parametrize("exact", [False, True])
+def test_prefill_begin_returns_an_exact_end_without_absorbing_its_tail(monkeypatch, exact):
+    from tensorfold.families.qwen4_exp.cuda import decode
+
+    absorbed = []
+    monkeypatch.setattr(decode, "mtp_forward", lambda *args, **kwargs: absorbed.append(args[3]))
+    st = SimpleNamespace(pos=0, mtp_len=0)
+    st.restore = lambda snap: setattr(st, "pos", snap["pos"])
+    st.set_mtp_len = lambda n: setattr(st, "mtp_len", n)
+    e = SimpleNamespace(st=st, w=SimpleNamespace(mtp=object()), mbuf=object(), pbuf=None)
+    prompt = list(range(10))
+    resume = {"state": {"pos": 10 if exact else 9}, "tail": "tail", **({"head": "head"} if exact else {})}
+    assert decode.prefill_begin(e, prompt, resume=resume, new_sequence=False) == (10 if exact else 9)
+    assert absorbed == ([] if exact else [[9]])
+    with pytest.raises(ValueError, match="extend the cached tokens"):          # a point needs a row to compute
+        decode.prefill_begin(e, prompt, resume={"state": {"pos": 10}, "tail": None}, new_sequence=False)
+    with pytest.raises(ValueError, match="extend the cached tokens"):          # an end must be the prompt's own
+        decode.prefill_begin(e, prompt + [10], resume={**resume, "state": {"pos": 10}, "head": "h"},
+                             new_sequence=False)
+
+
+def test_a_refused_exact_repeat_keeps_the_point_and_end_it_resumed():
+    dec, source, _, prefix, snap, _ = decoder(room=False)
+    dec.free, dec.keep = [], 8
+    dec.kept = dec.kept[:1]
+    _with_end(dec, prefix, source)
+    with pytest.raises(NoRoom):
+        dec.admit(Stream(prefix + [7], 8))
+    assert [(k[0], k[1], k[2]) for k in dec.kept] == [(prefix, source, snap)] and "prompt_end" in snap

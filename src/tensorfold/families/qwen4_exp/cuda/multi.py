@@ -1314,7 +1314,7 @@ class MultiDecoder:
         if getattr(self, "admission_policy", "legacy") == "fifo":
             if any(self._runnable(stream) for stream in self.streams.values()):
                 return True
-            return bool(self._pieces())
+            return bool(self._pieces()) or any(getattr(s, "prompt_end", None) is not None for s in self.filling)
         if getattr(self, "media_runtime", None) is None:
             return True
         if any(not stream.done and not stream.waiting for stream in self.streams.values()):
@@ -1443,6 +1443,9 @@ class MultiDecoder:
         except NoRoom as error:
             if resume is None:
                 self.free.append(st)
+            elif "kept" in resume:                       # an exact repeat: the kept point (and end) it came from
+                ids, snap, tail = resume["kept"]
+                self._remember(list(ids), st, snap, tail)
             else:
                 self._remember(list(s.prompt[:s.cached]), st, resume["state"], resume["tail"])
             mark_error_state_retired(error)
@@ -1518,7 +1521,7 @@ class MultiDecoder:
         if self.controller is not None:
             observation = self.controller.work_observations
             try:
-                if mtp and resume is not None and resume.get("tail") is not None:
+                if mtp and resume is not None and resume.get("tail") is not None and resume.get("head") is None:
                     observation.admission(s, prefix_mtp_position=resume["state"]["mtp_len"],
                                           zero_proposals=self._proposal_limit() == 0)
                 else:
@@ -1539,6 +1542,8 @@ class MultiDecoder:
         s.prefill_s = time.perf_counter() - t0
         # the resumed point stays kept (slot_for keeps it in place, or a fork's source holds it): no fill re-keeps it
         self.fills[s.sid] = [e, mtp, begin, [], None]
+        if resume is not None and resume.get("head") is not None:     # its own end, kept: no pass (``_join_ends``)
+            s.prompt_end = (resume["head"], resume["last"])
         self.filling.append(s)
         if getattr(s, "retention_window", None) is not None:
             s.retention_window = None
@@ -1799,6 +1804,8 @@ class MultiDecoder:
         separate = meta.get("execution_provider") == "sm70" and meta.get("sm70_profile") == "optimized"
         for s in self._order():
             start = self.fills[s.sid][2]
+            if start == len(s.prompt):                   # an exact repeat joins from its kept end, without a pass
+                continue
             n = min(len(s.prompt) - start, room)
             request = getattr(s, "_media_request", None)
             if request is not None:
@@ -2086,6 +2093,39 @@ class MultiDecoder:
             self._drop_kept(s.st)
         return failed                                    # finish() frees their slots
 
+    def _keep_end(self, s: Stream, mtp: bool, head: torch.Tensor, last: torch.Tensor) -> None:
+        """Keep a drafting prompt's end with its kept point (one token before it): the committed state after the last
+        row, that row's head logits and stream row (the MTP tail). An exact repeat of the prompt joins from them
+        (``_join_ends``) instead of recomputing the last row as a one-row piece, which rounds differently from that row
+        inside this request's larger piece: so a repeat replies exactly as the cold request does."""
+
+        if self._keep_at(s) is None or getattr(self.w, "dflash2", None) is not None \
+                or getattr(s.st, "dspark_runtime", None) is not None:      # their replay/draft states: not qualified
+            return
+        ids = list(s.prompt[:-1])
+        entry = next((k for k in self.kept if k[1] is s.st and k[0] == ids), None)
+        if entry is None:                                # not kept (evicted, or a state kept nowhere)
+            return
+        state = s.st.snapshot()                         # its indexer history included, at this pos and MTP length
+        s.st.kv_validate_snapshot(state)
+        last = last.clone()
+        entry[2]["prompt_end"] = {"token": s.prompt[-1], "state": state, "tail": last if mtp else None,
+                                  "last": last, "head": head.clone()}
+
+    def _join_ends(self) -> list[Stream]:
+        """Exact repeats of a kept prompt end join the rounds from that end's head row; returns those already done."""
+
+        ended = []
+        for s in [x for x in self.filling if getattr(x, "prompt_end", None) is not None]:
+            head, last = s.prompt_end
+            s.prompt_end = None
+            piece = [(s, len(s.prompt), 0)]
+            try:
+                ended += self._joined(piece, head.clone(), [last.clone()], 0.0)
+            except Exception as exc:                     # noqa: BLE001  it fails alone, as a failed pass's prompts do
+                ended += self._failed(piece, exc)
+        return ended
+
     def _joined(self, pieces, heads, lasts, spent: float) -> list[Stream]:
         """Prompts that ended sample their first token, draft and join the rounds; returns those already done."""
 
@@ -2111,6 +2151,8 @@ class MultiDecoder:
             head += 1
             image_rows.finish(st)
             try:                                             # this request's own policy, grammar and capture
+                if s.cached < len(s.prompt) - 1:             # it computed its kept point: keep its end there too
+                    self._keep_end(s, mtp, logits, last)
                 replay = getattr(self.w, "dflash2", None) is not None and bool(s.owed)
                 if s.constraint is not None and not replay:  # replay advances the canonical grammar without a draw
                     logits = s.constraint.mask(logits, None, self.w.meta.get("vocab_offset", 0))
@@ -2252,6 +2294,7 @@ class MultiDecoder:
                     s.done, s.finished = True, time.perf_counter()
                     cancelled.append(s)
         ended = cancelled + self._make_room()          # all issued work from the previous round has resolved
+        ended += self._join_ends()
         live = [s for s in self.streams.values() if self._runnable(s)]
         if self.filling and (not live or not self.converged):
             ended += self._fill()                      # passes alone; a prompt that ends here joins this round

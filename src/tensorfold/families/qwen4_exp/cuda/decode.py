@@ -405,7 +405,10 @@ def _absorbs(e: Engine, mtp: bool) -> bool:
 @torch.no_grad()
 def prefill_begin(e: Engine, prompt: Sequence[int], *, mtp: bool = True, resume: dict | None = None,
                   new_sequence: bool = True) -> int:
-    """Empty the state, or restore a kept prompt end and absorb its tail; returns the first prompt row to commit."""
+    """Empty the state, or restore a kept prompt end and absorb its tail; returns the first prompt row to commit.
+
+    A resume with a ``head`` is the prompt's own end (an exact repeat): it returns ``len(prompt)``, nothing left to
+    commit, and its MTP tail stays pending as the prompt's last stream row, as that prompt's own pass left it."""
 
     if not prompt:
         raise ValueError("prefill requires at least one token")
@@ -423,12 +426,15 @@ def prefill_begin(e: Engine, prompt: Sequence[int], *, mtp: bool = True, resume:
     st.restore(resume["state"])
     if hasattr(st, "media_mtp_enabled"):
         st.media_mtp_enabled = _absorbs(e, mtp)
-    if not 0 < st.pos < len(prompt):
-        raise ValueError("a resumed prompt must extend the cached tokens")
+    exact = resume.get("head") is not None
+    if not 0 < st.pos <= len(prompt) or (st.pos == len(prompt)) != exact:
+        raise ValueError("a resumed prompt must extend the cached tokens, or end where its kept end does")
     if getattr(st, "media_profile_identity", None) is not None:
         # A restored media boundary waits for the new request's admitted ready
         # input. The next row may be visual; token lookup is not its embedding.
         e.last_streams = None if st.mtp_boundary is None else st.mtp_boundary.hidden
+        return st.pos
+    if exact:
         return st.pos
     if _absorbs(e, mtp) and resume.get("tail") is not None:
         mtp_forward(e.w, st, e.pbuf, [prompt[st.pos]], resume["tail"], logits=False)

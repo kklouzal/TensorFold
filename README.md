@@ -1980,6 +1980,26 @@ Down time per call at 3/5/9/10/20/32 rows moved from 20/33/61/70/102/146 us to
 (Q2_0). The C1 greedy oracle differs from the pre-change record late in two of six
 prompts (coherent; re-recorded).
 
+**Cold and cached repeats (2026-11-16).** A repeated prompt now gets its first
+request's greedy reply. A drafting prompt keeps its state one token before its end
+(for a next turn); a repeat used to recompute that last row as a one-row prompt
+pass, which rounds differently from the same row inside the first request's larger
+pass, so 9 of 10 long cold/repeat pairs differed, first in that row's head logits.
+The concurrent decoder now keeps the first request's prompt end with that state (the
+state after the last row, its head-logit row and stream row), and an exact repeat
+joins the rounds from it without a prompt pass (its `cached_tokens` is the whole
+prompt). On 8× V100 TP8/ETP4, MTP4, INT8 KV (image `cf8c0ff6` with the source
+overlaid, `m-profile7h`, 1,024 prefill rows): cold and repeat replies are identical in
+all 20 cases of the long-context oracle (336–6,190-token prompts, two rounds, recorded
+and re-checked in a fresh server); mean repeat TTFT fell from 0.54 to 0.10 s (4K, 3
+prompts) and from 0.59 to 0.21 s (16K, 2 prompts); corpus-v1 teacher-forced NLL is
+bitwise unchanged and cold TTFT is unchanged within cross-session noise (4K 2.25 vs
+2.19 s, 16K 8.38 vs 8.24 s; one session each). Still open: concurrent replies differ from C1 replies (batch
+numerics), a prompt that extends a kept point (a next turn, a shared prefix) is still
+cut into different pieces than its cold prefill, and the single-request engine
+(`--parallel 1`) still recomputes the last row. The serving matrix sends unique
+prompts, so its cells contain no cache hits.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the

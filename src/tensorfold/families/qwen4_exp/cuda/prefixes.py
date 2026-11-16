@@ -22,6 +22,24 @@ def _best(kept, prompt, busy=(), *, principal=_UNSCOPED):
                 and prompt[:len(k[0])] == k[0]), key=lambda k: len(k[0]), default=None)
 
 
+def _resumed(entry, prompt):
+    """What a prompt resumes from ``entry``: the kept point itself, or, for an exact repeat of the prompt that kept it
+    (its ids plus the one token after them), that prompt's end (``MultiDecoder._keep_end``). Returns the state, the
+    MTP tail, the cached token count and the end's head/stream rows (None unless exact)."""
+
+    end = entry[2].get("prompt_end")
+    if end is not None and len(prompt) == len(entry[0]) + 1 and prompt[-1] == end["token"]:
+        return end["state"], end["tail"], len(prompt), end
+    return entry[2], entry[3], len(entry[0]), None
+
+
+def _resume(state, tail, end, entry):
+    resume = {"state": state, "tail": tail}
+    if end is not None:     # the kept point it came from, which a refused admission keeps again
+        resume.update(head=end["head"], last=end["last"], kept=(entry[0], entry[2], entry[3]))
+    return resume
+
+
 def _longer(kept, entry):
     return any(k[1] is entry[1] and len(k[0]) > len(entry[0]) for k in kept)
 
@@ -89,12 +107,13 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED):
         try:
             if owner._grow(spare, len(prompt) + owner.depth + 2, protect=best[1]):
                 spare.begin_sequence_generation()
-                restored = spare.copy_prefix(best[1], len(best[0]), best[2]["mtp_len"],
-                    **({"indexer_snapshot": best[2]["compact_indexer"], "poison_control": owner.poison_control}
+                state, tail, n, end = _resumed(best, prompt)
+                restored = spare.copy_prefix(best[1], n, state["mtp_len"],
+                    **({"indexer_snapshot": state["compact_indexer"], "poison_control": owner.poison_control}
                        if spare.compact_indexer is not None else {}))
                 _use(owner, best[1])
-                state = best[2] if restored is None else {**best[2], "compact_indexer": restored}
-                return spare, {"state": state, "tail": best[3]}, len(best[0])
+                state = state if restored is None else {**state, "compact_indexer": restored}
+                return spare, _resume(state, tail, end, best), n
         except BaseException as primary:  # noqa: BLE001 - retain a popped fork slot even on cancellation
             try:
                 owner._quarantine(spare)
@@ -119,7 +138,8 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED):
         owner.kept = [k for k in owner.kept if k[1] is not best[1]
                       or len(k[0]) <= n and best[0][:len(k[0])] == k[0]]
         _use(owner, best[1])
-        return best[1], {"state": best[2], "tail": best[3]}, n
+        state, tail, cached, end = _resumed(best, prompt)
+        return best[1], _resume(state, tail, end, best), cached
     if owner.free:
         idle = owner.free.pop()
         try:
