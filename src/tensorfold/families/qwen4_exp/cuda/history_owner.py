@@ -867,7 +867,8 @@ class OwnerBuffers:
                             or scales.dtype != getattr(torch, fmt.scale_dtype)
                             or payload.shape != (cache.capacity, 1, 256 * fmt.bits // 8)
                             or scales.shape != (cache.capacity, 1, 256 // fmt.group)
-                            or not payload.is_contiguous() or not scales.is_contiguous()):
+                            or not payload.is_contiguous() or not scales.is_contiguous()
+                            or payload.data_ptr() % 16):  # RN K/V packed-run loads are 16-byte vectors
                         raise ValueError("native packed cache tensors differ from their admitted physical row schema")
             catalogue[id(state)] = (state, self._storage_signature(tensors))
             owners.extend((state, *tensors))

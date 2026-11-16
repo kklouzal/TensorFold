@@ -114,51 +114,70 @@ void routing_route_cuda(const at::Tensor& logits, at::Tensor& picks, at::Tensor&
 }
 
 namespace {
-// Match the qualified pinned cuBLAS serial GEMV: eight outputs/CTA, sixteen
-// lanes/output, five K512 tiles, then a left-fold of the sixteen lane totals.
-// Each CTA serves NR (<= 8) consecutive rows with one register copy of its weight
-// tile, so the FP32 weights are read once per row group instead of once per row;
-// the rows' independent FMA chains interleave. Every row's operation sequence is
-// the serial one and does not depend on the call's row count.
-template <int NR>
-__global__ void __launch_bounds__(128) serial_logits(const __half* x, const float* weight, float* output,
-                                                     int64_t input_stride, int first_row) {
-    __shared__ float input[NR][512];
-    __shared__ float partial[NR][128];
+// Match the qualified pinned cuBLAS serial GEMV: sixteen lanes/output, five K512
+// tiles, then a left-fold of the sixteen lane totals. Each CTA serves
+// LOGIT_EXPERTS outputs and NR (<= 8) consecutive rows with one register copy
+// of its weight tile, so the FP32 weights are read once per row group instead
+// of once per row; the rows' independent FMA chains interleave. The next tile's
+// weights and inputs are loaded into registers while the current tile's FMAs
+// run (inputs double-buffered in shared memory). Every row's operation sequence
+// is the serial one and does not depend on the call's row count or the CTA shape.
+// Calls of at most LOGIT_FEW_ROWS rows use 4 outputs/CTA (more CTAs in flight); larger calls 8.
+constexpr int LOGIT_OUTPUTS = 513, LOGIT_FEW_ROWS = 20;
+template <int NR, int LOGIT_EXPERTS>
+__global__ void __launch_bounds__(LOGIT_EXPERTS * 16) serial_logits(const __half* x, const float* weight, float* output,
+                                                               int64_t input_stride, int first_row) {
+    constexpr int LOGIT_THREADS = LOGIT_EXPERTS * 16, XS = 512 / LOGIT_THREADS;  // input values per thread, row and tile
+    __shared__ float input[2][NR][512];
+    __shared__ float partial[NR][LOGIT_THREADS];
     const int thread = threadIdx.x, lane = thread & 15, group = thread >> 4;
-    const int expert = blockIdx.x * 8 + group;
-    const bool active = expert < 513;
+    const int expert = blockIdx.x * LOGIT_EXPERTS + group;
+    const bool active = expert < LOGIT_OUTPUTS;
     const int first = first_row + blockIdx.y * NR;
     const float* row_weight = weight + int64_t(active ? expert : 0) * 2560 + lane;
-    float total[NR];
+    float total[NR], w[32], next_w[32];
+    __half next_x[NR][XS];
     #pragma unroll
     for (int r = 0; r < NR; ++r) total[r] = 0.0f;
-    #pragma unroll 1
-    for (int tile = 0; tile < 2560; tile += 512) {
-        float w[32];
+    auto load = [&](int tile) {
         #pragma unroll
-        for (int step = 0; step < 32; ++step) w[step] = active ? row_weight[tile + step * 16] : 0.0f;
+        for (int step = 0; step < 32; ++step) next_w[step] = active ? row_weight[tile + step * 16] : 0.0f;
         #pragma unroll
-        for (int r = 0; r < NR; ++r) {
+        for (int r = 0; r < NR; ++r)
             #pragma unroll
-            for (int offset = thread; offset < 512; offset += 128) {
-                const float value = __half2float(x[int64_t(first + r) * input_stride + tile + offset]);
+            for (int i = 0; i < XS; ++i) next_x[r][i] = x[int64_t(first + r) * input_stride + tile + thread + i * LOGIT_THREADS];
+    };
+    auto stage = [&](int buffer) {
+        #pragma unroll
+        for (int r = 0; r < NR; ++r)
+            #pragma unroll
+            for (int i = 0; i < XS; ++i) {
                 float scaled;
-                asm volatile("mul.rn.f32 %0, %1, 0f3f800000;" : "=f"(scaled) : "f"(value));
-                input[r][offset] = scaled;
+                asm volatile("mul.rn.f32 %0, %1, 0f3f800000;" : "=f"(scaled) : "f"(__half2float(next_x[r][i])));
+                input[buffer][r][thread + i * LOGIT_THREADS] = scaled;
             }
-        }
-        __syncthreads();
+        #pragma unroll
+        for (int step = 0; step < 32; ++step) w[step] = next_w[step];
+    };
+    load(0);
+    stage(0);
+    __syncthreads();
+    #pragma unroll 1
+    for (int tile = 0; tile < 5; ++tile) {
+        const int buffer = tile & 1;
+        if (tile < 4) load((tile + 1) * 512);
         float value[NR];
         #pragma unroll
         for (int r = 0; r < NR; ++r) value[r] = 0.0f;
         #pragma unroll
         for (int step = 0; step < 32; ++step) {
             #pragma unroll
-            for (int r = 0; r < NR; ++r) value[r] = __fmaf_rn(w[step], input[r][lane + step * 16], value[r]);
+            for (int r = 0; r < NR; ++r) value[r] = __fmaf_rn(w[step], input[buffer][r][lane + step * 16], value[r]);
         }
         #pragma unroll
         for (int r = 0; r < NR; ++r) total[r] = __fadd_rn(total[r], value[r]);
+        // input[buffer ^ 1] was last read by the previous tile, before the barrier that ended it.
+        if (tile < 4) stage(buffer ^ 1);
         __syncthreads();
     }
     #pragma unroll
@@ -171,29 +190,30 @@ __global__ void __launch_bounds__(128) serial_logits(const __half* x, const floa
             #pragma unroll
             for (int part = 1; part < 16; ++part)
                 value = __fadd_rn(value, partial[r][group * 16 + part]);
-            output[int64_t(first + r) * 513 + expert] = value;
+            output[int64_t(first + r) * LOGIT_OUTPUTS + expert] = value;
         }
     }
 }
 
 template <int NR>
 void launch_logits(const __half* x, const float* weight, float* output, int64_t stride, int first, int groups,
-                   cudaStream_t stream) {
-    serial_logits<NR><<<dim3(65, groups), 128, 0, stream>>>(x, weight, output, stride, first);
+                   bool few, cudaStream_t stream) {
+    if (few) serial_logits<NR, 4><<<dim3((LOGIT_OUTPUTS + 3) / 4, groups), 64, 0, stream>>>(x, weight, output, stride, first);
+    else serial_logits<NR, 8><<<dim3((LOGIT_OUTPUTS + 7) / 8, groups), 128, 0, stream>>>(x, weight, output, stride, first);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void launch_rows(const __half* x, const float* weight, float* output, int64_t stride, int first, int rows,
-                 int groups, cudaStream_t stream) {
+                 int groups, bool few, cudaStream_t stream) {
     switch (rows) {
-        case 1: return launch_logits<1>(x, weight, output, stride, first, groups, stream);
-        case 2: return launch_logits<2>(x, weight, output, stride, first, groups, stream);
-        case 3: return launch_logits<3>(x, weight, output, stride, first, groups, stream);
-        case 4: return launch_logits<4>(x, weight, output, stride, first, groups, stream);
-        case 5: return launch_logits<5>(x, weight, output, stride, first, groups, stream);
-        case 6: return launch_logits<6>(x, weight, output, stride, first, groups, stream);
-        case 7: return launch_logits<7>(x, weight, output, stride, first, groups, stream);
-        default: return launch_logits<8>(x, weight, output, stride, first, groups, stream);
+        case 1: return launch_logits<1>(x, weight, output, stride, first, groups, few, stream);
+        case 2: return launch_logits<2>(x, weight, output, stride, first, groups, few, stream);
+        case 3: return launch_logits<3>(x, weight, output, stride, first, groups, few, stream);
+        case 4: return launch_logits<4>(x, weight, output, stride, first, groups, few, stream);
+        case 5: return launch_logits<5>(x, weight, output, stride, first, groups, few, stream);
+        case 6: return launch_logits<6>(x, weight, output, stride, first, groups, few, stream);
+        case 7: return launch_logits<7>(x, weight, output, stride, first, groups, few, stream);
+        default: return launch_logits<8>(x, weight, output, stride, first, groups, few, stream);
     }
 }
 }  // namespace
@@ -205,8 +225,9 @@ void routing_logits_cuda(const at::Tensor& x, const at::Tensor& weight, at::Tens
     const auto* input = reinterpret_cast<const __half*>(x.data_ptr<at::Half>());
     // Up to eight rows: one launch; more: groups of eight, then one launch for the remainder.
     const int full = rows > 8 ? rows / 8 : 0, rest = rows - 8 * full;
-    if (full) launch_rows(input, weight.data_ptr<float>(), output.data_ptr<float>(), x.stride(0), 0, 8, full, stream);
+    const bool few = rows <= LOGIT_FEW_ROWS;
+    if (full) launch_rows(input, weight.data_ptr<float>(), output.data_ptr<float>(), x.stride(0), 0, 8, full, few, stream);
     if (rest) launch_rows(input, weight.data_ptr<float>(), output.data_ptr<float>(), x.stride(0), 8 * full, rest, 1,
-                          stream);
+                          few, stream);
 }
 

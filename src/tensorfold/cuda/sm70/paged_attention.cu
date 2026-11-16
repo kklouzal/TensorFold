@@ -318,7 +318,7 @@ __device__ __forceinline__ float rn_warp_sum(float value) {
 // increasing order. K decode is cooperatively reused across H heads; changing
 // H never changes an individual dot's eight FMAs/five RN shuffle additions.
 //
-// Key tiles are spread over RN_SPLITS CTAs per (row, head block). A key's score
+// Key tiles are spread over gridDim.z CTAs per (row, head block). A key's score
 // and a probability are per-key values; the order-dependent online (m, l)
 // recurrence of the serial form (tile maxima, then per-tile masses summed in key
 // order, then denominator = denominator * alpha + mass tile by tile) runs in
@@ -326,62 +326,121 @@ __device__ __forceinline__ float rn_warp_sum(float value) {
 // order. A descriptor fault (-2) in tile t stopped the serial kernel before tile
 // t: every CTA finds the first faulting tile among the tiles up to its own and
 // never decodes, scores or publishes from it or any later tile.
-constexpr int RN_TILES = (RN_MAX_SELECTED + TILE - 1) / TILE, RN_SPLITS = 16;
+//
+// Latency structure (no arithmetic change): page-offset loads of RN_SCAN_BATCH
+// keys per thread are issued before any is evaluated; the fault scan records
+// the local rows of the CTA's own tiles, so a tile needs no further page loads;
+// K and V are read in packed runs (one payload and one scale load per run).
+// The split count is the launch's gridDim.z (per-key values: any count gives the same bits). Few-row
+// calls use RN_SPLITS_FEW for more CTAs; RN_SPLITS (the minimum) sizes a CTA's own-tile slab.
+constexpr int RN_TILES = (RN_MAX_SELECTED + TILE - 1) / TILE, RN_SPLITS = 16, RN_SPLITS_FEW = 32, RN_FEW_ROWS = 8;
+constexpr int RN_OWN_TILES = (RN_TILES + RN_SPLITS - 1) / RN_SPLITS;  // tiles of one (row, split) CTA
+constexpr int RN_RUN = 16, RN_SCAN_BATCH = 4;
 
-template<int H> struct RNStorage {
+template<int H> struct __align__(16) RNStorage {
     __half query[H * DIM];
     __half key[TILE * DIM];
-    int64_t physical[TILE];
+    int64_t physical[RN_OWN_TILES][TILE];  // own tiles' local rows (-1 foreign/masked/beyond count)
 };
 
-// First tile (< limit) holding a descriptor fault, else limit; local_row latches the fault.
+// First tile (< limit) holding a descriptor fault, else limit; local_row_from latches the fault.
+// With `own`, also records the local rows of this CTA's tiles split, split + splits, ... (splits = gridDim.z) .
 __device__ __forceinline__ int rn_first_fault(const int64_t* descriptor, const int* ids, int count, int end,
-                                             int page_tokens, int layer, int limit, int* shared) {
+        int page_tokens, int layer, int limit, int* shared, int split = -1, int64_t (*own)[TILE] = nullptr) {
     if (!threadIdx.x) *shared = limit;
+    if (own != nullptr)
+        for (int at = threadIdx.x; at < RN_OWN_TILES * TILE; at += blockDim.x) own[at / TILE][at % TILE] = -1;
     __syncthreads();
-    for (int at = threadIdx.x; at < min(count, limit * TILE); at += blockDim.x) {
-        if (local_row(descriptor, ids == nullptr ? at : ids[at], end, page_tokens, layer) == -2)
-            atomicMin(shared, at / TILE);
+    const int n = min(count, limit * TILE);
+    for (int base = threadIdx.x; base < n; base += RN_SCAN_BATCH * blockDim.x) {
+        int logical[RN_SCAN_BATCH];
+        int64_t offset[RN_SCAN_BATCH];
+        #pragma unroll
+        for (int j = 0; j < RN_SCAN_BATCH; ++j) {
+            const int at = base + j * blockDim.x;
+            logical[j] = at < n ? (ids == nullptr ? at : ids[at]) : -1;
+        }
+        #pragma unroll
+        for (int j = 0; j < RN_SCAN_BATCH; ++j) offset[j] = page_offset_word(descriptor, logical[j], end, page_tokens);
+        #pragma unroll
+        for (int j = 0; j < RN_SCAN_BATCH; ++j) {
+            const int at = base + j * blockDim.x;
+            if (at >= n) break;
+            const int64_t local = local_row_from(descriptor, logical[j], end, page_tokens, layer, offset[j]);
+            if (local == -2) atomicMin(shared, at / TILE);
+            if (own != nullptr && at / TILE % int(gridDim.z) == split) own[at / TILE / int(gridDim.z)][at % TILE] = local;
+        }
     }
     __syncthreads();
     return *shared;
 }
 
 // One tile's 32 scores per head (warp) into scores[warp * TILE + key]; NaN marks keys without a local row.
-template<int H>
-__device__ __forceinline__ void rn_tile_scores(RNStorage<H>& storage, const int64_t* descriptor, const int* ids,
-        int first, int count, int end, int page_tokens, int layer, int codec, float* scores) {
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
-    if (threadIdx.x < TILE) {
-        const int at = first + threadIdx.x;
-        const int logical = at < count ? (ids == nullptr ? at : ids[at]) : -1;
-        storage.physical[threadIdx.x] = local_row(descriptor, logical, end, page_tokens, layer);
-    }
+// `physical` holds the tile's 32 local rows. A CTA walks its tiles software-pipelined: the next live
+// tile's packed K runs (one payload and one scale load each) are issued before the current tile's dots,
+// then decoded with decoded_half's element expressions.
+template<int H> struct RNTileRuns {
+    static constexpr int RUNS_PER_KEY = DIM / RN_RUN, RUNS = TILE * RUNS_PER_KEY;
+    static constexpr int ITEMS = (RUNS + H * 32 - 1) / (H * 32);
+    uint4 raw[ITEMS];
+    unsigned scale[ITEMS];
     // A tile without a local key (another owner's pages) has only NaN scores: no K decode or dots.
-    if (!__syncthreads_or(threadIdx.x < TILE && storage.physical[threadIdx.x] >= 0)) {
-        scores[threadIdx.x & 31] = CUDART_NAN_F;  // each warp its own head's row (TILE == 32 keys)
-        __syncthreads();
-        return;
+    __device__ __forceinline__ static bool live(const int64_t* physical) {
+        return __syncthreads_or(threadIdx.x < TILE && physical[threadIdx.x] >= 0);
     }
-    for (int at = threadIdx.x; at < TILE * DIM; at += H * 32) {
-        const int64_t physical = storage.physical[at / DIM];
-        __half value = __float2half_rn(0.f);
-        if (physical >= 0) {
-            value = tf_sm70::decoded_half(pointer<const void>(descriptor[meta::K_DATA]),
-                pointer<const void>(descriptor[meta::K_METADATA]), codec ? 4 : 8, codec,
-                physical * DIM + at % DIM);
-            if (!isfinite(__half2float(value))) {
-                latch(descriptor, 2, layer);
-                value = __float2half_rn(0.f);
-            }
+    __device__ __forceinline__ void load(const int64_t* physical, const int64_t* descriptor, int codec) {
+        const void* data = pointer<const void>(descriptor[meta::K_DATA]);
+        const void* scales = pointer<const void>(descriptor[meta::K_METADATA]);
+        #pragma unroll
+        for (int i = 0; i < ITEMS; ++i) {
+            const int task = threadIdx.x + i * H * 32;
+            raw[i] = make_uint4(0u, 0u, 0u, 0u);
+            scale[i] = 0u;
+            if (task < RUNS && physical[task / RUNS_PER_KEY] >= 0)
+                tf_sm70::load_run<RN_RUN>(data, scales, codec,
+                    physical[task / RUNS_PER_KEY] * DIM + task % RUNS_PER_KEY * RN_RUN, raw[i], scale[i]);
         }
-        storage.key[at] = value;
     }
-    __syncthreads();
+    // Decoded K into storage.key; ends with a barrier.
+    __device__ __forceinline__ void stage(RNStorage<H>& storage, const int64_t* physical, const int64_t* descriptor,
+                                          int layer, int codec) const {
+        #pragma unroll
+        for (int i = 0; i < ITEMS; ++i) {
+            const int task = threadIdx.x + i * H * 32;
+            if (task >= RUNS) continue;
+            const int key = task / RUNS_PER_KEY, col = task % RUNS_PER_KEY * RN_RUN;
+            const bool local = physical[key] >= 0;
+            unsigned packed[RN_RUN / 2];
+            #pragma unroll
+            for (int c = 0; c < RN_RUN; ++c) {
+                __half value = __float2half_rn(0.f);
+                if (local) {
+                    value = tf_sm70::decode_run_value<RN_RUN>(raw[i], scale[i], codec, c);
+                    if (!isfinite(__half2float(value))) {
+                        latch(descriptor, 2, layer);
+                        value = __float2half_rn(0.f);
+                    }
+                }
+                const unsigned bits = __half_as_ushort(value);
+                packed[c / 2] = c % 2 ? packed[c / 2] | bits << 16 : bits;
+            }
+            #pragma unroll
+            for (int v = 0; v < RN_RUN / 8; ++v)
+                *reinterpret_cast<uint4*>(storage.key + key * DIM + col + 8 * v) =
+                    make_uint4(packed[4 * v], packed[4 * v + 1], packed[4 * v + 2], packed[4 * v + 3]);
+        }
+        __syncthreads();
+    }
+};
+
+// Dots of a staged tile: scores[key] per head (warp); ends with a barrier (storage.key is reused).
+template<int H>
+__device__ __forceinline__ void rn_tile_dots(const RNStorage<H>& storage, const int64_t* physical, float* scores) {
+    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     #pragma unroll 4
     for (int key = 0; key < TILE; ++key) {
         float value = 0.f;
-        const bool valid = storage.physical[key] >= 0;
+        const bool valid = physical[key] >= 0;
         if (valid) {
             #pragma unroll
             for (int t = 0; t < 8; ++t) {
@@ -393,20 +452,51 @@ __device__ __forceinline__ void rn_tile_scores(RNStorage<H>& storage, const int6
         }
         if (!lane) scores[key] = valid ? __fmul_rn(value, .0625f) : CUDART_NAN_F;
     }
-    __syncthreads();  // storage.key/physical are reused by the next tile
+    __syncthreads();
+}
+
+// Scores of the CTA's tiles split, split + splits, ... < stop: after each tile's barrier,
+// visit(tile, scores) consumes it (uniformly called by every thread).
+template<int H, typename Scores, typename Visit>
+__device__ __forceinline__ void rn_own_tiles(RNStorage<H>& storage, int split, int stop, const int64_t* descriptor,
+                                            int layer, int codec, Scores scores_of, Visit visit) {
+    RNTileRuns<H> runs;
+    bool live = RNTileRuns<H>::live(storage.physical[0]);
+    if (live) runs.load(storage.physical[0], descriptor, codec);
+    for (int tile = split; tile < stop; tile += int(gridDim.z)) {
+        const int64_t* physical = storage.physical[tile / int(gridDim.z)];
+        float* scores = scores_of(tile);
+        if (live) runs.stage(storage, physical, descriptor, layer, codec);
+        const bool next = tile + int(gridDim.z) < stop && RNTileRuns<H>::live(storage.physical[tile / int(gridDim.z) + 1]);
+        if (next) runs.load(storage.physical[tile / int(gridDim.z) + 1], descriptor, codec);
+        if (live) rn_tile_dots(storage, physical, scores);
+        else {
+            scores[threadIdx.x & 31] = CUDART_NAN_F;  // each warp its own head's row (TILE == 32 keys)
+            __syncthreads();
+        }
+        visit(tile, scores);
+        live = next;
+    }
 }
 
 template<int H>
 __device__ __forceinline__ void rn_load_query(RNStorage<H>& storage, const __half* queries, int rows, int row,
                                               int group, int head_base, const int64_t* descriptor, int layer) {
-    for (int at = threadIdx.x; at < H * DIM; at += H * 32) {
+    constexpr int ITEMS = DIM / 32;  // H * DIM values over H * 32 threads; all loads issue first
+    __half value[ITEMS];
+    #pragma unroll
+    for (int i = 0; i < ITEMS; ++i) {
+        const int at = threadIdx.x + i * H * 32;
         const int h = head_base + at / DIM, col = at % DIM;
-        __half value = queries[((int64_t(group + h / 3) * rows + row) * 3 + h % 3) * DIM + col];
-        if (!isfinite(__half2float(value))) {
+        value[i] = queries[((int64_t(group + h / 3) * rows + row) * 3 + h % 3) * DIM + col];
+    }
+    #pragma unroll
+    for (int i = 0; i < ITEMS; ++i) {
+        if (!isfinite(__half2float(value[i]))) {
             latch(descriptor, 1, layer);
-            value = __float2half_rn(0.f);
+            value[i] = __float2half_rn(0.f);
         }
-        storage.query[at] = value;
+        storage.query[threadIdx.x + i * H * 32] = value[i];
     }
     __syncthreads();
 }
@@ -429,16 +519,17 @@ __global__ void rn_scores_kernel(const __half* queries, const int* selections, c
     rn_load_query(storage, queries, rows, row, group, head_base, descriptor, layer);  // latches as the serial form
     const int tiles = (count + TILE - 1) / TILE;
     if (split >= tiles) return;
-    const int last = split + (tiles - 1 - split) / RN_SPLITS * RN_SPLITS;
-    const int stop = rn_first_fault(descriptor, ids, count, end, page_tokens, layer, last + 1, &fault);
+    const int last = split + (tiles - 1 - split) / int(gridDim.z) * int(gridDim.z);
+    const int stop = rn_first_fault(descriptor, ids, count, end, page_tokens, layer, last + 1, &fault,
+                                    split, storage.physical);
     if (split >= stop) return;
     float* head_scores = scores + (int64_t(row) * HEADS + head_base + warp) * RN_TILES * TILE;
-    for (int tile = split; tile < stop; tile += RN_SPLITS)
-        rn_tile_scores(storage, descriptor, ids, tile * TILE, count, end, page_tokens, layer, codec,
-                       head_scores + tile * TILE);
+    rn_own_tiles(storage, split, stop, descriptor, layer, codec,
+                 [&](int tile) { return head_scores + tile * TILE; }, [](int, const float*) {});
 }
 
 // Statistics pass, part 2: one warp per head folds the stored scores in the serial kernel's order.
+// Lane l holds tile l's 32 scores in registers (eight 16-byte loads).
 __global__ void rn_fold_kernel(const int* selections, const int64_t* table, const float* scores, float* statistics,
         int rows, int width, int page_tokens, const int* layer_word) {
     __shared__ int end, count, enabled, fault;
@@ -461,12 +552,18 @@ __global__ void rn_fold_kernel(const int* selections, const int64_t* table, cons
     float carry = -CUDART_INF_F;  // running maximum before this group of 32 tiles
     for (int base = 0; base < tiles; base += 32) {
         const int tile = base + lane;
+        float s[TILE];
         float tile_max = -CUDART_INF_F;
         if (tile < tiles) {
-            for (int key = 0; key < TILE; ++key) {
-                const float s = head_scores[tile * TILE + key];
-                if (!isnan(s)) tile_max = fmaxf(tile_max, s);
+            const float4* source = reinterpret_cast<const float4*>(head_scores + tile * TILE);
+            #pragma unroll
+            for (int q = 0; q < TILE / 4; ++q) {
+                const float4 v = source[q];
+                s[4 * q] = v.x; s[4 * q + 1] = v.y; s[4 * q + 2] = v.z; s[4 * q + 3] = v.w;
             }
+            #pragma unroll
+            for (int key = 0; key < TILE; ++key)
+                if (!isnan(s[key])) tile_max = fmaxf(tile_max, s[key]);
         }
         float next = fmaxf(carry, tile_max);  // inclusive max scan: maxima are exact in any order
         #pragma unroll
@@ -480,10 +577,9 @@ __global__ void rn_fold_kernel(const int* selections, const int64_t* table, cons
             float mass = 0.f, alpha = 0.f;
             if (isfinite(next)) {
                 alpha = isfinite(before) ? rn_exp(__fsub_rn(before, next), descriptor, layer) : 0.f;
-                for (int key = 0; key < TILE; ++key) {
-                    const float s = head_scores[tile * TILE + key];
-                    if (!isnan(s)) mass = __fadd_rn(mass, rn_exp(__fsub_rn(s, next), descriptor, layer));
-                }
+                #pragma unroll
+                for (int key = 0; key < TILE; ++key)
+                    if (!isnan(s[key])) mass = __fadd_rn(mass, rn_exp(__fsub_rn(s[key], next), descriptor, layer));
             }
             tile_mass[head][tile] = mass;
             tile_alpha[head][tile] = alpha;
@@ -517,7 +613,7 @@ __global__ void rn_probability_kernel(const __half* queries, const int* selectio
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, head = head_base + warp;
     const int layer = *layer_word;
     const int64_t* descriptor = table + int64_t(row) * WORDS;
-    for (int tile = split; tile < RN_TILES; tile += RN_SPLITS)
+    for (int tile = split; tile < RN_TILES; tile += int(gridDim.z))
         for (int at = threadIdx.x; at < H * TILE; at += H * 32) {
             const int key = tile * TILE + at % TILE;
             if (key < RN_MAX_SELECTED)
@@ -530,20 +626,20 @@ __global__ void rn_probability_kernel(const __half* queries, const int* selectio
     rn_load_query(storage, queries, rows, row, group, head_base, descriptor, layer);  // latches as the serial form
     const int tiles = (count + TILE - 1) / TILE;
     if (split >= tiles) return;
-    const int last = split + (tiles - 1 - split) / RN_SPLITS * RN_SPLITS;
-    const int stop = rn_first_fault(descriptor, ids, count, end, page_tokens, layer, last + 1, &fault);
+    const int last = split + (tiles - 1 - split) / int(gridDim.z) * int(gridDim.z);
+    const int stop = rn_first_fault(descriptor, ids, count, end, page_tokens, layer, last + 1, &fault,
+                                    split, storage.physical);
     if (split >= stop) return;
     const float m = global[(int64_t(row) * HEADS + head) * 2];
     const float l = global[(int64_t(row) * HEADS + head) * 2 + 1];
     const bool usable = isfinite(m) && isfinite(l) && l > 0.f;
-    for (int tile = split; tile < stop; tile += RN_SPLITS) {
-        rn_tile_scores(storage, descriptor, ids, tile * TILE, count, end, page_tokens, layer, codec,
-                       scores + warp * TILE);
+    rn_own_tiles(storage, split, stop, descriptor, layer, codec, [&](int) { return scores + warp * TILE; },
+                 [&](int tile, const float* tile_scores) {
         if (!usable) {
             if (!lane) latch(descriptor, 16, layer);
         } else {
             const int key = tile * TILE + lane;
-            const float s = scores[warp * TILE + lane];
+            const float s = tile_scores[lane];
             if (key < count && !isnan(s)) {
                 const float p = __fdiv_rn(rn_exp(__fsub_rn(s, m), descriptor, layer), l);
                 const __half result = __float2half_rn(p);
@@ -551,7 +647,7 @@ __global__ void rn_probability_kernel(const __half* queries, const int* selectio
                 probability[(int64_t(row) * HEADS + head) * RN_MAX_SELECTED + key] = result;
             }
         }
-    }
+    });
 }
 
 __global__ void rn_merge_kernel(const float* gathered, const int64_t* table, float* output,
@@ -589,95 +685,148 @@ __global__ void rn_merge_kernel(const float* gathered, const int64_t* table, flo
     output[(int64_t(row) * HEADS + head) * 2 + 1] = enabled && valid ? denominator : 1.f;
 }
 
-// Four full warps, 32 output columns/block/head: warp w owns base+w+4*t,
-// t=0..7. Every thread keeps exactly eight independent FP32 accumulators.
-// Lane l visits selected i=l+32*t monotonically; lane0 publishes after five
-// explicit RN shuffle additions. P is globally normalized Half, not local-P.
-// All of a row's local rows and P faults are resolved up front by the whole
-// block (one round of dependent loads, not one per key tile); then keys go 32
-// at a time: the block decodes the tile's 32 x 32 V values into shared memory
-// (each thread 8 consecutive columns of one key) and lane l of every warp
-// consumes its key from there. Tiles without a local key (another owner's
-// pages) are skipped. Per lane the FMA sequence, and so every output bit and
-// status bit, is the per-key form's.
-constexpr int RN_PV_COLUMNS = 32;
-__global__ void rn_pv_kernel(const __half* probability, const int* selections, const int64_t* table,
-        float* output, int rows, int width, int page_tokens, const int* layer_word, int codec) {
-    constexpr int PARTS = RN_PV_COLUMNS / 4;
-    const int row = blockIdx.x, head = blockIdx.y, column_base = blockIdx.z * RN_PV_COLUMNS;
-    const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+// PV: one CTA per (row, block of RN_PV_COLUMNS columns) for all 12 heads. Warp
+// h is head h; lane l visits selected i=l+32*t monotonically with one FP32
+// accumulator per column, and lane0 publishes each column after five explicit
+// RN shuffle additions. P is globally normalized Half, not local-P. The row's
+// local rows are resolved once per CTA (page-offset loads batched); the tiles
+// holding a local key are listed in increasing order and processed
+// RN_PV_GROUP at a time, double-buffered: the next group's packed V runs (one
+// per thread, decoded once for all heads) and P values are loaded into
+// registers while the current group's FMAs read shared memory. Per lane the
+// FMA sequence, and so every output bit and status bit, is the per-key form's:
+// a local key whose P is nonfinite or negative is skipped for that head
+// (status 16); a nonfinite V value is latched (status 4) and consumed as zero
+// by every head that uses the key. Foreign/masked/error V is never read.
+constexpr int RN_PV_COLUMNS = 16, RN_PV_THREADS = HEADS * 32;
+constexpr int RN_PV_RUNS = RN_PV_COLUMNS / RN_RUN;                   // packed runs per key and block
+constexpr int RN_PV_GROUP = RN_PV_THREADS / (TILE * RN_PV_RUNS);     // tiles per group: one run per thread
+constexpr int RN_PV_PITCH = RN_PV_COLUMNS + 2;  // odd word pitch: lane l's key row in its own bank
+static_assert(RN_PV_COLUMNS % RN_RUN == 0 && DIM % RN_PV_COLUMNS == 0 && RN_PV_GROUP >= 1
+              && RN_PV_THREADS % (TILE * RN_PV_RUNS) == 0 && RN_PV_PITCH / 2 % 2 == 1 && RN_TILES <= 255,
+              "RN PV block geometry");
+__global__ void __launch_bounds__(RN_PV_THREADS, 2) rn_pv_kernel(const __half* probability, const int* selections,
+        const int64_t* table, float* output, int rows, int width, int page_tokens, const int* layer_word, int codec) {
+    const int row = blockIdx.x, column_base = blockIdx.y * RN_PV_COLUMNS;
+    const int head = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int layer = *layer_word;
     const int64_t* descriptor = table + int64_t(row) * WORDS;
-    __shared__ int enabled, end, count;
+    __shared__ int enabled, end, count, live_count;
     __shared__ const int* ids;
-    __shared__ int physical[RN_TILES * TILE];      // local row, or -1: foreign/masked/fault/bad P
-    __shared__ float weight[RN_TILES * TILE];
+    __shared__ int physical[RN_TILES * TILE];      // local row, or -1: foreign/masked/fault/beyond count
     __shared__ int tile_live[RN_TILES];
-    __shared__ __half tile[TILE][RN_PV_COLUMNS + 2];  // odd 17-word pitch: lane l's key row in its own bank
+    __shared__ unsigned char live[RN_TILES];       // tiles with a local key, increasing
+    __shared__ __align__(16) __half staged[2][RN_PV_GROUP][TILE][RN_PV_PITCH];
     if (!threadIdx.x) enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     __syncthreads();
-    float result[PARTS];
+    float result[RN_PV_COLUMNS];
     #pragma unroll
-    for (int part = 0; part < PARTS; ++part) result[part] = 0.f;
+    for (int c = 0; c < RN_PV_COLUMNS; ++c) result[c] = 0.f;
     const __half* p_row = probability + (int64_t(row) * HEADS + head) * RN_MAX_SELECTED;
     if (enabled) {
-        const int tiles = (count + TILE - 1) / TILE;
+        const int tiles = (count + TILE - 1) / TILE, keys = tiles * TILE;
         for (int t = threadIdx.x; t < tiles; t += blockDim.x) tile_live[t] = 0;
         __syncthreads();
-        for (int at = threadIdx.x; at < tiles * TILE; at += blockDim.x) {
-            int64_t local = -1;
-            float p = 0.f;
-            if (at < count) {
-                local = local_row(descriptor, ids == nullptr ? at : ids[at], end, page_tokens, layer);
-                if (local >= 0) {  // Never read foreign/masked/error V payloads.
-                    const __half half_p = p_row[at];
-                    p = __half2float(half_p);
-                    if (!isfinite(p) || p < 0.f) {
-                        latch(descriptor, 16, layer);
-                        local = -1;
-                    }
-                }
+        for (int base = threadIdx.x; base < keys; base += RN_SCAN_BATCH * blockDim.x) {
+            int logical[RN_SCAN_BATCH];
+            int64_t offset[RN_SCAN_BATCH];
+            #pragma unroll
+            for (int j = 0; j < RN_SCAN_BATCH; ++j) {
+                const int at = base + j * blockDim.x;
+                logical[j] = at < count ? (ids == nullptr ? at : ids[at]) : -1;
             }
-            physical[at] = local >= 0 ? int(local) : -1;  // PHYSICAL_ROWS <= INT32_MAX (rn_domain)
-            weight[at] = p;
-            if (local >= 0) tile_live[at / TILE] = 1;
+            #pragma unroll
+            for (int j = 0; j < RN_SCAN_BATCH; ++j) offset[j] = page_offset_word(descriptor, logical[j], end, page_tokens);
+            #pragma unroll
+            for (int j = 0; j < RN_SCAN_BATCH; ++j) {
+                const int at = base + j * blockDim.x;
+                if (at >= keys) break;
+                const int64_t local = local_row_from(descriptor, logical[j], end, page_tokens, layer, offset[j]);
+                physical[at] = local >= 0 ? int(local) : -1;  // PHYSICAL_ROWS <= INT32_MAX (rn_domain)
+                if (local >= 0) tile_live[at / TILE] = 1;
+            }
         }
         __syncthreads();
+        if (head == 0) {
+            int n = 0;
+            for (int base = 0; base < tiles; base += 32) {
+                const bool flag = base + lane < tiles && tile_live[base + lane];
+                const unsigned mask = __ballot_sync(0xffffffffu, flag);
+                if (flag) live[n + __popc(mask & ((1u << lane) - 1u))] = (unsigned char)(base + lane);
+                n += __popc(mask);
+            }
+            if (!lane) live_count = n;
+        }
+        __syncthreads();
+        const int n_live = live_count, groups = (n_live + RN_PV_GROUP - 1) / RN_PV_GROUP;
         const void* v_data = pointer<const void>(descriptor[meta::V_DATA]);
         const void* v_meta = pointer<const void>(descriptor[meta::V_METADATA]);
-        for (int t = 0; t < tiles; ++t) {
-            if (!tile_live[t]) continue;  // uniform: written before the barrier above
-            const int base = t * TILE;
-            const int key = threadIdx.x >> 2, first = (threadIdx.x & 3) * (RN_PV_COLUMNS / 4);
-            const int source = physical[base + key];
-            if (source >= 0) {
+        // This thread's loader task within a group: (slot, key, run).
+        const int slot = threadIdx.x / (TILE * RN_PV_RUNS), task_key = threadIdx.x / RN_PV_RUNS % TILE;
+        const int run = threadIdx.x % RN_PV_RUNS;
+        uint4 raw = make_uint4(0u, 0u, 0u, 0u);
+        unsigned scale = 0u;
+        bool loaded = false;
+        __half p_next[RN_PV_GROUP];
+        auto fetch = [&](int g) {
+            const int at = g * RN_PV_GROUP + slot;
+            const int source = at < n_live ? physical[live[at] * TILE + task_key] : -1;
+            loaded = source >= 0;
+            if (loaded)
+                tf_sm70::load_run<RN_RUN>(v_data, v_meta, codec, int64_t(source) * DIM + column_base + run * RN_RUN,
+                                          raw, scale);
+            #pragma unroll
+            for (int i = 0; i < RN_PV_GROUP; ++i) {
+                const int k = g * RN_PV_GROUP + i;
+                p_next[i] = __float2half_rn(0.f);
+                if (k < n_live && physical[live[k] * TILE + lane] >= 0) p_next[i] = p_row[live[k] * TILE + lane];
+            }
+        };
+        if (groups) fetch(0);
+        for (int g = 0; g < groups; ++g) {
+            const int buffer = g & 1;
+            if (loaded) {
+                __half2* destination = reinterpret_cast<__half2*>(&staged[buffer][slot][task_key][run * RN_RUN]);
                 #pragma unroll
-                for (int c = 0; c < RN_PV_COLUMNS / 4; ++c) {
-                    __half value = tf_sm70::decoded_half(v_data, v_meta, codec ? 4 : 8, codec,
-                                                         int64_t(source) * DIM + column_base + first + c);
-                    if (!isfinite(__half2float(value))) {
-                        latch(descriptor, 4, layer);
-                        value = __float2half_rn(0.f);
-                    }
-                    tile[key][first + c] = value;
+                for (int c = 0; c < RN_RUN; c += 2)
+                    destination[c / 2] = __halves2half2(tf_sm70::decode_run_value<RN_RUN>(raw, scale, codec, c),
+                                                        tf_sm70::decode_run_value<RN_RUN>(raw, scale, codec, c + 1));
+            }
+            __half p_current[RN_PV_GROUP];
+            #pragma unroll
+            for (int i = 0; i < RN_PV_GROUP; ++i) p_current[i] = p_next[i];
+            // Group g is staged; group g-1's readers of staged[buffer ^ 1] finished before this barrier.
+            __syncthreads();
+            if (g + 1 < groups) fetch(g + 1);
+            #pragma unroll
+            for (int i = 0; i < RN_PV_GROUP; ++i) {
+                const int k = g * RN_PV_GROUP + i;
+                if (k >= n_live) break;  // uniform
+                if (physical[live[k] * TILE + lane] < 0) continue;
+                const float p = __half2float(p_current[i]);
+                if (!isfinite(p) || p < 0.f) {
+                    latch(descriptor, 16, layer);
+                    continue;
+                }
+                const __half2* values = reinterpret_cast<const __half2*>(&staged[buffer][i][lane][0]);
+                #pragma unroll
+                for (int c = 0; c < RN_PV_COLUMNS; c += 2) {
+                    const float2 pair = __half22float2(values[c / 2]);
+                    float v0 = pair.x, v1 = pair.y;
+                    if (!isfinite(v0)) { latch(descriptor, 4, layer); v0 = 0.f; }
+                    if (!isfinite(v1)) { latch(descriptor, 4, layer); v1 = 0.f; }
+                    result[c] = __fmaf_rn(p, v0, result[c]);
+                    result[c + 1] = __fmaf_rn(p, v1, result[c + 1]);
                 }
             }
-            __syncthreads();
-            if (physical[base + lane] >= 0) {
-                const float p = weight[base + lane];
-                #pragma unroll
-                for (int part = 0; part < PARTS; ++part)
-                    result[part] = __fmaf_rn(p, __half2float(tile[lane][warp + 4 * part]), result[part]);
-            }
-            __syncthreads();  // the next live tile rewrites tile[][]
         }
     }
     #pragma unroll
-    for (int part = 0; part < PARTS; ++part) {
-        const float value = rn_warp_sum(result[part]);
+    for (int c = 0; c < RN_PV_COLUMNS; ++c) {
+        const float value = rn_warp_sum(result[c]);
         if (!lane) {
             if (!isfinite(value)) latch(descriptor, 4, layer);
-            output[(int64_t(row) * HEADS + head) * DIM + column_base + warp + 4 * part] = value;
+            output[(int64_t(row) * HEADS + head) * DIM + column_base + c] = value;
         }
     }
 }
@@ -807,7 +956,7 @@ void launch_rn_qk(const T& queries, const T& selected, const T& table, const T& 
     const int rows = int(queries.size(1));
     if (!rows) return;
     auto stream = at::cuda::getCurrentCUDAStream();
-    const dim3 grid(rows, HEADS / H, RN_SPLITS);
+    const dim3 grid(rows, HEADS / H, rows <= RN_FEW_ROWS ? RN_SPLITS_FEW : RN_SPLITS);
     const auto* q = reinterpret_cast<const __half*>(queries.data_ptr());
     if (P) {
         rn_probability_kernel<H><<<grid, H * 32, 0, stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
@@ -849,7 +998,7 @@ void sm70_paged_rn_merge_cuda(const T& gathered, const T& table, T& output, int 
 void sm70_paged_rn_pv_cuda(const T& probability, const T& selected, const T& table, T& output,
                           int rows, int page_tokens, const T& layer, int codec) {
     if (!rows) return;
-    rn_pv_kernel<<<dim3(rows, HEADS, DIM / RN_PV_COLUMNS), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+    rn_pv_kernel<<<dim3(rows, DIM / RN_PV_COLUMNS), RN_PV_THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(probability.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
         output.data_ptr<float>(), rows, int(selected.size(2)), page_tokens, layer.data_ptr<int>(), codec);
     C10_CUDA_KERNEL_LAUNCH_CHECK();

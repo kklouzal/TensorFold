@@ -194,8 +194,8 @@ def rn_preparation_identity():
                root / "paged_attention_device.cuh", root / "paged_attention_host.cuh")
     return {"kernel_family": RN_KERNEL_FAMILY, "graph_family": RN_GRAPH_FAMILY,
             "algorithm": RN_ALGORITHM, "log2e_bits": RN_LOG2E_BITS, "max_selected": RN_MAX_SELECTED,
-            "max_dense": RN_MAX_SELECTED, "qk_heads_per_block_choices": [1, 4, 12], "pv_columns_per_block": 64,
-            "pv_warps_per_block": 4, "pv_accumulators_per_thread": 16,
+            "max_dense": RN_MAX_SELECTED, "qk_heads_per_block_choices": [1, 4, 12], "pv_columns_per_block": 16,
+            "pv_warps_per_block": 12, "pv_accumulators_per_thread": 16,
             "requested_cuda_flags": list(RN_CUDA_FLAGS),
             "source_sha256": {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in sources},
             "qualification": "experimental numerical family; bounds/binary/quality/resource/P3 unqualified"}

@@ -102,9 +102,20 @@ __device__ __forceinline__ bool domain(const int64_t* descriptor, const int* sel
 }
 
 // Local physical row of a logical position: -1 = not on this rank or outside
-// [0, end), -2 = descriptor fault (latched).
-__device__ __forceinline__ int64_t local_row(const int64_t* descriptor, int logical,
-                                           int end, int page_tokens, int layer) {
+// [0, end), -2 = descriptor fault (latched). Split in two so callers can issue
+// several page-offset loads before evaluating any of them: page_offset_word
+// performs the only dependent load (0 when no page entry is read) and
+// local_row_from applies every check of the one-step form to that word.
+__device__ __forceinline__ int64_t page_offset_word(const int64_t* descriptor, int logical, int end, int page_tokens) {
+    namespace meta = tf_sm70_paged;
+    if (logical < 0 || logical >= end) return 0;
+    const int page = logical / page_tokens;
+    if (page >= descriptor[meta::PAGE_COUNT]) return 0;
+    return pointer<const int64_t>(descriptor[meta::PAGE_OFFSETS])[page];
+}
+
+__device__ __forceinline__ int64_t local_row_from(const int64_t* descriptor, int logical, int end, int page_tokens,
+                                                 int layer, int64_t offset) {
     namespace meta = tf_sm70_paged;
     if (logical < 0 || logical >= end) return -1;
     const int page = logical / page_tokens, within = logical % page_tokens;
@@ -112,13 +123,18 @@ __device__ __forceinline__ int64_t local_row(const int64_t* descriptor, int logi
         latch(descriptor, 32, layer);
         return -2;
     }
-    const int64_t offset = pointer<const int64_t>(descriptor[meta::PAGE_OFFSETS])[page];
     if (offset == -1) return -1;
     if (offset < -1 || descriptor[meta::PHYSICAL_ROWS] <= within || offset > descriptor[meta::PHYSICAL_ROWS] - 1 - within) {
         latch(descriptor, 32, layer);
         return -2;
     }
     return offset + within;
+}
+
+__device__ __forceinline__ int64_t local_row(const int64_t* descriptor, int logical,
+                                           int end, int page_tokens, int layer) {
+    return local_row_from(descriptor, logical, end, page_tokens, layer,
+                          page_offset_word(descriptor, logical, end, page_tokens));
 }
 
 // RN family exponential, x <= 0: exp(x) = ex2.approx(RN(x * log2e)) (non-FTZ).
