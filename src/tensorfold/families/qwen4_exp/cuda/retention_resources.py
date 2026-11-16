@@ -780,6 +780,10 @@ class _JsonPayloadPolicy:
     files: tuple
     recursion_limit: int
     frame_work: int
+    # Only MemoryError (fatal JSON containment) can fail a walker-measured C
+    # encode: json_wire_bound refuses depth/type/cycle/int-digit failures first
+    # and json_nesting.require_stack_capacity proved the handler C stack.
+    contained_encoder_failures: bool = False
 
     def record(self):
         depth = _runtime_facts().c_container_depth
@@ -788,6 +792,8 @@ class _JsonPayloadPolicy:
                 "fresh_tree_bytes_per_encoded_byte": 45,
                 "c_container_depth": "encoded-byte bound" if depth is None else depth,
                 "python_recursion_limit": self.recursion_limit, "frame_work_bytes": self.frame_work,
+                **({"guarded_container_depth": "json_nesting.loads/json_wire_bound",
+                    "contained_encoder_failures": self.contained_encoder_failures} if depth is None else {}),
                 "scope": "selected object/vector payload; allocator/C-stack/native workspace qualification separate"}
 
 
@@ -807,7 +813,11 @@ def _json_payload_policy():
     from tensorfold.engine.model_identity import capture_model_identity
     from .execution_identity import _small
 
+    from tensorfold import json_nesting
+
     facts = _runtime_facts()
+    if json_nesting.COMPILED_LIMIT != (facts.c_container_depth is not None):
+        raise ValueError("JSON nesting guard disagrees with the selected runtime's compiled depth")
     if (sys.platform != "linux" or platform.machine() != "x86_64" or struct.calcsize("P") != 8
             or sys.get_int_max_str_digits() != 4300
             or sysconfig.get_config_var("Py_DEBUG") not in (None, 0)
@@ -871,9 +881,10 @@ def _json_payload_policy():
     per_frame = ((facts.frame_object_bytes + 8 * slots) + (facts.interpreter_frame_bytes + 8 * slots)
                  + 56 + 72 + 40 + facts.pair_tuple_bytes + 72 + 36)
     recursion = _size(sys.getrecursionlimit(), "actual Python recursion limit")
+    contained = facts.serialization_notes and json_nesting.require_stack_capacity(recursion)
     return _JsonPayloadPolicy(captured.model_prefix,
         tuple((item.logical_name, item.size, item.sha256) for item in captured.files),
-        recursion, _size((recursion + 50) * per_frame + 36, "JSON/copy frame payload"))
+        recursion, _size((recursion + 50) * per_frame + 36, "JSON/copy frame payload"), contained)
 
 
 def _fresh_dict_payload(count, entry_bytes):
@@ -908,16 +919,22 @@ def _json_copy_working(encoded_bytes, policy):
                    max(old, old_keys, list_overlap), policy.frame_work))
 
 
-def _json_parse_payload(encoded_bytes, policy):
+def _json_parse_payload(encoded_bytes, policy, *, guarded=False):
     """Default selected scanner, including malformed-prefix/error peaks.
 
     Each open container consumes at least one input byte. 3.12.3 also raises at
-    its compiled C_RECURSION_LIMIT; 3.15.2 checks only the thread's C stack, so
-    its open-container bound is the encoded byte count itself.
+    its compiled C_RECURSION_LIMIT; 3.15.2 checks only the thread's C stack.
+    ``guarded`` callers parse through json_nesting.loads, which refuses deeper
+    input first; its refusal-only prefix copy fits the decoded-document pair.
+    Otherwise the 3.15.2 open-container bound is the encoded byte count.
     """
+    from tensorfold.json_nesting import NESTING_LIMIT
+
     _size(encoded_bytes, "JSON input bytes", zero=True)
     facts = _runtime_facts()
     limit = facts.c_container_depth
+    if limit is None and guarded:
+        limit = NESTING_LIMIT
     depth = encoded_bytes if limit is None else min(encoded_bytes, limit)
     keys = (encoded_bytes + 1) // 4
     memo, old = _fresh_dict_payload(keys, 16)
@@ -1081,7 +1098,8 @@ def _http_json_encoding_payload(encoded_bytes, policy, *, measured_depth=None):
     fixed = (_scaled(96 + 112 + 48 + 3 * 64 + 2 * 72 + 5 * 48 + 56 + 160 + 72 + 24 + 64, facts)
              + facts.heap_unicode_writer_bytes)
     wrappers = policy.frame_work + fixed
-    notes = _serialization_notes(count, amount)
+    contained = measured_depth is not None and policy.contained_encoder_failures
+    notes = 0 if contained else _serialization_notes(count, amount)
     construction = 2 * writer + scalar + numeric_key + integer_scratch + markers + wrappers + notes
     # Fixed source-owned SSE event labels/framing fit 128 ASCII bytes. During
     # prefix+text+suffix, the original and both joined strings may coexist.
@@ -1332,7 +1350,8 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
         source_record_tables[name] = layout["dict"] + 2 * table
     source_fixed = _total(source_record_tables.values())
     source_graph = frame * node if json_policy is None else graph + source_fixed
-    parsed = None if json_policy is None else _json_parse_payload(frame, json_policy)
+    # Every command/ACK/stop-boundary frame parses through json_nesting.loads.
+    parsed = None if json_policy is None else _json_parse_payload(frame, json_policy, guarded=True)
     parse_extra = 0 if parsed is None else parsed["total_bytes"] - graph - raw - text
     receive = graph + raw + text + parse_extra
     dispatch = graph + max(encoding + 5 * layout["dict_entry"], digest_working)
@@ -1842,7 +1861,7 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
             raise ValueError("HTTP payload frame exceeds the existing body maximum")
         # Includes raw buffers, chunk growth/final bytes and the full later
         # parse/error phase BEFORE read/json.loads. Empty bodies fund {} too.
-        return _json_parse_payload(amount, policy)["total_bytes"] + 3 * amount + 65536
+        return _json_parse_payload(amount, policy, guarded=True)["total_bytes"] + 3 * amount + 65536
 
     def rpc_bound(amount):
         # Serialized peer/source trees for one request-owned RPC of this encoded size.
@@ -2085,7 +2104,7 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
     # bound covers a dictionary/list/scalar node, including its pointer cell.
     # This deliberately conservative wire bound is independent of token shape.
     node = max(layout["dict_entry"], layout["unicode"] + 4, layout["integer"])
-    incoming_json = None if json_policy is None else _json_parse_payload(body_bytes, json_policy)
+    incoming_json = None if json_policy is None else _json_parse_payload(body_bytes, json_policy, guarded=True)
     transport = max_http_connections * (body_bytes * node if incoming_json is None else incoming_json["total_bytes"])
     # The backing cap already pays encoded manifest bytes. Pay additional
     # parsed graph/object headers for all admitted protected generations.

@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from tensorfold.server.errors import RequestError, error_body, invalid_request, retry_headers, server_error, status_of
+from tensorfold import json_nesting
 from tensorfold.server.request_body import read_body
 from tensorfold.server import json_output
 from tensorfold.server.responses_translate import Reply, _id, messages, translate
@@ -279,7 +280,7 @@ def _client_json(payload):
         if not math.isfinite(result):
             raise ValueError("JSON number is outside the supported finite range")
         return result
-    return json.loads(payload, parse_constant=constant, parse_float=number)
+    return json_nesting.loads(payload, parse_constant=constant, parse_float=number)
 
 
 class Wire:

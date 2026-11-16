@@ -103,7 +103,8 @@ def test_native_payload_bound_verifies_actual_selected_abi_and_rejects_other_tor
     assert result["torch_git"] in ("04cf2557f315a350e7eea7ab064288def65db75a",
                                     "05adb434bd30d298eb408a72420b0496ee05f8e3")
     assert result["libstdcxx_sha256"] == "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11"
-    assert result["python_implementation"] == "cpython" and result["python_version"] == [3, 12, 3]
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import _CPYTHON_RUNTIMES
+    assert result["python_implementation"] == "cpython" and tuple(result["python_version"]) in _CPYTHON_RUNTIMES
     # The published upstream nightly lacks the owned socket correction.
     for revision in ("5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1",
                      "09b29f3a97e07864066a2d574ffe03a852de9463", "other-native-build"):
@@ -426,3 +427,18 @@ def test_selected_note_bound_covers_actual_worst_key_reprs(monkeypatch, version)
     assert len(notes) == 5 and notes[1] == note
     retained = sum(sys.getsizeof(text) for text in notes) + sys.getsizeof(notes)
     assert retained <= resources._serialization_notes(5, len(json.dumps(document)))
+
+
+def test_315_certified_encoder_notes_need_both_the_walker_and_the_stack_proof(monkeypatch):
+    from dataclasses import replace
+
+    resources = selected_runtime(monkeypatch, (3, 15, 2))
+    base = resources._JsonPayloadPolicy("payload-fixture", (), sys.getrecursionlimit(), 8192)
+    contained = replace(base, contained_encoder_failures=True)
+    amount = 96 << 20
+    assert resources._http_json_encoding_payload(amount, contained, measured_depth=10000)["failure_note_bytes"] == 0
+    assert resources._http_json_encoding_payload(amount, contained)["failure_note_bytes"] > 8 * amount
+    assert resources._http_json_encoding_payload(amount, base, measured_depth=10000)["failure_note_bytes"] > 8 * amount
+    # Guarded parses get the 3.12 depth; unguarded ones keep the byte bound.
+    assert resources._json_parse_payload(amount, base, guarded=True)["c_depth_bound"] == 10000
+    assert resources._json_parse_payload(amount, base)["c_depth_bound"] == amount

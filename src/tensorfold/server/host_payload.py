@@ -16,6 +16,8 @@ import threading
 import time
 import weakref
 
+from tensorfold.json_nesting import COMPILED_LIMIT
+
 from .cancellation import RequestCancelled
 from .errors import CapacityError
 
@@ -56,7 +58,12 @@ def json_wire_bound(value, *, maximum, depth_limit=10000, shape=None):
         elif item is None:
             count = 4
         elif kind is int:
-            count = min(4301, max(1, (item.bit_length() * 30103 + 99999) // 100000) + (item < 0))
+            digits = max(1, (item.bit_length() * 30103 + 99999) // 100000)
+            if digits > 4300 and not COMPILED_LIMIT:
+                # Raise the encoder's own int-digit ValueError before any lease
+                # or C encode, so no failure notes can follow (CPython 3.14+).
+                int.__repr__(item)
+            count = min(4301, digits + (item < 0))
         elif kind is float:
             count = 24
         else:

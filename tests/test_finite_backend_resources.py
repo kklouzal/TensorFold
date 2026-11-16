@@ -93,7 +93,9 @@ def test_json_runtime_authority_rejects_changed_captured_native_content(monkeypa
     capture = model_identity.capture_model_identity
     def altered(*args, **kwargs):
         receipt = capture(*args, **kwargs)
-        files = tuple(replace(item, sha256="0" * 64) if item.logical_name == "json-native" else item
+        # A builtin parser (3.15.2) is bound through the executable digest.
+        native = {item.logical_name for item in receipt.files} & {"json-native"} or {"python"}
+        files = tuple(replace(item, sha256="0" * 64) if item.logical_name in native else item
                       for item in receipt.files)
         return SimpleNamespace(files=files, verify_unchanged=receipt.verify_unchanged,
                                model_prefix=receipt.model_prefix)
@@ -115,8 +117,12 @@ def test_selected_parser_has_separate_c_depth_codec_error_copy_and_complete_sum(
     from tensorfold.families.qwen4_exp.cuda.retention_resources import _json_parse_payload, _json_payload_policy
     policy = _json_payload_policy()
     encoded = 96 << 20
-    projection = _json_parse_payload(encoded, policy)
+    projection = _json_parse_payload(encoded, policy, guarded=True)
     assert projection["c_depth_bound"] == 10000
+    # Unguarded parses keep only the compiled counter, or the byte bound without one.
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import _runtime_facts
+    compiled = _runtime_facts().c_container_depth
+    assert _json_parse_payload(encoded, policy)["c_depth_bound"] == (encoded if compiled is None else compiled)
     assert policy.recursion_limit == sys.getrecursionlimit()
     terms = projection["terms"]
     assert terms["raw_input"] == terms["unicode_error_input_copy"]

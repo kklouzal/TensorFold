@@ -9,6 +9,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from tensorfold.cuda import health
+from tensorfold import json_nesting
 from tensorfold.server import anthropic, conversations, json_output, metrics, request_body, responses, runtime, stats, token_routes
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
 from tensorfold.server.decisions import DecisionError
@@ -145,7 +146,7 @@ def make_handler(app: App):
             path = self.path.split("?", 1)[0].rstrip("/")
             if path == runtime.ROUTE:
                 try:
-                    body = json.loads(read_body(self, limit=runtime.MAX_BODY_BYTES) or b"{}")
+                    body = json_nesting.loads(read_body(self, limit=runtime.MAX_BODY_BYTES) or b"{}")
                     reply = runtime.request(app, body)
                 except RequestError as error:
                     return self._refuse(error)
@@ -173,7 +174,8 @@ def make_handler(app: App):
                     return
                 return self._json(404, {"error": unknown_route("POST", self.path)})
             try:
-                body = json.loads(read_body(self, limit=TOKENIZER_BODY_LIMIT if tokenizer else GENERATION_BODY_LIMIT) or b"{}")
+                body = json_nesting.loads(
+                    read_body(self, limit=TOKENIZER_BODY_LIMIT if tokenizer else GENERATION_BODY_LIMIT) or b"{}")
                 model = requested_model(app, body)          # an id this endpoint does not serve: 404
                 # llama.cpp's opt-in prefill progress frames, on a stream
                 progress = isinstance(body, dict) and flag(body, "return_progress", False) and bool(body.get("stream"))
@@ -373,7 +375,7 @@ def make_handler(app: App):
                     return
                 return self._json(404, {"error": unknown_route("POST", self.path)})
             try:
-                body = json.loads(read_body(self) or b"{}")
+                body = json_nesting.loads(read_body(self) or b"{}")
                 if not isinstance(body, dict):
                     raise RequestError("request body must be an object")
                 requested_model(app, body)

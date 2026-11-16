@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import json
 import math
 import os
 import selectors
@@ -17,6 +16,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from tensorfold.cleanup import raise_failures
+from tensorfold import json_nesting
 from tensorfold.engine import grammar
 from tensorfold.server import anthropic, conversations, json_output, live, request_body, responses, token_routes
 from tensorfold.server.tools import (active_tool_specs, parse_tool_calls_from_content, stream_tool_call_deltas,
@@ -600,7 +600,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             field = "messages" if is_chat_completion else "prompt"   # the field an error's code names (OpenAI's param)
 
             try:
-                body = parse_numbers(json.loads(read_body(self) or b"{}"))
+                body = parse_numbers(json_nesting.loads(read_body(self) or b"{}"))
                 validate_modalities(body)
                 probability_options(body)
                 named = requested_model(app, body)      # the id the request asked for, as vLLM names it
@@ -930,7 +930,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
 
         def _post_tokenizer(self, detokenize: bool) -> None:
             try:
-                body = json.loads(read_body(self) or b"{}")
+                body = json_nesting.loads(read_body(self) or b"{}")
                 requested_model(app, body)
                 reply = token_routes.detokenize(app, body) if detokenize else token_routes.tokenize(app, body)
             except RequestError as exc:
@@ -950,7 +950,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 self._send_json({"error": unknown_route("POST", self.path)}, status=404)
                 return
             try:
-                body = parse_numbers(json.loads(read_body(self) or b"{}"))
+                body = parse_numbers(json_nesting.loads(read_body(self) or b"{}"))
                 if not isinstance(body, dict):
                     raise RequestError("request body must be an object")
                 requested_model(app, body)

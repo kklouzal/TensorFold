@@ -5,6 +5,7 @@ import json
 import traceback
 from typing import Any
 
+from tensorfold import json_nesting
 from tensorfold.server.anthropic_translate import Reply, error, translate
 from tensorfold.server.errors import RequestError, status_of
 from tensorfold.server.token_routes import count_chat
@@ -23,7 +24,7 @@ def post(handler: Any, app: Any) -> None:
     count = handler.path.split("?", 1)[0].rstrip("/").endswith("/count_tokens")
     try:
         raw = read_body(handler, limit=LIMIT)
-        body = json.loads(raw or b"{}")
+        body = json_nesting.loads(raw or b"{}")
         chat = translate(body, count=count)
         model = requested_model(app, body)          # an id this endpoint does not serve: not_found_error (404)
         late_system = getattr(app, "late_system", getattr(getattr(app, "template", None), "late_system", "system"))

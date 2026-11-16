@@ -87,8 +87,10 @@ def test_explicit_thinking_overrides_none_and_preserves_default(default_effort, 
     parsed_requests = []
     loads = json.loads
 
+    body_loads = http.json_nesting.loads
+
     def record_body(value, *args, **kwargs):
-        parsed = loads(value, *args, **kwargs)
+        parsed = body_loads(value, *args, **kwargs)
         if isinstance(value, bytes) and isinstance(parsed, dict):
             parsed_requests.append((parsed, copy.deepcopy(parsed)))
         return parsed
@@ -98,7 +100,7 @@ def test_explicit_thinking_overrides_none_and_preserves_default(default_effort, 
             raise ValueError("enabled thinking requires low, medium or xhigh effort")
         return template(messages, **kwargs)
 
-    monkeypatch.setattr(http.json, "loads", record_body)
+    monkeypatch.setattr(http.json_nesting, "loads", record_body)  # The request-body parse boundary.
     monkeypatch.setattr(app.tokenizer, "apply_chat_template", checked_template)
     server = serve_fake(app)
     try:

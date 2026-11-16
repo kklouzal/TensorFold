@@ -14,6 +14,7 @@ import sys
 import hashlib
 import json
 
+from tensorfold import json_nesting
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom
 from tensorfold.cuda.streams import Stream, mark_cohort_agreed
 from tensorfold.cuda.store_fields import validate_store_key
@@ -590,7 +591,7 @@ class TensorParallelDecoder:
         else:
             own = key(self.comm.rank)
             self.comm.store.wait([own], timedelta(hours=1))
-            payload = json.loads(self.comm.store.get(own))
+            payload = json_nesting.loads(self.comm.store.get(own))
             self.comm.store.delete_key(own)
             decisions, failed = payload["decisions"], payload["failed"]
         if failed:
@@ -949,7 +950,7 @@ class TensorParallelDecoder:
             for peer, payload, *key in acknowledged:
                 if type(payload) is not bytes or len(payload) > MAX_MESSAGE_BYTES:
                     raise ValueError("tensor-parallel acknowledgment requires at most 96 MiB of bytes")
-                remote = json.loads(payload)
+                remote = json_nesting.loads(payload)
                 if key:
                     self.comm.store.delete_key(key[0])
                 if remote != status:
@@ -1208,7 +1209,7 @@ class TensorParallelDecoder:
                 with self.engine._lifecycle:
                     if self.engine._closing:
                         return None
-        body = json.loads(self.comm.store.get(key))
+        body = json_nesting.loads(self.comm.store.get(key))
         if body["kind"] == "stop" or body.get("control", {}).get("admission_policy", "legacy") != "fifo":
             self.comm.store.delete_key(key)
         body["sequence"] = self.sequence
@@ -1230,7 +1231,7 @@ class TensorParallelDecoder:
         if payload is None:  # The leader's process closed its command end.
             self.engine._abort_comm = True
             return None
-        body = json.loads(payload)
+        body = json_nesting.loads(payload)
         body["sequence"] = self.sequence
         self.sequence += 1
         if body["kind"] == "stop":
