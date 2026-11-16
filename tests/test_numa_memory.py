@@ -220,3 +220,33 @@ def test_closed_session_does_not_reopen_allocation_authority():
     allocator.close()
     with pytest.raises(RuntimeError, match="closed"):
         allocator((1,), torch.float16)
+
+
+def test_process_binding_reaches_every_existing_thread_and_later_threads_inherit():
+    allowed = os.sched_getaffinity(0)
+    cpus = (min(allowed),)
+    started, release = threading.Event(), threading.Event()
+    seen = {}
+    def worker():
+        started.set()
+        release.wait()
+        seen["existing"] = os.sched_getaffinity(0)
+    thread = threading.Thread(target=worker)
+    thread.start()
+    started.wait()
+    try:
+        numa.bind_process_to_placement(SimpleNamespace(cpus=cpus))
+        release.set()
+        thread.join()
+        later = threading.Thread(target=lambda: seen.__setitem__("later", os.sched_getaffinity(0)))
+        later.start()
+        later.join()
+        assert seen == {"existing": set(cpus), "later": set(cpus)} and os.sched_getaffinity(0) == set(cpus)
+    finally:
+        release.set()
+        thread.join()
+        for task in Path("/proc/self/task").iterdir():
+            try:
+                os.sched_setaffinity(int(task.name), allowed)
+            except ProcessLookupError:
+                pass

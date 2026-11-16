@@ -62,3 +62,47 @@ def test_real_startup_places_post_cuda_check_before_native_preparation_and_ready
     initialize = next(node for node in calls if isinstance(node.func, ast.Attribute) and node.func.attr == '_initialize')
     ready = next(node for node in calls if isinstance(node.func, ast.Attribute) and node.func.attr == '_verify_numa_placement')
     assert initialize.lineno < ready.lineno
+
+
+def _bind_calls(monkeypatch, discovered):
+    from tensorfold.cuda import numa_memory
+    calls = []
+    def configure(device):
+        calls.append(('configure', device))
+        if isinstance(discovered, BaseException):
+            raise discovered
+        return discovered
+    monkeypatch.setattr(numa_memory, 'configure_gpu_numa', configure)
+    monkeypatch.setattr(numa_memory, 'bind_process_to_placement', lambda placement: calls.append(('bind', placement)))
+    return calls
+
+
+@pytest.mark.parametrize('name', ['TENSORFOLD_NUMA_PLAN', 'TENSORFOLD_NUMA_PLAN_SHA256', 'TENSORFOLD_NUMA_RANK'])
+def test_rank_binding_defers_to_a_sealed_plan_and_skips_single_rank(env, monkeypatch, name):
+    calls = _bind_calls(monkeypatch, NS(cpus=(0,), pci_bus_id='0000:1a:00.0', node=0))
+    FlashNextEngine._bind_local_node(1)
+    monkeypatch.setenv(name, 'x')
+    FlashNextEngine._bind_local_node(8)
+    assert calls == []
+
+
+def test_rank_binding_binds_observed_node_and_logs_unobservable_topology(env, monkeypatch, capsys):
+    placement = NS(cpus=(0, 1), pci_bus_id='0000:1a:00.0', node=0)
+    calls = _bind_calls(monkeypatch, placement)
+    FlashNextEngine._bind_local_node(8)
+    assert calls == [('configure', 0), ('bind', placement)]
+    assert 'NUMA node 0 (2 CPUs)' in capsys.readouterr().out
+    calls = _bind_calls(monkeypatch, RuntimeError('GPU has no observable online host NUMA node'))
+    FlashNextEngine._bind_local_node(8)
+    assert calls == [('configure', 0)]
+    assert 'left unbound' in capsys.readouterr().out
+
+
+def test_rank_binding_affinity_faults_propagate(env, monkeypatch):
+    from tensorfold.cuda import numa_memory
+    monkeypatch.setattr(numa_memory, 'configure_gpu_numa', lambda device: NS(cpus=(0,), pci_bus_id='b', node=0))
+    def refuse(placement):
+        raise OSError(22, 'Invalid argument')
+    monkeypatch.setattr(numa_memory, 'bind_process_to_placement', refuse)
+    with pytest.raises(OSError):
+        FlashNextEngine._bind_local_node(8)

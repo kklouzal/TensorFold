@@ -138,21 +138,20 @@ def configure_gpu_numa(device, *, torch_module=None):
     return discover_gpu_uuid(torch_module.cuda.get_device_properties(device).uuid)
 
 
-def bind_process_to_gpu_node(device, *, torch_module=None, proc=Path("/proc")):
-    """Restrict every thread of this process to the allowed CPUs local to ``device``'s NUMA node.
+def bind_process_to_placement(placement, *, proc=Path("/proc")):
+    """Restrict every thread of this process to ``placement.cpus`` (a discovered GPU node's allowed CPUs).
 
     A tensor-parallel rank's host threads otherwise migrate across sockets; node-local CPUs keep the
     rank's launch/collective host work next to its GPU's PCIe root. Threads started later inherit the
-    mask. Thread memory policy is unchanged. Returns the Placement; raises if the topology is unobservable.
+    mask. Thread memory policy is unchanged. The CPUs were already intersected with this process's
+    allowance, so a refused mask is a fault and propagates (threads listed earlier may already be bound).
     """
-    placement = configure_gpu_numa(device, torch_module=torch_module)
     cpus = set(placement.cpus)
     for task in (proc/"self/task").iterdir():
         try:
             os.sched_setaffinity(int(task.name), cpus)
         except ProcessLookupError:
             continue  # the thread exited after the listing
-    return placement
 
 
 def backing_bytes(size, *, page_size=None):

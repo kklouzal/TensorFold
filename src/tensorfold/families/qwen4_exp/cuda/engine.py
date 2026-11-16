@@ -180,17 +180,19 @@ class FlashNextEngine:
     @staticmethod
     def _bind_local_node(tp):
         """Tensor-parallel ranks run their host threads on their GPU's NUMA node (unless a strict NUMA plan
-        already placed this worker). Unobservable topology (no Linux NVIDIA PCI inventory) leaves them unbound."""
+        already placed this worker). Unobservable topology (no Linux NVIDIA PCI inventory, no online GPU node or no
+        allowed node-local CPU) is logged and leaves them unbound, as before this binding existed."""
         from os import environ
         if tp < 2 or any(name in environ for name in
                          ('TENSORFOLD_NUMA_PLAN', 'TENSORFOLD_NUMA_PLAN_SHA256', 'TENSORFOLD_NUMA_RANK')):
             return
-        from tensorfold.cuda.numa_memory import bind_process_to_gpu_node
+        from tensorfold.cuda.numa_memory import bind_process_to_placement, configure_gpu_numa
         try:
-            placement = bind_process_to_gpu_node(0)
+            placement = configure_gpu_numa(0)
         except (OSError, RuntimeError, ValueError, KeyError) as error:
             print(f"[tensorfold] rank host threads left unbound: GPU NUMA topology unavailable ({error})", flush=True)
             return
+        bind_process_to_placement(placement)  # An observed node whose allowed CPUs are refused is a fault.
         print(f"[tensorfold] rank host threads bound to GPU {placement.pci_bus_id} NUMA node {placement.node} "
               f"({len(placement.cpus)} CPUs)", flush=True)
 
