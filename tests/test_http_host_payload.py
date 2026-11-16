@@ -400,10 +400,14 @@ def test_tokenize_observes_native_count_before_ids_and_lexical_materialization()
     assert p.used == 0
 
 
-@pytest.mark.parametrize("thinking,prompt,expected", [
-    (False, 4096, (64, 4160)), (False, 262100, (64, 262144)),
-    (True, 4096, (262144, 262144)), (True, 1, (262144, 262144))])
-def test_generation_pays_its_prepared_token_extent(thinking, prompt, expected):
+@pytest.mark.parametrize("thinking,prompt,expected,constraint", [
+    (False, 4096, (64, 4160), {}), (False, 262100, (64, 262144), {}),
+    (True, 4096, (262144, 262144), {}), (True, 1, (262144, 262144), {}),
+    # Any gated/forced continuation keeps the full-context output envelope.
+    (False, 4096, (262144, 262144), {"tools": [{"type": "function"}]}),
+    (False, 4096, (262144, 262144), {"grammar": ("spec", "compiled")}),
+    (False, 4096, (262144, 262144), {"calls": object()})])
+def test_generation_pays_its_prepared_token_extent(thinking, prompt, expected, constraint):
     from tensorfold.cuda.server import App
 
     p = pool(1 << 20)
@@ -412,8 +416,8 @@ def test_generation_pays_its_prepared_token_extent(thinking, prompt, expected):
     p.generation_bound = lambda amount, output, extent: (calls.append((amount, output, extent)) or 10, output, 0, 0)
     app = App.__new__(App)
     app.host_payload_pool = p
-    prepared = SimpleNamespace(thinking=thinking, tools=[], grammar=None, calls=None,
-                               max_tokens=64, prompt=[7] * prompt)
+    prepared = SimpleNamespace(**{"thinking": thinking, "tools": [], "grammar": None, "calls": None,
+                                  "max_tokens": 64, "prompt": [7] * prompt, **constraint})
     with hp.handler_scope(app):
         owner = app._http_generation_owner(None)
         app._reserve_http_generation(owner, prepared)
@@ -435,6 +439,18 @@ def test_generation_prepayments_offset_later_ids_and_rpc_only():
         owner.ids(130)
         owner.rpc(170)
         assert owner.claims["tokenizer-ids"] == 30 and owner.claims["rpc"] == 20
+    assert p.used == 0
+
+
+def test_generation_rebases_tokenization_ids_paid_before_it():
+    p = pool(1000)
+    p.generation_bound = lambda amount, output, extent: (300, 0, 100, 150)
+    p.ids_bound = lambda count, *args, **kwargs: (count, 0)
+    with hp.handler_scope(SimpleNamespace(host_payload_pool=p)) as owner:
+        owner.ids(130)  # Tokenization precedes the generation grant.
+        assert owner.claims["tokenizer-ids"] == 130
+        owner.generation(body_bytes=0, output_tokens=1, extent_tokens=1)
+        assert owner.claims["tokenizer-ids"] == 30 and p.used == 330
     assert p.used == 0
 
 

@@ -345,6 +345,10 @@ class HostPayloadLease:
         if amount > self.claims.get("generation", 0):
             self.set("generation", amount)
             self._generation_ids_base, self._generation_rpc_base = ids_base, rpc_base
+            if self.claims.get("tokenizer-ids"):
+                # Tokenization paid its IDs before this phase existed; they now
+                # sit inside its prepayment, so only the excess stays charged.
+                self.ids(0)
         self._generation_output_bound = max(self._generation_output_bound, wire)
 
     def rpc(self, encoded_bytes):

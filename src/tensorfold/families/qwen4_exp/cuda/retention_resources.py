@@ -924,8 +924,9 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
     """Named future owned Python/NumPy payloads for ONE logical CPU owner.
 
     InputClaim independently pays the original full prompt and encoded replay.
-    This pays copies/continuation/output through the full supported context,
-    including thinking/gating subruns. Shared model/tokenizer tables are already
+    This pays copies/continuation/output through ``context`` tokens: the full
+    supported context for the static envelope (including thinking/gating
+    subruns), or one HTTP generation's admitted prompt+output token extent. Shared model/tokenizer tables are already
     loaded and excluded. Runtime allocator arenas/native libraries remain an
     explicit qualification obligation, not hidden inside these byte counts.
     """
