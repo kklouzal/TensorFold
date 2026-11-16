@@ -281,7 +281,7 @@ def test_actual_batched_drafter_chains_gold_after_recording_low_probability_orig
         mbuf=SimpleNamespace(streams=torch.zeros((120, 1)), input_preparation_context=None),
         buf=SimpleNamespace(streams=torch.zeros((120, 1)), rows=120), kv_host=object(), _proposal_limit=lambda: 4)
     decoder._proposal_count = MethodType(multi.MultiDecoder._proposal_count, decoder)
-    decoder._full_width = MethodType(multi.MultiDecoder._full_width, decoder)
+    decoder._pad_rows = MethodType(multi.MultiDecoder._pad_rows, decoder)
     observer.decoder, observer.engine = decoder, SimpleNamespace(rank=0)
     observer.prepared = {'data': data, 'input_sha256': 'a'*64}
     observer.current, observer.mtp_pick_step, observer.round_index = data['rounds'][0], 0, 0

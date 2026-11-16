@@ -238,13 +238,14 @@ operator, model-quality and matched performance gates remain open.
 Multi-request decode rounds have variable verify and MTP-refresh row totals
 (one row plus each request's drafts, which vary with the confidence stop), so an
 exact `(rows, participants)` catalogue cannot cover them. When a round's exact
-key was not captured but its full-width key `(participants * (depth + 1),
-participants)` was, `MultiDecoder` pads every verify window to depth + 1 rows
-and every batched MTP refresh window to depth + 1 rows
-(`ExactStateGraphs.full_width`). Padded rows repeat the window's last real
-input; they are ordinary tentative rows past the real window, as rejected
-drafts are. `accept()` sees only the real window, commits keep only accepted
-rows, and each MTP refresh reports draft logits from its real last row
+key was not captured, `MultiDecoder` pads the frame to the smallest captured
+key `(R, participants)` with rows < R <= participants * (depth + 1): the
+full-width key or an intermediate one (`ExactStateGraphs.pad_rows`). Windows
+take the padding in order, each up to depth + 1 rows (`multi._padded_counts`,
+the same split on every rank), for verify windows and batched MTP refresh
+windows alike. Padded rows repeat the window's last real input; they are
+ordinary tentative rows past the real window, as rejected drafts are.
+`accept()` sees only the real window, commits keep only accepted rows, and each MTP refresh reports draft logits from its real last row
 (`mtp_stage(last_rows=...)`). Grammar-constrained, mixed prefill, rotor-lookup,
 image and media rounds keep their exact frames. Single-window MTP frames never
 pad (their head reads the physical last row).
@@ -259,3 +260,25 @@ was padded) reproduced the six-prompt 160-token greedy oracle bit-identically,
 showing padded rows leave real-row target logits unchanged. Concurrent greedy
 outputs already differed from C1 outputs before this change (batch-size
 dependent numerics); padding does not make them C1-identical.
+
+### Intermediate row keys
+
+With MTP4 and the 0.7 confidence stop, a stream averages about 3.0 real verify
+rows (one row plus 0-4 drafts; at C24 4K the windows held 1/2/3/4 drafts in
+55/14/7.5/23% of rounds), so full-width padding computed about 40% padded rows,
+and the batched verify GPU time grows by about 1.1-1.6 ms per row on 8x V100.
+Adding verify `(ceil(3.5p), p)` and MTP-refresh `(3p, p)` keys for p = 2..24 to
+the 79-key catalogue (125 keys, 4,458 of 5,513 MiB graph budget at 24 x 262,144
+windows) lets most rounds pad to the intermediate key instead (modelled mean
+padded verify rows at C8/C16/C24: 40/80/120 -> 29/57/85). Replaying a
+balanced-seeded key with unequal windows is the ragged replay the native oracle
+above checks bit-exact for `(28,8)`, which is also the p = 8 intermediate verify key.
+
+Evidence (8x V100 TP8/ETP4, MTP4 conf 0.7, INT8 KV, 24 x 262,144 windows, image
+`cf8c0ff6` plus source overlays of `4605f899` with and without this change;
+greedy serving matrix C1/C8/C16/C24 x 4K/16K, 512 output tokens, A B B A, two
+sessions per arm, two repeats per cell, `tools/matrix_benchmark.py compare`): decode_median
+aggregate 1.089x (95% 1.047-1.132), gains at C8 4K and C24 16K, no regressed
+cell; prefill aggregate 1.008x (1.000-1.017); C1 unchanged; the six-prompt C1
+greedy oracle is identical and concurrent greedy replies agree across arms as
+often as across repeated runs of one arm.

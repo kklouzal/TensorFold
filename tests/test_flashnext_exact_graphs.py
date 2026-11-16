@@ -644,3 +644,32 @@ def test_ragged_warm_stages_matching_target_and_mtp_spans(monkeypatch):
     graph.warm(states)
     assert staged == [(4, 4, 4, 4, 3, 3, 3, 3)] * 2
     assert not graph.preparing
+
+
+def test_pad_rows_selects_the_smallest_captured_key_within_full_width():
+    graph, _ = owner(slots=4)
+    graph.owner.verify.update({(7, 2): object(), (10, 2): object(), (8, 4): object(), (20, 4): object()})
+    graph.owner.mtp.update({(6, 2): object()})
+    assert graph.pad_rows("verify", 5, 2) == 7                # the intermediate key, not the full width
+    assert graph.pad_rows("verify", 8, 2) == 10
+    assert graph.pad_rows("verify", 7, 2) is None             # an exact key runs unpadded
+    assert graph.pad_rows("verify", 9, 4) == 20
+    assert graph.pad_rows("verify", 8, 4) is None
+    assert graph.pad_rows("verify", 3, 3) is None             # no key for these participants: eager
+    assert graph.pad_rows("mtp", 4, 2) == 6
+    assert graph.pad_rows("mtp", 7, 2) is None                # no larger key within depth + 1 rows a window
+    graph.owner.mtp[(1, 1)] = graph.owner.mtp[(3, 1)] = object()
+    assert graph.pad_rows("mtp", 2, 1) is None                # a single MTP window never pads
+    graph.closed = True
+    assert graph.pad_rows("verify", 5, 2) is None
+
+
+def test_padded_counts_fill_windows_in_order_up_to_full_width():
+    from tensorfold.families.qwen4_exp.cuda.multi import _padded_counts
+
+    assert _padded_counts([2, 3, 2], 9, 5) == [4, 3, 2]
+    assert _padded_counts([2, 5, 2], 12, 5) == [5, 5, 2]
+    assert _padded_counts([1, 1], 2, 5) == [1, 1]
+    assert _padded_counts([2, 2, 2], 15, 5) == [5, 5, 5]
+    with pytest.raises(ValueError):
+        _padded_counts([2, 2], 11, 5)

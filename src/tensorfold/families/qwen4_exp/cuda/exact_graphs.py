@@ -318,24 +318,28 @@ class ExactStateGraphs:
         self.captured_keys.append((kind, *key))
         return pieces
 
-    def full_width(self, kind, rows, participants):
-        """True when a frame should be padded to depth + 1 rows per participant.
+    def pad_rows(self, kind, rows, participants):
+        """The total rows a frame of ``rows`` real rows pads to, or None (no padding).
 
-        Only when its exact (rows, participants) key was not captured but the
-        full-width key was. Captured keys agree on every rank (admission is an
-        all-rank vote), so this decision is identical everywhere. Padded rows
-        are ordinary tentative rows past the real window: causal attention and
-        per-row expert/linear work leave every real row's result unchanged, and
-        the caller never accepts or reads them.
+        Only when its exact (rows, participants) key was not captured: the
+        smallest captured (R, participants) key with rows < R <= depth + 1 rows
+        per participant (the full-width key or an intermediate one). Captured
+        keys agree on every rank (admission is an all-rank vote), so this
+        decision is identical everywhere. Padded rows are ordinary tentative
+        rows past the real windows: causal attention and per-row expert/linear
+        work leave every real row's result unchanged, and the caller never
+        accepts or reads them.
         """
         # A single MTP window reports its physical last row (mtp_compute), so
         # only batched MTP frames may pad; target frames pad at any count.
         if (self.closed or self.owner.failure is not None
                 or not (1 if kind == "verify" else 2) <= participants <= len(self.states)):
-            return False
+            return None
         captured = self.owner.verify if kind == "verify" else self.owner.mtp
-        return ((rows, participants) not in captured
-                and (participants * (self.dec.depth + 1), participants) in captured)
+        if (rows, participants) in captured:
+            return None
+        return next((total for total in range(rows + 1, participants * (self.dec.depth + 1) + 1)
+                     if (total, participants) in captured), None)
 
     def forward(self, kind, segs, *, mtp_positions=None, device_tokens=None):
         if kind not in self.serving_hits:
