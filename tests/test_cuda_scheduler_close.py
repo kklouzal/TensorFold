@@ -245,18 +245,25 @@ def test_native_spawn_before_thread_started_publication_retains_owner_until_retr
     scheduler = Scheduler(decoder)
     release = threading.Event()
     primary = KeyboardInterrupt("controlled interruption before native bootstrap publication")
-    native_start = threading._start_new_thread
+    # Thread.start's native spawn: _start_new_thread(function, args) on 3.12,
+    # _start_joinable_thread(function, handle=, daemon=) on 3.13+.
+    joinable = hasattr(threading, "_start_joinable_thread")
+    starter = "_start_joinable_thread" if joinable else "_start_new_thread"
+    native_start = getattr(threading, starter)
 
-    def delayed_bootstrap(function, arguments):
+    def delayed_bootstrap(function, *args, **kwargs):
         def bootstrap():
             if not release.wait(5):
                 raise AssertionError("native startup release deadline")
-            function(*arguments)
-        native_start(bootstrap, ())
+            function(*(() if joinable else args[0]))
+        if joinable:
+            native_start(bootstrap, **kwargs)
+        else:
+            native_start(bootstrap, ())
         raise primary
 
     try:
-        with patch.object(threading, "_start_new_thread", delayed_bootstrap):
+        with patch.object(threading, starter, delayed_bootstrap):
             try:
                 scheduler.start()
             except BaseException as caught:

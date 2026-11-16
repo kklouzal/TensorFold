@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -227,13 +228,13 @@ def validate_wheel(path, source):
             data = archive.read(name)
             original = source / "src" / name
             if name.endswith(".so"):
-                if name != "tensorfold/_fd_owner.abi3.so":
+                if not _STABLE_FD_OWNER.fullmatch(name):
                     raise ValueError("wheel contains an unexpected prebuilt native module")
                 native.append(name)
             elif not original.is_file() or data != original.read_bytes():
                 raise ValueError("wheel member differs from canonical source: " + name)
             members[name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
-        if native != ["tensorfold/_fd_owner.abi3.so"]:
+        if len(native) != 1:
             raise ValueError("wheel lacks the owned stable-ABI FD extension")
         configuration = tomllib.loads((source / "pyproject.toml").read_text())
         for package, patterns in configuration["tool"]["setuptools"]["package-data"].items():
@@ -314,6 +315,8 @@ def image(root, wheel_output, output, base, cpus, memory, timeout):
             "qualification": False})
 
 
+# The owned FD extension uses the stable ABI: ".abi3.so", or 3.15+'s platform-qualified ".abi3-<multiarch>.so".
+_STABLE_FD_OWNER = re.compile(r"tensorfold/_fd_owner\.abi3(-[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+)?\.so")
 _INSTALLED_CHECK = """import hashlib,json,pathlib,subprocess,sys
 from tensorfold import _fd_owner
 from tensorfold.cuda.sm70 import software_binding

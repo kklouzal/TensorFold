@@ -22,6 +22,10 @@ from tensorfold.cleanup import finish, raise_failures, rollback
 from .images_http import ImageInputError
 from .replay import MediaBusy, MediaEnvelope, MediaProbe, ReplayStore, check_cancelled
 
+# Linux memfd seal ABI (<linux/fcntl.h>: F_LINUX_SPECIFIC_BASE 1024 + 9, F_SEAL_*). CPython names them only
+# when its build headers did; the selected python-build-standalone 3.15 runtime omits them.
+_F_ADD_SEALS, _F_SEAL_SEAL, _F_SEAL_SHRINK, _F_SEAL_GROW = 1033, 0x1, 0x2, 0x4
+
 
 @contextmanager
 def _diagnostic_fd(limit, store, worker_index):
@@ -53,7 +57,7 @@ def _diagnostic_fd(limit, store, worker_index):
     try:
         owner.memfd()
         os.ftruncate(owner.fileno(), limit)
-        fcntl.fcntl(owner.fileno(), fcntl.F_ADD_SEALS, fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
+        fcntl.fcntl(owner.fileno(), _F_ADD_SEALS, _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL)
         yield owner.fileno()
     except BaseException as primary:
         rollback(owner, primary, close)

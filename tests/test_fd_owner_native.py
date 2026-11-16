@@ -39,7 +39,8 @@ class NativeFDControls(unittest.TestCase):
 
     def test_installed_binary_and_maintained_source_supplier_metadata(self):
         binary = Path(_fd_owner.__file__)
-        self.assertIn(".abi3.", binary.name)
+        # Stable-ABI spellings: ".abi3.so", or 3.15+'s platform-qualified ".abi3-<multiarch>.so".
+        self.assertRegex(binary.name, r"^_fd_owner\.abi3(-[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+)?\.so$")
         self.assertEqual(_fd_owner._ownership_version, 2)
         self.assertEqual(_fd_owner._limited_api, 0x030B0000)
         source = binary.with_name("_fd_owner.c")
@@ -94,7 +95,8 @@ class NativeFDControls(unittest.TestCase):
         descriptor = owner.fileno()
         self.assertFalse(os.get_inheritable(descriptor))
         os.ftruncate(descriptor, 32)
-        fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK)
+        from tensorfold.vision.media_frontend import _F_ADD_SEALS, _F_SEAL_GROW, _F_SEAL_SHRINK
+        fcntl.fcntl(descriptor, _F_ADD_SEALS, _F_SEAL_GROW | _F_SEAL_SHRINK)
         self.assertEqual(os.write(descriptor, b"owned"), 5)
         with self.assertRaises(OSError):
             os.ftruncate(descriptor, 33)

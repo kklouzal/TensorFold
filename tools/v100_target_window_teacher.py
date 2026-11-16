@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import sysconfig
 from itertools import chain
 from pathlib import Path
 
@@ -1430,7 +1431,7 @@ def _validate_attention_provider(profile, operation):
                 and type(row['bytes']) is int and 0 < row['bytes'] <= MODEL_OBSERVER_LIMITS['elf_bytes']
                 and legacy.sha(row['sha256']), 'bounded actual builtin Torch library identity required')
     cpp, cuda = Path(libraries['torch_C']['path']), Path(libraries['torch_cuda']['path'])
-    require(cpp.name == '_C.cpython-312-x86_64-linux-gnu.so' and cuda.name == 'libtorch_cuda.so'
+    require(cpp.name == '_C' + sysconfig.get_config_var('EXT_SUFFIX') and cuda.name == 'libtorch_cuda.so'
             and cuda.parent.name == 'lib' and cpp.parent == cuda.parent.parent,
             'builtin Torch providers must share their actual ordinary installed package')
     contents = profile.get('teacher_execution_registration', {}).get('contents', {})
