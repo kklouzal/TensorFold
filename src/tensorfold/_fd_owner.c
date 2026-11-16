@@ -1,13 +1,13 @@
-/* Project-owned POSIX descriptor ownership, CPython Stable ABI >= 3.11.
+/* Project-owned POSIX descriptor ownership, CPython Stable ABI >= 3.15.
  * A borrowed fileno must never be closed/reassigned externally, and users must
  * finish all I/O before close. Linux/XNU release an ordinary owned descriptor
  * before reporting close errors; a consumed numeric FD is never retried.
  */
 #ifndef Py_LIMITED_API
-#define Py_LIMITED_API 0x030B0000
+#define Py_LIMITED_API 0x030F0000
 #endif
-#if Py_LIMITED_API != 0x030B0000
-#error "tensorfold._fd_owner must use the CPython 3.11 Limited API"
+#if Py_LIMITED_API != 0x030F0000
+#error "tensorfold._fd_owner must use the CPython 3.15 Limited API"
 #endif
 #if !defined(__linux__) && !defined(__APPLE__)
 #error "tensorfold._fd_owner targets the declared Linux and macOS POSIX runtimes"

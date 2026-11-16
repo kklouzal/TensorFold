@@ -10,8 +10,8 @@ Interruption at native open return or before storing its result leaves the live
 descriptor in the existing journal for explicit cleanup and error observation.
 An acquiring factory which returns a newly opened owner violates this protocol.
 
-The extension uses the CPython 3.11 Stable ABI and C11. Source builds require a C
-compiler and Python development headers; matching `cp311-abi3` platform wheels
+The extension uses the CPython 3.15 Stable ABI and C11. Source builds require a C
+compiler and Python development headers; matching `cp315-abi3` platform wheels
 supply the compiled extension. The CUDA development container supplies the
 toolchain. Native Apple execution remains a separate qualification.
 
@@ -54,7 +54,7 @@ failure and any remaining journal. Destruction is only a misuse backstop; its
 unraisable diagnostic is never accepted as operation failure transport.
 
 Startup supplier checks bind `_ownership_version == 2`,
-`_limited_api == 0x030B0000`, and `_source_sha256` to the installed maintained C
+`_limited_api == 0x030F0000`, and `_source_sha256` to the installed maintained C
 source. They also verify the binary's wheel `RECORD` hash, installed path,
 platform/ABI tag and approved source manifest. These metadata describe build
 inputs and do not authenticate an untrusted binary. Protocol1 constructor

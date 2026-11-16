@@ -11,6 +11,7 @@ import dis
 import errno
 import gc
 import hashlib
+import importlib.machinery
 import os
 from pathlib import Path
 import pickle
@@ -39,10 +40,12 @@ class NativeFDControls(unittest.TestCase):
 
     def test_installed_binary_and_maintained_source_supplier_metadata(self):
         binary = Path(_fd_owner.__file__)
-        # Stable-ABI spellings: ".abi3.so", or 3.15+'s platform-qualified ".abi3-<multiarch>.so".
-        self.assertRegex(binary.name, r"^_fd_owner\.abi3(-[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+)?\.so$")
+        # setuptools names limited-API builds with the interpreter's first abi3 suffix
+        # (3.15: platform-qualified, e.g. ".abi3-x86_64-linux-gnu.so" or ".abi3-darwin.so").
+        abi3 = next(suffix for suffix in importlib.machinery.EXTENSION_SUFFIXES if suffix.startswith(".abi3"))
+        self.assertEqual(binary.name, "_fd_owner" + abi3)
         self.assertEqual(_fd_owner._ownership_version, 2)
-        self.assertEqual(_fd_owner._limited_api, 0x030B0000)
+        self.assertEqual(_fd_owner._limited_api, 0x030F0000)
         source = binary.with_name("_fd_owner.c")
         self.assertEqual(_fd_owner._source_sha256, hashlib.sha256(source.read_bytes()).hexdigest())
         self.assertEqual(OwnedFD.__module__, "tensorfold._fd_owner")
@@ -291,43 +294,22 @@ class NativeFDControls(unittest.TestCase):
                     if (info.st_dev, info.st_ino) == identity:
                         descriptors.append(int(path.name))
                 raise primary
-        if hasattr(sys, "monitoring"):
-            # CPython 3.12's public local INSTRUCTION event runs before STORE;
-            # it does not depend on late f_trace_opcodes activation.
-            monitor = sys.monitoring
-            tool = next((i for i in range(6) if monitor.get_tool(i) is None), None)
-            self.assertIsNotNone(tool, "no free bounded monitoring tool ID")
-            monitor.use_tool_id(tool, "tensorfold-native-fd-before-store")
-            try:
-                monitor.register_callback(tool, monitor.events.INSTRUCTION, witness)
-                monitor.set_local_events(tool, acquire.__code__, monitor.events.INSTRUCTION)
-                with self.assertRaises(KeyboardInterrupt) as caught:
-                    acquire()
-                self.assertIs(caught.exception, primary)
-            finally:
-                monitor.set_local_events(tool, acquire.__code__, 0)
-                monitor.register_callback(tool, monitor.events.INSTRUCTION, None)
-                monitor.free_tool_id(tool)
-        else:
-            # The declared CPython 3.11 floor supplies per-frame opcode tracing.
-            previous = sys.gettrace()
-            current = sys._getframe()
-            previous_opcodes = current.f_trace_opcodes
-            def trace(frame, event, argument):
-                if frame.f_code is acquire.__code__:
-                    frame.f_trace_opcodes = True
-                    if event == "opcode":
-                        witness(frame.f_code, frame.f_lasti)
-                return trace
-            try:
-                current.f_trace_opcodes = True
-                sys.settrace(trace)
-                with self.assertRaises(KeyboardInterrupt) as caught:
-                    acquire()
-                self.assertIs(caught.exception, primary)
-            finally:
-                sys.settrace(previous)
-                current.f_trace_opcodes = previous_opcodes
+        # The public local INSTRUCTION event runs before STORE;
+        # it does not depend on late f_trace_opcodes activation.
+        monitor = sys.monitoring
+        tool = next((i for i in range(6) if monitor.get_tool(i) is None), None)
+        self.assertIsNotNone(tool, "no free bounded monitoring tool ID")
+        monitor.use_tool_id(tool, "tensorfold-native-fd-before-store")
+        try:
+            monitor.register_callback(tool, monitor.events.INSTRUCTION, witness)
+            monitor.set_local_events(tool, acquire.__code__, monitor.events.INSTRUCTION)
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                acquire()
+            self.assertIs(caught.exception, primary)
+        finally:
+            monitor.set_local_events(tool, acquire.__code__, 0)
+            monitor.register_callback(tool, monitor.events.INSTRUCTION, None)
+            monitor.free_tool_id(tool)
         self.assertEqual(fired, [store], "the required pre-publication instruction witness did not fire exactly once")
         gc.collect()
         self.assertEqual(descriptors, [], "fresh constructor must never acquire a descriptor")
@@ -425,42 +407,20 @@ class NativeFDControls(unittest.TestCase):
                 fired.append(offset)
                 raise primary
 
-        if hasattr(sys, "monitoring"):
-            monitor = sys.monitoring
-            tool = next((i for i in range(6) if monitor.get_tool(i) is None), None)
-            self.assertIsNotNone(tool)
-            monitor.use_tool_id(tool, "tensorfold-native-open-before-store")
-            try:
-                monitor.register_callback(tool, monitor.events.INSTRUCTION, witness)
-                monitor.set_local_events(tool, acquire.__code__, monitor.events.INSTRUCTION)
-                with self.assertRaises(KeyboardInterrupt) as caught:
-                    acquire()
-                self.assertIs(caught.exception, primary)
-            finally:
-                monitor.set_local_events(tool, acquire.__code__, 0)
-                monitor.register_callback(tool, monitor.events.INSTRUCTION, None)
-                monitor.free_tool_id(tool)
-        else:
-            previous = sys.gettrace()
-            current = sys._getframe()
-            previous_opcodes = current.f_trace_opcodes
-
-            def trace(frame, event, argument):
-                if frame.f_code is acquire.__code__:
-                    frame.f_trace_opcodes = True
-                    if event == "opcode":
-                        witness(frame.f_code, frame.f_lasti)
-                return trace
-
-            try:
-                current.f_trace_opcodes = True
-                sys.settrace(trace)
-                with self.assertRaises(KeyboardInterrupt) as caught:
-                    acquire()
-                self.assertIs(caught.exception, primary)
-            finally:
-                sys.settrace(previous)
-                current.f_trace_opcodes = previous_opcodes
+        monitor = sys.monitoring
+        tool = next((i for i in range(6) if monitor.get_tool(i) is None), None)
+        self.assertIsNotNone(tool)
+        monitor.use_tool_id(tool, "tensorfold-native-open-before-store")
+        try:
+            monitor.register_callback(tool, monitor.events.INSTRUCTION, witness)
+            monitor.set_local_events(tool, acquire.__code__, monitor.events.INSTRUCTION)
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                acquire()
+            self.assertIs(caught.exception, primary)
+        finally:
+            monitor.set_local_events(tool, acquire.__code__, 0)
+            monitor.register_callback(tool, monitor.events.INSTRUCTION, None)
+            monitor.free_tool_id(tool)
         self.assertEqual(fired, [store])
         self.assertFalse(owner.closed)
         self.assertEqual(os.read(descriptors[0], 8), b"01234567")
