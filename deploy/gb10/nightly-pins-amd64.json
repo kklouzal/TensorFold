@@ -1,12 +1,19 @@
 {
-  "schema_version": 2,
-  "as_of": "2026-11-11",
+  "schema_version": 3,
+  "as_of": "2026-11-16",
   "platform": "linux/amd64",
-  "python": "3.12",
+  "python": "3.15",
+  "interpreter": {
+    "version": "3.15.2",
+    "artifact": "cpython-3.15.2+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.15.2%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "sha256": "ad23d1b73fac26440b0306ae06911031344c49a90ec19716c8362e7fa40cae43",
+    "bytes": 38360323
+  },
   "base": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:b3f64e4fec7d0825e05bf685e628e7e112afd7d63bc5906e2f71fd1f56cce336",
   "base_index": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9",
   "cuda": "13.4.3",
-  "cache_key": "cu1343-torch216-dev20261111-tv030-dev20261111-triton39-b7ddcf86-pip263-cslt010-nvshmem38-native",
+  "cache_key": "cu1343-torch216-dev20261111-tv030-dev20261111-triton39-b7ddcf86-pip263-cslt010-nvshmem38-cp3152-pbs20261110-native",
   "foundation_roots": [
     "torch==2.16.0.dev20261111+cu134",
     "triton==3.9.0+gitb7ddcf86",
@@ -16,8 +23,8 @@
   "wheels": {
     "torch": {
       "version": "2.16.0.dev20261111+cu134",
-      "url": "https://download-r2.pytorch.org/whl/nightly/cu134/torch-2.16.0.dev20261111%2Bcu134-cp312-cp312-manylinux_2_28_x86_64.whl",
-      "sha256": "6a2de32389987e29df1969b9ea5a13138b132e79b61ef1eeec1a409551851028"
+      "url": "https://download-r2.pytorch.org/whl/nightly/cu134/torch-2.16.0.dev20261111%2Bcu134-cp315-cp315-manylinux_2_28_x86_64.whl",
+      "sha256": "a7fa111343db1a60b683438786f1d375f1953eb9d2c517270c7872fabbab739c"
     },
     "triton": {
       "version": "3.9.0+gitb7ddcf86",
@@ -46,5 +53,33 @@
       "version": "3.8.0-1",
       "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnvshmem3-cuda-13_3.8.0-1_amd64.deb"
     }
-  ]
+  ],
+  "owned_builds": {
+    "pyyaml": {
+      "version": "6.0.3",
+      "url": "https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz",
+      "sha256": "d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f",
+      "build_requires": [
+        "setuptools",
+        "Cython; python_version < '3.13'",
+        "Cython>=3.0; python_version >= '3.13'"
+      ],
+      "environment": {}
+    },
+    "xgrammar": {
+      "version": "0.2.9",
+      "url": "https://files.pythonhosted.org/packages/3a/2f/5bf8e8fa6619cff534932f79b0abc81a417d354bc5093252c1a6081d0a93/xgrammar-0.2.9.tar.gz",
+      "sha256": "87b466bca2475e29bb0323abc62c6c33cbcbcff47e5fb800a3e2099ac9620b90",
+      "build_requires": [
+        "scikit-build-core>=0.10.0",
+        "setuptools-scm>=8.1",
+        "apache-tvm-ffi>=0.1.10",
+        "cmake>=3.18",
+        "ninja"
+      ],
+      "environment": {
+        "CXXFLAGS": "-Wno-error=odr"
+      }
+    }
+  }
 }

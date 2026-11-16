@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Render target-validated hash locks from a bounded pip resolver report.
 
-Linux CPython 3.12 ARM64 remains the default. AMD64 uses --architecture amd64.
-A report produced with pip cross-platform wheel selection needs --cross-report;
-its real resolver environment is retained while target tags, markers and extras
-are independently checked. Dependency validation is not an AMD64 build claim.
+Linux CPython 3.15 ARM64 remains the default. AMD64 uses --architecture amd64.
+The report must come from the pinned interpreter release. A report produced with
+pip cross-platform wheel selection needs --cross-report; its real resolver
+environment is retained while target tags, markers and extras are independently
+checked. Dependency validation is not an AMD64 build claim.
+
+Selected versions without a usable target wheel are declared in the pins'
+owned_builds. Their exact PyPI sdists stay in the manifest's runtime role (not
+in the runtime lock); the image builds them from the generated build lock.
 """
 
 import argparse
@@ -15,12 +20,19 @@ import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from foundation_policy import artifact_name, canonical_name, is_accelerator_package, validate_pins, wheel_url
+from foundation_policy import (
+    artifact_name,
+    canonical_name,
+    is_accelerator_package,
+    owned_builds,
+    validate_pins,
+    wheel_url,
+)
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.tags import compatible_tags, cpython_tags
-from packaging.utils import parse_wheel_filename
+from packaging.utils import parse_sdist_filename, parse_wheel_filename
 from packaging.version import Version
 from platform_pins import PLATFORMS, platform_pins
 
@@ -66,19 +78,20 @@ def _native_addons(pins: dict) -> list[dict]:
     return result
 
 
-def target_tags(architecture: str):
+def target_tags(architecture: str, python: tuple[int, int]):
     target = platform_pins(architecture)
+    abi = f"cp{python[0]}{python[1]}"
     minimum = 5 if architecture == "amd64" else 17
     platforms = [f"manylinux_2_{minor}_{target.machine}" for minor in range(39, minimum - 1, -1)]
     platforms += [f"manylinux2014_{target.machine}", f"linux_{target.machine}"]
     if architecture == "amd64":
         platforms += ["manylinux2010_x86_64", "manylinux1_x86_64"]
-    return set(cpython_tags((3, 12), abis=["cp312"], platforms=platforms)) | set(
-        compatible_tags((3, 12), interpreter="cp312", platforms=platforms))
+    return set(cpython_tags(python, abis=[abi], platforms=platforms)) | set(
+        compatible_tags(python, interpreter=abi, platforms=platforms))
 
 
 def _closure(selected: dict, environment: dict, *, cross: bool, roots: list[str] | None = None,
-             required_roots: set[str] | None = None) -> set[str]:
+             required_roots: set[str] | None = None, label: str = "foundation_roots") -> set[str]:
     """Validate the reachable target graph, preserving each requested extra."""
     extras = {name: {""} for name in selected} if roots is None else {}
 
@@ -108,11 +121,11 @@ def _closure(selected: dict, environment: dict, *, cross: bool, roots: list[str]
         seeded = set()
         for text in roots:
             requirement = Requirement(text)
-            if active(requirement, "foundation_roots", {""}):
-                include(requirement, "foundation_roots")
+            if active(requirement, label, {""}):
+                include(requirement, label)
                 seeded.add(canonical_name(requirement.name))
         if required_roots is not None and not required_roots <= seeded:
-            raise ValueError("foundation_roots omitted required audited wheels")
+            raise ValueError(f"{label} omitted required audited wheels")
     changed = True
     while changed:
         changed = False
@@ -133,14 +146,16 @@ def _closure(selected: dict, environment: dict, *, cross: bool, roots: list[str]
 def render(report: dict, pins: dict, architecture: str = "arm64", *, cross_report: bool = False,
            report_sha256: str | None = None):
     target = platform_pins(architecture)
-    validate_pins(pins, architecture)
+    validate_pins(pins, architecture, target.machine)
     native_addons = _native_addons(pins)
+    owned = owned_builds(pins)
     roots = pins["foundation_roots"]
     environment = report["environment"]
+    python = tuple(int(part) for part in pins["python"].split("."))
     if (environment["platform_system"] != "Linux" or environment["sys_platform"] != "linux"
             or environment["implementation_name"] != "cpython" or environment["python_version"] != pins["python"]
-            or Version(environment["python_full_version"]).release[:2] != (3, 12)):
-        raise ValueError("resolve the dependency report on Linux CPython 3.12")
+            or environment["python_full_version"] != pins["interpreter"]["version"]):
+        raise ValueError(f"resolve the dependency report on the pinned Linux CPython {pins['interpreter']['version']}")
     cross = environment["platform_machine"] != target.machine
     if cross and not cross_report:
         raise ValueError(f"resolve on {target.machine}, or explicitly declare --cross-report")
@@ -151,7 +166,7 @@ def render(report: dict, pins: dict, architecture: str = "arm64", *, cross_repor
     entries = report["install"]
     if not isinstance(entries, list) or not 1 <= len(entries) <= 256:
         raise ValueError("invalid dependency count")
-    accepted = target_tags(architecture)
+    accepted = target_tags(architecture, python)
     selected, distributions, lines = {}, {}, {}
     for item in entries:
         metadata = item["metadata"]
@@ -167,9 +182,20 @@ def render(report: dict, pins: dict, architecture: str = "arm64", *, cross_repor
         url = download["url"]
         parsed = urlsplit(url)
         filename = unquote(parsed.path.rsplit("/", 1)[-1])
+        if name in owned:
+            build = owned[name]
+            sdist_name, sdist_version = parse_sdist_filename(filename)
+            if (sdist_name != name or sdist_version != Version(version) or version != build["version"]
+                    or url != build["url"] or digest != build["sha256"]):
+                raise ValueError(f"resolver changed the owned {name} source distribution")
+            selected[name] = metadata
+            distributions[name] = {"version": version, "url": url, "sha256": digest}
+            distributions[name].update({key: metadata[key] for key in ("requires_dist", "requires_python")
+                                        if key in metadata})
+            continue
         wheel_name, wheel_version, _, tags = parse_wheel_filename(filename)
         if wheel_name != name or wheel_version != Version(version) or not tags & accepted:
-            raise ValueError(f"wheel metadata/tags do not match linux/{architecture} CPython 3.12: {name}")
+            raise ValueError(f"wheel metadata/tags do not match linux/{architecture} CPython {pins['python']}: {name}")
         allowed = BINARY_NIGHTLY_HOSTS if name in pins["wheels"] else ALLOWED_HOSTS
         nvidia_origin = (parsed.hostname == "pypi.nvidia.com" and parsed.port in (None, 443)
                          and (name == "cuda-toolkit" or name.startswith("nvidia-")))
@@ -185,7 +211,8 @@ def render(report: dict, pins: dict, architecture: str = "arm64", *, cross_repor
             parsed = urlsplit(url)
             pinned_name, pinned_version, _, pinned_tags = parse_wheel_filename(unquote(parsed.path.rsplit("/", 1)[-1]))
             if pinned_name != name or pinned_version != Version(version) or not pinned_tags & accepted:
-                raise ValueError(f"audited wheel metadata/tags do not match linux/{architecture} CPython 3.12: {name}")
+                raise ValueError(f"audited wheel metadata/tags do not match linux/{architecture} "
+                                 f"CPython {pins['python']}: {name}")
         if any(character.isspace() for character in unquote(url)) or not parsed.path.endswith(".whl"):
             raise ValueError(f"dependency must be a wheel URL: {name}")
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
@@ -194,28 +221,38 @@ def render(report: dict, pins: dict, architecture: str = "arm64", *, cross_repor
         lines[name] = f"{name} @ {url} --hash=sha256:{digest}\n"
         distributions[name] = {"version": version, "url": url, "sha256": digest}
         distributions[name].update({key: metadata[key] for key in ("requires_dist", "requires_python") if key in metadata})
-    if not set(pins["wheels"]) <= selected.keys() or not selected.keys() >= TEST_ONLY:
-        raise ValueError("report omitted required nightly or verification packages")
+    if not set(pins["wheels"]) <= selected.keys() or not selected.keys() >= TEST_ONLY or not owned.keys() <= selected.keys():
+        raise ValueError("report omitted required nightly, owned-build or verification packages")
     _closure(selected, active_environment, cross=cross)
     foundation = _closure(selected, active_environment, cross=cross, roots=roots, required_roots=set(pins["wheels"]))
+    # Owned sdists build in a discarded stage from exact wheels of one shared resolution,
+    # so a build dependency that is also a runtime package has the runtime identity.
+    build = _closure(selected, active_environment, cross=cross, label="owned build_requires",
+                     roots=sorted({text for record in owned.values() for text in record["build_requires"]}))
+    if build & (owned.keys() | TEST_ONLY) or owned.keys() & (foundation | TEST_ONLY):
+        raise ValueError("owned builds must be application packages built only from non-owned, non-test wheels")
     nccl_provider = pins.get("nccl_provider", "native")
     if nccl_provider == "nvidia-nccl-cu13" and nccl_provider not in foundation:
         raise ValueError("selected NCCL wheel provider must belong to the protected foundation closure")
     if foundation & TEST_ONLY:
         raise ValueError("verification-only packages cannot be foundation dependencies")
-    runtime_closure = _closure(selected, active_environment, cross=cross, roots=sorted(selected.keys() - TEST_ONLY))
+    # Build-only packages are those no non-build, non-test package reaches.
+    runtime_closure = _closure(selected, active_environment, cross=cross,
+                               roots=sorted(selected.keys() - TEST_ONLY - build))
     if runtime_closure & TEST_ONLY:
         raise ValueError("verification-only packages cannot be runtime dependencies")
     foreign = sorted(name for name in selected.keys() - foundation if is_accelerator_package(name))
     if foreign:
         raise ValueError("accelerator packages outside protected foundation closure: " + ", ".join(foreign))
-    roles = {"foundation": foundation, "runtime": selected.keys() - foundation - TEST_ONLY,
-             "verification": TEST_ONLY}
+    roles = {"foundation": foundation, "runtime": runtime_closure - foundation,
+             "verification": TEST_ONLY, "build": build}
     label = "ARM64" if architecture == "arm64" else "AMD64"
     mode = f"{label} cross-platform pip report (target marker closure checked)" if cross else f"{label} pip report"
     banner = f"# Generated by lock_dependencies.py from the {mode}; update pins and regenerate.\n"
     manifest = {"schema_version": 1,
-                **{key: pins[key] for key in ("platform", "python", "base", "base_index", "cuda", "cache_key")},
+                **{key: pins[key] for key in ("platform", "python", "interpreter", "base", "base_index", "cuda",
+                                              "cache_key")},
+                "owned_builds": owned,
                 "foundation_roots": roots,
                 "native_addons": native_addons,
                 "nccl_provider": nccl_provider,
@@ -228,8 +265,9 @@ def render(report: dict, pins: dict, architecture: str = "arm64", *, cross_repor
     if not re.fullmatch(r"[0-9a-f]{64}", manifest["resolver_report_sha256"]):
         raise ValueError("invalid resolver report SHA256")
     return {target.foundation: banner + "".join(lines[name] for name in sorted(foundation)),
-            target.runtime: banner + "".join(lines[name] for name in sorted(roles["runtime"])),
+            target.runtime: banner + "".join(lines[name] for name in sorted(roles["runtime"] - owned.keys())),
             target.verification: banner + "".join(lines[name] for name in sorted(TEST_ONLY)),
+            target.build: banner + "".join(lines[name] for name in sorted(build)),
             target.constraints: banner + "".join(
                 f"{name}==={selected[name]['version']}\n" for name in sorted(foundation)),
             target.manifest: json.dumps(manifest, indent=2, sort_keys=True) + "\n"}
@@ -286,8 +324,9 @@ def main():
     args.output_directory.mkdir(parents=True, exist_ok=True)
     write_locks(contents, args.output_directory)
     counts = {role: len(packages) for role, packages in json.loads(contents[target.manifest])["roles"].items()}
-    print(f"Locked {counts['foundation']} foundation, {counts['runtime']} runtime and "
-          f"{counts['verification']} test packages for linux/{args.architecture}; dependency closure validated")
+    print(f"Locked {counts['foundation']} foundation, {counts['runtime']} runtime "
+          f"({len(json.loads(contents[target.manifest])['owned_builds'])} owned builds), {counts['verification']} test "
+          f"and {counts['build']} build packages for linux/{args.architecture}; dependency closure validated")
 
 
 if __name__ == "__main__":

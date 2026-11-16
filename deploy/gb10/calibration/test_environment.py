@@ -59,9 +59,9 @@ def role():
 
 
 def site(prefix):
-    if sys.version_info[:2] != (3, 12):
-        raise ValueError('test role requires the recorded CPython3.12 target')
-    return Path(prefix)/'lib/python3.12/site-packages'
+    if sys.version_info[:2] != (3, 15):
+        raise ValueError('test role requires the selected CPython3.15 target')
+    return Path(prefix)/'lib/python3.15/site-packages'
 
 
 def inventory(directory):

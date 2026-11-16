@@ -73,7 +73,7 @@ Native ARM64 resolution and explicitly cross-resolved AMD64 metadata remain
 distinct from hardware/model qualification; the
 [refresh ledger](deploy/gb10/foundation-refresh-20261111.md) records their current scope.
 
-A fresh checkout can [stage the six tracked inputs and acquire the two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Native ARM images and the [GB10 checkpoint protocols](docs/gb10-nvfp4-validation.md) passed at their recorded bd1 source; final composed-source qualification remains separate. Older deployment profiles and measured rates retain their own identities.
+A fresh checkout can [stage the seven tracked inputs and acquire the pinned CPython 3.15.2 archive and two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Native ARM images and the [GB10 checkpoint protocols](docs/gb10-nvfp4-validation.md) passed at their recorded bd1 source; final composed-source qualification remains separate. Older deployment profiles and measured rates retain their own identities.
 
 The ARM64 runtime `e0bdd6b4`, source UID `1c166686`, passed installed CPU and
 the selected AEON 26B/DFlash functional, media, cancellation and full 262,144-token context
@@ -109,6 +109,7 @@ docker buildx build --platform linux/arm64 --load --target runtime \
   --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
   --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
   --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "PYTHON_SHA256=$TF_PYTHON_SHA256" \
   --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
   --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   -f deploy/gb10/Dockerfile -t tensorfold-gb10:candidate .
@@ -122,6 +123,7 @@ docker buildx build --platform linux/amd64 --load --target runtime \
   --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
   --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
   --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "PYTHON_SHA256=$TF_PYTHON_SHA256" \
   --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
   --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   -f deploy/gb10/Dockerfile -t tensorfold-x86-modern:candidate .
@@ -181,8 +183,8 @@ git rev-parse HEAD
 
 Run [input preparation](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs)
 with `TF_BUILD_ARCH=amd64` for this example, or `arm64` with a native ARM64 builder.
-It copies the six selected files, derives the base and fetches each declared
-addon from its pin URL into a temporary file. It checks the complete SHA256
+It copies the seven selected files, derives the base and fetches the declared
+interpreter archive and each addon from its pin URL into a temporary file. It checks the complete SHA256
 before publishing a canonical `.deb` name. Keep the resulting variables in this
 same shell; no hand-copied hashes or private wheelhouse are needed.
 
@@ -191,6 +193,7 @@ docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target runtime \
   --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
   --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
   --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "PYTHON_SHA256=$TF_PYTHON_SHA256" \
   --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
   --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-fork:local --file deploy/gb10/Dockerfile .
@@ -3455,6 +3458,7 @@ docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target verificati
   --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
   --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
   --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "PYTHON_SHA256=$TF_PYTHON_SHA256" \
   --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
   --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-fork:verification --file deploy/gb10/Dockerfile .

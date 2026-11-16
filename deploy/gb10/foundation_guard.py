@@ -256,7 +256,9 @@ def seal(*, manifest_path: Path, foundation: Path, application: Path, sdk_baseli
     addons = {item["package"]: item["version"] for item in manifest.get("native_addons", [])}
     native = native_files(before | addons)
     nccl_library, nccl_version = select_nccl(manifest, foundation, native)
-    addon_artifacts = {artifacts / item["artifact"]: item["sha256"] for item in manifest.get("native_addons", [])}
+    # The interpreter archive was hash-checked before extraction; seal it with the addons.
+    addon_artifacts = {artifacts / item["artifact"]: item["sha256"]
+                       for item in [*manifest.get("native_addons", []), manifest["interpreter"]]}
     owned_files = set(addon_artifacts) | tree_files(foundation) | {manifest_path, constraint, activation, config, bootstrap, runtime_helper, policy_helper, sdk_baseline, sdk_baseline.with_name("base-sdk.sha256"), sdk_baseline.with_name("base-sdk-links.tsv"), pattern_path}
     for key in ("wrappers", "helpers"):
         owned_files.update(Path(row["path"]) for row in toolchain[key].values())
@@ -275,7 +277,7 @@ def seal(*, manifest_path: Path, foundation: Path, application: Path, sdk_baseli
              "nccl_library": nccl_library, "nccl_version": nccl_version,
              "files": {str(path): identity(path, full=True) for path in sorted(files)}}
     if any(state["files"][str(path)]["sha256"] != expected for path, expected in addon_artifacts.items()):
-        raise ValueError("native addon artifact changed before sealing")
+        raise ValueError("native addon or interpreter artifact changed before sealing")
     from foundation_runtime import capture_runtime
     state["runtime"] = capture_runtime(foundation=foundation, manifest=manifest, native_files=native,
         compiler_files=compiler_files,
@@ -421,8 +423,26 @@ def native_proof(state: dict) -> dict:
 
 
 def role_lines(manifest: dict, role: str) -> list[str]:
+    """Locked wheel records; owned source builds are installed from their built wheels."""
     return sorted(f"{name} @ {pin['url']} --hash=sha256:{pin['sha256']}"
-                  for name, pin in manifest["roles"][role].items())
+                  for name, pin in manifest["roles"][role].items() if name not in manifest["owned_builds"])
+
+
+def owned_wheels(manifest: dict, directory: Path) -> dict[str, Path]:
+    """Exactly one built wheel per owned runtime record, matching its selected version."""
+    expected = manifest["owned_builds"]
+    found: dict[str, Path] = {}
+    for path in sorted(directory.iterdir()):
+        parts = path.name.removesuffix(".whl").split("-")
+        if path.is_symlink() or not path.is_file() or path.suffix != ".whl" or len(parts) not in (5, 6):
+            raise ValueError(f"unexpected owned build output: {path.name}")
+        name, version = canonical_name(parts[0]), parts[1]
+        if name not in expected or name in found or version != expected[name]["version"]:
+            raise ValueError(f"owned wheel differs from its selected source build: {path.name}")
+        found[name] = path
+    if found.keys() != expected.keys():
+        raise ValueError("owned wheel directory omits a selected source build")
+    return found
 
 
 def run_install(state: dict, argv: list[str]) -> None:
@@ -452,13 +472,24 @@ def run_install(state: dict, argv: list[str]) -> None:
     verify(state, full=True)
 
 
-def install_role(state: dict, *, role: str, lock: Path) -> None:
+def install_role(state: dict, *, role: str, lock: Path, owned: Path | None = None) -> None:
     verify(state, full=True)
+    manifest = state["manifest"]
     lines = sorted(line.strip() for line in lock.read_text().splitlines() if line.strip() and not line.startswith("#"))
-    if lines != role_lines(state["manifest"], role):
+    if lines != role_lines(manifest, role):
         raise ValueError("installation lock differs from the sealed, disjoint dependency role")
-    run_install(state, [str(Path(state["application"]) / "bin/python"), "-m", "pip", "install",
-                        "--require-hashes", "--no-deps", "-r", str(lock)])
+    built = manifest["owned_builds"].keys() & manifest["roles"][role].keys()
+    if (owned is not None) != bool(built):
+        raise ValueError(f"{role} role {'requires' if built else 'has no'} owned source-build wheels")
+    wheels = {} if owned is None else owned_wheels(manifest, owned)
+    python = str(Path(state["application"]) / "bin/python")
+    run_install(state, [python, "-m", "pip", "install", "--require-hashes", "--no-deps", "-r", str(lock)])
+    if wheels:
+        run_install(state, [python, "-m", "pip", "install", "--no-deps", "--no-index",
+                            *(str(path) for _, path in sorted(wheels.items()))])
+        state["owned_wheels"] = {name: {"wheel": path.name, "sha256": digest(path)}
+                                 for name, path in sorted(wheels.items())}
+        publish_state(state, Path(state["state_path"]))
 
 
 def install_application(state: dict, wheel: Path) -> None:
@@ -496,6 +527,7 @@ def main() -> None:
     parser.add_argument("--role", choices=("runtime", "verification"))
     parser.add_argument("--lock", type=Path)
     parser.add_argument("--wheel", type=Path)
+    parser.add_argument("--owned-wheels", type=Path, help="Directory of wheels built from the selected owned sdists")
     raw = sys.argv[1:]
     split = raw.index("--") if "--" in raw else len(raw)
     args = parser.parse_args(raw[:split])
@@ -546,7 +578,7 @@ def main() -> None:
         elif args.command == "install":
             if args.role is None or args.lock is None:
                 parser.error("install requires --role and --lock")
-            install_role(state, role=args.role, lock=args.lock)
+            install_role(state, role=args.role, lock=args.lock, owned=args.owned_wheels)
         elif args.command == "application":
             if args.wheel is None:
                 parser.error("application requires --wheel")

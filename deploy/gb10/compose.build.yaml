@@ -10,5 +10,6 @@ services:
         foundation_pins: ${TF_FOUNDATION_PINS:?Set TF_FOUNDATION_PINS to the generated native pin directory}
         foundation_artifacts: ${TF_FOUNDATION_ARTIFACTS:?Set TF_FOUNDATION_ARTIFACTS to the audited local artifact directory}
       args:
+        PYTHON_SHA256: ${TF_PYTHON_SHA256:?Set TF_PYTHON_SHA256 from the selected pins' interpreter record}
         SOURCE_REVISION: ${TF_SOURCE_REVISION:-uncommitted}
         MAX_JOBS: ${TF_BUILD_JOBS:-8}

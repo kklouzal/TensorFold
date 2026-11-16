@@ -26,16 +26,28 @@ def scripts(monkeypatch):
     return tuple(modules)
 
 
+def interpreter(machine):
+    # Synthetic identity in the official python-build-standalone naming; nothing is fetched.
+    artifact = f"cpython-3.15.2+20261110-{machine}-unknown-linux-gnu-install_only_stripped.tar.gz"
+    return {"version": "3.15.2", "artifact": artifact, "sha256": "d" * 64, "bytes": 1024,
+            "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/"
+                   + artifact.replace("+", "%2B")}
+
+
 def report_and_pins(architecture="amd64", machine="x86_64"):
     suffix = "-amd64" if architecture == "amd64" else ""
     pins = json.loads((HISTORY / ("nightly-pins" + suffix + ".json")).read_text())
-    # Archived schema-1 pins provide independent historical seeds. Reports
-    # derived from them here are synthetic and do not select deployment inputs.
-    pins.update({"schema_version": 2,
+    # Archived schema-1 pins provide independent historical seeds, retagged for the
+    # selected CPython 3.15 ABI. Reports derived from them here are synthetic and
+    # do not select deployment inputs.
+    for pin in pins["wheels"].values():
+        pin["url"] = pin["url"].replace("cp312-cp312", "cp315-cp315")
+    pins.update({"schema_version": 3, "python": "3.15",
+                 "interpreter": interpreter("x86_64" if architecture == "amd64" else "aarch64"),
                  "base_index": "nvcr.io/nvidia/cuda-dl-base:synthetic@sha256:" + "b" * 64,
                  "foundation_roots": list(pins["wheels"])})
     report = {"environment": {"implementation_name": "cpython", "platform_system": "Linux",
-                              "sys_platform": "linux", "python_version": "3.12", "python_full_version": "3.12.3",
+                              "sys_platform": "linux", "python_version": "3.15", "python_full_version": "3.15.2",
                               "platform_machine": machine}, "install": []}
     for name, pin in pins["wheels"].items():
         report["install"].append({"metadata": {"name": name, "version": pin["version"]},
@@ -53,6 +65,12 @@ def add(report, name, version="1.0", requirements=None):
                                                "archive_info": {"hashes": {"sha256": "a" * 64}}}})
 
 
+def runtime(monkeypatch, selector, version="3.15.2"):
+    major, minor, _ = map(int, version.split("."))
+    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=major, minor=minor)))
+    monkeypatch.setattr(selector.platform, "python_version", lambda: version)
+
+
 def manifest(result, scripts, architecture="amd64"):
     return json.loads(result[scripts[0].platform_pins(architecture).manifest])
 
@@ -61,7 +79,7 @@ def manifest(result, scripts, architecture="amd64"):
 def test_native_report_validates_selected_platform(scripts, architecture, machine):
     report, pins = report_and_pins(architecture, machine)
     result = scripts[0].render(report, pins, architecture)
-    assert len(result) == 5
+    assert len(result) == 6
     assert all("cross-platform" not in content for content in result.values())
 
 
@@ -103,7 +121,7 @@ def test_malformed_or_changed_distribution_is_refused(scripts, bad):
     elif bad == "architecture":
         report["install"][0]["download_info"]["url"] = pins["wheels"]["torch"]["url"].replace("x86_64", "aarch64")
     elif bad == "python":
-        report["install"][0]["download_info"]["url"] = pins["wheels"]["torch"]["url"].replace("cp312", "cp311")
+        report["install"][0]["download_info"]["url"] = pins["wheels"]["torch"]["url"].replace("cp315", "cp314")
     elif bad == "duplicate":
         report["install"].append(copy.deepcopy(report["install"][0]))
     else:
@@ -137,7 +155,7 @@ def test_select_pins_uses_native_runtime_and_all_preconditions(scripts, tmp_path
     target = selector.platform_pins(architecture)
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: machine)
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     report, pins = report_and_pins(architecture, machine)
     (tmp_path / target.pins).write_text(json.dumps(pins))
     contents = scripts[0].render(report, pins, architecture)
@@ -308,9 +326,9 @@ def test_manifest_records_target_and_report_provenance_deterministically(scripts
 def test_full_report_contract_remains_required(scripts, bad):
     report, pins = report_and_pins()
     if bad == "full_python":
-        report["environment"]["python_full_version"] = "3.13.1"
+        report["environment"]["python_full_version"] = "3.15.1"
     elif bad == "requires_python":
-        report["install"][0]["metadata"]["requires_python"] = ">=3.13"
+        report["install"][0]["metadata"]["requires_python"] = ">=3.16"
     elif bad == "requires_dist":
         report["install"][0]["metadata"]["requires_dist"] = {}
     elif bad == "missing_nightly":
@@ -325,7 +343,7 @@ def test_full_report_contract_remains_required(scripts, bad):
         scripts[0].render(report, pins, "amd64")
 
 
-def test_cli_writes_all_five_artifacts_and_hashes_original_report(scripts, tmp_path, monkeypatch, capsys):
+def test_cli_writes_all_six_artifacts_and_hashes_original_report(scripts, tmp_path, monkeypatch, capsys):
     generator = scripts[0]
     report, pins = report_and_pins()
     target = generator.platform_pins("amd64")
@@ -337,14 +355,14 @@ def test_cli_writes_all_five_artifacts_and_hashes_original_report(scripts, tmp_p
     monkeypatch.setattr(sys, "argv", ["lock_dependencies.py", "--report", str(report_path), "--architecture", "amd64"])
     generator.main()
     contents = {name: (tmp_path / name).read_text() for name in (
-        target.foundation, target.runtime, target.verification, target.constraints, target.manifest)}
+        target.foundation, target.runtime, target.verification, target.constraints, target.manifest, target.build)}
     assert manifest(contents, scripts)["resolver_report_sha256"] == hashlib.sha256(report_bytes).hexdigest()
     assert manifest(contents, scripts)["base"] == pins["base"]
     assert json.loads((tmp_path / target.pins).read_text()) == pins
-    assert "3 foundation, 0 runtime and 3 test packages" in capsys.readouterr().out
+    assert "3 foundation, 0 runtime (0 owned builds), 3 test and 0 build packages" in capsys.readouterr().out
 
 
-def test_five_artifact_generation_restores_originals_and_removes_new_files_on_failure(scripts, tmp_path, monkeypatch):
+def test_six_artifact_generation_restores_originals_and_removes_new_files_on_failure(scripts, tmp_path, monkeypatch):
     report, pins = report_and_pins()
     contents = scripts[0].render(report, pins, "amd64")
     filenames = list(contents)
@@ -369,11 +387,11 @@ def test_select_validates_every_input_before_copying(scripts, tmp_path, monkeypa
     target = selector.platform_pins("amd64")
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     for name, content in scripts[0].render(report, pins, "amd64").items():
         (tmp_path / name).write_text(content)
     if bad == "python":
-        monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=13)))
+        runtime(monkeypatch, selector, "3.15.1")
     elif bad == "missing":
         (tmp_path / target.manifest).unlink()
     elif bad == "oversized":
@@ -491,7 +509,7 @@ def selection_bundle(scripts, tmp_path, monkeypatch):
         (tmp_path / name).write_text("unpublished")
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     return selector, target, pins, contents
 
 
@@ -656,7 +674,7 @@ def test_exact_official_binary_hosts_generate_and_select(scripts, tmp_path, monk
     (tmp_path / target.pins).write_text(json.dumps(pins))
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     selector.select("amd64", tmp_path, base_image=pins["base"])
     assert (tmp_path / "requirements-foundation.lock").read_text() == result[target.foundation]
     assert (tmp_path / "requirements-runtime.lock").read_text() == result[target.runtime]
@@ -709,7 +727,7 @@ def test_cli_uses_explicit_pins_and_external_output_directory(scripts, tmp_path,
                                      "--output-directory", str(output)])
     generator.main()
     assert {path.name for path in output.iterdir()} == {
-        target.foundation, target.runtime, target.verification, target.constraints, target.manifest}
+        target.foundation, target.runtime, target.verification, target.constraints, target.manifest, target.build}
     selected = json.loads((output / target.manifest).read_text())
     assert selected["base"] == pins["base"]
     assert selected["foundation_roots"] == pins["foundation_roots"]
@@ -765,7 +783,7 @@ def test_selected_nccl_wheel_is_protected_and_selected(scripts, tmp_path, monkey
     (tmp_path / target.pins).write_text(json.dumps(pins))
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     selector.select("amd64", tmp_path, base_image=pins["base"])
     assert json.loads((tmp_path / "foundation-manifest.json").read_text())["nccl_provider"] == "nvidia-nccl-cu13"
 
@@ -818,7 +836,7 @@ def test_nvidia_index_accepts_only_canonical_vendor_namespaces(scripts, tmp_path
     (tmp_path / target.pins).write_text(json.dumps(pins))
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: machine)
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     selector.select(architecture, tmp_path, base_image=pins["base"])
     assert (tmp_path / "requirements-foundation.lock").read_text() == contents[target.foundation]
 
@@ -844,7 +862,7 @@ def test_nvidia_index_rejects_nonnamespace_packages_in_generator_and_selector(sc
     before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     with pytest.raises(ValueError, match="invalid selected distribution origin"):
         selector.select("amd64", tmp_path, base_image=pins["base"])
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
@@ -878,7 +896,7 @@ def test_nvidia_namespace_does_not_authorize_unsafe_urls(scripts, tmp_path, monk
     before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     with pytest.raises(ValueError):
         selector.select("amd64", tmp_path, base_image=pins["base"])
     assert {path.name: path.read_bytes() for path in tmp_path.iterdir()} == before
@@ -906,6 +924,96 @@ def test_nvidia_index_cuda_exception_is_exact_toolkit_only(scripts, tmp_path, mo
     (tmp_path / target.pins).write_text(json.dumps(pins))
     monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
     monkeypatch.setattr(selector.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(selector, "sys", SimpleNamespace(version_info=SimpleNamespace(major=3, minor=12)))
+    runtime(monkeypatch, selector)
     with pytest.raises(ValueError, match="distribution origin"):
         selector.select("amd64", tmp_path, base_image=pins["base"])
+
+
+def owned_build(name="owned-app", version="2.0", requirements=("builder>=1",)):
+    # Synthetic exact-sdist record; nothing is fetched or built here.
+    return {"version": version, "sha256": "e" * 64, "build_requires": list(requirements), "environment": {},
+            "url": f"https://files.pythonhosted.org/packages/00/{name.replace('-', '_')}-{version}.tar.gz"}
+
+
+def owned_report(architecture="amd64", machine="x86_64"):
+    report, pins = report_and_pins(architecture, machine)
+    pins["owned_builds"] = {"owned-app": owned_build()}
+    report["install"].append({"metadata": {"name": "owned-app", "version": "2.0", "requires_dist": ["shared>=1"]},
+                              "download_info": {"url": pins["owned_builds"]["owned-app"]["url"],
+                                                "archive_info": {"hashes": {"sha256": "e" * 64}}}})
+    add(report, "builder", requirements=["shared>=1", "build-helper"])
+    add(report, "build-helper")
+    add(report, "shared")
+    return report, pins
+
+
+@pytest.mark.parametrize("architecture,machine", [("arm64", "aarch64"), ("amd64", "x86_64")])
+def test_owned_sdist_stays_out_of_runtime_lock_and_builds_from_build_role(scripts, tmp_path, monkeypatch,
+                                                                         architecture, machine):
+    report, pins = owned_report(architecture, machine)
+    result = scripts[0].render(report, pins, architecture)
+    target = scripts[0].platform_pins(architecture)
+    roles = manifest(result, scripts, architecture)["roles"]
+    assert set(roles["runtime"]) == {"owned-app", "shared"}
+    assert set(roles["build"]) == {"builder", "build-helper", "shared"}
+    assert roles["runtime"]["owned-app"]["url"].endswith("owned_app-2.0.tar.gz")
+    assert roles["build"]["shared"] == roles["runtime"]["shared"]
+    locked = {role: {line.split(" @ ")[0] for line in result[getattr(target, attribute)].splitlines()
+                     if not line.startswith("#")}
+              for role, attribute in (("runtime", "runtime"), ("build", "build"))}
+    assert locked == {"runtime": {"shared"}, "build": {"builder", "build-helper", "shared"}}
+    assert manifest(result, scripts, architecture)["owned_builds"] == pins["owned_builds"]
+    selector = scripts[1]
+    monkeypatch.setattr(selector.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(selector.platform, "machine", lambda: machine)
+    runtime(monkeypatch, selector)
+    (tmp_path / target.pins).write_text(json.dumps(pins))
+    for name, content in result.items():
+        (tmp_path / name).write_text(content)
+    selector.select(architecture, tmp_path, interpreter_sha256=pins["interpreter"]["sha256"])
+    assert (tmp_path / "requirements-build.lock").read_text() == result[target.build]
+
+
+@pytest.mark.parametrize("bad", ["sdist_hash", "sdist_url", "version", "build_requires_test", "owned_in_build",
+                                 "foundation", "environment"])
+def test_owned_build_identity_and_roles_are_enforced(scripts, bad):
+    report, pins = owned_report()
+    record = pins["owned_builds"]["owned-app"]
+    sdist = next(item for item in report["install"] if item["metadata"]["name"] == "owned-app")
+    if bad == "sdist_hash":
+        sdist["download_info"]["archive_info"]["hashes"]["sha256"] = "f" * 64
+    elif bad == "sdist_url":
+        sdist["download_info"]["url"] = record["url"].replace("/00/", "/01/")
+    elif bad == "version":
+        record["version"] = "2.1"
+    elif bad == "build_requires_test":
+        record["build_requires"] = ["pytest"]
+    elif bad == "owned_in_build":
+        record["build_requires"] = ["owned-app"]
+    elif bad == "foundation":
+        report["install"][0]["metadata"]["requires_dist"] = ["owned-app"]
+    else:
+        record["environment"] = {"LD_PRELOAD": "/tmp/x.so"}
+    with pytest.raises(ValueError):
+        scripts[0].render(report, pins, "amd64")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("artifact", "cpython-3.15.2+20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"),
+    ("url", "https://example.invalid/cpython-3.15.2%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"),
+    ("version", "3.14.4"), ("sha256", "D" * 64), ("bytes", 0)])
+def test_interpreter_must_be_the_exact_official_target_archive(scripts, field, value):
+    report, pins = report_and_pins()
+    pins["interpreter"][field] = value
+    with pytest.raises(ValueError, match="interpreter"):
+        scripts[0].render(report, pins, "amd64")
+
+
+@pytest.mark.parametrize("bad", ["archive", "patch"])
+def test_select_binds_installed_interpreter_to_pins(selection_bundle, tmp_path, monkeypatch, bad):
+    selector = selection_bundle[0]
+    if bad == "patch":
+        runtime(monkeypatch, selector, "3.15.3")
+    with pytest.raises(ValueError, match="interpreter archive|deployment runtime"):
+        selector.select("amd64", tmp_path, interpreter_sha256="0" * 64 if bad == "archive" else None)
+    assert (tmp_path / "nightly-pins.json").read_text() == "unpublished"

@@ -49,7 +49,7 @@ def sealed(guard, tmp_path, monkeypatch):
     profile.write_text("{}")
     manifest = {"roles": {"foundation": {"torch": {"version": "1.0"}},
                           "runtime": {"demo": {"version": "1.0", "url": "https://example.invalid/demo.whl", "sha256": "a" * 64}},
-                          "verification": {}}}
+                          "verification": {}}, "owned_builds": {}}
     state = {"schema_version": 1, "foundation": str(foundation), "application": str(application),
              "manifest": manifest, "sdk_pattern": "^cuda-", "sdk_packages": {"cuda-sdk": "13.4.3"},
              "compiler_packages": {"gcc": "13"}, "native_files": [], "sdk_links": {},
@@ -316,9 +316,12 @@ def test_seal_publishes_compact_early_environment_and_failure_is_fatal(guard, tm
     distribution(guard.site_directory(foundation), "torch", "1.0")
     addon = tmp_path / "approved-runtime.deb"
     addon.write_bytes(b"owned copied native artifact")
+    archive = tmp_path / "interpreter.tar.gz"
+    archive.write_bytes(b"verified interpreter archive")
     manifest = tmp_path / "foundation-manifest.json"
     manifest.write_text(json.dumps({"roles": {"foundation": {"torch": {"version": "1.0"}},
                                              "runtime": {}, "verification": {}},
+                                    "interpreter": {"artifact": archive.name, "sha256": guard.digest(archive)},
                                     "native_addons": [{"artifact": addon.name, "sha256": guard.digest(addon),
                                                        "package": "runtime-addon", "version": "1.0"}]}))
     (tmp_path / "foundation-constraints.txt").write_text("torch===1.0\n")
@@ -349,7 +352,8 @@ def test_seal_publishes_compact_early_environment_and_failure_is_fatal(guard, tm
     state = guard.seal(manifest_path=manifest, foundation=foundation, application=application,
                        sdk_baseline=baseline, pattern_path=pattern, state_path=state_path,
                        artifacts=tmp_path, toolchain=tools)
-    for path in (addon, manifest, baseline, pattern, state_path, Path(state["runtime_profile_path"]),
+    assert state["files"][str(archive)]["sha256"] == guard.digest(archive)
+    for path in (addon, archive, manifest, baseline, pattern, state_path, Path(state["runtime_profile_path"]),
                  guard.site_directory(application) / "tensorfold-foundation-environment.json"):
         assert path.stat().st_mtime_ns % 10**9 == 0
     assert {path: path.stat().st_mtime_ns for path in native_timestamps} == native_timestamps
@@ -824,3 +828,43 @@ def test_pristine_compiler_baseline_rejects_preseal_mutation(guard, tmp_path, mu
         alias.symlink_to("different-runtime")
     result = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
     assert result.returncode != 0
+
+
+def owned_state(sealed, tmp_path, monkeypatch, guard):
+    sealed["manifest"]["owned_builds"] = {"owned-app": {"version": "2.0"}}
+    sealed["manifest"]["roles"]["runtime"]["owned-app"] = {
+        "version": "2.0", "url": "https://files.pythonhosted.org/owned_app-2.0.tar.gz", "sha256": "e" * 64}
+    sealed["state_path"] = str(tmp_path / "state.json")
+    sealed["state_digest"] = guard.state_digest(sealed)
+    lock = tmp_path / "runtime.lock"
+    lock.write_text("# generated\ndemo @ https://example.invalid/demo.whl --hash=sha256:" + "a" * 64 + "\n")
+    wheels = tmp_path / "owned"
+    wheels.mkdir()
+    calls = []
+    monkeypatch.setattr(guard, "run_install", lambda state, argv: calls.append(argv))
+    monkeypatch.setattr(guard, "publish_state", lambda state, path: calls.append(("published", path)))
+    return lock, wheels, calls
+
+
+def test_owned_wheels_install_after_locked_role_and_are_recorded(guard, sealed, tmp_path, monkeypatch):
+    lock, wheels, calls = owned_state(sealed, tmp_path, monkeypatch, guard)
+    wheel = wheels / "owned_app-2.0-cp315-cp315-linux_x86_64.whl"
+    wheel.write_bytes(b"built owned wheel")
+    guard.install_role(sealed, role="runtime", lock=lock, owned=wheels)
+    assert calls[0][-2:] == ["-r", str(lock)]
+    assert calls[1][-1] == str(wheel) and "--no-index" in calls[1]
+    assert sealed["owned_wheels"] == {"owned-app": {"wheel": wheel.name, "sha256": guard.digest(wheel)}}
+    assert calls[2] == ("published", Path(sealed["state_path"]))
+
+
+@pytest.mark.parametrize("bad", ["missing_directory", "version", "unknown", "extra_file", "empty"])
+def test_owned_wheels_must_match_selected_source_builds(guard, sealed, tmp_path, monkeypatch, bad):
+    lock, wheels, calls = owned_state(sealed, tmp_path, monkeypatch, guard)
+    names = {"version": "owned_app-2.1-cp315-cp315-linux_x86_64.whl",
+             "unknown": "other_app-2.0-cp315-cp315-linux_x86_64.whl",
+             "extra_file": "receipt.json"}
+    if bad in names:
+        (wheels / names[bad]).write_bytes(b"x")
+    with pytest.raises(ValueError, match="owned"):
+        guard.install_role(sealed, role="runtime", lock=lock, owned=None if bad == "missing_directory" else wheels)
+    assert calls == []

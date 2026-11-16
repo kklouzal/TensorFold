@@ -10,7 +10,8 @@ deployment configuration.
 
 This guide separates the current selected image inputs and source-specific
 checkpoint validation from the dated deployment records below. The build uses NGC
-CUDA **13.4.3 cuDNN development**, CPython 3.12 and genuine official nightlies:
+CUDA **13.4.3 cuDNN development**, CPython 3.15.2 (pinned python-build-standalone
+`20261110` archive per architecture) and genuine official nightlies:
 Torch `2.16.0.dev20261111+cu134`, TorchVision
 `0.30.0.dev20261111+cu134` and Triton `3.9.0+gitb7ddcf86` on both maintained
 architectures. The protected installer is pip 26.3. [ARM64 pins](nightly-pins.json)
@@ -26,8 +27,8 @@ gain/equivalence is claimed; AMD64 native execution is unrun. Exact identities
 and coverage limits are recorded in the refresh ledger.
 
 Use the [fresh-checkout input preparation](foundation.md#prepare-the-tracked-selected-inputs)
-to stage the six tracked files and fetch the two native runtime addons from
-those pins. Ordinary builds do not require a new resolver report or private
+to stage the seven tracked files and fetch the interpreter archive and two native
+runtime addons from those pins. Ordinary builds do not require a new resolver report or private
 experiment directories. The managed loader selects native core providers and
 only the exact protected TorchVision bundled-runtime exceptions permitted by
 the [foundation contract](foundation.md).
@@ -450,6 +451,7 @@ docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target runtime \
   --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
   --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
   --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "PYTHON_SHA256=$TF_PYTHON_SHA256" \
   --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
   --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-gb10-fork:candidate --file deploy/gb10/Dockerfile .
@@ -460,7 +462,7 @@ The earlier qualified Dockerfile used NVIDIA's NGC CUDA DL inference development
 its immutable multiarchitecture OCI index. It selects the original ARM64 child
 or the audited AMD64 child, then validates the actual Linux/Python architecture
 before installing the matching locks. That supplies NVCC, CUDA headers and forward-compatibility
-libraries. Python 3.12 and upstream nightly packages live in an isolated venv;
+libraries. Python 3.15 and upstream nightly packages live in an isolated venv;
 NGC's tightly coupled PyTorch plugins are not part of this image. All Python
 runtime dependencies are pinned to wheel URLs and SHA256 hashes, including the
 nightly's required CUDA libraries and Triton. The inference base's sparse/solver
@@ -482,6 +484,7 @@ docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target runtime \
   --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
   --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
   --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "PYTHON_SHA256=$TF_PYTHON_SHA256" \
   --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
   --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-fork:amd64 --file deploy/gb10/Dockerfile .
@@ -665,6 +668,7 @@ docker buildx build --platform "linux/$TF_BUILD_ARCH" --load --target verificati
   --build-context "foundation_pins=$TF_FOUNDATION_PINS" \
   --build-context "foundation_artifacts=$TF_FOUNDATION_ARTIFACTS" \
   --build-arg "BASE_IMAGE=$TF_BASE_IMAGE" \
+  --build-arg "PYTHON_SHA256=$TF_PYTHON_SHA256" \
   --build-arg "SOURCE_REVISION=$TF_SOURCE_REVISION" \
   --build-arg "MAX_JOBS=$TF_BUILD_JOBS" \
   --tag tensorfold-gb10-fork:verification --file deploy/gb10/Dockerfile .
@@ -728,7 +732,7 @@ shutdown after the CUDA suite, which exited successfully. Small isolated compile
 and GPU probes did not reproduce them. Sustained full-model memory behavior still
 needs validation; the warnings are retained rather than suppressed.
 
-For current foundation refreshes, follow [the schema2 generation, build and audit procedure](foundation.md).
+For current foundation refreshes, follow [the schema3 generation, build and audit procedure](foundation.md).
 The original schema1 inputs are archived under `history/20261006` with their
 source commit and byte hashes. They retain historical evidence; reproducing
 them requires their original tooling revision.
@@ -736,16 +740,26 @@ them requires their original tooling revision.
 For an intentional refresh, use actual reports produced for that selection and
 the maintained [external-output generation workflow](foundation.md#refresh-selected-dependencies).
 The archived 2026-10-06 report can reproduce only its original profile/tooling;
-it is not an input to current schema2 generation. The following command shape
-uses explicit new report/output paths:
+it is not an input to current schema3 generation. Owned sdist builds need a native
+report per architecture. The following command shape uses explicit new
+report/output paths:
 
 ```bash
+# On an AMD64 host; the archive is the pins' downloaded interpreter.
+python3 deploy/gb10/resolve_dependencies.py --architecture amd64 \
+  --archive "$TF_FOUNDATION_ARTIFACTS/cpython-3.15.2+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" \
+  --constraints-manifest deploy/gb10/foundation-manifest-amd64.json \
+  --output new-reports/resolver-amd64.json
 python3 deploy/gb10/lock_dependencies.py --architecture amd64 \
   --pins deploy/gb10/nightly-pins-amd64.json \
   --report new-reports/resolver-amd64.json --output-directory new-generated/amd64
 
-# Recorded AMD64-to-ARM64 metadata resolution; this does not qualify ARM execution.
-python3 deploy/gb10/lock_dependencies.py --architecture arm64 --cross-report \
+# On an ARM64 host with the ARM64 archive.
+python3 deploy/gb10/resolve_dependencies.py --architecture arm64 \
+  --archive "$TF_FOUNDATION_ARTIFACTS/cpython-3.15.2+20261110-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz" \
+  --constraints-manifest deploy/gb10/foundation-manifest-amd64.json \
+  --output new-reports/resolver-arm64.json
+python3 deploy/gb10/lock_dependencies.py --architecture arm64 \
   --pins deploy/gb10/nightly-pins.json \
   --report new-reports/resolver-arm64.json --output-directory new-generated/arm64
 ```

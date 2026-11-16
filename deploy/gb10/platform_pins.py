@@ -14,15 +14,17 @@ class PlatformPins:
     foundation: str
     constraints: str
     manifest: str
+    build: str
 
 
 PLATFORMS = MappingProxyType({
     "arm64": PlatformPins("arm64", "aarch64", "nightly-pins.json", "requirements-runtime.lock",
                           "requirements-test.lock", "requirements-foundation.lock", "foundation-constraints.txt",
-                          "foundation-manifest.json"),
+                          "foundation-manifest.json", "requirements-build.lock"),
     "amd64": PlatformPins("amd64", "x86_64", "nightly-pins-amd64.json", "requirements-runtime-amd64.lock",
                           "requirements-test-amd64.lock", "requirements-foundation-amd64.lock",
-                          "foundation-constraints-amd64.txt", "foundation-manifest-amd64.json"),
+                          "foundation-constraints-amd64.txt", "foundation-manifest-amd64.json",
+                          "requirements-build-amd64.lock"),
 })
 
 
