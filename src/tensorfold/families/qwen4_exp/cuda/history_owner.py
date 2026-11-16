@@ -930,13 +930,14 @@ class OwnerBuffers:
         for lane, (state, first, last, begin, end, cache, position, index_owner) in enumerate(spans):
             self.lane_rows[lane].fill_(last - first)
             live_pointer = self.lane_rows.data_ptr() + lane * self.lane_rows.element_size()
-            for row in range(begin, end):
-                words = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
-                         cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
-                         position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
-                         state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner,
-                         cache.merge_order)
-                self.descriptor_host_words[row - base] = words
+            # One lane's rows share every word but ROW_OFFSET (field 14): fill the block, then the offsets.
+            block = self.descriptor_host_words[begin - base:end - base]
+            block[:] = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
+                        cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
+                        position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
+                        state.capacity, cache.capacity, cache.page_offsets.numel(), 0, index_owner,
+                        cache.merge_order)
+            block[:, 14] = np.arange(begin - first, end - first, dtype=np.int64)
         if ring is None:
             self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
             if self.descriptor_upload is not None:

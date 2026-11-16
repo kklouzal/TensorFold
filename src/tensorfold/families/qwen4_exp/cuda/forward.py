@@ -47,6 +47,12 @@ def _gather(w: Weights, b: Buffers, part: torch.Tensor, flat: torch.Tensor, R: i
         summed = flat[:R * d // 2].view(torch.float16).view(R, d)
         if reduce(part[:R], summed):
             return summed.view(1, R, d)
+    if b.prefill and getattr(w.comm, "all_reduce_half", None) is not None:
+        # Prompt rows past the small gather: an NCCL FP32 sum moves ~2/world of the gathered bytes and its
+        # consumer reads one FP16 row set instead of world FP32 partials (NCCL's sum order, same on every rank).
+        summed = flat[:R * d // 2].view(torch.float16).view(R, d)
+        if w.comm.all_reduce_half(part[:R], summed):
+            return summed.view(1, R, d)
     out = flat[:b.world * R * d]
     w.comm.all_gather(part[:R], out)
     return out.view(b.world, R, d)

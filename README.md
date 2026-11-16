@@ -2003,6 +2003,28 @@ cut into different pieces than its cold prefill, and the single-request engine
 (`--parallel 1`) still recomputes the last row. The serving matrix sends unique
 prompts, so its cells contain no cache hits.
 
+**Prompt-pass host cost and rank placement (2026-11-16).** Three changes to the
+Flash Next tensor-parallel path. (1) Each rank now binds all of its host threads to
+the CPUs of its GPU's NUMA node at startup (skipped when a sealed NUMA plan already
+placed the worker; logged and left unbound when the NVIDIA PCI topology is not
+observable). Unbound rank threads migrated across both sockets. (2) Prompt-pass
+tensor-parallel partials larger than the small-gather mailbox are summed by one NCCL
+FP32 all-reduce and rounded once to FP16, instead of all-gathering every rank's FP32
+partials (each rank moves about a quarter of the bytes and the write-back reads one
+FP16 row set). The FP32 sum order is NCCL's rather than rank order; decode rounds and
+small prompt pieces are unchanged. (3) Owner-attention descriptor rows are packed per
+lane with NumPy instead of a per-row Python loop. On 8× V100 TP8/ETP4, MTP4, INT8 KV
+(image `cf8c0ff6` with the source overlaid, `m-profile7h`, 1,024 prefill rows, 24 lanes at
+262,144 context), the greedy serving matrix (two server sessions per arm, two repeats,
+A B B A) scores *superior*: prefill aggregate 1.196× (1.179–1.212), decode aggregate
+1.260× (1.252–1.268), no regressed cell; C1 prefill 4K 1,843 → 2,284, 16K 1,906 → 2,371,
+64K 1,793 → 2,104 tok/s; C8 prefill 4K 847 → 973, 16K 1,318 → 1,549 tok/s (C8 cells
+include the client's 503 resends); C1 decode 4K 52.5 → 65.7, 16K 40.0 → 56.5, 64K 39.1 →
+55.7 tok/s; C8 decode per request 4K 21.3 → 23.8, 16K 12.7 → 14.2 (uncertain cells). Corpus-v1 teacher-forced NLL:
+decode equivalent (+0.0012, CI [−0.0008, +0.0036]); prompt rows inconclusive (+0.0013,
+CI [−0.0036, +0.0066]); golden-vg2 greedy replies identical; long cold/repeat replies
+still identical to each other (their reference record predates the new prompt sums).
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the

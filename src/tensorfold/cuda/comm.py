@@ -508,6 +508,36 @@ class NCCL:
             small.allreduce(a, b, rows, dims, torch._C._cuda_getCurrentRawStream(self.device.index))
             return True
 
+    def all_reduce_half(self, send: torch.Tensor, recv: torch.Tensor) -> bool:
+        """Sum every rank's FP32 [rows, dims] partials in place, then round once to FP16 into recv.
+
+        NCCL's sum order is its own (not rank 0 first), but every rank receives the same bytes. ``send`` is
+        overwritten with the FP32 sums. Each rank moves about 2/world of the bytes the all-gather of the
+        partials would receive. Returns False (nothing submitted) when the partials fit the small gather,
+        whose mailboxes beat an NCCL launch there. Same borrowing contract as all_gather.
+        """
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("all_reduce_half: communicator admission is closed")
+            if (not isinstance(send, torch.Tensor) or not isinstance(recv, torch.Tensor) or send.ndim != 2
+                    or send.dtype != torch.float32 or recv.dtype != torch.float16 or recv.shape != send.shape
+                    or send.device != self.device or recv.device != self.device
+                    or not send.is_contiguous() or not recv.is_contiguous()):
+                raise ValueError("all_reduce_half: contiguous FP32 [rows, dims] input and FP16 output required")
+            if self.small_gather is not None and send.numel() * 4 <= self.small_gather_bytes:
+                return False
+            a, b = send.data_ptr(), recv.data_ptr()
+            if a < b + recv.numel() * 2 and b < a + send.numel() * 4:
+                raise ValueError("all_reduce_half: input and output must not overlap")
+            function = self.lib.ncclAllReduce
+            function.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                                 ctypes.c_void_p, ctypes.c_void_p]
+            function.restype = ctypes.c_int
+            self._check(function(a, a, send.numel(), _DTYPES[torch.float32], 0,      # ncclSum
+                                 self.comm, torch._C._cuda_getCurrentRawStream(self.device.index)))
+            recv.copy_(send)
+            return True
+
     def _all_gather(self, send: torch.Tensor, recv: torch.Tensor) -> None:
         """Submit while the caller holds this communicator's lifetime lease."""
         if not isinstance(send, torch.Tensor) or not isinstance(recv, torch.Tensor):

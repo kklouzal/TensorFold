@@ -177,6 +177,23 @@ class FlashNextEngine:
                     finish((lambda: diagnostic.report(primary), self._rollback_startup))
                 rollback(self, primary, retire_startup)
 
+    @staticmethod
+    def _bind_local_node(tp):
+        """Tensor-parallel ranks run their host threads on their GPU's NUMA node (unless a strict NUMA plan
+        already placed this worker). Unobservable topology (no Linux NVIDIA PCI inventory) leaves them unbound."""
+        from os import environ
+        if tp < 2 or any(name in environ for name in
+                         ('TENSORFOLD_NUMA_PLAN', 'TENSORFOLD_NUMA_PLAN_SHA256', 'TENSORFOLD_NUMA_RANK')):
+            return
+        from tensorfold.cuda.numa_memory import bind_process_to_gpu_node
+        try:
+            placement = bind_process_to_gpu_node(0)
+        except (OSError, RuntimeError, ValueError, KeyError) as error:
+            print(f"[tensorfold] rank host threads left unbound: GPU NUMA topology unavailable ({error})", flush=True)
+            return
+        print(f"[tensorfold] rank host threads bound to GPU {placement.pci_bus_id} NUMA node {placement.node} "
+              f"({len(placement.cpus)} CPUs)", flush=True)
+
     def _verify_numa_placement(self, stage, torch_module=None, *, expected_rank):
         """Startup-only verification of the launcher's enforced worker policy."""
         from os import environ
@@ -660,6 +677,7 @@ class FlashNextEngine:
                 self._startup_store = self._startup_store_origin = None  # Existing comm retains the managed transport.
         torch.cuda.set_device(0)
         self._verify_numa_placement("post-cuda", torch, expected_rank=rank)
+        self._bind_local_node(tp)
         if sm70 and self._owned_expert_requested:
             from tensorfold.cuda.sm70.triton_driver import prepare_driver
 
