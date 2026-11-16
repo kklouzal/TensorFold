@@ -136,7 +136,7 @@ static int file_close(int descriptor) {
 static char *path_real(const char *path, char *resolved) {
     if (strcmp(path, "/opt/venv/bin/python3")) abort();
     if (is("realpath-fail")) { errno = ENOENT; return NULL; }
-    strcpy(resolved, "/usr/bin/python3.12"); return resolved;
+    strcpy(resolved, "/opt/python3.15/bin/python3.15"); return resolved;
 }
 static ssize_t receipt_write(int descriptor, const void *buffer, size_t length) {
     if (is("write-fail")) { errno = EIO; return -1; }

@@ -582,7 +582,7 @@ def verification_receipt(raw, spec, expected):
             "actual owned launcher/source/xattr differs")
     require(type(python) is dict and set(python) == {"path", "resolved_path", "bytes", "sha256", "mode", "uid"}
             and {k: python[k] for k in ("path", "bytes", "sha256")} == contract["python"]
-            and python["resolved_path"] == "/usr/bin/python3.12"
+            and python["resolved_path"] == "/opt/python3.15/bin/python3.15"
             and type(python["mode"]) is int and python["mode"] == 0o755
             and type(python["uid"]) is int and python["uid"] == 0, "actual protected Python differs")
     require(type(launcher["source"]) is dict and type(launcher["source"].get("uid")) is int

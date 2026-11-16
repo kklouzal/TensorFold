@@ -68,7 +68,7 @@ def verification_data(spec):
                          "mode": 0o555, "uid": 0, "source": {"path": host.VERIFICATION_SOURCE,
                          "bytes": contract["launcher"]["source_bytes"], "sha256": contract["launcher"]["source_sha256"],
                          "mode": 0o444, "uid": 0}},
-            "python": {**contract["python"], "resolved_path": "/usr/bin/python3.12", "mode": 0o755, "uid": 0},
+            "python": {**contract["python"], "resolved_path": "/opt/python3.15/bin/python3.15", "mode": 0o755, "uid": 0},
             "runtime": expected["runtime"], "providers": {"schema": "tensorfold.native-elf-observation-v3",
                 "identity_method": "kernel-vma-backed-fd-v1", "PID": 1, "missing_required_provider_paths": [],
                 "required_providers": contract["providers"], "mapped_elfs": [
@@ -280,13 +280,13 @@ class Contracts(unittest.TestCase):
         spec["verification_launcher"] = {"mode": host.VERIFICATION_MODE, "base_image_id": self.spec["image_id"],
             "launcher": {"path": host.VERIFICATION_ENTRY, "bytes": 16976, "sha256": "1"*64,
                          "source_bytes": 8000, "source_sha256": "2"*64, "file_capability_hex": host.VERIFICATION_XATTR},
-            "python": {"path": host.VERIFICATION_PYTHON, "bytes": 8020928, "sha256": "3"*64},
-            "providers": {"/opt/venv/lib/python3.12/site-packages/torch/_C.cpython-312-x86_64-linux-gnu.so": {"bytes": 1024, "sha256": "4"*64},
-                          "/opt/venv/lib/python3.12/site-packages/tensorfold/_fd_owner.abi3.so": {"bytes": 37936, "sha256": "7"*64}}}
+            "python": {"path": host.VERIFICATION_PYTHON, "bytes": 33989216, "sha256": "3"*64},
+            "providers": {"/opt/venv/lib/python3.15/site-packages/torch/_C.cpython-315-x86_64-linux-gnu.so": {"bytes": 1024, "sha256": "4"*64},
+                          "/opt/venv/lib/python3.15/site-packages/tensorfold/_fd_owner.abi3-x86_64-linux-gnu.so": {"bytes": 37936, "sha256": "7"*64}}}
         path = self.operator/"spec.json"
         data = json.loads(path.read_text())
         data.update(image_id=spec["image_id"], verification_launcher=copy.deepcopy(spec["verification_launcher"]),
-                    app_root="/opt/venv/lib/python3.12/site-packages/tensorfold",
+                    app_root="/opt/venv/lib/python3.15/site-packages/tensorfold",
                     expected_app={"__init__.py": {"bytes": 10, "sha256": "5"*64, "mode": 0o644}},
                     sdk_manifest={"path": "/opt/tensorfold-pins/v100-source-foundation.json", "sha256": "6"*64},
                     fd={"sha256": "7"*64, "source_sha256": "8"*64},
@@ -331,7 +331,7 @@ class Contracts(unittest.TestCase):
             change(bad)
             with self.subTest(change=change), self.assertRaises(ValueError):
                 host.validate_spec(bad)
-        for target in ("/proc", "/proc/self/status", "/opt/qualification", "/usr/bin/python3.12", "/tmp"):
+        for target in ("/proc", "/proc/self/status", "/opt/qualification", "/opt/python3.15/bin/python3.15", "/tmp"):
             bad = copy.deepcopy(spec)
             bad["mounts"].append({"source": str(self.cache), "target": target, "read_only": True})
             with self.subTest(target=target), self.assertRaisesRegex(ValueError, "shadows"):

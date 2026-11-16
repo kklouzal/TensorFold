@@ -26,13 +26,15 @@ VARIANTS = ('cold','grow','future','changed')
 CAP = 6 << 20
 HISTORICAL_HELPER = 'd68f002b9d4019411bfd6d83b764ae4291b80e53b2789ab434d77acf46718134'
 CLIENT_SHA = '3c92fba4cf2ed06e666f5bea7f5281e30446b99b441e5655b4b3ccdec263ac02'
+# sha256 of ast.dump(method, include_attributes=False) in CPython 3.15's AST format; re-derived on
+# 3.15.2 from the unchanged source whose 3.12.3 digests were the previous pin.
 AST_AUTHORITY = {
-    'engine': {'_prefill':'e1a86637fef44460dee2c1951949ec5b325de62c72038fcc62575ac1eafaba42',
-               '_publish_canonical_locked':'c1579a3b2ff63f4928fb73a4a99b2825d7f2f1239618e6782754b0a6a85da117',
-               'generate':'6299ca3b7a590a8e9a268c95b1e39712347d9d2f2d7d139a5b35be4d8064d52b'},
-    'vision': {'warm':'d4fb09a8e7c003140da5df14f9fd9c54689f6a93ba0fffe675fd4e9f7f953499',
-               'encode':'fc07781afe741a7439ab6393373d4abdb151097e9e526028e079d49a61a00f27',
-               'encode_suffix':'b720bb3e657ac4e4b34e749229ccbed38b82311b81a4552d66d4637b5904eedc'}}
+    'engine': {'_prefill':'bf34594d6a0d4c5072ed11c745aa16efd88947322ce986e609e998b8ec9988bc',
+               '_publish_canonical_locked':'432d08420d35e48e1b102e295c359b9fb8ee2b62e516a42a7c828ebb0d6bd847',
+               'generate':'5405123c762d36b0bd7a8824272ac57947ee9aa163a09dfffa8e6cd86961d604'},
+    'vision': {'warm':'7d335ae38fd36871b294e3f9f0a23b92ca39fd17678f69130cf3a7b27d355242',
+               'encode':'a8147f2e1f68bcdaa297d231ba3958c0f05e733a6be4d23edcdb11081f965fbd',
+               'encode_suffix':'f6cbfe0ccc7e5f29df079005120fe954080820cf2251a57024575ae760e03a64'}}
 DYNAMIC = frozenset(('request_id','prefill_s','decode_s','queue_s','prepare_s','ttft_s','decode_tps','frontend_settlement_s','request_wall_s','cache_publication','cached'))
 HISTORICAL_PROFILE_COUNTERS = frozenset(('stats_version','rounds','drafts','drafted','accepted','min_rows'))
 
@@ -56,7 +58,7 @@ def semantic_bytes(value):
 def source_contract(refs):
     """Exact supported source DAG, including BOTH native encoder call sites."""
     shared.require(set(refs)=={'engine','vision','server'},'installed Engine/Vision/server source references required')
-    shared.require(sys.version_info[:2]==(3,12),"source AST contract uses admitted CPython3.12 format")
+    shared.require(sys.version_info[:2]==(3,15),"source AST contract uses admitted CPython3.15 format")
     facts = {}
     for key,classname in (('engine','Gemma4Engine'),('vision','GemmaCudaVision')):
         tree = ast.parse(ref_bytes(refs[key]))

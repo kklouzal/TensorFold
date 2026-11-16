@@ -344,8 +344,8 @@ def cap40_source(capture_source,monkeypatch):
         'mode':host.VERIFICATION_MODE,'base_image_id':'sha256:'+'d'*64,
         'launcher':{'path':host.VERIFICATION_ENTRY,'bytes':16976,'sha256':'1'*64,
             'source_bytes':8200,'source_sha256':'2'*64,'file_capability_hex':host.VERIFICATION_XATTR},
-        'python':{'path':host.VERIFICATION_PYTHON,'bytes':8020928,'sha256':'3'*64},
-        'providers':{'/opt/venv/lib/python3.12/site-packages/tensorfold/_fd_owner.abi3.so':{'bytes':1,'sha256':'4'*64}}}}
+        'python':{'path':host.VERIFICATION_PYTHON,'bytes':33989216,'sha256':'3'*64},
+        'providers':{'/opt/venv/lib/python3.15/site-packages/tensorfold/_fd_owner.abi3-x86_64-linux-gnu.so':{'bytes':1,'sha256':'4'*64}}}}
     info.update(image=authority['image_id'],cap_add=['CAP_CHECKPOINT_RESTORE'],cap_drop=['ALL'],user='1000:1000',
         readonly_root=True,pid_mode='',userns_mode='',network_mode='none',groups=None,mounts=[],tmpfs=None,
         entrypoint=[host.VERIFICATION_ENTRY],command=list(profile.CAP40_CAPTURE_ARGS))
@@ -361,7 +361,7 @@ def cap40_source(capture_source,monkeypatch):
         'start_time_ticks':12345,'argv':[host.VERIFICATION_PYTHON,*profile.CAP40_CAPTURE_ARGS]}
     files={'launcher':{'bytes':16976,'sha256':'1'*64,'uid':0,'mode':0o555,'readonly':True,'file_capability_hex':host.VERIFICATION_XATTR},
         'source':{'bytes':8200,'sha256':'2'*64,'uid':0,'mode':0o444,'readonly':True},
-        'python':{'bytes':8020928,'sha256':'3'*64,'uid':0,'mode':0o755,'readonly':True}}
+        'python':{'bytes':33989216,'sha256':'3'*64,'uid':0,'mode':0o755,'readonly':True}}
     original=profile._docker
     def docker(executable,action,*args):
         if action=='image':

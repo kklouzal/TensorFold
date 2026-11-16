@@ -1804,7 +1804,7 @@ def test_teacher_native_observation_is_after_resource_fence_and_no_retry(monkeyp
 
 
 def test_attention_sdk_observation_keeps_existing_fence_and_limits(tmp_path):
-    paths = ('/ordinary/torch/_C.cpython-312-x86_64-linux-gnu.so','/ordinary/torch/lib/libtorch_cuda.so')
+    paths = ('/ordinary/torch/_C.cpython-315-x86_64-linux-gnu.so','/ordinary/torch/lib/libtorch_cuda.so')
     events = []
     engine = NS(rank=1, _owned_teacher_frames=NS(finished=True,failed=None),
         _teacher_attention_provider_paths=paths, _close_resources=lambda:events.append('fence'))
