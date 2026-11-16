@@ -261,7 +261,9 @@ Determinism contracts are binding where promised:
   what runs beside it (golden `checkcN` runs N concurrent copies);
 - **cold vs cached**: a prefix-cache hit should give the same result as a cold
   prefill. On SC117 an exact repeat of a prompt joins from the kept end of its
-  first request, so it replies identically (2026-11-16). The long-context oracle
+  first request, so it replies identically (2026-11-16) while that end is kept
+  (drafting prompts; not DFlash2/DSpark or a retention policy; dropped by eviction
+  or when another prompt resumes its point in place). The long-context oracle
   `/home/kklouzal/build-cache/cc-perf-20261114/golden_long.py` (reference
   `golden-long2.json` beside it; `golden-long1.json` is superseded) sends each of
   10 prompts (336–6,190 tokens, text and chat) cold and then as its repeat and

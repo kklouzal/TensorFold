@@ -1988,7 +1988,10 @@ pass, so 9 of 10 long cold/repeat pairs differed, first in that row's head logit
 The concurrent decoder now keeps the first request's prompt end with that state (the
 state after the last row, its head-logit row and stream row), and an exact repeat
 joins the rounds from it without a prompt pass (its `cached_tokens` is the whole
-prompt). On 8× V100 TP8/ETP4, MTP4, INT8 KV (image `cf8c0ff6` with the source
+prompt). The end is kept only for drafting prompts outside DFlash2/DSpark and without
+a retention policy (whose recovery pool admits one snapshot per prefix entry), and
+it is dropped when another prompt resumes its point in place (that rewrites its last
+row); a repeat then recomputes the last row as before. On 8× V100 TP8/ETP4, MTP4, INT8 KV (image `cf8c0ff6` with the source
 overlaid, `m-profile7h`, 1,024 prefill rows): cold and repeat replies are identical in
 all 20 cases of the long-context oracle (336–6,190-token prompts, two rounds, recorded
 and re-checked in a fresh server); mean repeat TTFT fell from 0.54 to 0.10 s (4K, 3

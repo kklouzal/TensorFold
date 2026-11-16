@@ -233,3 +233,26 @@ def test_a_refused_exact_repeat_keeps_the_point_and_end_it_resumed():
     with pytest.raises(NoRoom):
         dec.admit(Stream(prefix + [7], 8))
     assert [(k[0], k[1], k[2]) for k in dec.kept] == [(prefix, source, snap)] and "prompt_end" in snap
+
+
+def test_an_in_place_resume_through_the_point_drops_the_end_it_rewrites():
+    dec, source, _, prefix, snap, _ = decoder()
+    dec.free = []
+    dec.kept = dec.kept[:1]
+    _with_end(dec, prefix, source)
+    st, resume, cached = dec._slot_for(prefix + [8], True)      # computes row len(prefix) with another token
+    assert st is source and cached == len(prefix) and resume == {"state": snap, "tail": "tail"}
+    assert "prompt_end" not in snap
+    st, resume, cached = dec._slot_for(prefix + [7], True)      # the old end's prompt now resumes the point
+    assert cached == len(prefix) and "head" not in resume
+
+
+def test_a_retention_policy_keeps_no_end_beyond_its_one_version_pool():
+    dec, source, _, prefix, snap, _ = decoder()
+    dec.retention_catalog = SimpleNamespace(policy=object())
+    source.image_positions = None
+    s = SimpleNamespace(prompt=prefix + [7], st=source, draft=True)
+    import torch
+
+    dec._keep_end(s, True, torch.zeros(1, 4), torch.zeros(1, 4))
+    assert "prompt_end" not in snap

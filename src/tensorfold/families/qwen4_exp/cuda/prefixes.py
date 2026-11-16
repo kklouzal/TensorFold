@@ -139,6 +139,8 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED):
                       or len(k[0]) <= n and best[0][:len(k[0])] == k[0]]
         _use(owner, best[1])
         state, tail, cached, end = _resumed(best, prompt)
+        if end is None:     # this prompt rewrites the end's last row (and MTP row) in place: the end no longer holds
+            best[2].pop("prompt_end", None)
         return best[1], _resume(state, tail, end, best), cached
     if owner.free:
         idle = owner.free.pop()

@@ -2102,6 +2102,10 @@ class MultiDecoder:
         if self._keep_at(s) is None or getattr(self.w, "dflash2", None) is not None \
                 or getattr(s.st, "dspark_runtime", None) is not None:      # their replay/draft states: not qualified
             return
+        if getattr(getattr(self, "retention_catalog", None), "policy", None) is not None:
+            # retention's recovery pool admits one snapshot version per prefix entry (``_owned_device_versions`` counts
+            # every tensor an entry holds): an end's state, tail and head would exceed it
+            return
         ids = list(s.prompt[:-1])
         entry = next((k for k in self.kept if k[1] is s.st and k[0] == ids), None)
         if entry is None:                                # not kept (evicted, or a state kept nowhere)

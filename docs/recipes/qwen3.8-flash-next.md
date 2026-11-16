@@ -407,7 +407,8 @@ states; a follow-up prefills the reply again. A kept state stops one token befor
 same prompt sent again resumes, and so does a next chat turn that renders the generation prompt's `<think>`
 and newline as `<think>` and two newlines. The concurrent decoder also keeps the prompt's end with that state (the
 state after the last row and that row's logits), so the same prompt sent again joins from it with no prompt pass and
-replies exactly as the first request did; the single-request engine recomputes the last row. Both also keep states at the second message's start (a shared system
+replies exactly as the first request did (not with DFlash2/DSpark or a retention policy, and not after another prompt
+resumed that state in place); the single-request engine recomputes the last row. Both also keep states at the second message's start (a shared system
 block) and the last assistant turn's start; the concurrent decoder adds the last other message's start (a user turn
 or tool result that a client may rewrite next time), and its prompt passes hold up to three such points without an
 extra pass (a fourth ends the pass); in the single-request engine each point ends a prefill chunk. Past its eight kept
