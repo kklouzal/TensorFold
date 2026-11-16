@@ -51,7 +51,7 @@ void family_owned_q8_prepare_cuda(const T&, const T&, const T&, const T&, const 
 
 void family_owned_q8_prepare_rows_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&,
     const T&, int, int, int, int, int, float, float, int, int);
-void family_qsa_rows_owned_cuda(const T&, const T&, const T&, T&, int, int, int, int, int);
+void family_qsa_select_owned_cuda(const T&, const T&, const T&, const O&, T&, int, int, int, int);
 void family_guard_rows_owned_cuda(const T&, T&, const T&, int, int);
 
 namespace {
@@ -318,8 +318,8 @@ void owned_q8_prepare_rows(const T& p, const T& axes, const T& qw, const T& kw, 
         qheads, index_heads, index_dim, float(eps), float(amplitude), section1, section2);
 }
 
-void qsa_rows_owned(const T& query, const T& descriptors, const T& pooled_rows, T selection,
-                    int rank, int ratio, int budget, int blocks, int layer) {
+void qsa_select_owned(const T& query, const T& descriptors, const T& pooled_rows, const O& scores, T selection,
+                      int rank, int ratio, int budget, int layer) {
     check_half(query);
     check(selection, query, at::kInt, "QSA selection wire rows");
     check(pooled_rows, query, at::kLong, "QSA pooled row pointers");
@@ -327,11 +327,20 @@ void qsa_rows_owned(const T& query, const T& descriptors, const T& pooled_rows, 
     check_descriptors(descriptors, query, rows);
     TORCH_CHECK(query.dim() == 3 && query.size(0) >= rows && query.size(2) > 0 && query.size(2) <= 256
                 && query.size(2) % 32 == 0 && rank >= 0 && rank < 8 && ratio > 0 && budget > 0
-                && budget % ratio == 0 && blocks > 0 && blocks <= 4096 && selection.dim() == 2
+                && budget % ratio == 0 && selection.dim() == 2
                 && selection.size(1) == budget + ratio + 2 && pooled_rows.numel() >= rows,
                 "QSA owned selector geometry");
+    if (scores) {
+        // The radix selector takes exactly 512 groups; the slab holds every group a row's context completes.
+        check(*scores, query, at::kFloat, "QSA owned score slab");
+        TORCH_CHECK(scores->dim() == 2 && scores->size(0) >= rows && scores->size(1) > 0
+                    && scores->size(1) <= std::numeric_limits<int>::max() / ratio
+                    && budget / ratio == 512, "QSA owned score slab geometry");  // qsa_select512::kTop
+        at::assert_no_overlap(*scores, selection);
+        at::assert_no_overlap(*scores, query);
+    }
     c10::cuda::CUDAGuard guard(query.device());
-    family_qsa_rows_owned_cuda(query, descriptors, pooled_rows, selection, rank, ratio, budget, blocks, layer);
+    family_qsa_select_owned_cuda(query, descriptors, pooled_rows, scores, selection, rank, ratio, budget, layer);
 }
 
 void guard_rows_owned(const T& x, T out, const T& descriptors, int64_t error, int64_t layer) {
@@ -645,6 +654,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("qsa_rows", &qsa_rows);
     m.def("qsa_select512", &qsa_select512);
     m.def("owned_q8_prepare_rows", &owned_q8_prepare_rows);
-    m.def("qsa_rows_owned", &qsa_rows_owned);
+    m.def("qsa_select_owned", &qsa_select_owned);
     m.def("guard_rows_owned", &guard_rows_owned);
 }

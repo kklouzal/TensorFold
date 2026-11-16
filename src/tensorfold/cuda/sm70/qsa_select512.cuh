@@ -8,7 +8,8 @@
 // TensorFold modifications: fixed K512; padded output stride; no length clamp;
 // deterministic device status/invalid output; finite-prefix containment; bitwise
 // zero canonicalization (no FTZ-dependent comparison). Decode fastpaths omitted.
-// This is an isolated candidate; it changes no score arithmetic or dispatch.
+// select_greater is the general body; family.cu's captured owned selector uses it
+// (qsa_select_owned_kernel) and the standalone kernel below keeps its contract.
 #pragma once
 
 #include <cuda_runtime.h>
@@ -41,40 +42,19 @@ __device__ __forceinline__ void invalid_ids(int32_t* output) {
     for (uint32_t index = threadIdx.x; index < kTop; index += kThreads) output[index] = -1;
 }
 
-__global__ __launch_bounds__(1024) void kernel(
-        const float* __restrict__ scores, const int32_t* __restrict__ lengths,
-        int32_t* __restrict__ output, int32_t* __restrict__ status,
-        uint32_t columns, uint64_t score_stride, uint64_t output_stride) {
-    __shared__ Shared shared;
-    const uint32_t row = blockIdx.x, tx = threadIdx.x;
-    const int32_t raw_length = lengths[row];
-    const float* values = scores + uint64_t(row) * score_stride;
-    int32_t* ids = output + uint64_t(row) * output_stride;
-    if (raw_length < 0 || uint32_t(raw_length) > columns) {
-        if (tx == 0) status[row] = 2;
-        invalid_ids(ids);
-        return;  // Uniform row decision; no score access outside the supplied prefix.
-    }
-    const uint32_t length = uint32_t(raw_length);
+// The general (length > kTop) body: kTop indices of the largest finite scores in [0, length), numeric order
+// with ties to the lower logical index, emitted as emit(rank, index) in ascending index order. Returns 1 (and
+// emits nothing) when a score in the prefix is nonfinite, else 0. Every thread of the block must call it; the
+// caller initialized nothing in ``shared``.
+template <typename Emit>
+__device__ __forceinline__ uint32_t select_greater(const float* __restrict__ values, uint32_t length, Shared& shared,
+                                                   Emit emit) {
+    const uint32_t tx = threadIdx.x;
     if (tx == 0) {
-        status[row] = 0;
         shared.invalid = shared.prefix = 0;
         shared.remaining = kTop;
     }
     __syncthreads();
-    if (length <= kTop) {
-        if (tx < length && !finite_bits(__float_as_uint(values[tx]))) atomicOr(&shared.invalid, 1u);
-        __syncthreads();
-        if (shared.invalid) {
-            if (tx == 0) status[row] = 1;
-            invalid_ids(ids);
-        } else {
-            for (uint32_t index = tx; index < kTop; index += kThreads)
-                ids[index] = index < length ? int32_t(index) : -1;
-        }
-        return;
-    }
-
     // Four exact radix passes find the kth numeric score. The final logical-ID
     // scan resolves pivot ties; no floating reduction/atomics or full-sort workspace.
 #pragma unroll
@@ -91,11 +71,7 @@ __global__ __launch_bounds__(1024) void kernel(
             if ((key & mask) == prefix) atomicAdd(&shared.histogram[(key >> shift) & 255u], 1u);
         }
         __syncthreads();
-        if (shared.invalid) {
-            if (tx == 0) status[row] = 1;
-            invalid_ids(ids);
-            return;
-        }
+        if (shared.invalid) return 1;
         if (tx == 0) {
             uint32_t remaining = shared.remaining;
             for (int bin = kBins - 1; bin >= 0; --bin) {
@@ -135,8 +111,50 @@ __global__ __launch_bounds__(1024) void kernel(
         const uint32_t greater_before = shared.chunk_greater_base + uint32_t(before >> 32);
         const uint32_t equal_before = shared.chunk_equal_base + uint32_t(before);
         if (greater || (equal && equal_before < shared.remaining))
-            ids[greater_before + min(equal_before, shared.remaining)] = int32_t(index);
+            emit(greater_before + min(equal_before, shared.remaining), index);
         __syncthreads();
     }
+    return 0;
 }
+
+__global__ __launch_bounds__(1024) void kernel(
+        const float* __restrict__ scores, const int32_t* __restrict__ lengths,
+        int32_t* __restrict__ output, int32_t* __restrict__ status,
+        uint32_t columns, uint64_t score_stride, uint64_t output_stride) {
+    __shared__ Shared shared;
+    const uint32_t row = blockIdx.x, tx = threadIdx.x;
+    const int32_t raw_length = lengths[row];
+    const float* values = scores + uint64_t(row) * score_stride;
+    int32_t* ids = output + uint64_t(row) * output_stride;
+    if (raw_length < 0 || uint32_t(raw_length) > columns) {
+        if (tx == 0) status[row] = 2;
+        invalid_ids(ids);
+        return;  // Uniform row decision; no score access outside the supplied prefix.
+    }
+    const uint32_t length = uint32_t(raw_length);
+    if (tx == 0) {
+        status[row] = 0;
+        shared.invalid = shared.prefix = 0;
+        shared.remaining = kTop;
+    }
+    __syncthreads();
+    if (length <= kTop) {
+        if (tx < length && !finite_bits(__float_as_uint(values[tx]))) atomicOr(&shared.invalid, 1u);
+        __syncthreads();
+        if (shared.invalid) {
+            if (tx == 0) status[row] = 1;
+            invalid_ids(ids);
+        } else {
+            for (uint32_t index = tx; index < kTop; index += kThreads)
+                ids[index] = index < length ? int32_t(index) : -1;
+        }
+        return;
+    }
+
+    if (select_greater(values, length, shared, [ids](uint32_t rank, uint32_t index) { ids[rank] = int32_t(index); })) {
+        if (tx == 0) status[row] = 1;
+        invalid_ids(ids);
+    }
+}
+
 }  // namespace tensorfold::sm70::qsa_select512

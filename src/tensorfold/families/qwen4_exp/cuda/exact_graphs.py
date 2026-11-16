@@ -395,10 +395,12 @@ class ExactStateGraphs:
                 # Validate the newly issued frame before the first replay too.
                 validate(source, segs)
         if pieces is not None:
-            from .history_owner import round_context_fits
+            from .history_owner import round_context_fits, round_selector_groups
 
             whole = self.round_pieces[kind].get(key)
-            if whole is not None and round_context_fits(segs, self.dec.w.cfg.index_ratio, mtp=kind == "mtp"):
+            ratio = None if whole is None else self.dec.w.cfg.index_ratio
+            if whole is not None and round_context_fits(segs, ratio, round_selector_groups(source, ratio),
+                                                        mtp=kind == "mtp"):
                 return self._replay_round(kind, whole, segs, source)
         if pieces is None:
             self.misses += 1

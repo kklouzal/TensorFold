@@ -37,19 +37,21 @@ if _PRIVATE_EMPTY_PREFIX not in ("inherit", "cpu-empty-v1"):
     raise ValueError("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX requires inherit or cpu-empty-v1")
 
 
-# The captured selector sorts at most this many pooled groups per row (the
-# native qsa_rows bound). Longer contexts use the eager owner layers, whose
-# selector switches to the shape-dependent Torch reference there.
-ROUND_SELECTOR_BLOCKS = 4096
+def round_selector_groups(buffers, ratio):
+    """Pooled groups the captured selector can score: the buffers' score slab (one column per group of
+    their context capacity); without a slab (context within the budget) no row is ever sparse."""
+    scores = getattr(getattr(buffers, "attn", None), "scores", None)
+    return scores.shape[1] if scores is not None else buffers.attn.budget // ratio
 
 
-def round_context_fits(segments, ratio, *, mtp=False):
-    """The captured selector/pooling bounds: at most ROUND_SELECTOR_BLOCKS
-    groups of context, at most 16 pooled groups per segment window and the
-    eager owner's fixed 16-row pooled normalization shape (capacity >= 64)."""
+def round_context_fits(segments, ratio, groups, *, mtp=False):
+    """The captured selector/pooling bounds: every row's completed groups within
+    the selector's ``groups`` (round_selector_groups), at most 16 pooled groups
+    per segment window and the eager owner's fixed 16-row pooled normalization
+    shape (capacity >= 64)."""
     from tensorfold.cuda.sm70.compact_indexer import ROUND_GROUPS
 
-    return all((state.mtp_len if mtp else state.pos) + last - first <= ROUND_SELECTOR_BLOCKS * ratio
+    return all(((state.mtp_len if mtp else state.pos) + last - first) // ratio <= groups
                and last - first <= 4 * ROUND_GROUPS - 3
                and state.compact_indexer is not None and state.compact_indexer.capacity // 4 >= ROUND_GROUPS
                for state, first, last in segments)
@@ -1603,8 +1605,10 @@ def captured_attention_layer(layer, weights, participants, buffers, total_rows):
     compact.round_pool(ik, lanes, a.ik_scale, position.inv_freq, c.eps, position.amplitude, position.sections,
                        layer.index)
     selection = owner.selection[:bucket]
-    module.qsa_rows_owned(buffers.iq, desc, owner.round_pooled[ai, :bucket], selection, rank, c.index_ratio,
-                          c.index_budget, ROUND_SELECTOR_BLOCKS, layer.index)
+    scores = buffers.attn.scores
+    module.qsa_select_owned(buffers.iq, desc, owner.round_pooled[ai, :bucket],
+                            None if scores is None else scores[:bucket], selection, rank, c.index_ratio,
+                            c.index_budget, layer.index)
     query_all = owner.queries.reshape(-1)[:8 * bucket * c.heads * c.head_dim].view(8, bucket, c.heads, c.head_dim)
     send = query_all[rank]
     send[:rows].copy_(buffers.q[:rows])

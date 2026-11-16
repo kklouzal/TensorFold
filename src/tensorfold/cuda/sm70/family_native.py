@@ -7,13 +7,14 @@ reads, then retain those storages through stream/graph completion. These
 immutable ownership facts are established at construction, not re-proved on
 every native launch; direct internal callers must preserve the same contract.
 
-The isolated qsa_select512 candidate consumes existing Float32 score rows and
-int32 causal complete-group lengths. It returns ascending logical group IDs in
-caller-owned [R,512] int32 output (short prefixes pad -1) and deterministic row
-status: 0 finite success, 1 nonfinite valid-prefix score, 2 invalid length.
-Caller must check status after positive stream/graph completion BEFORE using
-IDs. Masked suffix values are ignored; read/write spans must be disjoint and
-remain owned until completion. No runtime qsa_rows dispatch selects it.
+qsa_select512 consumes existing Float32 score rows and int32 causal
+complete-group lengths. It returns ascending logical group IDs in caller-owned
+[R,512] int32 output (short prefixes pad -1) and deterministic row status:
+0 finite success, 1 nonfinite valid-prefix score, 2 invalid length. Caller must
+check status after positive stream/graph completion BEFORE using IDs. Masked
+suffix values are ignored; read/write spans must be disjoint and remain owned
+until completion. The captured owned selector (qsa_select_owned) runs the same
+selection body over its own score slab; eager qsa_rows does not dispatch it.
 """
 
 from functools import lru_cache

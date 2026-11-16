@@ -2025,6 +2025,31 @@ decode equivalent (+0.0012, CI [−0.0008, +0.0036]); prompt rows inconclusive (
 CI [−0.0036, +0.0066]); golden-vg2 greedy replies identical; long cold/repeat replies
 still identical to each other (their reference record predates the new prompt sums).
 
+**Captured owner attention at every context (2026-11-16).** Decode verify and MTP
+round graphs captured owner attention only up to 16,384 tokens of context: the
+single-block indexer selector sorted at most 4,096 pooled groups, so past 16K every
+verify and MTP step replayed piecewise with eager owner attention per layer (Torch
+FP32 matmul scores and a stable argsort over all groups). The captured selector now
+scores the pooled groups over up to 160 blocks per row (each group's arithmetic
+unchanged) and takes the top 512 with `qsa_select512`'s exact radix selection
+(numeric order, lower group first) from the decode buffers' existing score slab, so
+the round graphs serve the whole context. Up to 16K its selections are bitwise the
+previous ones; above 16K the native score order replaces the eager Torch order (no
+less accurate against an FP64 evaluation, `tests/cuda/test_sm70_qsa_select_owned.py`).
+One selector call costs 24-37 us at 4K instead of 330-400 us. The RN value kernel now
+resolves a row's local keys once, stages each 32-key V tile through shared memory and
+skips tiles holding only other owners' pages, and the RN score tiles skip such tiles
+too; both are bitwise the previous kernels (432 randomized cases with Q8/RQ4 values,
+foreign pages, invalid P and nonfinite inputs) and 1-row/5-row value passes take
+80/179 instead of 204/237 us. Same host and configuration as above, base `c081340d`,
+greedy matrix C1 at 4K/64K and C8 at 4K/32K (two sessions per arm, two repeats, A B B A):
+*superior*, decode aggregate 1.200× (1.067–1.350), prefill 0.984× (uncertain); C1
+decode 4K 67.0 → 77.7, 64K 55.2 → 75.0 tok/s (means of four repeats); C8 decode per request 4K 17.3 → 18.9,
+32K 12.2 → 14.6 (uncertain cells); golden-vg2 identical. Other GPU work and CPU builds ran
+on the host during the second session pair. Long cold/repeat replies agree with each
+other, but the base itself changes them between server processes (its NCCL prompt sums),
+so they do not compare the two arms.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the

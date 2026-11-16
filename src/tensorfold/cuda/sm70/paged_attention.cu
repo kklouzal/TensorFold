@@ -357,7 +357,12 @@ __device__ __forceinline__ void rn_tile_scores(RNStorage<H>& storage, const int6
         const int logical = at < count ? (ids == nullptr ? at : ids[at]) : -1;
         storage.physical[threadIdx.x] = local_row(descriptor, logical, end, page_tokens, layer);
     }
-    __syncthreads();
+    // A tile without a local key (another owner's pages) has only NaN scores: no K decode or dots.
+    if (!__syncthreads_or(threadIdx.x < TILE && storage.physical[threadIdx.x] >= 0)) {
+        scores[threadIdx.x & 31] = CUDART_NAN_F;  // each warp its own head's row (TILE == 32 keys)
+        __syncthreads();
+        return;
+    }
     for (int at = threadIdx.x; at < TILE * DIM; at += H * 32) {
         const int64_t physical = storage.physical[at / DIM];
         __half value = __float2half_rn(0.f);
@@ -584,48 +589,91 @@ __global__ void rn_merge_kernel(const float* gathered, const int64_t* table, flo
     output[(int64_t(row) * HEADS + head) * 2 + 1] = enabled && valid ? denominator : 1.f;
 }
 
-// Four full warps, 64 output columns/block/head: warp w owns base+w+4*t,
-// t=0..15. Every thread keeps exactly sixteen independent FP32 accumulators.
+// Four full warps, 32 output columns/block/head: warp w owns base+w+4*t,
+// t=0..7. Every thread keeps exactly eight independent FP32 accumulators.
 // Lane l visits selected i=l+32*t monotonically; lane0 publishes after five
 // explicit RN shuffle additions. P is globally normalized Half, not local-P.
+// All of a row's local rows and P faults are resolved up front by the whole
+// block (one round of dependent loads, not one per key tile); then keys go 32
+// at a time: the block decodes the tile's 32 x 32 V values into shared memory
+// (each thread 8 consecutive columns of one key) and lane l of every warp
+// consumes its key from there. Tiles without a local key (another owner's
+// pages) are skipped. Per lane the FMA sequence, and so every output bit and
+// status bit, is the per-key form's.
+constexpr int RN_PV_COLUMNS = 32;
 __global__ void rn_pv_kernel(const __half* probability, const int* selections, const int64_t* table,
         float* output, int rows, int width, int page_tokens, const int* layer_word, int codec) {
-    const int row = blockIdx.x, head = blockIdx.y, column_base = blockIdx.z * 64;
+    constexpr int PARTS = RN_PV_COLUMNS / 4;
+    const int row = blockIdx.x, head = blockIdx.y, column_base = blockIdx.z * RN_PV_COLUMNS;
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int layer = *layer_word;
     const int64_t* descriptor = table + int64_t(row) * WORDS;
     __shared__ int enabled, end, count;
     __shared__ const int* ids;
+    __shared__ int physical[RN_TILES * TILE];      // local row, or -1: foreign/masked/fault/bad P
+    __shared__ float weight[RN_TILES * TILE];
+    __shared__ int tile_live[RN_TILES];
+    __shared__ __half tile[TILE][RN_PV_COLUMNS + 2];  // odd 17-word pitch: lane l's key row in its own bank
     if (!threadIdx.x) enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     __syncthreads();
-    float result[16];
+    float result[PARTS];
     #pragma unroll
-    for (int part = 0; part < 16; ++part) result[part] = 0.f;
+    for (int part = 0; part < PARTS; ++part) result[part] = 0.f;
+    const __half* p_row = probability + (int64_t(row) * HEADS + head) * RN_MAX_SELECTED;
     if (enabled) {
-        for (int at = lane; at < count; at += 32) {
-            const int logical = ids == nullptr ? at : ids[at];
-            const int64_t physical = local_row(descriptor, logical, end, page_tokens, layer);
-            if (physical < 0) continue;  // Never read foreign/masked/error V payloads.
-            const __half p = probability[(int64_t(row) * HEADS + head) * RN_MAX_SELECTED + at];
-            if (!isfinite(__half2float(p)) || __half2float(p) < 0.f) {
-                latch(descriptor, 16, layer);
-                continue;
-            }
-            #pragma unroll
-            for (int part = 0; part < 16; ++part) {
-                const int col = column_base + warp + 4 * part;
-                __half value = tf_sm70::decoded_half(pointer<const void>(descriptor[meta::V_DATA]),
-                    pointer<const void>(descriptor[meta::V_METADATA]), codec ? 4 : 8, codec, physical * DIM + col);
-                if (!isfinite(__half2float(value))) {
-                    latch(descriptor, 4, layer);
-                    value = __float2half_rn(0.f);
+        const int tiles = (count + TILE - 1) / TILE;
+        for (int t = threadIdx.x; t < tiles; t += blockDim.x) tile_live[t] = 0;
+        __syncthreads();
+        for (int at = threadIdx.x; at < tiles * TILE; at += blockDim.x) {
+            int64_t local = -1;
+            float p = 0.f;
+            if (at < count) {
+                local = local_row(descriptor, ids == nullptr ? at : ids[at], end, page_tokens, layer);
+                if (local >= 0) {  // Never read foreign/masked/error V payloads.
+                    const __half half_p = p_row[at];
+                    p = __half2float(half_p);
+                    if (!isfinite(p) || p < 0.f) {
+                        latch(descriptor, 16, layer);
+                        local = -1;
+                    }
                 }
-                result[part] = __fmaf_rn(__half2float(p), __half2float(value), result[part]);
             }
+            physical[at] = local >= 0 ? int(local) : -1;  // PHYSICAL_ROWS <= INT32_MAX (rn_domain)
+            weight[at] = p;
+            if (local >= 0) tile_live[at / TILE] = 1;
+        }
+        __syncthreads();
+        const void* v_data = pointer<const void>(descriptor[meta::V_DATA]);
+        const void* v_meta = pointer<const void>(descriptor[meta::V_METADATA]);
+        for (int t = 0; t < tiles; ++t) {
+            if (!tile_live[t]) continue;  // uniform: written before the barrier above
+            const int base = t * TILE;
+            const int key = threadIdx.x >> 2, first = (threadIdx.x & 3) * (RN_PV_COLUMNS / 4);
+            const int source = physical[base + key];
+            if (source >= 0) {
+                #pragma unroll
+                for (int c = 0; c < RN_PV_COLUMNS / 4; ++c) {
+                    __half value = tf_sm70::decoded_half(v_data, v_meta, codec ? 4 : 8, codec,
+                                                         int64_t(source) * DIM + column_base + first + c);
+                    if (!isfinite(__half2float(value))) {
+                        latch(descriptor, 4, layer);
+                        value = __float2half_rn(0.f);
+                    }
+                    tile[key][first + c] = value;
+                }
+            }
+            __syncthreads();
+            if (physical[base + lane] >= 0) {
+                const float p = weight[base + lane];
+                #pragma unroll
+                for (int part = 0; part < PARTS; ++part)
+                    result[part] = __fmaf_rn(p, __half2float(tile[lane][warp + 4 * part]), result[part]);
+            }
+            __syncthreads();  // the next live tile rewrites tile[][]
         }
     }
     #pragma unroll
-    for (int part = 0; part < 16; ++part) {
+    for (int part = 0; part < PARTS; ++part) {
         const float value = rn_warp_sum(result[part]);
         if (!lane) {
             if (!isfinite(value)) latch(descriptor, 4, layer);
@@ -801,7 +849,7 @@ void sm70_paged_rn_merge_cuda(const T& gathered, const T& table, T& output, int 
 void sm70_paged_rn_pv_cuda(const T& probability, const T& selected, const T& table, T& output,
                           int rows, int page_tokens, const T& layer, int codec) {
     if (!rows) return;
-    rn_pv_kernel<<<dim3(rows, HEADS, 4), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+    rn_pv_kernel<<<dim3(rows, HEADS, DIM / RN_PV_COLUMNS), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(probability.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
         output.data_ptr<float>(), rows, int(selected.size(2)), page_tokens, layer.data_ptr<int>(), codec);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
