@@ -1,28 +1,24 @@
-"""JSON container nesting at untrusted parse boundaries, per selected CPython.
+"""JSON container nesting at untrusted parse boundaries.
 
-CPython 3.12 raises RecursionError once its compiled C recursion counter
-(Py_C_RECURSION_LIMIT, 10000) is exhausted inside the C scanner. CPython 3.14+
-replaced that counter with C-stack-pointer checks, so the same input may nest
-as deep as the thread stack allows. The host payload projections pay for at
-most NESTING_LIMIT open containers on the boundaries that parse through
-``loads``; on runtimes without the compiled counter ``loads`` therefore refuses
-deeper input before the C scanner runs, with the error 3.12 raises for it.
-On the compiled-counter runtime it is exactly ``json.loads``.
+The selected CPython (3.15) checks only the C stack pointer while its json C
+scanner recurses, so input may nest as deep as the thread stack allows. The
+host payload projections pay for at most NESTING_LIMIT open containers on the
+boundaries that parse through ``loads``; ``loads`` therefore refuses deeper
+input before the C scanner runs. The limit and the refusal are the contract
+CPython 3.12 enforced with its compiled C recursion counter
+(Py_C_RECURSION_LIMIT, 10000): a RecursionError with 3.12's message, and a
+syntax error the scanner meets first keeps precedence.
 
-The guard bounds what the projections pay; it is not 3.12's exact threshold.
-3.12.3's counter also pays the C-entered frames already on the caller's stack
-(measured: a direct call, in the main or a new thread, accepts 9997 levels;
-more C-entered frames accept fewer), so an input nested within those few
-levels of 10000 parses here and is refused on 3.12.
+The guard bounds what the projections pay. It is not 3.12's exact threshold,
+which also counted the C-entered frames already on the caller's stack (3.12.3
+measured 9997 accepted levels for a direct call), so an input nested within
+those few levels of 10000 parses here.
 """
 
 import json
 import re
-import sys
 
 NESTING_LIMIT = 10000
-# Runtimes whose json C scanner/encoder enforce the compiled C recursion limit.
-COMPILED_LIMIT = sys.version_info[:2] < (3, 14)
 
 # The rest of a JSON string after its opening quote, including the closing
 # quote; an unterminated string runs to the end of the input.
@@ -116,7 +112,7 @@ def _vector_scan(text, start, depth, kw, block=GUARD_BLOCK):
 
 
 def _refuse_deep(text, kw):
-    """Raise what the compiled-limit scanner raises if ``text`` nests too deep.
+    """Raise what 3.12's compiled-limit scanner raised if ``text`` nests too deep.
 
     One linear pass, entered only when the input holds more than NESTING_LIMIT
     opening brackets. The scanner's open containers equal the bracket depth on
@@ -157,14 +153,14 @@ def _refuse_deep(text, kw):
 
 
 def loads(raw, **kw):
-    """``json.loads`` with the compiled 3.12 container-depth contract.
+    """``json.loads`` refusing input nested deeper than NESTING_LIMIT.
 
     Decodes bytes exactly as json.loads does (detect_encoding/surrogatepass)
     and parses that same text; the bracket count is a C-speed scan of it and
     needs no copy unless refusing. Decoded text that still starts with a BOM
     goes to json.loads unchanged: its scanner fails at offset 0 without nesting.
     """
-    if COMPILED_LIMIT or isinstance(raw, str):
+    if isinstance(raw, str):
         text = raw
     elif isinstance(raw, (bytes, bytearray)):
         text = raw.decode(json.detect_encoding(raw), "surrogatepass")
@@ -172,7 +168,7 @@ def loads(raw, **kw):
             return json.loads(raw, **kw)
     else:
         return json.loads(raw, **kw)  # json's own TypeError.
-    if not COMPILED_LIMIT and text.count("[") + text.count("{") > NESTING_LIMIT:
+    if text.count("[") + text.count("{") > NESTING_LIMIT:
         _refuse_deep(text, kw)
     return json.loads(text, **kw)
 
@@ -180,8 +176,7 @@ def loads(raw, **kw):
 def require_stack_capacity(recursion_limit):
     """Check handler threads hold NESTING_LIMIT C encoder levels with margin.
 
-    Without the compiled counter, a C encode refused only by the thread's
-    stack raises RecursionError and adds failure notes. Certified encoders
+    A C encode refused only by the thread's stack raises RecursionError and adds failure notes. Certified encoders
     run in default-attribute threads (no project stack_size): the glibc
     default stack, less its actual guard and CPython's soft limit
     (2*_PyOS_STACK_MARGIN_BYTES above the guard), must hold 512 bytes per

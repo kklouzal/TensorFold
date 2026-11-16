@@ -171,7 +171,6 @@ def test_process_fixed_map_highwater_bounds_actual_insert_delete_churn(pending):
         stream = Stream([987654], 1)
         decoder._remember(wire, stream)
         active.append((wire, stream))
-    largest = 0
     for wire in range(pending, pending + 8 * pending + 64):
         old, _stream = active.pop(0)
         decoder._forget(old)
@@ -180,7 +179,6 @@ def test_process_fixed_map_highwater_bounds_actual_insert_delete_churn(pending):
         active.append((wire, stream))
         assert len(decoder.requests) == len(decoder.wires) == pending
         current = sys.getsizeof(decoder.requests) + sys.getsizeof(decoder.wires)
-        largest = max(largest, current)
         assert current <= object_limit + table_limit
     for wire, _stream in active:
         decoder._forget(wire)
@@ -188,13 +186,9 @@ def test_process_fixed_map_highwater_bounds_actual_insert_delete_churn(pending):
     assert sys.getsizeof(decoder.requests) + sys.getsizeof(decoder.wires) <= object_limit + table_limit
     assert result["leader_request_map_limits"]["request_highwater"] == pending
     if pending == 2:
-        # Actual 3.12.3 calculate_log2_keysize small-size OR permits sixteen
-        # slots under churn; a naive ceilpow2(max(8,3P)) would miss this.
+        # The projection keeps 3.12.3's small-size OR (sixteen slots for two
+        # entries), a conservative cover of 3.15.2's eight-slot churn resize.
         assert limits["map_capacity"] >= 16
-        if sys.version_info[:2] == (3, 12):
-            # Observed on 3.12 only; 3.15's insert/delete churn stays within the
-            # same bound without reaching the sixteen-slot table.
-            assert largest > 2 * sys.getsizeof({0: None, 1: None})
 
 
 def test_leader_metadata_is_not_multiplied_by_followers_or_live_occupancy():

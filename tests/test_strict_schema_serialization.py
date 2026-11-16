@@ -37,10 +37,7 @@ def test_native_stdlib_positive_deep_annotation_keeps_its_encoding_domain():
     for _ in range(1100):
         nested = [nested]
     schema = {"type": "string", "description": nested}
-    try:
-        expected = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
-    except RecursionError:
-        pytest.skip("this stdlib cannot encode the positive-depth fixture (CPython 3.12 separates C/Python limits)")
+    expected = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
     assert st._schema_json_size(schema) == len(expected.encode())
     assert st.response_schema_spec(schema, "response_format").text == expected
 

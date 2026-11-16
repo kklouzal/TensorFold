@@ -83,9 +83,8 @@ def test_c_encoder_projection_retains_marker_churn_and_fixed_depth():
     unmeasured = resources._http_json_encoding_payload(96 << 20, policy())
     assert smaller["c_container_depth_bound"] == 50
     assert larger["c_container_depth_bound"] == 10000
-    # Without the walker, only a compiled C counter bounds encoder nesting.
-    compiled = resources._runtime_facts().c_container_depth
-    assert unmeasured["c_container_depth_bound"] == (48 << 20 if compiled is None else compiled)
+    # Without the walker (no compiled C counter), the structural bound applies.
+    assert unmeasured["c_container_depth_bound"] == 48 << 20
     assert larger["marker_payload_bytes"] > smaller["marker_payload_bytes"]
     assert larger["total_bytes"] == max(larger["construction_peak_bytes"], larger["completed_str_and_bytes_peak"])
     assert resources._http_json_encoding_payload(100, replace(policy(), frame_work=9192))["total_bytes"] == smaller["total_bytes"] + 1000

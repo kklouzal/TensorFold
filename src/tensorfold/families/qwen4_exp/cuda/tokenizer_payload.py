@@ -37,8 +37,8 @@ def bytelevel_payload_policy():
     from .execution_identity import _small
     from .retention_resources import _runtime_facts
 
-    # The cp310-abi3 DSO is the same file on every selected CPython; its
-    # Python-side conversion uses that runtime's unchanged PEP393 str layout.
+    # The cp310-abi3 DSO's Python-side conversion uses the supported runtime's
+    # PEP393 str layout; any other runtime is refused.
     _runtime_facts()
     if sys.platform != "linux" or struct.calcsize("P") != 8:
         raise ValueError("ByteLevel native payload requires the selected Linux64 artifact")

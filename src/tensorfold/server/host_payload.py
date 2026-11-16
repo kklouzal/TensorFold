@@ -16,7 +16,6 @@ import threading
 import time
 import weakref
 
-from tensorfold.json_nesting import COMPILED_LIMIT
 
 from .cancellation import RequestCancelled
 from .errors import CapacityError
@@ -59,9 +58,9 @@ def json_wire_bound(value, *, maximum, depth_limit=10000, shape=None):
             count = 4
         elif kind is int:
             digits = max(1, (item.bit_length() * 30103 + 99999) // 100000)
-            if digits > 4300 and not COMPILED_LIMIT:
+            if digits > 4300:
                 # Raise the encoder's own int-digit ValueError before any lease
-                # or C encode, so no failure notes can follow (CPython 3.14+).
+                # or C encode, so no failure notes can follow.
                 int.__repr__(item)
             count = min(4301, digits + (item < 0))
         elif kind is float:
@@ -474,8 +473,7 @@ def _retire_measurement_frames(primary):
         while trace is not None:
             frame = trace.tb_frame
             if frame.f_code in codes:
-                frame.clear()
-                _ = frame.f_locals  # Refresh any diagnostic locals cache after clear.
+                frame.clear()  # Also drops cached/extra locals.
             trace = trace.tb_next
     except BaseException as cleanup:
         from tensorfold.cleanup import raise_failures

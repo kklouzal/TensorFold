@@ -119,10 +119,8 @@ def test_selected_parser_has_separate_c_depth_codec_error_copy_and_complete_sum(
     encoded = 96 << 20
     projection = _json_parse_payload(encoded, policy, guarded=True)
     assert projection["c_depth_bound"] == 10000
-    # Unguarded parses keep only the compiled counter, or the byte bound without one.
-    from tensorfold.families.qwen4_exp.cuda.retention_resources import _runtime_facts
-    compiled = _runtime_facts().c_container_depth
-    assert _json_parse_payload(encoded, policy)["c_depth_bound"] == (encoded if compiled is None else compiled)
+    # Unguarded parses have no compiled counter: the byte bound applies.
+    assert _json_parse_payload(encoded, policy)["c_depth_bound"] == encoded
     assert policy.recursion_limit == sys.getrecursionlimit()
     terms = projection["terms"]
     assert terms["raw_input"] == terms["unicode_error_input_copy"]

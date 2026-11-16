@@ -1013,10 +1013,8 @@ class TensorParallelDecoder:
                 previous = current.f_back
                 if (id(current) not in active and current.f_code in owned
                         and current.f_locals.get("self") is self):
+                    # Also drops the frame's cached locals proxy/extra locals.
                     current.clear()
-                    # CPython 3.12 caches f_locals snapshots; refresh after clear
-                    # so the snapshot itself cannot retain body/error/closure cells.
-                    _ = current.f_locals
                 current = previous
             trace = trace.tb_next
 

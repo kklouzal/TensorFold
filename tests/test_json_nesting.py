@@ -1,6 +1,5 @@
-"""Untrusted JSON nesting refusal: the compiled 3.12 C depth contract on every runtime."""
+"""Untrusted JSON nesting refusal: the 3.12 C container-depth contract, enforced by the guard."""
 import json
-import sys
 import threading
 
 import pytest
@@ -10,8 +9,7 @@ from tensorfold import json_nesting
 
 @pytest.fixture
 def guard(monkeypatch):
-    # Exercise the guard's own logic with a small limit on either runtime.
-    monkeypatch.setattr(json_nesting, "COMPILED_LIMIT", False)
+    # Exercise the guard's own logic with a small limit.
     monkeypatch.setattr(json_nesting, "NESTING_LIMIT", 40)
     return json_nesting
 
@@ -23,8 +21,7 @@ def outcome(call, text, **kw):
         return type(error).__name__, str(error)
 
 
-def test_compiled_limit_matches_the_runtime_family():
-    assert json_nesting.COMPILED_LIMIT == (sys.version_info[:2] < (3, 14))
+def test_nesting_limit_is_the_312_compiled_depth():
     assert json_nesting.NESTING_LIMIT == 10000
 
 
@@ -69,20 +66,11 @@ def test_guard_keeps_decoder_hooks_and_boms(guard):
         guard.loads(1)
 
 
-@pytest.mark.skipif(json_nesting.COMPILED_LIMIT, reason="the compiled counter refuses before this bound")
 def test_actual_runtime_accepts_the_limit_and_refuses_beyond_it():
     limit = json_nesting.NESTING_LIMIT
     assert json_nesting.loads(("[" * limit + "]" * limit).encode()) is not None
     with pytest.raises(RecursionError, match="decoding a JSON array"):
         json_nesting.loads(b"[" * (limit + 1) + b"]" * (limit + 1))
-
-
-@pytest.mark.skipif(not json_nesting.COMPILED_LIMIT, reason="only the compiled-counter runtime delegates")
-def test_compiled_runtime_is_plain_json_loads(monkeypatch):
-    calls = []
-    monkeypatch.setattr(json, "loads", lambda raw, **kw: calls.append((raw, kw)) or "parsed")
-    assert json_nesting.loads(b"[" * 20000, parse_int=int) == "parsed"
-    assert calls == [(b"[" * 20000, {"parse_int": int})]
 
 
 def test_stack_check_reads_the_default_thread_stack(monkeypatch):
@@ -95,16 +83,11 @@ def test_stack_check_reads_the_default_thread_stack(monkeypatch):
         threading.stack_size(previous)
 
 
-@pytest.mark.parametrize("compiled", [True, False])
-def test_walker_raises_the_encoders_own_int_digit_error_first(monkeypatch, compiled):
+def test_walker_raises_the_encoders_own_int_digit_error_first():
     from tensorfold.server import host_payload
 
-    monkeypatch.setattr(host_payload, "COMPILED_LIMIT", compiled)
     assert host_payload.json_wire_bound([10 ** 4299, -(10 ** 4299)], maximum=1 << 20) > 8600
     for value in ([10 ** 4300], {"k": -(10 ** 4300)}):
-        if compiled:
-            assert host_payload.json_wire_bound(value, maximum=1 << 20) > 4300
-            continue
         with pytest.raises(ValueError) as refused:
             host_payload.json_wire_bound(value, maximum=1 << 20)
         with pytest.raises(ValueError) as native:

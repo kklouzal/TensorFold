@@ -103,8 +103,7 @@ def test_native_payload_bound_verifies_actual_selected_abi_and_rejects_other_tor
     assert result["torch_git"] in ("04cf2557f315a350e7eea7ab064288def65db75a",
                                     "05adb434bd30d298eb408a72420b0496ee05f8e3")
     assert result["libstdcxx_sha256"] == "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11"
-    from tensorfold.families.qwen4_exp.cuda.retention_resources import _CPYTHON_RUNTIMES
-    assert result["python_implementation"] == "cpython" and tuple(result["python_version"]) in _CPYTHON_RUNTIMES
+    assert result["python_implementation"] == "cpython" and result["python_version"] == [3, 15, 2]
     # The published upstream nightly lacks the owned socket correction.
     for revision in ("5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1",
                      "09b29f3a97e07864066a2d574ffe03a852de9463", "other-native-build"):
@@ -145,7 +144,7 @@ def test_native_payload_bound_requires_finite_existing_hard_fd_limit(monkeypatch
         require_native_payload_runtime()
 
 
-@pytest.mark.parametrize("variant", ["implementation", (3, 12, 4), (3, 13, 9), (3, 14, 2), (3, 15, 1), (3, 16, 0)])
+@pytest.mark.parametrize("variant", ["implementation", (3, 12, 3), (3, 14, 2), (3, 15, 1), (3, 15, 3), (3, 16, 0)])
 def test_new_unique_native_payload_rejects_unproved_python_layout_before_native_reads(monkeypatch, variant):
     from tensorfold.families.qwen4_exp.cuda import execution_identity
 
@@ -337,90 +336,62 @@ def test_resource_arithmetic_refuses_unrepresentable_commitments_before_allocati
         retention_header_resources(None, True)
 
 
-def selected_runtime(monkeypatch, version):
-    """Evaluate one selected runtime row's arithmetic; not runtime qualification."""
+def test_runtime_record_admits_exactly_the_selected_build(monkeypatch):
     from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
 
-    monkeypatch.setattr(resources, "_runtime_facts", lambda **_kw: resources._CPYTHON_RUNTIMES[version])
-    return resources
+    facts = resources._CPYTHON
+    assert facts.version == (3, 15, 2)
+    assert len({role for role, *_ in facts.files}) == len(facts.files)
+    assert all(len(digest) == 64 and size > 0 for *_, size, digest in facts.files)
+    assert {name for name, *_ in facts.http_sources} == {
+        "http.client", "http.server", "email.parser", "email.feedparser"}
+    assert {role: size for role, _, size, _ in facts.files}["python"] == 33989216
+    # _json is builtin: the executable digest binds it.
+    assert "json-native" not in {role for role, *_ in facts.files}
+    assert (facts.inline_values_bytes, facts.heap_unicode_writer_bytes, facts.frame_object_bytes,
+            facts.interpreter_frame_bytes, facts.pair_tuple_bytes) == (280, 56, 168, 80, 64)
+    # Historical 3.12.3 literals scale by the proven 5/4 bound, rounding up.
+    assert resources._scaled(536) == 670 and resources._scaled(1) == 2
+    for version in ((3, 12, 3), (3, 15, 1), (3, 15, 3), (3, 16, 0)):
+        monkeypatch.setattr(sys, "version_info", version)
+        with pytest.raises(ValueError, match="selected CPython runtime"):
+            resources._runtime_facts()
+        with pytest.raises(ValueError, match="selected CPython runtime"):
+            resources._python_layout()
 
 
-def test_runtime_table_admits_exactly_the_two_selected_builds(monkeypatch):
-    from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
-
-    assert set(resources._CPYTHON_RUNTIMES) == {(3, 12, 3), (3, 15, 2)}
-    for version, facts in resources._CPYTHON_RUNTIMES.items():
-        assert facts.version == version
-        assert len({role for role, *_ in facts.files}) == len(facts.files)
-        assert all(len(digest) == 64 and size > 0 for *_, size, digest in facts.files)
-        assert {name for name, *_ in facts.http_sources} == {
-            "http.client", "http.server", "email.parser", "email.feedparser"}
-    old, new = resources._CPYTHON_RUNTIMES[(3, 12, 3)], resources._CPYTHON_RUNTIMES[(3, 15, 2)]
-    # The 3.12.3 derivation is the unchanged reference row.
-    assert (old.c_container_depth, old.fixed_scale, old.inline_values_bytes, old.heap_unicode_writer_bytes,
-            old.frame_object_bytes, old.interpreter_frame_bytes, old.pair_tuple_bytes,
-            old.serialization_notes, old.streamed_list_enumerate, old.json_native_builtin) == (
-        10000, (1, 1), 0, 0, 136, 72, 56, False, False, False)
-    assert {role: size for role, _, size, _ in new.files}["python"] == 33989216
-    assert "json-native" not in {role for role, *_ in new.files} and new.json_native_builtin
-    assert new.c_container_depth is None and new.fixed_scale == (5, 4) and new.inline_values_bytes == 280
-    # A 3.12 patch release keeps the existing minor-scoped list/dict layout row
-    # only; every exact-runtime proof still refuses it.
-    monkeypatch.setattr(sys, "version_info", (3, 12, 9))
-    assert resources._runtime_facts(exact=False) is old
-    with pytest.raises(ValueError, match="selected CPython runtime"):
-        resources._runtime_facts()
-    monkeypatch.setattr(sys, "version_info", (3, 15, 3))
-    with pytest.raises(ValueError, match="selected CPython runtime"):
-        resources._runtime_facts(exact=False)
-
-
-def test_315_projections_cover_the_312_ones_with_their_new_terms(monkeypatch):
+def test_projections_have_no_compiled_depth_and_pay_failure_notes():
     from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
 
     policy = resources._JsonPayloadPolicy("payload-fixture", (), sys.getrecursionlimit(), 8192)
-    reference = {}
-    for version in ((3, 12, 3), (3, 15, 2)):
-        selected_runtime(monkeypatch, version)
-        reference[version] = {n: (resources._json_parse_payload(n, policy),
-                                  resources._http_json_encoding_payload(n, policy),
-                                  resources._http_json_encoding_payload(n, policy, measured_depth=10000),
-                                  resources._streamed_json_encoding_payload(max(1, n), resources._python_layout()))
-                              for n in (0, 7, 20000, 1 << 20, 96 << 20)}
-        reference[version]["cache"] = resources._responses_cache_wrappers(1024, 64)
     for n in (0, 7, 20000, 1 << 20, 96 << 20):
-        old, new = reference[(3, 12, 3)][n], reference[(3, 15, 2)][n]
-        for before, after in zip(old, new):
-            assert after["total_bytes"] >= before["total_bytes"]
-        # No compiled C depth: every byte may open a container.
-        assert old[0]["c_depth_bound"] == min(n, 10000) and new[0]["c_depth_bound"] == n
-        assert new[0]["terms"]["open_containers"] == 45 * n
+        parse = resources._json_parse_payload(n, policy)
+        guarded = resources._json_parse_payload(n, policy, guarded=True)
+        unmeasured = resources._http_json_encoding_payload(n, policy)
+        measured = resources._http_json_encoding_payload(n, policy, measured_depth=10000)
+        streamed = resources._streamed_json_encoding_payload(max(1, n), resources._python_layout())
+        # No compiled C depth: every byte may open a container unless guarded.
+        assert parse["c_depth_bound"] == n and parse["terms"]["open_containers"] == 45 * n
+        assert guarded["c_depth_bound"] == min(n, 10000)
         # Unmeasured C encodes use the structural depth; the certified walker caps it.
-        assert old[1]["c_container_depth_bound"] == old[2]["c_container_depth_bound"] == min(10000, n // 2)
-        assert new[1]["c_container_depth_bound"] == n // 2
-        assert new[2]["c_container_depth_bound"] == min(10000, n // 2)
-        assert old[1]["failure_note_bytes"] == old[3]["failure_note_bytes"] == 0
-        assert new[1]["failure_note_bytes"] > 8 * n and new[3]["failure_note_bytes"] > 8 * max(1, n)
-    assert reference[(3, 15, 2)]["cache"]["entry_payload_bytes"] == (1025 + 128) * (670 + 280)
+        assert unmeasured["c_container_depth_bound"] == n // 2
+        assert measured["c_container_depth_bound"] == min(10000, n // 2)
+        assert unmeasured["failure_note_bytes"] > 8 * n and streamed["failure_note_bytes"] > 8 * max(1, n)
+    assert resources._responses_cache_wrappers(1024, 64)["entry_payload_bytes"] == (1025 + 128) * (670 + 280)
 
 
-@pytest.mark.parametrize("version", [(3, 12, 3), (3, 15, 2)])
-def test_selected_note_bound_covers_actual_worst_key_reprs(monkeypatch, version):
-    resources = selected_runtime(monkeypatch, version)
+def test_selected_note_bound_covers_actual_worst_key_reprs():
+    from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
+
     # Apostrophes double in repr; one printable astral character widens it to UCS4.
     key = "\U0001F600" + "'" * 4000 + '"'
     escaped = len(json.dumps(key))
     note = f"when serializing dict item {key!r}"
-    if not resources._runtime_facts().serialization_notes:
-        assert resources._serialization_notes(3, escaped) == 0
-        return
     assert sys.getsizeof(note) <= 56 + 4 * 49 + 4 * 2 * escaped
     assert len(repr(key)) <= 2 * escaped
     document = [[[{key: [0.0]}]]]
     assert (resources._serialization_notes(5, len(json.dumps(document)))
             >= sys.getsizeof(note) + 4 * sys.getsizeof("when serializing list item 0"))
-    if sys.version_info[:3] != version:
-        return
     with pytest.raises(ValueError) as failure:
         json.dumps([[[{key: [float("nan")]}]]], allow_nan=False)
     notes = failure.value.__notes__
@@ -429,16 +400,17 @@ def test_selected_note_bound_covers_actual_worst_key_reprs(monkeypatch, version)
     assert retained <= resources._serialization_notes(5, len(json.dumps(document)))
 
 
-def test_315_certified_encoder_notes_need_both_the_walker_and_the_stack_proof(monkeypatch):
+def test_certified_encoder_notes_need_both_the_walker_and_the_stack_proof():
     from dataclasses import replace
 
-    resources = selected_runtime(monkeypatch, (3, 15, 2))
+    from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
+
     base = resources._JsonPayloadPolicy("payload-fixture", (), sys.getrecursionlimit(), 8192)
     contained = replace(base, contained_encoder_failures=True)
     amount = 96 << 20
     assert resources._http_json_encoding_payload(amount, contained, measured_depth=10000)["failure_note_bytes"] == 0
     assert resources._http_json_encoding_payload(amount, contained)["failure_note_bytes"] > 8 * amount
     assert resources._http_json_encoding_payload(amount, base, measured_depth=10000)["failure_note_bytes"] > 8 * amount
-    # Guarded parses get the 3.12 depth; unguarded ones keep the byte bound.
+    # Guarded parses get the guard depth; unguarded ones keep the byte bound.
     assert resources._json_parse_payload(amount, base, guarded=True)["c_depth_bound"] == 10000
     assert resources._json_parse_payload(amount, base)["c_depth_bound"] == amount
