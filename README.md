@@ -2698,9 +2698,10 @@ numerical combination, including fused Concat faces, with no speed/bit-identity
 claim. [Composition contract](docs/owned-prepared-m32.md#vendor-prefill-composition).
 
 A separate default-off `preparation.prepared_linears=owned-prepared-m32-v1`
-RN-owner trial extends existing prepared Dense/Concat M32 buffers through120
-logical decode/MTP rows, including an active C1 prefix on a120-row owner. Paid
-physical extents round up to128, with bounded panel views and original full-N
+RN-owner trial extends existing prepared Dense/Concat M32 buffers to any
+positive logical decode/MTP row count (120 at 24 lanes, 160 at 32 lanes with
+MTP4), including an active C1 prefix on a full owner. Paid physical extents
+round up to a multiple of 32, with bounded panel views and original full-N
 per-part GEMMs. Generic and prefill providers stay selected outside those paid
 views. Native GDN registration validates the exact padded projection owner and
 its layer stride. This is an unqualified numerical candidate; native/model,

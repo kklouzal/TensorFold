@@ -11,9 +11,12 @@ family selection.
 
 The private TP8/ETP4, HC4/D2560, bound NONE/MTP region preserves RN attention,
 expert banks, full session/context promises, GPU floor and runtime workspace.
-Decode/MTP Buffers through120 logical rows own physical extents rounded up to a
-multiple of32. A C1 prefix can use an existing120-row owner; panel offsets32/64/96
-are bounded against its actual initialized128-row storage. Source/target overlap
+Decode/MTP Buffers of any positive logical row count own physical extents
+rounded up to a multiple of32 (120 rows at 24 lanes x MTP4 own 128; 160 rows at
+32 lanes own 160). Each panel is an independent fixed-M32 product, so the row
+count has no kernel bound; the extra storage is charged by the forecast below.
+A C1 prefix can use a full owner; panel offsets (multiples of32) are bounded
+against its actual initialized physical storage. Source/target overlap
 is declined before writes. Nonowned inputs may use the paid M32 input staging
 area. Unowned output layouts, including MTP `fc_e`/`fc_h` output storage, retain
 the existing provider. Prefill and ordinary/global `_ENABLED` policy are unchanged.
@@ -39,7 +42,9 @@ checks; nonowner contiguous validation is unchanged.
 At the current configuration, both decode and MTP have120 rows. Each role adds
 2,989,824 bytes of padding,655,360 bytes of shared M32 input storage and329,728
 bytes of FP32 HC partial arenas:3,974,912 bytes per role,7,949,824 bytes per rank
-for both. These are raw tensor payload forecasts, not allocator/private-graph
+for both (6,596,992 bytes per role including the small-row split-K workspace).
+At 32 lanes x MTP4 (160 rows per role) no row padding is needed: 3,689,600 bytes
+per role including that workspace. These are raw tensor payload forecasts, not allocator/private-graph
 residency or a live-fit qualification. Entry-point/library warmup, actual full24
 session capacity, NUMA, partial commits, MTP4 and captured/eager model execution,
 output/unchanged teacher quality and uninstrumented matched throughput remain

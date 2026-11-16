@@ -11,7 +11,6 @@ from tensorfold.cuda.sm70 import dense_small
 _ENABLED = False
 ROWS = 32
 OWNED_POLICY = "owned-prepared-m32-v1"
-OWNED_MAX_ROWS = 120
 
 
 def field_layout(c, rows, head_width, world, *, linear_layers=None):
@@ -35,7 +34,7 @@ def field_layout(c, rows, head_width, world, *, linear_layers=None):
 def workspace_bytes(c, rows, head_width, world, *, enabled=None, prefill=False, linear_layers=None, owned_panels=False):
     """Exact additional persistent bytes; original logical Buffers are already charged."""
     enabled = _ENABLED if enabled is None else enabled
-    if not enabled or prefill or not 1 <= rows <= (OWNED_MAX_ROWS if owned_panels else ROWS):
+    if not enabled or prefill or rows < 1 or not owned_panels and rows > ROWS:
         return 0
     physical_rows = ((rows + ROWS - 1) // ROWS) * ROWS if owned_panels else ROWS
     extra = 0
@@ -55,7 +54,7 @@ def workspace_bytes(c, rows, head_width, world, *, enabled=None, prefill=False, 
 def workspace_bytes_from_text(text, rows, world, *, enabled=None, prefill=False, _pipeline_stage=None, owned_panels=False):
     """The same forecast before weights load, including replicated local KV heads."""
     enabled = _ENABLED if enabled is None else enabled
-    if not enabled or prefill or not 1 <= rows <= (OWNED_MAX_ROWS if owned_panels else ROWS):
+    if not enabled or prefill or rows < 1 or not owned_panels and rows > ROWS:
         return 0
     text = text.get("text_config") or text
     c = SimpleNamespace(
@@ -248,7 +247,7 @@ def create(w, rows, *, prefill, dtype, head_columns=None, linear_layers=None, ow
 
 def owned_numerical_identity():
     return {'policy': OWNED_POLICY, 'roles': ['decode', 'mtp'], 'prefill': 'unchanged',
-            'logical_rows_limit': OWNED_MAX_ROWS, 'panel_rows': ROWS,
+            'logical_rows': 'positive-role-rows', 'panel_rows': ROWS,
             'physical_rows': 'ceil(logical_rows/32)*32',
             'matmul': 'sm70-small-m-wmma-stream-v1-logical-rows-else-existing-dense32-or-concat32',
             'concat': 'joined-weight-small-rows-else-original-part-GEMMs;original-order;original-full-N',
@@ -269,9 +268,11 @@ class PreparedM32:
     def __init__(self, text, role_rows, device):
         self.device = torch.device(device)
         self.role_rows = {role: rows for role, rows in role_rows.items() if role in ('decode', 'mtp')}
-        if (not self.role_rows or any(type(rows) is not int or not 1 <= rows <= OWNED_MAX_ROWS
-                                     for rows in self.role_rows.values())):
-            raise ValueError('owned prepared M32 requires bounded decode/MTP rows through120')
+        # Panels are independent fixed-M32 products over a ceil(rows/32)*32
+        # physical extent, so the role row count has no kernel bound; the
+        # forecast below charges its storage through ordinary admission.
+        if not self.role_rows or any(type(rows) is not int or rows < 1 for rows in self.role_rows.values()):
+            raise ValueError('owned prepared M32 requires positive decode/MTP role rows')
         self.forecast = {role: workspace_bytes_from_text(text, rows, 8, enabled=True, owned_panels=True)
                          for role, rows in self.role_rows.items()}
         self.buffers = {}
@@ -324,7 +325,7 @@ class PreparedM32:
         are shared serially; no persistent second model/weight or output copy is
         retained. OwnerPreparation reconciles opaque code/library commitment.
         """
-        from .gguf_weights import GGUFDense, GGUFConcat
+        from .gguf_weights import GGUFConcat, GGUFDense
         if self.closed or self.binding_started or weights.device != self.device:
             raise RuntimeError('owned prepared M32 requires one matching pre-State weight binding')
         self.binding_started = True

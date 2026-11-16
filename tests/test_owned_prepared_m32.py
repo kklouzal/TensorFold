@@ -4,8 +4,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from tensorfold.families.qwen4_exp.cuda import padded_linears as p, owner_preparation as prep
-from tests.test_sm70_padded_linears import metadata, local_config
+from tensorfold.families.qwen4_exp.cuda import owner_preparation as prep
+from tensorfold.families.qwen4_exp.cuda import padded_linears as p
+from tests.test_sm70_padded_linears import local_config, metadata
 
 
 def buffers(rows=120):
@@ -16,7 +17,7 @@ def buffers(rows=120):
     return b, fields
 
 
-@pytest.mark.parametrize('rows', [1, 31, 32, 33, 64, 65, 96, 120])
+@pytest.mark.parametrize('rows', [1, 31, 32, 33, 64, 65, 96, 120, 121, 160])
 def test_each_paid_logical_extent_matches_forecast_and_reconciles_before_state(rows):
     b, _ = buffers(rows)
     plan = p.PreparedM32(metadata(), {'decode': rows}, 'cpu')
@@ -41,12 +42,13 @@ def test_actual_48_layer_forecast_is_not_lost_at_120_row_capacity():
     assert set(plan.role_rows) == {'decode', 'mtp'}
 
 
-@pytest.mark.parametrize('rows', [1, 31, 32, 33, 64, 65, 96, 120])
+@pytest.mark.parametrize('capacity, rows', [(120, rows) for rows in (1, 31, 32, 33, 64, 65, 96, 120)]
+                         + [(160, rows) for rows in (1, 120, 121, 128, 129, 159, 160)])
 @pytest.mark.parametrize('owned_input', [False, True])
-def test_active_prefix_and_all_four_panels_preserve_values_without_extending_storage(rows, owned_input):
-    b, fields = buffers()
-    source = fields['act'] if owned_input else torch.empty((120, 320), dtype=torch.float16)
-    for row in range(120):
+def test_active_prefix_and_all_panels_preserve_values_without_extending_storage(capacity, rows, owned_input):
+    b, fields = buffers(capacity)
+    source = fields['act'] if owned_input else torch.empty((capacity, 320), dtype=torch.float16)
+    for row in range(capacity):
         source[row].fill_(row / 256)
     original = source.clone()
     target = fields['mixed']
@@ -69,7 +71,7 @@ def test_active_prefix_and_all_four_panels_preserve_values_without_extending_sto
     torch.testing.assert_close(result, (source[:rows, torch.arange(2560) % 320].float() / 8).half(), atol=0, rtol=0)
     torch.testing.assert_close(source, original, atol=0, rtol=0)
     assert matrix.destinations == [target.data_ptr() + start * 2560 * 2 for start in range(0, rows, 32)]
-    assert b.owners['mixed'].shape == (128, 2560)
+    assert b.owners['mixed'].shape == ((capacity + 31) // 32 * 32, 2560)
 
 
 def test_paid_offsets_reject_unaligned_foreign_and_out_of_extent_views():
@@ -94,22 +96,23 @@ def test_aliasing_and_unowned_outputs_decline_before_any_write():
 
 
 def test_explicit_prepared_policy_is_numerical_and_cannot_hide_competing_dense_owner():
-    spec = dict(kernel_family=prep.RN_KERNEL_FAMILY, rn_heads_per_block=12,
-                graph_family='uncaptured', graph_budget_bytes=0, trial=True,
-                prepared_linears=p.OWNED_POLICY)
+    spec = {'kernel_family': prep.RN_KERNEL_FAMILY, 'rn_heads_per_block': 12,
+                'graph_family': 'uncaptured', 'graph_budget_bytes': 0, 'trial': True,
+                'prepared_linears': p.OWNED_POLICY}
     owner = prep.OwnerPreparation(spec, role_rows={'decode': 120, 'mtp': 120, 'prefill': 256}, manifest_sha256='a' * 64)
     assert owner.numerical_selection['prepared_linears']['reference_bit_identity'] is False
     for change in ({'trial': False}, {'prepared_linears': True}, {'prepared_linears': 'optimized'},
         {'dense_projections': {'backend': 'cublas', 'geometry': 'fixed-m32', 'roles': ['decode'], 'panel_rows': 32}}):
         with pytest.raises(ValueError, match='explicit RN trial'):
             prep.parse_preparation({**spec, **change})
-    with pytest.raises(ValueError, match='through120'):
-        p.PreparedM32(metadata(), {'decode': 121}, 'cpu')
+    for rows in (0, -32, 160.0, True):
+        with pytest.raises(ValueError, match='positive decode/MTP role rows'):
+            p.PreparedM32(metadata(), {'decode': rows}, 'cpu')
 
 
 def test_real_concat_adapter_passes_original_full_parts_to_each_prepared_panel(monkeypatch):
-    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFConcat
     from tensorfold.cuda.sm70 import gguf_ops
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFConcat, GGUFDense
     b, fields = buffers()
     matrix = GGUFConcat((GGUFDense(torch.zeros((1536, 320), dtype=torch.float16)),
                          GGUFDense(torch.zeros((1024, 320), dtype=torch.float16))))
