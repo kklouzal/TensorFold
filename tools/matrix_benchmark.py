@@ -288,8 +288,17 @@ def stream_request(base: str, body: dict, gate: threading.Barrier, delay: float,
     if delay:
         time.sleep(delay)
     sent = time.perf_counter()
-    pieces, usage, runtime, texts = [], None, None, []
-    with urllib.request.urlopen(request, timeout=args.timeout) as response:
+    pieces, usage, runtime, texts, refusals = [], None, None, [], 0
+    while True:  # --retry-overloaded: a capacity refusal (503) is resent; its time counts from the first send
+        try:
+            response = urllib.request.urlopen(request, timeout=args.timeout)
+            break
+        except urllib.error.HTTPError as error:
+            if error.code != 503 or refusals >= args.retry_overloaded:
+                raise
+            refusals += 1
+            time.sleep(args.retry_delay)
+    with response:
         protocol.response_type(response, "text/event-stream")
         for chunk in protocol.sse_objects(response, limits=limits):
             now = time.perf_counter()
@@ -307,7 +316,7 @@ def stream_request(base: str, body: dict, gate: threading.Barrier, delay: float,
         raise ValueError("stream ended without usage")
     protocol.completion_usage(usage, args.output_tokens, prompt=True)
     output = "".join(texts)
-    return {"sent": sent, "end_s": ended, "arrivals_s": pieces, "usage": usage, "server": runtime,
+    return {"sent": sent, "end_s": ended, "arrivals_s": pieces, "usage": usage, "server": runtime, "refusals": refusals,
             "output_chars": len(output), "output_sha256": sha256(output.encode("utf-8"))}
 
 
@@ -344,7 +353,8 @@ def rep_metrics(requests: list[dict]) -> dict:
            "decode_median_tps": statistics.median(decode) if len(decode) == len(requests) else None,
            "decode_min_tps": min(decode) if len(decode) == len(requests) else None,
            "ttft_median_s": statistics.median(ttft) if ttft else None, "ttft_max_s": max(ttft) if ttft else None,
-           "output_tps": completion / makespan, "total_tps": (prompt + completion) / makespan}
+           "output_tps": completion / makespan, "total_tps": (prompt + completion) / makespan,
+           "refusals": sum(r.get("refusals", 0) for r in requests)}
     server_decode = [m["server_decode_tps"] for m in per if m.get("server_decode_tps") is not None]
     if len(server_decode) == len(requests):
         out["server_decode_median_tps"] = statistics.median(server_decode)
@@ -936,6 +946,10 @@ def main() -> int:
     p.add_argument("--timeout", type=float, default=900, help="socket inactivity timeout, seconds")
     p.add_argument("--deadline", type=float, default=3600, help="whole-request deadline, seconds")
     p.add_argument("--fail-fast", action="store_true")
+    p.add_argument("--retry-overloaded", type=int, default=0, metavar="N",
+                   help="resend a request refused with HTTP 503 up to N times (time counts from the first send; "
+                        "each request records its refusals)")
+    p.add_argument("--retry-delay", type=float, default=0.05, help="seconds between --retry-overloaded resends")
     protocol.add_arguments(p)
 
     p = sub.add_parser("summary", help="per-cell table of one arm")
