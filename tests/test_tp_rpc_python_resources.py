@@ -191,7 +191,10 @@ def test_process_fixed_map_highwater_bounds_actual_insert_delete_churn(pending):
         # Actual 3.12.3 calculate_log2_keysize small-size OR permits sixteen
         # slots under churn; a naive ceilpow2(max(8,3P)) would miss this.
         assert limits["map_capacity"] >= 16
-        assert largest > 2 * sys.getsizeof({0: None, 1: None})
+        if sys.version_info[:2] == (3, 12):
+            # Observed on 3.12 only; 3.15's insert/delete churn stays within the
+            # same bound without reaching the sixteen-slot table.
+            assert largest > 2 * sys.getsizeof({0: None, 1: None})
 
 
 def test_leader_metadata_is_not_multiplied_by_followers_or_live_occupancy():
