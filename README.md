@@ -2208,6 +2208,16 @@ The shared proof validator distinguishes full 24-slot Q8 and 32-slot Q4 capacity
 the C8 teacher operation remains explicitly 24-slot Q8. Focused CPU contract controls pass;
 actual Source37 capacity, numerical quality and performance remain separate gates.
 
+A [CPython 3.15.2 runtime candidate](deploy/v100/python315-runtime.md) runs the same
+source on python-build-standalone 3.15.2 with the owned PyTorch source rebuilt for cp315
+and Triton 3.2.0 built from source with an owned compatibility patch. On 8×V100 (SC117
+IQ3_S, TP8/ETP4, MTP4, `--context 262144 --parallel 32`, greedy, 512 output tokens,
+source `53d6da37`), two sessions per arm against the 3.12.3 image `cf8c0ff6` measured
+prefill geomean 1.008 (0.989–1.027) and per-stream decode geomean 1.041 (1.019–1.063)
+over 4K/16K × C1/8/16/24/32, with no cell regression; golden-vg2 and the ten long greedy
+prompts were identical, and warm startup was 83–88 s versus 93 s. The audited
+source-foundation pipeline still builds the 3.12.3 image; it is not yet regenerated for 3.15.
+
 ### Serving, admission and startup
 
 Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
