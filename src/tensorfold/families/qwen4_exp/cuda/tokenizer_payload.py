@@ -35,9 +35,12 @@ def bytelevel_payload_policy():
 
     from tensorfold.engine.model_identity import capture_model_identity
     from .execution_identity import _small
+    from .retention_resources import _runtime_facts
 
-    if (sys.platform != "linux" or struct.calcsize("P") != 8
-            or sys.implementation.name != "cpython" or sys.version_info[:3] != (3, 12, 3)):
+    # The cp310-abi3 DSO is the same file on every selected CPython; its
+    # Python-side conversion uses that runtime's unchanged PEP393 str layout.
+    _runtime_facts()
+    if sys.platform != "linux" or struct.calcsize("P") != 8:
         raise ValueError("ByteLevel native payload requires the selected Linux64 artifact")
     package = distribution("tokenizers")
     if package.version != "0.23.3":

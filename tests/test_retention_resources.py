@@ -1,6 +1,7 @@
 """Source admission units and actual selected-tokenizer presentation boundaries."""
 
 from types import SimpleNamespace
+import json
 import sys
 
 import pytest
@@ -143,20 +144,20 @@ def test_native_payload_bound_requires_finite_existing_hard_fd_limit(monkeypatch
         require_native_payload_runtime()
 
 
-@pytest.mark.parametrize("variant", ["implementation", "version"])
+@pytest.mark.parametrize("variant", ["implementation", (3, 12, 4), (3, 13, 9), (3, 14, 2), (3, 15, 1), (3, 16, 0)])
 def test_new_unique_native_payload_rejects_unproved_python_layout_before_native_reads(monkeypatch, variant):
     from tensorfold.families.qwen4_exp.cuda import execution_identity
 
     def forbidden(*_args):
         pytest.fail("unsupported Python must refuse before process/native identity reads")
     monkeypatch.setattr(execution_identity, "_small", forbidden)
-    if variant == "version":
-        monkeypatch.setattr(sys, "version_info", (3, 12, 4))
+    if variant != "implementation":
+        monkeypatch.setattr(sys, "version_info", variant)
     else:
         values = vars(sys.implementation).copy()
         values["name"] = "pypy"
         monkeypatch.setattr(sys, "implementation", SimpleNamespace(**values))
-    with pytest.raises(ValueError, match="selected CPython3.12.3"):
+    with pytest.raises(ValueError, match="selected CPython runtime"):
         require_native_payload_runtime()
 
 
@@ -333,3 +334,95 @@ def test_resource_arithmetic_refuses_unrepresentable_commitments_before_allocati
         retained_recovery_extra(sys.maxsize, slots=sys.maxsize, keep=sys.maxsize, points=0)
     with pytest.raises(ValueError, match="host-sized"):
         retention_header_resources(None, True)
+
+
+def selected_runtime(monkeypatch, version):
+    """Evaluate one selected runtime row's arithmetic; not runtime qualification."""
+    from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
+
+    monkeypatch.setattr(resources, "_runtime_facts", lambda **_kw: resources._CPYTHON_RUNTIMES[version])
+    return resources
+
+
+def test_runtime_table_admits_exactly_the_two_selected_builds(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
+
+    assert set(resources._CPYTHON_RUNTIMES) == {(3, 12, 3), (3, 15, 2)}
+    for version, facts in resources._CPYTHON_RUNTIMES.items():
+        assert facts.version == version
+        assert len({role for role, *_ in facts.files}) == len(facts.files)
+        assert all(len(digest) == 64 and size > 0 for *_, size, digest in facts.files)
+        assert {name for name, *_ in facts.http_sources} == {
+            "http.client", "http.server", "email.parser", "email.feedparser"}
+    old, new = resources._CPYTHON_RUNTIMES[(3, 12, 3)], resources._CPYTHON_RUNTIMES[(3, 15, 2)]
+    # The 3.12.3 derivation is the unchanged reference row.
+    assert (old.c_container_depth, old.fixed_scale, old.inline_values_bytes, old.heap_unicode_writer_bytes,
+            old.frame_object_bytes, old.interpreter_frame_bytes, old.pair_tuple_bytes,
+            old.serialization_notes, old.streamed_list_enumerate, old.json_native_builtin) == (
+        10000, (1, 1), 0, 0, 136, 72, 56, False, False, False)
+    assert {role: size for role, _, size, _ in new.files}["python"] == 33989216
+    assert "json-native" not in {role for role, *_ in new.files} and new.json_native_builtin
+    assert new.c_container_depth is None and new.fixed_scale == (5, 4) and new.inline_values_bytes == 280
+    # A 3.12 patch release keeps the existing minor-scoped list/dict layout row
+    # only; every exact-runtime proof still refuses it.
+    monkeypatch.setattr(sys, "version_info", (3, 12, 9))
+    assert resources._runtime_facts(exact=False) is old
+    with pytest.raises(ValueError, match="selected CPython runtime"):
+        resources._runtime_facts()
+    monkeypatch.setattr(sys, "version_info", (3, 15, 3))
+    with pytest.raises(ValueError, match="selected CPython runtime"):
+        resources._runtime_facts(exact=False)
+
+
+def test_315_projections_cover_the_312_ones_with_their_new_terms(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
+
+    policy = resources._JsonPayloadPolicy("payload-fixture", (), sys.getrecursionlimit(), 8192)
+    reference = {}
+    for version in ((3, 12, 3), (3, 15, 2)):
+        selected_runtime(monkeypatch, version)
+        reference[version] = {n: (resources._json_parse_payload(n, policy),
+                                  resources._http_json_encoding_payload(n, policy),
+                                  resources._http_json_encoding_payload(n, policy, measured_depth=10000),
+                                  resources._streamed_json_encoding_payload(max(1, n), resources._python_layout()))
+                              for n in (0, 7, 20000, 1 << 20, 96 << 20)}
+        reference[version]["cache"] = resources._responses_cache_wrappers(1024, 64)
+    for n in (0, 7, 20000, 1 << 20, 96 << 20):
+        old, new = reference[(3, 12, 3)][n], reference[(3, 15, 2)][n]
+        for before, after in zip(old, new):
+            assert after["total_bytes"] >= before["total_bytes"]
+        # No compiled C depth: every byte may open a container.
+        assert old[0]["c_depth_bound"] == min(n, 10000) and new[0]["c_depth_bound"] == n
+        assert new[0]["terms"]["open_containers"] == 45 * n
+        # Unmeasured C encodes use the structural depth; the certified walker caps it.
+        assert old[1]["c_container_depth_bound"] == old[2]["c_container_depth_bound"] == min(10000, n // 2)
+        assert new[1]["c_container_depth_bound"] == n // 2
+        assert new[2]["c_container_depth_bound"] == min(10000, n // 2)
+        assert old[1]["failure_note_bytes"] == old[3]["failure_note_bytes"] == 0
+        assert new[1]["failure_note_bytes"] > 8 * n and new[3]["failure_note_bytes"] > 8 * max(1, n)
+    assert reference[(3, 15, 2)]["cache"]["entry_payload_bytes"] == (1025 + 128) * (670 + 280)
+
+
+@pytest.mark.parametrize("version", [(3, 12, 3), (3, 15, 2)])
+def test_selected_note_bound_covers_actual_worst_key_reprs(monkeypatch, version):
+    resources = selected_runtime(monkeypatch, version)
+    # Apostrophes double in repr; one printable astral character widens it to UCS4.
+    key = "\U0001F600" + "'" * 4000 + '"'
+    escaped = len(json.dumps(key))
+    note = f"when serializing dict item {key!r}"
+    if not resources._runtime_facts().serialization_notes:
+        assert resources._serialization_notes(3, escaped) == 0
+        return
+    assert sys.getsizeof(note) <= 56 + 4 * 49 + 4 * 2 * escaped
+    assert len(repr(key)) <= 2 * escaped
+    document = [[[{key: [0.0]}]]]
+    assert (resources._serialization_notes(5, len(json.dumps(document)))
+            >= sys.getsizeof(note) + 4 * sys.getsizeof("when serializing list item 0"))
+    if sys.version_info[:3] != version:
+        return
+    with pytest.raises(ValueError) as failure:
+        json.dumps([[[{key: [float("nan")]}]]], allow_nan=False)
+    notes = failure.value.__notes__
+    assert len(notes) == 5 and notes[1] == note
+    retained = sum(sys.getsizeof(text) for text in notes) + sys.getsizeof(notes)
+    assert retained <= resources._serialization_notes(5, len(json.dumps(document)))

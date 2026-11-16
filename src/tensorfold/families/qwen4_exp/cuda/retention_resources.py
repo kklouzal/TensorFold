@@ -428,8 +428,8 @@ def require_native_payload_runtime():
     allocator, kernel, device or model qualification. Both retain the owned
     socket correction; unpatched upstream and rejected forks are not admitted.
     """
-    if sys.implementation.name != "cpython" or sys.version_info[:3] != (3, 12, 3):
-        raise ValueError("native unique-profile payload bounds require the selected CPython3.12.3 layout")
+    # The equations are C++/Torch facts; Python only selects the admitted runtime row.
+    _runtime_facts()
     import platform
     import resource
     from pathlib import Path
@@ -649,16 +649,129 @@ def tokenizer_presentation_bound(tokenizer, *, precise_bytelevel=True):
                              "tokenizers-0.23.3/builtin-affine-v1")
 
 
+@dataclass(frozen=True)
+class _CPythonFacts:
+    """Facts of ONE selected CPython build used by the payload projections.
+
+    ``fixed_scale`` multiplies source-path object literals originally derived
+    for 3.12.3. A runtime may only use it when every type on those paths grows
+    by at most that ratio and the path's object set is unchanged (diff-reviewed);
+    allocations new in that runtime are separate fields. Unknown runtimes have
+    no row and are refused.
+    """
+    name: str
+    version: tuple
+    minor_layout_scope: bool  # _python_layout admits this minor (existing 3.12 contract)
+    files: tuple  # (role, locator, size, sha256): "executable", "module:<name>" or an absolute path
+    http_sources: tuple  # (module, size, sha256) of the selected HTTP/email header parser
+    json_native_builtin: bool  # _json is compiled into the bound executable
+    pair_tuple_bytes: int
+    frame_object_bytes: int  # GC header + PyFrameObject through _f_frame_data + frame specials
+    interpreter_frame_bytes: int  # _PyInterpreterFrame before localsplus
+    c_container_depth: int | None  # None: no compiled depth; nesting is bounded by encoded bytes
+    fixed_scale: tuple
+    inline_values_bytes: int  # managed-dict inline values that sys.getsizeof omits
+    heap_unicode_writer_bytes: int  # PyMem_Malloc'd PyUnicodeWriter struct
+    serialization_notes: bool  # JSON encoders add_note on each unwound container level
+    streamed_list_enumerate: bool  # Python iterencode lists use enumerate()
+
+
+_CPYTHON_RUNTIMES = {
+    # Ubuntu noble python3.12 3.12.3 (production image): unchanged derivation.
+    (3, 12, 3): _CPythonFacts(
+        "ubuntu-cpython-3.12.3", (3, 12, 3), True,
+        (("python", "executable", 8020928, "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"),
+         ("json-native", "module:_json", 48952, "ca8e35c58f7bc8e27258c4af43651c941413bc6318903621253485b0395758a3"),
+         ("libpython", "/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0", 9061000,
+          "1021f236227334ded6d1bbbc4bb6f5d933f793d8397c969896cfbdf03ce96223"),
+         ("pystate", "/usr/include/python3.12/cpython/pystate.h", 17228,
+          "11494795dd1d6945fbf8036af5ccf247463e94d405a760924a1c78f78ebfc4ec"),
+         ("ceval", "/usr/include/python3.12/internal/pycore_ceval.h", 5265,
+          "1af22b50c9ececfc4c3a5f37ecb70cc1c0eefad5a2656e6e22fc088cae54e226"),
+         ("frame", "/usr/include/python3.12/internal/pycore_frame.h", 9256,
+          "97c7e2722af4c30c240b8b3c867a54b2fe49a4207d2e566c6a19a9d190fd0f8a"),
+         ("copy", "module:copy", 8412, "cbd25547933176fcf6bb05c2adc9f4796d15ac20b9b82dcf890daea7203daeab"),
+         ("json-api", "module:json", 14020, "d5d41e2c29049515d295d81a6d40b4890fbec8d8482cfb401630f8ef2f77e4d5"),
+         ("json-decoder", "module:json.decoder", 12473,
+          "9f02654649816145bc76f8c210a5fe3ba1de142d4d97a1c93105732e747c285b"),
+         ("json-encoder", "module:json.encoder", 16070,
+          "af7bd40a0d0d0a3e726a9b4b3a2a543019f6ab97a340d0162a9c29ca9da97869")),
+        (("http.client", 58537, "0242200eed2aa47dc2723c99605055c9b792dc197ab36884db0a193772ba99d1"),
+         ("http.server", 48516, "6ef28116c245a8e5e7f2d57f17607b7df706fd86110cf1c5a2b8416151b41248"),
+         ("email.parser", 4975, "88890ea9994c55ff7d6c1fd570fece2785f51ed407ee95df4aff946e250bcd66"),
+         ("email.feedparser", 22796, "6046239fcdd6977d1c25841581cabedaeec8046cc5fedcb8ff2d6450a36442bd")),
+        False, 56, 136, 72, 10000, (1, 1), 0, 0, False, False),
+    # python-build-standalone 20261110 cpython-3.15.2 x86_64 install_only_stripped,
+    # installed unchanged at /opt/python3.15 (static libpython in the executable,
+    # so builtin _json is bound by the executable digest). Derived from the
+    # 3.15.2 sources (byte-identical to the installed Lib/ and Include/ files):
+    # PyFrameObject 72 + _PyInterpreterFrame 80 + GC 16 (pycore_frame.h,
+    # pycore_interpframe_structs.h); _Py_EnterRecursiveCall is stack-pointer based
+    # (ceval.c/pycore_ceval.h), so C nesting is bounded only by input bytes;
+    # tuples +8 (ob_hash); every other type on these paths grows <=1.235x
+    # (frame 168/136), hence the 5/4 fixed-literal scale; inline values
+    # <= round_up(30,8)+31*8 (SHARED_KEYS_MAX_SIZE 30, pycore_dict.h);
+    # PyUnicodeWriter_Create mallocs a 56-byte _PyUnicodeWriter; _json.c and
+    # json/encoder.py add one __notes__ entry per unwound container.
+    (3, 15, 2): _CPythonFacts(
+        "pbs-20261110-cpython-3.15.2", (3, 15, 2), False,
+        (("python", "executable", 33989216, "26e2d181de783ce64ffddfe6c3bedc276aa001547f2e20d5164d113210b2dae5"),
+         ("libpython", "/opt/python3.15/lib/libpython3.15.so.1.0", 35649448,
+          "f16c6fbb19447adabf44df0d1f63d1b0c8fa2543357a46f9b0f22fa0b4f92396"),
+         ("pystate", "/opt/python3.15/include/python3.15/cpython/pystate.h", 11771,
+          "41c15b867e799ed537ac515608b8a05b38f18d4b7c9d5e863a2bbfe07de37c65"),
+         ("ceval", "/opt/python3.15/include/python3.15/internal/pycore_ceval.h", 18119,
+          "a8726a55b80fe9f01eb11b30da8aefddd547962cf6b4c4783a053131bfab6e57"),
+         ("frame", "/opt/python3.15/include/python3.15/internal/pycore_frame.h", 2146,
+          "d11fa9f98b80cd04d657777d5a72eddedfb9905a9da9da7f23f714bb0fdb2fb9"),
+         ("interpreter-frame", "/opt/python3.15/include/python3.15/internal/pycore_interpframe_structs.h", 3435,
+          "b6621d382805c8f0f1727b427d2600c1e82d6c6c18f97fa8d04f86d9b65cc241"),
+         ("copy", "module:copy", 9049, "120238f795fdb0364d7a29450ce5494b3e32dc7f6367e0076138f77663ecf086"),
+         ("json-api", "module:json", 15446, "4cc35eb04b789ce4890cffa944829c946e4c5dd032aaa6dc01f53449b250985a"),
+         ("json-decoder", "module:json.decoder", 13584,
+          "6a06aad3e054e600b06959e93fe1713f88a4665348ee4a82f553ae5104038329"),
+         ("json-encoder", "module:json.encoder", 17116,
+          "2d3ded41ec1251b6334ee2d8a53b3fbb22a05202b7085636c749f99a38d00902")),
+        (("http.client", 60477, "f4506633b5fe4fe06add63d9e32ab5e6e7cda84ec1df365da7faa5c1315fdbc5"),
+         ("http.server", 44124, "5b9c88fe8af9ef7655d9c9a2a41832e4b09107e8f0f05ea7359b7d0f8d39fb31"),
+         ("email.parser", 4970, "5af6ef2ef9eb5aed6cae264ec2418ac466fe4316b41fd3f7ece4b149d521a1ee"),
+         ("email.feedparser", 22864, "2e68e34c6e956e94bdbd5077d75f1fff3e0d2423726914555f5695fc5cb2bacd")),
+        True, 64, 168, 80, None, (5, 4), 280, 56, True, True),
+}
+
+
+def _runtime_facts(*, exact=True):
+    """The selected runtime row; any other implementation/version is refused."""
+    import sysconfig
+
+    version = sys.version_info[:3]
+    if sys.implementation.name == "cpython" and sysconfig.get_config_var("Py_GIL_DISABLED") in (None, 0):
+        facts = _CPYTHON_RUNTIMES.get(version)
+        if facts is None and not exact:
+            facts = next((row for row in _CPYTHON_RUNTIMES.values()
+                          if row.minor_layout_scope and row.version[:2] == version[:2]), None)
+        if facts is not None:
+            return facts
+    raise ValueError("payload projection requires a selected CPython runtime (Ubuntu 3.12.3 or PBS 3.15.2)")
+
+
+def _scaled(value, facts):
+    """A 3.12.3-derived fixed object literal on an unchanged source path."""
+    numerator, denominator = facts.fixed_scale
+    return -(-value * numerator // denominator)
+
+
 def _python_layout():
-    # List over-allocation below is the supported CPython 3.12 list_resize
-    # contract, not a universal Python/allocator assumption. These limits apply
-    # only to the optional new tier promise; ordinary backends remain unchanged.
-    if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 12):
-        raise ValueError("tiered Python payload projection requires the selected CPython 3.12 runtime")
+    # List over-allocation below is the selected list_resize contract (identical
+    # in 3.12 and the selected 3.15.2 default build), not a universal Python or
+    # allocator assumption. These limits apply only to the optional new tier
+    # promise; ordinary backends remain unchanged.
+    facts = _runtime_facts(exact=False)
     return {"pointer": struct.calcsize("P"), "list": sys.getsizeof([]), "tuple": sys.getsizeof(()),
             "dict": sys.getsizeof({}), "dict_entry": sys.getsizeof({0: 0}),
             "bytes": sys.getsizeof(b""), "unicode": sys.getsizeof("\U0010ffff"),
-            "bytearray": sys.getsizeof(bytearray()), "integer": sys.getsizeof(sys.maxsize)}
+            "bytearray": sys.getsizeof(bytearray()), "integer": sys.getsizeof(sys.maxsize),
+            "inline_values": facts.inline_values_bytes}
 
 
 @dataclass(frozen=True)
@@ -669,58 +782,63 @@ class _JsonPayloadPolicy:
     frame_work: int
 
     def record(self):
+        depth = _runtime_facts().c_container_depth
         return {"schema": "tensorfold.cpython-json-payload", "version": 1,
                 "runtime_identity": self.identity, "files": self.files,
-                "fresh_tree_bytes_per_encoded_byte": 45, "c_container_depth": 10000,
+                "fresh_tree_bytes_per_encoded_byte": 45,
+                "c_container_depth": "encoded-byte bound" if depth is None else depth,
                 "python_recursion_limit": self.recursion_limit, "frame_work_bytes": self.frame_work,
                 "scope": "selected object/vector payload; allocator/C-stack/native workspace qualification separate"}
 
 
 def _json_payload_policy():
-    """Bind the actual Ubuntu CPython build before using its tighter layout.
+    """Bind the actual selected CPython build before using its tighter layout.
 
     The C parser's depth is a compiled runtime property, distinct from Python's
     mutable recursion setting. Source/header pairing and all byte identities
-    are recorded in the selected-runtime derivation, not inferred from 3.12.3.
+    are recorded per runtime in _CPYTHON_RUNTIMES, never inferred across them.
     """
     import _json
     import copy
+    import importlib
     import platform
     import sysconfig
     from pathlib import Path
     from tensorfold.engine.model_identity import capture_model_identity
     from .execution_identity import _small
 
-    if (sys.implementation.name != "cpython" or sys.version_info[:3] != (3, 12, 3)
-            or sys.platform != "linux" or platform.machine() != "x86_64" or struct.calcsize("P") != 8
+    facts = _runtime_facts()
+    if (sys.platform != "linux" or platform.machine() != "x86_64" or struct.calcsize("P") != 8
             or sys.get_int_max_str_digits() != 4300
             or sysconfig.get_config_var("Py_DEBUG") not in (None, 0)
             or sysconfig.get_config_var("Py_TRACE_REFS") not in (None, 0)):
-        raise ValueError("JSON payload projection requires the selected CPython3.12.3 Linux64 build")
+        raise ValueError(f"JSON payload projection requires the selected {facts.name} Linux64 build")
+    def frame_probe():
+        return sys._getframe()
+
+    probe = frame_probe()  # A completed frame owning its locals-free data.
     if (sys.getsizeof("") != 41 or sys.getsizeof([]) != 56 or sys.getsizeof({}) != 64
-            or sys.getsizeof({"": None}) != 184 or sys.getsizeof((1 << 64) - 1) != 36):
+            or sys.getsizeof({"": None}) != 184 or sys.getsizeof((1 << 64) - 1) != 36
+            or sys.getsizeof((None, None)) != facts.pair_tuple_bytes
+            or sys.getsizeof(probe) - 8 * (probe.f_code.co_nlocals + probe.f_code.co_stacksize)
+            != facts.frame_object_bytes):
         raise ValueError("JSON payload projection requires its actual selected object layout")
-    expected = {
-        "python": (Path(sys.executable).resolve(), 8020928, "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"),
-        "json-native": (Path(_json.__file__).resolve(), 48952, "ca8e35c58f7bc8e27258c4af43651c941413bc6318903621253485b0395758a3"),
-        "libpython": (Path("/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0"), 9061000,
-                      "1021f236227334ded6d1bbbc4bb6f5d933f793d8397c969896cfbdf03ce96223"),
-        "pystate": (Path("/usr/include/python3.12/cpython/pystate.h"), 17228,
-                    "11494795dd1d6945fbf8036af5ccf247463e94d405a760924a1c78f78ebfc4ec"),
-        "ceval": (Path("/usr/include/python3.12/internal/pycore_ceval.h"), 5265,
-                  "1af22b50c9ececfc4c3a5f37ecb70cc1c0eefad5a2656e6e22fc088cae54e226"),
-        "frame": (Path("/usr/include/python3.12/internal/pycore_frame.h"), 9256,
-                  "97c7e2722af4c30c240b8b3c867a54b2fe49a4207d2e566c6a19a9d190fd0f8a"),
-        "copy": (Path(copy.__file__).resolve(), 8412,
-                 "cbd25547933176fcf6bb05c2adc9f4796d15ac20b9b82dcf890daea7203daeab"),
-        "json-api": (Path(json.__file__).resolve(), 14020,
-                     "d5d41e2c29049515d295d81a6d40b4890fbec8d8482cfb401630f8ef2f77e4d5"),
-        "json-decoder": (Path(json.decoder.__file__).resolve(), 12473,
-                         "9f02654649816145bc76f8c210a5fe3ba1de142d4d97a1c93105732e747c285b"),
-        "json-encoder": (Path(json.encoder.__file__).resolve(), 16070,
-                         "af7bd40a0d0d0a3e726a9b4b3a2a543019f6ab97a340d0162a9c29ca9da97869"),
-    }
-    mapped = {"python": set(), "libpython": set(), "json-native": set()}
+    del probe
+    builtin = "_json" in sys.builtin_module_names
+    if builtin != facts.json_native_builtin or (getattr(_json, "__file__", None) is None) != builtin:
+        raise ValueError("JSON payload projection requires the selected native parser linkage")
+
+    def locate(locator):
+        if locator == "executable":
+            return Path(sys.executable).resolve()
+        if locator.startswith("module:"):
+            return Path(importlib.import_module(locator[len("module:"):]).__file__).resolve()
+        return Path(locator)
+
+    expected = {role: (locate(locator), size, digest) for role, locator, size, digest in facts.files}
+    # A builtin parser is code inside the bound executable mapping.
+    native = "python" if builtin else "json-native"
+    mapped = {"python": set(), "libpython": set(), native: set()}
     for line in _small("/proc/self/maps", 4 << 20).decode().splitlines():
         fields = line.split(None, 5)
         if len(fields) != 6:
@@ -731,7 +849,7 @@ def _json_payload_policy():
                 if fields[5].endswith(" (deleted)"):
                     raise ValueError("JSON payload projection cannot use a retired runtime artifact")
                 mapped[role].add(Path(fields[5]).resolve(strict=True))
-    required = ("python", "json-native")
+    required = ("python", native)
     if (any(mapped[role] != {expected[role][0].resolve(strict=True)} for role in required)
             or mapped["libpython"] and mapped["libpython"] != {expected["libpython"][0].resolve(strict=True)}):
         raise ValueError("JSON payload projection requires its actual loaded parser and Python runtime")
@@ -750,7 +868,8 @@ def _json_payload_policy():
                 + fn.__code__.co_stacksize for fn in functions)
     # Materialized heap frame, active backing, traceback, iterator/items/pair,
     # bound append and transient id. Include Python's error-reporting headroom.
-    per_frame = (136 + 8 * slots) + (72 + 8 * slots) + 56 + 72 + 40 + 56 + 72 + 36
+    per_frame = ((facts.frame_object_bytes + 8 * slots) + (facts.interpreter_frame_bytes + 8 * slots)
+                 + 56 + 72 + 40 + facts.pair_tuple_bytes + 72 + 36)
     recursion = _size(sys.getrecursionlimit(), "actual Python recursion limit")
     return _JsonPayloadPolicy(captured.model_prefix,
         tuple((item.logical_name, item.size, item.sha256) for item in captured.files),
@@ -790,9 +909,17 @@ def _json_copy_working(encoded_bytes, policy):
 
 
 def _json_parse_payload(encoded_bytes, policy):
-    """Default selected scanner, including malformed-prefix/error peaks."""
+    """Default selected scanner, including malformed-prefix/error peaks.
+
+    Each open container consumes at least one input byte. 3.12.3 also raises at
+    its compiled C_RECURSION_LIMIT; 3.15.2 checks only the thread's C stack, so
+    its open-container bound is the encoded byte count itself.
+    """
     _size(encoded_bytes, "JSON input bytes", zero=True)
-    depth, keys = min(encoded_bytes, 10000), (encoded_bytes + 1) // 4
+    facts = _runtime_facts()
+    limit = facts.c_container_depth
+    depth = encoded_bytes if limit is None else min(encoded_bytes, limit)
+    keys = (encoded_bytes + 1) // 4
     memo, old = _fresh_dict_payload(keys, 16)
     raw = sys.getsizeof(b"") + encoded_bytes
     digits = len(str(encoded_bytes + 1))
@@ -802,8 +929,10 @@ def _json_parse_payload(encoded_bytes, policy):
         return 41 + chars
     error_writer = 2 * (80 + 4 * max(error_chars + error_chars // 4 + 1, 237))
     error_strings = (ascii_string(49) + ascii_string(28) + ascii_string(9) + ascii_string(56)
-        + ascii_string(error_chars) + 3 * ascii_string(digits) + 72 + 64 + error_writer)
-    fixed = 512 + 88 + 64 + 184 + 320 + 144 + 1448 + error_strings + policy.frame_work
+        + ascii_string(error_chars) + 3 * ascii_string(digits) + _scaled(72 + 64, facts) + error_writer)
+    # The 3.15.2 scanstring writer struct is heap-allocated (one string at a time).
+    fixed = (_scaled(512 + 88 + 64 + 184 + 320 + 144 + 1448, facts) + facts.heap_unicode_writer_bytes
+             + error_strings + policy.frame_work)
     terms = {"fresh_tree": _json_tree_payload(encoded_bytes, policy), "open_containers": 45 * depth,
         "key_memo": memo, "one_container_resize": max(old, _append_list_payload(encoded_bytes // 2) - 56),
         "raw_input": raw, "unicode_error_input_copy": raw, "decoded_document": 2 * (80 + 4 * encoded_bytes),
@@ -811,6 +940,32 @@ def _json_parse_payload(encoded_bytes, policy):
         "number_source": 49 + encoded_bytes, "fixed_headers_error_strings_frames": fixed}
     return {"schema": "tensorfold.selected-json-parse-payload-v1", "terms": terms,
             "total_bytes": _total(terms.values()), "c_depth_bound": depth, "key_count_bound": keys}
+
+
+def _serialization_notes(levels, encoded_bytes):
+    """Failure notes a selected JSON encoder adds while unwinding ``levels`` containers.
+
+    Each unwound list/tuple/dict level adds one ``when serializing T item X``
+    note: <=48 ASCII characters for a sequence index, or 27 plus repr(key) for a
+    mapping. repr never exceeds twice a key's ASCII-escaped JSON spelling (only
+    an apostrophe doubles) and stores <=4 bytes/character; every ancestor key
+    was emitted before its value, so those spellings sum to <=encoded_bytes.
+    Also pays the __notes__ list/exception dict, a type-name string, and the
+    largest note's formatting: its repr is released before the widened
+    PyUnicode_FromFormat writer (min_length 27+100, 1/4 overallocation) is
+    resized to the exact retained note, and the ASCII prefix buffer is <=200
+    bytes. Python f-string notes join exactly and stay within the same bound.
+    """
+    _size(levels, "unwound JSON container levels", zero=True)
+    _size(encoded_bytes, "JSON note key extent", zero=True)
+    if not _runtime_facts().serialization_notes:
+        return 0
+    key = 2 * encoded_bytes
+    retained = levels * (56 + 4 * 49) + 4 * key
+    owners = _append_list_payload(levels) + 8 * (levels + (levels >> 3) + 6) + 2 * 184
+    chars = 48 + key
+    transient = 64 + 200 + (56 + 4 * (key + 1)) + (56 + 4 * (chars + chars // 4 + 1 + 127))
+    return _total((retained, owners, transient))
 
 
 def _responses_cache_wrappers(limit, connections):
@@ -821,9 +976,12 @@ def _responses_cache_wrappers(limit, connections):
     table = 32 + capacity * width + (2 * capacity // 3) * 24
     ordered = 128 + 2 * (table + 8 * capacity) + 32 * (limit + 1)
     entries = limit + 1 + 2 * connections
+    # One managed-dict _Entry per entry; 3.15.2 inline values are not in getsizeof.
+    facts = _runtime_facts()
+    entry = _scaled(536, facts) + facts.inline_values_bytes
     return {"ordered_dict_keys_mirrors_nodes": ordered, "entry_count": entries,
-            "entry_payload_bytes": entries * 536, "shared_attribute_keys": 768,
-            "total_bytes": _total((ordered, entries * 536, 768))}
+            "entry_payload_bytes": entries * entry, "shared_attribute_keys": 768,
+            "total_bytes": _total((ordered, entries * entry, 768))}
 
 
 def _streamed_json_encoding_payload(encoded_bytes, layout):
@@ -848,7 +1006,11 @@ def _streamed_json_encoding_payload(encoded_bytes, layout):
     finally:
         encoder.close()
     recursion = sys.getrecursionlimit()
+    facts = _runtime_facts()
     iterator_header = max(sys.getsizeof(iter([])), sys.getsizeof(iter(())), sys.getsizeof(iter({}.items())))
+    if facts.streamed_list_enumerate:
+        # 3.15.2 _iterencode_list: enumerate, its (index, value) result and index int.
+        iterator_header += sys.getsizeof(enumerate(())) + sys.getsizeof((None, None)) + layout["integer"]
     marker_header = layout["dict_entry"] + layout["integer"]
     metadata = recursion * (frame_header + iterator_header + sys.getsizeof({}.items()) + marker_header)
     # Appending ASCII keeps StringIO's UnicodeWriter accumulating; pay old/new
@@ -856,15 +1018,18 @@ def _streamed_json_encoding_payload(encoded_bytes, layout):
     capacity = encoded_bytes + encoded_bytes // (2 if sys.platform == "win32" else 4) + 1
     writer = layout["unicode"] + capacity
     with io.StringIO() as output:
-        stringio_header = sys.getsizeof(output) + 3 * struct.calcsize("I")
+        stringio_header = (sys.getsizeof(output) + 3 * struct.calcsize("I")
+                           + facts.heap_unicode_writer_bytes)
     text = layout["unicode"] + encoded_bytes
+    notes = _serialization_notes(recursion, encoded_bytes)
     return {"metadata_bytes": metadata, "writer_old_and_new_bytes": 2 * writer,
             "stringio_header_bytes": stringio_header, "escaped_chunk_bytes": text,
-            "total_bytes": metadata + stringio_header + 2 * writer + text,
+            "failure_note_bytes": notes,
+            "total_bytes": metadata + stringio_header + 2 * writer + text + notes,
             "runtime_recursion_limit": recursion, "encoder_frame_header_bytes": frame_header}
 
 
-def _http_json_encoding_payload(encoded_bytes, policy):
+def _http_json_encoding_payload(encoded_bytes, policy, *, measured_depth=None):
     """Pinned CPython C one-shot ASCII writer, not the RPC StringIO proof.
 
     _json.c encoder_call uses one overallocated UnicodeWriter and returns one
@@ -873,6 +1038,9 @@ def _http_json_encoding_payload(encoded_bytes, policy):
     returns that exact str. UTF8 encoding and socket retention form a later
     str+bytes phase. Marker ancestors survive failures and remain charged.
     Native allocator/RSS/C-stack qualification retains its existing scope.
+    ``measured_depth`` is the caller-enforced json_wire_bound nesting limit
+    that runs before every certified dynamic-pool encode; without it a runtime
+    lacking a compiled C depth uses the structural amount//2 bound.
     """
     import _json
     if type(policy) is not _JsonPayloadPolicy:
@@ -886,7 +1054,13 @@ def _http_json_encoding_payload(encoded_bytes, policy):
         raise ValueError("HTTP encoder differs from the certified default C ASCII dispatch")
     amount = _size(encoded_bytes, "HTTP encoded output bound", zero=True)
     layout = _python_layout()
-    depth = min(10000, amount // 2)  # Captured selected pystate.h C_RECURSION_LIMIT, not Python's setting.
+    facts = _runtime_facts()
+    # 3.12.3: captured pystate.h C_RECURSION_LIMIT, not Python's setting. Every
+    # open container has emitted at least "[]"/"{}" of the bounded output.
+    depth = amount // 2
+    for limit in (facts.c_container_depth, measured_depth):
+        if limit is not None:
+            depth = min(depth, _size(limit, "JSON container depth limit"))
     count = depth + 1
     capacity = 1 << (max(8, 3 * count) - 1).bit_length()
     index = 1 if capacity < 256 else 2 if capacity < 65536 else 4 if capacity < 1 << 32 else 8
@@ -903,9 +1077,12 @@ def _http_json_encoding_payload(encoded_bytes, policy):
     # one-argument tuples (including vectorcall-elided ones), the C two-argument
     # call tuple, floatstr function/defaults/-Infinity, and dumps' **kw dict.
     # Python frame/error headroom remains separate from these object payloads.
-    fixed = 96 + 112 + 48 + 3 * 64 + 2 * 72 + 5 * 48 + 56 + 160 + 72 + 24 + 64
+    # 3.15.2 adds its heap PyUnicodeWriter struct and per-level failure notes.
+    fixed = (_scaled(96 + 112 + 48 + 3 * 64 + 2 * 72 + 5 * 48 + 56 + 160 + 72 + 24 + 64, facts)
+             + facts.heap_unicode_writer_bytes)
     wrappers = policy.frame_work + fixed
-    construction = 2 * writer + scalar + numeric_key + integer_scratch + markers + wrappers
+    notes = _serialization_notes(count, amount)
+    construction = 2 * writer + scalar + numeric_key + integer_scratch + markers + wrappers + notes
     # Fixed source-owned SSE event labels/framing fit 128 ASCII bytes. During
     # prefix+text+suffix, the original and both joined strings may coexist.
     framed_strings = 3 * (41 + amount + 128)
@@ -914,6 +1091,7 @@ def _http_json_encoding_payload(encoded_bytes, policy):
         "encoded_bytes": amount, "c_container_depth_bound": depth, "marker_payload_bytes": markers,
         "writer_old_new_bytes": 2 * writer, "largest_ascii_scalar_bytes": scalar,
         "integer_decimal_scratch_bytes": integer_scratch, "numeric_key_repr_bytes": numeric_key,
+        "failure_note_bytes": notes,
         "construction_peak_bytes": construction, "completed_str_and_bytes_peak": wire,
         "total_bytes": max(construction, wire),
         "scope": "selected source/object payload; native dtoa/allocator/C-stack qualification separate"}
@@ -1103,7 +1281,9 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     if len(Stream.__dataclass_fields__) <= 30:
         raise ValueError("Stream metadata no longer has the selected combined dictionary layout")
     stream_table, stream_capacity = dictionary_table(len(stream_fields), 2)  # Unicode attribute keys.
-    stream_header = sys.getsizeof(object.__new__(Stream))
+    # Stream (and each typed record below) is a managed-dict instance; 3.15.2
+    # allocates inline values that sys.getsizeof does not report.
+    stream_header = sys.getsizeof(object.__new__(Stream)) + layout["inline_values"]
     wire_integer = sys.getsizeof(MAX_PROTOCOL_SEQUENCE)
     identity_integer = sys.getsizeof((1 << (8 * layout["pointer"])) - 1)
     leader_maps = {
@@ -1500,12 +1680,11 @@ def _http_header_resources(policy):
 
     if http.client._MAXLINE != 65536 or http.client._MAXHEADERS != 100:
         raise ValueError("HTTP header payload has no proof for these parser limits")
-    expected = {
-        "http.client": (http.client, 58537, "0242200eed2aa47dc2723c99605055c9b792dc197ab36884db0a193772ba99d1"),
-        "http.server": (http.server, 48516, "6ef28116c245a8e5e7f2d57f17607b7df706fd86110cf1c5a2b8416151b41248"),
-        "email.parser": (email.parser, 4975, "88890ea9994c55ff7d6c1fd570fece2785f51ed407ee95df4aff946e250bcd66"),
-        "email.feedparser": (email.feedparser, 22796, "6046239fcdd6977d1c25841581cabedaeec8046cc5fedcb8ff2d6450a36442bd"),
-    }
+    # 3.15.2 _read_headers no longer appends the terminator line before its
+    # count check: still <=101 retained header lines plus the request line.
+    modules = {"http.client": http.client, "http.server": http.server,
+               "email.parser": email.parser, "email.feedparser": email.feedparser}
+    expected = {name: (modules[name], size, digest) for name, size, digest in _runtime_facts().http_sources}
     files = {name: Path(row[0].__file__).resolve(strict=True) for name, row in expected.items()}
     authority = capture_model_identity(files, runtime_identity={"policy": "http-header-payload-v1"},
         authorize=lambda _name, path: path.resolve(strict=True), max_files=len(files),
@@ -1583,7 +1762,9 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
                      + 32 * cache_peak_keys + 128)
     if segment_encoder is None:
         segment_fixed = 0
-    depth = 10000
+    # json_wire_bound enforces this nesting limit before every certified encode;
+    # it bounds both the walker's own metadata and the C encoder's depth.
+    depth = _size(json_wire_bound.__kwdefaults__["depth_limit"], "certified JSON nesting limit")
     capacity = 1 << (max(8, 3 * (depth + 1)) - 1).bit_length()
     width = 1 if capacity < 256 else 2 if capacity < 65536 else 4 if capacity < 1 << 32 else 8
     marker_table = 32 + capacity * width + (2 * capacity // 3) * 24
@@ -1595,7 +1776,7 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
     refusal = {"error": {"message": "\0" * 1024, "type": "server_error",
                          "param": "response_id", "code": "server_is_overloaded"}}
     refusal_wire = json_wire_bound(refusal, maximum=1 << 20)
-    prepaid_encoder = _http_json_encoding_payload(refusal_wire, policy)["total_bytes"]
+    prepaid_encoder = _http_json_encoding_payload(refusal_wire, policy, measured_depth=depth)["total_bytes"]
     static_wire = 0 if static_http_metadata is None else json_wire_bound(static_http_metadata, maximum=sys.maxsize)
     static_payload = _json_tree_payload(static_wire, policy)
     # Fixed scalar/container shells in stats/runtime/usage/history records.
@@ -1712,7 +1893,8 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
                 extent = count * core["bound"].piece_utf8_bytes
                 owned += _append_list_payload(count) + count * layout["unicode"] + 5 * extent
                 future_wire += 12 * extent + 3 * count
-            owned += max(0, _http_json_encoding_payload(future_wire, policy)["total_bytes"] - prepaid_encoder)
+            owned += max(0, _http_json_encoding_payload(
+                future_wire, policy, measured_depth=depth)["total_bytes"] - prepaid_encoder)
         return owned, future_wire
 
     def generation_bound(amount, output_tokens, extent_tokens):
@@ -1743,7 +1925,7 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         # Echo/translated request fields may expand ASCII escaping and wrappers;
         # one existing protocol extent also funds fixed response/stat metadata.
         future_wire = terms["reply_graph_and_wire"] + 12 * amount + MAX_MESSAGE_BYTES
-        future_encoder = _http_json_encoding_payload(future_wire, policy)["total_bytes"]
+        future_encoder = _http_json_encoding_payload(future_wire, policy, measured_depth=depth)["total_bytes"]
         ids_base = ids_bound(4 * extent_tokens)[0]
         rpc_base = rpc_request_base(extent_tokens)
         return (owned + peers * _total(_follower_scope(terms).values()) + rpc_base + ids_base
@@ -1760,7 +1942,7 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         else:
             owned = _json_tree_payload(amount, policy) + layout["bytes"] + amount
         future_wire = 12 * amount + MAX_MESSAGE_BYTES
-        return owned + max(0, _http_json_encoding_payload(future_wire, policy)["total_bytes"] - prepaid_encoder)
+        return owned + max(0, _http_json_encoding_payload(future_wire, policy, measured_depth=depth)["total_bytes"] - prepaid_encoder)
 
     def control_bound(amount, kind):
         future_wire = 12 * amount + MAX_MESSAGE_BYTES
@@ -1774,11 +1956,11 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
             raise ValueError("HTTP control phase differs from its prepared source owner")
         return (_json_tree_payload(amount, None) + policy.frame_work
                 + extra + shell_payload
-                + max(0, _http_json_encoding_payload(future_wire, policy)["total_bytes"] - prepaid_encoder)), future_wire
+                + max(0, _http_json_encoding_payload(future_wire, policy, measured_depth=depth)["total_bytes"] - prepaid_encoder)), future_wire
 
     pool = HostPayloadPool(pool_bytes, body_bound=body_bound,
         generation_bound=generation_bound,
-        encoding_bound=lambda amount: _http_json_encoding_payload(amount, policy)["total_bytes"],
+        encoding_bound=lambda amount: _http_json_encoding_payload(amount, policy, measured_depth=depth)["total_bytes"],
         cache_bound=cache_bound, measurement_bytes=measurement, prepaid_encoder_bytes=prepaid_encoder,
         max_handlers=record["max_http_connections"],
         control_bound=control_bound,
