@@ -265,10 +265,15 @@ Determinism contracts are binding where promised:
   (drafting prompts; not DFlash2/DSpark or a retention policy; dropped by eviction
   or when another prompt resumes its point in place). The long-context oracle
   `/home/kklouzal/build-cache/cc-perf-20261114/golden_long.py` (reference
-  `golden-long2.json` beside it; `golden-long1.json` is superseded) sends each of
+  `golden-long3.json` beside it, recorded after the 4605f899 NCCL prompt sums and
+  round 0 reproduced by three fresh server processes at a8d0a03b; `golden-long1/2.json` are
+  superseded) sends each of
   10 prompts (336–6,190 tokens, text and chat) cold and then as its repeat and
   requires cold == repeat == reference; each round has its own prompt salts, so a
   round is checked once per server process (`check FILE --round K`, K = 0 or 1).
+  The same source, configuration and requests must reply identically in a fresh
+  server process; keep the oracle's full output (a truncated `DIFFER` list once
+  read as cross-process nondeterminism).
   Still open: a prompt that extends a kept point (a next turn, a shared system
   block) is cut into different prompt pieces than its cold prefill, so it may
   differ from a cold prefill of the same prompt, and concurrent replies differ from
