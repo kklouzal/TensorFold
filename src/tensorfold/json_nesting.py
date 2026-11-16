@@ -8,6 +8,12 @@ most NESTING_LIMIT open containers on the boundaries that parse through
 ``loads``; on runtimes without the compiled counter ``loads`` therefore refuses
 deeper input before the C scanner runs, with the error 3.12 raises for it.
 On the compiled-counter runtime it is exactly ``json.loads``.
+
+The guard bounds what the projections pay; it is not 3.12's exact threshold.
+3.12.3's counter also pays the C-entered frames already on the caller's stack
+(measured: a direct call, in the main or a new thread, accepts 9997 levels;
+more C-entered frames accept fewer), so an input nested within those few
+levels of 10000 parses here and is refused on 3.12.
 """
 
 import json
@@ -56,7 +62,25 @@ def _refuse_at(text, cut, kw):
     raise RecursionError(f"maximum recursion depth exceeded while decoding a JSON {kind} from a unicode string")
 
 
-def _vector_scan(text, start, depth, kw, block=1 << 16):
+# Characters per NumPy block of the string-dense scan.
+GUARD_BLOCK = 1 << 16
+
+
+def guard_workspace_bytes(chars):
+    """Transient bytes of one ``loads`` guard scan over ``chars`` decoded characters.
+
+    Per block character, the arrays one _vector_scan iteration holds are the
+    UTF-32 copy and its str slice (4 B each), index/last/before/toggles/step/
+    levels and the two index results (8 B each) and three bool masks: 75 B. The
+    largest single expression adds at most 5 more 8-byte temporaries. Arrays
+    are released before the next block, so 128 B per block character bounds
+    the peak (measured 80 B on 3.15.2/NumPy 2.5.4). 64 KiB covers array
+    headers and the guard's four Python frames.
+    """
+    return 128 * min(chars, GUARD_BLOCK) + 65536
+
+
+def _vector_scan(text, start, depth, kw, block=GUARD_BLOCK):
     """Finish a string-dense input in bounded NumPy blocks (outside a string at ``start``).
 
     A character is escaped after an odd backslash run; unescaped quotes toggle
@@ -87,6 +111,8 @@ def _vector_scan(text, start, depth, kw, block=1 << 16):
             return
         depth, inside = int(levels[-1]), int(inside + toggles[-1]) & 1
         run = int(codes.size - 1 - last[-1] if last[-1] >= 0 else codes.size + run)
+        # One block's arrays at a time (guard_workspace_bytes).
+        del codes, index, slash, last, before, quote, toggles, outside, step, levels, negative, deep
 
 
 def _refuse_deep(text, kw):
@@ -157,25 +183,34 @@ def require_stack_capacity(recursion_limit):
     Without the compiled counter, a C encode refused only by the thread's
     stack raises RecursionError and adds failure notes. Certified encoders
     run in default-attribute threads (no project stack_size): the glibc
-    default must hold the stack margins, 512 bytes per encoder level and 2048
-    bytes per already-active Python frame. Measured on the selected 3.15.2
-    binary: <=106 bytes per dict/list level, <=980 bytes per C-bridged frame.
+    default stack, less its actual guard and CPython's soft limit
+    (2*_PyOS_STACK_MARGIN_BYTES above the guard), must hold 512 bytes per
+    encoder level and 2048 bytes per already-active Python frame.
+    Encoder levels are a structural bound for the digest-bound 3.15.2
+    executable: its _json recursion is encoder_listencode_obj calling itself
+    (lists: 144-byte frame) or through encoder_encode_key_value (dicts:
+    144 + 32 argument/alignment + 80 = 256 bytes per level), with every other
+    call returning before the next level. The per-frame figure is a margin
+    over a measurement (<=980 bytes per C-bridged frame), not a proof.
     """
     import ctypes
+    import mmap
     import threading
 
     if threading.stack_size() != 0:
         return False
     libc = ctypes.CDLL(None, use_errno=True)
     attr = ctypes.create_string_buffer(256)  # pthread_attr_t is 56 bytes on x86_64 glibc.
-    size = ctypes.c_size_t()
+    size, guard = ctypes.c_size_t(), ctypes.c_size_t()
     if libc.pthread_getattr_default_np(attr) != 0:
         return False
     try:
-        if libc.pthread_attr_getstacksize(attr, ctypes.byref(size)) != 0:
+        if (libc.pthread_attr_getstacksize(attr, ctypes.byref(size)) != 0
+                or libc.pthread_attr_getguardsize(attr, ctypes.byref(guard)) != 0):
             return False
     finally:
         libc.pthread_attr_destroy(attr)
-    # Soft limit 2*_PyOS_STACK_MARGIN_BYTES above the base; <=64KiB guard pages.
-    required = 2 * 16384 + 65536 + 512 * NESTING_LIMIT + 2048 * (recursion_limit + 50)
+    page = mmap.PAGESIZE  # glibc rounds the guard up to whole pages.
+    required = (-(-guard.value // page) * page + 2 * 16384
+                + 512 * NESTING_LIMIT + 2048 * (recursion_limit + 50))
     return size.value >= required

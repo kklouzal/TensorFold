@@ -925,16 +925,20 @@ def _json_parse_payload(encoded_bytes, policy, *, guarded=False):
     Each open container consumes at least one input byte. 3.12.3 also raises at
     its compiled C_RECURSION_LIMIT; 3.15.2 checks only the thread's C stack.
     ``guarded`` callers parse through json_nesting.loads, which refuses deeper
-    input first; its refusal-only prefix copy fits the decoded-document pair.
+    input first; its refusal-only prefix copy fits the decoded-document pair,
+    and its scan workspace (at most one character per input byte) is added.
     Otherwise the 3.15.2 open-container bound is the encoded byte count.
     """
-    from tensorfold.json_nesting import NESTING_LIMIT
+    from tensorfold.json_nesting import NESTING_LIMIT, guard_workspace_bytes
 
     _size(encoded_bytes, "JSON input bytes", zero=True)
     facts = _runtime_facts()
     limit = facts.c_container_depth
+    guard = 0
     if limit is None and guarded:
         limit = NESTING_LIMIT
+        # The scan runs only on more than NESTING_LIMIT opening brackets.
+        guard = guard_workspace_bytes(encoded_bytes) if encoded_bytes > NESTING_LIMIT else 0
     depth = encoded_bytes if limit is None else min(encoded_bytes, limit)
     keys = (encoded_bytes + 1) // 4
     memo, old = _fresh_dict_payload(keys, 16)
@@ -955,6 +959,8 @@ def _json_parse_payload(encoded_bytes, policy, *, guarded=False):
         "raw_input": raw, "unicode_error_input_copy": raw, "decoded_document": 2 * (80 + 4 * encoded_bytes),
         "unicode_writer": 2 * (80 + 4 * (encoded_bytes + encoded_bytes // 4 + 1)),
         "number_source": 49 + encoded_bytes, "fixed_headers_error_strings_frames": fixed}
+    if guard:
+        terms["nesting_guard_workspace"] = guard
     return {"schema": "tensorfold.selected-json-parse-payload-v1", "terms": terms,
             "total_bytes": _total(terms.values()), "c_depth_bound": depth, "key_count_bound": keys}
 

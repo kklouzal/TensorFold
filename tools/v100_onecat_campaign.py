@@ -315,8 +315,9 @@ def image(root, wheel_output, output, base, cpus, memory, timeout):
             "qualification": False})
 
 
-# The owned FD extension uses the stable ABI: ".abi3.so", or 3.15+'s platform-qualified ".abi3-<multiarch>.so".
-_STABLE_FD_OWNER = re.compile(r"tensorfold/_fd_owner\.abi3(-[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+)?\.so")
+# The owned FD extension uses the stable ABI: ".abi3.so", or 3.15+'s platform-qualified
+# spelling for this x86_64 Linux campaign image (setuptools takes the first abi3 suffix).
+_STABLE_FD_OWNER = re.compile(r"tensorfold/_fd_owner\.abi3(-x86_64-linux-gnu)?\.so")
 _INSTALLED_CHECK = """import hashlib,json,pathlib,subprocess,sys
 from tensorfold import _fd_owner
 from tensorfold.cuda.sm70 import software_binding
