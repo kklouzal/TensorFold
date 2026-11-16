@@ -60,8 +60,9 @@ output quality (teacher-forced NLL with a predeclared margin) and correctness ar
 tested and what counts as superior, a regression or uncertain.
 
 Use the backend's actual supported environment: Apple Silicon for MLX, or the
-pinned native Linux ARM64/AMD64 container for CUDA. The project requires Python
-3.11 or newer; the reproducible CUDA container uses Python 3.12. A local editable
+pinned native Linux ARM64/AMD64 container for CUDA. The project requires CPython
+3.15 (3.15.2 is the supported runtime); each deployment guide names its container's
+pinned interpreter. A local editable
 installation is `python -m pip install -e '.[test]'`. This does not provision a
 CUDA compiler or reproduce the Docker dependency locks.
 

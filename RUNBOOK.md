@@ -1,6 +1,6 @@
 # Installation runbook
 
-Use the backend that matches the host. TensorFold needs Python 3.11 or newer, Apple Silicon for MLX,
+Use the backend that matches the host. TensorFold needs CPython 3.15 (3.15.2 is the supported runtime), Apple Silicon for MLX,
 or a supported NVIDIA CUDA environment. Choose one checkpoint from the [model table](README.md#supported-models-and-formats)
 and check disk space and available memory before downloading it.
 

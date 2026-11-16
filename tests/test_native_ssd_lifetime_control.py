@@ -332,7 +332,7 @@ class NativeLifetime(unittest.TestCase):
             current = sys._getframe()
             prior_opcodes = current.f_trace_opcodes
             try:
-                # CPython 3.12 enables opcode callbacks from the active-frame
+                # CPython enables opcode callbacks from the active-frame
                 # flags when settrace is installed, before the callee event.
                 current.f_trace_opcodes = True
                 sys.unraisablehook = lambda status: unraisable.append(status.exc_value)

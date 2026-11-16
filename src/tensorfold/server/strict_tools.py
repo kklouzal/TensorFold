@@ -941,7 +941,7 @@ def _rebase(node: dict[str, Any]) -> dict[str, Any]:
 
 
 def _regex(pattern: Any, where: str) -> Any:
-    """``pattern``'s syntax tree from CPython's regex parser (3.11+); RequestError when it is not a string or not a
+    """``pattern``'s syntax tree from CPython's regex parser; RequestError when it is not a string or not a
     regular expression Python reads. Python's parser recurses once per group, so this also bounds the nesting xgrammar
     0.2.8's regex compiler sees (it overflowed an 8 MB thread stack on 50,000 nested groups and killed the server)."""
 
