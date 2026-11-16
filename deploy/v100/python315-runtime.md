@@ -90,6 +90,15 @@ CPU suite (tests/ without tests/cuda): no 3.15-only failures beyond the Gemma
 qualification tool's 3.12 AST contract, the GB10 calibration environment and the
 wip image's stale protected install manifest.
 
+## 3.15 interpreter features
+
+- Experimental JIT (`PYTHON_JIT=1`, available in this build, off by default): one
+  session against the two default 3.15 sessions was mixed (C1 decode −3% at 4K and
+  −9% at 16K; C8 16K +9%; prefill within ±2.5%). Not enabled.
+- Free-threading: not applicable to this stack. The SM70 Triton 3.2 build, xgrammar,
+  the owned PyTorch build and the 3.11 limited-API FD owner are GIL builds, and
+  serving already uses one process per tensor-parallel rank.
+
 ## Open items before promotion
 
 - Port `source_foundation.py` (interpreter pin and acquisition, cp315 tags and
