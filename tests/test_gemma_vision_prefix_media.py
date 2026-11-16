@@ -258,7 +258,7 @@ def test_credit_once_before_hashes_and_rebind_borrows_same_lease(monkeypatch):
 def test_original_request_credit_is_used_without_second_cache_debit():
     from types import SimpleNamespace
     from tensorfold.server import host_payload as hp
-    pool = hp.HostPayloadPool(1 << 20, body_bound=lambda n: n, generation_bound=lambda n, o: (n + o, o),
+    pool = hp.HostPayloadPool(1 << 20, body_bound=lambda n: n, generation_bound=lambda n, o, e: (n + o, o, 0, 0),
                              encoding_bound=lambda n: n, cache_bound=lambda n, copying: n, measurement_bytes=0)
     raw, processor = standard_processor()
     frontend = GemmaVisionProcessor(raw, processor, get_aspect_ratio_preserving_size)

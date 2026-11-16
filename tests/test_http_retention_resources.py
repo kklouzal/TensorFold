@@ -236,7 +236,7 @@ def test_c27_recorded_geometry_pays_all_small_replies_and_monitor_together(monke
             lease = pool.lease()
             leases.append(lease)
             lease.begin_body().receive(1 << 20)
-            lease.generation(body_bytes=lease.body_bytes, output_tokens=64)
+            lease.generation(body_bytes=lease.body_bytes, output_tokens=64, extent_tokens=context)
             lease.render_input(body)
             lease.render(1 << 20, 64)
             lease.segment_cache(LIMIT, 256, 1 << 20)

@@ -183,6 +183,7 @@ class HostPayloadLease:
         self.body_bytes = 0
         self._generation_output_bound = self._cache_output_bound = self._control_output_bound = 0
         self._ids_output_bound = 0
+        self._generation_ids_base = self._generation_rpc_base = 0
         self._snapshot_output_bound = self._snapshot_wire = self._snapshot_graph = 0
         self._ids_count = self._ids_entries = self._ids_positions = self._metadata_chars = 0
         self.tokenization_reply = self.lexical_output = False
@@ -332,15 +333,25 @@ class HostPayloadLease:
         body.receive(0)  # Even an empty frame's {} parse has fixed working owners.
         return body
 
-    def generation(self, *, body_bytes, output_tokens):
-        amount, wire = self.pool.generation_bound(body_bytes, output_tokens)
-        self.set("generation", max(amount, self.claims.get("generation", 0)))
+    def generation(self, *, body_bytes, output_tokens, extent_tokens):
+        """Pay one generation sized by its own prompt+output token extent.
+
+        The phase includes forecast tokenizer-ID and submission-RPC
+        prepayments; ids()/rpc() charge only what exceeds them.
+        """
+        amount, wire, ids_base, rpc_base = self.pool.generation_bound(body_bytes, output_tokens, extent_tokens)
+        if amount < ids_base + rpc_base:
+            raise ValueError("generation phase must contain its own ID/RPC prepayments")
+        if amount > self.claims.get("generation", 0):
+            self.set("generation", amount)
+            self._generation_ids_base, self._generation_rpc_base = ids_base, rpc_base
         self._generation_output_bound = max(self._generation_output_bound, wire)
 
     def rpc(self, encoded_bytes):
-        # Generation already pays one maximum request-child/source allowance.
-        # Larger retained peer/error trees are charged before publication.
-        amount = max(0, self.pool.rpc_bound(encoded_bytes) - self.pool.rpc_request_base)
+        # Generation prepays its forecast submission child/source allowance.
+        # A larger actual retained peer/error tree is charged before publication.
+        base = self._generation_rpc_base if self.claims.get("generation") else 0
+        amount = max(0, self.pool.rpc_bound(encoded_bytes) - base)
         self.set("rpc", max(amount, self.claims.get("rpc", 0)))
 
     def cache(self, encoded_bytes, *, copying):
@@ -398,7 +409,7 @@ class HostPayloadLease:
                 (self._ids_count, self._ids_entries, self._ids_positions, self._metadata_chars), values))
             amount, wire = self.pool.ids_bound(*values,
                 reply=self.tokenization_reply, lexical=self.lexical_output)
-            base = self.pool.generation_ids_base if self.claims.get("generation") else 0
+            base = self._generation_ids_base if self.claims.get("generation") else 0
             self.set("tokenizer-ids", max(0, amount - base), allow_wait=False)
             self._ids_count, self._ids_entries, self._ids_positions, self._metadata_chars = values
             self._ids_output_bound = max(self._ids_output_bound, wire)

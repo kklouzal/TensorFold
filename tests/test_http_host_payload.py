@@ -16,7 +16,7 @@ from tensorfold.server.errors import CapacityError
 
 def pool(capacity=100, deadline=None):
     return hp.HostPayloadPool(capacity, body_bound=lambda n: 10 + n * 3,
-        generation_bound=lambda n, out: (n + out, out), encoding_bound=lambda n: n + 1,
+        generation_bound=lambda n, out, extent: (n + out, out, 0, 0), encoding_bound=lambda n: n + 1,
         cache_bound=lambda n, *, copying: n * (2 if copying else 1), measurement_bytes=0,
         deadline_seconds=deadline)
 
@@ -321,9 +321,9 @@ def test_funded_answer_encodes_when_unrelated_consumers_fill_remaining_pool():
     p = pool(1000)
     reply = {"answer": "x" * 64}
     future_wire = hp.json_wire_bound(reply, maximum=p.capacity)
-    p.generation_bound = lambda amount, output: (p.encoding_bound(future_wire), future_wire)
+    p.generation_bound = lambda amount, output, extent: (p.encoding_bound(future_wire), future_wire, 0, 0)
     owner, other = p.lease(), p.lease()
-    owner.generation(body_bytes=0, output_tokens=64)
+    owner.generation(body_bytes=0, output_tokens=64, extent_tokens=64)
     other.set("other", p.capacity - p.used)
     owner.encode(reply)
     assert owner.claims["encoder"] == 0 and p.used == p.capacity
@@ -361,7 +361,6 @@ def test_cache_transfer_drops_encoder_authority_of_released_control_phase():
 
 def test_owned_tokenizer_callbacks_never_wait_even_with_empty_owner():
     p = pool(10, deadline=60)
-    p.generation_ids_base = 0
     p.ids_bound = lambda *args, **kwargs: (10, 0)
     occupied, waiting = p.lease(), p.lease()
     occupied.set("other", 10)
@@ -377,7 +376,6 @@ def test_tokenize_observes_native_count_before_ids_and_lexical_materialization()
     from tensorfold.cuda.server import App
 
     p = pool(10000)
-    p.generation_ids_base = 0
     p.ids_bound = lambda count, *args, **kwargs: (10 * count + 1001, 1000)
     app = App.__new__(App)
     app.host_payload_pool = p
@@ -402,22 +400,42 @@ def test_tokenize_observes_native_count_before_ids_and_lexical_materialization()
     assert p.used == 0
 
 
-@pytest.mark.parametrize("thinking,expected", [(False, 64), (True, 262144), (None, 262144)])
-def test_actual_deferred_corpus_keys_pay_plain_requested_output_only(thinking, expected):
+@pytest.mark.parametrize("thinking,prompt,expected", [
+    (False, 4096, (64, 4160)), (False, 262100, (64, 262144)),
+    (True, 4096, (262144, 262144)), (True, 1, (262144, 262144))])
+def test_generation_pays_its_prepared_token_extent(thinking, prompt, expected):
     from tensorfold.cuda.server import App
 
     p = pool(1 << 20)
     p.context_tokens = 262144
     calls = []
-    p.generation_bound = lambda amount, output: (calls.append((amount, output)) or 10, output)
+    p.generation_bound = lambda amount, output, extent: (calls.append((amount, output, extent)) or 10, output, 0, 0)
     app = App.__new__(App)
-    app.host_payload_pool, app.default_thinking = p, False
-    body = {"enable_thinking": thinking, "max_tokens": 64,
-            "messages": [{"role": "user", "content": "corpus"}], "model": "selected",
-            "stream": False, "temperature": 0}
+    app.host_payload_pool = p
+    prepared = SimpleNamespace(thinking=thinking, tools=[], grammar=None, calls=None,
+                               max_tokens=64, prompt=[7] * prompt)
     with hp.handler_scope(app):
-        app._reserve_http_generation(body, None, None)
-    assert calls == [(0, expected)]
+        owner = app._http_generation_owner(None)
+        app._reserve_http_generation(owner, prepared)
+        assert owner.claims["generation"] == 10
+    assert calls == [(0, *expected)]
+
+
+def test_generation_prepayments_offset_later_ids_and_rpc_only():
+    p = pool(1000)
+    p.generation_bound = lambda amount, output, extent: (300, 0, 100, 150)
+    p.ids_bound = lambda count, *args, **kwargs: (count, 0)
+    p.rpc_bound = lambda amount: amount
+    with hp.handler_scope(SimpleNamespace(host_payload_pool=p)) as owner:
+        owner.generation(body_bytes=0, output_tokens=1, extent_tokens=1)
+        owner.ids(100)
+        assert owner.claims["tokenizer-ids"] == 0
+        owner.rpc(150)
+        assert owner.claims["rpc"] == 0
+        owner.ids(130)
+        owner.rpc(170)
+        assert owner.claims["tokenizer-ids"] == 30 and owner.claims["rpc"] == 20
+    assert p.used == 0
 
 
 def test_keepalive_without_a_header_slot_closes_before_parsing_without_poison():
@@ -452,12 +470,12 @@ def test_keepalive_without_a_header_slot_closes_before_parsing_without_poison():
 
 def test_stream_rpc_and_mailbox_share_one_borrow_until_terminal_retirement():
     p = pool(1000)
-    p.rpc_request_base = 50
+    p.generation_bound = lambda amount, output, extent: (100, 0, 0, 50)
     p.rpc_bound = lambda amount: 2 * amount
     app = SimpleNamespace(host_payload_pool=p)
     stream, mailbox = SimpleNamespace(), SimpleNamespace()
     with hp.handler_scope(app) as owner:
-        owner.set("generation", 100)
+        owner.generation(body_bytes=0, output_tokens=1, extent_tokens=1)
         hp.borrow_request(p, stream, mailbox)
         hp.reserve_rpc(stream, 80)
         assert owner.claims["rpc"] == 110

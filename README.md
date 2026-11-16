@@ -2179,6 +2179,10 @@ CPU test nodes and 21 subtests passed across the explicitly scoped runtime
 environments. The installed successor subsequently loaded the model, materialized
 32 full-window Q4 States on each rank and completed the [partial phase benchmark](#sc117-adaptive-path-measurements).
 See [the host-credit scope](docs/v100-adaptive-validation.md#ordinary-http-phase-credit-integration).
+Generation credit is sized by each prepared request's prompt plus output
+extent rather than the configured context; SC117 at `--context 262144
+--parallel 24` now admits 24 simultaneous 4K or 64K-prompt requests instead of
+refusing 20 of 24 with HTTP 503.
 
 Ordinary TP admission now releases completed RPC frame payloads after a
 recoverable `NoRoom`, preserving the original exception and queued Stream data.

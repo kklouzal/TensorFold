@@ -15,6 +15,10 @@ import sys
 from .retention_policy import RetentionPolicy
 
 INITIAL_COHORT_VALUE_BYTES = 8 << 20
+# Forecast of a plain submission frame's non-ID JSON (sampling, admission and
+# retention metadata). Selects the generation prepayment only; any larger
+# actual frame is charged by its RPC lease before publication.
+RPC_FRAME_METADATA_BYTES = 64 << 10
 
 
 def _size(value, name, *, zero=False):
@@ -1002,6 +1006,21 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
             "project_payload_bytes": _total((lists, mailbox, copies, text, reply_graph, reply_wire, request_graph))}
 
 
+def _follower_scope(continuation_terms):
+    """Replicated Stream/copy owners one follower rank holds for one logical caller."""
+    partition = continuation_terms["list_partition"]
+    for name in ("common_stream_bytes", "leader_frontend_bytes", "copy_bytes",
+                 "per_list_pointer_bytes", "prompt_integer_pool_bytes"):
+        _size(partition[name], name, zero=name == "copy_bytes")
+    return {
+        "common_stream_lists": partition["common_stream_bytes"],
+        "copy_lists": partition["copy_bytes"],
+        "copy_index": _size(continuation_terms["copy_index"], "copy index bytes", zero=True),
+        "prompt_pointer_list": partition["per_list_pointer_bytes"],
+        "prompt_integer_pool": partition["prompt_integer_pool_bytes"],
+    }
+
+
 def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_requests, max_http_body_bytes,
                           json_policy=None, ordinary_fifo_children=False):
     """Named Python owners for the serialized TP actor, separate from native IO.
@@ -1021,16 +1040,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     partition = continuation_terms["list_partition"]
     if partition["context_tokens"] != context:
         raise ValueError("RPC projection context differs from its continuation payload")
-    for name in ("common_stream_bytes", "leader_frontend_bytes", "copy_bytes",
-                 "per_list_pointer_bytes", "prompt_integer_pool_bytes"):
-        _size(partition[name], name, zero=name == "copy_bytes")
-    per_follower = {
-        "common_stream_lists": partition["common_stream_bytes"],
-        "copy_lists": partition["copy_bytes"],
-        "copy_index": _size(continuation_terms["copy_index"], "copy index bytes", zero=True),
-        "prompt_pointer_list": partition["per_list_pointer_bytes"],
-        "prompt_integer_pool": partition["prompt_integer_pool_bytes"],
-    }
+    per_follower = _follower_scope(continuation_terms)
     follower_scope = _total(per_follower.values())
     if world == 1:
         return {"global_rpc_python_working_bytes": 0, "per_follower_scope_bytes": follower_scope,
@@ -1652,10 +1662,32 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         # parse/error phase BEFORE read/json.loads. Empty bodies fund {} too.
         return _json_parse_payload(amount, policy)["total_bytes"] + 3 * amount + 65536
 
-    rpc_request_base = max(rpc["json_graph_bytes"],
-        peers * (0 if rpc["persistent_child_schema"] is None else
-                 _total(value for key, value in rpc["persistent_child_schema"].items()
-                        if type(value) is int and key != "largest_retained_integer_bytes")))
+    def rpc_bound(amount):
+        # Serialized peer/source trees for one request-owned RPC of this encoded size.
+        return (catalog.world * (_json_tree_payload(amount, policy) + 2 * amount + layout["unicode"] + layout["bytes"])
+                + _total(rpc["source_fixed_record_tables"].values()))
+
+    # Follower children retained from one submission: fixed Stream/typed shells
+    # plus string payloads proportional to that frame's encoded extent.
+    child = rpc["persistent_child_schema"]
+    child_shell = _total(value for key, value in child.items() if type(value) is int
+                         and key not in ("largest_retained_integer_bytes", "variable_string_bytes"))
+    child_string_factor, remainder = divmod(child["variable_string_bytes"], rpc["frame_bytes"])
+    if remainder or child_string_factor <= 0:
+        raise ValueError("follower child strings no longer scale with their source frame")
+    token_wire = len(str(core["bound"].vocab_size - 1)) + 1  # Compact JSON ID plus separator.
+
+    def rpc_request_base(extent_tokens):
+        """Prepay one forecast submission frame; rpc() tops up a larger actual frame.
+
+        Prompt and owed IDs together stay within the request's token extent;
+        fixed Stream/sampling/admission metadata is bounded by one header unit.
+        The forecast only selects how much is paid at generation; lease.rpc()
+        charges any actual encoded excess before publication, so it is not a
+        safety bound. rpc_bound(n) >= world*45n also covers the source graph.
+        """
+        frame = min(MAX_MESSAGE_BYTES, extent_tokens * token_wire + RPC_FRAME_METADATA_BYTES)
+        return max(rpc_bound(frame), peers * (child_shell + child_string_factor * frame))
 
     def ids_bound(count, entries=0, positions=0, metadata_chars=0, *, reply=False, lexical=False):
         # Simultaneous cardinalities supplied before the owned native getters
@@ -1682,10 +1714,18 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
             owned += max(0, _http_json_encoding_payload(future_wire, policy)["total_bytes"] - prepaid_encoder)
         return owned, future_wire
 
-    generation_ids_base = ids_bound(4 * core["context"])[0]
+    def generation_bound(amount, output_tokens, extent_tokens):
+        """One admitted generation's owners, sized by its own token extent.
 
-    def generation_bound(amount, output_tokens):
-        terms = continuation_payload_bytes(context=core["context"], vocab_size=core["bound"].vocab_size,
+        extent_tokens bounds prompt plus every token the request may append
+        (Stream.take never exceeds its count; plain output is capped by the
+        requested tokens, other regions by the context). All Stream/copy/
+        decoder lists and follower replicas hold at most that many IDs.
+        """
+        _size(extent_tokens, "generation token extent")
+        if extent_tokens > core["context"] or not 0 < output_tokens <= extent_tokens:
+            raise ValueError("generation extent must cover its output within the admitted context")
+        terms = continuation_payload_bytes(context=extent_tokens, vocab_size=core["bound"].vocab_size,
             presentation=core["bound"].decoded_utf8_bytes_per_token,
             presentation_fixed=core["bound"].decoded_utf8_fixed_bytes, max_body_bytes=max(1, amount),
             copy_enabled=core["copy_enabled"], json_policy=policy, output_tokens=output_tokens)
@@ -1703,8 +1743,10 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         # one existing protocol extent also funds fixed response/stat metadata.
         future_wire = terms["reply_graph_and_wire"] + 12 * amount + MAX_MESSAGE_BYTES
         future_encoder = _http_json_encoding_payload(future_wire, policy)["total_bytes"]
-        return (owned + peers * rpc["per_follower_scope_bytes"] + rpc_request_base + generation_ids_base
-                + max(0, future_encoder - prepaid_encoder)), future_wire
+        ids_base = ids_bound(4 * extent_tokens)[0]
+        rpc_base = rpc_request_base(extent_tokens)
+        return (owned + peers * _total(_follower_scope(terms).values()) + rpc_base + ids_base
+                + max(0, future_encoder - prepaid_encoder)), future_wire, ids_base, rpc_base
 
     def cache_bound(amount, *, copying):
         _size(amount, "cached encoded payload", zero=True)
@@ -1740,8 +1782,6 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         max_handlers=record["max_http_connections"],
         control_bound=control_bound,
         deadline_seconds=scheduler.queue_timeout_s)
-    pool.rpc_request_base = rpc_request_base
-    pool.generation_ids_base = generation_ids_base
     pool.ids_bound = ids_bound
     pool.tokenizer_serialized_chars = tokenizer_serialized_chars
     def segment_bound(limit, entries, text_chars):
@@ -1765,9 +1805,7 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
     pool.header_bound = headers["bound"]
     pool.header_payload_bytes = headers["payload_bytes"]
     pool.header_other_bytes = measurement + prepaid_encoder + 65536
-    pool.rpc_bound = lambda amount: (catalog.world * (_json_tree_payload(amount, policy)
-        + 2 * amount + layout["unicode"] + layout["bytes"]) +
-        _total(rpc["source_fixed_record_tables"].values()))
+    pool.rpc_bound = rpc_bound
     catalog._http_payload_pool = pool
     return result
 

@@ -450,6 +450,24 @@ admission and bounded execution evidence; it does not qualify actual C27
 activity, 32 active requests, complete model quality/performance, native
 encoder/Jinja heap, allocator/RSS, C-stack or broader managed/media profiles.
 
+Generation credit is now sized by the prepared request instead of the
+configured context. The grant is taken after tokenization (whose ID/render
+phases have their own grants) and covers the request's token extent,
+`min(context, prompt + output)`, where output is the requested cap for plain
+no-thinking requests and the context otherwise. Stream/copy/decoder lists, the
+seven follower replicas and the ID prepayment scale with that extent; the
+submission-RPC prepayment is a forecast frame for the extent, and a larger
+actual frame is still charged before publication. A caller-supplied prepared
+request is still granted before the operation begins. Previously the plain
+test inspected raw body keys, so any `chat_template_kwargs` request paid the
+full-context output envelope: measured on SC117 prod (`--context 262144
+--parallel 24`, image `cf8c0ff6`), each generation claimed 44.7 GB of a
+200.7 GB pool, admitting 4 of 24 simultaneous 4K requests (20 HTTP 503). With
+the fix the same server admitted 24/24 simultaneous 4K and 64K-prompt requests
+(512 output tokens, no refusals); the C1 greedy oracle stayed identical.
+Thinking/tool/grammar requests keep the full-context envelope, and live-owner
+growth still refuses rather than waits when the pool is genuinely exhausted.
+
 ## Private Dense M32 component checkpoint
 
 The existing private `native32` Dense selector now reuses prepared operands

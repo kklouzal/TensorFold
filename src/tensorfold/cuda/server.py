@@ -1358,10 +1358,11 @@ class App:
                                "send them as 0, 0 and 1 (or omit them)")
         return penalties
 
-    def _reserve_http_generation(self, body, prepared, cancelled):
+    def _http_generation_owner(self, cancelled):
+        """The HTTP payload owner a generation will pay, bound to its cancellation first."""
         pool = getattr(self, "host_payload_pool", None)
         if pool is None:
-            return
+            return None
         from tensorfold.server.host_payload import current
 
         owner = current()
@@ -1372,29 +1373,28 @@ class App:
             record = self.engine.retention_catalog.host_resource_envelope["static_maximum_projection"]
             admit_host_commitment(record["global_host_commitment_bytes"],
                                   materialized_owned_bytes=record["materialized_owned_bytes"])
-            return
+            return None
         if owner.pool is not pool:
             raise ValueError("HTTP generation belongs to a different host payload pool")
         if cancelled is not None:
             owner.cancelled = cancelled
-        context = pool.context_tokens
+        return owner
+
+    def _reserve_http_generation(self, owner, prepared):
+        """Pay the prepared request's generation before any Stream/RPC owner exists.
+
+        Its token extent is the actual prompt plus the output it may append:
+        thinking/tool/grammar/gating regions keep the full context envelope;
+        only a plain no-thinking operation has no legal forced/gated
+        continuation beyond its effective requested token cap.
+        """
+        context = owner.pool.context_tokens
         output = context
-        # Thinking/tool/grammar/gating/replay regions keep the established full
-        # context envelope. Only this plain no-thinking operation has no legal
-        # forced/gated continuation beyond its effective requested token cap.
-        if prepared is not None:
-            plain = (not prepared.thinking and not prepared.tools and prepared.grammar is None
-                     and prepared.calls is None)
-            if plain:
-                output = min(context, max(1, prepared.max_tokens))
-        elif (not self.default_thinking and body.get("enable_thinking", False) is False
-              and all(key in (
-                "model", "messages", "prompt", "temperature", "top_k", "top_p", "min_p", "seed",
-                "max_tokens", "max_completion_tokens", "return_token_ids", "stream", "stream_options",
-                "draft", "ignore_eos", "stop", "priority", "service_tier", "user", "enable_thinking")
-                for key in body)):
-            output = min(context, max(1, self._requested_tokens(body)))
-        owner.generation(body_bytes=owner.body_bytes, output_tokens=output)
+        if (not prepared.thinking and not prepared.tools and prepared.grammar is None
+                and prepared.calls is None):
+            output = min(context, max(1, prepared.max_tokens))
+        extent = min(context, len(prepared.prompt) + output)
+        owner.generation(body_bytes=owner.body_bytes, output_tokens=output, extent_tokens=extent)
 
     def run(self, body: dict[str, Any], chat: bool, emit: Callable[[dict[str, Any]], bool], *,
             prepared: PreparedRequest | None = None, cancelled: Callable[[], bool] | None = None,
@@ -1422,7 +1422,11 @@ class App:
         publication_intent = None
         canonical_capture = None
         cache_frontend = False
-        self._reserve_http_generation(body, prepared, cancelled)
+        host_owner = self._http_generation_owner(cancelled)
+        if host_owner is not None and prepared is not None:
+            # A refused caller-supplied Prepared stays caller-owned.
+            self._reserve_http_generation(host_owner, prepared)
+            host_owner = None
         entered = time.perf_counter()
         request_id = request_id or new_request_id()
         arrived = entered if arrived is None else float(arrived)
@@ -1431,6 +1435,9 @@ class App:
                 prepared = self.prepare(body, chat,
                     **({"_canonical_projection": _canonical_projection} if _canonical_projection is not None else {}))
                 prepare_s, admitted_s = time.perf_counter() - entered, entered - arrived
+                if host_owner is not None:
+                    # Its token extent exists only now; this operation owns the refusal cleanup.
+                    self._reserve_http_generation(host_owner, prepared)
             else:
                 prepare_s, admitted_s = entered - arrived, 0.0
             cache_frontend = prepared.canonical is not None or prepared._canonical_retired
