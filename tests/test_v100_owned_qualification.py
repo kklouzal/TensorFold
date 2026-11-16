@@ -3366,3 +3366,29 @@ def test_graph_attempt_loaded_matrix_is_bound_before_any_engine_constructor(chan
         with pytest.raises(ValueError, match='graph attempt diagnostic needs exact finite canonical'):
             owned.worker(arguments)
         assert calls == []
+
+
+def test_observer_failure_prints_bounded_primary_before_supervisor_notification(monkeypatch, capsys):
+    events = []
+    monkeypatch.setattr(owned, 'notify_failure', lambda: events.append(capsys.readouterr().err) or True)
+    engine = NS(rank=3)
+    try:
+        raise ValueError('ragged accounting requires exactly36 measured keys' + 'x' * 4096)
+    except ValueError as primary:
+        owned._observer_failure(engine, primary)
+    assert engine._abort_comm is True and len(events) == 1
+    line = events[0].strip()
+    assert line.startswith('[tensorfold] private observer failure ')
+    record = json.loads(line.removeprefix('[tensorfold] private observer failure '))
+    assert record['rank'] == 3 and record['type'] == 'ValueError' and len(record['message']) == 2048
+    assert record['message'].startswith('ragged accounting requires exactly36')
+    assert record['where'].startswith('test_v100_owned_qualification.py:')
+
+
+def test_observer_failure_preserves_primary_when_notification_fails(monkeypatch):
+    lost = RuntimeError('no supervisor')
+    monkeypatch.setattr(owned, 'notify_failure', lambda: (_ for _ in ()).throw(lost))
+    primary = ValueError('origin')
+    with pytest.raises(ValueError) as caught:
+        owned._observer_failure(NS(rank=0), primary)
+    assert caught.value is primary

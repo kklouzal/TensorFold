@@ -1967,12 +1967,39 @@ def prepare_normalization_parity(engine, resources, output):
 
 
 def _observer_failure(engine, primary):
+    """Print a bounded record of the primary, then notify the supervisor.
+
+    The supervisor retires every rank group as soon as the notification lands,
+    before the raised primary reaches a traceback printer: without this record
+    an observer failure exits the cohort silently.
+    """
     engine._abort_comm = True
+    errors = [None, None]
+    try:
+        args = BaseException.args.__get__(primary)
+        message = (args[0][:2048] if type(args) is tuple and len(args) == 1 and type(args[0]) is str
+                   else "compound/non-string exception arguments; retained in propagated failure")
+        trace, frame = BaseException.__traceback__.__get__(primary), None
+        for _ in range(256):
+            if trace is None:
+                break
+            frame, trace = trace, trace.tb_next
+        where = (None if frame is None else
+                 f"{os.path.basename(frame.tb_frame.f_code.co_filename)[:80]}:{frame.tb_lineno}")
+        rank = getattr(engine, "rank", None)
+        record = {"rank": rank if type(rank) is int else None, "type": type(primary).__name__[:128],
+                  "message": message, "where": where}
+        print("[tensorfold] private observer failure " + json.dumps(record, allow_nan=False),
+              file=sys.stderr, flush=True)
+    except BaseException as error:  # noqa: BLE001 - retained and raised with the primary after notification
+        errors[0] = error
     try:
         if not notify_failure():
             raise RuntimeError("history attestation lost its TP supervisor capability")
     except BaseException as cleanup:
-        raise_failures(primary, [cleanup])
+        errors[1] = cleanup
+    if errors[0] is not None or errors[1] is not None:
+        raise_failures(primary, [error for error in errors if error is not None])
 
 
 def _finite_diagnostic_matrix(benchmark, *, label):

@@ -245,7 +245,8 @@ take the padding in order, each up to depth + 1 rows (`multi._padded_counts`,
 the same split on every rank), for verify windows and batched MTP refresh
 windows alike. Padded rows repeat the window's last real input; they are
 ordinary tentative rows past the real window, as rejected drafts are.
-`accept()` sees only the real window, commits keep only accepted rows, and each MTP refresh reports draft logits from its real last row
+`accept()` sees only the real window, commits keep only accepted rows, and each
+MTP refresh reports draft logits from its real last row
 (`mtp_stage(last_rows=...)`). Grammar-constrained, mixed prefill, rotor-lookup,
 image and media rounds keep their exact frames. Single-window MTP frames never
 pad (their head reads the physical last row).
@@ -273,6 +274,13 @@ windows) lets most rounds pad to the intermediate key instead (modelled mean
 padded verify rows at C8/C16/C24: 40/80/120 -> 29/57/85). Replaying a
 balanced-seeded key with unequal windows is the ragged replay the native oracle
 above checks bit-exact for `(28,8)`, which is also the p = 8 intermediate verify key.
+
+The keys come only from the operator's execution-profile manifest
+(`preparation.exact_graph_policy`); there is no default catalogue with them, so
+a server started from a manifest without them keeps full-width padding and none
+of the gain below. At 32 x 262,144 windows the per-rank graph budget
+(862,011,392 bytes) is exhausted before the full-width verify keys above p = 8,
+so intermediate keys do not help a 32-lane server.
 
 Evidence (8x V100 TP8/ETP4, MTP4 conf 0.7, INT8 KV, 24 x 262,144 windows, image
 `cf8c0ff6` plus source overlays of `4605f899` with and without this change;
