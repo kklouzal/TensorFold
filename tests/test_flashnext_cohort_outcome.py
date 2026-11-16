@@ -107,3 +107,52 @@ def test_single_rank_cancel_keeps_its_local_refusal(monkeypatch):
     m.w = SimpleNamespace(comm=None)
     m.cancel([s])
     assert type(s.error) is ValueError and "staging was reused" in str(s.error) and m.remembered == [] and m.dropped
+
+
+def _decoder(world, poisoned=None):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    m = object.__new__(MultiDecoder)
+    m.w = SimpleNamespace(comm=None if world is None else SimpleNamespace(rank=0, world=world, all_gather=None))
+    if poisoned is not None:
+        m.poison_control = poisoned.append
+    return m
+
+
+def test_tp_containment_keeps_only_cohort_held_outcomes():
+    from tensorfold.cuda.streams import mark_cohort_agreed
+    from tensorfold.engine.grammar import GrammarError
+
+    poisoned = []
+    m = _decoder(2, poisoned)
+    agreed, grammar = mark_cohort_agreed(ValueError("agreed")), GrammarError("no token fits")
+    assert m._contain(agreed) is agreed and m._contain(grammar) is grammar and poisoned == []
+    local = ValueError("compact cut needs its captured raw tail")   # owner-rank state: peers may hold another outcome
+    with pytest.raises(ValueError) as caught:
+        m._contain(local)
+    assert caught.value is local and poisoned == [local]           # the cohort retires; no rank-local refusal
+    for world in (None, 1):                                         # one rank: every outcome is the cohort's
+        assert _decoder(world)._contain(local) is local
+
+
+def test_tp_kv_check_raises_a_cohort_agreed_failure_on_every_rank():
+    import torch
+
+    from tensorfold.cuda.streams import cohort_agreed
+    from tensorfold.families.qwen4_exp.cuda.forward import _kv_check
+    from tensorfold.families.qwen4_exp.cuda.state import KVNumericError
+
+    class St:
+        kv_status, kv_key_dtype, kv_value_dtype, pos, _kv_error = torch.zeros(2, dtype=torch.int32), "q", "q", 9, None
+        _kv_peer_status = torch.zeros((2, 2), dtype=torch.int32)
+
+        def kv_check(self):
+            pass
+
+    def gather(send, recv):   # this rank is clean; its peer's frame failed
+        recv.copy_(torch.tensor([[0, 0], [1, 3]], dtype=torch.int32))
+
+    st = St()
+    with pytest.raises(KVNumericError) as caught:
+        _kv_check([(st, 0, 1)], comm=SimpleNamespace(world=2, all_gather=gather))
+    assert cohort_agreed(caught.value) and st._kv_error is caught.value

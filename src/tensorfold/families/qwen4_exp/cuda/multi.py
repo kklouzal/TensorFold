@@ -25,7 +25,7 @@ from tensorfold.cuda.sampling import (
     validate_policy,
     validate_rows,
 )
-from tensorfold.cuda.streams import Stream, accept, mark_error_state_retired, prefix_limit
+from tensorfold.cuda.streams import Stream, accept, cohort_agreed, mark_cohort_agreed, mark_error_state_retired, prefix_limit
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows
 from tensorfold.engine.grammar import GrammarError
 
@@ -1878,7 +1878,7 @@ class MultiDecoder:
                     from .input_preparation import reject_prepared
 
                     reject_prepared(self.pbuf, exc)
-                return self._failed(pieces, exc)
+                return self._failed(pieces, self._contain(exc))
             return self._joined(pieces, heads, lasts, (time.perf_counter() - t0) / len(pieces))
         except BaseException as error:
             primary = error
@@ -2141,7 +2141,22 @@ class MultiDecoder:
             return None
         agreed = ValueError(f"{what} refused on tensor-parallel rank(s) {failed}; this request keeps no state there")
         agreed.__cause__ = error
-        return agreed
+        return mark_cohort_agreed(agreed)
+
+    def _contain(self, error: Exception) -> Exception:
+        """``error``, for a per-request catch to end only its requests; a tensor-parallel rank contains only an outcome
+        every rank holds at the same ordered point: one ``_cohort_outcome`` or ``_kv_check`` gathered, the leader's
+        published stop decision, or a grammar refusal (a pure function of the replicated tokens). Any other failure
+        may have left this rank short of a collective its peers entered, or with state they lack: ending its requests
+        here alone would hang or diverge the cohort, so it retires the cohort (the supervisor ends every rank)."""
+
+        comm = self.w.comm
+        if comm is None or comm.world == 1 or cohort_agreed(error) or isinstance(error, GrammarError):
+            return error
+        poison = getattr(self, "poison_control", None)
+        if poison is not None:
+            poison(error)
+        raise error
 
     def _join_ends(self) -> list[Stream]:
         """Exact repeats of a kept prompt end join the rounds from that end's head row; returns those already done."""
@@ -2154,7 +2169,7 @@ class MultiDecoder:
             try:
                 ended += self._joined(piece, head.clone(), [last.clone()], 0.0)
             except Exception as exc:                     # noqa: BLE001  it fails alone, as a failed pass's prompts do
-                ended += self._failed(piece, exc)
+                ended += self._failed(piece, self._contain(exc))
         return ended
 
     def _joined(self, pieces, heads, lasts, spent: float) -> list[Stream]:
@@ -2207,7 +2222,7 @@ class MultiDecoder:
                 if s.constraint is not None:
                     s.constraint.advance([first])
             except Exception as exc:                         # noqa: BLE001  it fails alone; the others go on
-                s.error, s.done = exc, True                  # returned, so its reply is the error and finish() frees it
+                s.error, s.done = self._contain(exc), True   # returned, so its reply is the error and finish() frees it
                 joined.append(s)
                 continue
             s.context = list(s.prompt)
@@ -2274,7 +2289,7 @@ class MultiDecoder:
                     try:
                         self._remember(list(s.prompt[:at]), s.st, state, tail)
                     except Exception as exc:             # noqa: BLE001  its reply is the error; its slot holds nothing
-                        error = exc
+                        error = self._contain(exc)
                 if error is not None:
                     s.error = error
                     self._drop_kept(s.st)
@@ -2427,7 +2442,7 @@ class MultiDecoder:
                     from .input_preparation import reject_prepared
 
                     reject_prepared(self.pbuf, exc)
-                ended += self._failed(pieces, exc)
+                ended += self._failed(pieces, self._contain(exc))
                 pieces = []
         held = [self.held.pop(s.sid, []) for s in live]
         half = self.buf.h.dtype == torch.float16
@@ -2468,7 +2483,10 @@ class MultiDecoder:
             # Delayed KVWords checks are local. Every TP owner must learn a
             # failed peer's status before any rank enters the sampler gather.
             _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
-        lasts = self._absorb(pieces, psegs, cuts) if pieces else None
+        try:                                            # owner-local tails/commits can refuse on some ranks only
+            lasts = self._absorb(pieces, psegs, cuts) if pieces else None
+        except Exception as exc:                         # noqa: BLE001  ends the round alike on every rank, or retires it
+            raise self._contain(exc)
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
         samplings = [s.sampling for s in live]

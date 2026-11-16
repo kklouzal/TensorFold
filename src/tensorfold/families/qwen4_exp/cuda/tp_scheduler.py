@@ -15,7 +15,7 @@ import hashlib
 import json
 
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom
-from tensorfold.cuda.streams import Stream
+from tensorfold.cuda.streams import Stream, mark_cohort_agreed
 from tensorfold.cuda.store_fields import validate_store_key
 from tensorfold.cleanup import raise_failures
 from .owner_execution import FAMILY_FIELDS
@@ -594,7 +594,7 @@ class TensorParallelDecoder:
             self.comm.store.delete_key(own)
             decisions, failed = payload["decisions"], payload["failed"]
         if failed:
-            raise RuntimeError("tensor-parallel stop-boundary policy failed") from error
+            raise mark_cohort_agreed(RuntimeError("tensor-parallel stop-boundary policy failed")) from error
         return decisions
 
     def _controls(self, execution=None):

@@ -13,6 +13,17 @@ def mark_error_state_retired(error):
     return error
 
 
+def mark_cohort_agreed(error):
+    """Every tensor-parallel rank raises this outcome at the same ordered point (an all-gathered or leader-published
+    decision), so ending only its requests keeps the rank cohort identical."""
+    BaseException.__dict__["__dict__"].__get__(error)["_tensorfold_cohort_agreed"] = True
+    return error
+
+
+def cohort_agreed(error) -> bool:
+    return BaseException.__dict__["__dict__"].__get__(error).get("_tensorfold_cohort_agreed") is True
+
+
 def prefix_limit(callback: Callable | None, new: Sequence[int], prefix: Sequence[int]) -> tuple[int, bool]:
     """Validate a pure precommit decision before cache/recurrent publication.
 

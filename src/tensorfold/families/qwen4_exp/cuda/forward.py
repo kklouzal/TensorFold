@@ -12,6 +12,7 @@ import triton.language as tl
 
 from tensorfold.cuda import pdl
 from tensorfold.cuda.pdl import wait as pdl_wait
+from tensorfold.cuda.streams import mark_cohort_agreed
 
 from tensorfold.cuda import moe as moe_mod
 from tensorfold.cuda import experts as grouped
@@ -1051,7 +1052,8 @@ def _kv_check(segs: Sequence[Seg], *, comm=None, workspace=None) -> None:
                     st._kv_error = first
                     break
     if first is not None:
-        raise first
+        # after the gathers every rank raises (its own or a peer's failure): the same outcome at the same point
+        raise first if comm is None else mark_cohort_agreed(first)
 
 
 class KVWords:
