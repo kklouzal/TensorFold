@@ -2110,11 +2110,38 @@ class MultiDecoder:
         entry = next((k for k in self.kept if k[1] is s.st and k[0] == ids), None)
         if entry is None:                                # not kept (evicted, or a state kept nowhere)
             return
-        state = s.st.snapshot()                         # its indexer history included, at this pos and MTP length
-        s.st.kv_validate_snapshot(state)
+        local = None
+        try:
+            state = s.st.snapshot()                     # its indexer history included, at this pos and MTP length
+            s.st.kv_validate_snapshot(state)
+        except Exception as exc:                         # noqa: BLE001  agreed below; every rank raises or none does
+            local = exc
+        error = self._cohort_outcome(local, "prompt-end snapshot")
+        if error is not None:
+            raise error
         last = last.clone()
         entry[2]["prompt_end"] = {"token": s.prompt[-1], "state": state, "tail": last if mtp else None,
                                   "last": last, "head": head.clone()}
+
+    def _cohort_outcome(self, error: Exception | None, what: str) -> Exception | None:
+        """One per-request outcome for every tensor-parallel rank of an ordered operation.
+
+        Owner-local state can refuse on some ranks only: a compact indexer's layer tails live on their owner rank, so
+        only it can see that a cut's raw staging was reused. A rank-local refusal caught per request would leave the
+        ranks with different request outcomes, which their scheduler digests then report as divergence. Every rank of
+        the operation reaches this gather at the same point (the caller's choice to snapshot is rank-identical); a
+        refusal on any rank becomes one ValueError on all, its local cause chained where it occurred."""
+
+        comm = self.w.comm
+        if comm is None or comm.world == 1:
+            return error
+        flags = gather_ints(torch, comm.all_gather, [int(error is not None)], world=comm.world)
+        failed = [rank for rank, (flag,) in enumerate(flags) if flag]
+        if not failed:
+            return None
+        agreed = ValueError(f"{what} refused on tensor-parallel rank(s) {failed}; this request keeps no state there")
+        agreed.__cause__ = error
+        return agreed
 
     def _join_ends(self) -> list[Stream]:
         """Exact repeats of a kept prompt end join the rounds from that end's head row; returns those already done."""
@@ -2234,13 +2261,22 @@ class MultiDecoder:
             # with its MTP tail) already holds this state, and remembering it again would displace that entry
             if self._keep_at(s) is not None and max(MIN_GAP, s.cached + 1) <= at < len(s.prompt):
                 mtp_len = s.st.mtp_len - 1 if mtp else s.st.mtp_len        # as a point ending a piece keeps it
-                try:
+                local = None
+                try:                                     # checks only: nothing is kept before every rank agrees
                     state = {**s.st.snapshot(), "mtp_len": mtp_len}
                     if s.st.compact_indexer is not None or getattr(s.st, "indexer_history_owner", None) is not None:
                         state.update(s.st.indexer_snapshot_metadata(s.st.pos, mtp_len))
-                    self._remember(list(s.prompt[:at]), s.st, state, tail)
+                    s.st.kv_validate_snapshot(state)
                 except Exception as exc:                 # noqa: BLE001  its reply is the error; its slot holds nothing
-                    s.error = exc
+                    local = exc
+                error = self._cohort_outcome(local, "cancelled prompt snapshot")
+                if error is None:
+                    try:
+                        self._remember(list(s.prompt[:at]), s.st, state, tail)
+                    except Exception as exc:             # noqa: BLE001  its reply is the error; its slot holds nothing
+                        error = exc
+                if error is not None:
+                    s.error = error
                     self._drop_kept(s.st)
         return streams
 
