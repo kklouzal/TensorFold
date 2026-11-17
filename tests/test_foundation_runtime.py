@@ -36,7 +36,7 @@ def runtime(monkeypatch):
 @pytest.fixture
 def prepared(runtime, tmp_path, monkeypatch):
     foundation = tmp_path / "foundation"
-    site = foundation / "lib/python3.12/site-packages"
+    site = foundation / "lib/python3.15/site-packages"
     (site / "torchvision").mkdir(parents=True)
     seals, dynamics, native, compiler = {}, {}, set(), set()
 
@@ -97,9 +97,9 @@ def prepared(runtime, tmp_path, monkeypatch):
                            locate_file=lambda member: site / member)
     monkeypatch.setattr(runtime.metadata, "distributions", lambda **kwargs: [dist])
     monkeypatch.setattr(runtime, "elf", lambda path: dict(dynamics[str(path.resolve())]))
-    manifest = {"python": "3.12", "roles": {"foundation": {"torchvision": {
+    manifest = {"python": "3.15", "roles": {"foundation": {"torchvision": {
         "version": dist.version, "sha256": "a" * 64,
-        "url": "https://download.pytorch.org/torchvision-0.30.0.dev20261007%2Bcu134-cp312-cp312-linux_x86_64.whl"}}}}
+        "url": "https://download.pytorch.org/torchvision-0.30.0.dev20261007%2Bcu134-cp315-cp315-linux_x86_64.whl"}}}}
     value = SimpleNamespace(foundation=foundation, site=site, native=native, compiler=compiler, seals=seals, dynamics=dynamics,
                             root=root, cupti=cupti, nccl=root / "libnccl.so.2", members=members,
                             record=record, dist=dist, manifest=manifest, add=add, seal=seal,

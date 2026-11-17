@@ -472,7 +472,7 @@ limits, route-body bounds and HTTP count before accepting work. See the
 All new unique profiles (no explicit retention, GPU tier and RAM tier) select
 the plain owned synchronous Store and canonical key/value wake path with the
 same process-fixed transport identity. Generic legacy defaults remain separate.
-Source runtime binding is exact CPython 3.12.3/Torch04cf2557/GCC 13 build/ABI and
+Source runtime binding is exact CPython 3.15.2 (python-build-standalone 20261110)/owned Torch 04cf2557 or 05adb434/GCC 13 build/ABI and
 recorded GCC 14 runtime content; these checks do not qualify allocator/RSS/NUMA
 or native wall deadlines. The conservative generic graph projection at 96 MiB
 can reject a declared host envelope without proving practical physical RAM
