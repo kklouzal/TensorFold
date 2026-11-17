@@ -70,8 +70,11 @@ class FetchTests(unittest.TestCase):
     def test_real_frozen_plan_is_bootstrap_readable(self):
         directory = Path(__file__).resolve().parents[1] / 'deploy/v100'
         items, inputs = FETCH['load_plan'](directory)
-        self.assertEqual(len(items), 264)
-        self.assertEqual(sum(i['folder'] == 'build-debs' for i in items), 191)
+        self.assertEqual(len(items), 261)
+        self.assertEqual(sum(i['folder'] == 'build-debs' for i in items), 181)
+        # The CPython 3.15.2 interpreter and the owned-build archives (PyYAML, xgrammar, Triton, LLVM).
+        self.assertEqual(sum(i['folder'] == 'runtime-python' for i in items), 1)
+        self.assertEqual(sum(i['folder'] == 'source-archives' for i in items), 4)
         self.assertEqual(len(inputs), 10)
         self.assertTrue(all(len(i['sha256']) == 64 for i in inputs.values()))
 
