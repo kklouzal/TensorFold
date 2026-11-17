@@ -82,6 +82,38 @@ python /qualification-tools/v100_owned_qualification.py \
   -- "${serve_args[@]}" --expert-tensor-parallel-size 4
 ```
 
+#### Measured SC117 configuration
+
+The SC117 serving-matrix measurements (Qwen3.8 Flash Next IQ3_S target with the
+shared Q8_0 MTP drafter, TP8/ETP4, MTP4 confidence 0.7, INT8 KV, 24 x 262,144
+windows) use this parent with an execution-profile manifest whose `preparation`
+selects the native owner families and the exact-graph key catalogue. The tracked
+packet `deploy/v100/execution-profiles/sc117-tp8etp4-mtp4-p24.preparation.json`
+holds that preparation; its 171 keys are `tools/v100_execution_manifest.py
+catalogue --lanes 24 --depth 4` (full-width and intermediate row keys, see
+[observed graph demand](../../docs/observed-graph-demand.md#intermediate-row-keys)).
+A manifest also binds the exact checkpoint inventory, so generate it once per
+checkpoint with the serving image and the serving `TF_GGUF_ASSETS_DIR`:
+
+```bash
+python tools/v100_execution_manifest.py manifest \
+  --target /models/SC117-IQ3_S-00001-of-00002.gguf --drafter /models/sc117-mtp \
+  --preparation deploy/v100/execution-profiles/sc117-tp8etp4-mtp4-p24.preparation.json \
+  --out /operator/sc117-profile.json
+```
+
+and add `--execution-profile-manifest /operator/sc117-profile.json` to the serve
+arguments. The measured runs also used, before `--`, `--execution-rows 120
+--grouped-gate-up-rows 4`; serve arguments `--context 262144 --parallel 24
+--kv-full-windows 24 --kv-dtype int8 --indexer-history gpu
+--expert-tensor-parallel-size 4 --draft-method mtp --mtp-drafts 4
+--mtp-confidence 0.7 --no-prefill-fp8`; and the environment
+`TENSORFOLD_SM70_PROFILE=reference TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN=grouped-v1
+TF_SMALL_GATHER_BYTES=262144 TENSORFOLD_PREFILL_ROWS=1024`. The packet is a
+preparation (`trial: true`), not a qualification receipt; without the manifest
+none of this preparation (native owner families, exact-graph catalogue) is
+selected.
+
 The output child directory must be new. The parent stays Torch/CUDA-free and
 uses the existing follower-first supervisor, failure pipe, signal handling and
 process retirement. Workers use the shared parser, `cmd_serve`, CUDA factory,

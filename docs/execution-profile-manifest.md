@@ -28,6 +28,10 @@ scope; it cannot establish that an administrator's reported experiment occurred.
 The loader requires substantive raw comparisons and measurements in addition
 to a passed verdict. HTTP callers cannot supply new evidence through booleans.
 No eligible V100 profile or synthetic qualification packet ships by default.
+The repository tracks one `preparation` packet for the measured SC117 V100
+configuration (`deploy/v100/execution-profiles/`, `trial: true`) and a generator
+that adds a checkpoint's artifact inventory (`tools/v100_execution_manifest.py`);
+it selects preparation only and carries no profile table or evidence receipt.
 
 ## Startup packet
 

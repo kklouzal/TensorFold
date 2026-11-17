@@ -1898,6 +1898,9 @@ rose 1.032x (95% 1.011-1.052; 4K/16K x C1-C24 on the CPython 3.15 image, two
 sessions per arm, no regressed cell, C1 unchanged); 32 lanes still cannot cover every
 participant count in its 822 MiB grant, so 24 lanes remains the production
 configuration ([round-only capture](docs/observed-graph-demand.md#round-only-capture)).
+The selected 171-key catalogue and native preparation ship as a tracked packet
+with a manifest generator for an actual checkpoint
+([measured SC117 configuration](deploy/v100/README.md#measured-sc117-configuration)).
 Descriptive single runs (Source40 `cf8c0ff6` + overlays, 8x V100 TP8/ETP4, MTP4
 conf 0.7, 64-token prompts, 400 greedy tokens, 79-key catalogue) moved aggregate
 decode from 47.3/25.2/35.0/52.4/73.1 tok/s to 47.3/58.6/77.0/103.0/127.7 tok/s at
