@@ -6,11 +6,11 @@
       e.g. inside the serving image). Chat documents (``messages``) use TensorFold's served template renderer,
       thinking off; text documents (``text``) are tokenized raw, without BOS.
   score --tokens corpus-v1.tokens.json --out RUN.json [--url http://127.0.0.1:8000] [--backend tensorfold|vllm]
-        [--top 20] [--repeat 1] [--model NAME]
+        [--top 20] [--repeat 1] [--model NAME] [--continuation-limit N]
       TensorFold: POST /v1/tensorfold/score (the server must run with TENSORFOLD_PRIVATE_SCORE=1). Every
       document's prompt tokens are scored by prompt-pass (prefill) rows and its continuation by teacher-forced
-      decode/MTP-verify rows. vLLM: /v1/completions with ``prompt_logprobs`` over prompt+continuation (one pass).
-  compare A.json B.json [--margin 0.005] [--out RESULT.json]
+      decode/MTP-verify rows (``--continuation-limit N``: only the first N, for prefill-path runs). vLLM: /v1/completions with ``prompt_logprobs`` over prompt+continuation (one pass).
+  compare A.json B.json [--margin 0.005] [--kinds PREFIX,...] [--out RESULT.json]
       Paired per-token statistics of B against A per path and kind, and a verdict (see ``compare``'s doc).
 
 Standard library only for ``score`` and ``compare``.
@@ -148,10 +148,15 @@ def score(args) -> None:
     if corpus.get("schema") != SCHEMA_TOKENS:
         raise SystemExit("not a frozen corpus token file")
     scorer = _score_tensorfold if args.backend == "tensorfold" else _score_vllm
+    limit = args.continuation_limit
+    if limit is not None and limit < 1:
+        raise SystemExit("--continuation-limit needs at least one token (the prompt-end row)")
+    documents = corpus["documents"] if limit is None else [
+        {**doc, "continuation": doc["continuation"][:limit]} for doc in corpus["documents"]]
     runs = []
     for repeat in range(args.repeat):
         docs, t0 = [], time.perf_counter()
-        for doc in corpus["documents"]:
+        for doc in documents:
             got = scorer(args.url, doc, args.top, args.model)
             docs.append({"id": doc["id"], "kind": doc["kind"], **got})
         seconds = time.perf_counter() - t0
@@ -168,6 +173,7 @@ def score(args) -> None:
         print("repeats bitwise identical" if same else "REPEATS DIFFER")
     out = {"schema": SCHEMA_RUN, "version": 1, "backend": args.backend, "label": args.label, "url": args.url,
            "top": args.top, "tokens_file": tokens_path.name, "tokens_sha256": _sha(tokens_path),
+           **({"continuation_limit": limit} if limit is not None else {}),
            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "runs": runs}
     Path(args.out).write_text(json.dumps(out, separators=(",", ":")) + "\n", encoding="utf-8")
 
@@ -248,15 +254,19 @@ def compare(args) -> None:
     a, b = json.loads(Path(args.a).read_text()), json.loads(Path(args.b).read_text())
     if a["tokens_sha256"] != b["tokens_sha256"]:
         raise SystemExit("the runs scored different frozen corpora")
+    if a.get("continuation_limit") != b.get("continuation_limit"):
+        raise SystemExit("the runs scored different continuation limits")
     ra, rb = _rows(a), _rows(b)
     if set(ra) != set(rb):
         raise SystemExit("the runs scored different positions")
     rng = random.Random(args.seed)
+    kinds = tuple(args.kinds.split(",")) if args.kinds else None
     result = {"schema": SCHEMA_RESULT, "version": 1, "a": {"file": args.a, "label": a.get("label"), "backend": a["backend"]},
               "b": {"file": args.b, "label": b.get("label"), "backend": b["backend"]}, "margin": args.margin,
+              **({"kinds": list(kinds)} if kinds else {}),
               "bootstrap": args.bootstrap, "seed": args.seed, "paths": {}}
     for path in ("prefill", "decode"):
-        keys = sorted(k for k in ra if k[1] == path)
+        keys = sorted(k for k in ra if k[1] == path and (kinds is None or ra[k][0].startswith(kinds)))
         if not keys:
             continue
         per_kind: dict = {}
@@ -331,11 +341,16 @@ def main(argv=None) -> None:
     p.add_argument("--label", default="")
     p.add_argument("--top", type=int, default=20)
     p.add_argument("--repeat", type=int, default=1)
+    p.add_argument("--continuation-limit", type=int,
+                   help="score only each document's first N continuation tokens (a prefill-path run; compare "
+                        "requires both runs to use the same N)")
     p.set_defaults(run=score)
     p = sub.add_parser("compare")
     p.add_argument("a")
     p.add_argument("b")
     p.add_argument("--margin", type=float, default=0.005)
+    p.add_argument("--kinds", help="compare only documents whose kind starts with one of these comma-separated "
+                                   "prefixes (e.g. 'text' for SC117 prompt rows; see docs/testing-methodology.md)")
     p.add_argument("--bootstrap", type=int, default=4000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out")

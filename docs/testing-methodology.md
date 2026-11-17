@@ -197,6 +197,22 @@ Frozen corpora:
   come from TensorFold's own Apache-2.0 files at commit `5a0d38b6`
   (third-party and vendored files excluded). Tokenizing takes about 45 CPU
   minutes (each chat render costs ~8 s); do it once per corpus version.
+- `tools/quality_eval/corpus-v2.sc117.tokens.json`: the same v2 documents
+  (`corpus-v2.gemma4.json`, recorded as `corpus-v2.json`, sha256 `b38fa75f…`)
+  tokenized with the SC117 tokenizer (sha256 `7b6b3e0e…`) and its checkpoint chat
+  template; 268 documents, 226,235 prompt-pass and 99,605 continuation positions
+  (18 CPU minutes in image `cf8c0ff6`).
+
+**SC117 prompt rows: judge the prefill path on raw-text documents.** Inside a
+chat user turn SC117 puts ~99% of each row's probability on `<|im_end|>`, so a
+chat document's prompt-row NLL (5–10 nats/token on the `chat-repo(-long)`
+strata) measures only the remaining ~1% tail and swings by ±0.1–0.4
+nats/token per document under any numerics change; the 96 raw-text documents
+carry the prefill evidence (`compare --kinds text`; v2 SC117: 107,932 rows,
+block SE ~0.0005–0.0007). The decode path is judged on all documents (chat
+continuations are assistant replies). A prefill-path run may cap the decode rows
+with `score --continuation-limit 32` (8,308 decode rows; ~6.5 minutes per run
+including the 268 prompt passes); `compare` refuses runs with different caps.
 
 Size rationale for v2: in the v1 A/B the document-blocked SE equalled the naive
 per-token SE (0.0041 vs 0.0040), so decode differences behave as nearly
