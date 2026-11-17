@@ -2068,6 +2068,30 @@ on the host during the second session pair. Long cold/repeat replies agree with 
 other, but the base itself changes them between server processes (its NCCL prompt sums),
 so they do not compare the two arms.
 
+**Fixed: prompt pieces above 1,638 rows left hyper-connection rows unwritten (2026-11-17).**
+The SM70 family kernels for hyper-connection normalization, stream mixing, the
+attention output gate and per-layer embeddings write one element per thread, but
+their launch grid was clamped to 65,535 blocks of 256 threads. Elements past
+16,776,960 per call were never written, and their rows kept stale buffer contents:
+normalization (rows × 4 streams × 2,560) past 1,638 rows in one prompt piece, the gate
+past 4,095 and stream mixing past 6,553. The deployed default prompt piece is 2,048
+rows (`TENSORFOLD_PREFILL_ROWS` unset), so every SC117 prompt longer than 1,638 tokens
+was affected: its later prompt rows, the KV/DeltaNet history built from them, and the
+MTP drafter reading those streams. Short prompts were unaffected (golden-vg2 replies
+were identical before and after). The grids are now exact.
+`tests/cuda/test_sm70_family_large_rows.py` checks 2,048- and 8,192-row calls bitwise
+against the same rows computed in two halves; it fails on the previous kernels and
+passes with the fix.
+
+Server check: 8× V100 TP8/ETP4, MTP4, INT8 KV; image `4b2661d8` with the source
+overlaid; `m-bdec-pad35`; 24 lanes. On six long raw-text corpus-v2 documents
+(50,285 teacher-forced prompt rows), prompt-row NLL was 1.755 at 1,024, 1,280 and
+1,536 rows, but 2.57, 3.11, 3.29 and 3.54 at 1,792, 1,920, 1,984 and 2,048 rows. With
+the fix it is 1.755 at both 2,048 and 1,792 rows. MTP acceptance on 4K prompts went
+from 26/64, 18/76 and 23/50 accepted drafts to 50/52, 49/53 and 47/51. Measurements
+from configurations with prompt pieces above 1,638 rows before this fix (2,048- and
+4,096-row trials and the deployed default) do not represent the model.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the

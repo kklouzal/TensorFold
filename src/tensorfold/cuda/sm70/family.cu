@@ -4,6 +4,7 @@
 #include <c10/cuda/CUDAException.h>
 #include <cuda_fp16.h>
 #include <math_constants.h>
+#include <limits>
 #include <optional>
 #include <algorithm>
 #include <type_traits>
@@ -960,7 +961,14 @@ __global__ __launch_bounds__(1024) void qsa_select_owned_kernel(const int64_t* d
 
 template<typename V> V* ptr(const T& x) { return reinterpret_cast<V*>(x.data_ptr()); }
 const void* optional_ptr(const O& x) { return x ? x->data_ptr() : nullptr; }
-int blocks(int64_t count) { return int(std::min<int64_t>((count + THREADS - 1) / THREADS, 65535)); }
+// Exact grids: normed/mix/gate/embed write one element per thread (no grid-stride loop), so a grid clamped to
+// 65535 blocks left every element past 65535 * 256 unwritten (HC normalization of a prompt piece above 1638
+// rows). Grid x admits 2^31 - 1 blocks; the grid-stride kernels that share this helper are unaffected.
+int blocks(int64_t count) {
+    const int64_t grid = (count + THREADS - 1) / THREADS;
+    TORCH_CHECK(grid <= std::numeric_limits<int>::max(), "SM70 family launch exceeds the CUDA grid-x limit");
+    return int(grid);
+}
 }  // namespace
 
 void family_writeback_prepare_cuda() {
