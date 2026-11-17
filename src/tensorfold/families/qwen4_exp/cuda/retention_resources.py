@@ -163,7 +163,7 @@ def native_sync_data_payload(*, world, chunk_bytes):
             "pinned_ordinary_bytes_already_in_progress": 2 * world * chunk_bytes,
             "native_chunk_payload_bytes": data, "sendbuffer_header_capacity_bytes": slack,
             "global_native_data_payload_bytes": _total((data, slack)),
-            "source": "owned Torch04cf2557/05adb434 with libstdc++13; synchronous daemon provenance required",
+            "source": "owned Torch05adb434 with libstdc++13; synchronous daemon provenance required",
             "remaining_terms": "key/control/metadata/allocator/kernel budgets are distinct"}
 
 
@@ -244,7 +244,7 @@ def native_sync_control_payload(*, world, chunk_bytes, ram, slots=None):
             "persistent_rendezvous_value_bytes": rendezvous_values,
             "global_native_control_value_bytes": control, "global_native_rpc_value_bytes": _total((rpc,)),
             "excluded": "already reserved manifest backing; fixed key/container and Python RPC ownership are separate",
-            "source": "owned Torch04cf2557/05adb434 synchronous backend; native-table-assist source ownership proof"}
+            "source": "owned Torch05adb434 synchronous backend; native-table-assist source ownership proof"}
 
 
 def native_sync_prefix_payload(*, world, slots):
@@ -278,7 +278,7 @@ def native_sync_prefix_payload(*, world, slots):
 def native_sync_fixed_payload(*, world, ram, slots, fd_limit=None, host_bytes=0):
     """Known GLOBAL key/container payload for the sealed synchronous ABI.
 
-    Owned Torch04cf2557/05adb434 with GCC13/runtime14 uses 32-byte strings, 24-byte vectors, cached
+    Owned Torch05adb434 with GCC13/runtime14 uses 32-byte strings, 24-byte vectors, cached
     72-byte string-key nodes, and eight-byte bucket pointers. These are
     allocation requests/object layouts, not allocator usable sizes or RSS.
     ``slots`` is the communicator's maximum admitted State count: retained
@@ -409,7 +409,7 @@ def native_sync_fixed_payload(*, world, ram, slots, fd_limit=None, host_bytes=0)
             "wait_map_key_highwater_bound": wait_highwater,
             "waiting_socket_vector_capacity": socket_capacity,
             "terms": terms, "global_native_fixed_payload_bytes": _total(terms.values()),
-            "source": "owned Torch04cf2557/05adb434 with GCC13/runtime14; sealed SDK layout and native-table-assist",
+            "source": "owned Torch05adb434 with GCC13/runtime14; sealed SDK layout and native-table-assist",
             "preconditions": "shared8192-byte bound for every protocol key; immutable W/maximum-slots/hard-NOFILE/actual-host Store region",
             "remaining_native_constraints": (
                 "allocator arenas/usable sizes and kernel socket buffers are not source payload",),
@@ -421,11 +421,11 @@ def require_native_payload_runtime():
 
     Uses the existing bounded descriptor capture, not deserialized attestations
     or a new certification system. The exact runtime14 library proof and the
-    owned Torch04cf2557/05adb434 and GCC13 template sources are versioned
+    owned Torch05adb434 and GCC13 template sources are versioned
     inputs. Their Store/daemon/socket fields and buffer algorithms preserve
     these payload equations; public header/layout controls cover the changed
     intrusive-pointer base. This is a source-payload proof, not installed-image,
-    allocator, kernel, device or model qualification. Both retain the owned
+    allocator, kernel, device or model qualification. It retains the owned
     socket correction; unpatched upstream and rejected forks are not admitted.
     """
     # The equations are C++/Torch facts; Python only checks the supported runtime.
@@ -437,10 +437,9 @@ def require_native_payload_runtime():
     from tensorfold.engine.model_identity import capture_model_identity
     from .execution_identity import _small
 
-    # Exact owned revisions with independently checked source/layout inputs.
-    # Keep the retained legacy image admissible; do not admit arbitrary nightlies.
-    revisions = ("04cf2557f315a350e7eea7ab064288def65db75a",
-                 "05adb434bd30d298eb408a72420b0496ee05f8e3")
+    # The exact owned revision with independently checked source/layout inputs;
+    # do not admit arbitrary nightlies.
+    revisions = ("05adb434bd30d298eb408a72420b0496ee05f8e3",)
     revision = torch.version.git_version
     library_hash = "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11"
     library_size = 2592224

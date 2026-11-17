@@ -493,7 +493,7 @@ See the [source foundation record](source-foundation.md) for exact artifacts.
 The complete application CPU gate on the corrected source/media/client stack
 passed at the exact scope recorded above. The later portable and shared-anonymous
 mapping policies have separate software evidence and retain all immutable
-source/provider checks; use the [explicit rebind procedure](source-foundation.md#portable-build-and-host-audit-policy).
+source/provider checks; see the [audit policy record](source-foundation.md#portable-build-and-host-audit-policy).
 Actual mapping-successor target acceptance after GPU work remains pending.
 Local CPU GREEN does not close that target gate. Compiler issue 6111901 remains
 separate below.

@@ -455,7 +455,7 @@ class Contracts(unittest.TestCase):
                 setattr(modules["tensorfold.families.qwen4_exp.cuda." + module], attr, lambda *a, **k: None)
         runtime = ModuleType("torch")
         runtime.__version__ = "test-runtime"
-        runtime.version = NS(git_version="04cf2557f315a350e7eea7ab064288def65db75a", cuda="12.9")
+        runtime.version = NS(git_version="05adb434bd30d298eb408a72420b0496ee05f8e3", cuda="12.9")
         runtime.cuda = NS(is_available=lambda: True, get_device_capability=lambda: (7, 0),
                           synchronize=lambda: (_ for _ in ()).throw(cleanup))
         runtime.backends = NS(cuda=NS(matmul=NS(allow_fp16_reduced_precision_reduction=True, allow_fp16_accumulation=False)))

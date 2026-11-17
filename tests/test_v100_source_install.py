@@ -269,16 +269,7 @@ def test_generated_image_recipes_use_only_hash_verified_offline_source_artifacts
     assert "TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas" in image
     assert "TRITON_LIBDEVICE_PATH=/usr/local/cuda/nvvm/libdevice/libdevice.10.bc" in image
     assert "TRITON_CACHE_DIR=/cache/volta-sm70-source-" in image
-    policy = generated["Dockerfile.audit-policy"]
-    assert policy == (ROOT / "deploy/v100/Dockerfile.audit-policy").read_text()
-    assert "ARG AUDIT_BASE_IMAGE" in policy and "FROM ${AUDIT_BASE_IMAGE}" in policy
-    assert "ARG AUDIT_POLICY_COMMAND=revise-runtime-policy" in policy
-    assert "revise-audit-policy)" in policy and "unsupported owned audit-policy revision" in policy
-    assert "audit-history/build-host-v1" in policy and "revise-runtime-policy" in policy
-    assert "audit-policy-build-host-v1.json" in policy and "source_foundation.py audit-process" in policy
-    assert "--network=none" in policy and "apt-get" not in policy
-    assert "application_artifacts" in policy and "sha256sum --strict --check application-wheel.sha256" in policy
-    assert "--no-deps /portable-app-wheels/tensorfold-*.whl" in policy and "/torch-*.whl" not in policy
+    assert set(generated) == {"Dockerfile.source-builder", "Dockerfile"}
 
 
 def test_offline_locks_preserve_exact_resolved_artifact_hashes():

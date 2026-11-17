@@ -60,7 +60,7 @@ class RuntimeIdentity(unittest.TestCase):
 
     def test_source_build_does_not_require_legacy_wheel_metadata_or_qualify_candidate(self):
         fake = self.torch(torch="2.14.1+tfcu129sm70", cuda="12.9",
-                          torch_git="04cf2557f315a350e7eea7ab064288def65db75a")
+                          torch_git="05adb434bd30d298eb408a72420b0496ee05f8e3")
         with patch.dict(sys.modules, {"torch": fake}), patch.dict(os.environ, {}, clear=True), \
                 patch.object(importlib.metadata, "version", side_effect=AssertionError("legacy wheel queried")):
             actual = q.runtime_identity("cuda:0")
@@ -82,7 +82,7 @@ class RuntimeIdentity(unittest.TestCase):
 
     def test_source_metadata_preparation_and_attention_dispatch_stay_ineligible(self):
         fake = self.torch(torch="2.14.1+tfcu129sm70", cuda="12.9",
-                          torch_git="04cf2557f315a350e7eea7ab064288def65db75a")
+                          torch_git="05adb434bd30d298eb408a72420b0496ee05f8e3")
         fake.cuda.get_device_capability = lambda _device: (7, 0)
         owner = SimpleNamespace(cfg=SimpleNamespace(execution_dtype="float16", heads=3, kv_heads=1,
                                                     head_dim=256), device="cuda:0", meta={})

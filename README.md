@@ -2430,9 +2430,10 @@ longer the blocker for that work. See the
 [source-build evidence](deploy/v100/source-foundation.md#executed-fresh-bootstrap).
 
 The V100 audit policy separates the pinned Torch build from current CPU dispatch
-and conditional CUDA metadata. The versioned immutable policy rebind retains
-the original framework/media bytes and build receipts; see the
-[portable audit procedure](deploy/v100/source-foundation.md#portable-build-and-host-audit-policy).
+and conditional CUDA metadata; current images are captured under that version-2
+policy by the source pipeline (the CPython 3.12 rebind recipe was retired with the
+3.15.2 port); see the
+[portable audit record](deploy/v100/source-foundation.md#portable-build-and-host-audit-policy).
 Software identity, actual V100 execution and compiler/model qualification remain
 separate gates.
 

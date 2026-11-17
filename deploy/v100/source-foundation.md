@@ -673,53 +673,11 @@ in every audit and its runtime digest. Artifact, wheel, source, provider and
 loaded-library checks remain mandatory; current-process audit API version 1
 is unchanged. No CPU dispatch override or CUDA visibility restriction is added.
 
-The explicit [policy input](audit-policy-build-host-v1.json) authenticates the
-original complete configuration against its old sealed hash and identifies
-the exact original source/media manifests, build receipt, producer and header.
-The generated `Dockerfile.audit-policy` archives the original producer and
-manifest, verifies every original artifact and stable runtime field, then
-publishes a new immutable version-2 policy image. Runtime audits refuse old
-version-1 manifests; the conversion exists only at this image-construction
-boundary. Existing images and native/media build receipts are not rewritten.
-
-```bash
-# Build one owned application wheel with the updated v2 header/media readers.
-# Supply its wheel and application-wheel.sha256 as application_artifacts.
-docker build --network=none \
-  --build-context application_artifacts=/path/to/verified-application-wheel \
-  --build-arg AUDIT_BASE_IMAGE=tensorfold-v100:source-socket-04cf2557@sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28 \
-  -f deploy/v100/Dockerfile.audit-policy -t tensorfold-v100:source-portable-policy-v1 .
-docker build --network=none \
-  --build-context application_artifacts=/path/to/verified-application-wheel \
-  --build-arg AUDIT_BASE_IMAGE=tensorfold-v100:media-socket-04cf2557@sha256:f1c72b97ae8949a0aab0b1407edd4fc320671fb129e104e39095eb602ce2e94f \
-  -f deploy/v100/Dockerfile.audit-policy -t tensorfold-v100:media-portable-policy-v1 .
-# The deployment successor can update the approved complete application once:
-docker build --network=none \
-  --build-context application_artifacts=/path/to/verified-application-wheel \
-  --build-arg AUDIT_BASE_IMAGE=tensorfold-v100:app-socket-21a12df376@sha256:e99c7284234376f43634c7103fcd6fe313fee4b61c073ad79965a100b2b1baef \
-  -f deploy/v100/Dockerfile.audit-policy -t tensorfold-v100:app-portable-policy-v1 .
-```
-
-These are explicit policy rebindings of the existing corrected Torch/media
-binary candidates, with no framework or decoder recompilation. The same one
-verified application wheel updates the strict v2 include reader and authenticated
-original/current media-producer role checks. It can also be applied directly to
-the already-qualified application image by choosing that exact immutable
-`AUDIT_BASE_IMAGE`; this avoids rebuilding the framework or media layers. The media
-variant retains its existing media installation authority and original media
-build producer. Each image records its exact immutable identity; the two
-variants share their original binary layers but have separate protected
-audit histories. Use `audit-process` for a current target process, where
-host-injected driver code and additional process code are separately bound.
-The `audit` command retains strict image-construction mapping equality.
-Actual V100, compiler, model, quality, resource and performance gates remain
-required after software identity passes.
-
-Apply this portable policy after the original media byte-construction stage.
-The explicit rebind authenticates the retained original media/source build
-producer separately from current audit code. Reusing an existing media build
-receipt follows this rebind procedure; a fresh source/media build keeps its
-own actual producer identities.
+The historical version-1 conversion (`revise-runtime-policy`, its policy input
+and the generated `Dockerfile.audit-policy`) rebound the CPython 3.12 Torch
+04cf2557 images. It was removed with the CPython 3.15.2 port: those bases cannot
+install the cp315 application wheel, and every current image is captured as
+version 2 by the source pipeline.
 
 The historical `shared-anonymous-data-v1` policy recognizes `/dev/zero
 (deleted)`, exactly `rw-s`, offset zero, device `00:01` and a positive inode.
@@ -752,17 +710,13 @@ source proofs retain software identity only. The new mapping policy requires
 an explicitly constructed successor manifest; runtime never silently accepts
 the predecessor mapping policy.
 
-For an existing version-2 source SDK whose installed audit is its original
-framework producer, the generated `Dockerfile.audit-policy` accepts explicit
-`--build-arg AUDIT_POLICY_COMMAND=revise-audit-policy`. That existing command
+`revise-audit-policy` remains the image-construction step that
+`Dockerfile.media` uses to rebind the SDK audit to the current producer. It
 archives and authenticates the original producer, manifest, build receipt and
 all software/provider bytes before publishing the new mapping-policy identity.
-The default `revise-runtime-policy` remains the historical version-1 migration.
 An unknown predecessor policy, changed original producer or substituted sealed
-library is refused. Reuse an exact verified application-wheel context and base
-image under the existing offline recipe; this does not rebuild Torch or patch
-an installed image. Repeated revisions whose current producer no longer equals
-the original build producer are not authorized by this construction command.
+library is refused. Repeated revisions whose current producer no longer equals
+the original build producer are not authorized.
 
 This correction has source/CPU test scope until a successor image and its
 actual current-process/target diagnostics pass. Retain the original Queue

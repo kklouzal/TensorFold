@@ -711,7 +711,7 @@ def execute(args):
         from tensorfold.families.qwen4_exp.cuda.decode import prefill
         from tensorfold.families.qwen4_exp.cuda.state import Buffers
         from tensorfold.families.qwen4_exp.cuda.forward import _kv_check
-        require(torch.version.git_version == "04cf2557f315a350e7eea7ab064288def65db75a", "pinned original framework required")
+        require(torch.version.git_version == "05adb434bd30d298eb408a72420b0496ee05f8e3", "pinned owned framework required")
         output = Output(args.out)
         report = {"schema": "tensorfold.mtp-four-cell-diagnostic-v1", "qualification": False, "P3_valid": False,
                   "image_id_declared": args.image_id, "source_commit_declared": args.source_commit,
