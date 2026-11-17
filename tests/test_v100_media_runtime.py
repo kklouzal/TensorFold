@@ -1,9 +1,9 @@
 """Installed CPU media closure; these controls require the separate source media image."""
 
+import importlib.util
 from pathlib import Path
 import sys
 import subprocess
-import types
 
 import pytest
 
@@ -22,8 +22,8 @@ def producer():
 def readonly_module(name, path):
     # The supported probe CLI reads the protected source without a bytecode
     # cache. Keep this same-process test from writing into the sealed inventory.
-    module = types.ModuleType(name)
-    module.__file__ = str(path)
+    # A file spec without exec_module keeps CPython 3.15 linecache on a real loader.
+    module = importlib.util.module_from_spec(importlib.util.spec_from_file_location(name, path))
     exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
     return module
 
