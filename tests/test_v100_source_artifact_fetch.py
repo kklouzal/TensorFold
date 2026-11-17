@@ -149,7 +149,7 @@ class FetchTests(unittest.TestCase):
                     'https://snapshot.ubuntu.com/ubuntu/20261025T000000Z/pool/'))
             else:
                 self.assertEqual(original['url'], effective['url'])
-        self.assertEqual(changed, 187)
+        self.assertEqual(changed, 177)
         self.assertEqual(len(policy['artifacts']), changed)
         self.assertTrue(any('nvidia.com' in i['url'] for i in selected))
         # Host alone is insufficient: only /ubuntu/pool/ APT paths are eligible.
