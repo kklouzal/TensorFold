@@ -5,8 +5,11 @@ Run on the target architecture (owned sdists need native metadata, so pip's
 cross-platform selection cannot produce this report). The pinned interpreter
 archive is verified against the selected pins and extracted into a temporary
 directory; its bundled pip resolves one shared closure for the foundation,
-application, verification and owned-build roles. Only the selected owned
-packages may resolve to sdists; pip builds their metadata in isolated
+application, verification and owned-build roles. The official Torch,
+TorchVision and Triton wheels are requested by their pinned URLs and SHA256s (the
+PyTorch index publishes no hashes, so a metadata-only dry run would record none);
+the image's hash-checked install verifies the whole wheels. Only the selected
+owned packages may resolve to sdists; pip builds their metadata in isolated
 environments, which affects only this report, never the image. An optional
 earlier manifest constrains every version it records (all roles), so a second
 architecture or an interpreter change keeps the reviewed selection.
@@ -18,13 +21,15 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
-from foundation_policy import owned_builds, validate_pins
+from foundation_policy import canonical_name, owned_builds, validate_pins
+from packaging.requirements import Requirement
 from platform_pins import PLATFORMS, platform_pins
 
 HERE = Path(__file__).resolve().parent
@@ -32,9 +37,6 @@ HERE = Path(__file__).resolve().parent
 # vision and grammar extras, plus the tools the image's no-isolation wheel build uses.
 APPLICATION_ROOTS = ("numpy", "huggingface_hub", "tokenizers", "safetensors", "Jinja2", "rich", "prompt_toolkit",
                      "pytest", "pillow", "transformers", "av", "xgrammar", "setuptools", "wheel", "packaging")
-TORCH_INDEXES = ("https://download.pytorch.org/whl/nightly/cu134/torch/",
-                 "https://download.pytorch.org/whl/nightly/cu134/torchvision/",
-                 "https://download.pytorch.org/whl/nightly/triton/")
 
 
 def constraints(manifest: Path) -> list[str]:
@@ -60,7 +62,18 @@ def resolve(architecture: str, archive: Path, output: Path, pins_path: Path, man
     with archive.open("rb") as stream:
         if hashlib.file_digest(stream, "sha256").hexdigest() != interpreter["sha256"]:
             raise ValueError("interpreter archive does not match the selected pins")
-    roots = [*pins["foundation_roots"], *APPLICATION_ROOTS,
+    # URL roots carry the official wheels' identities and their foundation_roots extras;
+    # the generator checks the foundation roots themselves against the report.
+    extras, other = {}, []
+    for root in pins["foundation_roots"]:
+        requirement = Requirement(root)
+        if canonical_name(requirement.name) in pins["wheels"]:
+            extras.setdefault(canonical_name(requirement.name), set()).update(requirement.extras)
+        else:
+            other.append(root)
+    official = [f"{name}{'[' + ','.join(sorted(extras.get(name, ()))) + ']' if extras.get(name) else ''}"
+                f" @ {pin['url']}#sha256={pin['sha256']}" for name, pin in sorted(pins["wheels"].items())]
+    roots = [*official, *other, *APPLICATION_ROOTS,
              *sorted({text for record in owned_builds(pins).values() for text in record["build_requires"]})]
     owned = ",".join(sorted(owned_builds(pins))) or ":none:"
     with tempfile.TemporaryDirectory(prefix="tensorfold-resolve-") as temporary:
@@ -76,12 +89,11 @@ def resolve(architecture: str, archive: Path, output: Path, pins_path: Path, man
         command = [str(work / "venv/bin/python"), "-m", "pip", "install", "--dry-run", "--ignore-installed",
                    "--no-cache-dir", "--pre", "--only-binary=:all:", f"--no-binary={owned}",
                    "--index-url", "https://pypi.org/simple",
-                   *(argument for index in TORCH_INDEXES for argument in ("--find-links", index)),
                    "-c", str(work / "constraints.txt"), "-r", str(work / "roots.txt"),
                    "--report", str(work / "report.json")]
         subprocess.run(command, env=environment, check=True)
         output.parent.mkdir(parents=True, exist_ok=True)
-        (work / "report.json").replace(output)
+        shutil.copyfile(work / "report.json", output)
 
 
 def main() -> None:

@@ -411,15 +411,11 @@ def native_proof(state: dict) -> dict:
     providers = mapped_runtime(state["runtime"], allow_vision=True)
     if torch.cuda.is_initialized():
         raise ValueError("foundation startup proof unexpectedly initialized CUDA")
-    static = state["manifest"]["roles"]["foundation"].get("cuda-bindings")
     return {"torch": torch.__version__, "triton": triton.__version__, "providers_before_torch": before,
             "providers_after_torch": core, "providers": providers, "loaded_sdk": [row["path"] for row in providers],
             "tools": tools, "torchvision": torchvision.__version__, "vision": vision,
             "nccl_library": state["nccl_library"], "nccl_version": version.value, "cuda_initialized": False,
-            "driver_role": bootstrap.DRIVER_ROLE,
-            "static_runtime_exceptions": {} if static is None else {"cuda-bindings": {
-                "version": static["version"], "url": static["url"], "sha256": static["sha256"],
-                "authority": "official static CUDART has no supported replacement; user permits protected component runtime"}}}
+            "driver_role": bootstrap.DRIVER_ROLE}
 
 
 def role_lines(manifest: dict, role: str) -> list[str]:

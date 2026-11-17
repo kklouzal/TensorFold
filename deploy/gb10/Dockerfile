@@ -21,6 +21,7 @@ RUN sh /opt/tensorfold-pins/foundation_sdk.sh capture /opt/tensorfold-pins /opt/
     && printf '%s  %s\n' "${PYTHON_SHA256}" "$1" | sha256sum --check --strict \
     && mkdir /opt/python3.15 \
     && tar -xzf "$1" -C /opt/python3.15 --strip-components=1 --no-same-owner \
+    && chmod -R go-w /opt/python3.15 \
     && /opt/python3.15/bin/python3.15 -m venv /opt/tensorfold-foundation \
     && /opt/python3.15/bin/python3.15 -m venv --without-pip /opt/tensorfold-venv
 ENV PATH=/opt/tensorfold-venv/bin:${PATH} \

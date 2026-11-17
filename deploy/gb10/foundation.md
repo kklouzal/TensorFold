@@ -169,8 +169,8 @@ A cross-architecture resolver report does not qualify native execution.
 ### Interpreter and owned source builds
 
 Ubuntu 24.04 has no CPython 3.15. The image installs the pins'
-python-build-standalone `install_only_stripped` archive unchanged at
-`/opt/python3.15` after checking the `PYTHON_SHA256` build argument; the selector
+python-build-standalone `install_only_stripped` archive at `/opt/python3.15`
+(contents unchanged; its group-writable modes are reduced to the usual 0755/0644) after checking the `PYTHON_SHA256` build argument; the selector
 binds that argument, the archive name and the running version to the pins, and the
 seal records the archive with the native add-ons. The interpreter tree itself is
 not sealed (the earlier apt interpreter was not either). Its sysconfig names
@@ -267,8 +267,8 @@ process-lifetime owners before Torch; the supported `TORCH_USE_RTLD_GLOBAL`
 selection avoids its wheel-provider preload. Preparatory launcher/driver/compiler
 interpreters skip these native preloads. Only exact official TorchVision RECORD
 members for bundled CUDART/NVJPEG are allowed as additional physical providers
-under the approved no-override exception. CUDA bindings' static bundled CUDART
-is recorded separately. The graph therefore does not claim every component uses
+under the approved no-override exception. (The CPython 3.12 foundation also
+recorded CUDA bindings' static CUDART; on 3.15 Torch no longer installs them.) The graph therefore does not claim every component uses
 only the base runtime. Triton's supported compiler/tool/libdevice overrides are checked against actual
 resolved providers. An owned compiler wrapper puts the selected SDK headers
 first without changing Triton source.
