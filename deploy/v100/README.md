@@ -107,7 +107,8 @@ arguments. The measured runs also used, before `--`, `--execution-rows 120
 --grouped-gate-up-rows 4`; serve arguments `--context 262144 --parallel 24
 --kv-full-windows 24 --kv-dtype int8 --indexer-history gpu
 --expert-tensor-parallel-size 4 --draft-method mtp --mtp-drafts 4
---mtp-confidence 0.7 --no-prefill-fp8`; and the environment
+--mtp-confidence 0.7 --no-prefill-fp8 --no-thinking --max-pending-requests 24
+--max-http-connections 25 --max-waiting-input-bytes 226493088`; and the environment
 `TENSORFOLD_SM70_PROFILE=reference TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN=grouped-v1
 TF_SMALL_GATHER_BYTES=262144 TENSORFOLD_PREFILL_ROWS=1024`. The packet is a
 preparation (`trial: true`), not a qualification receipt; without the manifest
