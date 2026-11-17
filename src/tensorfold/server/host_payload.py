@@ -16,7 +16,6 @@ import threading
 import time
 import weakref
 
-
 from .cancellation import RequestCancelled
 from .errors import CapacityError
 

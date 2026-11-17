@@ -7,9 +7,9 @@ lock and adds no work to a round. Each reading is taken on its own, as /metrics'
 across sections, and its load and memory readings are advisory, never an admission promise.
 
 A table the worker changes in place (a decoder's ``streams`` dict, its ``filling`` list) is copied whole by one
-``list()`` call before anything iterates it: under CPython's GIL (the CUDA image's 3.15 default build) that copy is one C loop no
-other thread interleaves with, so a scrape never iterates a table mid-change. Lists the worker replaces rather than
-changes (``kept``) are read as published.
+``list()`` call before anything iterates it: under CPython's GIL (the CUDA image's 3.15 default build) that copy is one
+C loop no other thread interleaves with, so a scrape never iterates a table mid-change. Lists the worker replaces
+rather than changes (``kept``) are read as published.
 
 The process's identity is fixed when this module first loads (before the model): ``INSTANCE_ID`` and the start time
 name the serving process, whose prefix cache and counters a restart empties.

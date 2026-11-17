@@ -2,8 +2,9 @@
 
 Thread.join state is not the authority: CPython 3.12 was observed to report an
 interrupted join as complete while its target still executed. The owner cancels
-admission before entry or waits for this callback's own final retirement journal. A cancelled pending native thread can later run
-only this empty controller, never the retired model/output/file callback.
+admission before entry or waits for this callback's own final retirement
+journal. A cancelled pending native thread can later run only this empty
+controller, never the retired model/output/file callback.
 """
 
 from __future__ import annotations

@@ -176,8 +176,8 @@ def loads(raw, **kw):
 def require_stack_capacity(recursion_limit):
     """Check handler threads hold NESTING_LIMIT C encoder levels with margin.
 
-    A C encode refused only by the thread's stack raises RecursionError and adds failure notes. Certified encoders
-    run in default-attribute threads (no project stack_size): the glibc
+    A C encode refused only by the thread's stack raises RecursionError and
+    adds failure notes. Certified encoders run in default-attribute threads (no project stack_size): the glibc
     default stack, less its actual guard and CPython's soft limit
     (2*_PyOS_STACK_MARGIN_BYTES above the guard), must hold 512 bytes per
     encoder level and 2048 bytes per already-active Python frame.
