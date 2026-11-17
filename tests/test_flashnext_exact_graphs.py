@@ -673,3 +673,44 @@ def test_padded_counts_fill_windows_in_order_up_to_full_width():
     assert _padded_counts([2, 2, 2], 15, 5) == [5, 5, 5]
     with pytest.raises(ValueError):
         _padded_counts([2, 2], 11, 5)
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_round_ready_role_captures_each_key_once_and_serves_unfit_frames_eagerly(monkeypatch, ready):
+    from tensorfold.families.qwen4_exp.cuda import compact_indexer, history_owner
+
+    graph, (state, _) = owner()
+    graph.dec.w.cfg = SimpleNamespace(index_ratio=4)
+    segments = [(state, 0, 5)]
+    key = graph._key("verify", segments)
+    graph.selected_keys = frozenset({("verify", *key)})
+    graph.preparing = True
+    monkeypatch.setattr(compact_indexer, "validate_target_indexer_frame", lambda buffers, segs: None)
+    monkeypatch.setattr(graph, "_round_ready", lambda kind, segs: None if ready else "no unique-history owner")
+    captures, replays = [], []
+    pieces = SimpleNamespace(graphs=["graph"], inserts=[], out=object())
+
+    def capture(kind, captured_key, segs, source, *, round_tables=False):
+        captures.append(round_tables)
+        if round_tables:
+            graph.round_pieces[kind][captured_key] = pieces
+        graph.owner.verify[captured_key] = pieces
+        return pieces
+    monkeypatch.setattr(graph, "_capture", capture)
+    monkeypatch.setattr(graph, "_replay_round", lambda kind, whole, segs, source: replays.append(whole) or whole.out)
+    monkeypatch.setattr(exact_graphs, "_kv_begin", lambda segs: None)
+    monkeypatch.setattr(exact_graphs, "replay", lambda piece, comm: replays.append(piece))
+    fits = [True]
+    monkeypatch.setattr(history_owner, "round_context_fits", lambda segs, ratio, groups, mtp: fits[0])
+    monkeypatch.setattr(history_owner, "round_selector_groups", lambda source, ratio: 1)
+    assert graph.forward("verify", segments) is pieces.out
+    assert captures == [ready]                                  # one capture per key, never both variants
+    graph.preparing = False
+    fits[0] = False                                             # a frame the round selector cannot hold
+    if ready:
+        assert graph.forward("verify", segments) is None        # no piecewise program: the round runs eagerly
+        assert graph.record()["serving_misses"]["verify"] == 1
+        assert replays == [pieces]
+    else:
+        assert graph.forward("verify", segments) is pieces.out  # piecewise keys still replay
+        assert replays == ["graph", "graph"]

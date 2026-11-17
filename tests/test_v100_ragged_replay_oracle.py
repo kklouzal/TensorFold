@@ -122,6 +122,16 @@ def test_accounting_projects_actual_selected_fields_and_keeps_phase_distinction(
     assert len(json.dumps(result).encode()) < 4096 + 68 * 1024
 
 
+def test_accounting_census_counts_a_round_captured_key_once(accounting_inputs):
+    from tools.v100_owned_qualification import _ragged_accounting
+    record, capacity, sample, states = accounting_inputs
+    for item in record['keys']:                  # every key captured once, as its round variant
+        item['accounting']['role'] += '-round'
+    result = _ragged_accounting(record, capacity, rank=0, graph_budget=100, sample=sample, states=states)
+    assert [row['role'] for row in result['capture_settlement']['keys']] == [
+        key[0] for key in record['exact_graph_catalogue']['captured_keys']]
+
+
 @pytest.mark.parametrize('case', ['declined', 'missing', 'duplicate', 'budget', 'rank', 'charge',
     'false_admission', 'noninteger', 'startup_drift', 'floor', 'workspace', 'context', 'busy_state', 'state_capacity'])
 def test_accounting_rejects_incomplete_or_weakened_gate_before_publication(accounting_inputs, case):

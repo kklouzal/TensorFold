@@ -500,7 +500,8 @@ def _ragged_accounting(record, capacity, *, rank, graph_budget, sample, states):
         row = integers(observed, ('rank', 'rows', 'participants', 'pieces', 'prior_keys', 'prior_bytes',
             'physical_delta_bytes', 'allocated_delta_bytes', 'reserved_delta_bytes', 'budget_bytes'),
             signed=('physical_delta_bytes', 'allocated_delta_bytes', 'reserved_delta_bytes'))
-        key = (observed['role'], row['rows'], row['participants'])
+        # A round-captured key's single capture reports its role as "<role>-round".
+        key = (observed['role'].removesuffix('-round'), row['rows'], row['participants'])
         if (observed['schema'] != 'tensorfold.exact-graph-key-v1' or observed['admitted'] is not True
                 or key not in expected or row['rank'] != rank or row['prior_keys'] != index
                 or row['prior_bytes'] != charged or row['budget_bytes'] != graph_budget or row['pieces'] <= 0

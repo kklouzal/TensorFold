@@ -279,8 +279,9 @@ The keys come only from the operator's execution-profile manifest
 (`preparation.exact_graph_policy`); there is no default catalogue with them, so
 a server started from a manifest without them keeps full-width padding and none
 of the gain below. At 32 x 262,144 windows the per-rank graph budget
-(862,011,392 bytes) is exhausted before the full-width verify keys above p = 8,
-so intermediate keys do not help a 32-lane server.
+(862,011,392 bytes) holds only a subset of keys even with
+[round-only capture](#round-only-capture), so intermediate keys do not make a
+32-lane server competitive (see there).
 
 Evidence (8x V100 TP8/ETP4, MTP4 conf 0.7, INT8 KV, 24 x 262,144 windows, image
 `cf8c0ff6` plus source overlays of `4605f899` with and without this change;
@@ -290,3 +291,46 @@ aggregate 1.089x (95% 1.047-1.132), gains at C8 4K and C24 16K, no regressed
 cell; prefill aggregate 1.008x (1.000-1.017); C1 unchanged; the six-prompt C1
 greedy oracle is identical and concurrent greedy replies agree across arms as
 often as across repeated runs of one arm.
+
+### Round-only capture
+
+A verify or MTP role whose owner attention captures inside the round graph
+(`ExactStateGraphs._round_ready`) captures each key once, as that round graph,
+and publishes it as the role's key: padding, lookup and the catalogue census see
+it once, and its per-key accounting row reports the role as `verify-round` or
+`mtp-round`. Since the round selector covers every context a State holds
+(a8d0a03b), every decode frame with at most `4 * ROUND_GROUPS - 3` rows per
+window replays it; a frame outside `round_context_fits` runs eagerly, because
+the key has no piecewise program. Roles without round capture keep piecewise
+keys. Each capture is admitted only within the byte budget and while the
+required native windows and service workspace still fit (`_has_room`); an
+over-budget round capture is released and its key declined (that shape runs
+eagerly), instead of failing startup at settlement.
+
+Graph memory per rank (8x V100 TP8/ETP4, MTP4, 24 x 262,144 windows): the
+125-key intermediate catalogue above took 4,458 MiB with piecewise plus round
+captures; with round-only capture 129 keys take 2,416 MiB, and the catalogue
+with verify `(3p, p)` and `(4p, p)` added for every p = 2..24 (171 keys) takes
+3,794 of 5,513 MiB.
+
+Evidence for round-only capture with that 171-key catalogue against `ace76993`
+with the 125-key catalogue (8x V100 TP8/ETP4, MTP4 conf 0.7, INT8 KV,
+24 x 262,144 windows, CPython 3.15 image `4b2661d8`; greedy serving matrix
+C1/C8/C16/C24/C32 x 4K/16K, C32 not servable on 24 lanes; A B B A, two
+sessions per arm, `tools/matrix_benchmark.py compare`): decode_median aggregate
+1.032x (95% 1.011-1.052), C8-C24 cells +3-6% (each within its familywise
+interval), C1 1.000, prefill 1.001, no regressed cell. golden-vg2 and the
+fresh-process `golden_long.py` round 0 were identical in all four sessions. The
+ragged-replay oracle's catalogue census counts a round-only key once (its
+measured row role without the `-round` suffix).
+
+32 lanes: with 32 x 262,144 windows the grant is 822 MiB. Round-only full-width
+verify keys cost about 14-52 MiB each for p <= 16 and more above, so every
+participant count cannot be covered. A subset (C1 keys, MTP proposal keys for
+p <= 32, and for p = 8, 16, 24, 32 full-width and intermediate verify and
+refresh keys, 57 keys) captures in 736 MiB, and its steady rounds at C8-C24 are
+within 5% of the 24-lane server, but the serving matrix's decode rates at
+C8/C16/C24 4K fell to 19.2/11.3/7.1 tok/s from 23.6/13.8/9.9 on 24 lanes
+(single descriptive sessions): while prompts prefill one after another, decode
+rounds run at every count between 1 and C, and counts without a key run
+eagerly. Production therefore stays at 24 lanes.

@@ -268,15 +268,17 @@ class ExactStateGraphs:
         torch.cuda.synchronize(self.dec.w.device)
         physical_delta = before - free_bytes()
         took = max(0, physical_delta)
-        admitted = self._agree(owner.room_bytes + took <= owner.budget)
+        # Within the byte budget and still leaving the required native windows
+        # and service workspace (settlement checks both again after capture).
+        admitted = self._agree(owner.room_bytes + took <= owner.budget and owner._has_room())
         error = None
         if not admitted and round_tables:
-            # The optional round variant never displaces the piecewise key that
-            # already serves this shape: release it and keep serving piecewise.
+            # A round capture over budget is released and declined; that shape
+            # then runs eagerly (later, smaller keys may still fit).
             for graph in pieces.graphs:
                 graph.reset()
             del self.bindings[(kind + "-round", key)]
-            self.declined_keys[(kind + "-round", *key)] = 'round variant exceeded admitted graph budget'
+            self.declined_keys[(kind, *key)] = 'round capture exceeded admitted graph budget'
             owner.room_bytes += took  # A reset pool may retain it; never re-advertise that memory.
             return None
         if not admitted:
@@ -311,9 +313,10 @@ class ExactStateGraphs:
         owner.bytes += took
         owner.room_bytes += took
         if round_tables:
+            # The key's only capture: published as the role's key too (padding,
+            # lookup and the catalogue census see it once), replayed through
+            # _replay_round. Its accounting row keeps the "-round" role.
             self.round_pieces[kind][key] = pieces
-            self.captured_keys.append((kind + "-round", *key))
-            return pieces
         (owner.verify if kind == "verify" else owner.mtp)[key] = pieces
         self.captured_keys.append((kind, *key))
         return pieces
@@ -388,24 +391,24 @@ class ExactStateGraphs:
                     reject_prepared(source, error)
         pieces = (self.owner.verify if kind == "verify" else self.owner.mtp).get(key)
         if pieces is None and self.preparing and self.selected_keys is not None and (kind, *key) in self.selected_keys:
-            pieces = self._capture(kind, key, segs, source)
-            if pieces is not None:
-                if kind not in self.round_reason:
-                    self.round_reason[kind] = self._round_ready(kind, segs) or False
-                if self.round_reason[kind] is False:
-                    self._capture(kind, key, segs, source, round_tables=True)
+            if kind not in self.round_reason:
+                self.round_reason[kind] = self._round_ready(kind, segs) or False
+            # A role whose attention captures inside the round graph keeps only
+            # that one capture per key (its selector covers every context the
+            # States hold); other roles keep the piecewise capture.
+            pieces = self._capture(kind, key, segs, source, round_tables=self.round_reason[kind] is False)
             if pieces is not None:
                 # Capture preparation reset/restaged these same actual slots.
                 # Validate the newly issued frame before the first replay too.
                 validate(source, segs)
-        if pieces is not None:
+        whole = None if pieces is None else self.round_pieces[kind].get(key)
+        if whole is not None:
             from .history_owner import round_context_fits, round_selector_groups
 
-            whole = self.round_pieces[kind].get(key)
-            ratio = None if whole is None else self.dec.w.cfg.index_ratio
-            if whole is not None and round_context_fits(segs, ratio, round_selector_groups(source, ratio),
-                                                        mtp=kind == "mtp"):
+            ratio = self.dec.w.cfg.index_ratio
+            if round_context_fits(segs, ratio, round_selector_groups(source, ratio), mtp=kind == "mtp"):
                 return self._replay_round(kind, whole, segs, source)
+            pieces = None                                # a round-only key has no piecewise program: eager
         if pieces is None:
             self.misses += 1
             if not self.preparing:
@@ -540,10 +543,9 @@ class ExactStateGraphs:
         for (kind, key), pieces in tuple(self.bindings.items()):
             for graph in pieces.graphs:
                 graph.reset()
-            if kind.endswith("-round"):
-                self.round_pieces[kind[:-len("-round")]].pop(key, None)
-            else:
-                (self.owner.verify if kind == "verify" else self.owner.mtp).pop(key, None)
+            role = kind.removesuffix("-round")
+            self.round_pieces[role].pop(key, None)
+            (self.owner.verify if role == "verify" else self.owner.mtp).pop(key, None)
             del self.bindings[(kind, key)]
         # The outer owner retires pending/partial captures before this method.
         # Keep every plan if any graph reset fails, including failed-capture

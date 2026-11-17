@@ -1889,6 +1889,15 @@ p = 2..24 (125 keys) raised the greedy serving-matrix decode_median aggregate
 1.089x (95% 1.047-1.132; C1/C8/C16/C24 x 4K/16K, two sessions per arm, no
 regressed cell, C1 unchanged) on 8x V100 TP8/ETP4 MTP4 conf 0.7, INT8 KV,
 24 x 262,144 windows ([intermediate row keys](docs/observed-graph-demand.md#intermediate-row-keys)).
+Roles whose attention captures inside the round graph now capture each key once
+(no separate piecewise program), about halving exact-graph memory (the 125-key
+catalogue took 4,458 MiB per rank with both captures; a 129-key superset now
+takes 2,416 MiB). With verify `(3p, p)` and `(4p, p)` keys added for every
+p = 2..24 (171 keys, 3,794 MiB) the greedy serving-matrix decode_median aggregate
+rose 1.032x (95% 1.011-1.052; 4K/16K x C1-C24 on the CPython 3.15 image, two
+sessions per arm, no regressed cell, C1 unchanged); 32 lanes still cannot cover every
+participant count in its 822 MiB grant, so 24 lanes remains the production
+configuration ([round-only capture](docs/observed-graph-demand.md#round-only-capture)).
 Descriptive single runs (Source40 `cf8c0ff6` + overlays, 8x V100 TP8/ETP4, MTP4
 conf 0.7, 64-token prompts, 400 greedy tokens, 79-key catalogue) moved aggregate
 decode from 47.3/25.2/35.0/52.4/73.1 tok/s to 47.3/58.6/77.0/103.0/127.7 tok/s at
