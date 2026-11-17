@@ -26,6 +26,15 @@ reuse 23/23 passed; `7ea` is retained stopped for rollback. No performance
 gain/equivalence is claimed; AMD64 native execution is unrun. Exact identities
 and coverage limits are recorded in the refresh ledger.
 
+CPython 3.15.2 port status (2026-11-17): the AMD64 inputs come from a native
+3.15.2 resolver report, and the AMD64 `verification` and `runtime` targets built
+natively on a non-GB10 x86 host, passing every Dockerfile gate (selection,
+interpreter and add-on checks, owned pyyaml/xgrammar builds, seal, full audits,
+`pip check`, the installed TensorFold/xgrammar import). In-image CPU tests,
+native-provider proof and any GPU execution (Blackwell sm_121 included) are
+unrun. The ARM64 inputs await [native generation](foundation.md#first-arm64-generation-after-the-cpython-315-port)
+on GB10; the deployed ARM64 runtime `e0bdd6b4` and its qualification remain CPython 3.12.
+
 Use the [fresh-checkout input preparation](foundation.md#prepare-the-tracked-selected-inputs)
 to stage the seven tracked files and fetch the interpreter archive and two native
 runtime addons from those pins. Ordinary builds do not require a new resolver report or private

@@ -73,6 +73,15 @@ Native ARM64 resolution and explicitly cross-resolved AMD64 metadata remain
 distinct from hardware/model qualification; the
 [refresh ledger](deploy/gb10/foundation-refresh-20261111.md) records their current scope.
 
+CPython 3.15.2 port status (2026-11-17): the AMD64 inputs come from a native
+3.15.2 resolver report, and the AMD64 `verification` and `runtime` targets built
+natively on a non-GB10 x86 host, passing every Dockerfile gate (selection,
+interpreter and add-on checks, owned pyyaml/xgrammar builds, seal, full audits,
+`pip check`, the installed TensorFold/xgrammar import). In-image CPU tests,
+native-provider proof and any GPU execution (Blackwell sm_121 included) are
+unrun. The ARM64 inputs await [native generation](deploy/gb10/foundation.md#first-arm64-generation-after-the-cpython-315-port)
+on GB10; the deployed ARM64 runtime `e0bdd6b4` and its qualification remain CPython 3.12.
+
 A fresh checkout can [stage the seven tracked inputs and acquire the pinned CPython 3.15.2 archive and two declared native addons](deploy/gb10/foundation.md#prepare-the-tracked-selected-inputs) without re-resolving dependencies or using private artifacts. Native ARM images and the [GB10 checkpoint protocols](docs/gb10-nvfp4-validation.md) passed at their recorded bd1 source; final composed-source qualification remains separate. Older deployment profiles and measured rates retain their own identities.
 
 The ARM64 runtime `e0bdd6b4`, source UID `1c166686`, passed installed CPU and

@@ -166,6 +166,35 @@ native selection. Earlier schema1 data is archived byte-for-byte under [history/
 evidence and a test oracle, not a deployment fallback.
 A cross-architecture resolver report does not qualify native execution.
 
+### First ARM64 generation after the CPython 3.15 port
+
+The ARM64 locks, constraints, manifest and report are not tracked yet: the 3.12
+ones were removed and must be regenerated natively. On the ARM64 builder, from a
+clean checkout, using only a temporary directory and the pinned interpreter:
+
+```bash
+set -euo pipefail
+TF_WORK="$(mktemp -d -t tensorfold-arm64-resolve.XXXXXXXX)"
+read -r TF_PY_NAME TF_PY_URL TF_PY_SHA < <(python3 -c 'import json
+i = json.load(open("deploy/gb10/nightly-pins.json"))["interpreter"]
+print(i["artifact"], i["url"], i["sha256"])')
+curl --fail --show-error --location --proto '=https' --proto-redir '=https' \
+  --output "$TF_WORK/$TF_PY_NAME" "$TF_PY_URL"
+printf '%s  %s\n' "$TF_PY_SHA" "$TF_WORK/$TF_PY_NAME" | sha256sum --check --strict
+mkdir "$TF_WORK/python" && tar -xzf "$TF_WORK/$TF_PY_NAME" -C "$TF_WORK/python"
+"$TF_WORK/python/python/bin/python3.15" -m venv "$TF_WORK/tools"
+grep '^packaging @' deploy/gb10/requirements-runtime-amd64.lock > "$TF_WORK/packaging.lock"
+"$TF_WORK/tools/bin/python" -m pip install --require-hashes --no-deps -r "$TF_WORK/packaging.lock"
+"$TF_WORK/tools/bin/python" deploy/gb10/resolve_dependencies.py --architecture arm64 \
+  --archive "$TF_WORK/$TF_PY_NAME" --constraints-manifest deploy/gb10/foundation-manifest-amd64.json \
+  --output deploy/gb10/resolver-arm64.json
+"$TF_WORK/tools/bin/python" deploy/gb10/lock_dependencies.py --architecture arm64 \
+  --report deploy/gb10/resolver-arm64.json
+```
+
+Commit the seven generated ARM64 files, then run the input preparation above with
+`TF_BUILD_ARCH=arm64` and the normal build commands.
+
 ### Interpreter and owned source builds
 
 Ubuntu 24.04 has no CPython 3.15. The image installs the pins'
