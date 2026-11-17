@@ -30,26 +30,35 @@ FROM source-builder AS resolver
 
 FROM resolver AS verification
 COPY deploy/v100/requirements-source-runtime-offline-amd64.lock /locks/requirements-source-runtime.lock
-RUN --network=none python3.12 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:${PATH}" \
+# The standalone runtime interpreter's sysconfig names clang; the pinned image toolchain is GCC13.
+ENV PATH="/opt/venv/bin:${PATH}" CC=gcc CXX=g++ \
     TF_NCCL_LIB=/opt/tensorfold-native/nccl-2.32.6/lib/libnccl.so.2 \
     TF_FOUNDATION_PROFILE=volta-sm70 \
-    TORCH_EXTENSIONS_DIR=/cache/volta-sm70-source-99bf9692d36690793571b64e0d564304429934d0514def01ec490ca28de62b10 \
+    TORCH_EXTENSIONS_DIR=/cache/volta-sm70-source-075735c11c7f2e023b56c442ce6e9245208ce037163adc5195945882d9d428d0 \
     TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
     TRITON_LIBDEVICE_PATH=/usr/local/cuda/nvvm/libdevice/libdevice.10.bc \
-    TRITON_CACHE_DIR=/cache/volta-sm70-source-99bf9692d36690793571b64e0d564304429934d0514def01ec490ca28de62b10/ebda922faa47bc942a19f5f9e5beec3548132ec89543eaba82921c9979130cd1/triton
+    TRITON_CACHE_DIR=/cache/volta-sm70-source-075735c11c7f2e023b56c442ce6e9245208ce037163adc5195945882d9d428d0/8a762413fb67f293c248cdefe3c4be4aea96fef876573cde44a04bd82be4d654/triton
 COPY --from=source_artifacts /native /opt/tensorfold-native
 COPY --from=source_artifacts /probes /opt/tensorfold-probes
 COPY --from=source_artifacts /build-inputs /opt/tensorfold-pins/build-inputs
 COPY --chmod=0444 deploy/v100/source-pins.json /opt/tensorfold-pins/source-pins.json
 COPY --chmod=0444 deploy/v100/source-runtime-amd64.json /opt/tensorfold-pins/source-runtime-amd64.json
 COPY --chmod=0444 deploy/v100/source_foundation.py /opt/tensorfold-pins/source_foundation.py
+RUN --network=none --mount=from=source_artifacts,source=/runtime-python,target=/runtime-python \
+    /opt/source-venv/bin/python /opt/tensorfold-pins/source_foundation.py install-runtime-python \
+       --pins /opt/tensorfold-pins/source-pins.json --archive /runtime-python/cpython-3.15.2+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz \
+       --target /opt/python3.15 \
+    && /opt/python3.15/bin/python3.15 -m venv /opt/venv
 RUN --network=none --mount=from=source_artifacts,source=/wheels,target=/source-wheels \
     --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \
     /opt/source-venv/bin/python /opt/tensorfold-pins/source_foundation.py verify-framework-wheel \
        --pins /opt/tensorfold-pins/source-pins.json \
        --build-receipt /opt/tensorfold-pins/build-inputs/source-build.json --wheel /source-wheels/torch-*.whl \
-    && python -m pip install --no-deps /source-wheels/torch-*.whl \
+    && /opt/source-venv/bin/python /opt/tensorfold-pins/source_foundation.py verify-owned-wheels \
+       --pins /opt/tensorfold-pins/source-pins.json \
+       --build-receipt /opt/tensorfold-pins/build-inputs/source-build.json --directory /source-wheels \
+    && python -m pip install --no-deps /source-wheels/torch-*.whl /source-wheels/pyyaml-*.whl \
+       /source-wheels/xgrammar-*.whl \
     && /opt/source-venv/bin/python -m pip --python /opt/venv install --no-cache-dir --no-index \
        --find-links=/python-wheels --require-hashes -r /locks/requirements-source-runtime.lock \
     && python -m pip check \
