@@ -3,6 +3,13 @@
 `tensorfold update` prints the sections below that are newer than the version you had. Each release's page on
 GitHub has the full notes and the measurements behind them.
 
+## Unreleased
+
+- **CPython 3.15.2 and MLX 0.32.4.** TensorFold now requires Python 3.15. On macOS it requires MLX 0.32.4, the first
+  release with CPython 3.15 wheels; `--ssd-experts` builds with nanobind 3.1.0. MLX 0.32.4 has not been tested on a
+  Mac yet: the MLX tests and the golden and bit-exactness checks still need to run there, and the bit-exact claims in
+  the notes below were measured on MLX 0.32.2/0.32.3 and are unverified on 0.32.4.
+
 ## 0.6.6 (6 Oct 2026)
 
 - **`--name-priority ID=background` on the CUDA server.** A request that names that served id (`--name` or an

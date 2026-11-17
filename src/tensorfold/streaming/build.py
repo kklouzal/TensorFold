@@ -12,7 +12,7 @@ from typing import Any
 
 SOURCE = Path(__file__).resolve().parent / "hostsync"
 # each MLX's own nanobind (the GIT_TAG in its CMakeLists): another version cannot take mlx.core.array
-NANOBIND = {"0.32.2": "2.15.0", "0.32.3": "3.0.1"}
+NANOBIND = {"0.32.4": "3.1.0"}
 
 
 def nanobind_for_mlx() -> str:

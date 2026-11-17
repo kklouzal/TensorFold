@@ -1033,7 +1033,7 @@
       "version": "0.9.4"
     }
   },
-  "resolver_report_sha256": "f4b16696a9a6c47e314f8212e757fd043cfb4662eed09b7c77d891b40cf178ce",
+  "resolver_report_sha256": "d62040f8c80d56e7fb6f4bfc34f6692dbc90732f853ff8e73826d8cb220a7f97",
   "schema": "tensorfold.v100-source-runtime",
   "source_distributions": {
     "pyyaml": {
@@ -1049,7 +1049,7 @@
         "tui"
       ],
       "requires_dist": [
-        "mlx<0.32.4,>=0.32.2; sys_platform == \"darwin\"",
+        "mlx<0.32.5,>=0.32.4; sys_platform == \"darwin\"",
         "mlx-lm<0.33,>=0.31.3; sys_platform == \"darwin\"",
         "numpy>=1.26",
         "huggingface-hub>=0.24",
@@ -1060,7 +1060,7 @@
         "prompt-toolkit<4,>=3.0.51; extra == \"tui\"",
         "pytest>=8; extra == \"test\"",
         "cmake>=3.27; sys_platform == \"darwin\" and extra == \"ssd\"",
-        "nanobind==3.0.1; sys_platform == \"darwin\" and extra == \"ssd\"",
+        "nanobind==3.1.0; sys_platform == \"darwin\" and extra == \"ssd\"",
         "Pillow>=10; extra == \"vision\"",
         "transformers<6,>=5.3; extra == \"vision\"",
         "mlx-vlm<0.8,>=0.7.3; sys_platform == \"darwin\" and extra == \"vision\"",

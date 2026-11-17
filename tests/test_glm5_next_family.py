@@ -75,7 +75,7 @@ def test_check_reads_json_only_and_names_the_mlx_it_needs(tmp_path, monkeypatch)
     assert out.stdout.strip().splitlines()[-1] == "False"
     monkeypatch.setattr(metadata, "version", lambda name: "0.32.0")
     monkeypatch.setattr(sys, "platform", "darwin")
-    with pytest.raises(ValueError, match="mlx>=0.32.2"):
+    with pytest.raises(ValueError, match="mlx>=0.32.4"):
         glm5_next.check(tmp_path)
 
 

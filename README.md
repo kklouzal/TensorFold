@@ -38,7 +38,7 @@ immediate delivery priority; see [Development governance](#development-governanc
 
 | Target | Runtime and scope |
 | --- | --- |
-| Apple Silicon/macOS | MLX backend; CPython 3.15. Package requirements currently constrain MLX to `>=0.32.2,<0.32.4` and mlx-lm to `>=0.31.3,<0.33`; MLX 0.32.2 and 0.32.3 publish no cp315 wheels (0.32.4 is the first), so a 3.15 MLX installation is pending that pin. |
+| Apple Silicon/macOS | MLX backend; CPython 3.15 with MLX `>=0.32.4,<0.32.5` (0.32.4 is the first release with cp315 wheels) and mlx-lm `>=0.31.3,<0.33`. MLX 0.32.4 is untested on a Mac: the MLX tests and the golden and bit-exactness checks still need to run there, and bit-exact claims measured on 0.32.2/0.32.3 are unverified on 0.32.4. |
 | Linux/NVIDIA AMD64 | Native AMD64 container and CUDA backend. The separate-VRAM trials used an RTX PRO 2000 Blackwell with 16 GB VRAM and 64 GB system RAM. |
 | Linux/NVIDIA ARM64 | Native ARM64 container and CUDA backend; the GB10 deployments use DGX Spark/GB10 unified memory. |
 | Linux/NVIDIA V100 (SM70), AMD64 | Separate source-built CUDA 12.x/SM70 stack through the [V100 source-foundation workflow](deploy/v100/source-foundation.md); CUDA13 official wheels do not provide V100 qualification. See [V100 status](#v100-sm70-adaptive-development-status). |

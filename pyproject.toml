@@ -23,8 +23,9 @@ classifiers = [
 ]
 # mlx-lm stays below its next minor (TensorFold builds on its models); CUDA uses the container's torch and triton.
 dependencies = [
-  # the prompt kernels and SSD streaming are tested on MLX 0.32.2 and 0.32.3 (#88)
-  "mlx>=0.32.2,<0.32.4; sys_platform == 'darwin'",
+  # MLX 0.32.4 is the first release with CPython 3.15 wheels; it is not yet tested on a Mac (the prompt
+  # kernels and SSD streaming were tested on 0.32.2 and 0.32.3, #88)
+  "mlx>=0.32.4,<0.32.5; sys_platform == 'darwin'",
   "mlx-lm>=0.31.3,<0.33; sys_platform == 'darwin'",
   "numpy>=1.26",
   "huggingface-hub>=0.24",
@@ -36,8 +37,8 @@ dependencies = [
 [project.optional-dependencies]
 tui = ["rich>=14,<16", "prompt-toolkit>=3.0.51,<4"]
 test = ["pytest>=8"]
-# --ssd-experts builds a small MLX extension on first use with MLX's own nanobind (MLX 0.32.2 takes 2.15.0)
-ssd = ["cmake>=3.27; sys_platform == 'darwin'", "nanobind==3.0.1; sys_platform == 'darwin'"]
+# --ssd-experts builds a small MLX extension on first use with MLX's own nanobind (MLX 0.32.4 takes 3.1.0)
+ssd = ["cmake>=3.27; sys_platform == 'darwin'", "nanobind==3.1.0; sys_platform == 'darwin'"]
 vision = ["Pillow>=10", "transformers>=5.3,<6", "mlx-vlm>=0.7.3,<0.8; sys_platform == 'darwin'",
           "av>=12; sys_platform != 'darwin'"]
 # response_format, guided_* and structured_outputs on every server: grammar-shaped replies (xgrammar brings torch)

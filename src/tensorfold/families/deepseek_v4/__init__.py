@@ -20,7 +20,7 @@ KERNEL_DEPENDENCIES = ("tensorfold.kernels.qdot", "tensorfold.kernels.glm.flash.
 QUANT_METHODS = {"mlx": ("mlx",)}
 # buffers of 200 ops and 200 MB, so a prompt chunk's memory frees as it runs; no TF32: row kernels repeat fp32
 MLX_ENV = {"MLX_MAX_OPS_PER_BUFFER": "200", "MLX_MAX_MB_PER_BUFFER": "200", "MLX_ENABLE_TF32": "0"}
-LEAST_MLX = (0, 32, 2)
+LEAST_MLX = (0, 32, 4)
 
 
 def check(model_dir: str | Path) -> None:

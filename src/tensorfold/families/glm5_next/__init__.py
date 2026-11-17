@@ -62,7 +62,7 @@ def check(model_dir: str | Path) -> None:
     if sys.platform == "darwin":
         from tensorfold.families.glm5_next.config import quant_formats, unreadable
 
-        _require_mlx((0, 32, 2))
+        _require_mlx((0, 32, 4))
         from tensorfold.families.glm5_next.layouts import canonical
 
         text = config.get("text_config") or config
