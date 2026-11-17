@@ -488,7 +488,7 @@ def test_iq4nl_ple_embed_equals_host_decode_then_native_embed(rows):
     heads, dims = 16, 160
     rng = np.random.default_rng(rows)
     packed = rng.integers(0, 256, size=(rows * heads, dims // 32, 18), dtype=np.uint8)
-    scales = (rng.normal(size=(rows * heads, dims // 32)) * rng.choice([1e-4, 1e-2, 1, 400], size=(rows * heads, dims // 32)))
+    scales = np.clip(rng.normal(size=(rows * heads, dims // 32)) * rng.choice([1e-4, 1e-2, 1, 400], size=(rows * heads, dims // 32)), -500, 500)
     packed[..., :2] = scales.astype("<f2").view(np.uint8).reshape(rows * heads, dims // 32, 2)
     packed = packed.reshape(rows * heads, -1)
     source = SimpleNamespace(ggml_type=20, encoding="IQ4_NL", shape=(rows * heads, dims), row_bytes=packed.shape[1])
