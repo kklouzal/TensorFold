@@ -36,11 +36,28 @@ tf_capture_sources() {
 case ${1:-} in
 lint-prepare)
     if [[ ! -x "$tf_lint_prefix/bin/python" ]]; then
-        python3.12 -m venv --without-pip "$tf_lint_prefix"
+        "$tf_runtime_python_prefix/bin/python$tf_runtime_python_minor" -m venv --without-pip "$tf_lint_prefix"
     fi
     /opt/source-venv/bin/python -m pip --python "$tf_lint_prefix" install --no-index \
         --find-links "$tf_state/release/lint-wheels" --require-hashes \
         -r "$tf_project/deploy/v100/requirements-source-lint-offline-amd64.lock"
+    # PyYAML 6.0.3 has no cp315 wheel: build its verified sdist offline with the locked
+    # build tools in a disposable environment, then install that wheel into the lint venv.
+    python "$tf_project/deploy/v100/source_foundation.py" verify-owned-sources \
+        --pins "$tf_project/deploy/v100/source-pins.json" --release "$tf_state/release" \
+        --patches "$tf_project/deploy/v100/framework-patches"
+    eval "$(python "$tf_project/deploy/v100/source_foundation.py" owned-build-configuration \
+        --pins "$tf_project/deploy/v100/source-pins.json")"
+    tf_lint_yaml="$tf_state/build/lint-pyyaml"
+    rm -rf "$tf_lint_yaml" && "$tf_runtime_python_prefix/bin/python$tf_runtime_python_minor" -m venv "$tf_lint_yaml/venv"
+    grep -E '^(setuptools|cython)==' "$tf_project/deploy/v100/requirements-source-build-offline-amd64.lock" \
+        > "$tf_lint_yaml/build-tools.lock"
+    "$tf_lint_yaml/venv/bin/python" -m pip install --no-index --find-links "$tf_state/release/python-wheels" \
+        --require-hashes -r "$tf_lint_yaml/build-tools.lock"
+    SOURCE_DATE_EPOCH=$tf_owned_source_date_epoch "$tf_lint_yaml/venv/bin/python" -m pip wheel --no-deps \
+        --no-build-isolation --no-index --no-cache-dir --wheel-dir "$tf_lint_yaml/wheel" \
+        "$tf_state/release/source-archives/$tf_pyyaml_artifact"
+    /opt/source-venv/bin/python -m pip --python "$tf_lint_prefix" install --no-index --no-deps "$tf_lint_yaml/wheel/"pyyaml-*.whl
     python "$tf_project/deploy/v100/source_foundation.py" render-lint-python-registry \
         --pins "$tf_project/deploy/v100/source-pins.json" --output "$UV_PYTHON_DOWNLOADS_JSON_URL"
     "$tf_lint_prefix/bin/uv" python install "$tf_lint_python_version"
@@ -66,8 +83,7 @@ finalize)
         --receipts "$tf_state/receipts" --lint-tool "$tf_lint_prefix/bin/spin"
     ;;
 prepare|prepare-bootstrap)
-    # The selected runtime interpreter builds the framework and owned wheels. Its
-    # prefix must persist across phases (mount it like the native prefix).
+    # The builder image installs the selected runtime interpreter; prove it is unchanged.
     python "$tf_project/deploy/v100/source_foundation.py" install-runtime-python \
         --pins "$tf_project/deploy/v100/source-pins.json" \
         --archive "$tf_state/release/runtime-python/$tf_runtime_python_artifact" --target "$tf_runtime_python_prefix"

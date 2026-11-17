@@ -16,8 +16,15 @@ RUN --network=none --mount=from=source_artifacts,source=/build-debs,target=/debs
          --yes --no-install-recommends install \
     && sh /opt/tensorfold-pins/foundation_sdk.sh check /opt/tensorfold-pins /opt/tensorfold-pins/foundation-sdk-pattern.txt
 COPY deploy/v100/requirements-source-bootstrap-offline-amd64.lock /opt/source-bootstrap.lock
-RUN --network=none --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \
-    python3.12 -m venv /opt/source-venv \
+# The selected CPython 3.15.2 archive (verified here by its pinned SHA256) is installed unchanged at its
+# prefix; it serves the producer tools and, through /opt/venv, the framework/runtime.
+RUN --network=none --mount=from=source_artifacts,source=/runtime-python,target=/runtime-python \
+    --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \
+    cd /runtime-python && echo "ad23d1b73fac26440b0306ae06911031344c49a90ec19716c8362e7fa40cae43  cpython-3.15.2+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" | sha256sum --strict --check \
+    && mkdir /opt/python3.15 \
+    && tar -xzf "cpython-3.15.2+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -C /opt/python3.15 --strip-components=1 --no-same-owner \
+    && chmod -R go-w /opt/python3.15 \
+    && /opt/python3.15/bin/python3.15 -m venv /opt/source-venv \
     && /opt/source-venv/bin/python -m pip install --no-cache-dir --no-index --find-links=/python-wheels \
        --require-hashes -r /opt/source-bootstrap.lock
 ENV PATH="/opt/source-venv/bin:${PATH}" CUDA_HOME=/usr/local/cuda \
@@ -34,10 +41,10 @@ COPY deploy/v100/requirements-source-runtime-offline-amd64.lock /locks/requireme
 ENV PATH="/opt/venv/bin:${PATH}" CC=gcc CXX=g++ \
     TF_NCCL_LIB=/opt/tensorfold-native/nccl-2.32.6/lib/libnccl.so.2 \
     TF_FOUNDATION_PROFILE=volta-sm70 \
-    TORCH_EXTENSIONS_DIR=/cache/volta-sm70-source-075735c11c7f2e023b56c442ce6e9245208ce037163adc5195945882d9d428d0 \
+    TORCH_EXTENSIONS_DIR=/cache/volta-sm70-source-57faae4a14a19b474912e5aacbab449c93632f8a61e51a0543845cc783127760 \
     TRITON_PTXAS_PATH=/usr/local/cuda/bin/ptxas \
     TRITON_LIBDEVICE_PATH=/usr/local/cuda/nvvm/libdevice/libdevice.10.bc \
-    TRITON_CACHE_DIR=/cache/volta-sm70-source-075735c11c7f2e023b56c442ce6e9245208ce037163adc5195945882d9d428d0/8a762413fb67f293c248cdefe3c4be4aea96fef876573cde44a04bd82be4d654/triton
+    TRITON_CACHE_DIR=/cache/volta-sm70-source-57faae4a14a19b474912e5aacbab449c93632f8a61e51a0543845cc783127760/8a762413fb67f293c248cdefe3c4be4aea96fef876573cde44a04bd82be4d654/triton
 COPY --from=source_artifacts /native /opt/tensorfold-native
 COPY --from=source_artifacts /probes /opt/tensorfold-probes
 COPY --from=source_artifacts /build-inputs /opt/tensorfold-pins/build-inputs

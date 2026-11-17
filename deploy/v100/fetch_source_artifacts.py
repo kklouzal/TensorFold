@@ -177,7 +177,7 @@ def load_plan(directory):
         if any(environment.get(k) != v for k, v in {
                 'sys_platform': 'linux', 'platform_machine': 'x86_64',
                 'implementation_name': 'cpython',
-                'python_version': '3.12' if stem == 'lint' else '3.15'}.items()):
+                'python_version': '3.15'}.items()):
             raise ValueError('wrong Python receipt target')
         packages = doc['packages']
         if type(packages) is not dict or not 0 < len(packages) <= MAX_ARTIFACTS:

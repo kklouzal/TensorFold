@@ -16,8 +16,15 @@ RUN --network=none --mount=from=source_artifacts,source=/build-debs,target=/debs
          --yes --no-install-recommends install \
     && sh /opt/tensorfold-pins/foundation_sdk.sh check /opt/tensorfold-pins /opt/tensorfold-pins/foundation-sdk-pattern.txt
 COPY deploy/v100/requirements-source-bootstrap-offline-amd64.lock /opt/source-bootstrap.lock
-RUN --network=none --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \
-    python3.12 -m venv /opt/source-venv \
+# The selected CPython 3.15.2 archive (verified here by its pinned SHA256) is installed unchanged at its
+# prefix; it serves the producer tools and, through /opt/venv, the framework/runtime.
+RUN --network=none --mount=from=source_artifacts,source=/runtime-python,target=/runtime-python \
+    --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \
+    cd /runtime-python && echo "ad23d1b73fac26440b0306ae06911031344c49a90ec19716c8362e7fa40cae43  cpython-3.15.2+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" | sha256sum --strict --check \
+    && mkdir /opt/python3.15 \
+    && tar -xzf "cpython-3.15.2+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" -C /opt/python3.15 --strip-components=1 --no-same-owner \
+    && chmod -R go-w /opt/python3.15 \
+    && /opt/python3.15/bin/python3.15 -m venv /opt/source-venv \
     && /opt/source-venv/bin/python -m pip install --no-cache-dir --no-index --find-links=/python-wheels \
        --require-hashes -r /opt/source-bootstrap.lock
 ENV PATH="/opt/source-venv/bin:${PATH}" CUDA_HOME=/usr/local/cuda \

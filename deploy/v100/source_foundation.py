@@ -259,6 +259,11 @@ def install_runtime_python(pins, archive, target):
 OWNED_PYTHON_BUILDS = ("pyyaml", "xgrammar", "triton")
 
 
+def owned_names(pins):
+    """Distributions that may only come from their owned CPython 3.15 builds."""
+    return set(OWNED_PYTHON_BUILDS) if pins is None else set(owned_python_builds(pins))
+
+
 def owned_python_builds(pins):
     """Validate the owned source builds that have no usable cp315 PyPI wheel."""
     builds = pins["owned_python_builds"]
@@ -363,9 +368,9 @@ def render_build_report(report, report_sha256, *, runtime=False, lint=False, lin
     # Triton's owned build enters through the runtime profile; the base closure
     # keeps the official Triton3.9 wheel. pyyaml/xgrammar have no cp315 wheels.
     owned = set(owned_python_builds(pins)) - {"triton"} if framework else set()
-    # Framework, runtime and the UV-managed lint-script interpreter are CPython 3.15;
-    # the builder's host lint venv and the separate media image keep CPython 3.12.
-    python_version = "3.15" if framework or lint_script else "3.12"
+    # Framework, runtime, the builder lint venv and the UV-managed lint-script interpreter are
+    # CPython 3.15; the separate media image's closures keep CPython 3.12 until that image is ported.
+    python_version = "3.12" if media_build or media_runtime else "3.15"
     environment = report.get("environment", {})
     if any(environment.get(key) != value for key, value in {
         "sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython",
@@ -423,7 +428,8 @@ def render_build_report(report, report_sha256, *, runtime=False, lint=False, lin
                           "requires_dist": metadata.get("requires_dist", [])}
     required = ({"setuptools", "wheel", "cython", "meson", "ninja", "numpy", "packaging", "pip"} if media_build else
                 {"pillow"} if media_runtime else
-                {"spin", "uv", "packaging", "pyyaml", "typing-extensions"} if lint else {"cmakelint", "lintrunner"} if lint_script else
+                # PyYAML has no cp315 wheel: lint-prepare installs the owned sdist build.
+                {"spin", "uv", "packaging", "typing-extensions"} if lint else {"cmakelint", "lintrunner"} if lint_script else
                 {"cmake", "ninja", "numpy", "setuptools", "packaging", "pip", "typing-extensions",
                  "huggingface-hub", "tokenizers", "safetensors", "pytest", "ruff", "triton"}
                 if runtime else
@@ -433,7 +439,7 @@ def render_build_report(report, report_sha256, *, runtime=False, lint=False, lin
                  "six", "typing-extensions", "cython", "setuptools-scm", "apache-tvm-ffi", "pybind11", "wheel"})
     if not required <= selected.keys():
         raise ValueError("source-build report omitted required framework build tools")
-    if framework and owned & selected.keys():
+    if (framework or lint) and owned_names(pins) & selected.keys():
         raise ValueError("owned source builds cannot also come from an official wheel")
     if runtime and set(sources) != {"torch", "tensorfold", "pyyaml", "xgrammar"}:
         raise ValueError("source runtime report must resolve the owned source distributions and their full closure")
@@ -936,8 +942,15 @@ RUN --network=none --mount=from=source_artifacts,source=/build-debs,target=/debs
          --yes --no-install-recommends install \\
     && sh /opt/tensorfold-pins/foundation_sdk.sh check /opt/tensorfold-pins /opt/tensorfold-pins/foundation-sdk-pattern.txt
 COPY deploy/v100/requirements-source-bootstrap-offline-amd64.lock /opt/source-bootstrap.lock
-RUN --network=none --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \\
-    python3.12 -m venv /opt/source-venv \\
+# The selected CPython 3.15.2 archive (verified here by its pinned SHA256) is installed unchanged at its
+# prefix; it serves the producer tools and, through /opt/venv, the framework/runtime.
+RUN --network=none --mount=from=source_artifacts,source=/runtime-python,target=/runtime-python \\
+    --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \\
+    cd /runtime-python && echo "{pins["runtime_python"]["sha256"]}  {interpreter["artifact"]}" | sha256sum --strict --check \\
+    && mkdir {interpreter["prefix"]} \\
+    && tar -xzf "{interpreter["artifact"]}" -C {interpreter["prefix"]} --strip-components=1 --no-same-owner \\
+    && chmod -R go-w {interpreter["prefix"]} \\
+    && {interpreter["executable"]} -m venv /opt/source-venv \\
     && /opt/source-venv/bin/python -m pip install --no-cache-dir --no-index --find-links=/python-wheels \\
        --require-hashes -r /opt/source-bootstrap.lock
 ENV PATH="/opt/source-venv/bin:${{PATH}}" CUDA_HOME=/usr/local/cuda \\

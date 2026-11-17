@@ -127,10 +127,11 @@ uses Spin 0.18, UV 0.11.15, lintrunner 0.12.7, cmakelint 1.4.1 and the pinned ho
 codegen prerequisites. The supported `spin quicklint -- -a <paths>` dispatches
 actual `lintrunner -a` on the uncommitted patch before a fork commit. Its managed
 Python 3.10.20 interpreter (20260510 build) has separate URL/bytes/SHA256 pins.
-The framework and runtime use the selected CPython 3.15.2 standalone interpreter
-(see [the 3.15 runtime notes](python315-runtime.md)); the builder's own host tools
-(`/opt/source-venv`, the Spin lint venv) and the separate media image keep Ubuntu's
-Python 3.12. The recorded SDK build used a narrow
+The builder installs the selected CPython 3.15.2 standalone archive unchanged at
+`/opt/python3.15` (see [the 3.15 runtime notes](python315-runtime.md)); its producer
+venv (`/opt/source-venv`), the Spin lint venv, the framework build and the runtime
+`/opt/venv` all use it, and the bundle no longer carries Ubuntu's Python 3.12. The
+separate media image is not yet ported and keeps its CPython 3.12 closures. The recorded SDK build used a narrow
 immutable release-wheel exception while retaining the lint, detached-HEAD,
 Test Plan and publication rules. That historical record does not establish or
 revoke the scope of authorization for a fresh build. The owner has now directly
@@ -147,7 +148,8 @@ the archive in the release bundle does not make UV install it offline; the
 maintained workflow does not directly unpack it into UV internals. The source
 image's offline APT/wheel construction remains separately enforced.
 
-The refreshed builder installs 191 exact Debian artifacts from its recorded bundle,
+The builder installs 181 exact Debian artifacts from its recorded bundle (the ten
+Ubuntu Python 3.12 packages, a leaf cluster with no other dependents, were removed),
 including cuDNN, Nsight Systems and their Ubuntu 24.04 dependencies. The base
 image owns its other packages. [source-apt-amd64.json](source-apt-amd64.json)
 records each added artifact's version, origin, bytes and SHA256; its companion
@@ -340,9 +342,8 @@ system or older Ninja is allowed. An independent real-binary interruption gate
 and complete framework build remain required; identity checks alone do not
 prove either execution result.
 
-Regenerate the build-tool, runtime and lint-script closures from actual native
-AMD64/CPython 3.15 resolver reports, and the builder lint venv closure from a
-CPython 3.12 report, with all other exact pins retained (`render-build-tools`
+Regenerate the build-tool, runtime, lint and lint-script closures from actual
+native AMD64/CPython 3.15 resolver reports, with all other exact pins retained (`render-build-tools`
 and `render-runtime` take `--pins`). The rest of this paragraph records the
 historical CPython 3.12 Ninja-only update. `render-build-tools --constraints`
 also emits the media build constraints from the same report. Bootstrap locks
