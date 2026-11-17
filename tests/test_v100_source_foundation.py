@@ -349,7 +349,8 @@ def test_native_report_regeneration_changes_only_ninja_and_retains_bootstrap(tmp
 def runtime_report():
     data = report()
     names = {row["metadata"]["name"] for row in data["install"]}
-    for name in ("huggingface-hub", "tokenizers", "safetensors", "pytest", "ruff", "xgrammar", "triton"):
+    # pyyaml/xgrammar are owned cp315 builds, appended below as local wheels.
+    for name in ("huggingface-hub", "tokenizers", "safetensors", "pytest", "ruff", "triton"):
         if name not in names:
             version = "3.9.0" if name == "triton" else "1.0"
             data["install"].append({"metadata": {"name": name, "version": version}, "download_info": {
@@ -414,9 +415,10 @@ def test_build_tools_cannot_take_an_owned_package_from_an_official_wheel():
 @pytest.mark.parametrize("change", ["missing-source", "wrong-source-version", "remote-source", "editable-source"])
 def test_runtime_report_requires_actual_declared_owned_source_metadata(change):
     data, pins = runtime_report()
-    source = data["install"][-2]
+    rows = {row["metadata"]["name"]: row for row in data["install"]}
+    source = rows["torch"]
     if change == "missing-source":
-        data["install"].pop()
+        data["install"].remove(rows["tensorfold"])
     elif change == "wrong-source-version":
         source["metadata"]["version"] = "2.16.0+cu134"
     elif change == "remote-source":
