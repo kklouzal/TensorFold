@@ -32,7 +32,7 @@ from tensorfold.cleanup import raise_failures  # noqa: E402
 DOCUMENT_LIMIT = 16 << 20
 CHUNK = 1 << 20
 MAX_ARTIFACTS = 512
-FOLDERS = {'build-debs', 'python-wheels', 'lint-wheels', 'lint-python'}
+FOLDERS = {'build-debs', 'python-wheels', 'lint-wheels', 'lint-python', 'runtime-python', 'source-archives'}
 
 
 def sha(value):
@@ -166,7 +166,7 @@ def load_plan(directory):
         if stem == 'runtime' and doc['version'] == 2:
             fields |= {'source_distributions', 'triton_execution'}
             sources = doc.get('source_distributions', {})
-            if (set(sources) != {'torch', 'tensorfold'}
+            if (set(sources) != {'torch', 'tensorfold', 'pyyaml', 'xgrammar'}
                     or sources['torch'].get('source_commit') != pins['sources']['pytorch'].get(
                         'effective_commit', pins['sources']['pytorch']['commit'])
                     or doc.get('triton_execution') != 'SM70 FP32 moe_partial ordered-FMA; protected CUDA12 tools; other kernels unqualified'):
@@ -176,7 +176,8 @@ def load_plan(directory):
         environment = doc['environment']
         if any(environment.get(k) != v for k, v in {
                 'sys_platform': 'linux', 'platform_machine': 'x86_64',
-                'implementation_name': 'cpython', 'python_version': '3.11' if stem == 'lint-script' else '3.12'}.items()):
+                'implementation_name': 'cpython',
+                'python_version': '3.12' if stem == 'lint' else '3.15'}.items()):
             raise ValueError('wrong Python receipt target')
         packages = doc['packages']
         if type(packages) is not dict or not 0 < len(packages) <= MAX_ARTIFACTS:
@@ -201,7 +202,7 @@ def load_plan(directory):
     lint = pins['lint_python']
     if (set(lint) != {'version', 'build', 'url', 'bytes', 'sha256'}
             or type(lint['version']) is not str or type(lint['build']) is not str
-            or re.fullmatch(r'3\.(?:10|11)\.[0-9]+', lint['version']) is None
+            or re.fullmatch(r'3\.15\.[0-9]+', lint['version']) is None
             or re.fullmatch(r'[0-9]{8}', lint['build']) is None):
         raise ValueError('unexpected lint interpreter identity')
     expected_lint_url = ('https://github.com/astral-sh/python-build-standalone/releases/download/'
@@ -211,6 +212,20 @@ def load_plan(directory):
         raise ValueError('lint interpreter must use its selected official version/build artifact')
     items.append(dict(folder='lint-python', name=urlsplit(lint['url']).path.rsplit('/', 1)[-1],
                       url=lint['url'], sha256=lint['sha256'], bytes=positive(lint['bytes'])))
+    runtime = pins['runtime_python']
+    expected_runtime_url = ('https://github.com/astral-sh/python-build-standalone/releases/download/'
+        + runtime['build'] + '/cpython-' + runtime['version'] + '%2B' + runtime['build']
+        + '-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz')
+    if (re.fullmatch(r'3\.15\.[0-9]+', runtime['version']) is None or runtime['url'] != expected_runtime_url):
+        raise ValueError('runtime interpreter must use its selected official version/build artifact')
+    # The stager saves the decoded basename; the producer expects the same name.
+    items.append(dict(folder='runtime-python', name=unquote(urlsplit(runtime['url']).path.rsplit('/', 1)[-1]),
+                      url=runtime['url'], sha256=runtime['sha256'], bytes=positive(runtime['bytes'])))
+    for name, build in sorted(pins['owned_python_builds'].items()):
+        rows = [build] + ([build['llvm']] if name == 'triton' else [])
+        for row in rows:
+            items.append(dict(folder='source-archives', name=safe_name(row['artifact']), url=row['url'],
+                              sha256=row['sha256'], bytes=positive(row['bytes'])))
     return validate_plan(items), inputs
 
 

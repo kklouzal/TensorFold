@@ -24,6 +24,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -170,12 +171,201 @@ def effective_commit(source):
     return source.get("effective_commit", source["commit"])
 
 
+PBS_RELEASES = "https://github.com/astral-sh/python-build-standalone/releases/download/"
+
+
+def runtime_python(pins):
+    """The selected framework/runtime interpreter: one pinned standalone archive.
+
+    Host producer tools keep their own interpreters; this one builds the
+    framework and owned wheels and becomes the image's /opt/venv base, installed
+    unchanged at its fixed prefix (bytes the runtime payload proofs bind).
+    """
+    selected = pins["runtime_python"]
+    version = Version(selected["version"])
+    if (set(selected) != {"version", "build", "url", "bytes", "sha256", "prefix"} or len(version.release) != 3
+            or version.release[:2] != (3, 15) or version.pre is not None or version.post is not None
+            or version.dev is not None or version.local is not None
+            or not re.fullmatch(r"[0-9]{8}", selected["build"]) or expected_identity(selected)["bytes"] == 0
+            or selected["prefix"] != "/opt/python3.15"):
+        raise ValueError("runtime Python requires its selected stable CPython 3.15 standalone build")
+    artifact = ("cpython-" + selected["version"] + "%2B" + selected["build"]
+                + "-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz")
+    if selected["url"] != PBS_RELEASES + selected["build"] + "/" + artifact:
+        raise ValueError("runtime Python must use the exact selected official standalone artifact")
+    return {"version": selected["version"], "python_version": "3.15", "abi": "cp315",
+            "artifact": artifact.replace("%2B", "+"), "prefix": selected["prefix"],
+            "executable": selected["prefix"] + "/bin/python3.15",
+            "site_packages": "/opt/venv/lib/python3.15/site-packages"}
+
+
+def install_runtime_python(pins, archive, target):
+    """Install the verified archive unchanged at its prefix, or prove an existing copy.
+
+    The archive's single top-level ``python/`` tree maps onto the prefix. An
+    existing prefix must hold every archive member byte-for-byte; the only
+    admitted additions are bytecode caches the interpreter writes itself.
+    """
+    selected = runtime_python(pins)
+    if archive.name != selected["artifact"] or file_identity(archive) != expected_identity(pins["runtime_python"]):
+        raise ValueError("runtime Python archive differs from its selected pin")
+    if str(target) != selected["prefix"]:
+        raise ValueError("runtime Python must be installed at its selected prefix")
+    with tarfile.open(archive, "r:gz") as bundle:
+        members = bundle.getmembers()
+        if not members or len(members) > 100000 or any(
+                not (member.name == "python" or member.name.startswith("python/")) for member in members):
+            raise ValueError("runtime Python archive must contain one bounded python/ tree")
+        for member in members:
+            member.name = member.name[len("python/"):] if member.name != "python" else "."
+        target.mkdir(parents=True, exist_ok=True)
+        if not any(target.iterdir()):
+            bundle.extractall(target, members=members, filter="data")
+        expected = {}
+        for member in members:
+            if member.isfile():
+                with bundle.extractfile(member) as stream:
+                    # The tarfile "data" filter drops group/other write bits.
+                    expected[member.name] = ("file", hashlib.sha256(stream.read()).hexdigest(), member.mode & 0o755)
+            elif member.issym():
+                expected[member.name] = ("link", member.linkname)
+            elif member.isdir():
+                expected[member.name] = ("dir",)
+            else:
+                raise ValueError("runtime Python archive contains a special file")
+    for name, kind in expected.items():
+        path = target / name
+        if "__pycache__" in Path(name).parts:
+            continue  # Bytecode caches are derived data the interpreter may rewrite.
+        if kind[0] == "file":
+            if (path.is_symlink() or not path.is_file() or file_identity(path)["sha256"] != kind[1]
+                    or path.stat().st_mode & 0o777 != kind[2]):
+                raise ValueError("installed runtime Python differs from its archive: " + name)
+        elif kind[0] == "link":
+            if not path.is_symlink() or os.readlink(path) != kind[1]:
+                raise ValueError("installed runtime Python link differs from its archive: " + name)
+        elif not path.is_dir() or path.is_symlink():
+            raise ValueError("installed runtime Python directory differs from its archive: " + name)
+    for path in target.rglob("*"):
+        relative = path.relative_to(target).as_posix()
+        # Archive parents may be implicit; only files/links must be declared members.
+        if (relative not in expected and "__pycache__" not in path.relative_to(target).parts
+                and (path.is_symlink() or not path.is_dir())):
+            raise ValueError("installed runtime Python has an undeclared file: " + relative)
+    return {"archive": {"artifact": archive.name, **expected_identity(pins["runtime_python"])},
+            "prefix": str(target), "members": len(expected)}
+
+
+OWNED_PYTHON_BUILDS = ("pyyaml", "xgrammar", "triton")
+
+
+def owned_python_builds(pins):
+    """Validate the owned source builds that have no usable cp315 PyPI wheel."""
+    builds = pins["owned_python_builds"]
+    if set(builds) != set(OWNED_PYTHON_BUILDS):
+        raise ValueError("owned Python builds must be exactly the selected pyyaml/xgrammar/triton sources")
+    for name, row in builds.items():
+        expected_identity(row)
+        parsed = urlsplit(row["url"])
+        host = "github.com" if name == "triton" else "files.pythonhosted.org"
+        if (parsed.scheme != "https" or parsed.hostname != host or parsed.query or parsed.fragment
+                or Path(parsed.path).name != (("v" + row["version"] + ".tar.gz") if name == "triton" else row["artifact"])
+                or row["artifact"] != name + "-" + row["version"] + ".tar.gz" or not row.get("reason")):
+            raise ValueError("owned Python build needs its exact official source archive: " + name)
+    triton = builds["triton"]
+    if (triton["version"] != "3.2.0" or len(triton["owned_patches"]) != 1
+            or urlsplit(triton["llvm"]["url"]).hostname != "oaitriton.blob.core.windows.net"):
+        raise ValueError("owned Triton build requires its selected 3.2.0 source, patch and LLVM")
+    expected_identity(triton["llvm"])
+    for patch in triton["owned_patches"]:
+        expected_identity(patch)
+    return builds
+
+
+def owned_source_artifacts(pins, patch_directory):
+    """Every owned-build input with its staged location relative to the release bundle."""
+    rows = []
+    for name, row in owned_python_builds(pins).items():
+        rows.append(("source-archives/" + row["artifact"], row))
+    llvm = pins["owned_python_builds"]["triton"]["llvm"]
+    rows.append(("source-archives/" + llvm["artifact"], llvm))
+    for patch in pins["owned_python_builds"]["triton"]["owned_patches"]:
+        rows.append((str(patch_directory / patch["artifact"]), patch))
+    return rows
+
+
+def verify_owned_sources(pins, release, patch_directory):
+    for location, row in owned_source_artifacts(pins, patch_directory):
+        path = Path(location) if Path(location).is_absolute() else release / location
+        if file_identity(path) != expected_identity(row):
+            raise ValueError("owned build input differs from its pin: " + str(path))
+
+
+def owned_wheel_name(pins, name, path):
+    wheel, version, _, tags = parse_wheel_filename(path.name)
+    abi = runtime_python(pins)["abi"]
+    if (wheel != name or version != Version(pins["owned_python_builds"][name]["version"])
+            or not any(t.interpreter == abi and t.abi == abi and t.platform == "linux_x86_64" for t in tags)):
+        raise ValueError("owned wheel has the wrong name/version/CPython 3.15 tag: " + path.name)
+
+
+def verify_owned_wheels(pins, build, directory):
+    """Authenticate owned wheels against their completed-build receipt before installation."""
+    owned = build.get("owned_wheels")
+    if type(owned) is not dict or set(owned) != set(OWNED_PYTHON_BUILDS):
+        raise ValueError("completed build receipt must identify every owned wheel")
+    for name, record in owned.items():
+        path = directory / record["artifact"]
+        owned_wheel_name(pins, name, path)
+        if file_identity(path) != expected_identity(record):
+            raise ValueError("owned wheel differs from its completed-build receipt: " + name)
+
+
+def capture_owned_wheels(pins, directory):
+    """Record the owned wheels the producer phase just built from verified inputs."""
+    result = {}
+    for name in OWNED_PYTHON_BUILDS:
+        candidates = sorted(directory.glob(name + "-*.whl"))
+        if len(candidates) != 1:
+            raise ValueError("owned build must produce exactly one wheel: " + name)
+        owned_wheel_name(pins, name, candidates[0])
+        result[name] = {"artifact": candidates[0].name, **file_identity(candidates[0])}
+    return result
+
+
+def owned_build_configuration(pins):
+    builds = owned_python_builds(pins)
+    triton = builds["triton"]
+    llvm = triton["llvm"]["artifact"]
+    if not llvm.endswith(".tar.gz"):
+        raise ValueError("owned Triton LLVM archive must be a gzip tarball")
+    # One fixed epoch: the pinned PyTorch fork's committed source date is not
+    # available here, so the owned wheels use the pins' declared as-of date.
+    from datetime import datetime, timezone
+    epoch = int(datetime.strptime(pins["as_of"], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+    return {"pyyaml_artifact": builds["pyyaml"]["artifact"], "xgrammar_artifact": builds["xgrammar"]["artifact"],
+            "xgrammar_cxxflags": builds["xgrammar"]["cxxflags"], "triton_artifact": triton["artifact"],
+            "triton_version": triton["version"], "triton_patch": triton["owned_patches"][0]["artifact"],
+            "triton_llvm_artifact": llvm, "triton_llvm_directory": llvm[:-len(".tar.gz")],
+            "owned_source_date_epoch": str(epoch)}
+
+
 def render_build_report(report, report_sha256, *, runtime=False, lint=False, lint_script=False, media_build=False, media_runtime=False, pins=None):
     if not isinstance(report, dict) or not isinstance(report.get("environment"), dict):
         raise ValueError("source-build dependency report must contain its native environment")
     if sum((runtime, lint, lint_script, media_build, media_runtime)) > 1:
         raise ValueError("source dependency roles have separate interpreter and installation lifetimes")
-    python_version = "3.11" if lint_script else "3.12"
+    # Framework build and runtime closures use the selected runtime interpreter;
+    # lint, lint-script and the separate media image keep their own interpreters.
+    framework = not (lint or lint_script or media_build or media_runtime)
+    if framework and pins is None:
+        raise ValueError("framework dependency reports require the selected pins")
+    # Triton's owned build enters through the runtime profile; the base closure
+    # keeps the official Triton3.9 wheel. pyyaml/xgrammar have no cp315 wheels.
+    owned = set(owned_python_builds(pins)) - {"triton"} if framework else set()
+    # Framework, runtime and the UV-managed lint-script interpreter are CPython 3.15;
+    # the builder's host lint venv and the separate media image keep CPython 3.12.
+    python_version = "3.15" if framework or lint_script else "3.12"
     environment = report.get("environment", {})
     if any(environment.get(key) != value for key, value in {
         "sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython",
@@ -188,6 +378,18 @@ def render_build_report(report, report_sha256, *, runtime=False, lint=False, lin
     for item in installs:
         metadata, download = item["metadata"], item["download_info"]
         name = canonicalize_name(metadata["name"], validate=True)
+        if name in owned:
+            # Owned source builds: resolved from their local built wheels and
+            # installed only after verification against the completed-build receipt.
+            parsed = urlsplit(download["url"])
+            if (not runtime or name in sources or parsed.scheme != "file"
+                    or item.get("is_direct") is not True
+                    or metadata["version"] != pins["owned_python_builds"][name]["version"]):
+                raise ValueError("owned runtime builds require their declared local wheel: " + name)
+            sources[name] = {"version": metadata["version"], "owned_build": True,
+                             "requires_dist": metadata.get("requires_dist", []),
+                             "requested_extras": item.get("requested_extras", [])}
+            continue
         if name in {"torch", "tensorfold"} and runtime:
             parsed = urlsplit(download["url"])
             if (pins is None or name in sources or parsed.scheme != "file" or parsed.netloc
@@ -223,14 +425,18 @@ def render_build_report(report, report_sha256, *, runtime=False, lint=False, lin
                 {"pillow"} if media_runtime else
                 {"spin", "uv", "packaging", "pyyaml", "typing-extensions"} if lint else {"cmakelint", "lintrunner"} if lint_script else
                 {"cmake", "ninja", "numpy", "setuptools", "packaging", "pip", "typing-extensions",
-                 "huggingface-hub", "tokenizers", "safetensors", "pytest", "ruff", "xgrammar", "triton"}
+                 "huggingface-hub", "tokenizers", "safetensors", "pytest", "ruff", "triton"}
                 if runtime else
-                {"scikit-build-core", "cmake", "ninja", "numpy", "setuptools", "packaging", "pip", "pyyaml",
-                 "six", "typing-extensions"})
+                # Framework tools plus the owned-wheel producers (pyyaml: Cython;
+                # xgrammar: scikit-build-core/setuptools-scm/tvm-ffi; Triton: pybind11/wheel).
+                {"scikit-build-core", "cmake", "ninja", "numpy", "setuptools", "packaging", "pip",
+                 "six", "typing-extensions", "cython", "setuptools-scm", "apache-tvm-ffi", "pybind11", "wheel"})
     if not required <= selected.keys():
         raise ValueError("source-build report omitted required framework build tools")
-    if runtime and set(sources) != {"torch", "tensorfold"}:
-        raise ValueError("source runtime report must resolve both owned source distributions and their full closure")
+    if framework and owned & selected.keys():
+        raise ValueError("owned source builds cannot also come from an official wheel")
+    if runtime and set(sources) != {"torch", "tensorfold", "pyyaml", "xgrammar"}:
+        raise ValueError("source runtime report must resolve the owned source distributions and their full closure")
     lock = "# Generated by deploy/v100/source_foundation.py from the recorded native pip report.\n"
     lock += "".join(f"{name} @ {row['url']} --hash=sha256:{row['sha256']}\n" for name, row in sorted(selected.items()))
     schema = ("tensorfold.v100-media-build-tools" if media_build else "tensorfold.v100-media-runtime-support" if media_runtime else
@@ -250,28 +456,32 @@ def validate_triton_profile(profile):
     if (type(profile) is not dict or set(profile) != {
             "schema", "version", "name", "from_triton", "triton", "execution_scope"}
             or profile["schema"] != "tensorfold.v100-triton-runtime-profile-input"
-            or type(profile["version"]) is not int or profile["version"] != 1
+            or type(profile["version"]) is not int or profile["version"] != 2
             or profile["name"] != "sm70-triton32-v1" or profile["from_triton"] != "3.9.0"
             or type(profile["execution_scope"]) is not str or not 0 < len(profile["execution_scope"]) <= 512):
         raise ValueError("unsupported explicit SM70 runtime profile")
     row = profile["triton"]
-    if type(row) is not dict or set(row) != {"version", "artifact", "url", "bytes", "sha256"}:
-        raise ValueError("runtime profile requires one complete official Triton wheel")
-    parsed = urlsplit(row["url"])
+    if type(row) is not dict or set(row) != {"version", "artifact", "bytes", "sha256", "build"}:
+        raise ValueError("runtime profile requires one complete owned Triton wheel")
     name, version, _, tags = parse_wheel_filename(row["artifact"])
+    # Triton3.2 publishes no CPython 3.15 wheel: the owned patched source build
+    # (pins owned_python_builds.triton) is identified by its completed-build receipt.
     if (name != "triton" or version != Version("3.2.0") or row["version"] != "3.2.0"
-            or parsed.scheme != "https" or parsed.hostname != "files.pythonhosted.org"
-            or parsed.username or parsed.password or parsed.query or parsed.fragment
-            or any(c.isspace() for c in row["url"]) or Path(parsed.path).name != row["artifact"]
-            or not any(t.interpreter == "cp312" and t.abi == "cp312" and t.platform.endswith("x86_64") for t in tags)
+            or row["build"] != "owned-source-build"
+            or not any(t.interpreter == "cp315" and t.abi == "cp315" and t.platform == "linux_x86_64" for t in tags)
             or expected_identity(row)["bytes"] <= 0):
-        raise ValueError("runtime profile requires its exact official CPython312 AMD64 Triton3.2 wheel")
+        raise ValueError("runtime profile requires its owned CPython315 AMD64 Triton3.2 wheel")
     return row
 
 
 def runtime_profile_lock(packages):
+    def line(name, row):
+        # Owned local builds are installed by version/hash from the verified bundle.
+        if row["url"].startswith("owned:"):
+            return f"{name}=={row['version']} --hash=sha256:{row['sha256']}\n"
+        return f"{name} @ {row['url']} --hash=sha256:{row['sha256']}\n"
     return ("# Generated verified base closure plus actual native Triton dependency-revision report.\n"
-            + "".join(f"{name} @ {p['url']} --hash=sha256:{p['sha256']}\n" for name, p in sorted(packages.items())))
+            + "".join(line(name, p) for name, p in sorted(packages.items())))
 
 
 def render_runtime_profile(base, base_sha, report, report_sha, profile, wheel):
@@ -288,8 +498,8 @@ def render_runtime_profile(base, base_sha, report, report_sha, profile, wheel):
         raise ValueError("runtime profile base or whole-wheel identity differs")
     environment = report.get("environment", {})
     if any(environment.get(k) != v for k, v in {"sys_platform": "linux", "platform_machine": "x86_64",
-            "implementation_name": "cpython", "python_version": "3.12"}.items()):
-        raise ValueError("runtime profile needs an actual native AMD64 CPython312 report")
+            "implementation_name": "cpython", "python_version": "3.15"}.items()):
+        raise ValueError("runtime profile needs an actual native AMD64 CPython315 report")
     installs = report.get("install")
     if type(installs) is not list or len(installs) != 1:
         raise ValueError("runtime profile pip report must change Triton only")
@@ -310,7 +520,7 @@ def render_runtime_profile(base, base_sha, report, report_sha, profile, wheel):
     if (canonicalize_name(genuine["Name"]) != "triton" or genuine["Version"] != row["version"]
             or metadata.get("requires_dist", []) != requires):
         raise ValueError("runtime profile report changed genuine wheel requirement metadata")
-    selected = {**base["packages"], "triton": {"version": row["version"], "url": row["url"],
+    selected = {**base["packages"], "triton": {"version": row["version"], "url": "owned:" + row["artifact"],
         "sha256": row["sha256"], "requires_dist": requires}}
     lock = runtime_profile_lock(selected)
     receipt = {**base, "version": 3, "packages": selected, "environment": environment,
@@ -341,7 +551,8 @@ def validate_runtime_profile_delta(base, base_raw, candidate, profile):
             or any(candidate["packages"][name] != value for name, value in base["packages"].items() if name != "triton")):
         raise ValueError("runtime profile changed an undeclared base dependency/source")
     selected = candidate["packages"]["triton"]
-    if any(selected.get(k) != row[k] for k in ("version", "url", "sha256")):
+    if (any(selected.get(k) != row[k] for k in ("version", "sha256"))
+            or selected.get("url") != "owned:" + row["artifact"]):
         raise ValueError("runtime profile changed its declared Triton wheel identity")
 
 
@@ -396,6 +607,9 @@ def prepare_runtime_profile(pins, prior, candidate_path, profile_path, wheel, *,
     if file_identity(build_path) != expected_identity(previous["build_receipt"]):
         raise ValueError("runtime profile changed its original framework-build receipt")
     build = read_json(build_path)[0]
+    owned = build.get("owned_wheels", {}).get("triton", {})
+    if owned.get("artifact") != row["artifact"] or expected_identity(owned) != expected_identity(row):
+        raise ValueError("runtime profile Triton wheel is not the completed build's owned wheel")
     return {"schema": "tensorfold.v100-runtime-profile-preparation", "version": 1,
         "prior_manifest_sha256": hashlib.sha256(previous_raw).hexdigest(),
         "candidate_runtime_sha256": hashlib.sha256(candidate_raw).hexdigest(),
@@ -425,7 +639,7 @@ def apply_runtime_profile(pins, prior, prepared_path, profile_path, *, directory
     replaced = {entry["path"] for entry in old_entries}
     if len(replaced) != len(old_entries):
         raise ValueError("runtime profile old-package inventory has duplicate paths")
-    site = Path("/opt/venv/lib/python3.12/site-packages")
+    site = Path(runtime_python(pins)["site_packages"])
     for path in replaced:
         selected = Path(path)
         if (not selected.is_relative_to(site / "triton")
@@ -662,7 +876,7 @@ def lint_python_registry(pins):
     """Use UV's supported download registry to select the exact pinned PBS build."""
     selected = pins["lint_python"]
     version = Version(selected["version"])
-    if (len(version.release) != 3 or version.release[:2] not in {(3, 10), (3, 11)}
+    if (len(version.release) != 3 or version.release[:2] != (3, 15)
             or version.pre is not None or version.post is not None or version.dev is not None
             or version.local is not None or not re.fullmatch(r"[0-9]{8}", selected["build"])
             or expected_identity(selected)["bytes"] == 0):
@@ -702,6 +916,7 @@ def capture_lint_python(pins, executable, install_directory, registry):
 def dockerfiles(pins):
     """One preparation recipe for the source builder and installed development image."""
     stack = selected_stack(pins)
+    interpreter = runtime_python(pins)
     runtime = read_json(Path(__file__).with_name("source-runtime-amd64.json"))[0]
     common = f'''# Generated by source_foundation.py render-dockerfiles. Device/release gates remain separate.
 # Supply --build-context source_artifacts=/path/to/the/verified/release/bundle.
@@ -736,8 +951,8 @@ FROM source-builder AS resolver
 
 FROM resolver AS verification
 COPY deploy/v100/requirements-source-runtime-offline-amd64.lock /locks/requirements-source-runtime.lock
-RUN --network=none python3.12 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:${{PATH}}" \\
+# The standalone runtime interpreter's sysconfig names clang; the pinned image toolchain is GCC13.
+ENV PATH="/opt/venv/bin:${{PATH}}" CC=gcc CXX=g++ \\
     TF_NCCL_LIB={stack["nccl_prefix"]}/lib/libnccl.so.2 \\
     TF_FOUNDATION_PROFILE=volta-sm70 \\
     TORCH_EXTENSIONS_DIR=/cache/volta-sm70-source-{hashlib.sha256(canonical(pins)).hexdigest()} \\
@@ -750,12 +965,21 @@ COPY --from=source_artifacts /build-inputs /opt/tensorfold-pins/build-inputs
 COPY --chmod=0444 deploy/v100/source-pins.json /opt/tensorfold-pins/source-pins.json
 COPY --chmod=0444 deploy/v100/source-runtime-amd64.json /opt/tensorfold-pins/source-runtime-amd64.json
 COPY --chmod=0444 deploy/v100/source_foundation.py /opt/tensorfold-pins/source_foundation.py
+RUN --network=none --mount=from=source_artifacts,source=/runtime-python,target=/runtime-python \\
+    /opt/source-venv/bin/python /opt/tensorfold-pins/source_foundation.py install-runtime-python \\
+       --pins /opt/tensorfold-pins/source-pins.json --archive /runtime-python/{interpreter["artifact"]} \\
+       --target {interpreter["prefix"]} \\
+    && {interpreter["executable"]} -m venv /opt/venv
 RUN --network=none --mount=from=source_artifacts,source=/wheels,target=/source-wheels \\
     --mount=from=source_artifacts,source=/python-wheels,target=/python-wheels \\
     /opt/source-venv/bin/python /opt/tensorfold-pins/source_foundation.py verify-framework-wheel \\
        --pins /opt/tensorfold-pins/source-pins.json \\
        --build-receipt /opt/tensorfold-pins/build-inputs/source-build.json --wheel /source-wheels/torch-*.whl \\
-    && python -m pip install --no-deps /source-wheels/torch-*.whl \\
+    && /opt/source-venv/bin/python /opt/tensorfold-pins/source_foundation.py verify-owned-wheels \\
+       --pins /opt/tensorfold-pins/source-pins.json \\
+       --build-receipt /opt/tensorfold-pins/build-inputs/source-build.json --directory /source-wheels \\
+    && python -m pip install --no-deps /source-wheels/torch-*.whl /source-wheels/pyyaml-*.whl \\
+       /source-wheels/xgrammar-*.whl \\
     && /opt/source-venv/bin/python -m pip --python /opt/venv install --no-cache-dir --no-index \\
        --find-links=/python-wheels --require-hashes -r /locks/requirements-source-runtime.lock \\
     && python -m pip check \\
@@ -1441,6 +1665,11 @@ def capture_build(pins, state, project):
     wheels = list((state / "wheels").glob("torch-*.whl"))
     if len(wheels) != 1:
         raise ValueError("completed source build must produce exactly one framework wheel")
+    owned = capture_owned_wheels(pins, state / "wheels")
+    if read_json(state / "receipts/owned-wheels.json")[0] != owned:
+        raise ValueError("owned wheels changed after their producer phase")
+    interpreter = runtime_python(pins)
+    install_runtime_python(pins, state / "release/runtime-python" / interpreter["artifact"], Path(interpreter["prefix"]))
     name, version, _, _ = parse_wheel_filename(wheels[0].name)
     if name != "torch" or version != Version(stack["torch_wheel_version"]):
         raise ValueError("completed source framework wheel has the wrong name/version")
@@ -1466,6 +1695,9 @@ def capture_build(pins, state, project):
             "source_commits": {name: effective_commit(row) for name, row in pins["sources"].items()},
             "upstream_source_commits": {name: row["commit"] for name, row in pins["sources"].items()},
             "source_inventories": inventories, "wheel": {"artifact": wheels[0].name, **file_identity(wheels[0])},
+            "owned_wheels": owned,
+            "runtime_python": {"artifact": interpreter["artifact"], "prefix": interpreter["prefix"],
+                               **expected_identity(pins["runtime_python"])},
             "generated_source_inputs": generated_inputs, "source_symlinks": symlinks,
             "probes": {name: file_identity(state / "build" / name) for name in
                        ("cccl-primitives", "libraries-probe", "reconvergence-6111901")},
@@ -1866,6 +2098,24 @@ def main():
     configuration = commands.add_parser("source-configuration")
     configuration.add_argument("--pins", type=Path, required=True)
     commands.add_parser("verify-pristine-base")
+    install_python = commands.add_parser("install-runtime-python")
+    install_python.add_argument("--pins", type=Path, required=True)
+    install_python.add_argument("--archive", type=Path, required=True)
+    install_python.add_argument("--target", type=Path, required=True)
+    owned_sources = commands.add_parser("verify-owned-sources")
+    owned_sources.add_argument("--pins", type=Path, required=True)
+    owned_sources.add_argument("--release", type=Path, required=True)
+    owned_sources.add_argument("--patches", type=Path, required=True)
+    owned_configuration = commands.add_parser("owned-build-configuration")
+    owned_configuration.add_argument("--pins", type=Path, required=True)
+    owned_capture = commands.add_parser("capture-owned-wheels")
+    owned_capture.add_argument("--pins", type=Path, required=True)
+    owned_capture.add_argument("--directory", type=Path, required=True)
+    owned_capture.add_argument("--output", type=Path, required=True)
+    owned_verify = commands.add_parser("verify-owned-wheels")
+    owned_verify.add_argument("--pins", type=Path, required=True)
+    owned_verify.add_argument("--build-receipt", type=Path, required=True)
+    owned_verify.add_argument("--directory", type=Path, required=True)
     lint_registry = commands.add_parser("render-lint-python-registry")
     lint_registry.add_argument("--pins", type=Path, required=True)
     lint_registry.add_argument("--output", type=Path, required=True)
@@ -1877,6 +2127,7 @@ def main():
     lint_python.add_argument("--output", type=Path, required=True)
     render = commands.add_parser("render-build-tools")
     render.add_argument("--report", type=Path, required=True)
+    render.add_argument("--pins", type=Path, required=True)
     render.add_argument("--lock", type=Path, required=True)
     render.add_argument("--receipt", type=Path, required=True)
     render.add_argument("--bootstrap-lock", type=Path)
@@ -2004,8 +2255,29 @@ def main():
         for key in ("version", "build", "sha256"):
             stack["lint_python_" + key] = configuration_pins["lint_python"][key]
         stack["lint_tools_sha256"] = file_identity(Path(__file__).with_name("source-lint-tools-amd64.json"))["sha256"]
-        for name in ("torch_wheel_version", "nccl_version", "lint_python_version", "lint_python_build", "lint_python_sha256", "lint_tools_sha256"):
+        interpreter = runtime_python(configuration_pins)
+        stack["runtime_python_artifact"] = interpreter["artifact"]
+        stack["runtime_python_prefix"] = interpreter["prefix"]
+        stack["runtime_python_minor"] = interpreter["python_version"]
+        for name in ("torch_wheel_version", "nccl_version", "lint_python_version", "lint_python_build", "lint_python_sha256",
+                     "lint_tools_sha256", "runtime_python_artifact", "runtime_python_prefix", "runtime_python_minor"):
             print("tf_" + name + "=" + shlex.quote(stack[name]))
+        return
+    if args.command == "install-runtime-python":
+        print(canonical(install_runtime_python(read_json(args.pins)[0], args.archive, args.target)).decode())
+        return
+    if args.command == "verify-owned-sources":
+        verify_owned_sources(read_json(args.pins)[0], args.release, args.patches)
+        return
+    if args.command == "owned-build-configuration":
+        for name, value in owned_build_configuration(read_json(args.pins)[0]).items():
+            print("tf_" + name + "=" + shlex.quote(value))
+        return
+    if args.command == "capture-owned-wheels":
+        args.output.write_bytes(canonical(capture_owned_wheels(read_json(args.pins)[0], args.directory)) + b"\n")
+        return
+    if args.command == "verify-owned-wheels":
+        verify_owned_wheels(read_json(args.pins)[0], read_json(args.build_receipt)[0], args.directory)
         return
     if args.command == "render-lint-python-registry":
         args.output.write_bytes(canonical(lint_python_registry(read_json(args.pins)[0])) + b"\n")
@@ -2126,7 +2398,7 @@ def main():
                                         lint_script=args.command == "render-lint-script-tools",
                                         media_build=args.command == "render-media-build-tools",
                                         media_runtime=args.command == "render-media-runtime-support",
-                                        pins=read_json(args.pins)[0] if args.command == "render-runtime" else None)
+                                        pins=read_json(args.pins)[0] if getattr(args, "pins", None) else None)
     args.lock.write_text(lock)
     args.receipt.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
     if getattr(args, "constraints", None) is not None:

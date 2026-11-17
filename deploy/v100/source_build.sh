@@ -66,8 +66,13 @@ finalize)
         --receipts "$tf_state/receipts" --lint-tool "$tf_lint_prefix/bin/spin"
     ;;
 prepare|prepare-bootstrap)
+    # The selected runtime interpreter builds the framework and owned wheels. Its
+    # prefix must persist across phases (mount it like the native prefix).
+    python "$tf_project/deploy/v100/source_foundation.py" install-runtime-python \
+        --pins "$tf_project/deploy/v100/source-pins.json" \
+        --archive "$tf_state/release/runtime-python/$tf_runtime_python_artifact" --target "$tf_runtime_python_prefix"
     if [[ ! -x "$tf_state/venv/bin/python" ]]; then
-        python3.12 -m venv "$tf_state/venv"
+        "$tf_runtime_python_prefix/bin/python$tf_runtime_python_minor" -m venv "$tf_state/venv"
     fi
     /opt/source-venv/bin/python -m pip --python "$tf_state/venv" install --no-index \
         --find-links "$tf_state/release/python-wheels" --require-hashes \
@@ -153,7 +158,7 @@ PY_PACKAGES
     mkdir -p "$tf_state/release/build-inputs" "$tf_state/release/wheels" \
         "$tf_state/release/native" "$tf_state/release/probes" "$tf_state/release/python-wheels" "$tf_state/release/build-debs"
     cp -a "$tf_prefix/." "$tf_state/release/native/"
-    cp "$tf_state/wheels/"torch-*.whl "$tf_state/release/wheels/"
+    cp "$tf_state/wheels/"torch-*.whl "$tf_state/wheels/"{pyyaml,xgrammar,triton}-*.whl "$tf_state/release/wheels/"
     cp "$tf_state/receipts/source-build.json" "$tf_state/receipts/"*-source-inventory.json \
         "$tf_state/receipts/"*-metadata.json "$tf_state/receipts/"*-cubins.txt "$tf_state/receipts/"*-binary.sha256 \
         "$tf_state/receipts/builder-dpkg.txt" "$tf_state/receipts/builder-dpkg-observation.json" \
@@ -165,6 +170,46 @@ PY_PACKAGES
     python -m pip download --no-deps --no-index --find-links "$tf_state/release/python-wheels" --require-hashes \
         -r "$tf_project/deploy/v100/requirements-source-runtime-offline-amd64.lock" \
         --dest "$tf_state/release/python-wheels"
+    ;;
+owned-wheels)
+    # Owned builds for selected versions without a usable CPython wheel. Inputs are
+    # pinned archives/patches verified before use; no network or dependency resolution.
+    python "$tf_project/deploy/v100/source_foundation.py" verify-owned-sources \
+        --pins "$tf_project/deploy/v100/source-pins.json" --release "$tf_state/release" \
+        --patches "$tf_project/deploy/v100/framework-patches"
+    eval "$(python "$tf_project/deploy/v100/source_foundation.py" owned-build-configuration \
+        --pins "$tf_project/deploy/v100/source-pins.json")"
+    export CC=gcc CXX=g++ PIP_NO_INDEX=1 SOURCE_DATE_EPOCH=$tf_owned_source_date_epoch
+    tf_owned="$tf_state/build/owned"
+    rm -rf "$tf_owned" && mkdir -p "$tf_owned" "$tf_state/wheels"
+    rm -f "$tf_state/wheels/"{pyyaml,xgrammar,triton}-*.whl
+    python -m pip wheel --no-deps --no-build-isolation --no-cache-dir --wheel-dir "$tf_state/wheels" \
+        "$tf_state/release/source-archives/$tf_pyyaml_artifact" > "$tf_state/logs/owned-pyyaml.log" 2>&1
+    # The framework build needs PyYAML; install the owned wheel into the build environment.
+    python -m pip install --no-deps --no-cache-dir "$tf_state/wheels/"pyyaml-*.whl
+    CXXFLAGS="$tf_xgrammar_cxxflags" python -m pip wheel --no-deps --no-build-isolation --no-cache-dir \
+        --wheel-dir "$tf_state/wheels" "$tf_state/release/source-archives/$tf_xgrammar_artifact" \
+        > "$tf_state/logs/owned-xgrammar.log" 2>&1
+    tar -xzf "$tf_state/release/source-archives/$tf_triton_artifact" -C "$tf_owned"
+    tar -xzf "$tf_state/release/source-archives/$tf_triton_llvm_artifact" -C "$tf_owned"
+    tf_triton_source="$tf_owned/triton-$tf_triton_version"
+    patch -d "$tf_triton_source" -p1 --forward --batch < "$tf_project/deploy/v100/framework-patches/$tf_triton_patch"
+    # TRITON_OFFLINE_BUILD forbids Triton's own downloads. The CUDA tools and the
+    # CUDA runtime/driver headers it would fetch come from the pinned CUDA 12.9 base
+    # (production also selects TRITON_PTXAS_PATH/TRITON_LIBDEVICE_PATH from it);
+    # the base's CCCL/NVTX headers are not part of that set. Proton is not built.
+    tf_triton_backend="$tf_triton_source/third_party/nvidia/backend"
+    mkdir -p "$tf_triton_backend/bin" "$tf_triton_backend/include"
+    cp /usr/local/cuda/bin/ptxas /usr/local/cuda/bin/cuobjdump /usr/local/cuda/bin/nvdisasm "$tf_triton_backend/bin/"
+    find /usr/local/cuda/include/ -mindepth 1 -maxdepth 1 ! -name cub ! -name thrust ! -name cuda ! -name nv \
+        ! -name nvtx3 -exec cp -a {} "$tf_triton_backend/include/" \;
+    (cd "$tf_triton_source/python" && TRITON_OFFLINE_BUILD=1 TRITON_BUILD_PROTON=OFF \
+        LLVM_SYSPATH="$tf_owned/$tf_triton_llvm_directory" TRITON_HOME="$tf_owned/home" \
+        python -m pip wheel --no-deps --no-build-isolation --no-cache-dir -v --wheel-dir "$tf_state/wheels" . \
+        > "$tf_state/logs/owned-triton.log" 2>&1)
+    python "$tf_project/deploy/v100/source_foundation.py" capture-owned-wheels \
+        --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/wheels" \
+        --output "$tf_state/receipts/owned-wheels.json"
     ;;
 framework|framework-bootstrap)
     python "$tf_project/deploy/v100/source_foundation.py" verify-ninja \
@@ -241,7 +286,7 @@ PY
     fi
     ;;
 *)
-    echo "source_build.sh requires lint-prepare, acquire[-bootstrap], prepare[-bootstrap], nccl[-bootstrap], framework[-bootstrap], finalize, probes or export" >&2
+    echo "source_build.sh requires lint-prepare, acquire[-bootstrap], prepare[-bootstrap], owned-wheels, nccl[-bootstrap], framework[-bootstrap], finalize, probes or export" >&2
     exit 2
     ;;
 esac

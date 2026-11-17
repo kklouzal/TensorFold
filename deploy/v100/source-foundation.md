@@ -19,7 +19,7 @@ The stack is a source-build candidate. Compilation, metadata import, native
 SM70 object coverage and device/model qualification are separate evidence.
 No old cu126 wheel result qualifies this combination.
 
-The target is native Linux AMD64 Ubuntu 24.04, CPython 3.12 and eight V100 SXM2
+The target is native Linux AMD64 Ubuntu 24.04, CPython 3.15.2 and eight V100 SXM2
 GPUs. The modern CUDA13 GB10/discrete pipeline has separate inputs and qualification.
 The development container uses the existing pinned CUDA 12.9.2 Ubuntu 24.04 child
 image. It already includes nvcc 12.9.86, cudart 12.9.79, cuBLAS/Lt 12.9.2.10,
@@ -127,7 +127,10 @@ uses Spin 0.18, UV 0.11.15, lintrunner 0.12.7, cmakelint 1.4.1 and the pinned ho
 codegen prerequisites. The supported `spin quicklint -- -a <paths>` dispatches
 actual `lintrunner -a` on the uncommitted patch before a fork commit. Its managed
 Python 3.10.20 interpreter (20260510 build) has separate URL/bytes/SHA256 pins.
-The framework/runtime stays on Python 3.12. The recorded SDK build used a narrow
+The framework and runtime use the selected CPython 3.15.2 standalone interpreter
+(see [the 3.15 runtime notes](python315-runtime.md)); the builder's own host tools
+(`/opt/source-venv`, the Spin lint venv) and the separate media image keep Ubuntu's
+Python 3.12. The recorded SDK build used a narrow
 immutable release-wheel exception while retaining the lint, detached-HEAD,
 Test Plan and publication rules. That historical record does not establish or
 revoke the scope of authorization for a fresh build. The owner has now directly
@@ -153,6 +156,25 @@ download identities were checked when producing this bundle. No package-index
 resolution occurs in the generated image's build steps. Keep the external
 artifact bundle: its pinned URLs support reacquisition, while cached artifacts
 allow reproduction when a package disappears from an upstream archive.
+
+### Owned CPython 3.15 builds
+
+`owned_python_builds` in [source-pins.json](source-pins.json) pins the official
+source archives for packages whose selected version has no usable CPython 3.15
+wheel: PyYAML 6.0.3 and xgrammar 0.2.9 (PyPI sdists) and Triton 3.2.0 (the GitHub
+tag archive, its [owned patch](framework-patches/triton-3.2.0/0001-python315-compatibility.patch)
+and the LLVM `86b69c31` prebuilt Triton names). `source_build.sh owned-wheels`
+verifies every input, builds the three wheels offline without build isolation
+from the locked build tools, installs PyYAML into the build venv (the framework
+build needs it) and records the wheel identities. Triton builds with
+`TRITON_OFFLINE_BUILD=1`, without Proton, and carries the base image's CUDA 12.9
+`ptxas`/`cuobjdump`/`nvdisasm` and `cuda.h` instead of Triton's downloaded copies;
+production still selects the protected tools through `TRITON_PTXAS_PATH` and
+`TRITON_LIBDEVICE_PATH`. xgrammar builds with `CXXFLAGS=-Wno-error=odr` (its
+C++20 tvm-ffi bindings and C++17 core trip GCC 13's LTO `-Wodr`). `export` copies
+the owned wheels next to Torch; the source image verifies PyYAML/xgrammar against
+the build receipt before installing them, and the `sm70-triton32-v1` runtime
+profile installs the owned Triton wheel only when it equals the receipt's.
 
 ### Reacquire the frozen build inputs
 
@@ -233,7 +255,8 @@ The current build-stage interface is:
 docker build --network=none \
   --build-context source_artifacts=/path/to/foundation-state/release \
   -f deploy/v100/Dockerfile.source-builder -t tensorfold-v100:source-builder-cu1292 .
-# Run in the owned builder with /work state, /src project and /opt/tensorfold-native prefix mounts:
+# Run in the owned builder with /work state, /src project, /opt/tensorfold-native prefix and
+# /opt/python3.15 runtime-interpreter mounts (both prefixes persist across phases):
 bash /src/deploy/v100/source_build.sh lint-prepare
 bash /src/deploy/v100/source_build.sh acquire-bootstrap
 bash /src/deploy/v100/source_build.sh prepare-bootstrap
@@ -242,6 +265,7 @@ bash /src/deploy/v100/source_build.sh framework-bootstrap
 bash /src/deploy/v100/source_build.sh finalize
 # Necessary pinned builds/tests are authorized by the owner.
 # Final artifacts/export still require the maintained validation gates.
+bash /src/deploy/v100/source_build.sh owned-wheels
 bash /src/deploy/v100/source_build.sh framework
 bash /src/deploy/v100/source_build.sh probes
 bash /src/deploy/v100/source_build.sh export
@@ -316,8 +340,11 @@ system or older Ninja is allowed. An independent real-binary interruption gate
 and complete framework build remain required; identity checks alone do not
 prove either execution result.
 
-Regenerate the five closures from actual native AMD64/CPython 3.12 resolver
-reports with all other exact pins retained. `render-build-tools --constraints`
+Regenerate the build-tool, runtime and lint-script closures from actual native
+AMD64/CPython 3.15 resolver reports, and the builder lint venv closure from a
+CPython 3.12 report, with all other exact pins retained (`render-build-tools`
+and `render-runtime` take `--pins`). The rest of this paragraph records the
+historical CPython 3.12 Ninja-only update. `render-build-tools --constraints`
 also emits the media build constraints from the same report. Bootstrap locks
 contain only packaging/pip and must remain byte-identical for this Ninja-only
 update; the generated source-builder Dockerfile is unchanged. Reusing its

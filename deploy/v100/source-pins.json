@@ -1,7 +1,7 @@
 {
   "schema": "tensorfold.v100-source-foundation",
   "version": 1,
-  "as_of": "2026-11-11",
+  "as_of": "2026-11-16",
   "specification_sha256": "479727e5e112995c3f4edff88747365efc33da2fe676d4e58dd7faf32b31991a",
   "base": "nvcr.io/nvidia/cuda:12.9.2-devel-ubuntu24.04@sha256:420850a3fd665171b3f1fd08946c51d50468d732a46d6c42345ea04444755048",
   "targets": {
@@ -98,10 +98,58 @@
   },
   "source_apt_bundle_sha256": "33d03bf304a9c340bb1b4d909537564eabd198926a529bd98c85a34a1d7aa634",
   "lint_python": {
-    "version": "3.11.18",
+    "version": "3.15.2",
     "build": "20261110",
-    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.11.18%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-    "bytes": 30783322,
-    "sha256": "3288c54cea3db350052019b3f8b558dd8a3da8afa6fda573f5fd2bcb37635b4a"
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.15.2%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "bytes": 38360323,
+    "sha256": "ad23d1b73fac26440b0306ae06911031344c49a90ec19716c8362e7fa40cae43"
+  },
+  "runtime_python": {
+    "version": "3.15.2",
+    "build": "20261110",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/cpython-3.15.2%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "bytes": 38360323,
+    "sha256": "ad23d1b73fac26440b0306ae06911031344c49a90ec19716c8362e7fa40cae43",
+    "prefix": "/opt/python3.15"
+  },
+  "owned_python_builds": {
+    "pyyaml": {
+      "version": "6.0.3",
+      "artifact": "pyyaml-6.0.3.tar.gz",
+      "url": "https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz",
+      "bytes": 130960,
+      "sha256": "d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f",
+      "reason": "no cp315 wheel for the selected version"
+    },
+    "xgrammar": {
+      "version": "0.2.9",
+      "artifact": "xgrammar-0.2.9.tar.gz",
+      "url": "https://files.pythonhosted.org/packages/3a/2f/5bf8e8fa6619cff534932f79b0abc81a417d354bc5093252c1a6081d0a93/xgrammar-0.2.9.tar.gz",
+      "bytes": 2763853,
+      "sha256": "87b466bca2475e29bb0323abc62c6c33cbcbcff47e5fb800a3e2099ac9620b90",
+      "cxxflags": "-Wno-error=odr",
+      "reason": "no cp315 wheel; GCC13 LTO reports -Wodr across its C++17 core and C++20 tvm-ffi bindings, fatal under upstream -Werror"
+    },
+    "triton": {
+      "version": "3.2.0",
+      "artifact": "triton-3.2.0.tar.gz",
+      "url": "https://github.com/triton-lang/triton/archive/refs/tags/v3.2.0.tar.gz",
+      "bytes": 5343217,
+      "sha256": "04eb07e2ff1b87bf4b26e132d696177248bfb9c71cecd4864e561a9c103de9b3",
+      "owned_patches": [
+        {
+          "artifact": "triton-3.2.0/0001-python315-compatibility.patch",
+          "bytes": 6441,
+          "sha256": "c8acc9fc6b02d2b30ab2d0513580c7482281cace70d4f6d36527e0d49cf1a564"
+        }
+      ],
+      "llvm": {
+        "artifact": "llvm-86b69c31-ubuntu-x64.tar.gz",
+        "url": "https://oaitriton.blob.core.windows.net/public/llvm-builds/llvm-86b69c31-ubuntu-x64.tar.gz",
+        "bytes": 1108961611,
+        "sha256": "b596c493d8f16e1c40026d16024fdcb3225dc09c5c7d8493833dff774677f67b"
+      },
+      "reason": "SM70 MMAv1 compiler profile; official wheels end at cp313"
+    }
   }
 }

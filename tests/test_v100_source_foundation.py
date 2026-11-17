@@ -15,12 +15,14 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("v100_source_foundation", ROOT / "deploy/v100/source_foundation.py")
 SOURCE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SOURCE)
+PINS = json.loads((ROOT / "deploy/v100/source-pins.json").read_text())
 
 
 def report():
-    names = ("scikit-build-core", "cmake", "ninja", "numpy", "setuptools", "packaging", "pip", "pyyaml", "six", "typing-extensions")
+    names = ("scikit-build-core", "cmake", "ninja", "numpy", "setuptools", "packaging", "pip", "six", "typing-extensions",
+             "cython", "setuptools-scm", "apache-tvm-ffi", "pybind11", "wheel")
     return {"environment": {"sys_platform": "linux", "platform_machine": "x86_64",
-                            "implementation_name": "cpython", "python_version": "3.12"},
+                            "implementation_name": "cpython", "python_version": "3.15"},
             "install": [{"metadata": {"name": name, "version": "1.0"}, "download_info": {
                 "url": f"https://files.pythonhosted.org/packages/{name.replace('-', '_')}-1.0-py3-none-any.whl",
                 "archive_info": {"hashes": {"sha256": "a" * 64}}}} for name in names]}
@@ -28,13 +30,13 @@ def report():
 
 def test_source_build_tools_retain_exact_artifact_bytes_and_resolver_provenance():
     raw = report()
-    lock, receipt = SOURCE.render_build_report(raw, "b" * 64)
+    lock, receipt = SOURCE.render_build_report(raw, "b" * 64, pins=PINS)
     assert "numpy @ https://files.pythonhosted.org/packages/numpy-1.0-py3-none-any.whl --hash=sha256:" + "a" * 64 in lock
     assert receipt["resolver_report_sha256"] == "b" * 64
     assert receipt["lock_sha256"] == hashlib.sha256(lock.encode()).hexdigest()
     reordered = copy.deepcopy(raw)
     reordered["install"].reverse()
-    assert SOURCE.render_build_report(reordered, "b" * 64) == (lock, receipt)
+    assert SOURCE.render_build_report(reordered, "b" * 64, pins=PINS) == (lock, receipt)
 
 
 def test_precommit_framework_outputs_cannot_be_exported(tmp_path):
@@ -87,7 +89,7 @@ if args[0].endswith("source_foundation.py"):
     if args[1] == "source-configuration":
         print("tf_torch_wheel_version=2.14.1+tfcu129sm70")
         print("tf_nccl_version=2.32.3")
-        print("tf_lint_python_version=3.11.18")
+        print("tf_lint_python_version=3.15.2")
         print("tf_lint_python_build=20261110")
         print("tf_lint_python_sha256=" + "a" * 64)
         print("tf_lint_tools_sha256=" + "b" * 64)
@@ -174,7 +176,7 @@ def test_binary_accelerator_providers_cannot_enter_source_build_tools(provider):
     data = report()
     data["install"][0]["metadata"]["name"] = provider
     with pytest.raises(ValueError, match="accelerator provider"):
-        SOURCE.render_build_report(data, "b" * 64)
+        SOURCE.render_build_report(data, "b" * 64, pins=PINS)
 
 
 @pytest.mark.parametrize("field,value", [("sys_platform", "win32"), ("platform_machine", "aarch64"),
@@ -183,7 +185,7 @@ def test_source_build_report_must_match_declared_native_target(field, value):
     data = report()
     data["environment"][field] = value
     with pytest.raises(ValueError, match="native Linux AMD64 CPython"):
-        SOURCE.render_build_report(data, "b" * 64)
+        SOURCE.render_build_report(data, "b" * 64, pins=PINS)
 
 
 @pytest.mark.parametrize("broken", ["duplicate", "missing", "foreign-url", "wrong-version", "wrong-name", "bad-sha"])
@@ -203,7 +205,7 @@ def test_malformed_or_incomplete_source_package_identity_is_rejected(broken):
     else:
         first["download_info"]["archive_info"]["hashes"]["sha256"] = "not-a-whole-file-hash"
     with pytest.raises(ValueError):
-        SOURCE.render_build_report(data, "b" * 64)
+        SOURCE.render_build_report(data, "b" * 64, pins=PINS)
 
 
 def test_native_package_bytes_are_verified_before_installation(tmp_path):
@@ -330,7 +332,7 @@ def test_native_report_regeneration_changes_only_ninja_and_retains_bootstrap(tmp
         source = root / "report.json"
         source.write_text(json.dumps(selected))
         args = [sys.executable, str(ROOT / "deploy/v100/source_foundation.py"), "render-build-tools",
-                "--report", str(source), "--lock", str(root / "lock"), "--receipt", str(root / "receipt.json"),
+                "--report", str(source), "--pins", str(ROOT / "deploy/v100/source-pins.json"), "--lock", str(root / "lock"), "--receipt", str(root / "receipt.json"),
                 "--bootstrap-lock", str(root / "bootstrap"), "--constraints", str(root / "constraints")]
         subprocess.run(args, check=True, capture_output=True)
         actual = json.loads((root / "receipt.json").read_text())
@@ -353,12 +355,19 @@ def runtime_report():
             data["install"].append({"metadata": {"name": name, "version": version}, "download_info": {
                 "url": f"https://files.pythonhosted.org/packages/{name.replace('-', '_')}-{version}-py3-none-any.whl",
                 "archive_info": {"hashes": {"sha256": "a" * 64}}}})
+    data["install"] = [row for row in data["install"]
+                       if row["metadata"]["name"] not in ("cython", "setuptools-scm", "apache-tvm-ffi", "pybind11", "wheel")]
     for name, version in (("torch", "2.16.0.dev20261111+tfcu129sm70"), ("tensorfold", "0.6.6")):
         data["install"].append({"metadata": {"name": name, "version": version,
                                              "requires_dist": ["typing-extensions>=1"]},
                                 "download_info": {"url": "file:///owned/" + name, "dir_info": {}},
                                 "is_direct": True, "requested": True})
-    pins = {"targets": {"pytorch": "2.16.0.dev20261111", "cuda": "12.9.2", "nccl": "2.32.6"},
+    for name, version in (("pyyaml", "6.0.3"), ("xgrammar", "0.2.9")):
+        data["install"].append({"metadata": {"name": name, "version": version, "requires_dist": []},
+                                "download_info": {"url": f"file:///owned/{name}-{version}-cp315-cp315-linux_x86_64.whl",
+                                                  "archive_info": {"hashes": {"sha256": "d" * 64}}},
+                                "is_direct": True, "requested": True})
+    pins = {**copy.deepcopy(PINS), "targets": {"pytorch": "2.16.0.dev20261111", "cuda": "12.9.2", "nccl": "2.32.6"},
             "sources": {"pytorch": {"commit": "a" * 40, "effective_commit": "b" * 40}}}
     return data, pins
 
@@ -373,6 +382,33 @@ def test_runtime_source_metadata_is_preserved_and_source_packages_are_installed_
         "version": "2.16.0.dev20261111+tfcu129sm70", "source_url": "file:///owned/torch",
         "requires_dist": ["typing-extensions>=1"], "requested_extras": [], "source_commit": "b" * 40}
     assert receipt["triton_execution"] == "SM70 FP32 moe_partial ordered-FMA; protected CUDA12 tools; other kernels unqualified"
+    # Owned cp315 builds are resolved from local wheels and verified against the build receipt.
+    assert "pyyaml" not in receipt["packages"] and "xgrammar" not in receipt["packages"]
+    assert receipt["source_distributions"]["pyyaml"] == {"version": "6.0.3", "owned_build": True,
+                                                       "requires_dist": [], "requested_extras": []}
+
+
+@pytest.mark.parametrize("change", ["official-wheel", "wrong-version", "not-direct"])
+def test_runtime_owned_builds_must_come_from_their_declared_local_wheels(change):
+    data, pins = runtime_report()
+    owned = data["install"][-1]
+    if change == "official-wheel":
+        owned["download_info"]["url"] = "https://files.pythonhosted.org/packages/xgrammar-0.2.9-py3-none-any.whl"
+    elif change == "wrong-version":
+        owned["metadata"]["version"] = "0.2.8"
+    else:
+        owned["is_direct"] = False
+    with pytest.raises(ValueError, match="owned runtime builds"):
+        SOURCE.render_build_report(data, "c" * 64, runtime=True, pins=pins)
+
+
+def test_build_tools_cannot_take_an_owned_package_from_an_official_wheel():
+    data = report()
+    data["install"].append({"metadata": {"name": "pyyaml", "version": "6.0.3"}, "download_info": {
+        "url": "https://files.pythonhosted.org/packages/pyyaml-6.0.3-py3-none-any.whl",
+        "archive_info": {"hashes": {"sha256": "a" * 64}}}})
+    with pytest.raises(ValueError, match="owned"):
+        SOURCE.render_build_report(data, "b" * 64, pins=PINS)
 
 
 @pytest.mark.parametrize("change", ["missing-source", "wrong-source-version", "remote-source", "editable-source"])
@@ -392,21 +428,21 @@ def test_runtime_report_requires_actual_declared_owned_source_metadata(change):
 
 
 def lint_python_pins():
-    return {"lint_python": {"version": "3.11.18", "build": "20261110", "bytes": 30783322,
+    return {"lint_python": {"version": "3.15.2", "build": "20261110", "bytes": 38360323,
         "sha256": "a" * 64,
         "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20261110/"
-               "cpython-3.11.18%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"}}
+               "cpython-3.15.2%2B20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"}}
 
 
 def test_lint_registry_selects_exact_archive_build_without_patching_uv():
     pins = lint_python_pins()
     registry = SOURCE.lint_python_registry(pins)
-    assert registry == {"cpython-3.11.18-linux-x86_64-gnu": {
+    assert registry == {"cpython-3.15.2-linux-x86_64-gnu": {
         "name": "cpython", "arch": {"family": "x86_64", "variant": None}, "os": "linux", "libc": "gnu",
-        "major": 3, "minor": 11, "patch": 18, "prerelease": "", "url": pins["lint_python"]["url"],
+        "major": 3, "minor": 15, "patch": 2, "prerelease": "", "url": pins["lint_python"]["url"],
         "sha256": "a" * 64, "variant": None, "build": "20261110"}}
     for field, value in (("url", "https://example.invalid/python.tar.gz"), ("bytes", 0),
-                         ("sha256", "not-a-sha"), ("version", "3.11.18rc1")):
+                         ("sha256", "not-a-sha"), ("version", "3.15.2rc1")):
         altered = copy.deepcopy(pins)
         altered["lint_python"][field] = value
         with pytest.raises(ValueError):
@@ -417,14 +453,14 @@ def test_lint_capture_requires_selected_managed_binary_version_and_registry(tmp_
     pins = lint_python_pins()
     root = tmp_path / "managed"
     root.mkdir()
-    binary = root / "python3.11"
+    binary = root / "python3.15"
     binary.write_bytes(b"independent managed interpreter fixture")
     registry = tmp_path / "registry.json"
     registry.write_bytes(SOURCE.canonical(SOURCE.lint_python_registry(pins)))
     commands = []
     def run(command, **kwargs):
         commands.append(command)
-        return '{"implementation":"cpython","version":[3,11,18]}'
+        return '{"implementation":"cpython","version":[3,15,2]}'
     monkeypatch.setattr(SOURCE.subprocess, "check_output", run)
     receipt = SOURCE.capture_lint_python(pins, binary, root, registry)
     assert receipt["interpreter"]["sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -435,7 +471,7 @@ def test_lint_capture_requires_selected_managed_binary_version_and_registry(tmp_
         SOURCE.capture_lint_python(pins, outsider, root, registry)
     assert len(commands) == 1
     monkeypatch.setattr(SOURCE.subprocess, "check_output", lambda *args, **kwargs:
-                        '{"implementation":"cpython","version":[3,11,17]}')
+                        '{"implementation":"cpython","version":[3,15,1]}')
     with pytest.raises(ValueError, match="differs"):
         SOURCE.capture_lint_python(pins, binary, root, registry)
     registry.write_text('{}')
@@ -457,7 +493,7 @@ def test_framework_private_cutlass_version_comes_from_the_selected_header(tmp_pa
 
 def test_isolated_lint_script_dependencies_keep_their_actual_python_lifetime():
     data = {"environment": {"sys_platform": "linux", "platform_machine": "x86_64",
-                            "implementation_name": "cpython", "python_version": "3.11"},
+                            "implementation_name": "cpython", "python_version": "3.15"},
             "install": [{"metadata": {"name": "cmakelint", "version": "1.4.1"}, "download_info": {
                 "url": "https://files.pythonhosted.org/packages/cmakelint-1.4.1-py3-none-any.whl",
                 "archive_info": {"hashes": {"sha256": "a" * 64}}}}]}
@@ -467,9 +503,9 @@ def test_isolated_lint_script_dependencies_keep_their_actual_python_lifetime():
     lock, receipt = SOURCE.render_build_report(data, "b" * 64, lint_script=True)
     assert "cmakelint @" in lock and receipt["packages"]["cmakelint"]["version"] == "1.4.1"
     assert receipt["schema"] == "tensorfold.v100-source-lint-script-tools"
-    assert receipt["environment"]["python_version"] == "3.11"
+    assert receipt["environment"]["python_version"] == "3.15"
     data["environment"]["python_version"] = "3.12"
-    with pytest.raises(ValueError, match="native Linux AMD64 CPython3.11"):
+    with pytest.raises(ValueError, match="native Linux AMD64 CPython3.15"):
         SOURCE.render_build_report(data, "b" * 64, lint_script=True)
     with pytest.raises(ValueError, match="separate interpreter"):
         SOURCE.render_build_report(data, "b" * 64, lint=True, lint_script=True)
@@ -490,7 +526,7 @@ if args[0] == '-':
 if args[1] == 'source-configuration':
     print('tf_torch_wheel_version=2.16.0.dev20261111+tfcu129sm70')
     print('tf_nccl_version=2.32.6')
-    print('tf_lint_python_version=3.11.18')
+    print('tf_lint_python_version=3.15.2')
     print('tf_lint_python_build=20261110')
     print('tf_lint_python_sha256='+'a'*64)
     print('tf_lint_tools_sha256='+'b'*64)
@@ -519,3 +555,83 @@ elif args[1] == 'capture-build':
         assert actual["rows"] == 1
         payload = (state / "receipts/builder-dpkg.txt").read_bytes()
         assert actual["inventory"] == {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def runtime_archive(tmp_path, members):
+    import io
+    import tarfile
+    pins = copy.deepcopy(PINS)
+    archive = tmp_path / SOURCE.runtime_python(pins)["artifact"]
+    with tarfile.open(archive, "w:gz") as bundle:
+        for name, payload, mode in members:
+            info = tarfile.TarInfo(name)
+            if payload is None:
+                info.type, info.mode = tarfile.DIRTYPE, 0o755
+                bundle.addfile(info)
+            elif isinstance(payload, tuple):
+                info.type, info.linkname = tarfile.SYMTYPE, payload[0]
+                bundle.addfile(info)
+            else:
+                info.size, info.mode = len(payload), mode
+                bundle.addfile(info, io.BytesIO(payload))
+    pins["runtime_python"].update(SOURCE.file_identity(archive))
+    return pins, archive
+
+
+def test_runtime_python_installs_unchanged_and_proves_an_existing_prefix(tmp_path, monkeypatch):
+    pins, archive = runtime_archive(tmp_path, [
+        ("python", None, 0), ("python/bin/python3.15", b"\x7fELF interpreter", 0o775),
+        ("python/bin/python3", ("python3.15",), 0), ("python/lib/python3.15/os.py", b"import sys\n", 0o644)])
+    target = tmp_path / "opt/python3.15"
+    monkeypatch.setitem(pins["runtime_python"], "prefix", "/opt/python3.15")
+    selected = SOURCE.runtime_python(pins)
+    monkeypatch.setattr(SOURCE, "runtime_python", lambda _pins: {**selected, "prefix": str(target)})
+    receipt = SOURCE.install_runtime_python(pins, archive, target)
+    assert receipt["members"] == 4 and (target / "bin/python3").is_symlink()
+    assert (target / "bin/python3.15").stat().st_mode & 0o777 == 0o755
+    (target / "lib/python3.15/__pycache__").mkdir()
+    (target / "lib/python3.15/__pycache__/os.cpython-315.pyc").write_bytes(b"cache")
+    SOURCE.install_runtime_python(pins, archive, target)
+    (target / "lib/python3.15/os.py").write_text("import changed\n")
+    with pytest.raises(ValueError, match="differs from its archive"):
+        SOURCE.install_runtime_python(pins, archive, target)
+    (target / "lib/python3.15/os.py").write_text("import sys\n")
+    (target / "lib/python3.15/extra.py").write_text("planted\n")
+    with pytest.raises(ValueError, match="undeclared file"):
+        SOURCE.install_runtime_python(pins, archive, target)
+
+
+def test_runtime_python_pin_is_one_selected_standalone_315_artifact():
+    selected = SOURCE.runtime_python(PINS)
+    assert selected["executable"] == "/opt/python3.15/bin/python3.15"
+    assert selected["artifact"] == "cpython-3.15.2+20261110-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+    for field, value in (("version", "3.14.10"), ("prefix", "/usr/local"), ("url", "https://example.invalid/x.tar.gz")):
+        altered = copy.deepcopy(PINS)
+        altered["runtime_python"][field] = value
+        with pytest.raises(ValueError, match="runtime Python"):
+            SOURCE.runtime_python(altered)
+
+
+def test_owned_wheels_are_verified_against_the_completed_build_receipt(tmp_path):
+    names = {"pyyaml": "pyyaml-6.0.3-cp315-cp315-linux_x86_64.whl",
+             "xgrammar": "xgrammar-0.2.9-cp315-cp315-linux_x86_64.whl",
+             "triton": "triton-3.2.0-cp315-cp315-linux_x86_64.whl"}
+    for name, artifact in names.items():
+        (tmp_path / artifact).write_bytes(name.encode())
+    owned = SOURCE.capture_owned_wheels(PINS, tmp_path)
+    SOURCE.verify_owned_wheels(PINS, {"owned_wheels": owned}, tmp_path)
+    (tmp_path / names["xgrammar"]).write_bytes(b"changed")
+    with pytest.raises(ValueError, match="differs from its completed-build receipt"):
+        SOURCE.verify_owned_wheels(PINS, {"owned_wheels": owned}, tmp_path)
+    (tmp_path / names["triton"]).rename(tmp_path / "triton-3.2.0-cp312-cp312-linux_x86_64.whl")
+    with pytest.raises(ValueError, match="CPython 3.15 tag"):
+        SOURCE.capture_owned_wheels(PINS, tmp_path)
+
+
+def test_owned_build_inputs_are_pinned_official_archives():
+    builds = SOURCE.owned_python_builds(PINS)
+    assert set(builds) == {"pyyaml", "xgrammar", "triton"}
+    altered = copy.deepcopy(PINS)
+    altered["owned_python_builds"]["pyyaml"]["url"] = "https://example.invalid/pyyaml-6.0.3.tar.gz"
+    with pytest.raises(ValueError, match="official source archive"):
+        SOURCE.owned_python_builds(altered)

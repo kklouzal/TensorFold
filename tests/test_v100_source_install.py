@@ -44,7 +44,7 @@ def test_actual_mapped_provider_ownership_is_required(changed):
     if changed == "nccl":
         identity["mapped_libraries"][-1] = "/usr/lib/x86_64-linux-gnu/libnccl.so.2.27.3"
     elif changed == "wheel-cublas":
-        identity["mapped_libraries"][0] = "/opt/venv/lib/python3.12/site-packages/nvidia/cublas/lib/libcublas.so.12"
+        identity["mapped_libraries"][0] = "/opt/venv/lib/python3.15/site-packages/nvidia/cublas/lib/libcublas.so.12"
     else:
         identity["mapped_libraries"].pop(1)
     with pytest.raises(ValueError, match="mapped provider escaped"):
@@ -53,9 +53,9 @@ def test_actual_mapped_provider_ownership_is_required(changed):
 
 def test_source_cpu_consumer_extensions_remain_separate_from_bundled_accelerator_providers():
     identity = runtime()
-    identity["mapped_libraries"].append("/opt/venv/lib/python3.12/site-packages/torchvision/_C.abi3.so")
+    identity["mapped_libraries"].append("/opt/venv/lib/python3.15/site-packages/torchvision/_C.abi3.so")
     SOURCE.validate_runtime(identity, RUNTIME_PINS)
-    identity["mapped_libraries"].append("/opt/venv/lib/python3.12/site-packages/torchvision.libs/libcudart.fake.so")
+    identity["mapped_libraries"].append("/opt/venv/lib/python3.15/site-packages/torchvision.libs/libcudart.fake.so")
     with pytest.raises(ValueError, match="binary-wheel accelerator"):
         SOURCE.validate_runtime(identity, RUNTIME_PINS)
 
@@ -369,7 +369,7 @@ def test_pristine_capture_bytes_bind_before_audit_process(tmp_path, monkeypatch)
 def test_framework_wheel_is_verified_against_owned_receipt_before_dependency_install(tmp_path):
     pins = {"targets": {"pytorch": "2.16.0.dev20261111", "cuda": "12.9.2", "nccl": "2.32.6"},
             "sources": {"pytorch": {"commit": "a" * 40, "effective_commit": "b" * 40}}}
-    wheel = tmp_path / "torch-2.16.0.dev20261111+tfcu129sm70-cp312-cp312-linux_x86_64.whl"
+    wheel = tmp_path / "torch-2.16.0.dev20261111+tfcu129sm70-cp315-cp315-linux_x86_64.whl"
     wheel.write_bytes(b"independent owned-wheel boundary fixture")
     build = {"schema": "tensorfold.v100-source-build", "version": 1, "targets": pins["targets"],
              "source_commits": {"pytorch": "b" * 40},

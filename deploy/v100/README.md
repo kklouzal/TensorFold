@@ -695,7 +695,7 @@ The remaining original build/serve commands and measured host configurations
 retain their named historical images and layouts. Their numeric settings are
 not defaults or capacity recommendations for the current v6 candidate.
 
-The native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
+The historical native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
 image by child and index digest, with official **Torch 2.14.1+cu126**,
 **TorchVision 0.29.1+cu126** and **Triton 3.8.0** wheels by SHA256. CUDA 12.9.2 is
 the compiler toolkit; Torch's wheel runtime is CUDA 12.6. They are deliberately

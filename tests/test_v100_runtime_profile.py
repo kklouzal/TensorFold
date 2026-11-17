@@ -31,7 +31,7 @@ def inputs(tmp_path):
             "triton_execution": "original restricted FMA evidence"}
     raw = SOURCE.canonical(base)
     report = {"environment": {"sys_platform": "linux", "platform_machine": "x86_64",
-                              "implementation_name": "cpython", "python_version": "3.12"},
+                              "implementation_name": "cpython", "python_version": "3.15"},
               "install": [{"is_direct": True, "metadata": {"name": "triton", "version": "3.2.0", "requires_dist": ["filelock"]},
                            "download_info": {"url": "file:///wheel/" + wheel.name,
                                "archive_info": {"hashes": {"sha256": profile["triton"]["sha256"]}}}}]}
@@ -53,13 +53,14 @@ def test_renderer_retains_full_base_metadata_and_records_actual_single_delta(tmp
     assert receipt["source_distributions"] == base["source_distributions"]
     assert receipt["base_resolver_report_sha256"] == base["resolver_report_sha256"]
     assert receipt["runtime_profile"]["base_runtime_sha256"] == hashlib.sha256(raw).hexdigest()
-    assert "triton @ " + profile["triton"]["url"] in lock
+    assert "triton==3.2.0 --hash=sha256:" + profile["triton"]["sha256"] in lock
+    assert receipt["packages"]["triton"]["url"] == "owned:" + profile["triton"]["artifact"]
     assert receipt["packages"]["triton"]["requires_dist"] == ["filelock"]
     assert receipt["lock_sha256"] == hashlib.sha256(lock.encode()).hexdigest()
     SOURCE.validate_runtime_profile_delta(base, raw, receipt, profile)
 
 
-@pytest.mark.parametrize("fault", ["other-package", "requires", "sha", "foreign-url", "environment", "version", "old-base"])
+@pytest.mark.parametrize("fault", ["other-package", "requires", "sha", "not-owned", "cp312-wheel", "environment", "version", "old-base"])
 def test_renderer_rejects_undeclared_or_non_genuine_inputs(tmp_path, fault):
     base, raw, report, profile, wheel = values = inputs(tmp_path)
     item = report["install"][0]
@@ -69,8 +70,10 @@ def test_renderer_rejects_undeclared_or_non_genuine_inputs(tmp_path, fault):
         item["metadata"]["requires_dist"] = []
     elif fault == "sha":
         item["download_info"]["archive_info"]["hashes"]["sha256"] = "e" * 64
-    elif fault == "foreign-url":
-        profile["triton"]["url"] = profile["triton"]["url"].replace("files.pythonhosted.org", "invalid.example")
+    elif fault == "not-owned":
+        profile["triton"]["build"] = "official-wheel"
+    elif fault == "cp312-wheel":
+        profile["triton"]["artifact"] = "triton-3.2.0-cp312-cp312-linux_x86_64.whl"
     elif fault == "environment":
         report["environment"]["platform_machine"] = "aarch64"
     elif fault == "version":
@@ -154,7 +157,8 @@ def test_post_install_revision_proves_original_bytes_and_keeps_build_provenance(
     directory, prior = tmp_path / "pins", tmp_path / "prior"
     directory.mkdir()
     prior.mkdir()
-    pins = {"immutable": "source providers"}
+    pins = {"immutable": "source providers",
+            "runtime_python": json.loads((ROOT / "deploy/v100/source-pins.json").read_text())["runtime_python"]}
     old_producer = prior / "source_foundation.py"
     old_producer.write_bytes(b"original producer, no new framework compilation")
     (directory / "source_foundation.py").write_bytes(b"new runtime auditor")
@@ -163,9 +167,10 @@ def test_post_install_revision_proves_original_bytes_and_keeps_build_provenance(
     torch = tmp_path / "libtorch.so"
     torch.write_bytes(b"immutable original Torch/native bytes")
     build = tmp_path / "source-build.json"
-    build.write_bytes(SOURCE.canonical({"producer_inputs": {"deploy/v100/source_foundation.py": SOURCE.file_identity(old_producer)}}))
+    build.write_bytes(SOURCE.canonical({"producer_inputs": {"deploy/v100/source_foundation.py": SOURCE.file_identity(old_producer)},
+                                        "owned_wheels": {"triton": {"artifact": wheel.name, **SOURCE.file_identity(wheel)}}}))
     identity = {"torch": "2.16.0+owned", "triton": {"version": "3.9.0"}, "mapped_libraries": [str(torch)]}
-    old_path = "/opt/venv/lib/python3.12/site-packages/triton/_removed_fixture.py"
+    old_path = "/opt/venv/lib/python3.15/site-packages/triton/_removed_fixture.py"
     removed = {"path": old_path, "bytes": 1, "sha256": "a" * 64}
     artifacts = [{"path": str(directory / "source_foundation.py"), **SOURCE.file_identity(old_producer)},
                  {"path": str(directory / "source-runtime-amd64.json"), **SOURCE.file_identity(prior / "source-runtime-amd64.json")},
