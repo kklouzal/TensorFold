@@ -476,3 +476,30 @@ def test_captured_decode_ple_is_exact_for_advancing_live_row_counts():
                    expected, epss, 1e-6, streams)
             torch.testing.assert_close(actual[section].view(torch.int16), expected.view(torch.int16), atol=0, rtol=0)
             torch.testing.assert_close(apss[section].view(torch.int32), epss.view(torch.int32), atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("rows", [1, 5, 120])
+def test_iq4nl_ple_embed_equals_host_decode_then_native_embed(rows):
+    """The production path before GPU decode: GGUF reference decode on the host (FP16 rows), then the native embed."""
+    import numpy as np
+    from types import SimpleNamespace
+    from tensorfold.families.qwen4_exp.gguf import decode_rows
+
+    heads, dims = 16, 160
+    rng = np.random.default_rng(rows)
+    packed = rng.integers(0, 256, size=(rows * heads, dims // 32, 18), dtype=np.uint8)
+    scales = (rng.normal(size=(rows * heads, dims // 32)) * rng.choice([1e-4, 1e-2, 1, 400], size=(rows * heads, dims // 32)))
+    packed[..., :2] = scales.astype("<f2").view(np.uint8).reshape(rows * heads, dims // 32, 2)
+    packed = packed.reshape(rows * heads, -1)
+    source = SimpleNamespace(ggml_type=20, encoding="IQ4_NL", shape=(rows * heads, dims), row_bytes=packed.shape[1])
+    values = torch.from_numpy(decode_rows(source, packed).astype(np.float16)).cuda()
+    results = []
+    for kind in ("host", "device"):
+        out = torch.empty((rows, heads * dims), device="cuda", dtype=torch.float16)
+        xs = torch.empty((rows, heads * dims // 32), device="cuda")
+        if kind == "host":
+            invoke("ple_embed_bf16", True, rows, values, heads, dims, out, xs, scale=1.0)
+        else:
+            invoke("ple_embed_iq4nl", True, rows, torch.from_numpy(packed).cuda(), heads, dims, out, xs, scale=1.0)
+        results.append((out.view(torch.int16), xs))
+    assert torch.equal(results[0][0], results[1][0]) and torch.equal(results[0][1], results[1][1])
