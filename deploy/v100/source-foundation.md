@@ -482,9 +482,10 @@ The corrected source SDK is local image ID
 `sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28`
 (`tensorfold-v100:source-socket-04cf2557`), 23,004,442,479 uncompressed bytes.
 This is its observed local OCI index identity, with no registry publication claim.
-The selected `Dockerfile.binding-verification` consumer now names that same
-corrected SDK. Its former `source-sealed-binding-950289ab-r2` default remains
-historical; it cannot satisfy the current adaptive native-payload guard.
+The consumer recipe `Dockerfile.binding-verification` that rebuilt the
+application wheel onto that SDK was retired with the CPython 3.15.2 port: its
+cp312 base cannot install the cp315 wheel, and the pipeline's
+`Dockerfile.application-wheel` now builds the application image.
 Upstream Spin/lintrunner, direct native normal/failed IPv4/IPv6 formatter and
 concurrent controls passed. Actual new-wheel IPv4 Store SET/GET/delete and
 normal/forced numeric endpoint checks matched independent kernel endpoints.

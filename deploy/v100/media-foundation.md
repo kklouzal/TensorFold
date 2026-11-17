@@ -313,10 +313,12 @@ records a separate 187-module application run on f8 and affected mapping-policy
 checks on 6da using the unchanged whole application wheel and media bytes.
 Actual successor target acceptance after GPU work, compiler/device/model/
 resource/quality and performance gates remain open.
-The selected consumer recipe is `Dockerfile.media-binding-verification`; its
-default names this actual locally resolved OCI index. The former default
-`tensorfold-v100:media-dav1d-candidate@sha256:7c547c67e4783f3767b0cb2f88587331b61cef6b4adb595548f7a19deab8ef91`
-remains a historical component identity, with no registry publication claim.
+The consumer recipe `Dockerfile.media-binding-verification` that installed the
+application wheel onto that cp312 media image was retired with the CPython 3.15.2
+port; the media binding tests now run on the media image with the source tree
+mounted (see the CPython 3.15.2 build section). The former defaults, including
+`tensorfold-v100:media-dav1d-candidate@sha256:7c547c67e4783f3767b0cb2f88587331b61cef6b4adb595548f7a19deab8ef91`,
+remain historical component identities, with no registry publication claim.
 Framework metadata queries materialize their own lazy cuDNN component before
 collecting mapped-library identity. This changes audit observation order, not
 framework/provider binaries. A fresh-process regression compares consecutive
