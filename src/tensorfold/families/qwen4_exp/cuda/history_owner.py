@@ -295,14 +295,18 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Select prepared Q8 writers while retaining the independent reference."""
     owner = getattr(buffers, 'history_owner', None)
     window_module = getattr(owner, 'owned_q8_window_preparation', None)
+    if window_module is not None and buffers.prefill and mtp:
+        # The MTP head's prompt absorb keeps the reference prepare: the native window there cost decode
+        # (SC117 10-cell matrix: decode 0.991x, prefill 1.011x against target-rows-only; ledger pf2).
+        window_module = None
     if window_module is not None:
-        role = 'mtp' if mtp else 'decode'
-        if (buffers.prefill or buffers.owner_graph_family != 'uncaptured'
+        role = 'prefill' if buffers.prefill else 'mtp' if mtp else 'decode'
+        if (buffers.owner_graph_family != 'uncaptured'
                 or owner.owned_q8_window_role != role or buffers.owner_role != role
                 or buffers.owner_kernel_family != owner.native_kernel_family):
             raise ValueError('owned Q8 window differs from its prepared execution role')
         rows = stop - start
-        if not 1 <= rows <= owner.rows:
+        if not 1 <= rows <= (buffers.rows if buffers.prefill else owner.rows):
             raise ValueError('owned Q8 window exceeds its prepared row envelope')
         c, a = weights.cfg, layer.attn
         ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
@@ -310,16 +314,33 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
         pos = state.mtp_len if mtp else state.pos
         coordinates = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
         position = buffers.mtp_indexer_position if mtp else buffers.target_indexer_position
+        if coordinates is None and buffers.prefill:
+            # Prompt rows without issued coordinates take the reference route's own resolution.
+            from .compact_indexer import coordinate_rows
+
+            coordinates = coordinate_rows(state, torch.arange(rows, device=projection.device) + pos)
+        else:
+            coordinates = None if coordinates is None else coordinates[start:stop]
         if (type(cache) is not OwnedKVCache or
                 (cache.key_format.bits, cache.key_format.codec, cache.value_format.bits, cache.value_format.codec) != (8, 0, 8, 0)
                 or coordinates is None or position is None or state.compact_indexer is None):
             raise ValueError('owned Q8 window requires its original Q8 cache and issued indexer profile')
-        coordinates = coordinates[start:stop]
-        ik = ops.owned_q8_prepare_window(window_module, projection[start:stop], coordinates,
-            weights, cache, state, layer, buffers.q[start:stop], buffers.iq[start:stop],
-            frequency=position.inv_freq, sections=position.sections,
-            amplitude=position.amplitude, start=pos,
-            **({'dispatch': 'grid-v1'} if getattr(owner, 'owned_q8_window_dispatch', None) == 'grid-v1' else {}))
+        dispatch = {'dispatch': 'grid-v1'} if getattr(owner, 'owned_q8_window_dispatch', None) == 'grid-v1' else {}
+        # The native window takes at most owner.rows (<= 256) rows per dispatch; a prompt window runs in such
+        # windows at consecutive cache positions, then publishes its raw IK in one compact-indexer transaction.
+        parts = []
+        for first in range(0, rows, owner.rows):
+            last = min(rows, first + owner.rows)
+            part = ops.owned_q8_prepare_window(window_module, projection[start + first:start + last],
+                coordinates[first:last], weights, cache, state, layer, buffers.q[start + first:start + last],
+                buffers.iq[start + first:start + last], frequency=position.inv_freq, sections=position.sections,
+                amplitude=position.amplitude, start=pos + first, **dispatch)
+            if part is None:
+                if first:
+                    raise RuntimeError('owned Q8 window refused a later prompt window after publishing earlier rows')
+                break
+            parts.append(part)
+        ik = None if not parts else parts[0] if len(parts) == 1 else torch.cat(parts)
         if ik is not None:
             if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
                     include_mtp=hasattr(state, 'mtp_kc')):
@@ -969,12 +990,13 @@ class OwnerBuffers:
                 or not owned_q8_window_prepare and (owned_q8_window_role is not None or owned_q8_window_dispatch is not None)
                 or owned_q8_window_dispatch not in (None, 'leaf-loop-v1', 'grid-v1')):
             raise ValueError('owned Q8 window requires its explicit boolean selection')
-        if owned_q8_window_prepare and (owned_q8_window_role not in ('decode', 'mtp')
-                or self.prefill or not 1 <= self.rows <= 256 or self.heads != 3 or self.head_dim != 256
+        if owned_q8_window_prepare and (owned_q8_window_role not in ('decode', 'mtp', 'prefill')
+                or self.prefill != (owned_q8_window_role == 'prefill')
+                or not 1 <= self.rows <= 256 or self.heads != 3 or self.head_dim != 256
                 or family not in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
                 or self.native_pair is None or (self.native_pair.key.bits, self.native_pair.key.codec,
                     self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
-            raise ValueError('owned Q8 window requires its bounded original Q8 decode/MTP owner')
+            raise ValueError('owned Q8 window requires its bounded original Q8 decode/MTP/prompt owner')
         if (family not in (KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
                 or (family == RN_KERNEL_FAMILY and (type(heads_per_block) is not int or heads_per_block not in (1, 4, 12)))
                 or (family in (KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY) and heads_per_block is not None)):
@@ -1005,7 +1027,8 @@ class OwnerBuffers:
             if (self.partials.numel() * self.partials.element_size() < rn_probability_bytes(self.rows)
                     or torch._C._overlaps(self.partials, self.partial)):
                 raise ValueError("RN Half-P requires its fully paid disjoint PV receive slab")
-        if (family in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY) and not self.prefill and self.native_pair is not None
+        if (family in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
+                and (not self.prefill or owned_q8_window_prepare) and self.native_pair is not None
                 and (self.native_pair.key.bits, self.native_pair.key.codec,
                      self.native_pair.value.bits, self.native_pair.value.codec) == (8, 0, 8, 0)):
             self.owned_q8_preparation = ops.prepare_owned_q8(self.device,
@@ -1715,7 +1738,8 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                 owner.position.fill_(host_pos)
                 pooled = state.mtp_pooled if mtp else state.pooled[ai]
                 ops.qsa_rows(buffers.iq[begin:end], pooled, owner.position, scratch, end - begin,
-                             context=host_pos + end - begin)
+                             context=host_pos + end - begin, status=state.kv_status, layer=layer.index,
+                             prompt=buffers.prefill)
                 selection[begin - base:end - base, :buffers.attn.idw].copy_(scratch.ids)
                 selection[begin - base:end - base, buffers.attn.idw].copy_(scratch.nk)
                 selection[begin - base:end - base, buffers.attn.idw + 1].copy_(scratch.sparse)

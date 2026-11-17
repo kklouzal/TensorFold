@@ -8,8 +8,9 @@
 // TensorFold modifications: fixed K512; padded output stride; no length clamp;
 // deterministic device status/invalid output; finite-prefix containment; bitwise
 // zero canonicalization (no FTZ-dependent comparison). Decode fastpaths omitted.
-// select_greater is the general body; family.cu's captured owned selector uses it
-// (qsa_select_owned_kernel) and the standalone kernel below keeps its contract.
+// select_greater is the general body; family.cu's captured owned selector
+// (qsa_select_owned_kernel) and eager long-context rows (qsa_select_rows_kernel) use it,
+// and the standalone kernel below keeps its contract.
 #pragma once
 
 #include <cuda_runtime.h>

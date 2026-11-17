@@ -162,7 +162,9 @@ def test_select_pools_before_scoring_and_preserves_explicit_phase_controls(case,
                          case.scratch, case.rows, context=24, history_kind='prefill',
                          history_capacity=case.capacity, status=case.status, valid_rows=case.live, layer=-1)
     assert [name for name, _ in calls] == ['pool', 'rows']
-    assert calls[1][1] == {'context': 24}
+    # Selection receives the State's status word (a native long-context selection failure latches there).
+    assert calls[1][1].keys() == {'context', 'status', 'layer'} and calls[1][1]['context'] == 24
+    assert calls[1][1]['status'] is case.status and calls[1][1]['layer'] == -1
     assert ('history_kind' in calls[0][1]) is history
     if history:
         assert calls[0][1]['history_kind'] == 'prefill'

@@ -421,7 +421,8 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                 b.pos_blk.fill_(host_pos + r0 - a0)
                 ends = host_pos + r0 - a0 + n
                 if b.attn.qsa:
-                    attn_mod.qsa_rows(b.iq[r0:r0 + n], pooled, b.pos_blk, b.attn, n, context=ends)
+                    attn_mod.qsa_rows(b.iq[r0:r0 + n], pooled, b.pos_blk, b.attn, n, context=ends,
+                                      status=st.kv_status, layer=layer.index, prompt=True)
                 attn_mod.attention(b.q[r0:r0 + n], cache.k, cache.v, b.pos_blk, b.attn, n, scale,
                                    out=b.attn_o[r0:r0 + n], context=ends, ks=cache.ks, vs=cache.vs,
                                    k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
@@ -431,7 +432,8 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
         if b.attn.qsa:
             attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, inv_freq, c.eps, b.attn, a1 - a0,
                                 context=keys, rope=rope, delta=delta, length=length, sections=sections,
-                                rope_scale=rope_scale, **pool_history)
+                                rope_scale=rope_scale,
+                                **(pool_history or {"status": st.kv_status, "layer": layer.index}))
         # Unqualified decode windows use the original Torch operator at each
         # query's actual end. Padded keys must not select a different GEMM tree.
         if b.h.dtype == torch.float16 and getattr(st, "graph_rows", None) is None:

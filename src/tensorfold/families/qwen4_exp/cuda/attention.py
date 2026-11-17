@@ -784,7 +784,7 @@ def qsa_select(iq: torch.Tensor, ikc: torch.Tensor, pooled: torch.Tensor, pos0: 
                        if isinstance(ikc, HistoryLayer) else {})
     qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows,
              rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, **history_options)
-    qsa_rows(iq, pooled, pos0, scratch, rows, context=context)
+    qsa_rows(iq, pooled, pos0, scratch, rows, context=context, status=status, layer=layer)
 
 
 def qsa_pool(ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_scale: torch.Tensor,
@@ -809,10 +809,14 @@ def qsa_pool(ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_sca
 
 
 def qsa_rows(iq: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, scratch: AttnScratch, rows: int, *,
-             context: int | None = None) -> None:
-    """Score and select the blocks of rows P0 .. P0 + rows - 1; ``context`` bounds the launches to keys in use."""
+             context: int | None = None, status: torch.Tensor | None = None, layer: int = 0,
+             prompt: bool = False) -> None:
+    """Score and select the blocks of rows P0 .. P0 + rows - 1; ``context`` bounds the launches to keys in use.
+    ``status`` (the State's kv_status) receives a native long-context selection failure; ``prompt`` selects
+    the prompt-window route (family_ops.qsa_rows)."""
     if iq.dtype == torch.float16:
-        return _half_ops.qsa_rows(iq, pooled, pos0, scratch, rows, context=context)
+        return _half_ops.qsa_rows(iq, pooled, pos0, scratch, rows, context=context, status=status, layer=layer,
+                                  prompt=prompt)
 
 
     di = pooled.shape[1]

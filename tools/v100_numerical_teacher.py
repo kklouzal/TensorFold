@@ -183,7 +183,7 @@ def expected_numerics(trial, *, mtp=False):
         result['prepared_linears'] = owned_numerical_identity()
     if trial['owned_q8_window_prepare']:
         result['owned_q8_window_preparation'] = {
-            'policy': 'owned-q8-window-preparation-v1', 'roles': ['decode', 'mtp'] if mtp else ['decode'],
+            'policy': 'owned-q8-window-preparation-v1', 'roles': ['decode', 'mtp', 'prefill'] if mtp else ['decode', 'prefill'],
             'codec': 'original-floor-q8', 'native_rows_per_dispatch': 1,
             'native_dispatches_per_window': 'rows', 'maximum_window_rows': 256,
             'compact_indexer': 'reference-window-transaction', 'qualified': False}

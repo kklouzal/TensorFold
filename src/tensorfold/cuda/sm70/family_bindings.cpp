@@ -43,6 +43,7 @@ void family_ring_publish_cuda(const T&, T&, const T&, int, int, const O&, const 
 void family_qsa_select512_cuda(const T&, const T&, T&, T&);
 void family_qsa_dense_cuda(const T&, T&, T&, int);
 void family_qsa_rows_cuda(const T&, const T&, const T&, T&, T&, T&, T&, int, int, int, int);
+void family_qsa_rows_long_cuda(const T&, const T&, const T&, T&, T&, T&, T&, T&, int, int, int, int, int);
 
 void family_owned_q8_prepare_resident_cuda();
 void family_owned_q8_prepare_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&,
@@ -588,6 +589,32 @@ void qsa_rows(const T& query, const T& pooled, const T& position, T sparse, T co
     family_qsa_rows_cuda(query, pooled, position, sparse, counts, ids, scores, rows, ratio, budget, blocks);
 }
 
+// qsa_rows past the single-block selector: the captured round's score/radix bodies over one pooled base. Every
+// selectable group needs a score column (blocks <= scores.size(1)); a nonfinite score or a context past
+// ``blocks`` latches status (32, layer) and zeroes that row's ids.
+void qsa_rows_long(const T& query, const T& pooled, const T& position, T sparse, T counts, T ids, T scores, T status,
+                   int rows, int ratio, int budget, int blocks, int layer) {
+    check_half(query); same_half(pooled, query);
+    TORCH_CHECK(position.scalar_type() == at::kInt || position.scalar_type() == at::kLong, "QSA position dtype");
+    check(position, query, position.scalar_type(), "QSA position");
+    for (const auto* output : std::initializer_list<const T*>{&sparse, &counts, &ids, &status})
+        check(*output, query, at::kInt, "QSA integer output");
+    check(scores, query, at::kFloat, "QSA scores");
+    TORCH_CHECK(query.dim() == 3 && query.size(0) >= rows && pooled.dim() == 2 && pooled.size(1) == query.size(2)
+                && query.size(2) > 0 && query.size(2) <= 256 && query.size(2) % 32 == 0 && rows >= 0
+                && rows <= 65535 && ratio > 0 && budget > 0 && budget % ratio == 0
+                && budget / ratio == 512 && blocks > 0  // qsa_select512::kTop
+                && blocks <= pooled.size(0) && position.numel() == 1 && sparse.numel() >= rows
+                && counts.numel() >= rows && status.numel() == 2 && status.is_contiguous()
+                && ids.dim() == 2 && ids.size(0) >= rows && ids.size(1) >= budget + ratio && ids.stride(1) == 1
+                && scores.dim() == 2 && scores.size(0) >= rows && scores.size(1) >= blocks && scores.stride(1) == 1,
+                "QSA long selector geometry");
+    at::assert_no_overlap(scores, ids);
+    c10::cuda::CUDAGuard guard(query.device());
+    family_qsa_rows_long_cuda(query, pooled, position, sparse, counts, ids, scores, status, rows, ratio, budget,
+                              blocks, layer);
+}
+
 // Candidate-only complete-score selection. Callers own preallocated, disjoint
 // operands through current-stream/graph completion; no score calculation here.
 namespace {
@@ -655,5 +682,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("qsa_select512", &qsa_select512);
     m.def("owned_q8_prepare_rows", &owned_q8_prepare_rows);
     m.def("qsa_select_owned", &qsa_select_owned);
+    m.def("qsa_rows_long", &qsa_rows_long);
     m.def("guard_rows_owned", &guard_rows_owned);
 }

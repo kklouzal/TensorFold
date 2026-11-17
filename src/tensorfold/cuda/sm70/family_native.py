@@ -11,10 +11,13 @@ qsa_select512 consumes existing Float32 score rows and int32 causal
 complete-group lengths. It returns ascending logical group IDs in caller-owned
 [R,512] int32 output (short prefixes pad -1) and deterministic row status:
 0 finite success, 1 nonfinite valid-prefix score, 2 invalid length. Caller must
-check status after positive stream/graph completion BEFORE using IDs. Masked
-suffix values are ignored; read/write spans must be disjoint and remain owned
-until completion. The captured owned selector (qsa_select_owned) runs the same
-selection body over its own score slab; eager qsa_rows does not dispatch it.
+check status after positive stream/graph completion BEFORE using IDs (or consume
+it on the device stream before the IDs). Masked suffix values are ignored;
+read/write spans must be disjoint and remain owned until completion. The captured
+owned selector (qsa_select_owned) and eager decode-shaped rows past 4096 groups
+(qsa_rows_long) run the same selection body over their score slabs; eager prompt
+windows past 4096 groups call qsa_select512 on the Torch reference scores and
+latch a nonzero row status into the State's kv_status word on the device.
 """
 
 from functools import lru_cache

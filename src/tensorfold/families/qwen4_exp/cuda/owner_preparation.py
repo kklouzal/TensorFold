@@ -511,9 +511,9 @@ class OwnerPreparation:
                            if self.specification.get('descriptor_upload') is not None else {}))
                     owner.configure_native_family(self.specification["kernel_family"], self.specification.get("rn_heads_per_block"),
                         **({'owned_q8_window_prepare': True, 'owned_q8_window_role': role}
-                           if self.specification.get('owned_q8_window_prepare', False) and role != 'prefill' else {}),
+                           if self.specification.get('owned_q8_window_prepare', False) else {}),
                         **({'owned_q8_window_dispatch': 'grid-v1'}
-                           if self.specification.get('owned_q8_window_dispatch') == 'grid-v1' and role != 'prefill' else {}),
+                           if self.specification.get('owned_q8_window_dispatch') == 'grid-v1' else {}),
                         **({'aten_panel_rows': self.specification['aten_tiles']['panel_rows']}
                            if self.specification['kernel_family'] == ATEN_KERNEL_FAMILY else {}),
                         **({'aten_query_layout': self.specification['aten_tiles']['query_layout']}
@@ -709,7 +709,7 @@ class OwnerPreparation:
                 'policy': ('owned-q8-window-grid-preparation-v1'
                            if self.specification.get('owned_q8_window_dispatch') == 'grid-v1'
                            else 'owned-q8-window-preparation-v1'),
-                'roles': [role for role in ('decode', 'mtp') if role in self.role_rows],
+                'roles': [role for role in ('decode', 'mtp', 'prefill') if role in self.role_rows],
                 'codec': 'original-floor-q8',
                 'native_rows_per_dispatch': ('window' if self.specification.get('owned_q8_window_dispatch') == 'grid-v1' else 1),
                 'native_dispatches_per_window': (1 if self.specification.get('owned_q8_window_dispatch') == 'grid-v1' else 'rows'),

@@ -129,6 +129,39 @@ def test_selected_roles_keep_one_raw_transaction_and_commit_only_mtp(monkeypatch
         assert events[-1][1:] == ('prepared', 132, (7, 3))
 
 
+@pytest.mark.parametrize('mtp', [False, True])
+@pytest.mark.parametrize('coordinates', ['issued', 'resolved'])
+@torch.no_grad()
+def test_prompt_rows_run_in_owner_windows_with_one_raw_transaction(monkeypatch, mtp, coordinates):
+    rows = 300
+    item = fixture(rows, mtp=mtp)
+    p, state, _layer, _weights, buffers, events = item
+    buffers.prefill, buffers.owner_role, buffers.rows = True, 'prefill', 1024
+    if coordinates == 'resolved':
+        buffers.target_indexer_coordinates = buffers.mtp_indexer_coordinates = None
+        state.image_positions, state.rope_delta = None, 0
+    issued = buffers.target_indexer_coordinates
+    buffers.history_owner = NS(owned_q8_window_preparation=object(), owned_q8_window_role='prefill', rows=256,
+        native_kernel_family=FAMILY, owned_q8_window_dispatch='grid-v1')
+    invocations = []
+    def native(module, projection, axes, *args, **kwargs):
+        invocations.append((projection.data_ptr(), axes.clone(), kwargs['start']))
+        return projection[:, -128:]
+    monkeypatch.setattr(ops, 'owned_q8_prepare_window', native)
+    monkeypatch.setattr(history, '_prepare_reference', lambda *args, **kwargs: invocations.append('reference'))
+    history.prepare(*item[:5], 0, rows, mtp=mtp)
+    if mtp:  # the MTP head's prompt absorb keeps the reference prepare
+        assert invocations == ['reference']
+        return
+    assert [(at, start) for at, _, start in invocations] == [(p[0].data_ptr(), 127), (p[256].data_ptr(), 383)]
+    axes = torch.cat([value for _, value, _ in invocations])
+    expected = issued if issued is not None else (torch.arange(rows) + 127)[:, None].expand(-1, 3)
+    assert torch.equal(axes, expected)
+    assert [event[0] for event in events] == ['append', 'pool']
+    assert events[0][1][1] == 127 and torch.equal(events[0][1][2], p[:, -128:])
+    assert state.target_tentative_length == 427
+
+
 @torch.no_grad()
 def test_cross_row_alias_and_invalid_window_fail_before_guard_or_launch(monkeypatch):
     p, state, layer, weights, buffers, _ = fixture(5)
@@ -189,12 +222,12 @@ def test_grid_capability_is_checked_before_residency(monkeypatch):
         ops.prepare_owned_q8('cuda:0', window_dispatch='grid-v1')
 
 
-@pytest.mark.parametrize('role', ['decode', 'mtp'])
+@pytest.mark.parametrize('role', ['decode', 'mtp', 'prefill'])
 @pytest.mark.parametrize('dispatch', ['leaf-loop-v1', 'grid-v1'])
 def test_cold_capability_reuses_one_residency_operation(monkeypatch, role, dispatch):
     owner = object.__new__(history.OwnerBuffers)
     owner._empty_resources()
-    owner.prefill, owner.device, owner.rows, owner.heads, owner.head_dim = False, 'cpu', 5, 3, 256
+    owner.prefill, owner.device, owner.rows, owner.heads, owner.head_dim = role == 'prefill', 'cpu', 5, 3, 256
     owner.native_pair = get_pair('int8')
     owner.partials, owner.partial = torch.empty(8, 5, 12, 256), torch.empty(5, 12, 256)
     module = NS(__name__='resident')

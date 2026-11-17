@@ -2126,6 +2126,48 @@ measurements in this section set `TENSORFOLD_PREFILL_ROWS=1024`, below every aff
 size, so they stand. Other kernels' launch grids were audited for the same clamp: every
 other clamped grid loops over its elements.
 
+**Native KV preparation for target prompt rows; one exact selector past 16K (2026-11-17).**
+Target prompt rows now use the native owned-Q8 window preparation that decode and MTP
+rows already used. It runs in windows of at most 256 rows at consecutive cache
+positions, and each prompt piece publishes its raw indexer keys in one compact-indexer
+transaction. Before, each piece took about 15 Torch operations per attention layer.
+The MTP head's absorb of the prompt keeps the reference preparation: with the native
+window there too, the matrix measured decode 0.991× and prefill 1.011× against
+target rows alone.
+
+Indexer selection past 4,096 pooled groups (16K context) no longer uses a stable
+Torch argsort:
+- Prompt windows keep the Torch score arithmetic and select with `qsa_select512`'s
+  exact radix top 512. The selection is bitwise the previous one, and one 256-row
+  call takes 0.92 ms instead of 3.14 ms at 64K.
+- Decode-shaped eager rows run the captured round selector's score and radix bodies,
+  so an eager step selects exactly what a round graph would.
+- A selector failure (nonfinite score, context past the score slab) latches the
+  State's structural status.
+
+GPU tests (`tests/cuda/test_sm70_qsa_rows_long.py`) cover:
+- scores equal to the single-block kernel's, bitwise, up to 262,139 positions;
+- ids equal to an exact FP64 lexicographic top 512;
+- equality with the single-block kernel inside its envelope;
+- the prompt route equal to the stable-sort reference, bitwise;
+- status latching.
+
+Quality on 8× V100 TP8/ETP4, MTP4, INT8 KV, image `4b2661d8` with the source
+overlaid, `m-bdec-pad35`, 1,024 prefill rows: corpus-v2 raw-text prompt rows d
+−0.0007 (CI −0.0020, +0.0007) and decode rows d −0.00002 (CI −0.0018, +0.0018),
+both *equivalent*; golden-vg2 identical.
+
+Performance on the standard 10-cell greedy matrix (4K and 16K prompts at C1, C8, C16,
+C24 and C32; 32 lanes, `m-profile7h32`; base `a8bc6834`, two server sessions per arm):
+- *superior*: prefill aggregate 1.035× (1.033–1.038), decode aggregate 1.001×
+  (0.994–1.009), no regressed cell;
+- C1 prefill 4K 2,407 → 2,488, 16K 2,437 → 2,529 tok/s;
+- C32 prefill 4K 2,010 → 2,074, 16K 2,189 → 2,268 tok/s.
+
+The two candidate sessions ran after the four reference and first-candidate
+sessions, not interleaved; the two reference sessions, first and fourth in that
+order, agree within 0.5%.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the
