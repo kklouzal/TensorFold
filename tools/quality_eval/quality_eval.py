@@ -10,8 +10,10 @@
       TensorFold: POST /v1/tensorfold/score (the server must run with TENSORFOLD_PRIVATE_SCORE=1). Every
       document's prompt tokens are scored by prompt-pass (prefill) rows and its continuation by teacher-forced
       decode/MTP-verify rows (``--continuation-limit N``: only the first N, for prefill-path runs). vLLM: /v1/completions with ``prompt_logprobs`` over prompt+continuation (one pass).
-  compare A.json B.json [--margin 0.005] [--kinds PREFIX,...] [--out RESULT.json]
+  compare A.json B.json [--margin 0.005] [--prefill-kinds PREFIX,...] [--out RESULT.json]
       Paired per-token statistics of B against A per path and kind, and a verdict (see ``compare``'s doc).
+      ``--prefill-kinds`` restricts only the prefill verdict to those document kinds; decode keeps every document
+      and per-kind means still cover every kind.
 
 Standard library only for ``score`` and ``compare``.
 """
@@ -260,28 +262,30 @@ def compare(args) -> None:
     if set(ra) != set(rb):
         raise SystemExit("the runs scored different positions")
     rng = random.Random(args.seed)
-    kinds = tuple(args.kinds.split(",")) if args.kinds else None
+    kinds = tuple(args.prefill_kinds.split(",")) if args.prefill_kinds else None
     result = {"schema": SCHEMA_RESULT, "version": 1, "a": {"file": args.a, "label": a.get("label"), "backend": a["backend"]},
               "b": {"file": args.b, "label": b.get("label"), "backend": b["backend"]}, "margin": args.margin,
-              **({"kinds": list(kinds)} if kinds else {}),
+              **({"prefill_kinds": list(kinds)} if kinds else {}),
               "bootstrap": args.bootstrap, "seed": args.seed, "paths": {}}
     for path in ("prefill", "decode"):
-        keys = sorted(k for k in ra if k[1] == path and (kinds is None or ra[k][0].startswith(kinds)))
+        every = sorted(k for k in ra if k[1] == path)
+        keys = [k for k in every if path != "prefill" or kinds is None or ra[k][0].startswith(kinds)]
         if not keys:
             continue
-        per_kind: dict = {}
-        diffs, groups, agree, kls, tails, nll_a, nll_b = [], [], 0, [], [], [], []
-        for key in keys:
-            kind, x = ra[key]
-            _, y = rb[key]
+        per_kind: dict = {}  # every kind of the path, including kinds outside the verdict
+        for key in every:
+            (kind, x), (_, y) = ra[key], rb[key]
             if x["id"] != y["id"]:
                 raise SystemExit(f"{key}: different target tokens")
+            per_kind.setdefault(kind, []).append((-y["logprob"]) - (-x["logprob"]))
+        diffs, groups, agree, kls, tails, nll_a, nll_b = [], [], 0, [], [], [], []
+        for key in keys:
+            (_, x), (_, y) = ra[key], rb[key]
             d = (-y["logprob"]) - (-x["logprob"])
             diffs.append(d)
             groups.append(key[0])
             nll_a.append(-x["logprob"])
             nll_b.append(-y["logprob"])
-            per_kind.setdefault(kind, []).append(d)
             if x["top"] and y["top"]:
                 agree += int(x["top"][0][0] == y["top"][0][0])
                 got = _coarse_kl(x["top"], y["top"])
@@ -349,8 +353,9 @@ def main(argv=None) -> None:
     p.add_argument("a")
     p.add_argument("b")
     p.add_argument("--margin", type=float, default=0.005)
-    p.add_argument("--kinds", help="compare only documents whose kind starts with one of these comma-separated "
-                                   "prefixes (e.g. 'text' for SC117 prompt rows; see docs/testing-methodology.md)")
+    p.add_argument("--prefill-kinds", help="judge the prefill path only on documents whose kind starts with one of "
+                                           "these comma-separated prefixes (e.g. 'text' for SC117; decode keeps every "
+                                           "document; see docs/testing-methodology.md)")
     p.add_argument("--bootstrap", type=int, default=4000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out")

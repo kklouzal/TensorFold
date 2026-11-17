@@ -208,9 +208,10 @@ chat user turn SC117 puts ~99% of each row's probability on `<|im_end|>`, so a
 chat document's prompt-row NLL (5–10 nats/token on the `chat-repo(-long)`
 strata) measures only the remaining ~1% tail and swings by ±0.1–0.4
 nats/token per document under any numerics change; the 96 raw-text documents
-carry the prefill evidence (`compare --kinds text`; v2 SC117: 107,932 rows,
+carry the prefill evidence (`compare --prefill-kinds text`; v2 SC117: 107,932 rows,
 block SE ~0.0005–0.0007). The decode path is judged on all documents (chat
-continuations are assistant replies). A prefill-path run may cap the decode rows
+continuations are assistant replies); `--prefill-kinds` narrows only the prefill
+verdict, and the result's per-kind means still list the chat strata. A prefill-path run may cap the decode rows
 with `score --continuation-limit 32` (8,308 decode rows; ~6.5 minutes per run
 including the 268 prompt passes); `compare` refuses runs with different caps.
 
