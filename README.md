@@ -2068,6 +2068,25 @@ on the host during the second session pair. Long cold/repeat replies agree with 
 other, but the base itself changes them between server processes (its NCCL prompt sums),
 so they do not compare the two arms.
 
+**Faster RN owner attention and router logits, bitwise unchanged (2026-11-17).** The RN
+owner-attention kernels issue page-offset loads in batches, record each block's own
+key tiles during the fault scan, read K and V as packed 16-value runs and load the
+next K tile while the current one is scored; calls of at most 8 rows spread keys over
+32 blocks per row instead of 16. The value pass is one block per row and 16 columns for
+all 12 heads, so each V value is decoded once for every head. The router's logit GEMV
+loads the next weight tile during the current tile's FMAs, and calls of at most 20 rows
+use 4 outputs per block. Every row's FMA and addition order is unchanged: a
+base-versus-candidate harness (image `cf8c0ff6`) found 0 of 1,152 RN cases (Q8 and RQ4 values, descriptor
+faults, inactive rows, 1/4/12 heads per block) and 0 router cases differing. Packed K/V
+payloads must now start on a 16-byte boundary; binding a State whose payload does not
+is rejected. Per layer at 1/5/20 rows (same harness), RN took 152/172/425 instead of 257/342/770 us.
+On 8× V100 TP8/ETP4, MTP4, INT8 KV, image `4b2661d8` with the source overlaid,
+`m-bdec-pad35`, 1,024 prefill rows, 24 lanes, base `ace76993`, greedy matrix C1/C8/C16/C24
+at 4K and 16K (one server session per arm and pass, two repeats, A B B A): *superior*,
+decode aggregate 1.052× (1.036–1.068) with no regressed cell (lowest 1.020×), prefill
+1.004× (0.994–1.015); C1 decode 4K 84.2 → 85.9, 16K 86.1 → 88.4 tok/s; C24 decode per
+request 4K 11.5 → 12.4, 16K 11.2 → 12.0 tok/s; golden-vg2 identical. C32 was not run.
+
 **Fixed: prompt pieces above 1,638 rows left hyper-connection rows unwritten (2026-11-17).**
 The SM70 family kernels for hyper-connection normalization, stream mixing, the
 attention output gate and per-layer embeddings write one element per thread, but
@@ -2090,7 +2109,10 @@ overlaid; `m-bdec-pad35`; 24 lanes. On six long raw-text corpus-v2 documents
 the fix it is 1.755 at both 2,048 and 1,792 rows. MTP acceptance on 4K prompts went
 from 26/64, 18/76 and 23/50 accepted drafts to 50/52, 49/53 and 47/51. Measurements
 from configurations with prompt pieces above 1,638 rows before this fix (2,048- and
-4,096-row trials and the deployed default) do not represent the model.
+4,096-row trials and the deployed default) do not represent the model. The V100
+measurements in this section set `TENSORFOLD_PREFILL_ROWS=1024`, below every affected
+size, so they stand. Other kernels' launch grids were audited for the same clamp: every
+other clamped grid loops over its elements.
 
 ## V100 (SM70) adaptive development status
 
