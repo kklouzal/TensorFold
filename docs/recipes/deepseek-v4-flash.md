@@ -1,7 +1,7 @@
 # DeepSeek-V4-Flash
 
 The `deepseek_v4` family serves `mlx-community/DeepSeek-V4-Flash-4bit` on the MLX lane engine, on a Mac with
-256 GB and MLX 0.32.2 or later (`serve` refuses an older MLX). The routed experts keep DeepSeek's mxfp4 bytes and
+256 GB and MLX 0.32.4 or later (`serve` refuses an older MLX). The routed experts keep DeepSeek's mxfp4 bytes and
 everything else is affine 4-bit in groups of 64; about 151 GiB stays resident.
 Packages: `src/tensorfold/families/deepseek_v4/` and `src/tensorfold/kernels/deepseek/v4/`, with GLM-5.3-Flash's
 hyper-connection kernels and row linears.

@@ -132,7 +132,7 @@ speeds); `TF_GLM_LATENT=0` gives 0.3.6's replies exactly.
 
 ## Apple Silicon (MLX)
 
-On a Mac with 256 GB and MLX 0.32.2 or later (`serve` refuses an older MLX):
+On a Mac with 256 GB and MLX 0.32.4 or later (`serve` refuses an older MLX):
 
 ```bash
 tensorfold pull TensorFold/GLM-5.3-Flash-MLX-4bit-MTP
