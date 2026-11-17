@@ -368,9 +368,8 @@ def render_build_report(report, report_sha256, *, runtime=False, lint=False, lin
     # Triton's owned build enters through the runtime profile; the base closure
     # keeps the official Triton3.9 wheel. pyyaml/xgrammar have no cp315 wheels.
     owned = set(owned_python_builds(pins)) - {"triton"} if framework else set()
-    # Framework, runtime, the builder lint venv and the UV-managed lint-script interpreter are
-    # CPython 3.15; the separate media image's closures keep CPython 3.12 until that image is ported.
-    python_version = "3.12" if media_build or media_runtime else "3.15"
+    # Every container closure (framework, runtime, lint, lint-script, media) uses CPython 3.15.
+    python_version = "3.15"
     environment = report.get("environment", {})
     if any(environment.get(key) != value for key, value in {
         "sys_platform": "linux", "platform_machine": "x86_64", "implementation_name": "cpython",
