@@ -527,13 +527,25 @@ def _ragged_accounting(record, capacity, *, rank, graph_budget, sample, states):
     baseline_fields = integers(baseline, ('device_total_bytes', 'effective_device_floor_bytes'))
     current = integers(sample, ('physical_free_bytes', 'device_total_bytes', 'allocated_bytes', 'reserved_bytes',
         'observed_at_unix_ns', 'start_monotonic_ns', 'end_monotonic_ns'))
-    floor = cuda_reserve_bytes(baseline_fields['device_total_bytes'])
+    # The startup's recorded floor policy: full-window physical headroom admits from the actual free memory with
+    # no unused floor (097d5041); otherwise the configured CUDA reserve.
+    headroom = capacity.get('full_window_headroom')
+    if headroom is None:
+        floor = cuda_reserve_bytes(baseline_fields['device_total_bytes'])
+    elif (type(headroom) is dict and headroom.get('policy') == 'full-window-physical-headroom-v1'
+            and type(headroom.get('unused_device_floor_bytes')) is int and headroom['unused_device_floor_bytes'] == 0):
+        floor = 0
+    else:
+        raise ValueError('ragged accounting requires a recognized startup device-floor policy')
     if (current['device_total_bytes'] != baseline_fields['device_total_bytes']
             or baseline_fields['effective_device_floor_bytes'] != floor
             or not floor <= current['physical_free_bytes'] <= current['device_total_bytes']
             or current['allocated_bytes'] > current['reserved_bytes']
             or current['start_monotonic_ns'] > current['end_monotonic_ns']):
-        raise ValueError('ragged accounting quiescent sample violates the unchanged device floor')
+        raise ValueError('ragged accounting quiescent sample violates the unchanged device floor: '
+                         f"physical_free_bytes={current['physical_free_bytes']} floor_bytes={floor} "
+                         f"effective_device_floor_bytes={baseline_fields['effective_device_floor_bytes']} "
+                         f"allocated_bytes={current['allocated_bytes']} reserved_bytes={current['reserved_bytes']}")
     startup = capacity['multi_graphs']
     if (startup['automatic'] is not True or startup['captured'] is not True or startup['reason'] is not None
             or any(startup[name] != value for name, value in totals.items())

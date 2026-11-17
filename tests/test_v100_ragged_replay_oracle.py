@@ -132,6 +132,20 @@ def test_accounting_census_counts_a_round_captured_key_once(accounting_inputs):
         key[0] for key in record['exact_graph_catalogue']['captured_keys']]
 
 
+def test_accounting_expects_the_recorded_full_window_headroom_floor(accounting_inputs):
+    from tools.v100_owned_qualification import _ragged_accounting
+    record, capacity, sample, states = accounting_inputs
+    capacity['allocation_baseline']['effective_device_floor_bytes'] = 0
+    with pytest.raises(ValueError, match='device floor'):     # the legacy reserve policy expects 4 GiB
+        _ragged_accounting(record, capacity, rank=0, graph_budget=100, sample=sample, states=states)
+    capacity['full_window_headroom'] = {'policy': 'full-window-physical-headroom-v1', 'unused_device_floor_bytes': 0}
+    sample['physical_free_bytes'] = 4 * 2**30 - 1                # no unused floor under full-window headroom
+    _ragged_accounting(record, capacity, rank=0, graph_budget=100, sample=sample, states=states)
+    capacity['full_window_headroom']['unused_device_floor_bytes'] = 1
+    with pytest.raises(ValueError, match='device-floor policy'):
+        _ragged_accounting(record, capacity, rank=0, graph_budget=100, sample=sample, states=states)
+
+
 @pytest.mark.parametrize('case', ['declined', 'missing', 'duplicate', 'budget', 'rank', 'charge',
     'false_admission', 'noninteger', 'startup_drift', 'floor', 'workspace', 'context', 'busy_state', 'state_capacity'])
 def test_accounting_rejects_incomplete_or_weakened_gate_before_publication(accounting_inputs, case):
