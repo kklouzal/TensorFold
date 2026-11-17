@@ -1,8 +1,8 @@
 # Generated exact local-wheel closure; provenance URLs remain in its companion receipt.
-cython==3.3.1 --hash=sha256:215669fd0ce792080cd4d0748db7e1e31f424b6706a6220d08339895e6a3a03a
+cython==3.3.1 --hash=sha256:fcb6c86dddaedd1da5d77ba2469c1a4bea52442e02d8f0653ff78667fbaaa8d9
 meson==1.12.1 --hash=sha256:930bc7542cbd9f57009e182fd014eba48cf1a0180a7b9006d2d32d8f168d8b02
 ninja==1.13.2 --hash=sha256:65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c
-numpy==2.5.4 --hash=sha256:fbde6962867ee75b48b0ee29b2b9372ec5d617799dbaf38e82dc0596f2f7738a
+numpy==2.5.4 --hash=sha256:56733449d2544178beaa4545cee357370440cf056c197f9c7bfb19dbfdd0e86d
 packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
 pip==26.3 --hash=sha256:f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13
 setuptools==84.2.1 --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2

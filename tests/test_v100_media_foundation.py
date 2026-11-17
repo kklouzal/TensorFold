@@ -462,8 +462,8 @@ def test_media_export_embeds_the_actual_completed_stage_environments(media_drive
         result, _ = run(stage)
         assert result.returncode == 0, result.stdout + result.stderr
     wheels = state / "wheels"
-    for filename in ("av-19.0.2-cp312-cp312-linux_x86_64.whl",
-                     "torchvision-0.30.0.dev20261111+tfcpu-cp312-cp312-linux_x86_64.whl"):
+    for filename in ("av-19.0.2-cp315-cp315-linux_x86_64.whl",
+                     "torchvision-0.30.0.dev20261111+tfcpu-cp315-cp315-linux_x86_64.whl"):
         (wheels / filename).write_bytes(b"external wheel boundary; no media build proof")
     # Independent source/Ninja admission controls retain their own real tests.
     # This test exercises only actual shell environment publication and export.
@@ -696,8 +696,8 @@ def test_pyav_changed_config_during_build_cannot_publish_or_borrow_old_facts(med
 def test_media_owned_wheel_set_cannot_overwrite_inherited_transformers(tmp_path):
     pins = {"artifacts": [{"name": "torchvision", "version": "0.30.0.dev20261111"},
                            {"name": "pyav", "version": "19.0.2"}]}
-    for filename in ("av-19.0.2-cp312-cp312-linux_x86_64.whl",
-                     "torchvision-0.30.0.dev20261111+tfcpu-cp312-cp312-linux_x86_64.whl"):
+    for filename in ("av-19.0.2-cp315-cp315-linux_x86_64.whl",
+                     "torchvision-0.30.0.dev20261111+tfcpu-cp315-cp315-linux_x86_64.whl"):
         (tmp_path / filename).write_bytes(b"owned wheel boundary fixture")
     expected = {path.name: MEDIA.file_identity(path) for path in tmp_path.glob("*.whl")}
     assert len(MEDIA.verify_owned_wheels(pins, tmp_path, {"source_wheels": expected})) == 2

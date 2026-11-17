@@ -1,23 +1,23 @@
 {
   "environment": {
     "implementation_name": "cpython",
-    "implementation_version": "3.12.3",
+    "implementation_version": "3.15.2",
     "os_name": "posix",
     "platform_machine": "x86_64",
     "platform_python_implementation": "CPython",
     "platform_release": "7.0.0-43-generic",
     "platform_system": "Linux",
     "platform_version": "#43-Ubuntu SMP PREEMPT_DYNAMIC Fri Oct 23 13:25:25 UTC 2026",
-    "python_full_version": "3.12.3",
-    "python_version": "3.12",
+    "python_full_version": "3.15.2",
+    "python_version": "3.15",
     "sys_platform": "linux"
   },
-  "lock_sha256": "fc3fb208f0088be242e92291a0458d6aa2034a3efe5b794d996c269025d43092",
+  "lock_sha256": "5179e84363a2a71c5ee09b89f443c53f6f817c1871f79137c747c6fb2a5ced76",
   "packages": {
     "cython": {
       "requires_dist": [],
-      "sha256": "215669fd0ce792080cd4d0748db7e1e31f424b6706a6220d08339895e6a3a03a",
-      "url": "https://files.pythonhosted.org/packages/4a/c6/51ffdd996a1e6836792061ebe7ecf40480f1bd5693a721cea0ad4a689a81/cython-3.3.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "fcb6c86dddaedd1da5d77ba2469c1a4bea52442e02d8f0653ff78667fbaaa8d9",
+      "url": "https://files.pythonhosted.org/packages/63/e4/4ef74af67d86067258187a24764df2d9d9bf9adb0b78712862dea051eaff/cython-3.3.1-cp315-cp315-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
       "version": "3.3.1"
     },
     "meson": {
@@ -39,8 +39,8 @@
     },
     "numpy": {
       "requires_dist": [],
-      "sha256": "fbde6962867ee75b48b0ee29b2b9372ec5d617799dbaf38e82dc0596f2f7738a",
-      "url": "https://files.pythonhosted.org/packages/43/a3/c799c62e19c337e6d3770b08e475887fb30ce8477d3c09efca6b2f0228a6/numpy-2.5.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "56733449d2544178beaa4545cee357370440cf056c197f9c7bfb19dbfdd0e86d",
+      "url": "https://files.pythonhosted.org/packages/93/3a/01360c8036822ed9f7aa32189a77d1476567ec1e8e1383522389e4faac45/numpy-2.5.4-cp315-cp315-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl",
       "version": "2.5.4"
     },
     "packaging": {
@@ -121,7 +121,7 @@
       "version": "0.48.0"
     }
   },
-  "resolver_report_sha256": "c44ca2de706ba028d5a9f09e612ef447d4be9b9052fdd1cdbe99e3e8239d8b14",
+  "resolver_report_sha256": "2e69924c4ef8df8ee5b7b8dc10fc5356f5dcb1b0c3bcceaf9e02f3762f2d81e1",
   "schema": "tensorfold.v100-media-build-tools",
   "version": 1
 }
