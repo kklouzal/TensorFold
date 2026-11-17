@@ -544,7 +544,7 @@ See the governing specification's Sections 21–25.
 The governing specification now selects the coherent
 [source-built CUDA 12.9 stack](source-foundation.md). Its source producer,
 compile receipts and remaining V100 gates are separate from the historical
-wheel-based configuration below. A successful old cu126 import or model test
+wheel-based configuration (removed; see below). A successful old cu126 import or model test
 does not qualify the new framework/library combination. No serving-time
 dependency fallback is provided.
 
@@ -691,68 +691,12 @@ are unchanged; this client-only addition does not rebuild or reload the service.
 
 ## Historical cu126 reference
 
-The remaining original build/serve commands and measured host configurations
-retain their named historical images and layouts. Their numeric settings are
-not defaults or capacity recommendations for the current v6 candidate.
-
-The historical native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
-image by child and index digest, with official **Torch 2.14.1+cu126**,
-**TorchVision 0.29.1+cu126** and **Triton 3.8.0** wheels by SHA256. CUDA 12.9.2 is
-the compiler toolkit; Torch's wheel runtime is CUDA 12.6. They are deliberately
-recorded separately. A newer CUDA toolkit alone does not prove that a framework
-wheel contains Volta kernels. The probe requires `sm_70` in Torch's actual
-compiled targets and executes the selected operators on a V100.
-
-The historical cu126 wheels were selected because newer cu128/cu129 PyTorch wheels removed
-Volta. See [PyTorch's packaging notice](https://dev-discuss.pytorch.org/t/dropping-volta-support-from-cuda-12-8-binaries-for-release-2-11/3290)
-and [CUDA 12.9.2 compiler targets](https://docs.nvidia.com/cuda/archive/12.9.2/cuda-compiler-driver-nvcc/index.html#gpu-name-gpuname-arch).
-Triton is retained as a framework dependency; this SM70 provider does not invoke
-Triton kernels. The GB10 managed runtime, native-library policies and CUDA 13.x
-locks are unchanged. This separate development profile is not yet a qualified
-managed production foundation or a complete audit of all family APIs.
-
-The lock files are generated with the existing `deploy/gb10/lock_dependencies.py`
-renderer, using [pins.json](pins.json) and an actual Linux AMD64 pip resolver
-report. Never hand-edit the generated locks. To regenerate, build the resolver
-target, mount a new evidence directory, and resolve the three exact wheel URLs
-in `pins.json` plus the required component/test dependencies with pip's
-`--dry-run --ignore-installed --only-binary=:all: --report`. Pass that report,
-the pins, `architecture="amd64"`, and its raw SHA256 to `render`, then publish
-with `write_locks` into this directory. Preserve the report as private evidence;
-the generated manifest retains its identity and dependency closure.
-
-## Build and check
-
-From the repository root:
-
-```bash
-docker build --target verification -f deploy/v100/Dockerfile.cu126-reference -t tensorfold-v100:verified .
-docker run --rm tensorfold-v100:verified -m pytest -q \
-  tests/test_flashnext_gguf.py tests/test_flashnext_gguf_weights.py \
-  tests/test_gguf_assets.py tests/test_sm70_mtp_weights.py \
-  tests/test_flashnext_tp_control.py tests/test_flashnext_tp_scheduler.py
-docker run --rm --gpus 'device=0' -v tensorfold-v100-cache:/cache \
-  tensorfold-v100:verified -m pytest -q tests/cuda/test_sm70.py \
-  tests/cuda/test_sm70_gguf.py tests/cuda/test_flashnext_sm70_family.py \
-  tests/cuda/test_flashnext_sm70_mtp.py
-docker run --rm --gpus all --ipc host -v tensorfold-v100-cache:/cache \
-  tensorfold-v100:verified -m pytest -q tests/cuda/test_flashnext_sm70_collectives.py \
-  tests/cuda/test_flashnext_sm70_tp_scheduler.py
-docker run --rm --gpus 'device=0' -v tensorfold-v100-cache:/cache \
-  tensorfold-v100:verified /verification/v100_probe.py --probe-gpu
-docker run --rm tensorfold-v100:verified -m pytest -c /verification/pytest.ini -q \
-  /src/tests/test_deployment_pins.py /src/tests/test_verification_public_permissions.py
-```
-
-The last command uses source-relative deployment fixtures while importing the
-installed wheel. Other commands use tests outside the source import path.
-Package data includes all native CUDA/C++ sources. The cache key binds source,
-headers, architecture, compiler, flags and framework ABI; `MAX_JOBS=4` bounds
-native builds. Keep this cache separate from other serving stacks.
-The probe prints a component receipt with the provider, GGUF and GDN native
-binary hashes, compiler identities, SM70 cubins and bounded execution checks.
-Its optional `--checkpoint /models/first-shard.gguf` inventories a read-only
-model mount without loading the full model.
+The earlier CUDA 12.6 wheel reference recipe (`Dockerfile.cu126-reference`, its `pins.json`,
+foundation manifest/constraints and `requirements-*-amd64.lock` files) pinned CPython 3.12 Torch
+2.14.1+cu126 wheels that have no CPython 3.15 build. It never qualified the selected source-built
+stack and was removed with the CPython 3.15.2 move; its recorded results remain historical evidence
+in git history. Build and verify V100 images through the
+[source foundation](source-foundation.md#build-stages) instead.
 
 ## GPU-local CPU and host-memory placement
 

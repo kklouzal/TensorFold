@@ -461,7 +461,7 @@ were then frozen in the artifact bundle and the generated builder was rebuilt
 with networking disabled. Python URL/hash locks retain resolver provenance;
 their generated offline counterparts select the same local wheel bytes.
 `source_foundation.py render-dockerfiles` owns both selected Dockerfiles.
-The old wheel recipe remains `Dockerfile.cu126-reference` for historical controls.
+The old CUDA 12.6 wheel recipe was removed with the CPython 3.15.2 move (see git history).
 
 The [additive media procedure](media-foundation.md) retains the original build
 receipt and audited provider bytes while applying a separately identified audit
