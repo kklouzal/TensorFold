@@ -552,7 +552,8 @@ The additive [CPU media source image](media-foundation.md) builds the exact
 TorchVision/Transformers/PyAV/FFmpeg processor and decoder closure while preserving
 the selected source Torch/native providers. Its software inventory and installed
 controls do not qualify SC117 vision, service media policies, capacity or V100
-execution.
+execution. It now builds on the CPython 3.15.2 SDK; see its
+[recorded CPython 3.15.2 build](media-foundation.md#cpython-3152-build).
 
 Build the selected development image with the external source artifact context:
 

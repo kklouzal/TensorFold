@@ -32,10 +32,51 @@ qualification; historical receipts below retain their original inputs.
 The earlier home-design checkpoints `14fda300` and `72972474` retain their
 recorded processor/stack scope; they do not qualify this refreshed candidate.
 
+## CPython 3.15.2 build
+
+The media image follows the source SDK onto the pinned python-build-standalone
+CPython 3.15.2 (`/opt/venv`; see [the 3.15 runtime notes](python315-runtime.md)).
+`requirements-media-*.lock`, their offline locks, `media-build-amd64.json`,
+`media-runtime-amd64.json` and `media-build-constraints.txt` are rendered by
+`render-media-build-tools`/`render-media-runtime-support` and `offline-lock` from
+actual CPython 3.15.2 pip 26.3 reports constrained by `runtime-constraints` of
+the base runtime receipt. Every version is unchanged; the interpreter-specific
+wheels are the official cp315 Cython 3.3.1, NumPy 2.5.4 (the base runtime's own
+wheel) and Pillow 13.0.0 builds, so no owned support-wheel build is needed.
+`media-native-apt.json` is re-rendered against the current foundation APT
+bundle. Source pins, FFmpeg/dav1d configuration and the inherited Transformers
+identity are unchanged. TorchVision still builds its `py3-none` stable-ABI
+wheel; PyAV 19.0.2 selects the limited API only on CPython 3.12-3.13, so it
+builds a `cp315-cp315` wheel here.
+
+Recorded CPU build, 2026-11-17: SDK `tensorfold-v100:py315-sdk-3a8c8ea2`
+(`sha256:b25a7af2fa0236e8afe9a4b826d8c54eedbe6adf0acc988e676956c22191cddd`),
+producer snapshot `45e95d38`, `MAX_JOBS=56` on 56 host CPUs. All seven
+`media_build.sh` phases exited 0 in under two minutes, with the FFmpeg warning count
+unchanged from the CPython 3.12 build. The resulting
+`tensorfold-v100:py315-media-45e95d38` is local image ID
+`sha256:39844d6a40c7b497f6440aff0f21b4197947e923baeeaf601eb93a515f6f7693`,
+23,812,513,423 bytes, 22 layers and 132,702,561 bytes over that SDK. Its build
+ran the policy rebind, media install capture/audit, processor probe and source
+process audit. Afterwards the media audit passed over 3,611 artifacts (the same
+inventory size as the CPython 3.12 image), the probe passed, including dav1d AV1
+pixels against the libaom oracle, and the source process audit passed.
+`test_v100_media_foundation.py` (103), `test_v100_media_runtime.py` (5),
+`test_media_frontend_runtime.py` (26) and `test_media_work_runtime.py` (3)
+passed in the image, as did `test_sm70_software_binding.py` with
+`test_sm70_media_software_binding.py` (54).
+`test_sm70_media_software_binding_runtime.py` fails all four cases: the SDK's
+protected `/opt/tensorfold-pins/foundation-sdk-pattern.txt`, `foundation_sdk.sh`
+and `source-apt-amd64.sha256` are mode 0664 (copied with the build-context
+mode). The CPython 3.12 media-binding image `a817b9a4` fails the same four cases
+identically, so this SDK file-mode defect predates the port and remains open.
+These are CPU software checks only; the pending gates below are unchanged.
+
 ## Independent input acquisition checkpoint
 
 Input acquisition and extraction can run before the final SDK exists. They
-require Python 3.12, `packaging` and curl 8.4 or newer for the
+require Python 3.12 or newer (the CPython 3.15.2 SDK supplies it, `packaging`
+and curl 8.5.0), `packaging` and curl 8.4 or newer for the
 [in-transfer size limit](https://raw.githubusercontent.com/curl/curl/curl-8_5_0/docs/cmdline-opts/max-filesize.d);
 installation, source compilation and
 installed-media auditing still require their separately specified SDK/builder

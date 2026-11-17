@@ -131,7 +131,7 @@ The builder installs the selected CPython 3.15.2 standalone archive unchanged at
 `/opt/python3.15` (see [the 3.15 runtime notes](python315-runtime.md)); its producer
 venv (`/opt/source-venv`), the Spin lint venv, the framework build and the runtime
 `/opt/venv` all use it, and the bundle no longer carries Ubuntu's Python 3.12. The
-separate media image is not yet ported and keeps its CPython 3.12 closures. The recorded SDK build used a narrow
+separate [media image](media-foundation.md#cpython-3152-build) uses the same interpreter. The recorded SDK build used a narrow
 immutable release-wheel exception while retaining the lint, detached-HEAD,
 Test Plan and publication rules. That historical record does not establish or
 revoke the scope of authorization for a fresh build. The owner has now directly
