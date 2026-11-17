@@ -480,6 +480,11 @@ def ple_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
                        w.x3.ple_emb[:R])
         _mm(emb, p.key, None, b.ple_keys[:R], b)
         _mm(emb, p.value, None, b.ple_vals[:R], b)
+    elif getattr(p.table, "iq4nl_rows", False):       # a GGUF table's packed IQ4_NL rows, decoded here
+        _family(b).ple_embed_iq4nl(R, b.ple_q, p.ngram.heads, p.ngram.dims, b.ple_emb[:R], b.xs_ple[:R],
+                                   scale=p.table.weight_scale)
+        _mm(b.ple_emb[:R], p.key, b.xs_ple[:R], b.ple_keys[:R], b)
+        _mm(b.ple_emb[:R], p.value, b.xs_ple[:R], b.ple_vals[:R], b)
     elif getattr(p.table, "bits", 4) == 16:           # the published revision's rows: bf16, nothing to unpack
         _family(b).ple_embed_bf16(R, b.ple_v, p.ngram.heads, p.ngram.dims, b.ple_emb[:R], b.xs_ple[:R],
                             scale=getattr(p.table, "weight_scale", 1.0))
@@ -511,6 +516,12 @@ def ple_conv_streams(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers)
 def stage_ple_rows(p, b: Buffers, ids: np.ndarray, at: int = 0) -> None:
     """Copy the rows' n-gram table entries (host memory map) to the GPU buffers, from staging row ``at``."""
 
+    if getattr(p.table, "iq4nl_rows", False):              # packed IQ4_NL rows: the forward decodes them
+        packed = p.table.gather(ids)
+        rows = slice(at, at + packed.shape[0])
+        b.ple_hq[rows].numpy()[:] = packed
+        b.ple_q[rows].copy_(b.ple_hq[rows], non_blocking=True)
+        return
     if getattr(p.table, "bits", 4) == 16:                  # a bf16 table: the rows go over as they are
         values = p.table.gather(ids)
         if b.ple_hv.dtype == torch.float16:

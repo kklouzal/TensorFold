@@ -185,6 +185,24 @@ __global__ void gate_kernel(const __half* value, const __half* proj, __half* out
     if (!lane) xs[group] = sum;
 }
 
+// IQ4_NL table rows (ggml type 20: 32-value blocks of an FP16 scale + 16 nibble bytes). A block's coefficient is the
+// GGUF reference decode, FP16(scale * codebook) rounded once (an exact FP32 product), then embed_kernel's arithmetic.
+__constant__ int8_t ple_iq4nl_codebook[16] = {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
+
+__global__ void embed_iq4nl_kernel(const uint8_t* packed, int64_t row_bytes, int row_blocks, __half* out, float* xs,
+                                   int64_t groups, float scale) {
+    const int64_t group = int64_t(blockIdx.x) * 8 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
+    if (group >= groups) return;
+    const uint8_t* p = packed + (group / row_blocks) * row_bytes + (group % row_blocks) * 18;
+    const float d = __half2float(__ushort_as_half(static_cast<unsigned short>(p[0] | (p[1] << 8))));
+    const int code = (p[2 + lane % 16] >> (4 * (lane / 16))) & 15;
+    const float stored = __half2float(__float2half_rn(d * float(ple_iq4nl_codebook[code])));
+    float value = half_round(stored * scale);
+    out[group * 32 + lane] = __float2half_rn(value);
+    float sum = warp_sum(value);
+    if (!lane) xs[group] = sum;
+}
+
 __global__ void embed_kernel(const __half* values, __half* out, float* xs, int64_t groups, float scale) {
     const int64_t group = int64_t(blockIdx.x) * 8 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (group >= groups) return;
@@ -1066,6 +1084,11 @@ void family_gate_cuda(const T& value, const T& projection, T& out, T& xs, int he
 void family_ple_embed_cuda(const T& values, T& out, T& xs, int rows, int heads, int dim, float scale) {
     if (out.numel()) embed_kernel<<<blocks(out.numel()), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
         ptr<__half>(values), ptr<__half>(out), ptr<float>(xs), out.numel() / 32, scale);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void family_ple_embed_iq4nl_cuda(const T& packed, T& out, T& xs, int dim, float scale) {
+    if (out.numel()) embed_iq4nl_kernel<<<blocks(out.numel()), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        packed.data_ptr<uint8_t>(), packed.size(1), dim / 32, ptr<__half>(out), ptr<float>(xs), out.numel() / 32, scale);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 void family_ple_gate_cuda(const T& keys, const T& values, const T& h, const T& nk, const T& nq,

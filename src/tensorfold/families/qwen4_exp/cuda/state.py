@@ -216,6 +216,9 @@ class Buffers:
         self.ple_hb = torch.zeros((nrow, dh // 32), dtype=torch.int16, pin_memory=pin)
         self.ple_v = torch.zeros((nrow, dh), dtype=bf, device=dev)          # a bf16 table's rows, as they ship
         self.ple_hv = torch.zeros((nrow, dh), dtype=bf, pin_memory=pin)
+        # a GGUF IQ4_NL table's packed rows (decoded on the GPU by the forward)
+        self.ple_q = torch.zeros((nrow, dh // 32 * 18), dtype=torch.uint8, device=dev)
+        self.ple_hq = torch.zeros((nrow, dh // 32 * 18), dtype=torch.uint8, pin_memory=pin)
         self.ple_emb = row_tensor("ple_emb", (rows, c.ple_dim), dtype=bf)
         self.xs_ple = torch.empty((rows, c.ple_dim // 32), dtype=f32, device=dev)
         self.ple_keys = row_tensor("ple_keys", (rows, wide), dtype=bf)

@@ -516,6 +516,20 @@ def _torch_ple_embed_bf16(rows, values, heads, dh, out, xs, *, scale=1.0):
     group_sums(out, xs)
 
 
+_IQ4NL_CODEBOOK = (-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113)
+
+
+def _torch_ple_embed_iq4nl(rows, packed, heads, dh, out, xs, *, scale=1.0):
+    """IQ4_NL table rows (row r * heads + h, 18-byte blocks): FP16(scale * codebook) as the GGUF decode, then embed."""
+    blocks = packed[:rows * heads].reshape(rows * heads, dh // 32, 18)
+    d = blocks[..., :2].contiguous().view(torch.float16).float()
+    nibbles = blocks[..., 2:]
+    codes = torch.cat((nibbles & 15, nibbles >> 4), -1).long()
+    book = torch.tensor(_IQ4NL_CODEBOOK, dtype=torch.float32, device=packed.device)
+    value = (book[codes] * d).half().reshape(rows * heads, dh)
+    _torch_ple_embed_bf16(rows, value, heads, dh, out, xs, scale=scale)
+
+
 def _torch_ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps, streams):
     rows, wide = h.shape
     dims = wide // streams
@@ -915,7 +929,7 @@ _NATIVE_FAMILY = False
 _NATIVE_ATTENTION = False
 _reference = {name: globals()["_torch_" + name] for name in (
     "hc_writeback", "hc_normed", "hc_act", "hc_reduce_act", "hc_mix", "rmsnorm", "attn_gate",
-    "ple_embed_bf16", "ple_gate", "ple_conv", "add_streams", "moe_partial", "shift_windows")}
+    "ple_embed_bf16", "ple_embed_iq4nl", "ple_gate", "ple_conv", "add_streams", "moe_partial", "shift_windows")}
 
 
 def _fused(tensor, *, half=True):
@@ -1065,6 +1079,13 @@ def ple_embed_bf16(rows, values, heads, dh, out, xs, *, scale=1.0):
     if native is not None:
         return native.ple_embed(values, out, xs, rows, heads, dh, scale)
     return _reference["ple_embed_bf16"](rows, values, heads, dh, out, xs, scale=scale)
+
+
+def ple_embed_iq4nl(rows, packed, heads, dh, out, xs, *, scale=1.0):
+    native = _fused(out)
+    if native is not None:
+        return native.ple_embed_iq4nl(packed, out, xs, rows, heads, dh, scale)
+    return _reference["ple_embed_iq4nl"](rows, packed, heads, dh, out, xs, scale=scale)
 
 
 def ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps, streams, valid_rows=None, independent_rows=False):

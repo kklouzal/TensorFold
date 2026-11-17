@@ -600,6 +600,14 @@ def ple_embed_bf16(rows: int, values: torch.Tensor, heads: int, dh: int, out: to
                                    PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
+def ple_embed_iq4nl(rows: int, packed: torch.Tensor, heads: int, dh: int, out: torch.Tensor,
+                    xs: torch.Tensor, *, scale: float = 1.0) -> None:
+    """A GGUF IQ4_NL table's gathered packed rows (row r * heads + h) -> out [rows, heads * dh], decoded on the GPU."""
+    if out.dtype != torch.float16:
+        raise ValueError("IQ4_NL n-gram rows execute in FP16")
+    return _half_ops.ple_embed_iq4nl(rows, packed, heads, dh, out, xs, scale=scale)
+
+
 @triton.jit
 def _ple_gate(KEYS, VALS, H, NK, NQ, GATED, PSS, eps,
               D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr, PDL: tl.constexpr = False):

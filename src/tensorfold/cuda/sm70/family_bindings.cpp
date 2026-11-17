@@ -22,6 +22,7 @@ void family_mix_cuda(const T&, const T&, T&, T&, int);
 void family_rms_cuda(const T&, const T&, T&, T&, int, float);
 void family_gate_cuda(const T&, const T&, T&, T&, int, int);
 void family_ple_embed_cuda(const T&, T&, T&, int, int, int, float);
+void family_ple_embed_iq4nl_cuda(const T&, T&, T&, int, float);
 void family_ple_gate_cuda(const T&, const T&, const T&, const T&, const T&, T&, T&, const O&, int, float, bool);
 void family_ple_conv_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&, int, int, float);
 void family_add_cuda(const T&, const T&, T&, int);
@@ -171,6 +172,16 @@ void ple_embed(const T& values, T out, T xs, int rows, int heads, int dim, doubl
     TORCH_CHECK(rows >= 0 && heads > 0 && dim > 0 && out.sizes() == at::IntArrayRef({rows, int64_t(heads) * dim})
                 && values.numel() >= int64_t(rows) * heads * dim && std::isfinite(scale), "PLE embedding geometry");
     c10::cuda::CUDAGuard guard(out.device()); family_ple_embed_cuda(values, out, xs, rows, heads, dim, float(scale));
+}
+
+void ple_embed_iq4nl(const T& packed, T out, T xs, int rows, int heads, int dim, double scale) {
+    check_half(out); groups(out, xs);
+    TORCH_CHECK(packed.is_cuda() && packed.device() == out.device() && packed.scalar_type() == at::kByte
+                && packed.dim() == 2 && packed.is_contiguous(), "IQ4_NL PLE rows require contiguous same-device uint8");
+    TORCH_CHECK(rows >= 0 && heads > 0 && dim > 0 && dim % 32 == 0 && packed.size(1) == int64_t(dim / 32) * 18
+                && out.sizes() == at::IntArrayRef({rows, int64_t(heads) * dim})
+                && packed.size(0) >= int64_t(rows) * heads && std::isfinite(scale), "IQ4_NL PLE embedding geometry");
+    c10::cuda::CUDAGuard guard(out.device()); family_ple_embed_iq4nl_cuda(packed, out, xs, dim, float(scale));
 }
 
 void ple_gate(const T& keys, const T& values, const T& h, const T& nk, const T& nq, T gated, T pss,
@@ -673,7 +684,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("owned_q8_prepare_window", &owned_q8_prepare<true>);
     m.def("guard_rows", &guard_rows);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
-    m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);
+    m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_embed_iq4nl", &ple_embed_iq4nl); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);
     m.def("prep", &prep); m.def("prep_q4", &prep_q4); m.def("prep_staged", &prep_staged);
     m.def("pool", &pool); m.def("pool_staged", &pool_staged); m.def("ring_publish", &ring_publish);

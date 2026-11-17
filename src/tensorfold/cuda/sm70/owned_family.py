@@ -15,7 +15,7 @@ import torch
 
 POLICY = 'owned-native-family-v1'
 OPERATIONS = ('hc_writeback', 'hc_normed', 'hc_act', 'hc_reduce_act', 'hc_mix',
-              'rmsnorm', 'attn_gate', 'ple_embed_bf16', 'ple_gate', 'ple_conv',
+              'rmsnorm', 'attn_gate', 'ple_embed_bf16', 'ple_embed_iq4nl', 'ple_gate', 'ple_conv',
               'add_streams', 'moe_partial', 'shift_windows')
 
 
@@ -87,6 +87,10 @@ class PreparedFamily:
         self.module.ple_embed(values, out, xs, rows, heads, dh, scale)
         _published(out, xs)
 
+    def ple_embed_iq4nl(self, rows, packed, heads, dh, out, xs, *, scale=1.0):
+        self.module.ple_embed_iq4nl(packed, out, xs, rows, heads, dh, scale)
+        _published(out, xs)
+
     def ple_gate(self, keys, vals, h, norm_key, norm_query, gated, pss, eps, streams,
                  valid_rows=None, independent_rows=False):
         self.module.ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, streams,
@@ -150,6 +154,7 @@ def prepare(device):
         owner.rmsnorm(h, scale, 1e-6, out=normed, xs=xs)
         owner.attn_gate(half(1, 3, 256), half(1, 1536), half(1, 768), full(1, 24), q_heads=3, head_dim=256)
         owner.ple_embed_bf16(1, half(4, 640), 4, 640, mixed, mx)
+        owner.ple_embed_iq4nl(1, torch.zeros((4, 360), device=device, dtype=torch.uint8), 4, 640, mixed, mx)
         for independent in (False, True):
             owner.ple_gate(h, mixed, h, scale, scale, out, full(1, 4), 1e-6, 4,
                 valid_rows=torch.ones((1,), device=device, dtype=torch.int32), independent_rows=independent)

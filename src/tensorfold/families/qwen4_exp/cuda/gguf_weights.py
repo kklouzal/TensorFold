@@ -664,14 +664,16 @@ class GGUFExperts:
 
 
 class GGUFPLETable(_MappedTable):
-    """The fork's existing mapped/read-ahead lifetime over original IQ4_NL rows."""
-    bits = 16  # Values handed to the family staging interface are decoded FP16.
-    dtype = "float16"
+    """The fork's existing mapped/read-ahead lifetime over original IQ4_NL rows.
+
+    ``gather`` returns the rows' packed IQ4_NL bytes; the forward decodes them on the GPU (``ple_embed_iq4nl``:
+    FP16(scale * codebook), the GGUF reference decode). Rows whose FP32 values would overflow FP16 are refused here."""
+    iq4nl_rows = True
     weight_scale = 1.0
 
     def __init__(self, source):
         with self._construction():
-            if source.encoding != "IQ4_NL" or len(source.shape) != 2:
+            if source.encoding != "IQ4_NL" or len(source.shape) != 2 or source.shape[1] % 32:
                 raise ValueError("Flash Next GGUF PLE requires an IQ4_NL matrix")
             self.source = source
             file = TableFile(source.path, min_bytes=source.offset + source.nbytes)
@@ -692,11 +694,17 @@ class GGUFPLETable(_MappedTable):
 
     def _gather_flat(self, ids):
         packed = np.ascontiguousarray(self.values[0][ids])
-        values = decode_rows(self.source, packed)
-        result = values.astype(np.float16)
-        if np.any(np.isfinite(values) & ~np.isfinite(result)):
-            raise ValueError("IQ4_NL PLE row overflows FP16 execution")
-        return result
+        # |FP16 scale * codebook| <= |scale| * 127 is exact in FP32; only blocks reaching FP16's overflow bound (or a
+        # non-finite scale) need the reference decode's check, which refuses finite values that overflow FP16.
+        scales = packed.reshape(len(packed), -1, 18)[..., :2].copy().view("<f2").astype(np.float32)
+        suspect = ~(np.abs(scales) < np.float32(65504.0 / 127)).all(axis=(1, 2))
+        if suspect.any():
+            values = decode_rows(self.source, packed[suspect])
+            with np.errstate(over="ignore"):                  # the overflow is the refused condition
+                half = values.astype(np.float16)
+            if np.any(np.isfinite(values) & ~np.isfinite(half)):
+                raise ValueError("IQ4_NL PLE row overflows FP16 execution")
+        return packed
 
     def prefetch(self, workers=PLE_PREFETCH_WORKERS):
         return self._life.call(_prefetch, self.values, workers)

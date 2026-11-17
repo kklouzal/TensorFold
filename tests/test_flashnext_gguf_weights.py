@@ -390,7 +390,7 @@ def test_packed_ple_uses_existing_read_ahead_and_close_ownership(tmp_path, monke
     descriptor = PackedTensor("ple", (8, 32), 20, path, 64, packed.nbytes)
     table = ReadAhead(GGUFPLETable(descriptor))
     table.read_ahead([3, 4, 3])
-    np.testing.assert_array_equal(table.gather([3, 4, 3]), scalar_reference(packed, 20, 32)[[3, 4, 3]].astype(np.float16))
+    np.testing.assert_array_equal(table.gather([3, 4, 3]), packed[[3, 4, 3]])   # packed rows; the GPU decodes them
     calls = []
     monkeypatch.setattr(table.table, "_lock_arrays", lambda arrays: calls.append(arrays) or False)
     assert table.lock() is False
@@ -400,3 +400,42 @@ def test_packed_ple_uses_existing_read_ahead_and_close_ownership(tmp_path, monke
         table.gather([0])
     with pytest.raises(ValueError, match="closed"):
         table.lock()
+
+
+@pytest.mark.torch
+def test_packed_ple_refuses_rows_overflowing_fp16(tmp_path):
+    pytest.importorskip("tensorfold._fd_owner", reason="needs the installed native FD owner")
+    import struct
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFPLETable
+
+    packed = blocks(20, 4, 64)
+    packed[2, 18:20] = np.frombuffer(struct.pack("<e", 600.0), np.uint8)   # |600 * -127| > FP16 max
+    packed[2, 20:36] = 0                                                   # every code -127
+    packed[3, 0:2] = np.frombuffer(struct.pack("<e", 515.0), np.uint8)    # the bound: 515 * 127 < 65504
+    path = tmp_path / "ple.bin"
+    path.write_bytes(packed.tobytes())
+    table = GGUFPLETable(PackedTensor("ple", (4, 64), 20, path, 0, packed.nbytes))
+    try:
+        np.testing.assert_array_equal(table.gather([0, 3, 1]), packed[[0, 3, 1]])
+        with pytest.raises(ValueError, match="overflows FP16"):
+            table.gather([1, 2])
+    finally:
+        table.close()
+
+
+@pytest.mark.torch
+def test_iq4nl_ple_embed_reference_matches_gguf_decode():
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda.sm70 import family_ops
+
+    rows, heads, dh = 3, 4, 64
+    packed = blocks(20, rows * heads, dh, seed=5)
+    scales = np.random.default_rng(5).normal(size=(rows * heads, dh // 32)).astype("<f2")
+    packed.reshape(rows * heads, -1, 18)[..., :2] = scales.view(np.uint8).reshape(rows * heads, -1, 2)
+    descriptor = SimpleNamespace(ggml_type=20, encoding="IQ4_NL", shape=(rows * heads, dh), row_bytes=packed.shape[1])
+    values = torch.from_numpy(decode_rows(descriptor, packed).astype(np.float16))
+    expected, xe = torch.empty((rows, heads * dh), dtype=torch.float16), torch.empty((rows, heads * dh // 32))
+    family_ops._torch_ple_embed_bf16(rows, values, heads, dh, expected, xe, scale=0.5)
+    out, xs = torch.empty_like(expected), torch.empty_like(xe)
+    family_ops._torch_ple_embed_iq4nl(rows, torch.from_numpy(packed), heads, dh, out, xs, scale=0.5)
+    assert torch.equal(out.view(torch.int16), expected.view(torch.int16)) and torch.equal(xs, xe)
