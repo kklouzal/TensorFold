@@ -19,7 +19,7 @@ def test_old_python_refuses_before_tool_definitions(tool, version):
     assert rc.returncode != 0
     assert 'Python 3.11+ is required' in rc.stderr
     assert '.'.join(map(str, version)) in rc.stderr
-    assert f'python3.12 tools/{tool}' in rc.stderr
+    assert f'Python 3.11 or newer interpreter: python3 tools/{tool}' in rc.stderr
     assert 'Traceback' not in rc.stderr
 
 

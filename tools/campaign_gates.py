@@ -30,7 +30,7 @@ import traceback
 
 if sys.version_info < (3, 11):
     print(f"Python 3.11+ is required (this is {sys.version.split()[0]}); "
-          "TensorFold's tools use PEP 604 unions. Try: python3.12 tools/campaign_gates.py ...", file=sys.stderr)
+          "TensorFold's tools use PEP 604 unions. Run it with a Python 3.11 or newer interpreter: python3 tools/campaign_gates.py ...", file=sys.stderr)
     sys.exit(4)                                     # an error, never a gate verdict
 
 if __package__:
