@@ -2220,15 +2220,18 @@ The shared proof validator distinguishes full 24-slot Q8 and 32-slot Q4 capacity
 the C8 teacher operation remains explicitly 24-slot Q8. Focused CPU contract controls pass;
 actual Source37 capacity, numerical quality and performance remain separate gates.
 
-A [CPython 3.15.2 runtime candidate](deploy/v100/python315-runtime.md) runs the same
-source on python-build-standalone 3.15.2 with the owned PyTorch source rebuilt for cp315
-and Triton 3.2.0 built from source with an owned compatibility patch. On 8×V100 (SC117
-IQ3_S, TP8/ETP4, MTP4, `--context 262144 --parallel 32`, greedy, 512 output tokens,
-source `53d6da37`), two sessions per arm against the 3.12.3 image `cf8c0ff6` measured
-prefill geomean 1.008 (0.989–1.027) and per-stream decode geomean 1.041 (1.019–1.063)
-over 4K/16K × C1/8/16/24/32, with no cell regression; golden-vg2 and the ten long greedy
-prompts were identical, and warm startup was 83–88 s versus 93 s. The audited
-source-foundation pipeline still builds the 3.12.3 image; it is not yet regenerated for 3.15.
+The V100 image runs on [CPython 3.15.2](deploy/v100/python315-runtime.md), built by
+the source foundation: the pinned python-build-standalone 3.15.2 archive at
+`/opt/python3.15`, the owned PyTorch source rebuilt for cp315, and owned source builds
+of Triton 3.2.0 (with a compatibility patch), PyYAML and xgrammar, which have no
+usable cp315 wheels. On 8×V100 (SC117 IQ3_S, TP8/ETP4, MTP4, `--context 262144
+--parallel 24`, manifest `m-bdec-pad35`, greedy, 512 output tokens), two sessions per
+arm of the pipeline-built image against the CPython 3.12.3 image `cf8c0ff6` measured
+prefill geomean 1.004 (0.998–1.010) and per-stream decode geomean 1.003 (0.983–1.024)
+over 4K/16K × C1/8/16/24 with no cell regression (C32 needs 32 lanes); golden-vg2 and
+the ten long greedy prompts were identical in every fresh process, and warm startup was
+91 s versus 97 s. An earlier 32-lane comparison with manifest `m-profile7h32` measured
+decode geomean 1.041 (1.019–1.063), including C32.
 
 ### Serving, admission and startup
 
