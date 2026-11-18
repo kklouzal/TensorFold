@@ -16,6 +16,7 @@ from tensorfold.families.qwen4_exp.cuda.sm70_kv import (
     COMPACT_Q4,
     COMPACT_ISO4,
     EIGHT_BIT,
+    OWNED_ONLY,
     ROTOR_Q8,
     ROTOR_Q8_NORM,
     check_kernel_fields,
@@ -29,7 +30,7 @@ from tests.test_cuda_growing_caches import weights
 # Iso4 and the eight-bit RotorQuant formats are admitted only symmetrically (K == V).
 PAIRS = tuple((key, value) for key, value in product(FORMATS, repeat=2)
               if (COMPACT_ISO4 not in (key, value) or key == value == COMPACT_ISO4)
-              and (not {key, value} & set(EIGHT_BIT) or key == value))
+              and (not {key, value} & set(OWNED_ONLY) or key == value))
 
 
 def model(world=1, *, mtp=True, dtype="float16"):
@@ -53,10 +54,10 @@ def test_exact_sm70_registry_and_operator_plan_agree(key, value):
     policy = check_pair(pair, head_dim=256)
     assert policy == (ROTOR_POLICY if pair.key.codec or pair.value.codec else RAW_POLICY)
     fields = [(0 if side.bits == 16 else side.bits, side.codec) for side in (pair.key, pair.value)]
-    if key in EIGHT_BIT:
-        # Eight-bit sides run only on the owned unique-history path (owned writer + paged RN readers);
-        # the legacy prep/attention operators keep refusing them, and the kernels name rotorquant8 codec 12.
-        assert kernel_codec(pair.key) == (12 if key == ROTOR_Q8 else 8)
+    if key in OWNED_ONLY:
+        # These sides run only on the owned unique-history path (owned writer + paged RN readers); the legacy
+        # prep/attention operators keep refusing them, and the kernels name rotorquant8 codec 12.
+        assert kernel_codec(pair.key) == (12 if key == ROTOR_Q8 else pair.key.codec)
         with pytest.raises(ValueError, match="SM70"):
             check_kernel_fields(*fields[0], *fields[1])
         return
@@ -141,7 +142,8 @@ def test_half_state_uses_real_packed_and_scale_bytes_through_clone_resize_copy(k
     source = State(w, 37, 4, kv_pair=pair, limit=128)
     expected_row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 136, ROTOR_Q4_NORM: 136,
                         COMPACT_Q4: 128 + 2 * (2 + 2), COMPACT_ISO4: 128 + 2 * (2 + 2),
-                        ROTOR_Q8: 256 + 2 * 4, ROTOR_Q8_NORM: 256 + 2 * 4}[side]
+                        ROTOR_Q8: 256 + 2 * 4, ROTOR_Q8_NORM: 256 + 2 * 4,
+                        "rotorquant-planar4": 136, "rotorquant-iso4": 136, "rotorquant-iso64-norm4": 136}[side]
                        for side in (key, value))
     layers = 2 + int(mtp)
     expected = layers * (37 * (expected_row + 256) + 10 * 256 + pair.dummy_bytes)
@@ -239,7 +241,8 @@ def test_full_window_forecast_counts_q4_packing_fp32_scales_and_replace_overlap(
     candidate = indexed_stream_geometry(text, **kwargs, kv_pair=specs)
     row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 128 + 2 * 4, ROTOR_Q4_NORM: 128 + 2 * 4,
                COMPACT_Q4: 128 + 2 * (2 + 2), COMPACT_ISO4: 128 + 2 * (2 + 2),
-               ROTOR_Q8: 256 + 2 * 4, ROTOR_Q8_NORM: 256 + 2 * 4}[name]
+               ROTOR_Q8: 256 + 2 * 4, ROTOR_Q8_NORM: 256 + 2 * 4,
+               "rotorquant-planar4": 136, "rotorquant-iso4": 136, "rotorquant-iso64-norm4": 136}[name]
               for name in (key, value))
     # Every full slot owns all target/MTP caches. A replacement retains one
     # additional layer; indexer/pool, graph/status and workspace bytes cancel.

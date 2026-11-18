@@ -427,7 +427,8 @@ def test_long_issued_axis_selection_uses_each_original_coordinate_without_text_p
     assert new[1].kv_status.cpu().tolist() == [0, -2]
 
 
-ROTOR = ('rotorquant-planar4-sm70-v1', 'rotorquant-iso4-sm70-v1', 'rotorquant8', 'rotorquant8-norm')
+ROTOR = ('rotorquant-planar4-sm70-v1', 'rotorquant-iso4-sm70-v1', 'rotorquant-planar4', 'rotorquant-iso4',
+         'rotorquant-iso64-norm4', 'rotorquant-signed128-4', 'rotorquant-signed64-norm4', 'rotorquant8', 'rotorquant8-norm')
 
 
 @pytest.mark.parametrize('kv', ROTOR)

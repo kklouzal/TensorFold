@@ -1,4 +1,4 @@
-"""Eight-bit RotorQuant (rotorquant8 / rotorquant8-norm) through the NativeRN paged owner attention.
+"""FP32-scale RotorQuant (rotorquant8/-norm, signed128-4, signed64-norm4) through the NativeRN paged owner attention.
 
 Random K/V are encoded per owner by the native codec, the four-peer RN phases
 run as in serving, and the merged output is compared with an FP64 attention
@@ -20,12 +20,13 @@ PAGE, LOGICAL, ROWS, PEERS = 128, 512, 2, 4
 
 
 def owner_shard(rank, keys, values, codec):
+    width = 256 if codec in (8, 12) else 128
     """Rank-owned pages (page % 4 == rank) of the logical [512, 256] K/V, encoded in place by the native codec."""
     offsets, physical = [], 0
     for page in range(LOGICAL // PAGE):
         offsets.append(physical if page % PEERS == rank else -1)
         physical += PAGE if page % PEERS == rank else 0
-    k = torch.zeros((physical, 1, 256), dtype=torch.uint8, device='cuda')
+    k = torch.zeros((physical, 1, width), dtype=torch.uint8, device='cuda')
     v = torch.zeros_like(k)
     ks = torch.zeros((physical, 1, 2), dtype=torch.float32, device='cuda')
     vs = torch.zeros_like(ks)
@@ -54,10 +55,12 @@ def decoded(codes, scales, codec):
     return codec_native.decode(codes, scales, out, codec=codec)
 
 
-@pytest.mark.parametrize('codec', [12, 8])
+# Kernel codecs: 12 rotorquant8, 8 rotorquant8-norm, 4 rotorquant-signed128-4, 5 rotorquant-signed64-norm4.
+@pytest.mark.parametrize('codec', [12, 8, 1, 2, 3, 4, 5])
 @pytest.mark.parametrize('heads', [1, 4, 12])
 @torch.no_grad()
-def test_rn_eight_bit_rotor_matches_fp64_attention_over_decoded_operands(codec, heads):
+def test_rn_fp32_scale_rotor_matches_fp64_attention_over_decoded_operands(codec, heads):
+    bits = 8 if codec in (8, 12) else 4
     gen = torch.Generator(device='cuda').manual_seed(4108 + codec)
     keys = torch.randn((LOGICAL, 256), device='cuda', generator=gen).half()
     values = torch.randn((LOGICAL, 256), device='cuda', generator=gen).half()
@@ -80,22 +83,22 @@ def test_rn_eight_bit_rotor_matches_fp64_attention_over_decoded_operands(codec, 
     local = [torch.empty((ROWS, 12, 256), dtype=torch.float32, device='cuda') for _ in range(PEERS)]
     out = [torch.empty((ROWS, 3, 256), dtype=torch.float16, device='cuda') for _ in range(PEERS)]
     for rank, shard in enumerate(shards):
-        operator.rn_local_statistics(query, selection, shard['table'], stats[rank], key_bits=8, key_codec=codec,
+        operator.rn_local_statistics(query, selection, shard['table'], stats[rank], key_bits=bits, key_codec=codec,
                                      heads_per_block=heads, **common)
         all_stats[rank].copy_(stats[rank])
     for rank, shard in enumerate(shards):
         operator.rn_merge_statistics(all_stats, shard['table'], globals_[rank], **common)
     probability = receive.view(torch.float16).reshape(-1)[:ROWS * 12 * 2051].view(ROWS, 12, 2051)
     for rank, shard in enumerate(shards):
-        operator.rn_probabilities(query, selection, shard['table'], globals_[rank], probability, key_bits=8,
+        operator.rn_probabilities(query, selection, shard['table'], globals_[rank], probability, key_bits=bits,
                                   key_codec=codec, heads_per_block=heads, **common)
         operator.rn_partial_values(probability, selection, shard['table'], local[rank], page_tokens=PAGE,
-                                   layer=layer, value_bits=8, value_codec=codec)
+                                   layer=layer, value_bits=bits, value_codec=codec)
     for rank in range(PEERS):
         receive[rank].copy_(local[rank])
     for rank, shard in enumerate(shards):
         operator.merge_values(receive, shard['table'], out[rank], rank=rank, page_tokens=PAGE, layer=layer,
-                              value_bits=8, value_codec=codec)
+                              value_bits=bits, value_codec=codec)
     torch.cuda.synchronize()
     for shard in shards:
         assert shard['status'].cpu().tolist() == [0, -2]
@@ -109,7 +112,8 @@ def test_rn_eight_bit_rotor_matches_fp64_attention_over_decoded_operands(codec, 
             if offset >= 0:
                 dk[page * PAGE:(page + 1) * PAGE] = k[offset:offset + PAGE, 0].double()
                 dv[page * PAGE:(page + 1) * PAGE] = v[offset:offset + PAGE, 0].double()
-    variant = 'signed-iso128-norm8' if codec == 8 else 'signed-iso128'
+    variant = {12: 'signed-iso128', 8: 'signed-iso128-norm8', 1: 'planar', 2: 'isofast', 3: 'iso64-norm',
+               4: 'signed-iso128', 5: 'signed-iso64-norm'}[codec]
     for row in range(ROWS):
         ids = chosen[row].long()
         q = query[:PEERS, row].reshape(12, 256).double()

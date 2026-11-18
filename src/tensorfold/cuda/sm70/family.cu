@@ -411,8 +411,9 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
 // One window row (blockIdx.x = output unit). window_start/window_rows describe
 // this row's own State window; start is its logical row inside that window.
 // CODEC 0 is ordinary Q8 (Hadamard H32, FP16 absmax); CODEC 9/10 are the compact
-// Planar4/Iso4 formats and 8/12 the eight-bit signed Iso128 RotorQuant formats
-// (norm8 / original RMS): the query is rotated into the stored basis and K/V are
+// Planar4/Iso4 formats, 1..5 the FP32-scale Q4 formats (Planar, Isofast, Iso64-norm, signed
+// Iso128, signed Iso64-norm) and 8/12
+// the eight-bit signed Iso128 RotorQuant formats (norm8 / original RMS): the query is rotated into the stored basis and K/V are
 // encoded per 128-value group exactly as the reference rotate/encode kernels do
 // (group-local error votes, same staged FP32 arithmetic, same packed stores).
 template<int CODEC>
@@ -494,7 +495,7 @@ __device__ __forceinline__ void owned_q8_prepare_row(const __half* p, const int6
         value = guarded(value, status, flag, layer, 0, nullptr);
     }
     if (col >= width) return;  // Widths are complete warps.
-    if constexpr (CODEC == 9 || CODEC == 10 || tf_rq4::eight_bit(CODEC)) {
+    if constexpr (CODEC != 0) {
         if (kind != 3) {  // Q/K/V widths are the whole CTA: every thread reaches each barrier.
             __shared__ int votes[2];
             const tf_rq4::GroupAny any{votes};
@@ -1446,6 +1447,11 @@ void family_owned_q8_prepare_resident_cuda() {
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<10>));
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<8>));
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<12>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<4>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<5>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<1>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<2>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<3>));
 }
 
 void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
@@ -1466,6 +1472,11 @@ void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const 
     else if (codec == 10) launch(std::integral_constant<int, 10>{});
     else if (codec == 8) launch(std::integral_constant<int, 8>{});
     else if (codec == 12) launch(std::integral_constant<int, 12>{});
+    else if (codec == 4) launch(std::integral_constant<int, 4>{});
+    else if (codec == 5) launch(std::integral_constant<int, 5>{});
+    else if (codec == 1) launch(std::integral_constant<int, 1>{});
+    else if (codec == 2) launch(std::integral_constant<int, 2>{});
+    else if (codec == 3) launch(std::integral_constant<int, 3>{});
     else launch(std::integral_constant<int, 0>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -1485,6 +1496,11 @@ void family_owned_q8_prepare_rows_cuda(const T& p, const T& axes, const T& qw, c
     else if (codec == 10) launch(std::integral_constant<int, 10>{});
     else if (codec == 8) launch(std::integral_constant<int, 8>{});
     else if (codec == 12) launch(std::integral_constant<int, 12>{});
+    else if (codec == 4) launch(std::integral_constant<int, 4>{});
+    else if (codec == 5) launch(std::integral_constant<int, 5>{});
+    else if (codec == 1) launch(std::integral_constant<int, 1>{});
+    else if (codec == 2) launch(std::integral_constant<int, 2>{});
+    else if (codec == 3) launch(std::integral_constant<int, 3>{});
     else launch(std::integral_constant<int, 0>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

@@ -205,16 +205,23 @@ def test_actual_serial_generate_keeps_drafts_and_shares_the_qualified_resume_cou
     assert retired_calls == [(None, False)] and engine.served == 1
 
 
-@pytest.mark.parametrize("format", ["rotorquant-planar4-sm70-v1", "rotorquant-iso4-sm70-v1", "rotorquant8",
-                                    "rotorquant8-norm"])
+@pytest.mark.parametrize("format", ["rotorquant-planar4-sm70-v1", "rotorquant-iso4-sm70-v1", "rotorquant-iso4",
+                                    "rotorquant-signed128-4", "rotorquant8", "rotorquant8-norm"])
 @pytest.mark.parametrize("profile", ["reference", "optimized"])
 @pytest.mark.parametrize("sampling", [None, Sampling(17, 0), Sampling(19, .7, 40, .9)])
-def test_owned_writer_rotor_formats_borrow_exactly_as_int8(format, profile, sampling):
-    # Rows of these formats are quantized independently by the owned per-row writer, as ordinary Q8.
-    expected = prefix_policy.reuse_allowed(weights(profile=profile), sampling, draft=True, vision=None,
-                                           position=128, kv_pair=get_pair("int8"))
-    assert prefix_policy.reuse_allowed(weights(profile=profile), sampling, draft=True, vision=None,
-                                       position=128, kv_pair=get_pair(format)) is expected
-    assert prefix_policy.serial_reuse_allowed(weights(profile=profile), sampling, draft=True, position=128,
+def test_unique_history_owned_rotor_formats_borrow_exactly_as_int8(format, profile, sampling):
+    # In the unique-history layout the history owner writes these rows exactly as it writes ordinary Q8 rows.
+    unique = weights(profile=profile)
+    unique.meta["history_layout"] = "unique"
+    expected = prefix_policy.reuse_allowed(unique, sampling, draft=True, vision=None, position=128,
+                                           kv_pair=get_pair("int8"))
+    assert prefix_policy.reuse_allowed(unique, sampling, draft=True, vision=None, position=128,
+                                       kv_pair=get_pair(format)) is expected
+    assert prefix_policy.serial_reuse_allowed(unique, sampling, draft=True, position=128,
                                               kv_pair=get_pair(format)) is prefix_policy.serial_reuse_allowed(
-        weights(profile=profile), sampling, draft=True, position=128, kv_pair=get_pair("int8"))
+        unique, sampling, draft=True, position=128, kv_pair=get_pair("int8"))
+    # Mixed pairs and other layouts stay cold.
+    assert not prefix_policy.reuse_allowed(unique, sampling, draft=True, vision=None, position=128,
+                                           kv_pair=get_pair("int8", format, "int8"))
+    assert not prefix_policy.reuse_allowed(weights(profile=profile), sampling, draft=True, vision=None,
+                                           position=128, kv_pair=get_pair(format))

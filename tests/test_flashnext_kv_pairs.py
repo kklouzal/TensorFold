@@ -11,7 +11,7 @@ import itertools
 import pytest
 
 from tensorfold.families.qwen4_exp.kv_formats import FORMATS, KVPairFormat, get, get_pair
-from tensorfold.families.qwen4_exp.cuda.sm70_kv import FORMATS as SM70_FORMATS, ROTOR_POLICY, COMPACT_ISO4, EIGHT_BIT
+from tensorfold.families.qwen4_exp.cuda.sm70_kv import FORMATS as SM70_FORMATS, ROTOR_POLICY, COMPACT_ISO4, OWNED_ONLY
 from tests.test_cuda_geometry import allocations  # noqa: F401
 from tests.test_cuda_growing_caches import weights
 
@@ -21,7 +21,7 @@ STATE_PAIRS = tuple(pair for pair in PAIRS
                     if (COMPACT_ISO4 not in (pair.key_dtype, pair.value_dtype) or pair.symmetric)
                     and (pair not in COMPACT_PAIRS
                          or pair.key_dtype in SM70_FORMATS and pair.value_dtype in SM70_FORMATS
-                         and (not {pair.key_dtype, pair.value_dtype} & set(EIGHT_BIT) or pair.symmetric)))
+                         and (not {pair.key_dtype, pair.value_dtype} & set(OWNED_ONLY) or pair.symmetric)))
 
 
 def pair_id(pair):

@@ -74,7 +74,9 @@ def _rotor_variant(codec):
         return "signed-iso64-norm"
     if codec == 8:
         return "signed-iso128-norm8"
-    raise ValueError("SM70 RotorQuant requires an admitted signed basis")
+    if codec in (1, 2, 3):
+        return ("planar", "isofast", "iso64-norm")[codec - 1]
+    raise ValueError("SM70 RotorQuant requires an admitted basis")
 
 
 def _rotor_bits(codec):
@@ -1188,7 +1190,9 @@ def shift_windows(old, new, keep, channels):
 
 
 # (key bits, key codec, value bits, value codec) -> native owned-writer codec (12: rotorquant8, 8: rotorquant8-norm).
-OWNED_FORMATS = {(8, 0, 8, 0): 0, (4, 9, 4, 9): 9, (4, 10, 4, 10): 10, (8, 4, 8, 4): 12, (8, 8, 8, 8): 8}
+OWNED_FORMATS = {(8, 0, 8, 0): 0, (4, 1, 4, 1): 1, (4, 2, 4, 2): 2, (4, 3, 4, 3): 3, (4, 4, 4, 4): 4,
+                 (4, 5, 4, 5): 5, (4, 9, 4, 9): 9, (4, 10, 4, 10): 10,
+                 (8, 4, 8, 4): 12, (8, 8, 8, 8): 8}
 
 
 def owned_codec(cache):

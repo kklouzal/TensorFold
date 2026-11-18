@@ -49,7 +49,8 @@ void statistics(const T& value, const T& owner, int rows, bool gathered) {
 }
 
 void format(int bits, int codec) {
-    TORCH_CHECK((bits == 8 && (codec == 0 || codec == 8 || codec == 12)) || (bits == 4 && (codec == 9 || codec == 10)),
+    TORCH_CHECK((bits == 8 && (codec == 0 || codec == 8 || codec == 12))
+                || (bits == 4 && ((codec >= 1 && codec <= 5) || codec == 9 || codec == 10)),
                 "paged owner attention supports ordinary Q8, eight-bit RotorQuant kernel codec 8/12, "
                 "pinned Iso4 codec10 or Planar4 codec9");
 }
