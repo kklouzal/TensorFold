@@ -2197,6 +2197,27 @@ about 27 ms) and was the only value measured. Verify launch spread fell from a m
 per arm (same setup and base as above): decode +2.26% (+1.83% with the best cell
 dropped; C24 16K −2.25%), prefill +0.58%; golden-vg2 identical.
 
+**Tensor-parallel operations that fail on some ranks only now fail closed (2026-11-18).**
+A follower whose scheduler operation raised a recoverable error (`ValueError`, `NoRoom`)
+used to acknowledge and wait for the next command without logging it. When only that
+rank failed, the other ranks were already inside a collective it skipped. The leader then
+never reached the acknowledgment comparison, so the cohort hung indefinitely (seen at C8
+with an owner-local compact-indexer refusal on rank 7). Now the leader confirms each
+follower that raised once every acknowledgment matches, and
+`src/tensorfold/families/qwen4_exp/cuda/tp_scheduler.py` bounds both waits:
+- A follower without that confirmation within `ERROR_AGREEMENT_S` (120 s) logs
+  `rank N: <kind> operation S raised <type> on this rank only: ...` and poisons the
+  cohort. The supervisor then ends every rank.
+- A leader whose own operation raised waits for acknowledgments for the same bound,
+  then poisons the cohort.
+
+Failures raised alike on every rank keep their per-request outcome; the confirmation
+costs one Store write per failed operation. The error-free path is unchanged. On 8x
+V100 (prod, 24 lanes, eight 4K streams; `4b2661d8` with the fe709301 source and this
+change overlaid), a diagnostic overlay made rank 7 raise before a round's collectives.
+Rank 7 logged the line above 120 s later and the cohort was retired at once; the same
+failure previously hung. CPU coverage is `tests/test_tp_rank_local_failure.py`.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the
