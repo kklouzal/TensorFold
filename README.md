@@ -2233,6 +2233,24 @@ change overlaid), a diagnostic overlay made rank 7 raise before a round's collec
 Rank 7 logged its local failure 120 s later and the cohort was retired at once; the same
 failure previously hung. CPU coverage is `tests/test_tp_rank_local_failure.py`.
 
+**Greedy MTP draft picks on the GPU (2026-11-18).** Each greedy tensor-parallel MTP
+proposal step used to read back its gathered candidate packet in a second blocking copy
+after the step's KV-status wait, then chose the draft with NumPy (about 0.28 ms per step at
+C1). The SM70 family kernel `draft_pick` now applies the host chooser's packet checks and
+its greedy rule (maximum real FP32 score, lowest global ID among exact ties) on the
+device. Its few result words are copied into pinned memory before the status check's
+wait, so the pick needs no readback of its own
+(`src/tensorfold/families/qwen4_exp/cuda/draft_pick.py`). Errors keep the host chooser's
+precedence, and a possibly truncated tie falls back to the original chooser with its
+full-vocabulary repair. The confidence uses the same FP64 operations, so tokens and
+confidences are bitwise those of the host chooser (`tests/cuda/test_sm70_draft_pick.py`,
+129 differential cases). Sampled requests keep the host path. Two fast-protocol pairs
+(8x V100 TP8/ETP4, MTP4, INT8 KV, image `4b2661d8` with the source overlaid,
+`m-bdec-r2b-24`, 24 lanes, 4K/16K x C1-C24, one repeat each; bases `987ce177` and
+`597869cb`): decode +1.53% (+1.42% with the best cell dropped), every decode cell between
++1.07% and +2.33% combined over both pairs (the first pair alone had C8 4K −2.75%),
+prefill +0.01%; golden-vg2 identical.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the
