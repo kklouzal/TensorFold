@@ -22,6 +22,9 @@ namespace {
 
 // NK key heads and NV value heads: the whole layer (16, 48) or one tensor-parallel rank's share (8, 24)
 
+// chain_kernel/batch_chain_kernel block size: launch bounds and both launches use it (chain_body's static checks).
+constexpr int CHAIN_THREADS = 1024;
+
 template <int NK, int NV, bool NegativeDecay>
 __device__ __forceinline__ void chain_body(
         const __half* __restrict__ P, const __half* __restrict__ cs,
@@ -39,6 +42,11 @@ __device__ __forceinline__ void chain_body(
     // convolution, q/k norms and gates (phase 1) and the gated RMSNorm output (phase 3) of every row in a tile
     // run in parallel. Each value is computed by the same expression as the row-serial schedule (bitwise).
     constexpr int RT = 8, CH = 2 * DK + DV;
+    // Warp w owns state rows 4w .. 4w + 3 and lane l columns 4l .. 4l + 3; phase 3 runs DV threads per tile row;
+    // phase 1b uses warps 0 .. 2RT - 1 (q/k norms) and 2RT .. 3RT - 1 (gates).
+    static_assert(DV == 4 * (CHAIN_THREADS / 32) && DK == 4 * 32, "GDN chain state tiling needs DV / 4 warps of DK / 4 lanes");
+    static_assert(RT * DV == CHAIN_THREADS, "GDN chain phase 3 needs one block thread per (tile row, value column)");
+    static_assert(3 * RT <= CHAIN_THREADS / 32, "GDN chain phase 1b needs 3 * RT warps");
     __shared__ float qs[RT][DK], ks[RT][DK], vs[RT][DV], ys[RT][DV];
     __shared__ float gates[RT][2], rinv[RT];
     float s[4][4];
@@ -150,7 +158,7 @@ __device__ __forceinline__ void chain_body(
 }
 
 template<int NK, int NV, bool NegativeDecay>
-__global__ void __launch_bounds__(1024) chain_kernel(
+__global__ void __launch_bounds__(CHAIN_THREADS) chain_kernel(
         const __half* __restrict__ P, const __half* __restrict__ cs,
         const __half* __restrict__ cw, const float* __restrict__ state_in,
         const float* __restrict__ decay_parameter, const float* __restrict__ dt_bias,
@@ -163,7 +171,7 @@ __global__ void __launch_bounds__(1024) chain_kernel(
 }
 
 template<int NK, int NV, bool NegativeDecay>
-__global__ void __launch_bounds__(1024) batch_chain_kernel(
+__global__ void __launch_bounds__(CHAIN_THREADS) batch_chain_kernel(
         const __half* __restrict__ P, const __half* __restrict__ cw,
         const float* __restrict__ decay_parameter, const float* __restrict__ dt_bias,
         const __half* __restrict__ norm_w, float eps,
@@ -227,7 +235,7 @@ void sm70_gdn_chain_cuda(const at::Tensor& P, const at::Tensor& cs, const at::Te
     auto stream = at::cuda::getCurrentCUDAStream();
     const int nv = (int)decay_parameter.numel();
     auto launch = [&](auto kernel, int blocks) {
-        kernel<<<blocks, 1024, 0, stream>>>(
+        kernel<<<blocks, CHAIN_THREADS, 0, stream>>>(
         ptr<__half>(P), ptr<__half>(cs), ptr<__half>(cw), ptr<float>(state_in),
         ptr<float>(decay_parameter), ptr<float>(dt_bias), ptr<__half>(norm_w), (float)eps, (int)rows,
         ptr<__half>(out), ptr<float>(xs), ptr<float>(state_out), ptr<float>(k_save),
@@ -253,7 +261,7 @@ void sm70_gdn_batch_chain_cuda(const at::Tensor& P, const at::Tensor& cw,
     auto stream = at::cuda::getCurrentCUDAStream();
     const int nv = (int)decay.numel(), slots = (int)pointers.size(1);
     auto launch = [&](auto kernel) {
-        kernel<<<dim3(nv, slots), 1024, 0, stream>>>(ptr<__half>(P), ptr<__half>(cw), ptr<float>(decay),
+        kernel<<<dim3(nv, slots), CHAIN_THREADS, 0, stream>>>(ptr<__half>(P), ptr<__half>(cw), ptr<float>(decay),
             ptr<float>(bias), ptr<__half>(norm), (float)eps, ptr<int64_t>(pointers), pointers.stride(0),
             ptr<int>(starts), ptr<__half>(out), ptr<float>(sums));
     };
