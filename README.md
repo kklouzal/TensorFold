@@ -669,7 +669,7 @@ These read once at startup on Apple Silicon; defaults are the qualified paths.
 
 ## KV cache formats
 
-Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider admits `fp16` (its CLI default), `int8`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4`, and the distinct compact `rotorquant-planar4-sm70-v1`, with supported independent sides. The compact format requires its own V100 qualification. Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70.
+Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider admits `fp16` (its CLI default), `int8`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4`, and the distinct compact `rotorquant-planar4-sm70-v1` / `rotorquant-iso4-sm70-v1`, with supported independent sides. Its unique-history TP8 owner path (the SC117 serving profile) additionally admits `rotorquant8`, `rotorquant8-norm`, `rotorquant-planar4`, `rotorquant-iso4` and `rotorquant-iso64-norm4`, with the same format on K and V; every RotorQuant format on that path is written by the fused owned KV writer and read by the native sparse attention kernels, including captured decode rounds (see [RotorQuant KV on V100](#rotorquant-kv-on-v100-sm70)). Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70.
 
 | Family | Exact names | Bytes for one 256-value K **or** V head |
 | --- | --- | ---: |
@@ -678,7 +678,7 @@ Flash Next's modern CUDA provider supports the following **16 formats**, with in
 | INT4 | `int4` | 144 |
 | RotorQuant 3-bit | `rotorquant-planar3`, `rotorquant-iso3` | 104 |
 | RotorQuant 4-bit | `rotorquant-planar4`, `rotorquant-iso4`, `rotorquant-iso64-norm4`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4` | 136 |
-| Compact CUDA Planar4, SM70 only | `rotorquant-planar4-sm70-v1`; separate pinned FP16 norm/reserved schema, new native/model qualification pending | 136 |
+| Compact CUDA Planar4/Iso4, SM70 only | `rotorquant-planar4-sm70-v1`, `rotorquant-iso4-sm70-v1`; separate pinned FP16 norm/reserved schema | 136 |
 | RotorQuant 6-bit | `rotorquant6`, `rotorquant6-norm`, `rotorquant6-outlier-norm` | 200 |
 | RotorQuant 7-bit | `rotorquant7` | 232 |
 | RotorQuant 8-bit | `rotorquant8`, `rotorquant8-norm` | 264 |

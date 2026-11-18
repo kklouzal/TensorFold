@@ -23,7 +23,10 @@
 // This is the unrounded Q8 value, not paged_attention.cu's FP16-rounded
 // decode; both are approximations of the same dequantized operand.
 // Exponentials use the RN family's RN(x*log2e) -> ex2.approx.f32 (non-FTZ).
-// Only ordinary Q8 (bits 8, codec 0) caches are accepted by the bindings.
+// RotorQuant caches (kernel template KIND 1..3) enter the tensor core as their
+// FP16-rounded centroids (a shared-memory table) with the codec's FP32 or FP16
+// per-128 group scale applied exactly where the Q8 scale is (no /128); their
+// local sums stay in the stored basis (merge_values applies the inverse basis).
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -32,6 +35,7 @@
 #include <cstdint>
 #include "paged_attention_descriptor.cuh"
 #include "paged_attention_device.cuh"
+#include "rotorquant_q4.cuh"
 
 using T = at::Tensor;
 
@@ -89,6 +93,38 @@ __device__ __forceinline__ void codes(uint32_t raw, uint32_t& lo, uint32_t& hi) 
     hi = *reinterpret_cast<uint32_t*>(&y);
 }
 
+// KIND: 0 ordinary Q8; 1 eight-bit RotorQuant (kernel codecs 8/12: index bytes, FP32 scale per 128);
+// 2 FP32-scale Q4 (codecs 1..5: nibbles, FP32 scale per 128); 3 compact Q4 (codecs 9/10: nibbles, FP16 norm word).
+// Four index bytes -> two FP16x2 of their FP16 centroids.
+__device__ __forceinline__ void centroids(uint32_t raw, const __half* table, uint32_t& lo, uint32_t& hi) {
+    __half2 x = __halves2half2(table[raw & 0xffu], table[(raw >> 8) & 0xffu]);
+    __half2 y = __halves2half2(table[(raw >> 16) & 0xffu], table[raw >> 24]);
+    lo = *reinterpret_cast<uint32_t*>(&x);
+    hi = *reinterpret_cast<uint32_t*>(&y);
+}
+
+template<int KIND>
+__device__ __forceinline__ void tile_codes(uint32_t raw, const __half* table, uint32_t& lo, uint32_t& hi) {
+    if constexpr (KIND == 0) codes(raw, lo, hi);
+    else centroids(raw, table, lo, hi);
+}
+
+// Eight nibble-packed codes (even value in the low nibble) -> eight index bytes.
+__device__ __forceinline__ uint2 nibbles(uint32_t packed) {
+    uint32_t low = 0, high = 0;
+    #pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        low |= ((packed >> (4 * i)) & 15u) << (8 * i);
+        high |= ((packed >> (16 + 4 * i)) & 15u) << (8 * i);
+    }
+    return make_uint2(low, high);
+}
+
+__device__ __forceinline__ uint4 widen(uint2 packed) {
+    const uint2 a = nibbles(packed.x), b = nibbles(packed.y);
+    return make_uint4(a.x, a.y, b.x, b.y);
+}
+
 __device__ __forceinline__ uint32_t pack(float a, float b) {
     __half2 value = __floats2half2_rn(a, b);
     return *reinterpret_cast<uint32_t*>(&value);
@@ -101,6 +137,7 @@ struct __align__(16) Shared {
     float ks[CH][8];              // K group scale / 128 (0 for masked keys)
     float vs[CH][8];              // V group scale (0 for masked keys)
     float s[16][SW];              // scores, then probabilities
+    __half table[256];            // RotorQuant FP16 centroids (KIND > 0)
     float alpha[16];
     int list[MAX_SELECTED + 1];   // compacted local physical rows, selection order
     int warp_total[THREADS / 32];
@@ -110,41 +147,62 @@ struct Prefetch {
     uint4 k[4], v[4], scale;
 };
 
-__device__ __forceinline__ void fetch(Prefetch& f, const Shared& S, int first, int n, const int8_t* kdata,
-                                      const int8_t* vdata, const __half* kmeta, const __half* vmeta) {
+// Q4 kinds load the 8 nibble bytes of a thread's 16 dims (widened in stage); metadata is two words per row.
+template<int KIND>
+__device__ __forceinline__ void fetch(Prefetch& f, const Shared& S, int first, int n, const uint8_t* kdata,
+                                      const uint8_t* vdata, const void* kmeta, const void* vmeta) {
+    constexpr int ROW = KIND >= 2 ? DIM / 2 : DIM;
     const int t = threadIdx.x;
     const uint4 zero = make_uint4(0, 0, 0, 0);
+    auto load = [&](const uint8_t* data, int at) {
+        if (at >= n) return zero;
+        const uint8_t* row = data + int64_t(S.list[at]) * ROW;
+        if constexpr (KIND >= 2) {
+            const uint2 v = __ldg(reinterpret_cast<const uint2*>(row) + (t & 15));
+            return make_uint4(v.x, v.y, 0u, 0u);
+        } else return __ldg(reinterpret_cast<const uint4*>(row) + (t & 15));
+    };
     #pragma unroll
-    for (int s = 0; s < 4; ++s) {
-        const int at = first + (t >> 4) + 8 * s;
-        f.k[s] = at < n ? __ldg(reinterpret_cast<const uint4*>(kdata + int64_t(S.list[at]) * DIM) + (t & 15)) : zero;
-    }
+    for (int s = 0; s < 4; ++s) f.k[s] = load(kdata, first + (t >> 4) + 8 * s);
     #pragma unroll
-    for (int e = 0; e < 4; ++e) {
-        const int at = first + 4 * (t >> 4) + e;
-        f.v[e] = at < n ? __ldg(reinterpret_cast<const uint4*>(vdata + int64_t(S.list[at]) * DIM) + (t & 15)) : zero;
-    }
+    for (int e = 0; e < 4; ++e) f.v[e] = load(vdata, first + 4 * (t >> 4) + e);
     f.scale = zero;
     if (t < 2 * CH) {
         const int at = first + (t & (CH - 1));
-        if (at < n)
-            f.scale = __ldg(reinterpret_cast<const uint4*>((t < CH ? kmeta : vmeta) + int64_t(S.list[at]) * 8));
+        if (at < n) {
+            const void* meta = t < CH ? kmeta : vmeta;
+            if constexpr (KIND == 0)
+                f.scale = __ldg(reinterpret_cast<const uint4*>(static_cast<const __half*>(meta) + int64_t(S.list[at]) * 8));
+            else {
+                const uint2 v = __ldg(reinterpret_cast<const uint2*>(static_cast<const float*>(meta) + int64_t(S.list[at]) * 2));
+                f.scale = make_uint4(v.x, v.y, 0u, 0u);
+            }
+        }
     }
 }
 
+template<int KIND>
 __device__ __forceinline__ void stage(Shared& S, const Prefetch& f, int first, int n,
                                       const int64_t* descriptor, int layer) {
     const int t = threadIdx.x;
     #pragma unroll
-    for (int s = 0; s < 4; ++s)
-        *reinterpret_cast<uint4*>(&S.k[(t >> 4) + 8 * s][(t & 15) * 16]) = f.k[s];
+    for (int s = 0; s < 4; ++s) {
+        uint4 k = f.k[s];
+        if constexpr (KIND >= 2) k = widen(make_uint2(k.x, k.y));
+        *reinterpret_cast<uint4*>(&S.k[(t >> 4) + 8 * s][(t & 15) * 16]) = k;
+    }
     {
         // Thread owns keys 4cq..4cq+3 x dims 16dg..16dg+15: 4x4 byte transposes.
         const int cq = t >> 4, dg = t & 15;
-        const uint32_t* in0 = reinterpret_cast<const uint32_t*>(&f.v[0]);
-        const uint32_t* in1 = reinterpret_cast<const uint32_t*>(&f.v[1]);
-        const uint32_t* in2 = reinterpret_cast<const uint32_t*>(&f.v[2]);
-        const uint32_t* in3 = reinterpret_cast<const uint32_t*>(&f.v[3]);
+        uint4 wide[4] = {f.v[0], f.v[1], f.v[2], f.v[3]};
+        if constexpr (KIND >= 2) {
+            #pragma unroll
+            for (int e = 0; e < 4; ++e) wide[e] = widen(make_uint2(f.v[e].x, f.v[e].y));
+        }
+        const uint32_t* in0 = reinterpret_cast<const uint32_t*>(&wide[0]);
+        const uint32_t* in1 = reinterpret_cast<const uint32_t*>(&wide[1]);
+        const uint32_t* in2 = reinterpret_cast<const uint32_t*>(&wide[2]);
+        const uint32_t* in3 = reinterpret_cast<const uint32_t*>(&wide[3]);
         uint32_t out[16];
         #pragma unroll
         for (int w = 0; w < 4; ++w) {
@@ -165,20 +223,29 @@ __device__ __forceinline__ void stage(Shared& S, const Prefetch& f, int first, i
         const int cell = t & (CH - 1);
         const bool key = t < CH, live = first + cell < n;
         const __half* scale = reinterpret_cast<const __half*>(&f.scale);
+        const float* word = reinterpret_cast<const float*>(&f.scale);
         #pragma unroll
         for (int g = 0; g < 8; ++g) {
-            float value = __half2float(scale[g]);
-            if (live && !isfinite(value)) {
-                latch(descriptor, key ? 2 : 4, layer);  // Every decoded element of the group is nonfinite.
+            // Q8: one FP16 scale per 32 values. RotorQuant: one metadata word per 128 values (groups 4w..4w+3).
+            float value;
+            bool valid;
+            if constexpr (KIND == 0) { value = __half2float(scale[g]); valid = isfinite(value); }
+            else if constexpr (KIND == 3) {
+                valid = tf_rq4::valid_metadata<9>(word[g / 4]);
+                value = tf_rq4::metadata_scale<9>(word[g / 4]);
+            } else { valid = tf_rq4::valid_metadata<4>(word[g / 4]); value = word[g / 4]; }
+            if (live && !valid) {
+                latch(descriptor, key ? 2 : 4, layer);  // Every decoded element of the group is invalid.
                 value = 0.f;
             }
             if (!live) value = 0.f;
-            if (key) S.ks[cell][g] = __fmul_rn(value, .0078125f);
+            if (key) S.ks[cell][g] = KIND == 0 ? __fmul_rn(value, .0078125f) : value;
             else S.vs[cell][g] = value;
         }
     }
 }
 
+template<int KIND>
 __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries, const int* selections,
         const int64_t* table, float* statistics, float* values, int rows, int width,
         int group, int page_tokens, const int* layer_word) {
@@ -220,6 +287,12 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
         *reinterpret_cast<uint4*>(&S.q[head][part * 8]) = value;
     }
     if (t < 16) S.alpha[t] = 0.f;
+    if constexpr (KIND > 0) {
+        // FP16 centroids of the stored basis; codec is the RotorQuant kernel codec.
+        for (int i = t; i < 256; i += THREADS)
+            S.table[i] = __float2half_rn(KIND == 1 ? tf_rq4::centroid8(i) : i >= 16 ? 0.f
+                                         : KIND == 3 ? tf_rq4::selected_centroid<9>(i) : tf_rq4::centroid(i));
+    }
 
     // Compact local selected keys (selection order) into physical row ids.
     int n = 0;
@@ -248,10 +321,10 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
         return;
     }
 
-    const int8_t* kdata = pointer<const int8_t>(descriptor[meta::K_DATA]);
-    const int8_t* vdata = pointer<const int8_t>(descriptor[meta::V_DATA]);
-    const __half* kmeta = pointer<const __half>(descriptor[meta::K_METADATA]);
-    const __half* vmeta = pointer<const __half>(descriptor[meta::V_METADATA]);
+    const uint8_t* kdata = pointer<const uint8_t>(descriptor[meta::K_DATA]);
+    const uint8_t* vdata = pointer<const uint8_t>(descriptor[meta::V_DATA]);
+    const void* kmeta = pointer<const void>(descriptor[meta::K_METADATA]);
+    const void* vmeta = pointer<const void>(descriptor[meta::V_METADATA]);
 
     const int qp = (lane >> 2) & 3, jj = (lane & 3) + 4 * (lane >> 4);
     const int crow = (lane & 1) + 4 * (lane >> 4), ccol = lane & 2;
@@ -267,12 +340,12 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
             for (int i = 0; i < 8; ++i) acc[rb][nt][i] = 0.f;
 
     Prefetch f;
-    if (n) fetch(f, S, 0, n, kdata, vdata, kmeta, vmeta);
+    if (n) fetch<KIND>(f, S, 0, n, kdata, vdata, kmeta, vmeta);
     for (int first = 0; first < n; first += CH) {
         __syncthreads();  // Previous chunk's readers have retired every tile.
-        stage(S, f, first, n, descriptor, layer);
+        stage<KIND>(S, f, first, n, descriptor, layer);
         __syncthreads();
-        if (first + CH < n) fetch(f, S, first + CH, n, kdata, vdata, kmeta, vmeta);
+        if (first + CH < n) fetch<KIND>(f, S, first + CH, n, kdata, vdata, kmeta, vmeta);
 
         // Scores: warp w = keys 8w..8w+7, QP = dims 64qp..64qp+63 (two scale groups,
         // separate chains), k order rotated by qp for conflict-free shared loads.
@@ -291,7 +364,7 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
                 for (int kk = 0; kk < 8; ++kk) {
                     const int d0 = 64 * qp + 32 * g + 4 * ((kk + qp) & 7);
                     uint32_t b0, b1;
-                    codes(*reinterpret_cast<const uint32_t*>(&S.k[cell][d0]), b0, b1);
+                    tile_codes<KIND>(*reinterpret_cast<const uint32_t*>(&S.k[cell][d0]), S.table, b0, b1);
                     #pragma unroll
                     for (int rb = 0; rb < 2; ++rb) {
                         const uint2 a = *reinterpret_cast<const uint2*>(&S.q[rb * 8 + jj][d0]);
@@ -368,7 +441,7 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
             int exponent = 0;
             if (range > 0.f) frexpf(range, &exponent);  // range < 2^exponent
             const float up = range > 0.f ? ldexpf(1.f, 14 - exponent) : 0.f;
-            const float down = ldexpf(1.f, exponent - 14 - 7);  // includes the Q8 /128
+            const float down = ldexpf(1.f, exponent - 14 - (KIND == 0 ? 7 : 0));  // Q8 includes its /128
             float tmp[2][2][8];
             #pragma unroll
             for (int rb = 0; rb < 2; ++rb)
@@ -393,7 +466,7 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
                 for (int nt = 0; nt < 2; ++nt) {
                     const int d = 64 * warp + 16 * qp + 8 * nt + jj;
                     uint32_t b0, b1;
-                    codes(S.v[ks][d ^ ((qp >> 1) << 3)], b0, b1);
+                    tile_codes<KIND>(S.v[ks][d ^ ((qp >> 1) << 3)], S.table, b0, b1);
                     #pragma unroll
                     for (int rb = 0; rb < 2; ++rb) mma884(tmp[rb][nt], a[rb][0], a[rb][1], b0, b1);
                 }
@@ -469,13 +542,19 @@ __global__ void weight_kernel(const float* unnormalized, const float* local, con
 }  // namespace
 
 void sm70_prompt_attention_fused_cuda(const T& queries, const T& selected, const T& table, T& statistics,
-                                      T& unnormalized, int group, int page_tokens, const T& layer) {
+                                      T& unnormalized, int group, int page_tokens, const T& layer, int codec) {
     const int rows = int(queries.size(1));
     if (!rows) return;
-    fused_kernel<<<rows, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
-        reinterpret_cast<const __half*>(queries.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
-        statistics.data_ptr<float>(), unnormalized.data_ptr<float>(), rows,
-        int(selected.size(2)), group, page_tokens, layer.data_ptr<int>());
+    auto launch = [&](auto kind) {
+        fused_kernel<decltype(kind)::value><<<rows, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+            reinterpret_cast<const __half*>(queries.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+            statistics.data_ptr<float>(), unnormalized.data_ptr<float>(), rows,
+            int(selected.size(2)), group, page_tokens, layer.data_ptr<int>());
+    };
+    if (codec == 0) launch(std::integral_constant<int, 0>{});
+    else if (codec == 8 || codec == 12) launch(std::integral_constant<int, 1>{});
+    else if (codec == 9 || codec == 10) launch(std::integral_constant<int, 3>{});
+    else launch(std::integral_constant<int, 2>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

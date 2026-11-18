@@ -13,13 +13,16 @@ ROTOR_Q4_NORM = "rotorquant-signed64-norm4"
 ROTOR_Q8 = "rotorquant8"
 ROTOR_Q8_NORM = "rotorquant8-norm"
 PLANAR4, ISO4, ISO64_NORM4 = "rotorquant-planar4", "rotorquant-iso4", "rotorquant-iso64-norm4"
-ROTOR_FORMATS = (ROTOR_Q4, ROTOR_Q4_NORM, COMPACT_Q4, COMPACT_ISO4, ROTOR_Q8, ROTOR_Q8_NORM, PLANAR4, ISO4, ISO64_NORM4)
+SIGNED128_NORM4 = "rotorquant-signed128-norm4"
+ROTOR_FORMATS = (ROTOR_Q4, ROTOR_Q4_NORM, COMPACT_Q4, COMPACT_ISO4, ROTOR_Q8, ROTOR_Q8_NORM, PLANAR4, ISO4, ISO64_NORM4,
+                 SIGNED128_NORM4)
 # Eight-bit and the FP32-RMS Planar/Isofast/Iso64-norm Q4 sides run only on the unique-history owned path (owned
 # writer + RN paged readers), symmetrically; the legacy prep/attention operators refuse them.
 EIGHT_BIT = (ROTOR_Q8, ROTOR_Q8_NORM)
-OWNED_ONLY = (*EIGHT_BIT, PLANAR4, ISO4, ISO64_NORM4)
+OWNED_ONLY = (*EIGHT_BIT, PLANAR4, ISO4, ISO64_NORM4, SIGNED128_NORM4)
 _DESCRIPTOR = {ROTOR_Q4: (4, 4), ROTOR_Q4_NORM: (4, 5), COMPACT_Q4: (4, 9), COMPACT_ISO4: (4, 10),
-               ROTOR_Q8: (8, 4), ROTOR_Q8_NORM: (8, 8), PLANAR4: (4, 1), ISO4: (4, 2), ISO64_NORM4: (4, 3)}
+               ROTOR_Q8: (8, 4), ROTOR_Q8_NORM: (8, 8), PLANAR4: (4, 1), ISO4: (4, 2), ISO64_NORM4: (4, 3),
+               SIGNED128_NORM4: (4, 6)}
 
 
 def kernel_codec(side) -> int:

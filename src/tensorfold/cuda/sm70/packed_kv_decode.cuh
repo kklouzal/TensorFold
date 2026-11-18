@@ -13,10 +13,13 @@ __device__ __forceinline__ __half decoded_q8(int8_t q, __half scale) {
     return __float2half_rn(value);
 }
 
-__device__ __forceinline__ __half decoded_q4(int codec, int index, float word) {
+// `table`, when given, is a shared-memory copy of the codec's 16 centroids (stage_centroids): the same values,
+// read without the constant cache's serialization of divergent indices.
+__device__ __forceinline__ __half decoded_q4(int codec, int index, float word, const float* table = nullptr) {
     if (codec == 9 || codec == 10)
-        return __float2half_rn(__fmul_rn(tf_rq4::selected_centroid<9>(index), tf_rq4::metadata_scale<9>(word)));
-    return __float2half_rn(__fmul_rn(tf_rq4::centroid(index), word));
+        return __float2half_rn(__fmul_rn(table ? table[index] : tf_rq4::selected_centroid<9>(index),
+                                         tf_rq4::metadata_scale<9>(word)));
+    return __float2half_rn(__fmul_rn(table ? table[index] : tf_rq4::centroid(index), word));
 }
 
 // Eight-bit RotorQuant (kernel codecs 8/12): FP32 centroid times FP32 group scale, one final FP16 rounding.
@@ -30,10 +33,14 @@ __host__ __device__ constexpr int codec_bits(int codec) {
     return codec == 0 || tf_rq4::eight_bit(codec) ? 8 : 4;
 }
 
-// Shared-memory centroid table for the eight-bit codecs: every CTA thread calls this (it ends with a barrier).
-__device__ __forceinline__ const float* stage_centroids8(int codec, float* table) {
-    if (!tf_rq4::eight_bit(codec)) return nullptr;
-    for (int i = threadIdx.x; i < 256; i += blockDim.x) table[i] = tf_rq4::centroid8(i);
+// Shared-memory centroid table (256 floats of storage) for the RotorQuant codecs: 256 eight-bit or 16 four-bit
+// centroids. Every CTA thread calls this (it ends with a barrier); ordinary Q8 needs no table.
+__device__ __forceinline__ const float* stage_centroids(int codec, float* table) {
+    if (codec == 0) return nullptr;
+    const int count = tf_rq4::eight_bit(codec) ? 256 : 16;
+    for (int i = threadIdx.x; i < count; i += blockDim.x)
+        table[i] = tf_rq4::eight_bit(codec) ? tf_rq4::centroid8(i)
+                 : codec == 9 || codec == 10 ? tf_rq4::selected_centroid<9>(i) : tf_rq4::centroid(i);
     __syncthreads();
     return table;
 }
@@ -85,6 +92,6 @@ __device__ __forceinline__ __half decode_run_value(const uint4& raw, unsigned sc
     if (tf_rq4::eight_bit(codec))
         return decoded_q8_rotor(int((words[i / 4] >> (8 * (i % 4))) & 0xffu), __uint_as_float(scale), table);
     const unsigned byte = (words[i / 8] >> (8 * (i / 2 % 4))) & 0xffu;
-    return decoded_q4(codec, (byte >> (4 * (i & 1))) & 15, __uint_as_float(scale));
+    return decoded_q4(codec, (byte >> (4 * (i & 1))) & 15, __uint_as_float(scale), table);
 }
 }  // namespace tf_sm70

@@ -1,7 +1,8 @@
 """Tensor-core (mma.m8n8k4) local phases for SM70 unique-history prompt attention.
 
 Selected by ``history_owner`` for prefill owners of the RN family with ordinary
-Q8 (bits 8, codec 0) caches unless ``TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION=0``.
+Q8 (bits 8, codec 0) or owned RotorQuant caches (``paged_attention.KERNEL_FORMATS``)
+unless ``TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION=0``.
 It replaces the per-row RN local statistics/probability/value phases with one
 CTA per query row that shares every compacted local K/V tile across the twelve
 GQA heads of the KV head. Descriptor/selection/status semantics (shared device
@@ -15,7 +16,9 @@ formats are those of ``paged_attention``:
 
 Arithmetic: exact Q8 codes (c + 0.5) and FP16 queries in the tensor core, FP32
 group scales applied after each 32-dim group dot (K) or folded into FP16 P with
-an exact power-of-two range (V); RN ex2 exponentials. The caller retains every
+an exact power-of-two range (V); RN ex2 exponentials. RotorQuant codes enter as
+their FP16-rounded centroids with the codec's per-128 scale in the same places;
+their local sums stay in the stored basis (merge_values inverse-rotates). The caller retains every
 descriptor-addressed tensor through stream completion, as for the RN family.
 """
 
@@ -38,7 +41,8 @@ def extension():
     prepared = _native()
     root = Path(__file__).parent
     sources = [root / "prompt_attention_bindings.cpp", root / "prompt_attention.cu"]
-    headers = [root / "paged_attention_host.cuh", root / "paged_attention_descriptor.cuh", root / "paged_attention_device.cuh"]
+    headers = [root / "paged_attention_host.cuh", root / "paged_attention_descriptor.cuh", root / "paged_attention_device.cuh",
+               root / "rotorquant_q4.cuh", root / "rotorquant_q4_tables.cuh"]
     digest = hashlib.sha256(prepared.__name__.encode())
     for source in [*sources, *headers]:
         digest.update(source.name.encode() + b"\0" + source.read_bytes())
@@ -57,8 +61,10 @@ def _controls(group_start, page_tokens, key_bits, key_codec):
         raise ValueError("a KV-head group starts at rank zero or four")
     if type(page_tokens) is not int or not 0 < page_tokens <= 2**31 - 1 or page_tokens % 4:
         raise ValueError("history pages require positive int32 complete pooling groups")
-    if (key_bits, key_codec) != (8, 0) or type(key_bits) is not int or type(key_codec) is not int:
-        raise ValueError("tensor-core prompt attention supports only ordinary Q8")
+    from .paged_attention import KERNEL_FORMATS
+
+    if type(key_bits) is not int or type(key_codec) is not int or (key_bits, key_codec) not in KERNEL_FORMATS:
+        raise ValueError("tensor-core prompt attention supports ordinary Q8 or an owned RotorQuant kernel codec")
 
 
 def fused_local(queries, selections, row_table, statistics, unnormalized, *, group_start, page_tokens,

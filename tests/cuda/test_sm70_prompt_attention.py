@@ -40,20 +40,33 @@ def quantize(x):
     return code.view(-1, DIM), scale
 
 
-def build(first, degree, generator):
+# (bits, kernel codec) of the owned RotorQuant formats: rotorquant8 / -norm, FP32-scale Q4, compact Q4.
+ROTOR = ((8, 12), (8, 8), (4, 3), (4, 4), (4, 5), (4, 6), (4, 2), (4, 10))
+
+
+def rotor_encode(x, bits, codec):
+    from tensorfold.cuda.sm70 import rotorquant_q4_native as native
+    codes = torch.empty(x.shape[0], 1, DIM * bits // 8, dtype=torch.uint8, device=x.device)
+    scales = torch.empty(x.shape[0], 1, DIM // 128, dtype=torch.float32, device=x.device)
+    native.encode(x.view(-1, 1, DIM), codes, scales, codec=codec)
+    return codes.view(x.shape[0], -1), scales.view(x.shape[0], -1)
+
+
+def build(first, degree, generator, kv=(8, 0)):
     device = "cuda"
     capacity = ((first + ROWS + PAGE_TOKENS - 1) // PAGE_TOKENS) * PAGE_TOKENS + PAGE_TOKENS
     pages = capacity // PAGE_TOKENS
-    kc, ks = quantize(torch.randn(capacity, DIM, device=device, generator=generator))
-    vc, vs = quantize(torch.randn(capacity, DIM, device=device, generator=generator))
+    encode = quantize if kv == (8, 0) else (lambda x: rotor_encode(x, *kv))
+    kc, ks = encode(torch.randn(capacity, DIM, device=device, generator=generator))
+    vc, vs = encode(torch.randn(capacity, DIM, device=device, generator=generator))
     caches = []
     for rank in range(4):
         local = [page for page in range(pages) if 1 ^ (page % degree) == rank]
         offsets = torch.full((pages,), -1, dtype=torch.int64)
         physical = max(1, len(local) * PAGE_TOKENS)
-        k = torch.zeros(physical, 1, DIM, dtype=torch.int8, device=device)
+        k = torch.zeros(physical, 1, kc.shape[1], dtype=kc.dtype, device=device)
         v = torch.zeros_like(k)
-        k_scale = torch.zeros(physical, 1, DIM // 32, dtype=torch.float16, device=device)
+        k_scale = torch.zeros(physical, 1, ks.shape[1], dtype=ks.dtype, device=device)
         v_scale = torch.zeros_like(k_scale)
         for index, page in enumerate(local):
             offsets[page] = index * PAGE_TOKENS
@@ -95,25 +108,38 @@ def build(first, degree, generator):
                              c["physical"], pages, row, OWNER, merge_word] for row in range(ROWS)],
                            dtype=torch.int64, device=device) for c in caches]
     return dict(q=q, selections=selections, caches=caches, tables=tables, keep=(position, live, generations),
-                logical=(kc, ks, vc, vs))
+                logical=(kc, ks, vc, vs), kv=kv)
 
 
 def exact(data):
     """FP64 group attention [rows,12,256] over the unrounded Q8 values (c + 0.5) * scale / 128."""
     kc, ks, vc, vs = data["logical"]
     q = data["q"][:4].permute(1, 0, 2, 3).reshape(ROWS, HEADS, DIM).double()
+    if data["kv"] != (8, 0):
+        # Rotor values in their stored basis: FP32 centroid * scale (exact decode, no FP16 rounding).
+        from tensorfold.cuda.sm70 import rotorquant_q4_native as native
+
+        def decode(codes, scales):
+            out = torch.empty(codes.shape[0], 1, DIM, dtype=torch.float32, device="cuda")
+            return native.decode(codes.view(codes.shape[0], 1, -1), scales.view(scales.shape[0], 1, -1), out,
+                                 codec=data["kv"][1]).view(-1, DIM).double()
+        dk, dv = decode(kc, ks), decode(vc, vs)
     selection = data["selections"][OWNER]
     out = torch.zeros(ROWS, HEADS, DIM, dtype=torch.float64, device="cuda")
     for row in range(ROWS - PADDING):
         n = int(selection[row, WIDTH - 2])
         ids = selection[row, :n].long() if int(selection[row, WIDTH - 1]) else torch.arange(n, device="cuda")
-        k = (kc[ids].double().view(n, 8, 32) + 0.5) * ks[ids].double()[..., None] / 128
-        v = (vc[ids].double().view(n, 8, 32) + 0.5) * vs[ids].double()[..., None] / 128
+        if data["kv"] != (8, 0):
+            k, v = dk[ids], dv[ids]
+        else:
+            k = (kc[ids].double().view(n, 8, 32) + 0.5) * ks[ids].double()[..., None] / 128
+            v = (vc[ids].double().view(n, 8, 32) + 0.5) * vs[ids].double()[..., None] / 128
         out[row] = torch.softmax((q[row] @ k.view(n, DIM).T) / 16, -1) @ v.view(n, DIM)
     return out
 
 
 def run(data, family):
+    bits, codec = data["kv"]
     layer = torch.tensor([LAYER], dtype=torch.int32, device="cuda")
     common = dict(group_start=0, page_tokens=PAGE_TOKENS, layer=layer)
     stats = torch.zeros(WORLD, ROWS, HEADS, 2, device="cuda")
@@ -121,20 +147,20 @@ def run(data, family):
     unnormalized = [torch.full((ROWS, HEADS, DIM), math.nan, device="cuda") for _ in range(4)]
     for rank in range(4):
         if family == "rn":
-            rn.rn_local_statistics(data["q"], data["selections"], data["tables"][rank], stats[rank], key_bits=8,
-                                   key_codec=0, heads_per_block=12, **common)
+            rn.rn_local_statistics(data["q"], data["selections"], data["tables"][rank], stats[rank], key_bits=bits,
+                                   key_codec=codec, heads_per_block=12, **common)
         else:
             tc.fused_local(data["q"], data["selections"], data["tables"][rank], stats[rank], unnormalized[rank],
-                           **common)
+                           key_bits=bits, key_codec=codec, **common)
     for rank in range(4):
         merged = torch.empty(ROWS, HEADS, 2, device="cuda")
         rn.rn_merge_statistics(stats, data["tables"][rank], merged, **common)
         if family == "rn":
             probability = torch.empty(ROWS, HEADS, rn.RN_MAX_SELECTED, dtype=torch.float16, device="cuda")
-            rn.rn_probabilities(data["q"], data["selections"], data["tables"][rank], merged, probability, key_bits=8,
-                                key_codec=0, heads_per_block=12, **common)
+            rn.rn_probabilities(data["q"], data["selections"], data["tables"][rank], merged, probability, key_bits=bits,
+                                key_codec=codec, heads_per_block=12, **common)
             rn.rn_partial_values(probability, data["selections"], data["tables"][rank], values[rank],
-                                 page_tokens=PAGE_TOKENS, layer=layer, value_bits=8, value_codec=0)
+                                 page_tokens=PAGE_TOKENS, layer=layer, value_bits=bits, value_codec=codec)
         else:
             tc.weight_values(unnormalized[rank], stats[rank], merged, data["tables"][rank], values[rank], layer=layer)
     torch.cuda.synchronize()
@@ -164,3 +190,22 @@ def test_fused_prompt_attention_is_no_less_accurate_than_rn(first, degree):
     tc_error = relative_l2(tc_values.sum(0)[live], oracle[live])
     rn_error = relative_l2(rn_values.sum(0)[live], oracle[live])
     assert tc_error <= rn_error, (tc_error, rn_error)
+
+
+@pytest.mark.parametrize("kv", ROTOR, ids=lambda kv: f"bits{kv[0]}-codec{kv[1]}")
+@pytest.mark.parametrize("first", [1024, 8192], ids=["dense-1k", "sparse-8k"])
+def test_fused_prompt_attention_rotor_matches_rn_accuracy_class(first, kv):
+    """RotorQuant tiles: FP16 centroids x per-128 scale in the tensor core (RN rounds centroid x scale once to
+    FP16 instead); both round each operand once, so the fused error stays within the RN family's class."""
+    generator = torch.Generator(device="cuda").manual_seed(4321 + first + kv[1])
+    data = build(first, 4, generator, kv)
+    oracle = exact(data)
+    live = slice(0, ROWS - PADDING)
+    rn_stats, rn_values, rn_status = run(data, "rn")
+    tc_stats, tc_values, tc_status = run(data, "tc")
+    assert rn_status == tc_status == [[0, -2]] * 4
+    assert torch.equal(torch.isfinite(rn_stats[..., 0]), torch.isfinite(tc_stats[..., 0])), "empty local sets differ"
+    assert torch.all(tc_values[:, ROWS - PADDING:] == 0), "inactive rows must publish zero"
+    tc_error = relative_l2(tc_values.sum(0)[live], oracle[live])
+    rn_error = relative_l2(rn_values.sum(0)[live], oracle[live])
+    assert tc_error <= 1.25 * rn_error and tc_error < 2e-3, (tc_error, rn_error)

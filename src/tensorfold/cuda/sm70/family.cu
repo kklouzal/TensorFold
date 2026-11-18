@@ -411,8 +411,8 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
 // One window row (blockIdx.x = output unit). window_start/window_rows describe
 // this row's own State window; start is its logical row inside that window.
 // CODEC 0 is ordinary Q8 (Hadamard H32, FP16 absmax); CODEC 9/10 are the compact
-// Planar4/Iso4 formats, 1..5 the FP32-scale Q4 formats (Planar, Isofast, Iso64-norm, signed
-// Iso128, signed Iso64-norm) and 8/12
+// Planar4/Iso4 formats, 1..6 the FP32-scale Q4 formats (Planar, Isofast, Iso64-norm, signed
+// Iso128, signed Iso64-norm, signed Iso128-norm) and 8/12
 // the eight-bit signed Iso128 RotorQuant formats (norm8 / original RMS): the query is rotated into the stored basis and K/V are
 // encoded per 128-value group exactly as the reference rotate/encode kernels do
 // (group-local error votes, same staged FP32 arithmetic, same packed stores).
@@ -1452,6 +1452,7 @@ void family_owned_q8_prepare_resident_cuda() {
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<1>));
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<2>));
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<3>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<6>));
 }
 
 void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
@@ -1477,6 +1478,7 @@ void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const 
     else if (codec == 1) launch(std::integral_constant<int, 1>{});
     else if (codec == 2) launch(std::integral_constant<int, 2>{});
     else if (codec == 3) launch(std::integral_constant<int, 3>{});
+    else if (codec == 6) launch(std::integral_constant<int, 6>{});
     else launch(std::integral_constant<int, 0>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -1501,6 +1503,7 @@ void family_owned_q8_prepare_rows_cuda(const T& p, const T& axes, const T& qw, c
     else if (codec == 1) launch(std::integral_constant<int, 1>{});
     else if (codec == 2) launch(std::integral_constant<int, 2>{});
     else if (codec == 3) launch(std::integral_constant<int, 3>{});
+    else if (codec == 6) launch(std::integral_constant<int, 6>{});
     else launch(std::integral_constant<int, 0>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

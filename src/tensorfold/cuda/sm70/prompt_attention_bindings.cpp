@@ -8,7 +8,7 @@
 
 using T = at::Tensor;
 
-void sm70_prompt_attention_fused_cuda(const T&, const T&, const T&, T&, T&, int, int, const T&);
+void sm70_prompt_attention_fused_cuda(const T&, const T&, const T&, T&, T&, int, int, const T&, int);
 void sm70_prompt_attention_weight_cuda(const T&, const T&, const T&, const T&, T&, const T&);
 
 namespace {
@@ -42,8 +42,11 @@ void values(const T& value, const T& owner, int rows, const char* name) {
                 name, " require [rows,12,256]");
 }
 
-void q8(int bits, int codec) {
-    TORCH_CHECK(bits == 8 && codec == 0, "tensor-core prompt attention supports only ordinary Q8 (bits 8, codec 0)");
+// Ordinary Q8 (8, 0) and the owned RotorQuant kernel codecs: eight-bit (8, 8/12) and four-bit (4, 1..5/9/10).
+void kv_format(int bits, int codec) {
+    TORCH_CHECK((bits == 8 && (codec == 0 || codec == 8 || codec == 12))
+                || (bits == 4 && ((codec >= 1 && codec <= 6) || codec == 9 || codec == 10)),
+                "tensor-core prompt attention supports ordinary Q8 or an owned RotorQuant kernel codec");
 }
 
 void distinct(const T& output, std::initializer_list<const T*> inputs) {
@@ -58,11 +61,11 @@ void fused_local(const T& queries, const T& selected, const T& table, T stats, T
     selections(selected, queries, rows);
     statistics(stats, queries, rows);
     values(unnormalized, queries, rows, "unnormalized local values");
-    q8(bits, codec);
+    kv_format(bits, codec);
     distinct(stats, {&queries, &selected, &table, &layer, &unnormalized});
     distinct(unnormalized, {&queries, &selected, &table, &layer});
     c10::cuda::CUDAGuard guard(queries.device());
-    sm70_prompt_attention_fused_cuda(queries, selected, table, stats, unnormalized, group, page_tokens, layer);
+    sm70_prompt_attention_fused_cuda(queries, selected, table, stats, unnormalized, group, page_tokens, layer, codec);
 }
 
 void weight_values(const T& unnormalized, const T& local, const T& global, const T& table, T output, const T& layer) {

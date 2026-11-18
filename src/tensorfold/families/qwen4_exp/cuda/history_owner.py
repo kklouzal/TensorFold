@@ -1214,7 +1214,8 @@ class OwnerBuffers:
             unnormalized = self.partials.reshape(-1)[first:first + count].view(rows, 12, 256)
             prompt.fused_local(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
                                unnormalized, group_start=common["group_start"],
-                               page_tokens=self.native_page_tokens, layer=self.native_layer)
+                               page_tokens=self.native_page_tokens, layer=self.native_layer,
+                               key_bits=bits, key_codec=codec)
             self.gather_native(views["local_stats"], views["all_stats"])
             native.rn_merge_statistics(views["all_stats"], views["row_table"], views["global_stats"], **common)
             # all_stats[rank] is this rank's (m, l); local_stats is overwritten by local_values below.
@@ -1505,11 +1506,10 @@ class OwnerBuffers:
         self.closed, self._base_ready = True, False
 
     def _prompt_attention_selected(self):
-        """Prefill RN-family owners over ordinary Q8 pages use the tensor-core local phases."""
+        """Prefill RN-family owners over ordinary Q8 or owned RotorQuant pages use the tensor-core local phases."""
         from .owner_execution import RN_KERNEL_FAMILY
-        pair = self.native_pair
         return (_PROMPT_ATTENTION == "fused-v1" and self.prefill and self.native_kernel_family == RN_KERNEL_FAMILY
-                and pair is not None and (pair.key.bits, pair.key.codec) == (8, 0))
+                and self.native_codec is not None)
 
     @staticmethod
     def _prompt_unnormalized_extent(rows):
