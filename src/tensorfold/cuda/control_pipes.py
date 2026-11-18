@@ -43,6 +43,7 @@ from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
 from tensorfold.cuda.store_fields import validate_store_key
 
 _HEADER = struct.Struct("<Q")
+RECEIVE_SPIN_SECONDS = 0.02  # follower command wait spins this long before blocking (see ControlPipes.receive)
 _JOINED, _ABSENT = b"pipe", b"store"
 
 
@@ -262,7 +263,16 @@ class ControlPipes:
         # has had the leader's read end since rendezvous: POLLERR on this write end means
         # that reader is gone, i.e. the leader departed, before or between commands.
         poller.register(self.writer, 0)
-        events = poller.poll(int(timeout_s * 1000))
+        # Busy rounds: a follower that sleeps in poll() wakes late (cross-socket wakeup, idle-core clock ramp:
+        # ranks on the leader's other NUMA node launched each verify ~0.3 ms late). Spin non-blocking first;
+        # an idle cohort still sleeps after RECEIVE_SPIN_SECONDS.
+        started = time.monotonic()
+        spin_until = started + min(RECEIVE_SPIN_SECONDS, timeout_s)
+        events = poller.poll(0)
+        while not events and time.monotonic() < spin_until:
+            events = poller.poll(0)
+        if not events:
+            events = poller.poll(max(0, int((timeout_s - (time.monotonic() - started)) * 1000)))
         if not events:
             raise TimeoutError("tensor-parallel command wait timed out")
         if not any(descriptor == self.reader for descriptor, _ in events):
