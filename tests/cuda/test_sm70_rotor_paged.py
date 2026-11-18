@@ -56,7 +56,7 @@ def decoded(codes, scales, codec):
 
 
 # Kernel codecs: 12 rotorquant8, 8 rotorquant8-norm, 4 rotorquant-signed128-4, 5 rotorquant-signed64-norm4.
-@pytest.mark.parametrize('codec', [12, 8, 1, 2, 3, 4, 5])
+@pytest.mark.parametrize('codec', [12, 8, 1, 2, 3, 4, 5, 11])
 @pytest.mark.parametrize('heads', [1, 4, 12])
 @torch.no_grad()
 def test_rn_fp32_scale_rotor_matches_fp64_attention_over_decoded_operands(codec, heads):
@@ -113,7 +113,7 @@ def test_rn_fp32_scale_rotor_matches_fp64_attention_over_decoded_operands(codec,
                 dk[page * PAGE:(page + 1) * PAGE] = k[offset:offset + PAGE, 0].double()
                 dv[page * PAGE:(page + 1) * PAGE] = v[offset:offset + PAGE, 0].double()
     variant = {12: 'signed-iso128', 8: 'signed-iso128-norm8', 1: 'planar', 2: 'isofast', 3: 'iso64-norm',
-               4: 'signed-iso128', 5: 'signed-iso64-norm'}[codec]
+               4: 'signed-iso128', 5: 'signed-iso64-norm', 11: 'iso64-norm-h64'}[codec]
     for row in range(ROWS):
         ids = chosen[row].long()
         q = query[:PEERS, row].reshape(12, 256).double()

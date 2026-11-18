@@ -287,7 +287,7 @@ __global__ void merge_values_kernel(const float* gathered, const int64_t* table,
         value = tf_rq4::rotate_component<1, true>(value, col, rotated);
     } else if (codec == 2) {
         value = tf_rq4::rotate_component<2, true>(value, col, rotated);
-    } else if (codec == 3) {
+    } else if (codec == 3 || codec == 11) {
         value = tf_rq4::rotate_component<3, true>(value, col, rotated);
     } else {
         #pragma unroll

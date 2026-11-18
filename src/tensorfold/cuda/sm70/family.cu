@@ -513,6 +513,8 @@ __device__ __forceinline__ void owned_q8_prepare_row(const __half* p, const int6
             float* scales = static_cast<float*>(kind == 1 ? ks : vs);
             if constexpr (tf_rq4::eight_bit(CODEC))
                 tf_rq4::store_encoded8(item, col, codes, scales, destination * 256, 256, destination >= 0);
+            else if constexpr (CODEC == 11)
+                tf_rq4::store_encoded_halves(item, col, shared, codes, scales, destination * 256, 256, destination >= 0);
             else tf_rq4::store_encoded(item, col, shared, codes, scales, destination * 256, 256, destination >= 0);
             return;
         }
@@ -1452,6 +1454,7 @@ void family_owned_q8_prepare_resident_cuda() {
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<1>));
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<2>));
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<3>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<11>));
 }
 
 void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
@@ -1477,6 +1480,7 @@ void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const 
     else if (codec == 1) launch(std::integral_constant<int, 1>{});
     else if (codec == 2) launch(std::integral_constant<int, 2>{});
     else if (codec == 3) launch(std::integral_constant<int, 3>{});
+    else if (codec == 11) launch(std::integral_constant<int, 11>{});
     else launch(std::integral_constant<int, 0>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -1501,6 +1505,7 @@ void family_owned_q8_prepare_rows_cuda(const T& p, const T& axes, const T& qw, c
     else if (codec == 1) launch(std::integral_constant<int, 1>{});
     else if (codec == 2) launch(std::integral_constant<int, 2>{});
     else if (codec == 3) launch(std::integral_constant<int, 3>{});
+    else if (codec == 11) launch(std::integral_constant<int, 11>{});
     else launch(std::integral_constant<int, 0>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

@@ -143,7 +143,8 @@ def test_half_state_uses_real_packed_and_scale_bytes_through_clone_resize_copy(k
     expected_row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 136, ROTOR_Q4_NORM: 136,
                         COMPACT_Q4: 128 + 2 * (2 + 2), COMPACT_ISO4: 128 + 2 * (2 + 2),
                         ROTOR_Q8: 256 + 2 * 4, ROTOR_Q8_NORM: 256 + 2 * 4,
-                        "rotorquant-planar4": 136, "rotorquant-iso4": 136, "rotorquant-iso64-norm4": 136}[side]
+                        "rotorquant-planar4": 136, "rotorquant-iso4": 136, "rotorquant-iso64-norm4": 136,
+                        "rotorquant-iso64-norm4-h64": 136}[side]
                        for side in (key, value))
     layers = 2 + int(mtp)
     expected = layers * (37 * (expected_row + 256) + 10 * 256 + pair.dummy_bytes)
@@ -242,7 +243,8 @@ def test_full_window_forecast_counts_q4_packing_fp32_scales_and_replace_overlap(
     row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 128 + 2 * 4, ROTOR_Q4_NORM: 128 + 2 * 4,
                COMPACT_Q4: 128 + 2 * (2 + 2), COMPACT_ISO4: 128 + 2 * (2 + 2),
                ROTOR_Q8: 256 + 2 * 4, ROTOR_Q8_NORM: 256 + 2 * 4,
-               "rotorquant-planar4": 136, "rotorquant-iso4": 136, "rotorquant-iso64-norm4": 136}[name]
+               "rotorquant-planar4": 136, "rotorquant-iso4": 136, "rotorquant-iso64-norm4": 136,
+                        "rotorquant-iso64-norm4-h64": 136}[name]
               for name in (key, value))
     # Every full slot owns all target/MTP caches. A replacement retains one
     # additional layer; indexer/pool, graph/status and workspace bytes cancel.

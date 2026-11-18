@@ -94,7 +94,8 @@ __device__ __forceinline__ void codes(uint32_t raw, uint32_t& lo, uint32_t& hi) 
 }
 
 // KIND: 0 ordinary Q8; 1 eight-bit RotorQuant (kernel codecs 8/12: index bytes, FP32 scale per 128);
-// 2 FP32-scale Q4 (codecs 1..5: nibbles, FP32 scale per 128); 3 compact Q4 (codecs 9/10: nibbles, FP16 norm word).
+// 2 FP32-scale Q4 (codecs 1..5: nibbles, FP32 scale per 128); 3 compact Q4 (codecs 9/10: nibbles, FP16 norm word);
+// 4 Iso64-norm H64 (codec 11: nibbles, two FP16 per-64 scales per word).
 // Four index bytes -> two FP16x2 of their FP16 centroids.
 __device__ __forceinline__ void centroids(uint32_t raw, const __half* table, uint32_t& lo, uint32_t& hi) {
     __half2 x = __halves2half2(table[raw & 0xffu], table[(raw >> 8) & 0xffu]);
@@ -236,6 +237,9 @@ __device__ __forceinline__ void stage(Shared& S, const Prefetch& f, int first, i
             else if constexpr (KIND == 3) {
                 valid = tf_rq4::valid_metadata<9>(word[g / 4]);
                 value = tf_rq4::metadata_scale<9>(word[g / 4]);
+            } else if constexpr (KIND == 4) {  // per-64 FP16 scales: 32-value group g lies in half (g % 4) / 2
+                value = tf_rq4::half_group_scale(word[g / 4], (g % 4) / 2);
+                valid = tf_rq4::valid_half_group_scale(value);
             } else { valid = tf_rq4::valid_metadata<4>(word[g / 4]); value = word[g / 4]; }
             if (live && !valid) {
                 latch(descriptor, key ? 2 : 4, layer);  // Every decoded element of the group is invalid.
@@ -558,6 +562,7 @@ void sm70_prompt_attention_fused_cuda(const T& queries, const T& selected, const
     if (codec == 0) launch(std::integral_constant<int, 0>{});
     else if (codec == 8 || codec == 12) launch(std::integral_constant<int, 1>{});
     else if (codec == 9 || codec == 10) launch(std::integral_constant<int, 3>{});
+    else if (codec == 11) launch(std::integral_constant<int, 4>{});
     else launch(std::integral_constant<int, 2>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

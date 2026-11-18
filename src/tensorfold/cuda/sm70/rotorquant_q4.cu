@@ -58,6 +58,7 @@ __global__ void encode_kernel(const Input* source, uint8_t* codes, float* scales
     if (col == 0) latch(status, encoded.errors, layer);
     const int64_t destination = ((base + row) * heads + head) * dim + group * 128;
     if constexpr (tf_rq4::eight_bit(CODEC)) tf_rq4::store_encoded8(encoded, col, codes, scales, destination, 128, true);
+    else if constexpr (CODEC == 11) tf_rq4::store_encoded_halves(encoded, col, shared, codes, scales, destination, 128, true);
     else tf_rq4::store_encoded(encoded, col, shared, codes, scales, destination, 128, true);
 }
 
@@ -96,13 +97,18 @@ __global__ void decode_kernel(const uint8_t* codes, const float* scales, Output*
         return;
     }
     const float word = scales[blockIdx.x];
-    const float scale = tf_rq4::metadata_scale<CODEC>(word);
+    float scale = tf_rq4::metadata_scale<CODEC>(word);
+    bool valid = tf_rq4::valid_metadata<CODEC>(word);
+    if constexpr (CODEC == 11) {
+        scale = tf_rq4::half_group_scale(word, col / 64);
+        valid = tf_rq4::valid_half_group_scale(scale);
+    }
     int code;
     if constexpr (tf_rq4::eight_bit(CODEC)) code = codes[logical];
     else code = (codes[logical / 2] >> (4 * (col % 2))) & 15;
     const float value = __fmul_rn(tf_rq4::selected_centroid<CODEC>(code),
-                                 tf_rq4::valid_metadata<CODEC>(word) ? scale : 0.0f);
-    const bool bad_scale = __syncthreads_or(!tf_rq4::valid_metadata<CODEC>(word) || !isfinite(value));
+                                 valid ? scale : 0.0f);
+    const bool bad_scale = __syncthreads_or(!valid || !isfinite(value));
     float output = bad_scale ? 0.0f : value;
     if constexpr (INVERSE) output = tf_rq4::rotate_component<CODEC, true>(output, col, shared);
     const bool bad_output = __syncthreads_or(!representable<Output>(output));
@@ -159,6 +165,7 @@ template<class Callable> void dispatch_codec(int codec, Callable callable) {
         case 5: callable(std::integral_constant<int, 5>{}); break;
         case 9: callable(std::integral_constant<int, 9>{}); break;
         case 10: callable(std::integral_constant<int, 10>{}); break;
+        case 11: callable(std::integral_constant<int, 11>{}); break;
         case 8: callable(std::integral_constant<int, 8>{}); break;
         case 12: callable(std::integral_constant<int, 12>{}); break;
     }

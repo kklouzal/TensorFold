@@ -46,7 +46,7 @@ def generation_bytes(slots):
 
 
 # (bits, kernel codec): kernel codec 12 is descriptor codec 4 at eight bits (rotorquant8), 8 is rotorquant8-norm.
-KERNEL_FORMATS = ((8, 0), (4, 1), (4, 2), (4, 3), (4, 4), (4, 5), (4, 9), (4, 10), (8, 8), (8, 12))
+KERNEL_FORMATS = ((8, 0), (4, 1), (4, 2), (4, 3), (4, 4), (4, 5), (4, 9), (4, 10), (4, 11), (8, 8), (8, 12))
 
 
 def _format(bits, codec):

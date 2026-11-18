@@ -41,7 +41,7 @@ def quantize(x):
 
 
 # (bits, kernel codec) of the owned RotorQuant formats: rotorquant8 / -norm, FP32-scale Q4, compact Q4.
-ROTOR = ((8, 12), (8, 8), (4, 3), (4, 4), (4, 5), (4, 2), (4, 10))
+ROTOR = ((8, 12), (8, 8), (4, 3), (4, 4), (4, 5), (4, 2), (4, 10), (4, 11))
 
 
 def rotor_encode(x, bits, codec):

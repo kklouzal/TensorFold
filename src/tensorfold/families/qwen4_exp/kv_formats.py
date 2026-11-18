@@ -112,6 +112,8 @@ FORMATS = (
     KVFormat("rotorquant-iso64-norm4", 4, 3, 128, 4, descriptor(4, "iso64-norm")),
     KVFormat("rotorquant-signed128-4", 4, 4, 128, 4, descriptor(4, "signed-iso128")),
     KVFormat("rotorquant-signed64-norm4", 4, 5, 128, 4, descriptor(4, "signed-iso64-norm")),
+    # SM70 owned path only: Iso64 basis with a norm-corrected FP16 scale per 64 values (two per metadata word).
+    KVFormat("rotorquant-iso64-norm4-h64", 4, 11, 128, 4, descriptor(4, "iso64-norm-h64")),
     KVFormat("rotorquant6", 6, 4, 128, 4, descriptor(6, "signed-iso128")),
     KVFormat("rotorquant6-norm", 6, 6, 128, 4, descriptor(6, "signed-iso128-norm")),
     KVFormat("rotorquant6-outlier-norm", 6, 7, 128, 4, descriptor(6, "signed-iso128-outlier-norm")),
@@ -123,6 +125,8 @@ FORMATS = (
     KVFormat("fp16", 16, 0, 32, 2),
 )
 DTYPES = tuple(item.name for item in FORMATS)
+# Formats served only by the GGUF SM70 provider (refused elsewhere before weight loading).
+SM70_ONLY = frozenset((COMPACT_Q4, COMPACT_ISO4, "rotorquant-iso64-norm4-h64"))
 BITS_OF = MappingProxyType({item.name: item.bits for item in FORMATS})
 _BY_NAME = MappingProxyType({item.name: item for item in FORMATS})
 

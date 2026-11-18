@@ -101,8 +101,9 @@ __device__ __forceinline__ float wide(float value, int col, float* shared) {
 
 template<int CODEC, bool INVERSE>
 __device__ __forceinline__ float rotate_component(float value, int col, float* shared) {
-    static_assert((CODEC >= 1 && CODEC <= 5) || CODEC == 9 || CODEC == 10 || eight_bit(CODEC));
+    static_assert((CODEC >= 1 && CODEC <= 5) || CODEC == 9 || CODEC == 10 || CODEC == 11 || eight_bit(CODEC));
     if constexpr (eight_bit(CODEC)) return rotate_component<4, INVERSE>(value, col, shared);  // same signed basis
+    if constexpr (CODEC == 11) return rotate_component<3, INVERSE>(value, col, shared);       // Iso64 basis
     // All CTA threads participate, col==threadIdx.x, blockDim.x is a multiple
     // of128 and shared has blockDim.x floats. There are no per-value barriers.
     if constexpr (CODEC == 1 || CODEC == 9) {
@@ -189,6 +190,34 @@ __device__ __forceinline__ float reduce_group(float value, int col, float* share
     return result;
 }
 
+// Same tree within each 64-value half group (codec 11 normalizes and corrects every half on its own).
+template<bool MAXIMUM>
+__device__ __forceinline__ float reduce_half_group(float value, int col, float* shared) {
+    shared[col] = value;
+    __syncthreads();
+    const int lane = col % 64, base = col / 64 * 64;
+    #pragma unroll
+    for (int distance = 32; distance; distance /= 2) {
+        if (lane < distance) {
+            if constexpr (MAXIMUM) shared[col] = fmaxf(shared[col], shared[col + distance]);
+            else shared[col] = __fadd_rn(shared[col], shared[col + distance]);
+        }
+        __syncthreads();
+    }
+    const float result = shared[base];
+    __syncthreads();
+    return result;
+}
+
+// Codec 11 metadata: the FP16 corrected scales of values 0..63 (low half) and 64..127 (high half) of a group.
+__device__ __forceinline__ float half_group_scale(float word, int half) {
+    return __half2float(__ushort_as_half((unsigned short)(__float_as_uint(word) >> (16 * half))));
+}
+
+__device__ __forceinline__ bool valid_half_group_scale(float scale) {
+    return isfinite(scale) && scale >= 0.0f;
+}
+
 struct Encoded {
     int code;
     float scale;
@@ -245,6 +274,26 @@ __device__ __forceinline__ Encoded encode_component(float value, int col, float*
         const int errors = (bad_source ? source_error : 0) | (bad ? 8 : 0);
         return {errors ? 7 : code, errors ? 0.0f : __uint_as_float(__half_as_ushort(half_scale)), errors};
     }
+    if constexpr (CODEC == 11) {
+        const float maximum = reduce_half_group<true>(fabsf(value), col, shared);
+        const float scaled = __fdiv_rn(value, maximum > 0.0f ? maximum : 1.0f);
+        const float energy = reduce_half_group<false>(__fmul_rn(scaled, scaled), col, shared);
+        const float norm = __fsqrt_rn(__fmul_rn(energy, 0.015625f));
+        const float unit = __fdiv_rn(scaled, norm > 0.0f ? norm : 1.0f);
+        const float rotated = rotate_component<CODEC, false>(unit, col, shared);
+        int code = index(rotated);
+        const float center = centroid(code);
+        const float coded_energy = reduce_half_group<false>(__fmul_rn(center, center), col, shared);
+        const float corrected = __fmul_rn(__fmul_rn(maximum, norm), __fsqrt_rn(__fdiv_rn(64.0f, coded_energy)));
+        const float scale = __half2float(__float2half_rn(corrected));
+        const float reconstruction = __fmul_rn(center, scale);
+        const bool bad_scale = (!isfinite(scale) || scale < 0.0f || (maximum > 0.0f && scale == 0.0f)
+                                || !isfinite(reconstruction)
+                                || !isfinite(__half2float(__float2half_rn(reconstruction))));
+        const bool bad_working = any(bad_scale, col);
+        const int errors = (bad_source ? source_error : 0) | (bad_working ? 8 : 0);
+        return {errors ? 7 : code, errors ? 0.0f : scale, errors};
+    }
     const float maximum = reduce_group<true>(fabsf(value), col, shared);
     const float scaled = __fdiv_rn(value, maximum > 0.0f ? maximum : 1.0f);
     const float energy = reduce_group<false>(__fmul_rn(scaled, scaled), col, shared);
@@ -280,6 +329,24 @@ __device__ __forceinline__ void store_encoded(Encoded item, int col, float* shar
         if (col % 2 == 0)
             codes[(scalar_base + col) / 2] = uint8_t(int(shared[col]) | (int(shared[col + 1]) << 4));
         if (col % 128 == 0) scales[(scalar_base + col) / 128] = item.scale;
+    }
+    __syncthreads();
+}
+
+// Codec 11: nibbles as store_encoded, then one word per 128 values holding both halves' FP16 scales.
+__device__ __forceinline__ void store_encoded_halves(Encoded item, int col, float* shared, uint8_t* codes,
+                                                     float* scales, int64_t scalar_base, int dim, bool write) {
+    shared[col] = float(item.code);
+    __syncthreads();
+    if (write && col < dim && col % 2 == 0)
+        codes[(scalar_base + col) / 2] = uint8_t(int(shared[col]) | (int(shared[col + 1]) << 4));
+    __syncthreads();
+    shared[col] = item.scale;
+    __syncthreads();
+    if (write && col < dim && col % 128 == 0) {
+        const uint32_t word = uint32_t(__half_as_ushort(__float2half_rn(shared[col])))
+                            | uint32_t(__half_as_ushort(__float2half_rn(shared[col + 64]))) << 16;
+        reinterpret_cast<uint32_t*>(scales)[(scalar_base + col) / 128] = word;
     }
     __syncthreads();
 }

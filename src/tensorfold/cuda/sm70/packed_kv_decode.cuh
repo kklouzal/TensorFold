@@ -50,7 +50,12 @@ __device__ __forceinline__ __half decoded_half(const void* data, const void* sca
     if (!bits) return static_cast<const __half*>(data)[at];
     if (tf_rq4::eight_bit(codec))
         return decoded_q8_rotor(static_cast<const uint8_t*>(data)[at], static_cast<const float*>(scales)[at / 128], table);
-    if (codec != 0) {  // every four-bit kernel codec (1..5, 9, 10): nibbles, one metadata word per 128 values
+    if (codec == 11) {  // per-64 FP16 scales: the half group of `at` selects its scale
+        const unsigned byte = static_cast<const uint8_t*>(data)[at / 2];
+        return decoded_q4(codec, (byte >> (4 * (at & 1))) & 15,
+                          tf_rq4::half_group_scale(static_cast<const float*>(scales)[at / 128], int(at % 128) / 64), table);
+    }
+    if (codec != 0) {  // every other four-bit kernel codec (1..5, 9, 10): nibbles, one metadata word per 128 values
         const unsigned byte = static_cast<const uint8_t*>(data)[at / 2];
         const int index = (byte >> (4 * (at & 1))) & 15;
         return decoded_q4(codec, index, static_cast<const float*>(scales)[at / 128]);
@@ -78,6 +83,8 @@ __device__ __forceinline__ void load_run(const void* data, const void* scales, i
         if constexpr (N == 16) { const uint2 v = *reinterpret_cast<const uint2*>(source); raw = make_uint4(v.x, v.y, 0u, 0u); }
         else raw = make_uint4(*reinterpret_cast<const unsigned*>(source), 0u, 0u, 0u);
         scale = __float_as_uint(static_cast<const float*>(scales)[at / 128]);
+        // Codec 11: a run lies inside one 64-value half group; carry that half's FP16 scale as FP32.
+        if (codec == 11) scale = __float_as_uint(tf_rq4::half_group_scale(__uint_as_float(scale), int(at % 128) / 64));
     }
 }
 

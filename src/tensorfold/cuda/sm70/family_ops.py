@@ -1191,7 +1191,7 @@ def shift_windows(old, new, keep, channels):
 
 # (key bits, key codec, value bits, value codec) -> native owned-writer codec (12: rotorquant8, 8: rotorquant8-norm).
 OWNED_FORMATS = {(8, 0, 8, 0): 0, (4, 1, 4, 1): 1, (4, 2, 4, 2): 2, (4, 3, 4, 3): 3, (4, 4, 4, 4): 4,
-                 (4, 5, 4, 5): 5, (4, 9, 4, 9): 9, (4, 10, 4, 10): 10,
+                 (4, 5, 4, 5): 5, (4, 9, 4, 9): 9, (4, 11, 4, 11): 11, (4, 10, 4, 10): 10,
                  (8, 4, 8, 4): 12, (8, 8, 8, 8): 8}
 
 

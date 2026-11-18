@@ -342,11 +342,13 @@ def variant_id(variant: str) -> int:
         return 7
     if variant == "signed-iso128-norm8":
         return 8
+    if variant == "iso64-norm-h64":
+        return 11
     raise ValueError(f"Unknown RotorQuant reference variant {variant!r}")
 
 
 def norm_corrected(variant: str) -> bool:
-    return variant_id(variant) in (3, 5, 6, 7, 8)
+    return variant_id(variant) in (3, 5, 6, 7, 8, 11)
 
 
 def outlier_scaled(variant: str) -> bool:
@@ -363,6 +365,10 @@ def thresholds(bits: int) -> tuple[float, ...]:
 
 def _variant_bits(bits: int, variant: str) -> int:
     codec = variant_id(variant)
+    if codec == 11:
+        if bits != 4:
+            raise ValueError("Iso64-norm H64 RotorQuant needs four-bit indices")
+        return codec
     if codec == 8:
         if bits != 8:
             raise ValueError("Norm8 RotorQuant needs eight-bit indices")
@@ -439,6 +445,11 @@ def descriptor(bits: int = 4, variant: str = "planar") -> FormatDescriptor:
             coefficients += (WIDE_GIVENS_COS, WIDE_GIVENS_SIN)
         if outlier_scaled(variant):
             header += "|index-alpha-max1-div-rn-rotated-absmax-outer-centroid|divide-before-index-only"
+        if codec == 11:
+            # Iso64 basis, but each 64-value half group is normalized and norm-corrected on its own; the
+            # 4-byte metadata word holds the two halves' FP16 corrected scales (low half = values 0..63).
+            header = header.replace("fp32-original-rms", "fp16-per64-corrected-rms-pair") + \
+                "per64-absmax-rms-normalize|rn64-centroid-energy|fp16-rn-scales|"
     if bits == 6:
         header = header.replace("even-low-nibble", "low4-high2-group-local-planes")
     elif bits == 7:
