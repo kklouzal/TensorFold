@@ -8,6 +8,8 @@
 // TensorFold modifications: fixed K512; padded output stride; no length clamp;
 // deterministic device status/invalid output; finite-prefix containment; bitwise
 // zero canonicalization (no FTZ-dependent comparison). Decode fastpaths omitted.
+// A parallel bin search and contiguous-segment emission (one block scan) replace the single-thread bin walk
+// and the per-chunk scans (same selection, bitwise; dec6 T0 ~2x faster at 4K..256K).
 // select_greater is the general body; family.cu's captured owned selector
 // (qsa_select_owned_kernel) and eager long-context rows (qsa_select_rows_kernel) use it,
 // and the standalone kernel below keeps its contract.
@@ -25,9 +27,9 @@ constexpr uint32_t kTop = 512;
 struct Shared {
     using Scan = cub::BlockScan<uint64_t, kThreads>;
     uint32_t histogram[kBins];
+    uint32_t bin_warp_total[kBins / 32];
     typename Scan::TempStorage scan;
-    uint32_t prefix, pivot, remaining, greater_seen, equal_seen;
-    uint32_t chunk_greater_base, chunk_equal_base, invalid;
+    uint32_t prefix, remaining, invalid;
 };
 
 __device__ __forceinline__ uint32_t ordered_bits(uint32_t bits) {
@@ -58,6 +60,7 @@ __device__ __forceinline__ uint32_t select_greater(const float* __restrict__ val
     __syncthreads();
     // Four exact radix passes find the kth numeric score. The final logical-ID
     // scan resolves pivot ties; no floating reduction/atomics or full-sort workspace.
+    const uint32_t lane = tx & 31;
 #pragma unroll
     for (int pass = 0; pass < 4; ++pass) {
         if (tx < kBins) shared.histogram[tx] = 0;
@@ -73,47 +76,52 @@ __device__ __forceinline__ uint32_t select_greater(const float* __restrict__ val
         }
         __syncthreads();
         if (shared.invalid) return 1;
-        if (tx == 0) {
-            uint32_t remaining = shared.remaining;
-            for (int bin = kBins - 1; bin >= 0; --bin) {
-                const uint32_t count = shared.histogram[bin];
-                if (remaining > count) remaining -= count;
-                else {
-                    shared.prefix |= uint32_t(bin) << shift;
-                    shared.remaining = remaining;
-                    break;
-                }
+        // The highest bin whose count, accumulated from the top bin down, reaches ``remaining`` (exactly one bin
+        // satisfies exclusive < remaining <= inclusive): a parallel scan of the 256 descending counts.
+        // ``remaining`` is read before the barrier below: the winning thread rewrites it after that barrier.
+        const uint32_t remaining = shared.remaining;
+        uint32_t count = 0, inclusive = 0;
+        if (tx < kBins) {
+            count = inclusive = shared.histogram[kBins - 1 - tx];
+#pragma unroll
+            for (uint32_t offset = 1; offset < 32; offset <<= 1) {
+                const uint32_t other = __shfl_up_sync(0xffffffffu, inclusive, offset);
+                if (lane >= offset) inclusive += other;
+            }
+            if (lane == 31) shared.bin_warp_total[tx >> 5] = inclusive;
+        }
+        __syncthreads();
+        if (tx < kBins) {
+            for (uint32_t warp = 0; warp < (tx >> 5); ++warp) inclusive += shared.bin_warp_total[warp];
+            const uint32_t exclusive = inclusive - count;
+            if (exclusive < remaining && remaining <= inclusive) {
+                shared.prefix = prefix | (uint32_t(kBins - 1 - tx) << shift);
+                shared.remaining = remaining - exclusive;
             }
         }
         __syncthreads();
     }
-    if (tx == 0) {
-        shared.pivot = shared.prefix;
-        shared.greater_seen = shared.equal_seen = 0;
+    const uint32_t pivot = shared.prefix, remaining = shared.remaining;
+    // Each thread owns one contiguous index segment, so a single block scan of the packed greater/pivot-equal
+    // counts orders every emission by ascending index (length <= 2^31: the packed low word cannot carry).
+    const uint32_t per = (length + kThreads - 1) / kThreads;
+    const uint32_t begin = min(length, tx * per), end = min(length, begin + per);
+    uint32_t greater = 0, equal = 0;
+    for (uint32_t index = begin; index < end; ++index) {
+        const uint32_t key = ordered_bits(__float_as_uint(values[index]));
+        greater += key > pivot;
+        equal += key == pivot;
     }
-    __syncthreads();
-    // Packed integer scans track greater/pivot-equal cardinalities. A chunk has
-    // <=1024 entries, so its low-word sum cannot carry into the greater count.
-    for (uint32_t base = 0; base < length; base += kThreads) {
-        const uint32_t index = base + tx;
-        const uint32_t key = index < length ? ordered_bits(__float_as_uint(values[index])) : 0;
-        const uint32_t greater = index < length && key > shared.pivot;
-        const uint32_t equal = index < length && key == shared.pivot;
-        uint64_t before = 0, total = 0;
-        Shared::Scan(shared.scan).ExclusiveSum((uint64_t(greater) << 32) | equal, before, total);
-        __syncthreads();
-        if (tx == 0) {
-            shared.chunk_greater_base = shared.greater_seen;
-            shared.chunk_equal_base = shared.equal_seen;
-            shared.greater_seen += uint32_t(total >> 32);
-            shared.equal_seen += uint32_t(total);
+    uint64_t before = 0, total = 0;
+    Shared::Scan(shared.scan).ExclusiveSum((uint64_t(greater) << 32) | equal, before, total);
+    uint32_t greater_before = uint32_t(before >> 32), equal_before = uint32_t(before);
+    for (uint32_t index = begin; index < end; ++index) {
+        const uint32_t key = ordered_bits(__float_as_uint(values[index]));
+        if (key > pivot) emit(greater_before++ + min(equal_before, remaining), index);
+        else if (key == pivot) {
+            if (equal_before < remaining) emit(greater_before + equal_before, index);
+            ++equal_before;
         }
-        __syncthreads();
-        const uint32_t greater_before = shared.chunk_greater_base + uint32_t(before >> 32);
-        const uint32_t equal_before = shared.chunk_equal_base + uint32_t(before);
-        if (greater || (equal && equal_before < shared.remaining))
-            emit(greater_before + min(equal_before, shared.remaining), index);
-        __syncthreads();
     }
     return 0;
 }

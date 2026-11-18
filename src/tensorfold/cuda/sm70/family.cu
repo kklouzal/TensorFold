@@ -914,15 +914,25 @@ __device__ __forceinline__ OwnedSelectorRow owned_selector_row(const int64_t* de
     r.owner = true;
     r.position = word_pointer<const int>(d[owner_words::POSITION]);
     r.pooled = word_pointer<const __half>(pooled_rows[row]);
+    // The scorer reads keys as 16-byte vectors: a misaligned table base is a structural failure (as a null one).
+    if (reinterpret_cast<uintptr_t>(r.pooled) % 16 != 0) r.pooled = nullptr;
     r.status = word_pointer<int>(d[owner_words::STATUS]);
     if (r.position != nullptr) r.end = int(*r.position + d[owner_words::ROW_OFFSET] + 1);
     return r;
 }
 
-// One row's scores of its complete pooled groups, spread over the grid's x blocks (each warp one group):
-// qsa_select_row's per-group expression, unchanged (bitwise equal scores).
-__device__ __forceinline__ void qsa_score_groups(const __half* q, const __half* pooled, float* out, int complete,
-                                                 int heads, int dim) {
+// One row's scores of its complete pooled groups. Two bodies, bitwise equal (selected per row on the device by
+// QSA_LANE_SCORER_GROUPS, so a captured graph and the eager path choose identically for every context):
+// qsa_score_groups_warp: each warp one group, qsa_select_row's per-group expression unchanged; fastest while a row
+// has few groups. qsa_score_groups_lane: one thread per group, no shuffles: per head the 32 lane partials (lane l
+// sums columns l, l + 32, ... in order) are combined by warp_sum's butterfly tree as lane 0 evaluates it (pairs
+// i, i + offset for offset 16 .. 1; FP32 addition is commutative), then ReLU, summed over heads in order and divided
+// by sqrt(dim). Each half product is exact in FP32 (11 x 11 significand bits), so FMA contraction cannot change a
+// partial. The key stays in registers, the row's query in dynamic shared memory (heads * DIM halves).
+// dec6 T0 (V100, 4 x 128 indexer, per layer): lane body 64K 1/5 rows 17/54 us vs 29/86; warp body 16K 1 row 9 vs 12.
+constexpr int QSA_LANE_SCORER_GROUPS = 8192;
+__device__ __forceinline__ void qsa_score_groups_warp(const __half* q, const __half* pooled, float* out, int complete,
+                                                      int heads, int dim) {
     const int lane = threadIdx.x & 31, warps = blockDim.x >> 5;
     for (int block = blockIdx.x * warps + (threadIdx.x >> 5); block < complete; block += gridDim.x * warps) {
         float score = 0.f;
@@ -938,7 +948,54 @@ __device__ __forceinline__ void qsa_score_groups(const __half* q, const __half* 
         if (!lane) out[block] = score;
     }
 }
+template<int DIM>
+__device__ __forceinline__ void qsa_score_groups_lane(const __half* q, const __half* pooled, float* out, int complete,
+                                                      int heads) {
+    static_assert(DIM % 32 == 0 && DIM >= 32 && DIM <= 256, "QSA scorer dimension");
+    if (int(blockIdx.x * blockDim.x) >= complete) return;  // uniform per block, before the barrier
+    extern __shared__ __half2 qsa_query[];
+    const __half2* q2 = reinterpret_cast<const __half2*>(q);
+    for (int i = threadIdx.x; i < heads * DIM / 2; i += blockDim.x) qsa_query[i] = q2[i];
+    __syncthreads();
+    for (int group = blockIdx.x * blockDim.x + threadIdx.x; group < complete; group += gridDim.x * blockDim.x) {
+        uint4 key4[DIM / 8];
+        const uint4* source = reinterpret_cast<const uint4*>(pooled + int64_t(group) * DIM);
+#pragma unroll
+        for (int v = 0; v < DIM / 8; ++v) key4[v] = source[v];
+        const __half* key = reinterpret_cast<const __half*>(key4);
+        float score = 0.f;
+        for (int head = 0; head < heads; ++head) {
+            const __half* qh = reinterpret_cast<const __half*>(qsa_query) + head * DIM;
+            float partial[32];
+#pragma unroll
+            for (int lane = 0; lane < 32; ++lane) {
+                float dot = 0.f;
+#pragma unroll
+                for (int col = lane; col < DIM; col += 32) dot = dot + __half2float(qh[col]) * __half2float(key[col]);
+                partial[lane] = dot;
+            }
+#pragma unroll
+            for (int offset = 16; offset; offset >>= 1)
+#pragma unroll
+                for (int i = 0; i < offset; ++i) partial[i] = partial[i] + partial[i + offset];
+            score = score + (partial[0] < 0.f ? 0.f : partial[0]);
+        }
+        score /= sqrtf(float(DIM));
+        out[group] = score;
+    }
+}
+// Both scorer launches run; each row takes exactly one body by its completed-group count. DIM == 0 is the warp body.
+template<int DIM>
+__device__ __forceinline__ void qsa_score_row(const __half* q, const __half* pooled, float* out, int complete,
+                                              int heads, int dim) {
+    if constexpr (DIM == 0) {
+        if (complete < QSA_LANE_SCORER_GROUPS) qsa_score_groups_warp(q, pooled, out, complete, heads, dim);
+    } else {
+        if (complete >= QSA_LANE_SCORER_GROUPS) qsa_score_groups_lane<DIM>(q, pooled, out, complete, heads);
+    }
+}
 
+template<int DIM>
 __global__ void qsa_scores_owned_kernel(const __half* query, const int64_t* descriptors, const int64_t* pooled_rows,
                                         float* scores, int64_t score_stride, int rank, int heads, int dim, int ratio,
                                         int top, int blocks) {
@@ -947,21 +1004,22 @@ __global__ void qsa_scores_owned_kernel(const __half* query, const int64_t* desc
     if (!r.owner || r.position == nullptr || r.pooled == nullptr) return;  // the select launch latches a failure
     const int complete = r.end / ratio;
     if (complete <= top || complete > blocks) return;
-    qsa_score_groups(query + int64_t(row) * heads * dim, r.pooled, scores + int64_t(row) * score_stride, complete,
-                     heads, dim);
+    qsa_score_row<DIM>(query + int64_t(row) * heads * dim, r.pooled, scores + int64_t(row) * score_stride,
+                       complete, heads, dim);
 }
 
 // Eager rows P0 .. P0 + rows - 1 over one pooled base (decode-shaped owner layers the round graphs did not
 // serve) past the single-block selector's 4096 groups: the captured round's score and radix-select bodies, so a
 // row selects the same groups whether a graph or the eager owner served it. Results use the qsa_rows layout.
+template<int DIM>
 __global__ void qsa_scores_rows_kernel(const __half* query, const __half* pooled, const void* position, bool pos_long,
                                        float* scores, int64_t score_stride, int heads, int dim, int ratio, int top,
                                        int blocks) {
     const int row = blockIdx.y;
     const int complete = int((position_value(position, pos_long) + row + 1) / ratio);
     if (complete <= top || complete > blocks) return;  // dense rows need no scores; the select launch latches excess
-    qsa_score_groups(query + int64_t(row) * heads * dim, pooled, scores + int64_t(row) * score_stride, complete,
-                     heads, dim);
+    qsa_score_row<DIM>(query + int64_t(row) * heads * dim, pooled, scores + int64_t(row) * score_stride,
+                       complete, heads, dim);
 }
 
 __global__ __launch_bounds__(1024) void qsa_select_rows_kernel(const void* position, bool pos_long, int* sparse,
@@ -1025,6 +1083,29 @@ __global__ __launch_bounds__(1024) void qsa_select_owned_kernel(const int64_t* d
 }
 
 template<typename V> V* ptr(const T& x) { return reinterpret_cast<V*>(x.data_ptr()); }
+// The scorer's two launches (qsa_score_row picks one per row on the device): the warp body (DIM 0, up to 160
+// blocks of eight warps per row) and the lane body, whose key dimension (the bindings admit 32..256 in steps of 32)
+// is a template argument (register-resident keys) with the row's query (heads x dim halves) in dynamic shared
+// memory, up to 160 blocks of 128 threads per row. Blocks past a row's groups exit at once.
+template<typename Launch> void qsa_score_launch(const T& query, int blocks, int rows, Launch launch) {
+    const int heads = int(query.size(1)), dim = int(query.size(2));
+    const size_t shared = size_t(heads) * dim * sizeof(__half);
+    TORCH_CHECK(shared <= 48 * 1024, "QSA scorer query exceeds 48 KiB of shared memory");
+    launch(std::integral_constant<int, 0>{}, dim3(std::min(160, (blocks + 7) / 8), rows), THREADS, size_t(0));
+    if (blocks < QSA_LANE_SCORER_GROUPS) return;  // no row can reach the lane body
+    const dim3 grid(std::min(160, (blocks + 127) / 128), rows);
+    switch (dim) {
+        case 32: launch(std::integral_constant<int, 32>{}, grid, 128, shared); break;
+        case 64: launch(std::integral_constant<int, 64>{}, grid, 128, shared); break;
+        case 96: launch(std::integral_constant<int, 96>{}, grid, 128, shared); break;
+        case 128: launch(std::integral_constant<int, 128>{}, grid, 128, shared); break;
+        case 160: launch(std::integral_constant<int, 160>{}, grid, 128, shared); break;
+        case 192: launch(std::integral_constant<int, 192>{}, grid, 128, shared); break;
+        case 224: launch(std::integral_constant<int, 224>{}, grid, 128, shared); break;
+        case 256: launch(std::integral_constant<int, 256>{}, grid, 128, shared); break;
+        default: TORCH_CHECK(false, "QSA scorer dimension ", dim);
+    }
+}
 const void* optional_ptr(const O& x) { return x ? x->data_ptr() : nullptr; }
 // Exact grids: normed/mix/gate/embed write one element per thread (no grid-stride loop), so a grid clamped to
 // 65535 blocks left every element past 65535 * 256 unwritten (HC normalization of a prompt piece above 1638
@@ -1305,11 +1386,13 @@ void family_qsa_rows_long_cuda(const T& query, const T& pooled, const T& positio
     if (!rows) return;
     auto stream = at::cuda::getCurrentCUDAStream();
     const bool pos_long = position.scalar_type() == at::kLong;
-    // As the captured selector: up to 160 blocks of eight warps per row; blocks past a row's groups exit at once.
-    const int chunks = std::min(160, (blocks + 7) / 8);
-    qsa_scores_rows_kernel<<<dim3(chunks, rows), THREADS, 0, stream>>>(
-        ptr<__half>(query), ptr<__half>(pooled), position.data_ptr(), pos_long, ptr<float>(scores), scores.stride(0),
-        int(query.size(1)), int(query.size(2)), ratio, budget / ratio, blocks);
+    // As the captured selector: the scorer's grid covers the slab; blocks past a row's groups exit at once.
+    qsa_score_launch(query, blocks, rows, [&](auto dim, dim3 grid, int threads, size_t shared) {
+        qsa_scores_rows_kernel<decltype(dim)::value><<<grid, threads, shared, stream>>>(
+            ptr<__half>(query), ptr<__half>(pooled), position.data_ptr(), pos_long, ptr<float>(scores),
+            scores.stride(0), int(query.size(1)), int(query.size(2)), ratio, budget / ratio, blocks);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+    });
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     qsa_select_rows_kernel<<<rows, tensorfold::sm70::qsa_select512::kThreads, 0, stream>>>(
         position.data_ptr(), pos_long, ptr<int>(sparse), ptr<int>(counts), ptr<int>(ids), ids.stride(0),
@@ -1365,12 +1448,12 @@ void family_qsa_select_owned_cuda(const T& query, const T& descriptors, const T&
     float* score_rows = scores ? ptr<float>(*scores) : nullptr;
     const int64_t stride = scores ? scores->stride(0) : 0;
     if (blocks > budget / ratio) {
-        // Up to 160 blocks (two per V100 SM) of eight warps per row; a warp scores every 1280th group, and
-        // blocks past a row's completed groups exit at once.
-        const int chunks = std::min(160, (blocks + 7) / 8);
-        qsa_scores_owned_kernel<<<dim3(chunks, rows), THREADS, 0, stream>>>(
-            ptr<__half>(query), descriptors.data_ptr<int64_t>(), pooled_rows.data_ptr<int64_t>(), score_rows, stride,
-            rank, int(query.size(1)), int(query.size(2)), ratio, budget / ratio, blocks);
+        qsa_score_launch(query, blocks, rows, [&](auto dim, dim3 grid, int threads, size_t shared) {
+            qsa_scores_owned_kernel<decltype(dim)::value><<<grid, threads, shared, stream>>>(
+                ptr<__half>(query), descriptors.data_ptr<int64_t>(), pooled_rows.data_ptr<int64_t>(), score_rows,
+                stride, rank, int(query.size(1)), int(query.size(2)), ratio, budget / ratio, blocks);
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
+        });
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
     qsa_select_owned_kernel<<<rows, tensorfold::sm70::qsa_select512::kThreads, 0, stream>>>(

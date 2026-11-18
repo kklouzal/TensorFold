@@ -354,7 +354,8 @@ void qsa_select_owned(const T& query, const T& descriptors, const T& pooled_rows
     TORCH_CHECK(query.dim() == 3 && query.size(0) >= rows && query.size(2) > 0 && query.size(2) <= 256
                 && query.size(2) % 32 == 0 && rank >= 0 && rank < 8 && ratio > 0 && budget > 0
                 && budget % ratio == 0 && selection.dim() == 2
-                && selection.size(1) == budget + ratio + 2 && pooled_rows.numel() >= rows,
+                && selection.size(1) == budget + ratio + 2 && pooled_rows.numel() >= rows
+                && reinterpret_cast<uintptr_t>(query.data_ptr()) % 4 == 0,  // half2 query staging
                 "QSA owned selector geometry");
     if (scores) {
         // The radix selector takes exactly 512 groups; the slab holds every group a row's context completes.
@@ -632,7 +633,9 @@ void qsa_rows_long(const T& query, const T& pooled, const T& position, T sparse,
                 && blocks <= pooled.size(0) && position.numel() == 1 && sparse.numel() >= rows
                 && counts.numel() >= rows && status.numel() == 2 && status.is_contiguous()
                 && ids.dim() == 2 && ids.size(0) >= rows && ids.size(1) >= budget + ratio && ids.stride(1) == 1
-                && scores.dim() == 2 && scores.size(0) >= rows && scores.size(1) >= blocks && scores.stride(1) == 1,
+                && scores.dim() == 2 && scores.size(0) >= rows && scores.size(1) >= blocks && scores.stride(1) == 1
+                && reinterpret_cast<uintptr_t>(pooled.data_ptr()) % 16 == 0  // 16-byte key vectors
+                && reinterpret_cast<uintptr_t>(query.data_ptr()) % 4 == 0,  // half2 query staging
                 "QSA long selector geometry");
     at::assert_no_overlap(scores, ids);
     c10::cuda::CUDAGuard guard(query.device());
