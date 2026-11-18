@@ -23,6 +23,7 @@ void family_rms_cuda(const T&, const T&, T&, T&, int, float);
 void family_gate_cuda(const T&, const T&, T&, T&, int, int);
 void family_ple_embed_cuda(const T&, T&, T&, int, int, int, float);
 void family_ple_embed_iq4nl_cuda(const T&, T&, T&, int, float);
+void family_draft_pick_cuda(const T&, const T&, const T&, T&, int, int, int);
 void family_ple_gate_cuda(const T&, const T&, const T&, const T&, const T&, T&, T&, const O&, int, float, bool);
 void family_ple_conv_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&, int, int, float);
 void family_add_cuda(const T&, const T&, T&, int);
@@ -182,6 +183,19 @@ void ple_embed_iq4nl(const T& packed, T out, T xs, int rows, int heads, int dim,
                 && out.sizes() == at::IntArrayRef({rows, int64_t(heads) * dim})
                 && packed.size(0) >= int64_t(rows) * heads && std::isfinite(scale), "IQ4_NL PLE embedding geometry");
     c10::cuda::CUDAGuard guard(out.device()); family_ple_embed_iq4nl_cuda(packed, out, xs, dim, float(scale));
+}
+
+void draft_pick(const T& packet, const T& kept, const T& incomplete, T out, int world, int rows, int cand) {
+    TORCH_CHECK(packet.is_cuda() && packet.scalar_type() == at::kFloat && packet.is_contiguous()
+                && world >= 1 && world <= 8 && cand >= 1 && cand <= 64 && rows >= 0
+                && packet.numel() >= int64_t(world) * rows * (2 * cand + 1), "draft pick packet geometry");
+    TORCH_CHECK(kept.device() == packet.device() && kept.scalar_type() == at::kLong && kept.is_contiguous()
+                && kept.numel() == world && incomplete.device() == packet.device()
+                && incomplete.scalar_type() == at::kByte && incomplete.is_contiguous() && incomplete.numel() == world,
+                "draft pick shard widths");
+    TORCH_CHECK(out.device() == packet.device() && out.scalar_type() == at::kLong && out.is_contiguous()
+                && out.numel() >= int64_t(rows) * (3 + world), "draft pick output words");
+    c10::cuda::CUDAGuard guard(packet.device()); family_draft_pick_cuda(packet, kept, incomplete, out, world, rows, cand);
 }
 
 void ple_gate(const T& keys, const T& values, const T& h, const T& nk, const T& nq, T gated, T pss,
@@ -684,7 +698,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("owned_q8_prepare_window", &owned_q8_prepare<true>);
     m.def("guard_rows", &guard_rows);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
-    m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_embed_iq4nl", &ple_embed_iq4nl); m.def("ple_gate", &ple_gate);
+    m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_embed_iq4nl", &ple_embed_iq4nl); m.def("draft_pick", &draft_pick); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);
     m.def("prep", &prep); m.def("prep_q4", &prep_q4); m.def("prep_staged", &prep_staged);
     m.def("pool", &pool); m.def("pool_staged", &pool_staged); m.def("ring_publish", &ring_publish);

@@ -195,6 +195,13 @@ class MultiDecoder:
                 width = w.draft_head.n if w.draft_head is not None else w.head.n
                 self._draft_plan = self.mbuf.sample_plan = SamplingShard(
                     w, width, offset=int(w.meta["vocab_offset"]), id_map=w.draft_ids)
+        # Greedy MTP proposals pick on the device; the pick's words ride the step's status readback wait.
+        self._draft_pick = None
+        if (self._draft_plan is not None and w.meta.get("execution_provider") == "sm70"
+                and torch.device(w.device).type == "cuda"):
+            from .draft_pick import DraftPick
+
+            self._draft_pick = DraftPick(w, self._draft_plan, self.mbuf.rows)
         from .hc_plans import enroll
 
         enroll(w, self.buf)
@@ -2790,7 +2797,8 @@ class MultiDecoder:
         context = getattr(self.mbuf, "input_preparation_context", None)
         segs = prepare_refresh() if context is None else context.prepare("mtp-refresh-window", prepare_refresh)
         proposing = any(room[s.sid] > 0 for s, _, _ in todo)
-        logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
+        greedy = proposing and all(s.sampling is None or s.sampling.temperature <= 0 for s, _, _ in todo)
+        logits = self._mtp(segs, pick=greedy) if proposing else self._mtp(segs, logits=False)
         if self.controller is not None:
             self.controller.work_observations.mtp(
                 segs, role="refresh", zero_proposal_rows=sum(end - begin for (stream, _, _), (_, begin, end)
@@ -2848,7 +2856,7 @@ class MultiDecoder:
                 return mtp_stage(self.mbuf, windows)
 
             segs = prepare_proposal() if context is None else context.prepare("mtp-proposal-window", prepare_proposal)
-            logits = self._mtp(segs)
+            logits = self._mtp(segs, pick=greedy)
             if self.controller is not None:
                 self.controller.work_observations.mtp(segs, role="proposal")
 
@@ -2865,8 +2873,12 @@ class MultiDecoder:
         pad = getattr(getattr(getattr(self, "graphs", None), "bound", None), "pad_rows", None)
         return None if pad is None else pad(kind, rows, participants)
 
-    def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None) -> torch.Tensor | None:
-        """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
+    def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None,
+             pick: bool = False) -> torch.Tensor | None:
+        """An MTP step over every drafting stream, its attention one launch a kernel for all of them.
+
+        ``pick``: every drafting stream is greedy; the device pick over the step's gathered packet is queued
+        before the status check's wait, which then also covers the pick's words (``_picks`` consumes them)."""
 
         self.mbuf.rotor_lookup = False
         if self.live() == 1:
@@ -2882,6 +2894,11 @@ class MultiDecoder:
                 out = mtp_compute(self.w, segs, self.mbuf, check=False, logits=logits,
                                   **({"next_inputs": next_inputs} if next_inputs is not None else {}))
             if self.w.comm is not None:
+                draft_pick = getattr(self, "_draft_pick", None)
+                if draft_pick is not None:
+                    draft_pick.pending = None
+                    if pick and out is not None and out.data_ptr() == self.mbuf.logits.data_ptr():
+                        draft_pick.issue(self.mbuf.cand_all, out.shape[0])
                 _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
             return out
         except BaseException as primary:
@@ -2921,6 +2938,16 @@ class MultiDecoder:
             if (self.w.meta.get("execution_provider") == "sm70"
                     and logits.data_ptr() == self.mbuf.logits.data_ptr()
                     and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
+                draft_pick = getattr(self, "_draft_pick", None)
+                if (draft_pick is not None and draft_pick.pending is not None
+                        and (samplings[0] is None or samplings[0].temperature <= 0) and self._draft_plan.graph_ids_safe):
+                    # choose_gathered's entry checks, then its greedy rule as evaluated on the device.
+                    validate_policy(positions, samplings[0])
+                    validate_rows(logits, positions, samplings[0])
+                    self._draft_plan.check_model(self.w, logits)
+                    picked = draft_pick.take(self.mbuf.cand_all, len(positions))
+                    if picked:
+                        return picked
                 chosen, probabilities = choose_gathered(
                     self.w, self.mbuf.cand_all, len(positions), positions, samplings[0], with_prob=True,
                     logits=logits, plan=self._draft_plan, readback=self.mbuf.gathered_readback)

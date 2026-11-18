@@ -5,6 +5,7 @@
 #include <cuda_fp16.h>
 #include <math_constants.h>
 #include <limits>
+#include <climits>
 #include <optional>
 #include <algorithm>
 #include <type_traits>
@@ -1383,5 +1384,94 @@ void family_guard_rows_owned_cuda(const T& x, T& out, const T& descriptors, int 
     const int threads = std::min(256, std::max(32, (cols + 31) / 32 * 32));
     if (rows && cols) guard_rows_owned_kernel<<<rows, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
         ptr<__half>(x), ptr<__half>(out), descriptors.data_ptr<int64_t>(), cols, x.stride(0), error, layer);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+// Greedy draft choice over a completed gathered candidate packet (forward.candidates' all-rank packet: per rank and
+// row CAND FP32 scores, CAND int32 global IDs stored in FP32 slots, the rank's FP32 full-domain log-sum-exp), one
+// block a row. The host chooser's packet checks are evaluated here as flags the host raises in its original
+// precedence; the token is the maximum real score with the lowest global ID among exact ties. Out words per row:
+// flags, token, the chosen FP32 score bits, then each rank's FP32 log-sum-exp bits.
+namespace {
+constexpr int PICK_MAX_ENTRIES = 8 * 64;
+enum : int { PICK_PADDING = 1, PICK_SCORES = 2, PICK_NORM_INVALID = 4, PICK_NORM_NONE = 8, PICK_AMBIGUOUS = 16,
+             PICK_BEST = 32, PICK_DISTINCT = 64 };
+__device__ __forceinline__ bool pick_nan(float v) { return v != v; }
+__device__ __forceinline__ bool pick_posinf(float v) { return v == __int_as_float(0x7f800000); }
+__device__ __forceinline__ bool pick_finite(float v) {
+    return !pick_nan(v) && !pick_posinf(v) && v != __int_as_float(0xff800000);
+}
+__global__ void draft_pick_kernel(const float* packet, const int64_t* kept, const uint8_t* incomplete,
+                                  int64_t* out, int world, int rows, int cand) {
+    const int row = blockIdx.x, width = 2 * cand + 1, entries = world * cand;
+    __shared__ float values[PICK_MAX_ENTRIES];
+    __shared__ int ids[PICK_MAX_ENTRIES];
+    __shared__ int flags, token;
+    __shared__ float best;
+    if (threadIdx.x == 0) { flags = 0; token = INT_MAX; }
+    __syncthreads();
+    int local = 0;
+    for (int e = threadIdx.x; e < entries; e += THREADS) {
+        const int rank = e / cand, column = e % cand;
+        const float* base = packet + (static_cast<int64_t>(rank) * rows + row) * width;
+        const float value = base[column];
+        const int id = __float_as_int(base[cand + column]);
+        values[e] = value;
+        ids[e] = id;
+        const bool real = column < kept[rank];
+        if ((real && id < 0) || (!real && id != -1) || (!real && value != __int_as_float(0xff800000))) local |= PICK_PADDING;
+        if (pick_nan(value) || pick_posinf(value)) local |= PICK_SCORES;
+    }
+    if (threadIdx.x < world) {
+        const float norm = packet[(static_cast<int64_t>(threadIdx.x) * rows + row) * width + 2 * cand];
+        if (pick_nan(norm) || pick_posinf(norm)) local |= PICK_NORM_INVALID;
+    }
+    if (local) atomicOr(&flags, local);
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        bool any_finite = false;
+        float top = __int_as_float(0xff800000), masked = __int_as_float(0xff800000);
+        for (int rank = 0; rank < world; ++rank)
+            any_finite |= pick_finite(packet[(static_cast<int64_t>(rank) * rows + row) * width + 2 * cand]);
+        for (int e = 0; e < entries; ++e) {
+            // NaN-free unless SCORES is flagged; a flagged row is never interpreted.
+            if (values[e] > top) top = values[e];
+            if (ids[e] >= 0 && values[e] > masked) masked = values[e];
+        }
+        int extra = any_finite ? 0 : PICK_NORM_NONE;
+        for (int rank = 0; rank < world; ++rank) {
+            float edge = __int_as_float(0x7f800000);
+            for (int column = 0; column < cand; ++column) edge = fminf(edge, values[rank * cand + column]);
+            if (incomplete[rank] && pick_finite(edge) && edge >= top) extra |= PICK_AMBIGUOUS;
+        }
+        if (!pick_finite(masked)) extra |= PICK_BEST;
+        best = masked;
+        if (extra) atomicOr(&flags, extra);
+    }
+    __syncthreads();
+    int dup = 0, tied = INT_MAX;
+    for (int e = threadIdx.x; e < entries; e += THREADS) {
+        const int id = ids[e];
+        if (id < 0) continue;
+        for (int other = e + 1; other < entries; ++other) dup |= ids[other] == id;
+        if (values[e] == best && id < tied) tied = id;
+    }
+    if (dup) atomicOr(&flags, static_cast<int>(PICK_DISTINCT));
+    if (tied != INT_MAX) atomicMin(&token, tied);
+    __syncthreads();
+    const int words = 3 + world;
+    if (threadIdx.x == 0) {
+        out[row * words] = flags;
+        out[row * words + 1] = token;
+        out[row * words + 2] = static_cast<int64_t>(__float_as_int(best));
+    }
+    if (threadIdx.x < world)
+        out[row * words + 3 + threadIdx.x] = static_cast<int64_t>(
+            __float_as_int(packet[(static_cast<int64_t>(threadIdx.x) * rows + row) * width + 2 * cand]));
+}
+}  // namespace
+void family_draft_pick_cuda(const T& packet, const T& kept, const T& incomplete, T& out, int world, int rows, int cand) {
+    if (rows) draft_pick_kernel<<<rows, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        packet.data_ptr<float>(), kept.data_ptr<int64_t>(), incomplete.data_ptr<uint8_t>(),
+        out.data_ptr<int64_t>(), world, rows, cand);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
