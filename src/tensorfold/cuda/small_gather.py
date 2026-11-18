@@ -58,7 +58,8 @@ DEFAULT_BULK = 120 * 2560 * 4
 def configured_bulk(world: int) -> int:
     """Per-rank FP32 partial bytes the bulk row all-reduce admits (0: off). Only with the small all-gather.
 
-    Its mailbox (``bulk_mailbox_bytes``) is allocated at communicator open, outside admission forecasts.
+    Its mailbox (``bulk_mailbox_bytes``) is allocated at communicator open, before Flash Next's capacity admission
+    samples free device memory, so the admitted budget excludes it; geometry forecasts do not itemize it.
     """
     raw = os.environ.get(BULK_ENV, "").strip()
     if not raw:
