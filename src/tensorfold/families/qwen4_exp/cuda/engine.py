@@ -742,7 +742,7 @@ class FlashNextEngine:
         if tp > 1 and not managed:
             from tensorfold.cuda.comm import open_comm
 
-            self.comm = open_comm(rank, tp, master, port,
+            self.comm = open_comm(rank, tp, master, port, row_reduce=True,
                 **({"store": self._startup_store} if self._startup_store is not None else {}),
                 **({} if self._store_use_libuv is None else {"use_libuv": self._store_use_libuv}),
                 **({"store_origin": self._startup_store_origin} if self._startup_store_origin is not None else {}),

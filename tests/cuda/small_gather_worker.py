@@ -30,7 +30,7 @@ def main():
     torch.cuda.set_device(0)
     device = torch.device("cuda", 0)
     comm = NCCL()
-    comm.open(rank, world, "127.0.0.1", port)
+    comm.open(rank, world, "127.0.0.1", port, row_reduce=True)
     small = comm.small_gather
     report = {"rank": rank, "enabled": small is not None, "capacity": comm.small_gather_bytes, "errors": []}
     if small is None:
@@ -149,7 +149,7 @@ def main():
     # Bulk row all-reduce (TF_SMALL_ALLREDUCE_BYTES): the same oracle, called directly at shapes either path admits.
     bulk_shapes = 0
     stream = torch.cuda.current_stream().cuda_stream
-    for rows in (5, 16, 40, 46, 64, 120):
+    for rows in (5, 16, 40, 46, 64, 120, 160):
         if not small.bulk_chunk_rows(rows, 2560):
             continue
         generator = torch.Generator(device=device)

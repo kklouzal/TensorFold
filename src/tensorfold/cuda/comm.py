@@ -74,10 +74,10 @@ _SMALL_ALLREDUCE = os.environ.get("TF_SMALL_ALLREDUCE", "1") != "0"
 # 16.7 vs 18.6 us; four rows is about break-even, so the gather keeps them.
 _SMALL_ALLREDUCE_MIN_ROWS = 5
 # From this many rows the bulk row all-reduce (plain-store chunks, TF_SMALL_ALLREDUCE_BYTES mailbox) takes
-# decode partials: in-graph on 8x V100-SXM2 at [rows, 2560] it measured 42-44 vs 51 us (LL) at 40 rows,
-# 60 vs 95 us and 73-82 vs 125 us (NCCL FP32 all-gather, before its consumer's 8-partial sum) at 80/120
-# rows, but 31 vs 22 us at 16 rows; rows 17-39 were not measured and keep the LL kernel.
-_BULK_ALLREDUCE_MIN_ROWS = 40
+# decode partials. In-graph on 8x V100-SXM2 at [rows, 2560], bulk vs LL: 17/24/28 rows 33/36/40 vs 23/30/34 us,
+# 32 rows 40.3 vs 40.4 (a tie keeps the LL kernel), 36/39/40 rows 41/42/45 vs 46/51/52; past the LL mailbox,
+# 80/120/160 rows 60/77/94 vs 95/132/150 us for the NCCL FP32 all-gather alone (before its 8-partial sum).
+_BULK_ALLREDUCE_MIN_ROWS = 33
 
 class _TCPStoreOrigin:
     """Process-local factory provenance, retained with its exact native Store.
@@ -346,8 +346,12 @@ class NCCL:
             self.native_state_slots_highwater = max(self.native_state_slots_highwater, count)
 
     def open(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
-             key: str = "tf_nccl_uid", store=None, use_libuv: bool | None = None, store_origin=None) -> None:
+             key: str = "tf_nccl_uid", store=None, use_libuv: bool | None = None, store_origin=None,
+             row_reduce: bool = False) -> None:
         """Acquire into a published slot; failure closes or retains that slot.
+
+        ``row_reduce``: this communicator reduces tensor-parallel decode partials (``all_reduce_rows``), so
+        it also opens the bulk row all-reduce mailbox (``TF_SMALL_ALLREDUCE_BYTES``).
 
         Native init writes directly into ``comm`` before Python regains control.
         The released GIL syscall cannot expose an unjournaled Python result.
@@ -360,7 +364,7 @@ class NCCL:
                     raise RuntimeError("communicator open is one-shot")
                 acquiring = True
                 self._initialize(rank, world, master, port, timeout_s=timeout_s, key=key, store=store,
-                                 use_libuv=use_libuv, store_origin=store_origin)
+                                 use_libuv=use_libuv, store_origin=store_origin, row_reduce=row_reduce)
                 self._opened = True
         except BaseException as error:
             if not acquiring:
@@ -370,7 +374,8 @@ class NCCL:
             store = store_origin = None  # Failure tracebacks cannot keep a retired owned listener alive.
 
     def _initialize(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
-                    key: str = "tf_nccl_uid", store=None, use_libuv: bool | None = None, store_origin=None) -> None:
+                    key: str = "tf_nccl_uid", store=None, use_libuv: bool | None = None, store_origin=None,
+                    row_reduce: bool = False) -> None:
         try:
             from datetime import timedelta
             from math import isfinite
@@ -431,7 +436,8 @@ class NCCL:
                 from .small_gather import configured_bulk, configured_capacity, open_small_gather
 
                 capacity = configured_capacity()
-                bulk = configured_bulk(world) if capacity else 0
+                # Only the communicator whose decode partials use all_reduce_rows holds the bulk mailbox.
+                bulk = configured_bulk(world) if capacity and row_reduce else 0
             if capacity:
                 # Every rank holds the same unique ID, and each open draws a new one.
                 nonce = hashlib.sha256(bytes(uid.internal)).hexdigest()[:32]

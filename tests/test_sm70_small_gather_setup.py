@@ -23,9 +23,9 @@ def test_mailbox_bytes_are_two_parities_of_sixteen_byte_lines():
     assert small_gather.mailbox_bytes(8, 131072) == 2 * 8 * (131072 // 8) * 16 == 4 * 1024 * 1024
 
 
-@pytest.mark.parametrize("world,raw,expected", [(8, "", 1228800), (6, "", 1228800), (7, "", 1228752), (8, "0", 0),
+@pytest.mark.parametrize("world,raw,expected", [(8, "", 1638400), (6, "", 1638336), (7, "", 1638336), (8, "0", 0),
                                                 (8, "128", 128), (8, str(small_gather.MAX_BULK), small_gather.MAX_BULK)])
-def test_bulk_capacity_defaults_to_120_rows_of_2560_and_accepts_zero(monkeypatch, world, raw, expected):
+def test_bulk_capacity_defaults_to_160_rows_of_2560_and_accepts_zero(monkeypatch, world, raw, expected):
     monkeypatch.setenv(small_gather.BULK_ENV, raw)
     assert small_gather.configured_bulk(world) == expected
 
@@ -38,8 +38,8 @@ def test_bulk_capacity_rejects_values_outside_the_contract(monkeypatch, raw):
 
 
 def test_bulk_mailbox_bytes_at_the_default_on_the_v100_cube_mesh():
-    # 3 transit regions (non-neighbours per rank): 2 x (8 x 4 x 153600 + 8 x 76800) + flags 2 x 8 x 5 x 4 x 4.
-    assert small_gather.bulk_mailbox_bytes(8, 1228800, 3) == 11059200 + 1280
+    # 3 transit regions (non-neighbours per rank): 2 x (8 x 4 x 204800 + 8 x 102400) + flags 2 x 8 x 5 x 4 x 4.
+    assert small_gather.bulk_mailbox_bytes(8, 1638400, 3) == 14745600 + 1280
 
 
 def test_each_open_has_its_own_store_namespace():

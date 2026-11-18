@@ -50,16 +50,18 @@ def configured_capacity() -> int:
 BULK_ENV = "TF_SMALL_ALLREDUCE_BYTES"
 # Native kMaxBulkBytes.
 MAX_BULK = 8 << 20
-# Unset: FP32 partials of 120 rows x 2560 per rank (SC117's 24-lane MTP4 verify), rounded down to a multiple of
+# Unset: FP32 partials of 160 rows x 2560 per rank (SC117's 32-lane MTP4 verify), rounded down to a multiple of
 # 16 x world.
-DEFAULT_BULK = 120 * 2560 * 4
+DEFAULT_BULK = 160 * 2560 * 4
 
 
 def configured_bulk(world: int) -> int:
     """Per-rank FP32 partial bytes the bulk row all-reduce admits (0: off). Only with the small all-gather.
 
-    Its mailbox (``bulk_mailbox_bytes``) is allocated at communicator open, before Flash Next's capacity admission
-    samples free device memory, so the admitted budget excludes it; geometry forecasts do not itemize it.
+    Its mailbox (``bulk_mailbox_bytes``) is allocated when the tensor-parallel communicator opens
+    (``NCCL.open(row_reduce=True)``), before the engine samples device memory for admission, so admission's
+    physical-free sample already excludes it (geometry forecasts do not itemize it); other communicators
+    allocate none.
     """
     raw = os.environ.get(BULK_ENV, "").strip()
     if not raw:
