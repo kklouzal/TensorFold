@@ -2328,6 +2328,40 @@ gained between +2.46% and +5.85% (C1 4K/16K 87.7/89.0 → 90.6/92.0 tok/s). Pref
 because the change only reorders host work and copies. The staging change alone measured
 +1.59% (+0.90% trimmed, uncertain) on one earlier pair against `3a99113a`.
 
+**Faster SM70 GDN decode chains, same outputs (2026-11-18).** `chain_body` in
+`src/tensorfold/cuda/sm70/gdn.cu` runs every decode, verify and draft row through the
+GDN layers, via `chain_kernel` and `batch_chain_kernel`. It used to process each row
+completely before starting the next, with five block barriers per row. Only the
+delta-rule state update and the read-out depend on the recurrent state. Rows now run in
+tiles of 8, in three phases:
+1. For every row in the tile, in parallel: the convolution and SiLU, the q/k L2 norms
+   and the gates.
+2. Row by row: only the register-resident update and read-out, with no barrier per row.
+3. The gated RMSNorm output, 128 threads per row.
+
+Each value uses the same expression as before, so outputs, sums, the final state and
+the replay saves are bitwise unchanged. Hashes of all of these matched over 70 cases:
+rows 1–40, all keep-row variants and both decay forms.
+
+Microbenchmark on V100 GPU0 (6 value heads per rank, µs per launch, base → new):
+
+| Rows | Base | New |
+|---|---|---|
+| 5 | 35.2 | 26.0 |
+| 8 | 49.6 | 33.7 |
+| 17 | 92.9 | 64.1 |
+| 40 | 203.6 | 130.9 |
+
+End to end on 8× V100 (prod config, 24 lanes):
+- **In-graph profile (`4bc07085` base vs this change, 4K):** at C1 the 5-row verify
+  graph's GDN time fell from 1.136 to 0.882 ms, and its median span from 23.41 to
+  23.19 ms. At C24 the GDN time fell from 2.72 to 2.41 ms per verify graph; the C24 span
+  (about 111 ms) is too noisy at 8–9 samples to resolve that.
+- **Fast protocol, one session per arm on `d718cc9b`:** decode +0.80% (+0.22% with the
+  best cell dropped; worst cell C16 4K −1.25%), so not established by itself;
+  golden-vg2 identical. The change is accepted on the bitwise identity and the in-graph
+  saving.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the
