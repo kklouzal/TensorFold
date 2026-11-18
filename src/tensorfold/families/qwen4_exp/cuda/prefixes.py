@@ -44,7 +44,8 @@ def _best(kept, prompt, busy=(), *, principal=_UNSCOPED, extent=None):
     if principal is not _UNSCOPED:
         kept = (entry for entry in kept if "prefix_principal" in entry[2] and entry[2]["prefix_principal"] == principal)
     return max((k for k in kept if id(k[1]) not in busy and len(k[0]) < len(prompt)
-                and prompt[:len(k[0])] == k[0] and fits(k[1], extent)), key=lambda k: len(k[0]), default=None)
+                and prompt[:len(k[0])] == k[0] and (extent is None or fits(k[1], extent))),
+               key=lambda k: len(k[0]), default=None)
 
 
 def _resumed(entry, prompt):
@@ -92,7 +93,7 @@ def _idle(owner, busy, *spared, extent=None):
 
     chains: dict[int, tuple] = {}
     for k in owner.kept:                     # ascending: a slot's last entry is its most valuable
-        if id(k[1]) not in busy and all(k[1] is not s for s in spared) and fits(k[1], extent):
+        if id(k[1]) not in busy and all(k[1] is not s for s in spared) and (extent is None or fits(k[1], extent)):
             chains[id(k[1])] = k
     return min(chains.values(), key=lambda k: _value(owner, k), default=None)
 
