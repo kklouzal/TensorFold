@@ -97,3 +97,19 @@ def test_ranks_failing_alike_keep_the_recoverable_request_failure(monkeypatch, p
     assert all(rank.failure is None and not rank.engine._abort_comm for rank in ranks)
     assert store.data == {}                                   # the confirmation keys are retired by their peers
     leader.shutdown()
+
+
+def test_poisoning_names_the_failure_and_its_cause_once_per_rank(monkeypatch, capsys):
+    _store, (leader, peer) = _cohort(2, {1}, monkeypatch)
+    outcome = []
+    thread = threading.Thread(target=_apply, args=(peer, outcome))
+    thread.start()
+    leader.decoder.round = lambda: threading.Event().wait(2) and []
+    stuck = threading.Thread(target=lambda: pytest.raises(RuntimeError, leader.round), daemon=True)
+    stuck.start()
+    thread.join(10)
+    peer._poison_control(RuntimeError("a later failure"))       # already poisoned: no second line
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.startswith("[tensorfold] rank 1:")]
+    assert len(lines) == 1 and "cohort poisoned by RuntimeError" in lines[0]
+    assert "did not confirm" in lines[0] and "cause ValueError: compact append staging was reused" in lines[0]
+    stuck.join(10)

@@ -26,7 +26,9 @@ class Store:
             self.condition.notify_all()
 
     def wait(self, keys, duration):
-        assert duration in (timedelta(hours=1), timedelta(seconds=ERROR_AGREEMENT_S))  # ACK/command, or agreement
+        # Agreement keys wait the agreement bound; ACKs 1 h, or the bound after the leader raised; all else 1 h.
+        assert all(duration == (timedelta(seconds=ERROR_AGREEMENT_S) if '/agreed/' in key else timedelta(hours=1))
+                   or (duration == timedelta(seconds=ERROR_AGREEMENT_S) and '/ack/' in key) for key in keys)
         with self.condition:
             assert self.condition.wait_for(lambda: all(key in self.data for key in keys), 5), keys
 

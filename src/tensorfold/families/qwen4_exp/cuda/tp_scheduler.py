@@ -374,8 +374,6 @@ class TensorParallelDecoder:
             except Exception as failure:
                 if not timed_out(failure, [key], wait):
                     raise
-                print(f"[tensorfold] rank {self.comm.rank}: {kind} operation {sequence} raised {type(error).__name__}"
-                      f" on this rank only: {str(error)[:512]}", file=sys.stderr, flush=True)
                 raise RuntimeError(
                     f"tensor-parallel rank {self.comm.rank} raised {type(error).__name__} in {kind} operation "
                     f"{sequence} and the leader did not confirm within {ERROR_AGREEMENT_S:g} s that every rank "
@@ -391,12 +389,31 @@ class TensorParallelDecoder:
             self.failure = error
         self.engine._abort_comm = True
         if first:
+            # The supervisor's retirement carries no reason: one bounded line per rank names the poisoning failure.
+            diagnostic = None
+            try:
+                self._report_poison(error)
+            except BaseException as failure:  # noqa: BLE001 - re-raised after the supervisor is notified
+                diagnostic = failure
             try:
                 from tensorfold.cuda.cohort import notify_failure
 
                 notify_failure()
             except BaseException as notification:
-                raise_failures(error, [notification])
+                raise_failures(error, [*([diagnostic] if diagnostic is not None else []), notification])
+            if diagnostic is not None:
+                raise_failures(error, [diagnostic])
+
+    def _report_poison(self, error):
+        from tensorfold.cuda.cohort import _exception_label
+
+        kind, message = _exception_label(error)
+        line = f"[tensorfold] rank {self.comm.rank}: tensor-parallel cohort poisoned by {kind}: {message}"
+        cause = BaseException.__cause__.__get__(error, type(error))
+        if cause is not None and cause is not error:
+            cause_kind, cause_message = _exception_label(cause)
+            line += f" (cause {cause_kind}: {cause_message})"
+        print(line + "; the supervisor retires every rank", file=sys.stderr, flush=True)
 
     def _media_cpu(self, operation):
         """Expected, retired input failures stay local; uncertain owners contain the cohort."""

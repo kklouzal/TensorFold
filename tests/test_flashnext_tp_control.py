@@ -21,7 +21,9 @@ class Store:
         self.values[key] = value.encode() if isinstance(value, str) else value
 
     def wait(self, keys, duration):
-        assert duration in (timedelta(hours=1), timedelta(seconds=ERROR_AGREEMENT_S))  # ACK/command, or agreement
+        # Agreement keys wait the agreement bound; ACKs 1 h, or the bound after the leader raised; all else 1 h.
+        assert all(duration == (timedelta(seconds=ERROR_AGREEMENT_S) if '/agreed/' in key else timedelta(hours=1))
+                   or (duration == timedelta(seconds=ERROR_AGREEMENT_S) and '/ack/' in key) for key in keys)
         assert all(key in self.values for key in keys)
 
     def get(self, key):

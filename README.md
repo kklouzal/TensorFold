@@ -2205,17 +2205,20 @@ never reached the acknowledgment comparison, so the cohort hung indefinitely (se
 with an owner-local compact-indexer refusal on rank 7). Now the leader confirms each
 follower that raised once every acknowledgment matches, and
 `src/tensorfold/families/qwen4_exp/cuda/tp_scheduler.py` bounds both waits:
-- A follower without that confirmation within `ERROR_AGREEMENT_S` (120 s) logs
-  `rank N: <kind> operation S raised <type> on this rank only: ...` and poisons the
+- A follower without that confirmation within `ERROR_AGREEMENT_S` (120 s) poisons the
   cohort. The supervisor then ends every rank.
 - A leader whose own operation raised waits for acknowledgments for the same bound,
   then poisons the cohort.
+
+Every rank that poisons its cohort, for this or any other reason, logs one line naming
+the failure and its cause (`[tensorfold] rank N: tensor-parallel cohort poisoned by
+<type>: ... (cause <type>: ...)`), since the supervisor's retirement carries no reason.
 
 Failures raised alike on every rank keep their per-request outcome; the confirmation
 costs one Store write per failed operation. The error-free path is unchanged. On 8x
 V100 (prod, 24 lanes, eight 4K streams; `4b2661d8` with the fe709301 source and this
 change overlaid), a diagnostic overlay made rank 7 raise before a round's collectives.
-Rank 7 logged the line above 120 s later and the cohort was retired at once; the same
+Rank 7 logged its local failure 120 s later and the cohort was retired at once; the same
 failure previously hung. CPU coverage is `tests/test_tp_rank_local_failure.py`.
 
 ## V100 (SM70) adaptive development status
