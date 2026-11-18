@@ -50,10 +50,10 @@ void family_qsa_rows_long_cuda(const T&, const T&, const T&, T&, T&, T&, T&, T&,
 void family_owned_q8_prepare_resident_cuda();
 void family_owned_q8_prepare_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&,
     T&, T&, T&, T&, const T&, const T&, T&, int64_t, int64_t, int64_t, int64_t, int64_t,
-    int, int, int, int, int, float, float, int, int);
+    int, int, int, int, int, float, float, int, int, int);
 
 void family_owned_q8_prepare_rows_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&,
-    const T&, int, int, int, int, int, float, float, int, int);
+    const T&, int, int, int, int, int, float, float, int, int, int);
 void family_qsa_select_owned_cuda(const T&, const T&, const T&, const O&, T&, int, int, int, int);
 void family_guard_rows_owned_cuda(const T&, T&, const T&, int, int);
 
@@ -267,16 +267,23 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
         const T& freq, T q, T iq, T k, T v, T ks, T vs, const T& offsets,
         const T& generations, T status, int64_t slot, int64_t owner, int64_t start,
         int64_t logical, int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
-        int index_dim, double eps, double amplitude, int section1, int section2) {
+        int index_dim, double eps, double amplitude, int section1, int section2, int codec) {
     check_half(p); epsilon(eps);
+    // codec 0: ordinary Q8 (int8 payload, FP16 H32 scales); 9/10: compact Planar4/Iso4
+    // (uint8 nibble payload, one four-byte metadata word per 128 values); 8/12: eight-bit
+    // RotorQuant (uint8 index payload, one FP32 scale per 128 values).
+    TORCH_CHECK(codec == 0 || codec == 9 || codec == 10 || codec == 8 || codec == 12, "owned preparation codec");
+    const bool rotor = codec != 0, nibbles = codec == 9 || codec == 10;
     TORCH_CHECK(p.dim() == 2 && p.size(0) >= 1 && p.size(0) <= (WINDOW ? 256 : 1)
         && qheads == 3 && index_heads > 0 && index_heads <= 256
         && index_dim > 0 && index_dim <= 256 && index_dim % 32 == 0
         && p.size(1) == 2 * qheads * 256 + 512 + (index_heads + 1) * index_dim, "owned Q8 projection geometry");
-    for (const auto* x : {&q, &iq, &ks, &vs}) same_half(*x, p);
+    for (const auto* x : {&q, &iq}) same_half(*x, p);
+    if (rotor) for (const auto* x : {&ks, &vs}) check(*x, p, at::kFloat, "owned RotorQuant metadata words");
+    else for (const auto* x : {&ks, &vs}) same_half(*x, p);
     for (const auto* x : {&qw, &kw, &iw, &freq}) check(*x, p, at::kFloat, "owned Q8 weights");
     for (const auto* x : {&axes, &offsets, &generations}) check(*x, p, at::kLong, "owned Q8 metadata");
-    for (const auto* x : {&k, &v}) check(*x, p, at::kChar, "owned Q8 payload");
+    for (const auto* x : {&k, &v}) check(*x, p, rotor ? at::kByte : at::kChar, "owned Q8 payload");
     check(status, p, at::kInt, "owned Q8 status");
     const int64_t rows = p.size(0);
     TORCH_CHECK(q.numel() == rows * qheads * 256 && iq.numel() == rows * index_heads * index_dim
@@ -287,8 +294,8 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
     TORCH_CHECK(slot >= 0 && owner >= 0 && logical > 0 && logical <= INT32_MAX && physical >= 0 && physical <= INT32_MAX
         && start >= 0 && start <= logical - rows && page_tokens > 0 && page_tokens % 4 == 0
         && offsets.dim() == 1 && offsets.numel() == (logical + page_tokens - 1) / page_tokens
-        && k.numel() >= physical * 256 && v.numel() >= physical * 256 && ks.numel() >= physical * 8
-        && vs.numel() >= physical * 8 && layer >= -1 && section1 >= 0 && section2 >= 0
+        && k.numel() >= physical * (nibbles ? 128 : 256) && v.numel() >= physical * (nibbles ? 128 : 256)
+        && ks.numel() >= physical * (rotor ? 2 : 8) && vs.numel() >= physical * (rotor ? 2 : 8) && layer >= -1 && section1 >= 0 && section2 >= 0
         && section1 <= 256 && section2 <= 256 && std::isfinite(amplitude) && amplitude > 0
         && std::isfinite(float(amplitude)), "owned Q8 page/domain geometry");
     // The outputs and the status word are separately owned. No user-supplied
@@ -302,7 +309,7 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
     c10::cuda::CUDAGuard guard(p.device());
     family_owned_q8_prepare_cuda(p, axes, qw, kw, iw, freq, q, iq, k, v, ks, vs, offsets, generations,
         status, slot, owner, start, logical, physical, page_tokens, layer, qheads, index_heads, index_dim,
-        float(eps), float(amplitude), section1, section2);
+        float(eps), float(amplitude), section1, section2, codec);
 }
 
 // Round-table entries. Descriptor rows are produced by the canonical owner,
@@ -315,8 +322,10 @@ void check_descriptors(const T& descriptors, const T& owner, int64_t rows) {
 
 void owned_q8_prepare_rows(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
         const T& freq, T q, T iq, const T& descriptors, int page_tokens, int layer, int qheads,
-        int index_heads, int index_dim, double eps, double amplitude, int section1, int section2) {
+        int index_heads, int index_dim, double eps, double amplitude, int section1, int section2, int codec) {
     check_half(p); epsilon(eps);
+    // The descriptors' payload/metadata pointers carry the codec's owned State layout.
+    TORCH_CHECK(codec == 0 || codec == 9 || codec == 10 || codec == 8 || codec == 12, "owned preparation codec");
     TORCH_CHECK(p.dim() == 2 && p.size(0) >= 1 && p.size(0) <= 256
         && qheads == 3 && index_heads > 0 && index_heads <= 256
         && index_dim > 0 && index_dim <= 256 && index_dim % 32 == 0
@@ -341,7 +350,7 @@ void owned_q8_prepare_rows(const T& p, const T& axes, const T& qw, const T& kw, 
     }
     c10::cuda::CUDAGuard guard(p.device());
     family_owned_q8_prepare_rows_cuda(p, axes, qw, kw, iw, freq, q, iq, descriptors, page_tokens, layer,
-        qheads, index_heads, index_dim, float(eps), float(amplitude), section1, section2);
+        qheads, index_heads, index_dim, float(eps), float(amplitude), section1, section2, codec);
 }
 
 void qsa_select_owned(const T& query, const T& descriptors, const T& pooled_rows, const O& scores, T selection,

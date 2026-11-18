@@ -1,4 +1,4 @@
-"""Generate native Q4 tables from rotorquant_ref and rotorquant_compact authorities."""
+"""Generate native Q4/Q8 RotorQuant tables from rotorquant_ref and rotorquant_compact authorities."""
 from __future__ import annotations
 
 import argparse
@@ -11,6 +11,11 @@ from tensorfold.cuda.sm70 import rotorquant_compact as compact
 
 def _bits(values):
     return ", ".join(f"0x{struct.unpack('<I', struct.pack('<f', value))[0]:08x}u" for value in values)
+
+
+def _lifting8():
+    return tuple(ref.THRESHOLDS_8[2 * step * cell + step - 1]
+                 for step in (128, 64, 32, 16, 8, 4, 2, 1) for cell in range(256 // (2 * step)))
 
 
 def render():
@@ -32,6 +37,11 @@ constexpr uint32_t wide_sin_bits = {_bits((ref.WIDE_GIVENS_SIN,))};
 static __device__ __constant__ uint32_t compact_centroid_bits[16] = {{{_bits(compact.CENTROIDS)}}};
 static __device__ __constant__ uint32_t compact_cos_bits[64] = {{{_bits(compact.COS)}}};
 static __device__ __constant__ uint32_t compact_sin_bits[64] = {{{_bits(compact.SIN)}}};
+// {ref.descriptor(8, "signed-iso128").codec_id}
+// {ref.descriptor(8, "signed-iso128-norm8").codec_id}
+// Eight-bit centroids and binary-lifting boundaries: level L's 2^L cells at [2^L - 1, 2^(L + 1) - 1).
+static __device__ __constant__ uint32_t centroid8_bits[256] = {{{_bits(ref.CENTROIDS_8)}}};
+static __device__ __constant__ uint32_t lifting8_bits[255] = {{{_bits(_lifting8())}}};
 // {compact.descriptor(compact.ISO_CODEC).codec_id}
 static __device__ __constant__ uint32_t compact_qw_bits[32] = {{{_bits(compact.QW)}}};
 static __device__ __constant__ uint32_t compact_qx_bits[32] = {{{_bits(compact.QX)}}};

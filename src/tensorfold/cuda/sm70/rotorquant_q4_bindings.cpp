@@ -45,8 +45,9 @@ void controls(const T& owner, const O& position, const O& status, const O& live,
               int codec, int error, int layer) {
     const auto* prop = at::cuda::getDeviceProperties(owner.get_device());
     TORCH_CHECK(prop->major == 7 && prop->minor == 0, "RotorQuant FP16 native codec requires SM70");
-    TORCH_CHECK((codec >= 1 && codec <= 5) || codec == 9 || codec == 10,
-                "native Q4 codec requires a registered basis 1..5, compact Planar4 9 or Iso4 10");
+    TORCH_CHECK((codec >= 1 && codec <= 5) || codec == 9 || codec == 10 || codec == 8 || codec == 12,
+                "native codec requires a registered Q4 basis 1..5, compact Planar4 9 / Iso4 10, "
+                "or eight-bit signed Iso128 8 (norm8) / 12 (original RMS)");
     TORCH_CHECK(error == 1 || error == 2 || error == 4 || error == 8 || error == 16,
                 "one declared KV numeric error bit required");
     TORCH_CHECK(layer >= -1, "KV error layer must be a model layer or MTP -1");
@@ -109,7 +110,8 @@ void encode(const T& x, T codes, T scales, O position, O status, O valid_rows,
     check(codes, x, at::kByte, "packed Q4 codes"); check(scales, x, at::kFloat, "Q4 original RMS");
     TORCH_CHECK(codes.dim() == 3 && scales.dim() == 3 && codes.size(0) == scales.size(0)
                 && codes.size(1) == x.size(1) && scales.size(1) == x.size(1)
-                && codes.size(2) == x.size(2) / 2 && scales.size(2) == x.size(2) / 128,
+                && codes.size(2) == x.size(2) / ((codec == 8 || codec == 12) ? 1 : 2)
+                && scales.size(2) == x.size(2) / 128,
                 "packed Q4 cache geometry does not match its source");
     TORCH_CHECK(position || rows <= codes.size(0), "destination needs every requested source row");
     controls(x, position, status, valid_rows, codec, error, layer);
@@ -142,7 +144,8 @@ void decode(const T& codes, const T& scales, T out, O status, O valid_rows,
     check(codes, out, at::kByte, "packed Q4 codes"); check(scales, out, at::kFloat, "Q4 RMS");
     TORCH_CHECK(codes.dim() == 3 && scales.dim() == 3 && codes.size(0) >= rows && scales.size(0) == codes.size(0)
                 && codes.size(1) == out.size(1) && scales.size(1) == out.size(1)
-                && codes.size(2) == out.size(2) / 2 && scales.size(2) == out.size(2) / 128,
+                && codes.size(2) == out.size(2) / ((codec == 8 || codec == 12) ? 1 : 2)
+                && scales.size(2) == out.size(2) / 128,
                 "decoded Q4 geometry");
     controls(out, {}, status, valid_rows, codec, error, layer);
     mutable_controls(codes, {}, status, valid_rows);

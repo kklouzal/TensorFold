@@ -49,8 +49,9 @@ void statistics(const T& value, const T& owner, int rows, bool gathered) {
 }
 
 void format(int bits, int codec) {
-    TORCH_CHECK((bits == 8 && codec == 0) || (bits == 4 && (codec == 9 || codec == 10)),
-                "paged owner attention supports ordinary Q8, pinned Iso4 codec10 or Planar4 codec9");
+    TORCH_CHECK((bits == 8 && (codec == 0 || codec == 8 || codec == 12)) || (bits == 4 && (codec == 9 || codec == 10)),
+                "paged owner attention supports ordinary Q8, eight-bit RotorQuant kernel codec 8/12, "
+                "pinned Iso4 codec10 or Planar4 codec9");
 }
 
 float attention_scale(double scale) {
@@ -82,7 +83,7 @@ void local_statistics(const T& queries, const T& selected, const T& table, T out
     for (const auto* input : {&queries, &selected, &table, &layer}) distinct(output, *input);
     c10::cuda::CUDAGuard guard(queries.device());
     sm70_paged_statistics_cuda(queries, selected, table, output, group, page_tokens, layer,
-                              key_bits == 4 ? key_codec : 0, attention_scale(scale));
+                              key_codec, attention_scale(scale));
 }
 
 void merge_statistics(const T& gathered, const T& table, T output, int group, int page_tokens, const T& layer) {
@@ -118,7 +119,7 @@ void normalized_partial(const T& queries, const T& selected, const T& table, con
     for (const auto* input : {&queries, &selected, &table, &global, &layer}) distinct(output, *input);
     c10::cuda::CUDAGuard guard(queries.device());
     sm70_paged_values_cuda(queries, selected, table, global, output, group, page_tokens, layer,
-                          key_bits == 4 ? key_codec : 0, value_bits == 4 ? value_codec : 0,
+                          key_codec, value_codec,
                           attention_scale(scale));
 }
 
@@ -141,7 +142,7 @@ void merge_values(const T& gathered, const T& table, T output, int rank, int pag
     distinct(output, table);
     distinct(output, layer);
     c10::cuda::CUDAGuard guard(gathered.device());
-    sm70_paged_merge_values_cuda(gathered, table, output, rank, layer, value_bits == 4 ? value_codec : 0);
+    sm70_paged_merge_values_cuda(gathered, table, output, rank, layer, value_codec);
 }
 
 namespace {
@@ -171,7 +172,7 @@ void rn_local_statistics(const T& queries, const T& selected, const T& table, T 
     for (const auto* input : {&queries, &selected, &table, &layer}) distinct(output, *input);
     c10::cuda::CUDAGuard guard(queries.device());
     sm70_paged_rn_qk_cuda(queries, selected, table, output, output, group, page_tokens, layer,
-                          key_bits == 4 ? key_codec : 0, heads, false);
+                          key_codec, heads, false);
 }
 
 void rn_merge_statistics(const T& gathered, const T& table, T output, int group, int page_tokens, const T& layer) {
@@ -200,7 +201,7 @@ void rn_probabilities(const T& queries, const T& selected, const T& table, const
     for (const auto* input : {&queries, &selected, &table, &global, &layer}) distinct(output, *input);
     c10::cuda::CUDAGuard guard(queries.device());
     sm70_paged_rn_qk_cuda(queries, selected, table, global, output, group, page_tokens, layer,
-                          key_bits == 4 ? key_codec : 0, heads, true);
+                          key_codec, heads, true);
 }
 
 void rn_partial_values(const T& probability, const T& selected, const T& table, T output,
@@ -218,7 +219,7 @@ void rn_partial_values(const T& probability, const T& selected, const T& table, 
     for (const auto* input : {&probability, &selected, &table, &layer}) distinct(output, *input);
     c10::cuda::CUDAGuard guard(probability.device());
     sm70_paged_rn_pv_cuda(probability, selected, table, output, rows, page_tokens, layer,
-                          value_bits == 4 ? value_codec : 0);
+                          value_codec);
 }
 
 void pack_owner_queries(const T& queries, const T& table, T output, int group, int page_tokens, const T& layer) {

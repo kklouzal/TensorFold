@@ -67,11 +67,18 @@ def _kv_payload_dtype(bits):
 
 
 def _rotor_variant(codec):
-    if codec == 4:
+    """Reference variant of a native SM70 kernel codec (12: descriptor codec 4 at eight bits)."""
+    if codec in (4, 12):
         return "signed-iso128"
     if codec == 5:
         return "signed-iso64-norm"
-    raise ValueError("SM70 Rotor Q4 requires an admitted signed basis")
+    if codec == 8:
+        return "signed-iso128-norm8"
+    raise ValueError("SM70 RotorQuant requires an admitted signed basis")
+
+
+def _rotor_bits(codec):
+    return 8 if codec in (8, 12) else 4
 
 
 def _rotor_rotate(value, out, *, codec=4, inverse=False, status=None, error=1, layer=0, valid_rows=None):
@@ -135,9 +142,9 @@ def _rotor_encode(value, codes, scales, position, *, codec=4, status=None, error
     else:
         from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import quantize_ref, dequant_ref
         variant = _rotor_variant(codec)
-        payload, metadata = quantize_ref(guarded, 4, variant)
+        payload, metadata = quantize_ref(guarded, _rotor_bits(codec), variant)
         # Storage validity alone does not prove the FP16 working operand finite.
-        working = dequant_ref(payload, metadata, 4, variant).half()
+        working = dequant_ref(payload, metadata, _rotor_bits(codec), variant).half()
     bad = ~torch.isfinite(working)
     if bool(bad.any()):
         if status is None:
@@ -198,7 +205,7 @@ def _rotor_decode(codes, scales, width, codec):
         out.copy_(dequant_ref(codes, scales, codec=codec))
     else:
         from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import dequant_ref
-        out.copy_(dequant_ref(codes, scales, 4, _rotor_variant(codec)))
+        out.copy_(dequant_ref(codes, scales, _rotor_bits(codec), _rotor_variant(codec)))
     return out
 
 
@@ -1180,6 +1187,20 @@ def shift_windows(old, new, keep, channels):
     return _reference["shift_windows"](old, new, keep, channels)
 
 
+# (key bits, key codec, value bits, value codec) -> native owned-writer codec (12: rotorquant8, 8: rotorquant8-norm).
+OWNED_FORMATS = {(8, 0, 8, 0): 0, (4, 9, 4, 9): 9, (4, 10, 4, 10): 10, (8, 4, 8, 4): 12, (8, 8, 8, 8): 8}
+
+
+def owned_codec(cache):
+    """Native owned-writer codec of a homogeneous owned cache: 0 (ordinary Q8) or compact Planar4/Iso4."""
+    fields = (cache.key_format.bits, cache.key_format.codec, cache.value_format.bits, cache.value_format.codec)
+    try:
+        return OWNED_FORMATS[fields]
+    except KeyError:
+        raise ValueError('owned preparation requires homogeneous ordinary Q8, compact Planar4/Iso4 '
+                         'or eight-bit RotorQuant') from None
+
+
 def prepare_owned_q8(device, *, window_dispatch='leaf-loop-v1'):
     """Resolve only the owned-Q8 decode operator during voted owner preparation."""
     if window_dispatch not in ('leaf-loop-v1', 'grid-v1'):
@@ -1243,7 +1264,7 @@ def owned_q8_prepare_window(module, projection, coordinates, weights, cache, sta
             cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets,
             state.history_generations, state.kv_status, state.slot_generation, state.history_generation,
             start + row, cache.logical_capacity, cache.capacity, cache.placement.page_tokens, layer.index,
-            c.heads, c.index_heads, c.index_dim, c.eps, amplitude, sections[1], sections[2])
+            c.heads, c.index_heads, c.index_dim, c.eps, amplitude, sections[1], sections[2], owned_codec(cache))
     # Reference: eight guards (16 status writes) and two quantizer status pairs
     # (4), independent of rows. The raw-IK guard above already published two.
     mutations = (query, iq) + (state.kv_status,) * 18
@@ -1272,7 +1293,7 @@ def owned_q8_prepare(module, projection, coordinates, weights, cache, state, lay
         query, iq, cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets,
         state.history_generations, state.kv_status, state.slot_generation, state.history_generation,
         start, cache.logical_capacity, cache.capacity, cache.placement.page_tokens, layer.index,
-        c.heads, c.index_heads, c.index_dim, c.eps, amplitude, sections[1], sections[2])
+        c.heads, c.index_heads, c.index_dim, c.eps, amplitude, sections[1], sections[2], owned_codec(cache))
     # Match incumbent copy_/sticky-status publication counters. Aliased cache
     # bases intentionally advance once per owned append; inference has no counter.
     mutations = (query, iq) + (state.kv_status,) * 18

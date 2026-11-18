@@ -45,9 +45,14 @@ def generation_bytes(slots):
     return slots * 2 * 8
 
 
+# (bits, kernel codec): kernel codec 12 is descriptor codec 4 at eight bits (rotorquant8), 8 is rotorquant8-norm.
+KERNEL_FORMATS = ((8, 0), (4, 9), (4, 10), (8, 8), (8, 12))
+
+
 def _format(bits, codec):
-    if type(bits) is not int or type(codec) is not int or (bits, codec) not in ((8, 0), (4, 9), (4, 10)):
-        raise ValueError("paged attention requires ordinary Q8, pinned Iso4 codec10 or Planar4 codec9")
+    if type(bits) is not int or type(codec) is not int or (bits, codec) not in KERNEL_FORMATS:
+        raise ValueError("paged attention requires ordinary Q8, eight-bit RotorQuant (kernel codec 8/12), "
+                         "pinned Iso4 codec10 or Planar4 codec9")
 
 
 def _controls(group_start, page_tokens):

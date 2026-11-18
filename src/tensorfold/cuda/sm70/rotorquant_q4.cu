@@ -57,7 +57,8 @@ __global__ void encode_kernel(const Input* source, uint8_t* codes, float* scales
     const auto encoded = tf_rq4::encode_component<CODEC>(value, col, shared, source_error);
     if (col == 0) latch(status, encoded.errors, layer);
     const int64_t destination = ((base + row) * heads + head) * dim + group * 128;
-    tf_rq4::store_encoded(encoded, col, shared, codes, scales, destination, 128, true);
+    if constexpr (tf_rq4::eight_bit(CODEC)) tf_rq4::store_encoded8(encoded, col, codes, scales, destination, 128, true);
+    else tf_rq4::store_encoded(encoded, col, shared, codes, scales, destination, 128, true);
 }
 
 template<class Input, class Output, int CODEC, bool INVERSE>
@@ -96,8 +97,9 @@ __global__ void decode_kernel(const uint8_t* codes, const float* scales, Output*
     }
     const float word = scales[blockIdx.x];
     const float scale = tf_rq4::metadata_scale<CODEC>(word);
-    const uint8_t packed = codes[logical / 2];
-    const int code = (packed >> (4 * (col % 2))) & 15;
+    int code;
+    if constexpr (tf_rq4::eight_bit(CODEC)) code = codes[logical];
+    else code = (codes[logical / 2] >> (4 * (col % 2))) & 15;
     const float value = __fmul_rn(tf_rq4::selected_centroid<CODEC>(code),
                                  tf_rq4::valid_metadata<CODEC>(word) ? scale : 0.0f);
     const bool bad_scale = __syncthreads_or(!tf_rq4::valid_metadata<CODEC>(word) || !isfinite(value));
@@ -157,6 +159,8 @@ template<class Callable> void dispatch_codec(int codec, Callable callable) {
         case 5: callable(std::integral_constant<int, 5>{}); break;
         case 9: callable(std::integral_constant<int, 9>{}); break;
         case 10: callable(std::integral_constant<int, 10>{}); break;
+        case 8: callable(std::integral_constant<int, 8>{}); break;
+        case 12: callable(std::integral_constant<int, 12>{}); break;
     }
 }
 

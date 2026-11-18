@@ -410,9 +410,15 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
 // coordinates and a current owned-page table, never contiguous logical KV.
 // One window row (blockIdx.x = output unit). window_start/window_rows describe
 // this row's own State window; start is its logical row inside that window.
+// CODEC 0 is ordinary Q8 (Hadamard H32, FP16 absmax); CODEC 9/10 are the compact
+// Planar4/Iso4 formats and 8/12 the eight-bit signed Iso128 RotorQuant formats
+// (norm8 / original RMS): the query is rotated into the stored basis and K/V are
+// encoded per 128-value group exactly as the reference rotate/encode kernels do
+// (group-local error votes, same staged FP32 arithmetic, same packed stores).
+template<int CODEC>
 __device__ __forceinline__ void owned_q8_prepare_row(const __half* p, const int64_t* coordinates,
         const float* qw, const float* kw, const float* iw, const float* freq,
-        __half* queries, __half* iq, int8_t* kc, int8_t* vc, __half* ks, __half* vs,
+        __half* queries, __half* iq, void* kc, void* vc, void* ks, void* vs,
         const int64_t* offsets, const int64_t* generations, int* status,
         int64_t expected_slot, int64_t expected_owner, int64_t window_start, int64_t window_rows,
         int64_t start, int64_t logical, int64_t physical, int page_tokens, int layer, int qheads,
@@ -488,6 +494,28 @@ __device__ __forceinline__ void owned_q8_prepare_row(const __half* p, const int6
         value = guarded(value, status, flag, layer, 0, nullptr);
     }
     if (col >= width) return;  // Widths are complete warps.
+    if constexpr (CODEC == 9 || CODEC == 10 || tf_rq4::eight_bit(CODEC)) {
+        if (kind != 3) {  // Q/K/V widths are the whole CTA: every thread reaches each barrier.
+            __shared__ int votes[2];
+            const tf_rq4::GroupAny any{votes};
+            if (kind == 0) {
+                const bool bad_source = any(!isfinite(value), col);
+                value = tf_rq4::rotate_component<CODEC, false>(bad_source ? 0.f : value, col, shared);
+                const bool bad_output = any(!isfinite(value) || !isfinite(__half2float(__float2half_rn(value))), col);
+                if (!(col & 127) && (bad_source || bad_output)) { atomicOr(status, 1); atomicCAS(status + 1, -2, layer); }
+                queries[head * 256 + col] = __float2half_rn(bad_source || bad_output ? 0.f : value);
+                return;
+            }
+            const auto item = tf_rq4::encode_component<CODEC>(value, col, shared, kind == 1 ? 2 : 4, any);
+            if (!(col & 127) && item.errors) { atomicOr(status, item.errors); atomicCAS(status + 1, -2, layer); }
+            uint8_t* codes = static_cast<uint8_t*>(kind == 1 ? kc : vc);
+            float* scales = static_cast<float*>(kind == 1 ? ks : vs);
+            if constexpr (tf_rq4::eight_bit(CODEC))
+                tf_rq4::store_encoded8(item, col, codes, scales, destination * 256, 256, destination >= 0);
+            else tf_rq4::store_encoded(item, col, shared, codes, scales, destination * 256, 256, destination >= 0);
+            return;
+        }
+    }
     if (kind == 0) queries[head * 256 + col] = __float2half_rn(hadamard(value));
     else if (kind == 3) iq[head * index_dim + col] = __float2half_rn(value);
     else {
@@ -507,21 +535,22 @@ __device__ __forceinline__ void owned_q8_prepare_row(const __half* p, const int6
         float code = __fadd_rn(floorf(__fmul_rn(__fmul_rn(value, __fdiv_rn(1.f, scale)), 128.f)), 128.f);
         code = fminf(255.f, fmaxf(0.f, code));
         if (destination >= 0) {
-            (kind == 1 ? kc : vc)[destination * 256 + col] = static_cast<int8_t>(int(code) - 128);
-            if (!(col & 31)) (kind == 1 ? ks : vs)[destination * 8 + col / 32] = __float2half_rn(stored);
+            static_cast<int8_t*>(kind == 1 ? kc : vc)[destination * 256 + col] = static_cast<int8_t>(int(code) - 128);
+            if (!(col & 31)) static_cast<__half*>(kind == 1 ? ks : vs)[destination * 8 + col / 32] = __float2half_rn(stored);
         }
     }
 }
 
+template<int CODEC>
 __global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordinates,
         const float* qw, const float* kw, const float* iw, const float* freq,
-        __half* queries, __half* iq, int8_t* kc, int8_t* vc, __half* ks, __half* vs,
+        __half* queries, __half* iq, void* kc, void* vc, void* ks, void* vs,
         const int64_t* offsets, const int64_t* generations, int* status,
         int64_t expected_slot, int64_t expected_owner, int64_t start, int64_t logical,
         int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
         int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
     const int row = blockIdx.y;
-    owned_q8_prepare_row(p + int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim),
+    owned_q8_prepare_row<CODEC>(p + int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim),
         coordinates + int64_t(row) * 3, qw, kw, iw, freq, queries + int64_t(row) * qheads * 256,
         iq + int64_t(row) * index_heads * index_dim, kc, vc, ks, vs, offsets, generations, status,
         expected_slot, expected_owner, start, gridDim.y, start + row, logical, physical, page_tokens, layer,
@@ -537,6 +566,7 @@ template<typename V> __device__ __forceinline__ V* word_pointer(int64_t word) {
 // so one captured launch serves any admitted State/generation. Inactive rows
 // (null live pointer) touch nothing; malformed live rows latch 32 like the
 // original host validation would refuse them.
+template<int CODEC>
 __global__ void owned_q8_prepare_rows_kernel(const __half* p, const int64_t* coordinates,
         const float* qw, const float* kw, const float* iw, const float* freq,
         __half* queries, __half* iq, const int64_t* descriptors, int page_tokens, int layer, int qheads,
@@ -557,11 +587,11 @@ __global__ void owned_q8_prepare_rows_kernel(const __half* p, const int64_t* coo
         return;
     }
     const int64_t window_start = *position;
-    owned_q8_prepare_row(p + int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim),
+    owned_q8_prepare_row<CODEC>(p + int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim),
         coordinates + int64_t(row) * 3, qw, kw, iw, freq, queries + int64_t(row) * qheads * 256,
         iq + int64_t(row) * index_heads * index_dim,
-        word_pointer<int8_t>(d[owner_words::K_DATA]), word_pointer<int8_t>(d[owner_words::V_DATA]),
-        word_pointer<__half>(d[owner_words::K_METADATA]), word_pointer<__half>(d[owner_words::V_METADATA]),
+        word_pointer<void>(d[owner_words::K_DATA]), word_pointer<void>(d[owner_words::V_DATA]),
+        word_pointer<void>(d[owner_words::K_METADATA]), word_pointer<void>(d[owner_words::V_METADATA]),
         word_pointer<const int64_t>(d[owner_words::PAGE_OFFSETS]), word_pointer<const int64_t>(d[owner_words::GENERATIONS]),
         status, d[owner_words::EXPECTED_SLOT], d[owner_words::EXPECTED_OWNER], window_start, rows,
         window_start + within, d[owner_words::LOGICAL_CAPACITY], d[owner_words::PHYSICAL_ROWS], page_tokens, layer,
@@ -1411,31 +1441,51 @@ void family_qsa_select512_cuda(const T& scores, const T& lengths, T& output, T& 
 
 void family_owned_q8_prepare_resident_cuda() {
     cudaFuncAttributes attributes;
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<0>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<9>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<10>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<8>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, owned_q8_prepare_kernel<12>));
 }
 
 void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
         const T& freq, T& q, T& iq, T& k, T& v, T& ks, T& vs, const T& offsets,
         const T& generations, T& status, int64_t slot, int64_t owner, int64_t start,
         int64_t logical, int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
-        int index_dim, float eps, float amplitude, int section1, int section2) {
-    owned_q8_prepare_kernel<<<dim3(qheads + 2 + index_heads, p.size(0)), THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
-        ptr<__half>(p), axes.data_ptr<int64_t>(), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(freq),
-        ptr<__half>(q), ptr<__half>(iq), k.data_ptr<int8_t>(), v.data_ptr<int8_t>(), ptr<__half>(ks), ptr<__half>(vs),
-        offsets.data_ptr<int64_t>(), generations.data_ptr<int64_t>(), status.data_ptr<int>(), slot, owner, start,
-        logical, physical, page_tokens, layer, qheads, index_heads, index_dim, freq.numel(), eps, amplitude,
-        section1, section2);
+        int index_dim, float eps, float amplitude, int section1, int section2, int codec) {
+    auto launch = [&](auto selected) {
+        owned_q8_prepare_kernel<decltype(selected)::value><<<dim3(qheads + 2 + index_heads, p.size(0)), THREADS, 0,
+                                                             at::cuda::getCurrentCUDAStream()>>>(
+            ptr<__half>(p), axes.data_ptr<int64_t>(), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(freq),
+            ptr<__half>(q), ptr<__half>(iq), k.data_ptr(), v.data_ptr(), ks.data_ptr(), vs.data_ptr(),
+            offsets.data_ptr<int64_t>(), generations.data_ptr<int64_t>(), status.data_ptr<int>(), slot, owner, start,
+            logical, physical, page_tokens, layer, qheads, index_heads, index_dim, freq.numel(), eps, amplitude,
+            section1, section2);
+    };
+    if (codec == 9) launch(std::integral_constant<int, 9>{});
+    else if (codec == 10) launch(std::integral_constant<int, 10>{});
+    else if (codec == 8) launch(std::integral_constant<int, 8>{});
+    else if (codec == 12) launch(std::integral_constant<int, 12>{});
+    else launch(std::integral_constant<int, 0>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void family_owned_q8_prepare_rows_cuda(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
         const T& freq, T& q, T& iq, const T& descriptors, int page_tokens, int layer, int qheads, int index_heads,
-        int index_dim, float eps, float amplitude, int section1, int section2) {
-    if (p.size(0)) owned_q8_prepare_rows_kernel<<<dim3(qheads + 2 + index_heads, p.size(0)), THREADS, 0,
-                                                   at::cuda::getCurrentCUDAStream()>>>(
-        ptr<__half>(p), axes.data_ptr<int64_t>(), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(freq),
-        ptr<__half>(q), ptr<__half>(iq), descriptors.data_ptr<int64_t>(), page_tokens, layer, qheads, index_heads,
-        index_dim, freq.numel(), eps, amplitude, section1, section2);
+        int index_dim, float eps, float amplitude, int section1, int section2, int codec) {
+    if (!p.size(0)) return;
+    auto launch = [&](auto selected) {
+        owned_q8_prepare_rows_kernel<decltype(selected)::value><<<dim3(qheads + 2 + index_heads, p.size(0)), THREADS, 0,
+                                                                  at::cuda::getCurrentCUDAStream()>>>(
+            ptr<__half>(p), axes.data_ptr<int64_t>(), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(freq),
+            ptr<__half>(q), ptr<__half>(iq), descriptors.data_ptr<int64_t>(), page_tokens, layer, qheads, index_heads,
+            index_dim, freq.numel(), eps, amplitude, section1, section2);
+    };
+    if (codec == 9) launch(std::integral_constant<int, 9>{});
+    else if (codec == 10) launch(std::integral_constant<int, 10>{});
+    else if (codec == 8) launch(std::integral_constant<int, 8>{});
+    else if (codec == 12) launch(std::integral_constant<int, 12>{});
+    else launch(std::integral_constant<int, 0>{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

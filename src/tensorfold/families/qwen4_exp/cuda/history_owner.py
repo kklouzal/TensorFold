@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from tensorfold.cuda.sm70 import family_ops as ops
+from .sm70_kv import kernel_codec
 
 from .kvcache import KVCache, KVPairFormat
 from tensorfold.cuda.sm70.attention_backends import (OWNER_FAMILY as ATEN_KERNEL_FAMILY,
@@ -284,7 +285,7 @@ def _encode(value, format, status, layer, *, error):
         scales = torch.empty((rows, heads, dims // format.group),
                              dtype=getattr(torch, format.scale_dtype), device=value.device)
         position = torch.zeros((1,), dtype=torch.int32, device=value.device)
-        ops._rotor_encode(value, codes, scales, position, codec=format.codec, status=status, layer=layer, error=error)
+        ops._rotor_encode(value, codes, scales, position, codec=kernel_codec(format), status=status, layer=layer, error=error)
         return codes, scales
     if format.bits != 8:
         raise ValueError("unique SM70 history requires ordinary Q8 or an admitted RotorQuant Q4 codec")
@@ -322,7 +323,8 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
         else:
             coordinates = None if coordinates is None else coordinates[start:stop]
         if (type(cache) is not OwnedKVCache or
-                (cache.key_format.bits, cache.key_format.codec, cache.value_format.bits, cache.value_format.codec) != (8, 0, 8, 0)
+                (cache.key_format.bits, cache.key_format.codec, cache.value_format.bits, cache.value_format.codec)
+                not in ops.OWNED_FORMATS
                 or coordinates is None or position is None or state.compact_indexer is None):
             raise ValueError('owned Q8 window requires its original Q8 cache and issued indexer profile')
         dispatch = {'dispatch': 'grid-v1'} if getattr(owner, 'owned_q8_window_dispatch', None) == 'grid-v1' else {}
@@ -364,7 +366,8 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
         ai = state.att_index[layer.index]
         cache = state.kc[ai]
         if (type(cache) is OwnedKVCache and
-                (cache.key_format.bits, cache.key_format.codec, cache.value_format.bits, cache.value_format.codec) == (8, 0, 8, 0)):
+                (cache.key_format.bits, cache.key_format.codec, cache.value_format.bits, cache.value_format.codec)
+                in ops.OWNED_FORMATS):
             coordinates = buffers.target_indexer_coordinates[start:stop]
             position = buffers.target_indexer_position
             if position is None:
@@ -429,7 +432,7 @@ def _prepare_reference(projection, state, layer, weights, buffers, start, stop, 
     query = ops._guard(query, state.kv_status, 1, layer.index)
     key = ops._guard(key, state.kv_status, 2, layer.index)
     if cache.key_format.codec:
-        ops._rotor_rotate(query, buffers.q[start:stop], codec=cache.key_format.codec,
+        ops._rotor_rotate(query, buffers.q[start:stop], codec=kernel_codec(cache.key_format),
                           status=state.kv_status, layer=layer.index)
     else:
         buffers.q[start:stop].copy_(ops.h32(query).half() if cache.key_format.quantized else query)
@@ -456,7 +459,7 @@ def _decode(payload, scales, format, dims):
     if not format.quantized:
         return payload
     if format.codec:
-        return ops._rotor_decode(payload, scales, dims, format.codec)
+        return ops._rotor_decode(payload, scales, dims, kernel_codec(format))
     return ops.dequantize_int8(payload, scales)
 
 
@@ -776,8 +779,9 @@ class OwnerBuffers:
         if pair is None:
             raise ValueError("native preparation needs the selected homogeneous KV format")
         fields = (pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec)
-        if fields not in ((8, 0, 8, 0), (4, 9, 4, 9), (4, 10, 4, 10)):
-            raise ValueError("native paged owner attention requires homogeneous ordinary Q8 or compact Q4")
+        if fields not in ops.OWNED_FORMATS:
+            raise ValueError("native paged owner attention requires homogeneous ordinary Q8, compact Q4 "
+                             "or eight-bit RotorQuant")
         if self.native_pair is not None and self.native_pair != pair:
             raise ValueError("a prepared native owner workspace cannot change its codec identity")
         if type(page_tokens) is not int or page_tokens < 1 or page_tokens % 4:
@@ -995,8 +999,7 @@ class OwnerBuffers:
                 or self.prefill != (owned_q8_window_role == 'prefill')
                 or not 1 <= self.rows <= 256 or self.heads != 3 or self.head_dim != 256
                 or family not in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
-                or self.native_pair is None or (self.native_pair.key.bits, self.native_pair.key.codec,
-                    self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
+                or self.native_pair is None or self.native_codec is None):
             raise ValueError('owned Q8 window requires its bounded original Q8 decode/MTP/prompt owner')
         if (family not in (KERNEL_FAMILY, RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
                 or (family == RN_KERNEL_FAMILY and (type(heads_per_block) is not int or heads_per_block not in (1, 4, 12)))
@@ -1029,9 +1032,7 @@ class OwnerBuffers:
                     or torch._C._overlaps(self.partials, self.partial)):
                 raise ValueError("RN Half-P requires its fully paid disjoint PV receive slab")
         if (family in (RN_KERNEL_FAMILY, ATEN_KERNEL_FAMILY, FLASH_KERNEL_FAMILY)
-                and (not self.prefill or owned_q8_window_prepare) and self.native_pair is not None
-                and (self.native_pair.key.bits, self.native_pair.key.codec,
-                     self.native_pair.value.bits, self.native_pair.value.codec) == (8, 0, 8, 0)):
+                and (not self.prefill or owned_q8_window_prepare) and self.native_codec is not None):
             self.owned_q8_preparation = ops.prepare_owned_q8(self.device,
                 **({'window_dispatch': 'grid-v1'} if owned_q8_window_dispatch == 'grid-v1' else {}))
         if owned_q8_window_prepare:
@@ -1202,7 +1203,7 @@ class OwnerBuffers:
             if key_capacity is not None and key_capacity != OWNER_MAX_KEYS:
                 raise ValueError('ATen owner profile requires its fixed2051-key mask envelope')
             return self.aten_tiles.run(self, rows, views, OWNER_MAX_KEYS)
-        bits, codec = self.native_pair.key.bits, self.native_pair.key.codec
+        bits, codec = self.native_pair.key.bits, kernel_codec(self.native_pair.key)
         common = {"group_start": self.rank // 4 * 4, "page_tokens": self.native_page_tokens, "layer": self.native_layer}
         if self._prompt_attention_selected():
             # Prefill rows: tensor-core local attention over only this rank's selected pages (one pass
@@ -1270,9 +1271,8 @@ class OwnerBuffers:
         if (buffers.owner_graph_family != "uncaptured" or buffers.owner_kernel_family != self.native_kernel_family
                 or buffers.owner_role != role or buffers.history_owner is not self):
             return "round capture requires the uncaptured decode/MTP owner role"
-        if (self.native_pair is None or (self.native_pair.key.bits, self.native_pair.key.codec,
-                                         self.native_pair.value.bits, self.native_pair.value.codec) != (8, 0, 8, 0)):
-            return "round capture requires ordinary Q8 history"
+        if self.native_codec is None:
+            return "round capture requires ordinary Q8 or compact Planar4/Iso4 history"
         if (stage is None or position is None or storage is None
                 or storage is not (stage.mtp_coordinates if role == "mtp" else stage.coordinates)
                 or buffers.rows > self.rows or c.index_ratio != 4 or c.index_dim != 128
@@ -1580,6 +1580,14 @@ class OwnerBuffers:
                                              and self.descriptors_host.is_pinned() else 0)}
 
     @property
+    def native_codec(self):
+        """Owned-writer codec of the prepared homogeneous pair (0 ordinary Q8, 9/10 compact Q4); None otherwise."""
+        pair = self.native_pair
+        if pair is None:
+            return None
+        return ops.OWNED_FORMATS.get((pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec))
+
+    @property
     def nbytes(self):
         # Round table views share round_device; the pinned slab is host memory.
         return (sum(value.nbytes for name, value in vars(self).items()
@@ -1625,7 +1633,7 @@ def captured_attention_layer(layer, weights, participants, buffers, total_rows):
     module.owned_q8_prepare_rows(projection, coordinates[:rows], a.q_scale, a.k_scale,
         a.iq_scale, position.inv_freq, buffers.q[:rows], buffers.iq[:rows], desc, owner.native_page_tokens,
         layer.index, c.heads, c.index_heads, c.index_dim, c.eps, position.amplitude,
-        position.sections[1], position.sections[2])
+        position.sections[1], position.sections[2], owner.native_codec)
     lanes = owner.round_lanes[ai, :participants]
     compact.round_stage(ik, lanes, layer.index)
     compact.round_pool(ik, lanes, a.ik_scale, position.inv_freq, c.eps, position.amplitude, position.sections,
@@ -1847,7 +1855,7 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
                     result = result + pieces[peer]
                 if cache.value_format.codec:
                     ops._rotor_rotate(result[None], buffers.attn_o[base + row:base + row + 1],
-                                      codec=cache.value_format.codec, inverse=True,
+                                      codec=kernel_codec(cache.value_format), inverse=True,
                                       status=state.kv_status, layer=layer.index)
                 elif cache.value_format.quantized:
                     buffers.attn_o[base + row].copy_(ops.h32(result).half())

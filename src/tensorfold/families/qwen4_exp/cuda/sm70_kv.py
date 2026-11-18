@@ -10,7 +10,19 @@ from tensorfold.cuda.sm70.rotorquant_compact import NAME as COMPACT_Q4, ISO_NAME
 
 ROTOR_Q4 = "rotorquant-signed128-4"
 ROTOR_Q4_NORM = "rotorquant-signed64-norm4"
-ROTOR_FORMATS = (ROTOR_Q4, ROTOR_Q4_NORM, COMPACT_Q4, COMPACT_ISO4)
+ROTOR_Q8 = "rotorquant8"
+ROTOR_Q8_NORM = "rotorquant8-norm"
+ROTOR_FORMATS = (ROTOR_Q4, ROTOR_Q4_NORM, COMPACT_Q4, COMPACT_ISO4, ROTOR_Q8, ROTOR_Q8_NORM)
+# Eight-bit signed Iso128 sides run only on the unique-history owned path (owned writer + RN paged readers).
+EIGHT_BIT = (ROTOR_Q8, ROTOR_Q8_NORM)
+_DESCRIPTOR = {ROTOR_Q4: (4, 4), ROTOR_Q4_NORM: (4, 5), COMPACT_Q4: (4, 9), COMPACT_ISO4: (4, 10),
+               ROTOR_Q8: (8, 4), ROTOR_Q8_NORM: (8, 8)}
+
+
+def kernel_codec(side) -> int:
+    """Native SM70 codec id of a registered side: its descriptor codec, except descriptor codec 4 at eight
+    bits (rotorquant8, original RMS), which the native kernels call 12 to keep it distinct from Q4 codec 4."""
+    return 12 if (side.bits, side.codec) == (8, 4) else side.codec
 FORMATS = ("fp16", "int8", *ROTOR_FORMATS)
 RAW_POLICY = "stored-basis-fp16-fp32acc-v1"
 ROTOR_POLICY = "stored-rotor-basis-fp16-fp32acc-v1"
@@ -24,16 +36,17 @@ def check_pair(pair: KVPairFormat, *, head_dim: int | None = None) -> str:
     for side in (pair.key, pair.value):
         if side.name not in FORMATS or side != get(side.name):
             raise ValueError(
-                "SM70 KV supports fp16, int8, signed Rotor Q4 or pinned compact Planar4/Iso4"
+                "SM70 KV supports fp16, int8, signed Rotor Q4, pinned compact Planar4/Iso4 or rotorquant8(-norm)"
             )
         if side.name in ROTOR_FORMATS and (
-            (side.bits, side.codec, side.group, side.scale_bytes)
-            != (4, 4 if side.name == ROTOR_Q4 else 5 if side.name == ROTOR_Q4_NORM else
-                9 if side.name == COMPACT_Q4 else 10, 128, 4)
+            (side.bits, side.codec, side.group, side.scale_bytes) != (*_DESCRIPTOR[side.name], 128, 4)
             or side.payload_dtype != "uint8"
             or side.scale_dtype != "float32"
         ):
-            raise ValueError("SM70 Rotor Q4 requires its unchanged registered descriptor and four-byte metadata")
+            raise ValueError("SM70 RotorQuant requires its unchanged registered descriptor and four-byte metadata")
+    if any(side.name in EIGHT_BIT for side in (pair.key, pair.value)) and not (
+            pair.symmetric and pair.key.name in EIGHT_BIT):
+        raise ValueError("SM70 eight-bit RotorQuant requires the same rotorquant8 or rotorquant8-norm on K and V")
     if any(side.name == COMPACT_ISO4 for side in (pair.key, pair.value)) and not (
             pair.symmetric and pair.key.name == COMPACT_ISO4):
         raise ValueError("initial SM70 compact Iso4 profile requires K=Iso4 and V=Iso4; mixed variants are unsupported")

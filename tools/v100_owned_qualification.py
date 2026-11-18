@@ -4050,9 +4050,7 @@ def _owned_q8_preparation_receipt(engine):
     family = getattr(buffers, 'owner_kernel_family', None)
     states = decoder.states
     if (type(owner) is not OwnerBuffers or owner.closed or owner.prefill or buffers.prefill
-            or owner.native_pair is None
-            or (owner.native_pair.key.bits, owner.native_pair.key.codec,
-                owner.native_pair.value.bits, owner.native_pair.value.codec) != (8, 0, 8, 0)
+            or owner.native_pair is None or owner.native_codec is None
             or preparation is None
             or not preparation.prepared or preparation.closed
             or preparation.workspaces.get('decode') is not owner

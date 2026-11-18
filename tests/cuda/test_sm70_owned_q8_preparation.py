@@ -21,9 +21,9 @@ def exact(actual, expected):
     assert torch.equal(actual.contiguous().view(torch.uint8), expected.contiguous().view(torch.uint8))
 
 
-def window_fixture(rows, *, mtp=False, pattern='random', owned_pages=(0, 2)):
+def window_fixture(rows, *, mtp=False, pattern='random', owned_pages=(0, 2), kv='int8'):
     """Extend the independent one-row fixture without changing its oracle."""
-    p, state, layer, weights, buffers = fixture(127, pattern=pattern, owned_pages=owned_pages)
+    p, state, layer, weights, buffers = fixture(127, pattern=pattern, owned_pages=owned_pages, kv=kv)
     p = torch.cat([torch.roll(p, row, dims=1) for row in range(rows)], 0)
     axes = torch.stack([buffers.target_indexer_coordinates[0] + row for row in range(rows)])
     buffers.target_indexer_coordinates = buffers.mtp_indexer_coordinates = axes
@@ -107,7 +107,7 @@ def raw_grid(module, item, *, start=None):
         state.kv_status, state.slot_generation, state.history_generation,
         state.pos if start is None else start, cache.logical_capacity, cache.capacity,
         cache.placement.page_tokens, layer.index, c.heads, c.index_heads, c.index_dim,
-        c.eps, 1., 11, 10)
+        c.eps, 1., 11, 10, 0)
 
 
 @pytest.mark.parametrize('mtp', [False, True])
@@ -204,7 +204,7 @@ def test_grid_and_leaf_loop_same_changed_input_nondefault_stream_with_sticky_fir
         assert item[1].kv_status.cpu().tolist()[1] == 2
 
 
-def fixture(start=64, *, rank=0, owned=True, pattern='random', capacity=385, owned_pages=None):
+def fixture(start=64, *, rank=0, owned=True, pattern='random', capacity=385, owned_pages=None, kv='int8'):
     device = torch.device('cuda', torch.cuda.current_device())
     gen = torch.Generator(device=device).manual_seed(1207)
     cfg = NS(heads=3, head_dim=256, index_heads=4, index_dim=128, eps=1e-6,
@@ -216,7 +216,7 @@ def fixture(start=64, *, rank=0, owned=True, pattern='random', capacity=385, own
     foreign = rank // 4 * 4 + (rank + 1) % 4
     owners = [rank if owned and (owned_pages is None or page in owned_pages) else foreign
               for page in range(pages)]
-    cache = history.OwnedKVCache(capacity, 1, 256, device, pair=get_pair('int8'),
+    cache = history.OwnedKVCache(capacity, 1, 256, device, pair=get_pair(kv),
                                  placement=placement, slot=0, layer=0, rank=rank, owners=owners)
     for t in (cache.k, cache.v, cache.ks, cache.vs):
         t.fill_(7)
@@ -425,3 +425,53 @@ def test_long_issued_axis_selection_uses_each_original_coordinate_without_text_p
             (new[1].kv_status, old[1].kv_status)):
         exact(actual, expected)
     assert new[1].kv_status.cpu().tolist() == [0, -2]
+
+
+ROTOR = ('rotorquant-planar4-sm70-v1', 'rotorquant-iso4-sm70-v1', 'rotorquant8', 'rotorquant8-norm')
+
+
+@pytest.mark.parametrize('kv', ROTOR)
+@pytest.mark.parametrize('mtp,rows,pattern,owned_pages', [
+    (False, 1, 'random', (0,)), (False, 5, 'random', (0, 1)), (False, 129, 'cancellation', (0, 2)),
+    (False, 256, 'random', (0, 1, 2)), (True, 5, 'random', (0, 2)), (True, 129, 'nonfinite', (0, 2)),
+    (True, 256, 'overflow', ()), (True, 5, 'subnormal', (0, 1)), (True, 5, 'zeros', (0, 1)),
+])
+@pytest.mark.parametrize('dispatch', ['leaf-loop-v1', 'grid-v1'])
+@torch.no_grad()
+def test_rotor_window_exact_reference_bytes_and_status(kv, mtp, rows, pattern, owned_pages, dispatch):
+    """Compact Planar4/Iso4 and eight-bit RotorQuant owned writers equal the reference rotate/encode program bit for bit."""
+    old = window_fixture(rows, mtp=mtp, pattern=pattern, owned_pages=owned_pages, kv=kv)
+    new = window_fixture(rows, mtp=mtp, pattern=pattern, owned_pages=owned_pages, kv=kv)
+    module = ops.prepare_owned_q8(new[0].device, window_dispatch=dispatch)
+    new[4].history_owner = NS(owned_q8_window_preparation=module, owned_q8_window_role=new[4].owner_role, rows=rows,
+        native_kernel_family=new[4].owner_kernel_family, owned_q8_window_dispatch=dispatch)
+    def tensors(item):
+        _, state, _, _, buffers = item
+        cache = state.kc[0]
+        return (buffers.q, buffers.iq, cache.k, cache.v, cache.ks, cache.vs, state.kv_status)
+    history._prepare_reference(*old, 0, rows, mtp=mtp)
+    history.prepare(*new, 0, rows, mtp=mtp)
+    torch.cuda.synchronize()
+    assert new[1].kc[0].k.dtype == torch.uint8 and new[1].kc[0].ks.dtype == torch.float32
+    for actual, expected in zip(tensors(new), tensors(old)):
+        exact(actual, expected)
+
+
+@pytest.mark.parametrize('kv', ROTOR)
+@pytest.mark.parametrize('start,rank,owned,pattern', [
+    (64, 0, True, 'random'), (127, 3, True, 'random'), (384, 7, True, 'random'), (64, 1, False, 'random'),
+    (128, 5, False, 'nonfinite'), (64, 0, True, 'zeros'), (64, 0, True, 'overflow'),
+])
+@torch.no_grad()
+def test_rotor_decode_row_exact_reference(kv, start, rank, owned, pattern):
+    old = fixture(start, rank=rank, owned=owned, pattern=pattern, kv=kv)
+    new = fixture(start, rank=rank, owned=owned, pattern=pattern, kv=kv)
+    new[4].history_owner.owned_q8_preparation = ops.prepare_owned_q8(new[0].device)
+    history._prepare_reference(*old, 0, 1, mtp=False)
+    history.prepare(*new, 0, 1, mtp=False)
+    torch.cuda.synchronize()
+    for actual, expected in zip((new[4].q, new[4].iq, new[1].kc[0].k, new[1].kc[0].v, new[1].kc[0].ks,
+                                 new[1].kc[0].vs, new[1].kv_status),
+                                (old[4].q, old[4].iq, old[1].kc[0].k, old[1].kc[0].v, old[1].kc[0].ks,
+                                 old[1].kc[0].vs, old[1].kv_status)):
+        exact(actual, expected)

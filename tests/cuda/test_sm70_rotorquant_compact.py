@@ -9,7 +9,7 @@ import itertools
 from tensorfold.cuda.sm70 import rotorquant_compact as compact
 from tensorfold.cuda.sm70 import rotorquant_q4_native as native
 from tensorfold.families.qwen4_exp.kv_formats import KVPairFormat, get
-from tensorfold.families.qwen4_exp.cuda.sm70_kv import FORMATS as SM70_FORMATS
+from tensorfold.families.qwen4_exp.cuda.sm70_kv import FORMATS as SM70_FORMATS, EIGHT_BIT
 
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
@@ -18,7 +18,8 @@ pytestmark = pytest.mark.skipif(
 
 GOLDENS = json.loads((Path(__file__).parents[1] / 'fixtures/rotorquant_planar4_sm70.json').read_text())
 COMPACT_PAIRS = tuple(KVPairFormat(get(key), get(value)) for key, value in itertools.product(SM70_FORMATS, repeat=2)
-                      if compact.NAME in (key, value) and compact.ISO_NAME not in (key, value))
+                      if compact.NAME in (key, value) and compact.ISO_NAME not in (key, value)
+                      and not {key, value} & set(EIGHT_BIT))  # eight-bit sides are symmetric-only
 
 
 @pytest.mark.parametrize('case', GOLDENS['fixtures'], ids=lambda case: case['name'])

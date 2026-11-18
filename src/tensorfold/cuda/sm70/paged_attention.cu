@@ -68,7 +68,7 @@ __device__ __forceinline__ bool load_keys(Storage& storage, const int64_t* descr
         const int64_t physical = storage.physical[key];
         storage.tile.kv[item] = physical < 0 ? __float2half_rn(0.f)
             : tf_sm70::decoded_half(pointer<const void>(descriptor[meta::K_DATA]), pointer<const void>(descriptor[meta::K_METADATA]),
-                                   codec ? 4 : 8, codec, physical * DIM + col);
+                                   tf_sm70::codec_bits(codec), codec, physical * DIM + col);
     }
     __syncthreads();
     return true;
@@ -222,7 +222,7 @@ __global__ void values_kernel(const __half* queries, const int* selections, cons
             const int64_t physical = storage.physical[key];
             storage.tile.kv[item] = physical < 0 ? __float2half_rn(0.f)
                 : tf_sm70::decoded_half(pointer<const void>(descriptor[meta::V_DATA]), pointer<const void>(descriptor[meta::V_METADATA]),
-                                       value_codec ? 4 : 8, value_codec, physical * DIM + col);
+                                       tf_sm70::codec_bits(value_codec), value_codec, physical * DIM + col);
         }
         __syncthreads();
         #pragma unroll
@@ -279,6 +279,8 @@ __global__ void merge_values_kernel(const float* gathered, const int64_t* table,
         value = tf_rq4::rotate_component<9, true>(value, col, rotated);
     } else if (codec == 10) {
         value = tf_rq4::rotate_component<10, true>(value, col, rotated);
+    } else if (tf_rq4::eight_bit(codec)) {
+        value = tf_rq4::rotate_component<4, true>(value, col, rotated);  // signed Iso128 basis
     } else {
         #pragma unroll
         for (int offset = 1; offset <= 16; offset *= 2) {
@@ -341,6 +343,7 @@ template<int H> struct __align__(16) RNStorage {
     __half query[H * DIM];
     __half key[TILE * DIM];
     int64_t physical[RN_OWN_TILES][TILE];  // own tiles' local rows (-1 foreign/masked/beyond count)
+    float centroids[256];                  // eight-bit RotorQuant codecs only (stage_centroids8)
 };
 
 // First tile (< limit) holding a descriptor fault, else limit; local_row_from latches the fault.
@@ -415,7 +418,7 @@ template<int H> struct RNTileRuns {
             for (int c = 0; c < RN_RUN; ++c) {
                 __half value = __float2half_rn(0.f);
                 if (local) {
-                    value = tf_sm70::decode_run_value<RN_RUN>(raw[i], scale[i], codec, c);
+                    value = tf_sm70::decode_run_value<RN_RUN>(raw[i], scale[i], codec, c, storage.centroids);
                     if (!isfinite(__half2float(value))) {
                         latch(descriptor, 2, layer);
                         value = __float2half_rn(0.f);
@@ -516,6 +519,7 @@ __global__ void rn_scores_kernel(const __half* queries, const int* selections, c
         enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     __syncthreads();
     if (!enabled) return;
+    tf_sm70::stage_centroids8(codec, storage.centroids);
     rn_load_query(storage, queries, rows, row, group, head_base, descriptor, layer);  // latches as the serial form
     const int tiles = (count + TILE - 1) / TILE;
     if (split >= tiles) return;
@@ -623,6 +627,7 @@ __global__ void rn_probability_kernel(const __half* queries, const int* selectio
         enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     __syncthreads();
     if (!enabled) return;
+    tf_sm70::stage_centroids8(codec, storage.centroids);
     rn_load_query(storage, queries, rows, row, group, head_base, descriptor, layer);  // latches as the serial form
     const int tiles = (count + TILE - 1) / TILE;
     if (split >= tiles) return;
@@ -717,8 +722,10 @@ __global__ void __launch_bounds__(RN_PV_THREADS, 2) rn_pv_kernel(const __half* p
     __shared__ int tile_live[RN_TILES];
     __shared__ unsigned char live[RN_TILES];       // tiles with a local key, increasing
     __shared__ __align__(16) __half staged[2][RN_PV_GROUP][TILE][RN_PV_PITCH];
+    __shared__ float centroids[256];
     if (!threadIdx.x) enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     __syncthreads();
+    const float* centroid_table = tf_sm70::stage_centroids8(codec, centroids);
     float result[RN_PV_COLUMNS];
     #pragma unroll
     for (int c = 0; c < RN_PV_COLUMNS; ++c) result[c] = 0.f;
@@ -789,8 +796,8 @@ __global__ void __launch_bounds__(RN_PV_THREADS, 2) rn_pv_kernel(const __half* p
                 __half2* destination = reinterpret_cast<__half2*>(&staged[buffer][slot][task_key][run * RN_RUN]);
                 #pragma unroll
                 for (int c = 0; c < RN_RUN; c += 2)
-                    destination[c / 2] = __halves2half2(tf_sm70::decode_run_value<RN_RUN>(raw, scale, codec, c),
-                                                        tf_sm70::decode_run_value<RN_RUN>(raw, scale, codec, c + 1));
+                    destination[c / 2] = __halves2half2(tf_sm70::decode_run_value<RN_RUN>(raw, scale, codec, c, centroid_table),
+                                                        tf_sm70::decode_run_value<RN_RUN>(raw, scale, codec, c + 1, centroid_table));
             }
             __half p_current[RN_PV_GROUP];
             #pragma unroll

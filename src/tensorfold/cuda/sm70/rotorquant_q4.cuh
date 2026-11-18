@@ -17,10 +17,28 @@ __device__ __forceinline__ int index(float value) {
     return code;  // Exact thresholds, including +/-zero, choose the lower bin.
 }
 
+// Eight-bit RotorQuant kernel codecs (signed-iso128 basis, 128 index bytes and one FP32 scale per group):
+// 12 = descriptor codec 4 at eight bits (original RMS, `rotorquant8`); 8 = norm8 (`rotorquant8-norm`).
+__host__ __device__ constexpr bool eight_bit(int codec) { return codec == 8 || codec == 12; }
+
+__device__ __forceinline__ float centroid8(int code) {
+    return __uint_as_float(centroid8_bits[code]);
+}
+
+__device__ __forceinline__ int index8(float value) {
+    // Binary lifting: before level L, code is a multiple of 2 * (128 >> L); exact boundaries choose the lower bin.
+    int code = 0;
+    #pragma unroll
+    for (int level = 0; level < 8; ++level)
+        code += (value > __uint_as_float(lifting8_bits[(1 << level) - 1 + (code >> (8 - level))])) ? 128 >> level : 0;
+    return code;
+}
+
 template<int CODEC>
 __device__ __forceinline__ float selected_centroid(int code) {
     if constexpr (CODEC == 9 || CODEC == 10) return __uint_as_float(compact_centroid_bits[code]);
-    return centroid(code);
+    else if constexpr (eight_bit(CODEC)) return centroid8(code);
+    else return centroid(code);
 }
 
 template<int CODEC>
@@ -83,7 +101,8 @@ __device__ __forceinline__ float wide(float value, int col, float* shared) {
 
 template<int CODEC, bool INVERSE>
 __device__ __forceinline__ float rotate_component(float value, int col, float* shared) {
-    static_assert((CODEC >= 1 && CODEC <= 5) || CODEC == 9 || CODEC == 10);
+    static_assert((CODEC >= 1 && CODEC <= 5) || CODEC == 9 || CODEC == 10 || eight_bit(CODEC));
+    if constexpr (eight_bit(CODEC)) return rotate_component<4, INVERSE>(value, col, shared);  // same signed basis
     // All CTA threads participate, col==threadIdx.x, blockDim.x is a multiple
     // of128 and shared has blockDim.x floats. There are no per-value barriers.
     if constexpr (CODEC == 1 || CODEC == 9) {
@@ -176,11 +195,32 @@ struct Encoded {
     int errors;
 };
 
-template<int CODEC>
-__device__ __forceinline__ Encoded encode_component(float value, int col, float* shared, int source_error) {
+// Error votes span the whole CTA (one 128-value group per CTA in the codec
+// kernels). GroupAny limits each vote to its own 128-value group, so a CTA that
+// encodes several groups of one head keeps the per-group codec semantics.
+struct CtaAny {
+    __device__ __forceinline__ bool operator()(bool value, int) const { return __syncthreads_or(value); }
+};
+
+struct GroupAny {
+    int* flags;  // shared, one word per 128-value group of the CTA
+    __device__ __forceinline__ bool operator()(bool value, int col) const {
+        if (!(col & 127)) flags[col >> 7] = 0;
+        __syncthreads();
+        if (value) atomicOr(flags + (col >> 7), 1);
+        __syncthreads();
+        const bool result = flags[col >> 7] != 0;
+        __syncthreads();
+        return result;
+    }
+};
+
+template<int CODEC, class Any = CtaAny>
+__device__ __forceinline__ Encoded encode_component(float value, int col, float* shared, int source_error,
+                                                   Any any = Any{}) {
     // The encoder serves the FP16-working policy. A finite wire scale alone
     // does not prove that its selected centroid is representable as Half.
-    const bool bad_source = __syncthreads_or(!isfinite(value));
+    const bool bad_source = any(!isfinite(value), col);
     if (bad_source) value = 0.0f;
     if constexpr (CODEC == 9 || CODEC == 10) {
         const float energy = reduce_group<false>(__fmul_rn(value, value), col, shared);
@@ -199,9 +239,9 @@ __device__ __forceinline__ Encoded encode_component(float value, int col, float*
         const float corrected = reconstruction > 1e-10f ? __fdiv_rn(norm, reconstruction) : norm;
         const __half half_scale = __float2half_rn(corrected);
         const float scale = __half2float(half_scale);
-        const bool bad = __syncthreads_or(!isfinite(norm) || !isfinite(scale)
+        const bool bad = any(!isfinite(norm) || !isfinite(scale)
             || (norm > 1e-10f && scale == 0.0f)
-            || !isfinite(__half2float(__float2half_rn(__fmul_rn(selected, scale)))));
+            || !isfinite(__half2float(__float2half_rn(__fmul_rn(selected, scale)))), col);
         const int errors = (bad_source ? source_error : 0) | (bad ? 8 : 0);
         return {errors ? 7 : code, errors ? 0.0f : __uint_as_float(__half_as_ushort(half_scale)), errors};
     }
@@ -212,19 +252,22 @@ __device__ __forceinline__ Encoded encode_component(float value, int col, float*
     const float unit = __fdiv_rn(scaled, norm > 0.0f ? norm : 1.0f);
     float scale = __fmul_rn(maximum, norm);
     const float rotated = rotate_component<CODEC, false>(unit, col, shared);
-    int code = index(rotated);
-    if constexpr (CODEC == 3 || CODEC == 5) {
-        const float center = centroid(code);
+    int code;
+    if constexpr (eight_bit(CODEC)) code = index8(rotated);
+    else code = index(rotated);
+    if constexpr (CODEC == 3 || CODEC == 5 || CODEC == 8) {
+        const float center = selected_centroid<CODEC>(code);
         const float coded_energy = reduce_group<false>(__fmul_rn(center, center), col, shared);
         scale = __fmul_rn(scale, __fsqrt_rn(__fdiv_rn(128.0f, coded_energy)));
     }
-    const float reconstruction = __fmul_rn(centroid(code), scale);
+    const float reconstruction = __fmul_rn(selected_centroid<CODEC>(code), scale);
     const bool bad_scale = (!isfinite(scale) || scale < 0.0f || (maximum > 0.0f && scale == 0.0f)
+                            || (CODEC == 8 && scale > 137438953472.0f)  // norm8 metadata bound 128 * 2^30
                             || !isfinite(reconstruction)
                             || !isfinite(__half2float(__float2half_rn(reconstruction))));
-    const bool bad_working = __syncthreads_or(bad_scale);
+    const bool bad_working = any(bad_scale, col);
     const int errors = (bad_source ? source_error : 0) | (bad_working ? 8 : 0);
-    if (errors) { code = 7; scale = 0.0f; }
+    if (errors) { code = eight_bit(CODEC) ? 127 : 7; scale = 0.0f; }
     return {code, scale, errors};
 }
 
@@ -239,6 +282,15 @@ __device__ __forceinline__ void store_encoded(Encoded item, int col, float* shar
         if (col % 128 == 0) scales[(scalar_base + col) / 128] = item.scale;
     }
     __syncthreads();
+}
+
+// Eight-bit groups: one unsigned index byte per value, one FP32 scale per 128 values.
+__device__ __forceinline__ void store_encoded8(Encoded item, int col, uint8_t* codes, float* scales,
+                                              int64_t scalar_base, int dim, bool write) {
+    if (write && col < dim) {
+        codes[scalar_base + col] = uint8_t(item.code);
+        if (col % 128 == 0) scales[(scalar_base + col) / 128] = item.scale;
+    }
 }
 
 }  // namespace tf_rq4

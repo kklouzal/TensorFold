@@ -655,7 +655,9 @@ class FlashNextEngine:
                 if (history_placement is None or tp != 8 or indexer_history != "gpu" or vision and not media_requested
                         or int(text["num_attention_heads"]) // tp != 3 or dim != 256 or not self.kv_pair.symmetric):
                     raise ValueError("native owner preparation requires the homogeneous TP8 H3/D256 GPU-history profile")
-                _format(self.kv_pair.key.bits, self.kv_pair.key.codec)
+                from .sm70_kv import kernel_codec
+
+                _format(self.kv_pair.key.bits, kernel_codec(self.kv_pair.key))
         stage_identity_required = implemented_admission and tp == 8
         stage_identity_cohort = sm70 and tp == 8
         if dflash_plan is not None or media_requested or stage_identity_cohort:
