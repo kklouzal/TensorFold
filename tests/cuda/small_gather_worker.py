@@ -146,16 +146,37 @@ def main():
             if not same(got, oracle(part)):
                 report["errors"].append(f"all-reduce {rows} rows")
     report["reduced_shapes"] = reduced
+    # Bulk row all-reduce (TF_SMALL_ALLREDUCE_BYTES): the same oracle, called directly at shapes either path admits.
+    bulk_shapes = 0
+    stream = torch.cuda.current_stream().cuda_stream
+    for rows in (5, 16, 40, 46, 64, 120):
+        if not small.bulk_chunk_rows(rows, 2560):
+            continue
+        generator = torch.Generator(device=device)
+        generator.manual_seed(rows * 103 + rank)
+        part = torch.randn(rows, 2560, device=device, generator=generator) * (10.0 ** (rows % 5 - 2))
+        part[:, ::5] = -0.0
+        got = torch.empty(rows, 2560, dtype=torch.float16, device=device)
+        small.allreduce_bulk(part.data_ptr(), got.data_ptr(), rows, 2560, stream)
+        bulk_shapes += 1
+        if not same(got, oracle(part)):
+            report["errors"].append(f"bulk all-reduce {rows} rows")
+    report["bulk_shapes"] = bulk_shapes
     part = torch.randn(5, 2560, device=device)
     got = torch.empty(5, 2560, dtype=torch.float16, device=device)
     want, mixed = oracle(part), torch.empty(world * 1001, dtype=torch.float16, device=device)
     filler = torch.empty(1001, dtype=torch.float16, device=device)
     fill(filler, rank, 7)
 
+    wide = torch.randn(64, 2560, device=device)
+    wide_got = torch.empty(64, 2560, dtype=torch.float16, device=device)
+    wide_want = oracle(wide)
+
     def reduce_body():
         for _ in range(3):
             comm.all_reduce_rows(part, got)
             comm.all_gather(filler, mixed)
+            comm.all_reduce_rows(wide, wide_got)  # bulk where TF_SMALL_ALLREDUCE_BYTES admits 64 rows
 
     with torch.cuda.stream(side):
         reduce_body()
@@ -165,8 +186,10 @@ def main():
         reduce_body()
     for _ in range(50):
         got.zero_()
+        wide_got.zero_()
         graph.replay()
         bad += (got.view(torch.int16) != want.view(torch.int16)).any().to(torch.int64)
+        bad += (wide_got.view(torch.int16) != wide_want.view(torch.int16)).any().to(torch.int64)
     torch.cuda.synchronize()
     if int(bad):
         report["errors"].append(f"all-reduce graph: {int(bad)} mismatching replays")

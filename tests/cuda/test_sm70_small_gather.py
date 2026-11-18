@@ -5,7 +5,8 @@ as in tensor-parallel serving. Checks bitwise equality with NCCL and with a
 deterministic oracle (eager, in place, offset storage, capacity edge, NCCL above
 capacity) and varying-data CUDA-graph replays; the row all-reduce against the
 gathered partials summed in rank order and rounded to FP16 (eager and replayed
-between gathers), once from a fresh generation
+between gathers), the bulk row all-reduce (direct calls at 5-120 rows and 64 rows inside the graph)
+against the same oracle, once from a fresh generation
 sequence and once seeded just before the 32-bit generation wrap.
 ``TF_TEST_SMALL_GATHER_WORLD`` selects the rank count (default: all visible
 GPUs, at most 8); the visible GPUs must form a cohort with NVLink routes.
@@ -50,7 +51,9 @@ pytestmark = pytest.mark.skipif(
 def test_small_gather_matches_nccl_bitwise_eager_and_in_graph(seed):
     devices = _devices()
     world, port = len(devices), _port()
-    environment = {**os.environ, small_gather.ENV: str(small_gather.MAX_CAPACITY), "PYTHONUNBUFFERED": "1",
+    bulk = 16 * world * (120 * 2560 * 4 // (16 * world))  # FP32 partials of up to 120 x 2560 rows per rank
+    environment = {**os.environ, small_gather.ENV: str(small_gather.MAX_CAPACITY), small_gather.BULK_ENV: str(bulk),
+                   "PYTHONUNBUFFERED": "1",
                    "PYTHONPATH": os.pathsep.join([str(ROOT / "src"), os.environ.get("PYTHONPATH", "")])}
     workers = [subprocess.Popen([sys.executable, str(WORKER), str(rank), str(world), str(port), str(seed), "200"],
                                 env={**environment, "CUDA_VISIBLE_DEVICES": devices[rank]},
@@ -76,3 +79,5 @@ def test_small_gather_matches_nccl_bitwise_eager_and_in_graph(seed):
     assert [report["errors"] for report in reports] == [[]] * world
     assert all(report["capacity"] == small_gather.MAX_CAPACITY and report["eager_cases"] > 0
                and report["graph_replays"] == 200 and report["reduced_shapes"] >= 5 for report in reports)
+    if 2560 % (8 * world) == 0:
+        assert all(report["bulk_shapes"] == 6 for report in reports)

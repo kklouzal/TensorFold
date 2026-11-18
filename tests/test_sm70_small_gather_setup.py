@@ -23,6 +23,25 @@ def test_mailbox_bytes_are_two_parities_of_sixteen_byte_lines():
     assert small_gather.mailbox_bytes(8, 131072) == 2 * 8 * (131072 // 8) * 16 == 4 * 1024 * 1024
 
 
+@pytest.mark.parametrize("world,raw,expected", [(8, "", 1228800), (6, "", 1228800), (7, "", 1228752), (8, "0", 0),
+                                                (8, "128", 128), (8, str(small_gather.MAX_BULK), small_gather.MAX_BULK)])
+def test_bulk_capacity_defaults_to_120_rows_of_2560_and_accepts_zero(monkeypatch, world, raw, expected):
+    monkeypatch.setenv(small_gather.BULK_ENV, raw)
+    assert small_gather.configured_bulk(world) == expected
+
+
+@pytest.mark.parametrize("raw", ["64", "-128", "abc", str(small_gather.MAX_BULK + 128)])
+def test_bulk_capacity_rejects_values_outside_the_contract(monkeypatch, raw):
+    monkeypatch.setenv(small_gather.BULK_ENV, raw)
+    with pytest.raises(ValueError, match=small_gather.BULK_ENV):
+        small_gather.configured_bulk(8)
+
+
+def test_bulk_mailbox_bytes_at_the_default_on_the_v100_cube_mesh():
+    # 3 transit regions (non-neighbours per rank): 2 x (8 x 4 x 153600 + 8 x 76800) + flags 2 x 8 x 5 x 4 x 4.
+    assert small_gather.bulk_mailbox_bytes(8, 1228800, 3) == 11059200 + 1280
+
+
 def test_each_open_has_its_own_store_namespace():
     first = small_gather.store_prefix("tf_nccl_uid", "a" * 32)
     second = small_gather.store_prefix("tf_nccl_uid", "b" * 32)
@@ -71,7 +90,7 @@ class _Extension:
 def test_local_setup_failure_publishes_markers_so_peers_return_none_without_waiting(monkeypatch):
     store, nonce, world, capacity = _Store(), "c" * 32, 2, 4096
     prefix = small_gather.store_prefix("key", nonce)
-    store.set(prefix + "capacity/1", str(capacity))  # The peer reached the rendezvous first.
+    store.set(prefix + "capacity/1", f"{capacity}/0")  # The peer reached the rendezvous first (no bulk mailbox).
 
     def broken():
         raise RuntimeError("extension build failed")

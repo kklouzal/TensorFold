@@ -47,6 +47,37 @@ def configured_capacity() -> int:
     return value
 
 
+BULK_ENV = "TF_SMALL_ALLREDUCE_BYTES"
+# Native kMaxBulkBytes.
+MAX_BULK = 8 << 20
+# Unset: FP32 partials of 120 rows x 2560 per rank (SC117's 24-lane MTP4 verify), rounded down to a multiple of
+# 16 x world.
+DEFAULT_BULK = 120 * 2560 * 4
+
+
+def configured_bulk(world: int) -> int:
+    """Per-rank FP32 partial bytes the bulk row all-reduce admits (0: off). Only with the small all-gather.
+
+    Its mailbox (``bulk_mailbox_bytes``) is allocated at communicator open, outside admission forecasts.
+    """
+    raw = os.environ.get(BULK_ENV, "").strip()
+    if not raw:
+        return DEFAULT_BULK // (16 * world) * 16 * world
+    try:
+        value = int(raw)
+    except ValueError:
+        value = -1
+    if value < 0 or value % (16 * world) or value > MAX_BULK:
+        raise ValueError(f"{BULK_ENV} must be 0 or a multiple of {16 * world} bytes up to {MAX_BULK}, got {raw!r}")
+    return value
+
+
+def bulk_mailbox_bytes(world: int, bulk: int, regions: int) -> int:
+    """Device bytes of one rank's bulk mailbox: two parities of phase-1, transit and phase-2 slots, plus flags."""
+    slot = bulk // world
+    return 2 * (world * (1 + regions) * slot + world * (slot // 2)) + 2 * world * (2 + regions) * 4 * 4
+
+
 def mailbox_bytes(world: int, capacity: int) -> int:
     """Device bytes one rank allocates for one communicator (two parities x world slots of 16-byte lines)."""
     return 4 * world * capacity
@@ -60,7 +91,7 @@ def extension():
     digest = hashlib.sha256(source.read_bytes()).hexdigest()[:20]
     module = build.load("tf_small_gather_" + digest, [str(source)], need=(7, 0), extra_cuda_cflags=["-O3"],
                         extra_cflags=["-O3"])
-    if module.SmallGather.max_capacity != MAX_CAPACITY:
+    if module.SmallGather.max_capacity != MAX_CAPACITY or module.SmallGather.max_bulk != MAX_BULK:
         raise RuntimeError("small all-gather native capacity ceiling differs from its Python contract")
     return module
 
@@ -199,7 +230,7 @@ def store_prefix(key: str, nonce: str) -> str:
     return f"{key}/small_gather/{nonce}/"
 
 
-def open_small_gather(store, key: str, rank: int, world: int, capacity: int, nonce: str):
+def open_small_gather(store, key: str, rank: int, world: int, capacity: int, nonce: str, bulk: int = 0):
     """Collective over the Store: every rank returns a connected native SmallGather, or every rank None.
 
     The owner calls ``gather(send_ptr, recv_ptr, bytes, stream)`` for 0 < bytes <=
@@ -209,11 +240,11 @@ def open_small_gather(store, key: str, rank: int, world: int, capacity: int, non
     waiting for the Store timeout) and re-raises.
     """
     prefix = store_prefix(key, nonce)
-    store.set(prefix + f"capacity/{rank}", str(capacity))
-    if any(store.get(prefix + f"capacity/{r}").decode() != str(capacity) for r in range(world)):
-        raise RuntimeError(f"the ranks were started with different {ENV}")
+    store.set(prefix + f"capacity/{rank}", f"{capacity}/{bulk}")
+    if any(store.get(prefix + f"capacity/{r}").decode() != f"{capacity}/{bulk}" for r in range(world)):
+        raise RuntimeError(f"the ranks were started with different {ENV} or {BULK_ENV}")
     native = None
-    pending = {"topology": "failed", "handle": b"", "ok": "0"}  # Keys peers await, with failure markers.
+    pending = {"topology": "failed", "handle": b"", "bulk": b"", "ok": "0"}  # Keys peers await, with failure markers.
 
     def publish(name, value):
         store.set(prefix + f"{name}/{rank}", value)
@@ -252,6 +283,16 @@ def open_small_gather(store, key: str, rank: int, world: int, capacity: int, non
             except RuntimeError as error:
                 print(f"[tensorfold] rank {rank} cannot map small all-gather peers: {error}", flush=True)
                 ok = False
+        if ok and bulk:
+            publish("bulk", native.open_bulk(bulk))
+            bulk_handles = [store.get(prefix + f"bulk/{r}") for r in range(world)]
+            try:
+                native.connect_bulk(bulk_handles)
+            except RuntimeError as error:
+                print(f"[tensorfold] rank {rank} cannot map bulk all-reduce peers: {error}", flush=True)
+                ok = False
+        elif bulk:
+            publish("bulk", b"")  # peers that planned routes still await this key
         publish("ok", "1" if ok else "0")
         if all(store.get(prefix + f"ok/{r}") == b"1" for r in range(world)):
             result, native = native, None

@@ -73,6 +73,11 @@ _SMALL_ALLREDUCE = os.environ.get("TF_SMALL_ALLREDUCE", "1") != "0"
 # 14.1-14.2/14.4-14.8/22.2-22.4 us). In serving (cross-rank skew included) the median five-row call took
 # 16.7 vs 18.6 us; four rows is about break-even, so the gather keeps them.
 _SMALL_ALLREDUCE_MIN_ROWS = 5
+# From this many rows the bulk row all-reduce (plain-store chunks, TF_SMALL_ALLREDUCE_BYTES mailbox) takes
+# decode partials: in-graph on 8x V100-SXM2 at [rows, 2560] it measured 42-44 vs 51 us (LL) at 40 rows,
+# 60 vs 95 us and 73-82 vs 125 us (NCCL FP32 all-gather, before its consumer's 8-partial sum) at 80/120
+# rows, but 31 vs 22 us at 16 rows; rows 17-39 were not measured and keep the LL kernel.
+_BULK_ALLREDUCE_MIN_ROWS = 40
 
 class _TCPStoreOrigin:
     """Process-local factory provenance, retained with its exact native Store.
@@ -423,13 +428,14 @@ class NCCL:
                 raise RuntimeError("NCCL initialization returned no communicator")
             capacity = 0
             if world > 1:
-                from .small_gather import configured_capacity, open_small_gather
+                from .small_gather import configured_bulk, configured_capacity, open_small_gather
 
                 capacity = configured_capacity()
+                bulk = configured_bulk(world) if capacity else 0
             if capacity:
                 # Every rank holds the same unique ID, and each open draws a new one.
                 nonce = hashlib.sha256(bytes(uid.internal)).hexdigest()[:32]
-                self.small_gather = open_small_gather(self.store, key, rank, world, capacity, nonce)
+                self.small_gather = open_small_gather(self.store, key, rank, world, capacity, nonce, bulk)
                 self.small_gather_bytes = capacity if self.small_gather is not None else 0
                 if self.small_gather is None and rank == 0:
                     print("[tensorfold] small all-gather unavailable for this cohort's topology; using NCCL", flush=True)
@@ -480,13 +486,14 @@ class NCCL:
                 raise RuntimeError("all_gather: communicator admission is closed")
             self._all_gather(send, recv)
 
-    def all_reduce_rows(self, send: torch.Tensor, recv: torch.Tensor) -> bool:
+    def all_reduce_rows(self, send: torch.Tensor, recv: torch.Tensor, bulk: bool = True) -> bool:
         """Rank-ordered FP32 sums of every rank's [rows, dims] partials, rounded once to FP16 into recv.
 
         The sums are bitwise what a consumer of the all-gathered partials forms (rank 0 first, then
         each rank in order, FP32) followed by one FP16 rounding. Only the small-collective path
         implements it: returns False (nothing submitted) when it is unavailable or the shape does not
-        fit its mailboxes, and the caller keeps the all-gather. Same borrowing contract as all_gather.
+        fit its mailboxes, and the caller keeps the all-gather. ``bulk=False`` keeps shapes that only the bulk
+        all-reduce admits on the caller's path. Same borrowing contract as all_gather.
         """
         with self._close_lock:
             if self.closed or not self._opened:
@@ -500,12 +507,21 @@ class NCCL:
                     or not send.is_contiguous() or not recv.is_contiguous()):
                 raise ValueError("all_reduce_rows: contiguous FP32 [rows, dims] input and FP16 output required")
             rows, dims = send.shape
-            if rows < _SMALL_ALLREDUCE_MIN_ROWS or small.reduce_lines(rows, dims) == 0:
+            if rows < _SMALL_ALLREDUCE_MIN_ROWS:
                 return False
             a, b = send.data_ptr(), recv.data_ptr()
+            bulk = bulk and rows >= _BULK_ALLREDUCE_MIN_ROWS and small.bulk_chunk_rows(rows, dims) > 0
+            if not bulk and small.reduce_lines(rows, dims) == 0:
+                return False
+            if bulk and (a % 16 or b % 8):  # a rank-local fallback would desynchronize the cohort's calls
+                raise ValueError("all_reduce_rows: bulk rows need 16-byte aligned input and 8-byte aligned output")
             if a < b + recv.numel() * 2 and b < a + send.numel() * 4:
                 raise ValueError("all_reduce_rows: input and output must not overlap")
-            small.allreduce(a, b, rows, dims, torch._C._cuda_getCurrentRawStream(self.device.index))
+            stream = torch._C._cuda_getCurrentRawStream(self.device.index)
+            if bulk:
+                small.allreduce_bulk(a, b, rows, dims, stream)
+            else:
+                small.allreduce(a, b, rows, dims, stream)
             return True
 
     def all_reduce_half(self, send: torch.Tensor, recv: torch.Tensor) -> bool:
