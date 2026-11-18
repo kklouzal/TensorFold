@@ -26,7 +26,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tensorfold.cleanup import finish, raise_failures, rollback
-from tensorfold.cuda.geometry import indexed_prefill_rows
 from tensorfold.engine.model_identity import canonical_runtime_json, capture_model_identity
 from tensorfold.tensor_file import _metadata_object, _regular_stream, checkpoint_path
 
@@ -521,9 +520,9 @@ def _runtime(engine, *, previous_topology=None):
                "torch_threads": torch.get_num_threads(), "torch_interop_threads": torch.get_num_interop_threads(),
                "graphs_enabled": engine.graphs_enabled,
                "environment": {k: os.environ.get(k) for k in _RUNTIME_ENV},
-               # The effective prompt-piece rows through the engine's one resolver (`--prefill-rows`, the
-               # environment, or the SM70 default), not only the environment variable.
-               "prefill_rows": indexed_prefill_rows(tuple(torch.cuda.get_device_capability(engine.w.device))),
+               # The prompt-piece rows the engine runs (`--prefill-rows`, the environment, the SM70 default, the
+               # EXL3 rows or the capacity plan's choice), read from the engine rather than re-resolved.
+               "prefill_rows": int(engine.prefill_rows),
                "tuning_environment_sha256": tuning_environment_identity(os.environ)}
     from tensorfold.cuda.sm70.foundation_headers import selected_identity
 
