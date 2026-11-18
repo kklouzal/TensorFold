@@ -1979,6 +1979,24 @@ C1 unchanged, greedy oracle identical. The all-reduce admits rows while its mail
 C8 153.3 vs 147.7 tok/s mean of 5 and 4 runs (C1 and C4 unchanged within noise, greedy oracle
 identical), so 262144 is the measured choice for SC117 TP8 serving with the all-reduce.
 
+Decode partials of 40 or more rows (C8's 40-row verify, C16/C24's 80/120 rows, which previously
+fell back to an NCCL FP32 all-gather past the LL mailboxes) use a bulk row all-reduce on the same
+NVLink routes: the same rank-ordered FP32 reduce-scatter and single FP16 rounding (bitwise the
+gathered consumer's result), but payload moves as plain 16-byte stores in four row chunks, each
+published by a flag with the system-scope release/acquire pattern (`fence.acq_rel.sys`,
+`ld.acquire.sys`). Prompt rows keep their existing sums. `TF_SMALL_ALLREDUCE_BYTES` sets its per-rank
+FP32 partial ceiling (default 1,228,800 = 120 x 2560 rows, rounded to a multiple of 16 x world; `0`
+disables; at most 8 MiB); it applies only where `TF_SMALL_GATHER_BYTES` enables the mailboxes and
+allocates a second mailbox at communicator open (10.5 MiB per GPU at the default on the 8x V100 cube
+mesh, outside admission forecasts). In-graph on 8x V100-SXM2 (image `4b2661d8`, [rows, 2560], 8
+processes): 40 rows 44 vs 51 us (LL), 64/80/120 rows 52/60/75 vs 82/94/125 us for the NCCL all-gather
+alone (gather plus an 8-partial sum 110/124/160 us); below 40 rows the LL kernel stays faster (32 rows
+40 vs 40, 16 rows 35 vs 22). One fast pair on SC117 TP8/ETP4 MTP4 (base d718cc9b,
+`fb-base-t07a642cb4063-prod` vs `fb-dec8-bulk`): decode geomean +1.96% (trimmed +1.45%), C16 4K/16K
++1.3/+5.6%, C24 +4.9/+2.3%, C8 +1.5/-0.6%, C1 +0.4/+0.6%, prefill +0.05%; greedy golden identical.
+`tests/cuda/test_sm70_small_gather.py` checks it bitwise against the gathered oracle (5-120 rows,
+eager, in-graph, near generation wrap).
+
 The [2026-11-15 pending-experiment closeout](docs/verification-sc117-optimization-closeout-20261115.md)
 retains the verified runtime: quantized dense and fused-HC prototypes were not adopted, and the
 device draft chooser had identical measured quality but mixed workload performance. Its queued
