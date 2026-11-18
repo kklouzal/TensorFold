@@ -2168,6 +2168,20 @@ The two candidate sessions ran after the four reference and first-candidate
 sessions, not interleaved; the two reference sessions, first and fourth in that
 order, agree within 0.5%.
 
+**GGUF n-gram (PLE) rows decoded on the GPU (2026-11-18).** The SC117 GGUF n-gram
+table is IQ4_NL. The host used to decode each round's gathered rows with NumPy and cast
+them to FP16 (0.14/0.87/2.55 ms per rank at 5/40/120 rows). It now only gathers the
+packed rows into pinned staging. The SM70 family kernel `ple_embed_iq4nl` decodes them
+as the GGUF reference does (FP16 of the FP32 product scale × codebook) and applies the
+existing embedding arithmetic, so the result is bitwise the previous path's
+(`tests/cuda/test_sm70_fused_family.py`). Rows whose values could overflow FP16 are
+still checked against the reference decode on the host and refused. One fast-protocol
+session per arm (8× V100 TP8/ETP4, MTP4, INT8 KV, image `4b2661d8` with the source
+overlaid, `m-bdec-r2b-24`, 24 lanes, base `bf70dddb`, 4K/16K × C1–C24, one repeat):
+prefill +4.77% (every cell +1.2% to +6.7%), decode +2.16% (C8 4K +11.9%, C24 16K −2.3%,
+other cells within ±2.5%); golden-vg2 identical. The decode figure comes from a single
+pair and rests mostly on one cell, so treat its size as uncertain.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the
