@@ -643,28 +643,26 @@ def qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows, *, rope=
 def qsa_rows(iq, pooled, pos0, scratch, rows, *, context=None, status=None, layer=0, prompt=False):
     """Select each row's top budget/ratio pooled groups (numeric order, ties to the lower group ID, ascending
     emission). Natively, up to 4096 groups one block per row scores and sorts. Past that a selection failure
-    latches into ``status`` (the State's kv_status word, required there):
+    latches into ``status`` (the State's kv_status word):
       decode-shaped rows: native qsa_rows (<= 4096 groups) and qsa_rows_long, the captured round selector's
         score and radix bodies over scratch.scores, so an eager step selects exactly what a round graph would;
       prompt windows (``prompt``, any length): the Torch per-head score arithmetic below with qsa_select512's
         radix selection instead of the stable sort (the same selection over the same scores, ~4x faster).
-    Off SM70 (no extension) the Torch reference scores and sorts. Selection does not follow the optimized
-    profile switch: the captured round selector is native in both profiles."""
+    Off SM70 (no extension), and without a status word (a State with no kv_status: symmetric FP16 KV and no
+    unique-history placement, which also has no round graphs) where the native route would need one to latch,
+    the Torch reference scores and sorts. Selection does not follow the optimized profile switch: the captured
+    round selector is native in both profiles."""
     ratio, top = scratch.ratio, scratch.budget // scratch.ratio
     count = pooled.shape[0] if context is None else min(pooled.shape[0], (context + ratio - 1) // ratio)
     native = _selector(iq)
-    if native is not None and not prompt:
+    if native is not None and not prompt and (count <= 4096 or status is not None):
         if count <= top:
             return native.qsa_dense(pos0, scratch.sparse, scratch.nk, rows)
         if count <= 4096:
             return native.qsa_rows(iq, pooled, pos0, scratch.sparse, scratch.nk, scratch.ids, scratch.scores,
                                    rows, ratio, scratch.budget, count)
-        if status is None:
-            raise ValueError("QSA selection past 4096 pooled groups latches into a kv_status word")
         return native.qsa_rows_long(iq, pooled, pos0, scratch.sparse, scratch.nk, scratch.ids, scratch.scores,
                                     status, rows, ratio, scratch.budget, count, layer)
-    if native is not None and status is None:
-        raise ValueError("native prompt selection latches into a kv_status word")
     ends = pos0.reshape(-1)[0] + torch.arange(rows, device=iq.device) + 1
     complete = torch.div(ends, ratio, rounding_mode="floor")
     sparse = complete > top
@@ -679,7 +677,7 @@ def qsa_rows(iq, pooled, pos0, scratch, rows, *, context=None, status=None, laye
     blocks = torch.arange(count, device=iq.device)
     scores.masked_fill_(blocks[None] >= complete[:, None], -torch.inf)
     scratch.scores[:rows, :count].copy_(scores)
-    if native is not None and top == 512 and rows <= 256:
+    if native is not None and status is not None and top == 512 and rows <= 256:
         # The stable sort ranks a row's complete groups first and then its masked -inf groups in ascending order;
         # qsa_select512 pads a row with fewer than 512 complete groups (a dense row, never read) with -1, which the
         # ascending fill below restores to the sort's ids. Finite scores follow from the guarded IQ/pooled inputs;

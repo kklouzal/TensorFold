@@ -2147,7 +2147,10 @@ These routes follow the SM70 extension, not the optimized-profile switch. The fi
 version gated them on that switch, so the measured `reference` profile kept the
 Torch sort, and the matrix gain below comes from the KV preparation alone. The
 captured round selector is native in both profiles. Prefill MoE routing follows the
-same rule (`routing_native.route`, bitwise the Torch reference). Measured with them
+same rule (`routing_native.route`, bitwise the Torch reference). A State without a
+KV status word (symmetric FP16 KV without unique-history placement, which has no round
+graphs either) keeps the Torch selection wherever the native route would need that word
+to report a failure. Measured with them
 on (fast pair, base `987ce177`, `m-bdec-r2b-24`, 24 lanes, 4K/16K at C1–C24):
 - prefill +1.9%, decode −0.4% (worst cell −1.7%);
 - golden-vg2 identical; golden_long identical to the base.

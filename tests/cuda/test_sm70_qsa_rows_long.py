@@ -100,12 +100,19 @@ def test_long_route_equals_single_block_kernel_inside_its_envelope(native, rows,
         assert torch.equal(long.scores[row, :complete].view(torch.int32), short.scores[row, :complete].view(torch.int32))
 
 
+@pytest.mark.parametrize('prompt,start', [(False, 20_000), (True, 20_000), (True, 3_000)])
 @torch.no_grad()
-def test_long_route_requires_a_status_word(native):
+def test_a_state_without_a_status_word_selects_with_the_torch_reference(native, monkeypatch, prompt, start):
+    # Symmetric FP16 KV without unique-history placement has no kv_status (and no round graphs): the native routes
+    # need it to latch a failure, so such a State keeps the Torch reference rather than refusing the frame.
     iq, pooled = inputs(4, 8192, False, 3)
-    pos = torch.tensor([20_000], dtype=torch.int64, device='cuda')
-    with pytest.raises(ValueError, match='kv_status'):
-        ops.qsa_rows(iq, pooled, pos, scratch(4, 8192), 4, context=20_004)
+    pos = torch.tensor([start], dtype=torch.int64, device='cuda')
+    candidate, reference = scratch(4, 8192), scratch(4, 8192)
+    ops.qsa_rows(iq, pooled, pos, candidate, 4, context=start + 4, prompt=prompt)
+    monkeypatch.setattr(ops, '_selector', lambda tensor: None)
+    ops.qsa_rows(iq, pooled, pos, reference, 4, context=start + 4)
+    for name in ('ids', 'nk', 'sparse', 'scores'):
+        assert torch.equal(getattr(candidate, name), getattr(reference, name)), name
 
 
 @pytest.mark.parametrize('fault', ['nonfinite', 'slab'])
