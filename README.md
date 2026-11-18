@@ -669,7 +669,7 @@ These read once at startup on Apple Silicon; defaults are the qualified paths.
 
 ## KV cache formats
 
-Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider admits `fp16` (its CLI default), `int8`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4`, and the distinct compact `rotorquant-planar4-sm70-v1` / `rotorquant-iso4-sm70-v1`, with supported independent sides. Its unique-history TP8 owner path (the SC117 serving profile) additionally admits `rotorquant8`, `rotorquant8-norm`, `rotorquant-planar4`, `rotorquant-iso4` and `rotorquant-iso64-norm4`, with the same format on K and V; every RotorQuant format on that path is written by the fused owned KV writer and read by the native sparse attention kernels, including captured decode rounds (see [RotorQuant KV on V100](#rotorquant-kv-on-v100-sm70)). Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70.
+Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider admits `fp16` (its CLI default), `int8`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4`, and the distinct compact `rotorquant-planar4-sm70-v1` / `rotorquant-iso4-sm70-v1`, with supported independent sides. Its unique-history TP8 owner path (the SC117 serving profile) additionally admits `rotorquant8`, `rotorquant8-norm`, `rotorquant-planar4`, `rotorquant-iso4`, `rotorquant-iso64-norm4` and the SM70-only `rotorquant-iso64-norm4-h64`, with the same format on K and V; every RotorQuant format on that path is written by the fused owned KV writer and read by the native sparse attention kernels, including captured decode rounds (see [RotorQuant KV on V100](#rotorquant-kv-on-v100-sm70)). Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70.
 
 | Family | Exact names | Bytes for one 256-value K **or** V head |
 | --- | --- | ---: |
@@ -679,6 +679,7 @@ Flash Next's modern CUDA provider supports the following **16 formats**, with in
 | RotorQuant 3-bit | `rotorquant-planar3`, `rotorquant-iso3` | 104 |
 | RotorQuant 4-bit | `rotorquant-planar4`, `rotorquant-iso4`, `rotorquant-iso64-norm4`, `rotorquant-signed128-4`, `rotorquant-signed64-norm4` | 136 |
 | Compact CUDA Planar4/Iso4, SM70 only | `rotorquant-planar4-sm70-v1`, `rotorquant-iso4-sm70-v1`; separate pinned FP16 norm/reserved schema | 136 |
+| Iso64-norm with per-64 scales, SM70 only | `rotorquant-iso64-norm4-h64`; two norm-corrected FP16 scales (one per 64 values) in each 128-value group's four-byte word | 136 |
 | RotorQuant 6-bit | `rotorquant6`, `rotorquant6-norm`, `rotorquant6-outlier-norm` | 200 |
 | RotorQuant 7-bit | `rotorquant7` | 232 |
 | RotorQuant 8-bit | `rotorquant8`, `rotorquant8-norm` | 264 |
@@ -2277,6 +2278,17 @@ accepted per draft, 2.31 vs 2.43 tokens per round). Before the prompt attention 
 prefill ran on the RN decode kernels and was 30% slower. Owned RotorQuant formats borrow prompt
 state exactly as INT8 does in this layout (golden-long cold == repeat on every case).
 Fastbench configs `rq8` / `rq4` (`KVD` selects the format).
+
+**Q4 RotorQuant with per-64 scales at the same bytes (2026-11-18).** `rotorquant-iso64-norm4-h64`
+keeps iso64-norm4's Iso64 basis and 136 bytes per 256-value head but normalizes and norm-corrects each
+64-value half group on its own, storing the two FP16 corrected scales in the four-byte word that
+iso64-norm4 fills with one FP32 scale. Against INT8 on corpus-v2: text prompt rows +0.0025 nats
+(iso64-norm4 +0.0054), decode rows -0.0017, mean KL 0.0279 / 0.0096 (iso64-norm4 0.0292 / 0.0101);
+paired against iso64-norm4 the prompt rows improve by 0.0029 nats (95% CI -0.0057 to -0.0001).
+Serving matrix at 32 full lanes (`fb-rq4h64-g3` vs `fb-rq4n64-a7`): equal to iso64-norm4 within
+noise (prefill -0.4%, decode -0.1%; 2.32 vs 2.31 tokens per round; C32 4K 2477 / 11.83, C32 16K
+2625 / 11.42). Equal bytes, equal speed and lower loss make it the selected Q4 format (`rq4`
+default); iso64-norm4 remains admitted.
 
 **Batched PLE n-gram staging across a round's windows (2026-11-18, bitwise).** Each decode
 frame computed every PLE layer's n-gram row ids once per window and staged each window's table
