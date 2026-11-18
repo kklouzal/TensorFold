@@ -2252,6 +2252,48 @@ confidences are bitwise those of the host chooser (`tests/cuda/test_sm70_draft_p
 +1.07% and +2.33% combined over both pairs (the first pair alone had C8 4K −2.75%),
 prefill +0.01%; golden-vg2 identical.
 
+**Faster QSA selection on V100, same selections (2026-11-18).** The SM70 QSA selector
+picks each verify or draft row's top 512 pooled key groups. The captured round selector,
+eager long decode rows, and prompt selection past 4096 groups share its radix selection
+(`select_greater` in `src/tensorfold/cuda/sm70/qsa_select512.cuh`). Two changes there:
+- Each radix pass now finds its bin with a parallel scan over the 256 bin counts, instead
+  of one thread walking them.
+- The final emission uses one block scan over contiguous per-thread segments, instead of
+  one scan per 1024 scores.
+
+The round and eager scorers (`src/tensorfold/cuda/sm70/family.cu`) gain a second body
+with one thread per pooled group and no warp shuffles. It keeps the key in registers and
+the row's query in shared memory, and replays `warp_sum`'s reduction tree in registers.
+Half×half products are exact in FP32, so the scores are bitwise identical. Each row
+chooses on the GPU: the existing warp-per-group body below 8192 completed groups (32K
+context), the new body at or above. A captured graph and the eager path therefore choose
+the same way for every context. The new body still launches below the threshold and
+exits at once, which costs about 2–3 µs per layer.
+
+Measured on V100 GPU0 (image `4b2661d8` with the change overlaid; 4×128 indexer;
+CUDA-graph µs per layer, base → new):
+
+| Context | Rows | Base | New |
+|---|---|---|---|
+| 4K | 5 | 28.2 | 22.4 |
+| 16K | 5 | 56.2 | 41.6 |
+| 64K | 5 | 167.5 | 105.2 |
+| 128K | 5 | 327 | 241 |
+| 262K | 5 | 577 | 437 |
+
+Selections, scores and counts were bitwise identical on all 22 shapes measured. The QSA
+GPU tests fail the same 16 cases in `test_flashnext_qsa_select.py` as the base; these
+predate this change.
+
+End to end on 8× V100 (prod config, 24 lanes):
+- **Fast protocol, one session per arm:** decode +0.21% (−0.20% with the best cell
+  dropped), prefill +0.11%; golden-vg2 identical. Outputs are bitwise identical, so the
+  4K/16K differences are noise. C8 moved −3.6%/+3.1%; two base runs of the same tree
+  differ by +4.2%/+3.0% there.
+- **C1 at 64K, sessions in order A B B A, two prompts:** decode 79.92/79.80 →
+  80.52/80.42 and 85.75/85.68 → 86.23/86.50 tok/s (about +0.7%). The gain is specific to
+  long contexts.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the
