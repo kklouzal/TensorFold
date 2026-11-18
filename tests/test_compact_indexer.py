@@ -163,6 +163,7 @@ def test_prefix_transfer_retires_kv_pool_uses_on_both_states_even_without_owned_
     for owner, label in zip(owners, ("source", "destination")):
         owner._transfer_done, owner._transfer_stream = Event(label), 1
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: Stream(current[0]))
+    monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: current[0], raising=False)
     source_kv, destination_pool = torch.zeros(3, 256), torch.ones(3, 128)
     borrowers = (source_kv, destination_pool)
     def record(tensor, stream):
@@ -219,6 +220,7 @@ def test_prefix_transfer_wait_failure_cannot_be_reclassified_as_fresh_exhaustion
             raise failure
     owner._transfer_done, owner._transfer_stream = object(), 1
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: Stream())
+    monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: 2, raising=False)
     with pytest.raises(MemoryError) as caught:
         owner.check()
     assert caught.value is owner.retirement_failure is failure
@@ -256,6 +258,7 @@ def test_cross_stream_cut_reads_extend_cache_and_shared_staging_retirement(monke
         def wait_event(self, event):
             events.append(("wait", self.cuda_stream, event.label, event.stream))
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: Stream(current[0]))
+    monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: current[0], raising=False)
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda tensor: True))
     monkeypatch.setattr(torch.Tensor, "record_stream", lambda tensor, stream: None)
     entry.done, entry.pending, entry._stream = Event("cache"), True, 1
@@ -345,6 +348,7 @@ def test_issued_writer_with_failed_fence_blocks_reset_and_other_stream_reuse(mon
             raise error
     entry.done, entry.pending, entry._stream = Event(), True, 1
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: Stream())
+    monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: 2, raising=False)
     with pytest.raises(MemoryError) as caught:
         entry._copy(torch.ones_like(entry.raw), entry.raw, (0, 0))
     assert caught.value is error and torch.all(entry.raw == 1)
@@ -372,6 +376,7 @@ def test_explicit_coordinate_consumer_on_non_indexer_owner_retires_shared_role(m
             events.append(("wait", self.cuda_stream, event.stream))
     stage._events[0], stage._streams[0] = Event(), 1
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: Stream(current[0]))
+    monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: current[0], raising=False)
     monkeypatch.setattr(torch.Tensor, "record_stream", lambda tensor, stream: None)
     buffers = NS(target_indexer_coordinates=stage.coordinates, compact_indexer_stage=stage)
     state = NS(history_rank=7)
@@ -612,3 +617,125 @@ def test_prefix_cohort_refuses_before_mutation_or_contains_uncertain_transfer(mo
         assert all(target._history_error is error for (_, target, _), error in zip(states, errors))
         if failure in ("unretired_clone", "unretired_value", "reader_wait"):
             assert errors[3] is cause
+
+
+def bound(entry, stage, raw, coords, *, first=0, ordinal=0, mtp=False):
+    """One cache's rows of the current frame, bound through the staging registry (as execution binds them)."""
+    span = stage.bind(ordinal, first, first + len(raw), entry.n, mtp=mtp, expected=(0, 0))
+    entry.begin(span, raw, coords)
+    entry.pool(torch.zeros(64, 128).half(), torch.ones(128), torch.tensor([0.1]), 1e-6, (1, 1, 1), 1.0)
+    if mtp:  # MTP windows count at once (State commits its kept rows later)
+        entry.publish_commit(entry.prepare_commit(entry.n + len(raw), (0, 0)), entry.n + len(raw), (0, 0))
+    return span
+
+
+def restage(stage, *, mtp):
+    """An early (prestaged) frame: a new epoch that rewrites the role's shared rows."""
+    stage.begin(mtp=mtp)
+    (stage.mtp if mtp else stage.target).fill_(-777)
+    (stage.mtp_coordinates if mtp else stage.coordinates).fill_(-5)
+
+
+def history(rows=64):
+    torch.manual_seed(5)
+    return torch.randn(rows, 128).half(), torch.arange(rows * 3).reshape(rows, 3).long() + (1 << 33)
+
+
+@pytest.mark.parametrize("keep", [1, 2, 3, 4, 5])
+def test_padded_refresh_commits_its_kept_rows_after_a_prestaged_frame(keep):
+    """A padded MTP refresh (5 staged rows, ``keep`` real) commits after the next frame was staged early."""
+    raw, coords = history()
+    entry, stage = cache(proposals=8), Staging(8, 13, "cpu", mtp=True)
+    stage.begin(mtp=True)
+    bound(entry, stage, raw[:6], coords[:6], mtp=True)
+    stage.begin(mtp=True)
+    span = bound(entry, stage, raw[6:11], coords[6:11], mtp=True)
+    stage.retain(mtp=True)
+    restage(stage, mtp=True)
+    span.check()
+    snapshot = entry.snapshot(6 + keep)
+    expected, axes = expected_tail(raw, coords, 6 + keep)
+    assert torch.equal(snapshot["raw"], expected) and torch.equal(snapshot["coordinates"], axes)
+    entry.publish_commit(entry.prepare_commit(6 + keep, (0, 0)), 6 + keep, (0, 0))
+    assert entry.n == 6 + keep and torch.equal(entry.raw, expected) and torch.equal(entry.coordinates, axes)
+    other = entry.clone(torch.zeros(2, dtype=torch.int64), torch.tensor([0, -2], dtype=torch.int32))
+    assert torch.equal(other.raw, expected)
+
+
+def test_without_retain_the_restaged_role_refuses_the_old_span():
+    """The hazard retain removes: an early frame's epoch invalidates the producing frame's span reads."""
+    raw, coords = history()
+    entry, stage = cache(proposals=8), Staging(8, 13, "cpu", mtp=True)
+    stage.begin(mtp=True)
+    bound(entry, stage, raw[:5], coords[:5], mtp=True)
+    restage(stage, mtp=True)
+    with pytest.raises(ValueError, match="reused before its cut/commit resolved"):
+        entry.prepare_commit(3, (0, 0))
+
+
+def test_abandoned_prestage_keeps_spans_readable_and_a_later_frame_replaces_them():
+    raw, coords = history()
+    entry, stage = cache(proposals=8), Staging(8, 13, "cpu", mtp=True)
+    stage.begin(mtp=True)
+    span = bound(entry, stage, raw[:5], coords[:5], mtp=True)
+    stage.retain(mtp=True)
+    restage(stage, mtp=True)                     # never launched
+    restage(stage, mtp=True)                     # the next ordinary frame stages the role again
+    assert span.staging is None and entry.span is span
+    for cut in range(0, 6):
+        expected, axes = expected_tail(raw, coords, cut)
+        assert torch.equal(entry.snapshot(cut)["raw"], expected), cut
+    stage.retain(mtp=True)                       # nothing is bound to the current epoch: no copy, no rebinding
+    assert entry.span is span and stage._spans == [[], []]
+
+
+def test_multi_stream_frame_spans_each_keep_their_own_rows_across_chained_prestages():
+    """Two States in one padded frame; only one continues the chain, the other's refresh span stays readable."""
+    raw, coords = history()
+    a, b = cache(proposals=8), cache(proposals=8)
+    stage = Staging(16, 13, "cpu", mtp=True)
+    stage.begin(mtp=True)
+    bound(a, stage, raw[:5], coords[:5], first=0, mtp=True)
+    bound(b, stage, raw[20:25], coords[20:25], first=5, mtp=True)
+    stage.retain(mtp=True)                       # prestage during the refresh
+    restage(stage, mtp=True)
+    for cut in range(0, 6):
+        assert torch.equal(b.snapshot(cut)["raw"], expected_tail(raw[20:], coords[20:], cut)[0]), cut
+    a.publish_commit(a.prepare_commit(3, (0, 0)), 3, (0, 0))
+    a.begin_proposals((0, 0))
+    stage.begin(mtp=True)                        # a's proposal step (the actual launch of the early frame)
+    bound(a, stage, raw[30:31], coords[30:31], mtp=True)
+    stage.retain(mtp=True)                       # prestage during a's proposal
+    restage(stage, mtp=True)
+    b.publish_commit(b.prepare_commit(2, (0, 0)), 2, (0, 0))
+    expected, axes = expected_tail(raw[20:], coords[20:], 2)
+    assert torch.equal(b.raw, expected) and torch.equal(b.coordinates, axes)
+    assert a.span.staging is None and b.span.staging is None
+
+
+def test_target_role_retains_each_ordinal_channel():
+    raw, coords = history()
+    stage = Staging(8, 13, "cpu", mtp=False)
+    low, high = cache(), cache()
+    stage.begin(mtp=False)
+    bound(low, stage, raw[:3], coords[:3], ordinal=2)
+    bound(high, stage, raw[8:11], coords[:3], ordinal=9)
+    for entry in (low, high):
+        entry.publish_commit(entry.prepare_commit(3, (0, 0)), 3, (0, 0))
+    stage.retain(mtp=False)
+    restage(stage, mtp=False)
+    assert torch.equal(low.snapshot(2)["raw"][:2], raw[:2])
+    assert torch.equal(high.snapshot(2)["raw"][:2], raw[8:10])
+    assert torch.equal(high.snapshot(2)["coordinates"][:2], coords[:2])
+
+
+def test_retain_waits_for_and_retires_the_shared_role_on_the_current_stream(monkeypatch):
+    raw, coords = history()
+    entry, stage = cache(proposals=8), Staging(8, 13, "cpu", mtp=True)
+    stage.begin(mtp=True)
+    bound(entry, stage, raw[:5], coords[:5], mtp=True)
+    calls = []
+    monkeypatch.setattr(stage, "wait", lambda *, mtp: calls.append(("wait", mtp)))
+    monkeypatch.setattr(stage, "mark", lambda *, mtp: calls.append(("mark", mtp)))
+    stage.retain(mtp=True)
+    assert calls == [("wait", True), ("mark", True)]

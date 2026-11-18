@@ -36,7 +36,7 @@ from .decode import (
     draft, entry_end, prefill_begin, tp_sample_rows,
 )
 from .forward import Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
-from .mtp import mtp_compute, mtp_stage
+from .mtp import mtp_compute, mtp_prestage, mtp_stage, mtp_tokens
 from .prompt_plan import CUTS, POINTS, pass_limit
 from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room
 from .speculation import MethodGeometry
@@ -2798,7 +2798,44 @@ class MultiDecoder:
         segs = prepare_refresh() if context is None else context.prepare("mtp-refresh-window", prepare_refresh)
         proposing = any(room[s.sid] > 0 for s, _, _ in todo)
         greedy = proposing and all(s.sampling is None or s.sampling.temperature <= 0 for s, _, _ in todo)
-        logits = self._mtp(segs, pick=greedy) if proposing else self._mtp(segs, logits=False)
+        # The next proposal frame is staged while the producing step runs on the GPU (``_mtp``'s ``before_wait``):
+        # the windows predicted to continue, at their cache rows once the producing step's entries count, with
+        # placeholder IDs; the picked IDs are published just before its launch. Another continuing set restages.
+        prestaged = None
+
+        def prestage(rows):
+            """``rows``: (stream, producing row, entries the producing step adds) predicted to continue."""
+            if self.w.comm is None or not rows or any(
+                    getattr(s.st, "mtp_boundary", None) is not None or getattr(s.st, "media_input_span", None) is not None
+                    or getattr(s.st, "media_profile_identity", None) is not None for s, _, _ in rows):
+                return None
+
+            def run():
+                nonlocal prestaged
+                lengths = [s.st.mtp_len for s, _, _ in rows]
+                try:
+                    for s, _, added in rows:             # provisional and unpublished: restored below
+                        s.st.mtp_len += added
+                    windows = [(s.st, [0], self.mbuf.streams[row:row + 1]) for s, row, _ in rows]
+                    staged = (mtp_prestage(self.mbuf, windows) if context is None
+                              else context.prepare("mtp-proposal-window", lambda: mtp_prestage(self.mbuf, windows)))
+                    prestaged = ([(s, row) for s, row, _ in rows], staged, None)
+                except BaseException as error:           # raised after the producing step's checks and picks
+                    prestaged = (None, None, error)
+                finally:
+                    for (s, _, _), length in zip(rows, lengths):
+                        s.st.mtp_len = length
+            return run
+
+        def deferred():                                  # a chain ending early still reports a failed staging
+            if prestaged is not None and prestaged[2] is not None:
+                raise prestaged[2]
+
+        if proposing:
+            logits = self._mtp(segs, pick=greedy, before_wait=prestage(
+                [(s, a0 + len(keep) - 1, len(keep)) for (s, _, keep), (_, a0, _) in zip(todo, segs) if room[s.sid] > 1]))
+        else:
+            logits = self._mtp(segs, logits=False)
         if self.controller is not None:
             self.controller.work_observations.mtp(
                 segs, role="refresh", zero_proposal_rows=sum(end - begin for (stream, _, _), (_, begin, end)
@@ -2813,13 +2850,13 @@ class MultiDecoder:
         taking = [index for index, (s, _) in enumerate(active) if room[s.sid] > 0]
         if not taking:
             words.settle()
-            return
+            return deferred()
         if len(taking) != len(active):
             logits = logits[taking]
             active = [active[index] for index in taking]
         if not active:
             words.settle()
-            return
+            return deferred()
         if new:
             try:                                         # a failure here still reports a failed absorb first
                 for s, _ in active:
@@ -2836,7 +2873,7 @@ class MultiDecoder:
                 raise
             if not active:                               # every stream copies: no draft readback checks the absorb
                 words.settle()
-                return
+                return deferred()
         for j in range(self._proposal_limit()):
             picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active], words)
             nxt = []
@@ -2847,16 +2884,29 @@ class MultiDecoder:
                 s.drafts.append(d)
                 if not low and j + 1 < room[s.sid]:
                     nxt.append((s, row, d))
+            pre, prestaged = prestaged, None
+            if pre is not None and pre[2] is not None:
+                raise pre[2]
             if not nxt:
                 return
             for stream, _, _ in nxt:
                 stream.st.begin_mtp_proposals()
-            def prepare_proposal():
-                windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
-                return mtp_stage(self.mbuf, windows)
+            if pre is not None and len(pre[0]) == len(nxt) and all(
+                    s is t and row == r for (s, row), (t, r, _) in zip(pre[0], nxt)):
+                segs = pre[1]
+                tokens = [d for _, _, d in nxt]
+                if context is None:
+                    mtp_tokens(self.mbuf, segs, tokens)
+                else:
+                    context.prepare("mtp-proposal-window", lambda: mtp_tokens(self.mbuf, segs, tokens))
+            else:
+                def prepare_proposal():
+                    windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
+                    return mtp_stage(self.mbuf, windows)
 
-            segs = prepare_proposal() if context is None else context.prepare("mtp-proposal-window", prepare_proposal)
-            logits = self._mtp(segs, pick=greedy)
+                segs = prepare_proposal() if context is None else context.prepare("mtp-proposal-window", prepare_proposal)
+            logits = self._mtp(segs, pick=greedy, before_wait=prestage(
+                [(s, a0, 1) for (s, _, _), (_, a0, _) in zip(nxt, segs) if j + 2 < room[s.sid]]))
             if self.controller is not None:
                 self.controller.work_observations.mtp(segs, role="proposal")
 
@@ -2874,11 +2924,12 @@ class MultiDecoder:
         return None if pad is None else pad(kind, rows, participants)
 
     def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None,
-             pick: bool = False) -> torch.Tensor | None:
+             pick: bool = False, before_wait=None) -> torch.Tensor | None:
         """An MTP step over every drafting stream, its attention one launch a kernel for all of them.
 
         ``pick``: every drafting stream is greedy; the device pick over the step's gathered packet is queued
-        before the status check's wait, which then also covers the pick's words (``_picks`` consumes them)."""
+        before the status check's wait, which then also covers the pick's words (``_picks`` consumes them).
+        ``before_wait``: host work (it contains its own failures) run while the step executes, before that wait."""
 
         self.mbuf.rotor_lookup = False
         if self.live() == 1:
@@ -2899,6 +2950,8 @@ class MultiDecoder:
                     draft_pick.pending = None
                     if pick and out is not None and out.data_ptr() == self.mbuf.logits.data_ptr():
                         draft_pick.issue(self.mbuf.cand_all, out.shape[0])
+                if before_wait is not None and out is not None:
+                    before_wait()
                 _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
             return out
         except BaseException as primary:

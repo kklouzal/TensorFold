@@ -178,6 +178,7 @@ def test_unretired_frame_failure_keeps_primary_and_uses_existing_cohort_marker(m
     stage = buffers.compact_indexer_stage
     stage._events[0], stage._streams[0] = Event(), 1
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: Stream())
+    monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: 2, raising=False)
     monkeypatch.setattr(torch.Tensor, "record_stream", lambda *a: None)
     monkeypatch.setattr(cohort, "notify_failure", lambda: notified.append(True))
     if partial:
@@ -259,6 +260,7 @@ def test_native_writer_increments_the_actual_shared_frame_counter_before_submiss
     monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda tensor: True))
     monkeypatch.setattr(torch.Tensor, "record_stream", lambda *a: None)
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: NS())
+    monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: 0, raising=False)
     native.publish(torch.zeros(4, 3, dtype=torch.int64), buffers.target_indexer_coordinates, 0,
                    torch.zeros(2, dtype=torch.int64), (0, 0), torch.tensor([0, -2], dtype=torch.int32), 1)
     with pytest.raises(ValueError, match="mutated"):
@@ -399,6 +401,7 @@ def test_host_dma_retirement_precedes_rewrite_and_record_failure_retains_sources
             raise RuntimeError('uncertain host DMA endpoint')
     stage._host_events[0],stage._host_pending[0] = Event(),True
     monkeypatch.setattr(torch.cuda,'current_stream',lambda *a:object())
+    monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: 0, raising=False)
     with pytest.raises(RuntimeError,match='uncertain host DMA endpoint'):
         stage_text_indexer_frame(b,segments)
     assert events == ['wait','record']

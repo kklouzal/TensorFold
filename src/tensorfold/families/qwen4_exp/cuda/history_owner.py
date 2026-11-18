@@ -624,6 +624,7 @@ class OwnerBuffers:
         self.descriptor_upload_ring = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
         self._native_stream = None
+        self._current = None  # compact_indexer._stream's last Stream object
         self.native_comm = self.native_collective = None
         self._native_transport_configured = self._native_family_configured = False
         self.reference_transport_rows = 0
@@ -1323,8 +1324,6 @@ class OwnerBuffers:
         operand the captured layers read. The caller validated the issued
         coordinate frame and replays on the current stream next.
         """
-        from .compact_indexer import Span
-
         if self.round_device is None or self.closed:
             raise RuntimeError("round tables were not prepared before serving")
         mtp = self.owned_q8_window_role == "mtp"
@@ -1399,14 +1398,13 @@ class OwnerBuffers:
                                       table.data_ptr(), generations, status, slot, owner, position, first, count,
                                       table.shape[0], entry.proposal_raw.data_ptr(),
                                       entry.proposal_coordinates.data_ptr(), offset, int(mtp))
-                appends.append((entry, pos, count, raw, axes, expected, offset))
+                appends.append((entry, ai, first, pos, count, expected, offset))
             tentative.append((state, pos + count))
         if cursor != rows:
             raise ValueError("round segments do not cover the execution rows")
         stage.begin(mtp=mtp)
-        epoch = stage.mtp_epoch if mtp else stage.target_epoch
-        for entry, pos, count, raw, axes, expected, offset in appends:
-            entry.span = Span(pos, raw, axes, stage, epoch, mtp, expected)
+        for entry, ai, first, pos, count, expected, offset in appends:
+            entry.span = stage.bind(ai, first, first + count, pos, mtp=mtp, expected=expected)
             if mtp:
                 # Cache.begin/pool/prepare_commit/publish_commit host effects of
                 # one MTP window; the captured stage kernel writes the committed ring.
@@ -1417,7 +1415,9 @@ class OwnerBuffers:
             for state, length in tentative:
                 state.target_tentative_length = length
         self.round_device.copy_(self.round_host, non_blocking=True)
-        self.round_done.record(torch.cuda.current_stream(self.queries.device))
+        from .compact_indexer import _stream
+
+        self.round_done.record(_stream(self, self.queries.device))
         self._round_pending = True
 
     def finish_round(self, buffers, segments):
@@ -1437,7 +1437,9 @@ class OwnerBuffers:
 
     def mark_native_submitted(self):
         if self.native_done is not None:
-            self.native_done.record(torch.cuda.current_stream(self.queries.device))
+            from .compact_indexer import _stream
+
+            self.native_done.record(_stream(self, self.queries.device))
             self._native_stream = torch._C._cuda_getCurrentRawStream(self.queries.device.index)
             self._native_pending = True
 

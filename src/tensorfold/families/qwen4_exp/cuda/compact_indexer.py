@@ -35,6 +35,20 @@ class _TextCoordinates:
     delta: int
 
 
+def _stream(owner, device):
+    """``device``'s current stream. ``owner._current`` keeps (raw handle, Stream object), rebuilt only when the raw
+    current stream changes: torch.cuda.current_stream constructs a new object on every call (hot host path)."""
+    raw, cached = torch._C._cuda_getCurrentRawStream(device.index), owner._current
+    if cached is None or cached[0] != raw:
+        cached = owner._current = (raw, torch.cuda.current_stream(device))
+    return cached[1]
+
+
+def _waits(device, recorded):
+    """Whether the current stream differs from the raw stream that ``recorded`` names."""
+    return torch._C._cuda_getCurrentRawStream(device.index) != recorded
+
+
 def coordinate_rows(state, positions):
     """Resolve the existing query-coordinate route independently of cache grouping."""
     values = positions.long()[:, None].expand(-1, 3)
@@ -383,6 +397,8 @@ class Staging:
         self.target_epoch = self.mtp_epoch = 0
         self._events, self._streams = [None, None], [None, None]
         self._borrowers = [(), ()]
+        self._spans = [[], []]  # (span, ordinal, first, last) bound to each role's current epoch
+        self._current = None
         if host_coordinates:
             for role, enabled in enumerate((not mtp_only, mtp)):
                 if enabled:
@@ -407,9 +423,8 @@ class Staging:
         if event is not None:
             try:
                 values = self.mtp if mtp else self.target
-                stream = torch.cuda.current_stream(values.device)
-                if stream.cuda_stream != self._streams[role]:
-                    stream.wait_event(event)
+                if _waits(values.device, self._streams[role]):
+                    _stream(self, values.device).wait_event(event)
             except BaseException as error:
                 self._errors[role] = error
                 raise
@@ -422,7 +437,7 @@ class Staging:
         if event is not None:
             try:
                 values, coordinates = (self.mtp, self.mtp_coordinates) if mtp else (self.target, self.coordinates)
-                stream = torch.cuda.current_stream(values.device)
+                stream = _stream(self, values.device)
                 values.record_stream(stream)
                 coordinates.record_stream(stream)
                 event.record(stream)
@@ -441,8 +456,7 @@ class Staging:
         try:
             for tensor in borrowers:
                 if tensor.is_cuda:
-                    stream = torch.cuda.current_stream(tensor.device)
-                    tensor.record_stream(stream)
+                    tensor.record_stream(_stream(self, tensor.device))
             yield
         except BaseException as error:
             primary = error
@@ -469,6 +483,38 @@ class Staging:
             self.mtp_epoch += 1
         else:
             self.target_epoch += 1
+        self._spans[int(mtp)] = []
+
+    def bind(self, ordinal, first, last, start, *, mtp, expected):
+        """A cache's span over this role's rows of the current frame (epoch)."""
+        raw, coordinates, epoch = self.span(ordinal, first, last, mtp=mtp)
+        span = Span(start, raw, coordinates, self, epoch, mtp, expected)
+        self._spans[int(mtp)].append((span, ordinal, first, last))
+        return span
+
+    def retain(self, *, mtp):
+        """Move the role's current-frame spans into their own storage before the role is restaged early.
+
+        A frame staged while its producing step still runs (the MTP chain's next proposal) begins a new epoch
+        and rewrites these rows. The producing frame's spans stay readable afterwards for its commit, prefix
+        snapshots and clones, whether or not the early frame is launched: one stream-ordered copy of the
+        frame's row range (after the producing step's writes) on every rank owning such a span; each span
+        then owns a view of it (``staging=None``, as a cloned span) and no later epoch invalidates it.
+        """
+        role = int(mtp)
+        bound, self._spans[role] = self._spans[role], []
+        epoch = self.mtp_epoch if mtp else self.target_epoch
+        bound = [record for record in bound if record[0].staging is self and record[0].epoch == epoch]
+        if not bound:
+            return
+        low, high = min(record[2] for record in bound), max(record[3] for record in bound)
+        with self.reading(mtp=mtp), torch.inference_mode(False):
+            raw = (self.mtp[low:high] if mtp else self.target[:, low:high]).clone()
+            coordinates = (self.mtp_coordinates if mtp else self.coordinates)[low:high].clone()
+        for span, ordinal, first, last in bound:
+            span.raw = raw[first - low:last - low] if mtp else raw[ordinal // 8, first - low:last - low]
+            span.coordinates = coordinates[first - low:last - low]
+            span.staging = None
 
     def host_wait(self, *, mtp):
         role = int(mtp)
@@ -487,7 +533,7 @@ class Staging:
         event = self._host_events[role]
         if event is not None:
             try:
-                event.record(torch.cuda.current_stream(self.coordinates.device))
+                event.record(_stream(self, self.coordinates.device))
                 self._host_pending[role] = True
             except BaseException as error:
                 self._errors[role] = error
@@ -631,6 +677,7 @@ class Cache:
         self.done = torch.cuda.Event() if self.raw.is_cuda else None
         self.pending = False
         self._stream = None
+        self._current = None
         self._retirement_error = None
         if self.done is not None:
             self.done.record(torch.cuda.current_stream(self.raw.device))  # Materialize every admitted event before publication.
@@ -649,14 +696,14 @@ class Cache:
 
     def _mark(self):
         if self.done is not None:
-            stream = torch.cuda.current_stream(self.raw.device)
+            stream = _stream(self, self.raw.device)
             self.done.record(stream)
             self._stream = stream.cuda_stream
             self.pending = True
 
     def _read_done(self, tensors, *, span=None, mark_cache=True):
         if self.raw.is_cuda:
-            stream = torch.cuda.current_stream(self.raw.device)
+            stream = _stream(self, self.raw.device)
             for tensor in tensors:
                 tensor.record_stream(stream)
             if mark_cache:
@@ -709,10 +756,8 @@ class Cache:
     def wait_native_reuse(self):
         if self._retirement_error is not None:
             raise self._retirement_error
-        if self.pending:
-            stream = torch.cuda.current_stream(self.raw.device)
-            if stream.cuda_stream != self._stream:
-                stream.wait_event(self.done)
+        if self.pending and _waits(self.raw.device, self._stream):
+            _stream(self, self.raw.device).wait_event(self.done)
 
     def validate_append(self, start, count, expected):
         if (type(start) is not int or type(count) is not int or count < 1
@@ -943,6 +988,7 @@ class CompactIndexer:
         self._transfer_stream = None
         self._transfer_error = None
         self._transfer_borrowers = ()
+        self._current = None
         if self.empty.is_cuda:
             self._transfer_done = torch.cuda.Event()
             stream = torch.cuda.current_stream(self.empty.device)
@@ -954,8 +1000,8 @@ class CompactIndexer:
             raise self._transfer_error
         if self._transfer_done is not None:
             try:
-                stream = torch.cuda.current_stream(self.empty.device)
-                if stream.cuda_stream != self._transfer_stream:
+                if _waits(self.empty.device, self._transfer_stream):
+                    stream = _stream(self, self.empty.device)
                     stream.wait_event(self._transfer_done)
                     self._transfer_stream = stream.cuda_stream
             except BaseException as error:
@@ -1011,11 +1057,12 @@ class CompactIndexer:
         entry = self.entries[ordinal]
         if entry is None:
             raise ValueError("compact indexer append was routed to a non-owner")
-        destination, axes, epoch = staging.span(ordinal, first, last, mtp=mtp)
+        span = staging.bind(ordinal, first, last, start, mtp=mtp, expected=expected)
+        destination, axes = span.raw, span.coordinates
         if (raw.shape != destination.shape or coordinates.shape != axes.shape or raw.dtype != torch.float16
                 or coordinates.dtype != torch.int64 or raw.device != destination.device or coordinates.device != axes.device):
             raise ValueError("compact input rows/coordinates do not match their bounded execution span")
-        entry.begin(Span(start, destination, axes, staging, epoch, mtp, expected), raw, coordinates)
+        entry.begin(span, raw, coordinates)
         return entry
 
     def begin_mtp_proposals(self, expected):

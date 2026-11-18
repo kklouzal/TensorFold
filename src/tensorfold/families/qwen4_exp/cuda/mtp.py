@@ -131,6 +131,33 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
     return segs
 
 
+def mtp_prestage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Tensor]]) -> list:
+    """``mtp_stage`` of a frame staged while the producing step still runs (placeholder IDs, see ``mtp_tokens``).
+
+    The producing frame's compact spans first move to their own storage (``Staging.retain``): this staging
+    begins a new epoch and rewrites their rows, while that frame's commit, snapshots and clones still read them.
+    """
+    stage = getattr(b, "compact_indexer_stage", None)
+    if stage is not None:
+        stage.retain(mtp=True)
+    return mtp_stage(b, windows)
+
+
+def mtp_tokens(b: Buffers, segs: Sequence, tokens: Sequence[int]) -> None:
+    """Publish the next IDs of a frame staged before they were known (one per execution row), under its buffer event.
+
+    The frame was staged by ``mtp_stage`` with placeholder IDs; this copy is ordered after that staging's and before
+    the frame's launch on the current stream, so the step reads only these IDs.
+    """
+    n = segs[-1][2] if segs else 0
+    if not 0 < n <= b.rows or len(tokens) != n:
+        raise ValueError("staged MTP IDs require exactly one ID per staged execution row")
+    b.staged.synchronize()
+    b.ids_host_array[:n] = [int(t) for t in tokens]
+    b.ids[:n].copy_(b.ids_host[:n], non_blocking=True)
+    b.staged.record()
+
+
 def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = True, logits: bool = True,
                 context: int | None = None, check: bool = True,
                 next_inputs: torch.Tensor | None = None) -> torch.Tensor | None:
