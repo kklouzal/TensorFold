@@ -808,18 +808,19 @@ def _stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]
     b.ids_host_array[:R] = np.asarray([t for _, tokens in windows for t in tokens], dtype=np.int32)
     b.ids[:R].copy_(b.ids_host[:R], non_blocking=True)
     rows = []
-    for layer in w.layers:
-        if layer.ple is not None:
-            p = layer.ple
-            for (st, tokens), (_, a0, _) in zip(windows, segs):
-                toks = np.asarray(tokens, dtype=np.int64)
-                ids = p.ngram.ids(st.ple_history, toks)
-                st.ple_last = (st.ple_history, toks)
-                at = a0 * (ids.size // len(toks))                                       # ids [rows, heads]
-                if late:
-                    rows.append((p, ids, at))
-                else:
-                    _stage_rows(w, b, p, ids, at)
+    ple = [layer.ple for layer in w.layers if layer.ple is not None]
+    if ple:
+        toks = [np.asarray(tokens, dtype=np.int64) for _, tokens in windows]
+        histories = [st.ple_history for st, _ in windows]
+        for p in ple:
+            # Every window's rows in one call; segments are contiguous from row 0, so they stage from entry 0.
+            ids = p.ngram.ids_many(histories, toks)                                     # ids [R, heads]
+            if late:
+                rows.append((p, ids, 0))
+            else:
+                _stage_rows(w, b, p, ids, 0)
+        for (st, _), history, tokens in zip(windows, histories, toks):
+            st.ple_last = (history, tokens)
     b.staged.record()
     b.ple_late = rows or None
     return segs

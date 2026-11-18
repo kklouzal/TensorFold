@@ -41,6 +41,29 @@ class NGram:
         """Row ids [L, heads] for ``tokens`` [L] after ``history`` [n-1] (EOS resets the n-grams)."""
 
         seq = np.concatenate([np.asarray(history, dtype=np.int64), np.asarray(tokens, dtype=np.int64)])[None]
+        return self._rows(seq)[0, -len(tokens):]
+
+    def ids_many(self, histories, windows) -> np.ndarray:
+        """``ids`` of several windows, concatenated in order: [sum of window lengths, heads].
+
+        Each window follows its own [n-1] history. Shorter windows are right-padded to the longest; a row's ids read
+        only its own and earlier positions, so padding never reaches a real row (integer arithmetic: the rows equal
+        one ``ids`` call per window)."""
+
+        lengths = [len(tokens) for tokens in windows]
+        if not lengths or min(lengths) < 1 or len(histories) != len(lengths):
+            raise ValueError("n-gram windows require one history and at least one token each")
+        width = max(lengths)
+        seq = np.full((len(lengths), self.context + width), self.eos, dtype=np.int64)
+        for row, (history, tokens) in enumerate(zip(histories, windows)):
+            seq[row, :self.context] = history
+            seq[row, self.context:self.context + len(tokens)] = tokens
+        rows = self._rows(seq)[:, self.context:]
+        return np.concatenate([rows[row, :n] for row, n in enumerate(lengths)])
+
+    def _rows(self, seq: np.ndarray) -> np.ndarray:
+        """Row ids [B, width, heads] at every position of ``seq`` [B, width] (EOS resets the n-grams)."""
+
         batch, width = seq.shape
         pos = np.arange(width)
         eos_at = np.where(seq == self.eos, pos[None], -1)
@@ -60,8 +83,7 @@ class NGram:
                     mixed = np.bitwise_xor(mixed, shifted[p] * self.multipliers[p])
                 sizes = self.head_sizes[first:first + self.per_ngram]
                 blocks.append(mixed[..., None] % sizes + self.head_offsets[first:first + self.per_ngram])
-        out = np.concatenate(blocks, axis=-1)[0, -len(tokens):]
-        return out
+        return np.concatenate(blocks, axis=-1)
 
     def initial_history(self) -> np.ndarray:
         return np.full((self.context,), self.eos, dtype=np.int64)
