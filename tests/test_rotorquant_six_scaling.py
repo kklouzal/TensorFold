@@ -101,8 +101,7 @@ def test_corrected_six_format_has_distinct_full_identity_and_identical_rotation(
     source = source_fixture("random")
     assert ref.rotate_oracle(source.tolist(),variant) == ref.rotate_oracle(source.tolist(),"signed-iso128")
     assert ref.rotate_oracle(source.tolist(),variant,inverse=True) == ref.rotate_oracle(source.tolist(),"signed-iso128",inverse=True)
-    # Codec 6 is also registered at four bits (SM70 rotorquant-signed128-norm4); outliers (7) stay six-bit only.
-    for bits in ((3,) if codec == 6 else (3,4)):
+    for bits in (3,4):
         with pytest.raises(ValueError,match="six-bit"):
             ref.descriptor(bits,variant)
         with pytest.raises(ValueError,match="six-bit"):

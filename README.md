@@ -2239,6 +2239,45 @@ little for it even with 8 x 8,192-token short windows, so 20 is the largest full
 (prefill aggregate / decode median tok/s): C32 4K 2495 / 12.33, C32 16K 2655 / 11.91; C1-C24
 cells equal the 24-lane configuration. The 24-lane configuration's code path is unchanged.
 
+<a id="rotorquant-kv-on-v100-sm70"></a>
+**RotorQuant KV on V100 (SM70), Q8 for 24 lanes and Q4 for 32 lanes (2026-11-18).** The
+unique-history TP8 owner path now serves RotorQuant caches end to end: the fused owned KV writer
+rotates the query into the stored basis and encodes K/V per 128 values (bitwise equal to the
+reference rotate/encode kernels), the native sparse (RN) attention and the tensor-core prompt
+attention read the packed codes directly (centroids from a shared-memory table, the per-128 scale
+applied in FP32, the inverse basis applied once to the merged output), and decode rounds stay
+captured. Selected formats, same precision on K and V:
+`--kv-dtype rotorquant8-norm` (Q8, 264 bytes per 256-value K or V head, INT8 272) for 24 full
+262,144-token windows, and `--kv-dtype rotorquant-iso64-norm4` (Q4, 136 bytes) for **32 full
+262,144-token windows** with the whole 227-key C32 graph catalogue captured (5.35 of 7.64 GiB);
+INT8 fits only 20 full + 12 x 40,960-token windows at 32 lanes. INT8 stays available and unchanged
+(golden-vg2, golden-long and the teacher-forced scores bitwise identical).
+
+Quality is teacher-forced NLL on the SC117 corpus-v2 (`tools/quality_eval`, 96 text documents'
+prompt rows / 268 documents' decode rows, one server per arm, deltas against INT8 in nats, mean
+KL against INT8): rotorquant8-norm +0.0002 / +0.0001 (equivalent; KL 0.0069 / 0.0024);
+rotorquant8 +0.0015 / +0.0008 (KL 0.0072 / 0.0024). Four-bit, all 136 bytes:
+iso64-norm4 +0.0054 / -0.0026 (KL 0.029 / 0.010), signed64-norm4 +0.0067 / +0.0015 (KL 0.029 /
+0.011), signed128-4 +0.0069 / +0.0015 (KL 0.032 / 0.012), iso4 (FP32 RMS) -0.0011 / +0.0056
+(KL 0.040 / 0.015), planar4 +0.0055 / +0.0069 (KL 0.044 / 0.019), compact
+`rotorquant-iso4-sm70-v1` +0.0172 / +0.0214 (KL 0.063 / 0.033) and compact planar4 +0.025 / +0.021
+(KL 0.069 / 0.038); NLL deltas carry roughly +-0.004 CIs, so the paired KL decides among the
+norm-corrected variants. Equal bytes and equal reader cost (RN microbenchmark within 1% of INT8 at
+24 rows) leave quality, and with it MTP acceptance, as the deciding term: iso64-norm4 is the
+lowest-loss existing format (a signed Iso128 norm4 variant built for this comparison measured KL
+0.0285 / 0.0100, a tie, and was not kept). rotorquant8-norm and rotorquant8 tie; the norm variant
+is kept (lower prompt-row NLL, the GB10 production format).
+
+Fast serving matrix (8x V100 TP8/ETP4, MTP4, image `4b2661d8` + source, 1 rep; prefill aggregate /
+decode median tok/s): Q8 at 24 lanes vs INT8 prod (`fb-base-td16278c34063-prod`): prefill -1.0%,
+decode -1.1% geomean, MTP acceptance equal (C24 4K 2506 / 15.50, C24 16K 2632 / 14.80). Q4 at 32
+full lanes vs INT8 32 lanes mixed windows: prefill -0.5%, decode -4.0% geomean (C32 4K 2477 / 11.81,
+C32 16K 2637 / 11.48); per-round cost is equal and the decode gap is MTP acceptance (0.691 vs 0.720
+accepted per draft, 2.31 vs 2.43 tokens per round). Before the prompt attention port, rotor
+prefill ran on the RN decode kernels and was 30% slower. Owned RotorQuant formats borrow prompt
+state exactly as INT8 does in this layout (golden-long cold == repeat on every case).
+Fastbench configs `rq8` / `rq4` (`KVD` selects the format).
+
 **Batched PLE n-gram staging across a round's windows (2026-11-18, bitwise).** Each decode
 frame computed every PLE layer's n-gram row ids once per window and staged each window's table
 rows separately. `NGram.ids_many` now computes all windows in one batched pass (windows

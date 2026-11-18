@@ -101,9 +101,8 @@ __device__ __forceinline__ float wide(float value, int col, float* shared) {
 
 template<int CODEC, bool INVERSE>
 __device__ __forceinline__ float rotate_component(float value, int col, float* shared) {
-    static_assert((CODEC >= 1 && CODEC <= 6) || CODEC == 9 || CODEC == 10 || eight_bit(CODEC));
-    // Norm4 (6) and the eight-bit codecs share the signed Iso128 basis of codec 4.
-    if constexpr (CODEC == 6 || eight_bit(CODEC)) return rotate_component<4, INVERSE>(value, col, shared);
+    static_assert((CODEC >= 1 && CODEC <= 5) || CODEC == 9 || CODEC == 10 || eight_bit(CODEC));
+    if constexpr (eight_bit(CODEC)) return rotate_component<4, INVERSE>(value, col, shared);  // same signed basis
     // All CTA threads participate, col==threadIdx.x, blockDim.x is a multiple
     // of128 and shared has blockDim.x floats. There are no per-value barriers.
     if constexpr (CODEC == 1 || CODEC == 9) {
@@ -256,7 +255,7 @@ __device__ __forceinline__ Encoded encode_component(float value, int col, float*
     int code;
     if constexpr (eight_bit(CODEC)) code = index8(rotated);
     else code = index(rotated);
-    if constexpr (CODEC == 3 || CODEC == 5 || CODEC == 6 || CODEC == 8) {
+    if constexpr (CODEC == 3 || CODEC == 5 || CODEC == 8) {
         const float center = selected_centroid<CODEC>(code);
         const float coded_energy = reduce_group<false>(__fmul_rn(center, center), col, shared);
         scale = __fmul_rn(scale, __fsqrt_rn(__fdiv_rn(128.0f, coded_energy)));

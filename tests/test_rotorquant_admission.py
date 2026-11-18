@@ -18,7 +18,7 @@ from tests.test_cuda_capacity import HEAD, Loaded, checkpoint, fake_runtime, sma
 from tests.test_cuda_geometry import allocations  # noqa: F401
 from tests.test_cuda_growing_caches import weights
 
-ROTOR = tuple(item for item in kv_formats.FORMATS if item.rotor is not None and item.name not in kv_formats.SM70_ONLY)
+ROTOR = tuple(item for item in kv_formats.FORMATS if item.rotor is not None)
 NAMES = tuple(item.name for item in ROTOR)
 INCOMPATIBLE = tuple((name, peer) for name, peer in itertools.combinations(("int4", *NAMES), 2)
                      if kv_formats.get(name).bits == kv_formats.get(peer).bits)

@@ -3156,7 +3156,7 @@ def test_window_q8_receipt_distinguishes_actual_role_and_cold_dispatch_contract(
 
 @pytest.mark.parametrize('fault', ['closed', 'prefill', 'wrong-workspace', 'not-prepared', 'wrong-state',
                                   'state-count', 'family', 'owner-family', 'prepared-family', 'prepared-graph',
-                                  'graph', 'Q4', 'policy', 'module', 'path', 'callable'])
+                                  'graph', 'unowned-pair', 'policy', 'module', 'path', 'callable'])
 def test_cold_q8_receipt_refuses_unbound_or_inconsistent_metadata(fault):
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     engine, owner, record = _cold_q8_receipt_fixture()
@@ -3183,8 +3183,9 @@ def test_cold_q8_receipt_refuses_unbound_or_inconsistent_metadata(fault):
         engine._owner_preparation.specification['graph_family'] = 'captured'
     elif fault == 'graph':
         engine.multi.buf.owner_graph_family = 'captured'
-    elif fault == 'Q4':
-        owner.native_pair = get_pair('rotorquant-iso4-sm70-v1')
+    elif fault == 'unowned-pair':
+        # The owned writer serves ordinary Q8 and the owned RotorQuant formats; raw FP16 has no owned writer.
+        owner.native_pair = get_pair('fp16')
     elif fault == 'policy':
         record['owned_q8_preparation']['rows_per_call'] = 24
     elif fault == 'module':

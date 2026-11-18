@@ -270,10 +270,10 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
         int index_dim, double eps, double amplitude, int section1, int section2, int codec) {
     check_half(p); epsilon(eps);
     // codec 0: ordinary Q8 (int8 payload, FP16 H32 scales); 9/10: compact Planar4/Iso4
-    // (uint8 nibble payload, one four-byte metadata word per 128 values); 1..6: FP32-scale Q4 (nibbles,
+    // (uint8 nibble payload, one four-byte metadata word per 128 values); 1..5: FP32-scale Q4 (nibbles,
     // FP32 scale per 128 values); 8/12: eight-bit
     // RotorQuant (uint8 index payload, one FP32 scale per 128 values).
-    TORCH_CHECK((codec >= 0 && codec <= 6) || codec == 9 || codec == 10 || codec == 8 || codec == 12,
+    TORCH_CHECK((codec >= 0 && codec <= 5) || codec == 9 || codec == 10 || codec == 8 || codec == 12,
                 "owned preparation codec");
     const bool rotor = codec != 0, nibbles = rotor && codec != 8 && codec != 12;
     TORCH_CHECK(p.dim() == 2 && p.size(0) >= 1 && p.size(0) <= (WINDOW ? 256 : 1)
@@ -327,7 +327,7 @@ void owned_q8_prepare_rows(const T& p, const T& axes, const T& qw, const T& kw, 
         int index_heads, int index_dim, double eps, double amplitude, int section1, int section2, int codec) {
     check_half(p); epsilon(eps);
     // The descriptors' payload/metadata pointers carry the codec's owned State layout.
-    TORCH_CHECK((codec >= 0 && codec <= 6) || codec == 9 || codec == 10 || codec == 8 || codec == 12,
+    TORCH_CHECK((codec >= 0 && codec <= 5) || codec == 9 || codec == 10 || codec == 8 || codec == 12,
                 "owned preparation codec");
     TORCH_CHECK(p.dim() == 2 && p.size(0) >= 1 && p.size(0) <= 256
         && qheads == 3 && index_heads > 0 && index_heads <= 256

@@ -45,7 +45,7 @@ void controls(const T& owner, const O& position, const O& status, const O& live,
               int codec, int error, int layer) {
     const auto* prop = at::cuda::getDeviceProperties(owner.get_device());
     TORCH_CHECK(prop->major == 7 && prop->minor == 0, "RotorQuant FP16 native codec requires SM70");
-    TORCH_CHECK((codec >= 1 && codec <= 6) || codec == 9 || codec == 10 || codec == 8 || codec == 12,
+    TORCH_CHECK((codec >= 1 && codec <= 5) || codec == 9 || codec == 10 || codec == 8 || codec == 12,
                 "native codec requires a registered Q4 basis 1..5, compact Planar4 9 / Iso4 10, "
                 "or eight-bit signed Iso128 8 (norm8) / 12 (original RMS)");
     TORCH_CHECK(error == 1 || error == 2 || error == 4 || error == 8 || error == 16,

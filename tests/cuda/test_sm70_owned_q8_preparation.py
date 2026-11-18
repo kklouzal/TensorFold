@@ -428,8 +428,8 @@ def test_long_issued_axis_selection_uses_each_original_coordinate_without_text_p
 
 
 ROTOR = ('rotorquant-planar4-sm70-v1', 'rotorquant-iso4-sm70-v1', 'rotorquant-planar4', 'rotorquant-iso4',
-         'rotorquant-iso64-norm4', 'rotorquant-signed128-4', 'rotorquant-signed64-norm4', 'rotorquant-signed128-norm4',
-         'rotorquant8', 'rotorquant8-norm')
+         'rotorquant-iso64-norm4', 'rotorquant-signed128-4', 'rotorquant-signed64-norm4', 'rotorquant8',
+         'rotorquant8-norm')
 
 
 @pytest.mark.parametrize('kv', ROTOR)

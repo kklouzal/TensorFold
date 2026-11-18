@@ -332,11 +332,9 @@ class FlashNextEngine:
             graphs = False  # Whole-forward graph qualification is separate for this numerical profile.
         if position_profile_manifest is not None and not sm70:
             raise ValueError("position profile manifests require an explicit Flash Next SM70 provider")
-        from ..kv_formats import SM70_ONLY
-
-        compact_kv = any(side.name in SM70_ONLY for side in (self.kv_pair.key, self.kv_pair.value))
+        compact_kv = any(side.compact is not None for side in (self.kv_pair.key, self.kv_pair.value))
         if compact_kv and not sm70:
-            raise ValueError("compact Planar4/Iso4 and signed128-norm4 KV require the GGUF SM70 execution provider")
+            raise ValueError("compact Planar4/Iso4 KV requires the GGUF SM70 execution provider")
         if type(adaptive_sessions) is not bool or adaptive_sessions and not sm70:
             raise ValueError("automatic resident sessions require the GGUF SM70 provider")
         if session_ceiling is not None and (type(session_ceiling) is not int or session_ceiling < 1):
@@ -738,7 +736,7 @@ class FlashNextEngine:
         if (execution_profile_manifest is not None or nvfp4_source) and torch.cuda.get_device_capability() != (7, 0):
             raise ValueError("execution profile manifests require the actual SM70 V100 provider")
         if compact_kv and torch.cuda.get_device_capability() != (7, 0):
-            raise ValueError("compact Planar4/Iso4 and signed128-norm4 KV require an actual SM70 compute-capability 7.0 device")
+            raise ValueError("compact Planar4/Iso4 KV requires an actual SM70 compute-capability 7.0 device")
         if indexer_history == "ram" and torch.cuda.get_device_capability() != (7, 0):
             raise ValueError("RAM indexer history is supported by the GGUF SM70 CUDA provider only")
         self.tp, self.rank, self.depth, self.confidence = tp, rank, int(depth), float(confidence)

@@ -45,7 +45,7 @@ void values(const T& value, const T& owner, int rows, const char* name) {
 // Ordinary Q8 (8, 0) and the owned RotorQuant kernel codecs: eight-bit (8, 8/12) and four-bit (4, 1..5/9/10).
 void kv_format(int bits, int codec) {
     TORCH_CHECK((bits == 8 && (codec == 0 || codec == 8 || codec == 12))
-                || (bits == 4 && ((codec >= 1 && codec <= 6) || codec == 9 || codec == 10)),
+                || (bits == 4 && ((codec >= 1 && codec <= 5) || codec == 9 || codec == 10)),
                 "tensor-core prompt attention supports ordinary Q8 or an owned RotorQuant kernel codec");
 }
 

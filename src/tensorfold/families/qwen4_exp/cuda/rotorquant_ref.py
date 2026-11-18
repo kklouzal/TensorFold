@@ -369,9 +369,8 @@ def _variant_bits(bits: int, variant: str) -> int:
         return codec
     if bits in (7, 8) and codec != 4:
         raise ValueError("Seven/eight-bit RotorQuant needs signed-iso128 original RMS")
-    # Codec 6 (corrected signed-iso128) is registered at six bits and, for the SM70 owned path, four bits.
-    if codec == 7 and bits != 6 or codec == 6 and bits not in (4, 6):
-        raise ValueError("Corrected signed-iso128 RotorQuant needs six-bit (or, without outliers, four-bit) indices")
+    if codec in (6, 7) and bits != 6:
+        raise ValueError("Corrected signed-iso128 RotorQuant needs six-bit indices")
     if codec > 2 and bits != 4 and not (codec == 4 and bits in (6, 7, 8)) and not (codec in (6, 7) and bits == 6):
         raise ValueError("Wide RotorQuant needs four-bit indices, or six-bit signed-iso128")
     return codec

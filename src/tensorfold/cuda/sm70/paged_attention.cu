@@ -279,7 +279,7 @@ __global__ void merge_values_kernel(const float* gathered, const int64_t* table,
         value = tf_rq4::rotate_component<9, true>(value, col, rotated);
     } else if (codec == 10) {
         value = tf_rq4::rotate_component<10, true>(value, col, rotated);
-    } else if (codec == 4 || codec == 6 || tf_rq4::eight_bit(codec)) {
+    } else if (codec == 4 || tf_rq4::eight_bit(codec)) {
         value = tf_rq4::rotate_component<4, true>(value, col, rotated);  // signed Iso128 basis
     } else if (codec == 5) {
         value = tf_rq4::rotate_component<5, true>(value, col, rotated);
