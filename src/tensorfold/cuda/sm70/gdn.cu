@@ -35,12 +35,12 @@ __device__ __forceinline__ void chain_body(
     constexpr int PW = C + NV * DV + 2 * NV;          // projection row: qkv | z | b | a
     const int hv = blockIdx.x, hk = hv / (NV / NK);
     const int t = threadIdx.x, warp = t >> 5, lane = t & 31;
-    __shared__ float qs[DK], ks[DK], vs[DV], ys[DV];
-    __shared__ float gates[2], rinv;
-    int c = -1;
-    if (t < DK) c = hk * DK + t;
-    else if (t < 2 * DK) c = NK * DK + hk * DK + (t - DK);
-    else if (t < 2 * DK + DV) c = 2 * NK * DK + hv * DV + (t - 2 * DK);
+    // Rows are processed in tiles of RT. Only the state update and read-out are serial across rows; the
+    // convolution, q/k norms and gates (phase 1) and the gated RMSNorm output (phase 3) of every row in a tile
+    // run in parallel. Each value is computed by the same expression as the row-serial schedule (bitwise).
+    constexpr int RT = 8, CH = 2 * DK + DV;
+    __shared__ float qs[RT][DK], ks[RT][DK], vs[RT][DV], ys[RT][DV];
+    __shared__ float gates[RT][2], rinv[RT];
     float s[4][4];
     const size_t sbase = (size_t)hv * DV * DK;
 #pragma unroll
@@ -54,8 +54,12 @@ __device__ __forceinline__ void chain_body(
 #pragma unroll
             for (int i = 0; i < 4; ++i) state_out[sbase + (size_t)(warp * 4 + j) * DK + lane * 4 + i] = s[j][i];
     }
-    for (int r = 0; r < rows; ++r) {
-        if (c >= 0) {
+    for (int r0 = 0; r0 < rows; r0 += RT) {
+        const int nt = min(RT, rows - r0);
+        // Phase 1a: depthwise conv + SiLU of every (row, channel) in the tile.
+        for (int idx = t; idx < nt * CH; idx += blockDim.x) {
+            const int rr = idx / CH, j = idx - rr * CH, r = r0 + rr;
+            const int c = j < DK ? hk * DK + j : j < 2 * DK ? NK * DK + hk * DK + (j - DK) : 2 * NK * DK + hv * DV + (j - 2 * DK);
             float acc = 0.0f;
 #pragma unroll
             for (int tap = 0; tap < TAPS; ++tap) {
@@ -65,73 +69,83 @@ __device__ __forceinline__ void chain_body(
                 acc = acc + __half2float(cw[c * TAPS + tap]) * x;
             }
             const float act = bf(acc / (1.0f + expf(-acc)));
-            if (t < DK) qs[t] = act;
-            else if (t < 2 * DK) ks[t - DK] = act;
-            else vs[t - 2 * DK] = act;
+            if (j < DK) qs[rr][j] = act;
+            else if (j < 2 * DK) ks[rr][j - DK] = act;
+            else vs[rr][j - 2 * DK] = act;
         }
         __syncthreads();
-        if (warp < 2) {
-            float* x = warp == 0 ? qs : ks;
+        // Phase 1b: warp 2rr normalizes row rr's q, warp 2rr + 1 its k; warp 2RT + rr lane 0 its gates.
+        if (warp < 2 * nt) {
+            const int rr = warp >> 1;
+            float* x = (warp & 1) == 0 ? qs[rr] : ks[rr];
             float v4[4], ss = 0.0f;
 #pragma unroll
             for (int i = 0; i < 4; ++i) { v4[i] = x[lane * 4 + i]; ss = ss + v4[i] * v4[i]; }
             ss = warp_sum(ss);
             float inv = 1.0f / sqrtf(ss + 1e-6f);
-            if (warp == 0) inv = inv * (1.0f / sqrtf((float)DK));
+            if ((warp & 1) == 0) inv = inv * (1.0f / sqrtf((float)DK));
             __syncwarp();
 #pragma unroll
             for (int i = 0; i < 4; ++i) x[lane * 4 + i] = v4[i] * inv;
-        } else if (warp == 2 && lane == 0) {
+        } else if (warp >= 2 * RT && warp < 2 * RT + nt && lane == 0) {
+            const int rr = warp - 2 * RT, r = r0 + rr;
             const float b = __half2float(P[(size_t)r * PW + C + NV * DV + hv]);
             const float a = __half2float(P[(size_t)r * PW + C + NV * DV + NV + hv]);
             const float rate = NegativeDecay ? decay_parameter[hv] : -expf(decay_parameter[hv]);
-            gates[0] = expf(rate * softplusf_(a + dt_bias[hv]));
-            gates[1] = bf(sigmoidf_(b));
+            gates[rr][0] = expf(rate * softplusf_(a + dt_bias[hv]));
+            gates[rr][1] = bf(sigmoidf_(b));
         }
         __syncthreads();
-        const float g = gates[0], beta = gates[1];
-        float kk[4], qq[4];
+        // Phase 2: the serial recurrence (registers only; tile inputs are read-only, outputs disjoint per row).
+        for (int rr = 0; rr < nt; ++rr) {
+            const int r = r0 + rr;
+            const float g = gates[rr][0], beta = gates[rr][1];
+            float kk[4], qq[4];
 #pragma unroll
-        for (int i = 0; i < 4; ++i) { kk[i] = ks[lane * 4 + i]; qq[i] = qs[lane * 4 + i]; }
-        update(s, kk, vs, warp, g, beta);
+            for (int i = 0; i < 4; ++i) { kk[i] = ks[rr][lane * 4 + i]; qq[i] = qs[rr][lane * 4 + i]; }
+            update(s, kk, vs[rr], warp, g, beta);
 #pragma unroll
-        for (int j = 0; j < 4; ++j) {
-            float o = 0.0f;
+            for (int j = 0; j < 4; ++j) {
+                float o = 0.0f;
 #pragma unroll
-            for (int i = 0; i < 4; ++i) o = o + s[j][i] * qq[i];
-            o = warp_sum(o);
-            if (lane == 0) ys[warp * 4 + j] = bf(o);
-        }
-        // what a replay of this row needs
-        if (k_save != nullptr) {
-            if (t < DK && hv % (NV / NK) == 0) k_save[((size_t)r * NK + hk) * DK + t] = ks[t];
-            if (t < DV) v_save[((size_t)r * NV + hv) * DV + t] = __float2half_rn(vs[t]);
-            if (t == 0) { g_save[r * NV + hv] = g; b_save[r * NV + hv] = beta; }
+                for (int i = 0; i < 4; ++i) o = o + s[j][i] * qq[i];
+                o = warp_sum(o);
+                if (lane == 0) ys[rr][warp * 4 + j] = bf(o);
+            }
+            // what a replay of this row needs
+            if (k_save != nullptr) {
+                if (t < DK && hv % (NV / NK) == 0) k_save[((size_t)r * NK + hk) * DK + t] = ks[rr][t];
+                if (t < DV) v_save[((size_t)r * NV + hv) * DV + t] = __float2half_rn(vs[rr][t]);
+                if (t == 0) { g_save[r * NV + hv] = g; b_save[r * NV + hv] = beta; }
+            }
+            if (state_out != nullptr && r + 1 == live) {
+#pragma unroll
+                for (int j = 0; j < 4; ++j)
+#pragma unroll
+                    for (int i = 0; i < 4; ++i) state_out[sbase + (size_t)(warp * 4 + j) * DK + lane * 4 + i] = s[j][i];
+            }
         }
         __syncthreads();
-        if (warp == 0) {
+        // Phase 3: gated RMSNorm read-out, 128 threads per row (local warp lw = the row-serial schedule's warp).
+        const int rr = t / DV, tl = t - rr * DV, lw = tl >> 5;
+        if (rr < nt && lw == 0) {
             float ss = 0.0f;
 #pragma unroll
-            for (int i = 0; i < 4; ++i) { const float y = ys[lane * 4 + i]; ss = ss + y * y; }
+            for (int i = 0; i < 4; ++i) { const float y = ys[rr][lane * 4 + i]; ss = ss + y * y; }
             ss = warp_sum(ss);
-            if (lane == 0) rinv = 1.0f / sqrtf(ss / (float)DV + eps);
+            if (lane == 0) rinv[rr] = 1.0f / sqrtf(ss / (float)DV + eps);
         }
         __syncthreads();
-        if (t < DV) {
-            const float yn = bf(bf(ys[t] * rinv) * __half2float(norm_w[t]));
-            const float z = __half2float(P[(size_t)r * PW + C + hv * DV + t]);
+        if (rr < nt) {
+            const int r = r0 + rr;
+            const float yn = bf(bf(ys[rr][tl] * rinv[rr]) * __half2float(norm_w[tl]));
+            const float z = __half2float(P[(size_t)r * PW + C + hv * DV + tl]);
             const float o = bf(yn * sigmoidf_(z));
-            out[(size_t)r * NV * DV + hv * DV + t] = __float2half_rn(o);
+            out[(size_t)r * NV * DV + hv * DV + tl] = __float2half_rn(o);
             const float gs = warp_sum(o);
-            if (lane == 0) xs[(size_t)r * (NV * DV / 32) + hv * (DV / 32) + warp] = gs;
+            if (lane == 0) xs[(size_t)r * (NV * DV / 32) + hv * (DV / 32) + lw] = gs;
         }
         __syncthreads();
-        if (state_out != nullptr && r + 1 == live) {
-#pragma unroll
-            for (int j = 0; j < 4; ++j)
-#pragma unroll
-                for (int i = 0; i < 4; ++i) state_out[sbase + (size_t)(warp * 4 + j) * DK + lane * 4 + i] = s[j][i];
-        }
     }
 }
 
