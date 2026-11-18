@@ -186,3 +186,24 @@ def test_paged_family_fp32_scale_rotor_matches_fp64_attention_over_decoded_opera
         actual = torch.cat([out[rank][row].double() for rank in range(PEERS)])
         error = (actual - expected).abs().max().item()
         assert error <= 2e-3 * expected.abs().max().item() + 1e-3, (row, error)
+
+
+@torch.no_grad()
+def test_h64_metadata_word_packs_the_low_half_scale_in_its_low_bits():
+    # Codec 11: one 4-byte word per 128 values holds two FP16 corrected scales, values 0..63 in bits 0..15.
+    gen = torch.Generator(device='cuda').manual_seed(11)
+    x = torch.randn((4, 1, 256), device='cuda', generator=gen)
+    x[..., 64:128] *= 64          # each group's high half is much larger than its low half
+    x[..., 192:256] *= 64
+    x[1, 0, :64] = 0              # an all-zero half keeps a zero scale
+    x = x.half()
+    codes = torch.zeros((4, 1, 128), dtype=torch.uint8, device='cuda')
+    scales = torch.zeros((4, 1, 2), dtype=torch.float32, device='cuda')
+    codec_native.encode(x, codes, scales, codec=11, position=torch.tensor([0], dtype=torch.int64, device='cuda'))
+    halves = scales.view(torch.int32).view(torch.int16).view(torch.float16).float().view(4, 1, 2, 2)
+    low, high = halves[..., 0], halves[..., 1]
+    assert bool((high > 16 * low).all())
+    assert float(low[1, 0, 0]) == 0.0 and float(high[1, 0, 0]) > 0
+    out = torch.empty((4, 1, 256), dtype=torch.float16, device='cuda')
+    codec_native.decode(codes, scales, out, codec=11)
+    assert float(out[1, 0, :64].abs().max()) == 0.0   # decoded in the stored basis: the zero half stays zero

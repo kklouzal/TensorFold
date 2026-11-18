@@ -194,5 +194,7 @@ def test_other_rotor_variants_or_equal_width_impostors_remain_rejected(bits, sel
     case = fixture()
     case.args[21] = bits
     case.args[-2] = selected_codec
-    with pytest.raises(RuntimeError, match="CODEC4-or-5"):
+    # The legacy preparation admits only raw/INT8 and CODEC4/5/9/10 Q4 sides (e947b995 added 9/10 and reworded
+    # the refusal); owned-only RotorQuant codecs (1..3, 6, eight-bit) stay refused here.
+    with pytest.raises(RuntimeError, match=r"requires raw/int8/CODEC4/5/9/10 Q4 sides"):
         invoke(case)

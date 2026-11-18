@@ -1052,6 +1052,14 @@ def unpack_ref(payload, bits: int = 4):
     return codes.reshape(*payload.shape[:-1], payload.shape[-1] * 8 // bits)
 
 
+def _native_only(variant: str) -> None:
+    """Iso64-norm H64 (codec 11) groups its norm and FP16 scales per 64 values and packs two scales per word;
+    this per-128 FP32-RMS reference does not implement that layout, so it refuses rather than encode or decode
+    the format wrongly. Its codec is the native SM70 kernel (rotorquant_q4.cuh)."""
+    if variant_id(variant) == 11:
+        raise ValueError("iso64-norm-h64 has no Torch reference codec; use the native SM70 RotorQuant kernel")
+
+
 def quantize_ref(x, bits: int = 4, variant: str = "planar"):
     """Finite floating (...,128*k) input -> uint8 packed indices, original FP32 RMS.
 
@@ -1064,6 +1072,7 @@ def quantize_ref(x, bits: int = 4, variant: str = "planar"):
 
     bits = _bits(bits)
     _variant_bits(bits, variant)
+    _native_only(variant)
     _width(x.shape[-1])
     if x.dtype not in (torch.float16, torch.bfloat16, torch.float32):
         raise ValueError("RotorQuant source values must have a supported floating dtype: FP16, BF16 or FP32")
@@ -1109,6 +1118,7 @@ def dequant_ref(payload, rms, bits: int = 4, variant: str = "planar", *, inverse
 
     bits = _bits(bits)
     _variant_bits(bits, variant)
+    _native_only(variant)
     codes = unpack_ref(payload, bits)
     expected = (*codes.shape[:-1], codes.shape[-1] // GROUP)
     if tuple(rms.shape) != expected or rms.dtype != torch.float32 or rms.device != payload.device:
