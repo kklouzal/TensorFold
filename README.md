@@ -2203,6 +2203,30 @@ The two candidate sessions ran after the four reference and first-candidate
 sessions, not interleaved; the two reference sessions, first and fourth in that
 order, agree within 0.5%.
 
+**Prompt-sized MoE experts: staged IQ decode and vector publication (2026-11-18, bitwise).**
+Owned SC117 expert calls above `DECODE_MAX_ROWS` rows were bound by per-CTA serialized
+weight-decode latency, not bandwidth (about 67 GB/s at 1,024 rows) or tensor-core work: each
+of the gate/up kernel's 40 K-steps waited on its own packed-byte and codebook loads. Three
+changes in `gguf_ops.cu`, all producing the same bits:
+- the prefill gate/up and down kernels are instantiated per admitted kind (gate/up IQ3_XXS,
+  IQ3_S, IQ2_S, IQ4_XS; down IQ4_NL, Q2_0) via `decode8_fixed<Kind>`, with the runtime switch
+  kept for other kinds;
+- for word-aligned gate/up banks (offset 0), the CTA's 64 packed rows of each 256-column
+  block are copied to shared memory with word loads issued one block (4 K-steps) ahead, then
+  decoded from there by the same `decode8_block` expressions; the FP16 tiles and MMA order
+  are unchanged;
+- prompt-sized calls publish shared/foreign/invalid slots with `publish_owned8` (8 outputs
+  per thread, 16-byte stores, int32 indices) instead of one element per 64-bit-indexed thread.
+
+On real SC117 banks (one rank, 256 resident experts, random top-10 + shared, FP16 output,
+one layer per kind combination weighted by the model's 48-layer mix; `pf3/tools/h/moe_pf.py`):
+1,024 rows 1,992 → 1,495 us per layer (gate/up 1,056 → 829, publication 206 → 61), with output
+and activation hashes equal to the previous kernels at 96, 256 and 1,024 rows. Not adopted:
+64-row down spans (down 573 → 640 us), register-prefetched down slices (no gain), and a
+second step of activation prefetch in gate/up (no gain). One fast pair on 8x V100 TP8/ETP4
+(base `4bc07085`, `fb-base-t1f4e957b4063-prod` vs `fb-pf3-g2p`): prefill +5.3% geomean
+(trimmed +5.2%, every cell +4.9 to +5.8%), decode +2.3% (worst cell -0.5%); golden-vg2 identical.
+
 **GGUF n-gram (PLE) rows decoded on the GPU (2026-11-18).** The SC117 GGUF n-gram
 table is IQ4_NL. The host used to decode each round's gathered rows with NumPy and cast
 them to FP16 (0.14/0.87/2.55 ms per rank at 5/40/120 rows). It now only gathers the
