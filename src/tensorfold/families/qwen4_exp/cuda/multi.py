@@ -2596,14 +2596,10 @@ class MultiDecoder:
         if not half:
             for s, rows in zip(live, gdn_multi.keep(tables, [len(path) for path, _ in paths])):
                 self.held[s.sid] = rows                  # the next round's trees fold these rows in first
-        kept = []
+        kept, commits = [], []
         for s, (_, tokens), (st, a0, a1), rows, (path, end), (count, terminal), new in zip(
                 live, windows, segs, sampled, paths, boundaries, proposed):
-            if path:
-                commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False,
-                       **({"commit_dflash": False} if dflash is not None else {}))
-            else:
-                st.discard_target_tentative()
+            commits.append((st, a0, a1 - a0, len(path)))
             s.committed.extend(tokens[:len(path)])
             s.counted(len(tokens))
             new = new[:count]
@@ -2614,7 +2610,19 @@ class MultiDecoder:
                     s.error = exc
             last = terminal or s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
             kept.append((s, a0, rows[:len(path)], new, last))
+
+        def commit_all(inflight=False):
+            """Every State's accepted prefix; ``inflight``: while the MTP refresh runs (``State.kv_check``)."""
+            for st, a0, rows, accepted in commits:
+                if accepted:
+                    commit(self.w, st, self.buf, rows, accepted, at=a0, states=False,
+                           **({"commit_dflash": False} if dflash is not None else {}),
+                           **({"inflight": True} if inflight else {}))
+                else:
+                    st.discard_target_tentative()
+
         if dflash is not None:
+            commit_all()
             # Resolve every accepted target/feature prefix before publishing
             # any output, including a warm zero-proposal operation.
             self._commit_dflash([(s.st, len(path)) for s, (path, _end) in zip(live, paths) if path],
@@ -2625,7 +2633,7 @@ class MultiDecoder:
         else:
             self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if keep and s.draft and not last],
                             {s.sid: fresh for s, _, _, fresh, last in kept
-                             if getattr(s, "copies", None) is not None and not last})
+                             if getattr(s, "copies", None) is not None and not last}, commits=commit_all)
         for (s, _, _, new, _), (_count, terminal) in zip(kept, boundaries):
             if s.error is not None:
                 s.done = True
@@ -2725,13 +2733,25 @@ class MultiDecoder:
             self.controller.work_observations.dflash_conditioning(sum(rows for _state, rows in accepted),
                 prefill=prefill, zero_proposal_rows=zero_proposal_rows)
 
-    def _draft_all(self, streams: list, new: dict | None = None) -> None:
+    def _draft_all(self, streams: list, new: dict | None = None, commits=None) -> None:
         """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth.
         A stream whose context repeats earlier text drafts that continuation instead of an MTP row. A step's codec
-        status words are read back in the next draft readback (``KVWords``); its MTP entries count once they are."""
+        status words are read back in the next draft readback (``KVWords``); its MTP entries count once they are.
+
+        ``commits(inflight=False)``: the round's target commits, run exactly once. Under TP they run while the MTP
+        refresh executes (before its status wait): the refresh reads only the verify outputs and MTP State, and each
+        compact commit touches only its own role's entries. Otherwise they run before any drafting."""
+
+        pending = [commits]
+
+        def settle_commits(inflight=False):
+            run, pending[0] = pending[0], None
+            if run is not None:
+                run(inflight=True) if inflight else run()
 
         provider = getattr(self.w, "dspark", None)
         if provider is not None:
+            settle_commits()
             for s, _at, keep in streams:
                 s.drafts = []
                 count = self._proposal_count(s, s.count - len(s.out) - len(keep))
@@ -2754,6 +2774,10 @@ class MultiDecoder:
         bound = getattr(getattr(self, "graphs", None), "bound", None)
         handoff = getattr(bound, "greedy", None)
         room = {s.sid: self._proposal_count(s, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
+        todo = [(s, a0, keep) for s, a0, keep in streams if self.mbuf is not None]
+        if commits is not None and (self.w.comm is None or handoff is not None or not todo or any(
+                getattr(s.st, "indexer_history_owner", None) is not None for s, _, _ in todo)):
+            settle_commits()
         if (handoff is not None and self._proposal_limit() == self.depth
                 and all(count == self.depth for count in room.values()) and handoff.try_draft(streams, new)):
             return
@@ -2762,7 +2786,6 @@ class MultiDecoder:
             s.drafts = []
         # A zero-proposal step still maintains the selected MTP capability.
         # Otherwise resuming proposals would read stale conditioning history.
-        todo = [(s, a0, keep) for s, a0, keep in streams if self.mbuf is not None]
         if not todo:
             return
         # As in the verify frame, a batched refresh without its exact captured
@@ -2831,11 +2854,17 @@ class MultiDecoder:
             if prestaged is not None and prestaged[2] is not None:
                 raise prestaged[2]
 
-        if proposing:
-            logits = self._mtp(segs, pick=greedy, before_wait=prestage(
-                [(s, a0 + len(keep) - 1, len(keep)) for (s, _, keep), (_, a0, _) in zip(todo, segs) if room[s.sid] > 1]))
-        else:
-            logits = self._mtp(segs, logits=False)
+        early = prestage([(s, a0 + len(keep) - 1, len(keep))
+                          for (s, _, keep), (_, a0, _) in zip(todo, segs) if room[s.sid] > 1]) if proposing else None
+
+        def refresh_running():
+            settle_commits(inflight=True)
+            if early is not None:
+                early()
+
+        hook = {} if pending[0] is None and early is None else {"before_wait": refresh_running}
+        logits = self._mtp(segs, pick=greedy, **hook) if proposing else self._mtp(segs, logits=False, **hook)
+        settle_commits()                                 # the refresh ran no hook (no logits): commits follow it
         if self.controller is not None:
             self.controller.work_observations.mtp(
                 segs, role="refresh", zero_proposal_rows=sum(end - begin for (stream, _, _), (_, begin, end)

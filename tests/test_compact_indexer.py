@@ -739,3 +739,25 @@ def test_retain_waits_for_and_retires_the_shared_role_on_the_current_stream(monk
     monkeypatch.setattr(stage, "mark", lambda *, mtp: calls.append(("mark", mtp)))
     stage.retain(mtp=True)
     assert calls == [("wait", True), ("mark", True)]
+
+
+def test_role_commits_leave_the_other_roles_frontier_alone():
+    """set_pos commits target entries only; set_mtp_len the MTP entry only (an MTP step in flight)."""
+    raw, coords = history()
+    placement = NS(target_layers=2, indexer_owner=lambda slot, ordinal, include_mtp: 0)
+    indexer = CompactIndexer(placement, 0, 0, 128, 3, 128, "cpu", torch.zeros(2, dtype=torch.int64),
+                             torch.tensor([0, -2], dtype=torch.int32), proposal_rows=8, layer_ids=[0, 1, 2])
+    target, mtp = Staging(8, 3, "cpu", mtp=True), Staging(8, 3, "cpu", mtp=True)
+    target.begin(mtp=False)
+    for ordinal in range(2):
+        indexer.append(ordinal, 0, raw[:3], coords[:3], target, 0, 3, mtp=False, expected=(0, 0))
+    mtp.begin(mtp=True)
+    indexer.append(2, 0, raw[10:15], coords[10:15], mtp, 0, 5, mtp=True, expected=(0, 0))
+    entry = indexer.entries[2]
+    entry.publish_commit(entry.prepare_commit(5, (0, 0)), 5, (0, 0))  # a padded refresh counts at once
+    assert indexer.commit(3, 0, (0, 0), mtp=False)                    # target commit at the old mtp_len
+    assert entry.n == 5 and entry.span.resolved == 5                  # not rolled back to 0
+    assert [indexer.entries[i].n for i in range(2)] == [3, 3]
+    assert indexer.commit(0, 2, (0, 0), target=False)                 # the refresh keeps 2 of its 5 rows
+    assert entry.n == 2 and [indexer.entries[i].n for i in range(2)] == [3, 3]
+    assert torch.equal(entry.raw, expected_tail(raw[10:], coords[10:], 2)[0])

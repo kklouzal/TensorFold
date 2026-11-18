@@ -560,13 +560,18 @@ class State:
             return
         self._kv_pending = True
 
-    def kv_check(self) -> None:
+    def kv_check(self, *, inflight: bool = False) -> None:
         """Validate pending writes before publication, outside CUDA graph capture.
 
         A successful check consumes one two-word readback; subsequent checks
         without new GPU writes do not synchronize. Numeric failures require
         ``reset``; an ambiguous migration requires exclusive retirement and
         cannot be cleared by reset. CUDA/runtime failures propagate unchanged.
+
+        ``inflight``: the caller latched this State's status after its last
+        target write, and the pending writes belong to an MTP step still in
+        flight whose own status check follows (and also reads anything issued
+        now). Latched failures still raise; no readback waits on that step.
         """
 
         error = (getattr(self, "_history_error", None) or
@@ -580,7 +585,7 @@ class State:
         if getattr(self, "indexer_history_owner", None) is not None:
             self.indexer_history_owner.check()
         status = self.kv_status
-        if status is None:
+        if status is None or inflight:
             return
         if not self._kv_pending:
             return
@@ -655,12 +660,13 @@ class State:
         elif "dflash2" in snap:
             raise ValueError("DFlash2 snapshot cannot be restored into another speculative profile")
 
-    def set_pos(self, pos: int) -> None:
-        self.kv_check()
+    def set_pos(self, pos: int, *, inflight: bool = False) -> None:
+        """``inflight``: as ``kv_check``'s (an MTP step of this State runs; the target commit touches no MTP entry)."""
+        self.kv_check(inflight=inflight)
         if type(pos) is not int or not 0 <= pos <= min(self.capacity, self.logical_context):
             raise ValueError("target position exceeds the State's logical context")
         if self.compact_indexer is not None:
-            self._compact_commit(pos, self.mtp_len)
+            self._compact_commit(pos, self.mtp_len, mtp=False)
         if getattr(self, "indexer_history_owner", None) is not None:
             self._indexer_commit(pos, self.mtp_len)
         self.pos = pos
@@ -693,9 +699,10 @@ class State:
             self._kv_error = error
             raise
 
-    def _compact_commit(self, pos, mtp_len):
+    def _compact_commit(self, pos, mtp_len, *, target=True, mtp=True):
         try:
-            if self.compact_indexer.commit(pos, mtp_len, (self.slot_generation, self.history_generation)):
+            if self.compact_indexer.commit(pos, mtp_len, (self.slot_generation, self.history_generation),
+                                           target=target, mtp=mtp):
                 self._kv_pending = True
         except BaseException as error:
             self._kv_error = error
@@ -1189,7 +1196,7 @@ class State:
         if type(n) is not int or not 0 <= n <= min(self.capacity, self.logical_context):
             raise ValueError("MTP position exceeds the State's logical context")
         if self.compact_indexer is not None:
-            self._compact_commit(self.pos, n)
+            self._compact_commit(self.pos, n, target=False)
         if getattr(self, "indexer_history_owner", None) is not None:
             self._indexer_commit(self.pos, n)
         self.mtp_len = n

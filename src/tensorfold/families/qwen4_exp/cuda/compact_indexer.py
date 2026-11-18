@@ -1078,14 +1078,18 @@ class CompactIndexer:
             raise ValueError("compact cache frontiers must be integer rows within the selected allowance")
         return (pos,) * self.placement.target_layers + ((mtp_len,) if self.caches > self.placement.target_layers else ())
 
-    def commit(self, pos, mtp_len, expected):
+    def commit(self, pos, mtp_len, expected, *, target=True, mtp=True):
+        """Commit the selected roles' entries (``target``: every attention layer's at ``pos``; ``mtp``: the MTP
+        head's at ``mtp_len``). A State moves one frontier at a time, so each commit touches only its role and an
+        MTP step in flight never sees a target commit (or the reverse) roll its entry back."""
         self._wait_transfer()
         lengths = self.lengths(pos, mtp_len)
-        plans = [None if entry is None else entry.prepare_commit(length, expected)
-                 for entry, length in zip(self.entries, lengths)]
-        for entry, length, plan in zip(self.entries, lengths, plans):
-            if entry is not None:
-                entry.publish_commit(plan, length, expected)
+        split = self.placement.target_layers
+        selected = [(entry, length) for ordinal, (entry, length) in enumerate(zip(self.entries, lengths))
+                    if entry is not None and (target if ordinal < split else mtp)]
+        plans = [entry.prepare_commit(length, expected) for entry, length in selected]
+        for (entry, length), plan in zip(selected, plans):
+            entry.publish_commit(plan, length, expected)
         return any(plan is not None for plan in plans)
 
     def discard_target(self):

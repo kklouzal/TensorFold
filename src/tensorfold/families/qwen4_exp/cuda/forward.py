@@ -1259,15 +1259,16 @@ def shift_windows(old: torch.Tensor, new: torch.Tensor, keep: int, channels: int
 
 @torch.no_grad()
 def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, states: bool = True,
-           *, commit_dflash: bool = True) -> None:
+           *, commit_dflash: bool = True, inflight: bool = False) -> None:
     """Keep the accepted prefix; states=False means gdn_multi committed recurrence.
 
     commit_dflash=False leaves the bounded feature lease for the coordinator's
     commit_many; it must resolve that lease before reusing buffers or proposing.
+    ``inflight``: issued while this State's MTP refresh runs (``State.kv_check``).
     """
 
     try:
-        st.kv_check()
+        st.kv_check(inflight=inflight)
         if b.h.dtype == torch.float16:
             states = True  # FP16 recurrence owns per-segment state, rather than pending pointer-table folds.
         c = w.cfg
@@ -1296,7 +1297,7 @@ def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, st
             st.ple_last = None
             tail = st.ple_tail
             shift_windows(tail[None], b.ple_nrow[None, at:at + R], keep, tail.shape[1], family=getattr(b, "native_family", None))
-        st.set_pos(st.pos + keep)
+        st.set_pos(st.pos + keep, inflight=inflight)
         if getattr(w, "dspark", None) is not None:
             w.dspark.commit(st, keep)
         if commit_dflash and getattr(w, "dflash2", None) is not None:
