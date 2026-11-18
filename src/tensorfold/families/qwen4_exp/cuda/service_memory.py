@@ -9,17 +9,37 @@ device storage and imports no accelerator runtime.
 
 RAM_GRAPH_ADMISSION_VERSION = "observed-graph-admission-v1"
 FULL_GRAPH_HEADROOM_POLICY = 'full-window-physical-headroom-v1'
+MIXED_SESSION_POLICY = 'mixed-window-worst-rank-v1'
+
+
+def mixed_slot_capacities(receipt, slots):
+    """The admitted per-slot resident capacities of a mixed-window session receipt, or None (uniform)."""
+    session = receipt.get('session_capacity', {})
+    if session.get('policy') != MIXED_SESSION_POLICY:
+        return None
+    capacities, full = session.get('slot_capacities'), session.get('full_context_commitments')
+    short = session.get('short_windows', {})
+    if (type(slots) is not int or not isinstance(capacities, list) or len(capacities) != slots
+            or type(full) is not int or not 1 <= full < slots or session.get('resident_capacity') != slots
+            or any(type(n) is not int or n < 1 for n in capacities)
+            or capacities != [receipt.get('cache_slots')] * full + [short.get('cache_slots')] * (slots - full)
+            or type(short.get('cache_slots')) is not int or not 0 < short['cache_slots'] < capacities[0]):
+        raise ValueError('mixed-window session receipt differs from its admitted full/short slot capacities')
+    return capacities
 
 
 def full_window_headroom_required(receipt, *, key_bits, value_bits, slots, full_windows, physical_capacity):
     """The user's complete advertised-context Q8/Q4 resident region only."""
     required = 24 if (key_bits, value_bits) == (8, 8) else 32 if (key_bits, value_bits) == (4, 4) else None
     session = receipt.get('session_capacity', {})
+    # Mixed windows (user decision 2026-11-17): every slot is resident at its
+    # own admitted limit; the slot count still meets the Q8/Q4 lane target.
+    mixed = mixed_slot_capacities(receipt, slots) is not None
     return (required is not None and type(slots) is int and slots >= required
             and type(full_windows) is int and full_windows >= slots
             and receipt.get('native_window') == receipt.get('context_window') == 262144
             and session.get('context_tokens') == 262144
-            and session.get('full_context_commitments') == session.get('resident_capacity') == slots
+            and (mixed or session.get('full_context_commitments') == session.get('resident_capacity') == slots)
             and type(physical_capacity) is int and physical_capacity >= receipt.get('cache_slots', physical_capacity + 1))
 
 
@@ -114,11 +134,13 @@ def materialized_graph_room(states, capacity, live_bytes, promise, future, *, gp
     ``live_bytes`` is the existing physical-only reader after its device floor
     and absolute cap. No allocator/private-pool reclaim credit is introduced.
     """
+    limits = [capacity] * len(states) if type(capacity) is int else list(capacity)
     if (type(gpu_history) is not bool or type(live_bytes) is not int or live_bytes < 0 or not states
+            or len(limits) != len(states)
             or promise["growth_bytes"] != 0 or promise["full_windows_reserved"] != len(states)
-            or any(st.capacity != capacity or st.limit != capacity
+            or any(st.capacity != limit or st.limit != limit
                    or not gpu_history and (getattr(st, "indexer_history_owner", None) is None
-                       or st.indexer_history_owner.limit != capacity) for st in states)):
+                       or st.indexer_history_owner.limit != limit) for st, limit in zip(states, limits))):
         raise ValueError("observed graph credit requires every full RAM window materialized with zero future growth")
     fields = ("growth_bytes", "copy_overlap_bytes", "snapshot_bytes", "workspace_bytes", "future_bytes")
     if (any(type(future.get(key)) is not int or future[key] < 0 for key in fields)

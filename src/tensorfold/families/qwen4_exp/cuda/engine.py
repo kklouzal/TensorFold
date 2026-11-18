@@ -78,7 +78,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _owned_expert_gate_up=None, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=(), _owned_qualification_device: tuple=()) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, kv_short_window: int | str | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _owned_expert_gate_up=None, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=(), _owned_qualification_device: tuple=()) -> None:
         if type(_owned_expert_native) is not bool:
             raise ValueError("private owned expert selection must be a literal boolean")
         if (type(_owned_qualification_host) is not tuple or _owned_qualification_host and (not _owned_expert_native
@@ -165,7 +165,7 @@ class FlashNextEngine:
 
         with startup_failure_context(rank) as diagnostic:
             try:
-                self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest, media_profile_manifest=media_profile_manifest, max_waiting_input_bytes=max_waiting_input_bytes, max_waiting_input_bytes_per_principal=max_waiting_input_bytes_per_principal, output_queue_tokens=output_queue_tokens, queue_timeout_s=queue_timeout_s, retention_policy=retention_policy, expert_tensor_parallel_size=expert_tensor_parallel_size)
+                self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, kv_short_window=kv_short_window, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest, media_profile_manifest=media_profile_manifest, max_waiting_input_bytes=max_waiting_input_bytes, max_waiting_input_bytes_per_principal=max_waiting_input_bytes_per_principal, output_queue_tokens=output_queue_tokens, queue_timeout_s=queue_timeout_s, retention_policy=retention_policy, expert_tensor_parallel_size=expert_tensor_parallel_size)
                 if serving_profile_root is not None:
                     from .serving_runtime import ServingProfiles
 
@@ -233,7 +233,7 @@ class FlashNextEngine:
                  yarn_factor: float | None = None, vram_experts: float | str | None = None,
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None,
                  kv_full_windows: int | None = None, expert_session=None, vram_experts_pin: str="off",
-                 eos_token_ids=None, chat_template_file=None, chat_template_name=None,
+                 kv_short_window: int | str | None = None, eos_token_ids=None, chat_template_file=None, chat_template_name=None,
                  mtp_model_dir: Path | None = None, dspark_model_dir: Path | None = None,
                  dflash2_model_dir: Path | None = None,
                  indexer_history: str = "gpu", adaptive_sessions: bool = False,
@@ -347,10 +347,20 @@ class FlashNextEngine:
         self.adaptive_sessions = adaptive_sessions
         if indexer_history == "ram" and not sm70:
             raise ValueError("RAM indexer history requires the GGUF SM70 execution provider")
+        # Mixed resident windows (K full + N-K short): an explicit slot count above
+        # the full-window count under automatic resident sessions.
+        mixed_windows = bool(adaptive_sessions and type(kv_full_windows) is int and type(session_ceiling) is int
+                             and session_ceiling > kv_full_windows)
+        if kv_short_window is not None and (not mixed_windows or kv_short_window != "auto"
+                                            and (type(kv_short_window) is not int or kv_short_window < 1)):
+            raise ValueError("--kv-short-window (auto or a positive token count) requires resident GGUF GPU histories "
+                             "with --parallel N above --kv-full-windows K")
+        self.kv_short_window = None if kv_short_window == "auto" else kv_short_window
+        self.mixed_windows = None
         if not adaptive_sessions:
             check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp,
                                   resident_gguf=sm70)
-        elif kv_full_windows is not None:
+        elif kv_full_windows is not None and not mixed_windows:
             session_ceiling = min(session_ceiling, kv_full_windows) if session_ceiling is not None else kv_full_windows
         resident_windows = kv_full_windows if sm70 and vram_experts is None else None
         if mtp_model_dir is not None and not sm70:
@@ -524,6 +534,10 @@ class FlashNextEngine:
                 print("[tensorfold] CUDA graphs off: unique history owner execution requires live row bounds", flush=True)
                 graphs = False
         self._history_placement = history_placement
+        if mixed_windows and (history_placement is None or retention_policy is not None or vision or media_requested
+                              or dspark_model_dir is not None or dflash2_model_dir is not None):
+            raise ValueError("mixed full/short resident windows require unique TP8 GPU histories, text-only serving, "
+                             "no retention policy and the MTP or no-draft method")
         implemented_admission = history_placement is not None and self.position_profile is not None
         if not implemented_admission:
             if (max_waiting_input_bytes is not None or max_waiting_input_bytes_per_principal is not None
@@ -958,6 +972,13 @@ class FlashNextEngine:
 
             hc_graphs = GGUFDense.implementation == GGUFConcat.implementation == "reference"
         graph_request = multi_graph_request() if concurrent and (graphs or hc_graphs) else 0
+        if mixed_windows and self.kv_short_window is None and graph_request is None:
+            # The automatic captured-round pool is measured only after the
+            # windows are materialized; the largest fitting short window would
+            # take it (V100 2026-11-18: 8 x 261,120 left 0.9 GiB for a ~4.5 GiB
+            # catalogue). Select the short window explicitly instead.
+            raise ValueError("--kv-short-window auto cannot charge the automatic captured-round pool; "
+                             "set --kv-short-window TOKENS (or an explicit TENSORFOLD_MULTI_GRAPH_MIB)")
         self._local_hc_readout_requested = bool(hc_graphs and graph_request != 0)
         self._graph_request = graph_request
         graph_bytes = (graph_request or 0) if vram_experts is None else 0
@@ -1057,12 +1078,14 @@ class FlashNextEngine:
                     workers=signature(ReadAhead).parameters["threads"].default, alignment=ALIGN)
         # captured rounds: bounded and planned; experts read through a host cache (--vram-experts) decline capture
         # (multi_graphs.capturable), so they plan none (the decoder's budget is checked against this after loading)
-        def target_geometry(text, count=streams):
+        def target_geometry(text, count=streams, short=None):
             if concurrent:
                 return indexed_stream_geometry(text, count, each, KEEP, mtp=mtp, points=POINTS,
                     kv_pair=kv_geometry, graph_bytes=graph_bytes, prefill_rows=rows0,
                     kv_status=kv_status, world=tp, gdn_pointer_fields=8 if native_gdn_batch else 2,
-                    full_windows=count if adaptive_sessions else resident_windows,
+                    full_windows=(kv_full_windows if short is not None else count) if adaptive_sessions
+                                 else resident_windows,
+                    **({"short_slots": short} if short is not None else {}),
                     workspace_bytes=2 * 2**30 if adaptive_sessions or resident_windows is not None else 0,
                     **({"execution_rows": row_envelope(count)} if adaptive_sessions or execution_rows is not None else {}),
                     device_metadata_only=adaptive_sessions,
@@ -1090,13 +1113,13 @@ class FlashNextEngine:
 
         geometry = target_geometry
         if sm70:
-            def sm70_geometry(text, count=streams):
+            def sm70_geometry(text, count=streams, short=None):
                 # Two global KV heads remain one local head per TP8 rank,
                 # replicated across groups of four. The original metadata is
                 # unchanged; this copy is solely the per-rank allocation plan.
                 local = dict(text)
                 local["num_key_value_heads"] = max(tp, int(text["num_key_value_heads"]))
-                base = target_geometry(local, count)
+                base = target_geometry(local, count, short)
                 from tensorfold.cuda.sm70 import family_ops
                 from . import padded_linears
 
@@ -1390,8 +1413,10 @@ class FlashNextEngine:
             from tensorfold.cuda.capacity import Geometry
             from .kv_status import workspace_bytes as status_workspace
 
-            def session_geometry(text, count):
-                base = sm70_geometry(text, count)
+            def session_geometry(text, count, short=None):
+                if short is not None and not mixed_windows:
+                    raise ValueError("short resident windows require the mixed-window session request")
+                base = sm70_geometry(text, count, short)
                 media_extra = 0
                 if media_requested and mtp and self.position_profile is not None:
                     from .media_mtp import boundary_resources
@@ -1487,7 +1512,8 @@ class FlashNextEngine:
             if dspark_plan is not None and dspark_graph_host:
                 host_capacity["host_workspace_bytes"] -= dspark_graph_host
             adaptive_capacity = {"session_geometry": session_geometry, "session_ceiling": session_ceiling,
-                                 "session_host_workspace": session_host_workspace}
+                                 "session_host_workspace": session_host_workspace,
+                                 **({"session_short": (kv_full_windows, self.kv_short_window)} if mixed_windows else {})}
         if retention_header is not None:
             host_capacity["host_workspace_bytes"] = (
                 host_capacity.get("host_workspace_bytes", 0) + retention_header.global_host_bytes)
@@ -1571,6 +1597,27 @@ class FlashNextEngine:
                     'initial_admission': 'actual physical free/remaining absolute grant; no unused4GiB reservation'}
             if hc_graphs and resolved_streams < streams:
                 raise MemoryError("HC graph reservation cannot reduce the requested full-resident State envelope")
+            if mixed_windows:
+                from .service_memory import mixed_slot_capacities
+
+                capacities = mixed_slot_capacities(self.capacity_plan, session_ceiling)
+                if capacities is None or resolved_streams != session_ceiling:
+                    raise MemoryError("mixed-window admission did not retain every requested full and short slot")
+                session = self.capacity_plan["session_capacity"]
+                self.mixed_windows = {"policy": "mixed-resident-windows-v1", "full_windows": kv_full_windows,
+                    "short_windows": resolved_streams - kv_full_windows,
+                    "short_context_tokens": session["short_windows"]["context_tokens"],
+                    "slot_capacities": capacities, "selection": session["short_windows"]["selection"],
+                    "placement": "best-fit free slot whose resident window holds prompt+reply+guard rows; "
+                                 "FIFO head waits otherwise; prefix reuse only into fitting slots"}
+                print(f"[tensorfold] mixed resident windows: {kv_full_windows} x {self.capacity_plan['context_window']} "
+                      f"+ {resolved_streams - kv_full_windows} x {self.mixed_windows['short_context_tokens']} tokens "
+                      f"({self.mixed_windows['selection']}; largest fitting "
+                      f"{session['short_windows']['largest_fitting_tokens']})", flush=True)
+                if full_window_headroom:
+                    self.capacity_plan['full_window_headroom'].update(
+                        full_context_windows=kv_full_windows, slot_capacities=capacities,
+                        mixed_windows='user decision 2026-11-17: 32 lanes with mixed windows accepted')
             streams = resolved_streams
             resident_windows = streams
             self.streams = self.kv_full_windows = streams
@@ -1625,6 +1672,11 @@ class FlashNextEngine:
                 "cache_slots_each": self.capacity_plan["cache_slots"],
                 "auxiliary": self.method_geometry.method if self.method_geometry.method != "none" else None,
                 "workspace_bytes": 2 * 2**30, "policy": "resident-full-windows-v2"}
+            if self.mixed_windows is not None:
+                self.capacity_plan["kv_full_windows"].update(policy="resident-mixed-windows-v1",
+                    full_context_windows=self.mixed_windows["full_windows"],
+                    short_context_tokens=self.mixed_windows["short_context_tokens"],
+                    slot_capacities=self.mixed_windows["slot_capacities"])
         if dspark_plan is not None:
             self.capacity_plan["dspark"] = {
                 "identity": dspark_plan.identity, "source_identity": dspark_plan.source_identity,
@@ -1938,7 +1990,9 @@ class FlashNextEngine:
                                       **({"memory_live": (partial(owner_preparation.live_bytes, reserve=0)
                                                           if observed_graph_budget is not None else owner_preparation.live_bytes)}
                                          if owner_preparation is not None else {}),
-                                      **({"full_windows": resident_windows} if resident_windows is not None else {}))
+                                      **({"full_windows": resident_windows} if resident_windows is not None else {}),
+                                      **({"slot_limits": tuple(self.mixed_windows["slot_capacities"])}
+                                         if self.mixed_windows is not None else {}))
             self.capacity_plan["native_gdn_batch"] = {"enabled": native_gdn_batch,
                 "implementation": "sm70-gdn-state-batch-v1", "pointer_fields": 8 if native_gdn_batch else 2,
                 "scalar_C1": not native_gdn_capture,
@@ -1978,8 +2032,13 @@ class FlashNextEngine:
                 local_materialization = [rank, int(self.multi.full_resident), owned_cache_bytes,
                                          int(torch.cuda.memory_allocated()), int(torch.cuda.memory_reserved()), *capacities]
                 rank_materializations = gather(local_materialization) if tp > 1 else [local_materialization]
+                promised = (self.mixed_windows["slot_capacities"] if self.mixed_windows is not None
+                            else [self.max_len] * streams)
+                if (self.mixed_windows is not None and (not self.multi.full_resident
+                        or list(self.multi.slot_limits) != promised or promised[0] != self.max_len)):
+                    raise RuntimeError("decoder slot windows differ from the admitted mixed-window capacities")
                 if any(row[0] != peer or len(row) != 5 + streams or
-                       self.multi.full_resident and (row[1] != 1 or any(n != self.max_len for n in row[5:]))
+                       self.multi.full_resident and (row[1] != 1 or row[5:] != promised)
                        for peer, row in enumerate(rank_materializations)):
                     raise RuntimeError("ranks did not materialize every promised full context window")
                 self.capacity_plan["kv_full_windows"].update(
@@ -2565,6 +2624,9 @@ class FlashNextEngine:
                   getattr(getattr(self, "_dflash_pairing", None), "identity", None),
                   expert_policy, proposal_policy, context_policy, attention_policy,
                   getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
+        mixed = getattr(self, "mixed_windows", None)
+        if mixed is not None:
+            policy.append(["mixed-resident-windows", mixed["full_windows"], mixed["slot_capacities"]])
         if owned is not None:
             policy.append(["owned-expert-native", owned.identity])
         if getattr(self, "_owned_qualification_host", ()):

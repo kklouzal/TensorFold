@@ -1117,6 +1117,8 @@ def retention_identity_payload(engine):
                  "recovery_points_enabled": engine.points is not None,
                  "recovery_points_per_piece": POINTS, "interior_points": CUTS, "minimum_gap": MIN_GAP,
                  "execution_envelope": engine.capacity_plan["execution_envelope"]}
+    if getattr(engine.multi, "mixed_windows", False):
+        retention["slot_capacities"] = list(engine.multi.slot_limits)
     preparation = getattr(engine, "_owner_preparation", None)
     if preparation is not None:
         retention["owner_preparation"] = preparation.identity()

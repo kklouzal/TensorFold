@@ -46,6 +46,7 @@ def allocation_block():
         "workspace_bytes",
         "full_windows",
         "logical_context",
+        "slot_limits",
     ]
     f = ast.FunctionDef(
         name="prepare",
@@ -105,7 +106,7 @@ def test_production_constructor_owns_every_promised_cache_and_counts_it_once(slo
     # This isolated allocation block starts after the constructor binds its
     # media owner. These language-only fixtures have no media resource claim.
     dec = NS(controller=None, media_runtime=None)
-    ns["prepare"](dec, NS(), slots, 262148, 3, "int8", None, None, None, 0, full, 262144)
+    ns["prepare"](dec, NS(), slots, 262148, 3, "int8", None, None, None, 0, full, 262144, None)
     materialized = selection in ("equal", "larger")
     rows = 262148 if materialized else 256
     assert calls == [(rows, 262148, 4, 262144)] * slots

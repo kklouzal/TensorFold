@@ -10,16 +10,41 @@ Past ``keep``, a chain's spare points go before any value: a chain keeps one poi
 """
 
 from tensorfold.cleanup import raise_failures
+from tensorfold.cuda.memory_gate import NoRoom
 
 LADDER = 4096          # tokens: the nearest band of a chain's ladder, each farther band twice as wide
 _UNSCOPED = object()   # Legacy policy only; None is the explicit local/no-auth domain in selected FIFO profiles.
 
 
-def _best(kept, prompt, busy=(), *, principal=_UNSCOPED):
+def fits(st, extent) -> bool:
+    """Whether a slot's resident window holds a request's whole extent (None: uniform slots, every slot fits)."""
+    return extent is None or st.limit >= extent
+
+
+def _take_free(owner, extent=None):
+    """Remove and return the free slot that fits ``extent`` with the shortest window (best fit keeps longer
+    windows for longer requests); among equal windows the last, as ``pop()``. None when no free slot fits."""
+    if extent is None:
+        return owner.free.pop() if owner.free else None
+    index = None
+    for i in range(len(owner.free) - 1, -1, -1):
+        st = owner.free[i]
+        if fits(st, extent) and (index is None or st.limit < owner.free[index].limit):
+            index = i
+    return None if index is None else owner.free.pop(index)
+
+
+def has_room(owner, extent, busy=None) -> bool:
+    """A free slot, or an idle kept one, whose window holds ``extent``."""
+    busy = owner._busy() if busy is None else busy
+    return any(fits(st, extent) for st in owner.free) or _idle(owner, busy, extent=extent) is not None
+
+
+def _best(kept, prompt, busy=(), *, principal=_UNSCOPED, extent=None):
     if principal is not _UNSCOPED:
         kept = (entry for entry in kept if "prefix_principal" in entry[2] and entry[2]["prefix_principal"] == principal)
     return max((k for k in kept if id(k[1]) not in busy and len(k[0]) < len(prompt)
-                and prompt[:len(k[0])] == k[0]), key=lambda k: len(k[0]), default=None)
+                and prompt[:len(k[0])] == k[0] and fits(k[1], extent)), key=lambda k: len(k[0]), default=None)
 
 
 def _resumed(entry, prompt):
@@ -61,12 +86,13 @@ def _use(owner, st) -> None:
     owner.kept = sorted(owner.kept, key=lambda k: _value(owner, k))
 
 
-def _idle(owner, busy, *spared):
-    """The idle kept slot (none of ``spared``) whose chain is worth least, as its most valuable entry, or None."""
+def _idle(owner, busy, *spared, extent=None):
+    """The idle kept slot (none of ``spared``; one that holds ``extent``) whose chain is worth least, as its most
+    valuable entry, or None."""
 
     chains: dict[int, tuple] = {}
     for k in owner.kept:                     # ascending: a slot's last entry is its most valuable
-        if id(k[1]) not in busy and all(k[1] is not s for s in spared):
+        if id(k[1]) not in busy and all(k[1] is not s for s in spared) and fits(k[1], extent):
             chains[id(k[1])] = k
     return min(chains.values(), key=lambda k: _value(owner, k), default=None)
 
@@ -94,13 +120,16 @@ def _spare(kept) -> list:
     return spare
 
 
-def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED):
-    """Copy a fork into spare capacity; else resume a chain in place when that keeps more than it discards."""
+def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, extent=None):
+    """Copy a fork into spare capacity; else resume a chain in place when that keeps more than it discards.
+
+    ``extent`` (prompt + reply + speculative guard rows) restricts every placement, resume and fork target to
+    slots whose resident window holds it (mixed windows); None keeps uniform slots' behavior."""
 
     busy = owner._busy()
     best = _best(owner.kept, prompt, principal=principal) if reuse else None
-    if best is not None and owner.free and (id(best[1]) in busy or _longer(owner.kept, best)):
-        spare = owner.free.pop()
+    if best is not None and (id(best[1]) in busy or _longer(owner.kept, best) or not fits(best[1], extent)):
+        spare = _take_free(owner, extent)
     else:
         spare = None
     if spare is not None:
@@ -122,13 +151,13 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED):
                 raise_failures(primary, [cleanup])
             raise
         owner.free.append(spare)        # no room for the copy: a cold prefill would need as much, so resume in place
-    best = _best(owner.kept, prompt, busy, principal=principal) if reuse else None
+    best = _best(owner.kept, prompt, busy, principal=principal, extent=extent) if reuse else None
     if best is not None:
         # resume in place unless that discards more kept tokens than going cold costs: the reused tokens prefilled
         # again, and with no free slot the whole chain a cold prefill evicts (best's own, if it is worth least)
         cold = len(best[0])
-        if not owner.free:
-            victim = _idle(owner, busy)[1]
+        if not any(fits(st, extent) for st in owner.free):
+            victim = _idle(owner, busy, extent=extent)[1]
             cold += max(len(k[0]) for k in owner.kept if k[1] is victim)
         if _lost(owner.kept, best) > cold:
             best = None
@@ -142,25 +171,27 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED):
         if end is None:     # this prompt rewrites the end's last row (and MTP row) in place: the end no longer holds
             best[2].pop("prompt_end", None)
         return best[1], _resume(state, tail, end, best), cached
-    if owner.free:
-        idle = owner.free.pop()
+    idle = _take_free(owner, extent)
+    if idle is not None:
         try:
             idle.begin_sequence_generation()
         except BaseException:
             owner.free.append(idle)
             raise
         return idle, None, 0
-    idle = evict(owner, None, new_sequence=True)
+    idle = evict(owner, None, new_sequence=True, extent=extent)
     if idle is None:
+        if extent is not None and (owner.free or _idle(owner, owner._busy()) is not None):
+            raise NoRoom(f"a {extent}-row request waits for a slot whose resident window holds it")
         raise RuntimeError("no free stream slot")
     return idle, None, 0
 
 
-def evict(owner, keep, protect=None, *, new_sequence=False):
-    """The lowest-valued idle kept slot (never ``keep`` or ``protect``), its entries dropped and the clock risen to its
-    value, or None."""
+def evict(owner, keep, protect=None, *, new_sequence=False, extent=None):
+    """The lowest-valued idle kept slot (never ``keep`` or ``protect``; one that holds ``extent``), its entries dropped
+    and the clock risen to its value, or None."""
 
-    idle = _idle(owner, owner._busy(), keep, protect)
+    idle = _idle(owner, owner._busy(), keep, protect, extent=extent)
     if idle is None:
         return None
     if new_sequence:

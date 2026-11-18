@@ -44,6 +44,20 @@ def _full_windows(value: str) -> int | str:
         raise argparse.ArgumentTypeError("--kv-full-windows: use auto or a positive whole number") from None
 
 
+def _short_window(value: str) -> int | str:
+    """The mixed-window short slots' token count, or auto for the largest the memory solver retains."""
+
+    if value == "auto":
+        return value
+    try:
+        tokens = int(value)
+    except ValueError:
+        tokens = 0
+    if tokens < 1:
+        raise argparse.ArgumentTypeError("--kv-short-window: use auto or a positive token count")
+    return tokens
+
+
 def _prefill_rows(value: str) -> int:
     """A Flash Next prompt-piece row count, validated by the engine's own resolver."""
 
@@ -298,8 +312,13 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "affine, BF16, FP8 and NVFP4 tables; EXL3 retains its native mapped table. "
                             "Memory and latency depend on checkpoint format and storage")
     speed.add_argument("--kv-full-windows", type=_full_windows, default=None, metavar="N|auto",
-                       help="Flash Next GGUF GPU histories: auto computes equal full-context capacity; N caps it. "
+                       help="Flash Next GGUF GPU histories: auto computes equal full-context capacity; N caps it "
+                            "(with --parallel P above N: N full windows plus P-N shorter resident windows). "
                             "Other Flash Next resident GGUF/RAM-expert modes reserve N full KV windows across slots")
+    speed.add_argument("--kv-short-window", type=_short_window, default=None, metavar="TOKENS|auto",
+                       help="Flash Next GGUF GPU histories with --parallel P above --kv-full-windows N: the "
+                            "prompt-plus-reply window of the other P-N resident slots (auto: the largest that fits); "
+                            "requests longer than it wait for a full window")
     speed.add_argument("--execution-profile-manifest", type=Path, default=None, metavar="PATH",
                        help="Flash Next GGUF GPU-history SM70: load measured execution profiles only after their "
                             "checkpoint, codec, runtime, kernel and hardware identities match this deployment")

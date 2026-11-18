@@ -91,7 +91,8 @@ class MultiDecoder:
                  full_windows: int | None = None, execution_rows: int | None = None, memory_live=None,
                  logical_context: int | None = None, hc_graphs: bool = False, graph_memory_live=None,
                  native_gdn_batch: bool = False, native_gdn_capture: bool = False, exact_graph_policy=None,
-                 gdn_value8_prepared=None, graph_project_budget=None, graph_headroom_live=None) -> None:
+                 gdn_value8_prepared=None, graph_project_budget=None, graph_headroom_live=None,
+                 slot_limits=None) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         if type(hc_graphs) is not bool:
@@ -261,6 +262,16 @@ class MultiDecoder:
         # Legacy and explicitly shared modes keep the original growing floors.
         self.graph_project_budget = graph_project_budget
         self.graph_headroom_live = graph_headroom_live
+        # Mixed resident windows: one materialized limit per slot (full windows
+        # first). Uniform serving keeps every slot at ``capacity``.
+        if slot_limits is not None and (
+                type(slot_limits) not in (tuple, list) or len(slot_limits) != slots
+                or any(type(n) is not int or not depth + 1 < n <= capacity for n in slot_limits)
+                or slot_limits[0] != capacity or list(slot_limits) != sorted(slot_limits, reverse=True)
+                or full_windows is None or full_windows < slots or logical_context is None
+                or w.meta.get('history_layout') != 'unique' or w.meta.get('indexer_history', 'gpu') != 'gpu'):
+            raise ValueError("mixed slot windows require every unique-history GPU State resident at its own "
+                             "limit, full windows first, within the decoder capacity")
         if graph_project_budget is not None and (
                 type(graph_project_budget) is not int or graph_project_budget < 0 or budget is not None
                 or not graphs or full_windows is None or full_windows < slots
@@ -269,11 +280,12 @@ class MultiDecoder:
                 or w.meta.get('indexer_history', 'gpu') != 'gpu'):
             raise ValueError('observed graph headroom requires automatic unique resident SM70 full GPU windows')
         self.full_resident = full_windows is not None and full_windows >= slots
-        initial_capacity = capacity if self.full_resident else min(capacity, FIRST)
-        self.free = [State(w, initial_capacity, depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
-                           kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, slot=slot,
-                           logical_context=logical_context)
-                     for slot in range(slots)]
+        self.slot_limits = tuple(slot_limits) if slot_limits is not None else (capacity,) * slots
+        self.free = [State(w, limit if self.full_resident else min(limit, FIRST), depth + 1, kv_dtype, limit=limit,
+                           kv_pair=kv_pair, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, slot=slot,
+                           logical_context=logical_context,
+                           **({"short_window": True} if logical_context is not None and limit < logical_context else {}))
+                     for slot, limit in enumerate(self.slot_limits)]
         self.states = tuple(self.free)
         if native_gdn_batch:
             self.round_tables.bind_native(self.states, self.buf)
@@ -687,6 +699,12 @@ class MultiDecoder:
             mark_error_state_retired(outcome)
         return True
 
+    @property
+    def mixed_windows(self) -> bool:
+        """Slots own different resident windows (K full + shorter); uniform slots never filter placement."""
+        limits = getattr(self, "slot_limits", None)
+        return limits is not None and len(set(limits)) > 1
+
     def _drop_kept(self, st: State) -> None:
         self.kept = [k for k in self.kept if k[1] is not st]
 
@@ -885,8 +903,10 @@ class MultiDecoder:
         self.memory_gate.waits += any(s.waiting for s in live)
         return ended
 
-    def _slot_for(self, prompt: list[int], reuse: bool, *, principal=None):
-        """Reuse the longest kept point, copying a fork into a free slot when the memory gate permits it."""
+    def _slot_for(self, prompt: list[int], reuse: bool, *, principal=None, extent=None):
+        """Reuse the longest kept point, copying a fork into a free slot when the memory gate permits it.
+
+        ``extent`` (mixed windows only) restricts placement to slots whose resident window holds it."""
 
         fifo = getattr(self, "admission_policy", "legacy") == "fifo"
         best = (prefixes._best(self.kept, prompt, principal=principal) if fifo else
@@ -906,7 +926,9 @@ class MultiDecoder:
                     if all(st is not source for st in self.free):
                         self.free.append(source)
                 raise
-        return prefixes.slot_for(self, prompt, reuse, principal=principal) if fifo else prefixes.slot_for(self, prompt, reuse)
+        more = {} if extent is None else {"extent": extent}
+        return (prefixes.slot_for(self, prompt, reuse, principal=principal, **more) if fifo else
+                prefixes.slot_for(self, prompt, reuse, **more))
 
     def _remember(self, ids: list[int], st: State, snap: dict, tail) -> None:
         st.kv_validate_snapshot(snap)
@@ -1038,7 +1060,8 @@ class MultiDecoder:
             packet = [0, 0, 0, future["future_bytes"]]
             try:
                 initial_live = live()
-                room = materialized_graph_room(self.free, self.capacity, initial_live, promise, future,
+                room = materialized_graph_room(self.free, [self.slot_limits[st.history_slot] for st in self.free]
+                                               if self.mixed_windows else self.capacity, initial_live, promise, future,
                                                **({'gpu_history': True} if physical_headroom else {}))
                 if physical_headroom:
                     room = min(room, self.graph_project_budget)
@@ -1066,6 +1089,7 @@ class MultiDecoder:
                 "observations": [{"rank": rank, "graph_room_bytes": row[1], "live_after_floor_bytes": row[2],
                                   "future_service_bytes": row[3]} for rank, row in enumerate(observations)],
                 "full_slots": slots, "capacity": self.capacity, "future_service": dict(future),
+                **({"slot_capacities": list(self.slot_limits)} if self.mixed_windows else {}),
                 "header_room_bytes": self.graph_header_room, "private_spare_credit_bytes": 0}
             if physical_headroom:
                 from .service_memory import FULL_GRAPH_HEADROOM_POLICY
@@ -1446,6 +1470,16 @@ class MultiDecoder:
         if (window is None and getattr(self, "admission_policy", "legacy") == "fifo"
                 and not self.free and prefixes._idle(self, self._busy()) is None):
             raise mark_error_state_retired(NoRoom("all stream slots remain owned by active or retained generations"))
+        # Mixed resident windows: the request's whole extent (prompt, reply and the
+        # speculative guard rows) must fit its slot's window; it waits otherwise.
+        extent = len(s.prompt) + s.count + self.depth + 1 if self.mixed_windows else None
+        if extent is not None:
+            if window is not None or retained is not None:
+                raise mark_error_state_retired(ValueError("mixed resident windows do not support retained sessions"))
+            if not prefixes.has_room(self, extent):
+                raise mark_error_state_retired(NoRoom(
+                    f"a {len(s.prompt)}-token prompt with {s.count} reply tokens waits for a slot whose resident "
+                    "window holds it"))
         if window is not None:
             st, resume, s.cached = window, None, 0
         elif retained is not None:
@@ -1453,9 +1487,9 @@ class MultiDecoder:
                                                 principal=principal)
         elif getattr(self, "admission_policy", "legacy") == "fifo":
             st, resume, s.cached = self._slot_for(list(s.prompt), reuse,
-                                                principal=principal)
+                                                principal=principal, extent=extent)
         else:
-            st, resume, s.cached = self._slot_for(list(s.prompt), reuse)
+            st, resume, s.cached = self._slot_for(list(s.prompt), reuse, extent=extent)
         try:
             if not self._grow(st, st.limit if retained is not None else len(s.prompt) + self.depth + 2,
                               alone=not self.streams and not self.filling):

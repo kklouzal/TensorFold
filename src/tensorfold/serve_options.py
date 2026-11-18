@@ -268,6 +268,13 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                 or source is None or resolve_gguf(source) is None):
             raise ValueError("--execution-profile-manifest/--serving-profile-root selection requires resident Flash Next GGUF GPU histories on SM70")
     windows = getattr(args, "kv_full_windows", None)
+    if getattr(args, "kv_short_window", None) is not None and (
+            backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+            or history != "gpu" or getattr(args, "vram_experts", None) is not None or type(windows) is not int
+            or str(getattr(args, "parallel", "auto")).strip().lower() == "auto"
+            or _cuda_streams(getattr(args, "parallel", "auto")) <= windows):
+        raise ValueError("--kv-short-window requires Flash Next CUDA GGUF GPU histories with --parallel P above "
+                         "--kv-full-windows N")
     if windows is not None:
         if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
             raise ValueError("--kv-full-windows is supported by Flash Next CUDA only")

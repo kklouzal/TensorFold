@@ -250,8 +250,10 @@ class RetainedCatalog:
                     raise ValueError("GPU-only retained promises exceed the actual full-window slot count")
             if self.rank >= self.world or any(state.history_rank != self.rank for state in self.states):
                 raise ValueError("retention catalog rank differs from its actual State owners")
-            if any(state.limit != self.states[0].limit or state.kv_identity != self.states[0].kv_identity
-                   for state in self.states):
+            # Mixed resident windows (different per-slot limits) carry no retained
+            # sessions; the engine refuses a retention policy with them.
+            if any((policy is not None and state.limit != self.states[0].limit)
+                   or state.kv_identity != self.states[0].kv_identity for state in self.states):
                 raise ValueError("retention State pool must share its actual model/context/codec/position binding")
             if any(state.history_placement is not None and (self.comm is None
                    or state.history_placement.world != self.world or state.history_comm is not self.comm)
@@ -287,9 +289,11 @@ class RetainedCatalog:
                     self._native_key_limit = _LIBUV_KEY_BYTES
             if policy is not None and policy.tier == "ram":
                 self.transfer_chunk_bytes = min(policy.chunk_bytes, self._native_value_limit or policy.chunk_bytes)
+            limits = [state.limit for state in self.states]
             identity = _digest({"coordinate": weights.meta.get("coordinate_profile_identity"),
                 "kv": first.kv_identity, "context": first.limit,
-                "position": first.position_profile_identity, "epoch": first.position_epoch})
+                "position": first.position_profile_identity, "epoch": first.position_epoch,
+                **({"slot_limits": limits} if len(set(limits)) > 1 else {})})
             host = (None if self.comm is None else hashlib.sha256(_small("/proc/sys/kernel/random/boot_id")
                     + b"\0" + _small("/etc/machine-id")).hexdigest())
             payload = (0 if policy is None else max(state_inventory(state, recovery_versions=self.recovery_versions).future_bytes

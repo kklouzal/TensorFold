@@ -310,7 +310,8 @@ class State:
 
     def __init__(self, w: Weights, capacity: int, max_rows: int, kv_dtype: str = "bf16", *,
                  limit: int | None = None, kv_pair=None, kv_key_dtype: str | None = None,
-                 kv_value_dtype: str | None = None, slot: int = 0, logical_context: int | None = None) -> None:
+                 kv_value_dtype: str | None = None, slot: int = 0, logical_context: int | None = None,
+                 short_window: bool = False) -> None:
         c = w.cfg
         dev = w.device
         bf = execution_dtype(w)
@@ -325,7 +326,15 @@ class State:
         self.media_input_span = self.mtp_boundary = None
         physical_limit = int(capacity if limit is None else limit)
         logical_limit = physical_limit if logical_context is None else logical_context
-        if type(logical_limit) is not int or not 0 < logical_limit <= physical_limit:
+        # A short resident window (mixed-window serving) keeps the engine's
+        # logical context in its identity, so prefixes move between full and
+        # short slots; every row check bounds by min(capacity, logical) and
+        # admission places only requests whose extent fits this State's limit.
+        if type(short_window) is not bool or short_window and (
+                logical_context is None or limit is None or type(logical_limit) is not int
+                or not 0 < physical_limit < logical_limit):
+            raise ValueError("a short resident State window needs a physical limit below its logical context")
+        if type(logical_limit) is not int or not 0 < logical_limit <= physical_limit and not short_window:
             raise ValueError("State logical context must be a positive integer within its physical storage limit")
         self.logical_context = logical_limit
         binding = getattr(w, "positions", None)

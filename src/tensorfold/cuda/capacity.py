@@ -100,6 +100,41 @@ def fit_sessions(window: int, budget: int, weights: Weights,
     return low
 
 
+SHORT_WINDOW_GRANULE = 1024  # tokens: solved short resident windows are whole multiples of this
+
+
+def fit_short_window(window: int, budget: int, weights: Weights, geometry: Callable[[int], Geometry], reserve: int, *,
+                     granule: int = SHORT_WINDOW_GRANULE, additional_fits: Callable[[], bool] | None = None) -> int:
+    """Largest short-window token count (a multiple of ``granule``, below ``window``) whose complete mixed geometry fits.
+
+    ``geometry(short_slots)`` is the fixed-count rank geometry with the full
+    windows unchanged and every other slot materialized at ``short_slots``
+    cache rows (its tokens plus ``reserve``). Monotone in the short
+    window; 0 when even one granule cannot be retained.
+    """
+    if type(window) is not int or window <= 0 or type(budget) is not int or budget < 0:
+        raise ValueError("short-window planning needs a positive context and nonnegative integer byte budget")
+    if type(granule) is not int or granule < 1 or type(reserve) is not int or reserve < 0:
+        raise ValueError("short-window granule must be a positive integer")
+    if weights.resident + weights.staging > budget or additional_fits is not None and not additional_fits():
+        return 0
+
+    def fits(tokens):
+        cost = geometry(tokens + reserve).needed(window)
+        if type(cost) is not int or cost < 0:
+            raise ValueError("short-window geometry must return nonnegative integer bytes")
+        return weights.resident + cost <= budget
+
+    low, high = 0, (window - 1) // granule
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(middle * granule):
+            low = middle
+        else:
+            high = middle - 1
+    return low * granule
+
+
 @dataclass(frozen=True)
 class Plan:
     native: int
@@ -686,6 +721,7 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           session_geometry: Callable[[dict, int], Geometry] | None = None,
           session_ceiling: int | None = None,
           session_host_workspace: Callable[[int], int] | None = None,
+          session_short: tuple[int, int | None] | None = None,
           preallocated_device_bytes: int = 0,
           capture_device_baseline: bool = False, full_window_headroom: bool = False,
           execution_capability: tuple[int, int] | None = None) -> dict:
@@ -704,6 +740,11 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     in both phases; that argument's unified loading-only charge is unchanged.
     ``preallocated_device_bytes`` are proven nonreusable owners already absent
     from physical free; subtract them only from an explicit absolute cap.
+    ``session_short`` = (full windows, short tokens or None for the largest
+    fitting) selects mixed resident windows: exactly ``session_ceiling`` slots,
+    the first ``full windows`` at the complete context, the rest materialized
+    at one agreed shorter window; ``session_geometry`` then takes the short
+    slots' cache rows as a third argument.
     """
 
     from tensorfold.cuda import build
@@ -719,6 +760,7 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     plan = None
     baseline = None
     session_fitting, session_factory, session_context = 0, None, 0
+    short_tokens = short_largest = 0
     try:
         if type(preallocated_device_bytes) is not int or preallocated_device_bytes < 0:
             raise ValueError("preallocated device commitments must be nonnegative integer bytes")
@@ -727,6 +769,13 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
         if (type(full_window_headroom) is not bool or full_window_headroom
                 and (not capture_device_baseline or memory_reserve != 0 or session_geometry is None)):
             raise ValueError('full-window headroom requires explicit measured resident-session admission')
+        if session_short is not None and (
+                not isinstance(session_short, tuple) or len(session_short) != 2 or session_geometry is None
+                or type(session_short[0]) is not int or type(session_ceiling) is not int
+                or not 1 <= session_short[0] < session_ceiling
+                or session_short[1] is not None and (type(session_short[1]) is not int or session_short[1] < 1)):
+            raise ValueError("mixed resident windows need automatic sessions, an integer slot count and "
+                             "fewer full windows than slots")
         preallocation_limit = cuda_limit_bytes() if preallocated_device_bytes else None
         if preallocation_limit is not None and preallocated_device_bytes > preallocation_limit:
             raise ValueError("preallocated device commitments exceed the absolute CUDA budget")
@@ -776,8 +825,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                                                        if n is not None), default=None))
         serving_workspace = device_workspace_bytes + (host_workspace_bytes if unified(torch) else 0)
         if session_geometry is not None:
-            def session_factory(count):
-                base = session_geometry(text, count)
+            def session_factory(count, short=None):
+                base = session_geometry(text, count) if short is None else session_geometry(text, count, short)
                 from .geometry import with_fixed
 
                 return with_fixed(base, serving_workspace, label="device_library_workspace")
@@ -834,9 +883,20 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                 return (host_free is None or needed <= host_free) and (
                     allowance is None or needed <= allowance)
 
-            session_fitting = fit_sessions(session_context, budget, weights, session_factory,
-                                           ceiling=session_ceiling, additional_fits=host_fits)
-            geometry = session_factory(max(1, session_fitting))
+            if session_short is None:
+                session_fitting = fit_sessions(session_context, budget, weights, session_factory,
+                                               ceiling=session_ceiling, additional_fits=host_fits)
+                geometry = session_factory(max(1, session_fitting))
+            else:
+                short_reserve = session_factory(session_ceiling, 1).reserve
+                short_largest = fit_short_window(session_context, budget, weights,
+                    lambda short: session_factory(session_ceiling, short), short_reserve,
+                    granule=SHORT_WINDOW_GRANULE, additional_fits=lambda: host_fits(session_ceiling))
+                short_tokens = (short_largest if session_short[1] is None else
+                                session_short[1] if session_short[1] <= short_largest
+                                and session_short[1] < session_context else 0)
+                session_fitting = session_ceiling if short_tokens else 0
+                geometry = session_factory(session_ceiling, max(1, short_tokens) + short_reserve)
         plan = make_plan(effective_native, requested,
                          requested is not None if explicit is None else explicit,
                          budget,
@@ -853,18 +913,33 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
             # captured None/positive ceilings use 0/-(ceiling+1).
             ceiling_status = 0 if session_ceiling is None else -session_ceiling - 1
         status += [session_fitting, ceiling_status]
+        if session_short is not None:
+            status += [short_tokens, short_largest,
+                       session_short[0] if isinstance(session_short, tuple) and session_short else -1]
     both = gather(status) if world > 1 else [status]
     if any(row[0] for row in both):
         raise ValueError("CUDA startup memory geometry could not be established on every rank: " +
                          (error or "another rank could not read its checkpoint; check both folders/configs"))
+    short_agreed = short_slots = None
     if session_geometry is not None:
-        if any(len(row) != 8 or row[7] != status[7] for row in both):
+        if any(len(row) != len(status) or row[7] != status[7]
+               or session_short is not None and row[10] != session_short[0] for row in both):
             raise ValueError("CUDA ranks selected different automatic session ceilings or baseline modes")
         sessions = min(row[6] for row in both)
-        if sessions < 1:
+        if session_short is not None:
+            largest = min(row[9] for row in both)
+            if sessions < 1 or any(row[8] < 1 for row in both):
+                wanted = ("the largest fitting" if session_short[1] is None else f"a {session_short[1]}-token")
+                raise ValueError(f"CUDA memory budget cannot retain {session_short[0]} complete {session_context}-token "
+                                 f"windows plus {session_ceiling - session_short[0]} slots at {wanted} short window "
+                                 f"(largest agreed short window {largest} tokens, granule {SHORT_WINDOW_GRANULE}); "
+                                 "context and quality are unchanged")
+            short_agreed = min(row[8] for row in both)
+            short_slots = short_agreed + session_factory(sessions, 1).reserve
+        elif sessions < 1:
             raise ValueError(f"CUDA memory budget cannot retain one complete {session_context}-token session "
                              "with the selected method and execution resources; context and quality are unchanged")
-        geometry = session_factory(sessions)
+        geometry = session_factory(sessions) if session_short is None else session_factory(sessions, short_slots)
         plan = make_plan(plan.native, requested, plan.explicit, plan.budget, weights, geometry)
         if plan.fitting < session_context:
             raise RuntimeError("session geometry no longer preserves the admitted full-context commitment")
@@ -889,9 +964,12 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
         ledger = {} if geometry.breakdown_at is None else geometry.breakdown_at(
             max(geometry.minimum_slots, session_context + geometry.reserve))
         ledger_names = sorted(ledger)
+        following = (session_factory(sessions + 1) if session_short is None else
+                     session_factory(sessions, short_slots + SHORT_WINDOW_GRANULE))
         local = [rank, plan.budget, weights.resident, weights.staging,
-                 geometry.needed(session_context), session_factory(sessions + 1).needed(session_context),
-                 int(host_fits(sessions + 1)), *(ledger[name] for name in ledger_names)]
+                 geometry.needed(session_context), following.needed(session_context),
+                 int(host_fits(sessions + 1 if session_short is None else sessions)),
+                 *(ledger[name] for name in ledger_names)]
         baseline_names = ("observed_at_unix_ns", "physical_free_bytes", "device_total_bytes",
                           "effective_device_floor_bytes", "preallocated_project_bytes",
                           "usable_serving_budget_bytes", "allocator_allocated_bytes", "allocator_reserved_bytes")
@@ -919,14 +997,18 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
         ranks = gather(local) if world > 1 else [local]
         if any(len(row) != len(local) or row[0] != peer for peer, row in enumerate(ranks)):
             raise RuntimeError("rank resource ledgers do not match the admitted session profile")
-        resource = ("administrator-ceiling" if sessions == session_ceiling else
+        resource = ("explicit-short-window" if session_short is not None and session_short[1] is not None else
+                    "rank-device-memory" if session_short is not None else
+                    "administrator-ceiling" if sessions == session_ceiling else
                     "host-memory" if any(not row[6] for row in ranks) else "rank-device-memory")
         receipt["session_capacity"] = {
             "policy": "fixed-context-worst-rank-v1", "evidence": "header-plan-unqualified",
             "context_tokens": session_context, "configured_ceiling": session_ceiling,
-            "resident_capacity": sessions, "full_context_commitments": sessions,
+            "resident_capacity": sessions,
+            "full_context_commitments": sessions if session_short is None else session_short[0],
             "binding_ranks": [i for i, row in enumerate(both) if row[6] == sessions]
-                             if session_ceiling is None or sessions < session_ceiling else [],
+                             if session_short is None and (session_ceiling is None or sessions < session_ceiling) else
+                             [i for i, row in enumerate(both) if row[9] == largest] if session_short is not None else [],
             "limiting_resource": resource,
             "ranks": [{"rank": row[0], "budget_bytes": row[1], "resident_weight_bytes": row[2],
                        "loading_overlap_bytes": row[3], "session_execution_bytes": row[4],
@@ -934,6 +1016,13 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                        "resource_ledger_bytes": dict(zip(ledger_names, row[7:7 + len(ledger_names)])),
                        **({"allocation_baseline": rank_baseline(row)} if baseline is not None else {})} for row in ranks],
         }
+        if session_short is not None:
+            full_slots = max(geometry.minimum_slots, session_context + geometry.reserve)
+            receipt["session_capacity"].update(policy="mixed-window-worst-rank-v1", short_windows={
+                "slots": sessions - session_short[0], "context_tokens": short_agreed, "cache_slots": short_slots,
+                "selection": "largest-fitting" if session_short[1] is None else "explicit",
+                "largest_fitting_tokens": largest, "granule_tokens": SHORT_WINDOW_GRANULE},
+                slot_capacities=[full_slots] * session_short[0] + [short_slots] * (sessions - session_short[0]))
         if session_host_workspace is not None:
             host_workspace_bytes += session_host_workspace(sessions)
     if device_workspace_bytes or host_workspace_bytes:

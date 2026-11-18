@@ -568,7 +568,8 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             full_windows: int | None = None, workspace_bytes: int = 0,
                             indexer_raw_device_bytes: int | None = None,
                             execution_rows: int | None = None, history_placement=None, rank: int = 0,
-                            device_metadata_only: bool = False, expert_tensor_parallel_size=None, gdn_pointer_fields: int = 2) -> Geometry:
+                            device_metadata_only: bool = False, expert_tensor_parallel_size=None, gdn_pointer_fields: int = 2,
+                            short_slots: int | None = None) -> Geometry:
     """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
     the ``points`` each stream's prompt piece copies out before they are kept), its rounds' static tables and the
     budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs).
@@ -587,6 +588,11 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     if history_placement is not None and (indexer_raw_device_bytes is not None or world != history_placement.world):
         raise ValueError("unique history geometry requires the matching GPU-history rank inventory")
     windows = 1 if full_windows is None else min(streams, full_windows)
+    # Mixed resident windows: slots past the full ones own a materialized
+    # shorter window of ``short_slots`` cache rows (never grown or resized).
+    if short_slots is not None and (type(short_slots) is not int or short_slots < 1 or full_windows is None
+                                    or windows >= streams or history_placement is None):
+        raise ValueError("short resident windows require unique GPU histories and fewer full windows than slots")
     linear, attention = layer_counts(t)
     d, h, hk, hd, nk, nv, dk, dv, width = _gdn_dims(t, world)
     hc = int(t.get("hc_count", 1))
@@ -631,10 +637,11 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
 
     def breakdown_at(capacity: int) -> dict[str, int]:
         blocks = (capacity + ratio - 1) // ratio
+        other = min(first, capacity) if short_slots is None else min(short_slots, capacity)
         if history_placement is None:
-            cache = windows * caches(capacity) + (streams - windows) * caches(min(first, capacity))
+            cache = windows * caches(capacity) + (streams - windows) * caches(other)
         else:
-            cache = sum(history_placement.rank_bytes(slot, capacity if slot < windows else min(first, capacity),
+            cache = sum(history_placement.rank_bytes(slot, capacity if slot < windows else other,
                         rank, row, dummies, index_dim=index_dim, ratio=ratio, include_mtp=mtp, proposal_rows=each)
                         for slot in range(streams))
         replacement = 0

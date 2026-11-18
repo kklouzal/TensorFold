@@ -458,6 +458,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options["expert_tensor_parallel_size"] = args.expert_tensor_parallel_size
     if getattr(args, "kv_full_windows", None) is not None:
         options["kv_full_windows"] = args.kv_full_windows
+    if getattr(args, "kv_short_window", None) is not None:
+        options["kv_short_window"] = args.kv_short_window
     if getattr(args, "serving_profile_root", None) is not None:
         options["serving_profile_root"] = args.serving_profile_root
     if getattr(args, "execution_profile_manifest", None) is not None:

@@ -384,6 +384,10 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
             raise ValueError("kv_full_windows auto requires resident GGUF GPU histories and automatic capacity")
     elif full_windows is not None:
         engine_options["kv_full_windows"] = full_windows
+    if options.get("kv_short_window") is not None:
+        if type(full_windows) is not int or not (sm70 and history == "gpu"):
+            raise ValueError("kv_short_window requires resident GGUF GPU histories with an integer kv_full_windows")
+        engine_options["kv_short_window"] = options["kv_short_window"]
     for name in ("eos_token_ids", "chat_template_file", "chat_template_name"):
         if options.get(name) is not None:
             engine_options[name] = options[name]
