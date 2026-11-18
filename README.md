@@ -2294,6 +2294,40 @@ End to end on 8× V100 (prod config, 24 lanes):
   80.52/80.42 and 85.75/85.68 → 86.23/86.50 tok/s (about +0.7%). The gain is specific to
   long contexts.
 
+**MTP host work overlapped with GPU steps (2026-11-18).** In tensor-parallel decode, two
+pieces of host work now run while a GPU step executes, before its status wait:
+- **Staging the next MTP proposal frame.** It is staged during the producing step, with
+  placeholder IDs. The picked IDs are published just before launch. If a different set of
+  streams continues, the frame is restaged.
+- **The round's per-stream target commits.** They run during the MTP refresh step.
+
+Two contract changes make this safe. First, `compact_indexer.Staging` registers the
+compact-indexer spans of each role's current frame. A frame staged early first moves them
+into their own storage (`Staging.retain`: one stream-ordered copy on the owning rank).
+Without this, the early frame's new staging epoch makes the producing frame's span
+unreadable. That span is still read by a padded multi-stream refresh's commit, round-end
+snapshots and prefix clones. Before this change the read raised on the owning rank only and
+hung the cohort at C8 (the dec4 attempt). Second, compact commits are split by role:
+`State.set_pos` commits only the attention layers' entries, and `set_mtp_len` only the MTP
+head's. The other role was always a no-op under the previous order. During the overlapped
+commits, `State.kv_check(inflight=True)` skips the readback of the running MTP step's
+pending status; that step's own status check follows and also covers the commits' writes.
+
+Single-device decode, DSpark, the device greedy handoff and RAM indexer history keep the
+previous order. Compact-indexer stream waits now compare raw stream handles instead of
+building a `torch.cuda.current_stream()` object on each call.
+
+Evidence: CPU coverage is in `tests/test_compact_indexer.py` (padded refresh after an early
+frame, abandoned early frames, two-State frames, role-split commits) and
+`tests/test_flashnext_commit_overlap.py`. First, a C8/C24 screen ran: golden identical, no
+stall. Then one fast-protocol pair: 8x V100 TP8/ETP4, MTP4, INT8 KV, image `4b2661d8` with
+the source overlaid, `m-bdec-r2b-24`, 24 lanes, 4K/16K x C1-C24, one repeat, base
+`d718cc9b`. Decode was +3.73% (+3.43% with the best cell dropped) and every decode cell
+gained between +2.46% and +5.85% (C1 4K/16K 87.7/89.0 → 90.6/92.0 tok/s). Prefill was
++0.59%. golden-vg2 and golden-long4 round 0 were identical. The same outputs are expected,
+because the change only reorders host work and copies. The staging change alone measured
++1.59% (+0.90% trimmed, uncertain) on one earlier pair against `3a99113a`.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the
