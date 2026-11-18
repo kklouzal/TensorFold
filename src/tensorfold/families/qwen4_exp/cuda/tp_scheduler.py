@@ -22,6 +22,12 @@ from tensorfold.cleanup import raise_failures
 from .owner_execution import FAMILY_FIELDS
 from . import media_requests
 
+# A rank whose operation raised can only resume once the leader confirms every rank raised alike: a failure on some
+# ranks only leaves the others inside a collective it skipped, where neither acknowledgment nor comparison can finish.
+# Ranks that raise alike reach the same point of the same operation, so the confirmation follows within this bound;
+# past it the rank retires the cohort (supervisor) rather than wait forever.
+ERROR_AGREEMENT_S = 120.0
+
 MAX_PROTOCOL_SEQUENCE = (1 << 63) - 1
 FIFO_CHILD_SCHEMA = ("tensorfold.tp-fifo-retained-children", 1)
 
@@ -349,6 +355,35 @@ class TensorParallelDecoder:
         key = f"tensorfold/flashnext/round/{sequence}/ack/{peer}"
         validate_store_key(key)
         return key
+
+    def _agreement_key(self, sequence, peer):
+        key = f"tensorfold/flashnext/round/{sequence}/agreed/{peer}"
+        validate_store_key(key)
+        return key
+
+    def _await_agreement(self, sequence, kind, error):
+        """A peer whose operation raised a recoverable error resumes only after the leader confirms every rank raised
+        alike; otherwise the others may sit in a collective this rank skipped, so it retires the cohort."""
+
+        from tensorfold.cuda.store_wait import timed_out
+
+        key, wait = self._agreement_key(sequence, self.comm.rank), timedelta(seconds=ERROR_AGREEMENT_S)
+        try:
+            try:
+                self.comm.store.wait([key], wait)
+            except Exception as failure:
+                if not timed_out(failure, [key], wait):
+                    raise
+                print(f"[tensorfold] rank {self.comm.rank}: {kind} operation {sequence} raised {type(error).__name__}"
+                      f" on this rank only: {str(error)[:512]}", file=sys.stderr, flush=True)
+                raise RuntimeError(
+                    f"tensor-parallel rank {self.comm.rank} raised {type(error).__name__} in {kind} operation "
+                    f"{sequence} and the leader did not confirm within {ERROR_AGREEMENT_S:g} s that every rank "
+                    "raised alike (a rank-local failure); retiring the rank cohort") from error
+            self.comm.store.delete_key(key)
+        except BaseException as failure:
+            self._poison_control(failure)
+            raise
 
     def _poison_control(self, error):
         first = self.failure is None
@@ -938,19 +973,34 @@ class TensorParallelDecoder:
             result, error, status = self._execute(body, source)
             if self.failure is not None:
                 raise RuntimeError("tensor-parallel control publication failed; retire all rank owners") from self.failure
-            acknowledged = list(zip(sorted(piped), self.pipes.acknowledgments())) if piped else []
-            keys = [self._ack_key(sequence, peer) for peer in stored]
+            # After a local failure the peers acknowledge promptly only if they failed alike (_await_agreement).
+            wait = timedelta(hours=1) if error is None else timedelta(seconds=ERROR_AGREEMENT_S)
+            try:
+                acknowledged = (list(zip(sorted(piped), self.pipes.acknowledgments(wait.total_seconds())))
+                                if piped else [])
+                keys = [self._ack_key(sequence, peer) for peer in stored]
+                if keys:
+                    self.comm.store.wait(keys, wait)
+            except Exception as timeout:
+                if error is None:
+                    raise
+                raise RuntimeError(
+                    f"tensor-parallel rank 0 raised {type(error).__name__} in {body['kind']} operation {sequence} and "
+                    f"its peers did not acknowledge within {wait.total_seconds():g} s (they did not fail alike); "
+                    "retiring the rank cohort") from timeout
             if keys:
-                self.comm.store.wait(keys, timedelta(hours=1))
                 get_many = getattr(self.comm.store, "multi_get", None)
                 payloads = get_many(keys) if callable(get_many) else [self.comm.store.get(key) for key in keys]
                 if len(payloads) != len(keys):
                     raise RuntimeError("tensor-parallel scheduler received an incomplete acknowledgment batch")
                 acknowledged += zip(stored, payloads, keys)
+            failed = []
             for peer, payload, *key in acknowledged:
                 if type(payload) is not bytes or len(payload) > MAX_MESSAGE_BYTES:
                     raise ValueError("tensor-parallel acknowledgment requires at most 96 MiB of bytes")
                 remote = json_nesting.loads(payload)
+                if remote["error"] is not None:
+                    failed.append(self._agreement_key(sequence, peer))
                 if key:
                     self.comm.store.delete_key(key[0])
                 if remote != status:
@@ -959,6 +1009,14 @@ class TensorParallelDecoder:
                         self._poison_control(source)
                         raise_failures(source, (failure,))
                     self._poison_control(failure)
+            if failed and self.failure is None:
+                # Peers that raised wait for this confirmation that every rank raised alike (_await_agreement).
+                set_many = getattr(self.comm.store, "multi_set", None)
+                if callable(set_many):
+                    set_many(failed, ["1"] * len(failed))
+                else:
+                    for key in failed:
+                        self.comm.store.set(key, "1")
             if self.admission_policy == "fifo" and self.failure is None:
                 # The publisher owns FIFO payload reclamation after every
                 # consumer's ACK. Reclaim on this same sending connection;
@@ -1253,6 +1311,8 @@ class TensorParallelDecoder:
         if error is not None and not self._recoverable_operation(error, body["kind"]):
             self._poison_control(error)
             raise RuntimeError("tensor-parallel scheduler peer failed; retire all rank owners") from error
+        if error is not None:
+            self._await_agreement(body["sequence"], body["kind"], error)
         if (body["kind"] == "admit" and isinstance(error, NoRoom)
                 and getattr(self.engine, "serving_profiles", None) is None):
             try:

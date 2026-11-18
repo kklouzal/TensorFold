@@ -202,11 +202,11 @@ class ControlPipes:
             self.broken = True
             raise
 
-    def acknowledgments(self):
-        """One frame from every piped peer, in peer order."""
+    def acknowledgments(self, timeout_s=None):
+        """One frame from every piped peer, in peer order (within ``timeout_s``, default the channel's timeout)."""
         if self.broken:
             raise RuntimeError("tensor-parallel control pipes are broken; retire the cohort")
-        deadline = time.monotonic() + self.timeout_s
+        deadline = time.monotonic() + (self.timeout_s if timeout_s is None else float(timeout_s))
         try:
             pending = {self.readers[peer]: peer for peer in self.piped()}
             frames = {}

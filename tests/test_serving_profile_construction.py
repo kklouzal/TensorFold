@@ -8,6 +8,7 @@ import threading
 import pytest
 import torch
 
+from tensorfold.families.qwen4_exp.cuda.tp_scheduler import ERROR_AGREEMENT_S
 from tensorfold.families.qwen4_exp.cuda.profile_construction import (
     Construction, ConstructionFatal, ConstructionRefused, replay,
 )
@@ -38,7 +39,7 @@ class Store:
             self.data.pop(key, None)
 
     def wait(self, keys, duration):
-        assert duration == timedelta(hours=1)
+        assert duration in (timedelta(hours=1), timedelta(seconds=ERROR_AGREEMENT_S))  # ACK/command, or agreement
         with self.condition:
             assert self.condition.wait_for(lambda: all(key in self.data for key in keys), 5), keys
 

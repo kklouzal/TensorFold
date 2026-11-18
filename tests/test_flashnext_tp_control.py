@@ -7,6 +7,7 @@ import threading
 import numpy as np
 import pytest
 
+from tensorfold.families.qwen4_exp.cuda.tp_scheduler import ERROR_AGREEMENT_S
 from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
 
 torch = pytest.importorskip("torch")
@@ -20,7 +21,7 @@ class Store:
         self.values[key] = value.encode() if isinstance(value, str) else value
 
     def wait(self, keys, duration):
-        assert duration == timedelta(hours=1)
+        assert duration in (timedelta(hours=1), timedelta(seconds=ERROR_AGREEMENT_S))  # ACK/command, or agreement
         assert all(key in self.values for key in keys)
 
     def get(self, key):

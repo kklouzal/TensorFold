@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from tensorfold.families.qwen4_exp.cuda.tp_scheduler import ERROR_AGREEMENT_S
 from tensorfold.cuda.memory_gate import NoRoom
 from tensorfold.cuda.scheduler import Scheduler
 from tensorfold.cuda.streams import Stream
@@ -25,7 +26,7 @@ class Store:
             self.condition.notify_all()
 
     def wait(self, keys, duration):
-        assert duration == timedelta(hours=1)
+        assert duration in (timedelta(hours=1), timedelta(seconds=ERROR_AGREEMENT_S))  # ACK/command, or agreement
         with self.condition:
             assert self.condition.wait_for(lambda: all(key in self.data for key in keys), 5), keys
 
@@ -706,7 +707,7 @@ def test_real_scheduler_noroom_catches_release_rpc_frames_before_live_retry(coho
         from tensorfold.families.qwen4_exp.cuda.input_preparation import install_input_preparation
         store = root.comm.store
         def wait(keys, duration):
-            assert duration in (timedelta(hours=1), timedelta(seconds=60))
+            assert duration in (timedelta(hours=1), timedelta(seconds=60), timedelta(seconds=ERROR_AGREEMENT_S))
             with store.condition:
                 assert store.condition.wait_for(lambda: all(key in store.data for key in keys), 5), keys
         store.wait = wait
