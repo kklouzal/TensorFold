@@ -520,9 +520,11 @@ __device__ __forceinline__ void rn_load_query(RNStorage<H>& storage, const __hal
 }
 
 // Statistics pass, part 1: scores of this CTA's tiles into scores[row][head][key].
-template<int H>
+// ROTOR false: ordinary Q8 only (codec folds to 0, so the Q8 build carries no RotorQuant decode branches).
+template<int H, bool ROTOR>
 __global__ void rn_scores_kernel(const __half* queries, const int* selections, const int64_t* table,
-        float* scores, int rows, int width, int group, int page_tokens, const int* layer_word, int codec) {
+        float* scores, int rows, int width, int group, int page_tokens, const int* layer_word, int kv_codec) {
+    const int codec = ROTOR ? kv_codec : 0;
     __shared__ RNStorage<H> storage;
     __shared__ int end, count, enabled, fault;
     __shared__ const int* ids;
@@ -620,10 +622,11 @@ __global__ void rn_fold_kernel(const int* selections, const int64_t* table, cons
 }
 
 // Probability pass: each CTA zeroes and then publishes its own tiles' Half P.
-template<int H>
+template<int H, bool ROTOR>
 __global__ void rn_probability_kernel(const __half* queries, const int* selections, const int64_t* table,
         const float* global, __half* probability, int rows, int width, int group, int page_tokens,
-        const int* layer_word, int codec) {
+        const int* layer_word, int kv_codec) {
+    const int codec = ROTOR ? kv_codec : 0;
     __shared__ RNStorage<H> storage;
     __shared__ float scores[H * TILE];
     __shared__ int end, count, enabled, fault;
@@ -725,8 +728,10 @@ constexpr int RN_PV_PITCH = RN_PV_COLUMNS + 2;  // odd word pitch: lane l's key 
 static_assert(RN_PV_COLUMNS % RN_RUN == 0 && DIM % RN_PV_COLUMNS == 0 && RN_PV_GROUP >= 1
               && RN_PV_THREADS % (TILE * RN_PV_RUNS) == 0 && RN_PV_PITCH / 2 % 2 == 1 && RN_TILES <= 255,
               "RN PV block geometry");
+template<bool ROTOR>
 __global__ void __launch_bounds__(RN_PV_THREADS, 2) rn_pv_kernel(const __half* probability, const int* selections,
-        const int64_t* table, float* output, int rows, int width, int page_tokens, const int* layer_word, int codec) {
+        const int64_t* table, float* output, int rows, int width, int page_tokens, const int* layer_word, int kv_codec) {
+    const int codec = ROTOR ? kv_codec : 0;
     const int row = blockIdx.x, column_base = blockIdx.y * RN_PV_COLUMNS;
     const int head = threadIdx.x >> 5, lane = threadIdx.x & 31;
     const int layer = *layer_word;
@@ -980,7 +985,8 @@ void launch_rn_qk(const T& queries, const T& selected, const T& table, const T& 
     const dim3 grid(rows, HEADS / H, rows <= RN_FEW_ROWS ? RN_SPLITS_FEW : RN_SPLITS);
     const auto* q = reinterpret_cast<const __half*>(queries.data_ptr());
     if (P) {
-        rn_probability_kernel<H><<<grid, H * 32, rn_table_bytes(codec), stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+        (codec ? rn_probability_kernel<H, true> : rn_probability_kernel<H, false>)
+            <<<grid, H * 32, rn_table_bytes(codec), stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
             global.data_ptr<float>(), reinterpret_cast<__half*>(output.data_ptr()), rows, int(selected.size(2)), group,
             page_tokens, layer.data_ptr<int>(), codec);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -988,7 +994,8 @@ void launch_rn_qk(const T& queries, const T& selected, const T& table, const T& 
     }
     // Stream-ordered scratch (a capture's private pool inside graphs): rows x heads x 2051-key scores.
     auto scores = at::empty({rows, HEADS, RN_TILES * TILE}, queries.options().dtype(at::kFloat));
-    rn_scores_kernel<H><<<grid, H * 32, rn_table_bytes(codec), stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+    (codec ? rn_scores_kernel<H, true> : rn_scores_kernel<H, false>)
+        <<<grid, H * 32, rn_table_bytes(codec), stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
         scores.data_ptr<float>(), rows, int(selected.size(2)), group, page_tokens, layer.data_ptr<int>(), codec);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     rn_fold_kernel<<<rows, HEADS * 32, 0, stream>>>(selected.data_ptr<int>(), table.data_ptr<int64_t>(),
@@ -1019,7 +1026,8 @@ void sm70_paged_rn_merge_cuda(const T& gathered, const T& table, T& output, int 
 void sm70_paged_rn_pv_cuda(const T& probability, const T& selected, const T& table, T& output,
                           int rows, int page_tokens, const T& layer, int codec) {
     if (!rows) return;
-    rn_pv_kernel<<<dim3(rows, DIM / RN_PV_COLUMNS), RN_PV_THREADS, rn_table_bytes(codec), at::cuda::getCurrentCUDAStream()>>>(
+    (codec ? rn_pv_kernel<true> : rn_pv_kernel<false>)
+        <<<dim3(rows, DIM / RN_PV_COLUMNS), RN_PV_THREADS, rn_table_bytes(codec), at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(probability.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
         output.data_ptr<float>(), rows, int(selected.size(2)), page_tokens, layer.data_ptr<int>(), codec);
     C10_CUDA_KERNEL_LAUNCH_CHECK();

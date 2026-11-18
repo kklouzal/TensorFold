@@ -50,7 +50,7 @@ __device__ __forceinline__ __half decoded_half(const void* data, const void* sca
     if (!bits) return static_cast<const __half*>(data)[at];
     if (tf_rq4::eight_bit(codec))
         return decoded_q8_rotor(static_cast<const uint8_t*>(data)[at], static_cast<const float*>(scales)[at / 128], table);
-    if (codec == 9 || codec == 10 || codec == 4 || codec == 5) {
+    if (codec != 0) {  // every four-bit kernel codec (1..5, 9, 10): nibbles, one metadata word per 128 values
         const unsigned byte = static_cast<const uint8_t*>(data)[at / 2];
         const int index = (byte >> (4 * (at & 1))) & 15;
         return decoded_q4(codec, index, static_cast<const float*>(scales)[at / 128]);

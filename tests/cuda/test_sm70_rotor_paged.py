@@ -124,3 +124,65 @@ def test_rn_fp32_scale_rotor_matches_fp64_attention_over_decoded_operands(codec,
         actual = torch.cat([out[rank][row].double() for rank in range(PEERS)])
         error = (actual - expected).abs().max().item()
         assert error <= 2e-3 * expected.abs().max().item() + 1e-3, (row, error)
+
+
+# The original paged owner family (local statistics, normalized partials) reads K/V through decoded_half.
+@pytest.mark.parametrize('codec', [12, 8, 1, 2, 3, 4, 5])
+@torch.no_grad()
+def test_paged_family_fp32_scale_rotor_matches_fp64_attention_over_decoded_operands(codec):
+    bits = 8 if codec in (8, 12) else 4
+    gen = torch.Generator(device='cuda').manual_seed(5108 + codec)
+    keys = torch.randn((LOGICAL, 256), device='cuda', generator=gen).half()
+    values = torch.randn((LOGICAL, 256), device='cuda', generator=gen).half()
+    shards = [owner_shard(rank, keys, values, codec) for rank in range(PEERS)]
+    layer = torch.tensor([3], dtype=torch.int32, device='cuda')
+    count = 300
+    query = (torch.randn((8, ROWS, 3, 256), device='cuda', generator=gen) * 4).half()
+    selection = torch.zeros((8, ROWS, count + 2), dtype=torch.int32, device='cuda')
+    chosen = torch.stack([torch.randperm(LOGICAL - ROWS, device='cuda', generator=gen)[:count].sort().values
+                          for _ in range(ROWS)])
+    selection[0, :, :count] = chosen.int()
+    selection[0, :, -2:] = torch.tensor([count, 1], dtype=torch.int32, device='cuda')
+    common = dict(group_start=0, page_tokens=PAGE, layer=layer)
+    kv = dict(key_bits=bits, key_codec=codec)
+    all_stats = torch.empty((8, ROWS, 12, 2), dtype=torch.float32, device='cuda')
+    all_stats[..., 0] = -torch.inf
+    all_stats[..., 1] = 0
+    for rank, shard in enumerate(shards):
+        stats = torch.empty((ROWS, 12, 2), dtype=torch.float32, device='cuda')
+        operator.local_statistics(query, selection, shard['table'], stats, scale=1 / 16, **kv, **common)
+        all_stats[rank].copy_(stats)
+    receive = torch.zeros((8, ROWS, 12, 256), dtype=torch.float32, device='cuda')
+    for rank, shard in enumerate(shards):
+        global_stats = torch.empty((ROWS, 12, 2), dtype=torch.float32, device='cuda')
+        operator.merge_statistics(all_stats, shard['table'], global_stats, **common)
+        local = torch.empty((ROWS, 12, 256), dtype=torch.float32, device='cuda')
+        operator.normalized_partial(query, selection, shard['table'], global_stats, local, scale=1 / 16,
+                                    value_bits=bits, value_codec=codec, **kv, **common)
+        receive[rank].copy_(local)
+    out = [torch.empty((ROWS, 3, 256), dtype=torch.float16, device='cuda') for _ in range(PEERS)]
+    for rank, shard in enumerate(shards):
+        operator.merge_values(receive, shard['table'], out[rank], rank=rank, page_tokens=PAGE, layer=layer,
+                              value_bits=bits, value_codec=codec)
+    torch.cuda.synchronize()
+    for shard in shards:
+        assert shard['status'].cpu().tolist() == [0, -2]
+    dk = torch.empty((LOGICAL, 256), dtype=torch.float64, device='cuda')
+    dv = torch.empty_like(dk)
+    for shard in shards:
+        k, v = decoded(shard['k'], shard['ks'], codec), decoded(shard['v'], shard['vs'], codec)
+        for page in range(LOGICAL // PAGE):
+            offset = int(shard['offsets'][page])
+            if offset >= 0:
+                dk[page * PAGE:(page + 1) * PAGE] = k[offset:offset + PAGE, 0].double()
+                dv[page * PAGE:(page + 1) * PAGE] = v[offset:offset + PAGE, 0].double()
+    variant = {12: 'signed-iso128', 8: 'signed-iso128-norm8', 1: 'planar', 2: 'isofast', 3: 'iso64-norm',
+               4: 'signed-iso128', 5: 'signed-iso64-norm'}[codec]
+    for row in range(ROWS):
+        ids = chosen[row].long()
+        q = query[:PEERS, row].reshape(12, 256).double()
+        p = torch.softmax(q @ dk[ids].T / 16, dim=-1)
+        expected = rotate_ref((p @ dv[ids]).float(), variant, inverse=True).double()
+        actual = torch.cat([out[rank][row].double() for rank in range(PEERS)])
+        error = (actual - expected).abs().max().item()
+        assert error <= 2e-3 * expected.abs().max().item() + 1e-3, (row, error)
