@@ -2182,6 +2182,21 @@ prefill +4.77% (every cell +1.2% to +6.7%), decode +2.16% (C8 4K +11.9%, C24 16K
 other cells within ±2.5%); golden-vg2 identical. The decode figure comes from a single
 pair and rests mostly on one cell, so treat its size as uncertain.
 
+**Tensor-parallel followers spin briefly for the next command (2026-11-18).** A
+follower rank that slept in `poll()` for the leader's next command woke late when it ran
+on the leader's other socket (41–51 µs vs 1–7 µs, then a slower start), so ranks 4–7
+launched every verify about 0.33 ms after ranks 0–3. `ControlPipes.receive`
+(`src/tensorfold/cuda/control_pipes.py`) now polls without blocking for up to 20 ms
+(`RECEIVE_SPIN_SECONDS`) before it falls back to the blocking poll with the remaining
+timeout. Leader departure and timeouts are detected exactly as before. Each follower
+therefore keeps one CPU core busy for up to 20 ms after its previous command; an idle
+cohort sleeps after that. With 4 ranks on each 28-core NUMA node, at most 4 cores per
+node spin. 20 ms covers the gap between commands in a decode round (C1 round median
+about 27 ms) and was the only value measured. Verify launch spread fell from a median of
+334 µs to 61 µs, and the C1 round median from 27.2 to 26.8 ms. One fast-protocol session
+per arm (same setup and base as above): decode +2.26% (+1.83% with the best cell
+dropped; C24 16K −2.25%), prefill +0.58%; golden-vg2 identical.
+
 ## V100 (SM70) adaptive development status
 
 The V100 path is being refactored against the
