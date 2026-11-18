@@ -1409,6 +1409,22 @@ __device__ __forceinline__ uint4 decode8(const PackedView& bank, int64_t row, in
     return decode8_generic(bank, row, column);
 }
 
+// decode8 with the kind resolved at compile time (Kind < 0: the runtime switch). Same expressions,
+// so bitwise equal; prefill kernels instantiate one body per admitted kind instead of all seven.
+template <int Kind>
+__device__ __forceinline__ uint4 decode8_fixed(const PackedView& bank, int64_t row, int column) {
+    if constexpr (Kind < 0) {
+        return decode8(bank, row, column);
+    } else {
+        constexpr int Block = Kind == 8 || Kind == 20 ? 32 : Kind == 42 ? 64 : 256;
+        constexpr int Bytes = Kind == 8 ? 34 : Kind == 18 ? 98 : Kind == 20 ? 18 : Kind == 21 ? 110
+                            : Kind == 22 ? 82 : Kind == 23 ? 136 : 18;
+        const int col = column + bank.offset;
+        if (col % 8 == 0) return decode8_kind<Kind, Block, Bytes>(bank.data + row * bank.stride, col);
+        return decode8_generic(bank, row, column);
+    }
+}
+
 // Formats without the integer decode below keep the reference scalar/WMMA grouped kernels.
 // Each row retains the incumbent's lane-strided FMA sequence and shuffle tree.
 // Only coefficient decoding is shared: no arithmetic reduction spans queries.
@@ -2024,6 +2040,40 @@ void launch_down_decode(const __half* activation, int rows, const PackedView& do
     #undef TF_DOWN_LAUNCH
 }
 
+// publish_owned for prompt-sized calls: one thread per 8 consecutive outputs of one pair (dims % 8
+// == 0, 16-byte aligned shared/output; the launcher checks), int32 indices (pairs * dims < 2^31).
+// Same values and storage rounding per element; owned pairs are skipped whole.
+template <typename Index, bool F32>
+__global__ void publish_owned8(const Index* global, const int64_t* local, const float* shared,
+                               void* output, int pairs, int dims, int slots, int global_experts) {
+    const int chunks = dims / 8;
+    for (int item = blockIdx.x * blockDim.x + threadIdx.x; item < pairs * chunks; item += gridDim.x * blockDim.x) {
+        const int pair = item / chunks, column = (item % chunks) * 8;
+        const auto id = global[pair];
+        float v[8];
+        if (id == global_experts) {
+            const float4* s = reinterpret_cast<const float4*>(shared + (pair / slots) * dims + column);
+            const float4 a = s[0], b = s[1];
+            v[0] = a.x; v[1] = a.y; v[2] = a.z; v[3] = a.w; v[4] = b.x; v[5] = b.y; v[6] = b.z; v[7] = b.w;
+        } else {
+            float value;
+            if (id < 0 || id > global_experts) value = __int_as_float(0x7fffffff);
+            else if (local[pair] < 0) value = 0.0f;
+            else continue;  // owned: the down kernel's storage
+            #pragma unroll
+            for (int j = 0; j < 8; ++j) v[j] = value;
+        }
+        const int at = pair * dims + column;
+        if constexpr (F32) {
+            float4* o = reinterpret_cast<float4*>(static_cast<float*>(output) + at);
+            o[0] = make_float4(v[0], v[1], v[2], v[3]);
+            o[1] = make_float4(v[4], v[5], v[6], v[7]);
+        } else {
+            *reinterpret_cast<uint4*>(static_cast<__half*>(output) + at) = pack8(v);
+        }
+    }
+}
+
 // Grouping tiles are consecutive 16-pair slices of each expert. Only the tile opening each
 // 64-pair group leads (CTA-uniform return), so every pair is computed by exactly one CTA.
 __device__ __forceinline__ bool prefill_group(const OwnedGrouping& group, int tile,
@@ -2037,10 +2087,21 @@ __device__ __forceinline__ bool prefill_group(const OwnedGrouping& group, int ti
     return true;
 }
 
+// Packed bytes per 256-coefficient block of the kinds whose gate/up rows the prefill kernel stages raw.
+template <int Kind>
+__host__ __device__ constexpr int staged_block_bytes() {
+    return Kind == 18 ? 98 : Kind == 21 ? 110 : Kind == 22 ? 82 : Kind == 23 ? 136 : 0;
+}
+
 // CTA = (32 intermediate outputs, <=64 pairs of one expert); K steps of 64, double-buffered:
 // step s+1's activations are requested before step s's MMAs and its coefficients decoded
 // after them, so one barrier per step separates producers from consumers.
-__global__ __launch_bounds__(PREFILL_THREADS)
+// Staged kinds (word-aligned rows, offset 0; the launcher checks): the CTA's 64 packed rows of
+// one 256-column block are copied to shared memory with word loads issued a block (4 steps)
+// ahead, and coefficients are decoded from there by the same decode8_block expressions, so the
+// staged FP16 tiles and the MMA sequence are bitwise those of the direct path.
+template <int Kind>
+__global__ __launch_bounds__(PREFILL_THREADS, 2)
 void expert_gate_up_prefill(const __half* x, PackedView gate, PackedView up,
                             int slots, OwnedGrouping group, __half* activation) {
     namespace wmma = nvcuda::wmma;
@@ -2051,6 +2112,10 @@ void expert_gate_up_prefill(const __half* x, PackedView gate, PackedView up,
     const int first = blockIdx.x * M;
     __shared__ __align__(32) __half smem[2 * STAGE];  // per stage: gate A | up A | B; reused for C
     __shared__ int rows[N], pairs[N];
+    constexpr int BYTES = staged_block_bytes<Kind>(), STAGED = BYTES > 0;
+    constexpr int WORDS = (BYTES + 6) / 4;  // a block's bytes from its word-aligned start (start % 4 <= 2)
+    constexpr int RAW = 2 * M * WORDS, FETCH = (RAW + PREFILL_THREADS - 1) / PREFILL_THREADS;
+    __shared__ uint32_t raw[STAGED ? RAW : 1];  // [gate rows | up rows][WORDS] of one 256-column block
     const int thread = threadIdx.x, warp = thread / 32;
     if (thread < N) {
         const int pair = thread < count ? group.pairs[begin + thread] : -1;
@@ -2090,15 +2155,53 @@ void expert_gate_up_prefill(const __half* x, PackedView gate, PackedView up,
             *reinterpret_cast<uint4*>(stage + (2 * M + item / 8) * LD + bpart * 8) = b[j];
         }
     };
+    // Word i of the raw block: packed row i / WORDS (gate rows, then up rows), loaded from the
+    // block's word-aligned start; words wholly past the block end are not read. Rows are word
+    // aligned, so a block ending a row ends on a word boundary and no load leaves its row.
+    // Both banks are word aligned (launcher), so offsets within the CTA's 32 rows decide alignment.
+    const uint8_t* gbase = gate.data + (int64_t(expert) * 160 + first) * gate.stride;
+    const uint8_t* ubase = up.data + (int64_t(expert) * 160 + first) * up.stride;
+    const int gstride = int(gate.stride), ustride = int(up.stride);  // one packed row: < 2^31
+    uint32_t fetched[FETCH];
+    auto fetch = [&](int block) {
+        #pragma unroll
+        for (int j = 0; j < FETCH; ++j) {
+            const int i = thread + j * PREFILL_THREADS, r = i / WORDS, word = i % WORDS;
+            const int start = (r % M) * (r < M ? gstride : ustride) + block * BYTES;
+            const int at = (start & ~3) + 4 * word;
+            fetched[j] = i < RAW && at < start + BYTES
+                ? __ldg(reinterpret_cast<const uint32_t*>((r < M ? gbase : ubase) + at)) : 0u;
+        }
+    };
+    auto publish = [&] {
+        #pragma unroll
+        for (int j = 0; j < FETCH; ++j)
+            if (thread + j * PREFILL_THREADS < RAW) raw[thread + j * PREFILL_THREADS] = fetched[j];
+    };
+    auto decode = [&](const PackedView& bank, int r, int column) {
+        if constexpr (STAGED) {
+            const int start = (r % M) * int(bank.stride) + (column / 256) * BYTES;  // base rows word aligned
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(raw + r * WORDS) + (start & 3);
+            return decode8_block<Kind>(p, column % 256);
+        } else {
+            return decode8_fixed<Kind>(bank, source, column);
+        }
+    };
     const int mtile = warp % 2, ntile = warp / 2;
     const bool active = ntile * 16 < count;
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> gacc, uacc;
     wmma::fill_fragment(gacc, 0.0f);
     wmma::fill_fragment(uacc, 0.0f);
+    if constexpr (STAGED) {
+        fetch(0);
+        publish();
+        __syncthreads();
+        fetch(1);
+    }
     {
         uint4 b[LOADS];
         load_b(0, b);
-        store(smem, decode8(gate, source, dchunk * 8), decode8(up, source, dchunk * 8), b);
+        store(smem, decode(gate, drow, dchunk * 8), decode(up, M + drow, dchunk * 8), b);
     }
     __syncthreads();
     for (int base = 0, stage = 0; base < 2560; base += K, stage ^= 1) {
@@ -2121,9 +2224,18 @@ void expert_gate_up_prefill(const __half* x, PackedView gate, PackedView up,
                 wmma::mma_sync(uacc, a, bf, uacc);
             }
         }
+        if constexpr (STAGED) {
+            // Step base + K opens block (base + K) / 256: every decode of the previous block
+            // finished before the last barrier, so the buffer is free (CTA-uniform barrier).
+            if (next && (base + K) % 256 == 0) {
+                publish();
+                __syncthreads();
+                if (base + K + 256 < 2560) fetch((base + K) / 256 + 1);
+            }
+        }
         if (next)
-            store(smem + (stage ^ 1) * STAGE, decode8(gate, source, base + K + dchunk * 8),
-                  decode8(up, source, base + K + dchunk * 8), b);
+            store(smem + (stage ^ 1) * STAGE, decode(gate, drow, base + K + dchunk * 8),
+                  decode(up, M + drow, base + K + dchunk * 8), b);
         __syncthreads();
     }
     // C is staged column-major (pair-major) so each pair's outputs are contiguous.
@@ -2147,7 +2259,7 @@ void expert_gate_up_prefill(const __half* x, PackedView gate, PackedView up,
 // K=160 resident. Activations are loaded once per CTA; each 64-row slice of coefficients is
 // decoded once into shared memory. Output storage rounding and -0 canonicalization match the
 // decode-size kernel.
-template <bool F32>
+template <bool F32, int Kind>
 __global__ __launch_bounds__(PREFILL_THREADS)
 void expert_down160_prefill(const __half* activation, PackedView down,
                             int dims, OwnedGrouping group, void* output) {
@@ -2174,7 +2286,7 @@ void expert_down160_prefill(const __half* activation, PackedView down,
         for (int item = thread; item < M * (K / 8); item += PREFILL_THREADS) {
             const int row = item / (K / 8), part = item % (K / 8);
             *reinterpret_cast<uint4*>(aa + row * LD + part * 8) =
-                decode8(down, int64_t(expert) * dims + first + row, part * 8);
+                decode8_fixed<Kind>(down, int64_t(expert) * dims + first + row, part * 8);
         }
         __syncthreads();
         wmma::fragment<wmma::accumulator, 16, 16, 16, float> c0, c1;
@@ -2351,8 +2463,24 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
         }
         auto input = reinterpret_cast<const __half*>(x.data_ptr());
         if (x.size(0) > DECODE_MAX_ROWS)  // prefill: tensor-core tiles amortize coefficient decoding over the tile's pairs
-            expert_gate_up_prefill<<<dim3(5, group.max_tiles), PREFILL_THREADS, 0, stream>>>(
-                input, g, u, int(picks.size(1)), group, act);
+        {
+            const dim3 grid(5, group.max_tiles);
+            // Raw staging needs word-aligned packed rows read from their first byte.
+            const auto aligned = [](const PackedView& v) {
+                return v.offset == 0 && v.stride % 4 == 0 && (reinterpret_cast<uintptr_t>(v.data) & 3) == 0;
+            };
+            const int kind = g.kind == u.kind && aligned(g) && aligned(u) ? g.kind : -1;
+            #define TF_GU_PREFILL(K) expert_gate_up_prefill<K><<<grid, PREFILL_THREADS, 0, stream>>>( \
+                input, g, u, int(picks.size(1)), group, act)
+            switch (kind) {  // SC117 expert banks: IQ3_XXS, IQ3_S, IQ2_S, IQ4_XS gate/up pairs
+                case 18: TF_GU_PREFILL(18); break;
+                case 21: TF_GU_PREFILL(21); break;
+                case 22: TF_GU_PREFILL(22); break;
+                case 23: TF_GU_PREFILL(23); break;
+                default: TF_GU_PREFILL(-1);
+            }
+            #undef TF_GU_PREFILL
+        }
         else  // the 2- and 4-row selectors share one decode-size kernel (per-row results are slice independent)
             launch_gate_up_decode(input, int(x.size(0)), g, u, int(picks.size(1)), group, act, stream);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -2364,12 +2492,16 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
     if (grouping.defined()) {
         auto act = reinterpret_cast<const __half*>(activation.data_ptr());
         const bool prefill = x.size(0) > DECODE_MAX_ROWS && (reinterpret_cast<uintptr_t>(act) & 15) == 0;
-        if (prefill && output.scalar_type() == at::kFloat)
-            expert_down160_prefill<true><<<dim3(dims / 256, group.max_tiles), PREFILL_THREADS, 0, stream>>>(
-                act, d, dims, group, output.data_ptr());
-        else if (prefill)
-            expert_down160_prefill<false><<<dim3(dims / 256, group.max_tiles), PREFILL_THREADS, 0, stream>>>(
-                act, d, dims, group, output.data_ptr());
+        #define TF_DOWN_PREFILL(F, K) expert_down160_prefill<F, K><<<dim3(dims / 256, group.max_tiles), \
+            PREFILL_THREADS, 0, stream>>>(act, d, dims, group, output.data_ptr())
+        #define TF_DOWN_PREFILL_KIND(F) do { switch (d.kind) {  /* SC117 down banks: IQ4_NL, Q2_0 */ \
+            case 20: TF_DOWN_PREFILL(F, 20); break; \
+            case 42: TF_DOWN_PREFILL(F, 42); break; \
+            default: TF_DOWN_PREFILL(F, -1); } } while (0)
+        if (prefill && output.scalar_type() == at::kFloat) TF_DOWN_PREFILL_KIND(true);
+        else if (prefill) TF_DOWN_PREFILL_KIND(false);
+        #undef TF_DOWN_PREFILL_KIND
+        #undef TF_DOWN_PREFILL
         else
             launch_down_decode(act, int(x.size(0)), d, dims, group, output.data_ptr(), output.scalar_type() == at::kFloat, stream);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -2380,13 +2512,27 @@ void gguf_experts_owned_impl(const at::Tensor& x, const at::Tensor& picks,
         publish_owned<INDEX, FLOAT><<<publish_blocks, 128, 0, stream>>>( \
             picks.data_ptr<INDEX>(), local.data_ptr<int64_t>(), shared.data_ptr<float>(), \
             output.data_ptr(), count, dims, int(picks.size(1)), int(global_experts))
-    if (picks.scalar_type() == at::kLong) {
-        if (output.scalar_type() == at::kFloat) PUBLISH_OWNED(int64_t, true);
+    #define PUBLISH_OWNED8(INDEX, FLOAT) \
+        publish_owned8<INDEX, FLOAT><<<std::min((pairs * (dims / 8) + 127) / 128, 65535), 128, 0, stream>>>( \
+            picks.data_ptr<INDEX>(), local.data_ptr<int64_t>(), shared.data_ptr<float>(), \
+            output.data_ptr(), pairs, dims, int(picks.size(1)), int(global_experts))
+    // Prompt-sized calls: 8 outputs per thread (bitwise the same publication).
+    const bool wide = x.size(0) > DECODE_MAX_ROWS && dims % 8 == 0 && count <= std::numeric_limits<int>::max()
+                      && (reinterpret_cast<uintptr_t>(output.data_ptr()) & 15) == 0
+                      && (reinterpret_cast<uintptr_t>(shared.data_ptr()) & 15) == 0;
+    const bool f32_output = output.scalar_type() == at::kFloat;
+    if (wide && picks.scalar_type() == at::kLong) {
+        if (f32_output) PUBLISH_OWNED8(int64_t, true); else PUBLISH_OWNED8(int64_t, false);
+    } else if (wide) {
+        if (f32_output) PUBLISH_OWNED8(int32_t, true); else PUBLISH_OWNED8(int32_t, false);
+    } else if (picks.scalar_type() == at::kLong) {
+        if (f32_output) PUBLISH_OWNED(int64_t, true);
         else PUBLISH_OWNED(int64_t, false);
     } else {
-        if (output.scalar_type() == at::kFloat) PUBLISH_OWNED(int32_t, true);
+        if (f32_output) PUBLISH_OWNED(int32_t, true);
         else PUBLISH_OWNED(int32_t, false);
     }
+    #undef PUBLISH_OWNED8
     #undef PUBLISH_OWNED
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     if (supplied_activation) {
@@ -2502,7 +2648,8 @@ void gguf_prepare_owned_gate_up() {
  RESIDENT(initialize_owned_gu_slots<int32_t>);RESIDENT(initialize_owned_gu_slots<int64_t>);
  RESIDENT(group_owned_routes<int32_t>);RESIDENT(group_owned_routes<int64_t>);
  RESIDENT(group_owned_prefix);RESIDENT(group_owned_scatter);RESIDENT(expert_gate_up_decode);RESIDENT(expert_gate_up_grouped<4>);
- RESIDENT(expert_gate_up_prefill);
+ RESIDENT(expert_gate_up_prefill<18>);RESIDENT(expert_gate_up_prefill<21>);RESIDENT(expert_gate_up_prefill<22>);
+ RESIDENT(expert_gate_up_prefill<23>);RESIDENT(expert_gate_up_prefill<-1>);
  #undef RESIDENT
 }
 void gguf_prepare_owned_from_activation() {
@@ -2516,10 +2663,15 @@ void gguf_prepare_owned_from_activation() {
     RESIDENT((expert_down160_decode<false,1,true>)); RESIDENT((expert_down160_decode<false,4,true>));
     RESIDENT((expert_down160_grouped<true,7>)); RESIDENT((expert_down160_grouped<true,-1>));
     RESIDENT((expert_down160_grouped<false,7>)); RESIDENT((expert_down160_grouped<false,-1>));
-    RESIDENT(expert_gate_up_prefill);
-    RESIDENT(expert_down160_prefill<true>); RESIDENT(expert_down160_prefill<false>);
+    RESIDENT(expert_gate_up_prefill<18>); RESIDENT(expert_gate_up_prefill<21>); RESIDENT(expert_gate_up_prefill<22>);
+    RESIDENT(expert_gate_up_prefill<23>); RESIDENT(expert_gate_up_prefill<-1>);
+    RESIDENT((expert_down160_prefill<true,20>)); RESIDENT((expert_down160_prefill<true,42>));
+    RESIDENT((expert_down160_prefill<true,-1>)); RESIDENT((expert_down160_prefill<false,20>));
+    RESIDENT((expert_down160_prefill<false,42>)); RESIDENT((expert_down160_prefill<false,-1>));
     RESIDENT(publish_owned<int32_t,true>); RESIDENT(publish_owned<int32_t,false>);
     RESIDENT(publish_owned<int64_t,true>); RESIDENT(publish_owned<int64_t,false>);
+    RESIDENT((publish_owned8<int32_t,true>)); RESIDENT((publish_owned8<int32_t,false>));
+    RESIDENT((publish_owned8<int64_t,true>)); RESIDENT((publish_owned8<int64_t,false>));
     RESIDENT(publish_activation_status<true>); RESIDENT(publish_activation_status<false>);
 #undef RESIDENT
 }
