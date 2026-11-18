@@ -351,8 +351,13 @@ template<int H> struct __align__(16) RNStorage {
     __half query[H * DIM];
     __half key[TILE * DIM];
     int64_t physical[RN_OWN_TILES][TILE];  // own tiles' local rows (-1 foreign/masked/beyond count)
-    float centroids[256];                  // RotorQuant codecs only (stage_centroids)
 };
+
+// RotorQuant centroid table (stage_centroids): dynamic shared memory, launched with RN_TABLE_BYTES only for
+// RotorQuant codecs, so ordinary Q8 launches keep their static footprint and occupancy.
+extern __shared__ float rn_centroid_table[];
+constexpr size_t RN_TABLE_BYTES = 256 * sizeof(float);
+__host__ __forceinline__ size_t rn_table_bytes(int codec) { return codec ? RN_TABLE_BYTES : 0; }
 
 // First tile (< limit) holding a descriptor fault, else limit; local_row_from latches the fault.
 // With `own`, also records the local rows of this CTA's tiles split, split + splits, ... (splits = gridDim.z) .
@@ -413,7 +418,8 @@ template<int H> struct RNTileRuns {
         }
     }
     // Decoded K into storage.key; ends with a barrier.
-    __device__ __forceinline__ void stage(RNStorage<H>& storage, const int64_t* physical, const int64_t* descriptor,
+    __device__ __forceinline__ void stage(RNStorage<H>& storage, const float* table, const int64_t* physical,
+                                          const int64_t* descriptor,
                                           int layer, int codec) const {
         #pragma unroll
         for (int i = 0; i < ITEMS; ++i) {
@@ -426,7 +432,7 @@ template<int H> struct RNTileRuns {
             for (int c = 0; c < RN_RUN; ++c) {
                 __half value = __float2half_rn(0.f);
                 if (local) {
-                    value = tf_sm70::decode_run_value<RN_RUN>(raw[i], scale[i], codec, c, storage.centroids);
+                    value = tf_sm70::decode_run_value<RN_RUN>(raw[i], scale[i], codec, c, table);
                     if (!isfinite(__half2float(value))) {
                         latch(descriptor, 2, layer);
                         value = __float2half_rn(0.f);
@@ -469,7 +475,8 @@ __device__ __forceinline__ void rn_tile_dots(const RNStorage<H>& storage, const 
 // Scores of the CTA's tiles split, split + splits, ... < stop: after each tile's barrier,
 // visit(tile, scores) consumes it (uniformly called by every thread).
 template<int H, typename Scores, typename Visit>
-__device__ __forceinline__ void rn_own_tiles(RNStorage<H>& storage, int split, int stop, const int64_t* descriptor,
+__device__ __forceinline__ void rn_own_tiles(RNStorage<H>& storage, const float* table, int split, int stop,
+                                            const int64_t* descriptor,
                                             int layer, int codec, Scores scores_of, Visit visit) {
     RNTileRuns<H> runs;
     bool live = RNTileRuns<H>::live(storage.physical[0]);
@@ -477,7 +484,7 @@ __device__ __forceinline__ void rn_own_tiles(RNStorage<H>& storage, int split, i
     for (int tile = split; tile < stop; tile += int(gridDim.z)) {
         const int64_t* physical = storage.physical[tile / int(gridDim.z)];
         float* scores = scores_of(tile);
-        if (live) runs.stage(storage, physical, descriptor, layer, codec);
+        if (live) runs.stage(storage, table, physical, descriptor, layer, codec);
         const bool next = tile + int(gridDim.z) < stop && RNTileRuns<H>::live(storage.physical[tile / int(gridDim.z) + 1]);
         if (next) runs.load(storage.physical[tile / int(gridDim.z) + 1], descriptor, codec);
         if (live) rn_tile_dots(storage, physical, scores);
@@ -527,7 +534,7 @@ __global__ void rn_scores_kernel(const __half* queries, const int* selections, c
         enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     __syncthreads();
     if (!enabled) return;
-    tf_sm70::stage_centroids(codec, storage.centroids);
+    const float* centroids = tf_sm70::stage_centroids(codec, rn_centroid_table);
     rn_load_query(storage, queries, rows, row, group, head_base, descriptor, layer);  // latches as the serial form
     const int tiles = (count + TILE - 1) / TILE;
     if (split >= tiles) return;
@@ -536,7 +543,7 @@ __global__ void rn_scores_kernel(const __half* queries, const int* selections, c
                                     split, storage.physical);
     if (split >= stop) return;
     float* head_scores = scores + (int64_t(row) * HEADS + head_base + warp) * RN_TILES * TILE;
-    rn_own_tiles(storage, split, stop, descriptor, layer, codec,
+    rn_own_tiles(storage, centroids, split, stop, descriptor, layer, codec,
                  [&](int tile) { return head_scores + tile * TILE; }, [](int, const float*) {});
 }
 
@@ -635,7 +642,7 @@ __global__ void rn_probability_kernel(const __half* queries, const int* selectio
         enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     __syncthreads();
     if (!enabled) return;
-    tf_sm70::stage_centroids(codec, storage.centroids);
+    const float* centroids = tf_sm70::stage_centroids(codec, rn_centroid_table);
     rn_load_query(storage, queries, rows, row, group, head_base, descriptor, layer);  // latches as the serial form
     const int tiles = (count + TILE - 1) / TILE;
     if (split >= tiles) return;
@@ -646,7 +653,7 @@ __global__ void rn_probability_kernel(const __half* queries, const int* selectio
     const float m = global[(int64_t(row) * HEADS + head) * 2];
     const float l = global[(int64_t(row) * HEADS + head) * 2 + 1];
     const bool usable = isfinite(m) && isfinite(l) && l > 0.f;
-    rn_own_tiles(storage, split, stop, descriptor, layer, codec, [&](int) { return scores + warp * TILE; },
+    rn_own_tiles(storage, centroids, split, stop, descriptor, layer, codec, [&](int) { return scores + warp * TILE; },
                  [&](int tile, const float* tile_scores) {
         if (!usable) {
             if (!lane) latch(descriptor, 16, layer);
@@ -730,10 +737,9 @@ __global__ void __launch_bounds__(RN_PV_THREADS, 2) rn_pv_kernel(const __half* p
     __shared__ int tile_live[RN_TILES];
     __shared__ unsigned char live[RN_TILES];       // tiles with a local key, increasing
     __shared__ __align__(16) __half staged[2][RN_PV_GROUP][TILE][RN_PV_PITCH];
-    __shared__ float centroids[256];
     if (!threadIdx.x) enabled = rn_domain(descriptor, selections, rows, width, row, page_tokens, layer, end, count, ids);
     __syncthreads();
-    const float* centroid_table = tf_sm70::stage_centroids(codec, centroids);
+    const float* centroid_table = tf_sm70::stage_centroids(codec, rn_centroid_table);
     float result[RN_PV_COLUMNS];
     #pragma unroll
     for (int c = 0; c < RN_PV_COLUMNS; ++c) result[c] = 0.f;
@@ -974,7 +980,7 @@ void launch_rn_qk(const T& queries, const T& selected, const T& table, const T& 
     const dim3 grid(rows, HEADS / H, rows <= RN_FEW_ROWS ? RN_SPLITS_FEW : RN_SPLITS);
     const auto* q = reinterpret_cast<const __half*>(queries.data_ptr());
     if (P) {
-        rn_probability_kernel<H><<<grid, H * 32, 0, stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+        rn_probability_kernel<H><<<grid, H * 32, rn_table_bytes(codec), stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
             global.data_ptr<float>(), reinterpret_cast<__half*>(output.data_ptr()), rows, int(selected.size(2)), group,
             page_tokens, layer.data_ptr<int>(), codec);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -982,7 +988,7 @@ void launch_rn_qk(const T& queries, const T& selected, const T& table, const T& 
     }
     // Stream-ordered scratch (a capture's private pool inside graphs): rows x heads x 2051-key scores.
     auto scores = at::empty({rows, HEADS, RN_TILES * TILE}, queries.options().dtype(at::kFloat));
-    rn_scores_kernel<H><<<grid, H * 32, 0, stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
+    rn_scores_kernel<H><<<grid, H * 32, rn_table_bytes(codec), stream>>>(q, selected.data_ptr<int>(), table.data_ptr<int64_t>(),
         scores.data_ptr<float>(), rows, int(selected.size(2)), group, page_tokens, layer.data_ptr<int>(), codec);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     rn_fold_kernel<<<rows, HEADS * 32, 0, stream>>>(selected.data_ptr<int>(), table.data_ptr<int64_t>(),
@@ -1013,7 +1019,7 @@ void sm70_paged_rn_merge_cuda(const T& gathered, const T& table, T& output, int 
 void sm70_paged_rn_pv_cuda(const T& probability, const T& selected, const T& table, T& output,
                           int rows, int page_tokens, const T& layer, int codec) {
     if (!rows) return;
-    rn_pv_kernel<<<dim3(rows, DIM / RN_PV_COLUMNS), RN_PV_THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+    rn_pv_kernel<<<dim3(rows, DIM / RN_PV_COLUMNS), RN_PV_THREADS, rn_table_bytes(codec), at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const __half*>(probability.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
         output.data_ptr<float>(), rows, int(selected.size(2)), page_tokens, layer.data_ptr<int>(), codec);
     C10_CUDA_KERNEL_LAUNCH_CHECK();

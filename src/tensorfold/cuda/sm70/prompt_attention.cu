@@ -137,11 +137,14 @@ struct __align__(16) Shared {
     float ks[CH][8];              // K group scale / 128 (0 for masked keys)
     float vs[CH][8];              // V group scale (0 for masked keys)
     float s[16][SW];              // scores, then probabilities
-    __half table[256];            // RotorQuant FP16 centroids (KIND > 0)
     float alpha[16];
     int list[MAX_SELECTED + 1];   // compacted local physical rows, selection order
     int warp_total[THREADS / 32];
 };
+
+// RotorQuant FP16 centroids (KIND > 0): dynamic shared memory, launched only for RotorQuant caches so the
+// ordinary Q8 kernel keeps its static footprint.
+extern __shared__ __half prompt_centroids[];
 
 struct Prefetch {
     uint4 k[4], v[4], scale;
@@ -290,7 +293,7 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
     if constexpr (KIND > 0) {
         // FP16 centroids of the stored basis; codec is the RotorQuant kernel codec.
         for (int i = t; i < 256; i += THREADS)
-            S.table[i] = __float2half_rn(KIND == 1 ? tf_rq4::centroid8(i) : i >= 16 ? 0.f
+            prompt_centroids[i] = __float2half_rn(KIND == 1 ? tf_rq4::centroid8(i) : i >= 16 ? 0.f
                                          : KIND == 3 ? tf_rq4::selected_centroid<9>(i) : tf_rq4::centroid(i));
     }
 
@@ -364,7 +367,7 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
                 for (int kk = 0; kk < 8; ++kk) {
                     const int d0 = 64 * qp + 32 * g + 4 * ((kk + qp) & 7);
                     uint32_t b0, b1;
-                    tile_codes<KIND>(*reinterpret_cast<const uint32_t*>(&S.k[cell][d0]), S.table, b0, b1);
+                    tile_codes<KIND>(*reinterpret_cast<const uint32_t*>(&S.k[cell][d0]), prompt_centroids, b0, b1);
                     #pragma unroll
                     for (int rb = 0; rb < 2; ++rb) {
                         const uint2 a = *reinterpret_cast<const uint2*>(&S.q[rb * 8 + jj][d0]);
@@ -466,7 +469,7 @@ __global__ void __launch_bounds__(THREADS, 2) fused_kernel(const __half* queries
                 for (int nt = 0; nt < 2; ++nt) {
                     const int d = 64 * warp + 16 * qp + 8 * nt + jj;
                     uint32_t b0, b1;
-                    tile_codes<KIND>(S.v[ks][d ^ ((qp >> 1) << 3)], S.table, b0, b1);
+                    tile_codes<KIND>(S.v[ks][d ^ ((qp >> 1) << 3)], prompt_centroids, b0, b1);
                     #pragma unroll
                     for (int rb = 0; rb < 2; ++rb) mma884(tmp[rb][nt], a[rb][0], a[rb][1], b0, b1);
                 }
@@ -546,7 +549,8 @@ void sm70_prompt_attention_fused_cuda(const T& queries, const T& selected, const
     const int rows = int(queries.size(1));
     if (!rows) return;
     auto launch = [&](auto kind) {
-        fused_kernel<decltype(kind)::value><<<rows, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        fused_kernel<decltype(kind)::value><<<rows, THREADS, decltype(kind)::value ? 256 * sizeof(__half) : 0,
+                                              at::cuda::getCurrentCUDAStream()>>>(
             reinterpret_cast<const __half*>(queries.data_ptr()), selected.data_ptr<int>(), table.data_ptr<int64_t>(),
             statistics.data_ptr<float>(), unnormalized.data_ptr<float>(), rows,
             int(selected.size(2)), group, page_tokens, layer.data_ptr<int>());
