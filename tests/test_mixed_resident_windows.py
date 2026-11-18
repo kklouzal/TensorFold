@@ -449,6 +449,10 @@ def test_decoder_reports_window_waits_and_one_short_pool_turnover_as_the_bypass_
     assert dec.window_bypass_limit == 3
     assert dec.window_blocked(NS(prompt=[1] * 400, count=10))            # a free slot, none long enough
     assert not dec.window_blocked(NS(prompt=[1] * 10, count=10))         # fits the free short slot
+    dec.kept = [([1] * 50, full, {}, None)]
+    dec._busy = lambda: set()
+    assert not dec.window_blocked(NS(prompt=[1] * 400, count=10))        # an idle kept full slot: the head evicts it
+    dec.kept, dec._busy = [], lambda: {id(full)}
     dec.free = []
     assert not dec.window_blocked(NS(prompt=[1] * 400, count=10))        # nothing free: ordinary capacity wait
     dec.slot_limits = (1000,) * 5
