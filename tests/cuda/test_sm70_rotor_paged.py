@@ -127,7 +127,7 @@ def test_rn_fp32_scale_rotor_matches_fp64_attention_over_decoded_operands(codec,
 
 
 # The original paged owner family (local statistics, normalized partials) reads K/V through decoded_half.
-@pytest.mark.parametrize('codec', [12, 8, 1, 2, 3, 4, 5])
+@pytest.mark.parametrize('codec', [12, 8, 1, 2, 3, 4, 5, 11])
 @torch.no_grad()
 def test_paged_family_fp32_scale_rotor_matches_fp64_attention_over_decoded_operands(codec):
     bits = 8 if codec in (8, 12) else 4
@@ -177,7 +177,7 @@ def test_paged_family_fp32_scale_rotor_matches_fp64_attention_over_decoded_opera
                 dk[page * PAGE:(page + 1) * PAGE] = k[offset:offset + PAGE, 0].double()
                 dv[page * PAGE:(page + 1) * PAGE] = v[offset:offset + PAGE, 0].double()
     variant = {12: 'signed-iso128', 8: 'signed-iso128-norm8', 1: 'planar', 2: 'isofast', 3: 'iso64-norm',
-               4: 'signed-iso128', 5: 'signed-iso64-norm'}[codec]
+               4: 'signed-iso128', 5: 'signed-iso64-norm', 11: 'iso64-norm-h64'}[codec]
     for row in range(ROWS):
         ids = chosen[row].long()
         q = query[:PEERS, row].reshape(12, 256).double()
