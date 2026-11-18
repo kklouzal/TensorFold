@@ -59,17 +59,30 @@ def multi_static_domains(t: dict, streams: int, each: int, mtp: bool, *, gdn_poi
     return tables, tables + 8 * streams
 
 
-def indexed_prefill_rows() -> int | None:
-    """Flash Next prompt-piece rows from TENSORFOLD_PREFILL_ROWS (256 to 16,384), or None: the engine's own plan."""
+PREFILL_ROWS_ENV = "TENSORFOLD_PREFILL_ROWS"   # `serve --prefill-rows` sets it; the engine reads only this
+SM70_PREFILL_ROWS = 1024  # Flash Next on V100 without an explicit setting (see indexed_prefill_rows)
+
+
+def prefill_rows_value(text: str, source: str = PREFILL_ROWS_ENV) -> int:
+    """A prompt-piece row count: a decimal 256 to 16,384."""
+
+    value = str(text).strip()
+    if not value.isdecimal() or not 256 <= int(value) <= 16384:
+        raise ValueError(f"{source}: 256 to 16,384 rows, not {text!r}")
+    return int(value)
+
+
+def indexed_prefill_rows(capability: tuple[int, int] | None = None) -> int | None:
+    """Flash Next prompt-piece rows: TENSORFOLD_PREFILL_ROWS (`serve --prefill-rows` overrides it) if set; else
+    1,024 on SM70 (capability (7, 0)), where the measured 2,048-row pieces trade per-stream decode at C>=8 for
+    prefill and TTFT (README); else None, the engine's own plan."""
 
     import os
 
-    value = os.environ.get("TENSORFOLD_PREFILL_ROWS", "").strip()
-    if not value:
-        return None
-    if not value.isdecimal() or not 256 <= int(value) <= 16384:
-        raise ValueError(f"TENSORFOLD_PREFILL_ROWS: 256 to 16,384 rows, not {value!r}")
-    return int(value)
+    value = os.environ.get(PREFILL_ROWS_ENV, "").strip()
+    if value:
+        return prefill_rows_value(value)
+    return SM70_PREFILL_ROWS if capability == (7, 0) else None
 
 
 def size(info: dict, name: str = "tensor") -> int:

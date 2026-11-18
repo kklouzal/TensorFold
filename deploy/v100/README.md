@@ -610,15 +610,28 @@ roots and actual content/flags cache identity. See the
 The wheel-based image described below remains the historical reference build;
 its source/CPU or compile checks do not qualify the new source-built stack.
 
-## Optional development prefill rows
+## Prefill rows (prompt-piece size)
 
-Set `TF_PREFILL_ROWS=256` to forward the existing backend setting
-`TENSORFOLD_PREFILL_ROWS=256` through this Compose profile or the candidate Bash
-recipe. Unset or empty leaves the backend's own plan intact; the recorded
-reference resolved to 2048. The existing backend accepts 256–16,384 rows and
-refuses malformed/out-of-range values. This is prompt-piece geometry, not a
-change to logical context, MTP depth or a serving memory budget. No image build,
-new CLI flag, entrypoint change or global backend default is introduced.
+`TF_PREFILL_ROWS=N` forwards `TENSORFOLD_PREFILL_ROWS=N` through this Compose profile or
+the candidate Bash recipe; `tensorfold serve --prefill-rows N` sets the same value and
+takes precedence over the environment. The backend accepts 256–16,384 rows and refuses
+malformed or out-of-range values. When neither is set, Flash Next on V100 (SM70) now
+uses 1,024 rows; it used the engine's own plan (2,048) before 2026-11-18. This is
+prompt-piece geometry, not a change to logical context, MTP depth or a serving memory
+budget.
+
+The size trades prefill and time to first token against the decoding of replies
+already running, which pauses while each prompt piece runs. Measured on SC117, 8×
+V100 TP8/ETP4, MTP4, INT8 KV, 24 lanes, on the 8-cell greedy grid (4K and 16K prompts
+at C1, C8, C16, C24), 2,048 against 1,024 rows:
+- prefill +10%;
+- time to first token 10–25% lower;
+- total output tokens per second over each cell +4–8%;
+- per-stream decode about 5% slower at C8 and above, worst cell −12%.
+
+4,096 rows matched 2,048 on prefill with more decode loss. Choose 2,048 when prompt
+throughput and first-token latency matter more than per-reply decode speed under
+concurrency.
 
 Reproduce the measured profile with the same recorded flags and resources.
 For the Bash recipe, append the existing flags before its Docker invocation:
@@ -638,9 +651,8 @@ baseline outputs/IDs, including the two known wrong answers; quality remains
 five of seven cases. A-B-B-A startup controls select 256 for this eager development
 workflow: mean readiness 657.139 s at original-unset 2048 versus 172.268 s at 256,
 73.785% less time. Keep `TF_PREFILL_ROWS=256` in the Compose project's `.env` or
-exported launch environment for repeated dev use. The backend default remains
-unchanged when unset/empty. Longer-prompt/inference performance and other
-profiles are not qualified. See [the measured scope](../../docs/v100-adaptive-validation.md#prefill-row-development-pilot).
+exported launch environment for repeated dev use. Longer-prompt/inference
+performance and other profiles are not qualified. See [the measured scope](../../docs/v100-adaptive-validation.md#prefill-row-development-pilot).
 
 ## One-loaded-session correctness
 

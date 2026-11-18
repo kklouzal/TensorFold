@@ -56,7 +56,9 @@ precision = types.SimpleNamespace(fp8=lambda: False,
                                   same_on_ranks=function("cuda/prompt_precision.py", "same_on_ranks", {}))
 same_settings = function("families/qwen4_exp/cuda/engine.py", "_same_settings",
                          {"prompt_precision": precision, "json": __import__("json")})
-prefill_rows = function("cuda/geometry.py", "indexed_prefill_rows", {})
+prefill_rows = function("cuda/geometry.py", "indexed_prefill_rows", {
+    "PREFILL_ROWS_ENV": "TENSORFOLD_PREFILL_ROWS", "SM70_PREFILL_ROWS": 1024,
+    "prefill_rows_value": function("cuda/geometry.py", "prefill_rows_value", {"PREFILL_ROWS_ENV": "TENSORFOLD_PREFILL_ROWS"})})
 
 
 def engine(value, peers=None):

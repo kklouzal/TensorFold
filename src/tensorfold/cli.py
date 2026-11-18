@@ -394,11 +394,22 @@ def _backend(choice: str, family: Any) -> str:
     return backend
 
 
+def _apply_prefill_rows(args: argparse.Namespace, environ: Any = os.environ) -> None:
+    """`--prefill-rows` takes precedence over TENSORFOLD_PREFILL_ROWS: the engine, every rank and the execution
+    identity read the one resolver (geometry.indexed_prefill_rows) through that variable."""
+
+    if getattr(args, "prefill_rows", None) is not None:
+        from tensorfold.cuda.geometry import PREFILL_ROWS_ENV
+
+        environ[PREFILL_ROWS_ENV] = str(args.prefill_rows)
+
+
 def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context: int | None = None) -> int:
     """Serve a CUDA configuration already validated by ``cmd_serve`` before its weight resolution."""
 
     from tensorfold import hub
     qualification = _private_owned_qualification(args)
+    _apply_prefill_rows(args)
 
     sampling = _sampling_defaults(args, model_dir)  # refuse invalid defaults before acquiring the engine
     reply_tokens = _reply_tokens(args, model_dir)

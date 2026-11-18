@@ -419,7 +419,8 @@ class FlashNextEngine:
         from tensorfold.cuda.capacity import admit, config, gather_ints
         from tensorfold.cuda.geometry import (PREFILL_ROWS, gdn_geometry, indexed_prefill_rows,
                                               indexed_stream_geometry, indexed_weights, multi_graph_request)
-        chunk = None if is_exl3(model_dir) else indexed_prefill_rows()
+        chunk = None if is_exl3(model_dir) else indexed_prefill_rows(
+            tuple(torch.cuda.get_device_capability()) if torch.cuda.is_available() else None)
         text = config(model_dir)
         from .history_placement import HistoryPlacement
 

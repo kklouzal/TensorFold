@@ -211,7 +211,7 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     assert text["layer_types"].count("full_attention") == 12
     assert (rope.native_context, rope.rotary_dim, rope.theta) == (262144, 64, 10000000)
     execution_rows, depth = 32, 0
-    prefill_rows = indexed_prefill_rows() or PREFILL_ROWS
+    prefill_rows = indexed_prefill_rows((7, 0)) or PREFILL_ROWS  # the constructor runs as SM70 (below)
     monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **kw: None)
     monkeypatch.setattr(exl3_pack, "is_exl3", lambda p: False)
     monkeypatch.setattr(execution_policy, "configure", lambda *a, **kw: "reference")

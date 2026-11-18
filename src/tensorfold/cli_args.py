@@ -44,6 +44,17 @@ def _full_windows(value: str) -> int | str:
         raise argparse.ArgumentTypeError("--kv-full-windows: use auto or a positive whole number") from None
 
 
+def _prefill_rows(value: str) -> int:
+    """A Flash Next prompt-piece row count, validated by the engine's own resolver."""
+
+    from tensorfold.cuda.geometry import prefill_rows_value
+
+    try:
+        return prefill_rows_value(value, "--prefill-rows")
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from None
+
+
 def add_fifo_arguments(parser) -> None:
     """Shared explicit deployment inputs for serving and profile preparation."""
     parser.add_argument("--max-waiting-input-bytes", type=int, default=None,
@@ -264,6 +275,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        "(default 0.25; 0: whole prompts first, in order, as 0.3.6.2). CUDA Flash Next --parallel: "
                        "replies decode inside each prompt pass; a share sizes the passes so a round's decoding takes "
                        "it (default 0: whole passes)")
+    speed.add_argument("--prefill-rows", type=_prefill_rows, default=None, metavar="N",
+                       help="CUDA Flash Next: rows of one prompt piece (256 to 16,384; overrides "
+                            "TENSORFOLD_PREFILL_ROWS; default 1,024 on V100, otherwise the engine's own plan). "
+                            "Larger pieces prefill faster and start replies sooner but pause running replies "
+                            "longer (SC117 on 8x V100, 2,048 vs 1,024: prefill +10%%, time to first token "
+                            "10-25%% lower, per-reply decode about 5%% slower at 8 or more concurrent requests)")
     speed.add_argument("--prefill-pass", type=int, default=8, help="Mac: prompt chunks one forward takes while a "
                        "prompt fills alone, for models with a prompt pass (1: one chunk a forward, as 0.5.0)")
     speed.add_argument("--pass-cache-gib", type=float, default=16.0, help="Mac: MLX's cache of freed buffers during "

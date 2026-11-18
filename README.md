@@ -521,6 +521,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--spill-gib N` | MLX, default 0. Disk capacity for evicted conversation prefixes; needs `--snapshot-dir`. |
 | `--snapshot-dir DIR` | MLX, default `~/.cache/tensorfold/prefix-snapshots`; `none` disables persistent snapshots. |
 | `--max-snapshots N` | MLX, default 3 system-block snapshots loaded at startup. |
+| `--prefill-rows N` | CUDA Flash Next prompt-piece rows, 256–16,384; overrides `TENSORFOLD_PREFILL_ROWS`. Default 1,024 on V100 (SM70), otherwise the engine's own plan. On SC117 8× V100, 2,048 rows against 1,024 gave prefill +10% and 10–25% lower time to first token, but per-stream decode about 5% slower at 8+ concurrent requests (worst cell −12%); see [deploy/v100](deploy/v100/README.md#prefill-rows-prompt-piece-size). |
 | `--prefill-pass N` | MLX, default 8 prompt chunks per forward for families with a prompt pass. |
 | `--pass-cache-gib N` | MLX, default 16 GiB freed-buffer cache during a prompt pass when budget permits. |
 | `--mlx-cache-gib N` | MLX, default 8 GiB reusable freed-buffer cache. |

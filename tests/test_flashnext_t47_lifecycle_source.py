@@ -177,7 +177,7 @@ class Controls(unittest.TestCase):
                     'decode': NS(Engine=object), 'prompt_plan': NS(choose=lambda *args, **kwargs: (16, 0), POINTS=4),
                     'weights': NS(draft_token_ids=lambda *args: self.fail('depth0 draft allocation'), load=loaded),
                     'tensorfold.cuda.capacity': NS(admit=admitted, config=lambda *args: text, gather_ints=lambda *args: None),
-                    'tensorfold.cuda.geometry': NS(PREFILL_ROWS=128, indexed_prefill_rows=lambda: 16,
+                    'tensorfold.cuda.geometry': NS(PREFILL_ROWS=128, indexed_prefill_rows=lambda *capability: 16,
                         gdn_geometry=lambda *args, **kwargs: None, indexed_stream_geometry=lambda *args, **kwargs: None,
                         indexed_weights=lambda *args, **kwargs: None, multi_graph_request=lambda: 0),
                     'tensorfold.cuda.comm': NS(open_comm=open_comm),

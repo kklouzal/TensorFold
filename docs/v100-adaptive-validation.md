@@ -180,10 +180,11 @@ Evidence:
 | `sm-v100-startup-repeat-v1/startup-256-repeat-actual-gate-v1.json` | `89c24c34cae9e9969da64efcebc72b36212c5c2a6bdc52a88f1da6eb18d80c30` |
 | `sm-v100-startup-repeat-v1/startup-comparison-actual-gate-v2.json` | `80c49245087901ba444debc736149d59ab402347c4703559120f87d4f6bcaaea` |
 
-The maintained Compose and candidate Bash recipe expose this existing backend
-knob as optional `TF_PREFILL_ROWS`. Unset/empty preserves the engine's own plan;
-there is no new global backend default, runtime flag, entrypoint or hardcoded
-serving budget. See [the opt-in configuration](../deploy/v100/README.md#optional-development-prefill-rows).
+The maintained Compose and candidate Bash recipe expose this backend knob as
+optional `TF_PREFILL_ROWS`; `tensorfold serve --prefill-rows N` sets the same value.
+At the time of this pilot, unset/empty kept the engine's own plan (2,048). Since
+2026-11-18 it resolves to 1,024 on SM70. See
+[the prefill-rows configuration](../deploy/v100/README.md#prefill-rows-prompt-piece-size).
 
 ## Private native-owned SC117 functional milestone
 
