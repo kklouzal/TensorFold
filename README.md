@@ -2135,13 +2135,22 @@ The MTP head's absorb of the prompt keeps the reference preparation: with the na
 window there too, the matrix measured decode 0.991× and prefill 1.011× against
 target rows alone.
 
-Indexer selection past 4,096 pooled groups (16K context) no longer uses a stable
-Torch argsort:
+Eager indexer selection no longer uses a stable Torch argsort:
 - Prompt windows keep the Torch score arithmetic and select with `qsa_select512`'s
-  exact radix top 512. The selection is bitwise the previous one, and one 256-row
-  call takes 0.92 ms instead of 3.14 ms at 64K.
-- Decode-shaped eager rows run the captured round selector's score and radix bodies,
-  so an eager step selects exactly what a round graph would.
+  exact radix top 512 at every context. The selection is bitwise the previous one,
+  and one 256-row call takes 0.92 ms instead of 3.14 ms at 64K.
+- Decode-shaped eager rows run the captured round selector's score and radix bodies
+  (the single-block kernel up to 4,096 groups), so an eager step selects exactly
+  what a round graph would.
+
+These routes follow the SM70 extension, not the optimized-profile switch. The first
+version gated them on that switch, so the measured `reference` profile kept the
+Torch sort, and the matrix gain below comes from the KV preparation alone. The
+captured round selector is native in both profiles. Prefill MoE routing follows the
+same rule (`routing_native.route`, bitwise the Torch reference). Measured with them
+on (fast pair, base `987ce177`, `m-bdec-r2b-24`, 24 lanes, 4K/16K at C1–C24):
+- prefill +1.9%, decode −0.4% (worst cell −1.7%);
+- golden-vg2 identical; golden_long identical to the base.
 - A selector failure (nonfinite score, context past the score slab) latches the
   State's structural status.
 

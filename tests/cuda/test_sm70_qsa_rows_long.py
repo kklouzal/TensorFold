@@ -19,7 +19,6 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_
 def native(monkeypatch):
     from tensorfold.cuda.sm70.family_native import extension
 
-    monkeypatch.setattr(ops, '_NATIVE_FAMILY', True)
     return extension()
 
 
@@ -129,7 +128,8 @@ def test_failure_latches_structural_status_with_in_bounds_ids(native, fault):
     assert int(target.ids.min()) >= 0 and int(target.ids.max()) < start + rows
 
 
-@pytest.mark.parametrize('rows,start,ties', [(256, 16_384, True), (256, 61_000, False), (37, 200_001, True)])
+@pytest.mark.parametrize('rows,start,ties', [(256, 16_384, True), (256, 61_000, False), (37, 200_001, True),
+                                             (256, 1_900, True), (256, 3_000, False), (100, 9_000, True)])
 @torch.no_grad()
 def test_prompt_route_equals_the_torch_sort_reference(native, monkeypatch, rows, start, ties):
     groups = 262_144 // 4
@@ -138,7 +138,7 @@ def test_prompt_route_equals_the_torch_sort_reference(native, monkeypatch, rows,
     reference, candidate = scratch(rows, groups), scratch(rows, groups)
     status = torch.tensor([0, -2], dtype=torch.int32, device='cuda')
     ops.qsa_rows(iq, pooled, pos, candidate, rows, context=start + rows, status=status, layer=7, prompt=True)
-    monkeypatch.setattr(ops, '_NATIVE_FAMILY', False)
+    monkeypatch.setattr(ops, '_selector', lambda tensor: None)  # the Torch stable-sort reference
     ops.qsa_rows(iq, pooled, pos, reference, rows, context=start + rows)
     assert status.tolist() == [0, -2]
     for name in ('ids', 'nk', 'sparse', 'scores'):

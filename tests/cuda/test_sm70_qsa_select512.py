@@ -90,7 +90,7 @@ def test_nonfinite_valid_prefix_is_contained_and_suffix_ignored(native, bad):
     invoke(native, values, [513, 513, 1])
 
 
-def test_actual_unchanged_fp32_score_output_matches_current_large_count_qsa_policy(native):
+def test_actual_unchanged_fp32_score_output_matches_current_large_count_qsa_policy(native, monkeypatch):
     from types import SimpleNamespace
     from tensorfold.cuda.sm70 import family_ops
     rows, columns, ratio, top, dim = 5, 65537, 4, 512, 128
@@ -102,7 +102,8 @@ def test_actual_unchanged_fp32_score_output_matches_current_large_count_qsa_poli
         ids=torch.full((rows, ratio*(top+1)), -1, dtype=torch.int32, device='cuda'),
         scores=torch.empty((rows, columns), dtype=torch.float32, device='cuda'))
     position = torch.tensor([262144 - rows], dtype=torch.int32, device='cuda')
-    # Existing dispatch always takes original Torch FP32 scores for count>4096.
+    # The Torch FP32 scores and stable sort (the reference the prompt route keeps): selected off SM70 dispatch.
+    monkeypatch.setattr(family_ops, '_selector', lambda tensor: None)
     family_ops.qsa_rows(query, pooled, position, scratch, rows)
     lengths = torch.div(position + torch.arange(rows, device='cuda') + 1, ratio, rounding_mode='floor').int()
     output = torch.empty((rows, 512), dtype=torch.int32, device='cuda')

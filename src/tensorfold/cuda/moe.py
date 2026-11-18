@@ -193,9 +193,10 @@ def select_rows(logits: torch.Tensor, buf: MoEBuffers, top_k: int, experts: int)
             from tensorfold.cuda.sm70.routing_native import _OwnedMoESelection
             if type(prepared) is _OwnedMoESelection and prepared.run(logits, buf, top_k, experts):
                 return
-        from tensorfold.cuda.sm70 import family_ops
-
-        if family_ops._NATIVE_FAMILY and logits.is_cuda and experts == 512 and top_k <= 32:
+        # The native route is bitwise the Torch reference below (tests/cuda/test_sm70_routing*.py), so it serves
+        # both SM70 execution profiles; other devices keep the reference.
+        if (logits.is_cuda and experts == 512 and top_k <= 32
+                and torch.cuda.get_device_capability(logits.device) == (7, 0)):
             from tensorfold.cuda.sm70.routing_native import indices as stable_indices, route as stable_route
 
             picks, rounded = buf.pick[:rows], buf.wts[:rows]

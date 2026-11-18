@@ -644,15 +644,16 @@ def qsa_rows(iq, pooled, pos0, scratch, rows, *, context=None, status=None, laye
     """Select each row's top budget/ratio pooled groups (numeric order, ties to the lower group ID, ascending
     emission). Natively, up to 4096 groups one block per row scores and sorts. Past that a selection failure
     latches into ``status`` (the State's kv_status word, required there):
-      decode-shaped rows: qsa_rows_long, the captured round selector's score and radix bodies over
-        scratch.scores, so an eager step selects exactly what a round graph would;
-      prompt windows (``prompt``): the Torch per-head score arithmetic below with qsa_select512's radix
-        selection instead of the stable sort (the same selection over the same scores, ~4x faster at 256 rows).
-    Without the native family the Torch reference scores and sorts."""
+      decode-shaped rows: native qsa_rows (<= 4096 groups) and qsa_rows_long, the captured round selector's
+        score and radix bodies over scratch.scores, so an eager step selects exactly what a round graph would;
+      prompt windows (``prompt``, any length): the Torch per-head score arithmetic below with qsa_select512's
+        radix selection instead of the stable sort (the same selection over the same scores, ~4x faster).
+    Off SM70 (no extension) the Torch reference scores and sorts. Selection does not follow the optimized
+    profile switch: the captured round selector is native in both profiles."""
     ratio, top = scratch.ratio, scratch.budget // scratch.ratio
     count = pooled.shape[0] if context is None else min(pooled.shape[0], (context + ratio - 1) // ratio)
-    native = _fused(iq)
-    if native is not None:
+    native = _selector(iq)
+    if native is not None and not prompt:
         if count <= top:
             return native.qsa_dense(pos0, scratch.sparse, scratch.nk, rows)
         if count <= 4096:
@@ -660,9 +661,10 @@ def qsa_rows(iq, pooled, pos0, scratch, rows, *, context=None, status=None, laye
                                    rows, ratio, scratch.budget, count)
         if status is None:
             raise ValueError("QSA selection past 4096 pooled groups latches into a kv_status word")
-        if not prompt:
-            return native.qsa_rows_long(iq, pooled, pos0, scratch.sparse, scratch.nk, scratch.ids, scratch.scores,
-                                        status, rows, ratio, scratch.budget, count, layer)
+        return native.qsa_rows_long(iq, pooled, pos0, scratch.sparse, scratch.nk, scratch.ids, scratch.scores,
+                                    status, rows, ratio, scratch.budget, count, layer)
+    if native is not None and status is None:
+        raise ValueError("native prompt selection latches into a kv_status word")
     ends = pos0.reshape(-1)[0] + torch.arange(rows, device=iq.device) + 1
     complete = torch.div(ends, ratio, rounding_mode="floor")
     sparse = complete > top
@@ -677,13 +679,17 @@ def qsa_rows(iq, pooled, pos0, scratch, rows, *, context=None, status=None, laye
     blocks = torch.arange(count, device=iq.device)
     scores.masked_fill_(blocks[None] >= complete[:, None], -torch.inf)
     scratch.scores[:rows, :count].copy_(scores)
-    if native is not None:
-        # Prompt rows past 4096 groups are all sparse. Finite scores follow from the guarded IQ/pooled inputs; a
-        # selector status (nonfinite prefix) latches the frame's structural failure (32) and the row keeps
+    if native is not None and top == 512 and rows <= 256:
+        # The stable sort ranks a row's complete groups first and then its masked -inf groups in ascending order;
+        # qsa_select512 pads a row with fewer than 512 complete groups (a dense row, never read) with -1, which the
+        # ascending fill below restores to the sort's ids. Finite scores follow from the guarded IQ/pooled inputs;
+        # a selector status (nonfinite prefix) latches the frame's structural failure (32) and the row keeps
         # in-bounds group IDs until that failure retires the frame.
         chosen = torch.empty((rows, top), dtype=torch.int32, device=iq.device)
         state = torch.empty((rows,), dtype=torch.int32, device=iq.device)
         native.qsa_select512(scratch.scores[:rows, :count], complete.int(), chosen, state)
+        order = torch.arange(top, device=iq.device, dtype=torch.int32)
+        chosen = torch.where(chosen < 0, order, chosen)
         bad = state != 0
         failed = bad.any()
         status[0].bitwise_or_(failed.int() * 32)
@@ -930,6 +936,18 @@ _NATIVE_ATTENTION = False
 _reference = {name: globals()["_torch_" + name] for name in (
     "hc_writeback", "hc_normed", "hc_act", "hc_reduce_act", "hc_mix", "rmsnorm", "attn_gate",
     "ple_embed_bf16", "ple_embed_iq4nl", "ple_gate", "ple_conv", "add_streams", "moe_partial", "shift_windows")}
+
+
+def _selector(tensor):
+    """The SM70 extension for indexer selection in both execution profiles. The captured round selector runs it
+    under the reference profile too, so eager decode-shaped rows must select with the same bodies; prompt windows
+    use it only for the exact radix selection over the Torch scores (bitwise the stable sort's selection)."""
+    if (tensor.is_cuda and tensor.dtype == torch.float16
+            and torch.cuda.get_device_capability(tensor.device) == (7, 0)):
+        from .family_native import extension
+
+        return extension()
+    return None
 
 
 def _fused(tensor, *, half=True):
