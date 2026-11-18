@@ -2228,6 +2228,17 @@ second step of activation prefetch in gate/up (no gain). One fast pair on 8x V10
 (base `4bc07085`, `fb-base-t1f4e957b4063-prod` vs `fb-pf3-g2p`): prefill +5.3% geomean
 (trimmed +5.2%, every cell +4.9 to +5.8%), decode +2.3% (worst cell -0.5%); golden-vg2 identical.
 
+**32 lanes with mixed resident windows (2026-11-18).** `--parallel 32 --kv-full-windows 20
+--kv-short-window 40960` serves 32 resident lanes: 20 complete 262,144-token windows plus 12
+windows of 40,960 tokens, every State materialized at startup at its own limit and charged by the
+worst-rank memory solver. A request takes the free slot with the shortest window that holds its
+prompt + `max_tokens` + MTP guard rows and waits in FIFO order otherwise. SC117 8x V100 TP8/ETP4
+MTP4 INT8 KV, 227-key C32 graph catalogue (5.23 GiB, all captured): 24 full windows leave too
+little for it even with 8 x 8,192-token short windows, so 20 is the largest full count; 16 full +
+16 x 94,208 measured the same on the grid. Fast serving matrix, 1 rep, golden-vg2 identical
+(prefill aggregate / decode median tok/s): C32 4K 2495 / 12.33, C32 16K 2655 / 11.91; C1-C24
+cells equal the 24-lane configuration. The 24-lane configuration's code path is unchanged.
+
 **Batched PLE n-gram staging across a round's windows (2026-11-18, bitwise).** Each decode
 frame computed every PLE layer's n-gram row ids once per window and staged each window's table
 rows separately. `NGram.ids_many` now computes all windows in one batched pass (windows
