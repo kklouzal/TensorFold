@@ -2227,6 +2227,15 @@ second step of activation prefetch in gate/up (no gain). One fast pair on 8x V10
 (base `4bc07085`, `fb-base-t1f4e957b4063-prod` vs `fb-pf3-g2p`): prefill +5.3% geomean
 (trimmed +5.2%, every cell +4.9 to +5.8%), decode +2.3% (worst cell -0.5%); golden-vg2 identical.
 
+**Batched PLE n-gram staging across a round's windows (2026-11-18, bitwise).** Each decode
+frame computed every PLE layer's n-gram row ids once per window and staged each window's table
+rows separately. `NGram.ids_many` now computes all windows in one batched pass (windows
+right-padded; a row's ids read only earlier positions) and the frame's rows stage with one call
+per PLE layer. Same ids as the per-window path (400 random rounds with EOS resets). SC117 8x V100
+TP8/ETP4 MTP4, C24 4K, rank 0: verify-frame staging 2.77 -> 0.45 ms and late PLE row staging
+2.40 -> 0.79 ms per round, round median 139.2 -> 135.3 ms; fast serving matrix (base `d7e4d777`,
+two pairs) decode +0.88% (C24 +2.0 to +2.9%), golden-vg2 and golden_long identical.
+
 **GGUF n-gram (PLE) rows decoded on the GPU (2026-11-18).** The SC117 GGUF n-gram
 table is IQ4_NL. The host used to decode each round's gathered rows with NumPy and cast
 them to FP16 (0.14/0.87/2.55 ms per rank at 5/40/120 rows). It now only gathers the
