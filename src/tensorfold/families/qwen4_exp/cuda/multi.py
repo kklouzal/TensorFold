@@ -705,6 +705,23 @@ class MultiDecoder:
         limits = getattr(self, "slot_limits", None)
         return limits is not None and len(set(limits)) > 1
 
+    @property
+    def window_bypass_limit(self) -> int:
+        """Requests that may pass one FIFO head waiting only for a longer window: one turnover of the short slots
+        (0 with uniform slots: strict FIFO)."""
+        limits = getattr(self, "slot_limits", None)
+        return 0 if limits is None or len(set(limits)) < 2 else sum(n < max(limits) for n in limits)
+
+    def window_blocked(self, stream) -> bool:
+        """The request waits only because no free or idle slot's resident window holds its extent."""
+        if not self.mixed_windows or not stream.prompt:
+            return False
+        room = self.capacity - len(stream.prompt) - self.depth - 1        # admission's own count clip
+        extent = len(stream.prompt) + max(1, min(stream.count, room)) + self.depth + 1
+        busy = self._busy()
+        return (not prefixes.has_room(self, extent, busy)
+                and (bool(self.free) or prefixes._idle(self, busy) is not None))
+
     def _drop_kept(self, st: State) -> None:
         self.kept = [k for k in self.kept if k[1] is not st]
 

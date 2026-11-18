@@ -334,3 +334,122 @@ def test_mixed_decoder_queues_a_request_no_free_window_holds():
     with pytest.raises(NoRoom, match="waits for a slot whose resident window holds it"):
         dec.admit(Stream(prefix + [6, 7, 8], 8))
     assert dec.free == [spare] and dec.kept == kept and spare.copied is None
+
+
+# ---------------------------------------------------------------- bounded window bypass (actual FIFO scheduler)
+
+def _window_scheduler(limits, bypass_limit):
+    import threading
+
+    from tensorfold.cuda.scheduler import Scheduler
+    from tests.test_cuda_fifo_admission import Decoder
+
+    class WindowDecoder(Decoder):
+        """Controlled resident windows: a request's extent is prompt + reply; it needs a free slot that holds it."""
+
+        def __init__(self):
+            super().__init__(pause=99)
+            self.limits, self.owner = list(limits), [None] * len(limits)
+            self.window_bypass_limit = bypass_limit
+            self.queries = []
+
+        def validate_request(self, stream):
+            if not stream.prompt or len(stream.prompt) + stream.count > max(self.limits):
+                raise ValueError("controlled infeasible context")
+
+        def _fits(self, stream):
+            need = len(stream.prompt) + stream.count
+            return [i for i, n in enumerate(self.limits) if self.owner[i] is None and n >= need]
+
+        def window_blocked(self, stream):
+            self.queries.append((stream.prompt[0], threading.current_thread().name))
+            return not self._fits(stream) and any(o is None for o in self.owner)
+
+        def admit(self, stream):
+            fitting = self._fits(stream)
+            if not fitting:
+                raise NoRoom("controlled window wait")
+            slot = min(fitting, key=lambda i: (self.limits[i], -i))
+            self.owner[slot] = stream
+            super().admit(stream)
+
+        def finish(self, streams):
+            for stream in streams:
+                self.owner = [None if o is stream else o for o in self.owner]
+            super().finish(streams)
+
+    decoder = WindowDecoder()
+    scheduler = Scheduler(decoder, max_streams=len(limits), max_pending_requests=8, admission_policy="fifo",
+                          max_waiting_input_bytes=4096).start()
+    return decoder, scheduler
+
+
+def _run_window_case(limits, bypass_limit, shorts=2):
+    from tests.test_cuda_fifo_admission import client, joined
+
+    decoder, scheduler = _window_scheduler(limits, bypass_limit)
+    try:
+        active = client(scheduler, 99, prompt=[99] * 2, count=6)    # occupies the only full window
+        assert decoder.in_round.wait(3)
+        head = client(scheduler, 5, prompt=[5] * 4, count=4)        # extent 8: needs the full window
+        later = []
+        for index in range(shorts):
+            with scheduler.waiting.not_empty:
+                assert scheduler.waiting.not_empty.wait_for(lambda: scheduler.waiting.revision >= 2 + index, 3)
+            later.append(client(scheduler, 7 + index, prompt=[7 + index], count=1))   # extent 2: fits a short slot
+        with scheduler.waiting.not_empty:
+            assert scheduler.waiting.not_empty.wait_for(lambda: scheduler.waiting.revision >= 2 + shorts, 3)
+        decoder.release_round.set()
+        joined(active, head, *later)
+    finally:
+        decoder.release_round.set()
+        scheduler.close()
+    assert active.errors == head.errors == [] and all(item.errors == [] for item in later)
+    return [token for token, _ticket, _active in decoder.admissions], decoder
+
+
+def test_short_requests_pass_a_head_that_waits_only_for_a_full_window():
+    order, decoder = _run_window_case([10, 3, 3], 2)
+    assert order == [99, 7, 8, 5]                      # both shorts start while the long head waits
+    assert decoder.queries and all(token == 5 for token, _thread in decoder.queries)   # only the head is assessed
+
+
+def test_bypass_count_is_bounded_per_waiting_head():
+    order, _ = _run_window_case([10, 3, 3], 1)
+    assert order == [99, 7, 5, 8]                      # one pass allowed; then strict FIFO behind the head
+
+
+def test_head_takes_the_next_full_window_before_any_later_request():
+    # Shorts keep arriving and fitting; the head still owns the first full window that frees.
+    order, decoder = _run_window_case([10, 3, 3, 3], 8, shorts=4)
+    assert order == [99, 7, 8, 9, 10, 5]
+    head = next(item for item in decoder.admissions if item[0] == 5)
+    assert 99 not in head[2]                           # admitted at the pass the full window freed, not later
+
+
+def test_bypass_order_is_deterministic():
+    assert _run_window_case([10, 3, 3], 2)[0] == _run_window_case([10, 3, 3], 2)[0]
+
+
+def test_uniform_slots_keep_strict_fifo():
+    order, decoder = _run_window_case([10, 3, 3], 0)
+    assert order == [99, 5, 7, 8] and decoder.queries == []
+
+
+def test_decoder_reports_window_waits_and_one_short_pool_turnover_as_the_bypass_bound():
+    pytest.importorskip("torch")
+    pytest.importorskip("triton")
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    full, short = Slot("full", 1000), Slot("short", 300)
+    dec = object.__new__(MultiDecoder)
+    dec.slot_limits, dec.depth, dec.capacity = (1000, 1000, 300, 300, 300), 4, 1000
+    dec.free, dec.kept, dec.used, dec.clock = [short], [], {}, 0
+    dec._busy = lambda: {id(full)}
+    assert dec.window_bypass_limit == 3
+    assert dec.window_blocked(NS(prompt=[1] * 400, count=10))            # a free slot, none long enough
+    assert not dec.window_blocked(NS(prompt=[1] * 10, count=10))         # fits the free short slot
+    dec.free = []
+    assert not dec.window_blocked(NS(prompt=[1] * 400, count=10))        # nothing free: ordinary capacity wait
+    dec.slot_limits = (1000,) * 5
+    assert dec.window_bypass_limit == 0 and not dec.window_blocked(NS(prompt=[1] * 400, count=10))

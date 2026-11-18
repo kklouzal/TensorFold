@@ -833,10 +833,31 @@ class Scheduler:
                     retired=self.serving_profiles is not None and stream.error is not None)
         return True
 
+    def _window_bypass(self, head):
+        """Whether later requests may pass a FIFO head that waits only for a longer resident window.
+
+        Mixed resident windows only (``window_bypass_limit`` > 0): the decoder
+        reports that a free or idle slot exists but none holds the head's
+        extent. A request admitted behind it can therefore only take a window
+        too short for the head, so the head keeps first claim on the next
+        window that holds it (it is evaluated first on every pass). At most
+        ``window_bypass_limit`` requests pass one head in total; after that the
+        queue is strictly FIFO again until the head is admitted. The leader
+        decides; ranks only replay its admissions.
+        """
+        limit = getattr(self.decoder, "window_bypass_limit", 0)
+        if not limit:
+            return False
+        count = getattr(head, "_window_bypasses", 0)
+        if type(count) is not int or count >= limit or not self.decoder.window_blocked(head):
+            return False
+        head._window_bypasses = count
+        return True
+
     def _admit_fifo(self, entries):
         from tensorfold.server.cancellation import RequestCancelled
 
-        done, capacity_blocked = [], False
+        done, capacity_blocked, window_head = [], False, None
         for entry in entries:
             stream, box = entry[2]
             status = stream.admission_status
@@ -908,7 +929,12 @@ class Scheduler:
                 if self._occupied() or catalog is not None and catalog.has_retained:
                     if self.serving_profiles is not None:
                         self._retire_admission_error(error)
-                    capacity_blocked = True  # An eligible head never loses priority to a cheaper newer request.
+                    # An eligible head never loses priority to a cheaper newer request, except the decoder's
+                    # bounded window bypass (mixed windows): see _window_bypass.
+                    if window_head is None and not capacity_blocked and self._window_bypass(stream):
+                        window_head = stream
+                    else:
+                        capacity_blocked = True
                     stream.admission_status = replace(stream.admission_status,
                         readmission_issued_at=None) if stream.admission_status.gpu_admitted else replace(
                             stream.admission_status, issued_at=None)
@@ -920,6 +946,10 @@ class Scheduler:
             except Exception as error:
                 self._retire_waiting(entry, error)
                 continue
+            if window_head is not None:
+                window_head._window_bypasses += 1
+                if window_head._window_bypasses >= self.decoder.window_bypass_limit:
+                    capacity_blocked = True
             self.waiting.activate(entry)
             self._queue_state(stream, None, input_ready=True)
             self._queue_outcome(stream, "admitted")
