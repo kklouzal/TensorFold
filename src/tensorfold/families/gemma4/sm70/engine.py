@@ -484,6 +484,27 @@ class Decoder(PrefixOwner):
             from .prefix_host import HostTier
             self.host_tier = HostTier(self, engine.host_per_rank)
 
+    @property
+    def broken(self) -> BaseException | None:
+        return self._broken
+
+    @broken.setter
+    def broken(self, error: BaseException | None) -> None:
+        """Fail closed: once an operation fails on the leader the ranks' states may differ, so the first failure
+        retires the whole cohort through the TP supervisor (``cuda.cohort.notify_failure``: every rank ends and the
+        service restarts) instead of leaving a server that refuses every request."""
+        if error is None or getattr(self, "_broken", None) is not None:
+            self._broken = getattr(self, "_broken", None) if error is None else self._broken
+            return
+        self._broken = error
+        print(f"[tensorfold] Gemma 4 SM70 cohort failed: {type(error).__name__}: {error}; retiring every rank",
+              flush=True)
+        from tensorfold.cuda.cohort import notify_failure
+        try:
+            notify_failure()
+        except Exception as failure:          # noqa: BLE001 - the original failure stays the served error
+            print(f"[tensorfold] TP supervisor notification failed: {failure}", flush=True)
+
     def live(self) -> int:
         return len(self.streams) + len(self.filling)
 

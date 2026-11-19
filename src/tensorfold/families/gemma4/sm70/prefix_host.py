@@ -20,6 +20,14 @@ from .ops import OP_HRESTORE, OP_HSPILL
 BLOCK_BYTES = 1 << 21
 
 
+def _to_host(tensor):
+    """A pinned host copy ordered on the device stream (no synchronization); a restore reads it back on the same
+    stream, after the copy."""
+    import torch
+    out = torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True)
+    return out.copy_(tensor, non_blocking=True)
+
+
 class HostTier:
     def __init__(self, owner, capacity_bytes: int) -> None:
         if capacity_bytes < BLOCK_BYTES:
@@ -70,7 +78,7 @@ class HostTier:
                 sids.append(snap["sid"])
             metas.append((list(ids), {"pos": snap["pos"], "snap": sids.index(snap["sid"]), "exact": bool(snap.get("exact")),
                                       "prompt_end": None if end is None else
-                                      {"token": end["token"], "pos": end["state"]["pos"], "head": end["head"].cpu()}}))
+                                      {"token": end["token"], "pos": end["state"]["pos"], "head": _to_host(end["head"])}}))
         rows = min(rows, st.capacity)
         need = rows * o.e.token_bytes + len(sids) * o.snap_bytes
         k = -(-need // BLOCK_BYTES)

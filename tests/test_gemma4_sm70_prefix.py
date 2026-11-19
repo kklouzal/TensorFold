@@ -167,7 +167,9 @@ def test_live_streams_holding_memory_wait():
     assert o.held == ledger(o)
 
 
-def test_host_tier_spills_evicted_chain_and_restores_it():
+def test_host_tier_spills_evicted_chain_and_restores_it(monkeypatch):
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_host", lambda tensor: tensor)      # pinned copies need a GPU
     e = FakeEngine(budget=2048 * TOKEN + 3 * SNAP)
     o = Owner(e, host=64 << 20)
     a = stream(range(1600))
