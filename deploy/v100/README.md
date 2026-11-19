@@ -75,25 +75,25 @@ grant. Requests with thinking off: 64 simultaneous ones were all admitted (32
 running, 32 queued, last TTFT 51 s) and the 65th-72nd received 503 "request capacity
 reached".
 
-Host-RAM prefix tier and its trade-off: prompt points the GPU prefix cache evicts are
-kept in pinned host RAM (`TF_PREFIX_HOST_BYTES`, default empty = 64 GiB across the 8
-ranks, `0` = off; never written to disk) and restored on a hit. Measured (Q4, a
-4,883-token greedy prompt evicted by 24 longer prompts): the repeat's first token after
-0.061-0.075 s from host RAM against 1.82 s recomputed with the tier off (0.027-0.032 s
-while still in GPU memory); replies identical to the cold one; a concurrent stream's
-decode gaps unchanged. The tier is a fixed host obligation, so it comes out of the HTTP
-payload pool that thinking replies grow into: at Q4/32 the pool measured 234.7 GB with
-32 GiB of tier, so about 269 GB without it and about 200 GB with the 64 GiB default
-(INT8/24 is larger). A thinking request is admitted with about 0.5 GB and grows by
-roughly 16 KB per token of prompt plus reply and about 4 KB per generated token of
-decoded text, so a full 262,144-token sequence holds about 5.5 GB: with the default all
-32 sessions can still reach the full window at the same time (about 176 GB) with about
-24 GB to spare. A 4,883-token point takes about 36 MB per rank (mostly its two
-recurrent-state snapshots), so 64 GiB holds about 220 such points. Lower
-`TF_PREFIX_HOST_BYTES` for more growth headroom (or on a host with less RAM: the
-startup host admission refuses a tier that does not fit), raise it to keep more
-evicted prompts. `/stats` reports both: `prefix_cache.host` and `host_payload` (with
-the named fixed obligations behind the pool).
+Host-RAM prefix tier (opt-in) and its trade-off: with `TF_PREFIX_HOST_BYTES` set (for
+example `68719476736`, 64 GiB across the 8 ranks; empty or `0` = off, the default; never
+written to disk) prompt points the GPU prefix cache evicts are kept in pinned host RAM
+and restored on a hit. Measured (Q4, a 4,883-token greedy prompt evicted by 24 longer
+prompts): the repeat's first token after 0.059-0.075 s from host RAM against 1.82 s
+recomputed with the tier off (0.027-0.032 s while still in GPU memory); replies
+identical to the cold one. Its cost: under a stream of unique prompts every eviction
+spills, and on the production fastbench 64 GiB cost prefill -1.1% and decode -0.9%
+geomean against the tier off, so enable it where repeated or shared prefixes
+(chat sessions, agent loops, common system prompts or documents) dominate. The tier is
+a fixed host obligation that comes out of the HTTP payload pool thinking replies grow
+into: at Q4/32 the pool measured about 269 GB with the tier off, 234.7 GB with 32 GiB
+and 199.8 GB with 64 GiB (INT8/24 is larger). A thinking request is admitted with about
+0.5 GB and grows by roughly 16 KB per token of prompt plus reply and about 4 KB per
+generated token of decoded text, so a full 262,144-token sequence holds about 5.5 GB:
+even with 64 GiB all 32 sessions can reach the full window at the same time (about 176
+GB) with about 24 GB to spare. A 4,883-token point takes about 36 MB per rank (mostly
+its two recurrent-state snapshots), so 64 GiB holds about 220 such points. `/stats`
+reports `prefix_cache.host` and `host_payload` (with the named fixed obligations).
 
 The ordinary fixed-profile HTTP source path now derives a shared host-payload
 allowance from the existing physical/cgroup guard after fixed obligations.

@@ -1416,12 +1416,12 @@ class FlashNextEngine:
             history_host_per_rank = history_maximum_owners * history_plan.host_bytes(history_host_limit)
             host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * history_host_per_rank
         # Host-RAM prefix tier (prefix_host): one pinned slab per rank, a fixed host obligation before the HTTP pool.
-        from .prefix_host import BLOCK_BYTES, auto_capacity_bytes
+        from .prefix_host import BLOCK_BYTES
 
         prefix_host_supported = (unique_positions and concurrent and position_method == "mtp"
                                  and retention_policy is None and not vision)
         if prefix_host_bytes is None:
-            prefix_host_bytes = auto_capacity_bytes() if prefix_host_supported else 0
+            prefix_host_bytes = 0                       # opt-in: see prefix_host's throughput note
         if type(prefix_host_bytes) is not int or prefix_host_bytes < 0:
             raise ValueError("prefix_host_bytes must be a nonnegative byte count")
         if prefix_host_bytes and not prefix_host_supported:

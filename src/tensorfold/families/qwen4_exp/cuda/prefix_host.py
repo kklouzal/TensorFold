@@ -16,6 +16,10 @@ history/indexer layout, logical context); the process's weights, prefix policy a
 lifetime and nothing is persisted. Memory: one pinned slab of ``capacity`` bytes per rank, allocated at startup and
 charged to the host commitment; entries take fixed blocks, so allocation never fails once admitted.
 
+Off unless ``--prefix-host-bytes`` is set: under a stream of unique prompts every eviction spills, which cost 1-2%
+of prefill/decode throughput on the 8xV100 production benchmark even with the copies on a side stream (the
+coordinator's packing work), while a repeated or extended prompt restores in milliseconds instead of seconds.
+
 Cost model (SC117, Q4 KV, TP8): restoring n tokens copies about 1 KiB/token/rank plus a ~14.6 MB recurrent snapshot
 per point over PCIe (~12 GB/s), about 1.2 ms + 85 ns/token, against ~364 us/token of prefill: any point a request can
 use beyond its best VRAM point by ``MIN_GAIN`` tokens is restored.
@@ -30,14 +34,6 @@ import torch
 
 BLOCK_BYTES = 1 << 21        # fixed allocation unit of the pinned slab
 MIN_GAIN = 64                # tokens a host point must save beyond the best VRAM point (~23 ms of prefill)
-# Default across all ranks when --prefix-host-bytes is omitted on a supported configuration. A constant, so every
-# rank sizes the same slab (tier decisions must be rank-identical); the host commitment admission refuses it at
-# startup on a host that cannot also fund its other obligations. See README "Host-RAM prefix tier".
-DEFAULT_BYTES = 64 << 30
-
-
-def auto_capacity_bytes() -> int:
-    return DEFAULT_BYTES
 
 
 class _Region:
