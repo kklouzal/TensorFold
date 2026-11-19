@@ -10,6 +10,12 @@
       TensorFold: POST /v1/tensorfold/score (the server must run with TENSORFOLD_PRIVATE_SCORE=1). Every
       document's prompt tokens are scored by prompt-pass (prefill) rows and its continuation by teacher-forced
       decode/MTP-verify rows (``--continuation-limit N``: only the first N, for prefill-path runs). vLLM: /v1/completions with ``prompt_logprobs`` over prompt+continuation (one pass).
+  cachecheck --tokens corpus.tokens.json --mode extend|repeat --out-cold COLD.json --out-cached CACHED.json
+        [--url ...] [--top 20] [--continuation-limit N] [--min-prompt 64]
+      Prefix-cache qualification (TensorFold only). Per document: prime the server's prompt cache with a plain
+      greedy /v1/completions request (``extend``: the first half of the prompt plus one token; ``repeat``: the
+      whole prompt), score the document borrowing that state (score ``reuse``), then score it cold. Writes two
+      runs restricted to the rows the cached request computed, so ``compare COLD.json CACHED.json`` judges them.
   compare A.json B.json [--margin 0.005] [--prefill-kinds PREFIX,...] [--out RESULT.json]
       Paired per-token statistics of B against A per path and kind, and a verdict (see ``compare``'s doc).
       ``--prefill-kinds`` restricts only the prefill verdict to those document kinds; decode keeps every document
@@ -178,6 +184,75 @@ def score(args) -> None:
            **({"continuation_limit": limit} if limit is not None else {}),
            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "runs": runs}
     Path(args.out).write_text(json.dumps(out, separators=(",", ":")) + "\n", encoding="utf-8")
+
+
+def _score_rows(url: str, doc: dict, top: int, model: str | None, reuse: bool) -> dict:
+    body = {"prompt": doc["prompt"], "continuation": doc["continuation"], "top_logprobs": top, "reuse": reuse}
+    if model:
+        body["model"] = model
+    return _post(url.rstrip("/") + "/v1/tensorfold/score", body)
+
+
+def cachecheck(args) -> None:
+    tokens_path = Path(args.tokens)
+    corpus = json.loads(tokens_path.read_text(encoding="utf-8"))
+    if corpus.get("schema") != SCHEMA_TOKENS:
+        raise SystemExit("not a frozen corpus token file")
+    limit = args.continuation_limit
+    base = args.url.rstrip("/")
+    cold_docs, cached_docs, skipped, hits = [], [], [], 0
+    t0 = time.perf_counter()
+    documents = list(corpus["documents"])
+    if args.shuffle_seed is not None:            # a representative prefix when --max-seconds stops early
+        random.Random(args.shuffle_seed).shuffle(documents)
+
+    def write():
+        for docs, out, label in ((cold_docs, args.out_cold, "cold"), (cached_docs, args.out_cached, "cached")):
+            Path(out).write_text(json.dumps({"schema": SCHEMA_RUN, "version": 1, "backend": "tensorfold",
+                "label": f"cachecheck-{args.mode}-{label}", "url": args.url, "top": args.top,
+                "tokens_file": tokens_path.name, "tokens_sha256": _sha(tokens_path),
+                **({"continuation_limit": limit} if limit is not None else {}),
+                "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "runs": [{"seconds": round(time.perf_counter() - t0, 3), "documents": docs}]},
+                separators=(",", ":")) + "\n", encoding="utf-8")
+
+    for doc in documents:
+        if args.max_seconds is not None and time.perf_counter() - t0 > args.max_seconds:
+            print(f"stopped after {args.max_seconds}s")
+            break
+        if len(doc["prompt"]) < args.min_prompt:
+            skipped.append(doc["id"])
+            continue
+        if limit is not None:
+            doc = {**doc, "continuation": doc["continuation"][:limit]}
+        prime = doc["prompt"][:len(doc["prompt"]) // 2 + 1] if args.mode == "extend" else doc["prompt"]
+        body = {"prompt": prime, "max_tokens": 1, "temperature": 0}
+        if args.model:
+            body["model"] = args.model
+        _post(base + "/v1/completions", body)
+        cached = _score_rows(args.url, doc, args.top, args.model, True)
+        cold = _score_rows(args.url, doc, args.top, args.model, False)
+        n = int(cached.get("cached_tokens") or 0)
+        expected = len(prime) - 1 if args.mode == "extend" else len(doc["prompt"])
+        if n != expected:
+            print(f"{doc['id']}: cached {n} tokens, expected {expected} (not counted as a hit)")
+        else:
+            hits += 1
+        keep = {row["position"] for row in cached["prompt"]}
+        if [row["id"] for row in cached["continuation"]] != doc["continuation"]:
+            raise SystemExit(f"{doc['id']}: the cached request scored different continuation tokens")
+        for label, got, sink in (("cold", cold, cold_docs), ("cached", cached, cached_docs)):
+            prompt = [row for row in got["prompt"] if row["position"] in keep]
+            reply = got["continuation"]
+            sink.append({"id": doc["id"], "kind": doc["kind"], "prefill": prompt + reply[:1], "decode": reply[1:],
+                         "stats": got.get("stats"), "cached_tokens": got.get("cached_tokens", 0), "label": label})
+        if len(cold_docs) % 10 == 0:
+            write()
+    seconds = time.perf_counter() - t0
+    print(f"{args.mode}: {len(cold_docs)} documents ({hits} exact hits), {len(skipped)} shorter than {args.min_prompt} "
+          f"skipped, {seconds:.1f}s; identical rows: "
+          f"{sum(a['prefill'] == b['prefill'] and a['decode'] == b['decode'] for a, b in zip(cold_docs, cached_docs))}")
+    write()
 
 
 def _bitwise(a: list, b: list) -> bool:
@@ -349,6 +424,19 @@ def main(argv=None) -> None:
                    help="score only each document's first N continuation tokens (a prefill-path run; compare "
                         "requires both runs to use the same N)")
     p.set_defaults(run=score)
+    p = sub.add_parser("cachecheck")
+    p.add_argument("--tokens", required=True)
+    p.add_argument("--mode", choices=("extend", "repeat"), required=True)
+    p.add_argument("--out-cold", required=True)
+    p.add_argument("--out-cached", required=True)
+    p.add_argument("--url", default="http://127.0.0.1:8000")
+    p.add_argument("--model")
+    p.add_argument("--top", type=int, default=20)
+    p.add_argument("--continuation-limit", type=int)
+    p.add_argument("--min-prompt", type=int, default=64)
+    p.add_argument("--shuffle-seed", type=int, help="score documents in this seeded random order")
+    p.add_argument("--max-seconds", type=float, help="stop starting new documents after this long (results so far kept)")
+    p.set_defaults(run=cachecheck)
     p = sub.add_parser("compare")
     p.add_argument("a")
     p.add_argument("b")

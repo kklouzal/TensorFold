@@ -523,7 +523,8 @@ class TensorParallelDecoder:
                 "token_limit": stream.token_limit is not None, "profile_epoch": stream.profile_epoch,
                 "committed_output_tokens": stream.committed_output_tokens}
         if stream.probabilities is not None:      # private teacher scoring: every rank forces and gathers alike
-            result["teacher"] = [stream.probabilities.top, stream.probabilities.forced]
+            result["teacher"] = [stream.probabilities.top, stream.probabilities.forced,
+                                 bool(getattr(stream.probabilities, "reuse", False))]
         if self.admission_policy == "fifo":
             ticket = getattr(stream, "admission_ticket", None)
             if type(ticket) is not int or not 0 <= ticket < 1 << 63:
@@ -574,8 +575,11 @@ class TensorParallelDecoder:
         if body.get("teacher") is not None:
             from tensorfold.engine.probabilities import TeacherForcing
 
-            top, forced = body["teacher"]
+            top, forced, reuse = body["teacher"]
+            if type(reuse) is not bool:
+                raise ValueError("teacher scoring reuse must be a boolean")
             stream.probabilities = TeacherForcing(int(top), stream.prompt, forced)
+            stream.probabilities.reuse = reuse
         if self.admission_policy == "fifo":
             ticket = body["admission_ticket"]
             if type(ticket) is not int or not 0 <= ticket < 1 << 63:

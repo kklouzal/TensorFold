@@ -888,16 +888,22 @@ class App:
         draft = body.get("draft", True)
         if type(draft) is not bool:
             raise RequestError("draft must be a boolean")
+        reuse = body.get("reuse", False)
+        if type(reuse) is not bool:
+            raise RequestError("reuse must be a boolean")
         if len(prompt) < 2 or not reply:
             raise RequestError("score needs at least two prompt tokens and one continuation token")
         sink = TeacherForcing(top, prompt, reply)
+        sink.reuse = reuse
         emitted: list[int] = []
         result = self.engine.generate(prompt, len(reply), Sampling(seed=0, temperature=0.0),
                                       lambda new: emitted.extend(new), draft=draft, stop_eos=False,
                                       probabilities=sink)
         if emitted != reply:
             raise RequestError(f"the engine emitted {len(emitted)} of {len(reply)} forced tokens (context room?)")
-        missing = [pos for pos in range(1, len(prompt)) if pos not in sink.prompt_rows]
+        # ``reuse``: rows the engine borrowed from a kept prefix were not computed here.
+        cached = int(result.get("cached") or 0) if reuse and isinstance(result, dict) else 0
+        missing = [pos for pos in range(cached + 1, len(prompt)) if pos not in sink.prompt_rows]
         if missing:
             raise RuntimeError(f"{len(missing)} prompt rows were not scored (first position {missing[0]})")
 
@@ -912,8 +918,9 @@ class App:
                         for pos, value in zip(range(len(prompt), len(prompt) + len(reply)), sink.emitted(reply))]
         stats = {key: result[key] for key in ("rounds", "drafted", "accepted", "prefill_s", "decode_s")
                  if isinstance(result, dict) and type(result.get(key)) in (int, float)}
-        return {"object": "tensorfold.score", "prompt": [row(pos, sink.prompt_rows[pos]) for pos in range(1, len(prompt))],
-                "continuation": continuation, "stats": stats}
+        return {"object": "tensorfold.score", "prompt": [row(pos, sink.prompt_rows[pos]) for pos in range(1, len(prompt))
+                                                         if pos > cached or pos in sink.prompt_rows],
+                "continuation": continuation, "stats": stats, "cached_tokens": cached}
 
     def _requested_tokens(self, body: dict[str, Any]) -> int:
         for name in ("max_tokens", "max_completion_tokens"):

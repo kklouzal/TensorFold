@@ -2,7 +2,7 @@
 
 from ..qsa_selection import POLICY as QSA_SELECTION
 
-IDENTITY = "sm70-stochastic-or-non-owned-rotor-prefix-cold-v3:" + QSA_SELECTION
+IDENTITY = "sm70-non-owned-rotor-prefix-cold-v4:" + QSA_SELECTION
 
 
 def identity(profile):
@@ -28,25 +28,25 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
     preparation never met cached-suffix output identity, so those Rotor sides
     stay cold. In the unique-history layout, homogeneous Rotor pairs of
     family_ops.OWNED_FORMATS are written by the history owner exactly as
-    ordinary Q8 rows are, and keep the FP16/INT8 policy. Malformed sampling retains the original error
-    path so this decision cannot overtake a producing KV failure.
+    ordinary Q8 rows are, and keep the FP16/INT8 policy. The sampler does not
+    change prompt state: positive-temperature requests borrow like greedy ones
+    (exact repeats resume bitwise; an extension's suffix rounds as its own
+    prompt pieces, measured NLL-equivalent to cold in the ledger/docs/api.md).
+    Malformed sampling on a cold Rotor side retains the original error path
+    (borrowing), so this decision cannot overtake a producing KV failure.
     """
     ordinary = draft and vision is None
-    if not ordinary or w.meta.get("execution_provider") != "sm70":
+    if not ordinary or w.meta.get("execution_provider") != "sm70" or not _cold_rotor(w, kv_pair):
         return ordinary
-    rotor = _cold_rotor(w, kv_pair)
     if sampling is None:
-        return ordinary and not rotor
-    if not rotor and w.meta.get("sm70_profile") != "optimized":
-        return ordinary
+        return False
     from tensorfold.cuda.sampling import validate_policy
 
     try:
         validate_policy([position], sampling)
-        stochastic = sampling.temperature > 0
     except (ValueError, TypeError, OverflowError):
         return ordinary
-    return ordinary and not rotor and not stochastic
+    return False
 
 
 def serial_reuse_allowed(w, sampling, *, draft, position, kv_pair):

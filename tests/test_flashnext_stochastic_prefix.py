@@ -1,4 +1,4 @@
-"""Stochastic cache refusal changes borrowing, not drafting or validation precedence."""
+"""Positive-temperature requests borrow prompt state like greedy ones; drafting and validation precedence unchanged."""
 
 import ast
 import inspect
@@ -22,8 +22,8 @@ def weights(provider="sm70", profile="optimized"):
 
 
 @pytest.mark.parametrize("sampling,allowed", [(None,True),(Sampling(19,0),True),
-    (Sampling(19,-1),True),(Sampling(19,.7,40,.9),False),(Sampling(47,1,0,.95),False)])
-def test_only_valid_positive_temperature_declines_cached_suffix(sampling,allowed):
+    (Sampling(19,-1),True),(Sampling(19,.7,40,.9),True),(Sampling(47,1,0,.95),True)])
+def test_positive_temperature_borrows_cached_suffix_like_greedy(sampling,allowed):
     assert prefix_policy.reuse_allowed(weights(),sampling,draft=True,vision=None,position=79) is allowed
 
 
@@ -53,7 +53,7 @@ def method(owner,name,namespace):
     return namespace[name]
 
 
-@pytest.mark.parametrize("profile,sampling,reuse", [("optimized",Sampling(19,.7),False),
+@pytest.mark.parametrize("profile,sampling,reuse", [("optimized",Sampling(19,.7),True),
     ("reference",Sampling(19,.7),True),("optimized",Sampling(19,0),True),
     ("optimized",Sampling("bad",.7),True)])
 def test_actual_admit_borrow_changes_only_reuse_and_keeps_drafter(monkeypatch,profile,sampling,reuse):
@@ -63,13 +63,13 @@ def test_actual_admit_borrow_changes_only_reuse_and_keeps_drafter(monkeypatch,pr
     class StopBorrow(Exception):
         pass
 
-    def slot(prompt,allowed):
+    def slot(prompt,allowed,**_kw):
         borrowed.append((prompt,allowed))
         raise StopBorrow
 
     w=weights(profile=profile)
     provider=w.dspark
-    decoder=NS(w=w,capacity=8192,depth=3,streams={},_slot_for=slot,kv_pair=get_pair("int8"))
+    decoder=NS(w=w,capacity=8192,depth=3,streams={},_slot_for=slot,kv_pair=get_pair("int8"),mixed_windows=None)
     stream=NS(prompt=[11]*79,count=128,draft=True,vision=None,sampling=sampling,probabilities=None)
     with pytest.raises(StopBorrow):
         admit(decoder,stream)
@@ -139,11 +139,11 @@ def test_rotor_admit_declines_only_borrowing_and_retains_drafting():
     class StopBorrow(Exception):
         pass
 
-    def slot(prompt, allowed):
+    def slot(prompt, allowed, **_kw):
         borrowed.append(allowed)
         raise StopBorrow
 
-    decoder = NS(w=weights(), capacity=8192, depth=3, streams={}, _slot_for=slot,
+    decoder = NS(w=weights(), capacity=8192, depth=3, streams={}, _slot_for=slot, mixed_windows=None,
                  kv_pair=get_pair("rotorquant-signed128-4"))
     stream = NS(prompt=[11] * 128, count=128, draft=True, vision=None, sampling=Sampling(17, 0), probabilities=None)
     with pytest.raises(StopBorrow):

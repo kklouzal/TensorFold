@@ -58,6 +58,8 @@ class TeacherForcing(Probabilities):
         super().__init__(top, len(self.prompt), len(self.forced))
         self.prompt_rows: dict[int, dict] = {}
         self.where: dict[int, object] = {}
+        # Private cache qualification: borrow kept prompt state; borrowed rows are not scored.
+        self.reuse = False
 
     def add_prompt(self, positions, tokens, values, top_ids, top_values):
         for pos, token, value, ids, scores in zip(positions, tokens, values, top_ids, top_values, strict=True):

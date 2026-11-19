@@ -1480,7 +1480,7 @@ class MultiDecoder:
 
         reuse = reuse_allowed(self.w, s.sampling, draft=s.draft, vision=s.vision,
                               position=len(s.prompt), kv_pair=self.kv_pair)
-        if teacher_scoring.forced(s) is not None:
+        if teacher_scoring.forced(s) is not None and not getattr(s.probabilities, "reuse", False):
             reuse = False                                # a scoring request computes (and scores) every prompt row
         retained = getattr(s, "retention_request", None)
         window = getattr(s, "retention_window", None)
