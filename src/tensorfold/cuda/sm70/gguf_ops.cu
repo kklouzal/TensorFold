@@ -2114,8 +2114,12 @@ void expert_gate_up_prefill(const __half* x, PackedView gate, PackedView up,
     __shared__ int rows[N], pairs[N];
     constexpr int BYTES = staged_block_bytes<Kind>(), STAGED = BYTES > 0;
     constexpr int WORDS = (BYTES + 6) / 4;  // a block's bytes from its word-aligned start (start % 4 <= 2)
+    // Row pitch == 8 or 24 (mod 32) words: a warp's four decode rows start 8 banks apart, so their
+    // byte windows (each within 8 words of a step) never share a bank.
+    constexpr int PITCH = WORDS <= 24 ? 24 : 40;
+    static_assert(WORDS <= 40, "staged pitch covers the block");
     constexpr int RAW = 2 * M * WORDS, FETCH = (RAW + PREFILL_THREADS - 1) / PREFILL_THREADS;
-    __shared__ uint32_t raw[STAGED ? RAW : 1];  // [gate rows | up rows][WORDS] of one 256-column block
+    __shared__ uint32_t raw[STAGED ? 2 * M * PITCH : 1];  // [gate rows | up rows][PITCH] of one 256-column block
     const int thread = threadIdx.x, warp = thread / 32;
     if (thread < N) {
         const int pair = thread < count ? group.pairs[begin + thread] : -1;
@@ -2176,12 +2180,15 @@ void expert_gate_up_prefill(const __half* x, PackedView gate, PackedView up,
     auto publish = [&] {
         #pragma unroll
         for (int j = 0; j < FETCH; ++j)
-            if (thread + j * PREFILL_THREADS < RAW) raw[thread + j * PREFILL_THREADS] = fetched[j];
+            if (thread + j * PREFILL_THREADS < RAW) {
+                const int i = thread + j * PREFILL_THREADS;
+                raw[i / WORDS * PITCH + i % WORDS] = fetched[j];
+            }
     };
     auto decode = [&](const PackedView& bank, int r, int column) {
         if constexpr (STAGED) {
             const int start = (r % M) * int(bank.stride) + (column / 256) * BYTES;  // base rows word aligned
-            const uint8_t* p = reinterpret_cast<const uint8_t*>(raw + r * WORDS) + (start & 3);
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(raw + r * PITCH) + (start & 3);
             return decode8_block<Kind>(p, column % 256);
         } else {
             return decode8_fixed<Kind>(bank, source, column);
