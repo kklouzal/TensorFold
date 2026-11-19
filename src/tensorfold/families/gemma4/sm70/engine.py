@@ -240,7 +240,10 @@ class Gemma4SM70Engine:
         if append:
             self.head.append(taps, lay, prompt=prompt)
         if score is not None:
-            return self._score_rows(local, score)
+            scores = self._score_rows(local, score)
+            # F_LOGITS_LAST too: a scored prompt's last chunk also returns its last row (same forward, so the
+            # scorer's prompt arithmetic is the serving path's).
+            return (scores, self._gathered(local[-1:])) if flags & F_LOGITS_LAST else scores
         return self._gathered(local)
 
     def _score_rows(self, local, targets):
@@ -554,18 +557,14 @@ class Decoder(PrefixOwner):
         if s.head is not None:                     # an exact repeat: the kept prompt end's own last-row logits
             logits, s.head, stop, last = s.head, None, n, True
         elif sink is not None:
-            end = stop - 1 if last else stop          # rows whose next token is a prompt token
-            if end > start:
-                nexts = prompt[start + 1:end + 1]
-                tl, tv, ti = e.announce(OP_FORWARD, s.slot, start, end - start, flags & ~F_LOGITS_LAST | F_SCORE,
-                                        prompt[start:end] + [nexts[-1]])
-                for r in range(end - start):
-                    pos = start + r + 1
-                    sink.add_prompt([pos], [prompt[pos]], [tl[r]], [ti[r][:sink.top]], [tv[r][:sink.top]])
-                s.pos = end
-            if last:
-                logits = e.announce(OP_FORWARD, s.slot, end if end > start else start, stop - max(start, end), flags,
-                                    prompt[max(start, end):stop])
+            # One forward per chunk, as unscored prompts: every row whose next token is a prompt token is scored; a
+            # last chunk's final row (scored against the first forced token, unused) also returns its logits.
+            after = prompt[stop] if not last else (s.forced[0] if s.forced is not None else 0)
+            out = e.announce(OP_FORWARD, s.slot, start, stop - start, flags | F_SCORE, prompt[start:stop] + [after])
+            (tl, tv, ti), logits = out if last else (out, None)
+            for r in range(stop - start - (1 if last else 0)):
+                pos = start + r + 1
+                sink.add_prompt([pos], [prompt[pos]], [tl[r]], [ti[r][:sink.top]], [tv[r][:sink.top]])
             self.keep_points(s, start, stop, logits)
         else:
             logits = e.announce(OP_FORWARD, s.slot, start, stop - start, flags, prompt[start:stop])
