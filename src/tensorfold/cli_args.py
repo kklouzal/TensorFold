@@ -320,7 +320,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "prompt-plus-reply window of the other P-N resident slots (auto: the largest that fits); "
                             "requests longer than it wait for a full window")
     speed.add_argument("--prefix-host-bytes", type=int, default=None, metavar="BYTES",
-                       help="Flash Next concurrent SM70 unique TP8 GPU histories: pinned host RAM (all ranks together) "
+                       help="Flash Next concurrent SM70 unique TP8 GPU histories, or Gemma 4 on eight V100s (--tp 8): "
+                            "pinned host RAM (all ranks together) "
                             "that keeps prompt points the GPU prefix cache evicts, restored on a hit instead of "
                             "prefilled again; never written to disk. Off by default (0): it costs 1-2%% of throughput under unique-prompt load; use e.g. 68719476736 (64 GiB) for repeated or shared-prefix traffic")
     speed.add_argument("--execution-profile-manifest", type=Path, default=None, metavar="PATH",

@@ -51,26 +51,30 @@ drafting allowed reuses, at any temperature: the sampler does not change prompt 
 neither borrows nor keeps. Usage reports the reused tokens as `prompt_tokens_details.cached_tokens`; `/stats`
 `prefix_cache` and the Prometheus `prefix_cache_*` families report entries, lookups and hits/tokens by tier.
 
-- Points: the chat template's message starts (`cuda.markers.resume_points`: the second message, the last assistant
-  start and the last other message, at least 256 tokens apart) and the prompt end less one token. With thinking on,
-  a next turn re-renders the previous generation prompt's last three tokens (`<|turn>model\n<|channel>thought\n`),
-  so it resumes from the last assistant start. The prompt end also keeps its last-row logits: an exact repeat
-  computes no prompt row and replies exactly as the original request.
+- Points: 1,024-row prefill chunk boundaries at or before the chat template's message starts
+  (`cuda.markers.resume_points`: the second message, the last assistant start and the last other message) and
+  before the prompt end, plus each prompt's exact end (with its last-row logits) for exact repeats, kept as the
+  point one token before the end (`prefixes`' convention). Prefills are chunked at multiples of 1,024 from
+  position 0, and every resume starts on such a boundary (a request that merely extends an exact end resumes at the
+  boundary below it), so a resumed request computes exactly the chunks a cold prefill of its prompt computes and
+  replies bitwise like the cold request; an exact repeat computes no prompt row. The price is recomputing up to
+  1,023 rows of the shared prefix (measured below).
 - State of a point: full-attention caches are linear, so the rows below a point stay valid while later rows are
   rewritten before any read. Sliding-window rings are overwritten as a slot moves on, so the ring rows a point needs
   (its last window + 1 positions: 25 target layers and the drafter's sliding layers, 29.7 MB per rank) are copied
-  out right after the prompt chunk containing the point. The target ring (2,048 rows = window 1,024 + one 1,024-row
-  chunk) and the drafter ring (3,072 = window 2,048 + one chunk) are sized so that chunk never overwrites them.
-  Every prompt row feeds the drafter, so a kept point serves later drafting requests.
+  out when the prefill reaches the point (before the next chunk). The drafter ring is 3,072 rows (window 2,048 +
+  one chunk) so a chunk never overwrites the window behind the prompt end. Every prompt row feeds the drafter, so a
+  kept point serves later drafting requests.
 - Slots: `--parallel` live streams plus `max(8, --parallel)` slots for idle kept conversations (plus one padding
   slot); each slot's rings exist from startup. A fork copies the full-cache rows below the point and restores the
   snapshot; a resume in place restores the snapshot. A slot whose capacity is too small grows by copying its rows.
 - Memory: attached full caches and snapshots are charged to the KV budget. A request that needs room first releases
   free slots' caches, then evicts the least valuable idle chains; it waits only for memory live streams hold.
-- Arithmetic: when a resume point falls on a 1,024-row chunk boundary of the cold prefill, the cached request's
-  arithmetic is the cold request's and replies are bitwise equal; other resumes compute the suffix in chunks that
-  start at the point (the same prompt arithmetic with different chunk boundaries; suffixes of at most 16 rows use
-  the decode arithmetic), measured below.
+- Host tier (`--prefix-host-bytes`, off by default): points `prefixes` drops are copied (full-cache rows below the
+  chain's longest point and every point's snapshot) into one pinned slab per rank allocated at startup, in
+  contiguous runs of 2 MiB blocks (least valuable entries evicted first), and restored byte-exactly into a free
+  slot when a prompt extends a host point by at least 64 tokens beyond its best VRAM point. Copies are ordered on
+  the device stream; nothing is written to disk. An exact end on the host serves only exact repeats.
 
 ## Memory
 

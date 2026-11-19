@@ -100,8 +100,20 @@ verify blocks use 256-key attention chunks). On the C1 greedy serving matrix (4K
 scored with the server session as the unit, `--draft-rows 3` decoded 3.8% faster in aggregate than 5 with
 identical replies and no prefill regression, and 0.5% faster than 4; 4 rows decoded 3.3% faster than 5 but one
 4K prefill cell scored 1.3% slower, and 2 rows were slower (see the
-[README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)). Greedy requests draft; sampled requests and requests with grammar
-constraints or penalties currently decode serially. `--no-graphs` selects eager execution.
+[README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)). Greedy and sampled requests draft: every verify row is sampled from the target with the
+request's position-keyed sampler and a proposal is kept only when it equals the sampled token, so a sampled reply
+is exactly the serial (`"draft": false`) reply. Requests with grammar constraints or penalties decode serially.
+`--no-graphs` selects eager execution.
+
+Prompt-prefix reuse is automatic: a request resumes from the longest kept prompt state its prompt extends (a
+previous turn of the conversation, a shared system block, an edited later message), at any temperature, and
+reports the reused tokens as `usage.prompt_tokens_details.cached_tokens`. States are kept at 1,024-row prefill
+chunk boundaries at or before the template's message starts and the prompt end, plus each prompt's exact end for
+exact repeats, so a resumed request computes exactly the chunks a cold prefill would and replies identically.
+Kept conversations live in `max(8, --parallel)` extra slots and in the KV budget; the least valuable idle ones are
+evicted when a request needs room. `--prefix-host-bytes BYTES` (off by default) adds a pinned host-RAM tier
+(BYTES across the eight ranks) that keeps evicted points and restores them on a later hit. See
+[concurrent serving](../gemma4-sm70-concurrency.md#prompt-prefix-reuse) for the design and measurements.
 
 `--parallel N` (1-32) serves up to N requests together through the shared CUDA scheduler: prompts prefill in
 fixed 1,024-row chunks, round-robin across waiting prompts, with one batched decode round (all decoding
@@ -114,7 +126,8 @@ use tensor-core paths whose replies may differ from C1 (see
 Refused on this provider:
 `--vision`, `--parallel` above 32, `--kv-dtype` other than the FP16 default, and the GB10-only options
 `--delta4-head`, `--prepare-global-prompt`, `--dflash-head-w4a16`, `--clip-sampled-verification`,
-`--lossless-head`, `--prefix-cache-bytes`, `--spark-global-gqa` and `--spark-sampled-q`. See [the README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)
+`--lossless-head`, `--prefix-cache-bytes` (the GB10 archive; this provider's cache is automatic),
+`--spark-global-gqa` and `--spark-sampled-q`. See [the README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)
 for the measured scope.
 
 The [2026-11-15 throughput checkpoint](../gemma4-sm70-throughput-20261115.md)

@@ -509,7 +509,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--vram-experts-pin off\|auto\|on` | `off`: pageable authority. With supported CUDA RAM experts, `auto` admits host registration or retains pageable bytes on explicit capacity/capability refusal; `on` requires registration. Unknown driver/cleanup failures remain errors. |
 | `--kv-full-windows N\|auto` | GGUF GPU-history CUDA computes and reserves complete windows; `auto` is explicit automatic selection and an integer constrains the count. Other supported Flash Next paths retain their existing numeric growth-window contracts; `auto` is refused there. |
 | `--kv-short-window TOKENS\|auto` | GGUF GPU-history CUDA with `--parallel P` above `--kv-full-windows N` (mixed resident windows): N slots keep the complete context and the other P-N slots are materialized at startup with one shorter prompt-plus-reply window (an explicit count is verified on every rank, never enlarged; `auto`, the default, takes the largest whole multiple of 1024 tokens the worst rank's memory solver retains and is refused while whole-round graphs use the automatic captured-round pool, which it would consume). A request is placed in the free slot with the shortest window that holds its prompt + `max_tokens` + speculative rows, and waits in FIFO order otherwise; while the FIFO head waits only for a longer window, up to P-N later requests that fit a free shorter slot may start ahead of it (they cannot take a window the head could use, and the head claims the next one that frees); prefix reuse only resumes or copies into fitting slots. Receipts record every slot's capacity. Retention policies, DSpark/DFlash2 and media are refused with mixed windows. |
-| `--prefix-host-bytes BYTES` | Flash Next concurrent SM70 unique TP8 GPU histories with MTP (the V100 production path): pinned host RAM, all ranks together (off by default; refused elsewhere; under a stream of unique prompts its spills cost 1-2% of prefill/decode throughput on the production benchmark, so enable it, e.g. 64 GiB, where repeated or shared prefixes dominate), charged as a fixed host obligation before the HTTP payload pool. Prompt points the GPU prefix cache drops by value are copied there and restored into a free slot with the same history-page ownership on a hit (bit-identical to the GPU-resident point); never written to disk. `/stats` `prefix_cache.host` and Prometheus `prefix_host_*` report it. |
+| `--prefix-host-bytes BYTES` | Flash Next concurrent SM70 unique TP8 GPU histories with MTP (the V100 production path): pinned host RAM, all ranks together (off by default; refused elsewhere; under a stream of unique prompts its spills cost 1-2% of prefill/decode throughput on the production benchmark, so enable it, e.g. 64 GiB, where repeated or shared prefixes dominate), charged as a fixed host obligation before the HTTP payload pool. Prompt points the GPU prefix cache drops by value are copied there and restored into a free slot with the same history-page ownership on a hit (bit-identical to the GPU-resident point); never written to disk. `/stats` `prefix_cache.host` and Prometheus `prefix_host_*` report it. Gemma 4 on eight V100s (`--tp 8`) also accepts it: evicted kept points (full-cache rows and ring snapshots) are copied to one pinned slab per rank allocated at startup and restored byte-exactly into a free slot. |
 | `--ssd-experts GIB` | Unset. Supported MLX families stream checkpoint experts into a GPU pool; distinct from RAM-backed CUDA experts and unsupported with CUDA `--vram-experts`. See the [Flash Next recipe](docs/recipes/qwen3.8-flash-next.md). |
 | `--ple-on-ssd` | Off. Supported Flash Next affine, BF16, FP8 and NVFP4 n-gram layouts use bounded demand SSD reads with their original decoding/scale semantics. EXL3 retains its native mapped table and rejects this flag. |
 | `--kv-dtype FORMAT` | Flash Next CUDA `bf16`; shorthand selects both K and V formats. |
@@ -1656,6 +1656,29 @@ That functional operation took **359.99 s**, including model startup, prompt war
 All scoped candidate, source, build, native, packaging and fresh API gates are complete. The performance tables retain their original Source06/private comparison identities and limits. This closing result update changes documentation only; it leaves the qualified runtime code unchanged. A subsequent rebuild must record its own artifact IDs rather than reuse these digests as aliases.
 
 ### Eight V100s (SM70)
+
+#### Gemma 4 on eight V100s: prompt reuse, sampled drafts, `--parallel` (2026-11-19)
+
+The eight-V100 Gemma 4 provider now serves through the shared CUDA scheduler (`--parallel N`, batched decode
+rounds), reuses prompt prefixes automatically and drafts sampled requests with DFlash
+([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4), [design](docs/gemma4-sm70-concurrency.md)).
+Measured on eight V100-SXM2-32GB (image `4b2661d8`, `--context 262144`, INT8 DFlash 5 rows, Harness T4 template,
+thinking on; previous engine `3f49a0b2` vs this change, one session each):
+
+| | previous | this change |
+| --- | ---: | ---: |
+| C1 sampled decode, 4K / 16K prompts (tok/s) | 202 / 184 | 235 / 219 |
+| C1 greedy decode, 4K / 16K (tok/s) | 263 / 234 | 268 / 238 |
+| C1 prefill, greedy 4K / 16K (tok/s) | 5,917 / 5,452 | 5,816 / 5,404 |
+| Multi-turn chat, later-turn TTFT median (two interleaved conversations, 7-11K-token prompts) | 1.59 s | 0.19 s |
+| Exact repeat TTFT | 1.48 s | 0.013 s |
+| Chat decode median (thinking text, T 1.0) | 190 tok/s | 290-300 tok/s |
+
+Replies are unchanged: greedy and seeded sampled chat replies equal the previous engine's (23/23), drafted sampled
+replies equal `"draft": false` replies, and replies resumed from a kept prefix (in place, forked, exact repeat,
+extensions) equal cold replies bitwise, because kept states sit on prefill chunk boundaries. Teacher-forced exact
+repeats score identically to cold on quality corpus v2. Multi-request results are listed in the
+[concurrency note](docs/gemma4-sm70-concurrency.md#validation).
 
 #### Gemma 4 26B-A4B AEON NVFP4 on eight V100s (2026-11-15)
 
