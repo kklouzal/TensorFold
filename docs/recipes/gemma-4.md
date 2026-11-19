@@ -89,7 +89,7 @@ weights on cuBLAS tensor cores. Bit identity with GB10 is not claimed.
 ```sh
 TF_SMALL_GATHER_BYTES=262144 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/gemma4-nvfp4 --backend cuda \
   --precision checkpoint --drafter /models/gemma4-dflash --drafter-bits 8 --draft-rows 3 \
-  --parallel 1 --context 262144 --name gemma4-26b-a4b --thinking --thinking-budget 0 \
+  --parallel 8 --context 262144 --name gemma4-26b-a4b --thinking --thinking-budget 0 \
   --chat-template deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja --host 0.0.0.0 --port 8000
 ```
 
@@ -115,7 +115,9 @@ evicted when a request needs room. `--prefix-host-bytes BYTES` (off by default) 
 (BYTES across the eight ranks) that keeps evicted points and restores them on a later hit. See
 [concurrent serving](../gemma4-sm70-concurrency.md#prompt-prefix-reuse) for the design and measurements.
 
-`--parallel N` (1-32) serves up to N requests together through the shared CUDA scheduler: prompts prefill in
+`--parallel N` (1-32; `auto` means 1) serves up to N requests together through the shared CUDA scheduler
+(`--parallel 8` is the tested setting: one request decodes as fast as with `--parallel 1`, and eight requests
+of up to 200,000 reply tokens fit the KV budget at the full 262,144-token context): prompts prefill in
 fixed 1,024-row chunks, round-robin across waiting prompts, with one batched decode round (all decoding
 streams, padded to a graph bucket) between chunks. Startup captures a serial, a serial-with-drafter-taps and a
 DFlash round graph per bucket (1, 2, 3, 4, 6, 8, 12, ... up to N) and prints the per-rank KV budget. Each

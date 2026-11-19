@@ -134,7 +134,30 @@ server prints its own budget at startup.
 - The drafter's sliding layers read rings instead of linear caches, which reorders their attention sums.
   Proposals can differ from the earlier implementation; verified output cannot.
 
-## Validation (source in this change, image `cf8c0ff6`, eight V100-SXM2-32GB)
+## Validation (2026-11-19, image `4b2661d8`, eight V100-SXM2-32GB, `--context 262144`, INT8 DFlash 5 rows)
+
+Evidence in the claude-perf ledger section "Gemma 4 V100 parity (g4p)"; one server session per row.
+
+- Replies: 5 greedy and 9 seeded sampled chat replies (plus the 9 with `"draft": false`) equal the previous
+  one-lane engine (`3f49a0b2`) at `--parallel 1` and `--parallel 8`, with and without the host tier.
+- Prefix reuse: replies resumed in place, forked, from an exact repeat and from an extension (resumed at the chunk
+  boundary below the kept end) equal the cold `"draft": false` reply bitwise (4 documents of quality corpus v2);
+  a conversation evicted to the host tier and extended replies identically. Teacher-forced exact repeats score
+  identically to cold (80 documents). Resuming an extension one token before its end without the boundary
+  alignment was measured inconclusive against cold (decode d +0.0043 nats, 95% CI [-0.0165, +0.0229]) and is not
+  used.
+- Chat (two interleaved conversations with 7-11K-token prompts, thinking on, T 1.0): later-turn time to first
+  token 1.59 s cold, 0.19 s reused; exact repeat 0.013 s.
+- C1 decode, 4K/16K prompts: greedy 268/238 tok/s, sampled 235/219 (previous engine 263/234 and 202/184);
+  `--parallel 8` serves C1 at the same speed. Per-request decode at `--parallel 8`, greedy 4K: C2 139, C4 114,
+  C8 62 tok/s (sampled 128, 86, 53): DFlash verify rows are compute-bound FP32 GEMV rows (about 0.85 ms per extra
+  row), so batches gain less than serial batching would suggest.
+- Eight and twelve concurrent thinking-on requests with `max_tokens` 200,000 at `--parallel 8`: all 200; eight
+  ran at once, the rest queued.
+- Robustness: three queued requests at `--parallel 1`, client disconnects during a 30K-token prefill and during
+  decode, then a greedy reply equal to the reference; `/stats`, `/metrics` and `/v1/tokenize` respond.
+
+## Validation (source of the 2026-11-15 change, image `cf8c0ff6`, eight V100-SXM2-32GB)
 
 - Native kernel tests (`tests/cuda/test_sm70_gemma4_kernels.py`, 55 passed): row tiles beyond 16 rows equal
   16-row calls bitwise (W4, BF16, INT8); several attention segments in one launch equal per-stream launches
