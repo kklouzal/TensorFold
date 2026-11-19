@@ -347,11 +347,12 @@ class NCCL:
 
     def open(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
              key: str = "tf_nccl_uid", store=None, use_libuv: bool | None = None, store_origin=None,
-             row_reduce: bool = False) -> None:
+             row_reduce: bool = False, fp32_rows: bool = False) -> None:
         """Acquire into a published slot; failure closes or retains that slot.
 
         ``row_reduce``: this communicator reduces tensor-parallel decode partials (``all_reduce_rows``), so
-        it also opens the bulk row all-reduce mailbox (``TF_SMALL_ALLREDUCE_BYTES``).
+        it also opens the bulk row all-reduce mailbox (``TF_SMALL_ALLREDUCE_BYTES``). ``fp32_rows`` (with
+        ``row_reduce``) sizes that mailbox for FP32 sums as well (``all_reduce_rows_f32``).
 
         Native init writes directly into ``comm`` before Python regains control.
         The released GIL syscall cannot expose an unjournaled Python result.
@@ -364,7 +365,8 @@ class NCCL:
                     raise RuntimeError("communicator open is one-shot")
                 acquiring = True
                 self._initialize(rank, world, master, port, timeout_s=timeout_s, key=key, store=store,
-                                 use_libuv=use_libuv, store_origin=store_origin, row_reduce=row_reduce)
+                                 use_libuv=use_libuv, store_origin=store_origin, row_reduce=row_reduce,
+                                 fp32_rows=fp32_rows)
                 self._opened = True
         except BaseException as error:
             if not acquiring:
@@ -375,7 +377,7 @@ class NCCL:
 
     def _initialize(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
                     key: str = "tf_nccl_uid", store=None, use_libuv: bool | None = None, store_origin=None,
-                    row_reduce: bool = False) -> None:
+                    row_reduce: bool = False, fp32_rows: bool = False) -> None:
         try:
             from datetime import timedelta
             from math import isfinite
@@ -441,7 +443,8 @@ class NCCL:
             if capacity:
                 # Every rank holds the same unique ID, and each open draws a new one.
                 nonce = hashlib.sha256(bytes(uid.internal)).hexdigest()[:32]
-                self.small_gather = open_small_gather(self.store, key, rank, world, capacity, nonce, bulk)
+                self.small_gather = open_small_gather(self.store, key, rank, world, capacity, nonce, bulk,
+                                                      bool(fp32_rows))
                 self.small_gather_bytes = capacity if self.small_gather is not None else 0
                 if self.small_gather is None and rank == 0:
                     print("[tensorfold] small all-gather unavailable for this cohort's topology; using NCCL", flush=True)
@@ -528,6 +531,37 @@ class NCCL:
                 small.allreduce_bulk(a, b, rows, dims, stream)
             else:
                 small.allreduce(a, b, rows, dims, stream)
+            return True
+
+    def all_reduce_rows_f32(self, send: torch.Tensor, recv: torch.Tensor) -> bool:
+        """Rank-ordered FP32 sums of every rank's [rows, dims] partials into FP32 recv (bulk all-reduce only).
+
+        Bitwise what a consumer of the all-gathered partials forms: rank 0 first, then each rank in order
+        (FP32 adds; signed zeros and NaNs as those adds give them). Needs a communicator opened with
+        ``row_reduce`` and ``fp32_rows``; returns False (nothing submitted) when the small collectives are off
+        or the shape does not fit the bulk mailbox, and the caller keeps the all-gather. Row thresholds are
+        the caller's. Same borrowing contract as all_gather.
+        """
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("all_reduce_rows_f32: communicator admission is closed")
+            small = self.small_gather
+            if small is None or not _SMALL_ALLREDUCE:
+                return False
+            if (not isinstance(send, torch.Tensor) or not isinstance(recv, torch.Tensor) or send.ndim != 2
+                    or send.dtype != torch.float32 or recv.dtype != torch.float32 or recv.shape != send.shape
+                    or send.device != self.device or recv.device != self.device
+                    or not send.is_contiguous() or not recv.is_contiguous()):
+                raise ValueError("all_reduce_rows_f32: contiguous FP32 [rows, dims] input and output required")
+            rows, dims = send.shape
+            if small.bulk_chunk_rows(rows, dims, True) == 0:
+                return False
+            a, b = send.data_ptr(), recv.data_ptr()
+            if a % 16 or b % 16:  # a rank-local fallback would desynchronize the cohort's calls
+                raise ValueError("all_reduce_rows_f32: input and output must be 16-byte aligned")
+            if a < b + recv.numel() * 4 and b < a + send.numel() * 4:
+                raise ValueError("all_reduce_rows_f32: input and output must not overlap")
+            small.allreduce_bulk_f32(a, b, rows, dims, torch._C._cuda_getCurrentRawStream(self.device.index))
             return True
 
     def all_reduce_half(self, send: torch.Tensor, recv: torch.Tensor) -> bool:

@@ -6,8 +6,10 @@ deterministic oracle (eager, in place, offset storage, capacity edge, NCCL above
 capacity) and varying-data CUDA-graph replays; the row all-reduce against the
 gathered partials summed in rank order and rounded to FP16 (eager and replayed
 between gathers), the bulk row all-reduce (direct calls at 5-160 rows and 64 rows inside the graph)
-against the same oracle, once from a fresh generation
-sequence and once seeded just before the 32-bit generation wrap.
+against the same oracle, and the FP32-output bulk row all-reduce (direct calls at 1-73 rows of 2816/5632
+with signed zeros, NaN, infinities and subnormals, and 40 x 5632 inside the graph) against the gathered
+partials summed in rank order in FP32; once from a fresh generation sequence with the FP16-only mailbox
+(FP32 sums refused) and once seeded just before the 32-bit generation wrap with the wide mailbox.
 ``TF_TEST_SMALL_GATHER_WORLD`` selects the rank count (default: all visible
 GPUs, at most 8); the visible GPUs must form a cohort with NVLink routes.
 """
@@ -47,15 +49,15 @@ pytestmark = pytest.mark.skipif(
     reason="needs at least two SM70 GPUs")
 
 
-@pytest.mark.parametrize("seed", [-1, 0xFFFFFFFF - 3], ids=["fresh", "near-wrap"])
-def test_small_gather_matches_nccl_bitwise_eager_and_in_graph(seed):
+@pytest.mark.parametrize("seed, wide", [(-1, 0), (0xFFFFFFFF - 3, 1)], ids=["fresh", "near-wrap-wide"])
+def test_small_gather_matches_nccl_bitwise_eager_and_in_graph(seed, wide):
     devices = _devices()
     world, port = len(devices), _port()
     bulk = 16 * world * (160 * 2560 * 4 // (16 * world))  # FP32 partials of up to 160 x 2560 rows per rank
     environment = {**os.environ, small_gather.ENV: str(small_gather.MAX_CAPACITY), small_gather.BULK_ENV: str(bulk),
                    "PYTHONUNBUFFERED": "1",
                    "PYTHONPATH": os.pathsep.join([str(ROOT / "src"), os.environ.get("PYTHONPATH", "")])}
-    workers = [subprocess.Popen([sys.executable, str(WORKER), str(rank), str(world), str(port), str(seed), "200"],
+    workers = [subprocess.Popen([sys.executable, str(WORKER), str(rank), str(world), str(port), str(seed), "200", str(wide)],
                                 env={**environment, "CUDA_VISIBLE_DEVICES": devices[rank]},
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                for rank in range(world)]
@@ -81,3 +83,7 @@ def test_small_gather_matches_nccl_bitwise_eager_and_in_graph(seed):
                and report["graph_replays"] == 200 and report["reduced_shapes"] >= 5 for report in reports)
     if 2560 % (8 * world) == 0:
         assert all(report["bulk_shapes"] == 7 for report in reports)
+    # FP32 sums: refused without the wide mailbox; with it every shape up to the 160 x 2560 FP32 ceiling.
+    expected = 0 if not wide else sum(rows * dims <= 160 * 2560 for dims in (2816, 5632)
+                                      for rows in (1, 2, 5, 16, 40, 72, 73) if dims % (8 * world) == 0)
+    assert all(report["f32_shapes"] == expected for report in reports)

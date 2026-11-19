@@ -75,10 +75,13 @@ def configured_bulk(world: int) -> int:
     return value
 
 
-def bulk_mailbox_bytes(world: int, bulk: int, regions: int) -> int:
-    """Device bytes of one rank's bulk mailbox: two parities of phase-1, transit and phase-2 slots, plus flags."""
+def bulk_mailbox_bytes(world: int, bulk: int, regions: int, wide: bool = False) -> int:
+    """Device bytes of one rank's bulk mailbox: two parities of phase-1, transit and phase-2 slots, plus flags.
+
+    ``wide``: phase-2 slots hold FP32 sums (``allreduce_bulk_f32``), twice the FP16 slot.
+    """
     slot = bulk // world
-    return 2 * (world * (1 + regions) * slot + world * (slot // 2)) + 2 * world * (2 + regions) * 4 * 4
+    return 2 * (world * (1 + regions) * slot + world * (slot if wide else slot // 2)) + 2 * world * (2 + regions) * 4 * 4
 
 
 def mailbox_bytes(world: int, capacity: int) -> int:
@@ -233,18 +236,21 @@ def store_prefix(key: str, nonce: str) -> str:
     return f"{key}/small_gather/{nonce}/"
 
 
-def open_small_gather(store, key: str, rank: int, world: int, capacity: int, nonce: str, bulk: int = 0):
+def open_small_gather(store, key: str, rank: int, world: int, capacity: int, nonce: str, bulk: int = 0,
+                      wide: bool = False):
     """Collective over the Store: every rank returns a connected native SmallGather, or every rank None.
 
     The owner calls ``gather(send_ptr, recv_ptr, bytes, stream)`` for 0 < bytes <=
     capacity, ``abort()`` before an aborting device fence and ``release()`` after
-    its device fence. A rank whose local setup raises first publishes failure
+    its device fence. ``wide`` opens the bulk mailbox with FP32 phase-2 slots (``bulk_mailbox_bytes``).
+    A rank whose local setup raises first publishes failure
     markers for every key its peers still await (they then return None without
     waiting for the Store timeout) and re-raises.
     """
     prefix = store_prefix(key, nonce)
-    store.set(prefix + f"capacity/{rank}", f"{capacity}/{bulk}")
-    if any(store.get(prefix + f"capacity/{r}").decode() != f"{capacity}/{bulk}" for r in range(world)):
+    shape = f"{capacity}/{bulk}" + ("/wide" if bulk and wide else "")
+    store.set(prefix + f"capacity/{rank}", shape)
+    if any(store.get(prefix + f"capacity/{r}").decode() != shape for r in range(world)):
         raise RuntimeError(f"the ranks were started with different {ENV} or {BULK_ENV}")
     native = None
     pending = {"topology": "failed", "handle": b"", "bulk": b"", "ok": "0"}  # Keys peers await, with failure markers.
@@ -287,7 +293,7 @@ def open_small_gather(store, key: str, rank: int, world: int, capacity: int, non
                 print(f"[tensorfold] rank {rank} cannot map small all-gather peers: {error}", flush=True)
                 ok = False
         if ok and bulk:
-            publish("bulk", native.open_bulk(bulk))
+            publish("bulk", native.open_bulk(bulk, wide))
             bulk_handles = [store.get(prefix + f"bulk/{r}") for r in range(world)]
             try:
                 native.connect_bulk(bulk_handles)

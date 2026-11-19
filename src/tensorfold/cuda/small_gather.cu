@@ -50,6 +50,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
@@ -323,7 +324,7 @@ __global__ void __launch_bounds__(kThreads) small_allreduce_kernel(ReduceParams 
 // Mailbox (its own allocation, mapped like the LL mailbox), per parity:
 //   phase-1 inbox [source]          slice partials (FP32 [rows, slice]) from each source
 //   transit [source][region]        partials a relay forwards to the source's region-th non-neighbour
-//   phase-2 inbox [source]          the source's FP16 summed slice
+//   phase-2 inbox [source]          the source's summed slice (FP16, or FP32 in a wide mailbox)
 // and one flag per (parity, slot, chunk) after both parities. A flag holds the call's generation; its
 // reader clears it after consuming the chunk, so a stale flag never matches (as the LL lines). Reuse
 // ordering, generations and progress follow the LL kernels' header argument: every rank receives every
@@ -336,7 +337,7 @@ constexpr int kMaxBulkChunks = 4;
 
 struct BulkParams {
   const float* send;
-  __half* recv;
+  void* recv;              // Out [rows, dims]
   unsigned char* box[kMaxWorld];  // bulk mailbox base of every mapped rank (own included)
   uint32_t* state;
   const volatile int* abort;
@@ -405,7 +406,29 @@ __device__ __forceinline__ void bulk_copy(unsigned char* to, const unsigned char
   for (long long e = threadIdx.x; e < bytes / 16; e += blockDim.x) dst[e] = __ldcg(src + e);
 }
 
+// Phase-2 payload of one float4 of sums: the FP16 rounding (8 bytes) or the FP32 sums themselves (16 bytes).
+template <typename Out> struct BulkWord;
+template <> struct BulkWord<__half> {
+  using T = uint2;
+  static __device__ __forceinline__ T make(float4 a) {
+    const __half2 lo = __floats2half2_rn(a.x, a.y), hi = __floats2half2_rn(a.z, a.w);
+    uint2 word;
+    word.x = *reinterpret_cast<const uint32_t*>(&lo);
+    word.y = *reinterpret_cast<const uint32_t*>(&hi);
+    return word;
+  }
+};
+template <> struct BulkWord<float> {
+  using T = uint4;
+  static __device__ __forceinline__ T make(float4 a) {
+    return make_uint4(__float_as_uint(a.x), __float_as_uint(a.y), __float_as_uint(a.z), __float_as_uint(a.w));
+  }
+};
+
+// Out = __half: one FP16 rounding of the sums; Out = float: the FP32 sums (bitwise a rank-ordered consumer's).
+template <typename Out>
 __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) {
+  using Word = typename BulkWord<Out>::T;
   __shared__ uint32_t shared_generation;
   if (threadIdx.x == 0) {
     uint32_t next = *reinterpret_cast<volatile uint32_t*>(q.state) + 1u;
@@ -414,7 +437,7 @@ __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) 
   __syncthreads();
   const uint32_t generation = shared_generation, parity = generation & 1u;
   const int role = blockIdx.y, others = q.world - 1;
-  const int p1_row = q.slice * 4, p2_row = q.slice * 2;  // bytes per row of one slice
+  const int p1_row = q.slice * 4, p2_row = q.slice * int(sizeof(Out));  // bytes per row of one slice
   const int p2_slot = q.world * (1 + q.regions);
   bool aborted = false;
   auto chunk_rows = [&](int c) { return min(q.chunk_rows, q.rows - c * q.chunk_rows); };
@@ -452,7 +475,7 @@ __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) 
         bulk_set(flag, 0u);
       }
     }
-  } else if (role == 2) {  // reducer: rank-ordered FP32 sums of this rank's slice, one FP16 rounding
+  } else if (role == 2) {  // reducer: rank-ordered FP32 sums of this rank's slice (then the Out conversion)
     for (int c = blockIdx.x; c < q.chunks && !aborted; c += gridDim.x) {
       bool good = true;
       if (threadIdx.x < q.world && threadIdx.x != q.rank) {  // one waiting thread per source
@@ -473,13 +496,10 @@ __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) 
           if (source == 0) a = x;
           else { a.x = a.x + x.x; a.y = a.y + x.y; a.z = a.z + x.z; a.w = a.w + x.w; }  // rank order
         }
-        const __half2 lo = __floats2half2_rn(a.x, a.y), hi = __floats2half2_rn(a.z, a.w);
-        uint2 word;
-        word.x = *reinterpret_cast<const uint32_t*>(&lo);
-        word.y = *reinterpret_cast<const uint32_t*>(&hi);
+        const Word word = BulkWord<Out>::make(a);
         for (uint32_t mask = q.direct; mask; mask &= mask - 1)
-          reinterpret_cast<uint2*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, p2_slot + q.rank) + out_offset)[e] = word;
-        *reinterpret_cast<uint2*>(q.recv + (long long)r * q.dims + col) = word;
+          reinterpret_cast<Word*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, p2_slot + q.rank) + out_offset)[e] = word;
+        *reinterpret_cast<Word*>(static_cast<Out*>(q.recv) + (long long)r * q.dims + col) = word;
       }
       bulk_publish_fence();
       if (threadIdx.x == 0)
@@ -498,11 +518,11 @@ __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) 
       const uint32_t out = q.forward[c % kSplit][source];
       const int n = chunk_rows(c) * (q.slice / 4);
       for (int e = threadIdx.x; e < n; e += blockDim.x) {
-        const uint2 word = __ldcg(reinterpret_cast<const uint2*>(from) + e);
+        const Word word = __ldcg(reinterpret_cast<const Word*>(from) + e);
         for (uint32_t mask = out; mask; mask &= mask - 1)
-          reinterpret_cast<uint2*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, slot) + offset)[e] = word;
+          reinterpret_cast<Word*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, slot) + offset)[e] = word;
         const int r = c * q.chunk_rows + e / (q.slice / 4), col = source * q.slice + (e % (q.slice / 4)) * 4;
-        *reinterpret_cast<uint2*>(q.recv + (long long)r * q.dims + col) = word;
+        *reinterpret_cast<Word*>(static_cast<Out*>(q.recv) + (long long)r * q.dims + col) = word;
       }
       if (out) bulk_publish_fence();
       else __syncthreads();
@@ -745,16 +765,18 @@ class SmallGather {
     tail_capture_ = capture;
   }
 
-  // Bulk all-reduce mailbox for FP32 partials of up to `bytes` per rank (after connect_reduce). Returns
+  // Bulk all-reduce mailbox for FP32 partials of up to `bytes` per rank (after connect_reduce). `wide`: phase-2
+  // slots hold FP32 sums (allreduce_bulk_f32) instead of FP16 (slot bytes s1 instead of s1 / 2). Returns
   // this rank's IPC handle; connect_bulk maps every NVLink neighbour's (the only ranks this rank writes).
-  py::bytes open_bulk(int64_t bytes) {
+  py::bytes open_bulk(int64_t bytes, bool wide) {
     TORCH_CHECK(reduce_connected_ && bulk_own_ == nullptr && bytes > 0 && bytes % (16 * world_) == 0
                     && bytes <= kMaxBulkBytes,
                 "bulk all-reduce opens once after connect_reduce with a positive capacity up to ", kMaxBulkBytes,
                 " bytes, a multiple of 16 x world");
     bulk_bytes_ = bytes;
     bulk_s1_ = bytes / world_;
-    bulk_s2_ = bulk_s1_ / 2;
+    bulk_s2_ = wide ? bulk_s1_ : bulk_s1_ / 2;
+    bulk_wide_ = wide;
     bulk_parity_bytes_ = (long long)world_ * (1 + regions_) * bulk_s1_ + (long long)world_ * bulk_s2_;
     bulk_flags_ = 2 * bulk_parity_bytes_;
     const size_t total = size_t(bulk_flags_) + size_t(2) * world_ * (2 + regions_) * kMaxBulkChunks * sizeof(uint32_t);
@@ -782,24 +804,38 @@ class SmallGather {
       opened_.push_back(mapped);
     }
     int per_sm = 0, sms = 0;
-    check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, bulk_allreduce_kernel, kThreads, 0), "occupancy");
     check(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device_), "SM count");
-    bulk_row_blocks_ = std::max(1, per_sm * sms / (2 * (world_ + 2)));
+    check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, bulk_allreduce_kernel<__half>, kThreads, 0), "occupancy");
+    bulk_row_blocks_[0] = std::max(1, per_sm * sms / (2 * (world_ + 2)));
+    check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, bulk_allreduce_kernel<float>, kThreads, 0), "occupancy");
+    bulk_row_blocks_[1] = std::max(1, per_sm * sms / (2 * (world_ + 2)));
     bulk_connected_ = true;
   }
 
-  // Rows per chunk for a [rows, dims] bulk all-reduce, or 0 when the shape is outside its mailbox.
-  int64_t bulk_chunk_rows(int64_t rows, int64_t dims) const {
-    if (!bulk_connected_ || rows <= 0 || dims <= 0 || dims % (8 * world_) != 0) return 0;
+  // Rows per chunk for a [rows, dims] bulk all-reduce (FP32 output: `f32`), or 0 when the shape is outside its
+  // mailbox (FP32 output needs a wide one).
+  int64_t bulk_chunk_rows(int64_t rows, int64_t dims, bool f32) const {
+    if (!bulk_connected_ || (f32 && !bulk_wide_) || rows <= 0 || dims <= 0 || dims % (8 * world_) != 0) return 0;
     const long long slice_bytes = dims / world_ * 4;
     if (rows * slice_bytes > bulk_s1_) return 0;
     return (rows + kMaxBulkChunks - 1) / kMaxBulkChunks;
   }
 
-  // send: FP32 [rows, dims] partials (16-byte aligned); recv: FP16 [rows, dims] rank-ordered sums.
+  // send: FP32 [rows, dims] partials (16-byte aligned); recv: FP16 [rows, dims] rank-ordered sums (8-byte aligned).
   void allreduce_bulk(int64_t send, int64_t recv, int64_t rows, int64_t dims, int64_t stream_value) {
-    const int64_t chunk_rows = bulk_chunk_rows(rows, dims);
-    TORCH_CHECK(connected_ && !released_ && chunk_rows > 0 && send % 16 == 0 && recv % 8 == 0,
+    launch_bulk<__half>(send, recv, rows, dims, stream_value);
+  }
+
+  // send: FP32 [rows, dims] partials; recv: FP32 [rows, dims] rank-ordered sums (both 16-byte aligned; wide mailbox).
+  void allreduce_bulk_f32(int64_t send, int64_t recv, int64_t rows, int64_t dims, int64_t stream_value) {
+    launch_bulk<float>(send, recv, rows, dims, stream_value);
+  }
+
+  template <typename Out>
+  void launch_bulk(int64_t send, int64_t recv, int64_t rows, int64_t dims, int64_t stream_value) {
+    constexpr bool f32 = std::is_same<Out, float>::value;
+    const int64_t chunk_rows = bulk_chunk_rows(rows, dims, f32);
+    TORCH_CHECK(connected_ && !released_ && chunk_rows > 0 && send % 16 == 0 && recv % int64_t(sizeof(Out) * 4) == 0,
                 "bulk all-reduce shape or alignment is not admitted");
     auto stream = reinterpret_cast<cudaStream_t>(stream_value);
     cudaStreamCaptureStatus status;
@@ -810,7 +846,7 @@ class SmallGather {
       check(cudaStreamWaitEvent(stream, tail_, 0), "stream join");
     BulkParams q{};
     q.send = reinterpret_cast<const float*>(send);
-    q.recv = reinterpret_cast<__half*>(recv);
+    q.recv = reinterpret_cast<void*>(recv);
     for (int r = 0; r < kMaxWorld; ++r) q.box[r] = bulk_box_[r];
     q.state = state_;
     q.abort = abort_device_;
@@ -842,8 +878,8 @@ class SmallGather {
         if (ordinal_[a][b] >= 0) q.far[a][ordinal_[a][b]] = b;
     for (int r = 0; r < kMaxWorld; ++r) q.order[r] = order_[r];
     const long long units = (long long)(world_ - 1) * q.chunks;
-    const long long blocks = std::min<long long>(units, bulk_row_blocks_);
-    bulk_allreduce_kernel<<<dim3(unsigned(blocks), unsigned(world_ + 2)), kThreads, 0, stream>>>(q);
+    const long long blocks = std::min<long long>(units, bulk_row_blocks_[f32]);
+    bulk_allreduce_kernel<Out><<<dim3(unsigned(blocks), unsigned(world_ + 2)), kThreads, 0, stream>>>(q);
     check(cudaGetLastError(), "launch");
     check(cudaEventRecord(tail_, stream), "stream tail");
     has_tail_ = true;
@@ -914,8 +950,8 @@ class SmallGather {
   void* bulk_own_ = nullptr;
   unsigned char* bulk_box_[kMaxWorld] = {};
   long long bulk_bytes_ = 0, bulk_s1_ = 0, bulk_s2_ = 0, bulk_parity_bytes_ = 0, bulk_flags_ = 0;
-  long long bulk_row_blocks_ = 1;
-  bool bulk_connected_ = false;
+  long long bulk_row_blocks_[2] = {1, 1};  // per output type: FP16, FP32
+  bool bulk_connected_ = false, bulk_wide_ = false;
   std::vector<void*> opened_;
   cudaEvent_t tail_ = nullptr;
   cudaStream_t tail_stream_ = nullptr;
@@ -936,10 +972,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def("connect_reduce", &SmallGather::connect_reduce)
       .def("reduce_lines", &SmallGather::reduce_lines)
       .def("allreduce", &SmallGather::allreduce)
-      .def("open_bulk", &SmallGather::open_bulk)
+      .def("open_bulk", &SmallGather::open_bulk, py::arg("bytes"), py::arg("wide") = false)
       .def("connect_bulk", &SmallGather::connect_bulk)
-      .def("bulk_chunk_rows", &SmallGather::bulk_chunk_rows)
+      .def("bulk_chunk_rows", &SmallGather::bulk_chunk_rows, py::arg("rows"), py::arg("dims"), py::arg("f32") = false)
       .def("allreduce_bulk", &SmallGather::allreduce_bulk)
+      .def("allreduce_bulk_f32", &SmallGather::allreduce_bulk_f32)
       .def_property_readonly_static("max_bulk", [](py::object) { return kMaxBulkBytes; })
       .def("seed_generation", &SmallGather::seed_generation)
       .def_property_readonly_static("max_capacity", [](py::object) { return kMaxCapacityBytes; })

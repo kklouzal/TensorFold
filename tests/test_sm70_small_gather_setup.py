@@ -40,6 +40,8 @@ def test_bulk_capacity_rejects_values_outside_the_contract(monkeypatch, raw):
 def test_bulk_mailbox_bytes_at_the_default_on_the_v100_cube_mesh():
     # 3 transit regions (non-neighbours per rank): 2 x (8 x 4 x 204800 + 8 x 102400) + flags 2 x 8 x 5 x 4 x 4.
     assert small_gather.bulk_mailbox_bytes(8, 1638400, 3) == 14745600 + 1280
+    # wide (FP32 sums): phase-2 slots of 204800 bytes.
+    assert small_gather.bulk_mailbox_bytes(8, 1638400, 3, wide=True) == 16384000 + 1280
 
 
 def test_each_open_has_its_own_store_namespace():

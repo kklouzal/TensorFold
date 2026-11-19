@@ -88,7 +88,8 @@ class Gemma4SM70Engine:
         # The NVLink small all-gather for the per-layer FP32 decode partials is this provider's measured default
         # (6.2 -> 5.0 ms per serial step); every rank sets the same value before the communicator opens.
         os.environ.setdefault("TF_SMALL_GATHER_BYTES", "262144")
-        self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
+        # row_reduce/fp32_rows: the bulk mailbox of the decode rows' FP32 all-reduce (Target._reduce)
+        self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port, row_reduce=True, fp32_rows=True)
         self.w = W.load(model_dir, rank)
         self.snaps = {}                           # prefix snapshot id -> (target rings, drafter rings) on this rank
         # Host prefix tier (prefix_host.py, on by default; --prefix-host-bytes 0 disables): one pinned slab per rank,
