@@ -289,6 +289,8 @@ def test_production_int8_personal_profile_selects_the_tracked_24_lane_packet(com
     ({"TF_INDEXER_HISTORY": "ram"}, b"TF_INDEXER_HISTORY=gpu"),
     ({"TF_EXPERT_TENSOR_PARALLEL_SIZE": "8"}, b"TF_EXPERT_TENSOR_PARALLEL_SIZE=4"),
     ({"TF_KV_DTYPE": "fp16", "TF_MAX_PENDING_REQUESTS": "8", "TF_MAX_HTTP_CONNECTIONS": "9"}, b"numeric TF_PARALLEL"),
+    ({"TF_KV_DTYPE": "fp16", "TF_PARALLEL": "24", "TF_MAX_PENDING_REQUESTS": "8", "TF_MAX_HTTP_CONNECTIONS": "9"},
+     b"personal-profile KV codec"),
     ({"TF_V100_LAUNCH": "fast"}, b"production or reference"),
     ({"TF_THINKING": "maybe"}, b"TF_THINKING must be on or off")])
 def test_production_refuses_unsupported_configurations_before_exec(compose, tmp_path, variables, message):

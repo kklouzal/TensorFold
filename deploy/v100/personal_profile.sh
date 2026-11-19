@@ -104,6 +104,10 @@ tf_v100_production_launch() {
     _tf_v100_refuse 'production launch requires TF_EXPERT_TENSOR_PARALLEL_SIZE=4' || return
   [[ ${TF_PARALLEL:-} =~ ^[1-9][0-9]*$ && ${TF_DRAFTS:-} =~ ^[1-9][0-9]*$ ]] ||
     _tf_v100_refuse 'production launch requires numeric TF_PARALLEL and TF_DRAFTS (a personal KV profile resolves them)' || return
+  # Only the personal profiles' codecs (INT8 and the owned-path Q4 formats) run the native owner families the
+  # manifest selects; any other codec would otherwise fail later, inside engine startup.
+  [[ -n ${TF_V100_PERSONAL_CAP:-} ]] ||
+    _tf_v100_refuse "production launch requires a personal-profile KV codec (int8, rotorquant-iso4-sm70-v1 or rotorquant-iso64-norm4-h64), not ${TF_KV_DTYPE:-fp16}; set TF_V100_LAUNCH=reference otherwise" || return
   packet=${TF_EXECUTION_PREPARATION:-$packets/sc117-tp8etp4-mtp${TF_DRAFTS}-p${TF_PARALLEL}.preparation.json}
   for ((i=0; i<${#args[@]}; i++)); do
     if (( split < 0 )); then

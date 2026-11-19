@@ -30,7 +30,7 @@ explicit retention tiers (`--retention-tier`, below) remain opt-in.
 
 The production launch refuses, before Python starts, a non-MTP drafter, RAM indexer
 history, an expert degree other than 4, or a codec without a personal profile
-(non-numeric parallel count). A parallel count other than 24/32 needs an explicit
+(INT8, `rotorquant-iso4-sm70-v1` and `rotorquant-iso64-norm4-h64` have one). A parallel count other than 24/32 needs an explicit
 `TF_EXECUTION_PREPARATION` packet whose graph catalogue matches it. Use
 `TF_V100_LAUNCH=reference` for those configurations, for teacher/qualification
 tools, and for FP16 KV: it runs the ordinary launcher with the Torch reference
