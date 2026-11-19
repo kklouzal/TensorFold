@@ -2080,6 +2080,21 @@ Prometheus has `prefix_cache_tier_hits_total`, `prefix_cache_tier_tokens_total` 
 `prefix_host_*`. Raising the GPU kept-point limit (8) was not adopted: a host restore
 costs milliseconds, while each GPU point costs 14.6 MB per rank at 32 full windows.
 
+**HTTP payload pool: per-configuration TP frame and header bounds (2026-11-19).**
+The fixed host obligations behind the HTTP payload pool were sized for a 96 MiB TP
+command/acknowledgment frame and the stdlib header parser's own limits (101 lines of
+64 KiB): about 102 GB of RPC working set, 5 GB of native values and 28.5 GB of header
+proofs at TP8 with 65 connections. The TP decoder now derives its command bound from
+its logical context (1 MiB + 44 B/token + four times a 2 MiB grammar budget: about
+20.6 MB at 262,144 tokens; media keeps 96 MiB) and caps acknowledgments at 64 KiB,
+enforced before publication (an oversize request fails alone with a named error; a
+structured-output/tool grammar above about 2 MiB of source is refused this way) and by
+the control-pipe receivers before allocation; the certified HTTP handler reads at most
+64 KiB of header fields (more gets HTTP 431). On 8x V100 (production Compose, Q4/32,
+32 GiB prefix tier) the pool rose from 121.5 to 234.7 GB; `/stats` `host_payload`
+lists the named obligations. The pinned prefix tier is also credited as materialized
+now (it had been counted twice). Structured output and tool calls still run over TP.
+
 **Prompt-pass host cost and rank placement (2026-11-16).** Three changes to the
 Flash Next tensor-parallel path. (1) Each rank now binds all of its host threads to
 the CPUs of its GPU's NUMA node at startup (skipped when a sealed NUMA plan already

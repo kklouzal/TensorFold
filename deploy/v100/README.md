@@ -82,13 +82,12 @@ ranks, `0` = off; never written to disk) and restored on a hit. Measured (Q4, a
 0.061-0.075 s from host RAM against 1.82 s recomputed with the tier off (0.027-0.030 s
 while still in GPU memory); replies identical to the cold one; a concurrent stream's
 decode gaps unchanged. The tier is a fixed host obligation, so it comes out of the HTTP
-payload pool that thinking replies grow into: at Q4/32 the pool measured 155.6 GB with
-the tier off and 121.5 GB with 32 GiB (INT8/24 is larger). A thinking request is
+payload pool that thinking replies grow into: at Q4/32 the pool measured 234.7 GB with
+32 GiB of tier (about 269 GB without it; INT8/24 is larger). A thinking request is
 admitted with about 0.5 GB and grows by roughly 16 KB per token of prompt plus reply
 and about 4 KB per generated token of decoded text, so a full 262,144-token sequence
-holds about 5.5 GB: with 32 GiB of tier, 32 sessions can each grow to roughly 180,000
-tokens at the same time (about 21 to the full window); with the tier off, roughly
-230,000 (about 27 full). Larger tiers keep more evicted prompts (a 4,883-token point
+holds about 5.5 GB: all 32 sessions can reach the full window at the same time with
+about 58 GB to spare. Larger tiers keep more evicted prompts (a 4,883-token point
 takes about 36 MB per rank, mostly its two recurrent-state snapshots, so 32 GiB holds about 110 such points) at the
 cost of that headroom. `/stats` reports both: `prefix_cache.host` and `host_payload`
 (with the named fixed obligations behind the pool).
