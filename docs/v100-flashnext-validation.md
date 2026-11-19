@@ -61,7 +61,9 @@ concurrent failures followed joint cold-prefill shapes. C22 declines only
 positive-temperature prefix borrowing in the optimized SM70 profile and
 schedules independent prompts in separate prefill passes, preserving drafting
 and decode batching. C22 actual serving acceptance below resolves both failures, including
-complete R24 concurrent response identity after the correction.
+complete R24 concurrent response identity after the correction. Since 2026-11-19 (user decision: output-changing but not less accurate
+is accepted) positive-temperature requests borrow prefix state again; the
+cached-versus-cold NLL equivalence is in [the API notes](api.md).
 
 ## C22 serving and capacity closeout
 

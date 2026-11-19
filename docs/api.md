@@ -1037,10 +1037,22 @@ Resident Flash Next GGUF concurrent CUDA serving can reserve equal complete
 windows using `--parallel N --kv-full-windows N` (N≥2). This includes selected
 MTP or DSpark auxiliary KV and serving workspace; the context limit applies to
 each lane. Without the flag, the existing shared growth policy remains.
-On the optimized SM70 profile, positive-temperature requests prefill cold
-because cached suffixes have not met output-identity checks; drafting remains
-enabled. Raw FP16/INT8 greedy requests retain prefix borrowing; SM70 Rotor Q4
-requests prepare cold for either sampler. Independent cold prompts
+On the optimized SM70 profile, positive-temperature requests borrow kept
+prompt state like greedy ones (since 2026-11-19): a cached suffix is computed
+as its own prompt pieces, so it rounds differently from a cold prefill, but it
+is not less accurate. Measured with `tools/quality_eval/quality_eval.py
+cachecheck` (corpus-v2, 185 documents with prompts of at least 64 tokens,
+Q4 `rotorquant-iso64-norm4-h64`, 8x V100): a prompt extending a kept first
+half has decode NLL equivalent to cold (+0.0015, 95% CI [-0.0010, +0.0040],
+margin 0.005) and text-prefill NLL -0.0015 (CI [-0.0053, +0.0032]); an exact
+repeat is equivalent too (+0.0007, CI [-0.0004, +0.0018]) and bitwise
+identical on 157 of 185 documents. With INT8 KV the extension's decode NLL is
+equivalent (+0.00002, CI [-0.0013, +0.0013]); its text-prefill rows are
++0.0011 (CI [+0.0002, +0.0022]), worse within the 0.005 margin. These are the
+numerics greedy prefix reuse already had; positive temperature now shares
+them. Drafting remains enabled. Raw FP16/INT8 and
+the owned Rotor Q4 formats borrow prompt state; other SM70 Rotor Q4 sides
+prepare cold for either sampler. Independent cold prompts
 retain separate prefill passes while decode windows still batch.
 
 The Flash Next GGUF/SM70 provider additionally admits the existing
