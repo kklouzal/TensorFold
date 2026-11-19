@@ -526,6 +526,17 @@ def _torch_ple_embed_bf16(rows, values, heads, dh, out, xs, *, scale=1.0):
 
 
 _IQ4NL_CODEBOOK = (-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113)
+# The codebook as four little-endian words of four biased bytes (value + 128). The decode selects a word and
+# shifts with scalar kernel arguments only: no host tensor is copied to the device, so a whole-model graph can
+# capture this reference decode (a pageable host->device copy is refused during capture).
+_IQ4NL_WORDS = tuple(sum((_IQ4NL_CODEBOOK[4 * word + i] + 128) << (8 * i) for i in range(4)) for word in range(4))
+
+
+def _iq4nl_values(codes):
+    """Exact codebook[codes] (int64 codes 0..15) from device arithmetic."""
+    w0, w1, w2, w3 = _IQ4NL_WORDS
+    word = torch.where(codes < 8, torch.where(codes < 4, w0, w1), torch.where(codes < 12, w2, w3))
+    return ((word >> ((codes & 3) * 8)) & 255) - 128
 
 
 def _torch_ple_embed_iq4nl(rows, packed, heads, dh, out, xs, *, scale=1.0):
@@ -534,8 +545,7 @@ def _torch_ple_embed_iq4nl(rows, packed, heads, dh, out, xs, *, scale=1.0):
     d = blocks[..., :2].contiguous().view(torch.float16).float()
     nibbles = blocks[..., 2:]
     codes = torch.cat((nibbles & 15, nibbles >> 4), -1).long()
-    book = torch.tensor(_IQ4NL_CODEBOOK, dtype=torch.float32, device=packed.device)
-    value = (book[codes] * d).half().reshape(rows * heads, dh)
+    value = (_iq4nl_values(codes).float() * d).half().reshape(rows * heads, dh)
     _torch_ple_embed_bf16(rows, value, heads, dh, out, xs, scale=scale)
 
 
