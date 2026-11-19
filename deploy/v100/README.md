@@ -76,21 +76,24 @@ running, 32 queued, last TTFT 51 s) and the 65th-72nd received 503 "request capa
 reached".
 
 Host-RAM prefix tier and its trade-off: prompt points the GPU prefix cache evicts are
-kept in pinned host RAM (`TF_PREFIX_HOST_BYTES`, default empty = 32 GiB across the 8
+kept in pinned host RAM (`TF_PREFIX_HOST_BYTES`, default empty = 64 GiB across the 8
 ranks, `0` = off; never written to disk) and restored on a hit. Measured (Q4, a
 4,883-token greedy prompt evicted by 24 longer prompts): the repeat's first token after
-0.061-0.075 s from host RAM against 1.82 s recomputed with the tier off (0.027-0.030 s
+0.061-0.075 s from host RAM against 1.82 s recomputed with the tier off (0.027-0.032 s
 while still in GPU memory); replies identical to the cold one; a concurrent stream's
 decode gaps unchanged. The tier is a fixed host obligation, so it comes out of the HTTP
 payload pool that thinking replies grow into: at Q4/32 the pool measured 234.7 GB with
-32 GiB of tier (about 269 GB without it; INT8/24 is larger). A thinking request is
-admitted with about 0.5 GB and grows by roughly 16 KB per token of prompt plus reply
-and about 4 KB per generated token of decoded text, so a full 262,144-token sequence
-holds about 5.5 GB: all 32 sessions can reach the full window at the same time with
-about 58 GB to spare. Larger tiers keep more evicted prompts (a 4,883-token point
-takes about 36 MB per rank, mostly its two recurrent-state snapshots, so 32 GiB holds about 110 such points) at the
-cost of that headroom. `/stats` reports both: `prefix_cache.host` and `host_payload`
-(with the named fixed obligations behind the pool).
+32 GiB of tier, so about 269 GB without it and about 200 GB with the 64 GiB default
+(INT8/24 is larger). A thinking request is admitted with about 0.5 GB and grows by
+roughly 16 KB per token of prompt plus reply and about 4 KB per generated token of
+decoded text, so a full 262,144-token sequence holds about 5.5 GB: with the default all
+32 sessions can still reach the full window at the same time (about 176 GB) with about
+24 GB to spare. A 4,883-token point takes about 36 MB per rank (mostly its two
+recurrent-state snapshots), so 64 GiB holds about 220 such points. Lower
+`TF_PREFIX_HOST_BYTES` for more growth headroom (or on a host with less RAM: the
+startup host admission refuses a tier that does not fit), raise it to keep more
+evicted prompts. `/stats` reports both: `prefix_cache.host` and `host_payload` (with
+the named fixed obligations behind the pool).
 
 The ordinary fixed-profile HTTP source path now derives a shared host-payload
 allowance from the existing physical/cgroup guard after fixed obligations.

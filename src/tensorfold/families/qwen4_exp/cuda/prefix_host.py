@@ -31,7 +31,7 @@ MIN_GAIN = 64                # tokens a host point must save beyond the best VRA
 # Default across all ranks when --prefix-host-bytes is omitted on a supported configuration. A constant, so every
 # rank sizes the same slab (tier decisions must be rank-identical); the host commitment admission refuses it at
 # startup on a host that cannot also fund its other obligations. See README "Host-RAM prefix tier".
-DEFAULT_BYTES = 32 << 30
+DEFAULT_BYTES = 64 << 30
 
 
 def auto_capacity_bytes() -> int:

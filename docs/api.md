@@ -340,6 +340,13 @@ server without xgrammar (with the install command), and a grammar sent with `too
 function or strict function tools. A reply whose grammar fails while decoding ends with HTTP 500 (an error event when
 streaming); the other requests go on.
 
+Tensor-parallel grammar limit: on tensor-parallel Flash Next CUDA (the V100 TP8 path) every rank receives a request
+in one command frame whose size is bounded per configuration (`rank_protocol.tp_frame_bytes`: 1 MiB + 44 bytes per
+context token + four times `TP_GRAMMAR_BYTES` = 2 MiB of grammar source). A request whose grammar (structured output
+or tool definitions, after expansion) does not fit is refused before any rank receives it, with an error naming "the
+N-byte tensor-parallel transport envelope"; the other requests go on. Single-GPU and media configurations keep the
+96 MiB transport cap.
+
 ## Strict function tools
 
 A request whose active tools (after `tool_choice`) include `"strict": true` (`tools[].function.strict` in chat,

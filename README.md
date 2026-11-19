@@ -509,7 +509,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--vram-experts-pin off\|auto\|on` | `off`: pageable authority. With supported CUDA RAM experts, `auto` admits host registration or retains pageable bytes on explicit capacity/capability refusal; `on` requires registration. Unknown driver/cleanup failures remain errors. |
 | `--kv-full-windows N\|auto` | GGUF GPU-history CUDA computes and reserves complete windows; `auto` is explicit automatic selection and an integer constrains the count. Other supported Flash Next paths retain their existing numeric growth-window contracts; `auto` is refused there. |
 | `--kv-short-window TOKENS\|auto` | GGUF GPU-history CUDA with `--parallel P` above `--kv-full-windows N` (mixed resident windows): N slots keep the complete context and the other P-N slots are materialized at startup with one shorter prompt-plus-reply window (an explicit count is verified on every rank, never enlarged; `auto`, the default, takes the largest whole multiple of 1024 tokens the worst rank's memory solver retains and is refused while whole-round graphs use the automatic captured-round pool, which it would consume). A request is placed in the free slot with the shortest window that holds its prompt + `max_tokens` + speculative rows, and waits in FIFO order otherwise; while the FIFO head waits only for a longer window, up to P-N later requests that fit a free shorter slot may start ahead of it (they cannot take a window the head could use, and the head claims the next one that frees); prefix reuse only resumes or copies into fitting slots. Receipts record every slot's capacity. Retention policies, DSpark/DFlash2 and media are refused with mixed windows. |
-| `--prefix-host-bytes BYTES` | Flash Next concurrent SM70 unique TP8 GPU histories with MTP (the V100 production path): pinned host RAM, all ranks together (default 32 GiB there, 0 disables; refused elsewhere), charged as a fixed host obligation before the HTTP payload pool. Prompt points the GPU prefix cache drops by value are copied there and restored into a free slot with the same history-page ownership on a hit (bit-identical to the GPU-resident point); never written to disk. `/stats` `prefix_cache.host` and Prometheus `prefix_host_*` report it. |
+| `--prefix-host-bytes BYTES` | Flash Next concurrent SM70 unique TP8 GPU histories with MTP (the V100 production path): pinned host RAM, all ranks together (default 64 GiB there, 0 disables; refused elsewhere), charged as a fixed host obligation before the HTTP payload pool. Prompt points the GPU prefix cache drops by value are copied there and restored into a free slot with the same history-page ownership on a hit (bit-identical to the GPU-resident point); never written to disk. `/stats` `prefix_cache.host` and Prometheus `prefix_host_*` report it. |
 | `--ssd-experts GIB` | Unset. Supported MLX families stream checkpoint experts into a GPU pool; distinct from RAM-backed CUDA experts and unsupported with CUDA `--vram-experts`. See the [Flash Next recipe](docs/recipes/qwen3.8-flash-next.md). |
 | `--ple-on-ssd` | Off. Supported Flash Next affine, BF16, FP8 and NVFP4 n-gram layouts use bounded demand SSD reads with their original decoding/scale semantics. EXL3 retains its native mapped table and rejects this flag. |
 | `--kv-dtype FORMAT` | Flash Next CUDA `bf16`; shorthand selects both K and V formats. |
@@ -2066,7 +2066,7 @@ state like a greedy one (it used to prefill cold); cached-versus-cold NLL is
 equivalent on decode rows for Q4 and INT8 KV ([API notes](docs/api.md)). A prompt
 point the GPU cache drops by value (a slot reused, a point past the kept limit, a
 resume in place rewriting longer points) is copied into pinned host RAM
-(`--prefix-host-bytes`, default 32 GiB on this path) and restored into a free slot
+(`--prefix-host-bytes`, default 64 GiB on this path) and restored into a free slot
 with the same history-page ownership when a later prompt extends it by at least 64
 more tokens than any GPU-resident point; restored state is bit-identical to the
 resident point. On 8x V100 (production Compose, a 4,883-token greedy prompt evicted
@@ -2091,7 +2091,7 @@ enforced before publication (an oversize request fails alone with a named error;
 structured-output/tool grammar above about 2 MiB of source is refused this way) and by
 the control-pipe receivers before allocation; the certified HTTP handler reads at most
 64 KiB of header fields (more gets HTTP 431). On 8x V100 (production Compose, Q4/32,
-32 GiB prefix tier) the pool rose from 121.5 to 234.7 GB; `/stats` `host_payload`
+32 GiB prefix tier, the default then) the pool rose from 121.5 to 234.7 GB; `/stats` `host_payload`
 lists the named obligations. The pinned prefix tier is also credited as materialized
 now (it had been counted twice). Structured output and tool calls still run over TP.
 

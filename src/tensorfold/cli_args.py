@@ -322,7 +322,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--prefix-host-bytes", type=int, default=None, metavar="BYTES",
                        help="Flash Next concurrent SM70 unique TP8 GPU histories: pinned host RAM (all ranks together) "
                             "that keeps prompt points the GPU prefix cache evicts, restored on a hit instead of "
-                            "prefilled again; never written to disk (default 32 GiB on that configuration; 0 disables)")
+                            "prefilled again; never written to disk (default 64 GiB on that configuration; 0 disables)")
     speed.add_argument("--execution-profile-manifest", type=Path, default=None, metavar="PATH",
                        help="Flash Next GGUF GPU-history SM70: load measured execution profiles only after their "
                             "checkpoint, codec, runtime, kernel and hardware identities match this deployment")
