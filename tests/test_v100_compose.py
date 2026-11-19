@@ -308,6 +308,16 @@ def test_production_thinking_opt_out_keeps_the_queue_timeout(compose, tmp_path):
     assert parsed.thinking is False and parsed.queue_timeout_s == 60 and argv.count("--no-thinking") == 1
 
 
+@pytest.mark.parametrize("value,expected", [(None, None), ("0", 0), ("17179869184", 17179869184)])
+def test_production_prefix_host_bytes_passes_through_only_when_set(compose, tmp_path, value, expected):
+    from tensorfold.cli import build_parser
+
+    variables = {} if value is None else {"TF_PREFIX_HOST_BYTES": value}
+    argv = actual_argv(production(compose, tmp_path, variables), stubs=production_stubs(tmp_path))
+    parsed = build_parser().parse_args(["serve", *argv[argv.index("--") + 1:]])
+    assert parsed.prefix_host_bytes == expected and argv.count("--prefix-host-bytes") == (value is not None)
+
+
 def test_personal_pending_queue_is_bounded_at_twice_the_ceiling(compose, tmp_path):
     service = render(compose, tmp_path, variables={"TF_KV_DTYPE": "int8", "TF_MAX_PENDING_REQUESTS": "49"})
     rejected = actual_argv(service, succeeds=False)

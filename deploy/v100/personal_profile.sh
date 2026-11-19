@@ -135,5 +135,7 @@ tf_v100_production_launch() {
   # and host payload capacity (and a growing reply for more) instead of an immediate 503.
   [[ ${TF_THINKING:-on} == on ]] || args+=(--no-thinking)
   args+=(--queue-timeout-s "${TF_QUEUE_TIMEOUT_S:-900}")
+  # Host-RAM prefix tier: empty keeps the server default (32 GiB on this path), 0 turns it off.
+  [[ -z ${TF_PREFIX_HOST_BYTES:-} ]] || args+=(--prefix-host-bytes "$TF_PREFIX_HOST_BYTES")
   export TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN=grouped-v1 TF_SMALL_GATHER_BYTES=262144
 }

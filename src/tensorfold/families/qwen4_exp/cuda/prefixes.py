@@ -87,13 +87,14 @@ def _use(owner, st) -> None:
     owner.kept = sorted(owner.kept, key=lambda k: _value(owner, k))
 
 
-def _idle(owner, busy, *spared, extent=None):
-    """The idle kept slot (none of ``spared``; one that holds ``extent``) whose chain is worth least, as its most
-    valuable entry, or None."""
+def _idle(owner, busy, *spared, extent=None, where=None):
+    """The idle kept slot (none of ``spared``; one that holds ``extent``; one ``where`` accepts) whose chain is worth
+    least, as its most valuable entry, or None."""
 
     chains: dict[int, tuple] = {}
     for k in owner.kept:                     # ascending: a slot's last entry is its most valuable
-        if id(k[1]) not in busy and all(k[1] is not s for s in spared) and (extent is None or fits(k[1], extent)):
+        if id(k[1]) not in busy and all(k[1] is not s for s in spared) and (extent is None or fits(k[1], extent)) \
+                and (where is None or where(k[1])):
             chains[id(k[1])] = k
     return min(chains.values(), key=lambda k: _value(owner, k), default=None)
 
@@ -121,12 +122,91 @@ def _spare(kept) -> list:
     return spare
 
 
+def _spill(owner, entries) -> None:
+    """Copy kept points the cache is about to drop into the host tier (``prefix_host``), one entry per slot chain."""
+
+    host = getattr(owner, "host_tier", None)
+    if host is None:
+        return
+    groups: dict[tuple, list] = {}
+    for k in entries:                        # kept order: the same on every tensor-parallel rank
+        groups.setdefault((id(k[1]), k[2].get("prefix_principal")), []).append(k)
+    for (_slot, principal), points in groups.items():
+        host.spill(points, principal)
+
+
+def _restore_host(owner, prompt, principal, extent):
+    """Restore the host tier's longest point the prompt extends into a free (or freed idle) slot with the same
+    history ownership, when it saves ``MIN_GAIN`` tokens beyond the best VRAM point; else None."""
+
+    from .prefix_host import MIN_GAIN
+
+    host = owner.host_tier
+    found = host.best(prompt, None if principal is _UNSCOPED else principal)
+    if found is None:
+        return None
+    entry, index = found
+    vram = _best(owner.kept, prompt, principal=principal)
+    if vram is not None and len(entry["points"][index][0]) - len(vram[0]) < MIN_GAIN:
+        return None
+    rows = max(entry["rows"], len(prompt) + owner.depth + 2)
+
+    def usable(st):
+        return host.restorable(entry, st) and fits(st, extent) and st.limit >= rows
+
+    dst = None
+    for i in range(len(owner.free) - 1, -1, -1):            # best fit, as _take_free
+        st = owner.free[i]
+        if usable(st) and (dst is None or st.limit < owner.free[dst].limit):
+            dst = i
+    if dst is not None:
+        dst = owner.free.pop(dst)
+    else:
+        idle = _idle(owner, owner._busy(), extent=extent, where=usable)
+        if idle is None:
+            return None
+        dst = evict(owner, None, extent=extent, where=usable)
+    try:
+        if not owner._grow(dst, len(prompt) + owner.depth + 2):
+            owner.free.append(dst)
+            return None
+        dst.begin_sequence_generation()
+        ids, snap, tail = host.restore(entry, index, dst)
+        point = (ids, dst, snap, tail)
+        state, resumed_tail, cached, end = _resumed(point, prompt)
+        remember(owner, ids, dst, snap, tail, principal=principal)    # kept in its new slot, as a resume in place
+    except BaseException as primary:  # noqa: BLE001 - retain the popped slot even on cancellation
+        try:
+            owner._quarantine(dst)
+            owner._retire_failed_slot(dst)
+        except BaseException as cleanup:  # noqa: BLE001 - preserve restore and exclusive-retirement failures
+            raise_failures(primary, [cleanup])
+        raise
+    owner.prefix_counters["host_hits"] += 1
+    owner.prefix_counters["host_tokens"] += cached
+    return dst, _resume(state, resumed_tail, end, point), cached
+
+
+def _count(owner, kind, cached):
+    counters = getattr(owner, "prefix_counters", None)
+    if counters is not None:
+        counters[kind + "_hits"] += 1
+        counters[kind + "_tokens"] += cached
+
+
 def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, extent=None):
     """Copy a fork into spare capacity; else resume a chain in place when that keeps more than it discards.
 
     ``extent`` (prompt + reply + speculative guard rows) restricts every placement, resume and fork target to
     slots whose resident window holds it (mixed windows); None keeps uniform slots' behavior."""
 
+    counters = getattr(owner, "prefix_counters", None)
+    if counters is not None and reuse:
+        counters["lookups"] += 1
+    if reuse and getattr(owner, "host_tier", None) is not None:
+        restored = _restore_host(owner, prompt, principal, extent)
+        if restored is not None:
+            return restored
     busy = owner._busy()
     best = _best(owner.kept, prompt, principal=principal) if reuse else None
     if best is not None and (id(best[1]) in busy or _longer(owner.kept, best) or not fits(best[1], extent)):
@@ -143,6 +223,7 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, exte
                        if spare.compact_indexer is not None else {}))
                 _use(owner, best[1])
                 state = state if restored is None else {**state, "compact_indexer": restored}
+                _count(owner, "fork", n)
                 return spare, _resume(state, tail, end, best), n
         except BaseException as primary:  # noqa: BLE001 - retain a popped fork slot even on cancellation
             try:
@@ -165,12 +246,15 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, exte
     if best is not None:
         best[1].begin_sequence_generation()
         n = len(best[0])
+        _spill(owner, [k for k in owner.kept if k[1] is best[1]          # the resume rewrites their rows past n
+                       and not (len(k[0]) <= n and best[0][:len(k[0])] == k[0])])
         owner.kept = [k for k in owner.kept if k[1] is not best[1]
                       or len(k[0]) <= n and best[0][:len(k[0])] == k[0]]
         _use(owner, best[1])
         state, tail, cached, end = _resumed(best, prompt)
         if end is None:     # this prompt rewrites the end's last row (and MTP row) in place: the end no longer holds
             best[2].pop("prompt_end", None)
+        _count(owner, "resume", cached)
         return best[1], _resume(state, tail, end, best), cached
     idle = _take_free(owner, extent)
     if idle is not None:
@@ -188,13 +272,14 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, exte
     return idle, None, 0
 
 
-def evict(owner, keep, protect=None, *, new_sequence=False, extent=None):
-    """The lowest-valued idle kept slot (never ``keep`` or ``protect``; one that holds ``extent``), its entries dropped
-    and the clock risen to its value, or None."""
+def evict(owner, keep, protect=None, *, new_sequence=False, extent=None, where=None):
+    """The lowest-valued idle kept slot (never ``keep`` or ``protect``; one that holds ``extent``; one ``where``
+    accepts), its entries spilled to the host tier (if any) and dropped, the clock risen to its value, or None."""
 
-    idle = _idle(owner, owner._busy(), keep, protect, extent=extent)
+    idle = _idle(owner, owner._busy(), keep, protect, extent=extent, where=where)
     if idle is None:
         return None
+    _spill(owner, [k for k in owner.kept if k[1] is idle[1]])
     if new_sequence:
         idle[1].begin_sequence_generation()
     owner.clock = max(owner.clock, _value(owner, idle))
@@ -234,6 +319,7 @@ def remember(owner, ids, st, snap, tail, *, principal=_UNSCOPED) -> None:
         else:
             entry = min(owner.kept, key=lambda k: _worth(owner, k))
             owner.clock = max(owner.clock, _worth(owner, entry))
+        _spill(owner, [entry])
         owner.kept = [k for k in owner.kept if k is not entry]      # by identity: entries hold tensors
         gone.append(entry[1])
     busy = owner._busy()

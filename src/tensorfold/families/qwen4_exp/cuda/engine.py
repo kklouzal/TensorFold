@@ -78,7 +78,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, kv_short_window: int | str | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False, _owned_expert_gate_up=None, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=(), _owned_qualification_device: tuple=()) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, kv_short_window: int | str | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, prefix_host_bytes: int | None=None, _owned_expert_native: bool=False, _owned_expert_gate_up=None, _reference_owner_tiles: bool=False, _owned_qualification_host: tuple=(), _owned_qualification_device: tuple=()) -> None:
         if type(_owned_expert_native) is not bool:
             raise ValueError("private owned expert selection must be a literal boolean")
         if (type(_owned_qualification_host) is not tuple or _owned_qualification_host and (not _owned_expert_native
@@ -165,7 +165,7 @@ class FlashNextEngine:
 
         with startup_failure_context(rank) as diagnostic:
             try:
-                self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, kv_short_window=kv_short_window, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest, media_profile_manifest=media_profile_manifest, max_waiting_input_bytes=max_waiting_input_bytes, max_waiting_input_bytes_per_principal=max_waiting_input_bytes_per_principal, output_queue_tokens=output_queue_tokens, queue_timeout_s=queue_timeout_s, retention_policy=retention_policy, expert_tensor_parallel_size=expert_tensor_parallel_size)
+                self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, kv_short_window=kv_short_window, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest, media_profile_manifest=media_profile_manifest, max_waiting_input_bytes=max_waiting_input_bytes, max_waiting_input_bytes_per_principal=max_waiting_input_bytes_per_principal, output_queue_tokens=output_queue_tokens, queue_timeout_s=queue_timeout_s, retention_policy=retention_policy, expert_tensor_parallel_size=expert_tensor_parallel_size, prefix_host_bytes=prefix_host_bytes)
                 if serving_profile_root is not None:
                     from .serving_runtime import ServingProfiles
 
@@ -243,7 +243,7 @@ class FlashNextEngine:
                  max_waiting_input_bytes_per_principal: int | None = None,
                  output_queue_tokens: int | None = None, queue_timeout_s: float | None = None,
                  retention_policy: RetentionPolicy | None = None,
-                 expert_tensor_parallel_size: int | None = None) -> None:
+                 expert_tensor_parallel_size: int | None = None, prefix_host_bytes: int | None = None) -> None:
         initialize_started = time.perf_counter()
         requested_graphs = bool(graphs)  # Preserve user intent when whole-round qualification declines.
         self.graphs_requested = requested_graphs
@@ -1409,6 +1409,20 @@ class FlashNextEngine:
             history_host_limit = int(max_len if max_len is not None else self.rope.context_limit) + each
             history_host_per_rank = history_maximum_owners * history_plan.host_bytes(history_host_limit)
             host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * history_host_per_rank
+        # Host-RAM prefix tier (prefix_host): one pinned slab per rank, a fixed host obligation before the HTTP pool.
+        from .prefix_host import BLOCK_BYTES, auto_capacity_bytes
+
+        prefix_host_supported = (unique_positions and concurrent and position_method == "mtp"
+                                 and retention_policy is None and not vision)
+        if prefix_host_bytes is None:
+            prefix_host_bytes = auto_capacity_bytes() if prefix_host_supported else 0
+        if type(prefix_host_bytes) is not int or prefix_host_bytes < 0:
+            raise ValueError("prefix_host_bytes must be a nonnegative byte count")
+        if prefix_host_bytes and not prefix_host_supported:
+            raise ValueError("--prefix-host-bytes requires concurrent SM70 unique TP8 GPU histories with MTP drafting, "
+                             "no retention policy and no vision")
+        self.prefix_host_per_rank = prefix_host_bytes // tp // BLOCK_BYTES * BLOCK_BYTES
+        host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * self.prefix_host_per_rank
         adaptive_capacity = {}
         if self._owned_expert_plan is not None:
             numeric_capacity["resident_extra"] = numeric_capacity.get("resident_extra", 0) + (
@@ -1997,6 +2011,13 @@ class FlashNextEngine:
                                       **({"full_windows": resident_windows} if resident_windows is not None else {}),
                                       **({"slot_limits": tuple(self.mixed_windows["slot_capacities"])}
                                          if self.mixed_windows is not None else {}))
+            if self.prefix_host_per_rank:
+                from .prefix_host import HostPrefixTier
+
+                self.multi.host_tier = HostPrefixTier(self.prefix_host_per_rank, device=w.device, comm=w.comm)
+            self.capacity_plan["prefix_host"] = {"policy": "pinned-spill-on-evict-v1",
+                                                 "bytes_per_rank": self.prefix_host_per_rank,
+                                                 "host_bytes": tp * self.prefix_host_per_rank}
             self.capacity_plan["native_gdn_batch"] = {"enabled": native_gdn_batch,
                 "implementation": "sm70-gdn-state-batch-v1", "pointer_fields": 8 if native_gdn_batch else 2,
                 "scalar_C1": not native_gdn_capture,
@@ -2077,7 +2098,9 @@ class FlashNextEngine:
                     raise RuntimeError("retention host reservation is absent from the chosen steady header")
                 catalog.configure_host_resources(
                     baseline_host_bytes=self.capacity_plan["host_steady_commitment_bytes"] - retained_host,
-                    materialized_host_bytes=0,
+                    # Every rank pinned its host prefix slab during startup (cudaHostAlloc: resident and locked,
+                    # so already absent from MemAvailable when the HTTP pool is sized); credit it once.
+                    materialized_host_bytes=tp * self.prefix_host_per_rank,
                     **({"prepaid_native_fixed_payload_bytes": self._native_protocol_resources["fixed"]["global_native_fixed_payload_bytes"],
                         "prepaid_native_prefix_payload_bytes": self._native_protocol_resources["prefix"]["global_native_prefix_payload_bytes"],
                         "native_state_slots": self._native_protocol_resources["fixed"]["maximum_state_slots"],

@@ -1806,10 +1806,14 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
     fixed_cache = _json_tree_payload(cache, policy) + (0 if wrappers is None else wrappers["total_bytes"])
     fixed_handlers = record["max_http_connections"] * (
         measurement + prepaid_encoder + headers["payload_bytes"] + 65536)
-    fixed = _total((core["baseline"].baseline_host_bytes, core["header"].global_host_bytes,
-        record["global_waiting_input_bytes"], fixed_cache, fixed_rpc, fixed_handlers,
-        record["global_unpaid_native_fixed_payload_bytes"], record["global_unpaid_native_prefix_payload_bytes"],
-        segment_fixed, static_payload))
+    named_fixed = {"ordinary_steady_baseline": core["baseline"].baseline_host_bytes,
+        "retention_header": core["header"].global_host_bytes,
+        "waiting_input": record["global_waiting_input_bytes"], "logical_api_cache": fixed_cache,
+        "rpc_journal_and_phase": fixed_rpc, "http_handlers": fixed_handlers,
+        "unpaid_native_fixed": record["global_unpaid_native_fixed_payload_bytes"],
+        "unpaid_native_prefix": record["global_unpaid_native_prefix_payload_bytes"],
+        "segment_cache": segment_fixed, "static_http_metadata": static_payload}
+    fixed = _total(named_fixed.values())
     dynamic = {**record, "static_maximum_projection": static,
         "global_model_cpu_projection_bytes": 0, "global_completed_http_projection_bytes": 0,
         "global_http_rpc_error_tail_bytes": 0, "global_transport_projection_bytes": fixed_handlers,
@@ -1970,6 +1974,13 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         control_bound=control_bound,
         deadline_seconds=scheduler.queue_timeout_s)
     pool.ids_bound = ids_bound
+    authority = result["authority"]
+    # Operator evidence for /stats: what the pool is the remainder of (bytes; global over ranks).
+    pool.obligations = {**named_fixed, "fixed_total": fixed,
+        "materialized_credit": authority.get("materialized_owned_bytes", 0),
+        "physical_available_at_admission": authority.get("physical_available_bytes"),
+        "os_reserve": authority.get("effective_os_reserve_bytes"),
+        "usable_at_admission": authority.get("usable_remaining_bytes")}
     if core.get("piece_table") is not None and policy is not None and not core["bound"].decoded_utf8_fixed_bytes:
         pool.piece_bytes = core["piece_table"]
         pool.piece_bytes_max = core["bound"].decoded_utf8_bytes_per_token

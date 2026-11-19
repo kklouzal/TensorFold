@@ -267,6 +267,12 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                 or history != "gpu" or getattr(args, "vram_experts", None) is not None
                 or source is None or resolve_gguf(source) is None):
             raise ValueError("--execution-profile-manifest/--serving-profile-root selection requires resident Flash Next GGUF GPU histories on SM70")
+    host_bytes = getattr(args, "prefix_host_bytes", None)
+    if host_bytes is not None and (type(host_bytes) is not int or not 0 <= host_bytes <= sys.maxsize):
+        raise ValueError("--prefix-host-bytes must be a nonnegative byte count")
+    if host_bytes and (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+                       or history != "gpu" or getattr(args, "vram_experts", None) is not None):
+        raise ValueError("--prefix-host-bytes requires Flash Next CUDA GGUF GPU histories")
     windows = getattr(args, "kv_full_windows", None)
     if getattr(args, "kv_short_window", None) is not None and (
             backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")

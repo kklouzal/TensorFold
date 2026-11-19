@@ -350,6 +350,11 @@ class MultiDecoder:
         self.keep = keep
         self.used: dict[int, int] = {}                   # retention (prefixes.py): id(slot) -> clock at its last use
         self.clock = 0
+        self.host_tier = None                            # prefix_host.HostPrefixTier: spilled points (engine binds)
+        # Automatic prefix reuse by tier (prefixes.slot_for): lookups, and hits/tokens resumed in place, forked
+        # into a free slot or restored from host RAM (worker thread; /stats reads ints).
+        self.prefix_counters = dict.fromkeys(("lookups", "resume_hits", "resume_tokens", "fork_hits", "fork_tokens",
+                                              "host_hits", "host_tokens"), 0)
 
     def _rotor_lookup(self, request, participants=1):
         return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
@@ -992,7 +997,8 @@ class MultiDecoder:
             kv["protected_idle_bytes"] = retained
         return {"kv": kv,
                 "prefix_cache": {"entries": len(kept), "capacity": self.keep, "slots": len(ends),
-                                 "tokens": sum(ends.values())},
+                                 "tokens": sum(ends.values()), **dict(self.prefix_counters),
+                                 "host": None if self.host_tier is None else self.host_tier.record()},
                 "memory_waits": gate.waits, "memory_stops": gate.ends}
 
     @torch.no_grad()

@@ -152,6 +152,7 @@ class HostPayloadPool:
         self.failure = None
         self.last_refusal = None
         self.capacity_changed = None
+        self.obligations = None      # named fixed host obligations the capacity is the remainder of (operator record)
 
     def lease(self):
         lease = HostPayloadLease(self)
@@ -184,7 +185,8 @@ class HostPayloadPool:
                     "highwater_bytes": self.highwater, "owners": len(self._leases),
                     "active_handlers": self.active_handlers,
                     "waiters": len(self._waiters), "growth_waiters": len(self._growers), "poisoned": self.failure is not None,
-                    "last_refusal": None if self.last_refusal is None else dict(self.last_refusal)}
+                    "last_refusal": None if self.last_refusal is None else dict(self.last_refusal),
+                    "fixed_obligations": None if self.obligations is None else dict(self.obligations)}
 
     def fixed_slots_full(self):
         with self._condition:

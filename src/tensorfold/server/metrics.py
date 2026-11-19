@@ -395,6 +395,27 @@ def render(app: Any, *, server: Any = None) -> str:
             value = prefix[key]
             if value is not None:
                 _family(lines, name, "gauge", help_text, [f"{PREFIX}{name} {value}"])
+        if prefix.get("lookups") is not None:
+            _family(lines, "prefix_cache_lookups_total", "counter", "Admissions that looked up a reusable prompt point.",
+                    [f"{PREFIX}prefix_cache_lookups_total {prefix['lookups']}"])
+            _family(lines, "prefix_cache_tier_hits_total", "counter",
+                    "Admissions that reused a prompt point, by where it was (resumed in place, forked into a free "
+                    "slot, restored from host RAM).",
+                    [f'{PREFIX}prefix_cache_tier_hits_total{{tier="{tier}"}} {prefix[tier + "_hits"]}'
+                     for tier in ("resume", "fork", "host")])
+            _family(lines, "prefix_cache_tier_tokens_total", "counter", "Prompt tokens those admissions reused, by tier.",
+                    [f'{PREFIX}prefix_cache_tier_tokens_total{{tier="{tier}"}} {prefix[tier + "_tokens"]}'
+                     for tier in ("resume", "fork", "host")])
+        host = prefix.get("host")
+        if host is not None:
+            for name, key, kind, help_text in (
+                    ("prefix_host_capacity_bytes", "capacity_bytes_per_rank", "gauge", "Pinned host prefix tier bytes per rank."),
+                    ("prefix_host_used_bytes", "used_bytes_per_rank", "gauge", "Host prefix tier bytes in use per rank."),
+                    ("prefix_host_entries", "entries", "gauge", "Spilled slot chains in the host prefix tier."),
+                    ("prefix_host_spills_total", "spills", "counter", "Kept points copied to host RAM instead of dropped."),
+                    ("prefix_host_restores_total", "restores", "counter", "Host prefix points restored into a slot."),
+                    ("prefix_host_evictions_total", "evictions", "counter", "Host prefix entries evicted by value.")):
+                _family(lines, name, kind, help_text, [f"{PREFIX}{name} {host[key]}"])
         for name, key, help_text in (
                 ("prefix_cache_blocks", "chunks", "Retained cache chunks, not a count of conversations."),
                 ("prefix_cache_indexed_tokens", "indexed_tokens", "Tokens indexed by cache metadata; not proof of reusable state."),
