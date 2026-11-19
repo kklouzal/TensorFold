@@ -550,9 +550,10 @@ sections below; `tensorfold serve --help` remains authoritative.
 | `--position-profile-manifest PATH` | Flash Next SM70 unique TP8 GPU histories: immutable target/MTP/draft positions; see [Context, RoPE and YaRN](#context-rope-and-yarn). |
 
 Adaptive V100 serving requires explicit positive `--max-pending-requests` and
-`--max-http-connections` limits before model loading. The V100 Compose profile
-requires the corresponding `TF_MAX_PENDING_REQUESTS` and
-`TF_MAX_HTTP_CONNECTIONS` environment settings; it supplies no numeric defaults.
+`--max-http-connections` limits before model loading. The V100 Compose profile's
+default Q4 production launch supplies them from its personal profile (32 / 33);
+other codecs on its reference launch require explicit `TF_MAX_PENDING_REQUESTS` and
+`TF_MAX_HTTP_CONNECTIONS` ([production launch](deploy/v100/README.md#production-launch-compose-default)).
 
 The explicit `TENSORFOLD_SM70_PROFILE=optimized` profile selects canonical
 packed experts through R32, prepared linears, native family operations and
@@ -2553,8 +2554,20 @@ limits.
 
 ### Deployment, NUMA and capacity
 
+The V100 Compose profile now starts the measured production path by default: the
+owned-routed parent with native TP8/ETP4 experts, an execution-profile manifest
+generated into tmpfs at container start (native owner families and the 227-key
+exact-graph catalogue, captured at startup), RotorQuant Q4 `rotorquant-iso64-norm4-h64`
+KV and 32 complete 262,144-token windows. The previous default (ordinary launcher,
+FP16 KV, Torch reference experts) took 266 s to the first token of a 2,014-token
+prompt; it remains available as `TF_V100_LAUNCH=reference` for teacher and
+qualification tools. Until the HTTP host-payload reservation becomes incremental,
+thinking-on requests (the default) at this context are admitted three or four at a
+time and further ones get HTTP 503; `TF_THINKING=off` gives full 32-way concurrency. Numbers and limits: [production launch](deploy/v100/README.md#production-launch-compose-default).
+
 Personal V100 deployment profiles cap Q8 KV at 24 concurrent requests and the
-SM70 ISO4 Q4 profile at 32, retaining the full context and VRAM headroom.
+SM70 Q4 profiles (`rotorquant-iso64-norm4-h64`, the default, and `rotorquant-iso4-sm70-v1`)
+at 32, retaining the full context and VRAM headroom.
 These are administrator ceilings; the engine's capacity checks remain in force.
 See [the profile configuration](deploy/v100/README.md#personal-concurrency-ceilings).
 

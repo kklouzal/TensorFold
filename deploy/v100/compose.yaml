@@ -1,5 +1,10 @@
 # Build the verified image and set MODEL_ROOT/GGUF_FILE in the environment.
 # This profile requires eight V100s and a matching MTP or DSpark drafter checkpoint.
+# Default (TF_V100_LAUNCH=production): the SC117 production path - owned native
+# TP8/ETP4 experts, native owner families and startup-captured exact graphs from a
+# manifest generated into tmpfs at container start, RotorQuant Q4 KV and 32 complete
+# 262,144-token windows. TF_V100_LAUNCH=reference keeps the Torch reference path for
+# teacher/qualification work only (orders of magnitude slower prompts).
 services:
   tensorfold:
     image: ${TENSORFOLD_V100_IMAGE:-tensorfold-v100:verified}
@@ -22,6 +27,8 @@ services:
       - tensorfold-v100-cache:/cache
       - "${TF_NUMA_PLAN:?Set TF_NUMA_PLAN to the sealed target-image plan.json}:/run/tensorfold-v100/numa/plan.json:ro"
       - ./personal_profile.sh:/run/tensorfold-v100/personal_profile.sh:ro
+    tmpfs:
+      - /run/tensorfold-v100/runtime:size=16m,mode=0700
     environment:
       PYTHONUNBUFFERED: "1"
       NCCL_IGNORE_CPU_AFFINITY: "0"
@@ -36,7 +43,11 @@ services:
       # Required explicitly for the new FIFO profile; leave unset for legacy DSpark.
       TF_MAX_WAITING_INPUT_BYTES: "${TF_MAX_WAITING_INPUT_BYTES:-}"
       TF_EXPERT_TENSOR_PARALLEL_SIZE: "${TF_EXPERT_TENSOR_PARALLEL_SIZE:-}"
-      TF_KV_DTYPE: "${TF_KV_DTYPE:-fp16}"
+      TF_V100_LAUNCH: "${TF_V100_LAUNCH:-production}"
+      TF_EXECUTION_PREPARATION: "${TF_EXECUTION_PREPARATION:-}"
+      TF_THINKING: "${TF_THINKING:-on}"
+      TF_QUEUE_TIMEOUT_S: "${TF_QUEUE_TIMEOUT_S:-900}"
+      TF_KV_DTYPE: "${TF_KV_DTYPE:-rotorquant-iso64-norm4-h64}"
       TF_CONTEXT: "${TF_CONTEXT:-}"
       TF_PARALLEL: "${TF_PARALLEL:-}"
       TF_KV_FULL_WINDOWS: "${TF_KV_FULL_WINDOWS:-}"
@@ -71,6 +82,11 @@ services:
         if [[ -n "$${TF_EXPERT_TENSOR_PARALLEL_SIZE:-}" ]]; then
           args+=(--expert-tensor-parallel-size "$$TF_EXPERT_TENSOR_PARALLEL_SIZE")
         fi
+        case $$TF_V100_LAUNCH in
+          production) tf_v100_production_launch || exit $$? ;;
+          reference) ;;
+          *) echo "TF_V100_LAUNCH must be production or reference" >&2; exit 2 ;;
+        esac
         export TENSORFOLD_NUMA_RECEIPT_DIR=$$(mktemp -d /cache/numa-ranks.XXXXXXXX)
         exec /opt/venv/bin/python "$${args[@]}"
       - tensorfold-v100
@@ -103,7 +119,7 @@ services:
       - --kv-full-windows
       - "${TF_KV_FULL_WINDOWS:-auto}"
       - --kv-dtype
-      - "${TF_KV_DTYPE:-fp16}"
+      - "${TF_KV_DTYPE:-rotorquant-iso64-norm4-h64}"
       - --indexer-history
       - "${TF_INDEXER_HISTORY:-gpu}"
       - --draft-method

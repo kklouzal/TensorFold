@@ -2223,8 +2223,9 @@ fit a requested session count.
 `--kv-full-windows auto` selects that full-context policy on the GGUF GPU-history
 path. An explicit integer constrains the same capacity solver. Other providers
 and the legacy RAM-indexer path retain their own explicit contracts; they do not
-inherit the unique-history capacity calculation. The V100 Compose defaults use
-automatic session and full-window selection. Existing numeric environment
+inherit the unique-history capacity calculation. The V100 Compose production default
+resolves 32 complete windows through its Q4 personal profile; its reference launch
+keeps automatic session and full-window selection. Existing numeric environment
 overrides remain ceilings.
 
 `capacity_plan.session_capacity` reports the computed count, configured ceiling,

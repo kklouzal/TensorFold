@@ -1,5 +1,74 @@
 # Flash Next on eight V100 GPUs
 
+## Production launch (Compose default)
+
+`docker compose -f deploy/v100/compose.yaml up -d` starts the measured SC117
+production path (`TF_V100_LAUNCH=production`, the default):
+
+- the owned-routed parent `tools/v100_owned_qualification.py` instead of
+  `launch_cuda_tp.py`: native TP8/ETP4 routed experts (`--expert-tensor-parallel-size 4`,
+  `--grouped-gate-up-rows 4`, `--execution-rows` = parallel x (MTP depth + 1));
+- an execution-profile manifest generated at every container start from the tracked
+  preparation packet `execution-profiles/sc117-tp8etp4-mtp4-p32.preparation.json`
+  (or `-p24` for the Q8 profile; `TF_EXECUTION_PREPARATION` overrides) by
+  `tools/v100_execution_manifest.py`. Generation reads only the GGUF/drafter headers
+  (about 2 s) and writes into the `/run/tensorfold-v100/runtime` tmpfs; nothing
+  prepared is cached on disk. The manifest selects the native owner families
+  (paged RN attention, owned family operations, prepared linears, owned KV window
+  prepare/dispatch, GDN/HC capture) and the 227-key exact-graph catalogue, all
+  captured during startup (no lazy capture);
+- RotorQuant Q4 KV `rotorquant-iso64-norm4-h64` (136 bytes per 256-value K or V
+  head, half of INT8) with 32 complete 262,144-token windows, stock MTP depth 4 at
+  confidence 0.7, 64 pending requests (32 running, 32 queued), 65 HTTP connections,
+  a 603,981,568-byte FIFO input credit and a 900 s queue timeout (the personal Q4 profile);
+- `TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN=grouped-v1`, `TF_SMALL_GATHER_BYTES=262144`
+  and the default 1,024-row prompt pieces.
+
+Prefix caching: each of the 32 windows keeps its finished conversation until the
+slot is needed, so a repeated or extended prompt reuses its cached prefix. The
+explicit retention tiers (`--retention-tier`, below) remain opt-in.
+
+The production launch refuses, before Python starts, a non-MTP drafter, RAM indexer
+history, an expert degree other than 4, or a codec without a personal profile
+(non-numeric parallel count). A parallel count other than 24/32 needs an explicit
+`TF_EXECUTION_PREPARATION` packet whose graph catalogue matches it. Use
+`TF_V100_LAUNCH=reference` for those configurations, for teacher/qualification
+tools, and for FP16 KV: it runs the ordinary launcher with the Torch reference
+experts and family operations, whose prompts are orders of magnitude slower
+(SC117, FP16 KV, context 8,192: 266 s to first token for a 2,014-token prompt,
+7.6 prompt tokens/s, 3.0 decode tokens/s).
+
+Measured on 8x V100 (150 W cap, SC117 IQ3_S + shared Q8_0 MTP, this Compose
+service rendered by `docker compose config` and run without the host-specific
+NUMA plan; image 4b2661d8 with the current source overlaid):
+
+| Measure | Result |
+| --- | --- |
+| Startup to ready (manifest + load + 227 graphs) | 203 s cold; 111 s with warm caches; graph capture 53.4 s, 5,354 of 7,638 MiB graph headroom |
+| Windows | 32 resident full 262,144-token windows (administrator ceiling; memory admits more) |
+| C1, 2,014-token prompt | TTFT 0.70 s, prefill 2,895 tokens/s, decode 104 tokens/s |
+| C1, 6,014-token prompt | TTFT 2.10 s, prefill 2,866 tokens/s, decode 131 tokens/s |
+| Same 6,014-token prompt again (prefix reuse) | TTFT 0.054 s |
+| C32, 32 x 2,014-token prompts at once, thinking off | all 32 admitted, last TTFT 27.2 s, aggregate prefill 2,373 / decode 702 tokens/s (12.5 per stream) |
+| Serving matrix (thinking off), C1 4K / 16K | prefill 2,801 / 2,768 tokens/s, decode median 87.2 / 87.8 |
+| Serving matrix, C32 4K / 16K | prefill 2,475 / 2,633 tokens/s, decode median 11.70 / 11.66 (fastbench rq4: 2,477 / 2,637, 11.81 / 11.48) |
+| golden_long (10 cases, 336-6,190 tokens) | cold == repeat on all 10, full-prompt cache hits |
+| golden-vg2 (short greedy prompts) | differs from the INT8 reference on 4 of 6 prompts (lossy Q4 KV; see RotorQuant quality below) |
+
+Admission and queueing: `TF_MAX_PENDING_REQUESTS` defaults to 64 (32 running plus
+32 waiting in FIFO order), `TF_MAX_HTTP_CONNECTIONS` to 65 and the input credit to
+64 x 9,437,212 bytes; `TF_QUEUE_TIMEOUT_S` (default 900) bounds a request's wait, and
+only a full queue returns HTTP 503. Thinking stays on by default (`TF_THINKING=off`
+starts the server with `--no-thinking`; a request can still set
+`chat_template_kwargs.enable_thinking`). Current limit: a thinking, tool or
+structured-output request reserves HTTP host payload for the whole 262,144-token
+window, so only three or four such requests are admitted at a time (measured: 3 of
+8 simultaneous) and further ones receive HTTP 503 ("host payload capacity is busy")
+until one finishes; the queue timeout does not cover this phase. Requests with
+thinking off reserve only their prompt plus `max_tokens`: 64 simultaneous ones were
+all admitted (32 running, 32 queued, last TTFT 51 s) and the 65th-72nd received 503
+"request capacity reached". An incremental reservation is in progress.
+
 The ordinary fixed-profile HTTP source path now derives a shared host-payload
 allowance from the existing physical/cgroup guard after fixed obligations.
 Existing request/socket/body/cache/context limits remain in force. Phase grants
@@ -14,8 +83,9 @@ Source and fresh installed CPU controls cover PP1 routed-expert partitioning. St
 expert banks and GPU histories. Every rank must use the same effective degree;
 nonexpert/shared-expert work stays TP8 and shared-GGUF MoE MTP follows the target.
 New ETP4/2 reference execution is not a qualified deployment or a performance
-result. Existing compose defaults retain their current TP8 behavior; the new
-option does not introduce PP2 or the separate RAM expert-follower mode. Rebuild
+result. The Compose production default (above) uses ETP4 with the owned native
+provider, not this reference provider; the option does not introduce PP2 or the
+separate RAM expert-follower mode. Rebuild
 from this source before using the option; these software checks do not qualify
 an eight-V100 deployment. See
 [A3 qualification status](../../docs/v100-adaptive-validation.md#pp1-expert-partitions-a3).
@@ -26,20 +96,19 @@ MLX and other families retain their own defaults. The first controlled HTTP
 success used explicit depth 6 on source `d48e96a1`, before this default change;
 it does not qualify the new depth 4 profile. See [the installed diagnostic](../../docs/v100-adaptive-validation.md#first-controlled-sc117-http-success).
 
-For the one-server TP8/ETP4 source profile, set
-`TF_EXPERT_TENSOR_PARALLEL_SIZE=4` when using this Compose file. The entrypoint
-passes it as one argument to the existing server option; the CLI validates
-supported degrees and compatible resident-GGUF/GPU-history ownership before
-model loading. Leaving it unset or empty preserves the existing implicit degree
-and legacy arguments. Explicit `8` and `2` are also accepted by the source
-option. This selects the existing reference provider, not the unqualified native
-candidate below, and does not qualify an eight-V100 deployment.
+With `TF_V100_LAUNCH=reference`, `TF_EXPERT_TENSOR_PARALLEL_SIZE=4` passes one
+argument to the existing server option; the CLI validates supported degrees and
+compatible resident-GGUF/GPU-history ownership before model loading. Leaving it
+unset or empty there preserves the implicit degree. Explicit `8` and `2` are also
+accepted by the source option. On the reference launch this selects the Torch
+reference provider, not the owned native one below. The production launch adds
+`--expert-tensor-parallel-size 4` itself and refuses any other degree.
 
 An explicit owned-expert native ETP4 component now separates routed width160
 from shared-expert TP8 width80. It maps global router IDs on device and supports
 the caller's FP16 or FP32 slot storage before the existing FP32 partial/reduction
-boundary, with caller-owned route/activation scratch. It is not selected by
-ordinary serving or this Compose setting.
+boundary, with caller-owned route/activation scratch. The Compose production launch selects it
+through the owned-routed parent below; the plain `tensorfold serve` CLI has no flag for it.
 Target/method peak admission, selected-SDK integrated compilation and native
 SM70 execution, model quality, capacity and matched performance remain required
 before selection. A separate offline component compile/load is recorded in the
@@ -49,8 +118,8 @@ graphs remain disabled for the reference ETP4 and unique-history paths. See
 
 Internal qualification callers can prepare the same engine with
 `_owned_expert_native=True`. The maintained private procedure below reaches that
-constructor through the ordinary CLI/frontend; it adds no product CLI or
-Compose setting. It requires adaptive resident GGUF TP8/ETP4,
+constructor through the ordinary CLI/frontend; the Compose production launch
+runs this parent, and there is no separate product CLI flag. It requires adaptive resident GGUF TP8/ETP4,
 an actual SM70 device/build, stock shared-GGUF MTP, dense TP8 DFlash or no method,
 and bounded prepared row/slot geometry. Administrator profile transitions and
 DSpark remain unsupported by this private mode; normal reference behavior is
@@ -921,8 +990,9 @@ their existing signed bases, packed four-bit centroid indices and FP32 scales.
 They have separate measured quantization-quality tradeoffs; see below. Other formats fail before allocating model weights
 on SM70.
 
-The maintained [Compose profile](compose.yaml) selects the matching stock MTP
-head, automatic full-window session capacity and an 8,192-token window by default. Set `MODEL_ROOT` to the
+The maintained [Compose profile](compose.yaml) runs the
+[production launch](#production-launch-compose-default) by default: stock MTP,
+RotorQuant Q4 KV, 32 complete 262,144-token windows. Set `MODEL_ROOT` to the
 host model directory and `GGUF_FILE` to its container first-shard path, then:
 
 ```bash
@@ -932,8 +1002,9 @@ MODEL_ROOT=/path/to/models GGUF_FILE=/models/Flash-Next-00001-of-00004.gguf \
 
 `TF_CONTEXT`, `TF_PARALLEL`, `TF_KV_DTYPE`, `TF_PORT`, `TF_BIND_ADDRESS`,
 `TF_MODEL_NAME`, `MTP_DIRECTORY`, `TF_CACHE_VOLUME` and `TENSORFOLD_V100_IMAGE`
-configure that profile. Other codecs keep `auto` parallel/full-window settings
-and require explicit positive `TF_MAX_PENDING_REQUESTS` and
+configure that profile. With `TF_V100_LAUNCH=reference`, codecs outside the personal
+profiles keep `auto` parallel/full-window settings (and an 8,192-token default
+window) and require explicit positive `TF_MAX_PENDING_REQUESTS` and
 `TF_MAX_HTTP_CONNECTIONS`. Numeric overrides constrain automatic capacity rather
 than forcing allocation. Personal INT8/ISO4 settings are resolved by the shared
 read-only deployment helper before Python starts; they work with an already-built
@@ -1035,15 +1106,17 @@ growth/full-window contracts.
 ## Personal concurrency ceilings
 
 The personal deployment and benchmark launch recipes cap **INT8/Q8 at24** and
-the initial `rotorquant-iso4-sm70-v1` Q4 profile at **32** complete windows.
+the Q4 profiles (`rotorquant-iso64-norm4-h64`, the Compose default, and the earlier
+`rotorquant-iso4-sm70-v1`) at **32** complete windows.
 These are administrative ceilings for VRAM headroom, not changes to the generic
 hardware solver or evidence that either count is qualified. The solver and
 ordinary memory guards can select/refuse a smaller capacity.
 
 | Profile | KV codec | Parallel/full-window ceiling | Default P/H/W at L262144, MTP4 |
 | --- | --- | --- | --- |
-| Personal Q8 | `int8` | 24 | 24 / 25 / 226493088bytes |
-| Personal Q4 | `rotorquant-iso4-sm70-v1` | 32 | 32 / 33 / 301990784bytes |
+| Personal Q8 | `int8` | 24 | 48 / 49 / 452986176bytes |
+| Personal Q4 (default) | `rotorquant-iso64-norm4-h64` | 32 | 64 / 65 / 603981568bytes |
+| Personal Q4 (earlier compact) | `rotorquant-iso4-sm70-v1` | 32 | 64 / 65 / 603981568bytes |
 
 Use the maintained environment example with the same Compose recipe:
 
@@ -1051,14 +1124,15 @@ Use the maintained environment example with the same Compose recipe:
 # Set MODEL_ROOT, GGUF_FILE and the verified image reference separately.
 docker compose --env-file deploy/v100/personal-q8.env.example -f deploy/v100/compose.yaml config
 docker compose --env-file deploy/v100/personal-q8.env.example -f deploy/v100/compose.yaml up -d
-# Select personal-q4.env.example for the separate ISO4 qualification candidate.
+# personal-q4.env.example spells out the default Q4 production profile.
 ```
 
 `personal_profile.sh` maps missing/`auto` parallel and full-window settings to the
 codec's finite ceiling. Explicit positive lower settings remain lower; explicit
 values above24/32 fail before Python/model loading. The effective GPU ceiling is
-the minimum of the two settings. Default P is that effective ceiling; explicit
-P may be higher for bounded queuing, up to the personal ceiling. Queued requests
+the minimum of the two settings. Default P is twice that effective count (one
+bounded FIFO queue as deep as the active windows); explicit P may be lower, or
+higher up to twice the personal ceiling. Queued requests
 are not simultaneous active windows. H defaults to P+1 for a monitor; explicit
 positive H/W settings remain subject to the existing guards and benchmark
 preflight, without a new universal HTTP cap.

@@ -21,11 +21,12 @@ def resolve(**values):
     return result, fields
 
 
-@pytest.mark.parametrize("codec,cap", [("int8", 24), ("rotorquant-iso4-sm70-v1", 32)])
+@pytest.mark.parametrize("codec,cap", [("int8", 24), ("rotorquant-iso4-sm70-v1", 32),
+                                       ("rotorquant-iso64-norm4-h64", 32)])
 def test_auto_defaults_are_bounded_and_full_context(codec, cap):
     result, fields = resolve(TF_KV_DTYPE=codec, TF_PARALLEL="auto", TF_KV_FULL_WINDOWS="auto")
     assert result.returncode == 0, result.stderr
-    assert fields == dict(zip(FIELDS, map(str, (cap, cap, cap, cap + 1, cap * 9437212, 262144, 4, cap))))
+    assert fields == dict(zip(FIELDS, map(str, (cap, cap, 2 * cap, 2 * cap + 1, 2 * cap * 9437212, 262144, 4, cap))))
 
 
 def test_lower_counts_and_explicit_queued_pending_are_preserved():
@@ -39,14 +40,15 @@ def test_lower_counts_and_explicit_queued_pending_are_preserved():
 def test_lower_effective_default_couples_pending_monitor_and_input_credit():
     result, fields = resolve(TF_KV_DTYPE="int8", TF_PARALLEL="12", TF_KV_FULL_WINDOWS="8")
     assert result.returncode == 0, result.stderr
-    assert [fields[key] for key in FIELDS[2:5]] == ["8", "9", str(8 * 9437212)]
+    assert [fields[key] for key in FIELDS[2:5]] == ["16", "17", str(16 * 9437212)]
 
 
-@pytest.mark.parametrize("key", ["TF_PARALLEL", "TF_KV_FULL_WINDOWS", "TF_MAX_PENDING_REQUESTS"])
-@pytest.mark.parametrize("value", ["25", "999999999999999999999999999999999999"])
-def test_explicit_above_q8_cap_refuses_without_overflow_or_exec(key, value):
+@pytest.mark.parametrize("key,value,cap", [
+    ("TF_PARALLEL", "25", 24), ("TF_KV_FULL_WINDOWS", "25", 24), ("TF_MAX_PENDING_REQUESTS", "49", 48),
+    ("TF_PARALLEL", "9" * 36, 24), ("TF_KV_FULL_WINDOWS", "9" * 36, 24), ("TF_MAX_PENDING_REQUESTS", "9" * 36, 48)])
+def test_explicit_above_q8_cap_refuses_without_overflow_or_exec(key, value, cap):
     result, _ = resolve(TF_KV_DTYPE="int8", **{key: value})
-    assert result.returncode == 2 and b"personal V100 ceiling 24" in result.stderr
+    assert result.returncode == 2 and f"personal V100 ceiling {cap}".encode() in result.stderr
     assert not result.stdout
 
 
@@ -81,4 +83,5 @@ def test_persistent_examples_resolve_to_the_declared_profiles(name, cap):
     result, fields = resolve(**values)
     assert result.returncode == 0, result.stderr
     assert fields["TF_V100_PERSONAL_CAP"] == str(cap)
-    assert fields["TF_MAX_WAITING_INPUT_BYTES"] == str(cap * 9437212)
+    assert fields["TF_MAX_PENDING_REQUESTS"] == str(2 * cap)
+    assert fields["TF_MAX_WAITING_INPUT_BYTES"] == str(2 * cap * 9437212)

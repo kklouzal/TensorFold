@@ -7,19 +7,20 @@ import pytest
 
 from tools.v100_execution_manifest import catalogue
 
-PACKET = Path(__file__).resolve().parents[1] / "deploy/v100/execution-profiles/sc117-tp8etp4-mtp4-p24.preparation.json"
+PACKETS = Path(__file__).resolve().parents[1] / "deploy/v100/execution-profiles"
 
 
-def test_tracked_packet_is_the_rule_catalogue_and_loads_as_preparation():
+@pytest.mark.parametrize("lanes,count", [(24, 171), (32, 227)])
+def test_tracked_packet_is_the_rule_catalogue_and_loads_as_preparation(lanes, count):
     from tensorfold.families.qwen4_exp.cuda.exact_graph_policy import DEMAND_POLICY, parse_policy
     from tensorfold.families.qwen4_exp.cuda.owner_preparation import parse_preparation
 
-    packet = json.loads(PACKET.read_text(encoding="utf-8"))
+    packet = json.loads((PACKETS / f"sc117-tp8etp4-mtp4-p{lanes}.preparation.json").read_text(encoding="utf-8"))
     assert parse_preparation(packet) is not None
     policy = packet["exact_graph_policy"]
     assert policy["policy"] == DEMAND_POLICY
-    assert policy["keys"] == catalogue(24, 4) == parse_policy(policy)["keys"]   # sorted as the loader sorts
-    assert len(policy["keys"]) == 171
+    assert policy["keys"] == catalogue(lanes, 4) == parse_policy(policy)["keys"]   # sorted as the loader sorts
+    assert len(policy["keys"]) == count
 
 
 def test_catalogue_rule_keys_fit_depth_plus_one_rows_per_participant():

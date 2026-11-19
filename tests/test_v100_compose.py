@@ -22,7 +22,12 @@ def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=No
            ("MODEL_ROOT", "GGUF_FILE", "MTP_DIRECTORY", "DRAFTER_DIRECTORY")}
     env.update(MODEL_ROOT=str(tmp_path / "model files"), GGUF_FILE="/models/first shard; literal $(not-a-command).gguf",
                TENSORFOLD_V100_IMAGE="tensorfold-v100:controlled-compose-fixture",
-               TF_MAX_PENDING_REQUESTS="3", TF_MAX_HTTP_CONNECTIONS="4", TF_DRAFT_METHOD=method)
+               TF_MAX_PENDING_REQUESTS="3", TF_MAX_HTTP_CONNECTIONS="4", TF_DRAFT_METHOD=method,
+               TF_KV_DTYPE="fp16", TF_V100_LAUNCH="reference",  # the legacy reference argv; production tests below
+               # Sealed NUMA placement inputs the recipe requires (values are only rendered here).
+               TF_GPU_UUIDS=",".join(f"GPU-{index:08d}-0000-0000-0000-000000000000" for index in range(8)),
+               TF_NUMA_PLAN=str(tmp_path / "plan.json"), TF_NUMA_PLAN_SHA256="0" * 64,
+               TF_NUMA_CPUSET="0-55", TF_NUMA_SECCOMP=str(tmp_path / "seccomp.json"))
     if drafts is not None:
         env["TF_DRAFTS"] = drafts
     if prefill is not None:
@@ -48,7 +53,7 @@ def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=No
     return json.loads(result.stdout.replace("$$", "$"))["services"]["tensorfold"]
 
 
-def actual_argv(service, *, succeeds=True):
+def actual_argv(service, *, succeeds=True, stubs=None):
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("V100 Compose entrypoint requires the declared Linux Bash host capability")
@@ -57,12 +62,14 @@ def actual_argv(service, *, succeeds=True):
     # Capture only the exec boundary. The actual rendered Bash array/quoting
     # code runs unchanged, without starting a model or an alternate interpreter.
     script = ("source() { [[ $1 == /run/tensorfold-v100/personal_profile.sh ]] || return 2; "
-              "builtin source \"$TF_TEST_PROFILE_HELPER\"; }\n"
+              "builtin source \"$TF_TEST_PROFILE_HELPER\"; "
+              "[[ -z $TF_TEST_STUBS ]] || builtin source \"$TF_TEST_STUBS\"; }\n"
               "exec() { printf '%s\\0' \"$@\"; }\n" + entry[2])
     env = {name: value for name, value in os.environ.items()
            if name not in ("TF_MAX_WAITING_INPUT_BYTES", "TF_EXPERT_TENSOR_PARALLEL_SIZE", "BASH_ENV")}
     env.update(service["environment"])
     env["TF_TEST_PROFILE_HELPER"] = str(DEPLOY / "personal_profile.sh")
+    env["TF_TEST_STUBS"] = "" if stubs is None else str(stubs)
     result = subprocess.run([bash, "--noprofile", "--norc", "-c", script, entry[3], *service["command"]],
                             env=env, capture_output=True, timeout=10, check=False)
     if not succeeds:
@@ -73,7 +80,8 @@ def actual_argv(service, *, succeeds=True):
 
 
 @pytest.mark.parametrize("codec,cap,waiting", [
-    ("int8", 24, 226493088), ("rotorquant-iso4-sm70-v1", 32, 301990784)])
+    ("int8", 24, 226493088), ("rotorquant-iso4-sm70-v1", 32, 301990784),
+    ("rotorquant-iso64-norm4-h64", 32, 301990784)])
 def test_personal_codecs_reach_actual_cli_with_finite_admin_ceilings(compose, tmp_path, codec, cap, waiting):
     from tensorfold.cli import build_parser
     service = render(compose, tmp_path, variables={
@@ -82,8 +90,8 @@ def test_personal_codecs_reach_actual_cli_with_finite_admin_ceilings(compose, tm
     parsed = build_parser().parse_args(["serve", *argv[argv.index("--") + 1:]])
     assert str(parsed.parallel) == str(cap) and str(parsed.kv_full_windows) == str(cap)
     assert parsed.context == 262144 and parsed.mtp_drafts == 4
-    assert parsed.max_pending_requests == cap and parsed.max_http_connections == cap + 1
-    assert parsed.max_waiting_input_bytes == waiting
+    assert parsed.max_pending_requests == 2 * cap and parsed.max_http_connections == 2 * cap + 1
+    assert parsed.max_waiting_input_bytes == 2 * waiting
     mounted = [v for v in service["volumes"] if v["target"] == "/run/tensorfold-v100/personal_profile.sh"]
     assert len(mounted) == 1 and mounted[0]["read_only"] is True
 
@@ -220,3 +228,85 @@ def test_prefill_rows_metacharacters_stay_literal_and_backend_refuses(compose, t
     with pytest.raises(ValueError, match="TENSORFOLD_PREFILL_ROWS"):
         indexed_prefill_rows()
     assert not witness.exists()
+
+
+def production_stubs(tmp_path):
+    """Replace only the two side effects (tmpfs directory, header-only manifest tool) with recorders."""
+    stubs = tmp_path / "stubs.sh"
+    stubs.write_text(f"""
+mktemp() {{ [[ $1 == -d && $2 == /run/tensorfold-v100/runtime/launch.XXXXXXXX ]] || return 3; echo {tmp_path}/launch; }}
+_tf_v100_manifest() {{ printf '%s\\n' "$@" > {tmp_path}/manifest-call; }}
+""")
+    return stubs
+
+
+def production(compose, tmp_path, variables=None):
+    return render(compose, tmp_path, variables={"TF_KV_DTYPE": None, "TF_V100_LAUNCH": None, "TF_DRAFT_METHOD": None,
+        "TF_MAX_PENDING_REQUESTS": None, "TF_MAX_HTTP_CONNECTIONS": None, **(variables or {})})
+
+
+def test_default_compose_is_the_production_q4_32_full_window_launch(compose, tmp_path):
+    from tensorfold.cli import build_parser
+
+    service = production(compose, tmp_path)
+    assert service["environment"]["TF_V100_LAUNCH"] == "production"
+    assert any(mount.get("target") == "/run/tensorfold-v100/runtime" and mount.get("type") == "tmpfs"
+               for mount in service["volumes"]) or "/run/tensorfold-v100/runtime:size=16m,mode=0700" in service.get("tmpfs", [])
+    argv = actual_argv(service, stubs=production_stubs(tmp_path))
+    split = argv.index("--")
+    assert argv[:2] == ["/opt/venv/bin/python", "/src/tools/v100_owned_qualification.py"]
+    launcher = argv[2:split]
+    assert launcher[launcher.index("--out") + 1] == f"{tmp_path}/launch/receipts"
+    assert launcher[launcher.index("--execution-rows") + 1] == "160"
+    assert launcher[launcher.index("--grouped-gate-up-rows") + 1] == "4"
+    assert launcher[:launcher.index("--out")] == service["command"][1:service["command"].index("--")]
+    parsed = build_parser().parse_args(["serve", *argv[split + 1:]])
+    assert parsed.kv_dtype == "rotorquant-iso64-norm4-h64" and parsed.context == 262144 and parsed.mtp_drafts == 4
+    assert parsed.draft_method == "mtp" and argv.count("--draft-method") == 1
+    assert str(parsed.parallel) == "32" and str(parsed.kv_full_windows) == "32"
+    assert parsed.max_pending_requests == 64 and parsed.max_http_connections == 65
+    assert parsed.max_waiting_input_bytes == 64 * 9437212 and parsed.expert_tensor_parallel_size == 4
+    assert str(parsed.execution_profile_manifest) == f"{tmp_path}/launch/profile.json"
+    assert argv.count("--expert-tensor-parallel-size") == 1 and "--no-prefill-fp8" in argv
+    assert parsed.thinking is True and parsed.queue_timeout_s == 900 and "--no-thinking" not in argv
+    target = service["command"][service["command"].index("--") + 1]
+    drafter = service["command"][service["command"].index("--drafter") + 1]
+    assert (tmp_path / "manifest-call").read_text().splitlines() == [
+        target, drafter, "/src/deploy/v100/execution-profiles/sc117-tp8etp4-mtp4-p32.preparation.json",
+        f"{tmp_path}/launch/profile.json"]
+
+
+def test_production_int8_personal_profile_selects_the_tracked_24_lane_packet(compose, tmp_path):
+    argv = actual_argv(production(compose, tmp_path, {"TF_KV_DTYPE": "int8", "TF_EXPERT_TENSOR_PARALLEL_SIZE": "4"}),
+                       stubs=production_stubs(tmp_path))
+    assert argv[argv.index("--execution-rows") + 1] == "120"
+    assert argv.count("--expert-tensor-parallel-size") == 1
+    assert (tmp_path / "manifest-call").read_text().splitlines()[2].endswith("sc117-tp8etp4-mtp4-p24.preparation.json")
+
+
+@pytest.mark.parametrize("variables,message", [
+    ({"TF_DRAFT_METHOD": "dspark"}, b"stock MTP drafter"),
+    ({"TF_INDEXER_HISTORY": "ram"}, b"TF_INDEXER_HISTORY=gpu"),
+    ({"TF_EXPERT_TENSOR_PARALLEL_SIZE": "8"}, b"TF_EXPERT_TENSOR_PARALLEL_SIZE=4"),
+    ({"TF_KV_DTYPE": "fp16", "TF_MAX_PENDING_REQUESTS": "8", "TF_MAX_HTTP_CONNECTIONS": "9"}, b"numeric TF_PARALLEL"),
+    ({"TF_V100_LAUNCH": "fast"}, b"production or reference"),
+    ({"TF_THINKING": "maybe"}, b"TF_THINKING must be on or off")])
+def test_production_refuses_unsupported_configurations_before_exec(compose, tmp_path, variables, message):
+    rejected = actual_argv(production(compose, tmp_path, variables), succeeds=False, stubs=production_stubs(tmp_path))
+    assert message in rejected.stderr and rejected.stdout == b""
+    assert not (tmp_path / "manifest-call").exists()
+
+
+def test_production_thinking_opt_out_keeps_the_queue_timeout(compose, tmp_path):
+    from tensorfold.cli import build_parser
+
+    argv = actual_argv(production(compose, tmp_path, {"TF_THINKING": "off", "TF_QUEUE_TIMEOUT_S": "60"}),
+                       stubs=production_stubs(tmp_path))
+    parsed = build_parser().parse_args(["serve", *argv[argv.index("--") + 1:]])
+    assert parsed.thinking is False and parsed.queue_timeout_s == 60 and argv.count("--no-thinking") == 1
+
+
+def test_personal_pending_queue_is_bounded_at_twice_the_ceiling(compose, tmp_path):
+    service = render(compose, tmp_path, variables={"TF_KV_DTYPE": "int8", "TF_MAX_PENDING_REQUESTS": "49"})
+    rejected = actual_argv(service, succeeds=False)
+    assert rejected.returncode == 2 and b"personal V100 ceiling 48" in rejected.stderr
