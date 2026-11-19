@@ -252,7 +252,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "Gemma E4B native assistant/EAGLE3 require BF16 (16). The target verifies every draft")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block. CUDA Gemma4 MoE DFlash: 2-128 "
-                            "(default 16), restricted to 2-16 with --lossless-head; Gemma4 E2B DFlash2: 2-8 (default 8); "
+                            "(default 16; eight V100s with --tp 8: 2-16, default 3), restricted to 2-16 with --lossless-head; Gemma4 E2B DFlash2: 2-8 (default 8); "
                             "E4B native assistant: 2-8 (default 7), EAGLE3: 2-4 (default 4); "
                             "CUDA Qwen MoE NVFP4: default is the draft model's block size")
     speed.add_argument("--mtp-drafts", type=int, default=None,
@@ -325,7 +325,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="Flash Next concurrent SM70 unique TP8 GPU histories, or Gemma 4 on eight V100s (--tp 8): "
                             "pinned host RAM (all ranks together) "
                             "that keeps prompt points the GPU prefix cache evicts, restored on a hit instead of "
-                            "prefilled again; never written to disk. Off by default (0): it costs 1-2%% of throughput under unique-prompt load; use e.g. 68719476736 (64 GiB) for repeated or shared-prefix traffic")
+                            "prefilled again; never written to disk. Gemma 4 --tp 8: on by default (64 GiB, at most a quarter of MemAvailable; 0 disables). Flash Next: off by default (0): it costs 1-2%% of throughput under unique-prompt load; use e.g. 68719476736 (64 GiB) for repeated or shared-prefix traffic")
     speed.add_argument("--execution-profile-manifest", type=Path, default=None, metavar="PATH",
                        help="Flash Next GGUF GPU-history SM70: load measured execution profiles only after their "
                             "checkpoint, codec, runtime, kernel and hardware identities match this deployment")

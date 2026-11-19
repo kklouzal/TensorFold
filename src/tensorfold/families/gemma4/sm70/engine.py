@@ -36,6 +36,21 @@ PIPE_TIMEOUT = 600.0
 TRACE = os.environ.get("TF_GEMMA_ROUND_TRACE") == "1"     # diagnostic: per-shape round timing lines on rank 0
 
 
+HOST_DEFAULT_BYTES = 64 << 30   # host prefix tier across the eight ranks when --prefix-host-bytes is unset
+
+
+def _mem_available() -> int:
+    """The host's MemAvailable (bytes), or 0 when /proc/meminfo has none (the tier then stays off)."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return 0
+
+
 class Gemma4SM70Engine:
     tp = 8
     concurrent = True
@@ -69,6 +84,9 @@ class Gemma4SM70Engine:
         self.streams = streams
         self.prompt_rows = PROMPT_ROWS
         torch.cuda.set_device(0)
+        # The NVLink small all-gather for the per-layer FP32 decode partials is this provider's measured default
+        # (6.2 -> 5.0 ms per serial step); every rank sets the same value before the communicator opens.
+        os.environ.setdefault("TF_SMALL_GATHER_BYTES", "262144")
         self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.w = W.load(model_dir, rank)
         # Slots: the live streams', ``keep_slots`` more for kept prefix chains (idle conversations), and the last
@@ -79,12 +97,19 @@ class Gemma4SM70Engine:
         slots = streams + self.keep_slots + 1
         self.pad = slots - 1
         self.snaps = {}                           # prefix snapshot id -> (target rings, drafter rings) on this rank
-        # Host prefix tier (prefix_host.py, opt-in): one pinned slab per rank, allocated before the KV budget and the
-        # HTTP host pool are measured; host entry id -> its tensors' slab regions on this rank.
+        # Host prefix tier (prefix_host.py, on by default; --prefix-host-bytes 0 disables): one pinned slab per rank,
+        # allocated before the KV budget and the HTTP host pool are measured; host entry id -> its tensors' slab
+        # regions on this rank. Unset: HOST_DEFAULT_BYTES across the ranks, but at most a quarter of the host's
+        # MemAvailable, agreed as the smallest rank's choice (every rank must lay out identical blocks).
         if prefix_host_bytes is not None and (type(prefix_host_bytes) is not int or prefix_host_bytes < 0):
             raise ValueError("prefix_host_bytes must be a nonnegative byte count")
         from .prefix_host import BLOCK_BYTES
-        self.host_per_rank = (prefix_host_bytes or 0) // tp // BLOCK_BYTES * BLOCK_BYTES
+        if prefix_host_bytes is None:
+            prefix_host_bytes = min(HOST_DEFAULT_BYTES, _mem_available() // 4)
+        mine = torch.tensor([prefix_host_bytes // tp // BLOCK_BYTES * BLOCK_BYTES], dtype=torch.int64, device="cuda")
+        agreed = torch.empty(tp, dtype=torch.int64, device="cuda")
+        self.comm.all_gather(mine, agreed)
+        self.host_per_rank = int(agreed.min())
         self.host_slab = (torch.empty(self.host_per_rank, dtype=torch.uint8, pin_memory=True)
                           if self.host_per_rank else None)
         self.host_layout = {}
