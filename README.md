@@ -2060,6 +2060,26 @@ cut into different pieces than its cold prefill, and the single-request engine
 (`--parallel 1`) still recomputes the last row. The serving matrix sends unique
 prompts, so its cells contain no cache hits.
 
+**Prefix cache: positive temperature, host-RAM tier, metrics (2026-11-19).** On
+the optimized SM70 profile a positive-temperature request now reuses kept prompt
+state like a greedy one (it used to prefill cold); cached-versus-cold NLL is
+equivalent on decode rows for Q4 and INT8 KV ([API notes](docs/api.md)). A prompt
+point the GPU cache drops by value (a slot reused, a point past the kept limit, a
+resume in place rewriting longer points) is copied into pinned host RAM
+(`--prefix-host-bytes`, default 32 GiB on this path) and restored into a free slot
+with the same history-page ownership when a later prompt extends it by at least 64
+more tokens than any GPU-resident point; restored state is bit-identical to the
+resident point. On 8x V100 (production Compose, a 4,883-token greedy prompt evicted
+by 24 longer prompts) the repeat's first token came after 0.061-0.078 s from host
+RAM against 1.80-1.82 s recomputed and 0.026-0.030 s still resident, for Q4 and INT8;
+replies matched the cold one and a concurrent stream's decode gaps were unchanged.
+A temperature-0.7 extension of a 14.6K-token prompt now starts after 0.31 s (5.16 s
+cold). `/stats` `prefix_cache` reports lookups and hits/tokens by tier (resumed in
+place, forked into a free slot, restored from host) and the host tier's record;
+Prometheus has `prefix_cache_tier_hits_total`, `prefix_cache_tier_tokens_total` and
+`prefix_host_*`. Raising the GPU kept-point limit (8) was not adopted: a host restore
+costs milliseconds, while each GPU point costs 14.6 MB per rank at 32 full windows.
+
 **Prompt-pass host cost and rank placement (2026-11-16).** Three changes to the
 Flash Next tensor-parallel path. (1) Each rank now binds all of its host threads to
 the CPUs of its GPU's NUMA node at startup (skipped when a sealed NUMA plan already
