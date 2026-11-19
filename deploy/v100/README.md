@@ -328,7 +328,7 @@ request limit returns HTTP503 with the existing retry header.
 
 [compose.gemma4.yaml](compose.gemma4.yaml) serves the AEON compressed-tensors NVFP4 Gemma 4 26B-A4B with the z-lab
 DFlash drafter for Harness, in the configuration the V100 trial server runs: `--parallel 8`, the native 262,144-token
-context, INT8 drafter copies with 5 draft rows, thinking on, automatic prompt-prefix reuse, and every rank started
+context, INT8 drafter copies with 3 draft rows, thinking on, automatic prompt-prefix reuse, and every rank started
 through the Harness entrypoint ([gemma4_tp_harness.py](gemma4_tp_harness.py)) so `/v1/tokenize` and Harness model
 metadata work. It needs the whole GPU set (stop the SC117 service first) and no NUMA plan.
 

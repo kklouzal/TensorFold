@@ -100,7 +100,10 @@ verify blocks use 256-key attention chunks). On the C1 greedy serving matrix (4K
 scored with the server session as the unit, `--draft-rows 3` decoded 3.8% faster in aggregate than 5 with
 identical replies and no prefill regression, and 0.5% faster than 4; 4 rows decoded 3.3% faster than 5 but one
 4K prefill cell scored 1.3% slower, and 2 rows were slower (see the
-[README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)). Greedy and sampled requests draft: every verify row is sampled from the target with the
+[README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)). A 2026-11-19 sweep on the current engine
+(`--parallel 8`, 4K prompts, two repeats, greedy / sampled per-request decode tok/s at C1 and C8) confirmed 3:
+2 rows 261/234 and 82/66, 3 rows 284/252 and 80/67, 4 rows 283/244 and 76/64, 5 rows 269/241 and 67/57,
+6 rows 241/217 and 60/52. Greedy and sampled requests draft: every verify row is sampled from the target with the
 request's position-keyed sampler and a proposal is kept only when it equals the sampled token, so a sampled reply
 is exactly the serial (`"draft": false`) reply. Requests with grammar constraints or penalties decode serially.
 `--no-graphs` selects eager execution.
