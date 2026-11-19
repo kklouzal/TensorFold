@@ -99,12 +99,21 @@ class TensorParallelDecoder:
         self.decoder, self.engine, self.comm = decoder, engine, decoder.w.comm
         # Same-host peers exchange commands/ACKs through FIFOs (control_pipes);
         # the communicator declares the capability, other peers keep the Store.
+        from tensorfold.cuda.rank_protocol import MAX_ACK_BYTES, tp_frame_bytes
+
+        # One configured command bound on every rank (its logical context and media mode), so the host-memory
+        # proofs (retention_resources) and every sender/receiver use the same value; acknowledgments are tiny.
+        context = getattr(decoder, "logical_context", None) or decoder.capacity
+        self.frame_bytes = tp_frame_bytes(context, media=getattr(decoder, "media_runtime", None) is not None
+                                          or getattr(decoder, "vision", None) is not None)
+        self.ack_bytes = MAX_ACK_BYTES
         self.pipes = None
         if getattr(self.comm, "control_pipes", False) and self.comm.world > 1:
             from tensorfold.cuda.control_pipes import ControlPipes
 
             self.pipes = ControlPipes(self.comm.store, self.comm.rank, self.comm.world,
-                                      timeout_s=timedelta(hours=1).total_seconds())
+                                      timeout_s=timedelta(hours=1).total_seconds(),
+                                      max_frame=self.frame_bytes, max_ack=self.ack_bytes)
         self.sequence = 0
         self.next_wire = 0
         self.requests = {}
@@ -970,9 +979,9 @@ class TensorParallelDecoder:
         body["control"] = self._controls(body.get("execution"))
         sequence = self.sequence
         body["sequence"] = sequence
-        from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES, bounded_json
+        from tensorfold.cuda.rank_protocol import bounded_json
 
-        text = bounded_json(body, separators=(",", ":"))
+        text = bounded_json(body, separators=(",", ":"), limit=self.frame_bytes)
         if source is not None and getattr(self.engine, "host_payload_pool", None) is not None:
             from tensorfold.server.host_payload import reserve_rpc
             reserve_rpc(source, len(text))  # Before sequence/publication, never a partial RPC grow.
@@ -1017,8 +1026,8 @@ class TensorParallelDecoder:
                 acknowledged += zip(stored, payloads, keys)
             failed = []
             for peer, payload, *key in acknowledged:
-                if type(payload) is not bytes or len(payload) > MAX_MESSAGE_BYTES:
-                    raise ValueError("tensor-parallel acknowledgment requires at most 96 MiB of bytes")
+                if type(payload) is not bytes or len(payload) > self.ack_bytes:
+                    raise ValueError(f"tensor-parallel acknowledgment requires at most {self.ack_bytes} bytes")
                 remote = json_nesting.loads(payload)
                 if remote["error"] is not None:
                     failed.append(self._agreement_key(sequence, peer))
@@ -1321,7 +1330,7 @@ class TensorParallelDecoder:
 
         try:
             _result, error, status = self._execute(body)
-            acknowledgment = bounded_json(status, separators=(",", ":"))
+            acknowledgment = bounded_json(status, separators=(",", ":"), limit=self.ack_bytes)
             if self.pipes is not None and self.pipes.joined:
                 self.pipes.acknowledge(acknowledgment.encode("ascii"))
             else:

@@ -57,6 +57,7 @@ class Decoder:
         self.w = SimpleNamespace(comm=SimpleNamespace(rank=rank, world=world, store=store, control_pipes=pipes))
         self.rank = rank
         self.prefill_rows = 16
+        self.capacity = 4096                 # the logical context the TP command bound derives from
         self.points = lambda prompt: [rank + 1]
         self.arrived = lambda: bool(rank % 2)
         self.streams, self.filling = {}, []

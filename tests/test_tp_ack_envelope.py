@@ -40,6 +40,8 @@ def actor(rank, store, status):
     value = TensorParallelDecoder.__new__(TensorParallelDecoder)
     value.comm, value.engine = NS(rank=rank, world=2, store=store), NS(_abort_comm=False)
     value.failure, value.sequence, value.admission_policy = None, 0, "fifo"
+    # The configured command/ACK bounds; tests shrink the transport cap to exercise them cheaply.
+    value.frame_bytes = value.ack_bytes = rank_protocol.MAX_MESSAGE_BYTES
     value._controls = lambda _execution: {}
     value._execute = lambda *_args: ("completed", None, status)
     def poison(error):
@@ -58,6 +60,16 @@ def test_real_rank_transport_contract_remains_96_mib():
     assert rank_protocol.MAX_MESSAGE_BYTES == 96 << 20
 
 
+def test_configured_tp_bounds_cover_text_requests_and_keep_media_at_the_transport_cap():
+    frame = rank_protocol.tp_frame_bytes(262144)
+    # Four 262,144-ID lists of 10-digit IDs, the grammar wire budget and fixed fields; far below 96 MiB.
+    assert 4 * 262144 * 11 + 4 * rank_protocol.TP_GRAMMAR_BYTES < frame < 32 << 20
+    assert rank_protocol.tp_frame_bytes(262144, media=True) == rank_protocol.MAX_MESSAGE_BYTES
+    assert rank_protocol.tp_frame_bytes(1 << 30) == rank_protocol.MAX_MESSAGE_BYTES
+    with pytest.raises(ValueError, match="1000-byte tensor-parallel transport envelope"):
+        rank_protocol.bounded_json({"grammar": list(range(1000))}, limit=1000)
+
+
 def test_ack_send_accepts_exact_envelope_and_rejects_next_byte_before_store_set(monkeypatch):
     # A smaller TEST-ONLY cap exercises the same arithmetic without allocating
     # or publishing a native payload near the real 96MiB deployment contract.
@@ -71,7 +83,7 @@ def test_ack_send_accepts_exact_envelope_and_rejects_next_byte_before_store_set(
     assert key == peer._ack_key(3, 1) and len(text.encode("ascii")) == limit
     assert json.loads(text) == status and peer.failure is None
     status["state"] += "x"
-    with pytest.raises(ValueError, match="96 MiB transport envelope") as caught:
+    with pytest.raises(ValueError, match="128-byte tensor-parallel transport envelope") as caught:
         peer.apply({"kind": "round", "sequence": 4})
     assert len(store.sent) == 1 and peer.failure is caught.value
     assert peer.engine._abort_comm
@@ -96,7 +108,7 @@ def test_bad_ack_type_or_size_refuses_before_decode_and_retirement(monkeypatch, 
     store = Store(payload, batch=batch)
     leader = actor(0, store, {"error": None, "state": "same"})
     monkeypatch.setattr(tp_scheduler.json, "loads", lambda *_a, **_k: pytest.fail("unbounded ACK reached decoding"))
-    with pytest.raises(ValueError, match="acknowledgment requires at most 96 MiB of bytes") as caught:
+    with pytest.raises(ValueError, match="acknowledgment requires at most 128 bytes") as caught:
         leader._invoke({"kind": "round"})
     assert leader.failure is caught.value and leader.engine._abort_comm
     assert store.deleted == []  # Uncertain remote execution never takes normal ACK reclamation.

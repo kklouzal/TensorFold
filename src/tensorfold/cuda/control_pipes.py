@@ -7,7 +7,8 @@ key on the leader's serial path every round (~1.5-2 ms at C1 on 8x V100), while
 every peer idles. A peer that shares the leader's kernel instead receives the
 same bytes through a FIFO pair: one leader-to-peer command pipe and one
 peer-to-leader acknowledgment pipe, framed as an 8-byte little-endian length
-plus payload (at most ``MAX_MESSAGE_BYTES``, checked before allocation).
+plus payload (at most the configured command/acknowledgment limit, never above ``MAX_MESSAGE_BYTES``, checked
+before allocation).
 
 Rendezvous uses the Store once: the leader creates the FIFOs in a private
 (0700) temporary directory, opens its acknowledgment read ends and publishes
@@ -123,10 +124,14 @@ def _read_exact(descriptor, size, deadline, *, poller=None):
 class ControlPipes:
     """One rank's ends of the leader/peer FIFO pairs (see module docstring)."""
 
-    def __init__(self, store, rank, world, *, timeout_s):
+    def __init__(self, store, rank, world, *, timeout_s, max_frame=MAX_MESSAGE_BYTES, max_ack=MAX_MESSAGE_BYTES):
         if type(world) is not int or world < 2 or type(rank) is not int or not 0 <= rank < world:
             raise ValueError("control pipes require a multi-rank cohort and a valid rank")
+        if any(type(value) is not int or not 0 < value <= MAX_MESSAGE_BYTES for value in (max_frame, max_ack)):
+            raise ValueError("control pipe frame limits must be positive and within the transport cap")
         self.store, self.rank, self.world, self.timeout_s = store, rank, world, float(timeout_s)
+        # Every rank derives the same limits from its configuration: commands, then acknowledgments.
+        self.max_frame, self.max_ack = max_frame, max_ack
         self._descriptors, self._directory = [], []
         self._finalizer = weakref.finalize(self, _close_all, self._descriptors, self._directory)
         self.broken = False
@@ -191,8 +196,8 @@ class ControlPipes:
     def send(self, payload):
         if self.broken:
             raise RuntimeError("tensor-parallel control pipes are broken; retire the cohort")
-        if len(payload) > MAX_MESSAGE_BYTES:
-            raise ValueError("tensor-parallel control frame exceeds the 96 MiB transport envelope")
+        if len(payload) > self.max_frame:
+            raise ValueError("tensor-parallel control frame exceeds its configured transport envelope")
         frame = _HEADER.pack(len(payload)) + payload
         deadline = time.monotonic() + self.timeout_s
         try:
@@ -219,7 +224,7 @@ class ControlPipes:
                 for descriptor, _events in poller.poll(_deadline_ms(deadline)):
                     peer = pending.pop(descriptor)
                     poller.unregister(descriptor)
-                    frames[peer] = self._frame(descriptor, deadline)
+                    frames[peer] = self._frame(descriptor, deadline, limit=self.max_ack)
             return [frames[peer] for peer in sorted(frames)]
         except BaseException:
             self.broken = True
@@ -278,7 +283,7 @@ class ControlPipes:
         if not any(descriptor == self.reader for descriptor, _ in events):
             return None
         try:
-            return self._frame(self.reader, time.monotonic() + self.timeout_s, departed=None)
+            return self._frame(self.reader, time.monotonic() + self.timeout_s, departed=None, limit=self.max_frame)
         except BaseException:
             self.broken = True
             raise
@@ -286,8 +291,8 @@ class ControlPipes:
     def acknowledge(self, payload):
         if self.broken:
             raise RuntimeError("tensor-parallel control pipes are broken; retire the cohort")
-        if len(payload) > MAX_MESSAGE_BYTES:
-            raise ValueError("tensor-parallel acknowledgment exceeds the 96 MiB transport envelope")
+        if len(payload) > self.max_ack:
+            raise ValueError("tensor-parallel acknowledgment exceeds its configured transport envelope")
         try:
             _write(self.writer, _HEADER.pack(len(payload)) + payload, time.monotonic() + self.timeout_s)
         except BaseException:
@@ -295,15 +300,15 @@ class ControlPipes:
             raise
 
     # Shared ------------------------------------------------------------------
-    def _frame(self, descriptor, deadline, *, departed=PeerDeparted):
+    def _frame(self, descriptor, deadline, *, departed=PeerDeparted, limit=MAX_MESSAGE_BYTES):
         header = _read_exact(descriptor, _HEADER.size, deadline)
         if header is None:
             if departed is None:
                 return None
             raise departed("tensor-parallel control peer departed")
         (size,) = _HEADER.unpack(header)
-        if size > MAX_MESSAGE_BYTES:
-            raise ValueError("tensor-parallel control frame exceeds the 96 MiB transport envelope")
+        if size > limit:
+            raise ValueError("tensor-parallel control frame exceeds its configured transport envelope")
         payload = _read_exact(descriptor, size, deadline) if size else b""
         if payload is None:
             raise PeerDeparted("tensor-parallel control pipe closed inside a frame")

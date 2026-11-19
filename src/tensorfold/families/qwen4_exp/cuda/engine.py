@@ -559,7 +559,13 @@ class FlashNextEngine:
         if implemented_admission:
             from .retention_resources import retention_header_resources
 
-            retention_header = retention_header_resources(retention_policy, tp)
+            from tensorfold.cuda.rank_protocol import MAX_ACK_BYTES, tp_frame_bytes
+
+            # The served context cannot exceed this one, so the bound is >= the TP decoder's own.
+            retention_header = retention_header_resources(retention_policy, tp,
+                frame_bytes=tp_frame_bytes(max_len if type(max_len) is int and max_len > 0
+                                           else self.rope.context_limit, media=bool(vision)),
+                ack_bytes=MAX_ACK_BYTES)
             if tp > 1:
                 from .retention_resources import require_native_payload_runtime
 

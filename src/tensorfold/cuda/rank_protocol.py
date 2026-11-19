@@ -12,16 +12,40 @@ import math
 
 MAX_MESSAGE_BYTES = 96 << 20
 MAX_GRAMMAR_ITEMS = MAX_MESSAGE_BYTES + 5  # aggregate source/activation envelope unchanged
+# A tensor-parallel acknowledgment is an error class name, a 64-hex state digest and a small completion record.
+MAX_ACK_BYTES = 64 << 10
+# Grammar source bytes a text-only tensor-parallel request frame carries (engine.grammar.pack spends at most four
+# wire bytes per UTF-8 byte, including its activation metadata); larger grammars are refused at publication.
+TP_GRAMMAR_BYTES = 2 << 20
+_TOKEN_WIRE_BYTES = 44      # prompt, owed, kept points and a teacher-forced list: <= 4 x (10 digits + separator)
+_FRAME_FIXED_BYTES = 1 << 20  # scalars, sampling, retention record, control lists (<= P/S entries), framing
 
 
-def bounded_json(body, *, separators=None):
+def tp_frame_bytes(context, *, media=False):
+    """The per-configuration bound of one tensor-parallel command frame (all ranks derive the same value).
+
+    A text request frame holds at most ``context`` IDs in each of its prompt, owed, point and teacher lists, its
+    grammar wire and fixed fields. Media frames keep the global cap (their envelope bounds them separately).
+    Senders refuse a larger frame before publication (``bounded_json(limit=...)``), so the bound is fail-closed.
+    """
+    if type(context) is not int or context <= 0:
+        raise ValueError("a tensor-parallel frame bound needs the positive logical context")
+    if media:
+        return MAX_MESSAGE_BYTES
+    return min(MAX_MESSAGE_BYTES, _FRAME_FIXED_BYTES + _TOKEN_WIRE_BYTES * context + 4 * TP_GRAMMAR_BYTES)
+
+
+def bounded_json(body, *, separators=None, limit=MAX_MESSAGE_BYTES):
     """Encode validated flat request fields without a larger transient string."""
+    if type(limit) is not int or not 0 < limit <= MAX_MESSAGE_BYTES:
+        raise ValueError("rank message limit must be a positive byte count within the transport cap")
     size = 0
     with io.StringIO() as output:
         for chunk in json.JSONEncoder(separators=separators).iterencode(body):
             size += len(chunk)  # the default encoder emits ASCII
-            if size > MAX_MESSAGE_BYTES:
-                raise ValueError("rank request exceeds the 96 MiB transport envelope")
+            if size > limit:
+                raise ValueError(f"rank request exceeds the {limit}-byte tensor-parallel transport envelope "
+                                 "(a structured-output/tool grammar or request this large is not supported)")
             output.write(chunk)
         return output.getvalue()
 

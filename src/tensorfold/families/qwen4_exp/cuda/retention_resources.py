@@ -114,7 +114,7 @@ class StoreFieldGuard:
             raise ValueError("received cohort value exceeds its native/application byte limit")
 
 
-def retention_header_resources(policy, world, *, slots=None):
+def retention_header_resources(policy, world, *, slots=None, frame_bytes=None, ack_bytes=None):
     """Known reservations before model payload; global RAM is not rank-multiplied."""
     _size(world, "rank count")
     if policy is not None and type(policy) is not RetentionPolicy:
@@ -128,7 +128,7 @@ def retention_header_resources(policy, world, *, slots=None):
         return HeaderResources(policy.ram_bytes if ram else 0, policy.progress_bytes if ram else 0,
                                policy.overlap_bytes if ram else 0, world)
     control = native_sync_control_payload(world=world, chunk_bytes=policy.chunk_bytes if ram else 0,
-                                          ram=ram, slots=slots)
+                                          ram=ram, slots=slots, frame_bytes=frame_bytes, ack_bytes=ack_bytes)
     if not ram:
         return HeaderResources(0, 0, 0, world, 0, control["global_native_control_value_bytes"],
                                control["global_native_rpc_value_bytes"])
@@ -167,7 +167,7 @@ def native_sync_data_payload(*, world, chunk_bytes):
             "remaining_terms": "key/control/metadata/allocator/kernel budgets are distinct"}
 
 
-def native_sync_control_payload(*, world, chunk_bytes, ram, slots=None):
+def native_sync_control_payload(*, world, chunk_bytes, ram, slots=None, frame_bytes=None, ack_bytes=None):
     """GLOBAL synchronous stored/active control values, excluding backing.
 
     Counts source-owned values, not allocator RSS. One daemon's current
@@ -218,8 +218,10 @@ def native_sync_control_payload(*, world, chunk_bytes, ram, slots=None):
     serving = daemon_worker + daemon_actor + 3 * world * (worker + actor)
     startup = daemon_startup + 3 * world * bootstrap
     peers = world - 1
-    command = MAX_MESSAGE_BYTES if peers else 0
-    ack = MAX_MESSAGE_BYTES if peers else 0  # Actual publisher/receiver enforce the same application cap.
+    # The TP decoder's configured command/ACK bounds (rank_protocol.tp_frame_bytes / MAX_ACK_BYTES); its
+    # publishers and receivers enforce them. Callers without that geometry keep the global cap.
+    command = (MAX_MESSAGE_BYTES if frame_bytes is None else frame_bytes) if peers else 0
+    ack = (MAX_MESSAGE_BYTES if ack_bytes is None else ack_bytes) if peers else 0
     # Per-caller exclusivity: root publishes its vector batch OR collects
     # ACKs; each follower receives a command OR publishes its ACK. Map values
     # persist until the publishing side's ACK retirement.
@@ -1197,7 +1199,7 @@ def _follower_scope(continuation_terms):
 
 
 def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_requests, max_http_body_bytes,
-                          json_policy=None, ordinary_fifo_children=False):
+                          json_policy=None, ordinary_fifo_children=False, frame_bytes=None, ack_bytes=None):
     """Named Python owners for the serialized TP actor, separate from native IO.
 
     The selected protocol bounds commands and ACKs by MAX_MESSAGE_BYTES and
@@ -1222,7 +1224,11 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
                 "per_follower_scope": per_follower, "named_rpc_terms": {}, "frame_bytes": MAX_MESSAGE_BYTES,
                 "per_http_rpc_error_tail_bytes": 0}
 
-    peers, pending, frame = world - 1, max_pending_requests, MAX_MESSAGE_BYTES
+    # Commands are bounded by the TP decoder's configured frame (rank_protocol.tp_frame_bytes), enforced by
+    # every publisher before sequence/publication and by pipe receivers; ACKs by MAX_ACK_BYTES on both sides.
+    peers, pending = world - 1, max_pending_requests
+    frame = MAX_MESSAGE_BYTES if frame_bytes is None else _size(frame_bytes, "TP command frame bound")
+    ack_limit = MAX_MESSAGE_BYTES if ack_bytes is None else _size(ack_bytes, "TP acknowledgment bound")
     node = max(layout["dict_entry"], layout["unicode"] + 4, layout["integer"])
     if continuation_terms["request_graph"] != _json_tree_payload(max_http_body_bytes, json_policy):
         raise ValueError("RPC projection needs its actual continuation HTTP/body layout")
@@ -1246,7 +1252,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
         if type(value) is dict:
             ack_pending.extend(value.keys())
             ack_pending.extend(value.values())
-    ack_graph = _size(5 * frame + ack_headers, "owned RPC acknowledgment graph")
+    ack_graph = _size(5 * ack_limit + ack_headers, "owned RPC acknowledgment graph")
 
     def pointers(count):
         return layout["list"] + (count + (count >> 3) + 6) * layout["pointer"]
@@ -1468,7 +1474,13 @@ def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_wait
         terms["mailbox"] = terms["mailbox"] * min(context, output_queue_tokens) // context
         terms["project_payload_bytes"] = _total(value for name, value in terms.items()
                                                 if name not in ("project_payload_bytes", "input_prompt", "token_list_roles", "text_roles", "list_partition"))
-    header = retention_header_resources(catalog.policy, catalog.world, slots=len(catalog.states))
+    from tensorfold.cuda.rank_protocol import MAX_ACK_BYTES, tp_frame_bytes
+
+    # The TP decoder derives the same command bound from this logical context and media mode.
+    frame_bytes = tp_frame_bytes(context, media=getattr(decoder, "media_runtime", None) is not None
+                                 or getattr(decoder, "vision", None) is not None)
+    header = retention_header_resources(catalog.policy, catalog.world, slots=len(catalog.states),
+                                        frame_bytes=frame_bytes, ack_bytes=MAX_ACK_BYTES)
     sessions = 0 if catalog.policy is None else catalog.policy.max_sessions
     ordinary_children = (json_policy is not None and catalog.policy is None
         and fifo_child_schema is not None and getattr(decoder, "media_runtime", None) is None)
@@ -1477,7 +1489,7 @@ def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_wait
         raise ValueError("FIFO child schema differs from the actual model/tokenizer geometry")
     rpc_python = tp_rpc_python_payload(terms, world=catalog.world, context=context,
         max_pending_requests=max_pending_requests, max_http_body_bytes=body_bytes, json_policy=json_policy,
-        ordinary_fifo_children=ordinary_children)
+        ordinary_fifo_children=ordinary_children, frame_bytes=frame_bytes, ack_bytes=MAX_ACK_BYTES)
     # Replicated Stream state exists on every rank; detok/HTTP are leader-only.
     per_owner = terms["project_payload_bytes"] + (catalog.world - 1) * rpc_python["per_follower_scope_bytes"]
     generation_owners = max_pending_requests
@@ -1500,6 +1512,7 @@ def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_wait
         "header": header,
         "sessions": sessions,
         "rpc_python": rpc_python,
+        "tp_frame_bytes": frame_bytes,
         "generation_owners": generation_owners,
         "input_floor": input_floor,
         "model_cpu": model_cpu,
@@ -1880,7 +1893,7 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         charges any actual encoded excess before publication, so it is not a
         safety bound. rpc_bound(n) >= world*45n also covers the source graph.
         """
-        frame = min(MAX_MESSAGE_BYTES, extent_tokens * token_wire + RPC_FRAME_METADATA_BYTES)
+        frame = min(core["tp_frame_bytes"], extent_tokens * token_wire + RPC_FRAME_METADATA_BYTES)
         return max(rpc_bound(frame), peers * (child_shell + child_string_factor * frame))
 
     def ids_bound(count, entries=0, positions=0, metadata_chars=0, *, reply=False, lexical=False):
