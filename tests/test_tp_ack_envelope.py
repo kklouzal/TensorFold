@@ -42,6 +42,7 @@ def actor(rank, store, status):
     value.failure, value.sequence, value.admission_policy = None, 0, "fifo"
     # The configured command/ACK bounds; tests shrink the transport cap to exercise them cheaply.
     value.frame_bytes = value.ack_bytes = rank_protocol.MAX_MESSAGE_BYTES
+    value.pipes = None                   # the Store protocol (no same-host control pipes)
     value._controls = lambda _execution: {}
     value._execute = lambda *_args: ("completed", None, status)
     def poison(error):
