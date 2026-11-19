@@ -21,6 +21,7 @@ class FakeEngine:
         self.token_bytes = TOKEN
         self.ops = []
         self.snaps = set()
+        self.host_slab = None                        # the tests stub the pinned slab copies
 
     def slot_bytes(self, capacity):
         return capacity * TOKEN
@@ -61,6 +62,12 @@ class Logits:
 
     def cpu(self):
         return self
+
+    def numel(self):                                 # a 262,144-entry FP32 row: 1 MiB in the host tier
+        return 1 << 18
+
+    def element_size(self):
+        return 4
 
     def to(self, *args, **kwargs):
         return self
@@ -169,7 +176,9 @@ def test_live_streams_holding_memory_wait():
 
 def test_host_tier_spills_evicted_chain_and_restores_it(monkeypatch):
     from tensorfold.families.gemma4.sm70 import prefix_host
-    monkeypatch.setattr(prefix_host, "_to_host", lambda tensor: tensor)      # pinned copies need a GPU
+    stored = []
+    monkeypatch.setattr(prefix_host, "_to_slab",                            # pinned copies need a GPU
+                        lambda slab, offset, tensor: stored.append(offset) or tensor)
     e = FakeEngine(budget=2048 * TOKEN + 3 * SNAP)
     o = Owner(e, host=64 << 20)
     a = stream(range(1600))
@@ -181,6 +190,10 @@ def test_host_tier_spills_evicted_chain_and_restores_it(monkeypatch):
     fill(o, b)
     finish(o, b)
     assert o.host_tier.counters["spills"] == 1 and len(o.host_tier.entries) == 1
+    (entry,) = o.host_tier.entries
+    # The exact end's logits sit after the rows and snapshots, inside the entry's own blocks.
+    assert stored and min(stored) >= entry["start"] * prefix_host.BLOCK_BYTES + entry["rows"] * TOKEN + SNAP
+    assert max(stored) + (1 << 20) <= (entry["start"] + entry["blocks"]) * prefix_host.BLOCK_BYTES
     c = stream(list(range(1600)) + [1, 2])           # extends a: its aligned point restored from host
     o.place(c, 2048, True)
     assert c.cached == 1024 and o.prefix_counters["host_hits"] == 1

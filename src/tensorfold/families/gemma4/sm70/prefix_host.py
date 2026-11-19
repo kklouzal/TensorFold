@@ -20,12 +20,15 @@ from .ops import OP_HRESTORE, OP_HSPILL
 BLOCK_BYTES = 1 << 21
 
 
-def _to_host(tensor):
-    """A pinned host copy ordered on the device stream (no synchronization); a restore reads it back on the same
-    stream, after the copy."""
-    import torch
-    out = torch.empty(tensor.shape, dtype=tensor.dtype, pin_memory=True)
-    return out.copy_(tensor, non_blocking=True)
+ALIGN = 256                  # byte alignment of an exact end's logits inside its entry
+
+
+def _to_slab(slab, offset, tensor):
+    """``tensor``'s bytes into the pinned slab at ``offset``, ordered on the device stream (no synchronization); a
+    restore reads them back on the same stream after the copy, and a later spill reusing these blocks writes after
+    that read. Returns the slab view."""
+    size = tensor.numel() * tensor.element_size()
+    return slab[offset:offset + size].view(tensor.dtype).view(tensor.shape).copy_(tensor, non_blocking=True)
 
 
 class HostTier:
@@ -70,7 +73,7 @@ class HostTier:
         st = points[0][1]
         if not st.capacity:
             return
-        sids, metas, rows = [], [], 0
+        sids, metas, rows, heads = [], [], 0, []
         for ids, _st, snap, _tail in points:
             end = snap.get("prompt_end")
             rows = max(rows, len(ids), end["state"]["pos"] if end is not None else 0)
@@ -78,9 +81,17 @@ class HostTier:
                 sids.append(snap["sid"])
             metas.append((list(ids), {"pos": snap["pos"], "snap": sids.index(snap["sid"]), "exact": bool(snap.get("exact")),
                                       "prompt_end": None if end is None else
-                                      {"token": end["token"], "pos": end["state"]["pos"], "head": _to_host(end["head"])}}))
+                                      {"token": end["token"], "pos": end["state"]["pos"], "head": None}}))
+            if end is not None:
+                heads.append((metas[-1][1]["prompt_end"], end["head"]))
         rows = min(rows, st.capacity)
-        need = rows * o.e.token_bytes + len(sids) * o.snap_bytes
+        # Every rank lays out rows then snapshots from the entry's first block (_host_op). Rank 0 alone keeps the exact
+        # ends' last-row logits, after them in the same blocks, so the tier's capacity bounds them too.
+        need = -(-(rows * o.e.token_bytes + len(sids) * o.snap_bytes) // ALIGN) * ALIGN
+        at = []
+        for _meta, head in heads:
+            at.append(need)
+            need += -(-(head.numel() * head.element_size()) // ALIGN) * ALIGN
         k = -(-need // BLOCK_BYTES)
         if k > self.blocks:
             self.counters["spill_skipped"] += 1
@@ -88,6 +99,8 @@ class HostTier:
         start, gone = self._place(k)
         hid, self.next_id = self.next_id, self.next_id + 1
         o.e.announce(OP_HSPILL, hid, st.index, rows, start, [len(sids), *sids, *gone])
+        for (meta, head), offset in zip(heads, at):
+            meta["head"] = _to_slab(o.e.host_slab, start * BLOCK_BYTES + offset, head)
         self.taken[start:start + k] = b"\x01" * k
         self.entries.append({"hid": hid, "points": metas, "rows": rows, "start": start, "blocks": k,
                              "value": o.clock + max(len(ids) for ids, _ in metas), "principal": principal})
