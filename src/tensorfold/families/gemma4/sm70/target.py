@@ -6,7 +6,7 @@ number of streams, use the native W4A16 GEMVs with FP32 activations; prompt forw
 use exact FP16 dequantized weights on cuBLAS tensor cores (FP32 accumulation and output) with
 FP16 activations. Both share the norm, RoPE/KV, routing and attention kernels. The residual stream is FP32.
 Two cross-rank reductions per layer (attention output, [dense | routed] FFN partials): decode rows all-gather
-the FP32 partials and the tail kernels sum them in rank order, or (from BULK_REDUCE_ROWS) take the bitwise-equal
+the FP32 partials and the tail kernels sum them in rank order, or (from BULK_REDUCE_ROWS rows) take the bitwise-equal
 rank-ordered FP32 bulk all-reduce; prompt rows use an FP32 NCCL all-reduce.
 """
 
@@ -30,10 +30,12 @@ EXPERT_MMA_ROWS = 96        # wide rows from which expert-grouped tensor cores b
 # the C1 row-invariant arithmetic. TF_GEMMA_WIDE_ROWS=N enables it for forwards of at least N rows (experts
 # included), e.g. 17 for batches beyond one row tile or 1 to teacher-force a corpus through it at C1.
 WIDE_ROWS = 1 << 30
-# Decode rows from which the cross-rank sums take the rank-ordered FP32 bulk all-reduce (NCCL.all_reduce_rows_f32;
-# bitwise the tails' rank-order sum of the gathered partials) instead of the all-gather. TF_GEMMA_BULK_ROWS=N
-# overrides it (measurement).
-BULK_REDUCE_ROWS = int(os.environ.get("TF_GEMMA_BULK_ROWS", "1"))
+# Decode rows from which each cross-rank sum takes the rank-ordered FP32 bulk all-reduce (NCCL.all_reduce_rows_f32;
+# bitwise the tails' rank-order sum of the gathered partials) instead of the all-gather (small gather up to 256 KiB
+# per rank, else NCCL). In-graph per call on 8x V100-SXM2 (gather vs bulk, us): attention [rows, 2816] 8/12/16/24/40
+# rows 24.7/32.1/40.9/52.5/73.1 vs 31.2/35.1/34.9/39.4/46.1; FFN [rows, 5632] 4/5/6/8/24/40 rows
+# 23.5/28.0/32.2/40.9/75.8/105.7 vs 30.3/27.6/30.9/34.9/50.4/63.4 (the tail also reads one partial instead of 8).
+BULK_REDUCE_ROWS = {"o_parts": 16, "red_parts": 5}
 if os.environ.get("TF_GEMMA_WIDE_ROWS"):
     WIDE_ROWS = max(1, int(os.environ["TF_GEMMA_WIDE_ROWS"]))
     EXPERT_MMA_ROWS = max(WIDE_ROWS, EXPERT_MMA_ROWS) if WIDE_ROWS > DECODE_ROWS else WIDE_ROWS
@@ -316,7 +318,7 @@ class Target:
     def _reduce(self, part, name, prompt):
         # prompt: also wide decode forwards (rank-order identity with the all-gather is not their contract)
         """Cross-rank sum source for a tail kernel: (tensor, world). Decode rows take the rank-ordered FP32 bulk
-        all-reduce from BULK_REDUCE_ROWS where the communicator admits the shape, else all-gather the FP32
+        all-reduce from BULK_REDUCE_ROWS[name] where the communicator admits the shape, else all-gather the FP32
         partials (small-collective path when configured) for the tail to sum in rank order (bitwise the same
         sums); prompt rows all-reduce."""
         if self.comm is None:
@@ -324,9 +326,13 @@ class Target:
         if prompt:
             self.all_reduce(part)
             return part, 1
-        if part.shape[0] >= BULK_REDUCE_ROWS:
+        rows, limit = part.shape[0], BULK_REDUCE_ROWS[name]
+        # The warm-up's widest shapes may all take the bulk path: reserve the gather's largest shape below the
+        # threshold on every decode call, so no narrower captured shape grows (reallocates) it.
+        self._buf(name, (self.world, limit - 1) + tuple(part.shape[1:]))
+        if rows >= limit:
             total = self._buf(name + "_sum", tuple(part.shape))
-            if self.comm.all_reduce_rows_f32(part.view(part.shape[0], -1), total.view(part.shape[0], -1)):
+            if self.comm.all_reduce_rows_f32(part.view(rows, -1), total.view(rows, -1)):
                 return total, 1
         parts = self._buf(name, (self.world,) + tuple(part.shape))
         self.comm.all_gather(part, parts)
