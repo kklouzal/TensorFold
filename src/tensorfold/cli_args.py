@@ -78,7 +78,9 @@ def add_fifo_arguments(parser) -> None:
     parser.add_argument("--output-queue-tokens", type=int, default=None,
                           help="optional positive FIFO output credit per request, including callback delivery in flight; omitted preserves the full-reply mailbox bound")
     parser.add_argument("--queue-timeout-s", type=float, default=None,
-                          help="optional positive FIFO queue deadline in seconds; no timeout is imposed when omitted")
+                          help="optional positive queue deadline in seconds (Flash Next FIFO admission, or Gemma 4 on "
+                               "eight V100s: a request no --parallel lane took by then gets HTTP 503); no timeout is "
+                               "imposed when omitted")
 
 
 def add_retention_arguments(parser: argparse.ArgumentParser) -> None:

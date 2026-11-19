@@ -47,7 +47,8 @@ class Gemma4SM70Engine:
                  context: int | None = None, context_explicit: bool | None = None, drafter: str = "",
                  drafter_bits: int = 16, depth: int | None = None, no_drafts: bool = False, streams: int = 1,
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None, graphs: bool = True,
-                 keep_slots: int | None = None, prefix_host_bytes: int | None = None) -> None:
+                 keep_slots: int | None = None, prefix_host_bytes: int | None = None,
+                 queue_timeout_s: float | None = None) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -175,7 +176,8 @@ class Gemma4SM70Engine:
             from tensorfold.cuda.scheduler import Scheduler
             self.points = resume_points(model_dir, turn=True, template=self.chat_template)
             self.decoder = Decoder(self)
-            self.scheduler = Scheduler(self.decoder, max_streams=streams)
+            # Requests beyond --parallel wait in the scheduler's queue; --queue-timeout-s bounds that wait (503 after).
+            self.scheduler = Scheduler(self.decoder, max_streams=streams, queue_timeout_s=queue_timeout_s)
             try:
                 self.scheduler.start()
             except BaseException as primary:

@@ -487,6 +487,12 @@ def _fifo_options(args, family, backend, config_dir):
               getattr(args, "max_waiting_input_bytes_per_principal", None), getattr(args, "queue_timeout_s", None),
               getattr(args, "output_queue_tokens", None))
     policy = getattr(args, "retention_policy", None)
+    if (backend == "cuda" and getattr(family, "model_type", "") in ("gemma4", "gemma4_text")
+            and getattr(args, "tp", 1) == 8):
+        # Gemma 4 on eight V100s: a bounded wait for a free --parallel lane only (legacy admission).
+        if any(value is not None for i, value in enumerate(bounds) if i != 2) or policy is not None:
+            raise ValueError("Gemma 4 on eight V100s takes --queue-timeout-s only, not FIFO input/output or retention limits")
+        return
     if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
         if any(value is not None for value in bounds) or policy is not None:
             raise ValueError("FIFO input/deadline and retention options require actual adaptive Flash Next unique TP8 GPU histories")

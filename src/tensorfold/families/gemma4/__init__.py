@@ -170,7 +170,8 @@ def check_cuda_prefix_cache_metadata(config, *, flag="--prefix-cache-bytes"):
 
 CUDA_TP8 = True   # --tp 8: the eight-V100 TP8/ETP4 provider (families/gemma4/sm70)
 SM70_OPTIONS = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "eos_token_ids", "chat_template_file",
-                "chat_template_name", "vision", "kv_dtype", "expert_tensor_parallel_size", "graphs", "prefix_host_bytes"}
+                "chat_template_name", "vision", "kv_dtype", "expert_tensor_parallel_size", "graphs", "prefix_host_bytes",
+                "queue_timeout_s"}
 
 
 def _sm70_engine(model_dir, *, drafter, rank, master, master_port, no_drafts, context, **options):
@@ -194,7 +195,7 @@ def _sm70_engine(model_dir, *, drafter, rank, master, master_port, no_drafts, co
                             depth=None if rows is None else rows - 1, streams=options.get("parallel", 1),
                             **{k: options[k] for k in ("context_explicit", "drafter_bits", "eos_token_ids", "graphs",
                                                        "chat_template_file", "chat_template_name",
-                                                       "prefix_host_bytes") if k in options})
+                                                       "prefix_host_bytes", "queue_timeout_s") if k in options})
 
 
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0,

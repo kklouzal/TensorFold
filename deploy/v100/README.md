@@ -338,8 +338,9 @@ GEMMA4_DRAFTER_PATH=/models/.../z-lab--gemma-4-26B-A4B-it-DFlash/snapshots/<rev>
 GEMMA4_TEMPLATE=/path/to/chat-template.jinja docker compose -f deploy/v100/compose.gemma4.yaml up -d
 ```
 
-`GEMMA4_PARALLEL`, `GEMMA4_CONTEXT`, `GEMMA4_DRAFT_ROWS`, `GEMMA4_BIND_ADDRESS` and `GEMMA4_PORT` override the
-defaults. Add `--prefix-host-bytes BYTES` to the command for the opt-in host-RAM prefix tier. Design, memory and
+Requests beyond `--parallel` queue for a free lane; one that no lane took within `--queue-timeout-s` (900 s
+by default) gets HTTP 503 instead of waiting without bound. `GEMMA4_PARALLEL`, `GEMMA4_CONTEXT`,
+`GEMMA4_DRAFT_ROWS`, `GEMMA4_QUEUE_TIMEOUT_S`, `GEMMA4_BIND_ADDRESS` and `GEMMA4_PORT` override the defaults. Add `--prefix-host-bytes BYTES` to the command for the opt-in host-RAM prefix tier. Design, memory and
 measurements: [Gemma 4 recipe](../../docs/recipes/gemma-4.md#eight-v100s-tp8etp4) and
 [concurrent serving](../../docs/gemma4-sm70-concurrency.md). The Compose file is validated with `docker compose
 config`; the trial server itself runs the same arguments from a source snapshot overlay.

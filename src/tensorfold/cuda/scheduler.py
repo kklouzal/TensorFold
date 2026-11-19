@@ -340,8 +340,8 @@ class Scheduler:
         if admission_policy == "fifo" and maximum_bytes is None:
             raise ValueError("FIFO admission requires an explicit max_waiting_input_bytes limit")
         if admission_policy == "legacy" and (maximum_bytes is not None or principal_bytes is not None
-                                            or queue_timeout_s is not None or output_tokens is not None):
-            raise ValueError("waiting-input and queue-timeout limits require FIFO admission")
+                                            or output_tokens is not None):
+            raise ValueError("waiting-input and output-queue limits require FIFO admission")
         self.admission_policy = admission_policy
         self.max_waiting_input_bytes = maximum_bytes
         self.max_waiting_input_bytes_per_principal = principal_bytes
@@ -709,12 +709,26 @@ class Scheduler:
                         self._failure = error
                         rollback(self, error, lambda: finish((self._request_limit.close, self._stop_requests)))
                     raise
+            # Legacy admission's queue deadline (FIFO expires in its own admission pass): a request that no lane took
+            # within queue_timeout_s fails alone with a capacity refusal (HTTP 503); its stream is cancelled, so the
+            # worker retires it when it reaches the queue head, and the caller never waits on a full cohort.
+            deadline = (time.monotonic() + self.queue_timeout_s
+                        if self.admission_policy == "legacy" and self.queue_timeout_s is not None else None)
             while True:
+                wait = TICK_S
+                if deadline is not None and not stream.admitted:
+                    wait = min(wait, max(0.0, deadline - time.monotonic()))
                 try:
-                    kind, value = box.get(timeout=TICK_S)
+                    kind, value = box.get(timeout=wait)
                 except queue.Empty:
                     if not cancel.is_set() and emit([]):
                         self._request_cancel(cancel)  # the client left: retire at the next owned boundary
+                    elif (deadline is not None and not stream.admitted and not cancel.is_set()
+                          and time.monotonic() >= deadline):
+                        stream.error = CapacityError(f"no stream slot freed within the {self.queue_timeout_s:g} s "
+                                                     "queue timeout; retry later")
+                        self._request_cancel(cancel)
+                        raise stream.error
                     continue
                 if kind == "tokens":
                     try:
