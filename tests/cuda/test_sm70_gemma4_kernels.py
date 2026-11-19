@@ -32,7 +32,25 @@ def dequant(codes, scales, rowmul):
 def check(name, got, ref, tol):
     got = got.double().cpu(); ref = ref.double().cpu()
     err = ((got - ref).abs().max() / ref.abs().max().clamp_min(1e-30)).item()
-    assert err < tol, name
+    assert err < tol, f"{name}: relative error {err:.3g} >= {tol}"
+
+def tab(*tensors):
+    """Slot address table (int64 device) of per-slot cache tensors."""
+    return torch.tensor([t.data_ptr() for t in tensors], dtype=torch.int64, device="cuda")
+
+def segs(segments, H):
+    """Native segment table [6, width] for segments [(slot, pos, rows)] laid out consecutively; tiles count."""
+    tiles, row0 = [], 0
+    for g, (_, _, rows) in enumerate(segments):
+        tiles += [(g, r) for r in range(0, rows * H, 16)]
+    width = max(len(segments), len(tiles))
+    t = torch.zeros(6, width, dtype=torch.int32)
+    for g, (slot, pos, rows) in enumerate(segments):
+        t[0, g], t[1, g], t[2, g], t[3, g] = slot, pos, rows, row0
+        row0 += rows
+    for i, (g, r) in enumerate(tiles):
+        t[4, i], t[5, i] = g, r
+    return t.cuda(), len(tiles)
 
 
 
@@ -130,11 +148,13 @@ def test_gemma4_kernels():
             kpos = torch.arange(S, dtype=torch.int32)
         qpos = torch.tensor([pos0 + r // H for r in range(rows * H)])
         R = rows * H; rpad = -(-R // 16) * 16; chunks = S // (64 if R <= 16 else 256)
+        seg, tiles = segs([(0, pos0, rows)], H)
+        kd, vd, pd = k.to(dev), v.to(dev), kpos.to(dev)
         for splits in (1, min(chunks, 7)):
             po = torch.empty(splits, rpad, D, device=dev); pm = torch.empty(splits, rpad, device=dev); pl = torch.empty_like(pm)
             out = torch.empty(R, D, device=dev)
-            ext.attn(q.view(R, D).to(dev), R, H, D, k.to(dev), v.to(dev), kpos.to(dev) if ring else None, S,
-                     torch.tensor([pos0], dtype=torch.int32, device=dev), window, 0, 1.0, chunks, splits, po, pm, pl, rpad, out)
+            ext.attn(q.view(R, D).to(dev), H, D, tab(kd), tab(vd), tab(pd) if ring else None, seg, tiles, R <= 16, S,
+                     window, 0, 1.0, chunks, splits, po, pm, pl, out)
             ref = attn_ref(q.view(R, D), k, v, qpos, kpos, window)
             check(f"attn D{D} rows{rows} len{length} win{window} splits{splits}", out, ref, 3e-3)
     # qkv_prep: compare with torch reference
@@ -145,8 +165,9 @@ def test_gemma4_kernels():
     kc = torch.zeros(2048, D, dtype=torch.float16, device=dev); vc = torch.zeros_like(kc)
     kp = torch.full((2048,), -1, dtype=torch.int32, device=dev)
     qo = torch.empty(M, Hq, D, dtype=torch.float16, device=dev)
-    ext.qkv_prep(x.to(dev), M, Hq, D, 1, qw.to(dev), kw.to(dev), inv.to(dev), torch.tensor([2046], dtype=torch.int32, device=dev),
-                 qo, kc, vc, kp, 2048, 1e-6)
+    ext.qkv_prep(x.to(dev), M, Hq, D, 1, qw.to(dev), kw.to(dev), inv.to(dev),
+                 torch.arange(2046, 2046 + M, dtype=torch.int32, device=dev), torch.zeros(M, dtype=torch.int32, device=dev),
+                 qo, tab(kc), tab(vc), tab(kp), 2048, 1e-6)
     def rope_ref(t, w, pos):
         t = t.double(); t = t / torch.sqrt((t * t).mean(-1, keepdim=True) + 1e-6) * (w.double() if w is not None else 1)
         a, b = t[..., :D // 2], t[..., D // 2:]
@@ -337,11 +358,12 @@ def test_gemma4_dflash_context_kv_bank_and_strided_cache(bits, layers, rows):
         # in the FP32 library GEMM reduction algorithm when output width changes.
         x.zero_()
         x[torch.arange(rows, device=device), torch.arange(rows, device=device) % D] = 1.0
-    projected = draft._linear(x, bank, "kv")
-    original = [draft._linear(x, weight, f"reference-kv{i}") for i, weight in enumerate(tails)]
+    projected = draft._linear(x, bank, "kv", rows > 16)
+    original = [draft._linear(x, weight, f"reference-kv{i}", rows > 16) for i, weight in enumerate(tails)]
     assert torch.equal(projected.view(torch.int32), torch.cat(original, dim=1).view(torch.int32))
     before = projected.clone()
-    pos = torch.tensor([19], dtype=torch.int32, device=device)
+    pos = torch.arange(19, 19 + rows, dtype=torch.int32, device=device)
+    slot = torch.zeros(rows, dtype=torch.int32, device=device)
     inv = (1.0 / (10000 ** (torch.arange(0, d, 2, device=device).float() / d))).contiguous()
     qw = torch.ones(d, dtype=torch.bfloat16, device=device)
     for i in range(layers):
@@ -350,10 +372,10 @@ def test_gemma4_dflash_context_kv_bank_and_strided_cache(bits, layers, rows):
         v = torch.full_like(k, 124.0)
         expected_k, expected_v = k.clone(), v.clone()
         part = projected[:, i * 2 * d:(i + 1) * 2 * d]
-        draft.ext.qkv_prep(part, rows, 0, d, 2, qw, kw, inv, pos, part,
-                           k, v, None, 0, 1e-6)
-        draft.ext.qkv_prep(original[i], rows, 0, d, 2, qw, kw, inv, pos, original[i],
-                           expected_k, expected_v, None, 0, 1e-6)
+        draft.ext.qkv_prep(part, rows, 0, d, 2, qw, kw, inv, pos, slot, part,
+                           tab(k), tab(v), None, 0, 1e-6)
+        draft.ext.qkv_prep(original[i], rows, 0, d, 2, qw, kw, inv, pos, slot, original[i],
+                           tab(expected_k), tab(expected_v), None, 0, 1e-6)
         assert torch.equal(k.view(torch.int16), expected_k.view(torch.int16))
         assert torch.equal(v.view(torch.int16), expected_v.view(torch.int16))
         assert torch.all(k[:19] == 123) and torch.all(k[19 + rows:] == 123)
@@ -414,8 +436,8 @@ def test_gemma4_fused_router_matches_logits_and_routing():
     E, K = 128, 2816
     w = (torch.randn(E, K) * 0.05).bfloat16()
     scale = (torch.rand(E) + 0.5).bfloat16()
-    counter = torch.zeros(1, dtype=torch.int32, device=dev)
-    for M in (1, 5, 16):
+    counter = torch.zeros(4, dtype=torch.int32, device=dev)
+    for M in (1, 5, 16, 40):
         x = torch.randn(M, K)
         logits = torch.empty(M, E, device=dev)
         ids = torch.empty(M, 8, dtype=torch.int32, device=dev)
@@ -430,4 +452,120 @@ def test_gemma4_fused_router_matches_logits_and_routing():
         assert torch.equal(ids.cpu().long(), ti)
         check(f"router weights M{M}", wv, tv / tv.sum(-1, keepdim=True) * scale.double()[ti], 1e-6)
         assert torch.equal(loc.cpu(), torch.where(ti >= 64, ti - 64, -1).int())
-        assert int(counter.item()) == 0
+        assert int(counter.abs().sum().item()) == 0
+
+
+@pytest.mark.parametrize("rows", [17, 33, 160])
+def test_gemma4_row_tiles_equal_sixteen_row_calls(rows):
+    """Calls over 16 rows run 16-row tiles on grid.y with each row's arithmetic unchanged (bitwise)."""
+    from tensorfold.cuda.sm70.gemma4_native import extension
+    ext = extension()
+    dev = torch.device("cuda")
+    torch.manual_seed(7)
+    for N, K, geglu in [(1024, 2816, False), (2816, 512, False), (272, 2816, True), (2816, 272, False)]:
+        codes, scales, rowmul = (t.to(dev) for t in rand_packed(2 * N if geglu else N, K))
+        x = torch.randn(rows, K, device=dev)
+        whole = torch.empty(rows, N, device=dev)
+        ext.w4_rows(x, rows, codes, scales, rowmul, N, K, whole, N, geglu)
+        for r0 in range(0, rows, 16):
+            m = min(16, rows - r0)
+            part = torch.empty(m, N, device=dev)
+            ext.w4_rows(x[r0:r0 + m], m, codes, scales, rowmul, N, K, part, N, geglu)
+            assert torch.equal(whole[r0:r0 + m].view(torch.int32), part.view(torch.int32))
+    w = (torch.randn(3000, 2816, device=dev) * 0.05).bfloat16()
+    q8 = torch.randint(-127, 128, (1408, 2816), dtype=torch.int8, device=dev); sc = torch.rand(1408, device=dev) * 1e-2
+    x = torch.randn(rows, 2816, device=dev)
+    for name, call, N in [("bf16", lambda xx, m, o: ext.bf16_rows(xx, m, w, 3000, 2816, o, 3000, 30.0), 3000),
+                          ("i8", lambda xx, m, o: ext.i8_rows(xx, m, q8, sc, 1408, 2816, o, 1408, 0.0), 1408)]:
+        whole = torch.empty(rows, N, device=dev)
+        call(x, rows, whole)
+        for r0 in range(0, rows, 16):
+            m = min(16, rows - r0)
+            part = torch.empty(m, N, device=dev)
+            call(x[r0:r0 + m].contiguous(), m, part)
+            assert torch.equal(whole[r0:r0 + m].view(torch.int32), part.view(torch.int32)), name
+
+
+@pytest.mark.parametrize("D,n,ring", [(512, 1, 0), (512, 5, 0), (256, 5, 2048), (128, 5, 0), (256, 300, 2048)])
+def test_gemma4_attention_segments_equal_single_stream_calls(D, n, ring):
+    """Several streams' segments (own slots/positions) in one launch equal each stream's own launch (bitwise)."""
+    from tensorfold.cuda.sm70.gemma4_native import extension
+    ext = extension()
+    dev = torch.device("cuda")
+    torch.manual_seed(11)
+    H = 4 if D == 128 else 2
+    lengths = [700, 3000, 64, 1500]
+    S = ring or 3072
+    ks = [(torch.randn(S, D, device=dev) * 0.2).half() for _ in lengths]
+    vs = [torch.randn(S, D, device=dev).half() for _ in lengths]
+    ps = []
+    for L in lengths:
+        kpos = torch.full((S,), -1, dtype=torch.int32, device=dev)
+        if ring:
+            for p_ in range(max(0, L + n - ring), L + n):
+                kpos[p_ % ring] = p_
+        ps.append(kpos)
+    q = torch.randn(len(lengths) * n, H, D, device=dev).half()
+    small = n * H <= 16
+    chunks = S // (64 if small else 256)
+    splits = min(chunks, 9)
+    window = 1024 if ring else 0
+    segments = [(g, L, n) for g, L in enumerate(lengths)]
+    seg, tiles = segs(segments, H)
+    po = torch.empty(splits, tiles * 16, D, device=dev); pm = torch.empty(splits, tiles * 16, device=dev)
+    pl = torch.empty_like(pm)
+    out = torch.empty(len(lengths) * n * H, D, device=dev)
+    ext.attn(q.view(-1, D), H, D, tab(*ks), tab(*vs), tab(*ps) if ring else None, seg, tiles, small, S, window,
+             0, 1.0, chunks, splits, po, pm, pl, out)
+    for g, L in enumerate(lengths):
+        one, t1 = segs([(0, L, n)], H)
+        po1 = torch.empty(splits, t1 * 16, D, device=dev); pm1 = torch.empty(splits, t1 * 16, device=dev)
+        pl1 = torch.empty_like(pm1)
+        ref = torch.empty(n * H, D, device=dev)
+        ext.attn(q[g * n:(g + 1) * n].reshape(-1, D).contiguous(), H, D, tab(ks[g]), tab(vs[g]),
+                 tab(ps[g]) if ring else None, one, t1, small, S, window, 0, 1.0, chunks, splits, po1, pm1, pl1, ref)
+        assert torch.equal(out[g * n * H:(g + 1) * n * H].view(torch.int32), ref.view(torch.int32))
+
+
+@pytest.mark.parametrize("rows", [17, 37, 160])
+def test_gemma4_wide_mma_matches_fp64(rows):
+    """Wide decode tensor-core projections (hi/lo FP16 activations, exact FP16 weights, FP32 accumulation) and the
+    expert-grouped MoE agree with FP64 references of the same contracts to FP32-level relative error."""
+    from tensorfold.cuda.sm70.gemma4_native import extension
+    ext = extension()
+    dev = torch.device("cuda")
+    torch.manual_seed(5)
+    xh = torch.empty(rows * 2816, dtype=torch.float16, device=dev); xl = torch.empty_like(xh)
+    part = torch.empty(rows * 8 * 2 * 2816, device=dev)
+    for N, K, geglu in [(1024, 2816, False), (2816, 512, False), (272, 2816, True), (2816, 272, False), (40, 176, False)]:
+        codes, scales, rowmul = rand_packed(2 * N if geglu else N, K)
+        x = torch.randn(rows, K)
+        out = torch.full((rows, N + 3), 7.0, device=dev)
+        ext.w4_mma(x.to(dev), rows, codes.to(dev), scales.to(dev), rowmul.to(dev), N, K, out, N + 3, geglu, xh, xl, part)
+        y = x.double() @ dequant(codes, scales, rowmul).T
+        ref = torch.nn.functional.gelu(y[:, :N], approximate="tanh") * y[:, N:] if geglu else y
+        check(f"w4_mma N{N} K{K} geglu{geglu}", out[:, :N], ref, 2e-6)
+        assert torch.all(out[:, N:].cpu() == 7.0)
+    E, W, D, S = 64, 176, 2816, 8
+    gu = [rand_packed(2 * W, D) for _ in range(E)]; dn = [rand_packed(D, W) for _ in range(E)]
+    st = lambda parts, i: torch.stack([p[i] for p in parts]).to(dev).contiguous()
+    ids = torch.stack([torch.randperm(128)[:8] for _ in range(rows)])
+    ids[: rows // 2, 0] = 70                                  # one crowded expert
+    local = torch.where(ids >= 64, ids - 64, -1).int()
+    wts = torch.rand(rows, S)
+    x = torch.randn(rows, D)
+    out = torch.full((rows, 2 * D), 7.0, device=dev)
+    ext.w4_experts_mma(x.to(dev), rows, S, local.to(dev), wts.to(dev), st(gu, 0), st(gu, 1), st(gu, 2), st(dn, 0),
+                       st(dn, 1), st(dn, 2), E, W, D, torch.empty(E, dtype=torch.int32, device=dev),
+                       torch.empty(E, rows, dtype=torch.int32, device=dev), torch.empty(rows * S, W, device=dev),
+                       torch.empty(rows * S, D, device=dev), out[:, D:], 2 * D, xh, xl, part)
+    ref = torch.zeros(rows, D, dtype=torch.float64)
+    for m in range(rows):
+        for s_ in range(S):
+            e = int(local[m, s_])
+            if e < 0: continue
+            y = x[m].double() @ dequant(*gu[e]).T
+            a = torch.nn.functional.gelu(y[:W], approximate="tanh") * y[W:]
+            ref[m] += wts[m, s_].double() * (a @ dequant(*dn[e]).T)
+    check("experts mma", out[:, D:], ref, 2e-6)
+    assert torch.all(out[:, :D].cpu() == 7.0)

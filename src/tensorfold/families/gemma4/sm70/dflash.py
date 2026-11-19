@@ -2,8 +2,11 @@
 
 TP8 layout: fc output rows 352 per rank (all-gathered), 4 query heads + KV head r per layer, MLP 704 rows per
 rank; o_proj/down row-parallel with FP32 all-reduce. Original BF16 weights (decode GEMV reads BF16 directly;
-prompt rows use FP32 copies). Context K/V of accepted target taps live in linear per-layer caches; a proposal
-block (anchor + mask rows) writes its own K/V beyond the committed length, which later commits overwrite.
+prompt rows use FP32 copies). Context K/V of target taps live in per-slot caches (sliding layers: rings of
+RING rows with ring positions; full layers: linear, attached per admitted stream). A proposal block (anchor +
+mask rows) writes its own K/V at the positions it covers; the verify's taps of those same positions then
+replace them (every verified row, accepted or not: later blocks start inside that range and rewrite the rest
+before any read), so no round carries pending state.
 The companion receives raw (unscaled) target embeddings and the target's softcapped head (official contract).
 Proposals are verified by the target, so this arithmetic never changes the reply law.
 """
@@ -15,11 +18,14 @@ from pathlib import Path
 import torch
 
 from ..dflash_metadata import checked_headers
-from .target import CHUNK, DECODE_ROWS
+from .target import DECODE_ROWS, PROMPT_ROWS
+
+RING = 3072     # sliding drafter layers: window (2048) + PROMPT_ROWS, a multiple of the 256-key chunk: a prompt
+#                 chunk containing a kept point leaves the window behind it in the ring (prefix snapshots)
 
 
 class DFlash:
-    def __init__(self, draft_dir, target, *, context: int, block: int, bits: int = 8):
+    def __init__(self, draft_dir, target, *, context: int, block: int, bits: int = 8, slots: int = 1):
         from tensorfold.cuda.direct_read import SafeTensors
         from tensorfold.tensor_file import checkpoint_path
 
@@ -94,12 +100,30 @@ class DFlash:
         self.context_kv = self._pack_context_kv()
         exponent = torch.arange(0, d, 2, dtype=torch.int64).float() / d
         self.inv_freq = (1.0 / (cfg.rope.theta ** exponent)).to(dev).contiguous()
-        alloc = -(-(context + DECODE_ROWS) // CHUNK) * CHUNK
-        self.k = [torch.zeros((alloc, d), dtype=torch.float16, device=dev) for _ in self.layers]
-        self.v = [torch.zeros((alloc, d), dtype=torch.float16, device=dev) for _ in self.layers]
-        self.alloc = alloc
-        self.length = 0
-        self.pos = torch.zeros(1, dtype=torch.int32, device=dev)
+        if any(layer["sliding"] and cfg.sliding_window + max(block, PROMPT_ROWS) > RING for layer in self.layers):
+            raise ValueError("Gemma DFlash sliding window exceeds its ring")
+        self.alloc = target.alloc
+        self.slots = slots
+        # per layer: (k, v, positions) ring views [slots, RING, d] of stacked sliding tensors, or None (full layers,
+        # attached per slot)
+        sliding = [layer["sliding"] for layer in self.layers]
+        self.ring_k = torch.zeros((sum(sliding), slots, RING, d), dtype=torch.float16, device=dev)
+        self.ring_v = torch.zeros_like(self.ring_k)
+        self.ring_p = torch.full((sum(sliding), slots, RING), -1, dtype=torch.int32, device=dev)
+        self.window = cfg.sliding_window
+        self.rings, j = [], 0
+        for flag in sliding:
+            self.rings.append((self.ring_k[j], self.ring_v[j], self.ring_p[j]) if flag else None)
+            j += flag
+        self.k_tab = torch.zeros((len(self.layers), slots), dtype=torch.int64, device=dev)
+        self.v_tab = torch.zeros_like(self.k_tab)
+        self.p_tab = torch.zeros_like(self.k_tab)
+        for i, ring in enumerate(self.rings):
+            if ring is not None:
+                for s in range(slots):
+                    self.k_tab[i, s], self.v_tab[i, s], self.p_tab[i, s] = (ring[0][s].data_ptr(),
+                                                                         ring[1][s].data_ptr(), ring[2][s].data_ptr())
+        self.full = [None] * slots
         self.mask_id = cfg.mask_id
         self._f32 = {}
 
@@ -133,9 +157,55 @@ class DFlash:
             t = self._f32[key] = (w[0] * w[1][:, None]) if isinstance(w, tuple) else w.float()
         return t
 
-    def _linear(self, x, w, key):
+    def token_bytes(self) -> int:
+        """Linear (full-attention) cache bytes one token position adds to a slot."""
+        return sum(ring is None for ring in self.rings) * 2 * self.d * 2
+
+    def snapshot_bytes(self) -> int:
+        return self.ring_k.shape[0] * (self.window + 1) * self.d * 2 * 2
+
+    def _bind(self, slot, t):
+        self.full[slot] = t
+        for j, i in enumerate(i for i, ring in enumerate(self.rings) if ring is None):
+            self.k_tab[i, slot], self.v_tab[i, slot] = t[j, 0].data_ptr(), t[j, 1].data_ptr()
+
+    def attach(self, slot: int, capacity: int):
+        full = sum(ring is None for ring in self.rings)
+        self._bind(slot, torch.zeros((full, 2, capacity, self.d), dtype=torch.float16, device=self.device))
+        self.ring_p[:, slot].fill_(-1)
+
+    def grow(self, slot: int, capacity: int, rows: int):
+        old = self.full[slot]
+        t = torch.zeros((old.shape[0], 2, capacity, self.d), dtype=torch.float16, device=self.device)
+        t[:, :, :rows].copy_(old[:, :, :rows])
+        self._bind(slot, t)
+
+    def detach(self, slot: int):
+        for i, ring in enumerate(self.rings):
+            if ring is None:
+                self.k_tab[i, slot] = self.v_tab[i, slot] = 0
+        self.full[slot] = None
+
+    def copy_rows(self, src: int, dst: int, rows: int):
+        self.full[dst][:, :, :rows].copy_(self.full[src][:, :, :rows])
+
+    def snapshot(self, slot: int, pos: int):
+        lo = max(0, pos - self.window - 1)
+        index = torch.arange(lo, pos, device=self.device) % RING
+        return (lo, pos, self.ring_k[:, slot].index_select(1, index), self.ring_v[:, slot].index_select(1, index))
+
+    def restore(self, slot: int, snap):
+        lo, pos, k, v = snap
+        at = torch.arange(lo, pos, device=self.device)
+        index = at % RING
+        self.ring_k[:, slot].index_copy_(1, index, k)
+        self.ring_v[:, slot].index_copy_(1, index, v)
+        self.ring_p[:, slot].fill_(-1)
+        self.ring_p[:, slot].index_copy_(1, index, at.to(torch.int32).expand(self.ring_p.shape[0], -1).contiguous())
+
+    def _linear(self, x, w, key, prompt=False):
         rows = x.shape[0]
-        if rows <= DECODE_ROWS:
+        if not prompt and rows <= DECODE_ROWS:
             n, k = w[0].shape if isinstance(w, tuple) else w.shape
             out = torch.empty((rows, n), dtype=torch.float32, device=self.device)
             if isinstance(w, tuple):
@@ -145,9 +215,9 @@ class DFlash:
             return out
         return torch.mm(x, self._w32(key, w).t())
 
-    def _reduce(self, part, name):
+    def _reduce(self, part, name, prompt=False):
         """Cross-rank sum of a row-parallel partial: decode rows all-gather (small-collective path) and sum."""
-        if part.shape[0] > DECODE_ROWS:
+        if prompt or part.shape[0] > DECODE_ROWS:
             self.t.all_reduce(part)
             return part
         parts = self.t._buf(name, (self.t.world,) + tuple(part.shape))
@@ -159,81 +229,64 @@ class DFlash:
         self.ext.rms(x, x.shape[0], w, x.shape[1], self.cfg.eps, 1.0, out)
         return out
 
-    def reset(self):
-        self.length = 0
-
     # ------------------------------------------------------------------------------------------- context
     @torch.inference_mode()
-    def append(self, taps: torch.Tensor, start: int, *, pos: torch.Tensor | None = None):
-        """Commit target taps [rows, 6, hidden] (FP32) for positions start..start+rows-1.
-
-        ``pos`` (CUDA graphs): a device int32[1] the caller sets to ``start`` before each replay."""
+    def append(self, taps: torch.Tensor, lay, *, prompt: bool = False):
+        """Commit target taps [rows, 6, hidden] (FP32) at the layout's slots/positions (``prompt`` or more than
+        DECODE_ROWS rows: FP32 library GEMMs and an all-reduce; otherwise the row-invariant GEMVs)."""
         rows = taps.shape[0]
-        if rows == 0:
-            return
-        if start + rows > self.alloc - DECODE_ROWS:
-            raise ValueError("DFlash context exceeds its admitted cache")
         flat = taps.reshape(rows, -1)
-        local = self._linear(flat, self.fc, "fc")
+        local = self._linear(flat, self.fc, "fc", prompt)
         gathered = torch.empty((self.t.world, rows, self.fc_rows), dtype=torch.float32, device=self.device)
         self.t.comm.all_gather(local.contiguous(), gathered)
         ctx = self._rms(gathered.permute(1, 0, 2).reshape(rows, -1).contiguous(), self.hidden_norm)
-        if pos is None:
-            pos = self.pos
-            pos.fill_(start)
         d = self.d
-        projected = self._linear(ctx, self.context_kv, "kv")
+        projected = self._linear(ctx, self.context_kv, "kv", prompt)
         for i, layer in enumerate(self.layers):
             # qkv_prep reads the actual row stride. Hq0 writes only K/V caches,
             # so this slice can also serve as its unused qout without materializing it.
             kv = projected[:, i * 2 * d:(i + 1) * 2 * d]
-            self.ext.qkv_prep(kv, rows, 0, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, pos, kv,
-                              self.k[i], self.v[i], None, 0, self.cfg.eps)
-        self.length = start + rows
+            ring = self.rings[i]
+            self.ext.qkv_prep(kv, rows, 0, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, lay.row_pos,
+                              lay.row_slot, kv, self.k_tab[i], self.v_tab[i],
+                              None if ring is None else self.p_tab[i], 0 if ring is None else RING, self.cfg.eps)
 
     # ------------------------------------------------------------------------------------------- proposals
     @torch.inference_mode()
-    def logits(self, anchor, count: int, *, pos: torch.Tensor | None = None):
-        """This rank's softcapped head shard [n, shard] for block rows 1..n (n = min(count, block - 1)).
+    def logits(self, ids, lay):
+        """This rank's softcapped head shard [segments * (block - 1), shard] for block rows 1.. of every segment.
 
-        CUDA graphs: ``anchor`` is a device int64[1] and ``pos`` a device int32[1] (the committed length) set
-        before each replay; attention then spans the whole allocated cache (later keys are masked)."""
-        n = min(count, self.block - 1)
-        staged = pos is not None
-        if n < 1 or (not staged and self.length == 0):
-            return None
-        rows = n + 1
+        ``ids``: device int64 [segments * block] (anchor, then mask ids, per segment); ``lay``: block-row segments
+        at each stream's committed length (uploaded). Attention spans the largest capacity (later keys masked)."""
         cfg, ext, H, d = self.cfg, self.ext, self.heads, self.d
-        ids = torch.full((rows,), self.mask_id, dtype=torch.int64, device=self.device)
-        if staged:
-            ids[0:1].copy_(anchor)
-        else:
-            ids[0] = anchor
-            pos = self.pos
-            pos.fill_(self.length)
+        rows, n = lay.rows, lay.n
         x = torch.empty((rows, cfg.hidden), dtype=torch.float32, device=self.device)
         ext.embed(ids, rows, self.t.w.embed, cfg.hidden, 1.0, x)
-        slots = self.alloc if staged else -(-(self.length + rows) // CHUNK) * CHUNK
         for i, layer in enumerate(self.layers):
+            ring = self.rings[i]
             h = self._rms(x, layer["in_norm"])
             qkv = self._linear(h, layer["qkv"], f"qkv{i}")
             q = torch.empty((rows, H, d), dtype=torch.float16, device=self.device)
-            ext.qkv_prep(qkv, rows, H, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, pos, q,
-                         self.k[i], self.v[i], None, 0, cfg.eps)
+            ext.qkv_prep(qkv, rows, H, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, lay.row_pos,
+                         lay.row_slot, q, self.k_tab[i], self.v_tab[i], None if ring is None else self.p_tab[i],
+                         0 if ring is None else RING, cfg.eps)
             att = torch.empty((rows, H * d), dtype=torch.float32, device=self.device)
-            self.t._attention(q, rows, H, d, self.k[i], self.v[i], None, slots,
-                              cfg.sliding_window if layer["sliding"] else 0, att, noncausal=not layer["causal"],
-                              pos=pos, scale=d ** -0.5)
+            self.t._attention(q, lay, H, d, self.k_tab[i], self.v_tab[i], None if ring is None else self.p_tab[i],
+                              self.alloc if ring is None else RING, cfg.sliding_window if layer["sliding"] else 0,
+                              att, noncausal=not layer["causal"], scale=d ** -0.5)
             x = x + self._reduce(self._linear(att, layer["o"], f"o{i}"), "dflash_o")
             h = self._rms(x, layer["post_norm"])
             gu = self._linear(h, layer["gate_up"], f"gu{i}")
             act = torch.nn.functional.silu(gu[:, :self.width]) * gu[:, self.width:]
             x = x + self._reduce(self._linear(act.contiguous(), layer["down"], f"down{i}"), "dflash_down")
-        h = self._rms(x[1:].contiguous(), self.norm)
-        out = torch.empty((n, self.t.shard), dtype=torch.float32, device=self.device)
-        if self.bits == 8:
-            ext.i8_rows(h, n, self.head8[0], self.head8[1], self.t.shard, cfg.hidden, out, self.t.shard,
+        m = lay.count * (n - 1)
+        h = self._rms(x.view(lay.count, n, -1)[:, 1:].reshape(m, -1), self.norm)
+        out = torch.empty((m, self.t.shard), dtype=torch.float32, device=self.device)
+        if m > DECODE_ROWS:             # wide proposal blocks: the target's tensor-core head (original BF16 values)
+            self.t.head_wide(h, out, self.t.c.softcap)
+        elif self.bits == 8:
+            ext.i8_rows(h, m, self.head8[0], self.head8[1], self.t.shard, cfg.hidden, out, self.t.shard,
                         self.t.c.softcap)
         else:
-            ext.bf16_rows(h, n, self.t.w.head, self.t.shard, cfg.hidden, out, self.t.shard, self.t.c.softcap)
+            ext.bf16_rows(h, m, self.t.w.head, self.t.shard, cfg.hidden, out, self.t.shard, self.t.c.softcap)
         return out

@@ -1,133 +1,121 @@
-"""CUDA graphs for Gemma 4 SM70 decode and DFlash rounds, captured identically on every rank at startup.
+"""Batched decode shapes for Gemma 4 SM70: serial steps and DFlash rounds over B streams, eager or CUDA graphs.
 
-One graph per shape: serial decode (one row) and, with DFlash, one round graph per previously committed
-row count c in 0..block (append c accepted taps, propose block - 1 rows greedily, verify the block). Inputs
-arrive through one pinned staging vector copied to the device before each replay: [start, anchor,
-previous start]. Graphs read positions from device memory, and full-attention grids cover the allocated
-context, so a graph serves every position. Outputs (gathered logits, proposals) are graph-owned static
-buffers, valid until the next replay.
+A shape (mode, B) owns a Layout of B segments (one per stream, padded with the pad slot), its staged token
+inputs and its outputs. Serial: one row per stream (its last token); serial-taps also appends the row's taps
+to the drafter (drafting requests that take a serial round).
+Round: the drafter proposes block - 1 rows per stream (greedy, all-gathered argmax), the target verifies
+[anchor, proposals] and the drafter appends every verified row's taps (positions a later block rewrites before
+reading them). Both leave no pending state, so a stream may switch modes between rounds. Outputs: per verify
+row the all-gathered shard maxima (value, global index, NaN/+inf flag) [world, rows, 3]; the proposals; and
+the local logit shard for requests that need complete rows (gathered after the replay).
+
+Graphs are captured identically on every rank at startup (the bodies contain collectives) in one shared pool,
+after an eager warm-up has grown every scratch buffer to its largest shape. Slots and positions arrive through
+the layout's device tables, so one graph per shape serves every stream and position.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
+from .target import Layout
 
-class Graphs:
-    def __init__(self, engine):
-        self.e = engine
+MODE_SERIAL, MODE_ROUND, MODE_SERIAL_TAPS = 1, 2, 3     # TAPS: serial steps that keep the drafter context
+BUCKETS = (1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 28, 32)
+
+
+def buckets(streams: int) -> tuple[int, ...]:
+    """Batch sizes with a shape: the bucket ladder up to ``streams``, and ``streams`` itself."""
+    return tuple(sorted({b for b in BUCKETS if b < streams} | {streams}))
+
+
+class Shape:
+    def __init__(self, engine, mode: int, count: int):
         t = engine.target
-        dev = t.device
-        self.stage_host = torch.zeros(4, dtype=torch.int64, pin_memory=True)
-        self.stage = torch.zeros(4, dtype=torch.int64, device=dev)
-        self.pos = torch.zeros(1, dtype=torch.int32, device=dev)          # target start
-        self.prev_pos = torch.zeros(1, dtype=torch.int32, device=dev)     # previous verify start (append)
-        self.ids = torch.zeros(16, dtype=torch.int64, device=dev)
-        self.pool = torch.cuda.graph_pool_handle()
-        self.serial = None
-        self.rounds = {}
-        self.serial_logits = None
-        self.round_out = {}
+        self.e, self.mode, self.count = engine, mode, count
+        self.n = engine.block if mode == MODE_ROUND else 1
+        heads = (2, engine.head.heads) if engine.head is not None else (2,)
+        self.lay = Layout(t.device, self.n, count, heads)
+        rows = self.lay.rows
+        self.ids_host = np.zeros(rows, dtype=np.int32)
+        self.ids = torch.zeros(rows, dtype=torch.int64, device=t.device)
+        if mode == MODE_ROUND:
+            self.ids_host.fill(engine.head.mask_id)
+            self.verify = torch.zeros(rows, dtype=torch.int64, device=t.device)
+            index = torch.arange(rows, device=t.device)
+            self.proposal_rows = index[index % self.n != 0].contiguous()
+            m = count * (self.n - 1)
+            self.prop_arange = torch.arange(m, device=t.device)
+        self.row_arange = torch.arange(rows, device=t.device)
+        # Plain serial shapes of one row tile (the sampled/grammar/penalty path) also gather every row's complete
+        # vocabulary inside the graph, as the C1 engine did: no eager collective after the replay.
+        self.gather_all = mode == MODE_SERIAL and rows <= 16
+        self.full_rows = None
+        self.graph = None
+        self.out = None
+        self.local = None
 
-    def _stage(self, start, anchor, previous):
-        h = self.stage_host
-        h[0], h[1], h[2] = start, anchor, previous
-        self.stage.copy_(h, non_blocking=True)
+    def stage(self, slots, positions, anchors):
+        self.ids_host[0::self.n] = anchors
+        self.lay.stage(slots, positions, self.ids_host)
+        self.lay.upload()
 
-    def _copy_inputs(self, *, previous=False):
-        # Capture these device copies with their consumers. The target and drafter
-        # both read the same start position; neither mutates this input buffer.
-        self.pos.copy_(self.stage[0:1])
-        if previous:
-            self.prev_pos.copy_(self.stage[2:3])
-        self.ids[0:1].copy_(self.stage[1:2])
-
-    def _serial_body(self):
-        self._copy_inputs()
-        e, t = self.e, self.e.target
-        st = e._state
-        st.pos = self.pos
-        local, _ = t.forward(self.ids[:1], st, logits="all", taps=False, staged=True)
-        return e._gathered(local)
-
-    def _round_body(self, committed):
-        self._copy_inputs(previous=bool(committed))
-        e, t, head = self.e, self.e.target, self.e.head
-        st = e._state
-        st.pos = self.pos
-        if committed:
-            head.append(e._taps[:committed], 0, pos=self.prev_pos)
-        local = head.logits(self.stage[1:2], head.block - 1, pos=self.pos)
-        n = local.shape[0]
+    def _compact(self, local):
+        t = self.e.target
         values, index = local.max(dim=-1)
-        packed = torch.stack([values, (index + t.rank * t.shard).float()], -1).contiguous()
-        recv = torch.empty((t.world, n, 2), dtype=torch.float32, device=t.device)
+        bad = (torch.isnan(local) | torch.isposinf(local)).any(dim=-1)
+        packed = torch.stack([values, (index + t.rank * t.shard).float(), bad.float()], -1).contiguous()
+        recv = torch.empty((t.world,) + tuple(packed.shape), dtype=torch.float32, device=t.device)
         t.comm.all_gather(packed, recv)
-        best = recv[:, :, 0].argmax(dim=0)
-        proposals = recv[best, torch.arange(n, device=t.device), 1].long()
-        self.ids[1:n + 1].copy_(proposals)
-        logits, taps = t.forward(self.ids[:n + 1], st, logits="all", taps=True, staged=True)
-        e._taps = taps
-        return e._gathered(logits), proposals
+        return recv
 
-    def _capture(self, body):
-        st = self.e._state
-        length = st.length
+    def body(self):
+        t, head = self.e.target, self.e.head
+        self.ids.copy_(self.lay.ids32)          # staged int32 ids -> the embedding's int64 (captured)
+        if self.mode != MODE_ROUND:
+            append = self.mode == MODE_SERIAL_TAPS
+            local, taps = t.forward(self.ids, self.lay, prompt=False, logits="all", taps=append)
+            if append:
+                head.append(taps, self.lay)
+            self.local = local
+            if self.gather_all:                  # complete rows replace the compact maxima
+                recv = torch.empty((t.world,) + tuple(local.shape), dtype=torch.float32, device=t.device)
+                t.comm.all_gather(local, recv)
+                self.full_rows = recv.permute(1, 0, 2).reshape(local.shape[0], -1)
+                return None, None
+            return self._compact(local), None
+        drafted = head.logits(self.ids, self.lay)
+        m = drafted.shape[0]
+        values, index = drafted.max(dim=-1)
+        packed = torch.stack([values, (index + t.rank * t.shard).float()], -1).contiguous()
+        recv = torch.empty((t.world, m, 2), dtype=torch.float32, device=t.device)
+        t.comm.all_gather(packed, recv)
+        best = recv[:, :, 0].argmax(dim=0)          # first (lowest) rank among equal maxima
+        proposals = recv[best, self.prop_arange, 1].long()
+        self.verify.copy_(self.ids)
+        self.verify.index_copy_(0, self.proposal_rows, proposals)
+        local, taps = t.forward(self.verify, self.lay, prompt=False, logits="all", taps=True)
+        head.append(taps, self.lay)
+        self.local = local
+        return self._compact(local), proposals
+
+    def run(self):
+        """Execute the staged shape: (compact [world, rows, 3], proposals or None) on device."""
+        if self.graph is not None:
+            self.graph.replay()
+            return self.out
+        return self.body()
+
+    def capture(self, pool):
         stream = torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
             for _ in range(2):          # warm allocations/kernels outside capture
-                st.length = length
-                out = body()
+                self.body()
         torch.cuda.current_stream().wait_stream(stream)
         graph = torch.cuda.CUDAGraph()
-        st.length = length
-        with torch.cuda.graph(graph, pool=self.pool, stream=stream):
-            out = body()
+        with torch.cuda.graph(graph, pool=pool, stream=stream):
+            self.out = self.body()
         torch.cuda.current_stream().wait_stream(stream)
-        st.length = length
-        return graph, out
-
-    @torch.inference_mode()
-    def capture(self):
-        """Every rank captures in the same order (the bodies contain collectives).
-
-        Round graphs (block target rows) are captured before the one-row serial graph: decode-only target
-        scratch (FP32 projections/activations, gathered partials) is first created by these bodies and grows
-        with the row count, and a buffer reallocated after a graph captured its address would leave that
-        graph writing freed memory."""
-        e = self.e
-        st = e._state
-        saved_pos = st.pos
-        try:
-            st.length = 0
-            self._stage(0, 0, 0)
-            if e.head is not None:
-                e.head.length = 1
-                for c in range(e.head.block + 1):
-                    graph, out = self._capture(lambda c=c: self._round_body(c))
-                    self.rounds[c] = graph
-                    self.round_out[c] = out
-            self.serial, self.serial_logits = self._capture(self._serial_body)
-        finally:
-            st.pos = saved_pos
-            st.reset()
-            if e.head is not None:
-                e.head.reset()
-        torch.cuda.synchronize()
-
-    def run_serial(self, start, token):
-        st = self.e._state
-        self._stage(start, token, 0)
-        self.serial.replay()
-        st.length = start + 1
-        return self.serial_logits
-
-    def run_round(self, start, anchor, previous, committed):
-        st, head = self.e._state, self.e.head
-        self._stage(start, anchor, previous)
-        self.rounds[committed].replay()
-        st.length = start + head.block
-        head.length = start
-        logits, proposals = self.round_out[committed]
-        return logits, proposals
+        self.graph = graph

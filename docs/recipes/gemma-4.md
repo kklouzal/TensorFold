@@ -101,9 +101,18 @@ scored with the server session as the unit, `--draft-rows 3` decoded 3.8% faster
 identical replies and no prefill regression, and 0.5% faster than 4; 4 rows decoded 3.3% faster than 5 but one
 4K prefill cell scored 1.3% slower, and 2 rows were slower (see the
 [README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)). Greedy requests draft; sampled requests and requests with grammar
-constraints or penalties currently decode serially. `--no-graphs` selects eager execution. Startup captures
-one serial and one DFlash round graph per previously accepted row count. Refused on this provider:
-`--vision`, `--parallel` above 1, `--kv-dtype` other than the FP16 default, and the GB10-only options
+constraints or penalties currently decode serially. `--no-graphs` selects eager execution.
+
+`--parallel N` (1-32) serves up to N requests together through the shared CUDA scheduler: prompts prefill in
+fixed 1,024-row chunks, round-robin across waiting prompts, with one batched decode round (all decoding
+streams, padded to a graph bucket) between chunks. Startup captures a serial, a serial-with-drafter-taps and a
+DFlash round graph per bucket (1, 2, 3, 4, 6, 8, 12, ... up to N) and prints the per-rank KV budget. Each
+admitted request reserves full-attention KV for its prompt plus `max_tokens`; one that does not fit waits for a
+stream to finish. Batches of at most 16 padded rows keep the C1 arithmetic per stream (bitwise); wider batches
+use tensor-core paths whose replies may differ from C1 (see
+[concurrent serving](../gemma4-sm70-concurrency.md) for the memory table, numerical contract and validation).
+Refused on this provider:
+`--vision`, `--parallel` above 32, `--kv-dtype` other than the FP16 default, and the GB10-only options
 `--delta4-head`, `--prepare-global-prompt`, `--dflash-head-w4a16`, `--clip-sampled-verification`,
 `--lossless-head`, `--prefix-cache-bytes`, `--spark-global-gqa` and `--spark-sampled-q`. See [the README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)
 for the measured scope.

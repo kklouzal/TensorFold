@@ -6,9 +6,12 @@
 // block scale, then by the projection's FP32 per-output-row multiplier (1 / weight_global_scale).
 // Activations into decode GEMVs are FP32; tensor-core attention uses FP16 Q/K/V/P with FP32 accumulation.
 // GEMV/norm/routing reductions have a fixed order that does not depend on the number of rows in a call.
-// Attention depends on the call shape: 64-key chunks when rows x local heads <= 16 (one 16-row tile), else
-// 256-key chunks, and the caller's split count. Target decode/verify forwards of <= 8 rows (2 local heads)
-// therefore share serial-decode arithmetic; wider verify blocks and prompt forwards do not.
+// Calls with more than one row tile (MAXM rows) run tiles on grid.y with the same per-row arithmetic.
+// Attention runs per segment (one stream's consecutive rows, its own KV slot and start position) and depends on
+// the segment shape: 64-key chunks when the launch's segments have rows x local heads <= 16 (one 16-row tile),
+// else 256-key chunks, and the caller's split count. Target decode/verify segments of <= 8 rows (2 local heads)
+// therefore share serial-decode arithmetic; wider verify blocks and prompt forwards do not. KV slots are
+// addressed through per-layer device pointer tables indexed by slot (int64 addresses).
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 #include <mma.h>
@@ -116,6 +119,10 @@ __global__ void __launch_bounds__(256) w4_rows(const float* __restrict__ x, int6
         const uint8_t* __restrict__ codes, const uint8_t* __restrict__ scales, const float* __restrict__ rowmul,
         int N, int K, float* __restrict__ out, int64_t ldo) {
     constexpr int SUBS = 32 / L, P = GEGLU ? 2 * R : R;
+    const int m0 = blockIdx.y * MAXM;     // row tile
+    x += m0 * ldx;
+    out += m0 * ldo;
+    M -= m0;
     const int lane = threadIdx.x & 31, sl = lane % L;
     const int n0 = ((blockIdx.x * WARPS + (threadIdx.x >> 5)) * SUBS + lane / L) * R;
     // No early exit: half-warp subgroups share shuffles. Out-of-range outputs read row N - 1 and store nothing.
@@ -209,6 +216,185 @@ __global__ void __launch_bounds__(256) w4_expert_down(const float* __restrict__ 
     if (sl == 0 && out_n < N) out[m * ldo + out_n] = total;
 }
 
+// ---------------------------------------------------------------------------------------------- wide decode (MMA)
+// Decode forwards wider than one 16-row tile use tensor cores: each FP32 activation is split into FP16 hi + lo
+// (hi = rn(x), lo = rn(x - hi): about 22 significant bits), weights decode exactly to FP16 (E2M1 x E4M3), and
+// both products accumulate in FP32 on the MMA (rowmul then applied in FP32). Not the GEMV's summation order.
+
+// xh/xl[m, k] = split of x[m, k] (K % 4 == 0).
+__global__ void split_half(const float* __restrict__ x, int64_t ldx, int K, half* __restrict__ xh,
+                           half* __restrict__ xl) {
+    const int m = blockIdx.y;
+    for (int k = blockIdx.x * blockDim.x + threadIdx.x; k < K; k += gridDim.x * blockDim.x) {
+        const float v = x[m * ldx + k];
+        const half h = __float2half_rn(v);
+        xh[(int64_t)m * K + k] = h;
+        xl[(int64_t)m * K + k] = __float2half_rn(v - __half2float(h));
+    }
+}
+
+// lists[e, i]: the i-th pair (ascending) routed to local expert e; counts[e]. One warp per expert.
+__global__ void expert_lists(const int* __restrict__ local, int pairs, int cap, int* __restrict__ counts,
+                             int* __restrict__ lists) {
+    const int e = blockIdx.x, lane = threadIdx.x;
+    int n = 0;
+    for (int base = 0; base < pairs; base += 32) {
+        const int p = base + lane;
+        const bool hit = p < pairs && local[p] == e;
+        const unsigned mask = __ballot_sync(0xffffffffu, hit);
+        if (hit) lists[(int64_t)e * cap + n + __popc(mask & ((1u << lane) - 1))] = p;
+        n += __popc(mask);
+    }
+    if (lane == 0) counts[e] = n;
+}
+
+// out[dest(i), n] = rowmul[n] * sum_k x[src(i), k] * W_g[n, k] for the rows i of group g (blockIdx.y):
+// groups with lists: rows i < counts[g], src = lists[g, i] / xdiv, dest = lists[g, i]; otherwise rows i < M,
+// src = dest = i. Weights of group g start at row g * wrows. GEGLU: out = gelu_tanh(gate n) * up (n + N).
+// Block: 4 warps = 64 rows (one 16-row tile each) x 32 outputs over K range blockIdx.z % ksplit (kper wide).
+// ksplit > 1: raw sums go to part[ks, dest, col] (col: gate n, up N + n) and mma_finish adds the splits in
+// order and applies the epilogue (deterministic).
+constexpr int MT_ROWS = 64, MT_N = 32, MT_K = 64, MT_LD = MT_K + 16;
+
+template <bool GEGLU>
+__global__ void __launch_bounds__(128) w4_mma(const half* __restrict__ xh, const half* __restrict__ xl, int M,
+        const int* __restrict__ counts, const int* __restrict__ lists, int cap, int xdiv,
+        const uint8_t* __restrict__ codes, const uint8_t* __restrict__ scales, const float* __restrict__ rowmul,
+        int64_t wrows, int N, int K, int ksplit, int kper, float* __restrict__ part, int64_t pstride,
+        float* __restrict__ out, int64_t ldo) {
+    constexpr int WR = GEGLU ? 2 * MT_N : MT_N;       // weight rows decoded per block
+    __shared__ __align__(32) half ws[WR * MT_LD];
+    __shared__ __align__(32) half as[2 * MT_ROWS * MT_LD];   // hi rows, then lo rows; reused for the C tile
+    __shared__ int src[MT_ROWS], dst[MT_ROWS];
+    const int g = blockIdx.y, ks = blockIdx.z % ksplit, r0 = (blockIdx.z / ksplit) * MT_ROWS, n0 = blockIdx.x * MT_N;
+    const int rows = lists ? counts[g] : M;
+    if (r0 >= rows) return;
+    const int R = min(MT_ROWS, rows - r0);
+    const int t = threadIdx.x, warp = t >> 5;
+    if (t < MT_ROWS) {
+        int s_ = 0, d_ = 0;
+        if (t < R) {
+            const int i = lists ? lists[(int64_t)g * cap + r0 + t] : r0 + t;
+            s_ = lists ? i / xdiv : i;
+            d_ = i;
+        }
+        src[t] = s_;
+        dst[t] = d_;
+    }
+    const int64_t wbase = (int64_t)g * wrows;
+    const int groups = K >> 4;
+    constexpr int FR = WR / 16;
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[FR];
+#pragma unroll
+    for (int f = 0; f < FR; ++f) wmma::fill_fragment(acc[f], 0.f);
+    const bool active = warp * 16 < R;
+    const int kend = min(K, (ks + 1) * kper);
+    for (int k0 = ks * kper; k0 < kend; k0 += MT_K) {
+        const int kc = min(MT_K, kend - k0);        // multiple of 16
+        __syncthreads();
+        // weights: WR rows x kc -> FP16 (exact), eight codes per item, one 16-byte store
+        for (int item = t; item < WR * (kc >> 3); item += 128) {
+            const int wr = item / (kc >> 3), c8 = item % (kc >> 3);
+            const int n = min(n0 + (GEGLU ? wr % MT_N : wr), N - 1) + (GEGLU && wr >= MT_N ? N : 0);
+            const int64_t row = wbase + n;
+            const int kk = k0 + c8 * 8;
+            const uint32_t w = __ldg(reinterpret_cast<const uint32_t*>(codes + row * (K >> 1) + (kk >> 1)));
+            const float sc = scale_e4m3(__ldg(scales + row * groups + (kk >> 4)));
+            float f[8];
+            decode8(w, f);
+            uint32_t words[4];
+#pragma unroll
+            for (int q = 0; q < 4; ++q)
+                words[q] = uint32_t(__half_as_ushort(__float2half_rn(f[2 * q] * sc)))
+                    | (uint32_t(__half_as_ushort(__float2half_rn(f[2 * q + 1] * sc))) << 16);
+            *reinterpret_cast<uint4*>(ws + wr * MT_LD + c8 * 8) = make_uint4(words[0], words[1], words[2], words[3]);
+        }
+        // activations: R rows x kc (hi, lo), zero rows beyond R
+        for (int item = t; item < MT_ROWS * (kc >> 3); item += 128) {
+            const int r = item / (kc >> 3), c8 = item % (kc >> 3);
+            uint4 vh = make_uint4(0, 0, 0, 0), vl = make_uint4(0, 0, 0, 0);
+            if (r < R) {
+                const int64_t at = (int64_t)src[r] * K + k0 + c8 * 8;
+                vh = *reinterpret_cast<const uint4*>(xh + at);
+                vl = *reinterpret_cast<const uint4*>(xl + at);
+            }
+            *reinterpret_cast<uint4*>(as + r * MT_LD + c8 * 8) = vh;
+            *reinterpret_cast<uint4*>(as + (MT_ROWS + r) * MT_LD + c8 * 8) = vl;
+        }
+        __syncthreads();
+        if (active) {
+            for (int kk = 0; kk < kc; kk += 16) {
+                wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> ah, al;
+                wmma::load_matrix_sync(ah, as + warp * 16 * MT_LD + kk, MT_LD);
+                wmma::load_matrix_sync(al, as + (MT_ROWS + warp * 16) * MT_LD + kk, MT_LD);
+#pragma unroll
+                for (int f = 0; f < FR; ++f) {
+                    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b;
+                    wmma::load_matrix_sync(b, ws + f * 16 * MT_LD + kk, MT_LD);
+                    wmma::mma_sync(acc[f], ah, b, acc[f]);
+                    wmma::mma_sync(acc[f], al, b, acc[f]);
+                }
+            }
+        }
+    }
+    __syncthreads();
+    float* cs = reinterpret_cast<float*>(as);      // [64 rows][WR] FP32 (64 * 64 * 4 <= sizeof as)
+    if (active) {
+#pragma unroll
+        for (int f = 0; f < FR; ++f) wmma::store_matrix_sync(cs + warp * 16 * WR + f * 16, acc[f], WR, wmma::mem_row_major);
+    }
+    __syncthreads();
+    for (int item = t; item < R * MT_N; item += 128) {
+        const int r = item / MT_N, j = item % MT_N, n = n0 + j;
+        if (n >= N) continue;
+        if (ksplit > 1) {
+            float* p = part + ks * pstride + (int64_t)dst[r] * (GEGLU ? 2 * N : N);
+            p[n] = cs[r * WR + j];
+            if (GEGLU) p[N + n] = cs[r * WR + MT_N + j];
+            continue;
+        }
+        float v = cs[r * WR + j] * __ldg(rowmul + wbase + n);
+        if (GEGLU) v = gelu_tanh(v) * (cs[r * WR + MT_N + j] * __ldg(rowmul + wbase + n + N));
+        out[(int64_t)dst[r] * ldo + n] = v;
+    }
+}
+
+// Split-K finish: out[r, n] = epilogue(sum over ks ascending of part[ks, r, col]) for rows r (grid.y) whose
+// group is local[r] (>= 0; nullptr: group 0).
+template <bool GEGLU>
+__global__ void mma_finish(const float* __restrict__ part, int ksplit, int64_t pstride, const int* __restrict__ local,
+                           int64_t wrows, const float* __restrict__ rowmul, int N, float* __restrict__ out,
+                           int64_t ldo) {
+    const int r = blockIdx.y, n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+    const int e = local ? local[r] : 0;
+    if (e < 0) return;
+    const int64_t wbase = (int64_t)e * wrows, width = GEGLU ? 2 * N : N;
+    float a = 0.f, b = 0.f;
+    for (int ks = 0; ks < ksplit; ++ks) {
+        const float* p = part + ks * pstride + (int64_t)r * width;
+        a += p[n];
+        if (GEGLU) b += p[N + n];
+    }
+    float v = a * __ldg(rowmul + wbase + n);
+    if (GEGLU) v = gelu_tanh(v) * (b * __ldg(rowmul + wbase + n + N));
+    out[(int64_t)r * ldo + n] = v;
+}
+
+// out[m, n] = sum over slots s ascending with local >= 0 of weight[m, s] * y[m * S + s, n].
+__global__ void expert_combine(const float* __restrict__ y, int slots, const int* __restrict__ local,
+                               const float* __restrict__ weight, int N, float* __restrict__ out, int64_t ldo) {
+    const int m = blockIdx.y, n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n >= N) return;
+    float total = 0.f;
+    for (int s = 0; s < slots; ++s) {
+        const int pair = m * slots + s;
+        if (local[pair] < 0) continue;
+        total = fmaf(__ldg(weight + pair), y[(int64_t)pair * N + n], total);
+    }
+    out[m * ldo + n] = total;
+}
+
 // Exact FP16 weights e2m1 * e4m3 (rowmul applied by the caller's GEMM epilogue): out[N, K] half.
 template <bool VECTOR_STORE>
 __global__ void w4_dequant(const uint8_t* __restrict__ codes, const uint8_t* __restrict__ scales, int64_t N, int K,
@@ -245,6 +431,10 @@ __global__ void __launch_bounds__(256) bf16_rows(const float* __restrict__ x, in
         const __nv_bfloat16* __restrict__ w, int N, int K, float* __restrict__ out, int64_t ldo, float softcap) {
     // MAXM5 is an exact-five specialization, reachable only from M==5 dispatch.
     // Other templates retain their original runtime row bounds.
+    const int m0 = blockIdx.y * MAXM;     // row tile
+    x += m0 * ldx;
+    out += m0 * ldo;
+    M -= m0;
     const int n0 = (blockIdx.x * WARPS + (threadIdx.x >> 5)) * R, lane = threadIdx.x & 31;
     if (n0 >= N) return;
     const uint4* rows[R];
@@ -303,6 +493,10 @@ __global__ void __launch_bounds__(256) i8_rows(const float* __restrict__ x, int6
         const int8_t* __restrict__ w, const float* __restrict__ scale, int N, int K, float* __restrict__ out,
         int64_t ldo, float softcap) {
     static_assert(!EXACT_FIVE || MAXM == 5, "exact-five requires its five-row tile");
+    const int m0 = blockIdx.y * MAXM;     // row tile
+    x += m0 * ldx;
+    out += m0 * ldo;
+    M -= m0;
     const int n0 = (blockIdx.x * WARPS + (threadIdx.x >> 5)) * R, lane = threadIdx.x & 31;
     if (n0 >= N) return;
     const uint4* rows[R];
@@ -418,7 +612,8 @@ __global__ void route(const float* __restrict__ logits, int E, int topk, const _
 
 // Fused router: logits[m, e] = dot(x[m], W[e]) (BF16 weights, FP32), then the last block to finish routes every
 // row exactly as `route` does. Block b owns experts 2b, 2b+1; warp w covers K quarter (w & 3) of expert 2b + (w >> 2).
-// `counter` is a zeroed device int the last block resets (graph-replay safe).
+// `counter` holds one zeroed device int per row tile (grid.y); each tile's last block resets its own (graph-replay
+// safe).
 template <int MAXM>
 __global__ void __launch_bounds__(256) router(const float* __restrict__ x, int64_t ldx, int M,
         const __nv_bfloat16* __restrict__ w, int E, int K, float* __restrict__ logits, int* __restrict__ counter,
@@ -426,6 +621,16 @@ __global__ void __launch_bounds__(256) router(const float* __restrict__ x, int64
         float* __restrict__ weights, int* __restrict__ local) {
     __shared__ float part[8][MAXM];
     __shared__ bool last;
+    {
+        const int m0 = blockIdx.y * MAXM;     // row tile
+        x += m0 * ldx;
+        logits += m0 * E;
+        ids += m0 * topk;
+        weights += m0 * topk;
+        local += m0 * topk;
+        counter += blockIdx.y;
+        M = min(M - m0, MAXM);
+    }
     const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, t = threadIdx.x;
     const int e = blockIdx.x * 2 + (warp >> 2), quarter = warp & 3;
     const int chunks = K >> 3, per = (chunks + 3) / 4;
@@ -666,17 +871,19 @@ __global__ void embed(const int64_t* __restrict__ ids, const __nv_bfloat16* __re
 
 // ---------------------------------------------------------------------------------------------- q/k/v prep
 // x: [M, ldx] FP32 projections: q heads at [0, Hq*D), k at [Hq*D, (Hq+1)*D), v (has_v) at [(Hq+1)*D, (Hq+2)*D).
-// grid (M, Hq + 1), D/2 threads; thread i owns rotary pair (i, i + D/2).
-// q -> learned RMS, RoPE -> qout[m, h, :] (FP16).  k -> learned RMS, RoPE -> kc[slot].
-// v -> unweighted RMS of v (or of k when !has_v: K=V layers) -> vc[slot]. key_pos[slot] = position.
+// grid (M, Hq + 1), D/2 threads; thread i owns rotary pair (i, i + D/2). Row m sits at position row_pos[m] of
+// KV slot row_slot[m]; the slot's caches are ktab/vtab[slot] (and its ring positions ptab[slot], nullable).
+// q -> learned RMS, RoPE -> qout[m, h, :] (FP16).  k -> learned RMS, RoPE -> kc[cache row].
+// v -> unweighted RMS of v (or of k when !has_v: K=V layers) -> vc[cache row]. key_pos[cache row] = position.
 template <typename QT>
 __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D, int v_mode,
         const __nv_bfloat16* __restrict__ qw, const __nv_bfloat16* __restrict__ kw, const float* __restrict__ inv_freq,
-        const int* __restrict__ pos0, QT* __restrict__ qout, half* __restrict__ kc, half* __restrict__ vc,
-        int* __restrict__ key_pos, int ring, float eps) {
+        const int* __restrict__ row_pos, const int* __restrict__ row_slot, QT* __restrict__ qout,
+        const int64_t* __restrict__ ktab, const int64_t* __restrict__ vtab, const int64_t* __restrict__ ptab,
+        int ring, float eps) {
     __shared__ float scratch[16];
     const int m = blockIdx.x, h = blockIdx.y, i = threadIdx.x, half_d = D >> 1;
-    const int pos = *pos0 + m;
+    const int pos = row_pos[m];
     const float* xr = x + m * ldx + h * D;
     const float x1 = xr[i], x2 = xr[i + half_d];
     // block_sum over D/2 threads (128 or 256)
@@ -700,6 +907,10 @@ __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D
         q[i + half_d] = cast_out<QT>(r2);
         return;
     }
+    const int cache = row_slot[m];
+    half* __restrict__ kc = reinterpret_cast<half*>(ktab[cache]);
+    half* __restrict__ vc = reinterpret_cast<half*>(vtab[cache]);
+    int* __restrict__ key_pos = ptab ? reinterpret_cast<int*>(ptab[cache]) : nullptr;
     const int slot = ring ? pos % ring : pos;
     kc[(int64_t)slot * D + i] = __float2half_rn(r1);
     kc[(int64_t)slot * D + i + half_d] = __float2half_rn(r2);
@@ -727,14 +938,27 @@ __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D
 
 // ---------------------------------------------------------------------------------------------- attention
 // Split-key flash attention over one KV head shared by every query row of a 16-row tile.
-// q: [R, D] FP16, r = row * H + head (row position = *pos0 + r / H). K/V caches [S, D] FP16 with
-// S % 256 == 0 and every slot initialized (masked keys must hold finite values).
+// Segment g (one stream) owns rows [row0[g], row0[g] + rows[g]) at positions pos[g] + local row, and KV slot
+// slot[g]. q: [rows, H, D] FP16; segment-local attention row r = local row * H + head. Tile t covers local
+// rows tile_r0[t] .. + 16 of segment tile_seg[t] (a tile never mixes segments) and owns padded rows
+// [16 t, 16 t + 16) of po/pm/pl. A slot's K/V caches (ktab/vtab[slot]) hold every key a visited chunk covers,
+// all initialized (masked keys must hold finite values): linear caches a multiple of 256 rows beyond
+// the segment's last position, rings S rows.
 // key_pos: slot -> absolute position (or nullptr: slot index is the position). A key is visible to a query
 // at position p when 0 <= kp <= p and (window == 0 or kp > p - window). Scores are scaled by `scale` (FP32)
 // before masking (Gemma 4 target: 1.0; Qwen3-style DFlash companion: head_dim^-0.5).
 // Block (split, tile) visits chunks split, split + splits, ... of AC keys (64 for one 16-row
 // tile, else 256) with an online softmax
-// and writes unnormalized partials po[split, r, :], pm/pl[split, r]; attn_merge folds splits in order.
+// and writes unnormalized partials po[split, p, :], pm/pl[split, p]; attn_merge folds splits in order.
+
+struct Segs {
+    const int* slot;
+    const int* pos;
+    const int* rows;
+    const int* row0;
+    const int* tile_seg;
+    const int* tile_r0;
+};
 
 template <int D, int AC>
 struct AttnSmem {
@@ -742,9 +966,10 @@ struct AttnSmem {
     static constexpr size_t bytes = 16 * QLD * 2 + 16 * AC * 4 + 16 * PLD * 2 + 16 * D * 4;
 };
 
-template <int D, int AC>
-__global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, int R, int H, const half* __restrict__ kc,
-        const half* __restrict__ vc, const int* __restrict__ key_pos, int S, const int* __restrict__ pos0, int window,
+// RING: the slot's caches are rings with per-row positions (ptab); else linear (slot row = position).
+template <int D, int AC, bool RING>
+__global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, int H, const int64_t* __restrict__ ktab,
+        const int64_t* __restrict__ vtab, const int64_t* __restrict__ ptab, Segs sg, int S, int window,
         int noncausal, float scale, int chunks, float* __restrict__ po, float* __restrict__ pm, float* __restrict__ pl, int Rpad) {
     constexpr int QLD = AttnSmem<D, AC>::QLD, PLD = AttnSmem<D, AC>::PLD;
     extern __shared__ __align__(32) unsigned char smem[];
@@ -755,13 +980,27 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
     __shared__ int qpos[16];
     __shared__ float row_m[16], row_l[16], row_a[16];
     const int split = blockIdx.x, tile = blockIdx.y, t = threadIdx.x, warp = t >> 5;
-    const int r0 = tile * 16;
-    const int base = *pos0;
-    if (!key_pos && split * AC > base + (R - 1) / H) {
-        // Linear cache: every key of this split is in the future of every query row in the call.
+    const int p0 = tile * 16;                       // padded partial rows
+    const int seg = sg.tile_seg[tile], r0 = sg.tile_r0[tile], R = sg.rows[seg] * H, base = sg.pos[seg];
+    const int cache = sg.slot[seg];
+    q += (int64_t)sg.row0[seg] * H * D;
+    // The slot's cache addresses stay in (volatile) shared memory and are read where used: held in registers
+    // across the loop they made ptxas spill the 256-key variants (the earlier kernel-parameter pointers lived in
+    // the constant bank).
+    __shared__ const half* volatile kcs;
+    __shared__ const half* volatile vcs;
+    __shared__ const int* volatile kps;
+    if (t == 0) {
+        kcs = reinterpret_cast<const half*>(ktab[cache]);
+        vcs = reinterpret_cast<const half*>(vtab[cache]);
+        kps = RING ? reinterpret_cast<const int*>(ptab[cache]) : nullptr;
+    }
+    __syncthreads();
+    if (!RING && split * AC > base + (R - 1) / H) {
+        // Linear cache: every key of this split is in the future of every query row of the segment.
         if (t < 16) {
-            pm[(int64_t)split * Rpad + r0 + t] = -INFINITY;
-            pl[(int64_t)split * Rpad + r0 + t] = 0.f;
+            pm[(int64_t)split * Rpad + p0 + t] = -INFINITY;
+            pl[(int64_t)split * Rpad + p0 + t] = 0.f;
         }
         return;
     }
@@ -787,16 +1026,19 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
     bool processed = false;
     for (int c = split; c < chunks; c += gridDim.x) {     // interleaved: live keys spread over splits
         const int k0 = c * AC;
+        const int* key_pos = RING ? kps : nullptr;  // one shared read per chunk (see kcs)
         bool ok = false;
         for (int i = t; i < AC; i += 128) {
             const int key = k0 + i;
             if (key < S) {
-                const int kp = key_pos ? key_pos[key] : key;
+                const int kp = RING ? key_pos[key] : key;
                 ok |= kp >= 0 && kp <= qmax && (window == 0 || kp > qmin - window);
             }
         }
         if (!__syncthreads_or(ok)) continue;
         processed = true;
+        const half* kc = kcs;
+        const half* vc = vcs;
         // scores [16, AC]
         for (int kt = warp; kt < AC / 16; kt += 4) {
             wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
@@ -820,7 +1062,7 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
                 const int key = k0 + i;
                 bool v = false;
                 if (key < S && qp >= 0) {
-                    const int kp = key_pos ? key_pos[key] : key;
+                    const int kp = RING ? key_pos[key] : key;
                     v = kp >= 0 && kp <= qp && (window == 0 || kp > qp - window);
                 }
                 const float s = v ? ss[row * AC + i] * scale : -INFINITY;
@@ -874,22 +1116,26 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
         __syncthreads();
     }
     if (processed) {        // otherwise l == 0 and the merge never reads this split's o
-        float* out = po + ((int64_t)split * Rpad + r0) * D;
+        float* out = po + ((int64_t)split * Rpad + p0) * D;
         for (int i = t; i < 16 * D; i += 128) out[i] = os[i];
     }
     if (t < 16) {
-        pm[(int64_t)split * Rpad + r0 + t] = row_m[t];
-        pl[(int64_t)split * Rpad + r0 + t] = row_l[t];
+        pm[(int64_t)split * Rpad + p0 + t] = row_m[t];
+        pl[(int64_t)split * Rpad + p0 + t] = row_l[t];
     }
 }
 
-// out[r, :] = sum_s e^(m_s - M) o_s / sum_s e^(m_s - M) l_s, splits with l_s == 0 skipped.
+// out[row, :] = sum_s e^(m_s - M) o_s / sum_s e^(m_s - M) l_s, splits with l_s == 0 skipped. One block per
+// padded row r (pad rows exit); out row = (segment row0) * H + segment-local attention row.
 template <typename OT>
 __global__ void attn_merge(const float* __restrict__ po, const float* __restrict__ pm, const float* __restrict__ pl,
-                           int splits, int Rpad, int D, OT* __restrict__ out) {
+                           int splits, int Rpad, int D, int H, Segs sg, OT* __restrict__ out) {
     extern __shared__ float wts[];          // [splits] fold weights (0: an empty split)
     __shared__ float red[4];
     const int r = blockIdx.x, t = threadIdx.x;
+    const int seg = sg.tile_seg[r >> 4], local = sg.tile_r0[r >> 4] + (r & 15);
+    if (local >= sg.rows[seg] * H) return;
+    out += ((int64_t)sg.row0[seg] * H + local) * D;
     float M = -INFINITY;
     for (int s = t; s < splits; s += blockDim.x)
         if (pl[(int64_t)s * Rpad + r] > 0.f) M = fmaxf(M, pm[(int64_t)s * Rpad + r]);
@@ -912,7 +1158,7 @@ __global__ void attn_merge(const float* __restrict__ po, const float* __restrict
         float acc = 0.f;
         for (int s = 0; s < splits; ++s)
             if (wts[s] != 0.f) acc = fmaf(wts[s], po[((int64_t)s * Rpad + r) * D + d], acc);
-        out[(int64_t)r * D + d] = cast_out<OT>(acc * inv);
+        out[d] = cast_out<OT>(acc * inv);
     }
 }
 
@@ -946,6 +1192,7 @@ __global__ void expert_prompt_combine(const float* y, const int64_t* dest, const
 
 // ================================================================================================ launchers
 #include <ATen/cuda/CUDAContext.h>
+#include <algorithm>
 #include <torch/extension.h>
 
 using at::Tensor;
@@ -964,7 +1211,7 @@ template <bool GEGLU, int R, int L>
 void w4_rows_launch(const Tensor& x, int64_t M, const Tensor& codes, const Tensor& scales, const Tensor& rowmul,
                     int64_t N, int64_t K, Tensor& out, int64_t ldo) {
     const int64_t per_block = g4::WARPS * (32 / L) * R;
-    const dim3 grid((N + per_block - 1) / per_block);
+    const dim3 grid((N + per_block - 1) / per_block, M > 16 ? (M + 15) / 16 : 1);   // > 16 rows: 16-row tiles
     const int64_t ldx = x.stride(0);
 #define G4_ROWS(MM) g4::w4_rows<MM, GEGLU, R, L><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, \
         cptr<uint8_t>(codes), cptr<uint8_t>(scales), cptr<float>(rowmul), (int)N, (int)K, ptr<float>(out), ldo)
@@ -1063,7 +1310,7 @@ namespace {
 template <int R>
 void bf16_launch(const Tensor& x, int64_t M, const Tensor& w, int64_t N, int64_t K, Tensor& out, int64_t ldo,
                  double softcap) {
-    const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R));
+    const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R), M > 16 ? (M + 15) / 16 : 1);
     const int64_t ldx = x.stride(0);
 #define G4_BF(MM) g4::bf16_rows<MM, R><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, \
         cptr<__nv_bfloat16>(w), (int)N, (int)K, ptr<float>(out), ldo, (float)softcap)
@@ -1078,7 +1325,7 @@ void bf16_launch(const Tensor& x, int64_t M, const Tensor& w, int64_t N, int64_t
 template <int R>
 void i8_launch(const Tensor& x, int64_t M, const Tensor& w, const Tensor& scale, int64_t N, int64_t K, Tensor& out,
                int64_t ldo, double softcap) {
-    const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R));
+    const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R), M > 16 ? (M + 15) / 16 : 1);
     const int64_t ldx = x.stride(0);
 #define G4_I8(MM, EXACT) g4::i8_rows<MM, R, EXACT><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, cptr<int8_t>(w), \
         cptr<float>(scale), (int)N, (int)K, ptr<float>(out), ldo, (float)softcap)
@@ -1111,8 +1358,9 @@ void i8_rows_cuda(const Tensor& x, int64_t M, const Tensor& w, const Tensor& sca
 void router_cuda(const Tensor& x, int64_t M, const Tensor& w, int64_t E, int64_t K, Tensor& logits, Tensor& counter,
                  int64_t topk, const Tensor& scale, int64_t first, int64_t count, Tensor& ids, Tensor& weights,
                  Tensor& local) {
-    TORCH_CHECK(E <= 256 && M <= 16 && topk <= 8, "fused router serves <= 256 experts, <= 16 rows, top-k <= 8");
-    const dim3 grid((E + 1) / 2);
+    TORCH_CHECK(E <= 256 && topk <= 8 && counter.numel() >= (M + 15) / 16,
+                "fused router serves <= 256 experts, top-k <= 8 and needs one counter per 16-row tile");
+    const dim3 grid((E + 1) / 2, M > 16 ? (M + 15) / 16 : 1);
 #define G4_RT(MM) g4::router<MM><<<grid, 256, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)M, \
         cptr<__nv_bfloat16>(w), (int)E, (int)K, ptr<float>(logits), ptr<int>(counter), (int)topk, \
         cptr<__nv_bfloat16>(scale), (int)first, (int)count, ptr<int>(ids), ptr<float>(weights), ptr<int>(local))
@@ -1168,49 +1416,135 @@ void embed_cuda(const Tensor& ids, int64_t M, const Tensor& table, int64_t D, do
 }
 
 void qkv_prep_cuda(const Tensor& x, int64_t M, int64_t Hq, int64_t D, int64_t v_mode, const Tensor& qw, const Tensor& kw,
-                   const Tensor& inv_freq, const Tensor& pos0, Tensor& qout, Tensor& kc, Tensor& vc,
-                   const c10::optional<Tensor>& key_pos, int64_t ring, double eps) {
+                   const Tensor& inv_freq, const Tensor& row_pos, const Tensor& row_slot, Tensor& qout,
+                   const Tensor& ktab, const Tensor& vtab, const c10::optional<Tensor>& ptab, int64_t ring, double eps) {
     const dim3 grid(M, Hq + 1);
 #define G4_QP(T) g4::qkv_prep<T><<<grid, D / 2, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)Hq, (int)D, \
-        (int)v_mode, cptr<__nv_bfloat16>(qw), cptr<__nv_bfloat16>(kw), cptr<float>(inv_freq), cptr<int>(pos0), \
-        ptr<T>(qout), ptr<half>(kc), ptr<half>(vc), \
-        key_pos.has_value() ? reinterpret_cast<int*>(key_pos->data_ptr()) : nullptr, (int)ring, (float)eps)
+        (int)v_mode, cptr<__nv_bfloat16>(qw), cptr<__nv_bfloat16>(kw), cptr<float>(inv_freq), cptr<int>(row_pos), \
+        cptr<int>(row_slot), ptr<T>(qout), cptr<int64_t>(ktab), cptr<int64_t>(vtab), \
+        ptab.has_value() ? cptr<int64_t>(*ptab) : nullptr, (int)ring, (float)eps)
     if (qout.scalar_type() == at::kHalf) G4_QP(half); else G4_QP(float);
 #undef G4_QP
 }
 
 namespace {
-template <int D, int AC>
-void attn_launch(const Tensor& q, int64_t R, int64_t H, const Tensor& kc, const Tensor& vc,
-                 const c10::optional<Tensor>& key_pos, int64_t S, const Tensor& pos0, int64_t window, int64_t noncausal,
-                 double scale, int64_t chunks, int64_t splits, Tensor& po, Tensor& pm, Tensor& pl, int64_t Rpad) {
+g4::Segs segs(const Tensor& seg) {
+    // seg: int32 [6, ...] rows: slot, pos, rows, row0 (per segment), tile_seg, tile_r0 (per tile); one stride.
+    const int* b = cptr<int>(seg);
+    const int64_t s = seg.stride(0);
+    return g4::Segs{b, b + s, b + 2 * s, b + 3 * s, b + 4 * s, b + 5 * s};
+}
+
+template <int D, int AC, bool RING>
+void attn_launch(const Tensor& q, int64_t H, const Tensor& ktab, const Tensor& vtab,
+                 const c10::optional<Tensor>& ptab, const g4::Segs& sg, int64_t tiles, int64_t S, int64_t window,
+                 int64_t noncausal, double scale, int64_t chunks, int64_t splits, Tensor& po, Tensor& pm, Tensor& pl) {
     static bool configured = false;
     const size_t bytes = g4::AttnSmem<D, AC>::bytes;
     if (!configured) {
-        C10_CUDA_CHECK(cudaFuncSetAttribute(g4::attn_split<D, AC>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes));
+        C10_CUDA_CHECK(cudaFuncSetAttribute(g4::attn_split<D, AC, RING>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes));
         configured = true;
     }
-    const dim3 grid(splits, (R + 15) / 16);
-    g4::attn_split<D, AC><<<grid, 128, bytes, stream()>>>(cptr<half>(q), (int)R, (int)H, cptr<half>(kc), cptr<half>(vc),
-        key_pos.has_value() ? cptr<int>(*key_pos) : nullptr, (int)S, cptr<int>(pos0), (int)window, (int)noncausal,
-        (float)scale, (int)chunks,
-        ptr<float>(po), ptr<float>(pm), ptr<float>(pl), (int)Rpad);
+    const dim3 grid(splits, tiles);
+    g4::attn_split<D, AC, RING><<<grid, 128, bytes, stream()>>>(cptr<half>(q), (int)H, cptr<int64_t>(ktab),
+        cptr<int64_t>(vtab), ptab.has_value() ? cptr<int64_t>(*ptab) : nullptr, sg, (int)S, (int)window,
+        (int)noncausal, (float)scale, (int)chunks, ptr<float>(po), ptr<float>(pm), ptr<float>(pl), (int)(tiles * 16));
 }
 }  // namespace
 
-void attn_cuda(const Tensor& q, int64_t R, int64_t H, int64_t D, const Tensor& kc, const Tensor& vc,
-               const c10::optional<Tensor>& key_pos, int64_t S, const Tensor& pos0, int64_t window, int64_t noncausal,
-               double scale, int64_t chunks, int64_t splits, Tensor& po, Tensor& pm, Tensor& pl, int64_t Rpad,
-               Tensor& out) {
-    if (D == 128) (R <= 16 ? attn_launch<128, 64> : attn_launch<128, 256>)(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, scale, chunks, splits, po, pm, pl, Rpad);
-    else if (D == 256) (R <= 16 ? attn_launch<256, 64> : attn_launch<256, 256>)(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, scale, chunks, splits, po, pm, pl, Rpad);
-    else if (D == 512) (R <= 16 ? attn_launch<512, 64> : attn_launch<512, 256>)(q, R, H, kc, vc, key_pos, S, pos0, window, noncausal, scale, chunks, splits, po, pm, pl, Rpad);
+// seg: int32 [6, >= max(segments, tiles)] (see segs). small: every segment has rows x H <= 16 (64-key chunks).
+void attn_cuda(const Tensor& q, int64_t H, int64_t D, const Tensor& ktab, const Tensor& vtab,
+               const c10::optional<Tensor>& ptab, const Tensor& seg, int64_t tiles, bool small, int64_t S,
+               int64_t window, int64_t noncausal, double scale, int64_t chunks, int64_t splits, Tensor& po, Tensor& pm,
+               Tensor& pl, Tensor& out) {
+    const g4::Segs sg = segs(seg);
+    const bool ring = ptab.has_value();
+#define G4_ATT(DD) (small ? (ring ? attn_launch<DD, 64, true> : attn_launch<DD, 64, false>) \
+                          : (ring ? attn_launch<DD, 256, true> : attn_launch<DD, 256, false>)) \
+        (q, H, ktab, vtab, ptab, sg, tiles, S, window, noncausal, scale, chunks, splits, po, pm, pl)
+    if (D == 128) G4_ATT(128);
+    else if (D == 256) G4_ATT(256);
+    else if (D == 512) G4_ATT(512);
     else TORCH_CHECK(false, "attention head width must be 128, 256 or 512");
+#undef G4_ATT
     const size_t bytes = splits * sizeof(float);
+    const int Rpad = (int)(tiles * 16);
     if (out.scalar_type() == at::kHalf)
-        g4::attn_merge<half><<<R, 128, bytes, stream()>>>(cptr<float>(po), cptr<float>(pm), cptr<float>(pl),
-            (int)splits, (int)Rpad, (int)D, ptr<half>(out));
+        g4::attn_merge<half><<<Rpad, 128, bytes, stream()>>>(cptr<float>(po), cptr<float>(pm), cptr<float>(pl),
+            (int)splits, Rpad, (int)D, (int)H, sg, ptr<half>(out));
     else
-        g4::attn_merge<float><<<R, 128, bytes, stream()>>>(cptr<float>(po), cptr<float>(pm), cptr<float>(pl),
-            (int)splits, (int)Rpad, (int)D, ptr<float>(out));
+        g4::attn_merge<float><<<Rpad, 128, bytes, stream()>>>(cptr<float>(po), cptr<float>(pm), cptr<float>(pl),
+            (int)splits, Rpad, (int)D, (int)H, sg, ptr<float>(out));
+}
+
+namespace {
+void split(const Tensor& x, int64_t M, int64_t K, Tensor& xh, Tensor& xl) {
+    TORCH_CHECK(K % 16 == 0 && xh.numel() >= M * K && xl.numel() >= M * K, "wide split needs K % 16 == 0 and room");
+    g4::split_half<<<dim3((K + 255) / 256, M), 256, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)K, ptr<half>(xh),
+                                                                   ptr<half>(xl));
+}
+
+// K splits: about four 64-wide chunks each, at most 8.
+int ksplits(int64_t K, int64_t* kper) {
+    const int64_t chunks = (K + g4::MT_K - 1) / g4::MT_K;
+    int64_t ks = std::max<int64_t>(1, std::min<int64_t>(8, chunks / 4));
+    *kper = ((chunks + ks - 1) / ks) * g4::MT_K;
+    return (int)((K + *kper - 1) / *kper);
+}
+
+// One wide projection (all groups): rows by lists (or 0..M-1), split-K partials in part (floats >= ksplit * rows
+// * width) and the finish over dest rows [0, dest_rows) with groups local (or nullptr).
+template <bool G>
+void mma_launch(const Tensor& xh, const Tensor& xl, int64_t M, const int* counts, const int* lists, int cap, int xdiv,
+                int64_t groups, int64_t rchunks, const Tensor& codes, const Tensor& scales, const Tensor& rowmul,
+                int64_t wrows, int64_t N, int64_t K, Tensor& part, int64_t dest_rows, const int* local, float* out,
+                int64_t ldo) {
+    int64_t kper = 0;
+    const int ks = ksplits(K, &kper);
+    const int64_t width = G ? 2 * N : N, pstride = dest_rows * width;
+    TORCH_CHECK(ks == 1 || part.numel() >= ks * pstride, "wide split-K scratch is too small");
+    const dim3 grid((N + g4::MT_N - 1) / g4::MT_N, groups, rchunks * ks);
+    g4::w4_mma<G><<<grid, 128, 0, stream()>>>(cptr<half>(xh), cptr<half>(xl), (int)M, counts, lists, cap, xdiv,
+        cptr<uint8_t>(codes), cptr<uint8_t>(scales), cptr<float>(rowmul), wrows, (int)N, (int)K, ks, (int)kper,
+        ks > 1 ? ptr<float>(part) : nullptr, pstride, out, ldo);
+    if (ks > 1)
+        g4::mma_finish<G><<<dim3((N + 255) / 256, dest_rows), 256, 0, stream()>>>(cptr<float>(part), ks, pstride, local,
+            wrows, cptr<float>(rowmul), (int)N, out, ldo);
+}
+}  // namespace
+
+// Wide decode projection: out[M, N] (ldo) = x[M, K] (FP32) x W4^T (x rowmul; GEGLU pairs gate/up rows).
+// xh/xl: FP16 scratch >= M * K each; part: FP32 split-K scratch >= 8 * M * N (x2 GEGLU).
+void w4_mma_cuda(const Tensor& x, int64_t M, const Tensor& codes, const Tensor& scales, const Tensor& rowmul,
+                 int64_t N, int64_t K, Tensor& out, int64_t ldo, bool geglu, Tensor& xh, Tensor& xl, Tensor& part) {
+    split(x, M, K, xh, xl);
+    const int64_t rchunks = (M + g4::MT_ROWS - 1) / g4::MT_ROWS;
+    if (geglu) mma_launch<true>(xh, xl, M, nullptr, nullptr, 0, 1, 1, rchunks, codes, scales, rowmul, 0, N, K, part, M,
+                                nullptr, ptr<float>(out), ldo);
+    else mma_launch<false>(xh, xl, M, nullptr, nullptr, 0, 1, 1, rchunks, codes, scales, rowmul, 0, N, K, part, M,
+                           nullptr, ptr<float>(out), ldo);
+}
+
+// Wide decode routed experts: pairs grouped by local expert (lists/counts int32 scratch [E, M] / [E]); gate/up
+// GEGLU into act [M * slots, W], down into y [M * slots, D], then the slot-ordered combine into out (ldo).
+// xh/xl: FP16 scratch >= M * max(D, slots * W) each; part: FP32 split-K scratch.
+void w4_experts_mma_cuda(const Tensor& x, int64_t M, int64_t slots, const Tensor& local, const Tensor& weight,
+                         const Tensor& gu_codes, const Tensor& gu_scales, const Tensor& gu_rowmul,
+                         const Tensor& dn_codes, const Tensor& dn_scales, const Tensor& dn_rowmul, int64_t E,
+                         int64_t W, int64_t D, Tensor& counts, Tensor& lists, Tensor& act, Tensor& y, Tensor& out,
+                         int64_t ldo, Tensor& xh, Tensor& xl, Tensor& part) {
+    TORCH_CHECK(counts.numel() >= E && lists.numel() >= E * M && act.numel() >= M * slots * W
+                && y.numel() >= M * slots * D, "wide expert scratch is too small");
+    const int pairs = (int)(M * slots), cap = (int)M;
+    const int64_t rchunks = (M + g4::MT_ROWS - 1) / g4::MT_ROWS;
+    g4::expert_lists<<<E, 32, 0, stream()>>>(cptr<int>(local), pairs, cap, ptr<int>(counts), ptr<int>(lists));
+    split(x, M, D, xh, xl);
+    mma_launch<true>(xh, xl, M, cptr<int>(counts), cptr<int>(lists), cap, (int)slots, E, rchunks, gu_codes, gu_scales,
+                     gu_rowmul, 2 * W, W, D, part, pairs, cptr<int>(local), ptr<float>(act), W);
+    split(act, pairs, W, xh, xl);
+    mma_launch<false>(xh, xl, M, cptr<int>(counts), cptr<int>(lists), cap, 1, E, rchunks, dn_codes, dn_scales,
+                      dn_rowmul, D, D, W, part, pairs, cptr<int>(local), ptr<float>(y), D);
+    const dim3 g3((D + 255) / 256, M);
+    g4::expert_combine<<<g3, 256, 0, stream()>>>(cptr<float>(y), (int)slots, cptr<int>(local), cptr<float>(weight),
+        (int)D, ptr<float>(out), ldo);
 }

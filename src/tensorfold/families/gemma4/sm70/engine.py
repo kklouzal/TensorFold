@@ -1,33 +1,44 @@
-"""Gemma 4 26B-A4B on eight V100s: one request lane, TP8/ETP4 ranks driven by rank 0.
+"""Gemma 4 26B-A4B on eight V100s: TP8/ETP4 ranks driven by rank 0, up to ``--parallel`` streams together.
 
-Rank 0 owns the HTTP App, sampling and the request lane; ranks 1-7 run ``follow``. Every model operation is
-announced to the followers through the same-host control pipes as one small frame before rank 0 issues its
-own identical kernels and collectives, so all ranks submit the same NCCL sequence. Followers never sample.
+Rank 0 owns the HTTP App, the shared CUDA Scheduler (tensorfold.cuda.scheduler: admission queue, cancellation,
+per-request delivery on the caller's thread) and this provider's ``Decoder``: KV slots, prompt chunks and
+batched decode rounds. Ranks 1-7 run ``follow``. Every model operation is announced to the followers through
+the same-host control pipes as one small frame before rank 0 issues its own identical kernels and collectives,
+so all ranks submit the same NCCL sequence. Followers never sample.
+
+Memory: every slot has sliding-window rings from startup; a stream's full-attention caches (target and drafter)
+are attached at admission with the capacity its prompt and reply may reach, and detached when it finishes.
+Admission takes a slot and its bytes from a ledger whose budget is the smallest free memory over the ranks after
+warm-up, graph capture and the measured prompt transient; a request that does not fit waits (``NoRoom``) until
+a stream finishes.
 """
 
 from __future__ import annotations
 
-from tensorfold.engine.draft_acceptance import accepted_prefix as _accepted
-
+import array
+import os
 import struct
-import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
 
-OP_FORWARD, OP_STOP, OP_ROUND, OP_GSERIAL, OP_GROUND = 1, 2, 3, 4, 5
-F_LOGITS_ALL, F_LOGITS_LAST, F_APPEND, F_RESET, F_SCORE = 1, 2, 4, 8, 16
+from tensorfold.engine.draft_acceptance import accepted_prefix as _accepted
+
+from .ops import (OP_ATTACH, OP_BATCH, OP_COPY, OP_DETACH, OP_DROP, OP_FORWARD, OP_GROW, OP_RESTORE, OP_SNAP,
+                  OP_STOP)
+from .prefix import PrefixOwner
+F_LOGITS_LAST, F_APPEND, F_SCORE = 2, 4, 16
 SCORE_TOP = 20
-_HEAD = struct.Struct("<qqqq")      # op, start, rows, flags
-_ROUND = struct.Struct("<qqqqq")    # start, anchor, count, previous verify start, previous committed rows
+MAX_STREAMS = 32
+SAFETY = 1 << 30                # bytes left free per rank beyond the measured prompt transient
+_HEAD = struct.Struct("<qqqqq")  # op, a, b, c, d
 PIPE_TIMEOUT = 600.0
-
-
+TRACE = os.environ.get("TF_GEMMA_ROUND_TRACE") == "1"     # diagnostic: per-shape round timing lines on rank 0
 
 
 class Gemma4SM70Engine:
     tp = 8
-    concurrent = False
+    concurrent = True
     supports_canonical_prefix_archive = False
     supports_teacher_forcing = True
     penalties_supported = True
@@ -35,40 +46,50 @@ class Gemma4SM70Engine:
     def __init__(self, model_dir: Path, *, rank: int, tp: int, master: str, master_port: int,
                  context: int | None = None, context_explicit: bool | None = None, drafter: str = "",
                  drafter_bits: int = 16, depth: int | None = None, no_drafts: bool = False, streams: int = 1,
-                 eos_token_ids=None, chat_template_file=None, chat_template_name=None, graphs: bool = True) -> None:
+                 eos_token_ids=None, chat_template_file=None, chat_template_name=None, graphs: bool = True,
+                 keep_slots: int | None = None) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
         from tensorfold.token_metadata import resolve_eos
         from . import weights as W
-        from .target import Target, PROMPT_ROWS, DECODE_ROWS
+        from .target import Target, PROMPT_ROWS, CHUNK
+        from .graphs import Shape, MODE_SERIAL, MODE_ROUND, MODE_SERIAL_TAPS, buckets
 
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("Gemma 4 SM70 serving requires --tp 8 (TP8 attention/dense, ETP4 experts)")
-        if type(streams) is not int or streams != 1:
-            raise ValueError("Gemma 4 SM70 currently serves one request lane (--parallel 1)")
+        if type(streams) is not int or not 1 <= streams <= MAX_STREAMS:
+            raise ValueError(f"Gemma 4 SM70 serves --parallel 1 to {MAX_STREAMS}")
         raw = read_config(model_dir)
         text = raw.get("text_config") or raw
         native = int(text["max_position_embeddings"])
         self.context_window = native if not context else min(int(context), native)
         self.rank, self.world = rank, tp
-        self.max_rows = 1
-        self.max_draft = 0
+        self.streams = streams
         self.prompt_rows = PROMPT_ROWS
         torch.cuda.set_device(0)
         self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.w = W.load(model_dir, rank)
-        self.target = Target(self.w, self.comm, context=self.context_window)
+        # Slots: the live streams', ``keep_slots`` more for kept prefix chains (idle conversations), and the last
+        # one pads graph batches.
+        self.keep_slots = keep_slots if keep_slots is not None else max(4, streams)
+        if type(self.keep_slots) is not int or self.keep_slots < 0:
+            raise ValueError("keep_slots must be a nonnegative integer")
+        slots = streams + self.keep_slots + 1
+        self.pad = slots - 1
+        self.snaps = {}                           # prefix snapshot id -> (target rings, drafter rings) on this rank
+        self.target = Target(self.w, self.comm, context=self.context_window, slots=slots)
         self.vocab = self.w.config.vocab
-        self._state = self.target.make_state(self.context_window)
         self.head = None
+        self.block = 1
         if drafter and not no_drafts:
             from .dflash import DFlash
             block = 3 if depth is None else depth + 1
-            self.head = DFlash(drafter, self.target, context=self.context_window, block=block, bits=drafter_bits)
-            self.max_rows = block
-            self.max_draft = block - 1
-        self._taps = None
+            self.head = DFlash(drafter, self.target, context=self.context_window, block=block, bits=drafter_bits,
+                               slots=slots)
+            self.block = block
+        self.max_rows = self.block
+        self.max_draft = self.block - 1
         self._gather = torch.empty(tp * 16 * self.target.shard, dtype=torch.float32, device="cuda")
         from tensorfold.cuda.control_pipes import ControlPipes
         self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
@@ -80,51 +101,144 @@ class Gemma4SM70Engine:
                                    override=eos_token_ids)
             if sorted(self.pipes.piped()) != list(range(1, tp)):
                 raise RuntimeError("Gemma 4 SM70 requires all eight ranks on one host (control pipes)")
-        self.graphs = None
+        # Startup runs identically on every rank (collectives), without control frames.
+        self._attach(self.pad, PROMPT_ROWS + CHUNK)
+        self.shapes = {}
+        modes = (MODE_SERIAL, MODE_ROUND, MODE_SERIAL_TAPS) if self.head is not None else (MODE_SERIAL,)
+        for mode in modes:
+            for count in buckets(streams):
+                self.shapes[(mode, count)] = Shape(self, mode, count)
+        # Grow every prompt scratch to its admitted maximum (the scoring op sizes the all-row logits scratch),
+        # measuring the transient peak a prompt chunk adds, then every decode scratch at the widest shape.
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        warm = PROMPT_ROWS
+        self._forward(self.pad, 0, warm, F_SCORE | (F_APPEND if self.head is not None else 0), [0] * (warm + 1))
+        torch.cuda.synchronize()
+        transient = torch.cuda.max_memory_allocated() - torch.cuda.memory_allocated()
+        for mode in modes:
+            shape = self.shapes[(mode, streams)]
+            shape.stage([self.pad] * streams, [0] * streams, [0] * streams)
+            shape.run()
+        self.graphs = graphs
         if graphs:
-            from .graphs import Graphs
-            # Grow every prompt scratch to its admitted maximum before capture freezes the scratch set.
-            warm = min(PROMPT_ROWS, self.context_window - 16)
-            # (The scoring op sizes the all-row logits scratch without gathering full-vocabulary rows.)
-            self._run(OP_FORWARD, 0, warm, F_SCORE | F_RESET | (F_APPEND if self.head is not None else 0),
-                      [0] * (warm + 1))
-            # ... and every decode-arithmetic scratch to its widest (DECODE_ROWS) eager forward.
-            self._run(OP_FORWARD, 0, DECODE_ROWS, F_LOGITS_ALL | F_RESET | (F_APPEND if self.head is not None else 0),
-                      [0] * DECODE_ROWS)
-            self.graphs = Graphs(self)
-            self.graphs.capture()
+            pool = torch.cuda.graph_pool_handle()
+            for key in sorted(self.shapes, key=lambda k: (-k[1], k[0])):
+                shape = self.shapes[key]
+                shape.stage([self.pad] * shape.count, [0] * shape.count, [0] * shape.count)
+                shape.capture(pool)
             self.target.frozen = True
-        self._lock = threading.Lock()
+        # Calibrated round costs (ms) per shape: the leader's prior for choosing DFlash or serial rounds.
+        self.costs = {}
+        for key, shape in self.shapes.items():
+            shape.stage([self.pad] * shape.count, [0] * shape.count, [0] * shape.count)
+            shape.run()
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            for _ in range(3):
+                shape.run()
+            torch.cuda.synchronize()
+            self.costs[key] = (time.perf_counter() - t0) * 1000 / 3
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()            # graph pools keep their blocks; free cached ones count as device free
+        free, total = torch.cuda.mem_get_info()
+        own = free - transient - SAFETY
+        mine = torch.tensor([own], dtype=torch.int64, device="cuda")
+        every = torch.empty(tp, dtype=torch.int64, device="cuda")
+        self.comm.all_gather(mine, every)
+        self.budget = max(0, int(every.min()))
+        self.token_bytes = self.target.pool.token_bytes() + (self.head.token_bytes() if self.head else 0)
         self._closed = False
         self.vision = None
+        self.decoder = self.scheduler = None
+        if rank == 0:
+            fits = self.budget // self.slot_bytes(self.target.alloc)
+            print(f"[tensorfold] Gemma 4 SM70: --parallel {streams}, KV budget {self.budget / 2**30:.2f} GiB/rank "
+                  f"({self.token_bytes} B/token + rings): {fits} streams of {self.context_window} tokens fit at "
+                  "once; longer admissions wait for memory", flush=True)
+            curve = ", ".join(f"{'?SRT'[m]}{b}: {ms:.1f}" for (m, b), ms in sorted(self.costs.items()))
+            print(f"[tensorfold] round ms by shape (calibration, position 0): {curve}", flush=True)
+            from tensorfold.cuda.markers import resume_points
+            from tensorfold.cuda.scheduler import Scheduler
+            self.points = resume_points(model_dir, turn=True, template=self.chat_template)
+            self.decoder = Decoder(self)
+            self.scheduler = Scheduler(self.decoder, max_streams=streams)
+            try:
+                self.scheduler.start()
+            except BaseException as primary:
+                try:
+                    self.scheduler.close()
+                except BaseException as cleanup:
+                    raise primary from cleanup
+                raise
         torch.cuda.synchronize()
 
-    # ---------------------------------------------------------------------------------- shared op
-    def _run(self, op, start, rows, flags, ids):
-        """Execute one announced operation on this rank. Returns gathered logits on every rank (or None)."""
-        import torch
-        st = self._state
-        if op == OP_ROUND:
-            return self._round(*ids)
-        if op == OP_GSERIAL:
-            return self.graphs.run_serial(ids[0], ids[1])
-        if op == OP_GROUND:
-            return self.graphs.run_round(*ids[:4])
-        if flags & F_RESET:
-            st.reset()
+    # ---------------------------------------------------------------------------------------------- memory
+    def slot_bytes(self, capacity: int) -> int:
+        """Ledger bytes of one admitted slot: its full-attention caches, each allocation rounded to 2 MiB."""
+        from .target import CHUNK
+        capacity = -(-capacity // CHUNK) * CHUNK
+        granule = 2 << 20
+        rows = [self.target.pool.token_bytes()] + ([self.head.token_bytes()] if self.head is not None else [])
+        return sum(-(-capacity * b // granule) * granule for b in rows)
+
+    def _attach(self, slot, capacity):
+        """A new sequence in ``slot``: full caches of ``capacity`` rows (kept when already that size), empty rings."""
+        pool = self.target.pool
+        if pool.capacity[slot] != capacity:
+            self._detach(slot)
+            pool.attach(slot, capacity)
             if self.head is not None:
-                self.head.reset()
-        st.length = start
+                self.head.attach(slot, capacity)
+        else:
+            pool.ring_p[:, slot].fill_(-1)
+            if self.head is not None:
+                self.head.ring_p[:, slot].fill_(-1)
+
+    def _detach(self, slot):
+        self.target.pool.detach(slot)
+        if self.head is not None:
+            self.head.detach(slot)
+
+    def _prefix_op(self, op, a, b, c):
+        """Prefix-cache operations (identical on every rank; rank 0 decides, prefix.py)."""
+        pool, head = self.target.pool, self.head
+        if op == OP_SNAP:                      # slot a, position b -> snapshot id c
+            self.snaps[c] = (pool.snapshot(a, b), head.snapshot(a, b) if head is not None else None)
+        elif op == OP_RESTORE:                 # snapshot b into slot a's rings
+            target, drafter = self.snaps[b]
+            pool.restore(a, target)
+            if head is not None:
+                head.restore(a, drafter)
+        elif op == OP_DROP:
+            del self.snaps[a]
+        elif op == OP_COPY:                    # full-cache rows [0, c) of slot a into slot b
+            pool.copy_rows(a, b, c)
+            if head is not None:
+                head.copy_rows(a, b, c)
+        elif op == OP_GROW:                    # slot a to capacity b keeping rows [0, c)
+            pool.grow(a, b, c)
+            if head is not None:
+                head.grow(a, b, c)
+
+    # ---------------------------------------------------------------------------------------------- shared ops
+    def _forward(self, slot, start, rows, flags, ids):
+        """One stream's prompt chunk at ``start``; returns its gathered last-row logits, scores or None."""
+        from .target import Layout, DECODE_ROWS
         score = None
         if flags & F_SCORE:                 # payload carries one extra id: the token after the last row
             ids, score = ids[:rows], ids[1:rows + 1]
-            flags |= F_LOGITS_ALL
-        tokens = torch.tensor(ids, dtype=torch.int64, device="cuda")
-        mode = "all" if flags & F_LOGITS_ALL else "last" if flags & F_LOGITS_LAST else "none"
+        prompt = rows > DECODE_ROWS          # <= 16-row tails keep the decode arithmetic
+        heads = (2, self.head.heads) if self.head is not None else (2,)
+        lay = Layout(self.target.device, rows, 1, heads)
+        lay.stage([slot], [start], ids)
+        lay.upload()
+        tokens = lay.ids32.long()
+        mode = "all" if score is not None else "last" if flags & F_LOGITS_LAST else "none"
         append = bool(flags & F_APPEND) and self.head is not None
-        local, taps = self.target.forward(tokens, st, logits=mode, taps=append)
+        local, taps = self.target.forward(tokens, lay, prompt=prompt, logits=mode, taps=append)
         if append:
-            self.head.append(taps, start)
+            self.head.append(taps, lay, prompt=prompt)
         if score is not None:
             return self._score_rows(local, score)
         return self._gathered(local)
@@ -150,31 +264,9 @@ class Gemma4SM70Engine:
         top, order = torch.topk(values, SCORE_TOP, -1)
         return target.tolist(), (top - glse[:, None]).tolist(), index.gather(1, order).long().tolist()
 
-    def _round(self, start, anchor, count, previous, committed):
-        """Append the previous round's accepted taps, propose greedily, verify [anchor, proposals...]."""
-        import torch
-        if committed:
-            self.head.append(self._taps[:committed], previous)
-        local = self.head.logits(anchor, count)
-        proposals = [] if local is None else self._argmax(local)
-        tokens = torch.tensor([anchor, *proposals], dtype=torch.int64, device="cuda")
-        self._state.length = start
-        logits, taps = self.target.forward(tokens, self._state, logits="all", taps=True)
-        self._taps = taps
-        return self._gathered(logits), [anchor, *proposals]
-
-    def _argmax(self, local):
-        """Greedy proposals from vocabulary shards: global max, lowest token ID on ties (as a full argmax)."""
-        import torch
-        n = local.shape[0]
-        values, index = local.max(dim=-1)
-        packed = torch.stack([values, (index + self.rank * self.target.shard).float()], -1)
-        recv = torch.empty((self.world, n, 2), dtype=torch.float32, device="cuda")
-        self.comm.all_gather(packed.contiguous(), recv)
-        best = recv[:, :, 0].argmax(dim=0)       # first (lowest) rank among equal maxima
-        return [int(v) for v in recv[best, torch.arange(n, device="cuda"), 1].tolist()]
-
     def _gathered(self, local):
+        """Complete vocabulary rows [n, vocab], owned by the caller (never a view of the shared receive buffer:
+        a pipelined round reads its rows after the next prompt chunk has gathered)."""
         import torch
         if local is None:
             return None
@@ -182,79 +274,81 @@ class Gemma4SM70Engine:
         recv = (self._gather[:self.world * n * local.shape[1]].view(self.world, n, local.shape[1]) if n <= 16
                 else torch.empty((self.world, n, local.shape[1]), device="cuda"))
         self.comm.all_gather(local.contiguous(), recv)
-        return recv.permute(1, 0, 2).reshape(n, -1)
+        out = recv.permute(1, 0, 2).reshape(n, -1)
+        return out.clone() if out.data_ptr() == recv.data_ptr() else out
 
-    def _announce(self, op, start, rows, flags, ids):
-        import array
-        if op in (OP_ROUND, OP_GSERIAL, OP_GROUND):
-            body = _ROUND.pack(*ids, *([0] * (5 - len(ids))))
-        else:
-            body = array.array("i", ids).tobytes()
-        payload = _HEAD.pack(op, start, rows, flags) + body
-        self.pipes.send(payload)
-        return self._run(op, start, rows, flags, ids)
+    def _batch(self, mode, count, entries, full):
+        """One decode round over ``entries`` [(slot, start, anchor)] padded to the ``count`` shape. Returns the
+        device compact maxima, proposals, the gathered complete rows of the ``full`` segments (or None) and
+        whether those rows are indexed by segment (every segment gathered) rather than by position in ``full``."""
+        import torch
+        shape = self.shapes[(mode, count)]
+        pad = count - len(entries)
+        slots = [e[0] for e in entries] + [self.pad] * pad
+        starts = [e[1] for e in entries] + [0] * pad
+        anchors = [e[2] for e in entries] + [0] * pad
+        if TRACE:
+            self.marks = [time.perf_counter()]
+        shape.stage(slots, starts, anchors)
+        if TRACE:
+            self.marks.append(time.perf_counter())
+        compact, proposals = shape.run()
+        if TRACE:
+            self.marks.append(time.perf_counter())
+        rows = None
+        if shape.gather_all:                           # every row gathered inside the graph (graph-owned)
+            return compact, proposals, shape.full_rows, True
+        if full:
+            n = shape.n
+            if full == list(range(len(full))):          # a prefix of the segments: a view, no index upload
+                local = shape.local[:len(full) * n]
+            else:                                       # pageable non-blocking upload: never waits for the GPU
+                index = torch.tensor([g * n + r for g in full for r in range(n)], dtype=torch.int64)
+                local = shape.local.index_select(0, index.to("cuda", non_blocking=True))
+            rows = self._gathered(local)
+        return compact, proposals, rows, False
+
+    def _run(self, op, a, b, c, d, ids):
+        if op == OP_ATTACH:
+            return self._attach(a, b)
+        if OP_SNAP <= op <= OP_GROW:
+            return self._prefix_op(op, a, b, c)
+        if op == OP_DETACH:
+            return self._detach(a)
+        if op == OP_FORWARD:
+            return self._forward(a, b, c, d, ids)
+        if op == OP_BATCH:
+            n = 3 * c
+            entries = [tuple(ids[i:i + 3]) for i in range(0, n, 3)]
+            return self._batch(a, b, entries, list(ids[n:]))
+        raise RuntimeError(f"unknown Gemma 4 SM70 control operation {op}")
+
+    def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
+        self.pipes.send(_HEAD.pack(op, a, b, c, d) + array.array("i", ids).tobytes())
+        return self._run(op, a, b, c, d, ids)
 
     def follow(self) -> None:
-        import array
-        while True:
-            try:
-                frame = self.pipes.receive(PIPE_TIMEOUT)
-            except TimeoutError:
-                continue
-            if frame is None:
-                return
-            op, start, rows, flags = _HEAD.unpack_from(frame)
-            if op == OP_STOP:
-                return
-            if op in (OP_ROUND, OP_GSERIAL, OP_GROUND):
-                self._run(op, start, rows, flags, list(_ROUND.unpack_from(frame, _HEAD.size)))
-                continue
-            ids = array.array("i")
-            ids.frombytes(frame[_HEAD.size:])
-            if len(ids) != rows + (1 if flags & F_SCORE else 0):
-                raise RuntimeError("Gemma 4 SM70 control frame row count differs from its payload")
-            self._run(op, start, rows, flags, list(ids))
+        import torch
+        with torch.inference_mode():
+            while True:
+                try:
+                    frame = self.pipes.receive(PIPE_TIMEOUT)
+                except TimeoutError:
+                    continue
+                if frame is None:
+                    return
+                op, a, b, c, d = _HEAD.unpack_from(frame)
+                if op == OP_STOP:
+                    return
+                ids = array.array("i")
+                ids.frombytes(frame[_HEAD.size:])
+                self._run(op, a, b, c, d, list(ids))
 
-    # ---------------------------------------------------------------------------------- leader
-    def _prefill(self, prompt, progress, started, drafts=False, sink=None):
-        """Committed prompt rows; returns the last row's logits [1, vocab]. A teacher-forcing sink scores every
-        prompt row (prompt-row arithmetic) except the last, whose logits stay the generation's own."""
-        logits = None
-        start = 0
-        while start < len(prompt):
-            stop = min(len(prompt), start + self.prompt_rows)
-            last = stop == len(prompt)
-            flags = (F_LOGITS_LAST if last else 0) | (F_RESET if start == 0 else 0) | (F_APPEND if drafts else 0)
-            if sink is not None:
-                end = stop - 1 if last else stop          # rows whose next token is a prompt token
-                if end > start:
-                    nexts = prompt[start + 1:end + 1]
-                    tl, tv, ti = self._announce(OP_FORWARD, start, end - start, flags & ~F_LOGITS_LAST | F_SCORE,
-                                                prompt[start:end] + [nexts[-1]])
-                    for r in range(end - start):
-                        pos = start + r + 1
-                        sink.add_prompt([pos], [prompt[pos]], [tl[r]], [ti[r][:sink.top]], [tv[r][:sink.top]])
-                    flags &= ~F_RESET
-                    start = end
-                    if not last:
-                        continue
-                logits = self._announce(OP_FORWARD, start, stop - start, flags, prompt[start:stop])
-                start = stop
-                continue
-            logits = self._announce(OP_FORWARD, start, stop - start, flags, prompt[start:stop])
-            start = stop
-            if progress is not None:
-                progress(len(prompt), 0, start, (time.perf_counter() - started) * 1000)
-        return logits
-
+    # ---------------------------------------------------------------------------------------------- leader
     def generate(self, prompt: list[int], max_tokens: int, sampling, on_tokens: Callable[[list[int]], Any],
                  draft: bool = True, stop_eos: bool = True, *, vision=None, constraint=None,
                  background: bool = False, progress=None, penalties=None, cache_prompt: bool = True,
                  probabilities=None, **_ignored) -> dict[str, Any]:
-        import torch
-        from tensorfold.cuda.sampling import sample_rows
-        from tensorfold.engine.penalties import History
-
         if self.rank != 0:
             raise RuntimeError("only rank 0 generates")
         if vision is not None:
@@ -262,113 +356,385 @@ class Gemma4SM70Engine:
         if not isinstance(prompt, (list, tuple)) or not prompt or any(
                 type(t) is not int or not 0 <= t < self.vocab for t in prompt):
             raise ValueError("Gemma 4 needs a nonempty list of in-vocabulary prompt token IDs")
-        prompt = list(prompt)
         if type(max_tokens) is not int or max_tokens < 1:
             raise ValueError("max_tokens must be a positive integer")
         if len(prompt) + max_tokens > self.context_window:
             raise ValueError(f"prompt and reply exceed the {self.context_window}-token admitted context")
-        forced = getattr(probabilities, "forced", None)
-        history = History(penalties, prompt) if penalties is not None and penalties.active else None
-        queued = time.perf_counter()
-        with self._lock, torch.inference_mode():
-            if self._closed:
-                raise RuntimeError("Gemma 4 SM70 engine is closed")
-            started = time.perf_counter()
-            greedy = sampling is None or sampling.temperature <= 0 or forced is not None
-            drafts = bool(draft and self.head is not None and greedy and constraint is None and history is None)
-            logits = self._prefill(prompt, progress, started, drafts, probabilities)
-            if probabilities is not None:
-                self._score(probabilities, prompt, logits, len(prompt) - 1)
-            logits = self._shape(logits, constraint, history)
-            first = forced[0] if forced is not None else sample_rows(logits, [len(prompt)], sampling)[0]
-            if constraint is not None:
-                constraint.advance([first])
-            if history is not None:
-                history.extend([first])
-            prefill_s = time.perf_counter() - started
-            decoded = time.perf_counter()
-            out = [first]
-            rounds = drafted = accepted = 0
-            eos = tuple(self.eos) if stop_eos else ()
-            stopped = bool(on_tokens([first]))
-            previous = committed = 0
-            # The App's per-token work (detokenize, stream, gates) for round k runs while round k+1 executes on
-            # the GPU: each round launches before its predecessor's tokens are handed to on_tokens. A stop
-            # reported then leaves one already-launched round, whose state the next request resets.
-            pending = None
-            while drafts and not stopped and len(out) < max_tokens and out[-1] not in eos:
-                room = max_tokens - len(out)
-                start = len(prompt) + len(out) - 1
-                count = min(self.max_draft, room - 1)
-                if self.graphs is not None and count == self.max_draft:
-                    logits, proposals = self._announce(OP_GROUND, 0, 0, 0, [start, out[-1], previous, committed])
-                else:
-                    logits, proposals = self._announce(OP_ROUND, start, 0, 0,
-                                                       [start, out[-1], count, previous, committed])
-                if pending is not None:
-                    stopped = bool(on_tokens(pending))
-                    pending = None
-                    if stopped:
-                        break
-                inputs = [out[-1], *(proposals.tolist() if hasattr(proposals, "tolist") else proposals[1:])]
-                if forced is not None:
-                    sampled = forced[len(out):len(out) + len(inputs)]
-                else:
-                    sampled = sample_rows(logits, list(range(start + 1, start + len(inputs) + 1)), sampling)
-                chosen = _accepted(sampled, inputs, room, eos)
-                if probabilities is not None:
-                    for row in range(len(chosen)):
-                        self._score(probabilities, None, logits[row:row + 1], start + row,
-                                    origin=(row, len(inputs)))
-                previous, committed = start, len(chosen)
-                rounds += 1
-                drafted += len(inputs) - 1
-                accepted += len(chosen) - 1
-                out.extend(chosen)
-                pending = chosen
-            while (not drafts and not stopped and len(out) < max_tokens and out[-1] not in eos
-                   and not (constraint is not None and constraint.finished)):
-                position = len(prompt) + len(out) - 1
-                if self.graphs is not None:
-                    logits = self._announce(OP_GSERIAL, 0, 0, 0, [position, out[-1]])
-                else:
-                    logits = self._announce(OP_FORWARD, position, 1, F_LOGITS_ALL, [out[-1]])
-                if pending is not None:
-                    stopped = bool(on_tokens(pending))
-                    pending = None
-                    if stopped:
-                        break
-                if probabilities is not None:
-                    self._score(probabilities, None, logits, position, origin=(0, 1))
-                logits = self._shape(logits, constraint, history)
-                token = (forced[len(out)] if forced is not None else
-                         sample_rows(logits, [position + 1], sampling)[0])
-                if constraint is not None:
-                    constraint.advance([token])
-                if history is not None:
-                    history.extend([token])
-                out.append(token)
-                rounds += 1
-                pending = [token]
-            if pending is not None and not stopped:
-                stopped = bool(on_tokens(pending))
-            decoded_s = time.perf_counter() - decoded
-        return {"prefill_s": round(prefill_s, 4), "decode_s": round(decoded_s, 4),
-                "queue_s": round(started - queued, 4), "cached": 0, "drafts": drafts, "rounds": rounds,
-                "drafted": drafted, "accepted": accepted, "min_rows": 1 if rounds else 0}
+        if self._closed or self.scheduler is None:
+            raise RuntimeError("Gemma 4 SM70 engine is closed")
+        options = {"background": True} if background else {}
+        if penalties is not None and penalties.active:
+            options["penalties"] = penalties
+        return self.scheduler.submit(list(prompt), max_tokens, sampling, draft, on_tokens, stop_eos=stop_eos,
+                                     constraint=constraint, probabilities=probabilities, progress=progress, **options)
+
+    def drain(self) -> None:
+        """Requests retire inside the scheduler; nothing to fence for a caller."""
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self.rank == 0:
+            try:
+                if self.scheduler is not None:
+                    self.scheduler.close()
+                    self.scheduler = None
+            finally:
+                self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
+
+
+class Decoder(PrefixOwner):
+    """The shared Scheduler's decoder on rank 0: slots, prompt chunks and batched decode rounds.
+
+    A round runs at most one prompt chunk (the oldest foreground filling request's next PROMPT_ROWS rows: fixed
+    boundaries, so a prompt's numerics never depend on load) and then one batched round over every decoding
+    stream (decode interleaves by scheduling, one round between chunks). Greedy requests
+    without grammar/penalties draft with DFlash (``block`` verify rows a stream) when the measured round costs
+    and acceptance favour it over serial steps; other requests take one row a round. All decoding streams of a
+    mode share one batched forward (graph shape padded to a bucket)."""
+
+    PROBE = 32          # serial rounds of drafting streams before one DFlash round refreshes the acceptance rate
+
+    def __init__(self, engine: Gemma4SM70Engine):
+        self.e = engine
+        self.streams: dict = {}
+        self.filling: list = []
+        self.next_id = 0
+        self.broken: BaseException | None = None
+        self.eos = tuple(engine.eos)
+        self.tokens_per_round = float(engine.block)     # DFlash tokens a stream gains per round (EMA)
+        self.serial_rounds = 0
+        self.costs = dict(engine.costs)                 # measured ms per (mode, bucket), EMA
+        self.trace = {}
+        engine.marks = [0.0, 0.0, 0.0]
+        self.inflight = []                              # launched groups whose tokens are not decided yet
+        import torch
+        self.done = torch.cuda.Event()
+        self._init_prefix(engine, engine.points)
+
+    def live(self) -> int:
+        return len(self.streams) + len(self.filling)
+
+    def usage(self) -> dict:
+        """/stats' KV-memory and prefix-cache readings (ints and lists this worker replaces whole)."""
+        budget = self.e.budget
+        active = sum(self._bytes(s.st) for s in (*self.streams.values(), *self.filling) if s.st is not None)
+        per_token = self.e.token_bytes
+        return {"kv": {"budget_bytes": budget, "held_bytes": self.held, "active_bytes": active,
+                       "usage_ratio": round(active / budget, 6) if budget > 0 else None, "bytes_per_token": per_token,
+                       "free_tokens_estimate": max(0, budget - active) // per_token if per_token else None},
+                "prefix_cache": self.prefix_usage()}
+
+    def _check(self):
+        if self.broken is not None:
+            raise RuntimeError("Gemma 4 SM70 ranks may be out of step after an error; restart the server") \
+                from self.broken
+
+    def _ends(self, s):
+        return self.eos if s.stop_eos else ()
+
+    # ------------------------------------------------------------------------------------------ admission
+    def admit(self, s) -> None:
+        from tensorfold.cuda.memory_gate import NoRoom
+        from tensorfold.engine.penalties import History
+        self._check()
+        e = self.e
+        if s.vision is not None:
+            raise ValueError("Gemma 4 SM70 does not serve image/video input yet")
+        if len(s.prompt) + s.count > e.context_window:
+            raise ValueError(f"prompt and reply exceed the {e.context_window}-token admitted context")
+        capacity = self._cap(len(s.prompt) + s.count + e.block)
+        need = e.slot_bytes(capacity)
+        if need > e.budget:
+            raise ValueError(f"a {len(s.prompt)}-token prompt with {s.count} reply tokens needs {need >> 20} MiB of "
+                             f"KV per GPU; {e.budget >> 20} MiB is available")
+        # Prompt reuse: drafting-eligible requests without media; a teacher-forcing sink only when it asks to borrow
+        # (it scores the rows it computes). Sampling does not change prompt state (positive temperature reuses).
+        reuse = bool(s.draft and s.vision is None)
+        if hasattr(s.probabilities, "add_prompt") and not getattr(s.probabilities, "reuse", False):
+            reuse = False
+        try:
+            self.place(s, capacity, reuse)
+        except NoRoom:
+            raise
+        except BaseException as error:
+            self.broken = error
+            raise
+        s.sid, self.next_id = self.next_id, self.next_id + 1
+        s.history = History(s.penalties, s.prompt) if s.penalties is not None and s.penalties.active else None
+        s.forced = getattr(s.probabilities, "forced", None)
+        s.greedy = s.sampling is None or s.sampling.temperature <= 0 or s.forced is not None
+        # Sampled requests draft too: every verify row is sampled from the target with the request's position-keyed
+        # sampler and a proposal survives only if it equals that token (accepted_prefix), so the reply is the serial
+        # sampler's reply.
+        s.drafts = bool(s.draft and e.head is not None and s.constraint is None and s.history is None)
+        s.full = not (s.greedy and s.constraint is None and s.history is None and s.probabilities is None)
+        self.filling.append(s)
+
+    def cancel(self, gone) -> list:
+        """Filling requests whose clients left end now (their slots retire in ``finish``)."""
+        out = []
+        for s in gone:
+            if s in self.filling:
+                self.filling.remove(s)
+                s.done, s.finished = True, time.perf_counter()
+                out.append(s)
+        return out
+
+    def finish(self, done) -> None:
+        for s in done:
+            self.streams.pop(getattr(s, "sid", None), None)
+            if s in self.filling:
+                self.filling.remove(s)
+            if getattr(s, "st", None) is None:
+                continue
+            s.slot = None
+            if self.broken is None:
+                try:
+                    self.retire_slot(s)
+                except BaseException as error:
+                    self.broken = error
+                    raise
+
+    def drop(self, error=None) -> list:
+        """After an error in a round: forget every live stream; the ranks can no longer be trusted to agree."""
+        live = [s for s in self.streams.values() if not s.done] + self.filling
+        self.streams, self.filling, self.inflight = {}, [], []
+        if self.broken is None:
+            self.broken = error or RuntimeError("a Gemma 4 SM70 round failed")
+        return live
+
+    # ------------------------------------------------------------------------------------------ rounds
+    def round(self) -> list:
+        """One pipelined step: wait for the batch in flight and decide its tokens, launch the next batch at once,
+        then (while it runs) deliver the decided tokens and run the next prompt chunk. A stream that ends or is
+        cancelled during delivery may have one more launched row block; its results are ignored, and its slot
+        detaches after that work in stream order."""
+        import torch
+        self._check()
+        done = []
+        with torch.inference_mode():
+            try:
+                decided = self._collect() if self.inflight else []
+                ending = {id(s) for s, chosen in decided if chosen is None or self._ends_after(s, chosen)}
+                live = [s for s in self.streams.values() if not s.done and id(s) not in ending]
+                if live:
+                    self._launch(live, {id(s): chosen for s, chosen in decided if chosen is not None})
+                for s, chosen in decided:
+                    if chosen is not None:
+                        s.take(chosen, self._ends(s))
+                    if s.done:
+                        done.append(s)
+                if self.filling:
+                    done += self._fill()
+            except BaseException as error:
+                self.broken = error
+                raise
+        return done
+
+    def _ends_after(self, s, chosen):
+        return len(s.out) + len(chosen) >= s.count or (s.stop_eos and chosen[-1] in self.eos)
+
+    def _fill(self) -> list:
+        """The next fixed 1,024-row chunk of the next filling request, round-robin: concurrent prompts finish
+        together, so their decode batches stay full."""
+        e = self.e
+        foreground = [x for x in self.filling if not x.background]
+        s = (foreground or self.filling)[0]
+        prompt, n, start = s.prompt, len(s.prompt), s.pos
+        stop = min(n, start + e.prompt_rows)        # load-invariant chunk boundaries: a prompt's arithmetic never
+        #                                             depends on what else the server is doing
+        last = stop == n
+        # Every prompt row feeds the drafter (a kept point serves later drafting requests too).
+        flags = (F_LOGITS_LAST if last else 0) | (F_APPEND if e.head is not None else 0)
+        t0 = time.perf_counter()
+        sink = s.probabilities if hasattr(s.probabilities, "add_prompt") else None
+        logits = None
+        if s.head is not None:                     # an exact repeat: the kept prompt end's own last-row logits
+            logits, s.head, stop, last = s.head, None, n, True
+        elif sink is not None:
+            end = stop - 1 if last else stop          # rows whose next token is a prompt token
+            if end > start:
+                nexts = prompt[start + 1:end + 1]
+                tl, tv, ti = e.announce(OP_FORWARD, s.slot, start, end - start, flags & ~F_LOGITS_LAST | F_SCORE,
+                                        prompt[start:end] + [nexts[-1]])
+                for r in range(end - start):
+                    pos = start + r + 1
+                    sink.add_prompt([pos], [prompt[pos]], [tl[r]], [ti[r][:sink.top]], [tv[r][:sink.top]])
+                s.pos = end
+            if last:
+                logits = e.announce(OP_FORWARD, s.slot, end if end > start else start, stop - max(start, end), flags,
+                                    prompt[max(start, end):stop])
+            self.keep_points(s, start, stop, logits)
+        else:
+            logits = e.announce(OP_FORWARD, s.slot, start, stop - start, flags, prompt[start:stop])
+            self.keep_points(s, start, stop, logits)
+        s.pos = stop
+        s.prefill_s += time.perf_counter() - t0
+        self.filling.remove(s)
+        if s.on_fill is not None:
+            s.on_fill(stop)
+        if not last:
+            self.filling.append(s)                     # round-robin: back of the line
+            return []
+        s.context = list(prompt)
+        s.started = time.perf_counter()
+        self.streams[s.sid] = s
+        try:
+            if s.forced is not None:
+                first = s.forced[0]
+            else:
+                from tensorfold.cuda.sampling import sample_rows
+                first = sample_rows(self._shape(s, logits), [n], s.sampling)[0]
+            if s.probabilities is not None:
+                self._score(s, logits, n - 1, first)
+            if s.constraint is not None:
+                s.constraint.advance([first])
+            if s.history is not None:
+                s.history.extend([first])
+        except Exception as error:          # noqa: BLE001  (this request fails alone)
+            s.error, s.done, s.finished = error, True, time.perf_counter()
+            return [s]
+        s.take([first], self._ends(s))
+        return [s] if s.done else []
+
+    def _mode(self, count):
+        """DFlash for latency-bound batches (padded rows within one tile: the C1 policy); wider batches draft when
+        the measured tokens per ms beat serial steps at this batch size (periodic probe)."""
+        from .graphs import MODE_ROUND, MODE_SERIAL_TAPS, buckets
+        from .target import DECODE_ROWS
+        bucket = next(b for b in buckets(self.e.streams) if b >= count)
+        if bucket * self.e.block <= DECODE_ROWS:
+            return MODE_ROUND
+        round_ms, serial_ms = self.costs[(MODE_ROUND, bucket)], self.costs[(MODE_SERIAL_TAPS, bucket)]
+        if self.tokens_per_round * serial_ms >= round_ms or self.serial_rounds >= self.PROBE:
+            self.serial_rounds = 0
+            return MODE_ROUND
+        self.serial_rounds += 1
+        return MODE_SERIAL_TAPS
+
+    def _launch(self, live, pending):
+        """Launch the next batch: one forward per mode group; ``pending`` holds decided, undelivered tokens."""
+        from .graphs import MODE_ROUND, MODE_SERIAL, MODE_SERIAL_TAPS, buckets
+        e = self.e
+        drafting = [s for s in live if s.drafts]
+        serial = [s for s in live if not s.drafts]
+        groups = []
+        if drafting and self._mode(len(drafting)) == MODE_ROUND:
+            groups.append((MODE_ROUND, drafting))
+        elif drafting:
+            serial = drafting + serial              # one forward; their taps keep the drafter context
+        if serial:
+            groups.append((MODE_SERIAL_TAPS if drafting and not groups else MODE_SERIAL, serial))
+        self.inflight = []
+        for mode, group in groups:
+            bucket = next(b for b in buckets(e.streams) if b >= len(group))
+            entries, full = [], []
+            for g, s in enumerate(group):
+                extra = pending.get(id(s), ())
+                last = extra[-1] if extra else s.out[-1]
+                entries.append((s.slot, len(s.prompt) + len(s.out) + len(extra) - 1, last))
+                if s.full:
+                    full.append(g)
+            t0 = time.perf_counter()
+            out = e.announce(OP_BATCH, mode, bucket, len(entries), 0, [x for entry in entries for x in entry] + full)
+            self.inflight.append((mode, bucket, group, entries, full, out, t0))
+        self.done.record()
+
+    def _collect(self):
+        """Wait (GIL released) for the batch in flight; decide each live stream's tokens: [(stream, chosen | None)]
+        (None: the request failed alone, its error set)."""
+        import numpy as np
+        from tensorfold.cuda.sampling import sample_rows
+        from .graphs import MODE_ROUND
+        e = self.e
+        waited = time.perf_counter()
+        self.done.synchronize()
+        now = time.perf_counter()
+        decided = []
+        for mode, bucket, group, entries, full, (compact, proposals, rows, aligned), t0 in self.inflight:
+            n = e.block if mode == MODE_ROUND else 1
+            key = (mode, bucket)
+            self.costs[key] = 0.9 * self.costs[key] + 0.1 * (now - t0) * 1000
+            proposed = proposals.view(bucket, n - 1).tolist() if proposals is not None else None
+            if compact is not None:
+                best = compact.cpu().numpy()                   # [world, rows, 3] (already complete)
+                choice = best[:, :, 0].argmax(axis=0)          # first (lowest) rank among equal maxima
+                tokens = best[choice, np.arange(best.shape[1]), 1].astype(np.int64).tolist()
+                maxima = best[choice, np.arange(best.shape[1]), 0]
+                bad = best[:, :, 2].any(axis=0) | ~np.isfinite(maxima)
+                fullrow = {g: g if aligned else i for i, g in enumerate(full)}
+            else:                                              # complete rows for every segment
+                fullrow = {g: g for g in range(len(group))}
+            gained = drafted = 0
+            for g, s in enumerate(group):
+                if s.done or self.streams.get(s.sid) is not s:
+                    continue                                    # ended/cancelled/yielded after this launch
+                start, anchor = entries[g][1], entries[g][2]
+                inputs = [anchor] + (proposed[g] if proposed is not None else [])
+                emitted = len(s.out)                    # the launch-time pending tokens were delivered since
+                room = s.count - emitted
+                try:
+                    logits = rows[fullrow[g] * n:(fullrow[g] + 1) * n] if g in fullrow else None
+                    if s.forced is not None:
+                        sampled = s.forced[emitted:emitted + n]
+                    elif logits is None:
+                        if bad[g * n:(g + 1) * n].any():
+                            raise ValueError("sampling scores contain NaN or positive infinity, or no finite score")
+                        sampled = tokens[g * n:(g + 1) * n]
+                    elif mode == MODE_ROUND:
+                        sampled = sample_rows(logits, list(range(start + 1, start + n + 1)), s.sampling)
+                    else:
+                        sampled = sample_rows(self._shape(s, logits), [start + 1], s.sampling)
+                    chosen = _accepted(sampled, inputs, room, self._ends(s)) if mode == MODE_ROUND else sampled[:1]
+                    if s.probabilities is not None:
+                        for row in range(len(chosen)):
+                            self._score(s, logits[row:row + 1], start + row, chosen[row], origin=(row, n))
+                    if s.constraint is not None:
+                        s.constraint.advance(chosen)
+                    if s.history is not None:
+                        s.history.extend(chosen)
+                except Exception as error:          # noqa: BLE001  (this request fails alone)
+                    s.error, s.done, s.finished = error, True, time.perf_counter()
+                    decided.append((s, None))
+                    continue
+                s.counted(n)
+                if s.drafts and mode == MODE_ROUND:
+                    gained += len(chosen)
+                    drafted += 1
+                decided.append((s, chosen))
+            if drafted:
+                self.tokens_per_round = 0.8 * self.tokens_per_round + 0.2 * (gained / drafted)
+            if TRACE:
+                k = self.trace.setdefault(key, [0] + [0.0] * 7)
+                m = e.marks
+                k[0] += 1
+                for i, dt in enumerate((now - t0, time.perf_counter() - now, m[0] - t0, m[1] - m[0], m[2] - m[1],
+                                        waited - m[2], now - waited)):
+                    k[1 + i] += dt * 1000
+                if k[0] % 200 == 0:
+                    f = [round(v / k[0], 3) for v in k[1:]]
+                    print(f"[trace] {key}: {k[0]} rounds, launch-to-done {f[0]} decide {f[1]} | send {f[2]} stage "
+                          f"{f[3]} replay-call {f[4]} until-wait {f[5]} wait {f[6]} ms, DFlash tokens/round "
+                          f"{self.tokens_per_round:.2f}", flush=True)
+        self.inflight = []
+        return decided
 
     @staticmethod
-    def _shape(logits, constraint, history):
-        if constraint is not None:
+    def _shape(s, logits):
+        if s.constraint is not None:
             logits = logits.clone()
-            constraint.mask(logits)
-        if history is not None:
-            logits = history.apply(logits, copy=constraint is None)
+            s.constraint.mask(logits)
+        if s.history is not None:
+            logits = s.history.apply(logits, copy=s.constraint is None)
         return logits
 
-    def _score(self, sink, prompt, logits, position, origin="prompt-end"):
-        """Teacher-forcing sink: log probabilities of the forced next token at ``position`` (+ top)."""
+    @staticmethod
+    def _score(s, logits, position, token, origin="prompt-end"):
+        """Probabilities sink: log probability of ``token`` after ``position`` (+ top)."""
         import torch
+        sink = s.probabilities
         lp = torch.log_softmax(logits[-1:].float(), -1)[0]
         if sink.top:
             values, ids = torch.topk(lp, sink.top)
@@ -378,19 +744,6 @@ class Gemma4SM70Engine:
         nxt = position + 1
         if nxt < sink.start:
             return
-        token = sink.forced[nxt - sink.start]
         sink.add([nxt], [token], [float(lp[token])], [tops], [topv])
-        sink.origins([nxt], [origin])
-
-    def drain(self) -> None:
-        import torch
-        with self._lock:
-            torch.cuda.synchronize()
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            if self.rank == 0:
-                self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0))
+        if hasattr(sink, "origins"):
+            sink.origins([nxt], [origin])
