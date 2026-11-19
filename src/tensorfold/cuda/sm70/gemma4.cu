@@ -61,8 +61,9 @@ __device__ __forceinline__ float gelu_tanh(float g) {
 
 // ---------------------------------------------------------------------------------------------- W4 GEMV
 // Lanes split into 32 / L subgroups; a subgroup owns P physical weight rows and strides their 16-element groups
-// by L, so every activation load is reused across the P rows it multiplies. L and P depend only on the
-// matrix shape, never on the number of activation rows M, so each row's arithmetic is row-count invariant.
+// by L, so every activation load is reused across the P rows it multiplies. L depends only on the matrix shape, never
+// on the number of activation rows M; each output's arithmetic depends on L alone (not on P or the row tile), so each
+// row's result is row-count invariant.
 template <int L>
 __device__ __forceinline__ float sub_sum(float v) {
 #pragma unroll
@@ -1240,26 +1241,30 @@ void w4_rows_launch(const Tensor& x, int64_t M, const Tensor& codes, const Tenso
 }
 }  // namespace
 
-// Shape-only tiling (row-count invariant): half-warp subgroups for <= 16 groups, else full warps; outputs per
-// subgroup reuse each activation load (4 plain, 2 GEGLU pairs), dropping to 2/1 for narrow matrices.
+// Half-warp subgroups for <= 16 groups, else full warps; outputs per subgroup reuse each activation load (4 plain,
+// 2 GEGLU pairs), dropping to 2/1 for narrow matrices. One-row calls take 2 outputs on wide matrices (more blocks:
+// 1.25x faster) and narrow GEGLU 2 pairs from 32 rows (measured). Outputs per subgroup never change an output's
+// arithmetic (each output's group stride and reduction depend on L only), so every choice is bitwise row-count
+// invariant.
 void w4_rows_cuda(const Tensor& x, int64_t M, const Tensor& codes, const Tensor& scales, const Tensor& rowmul,
                   int64_t N, int64_t K, Tensor& out, int64_t ldo, bool geglu) {
     const bool half_warp = K / 16 <= 16;
     const bool wide = N >= 1024;
     if (geglu) {
         if (half_warp) w4_rows_launch<true, 1, 16>(x, M, codes, scales, rowmul, N, K, out, ldo);
-        else if (wide) w4_rows_launch<true, 2, 32>(x, M, codes, scales, rowmul, N, K, out, ldo);
+        else if (wide || M >= 32) w4_rows_launch<true, 2, 32>(x, M, codes, scales, rowmul, N, K, out, ldo);
         else w4_rows_launch<true, 1, 32>(x, M, codes, scales, rowmul, N, K, out, ldo);
     } else {
         if (half_warp) w4_rows_launch<false, 2, 16>(x, M, codes, scales, rowmul, N, K, out, ldo);
-        else if (wide) w4_rows_launch<false, 4, 32>(x, M, codes, scales, rowmul, N, K, out, ldo);
+        else if (wide && M > 1) w4_rows_launch<false, 4, 32>(x, M, codes, scales, rowmul, N, K, out, ldo);
         else w4_rows_launch<false, 2, 32>(x, M, codes, scales, rowmul, N, K, out, ldo);
     }
 }
 
 void w4_expert_gateup_cuda(const Tensor& x, int64_t pairs, int64_t slots, const Tensor& local, const Tensor& codes,
                            const Tensor& scales, const Tensor& rowmul, int64_t W, int64_t K, Tensor& act) {
-    constexpr int R = 2;
+    // One output (gate + up row) per warp: twice the blocks of two, 1.07-1.7x faster at 1..40 rows (measured).
+    constexpr int R = 1;
     const dim3 grid((W + g4::WARPS * R - 1) / (g4::WARPS * R), pairs);
     g4::w4_expert_gateup<R><<<grid, 256, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)slots, cptr<int>(local),
         cptr<uint8_t>(codes), cptr<uint8_t>(scales), cptr<float>(rowmul), (int)W, (int)K, ptr<float>(act));
