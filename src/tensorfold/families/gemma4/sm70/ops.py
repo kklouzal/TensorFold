@@ -2,3 +2,4 @@
 
 OP_STOP, OP_ATTACH, OP_DETACH, OP_FORWARD, OP_BATCH = 1, 2, 3, 4, 5
 OP_SNAP, OP_RESTORE, OP_DROP, OP_COPY, OP_GROW = 6, 7, 8, 9, 10
+OP_HSPILL, OP_HRESTORE = 11, 12                                   # host prefix tier (prefix_host.py)

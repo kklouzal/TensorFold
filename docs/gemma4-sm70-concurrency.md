@@ -19,15 +19,21 @@ Each scheduler round is pipelined:
    prompt, so a prompt's arithmetic never depends on load. Concurrent prompts finish together and their
    decode batches stay full, and every prompt chunk is followed by one batched decode round.
 
-Greedy requests without grammar, penalties or probabilities draft with DFlash. Latency-bound batches (padded
+Requests without grammar or penalties draft with DFlash, greedy and sampled alike. Every verify row is sampled
+from the target distribution by the request's own position-keyed sampler (`tensorfold.cuda.sampling.sample_rows`)
+and a proposal survives only when it equals the token sampled at its row (`engine.draft_acceptance.accepted_prefix`).
+Each emitted token is therefore exactly the token a serial step would have sampled at that position, so a sampled
+reply is the serial reply (rejection sampling with a point-mass proposal: acceptance is the target probability of
+the proposal) and drafted and `"draft": false` replies are equal. Latency-bound batches (padded
 verify rows within one 16-row tile) always draft, as the C1 engine does. Wider batches compare the measured
 cost of a DFlash round and of a serial step at that batch size, scaled by the observed tokens per round, and
-re-probe DFlash every 32 serial rounds. Greedy output does not depend on that choice (verification). Other
-requests take one row per round. Plain serial batches of up to 16 rows (the sampled, grammar and penalty
-path) gather complete vocabulary rows inside their CUDA graph, as the C1 engine did. Other batches exchange
-per-shard maxima (value, index, NaN/+inf flag) and gather complete rows only for the requests that need them.
+re-probe DFlash every 32 serial rounds. Output does not depend on that choice. Requests with grammar or
+penalties take one row per round. Plain serial batches of up to 16 rows
+gather complete vocabulary rows inside their CUDA graph, as the C1 engine did. Other batches exchange
+per-shard maxima (value, index, NaN/+inf flag) and gather complete rows only for the requests that need them
+(sampled, grammar, penalty and scored requests).
 
-Followers mirror five control frames (attach, detach, prompt chunk, batch, stop) over the existing same-host
+Followers mirror the control frames (attach, detach, prompt chunk, batch, stop and the prefix-cache operations below) over the existing same-host
 control pipes and run identical kernels and collectives.
 
 DFlash rounds carry no pending state. The round's drafter block writes K/V at positions `start..start+block-1`.
@@ -35,6 +41,36 @@ The target then verifies those rows, and the drafter appends every verified row'
 Rows beyond the accepted prefix are rewritten by the next block, which starts inside that range, before any
 read. Serial steps of drafting requests also append their taps. A stream can therefore switch between DFlash
 and serial rounds in any round.
+
+## Prompt-prefix reuse
+
+`prefix.py` keeps prompt states and resumes later requests from the longest kept point that prefixes their prompt,
+with Flash Next's retention policy (`families/qwen4_exp/cuda/prefixes.py`: resume in place, fork a copy into a free
+slot, GreedyDual-Size value over prompt tokens, a chain ladder of spare points). Every request without media and with
+drafting allowed reuses, at any temperature: the sampler does not change prompt state. A `"draft": false` request
+neither borrows nor keeps. Usage reports the reused tokens as `prompt_tokens_details.cached_tokens`; `/stats`
+`prefix_cache` and the Prometheus `prefix_cache_*` families report entries, lookups and hits/tokens by tier.
+
+- Points: the chat template's message starts (`cuda.markers.resume_points`: the second message, the last assistant
+  start and the last other message, at least 256 tokens apart) and the prompt end less one token. With thinking on,
+  a next turn re-renders the previous generation prompt's last three tokens (`<|turn>model\n<|channel>thought\n`),
+  so it resumes from the last assistant start. The prompt end also keeps its last-row logits: an exact repeat
+  computes no prompt row and replies exactly as the original request.
+- State of a point: full-attention caches are linear, so the rows below a point stay valid while later rows are
+  rewritten before any read. Sliding-window rings are overwritten as a slot moves on, so the ring rows a point needs
+  (its last window + 1 positions: 25 target layers and the drafter's sliding layers, 29.7 MB per rank) are copied
+  out right after the prompt chunk containing the point. The target ring (2,048 rows = window 1,024 + one 1,024-row
+  chunk) and the drafter ring (3,072 = window 2,048 + one chunk) are sized so that chunk never overwrites them.
+  Every prompt row feeds the drafter, so a kept point serves later drafting requests.
+- Slots: `--parallel` live streams plus `max(8, --parallel)` slots for idle kept conversations (plus one padding
+  slot); each slot's rings exist from startup. A fork copies the full-cache rows below the point and restores the
+  snapshot; a resume in place restores the snapshot. A slot whose capacity is too small grows by copying its rows.
+- Memory: attached full caches and snapshots are charged to the KV budget. A request that needs room first releases
+  free slots' caches, then evicts the least valuable idle chains; it waits only for memory live streams hold.
+- Arithmetic: when a resume point falls on a 1,024-row chunk boundary of the cold prefill, the cached request's
+  arithmetic is the cold request's and replies are bitwise equal; other resumes compute the suffix in chunks that
+  start at the point (the same prompt arithmetic with different chunk boundaries; suffixes of at most 16 rows use
+  the decode arithmetic), measured below.
 
 ## Memory
 

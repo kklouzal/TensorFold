@@ -24,8 +24,8 @@ from typing import Any, Callable
 
 from tensorfold.engine.draft_acceptance import accepted_prefix as _accepted
 
-from .ops import (OP_ATTACH, OP_BATCH, OP_COPY, OP_DETACH, OP_DROP, OP_FORWARD, OP_GROW, OP_RESTORE, OP_SNAP,
-                  OP_STOP)
+from .ops import (OP_ATTACH, OP_BATCH, OP_COPY, OP_DETACH, OP_DROP, OP_FORWARD, OP_GROW, OP_HRESTORE, OP_HSPILL,
+                  OP_RESTORE, OP_SNAP, OP_STOP)
 from .prefix import PrefixOwner
 F_LOGITS_LAST, F_APPEND, F_SCORE = 2, 4, 16
 SCORE_TOP = 20
@@ -47,7 +47,7 @@ class Gemma4SM70Engine:
                  context: int | None = None, context_explicit: bool | None = None, drafter: str = "",
                  drafter_bits: int = 16, depth: int | None = None, no_drafts: bool = False, streams: int = 1,
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None, graphs: bool = True,
-                 keep_slots: int | None = None) -> None:
+                 keep_slots: int | None = None, prefix_host_bytes: int | None = None) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -78,6 +78,15 @@ class Gemma4SM70Engine:
         slots = streams + self.keep_slots + 1
         self.pad = slots - 1
         self.snaps = {}                           # prefix snapshot id -> (target rings, drafter rings) on this rank
+        # Host prefix tier (prefix_host.py, opt-in): one pinned slab per rank, allocated before the KV budget and the
+        # HTTP host pool are measured; host entry id -> its tensors' slab regions on this rank.
+        if prefix_host_bytes is not None and (type(prefix_host_bytes) is not int or prefix_host_bytes < 0):
+            raise ValueError("prefix_host_bytes must be a nonnegative byte count")
+        from .prefix_host import BLOCK_BYTES
+        self.host_per_rank = (prefix_host_bytes or 0) // tp // BLOCK_BYTES * BLOCK_BYTES
+        self.host_slab = (torch.empty(self.host_per_rank, dtype=torch.uint8, pin_memory=True)
+                          if self.host_per_rank else None)
+        self.host_layout = {}
         self.target = Target(self.w, self.comm, context=self.context_window, slots=slots)
         self.vocab = self.w.config.vocab
         self.head = None
@@ -225,6 +234,56 @@ class Gemma4SM70Engine:
             if head is not None:
                 head.grow(a, b, c)
 
+    def _host_op(self, op, a, b, c, d, ids):
+        """Host prefix tier copies (prefix_host.py), ordered on the device stream; slab offsets follow from the
+        copied tensors' shapes, identical on every rank."""
+        import torch
+        pool, head, slab = self.target.pool, self.head, self.host_slab
+        if op == OP_HSPILL:                    # entry a <- slot b rows [0, c) + snapshots, from block d
+            n = ids[0]
+            sids, gone = ids[1:1 + n], ids[1 + n:]
+            for hid in gone:
+                self.host_layout.pop(hid, None)
+            at = d * (2 << 20)
+            regions = []
+
+            def put(t):
+                nonlocal at
+                size = t.numel() * t.element_size()
+                slab[at:at + size].view(t.dtype).view(t.shape).copy_(t, non_blocking=True)
+                regions.append((at, t.dtype, tuple(t.shape)))
+                at += size
+
+            put(pool.full[b][:, :, :c])
+            if head is not None:
+                put(head.full[b][:, :, :c])
+            snaps = []
+            for sid in sids:
+                target, drafter = self.snaps[sid]
+                snaps.append((target[:2], None if drafter is None else drafter[:2]))
+                for t in (target[2], target[3]) + (() if drafter is None else (drafter[2], drafter[3])):
+                    put(t)
+            self.host_layout[a] = (regions, snaps)
+        else:                                  # OP_HRESTORE: entry a -> slot b rows [0, c), snapshot d -> id ids[0]
+            regions, snaps = self.host_layout[a]
+
+            def get(i):
+                at, dtype, shape = regions[i]
+                size = torch.Size(shape).numel() * torch.empty((), dtype=dtype).element_size()
+                return slab[at:at + size].view(dtype).view(shape)
+
+            pool.full[b][:, :, :c].copy_(get(0), non_blocking=True)
+            first = 1
+            if head is not None:
+                head.full[b][:, :, :c].copy_(get(1), non_blocking=True)
+                first = 2
+            per = 2 if head is None else 4
+            base = first + per * d
+            dev = lambda i: get(i).to("cuda", non_blocking=True)
+            target, drafter = snaps[d]
+            self.snaps[ids[0]] = ((*target, dev(base), dev(base + 1)),
+                                  None if drafter is None else (*drafter, dev(base + 2), dev(base + 3)))
+
     # ---------------------------------------------------------------------------------------------- shared ops
     def _forward(self, slot, start, rows, flags, ids):
         """One stream's prompt chunk at ``start``; returns its gathered last-row logits, scores or None."""
@@ -320,6 +379,8 @@ class Gemma4SM70Engine:
             return self._attach(a, b)
         if OP_SNAP <= op <= OP_GROW:
             return self._prefix_op(op, a, b, c)
+        if op in (OP_HSPILL, OP_HRESTORE):
+            return self._host_op(op, a, b, c, d, ids)
         if op == OP_DETACH:
             return self._detach(a)
         if op == OP_FORWARD:
@@ -419,6 +480,9 @@ class Decoder(PrefixOwner):
         import torch
         self.done = torch.cuda.Event()
         self._init_prefix(engine, engine.points)
+        if engine.host_per_rank:
+            from .prefix_host import HostTier
+            self.host_tier = HostTier(self, engine.host_per_rank)
 
     def live(self) -> int:
         return len(self.streams) + len(self.filling)
@@ -560,19 +624,23 @@ class Decoder(PrefixOwner):
         logits = None
         if s.head is not None:                     # an exact repeat: the kept prompt end's own last-row logits
             logits, s.head, stop, last = s.head, None, n, True
-        elif sink is not None:
-            # One forward per chunk, as unscored prompts: every row whose next token is a prompt token is scored; a
-            # last chunk's final row (scored against the first forced token, unused) also returns its logits.
-            after = prompt[stop] if not last else (s.forced[0] if s.forced is not None else 0)
-            out = e.announce(OP_FORWARD, s.slot, start, stop - start, flags | F_SCORE, prompt[start:stop] + [after])
-            (tl, tv, ti), logits = out if last else (out, None)
-            for r in range(stop - start - (1 if last else 0)):
-                pos = start + r + 1
-                sink.add_prompt([pos], [prompt[pos]], [tl[r]], [ti[r][:sink.top]], [tv[r][:sink.top]])
-            self.keep_points(s, start, stop, logits)
         else:
-            logits = e.announce(OP_FORWARD, s.slot, start, stop - start, flags, prompt[start:stop])
-            self.keep_points(s, start, stop, logits)
+            self.keep_before(s, start)
+            if sink is not None:
+                # One forward per chunk, as unscored prompts: every row whose next token is a prompt token is
+                # scored; a last chunk's final row (scored against the first forced token, unused) also returns
+                # its logits.
+                after = prompt[stop] if not last else (s.forced[0] if s.forced is not None else 0)
+                out = e.announce(OP_FORWARD, s.slot, start, stop - start, flags | F_SCORE,
+                                 prompt[start:stop] + [after])
+                (tl, tv, ti), logits = out if last else (out, None)
+                for r in range(stop - start - (1 if last else 0)):
+                    pos = start + r + 1
+                    sink.add_prompt([pos], [prompt[pos]], [tl[r]], [ti[r][:sink.top]], [tv[r][:sink.top]])
+            else:
+                logits = e.announce(OP_FORWARD, s.slot, start, stop - start, flags, prompt[start:stop])
+            if last and s.keep_end:
+                self.keep_end(s, logits)
         s.pos = stop
         s.prefill_s += time.perf_counter() - t0
         self.filling.remove(s)

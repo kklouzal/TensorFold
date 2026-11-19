@@ -18,7 +18,6 @@ Every operation is announced to all ranks (rank 0 decides); snapshot ids are ran
 from __future__ import annotations
 
 from tensorfold.cuda.memory_gate import NoRoom
-from tensorfold.cuda.markers import MIN_GAP
 from tensorfold.families.qwen4_exp.cuda import prefixes
 
 from .ops import OP_ATTACH, OP_COPY, OP_DETACH, OP_DROP, OP_GROW, OP_RESTORE, OP_SNAP
@@ -40,7 +39,8 @@ class Slot:
 
     @property
     def limit(self) -> int:
-        return self.capacity
+        """Resident window: every slot can grow to the whole context (uniform slots)."""
+        return self.owner.e.target.alloc
 
     def begin_sequence_generation(self) -> None:
         """Nothing slot-generation-scoped to retire here: every write is ordered on the one device stream."""
@@ -74,6 +74,7 @@ class PrefixOwner:
         self.snap_ids: set[int] = set()
         self.next_snap = 0
         self._extent = 0
+        self._counted = None                             # the prefix tier the latest placement counted
 
     # ------------------------------------------------------------------------------------------ owner surface
     def _busy(self) -> set[int]:
@@ -165,12 +166,15 @@ class PrefixOwner:
         live streams hold the memory. Sets ``s.st``, ``s.slot``, ``s.cached``, ``s.pos`` and ``s.head`` (an exact
         repeat's stored last-row logits)."""
         self._extent = capacity
+        before = dict(self.prefix_counters)
         try:
             st, resume, cached = prefixes.slot_for(self, s.prompt, reuse)
         except RuntimeError as error:
             raise NoRoom(f"a {len(s.prompt)}-token prompt waits for a free slot") from error
         finally:
             self._sweep()
+        self._counted = next((t for t in ("resume", "fork", "host")
+                              if self.prefix_counters[t + "_hits"] != before[t + "_hits"]), None)
         if resume is None:
             cached = 0
             if st.capacity != capacity:
@@ -187,38 +191,75 @@ class PrefixOwner:
                 if all(k[1] is not st for k in self.kept):
                     self.free.append(st)
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for KV memory until a live stream finishes")
-            self.e.announce(OP_RESTORE, st.index, resume["state"]["sid"])
-            s.head = resume.get("head")
+            sid, s.head = resume["state"]["sid"], resume.get("head")
+            from .target import PROMPT_ROWS
+            if s.head is None and cached % PROMPT_ROWS:
+                # An exact-end point extended: resume at the aligned boundary below it (exact chunk arithmetic).
+                aligned, sid = self._aligned(s.prompt, cached)
+                self._recount(cached - aligned)
+                cached = aligned
+            if sid is None:
+                self.e.announce(OP_ATTACH, st.index, st.capacity)          # same capacity: empty rings only
+            else:
+                self.e.announce(OP_RESTORE, st.index, sid)
         s.st, s.slot, s.cached, s.pos = st, st.index, cached, cached
         s.stops = self._stops(s) if reuse else []
+        s.keep_end = reuse
+
+    def _recount(self, tokens: int) -> None:
+        """Take back reused tokens a placement counted but the request recomputes (its latest counted tier)."""
+        if tokens:
+            tier = self._counted
+            if tier is not None:
+                self.prefix_counters[tier + "_tokens"] -= tokens
 
     def _stops(self, s) -> list[int]:
-        """Positions whose states this prompt keeps: message starts past the reused prefix, then its end."""
-        n = len(s.prompt)
-        end = entry_end(s.prompt)
+        """Chunk boundaries (multiples of PROMPT_ROWS) this prompt keeps states at: the boundary at or before each
+        message start and before its end. Prefill chunks are aligned to these boundaries, so a request resuming at
+        one computes exactly the chunks a cold prefill of its prompt would: its replies equal the cold ones."""
+        from .target import PROMPT_ROWS
         found = self.points(s.prompt) if self.points is not None else []
-        stops = sorted({p for p in found if s.cached + MIN_GAP <= p < end})
-        return stops + ([end] if s.cached < end and n >= 2 else [])
+        bounds = {p // PROMPT_ROWS * PROMPT_ROWS for p in (*found, entry_end(s.prompt))}
+        return sorted(b for b in bounds if s.cached < b < len(s.prompt))
 
-    def keep_points(self, s, start: int, stop: int, logits) -> None:
-        """After the prompt chunk [start, stop): keep the stream's points inside it (``logits``: the prompt's
-        last-row logits when the chunk ends the prompt)."""
-        n = len(s.prompt)
-        while s.stops and s.stops[0] <= stop:
-            p = s.stops.pop(0)
-            if p < start:
-                continue
-            last = p == entry_end(s.prompt) and stop == n and n >= 2
-            at = n if last else p
-            sid = self._snapshot(s.st, at)
-            if sid is None:
-                return
-            snap = {"sid": sid, "pos": p, "mtp_len": p}
-            if last:
-                snap["prompt_end"] = {"token": s.prompt[-1], "state": {"sid": sid, "pos": n, "mtp_len": n},
-                                      "tail": None, "head": logits.clone(), "last": None}
-            prefixes.remember(self, list(s.prompt[:p]), s.st, snap, None)
+    def keep_before(self, s, start: int) -> None:
+        """Before the prompt chunk at ``start``: keep the state there when it is one of the stream's stops."""
+        while s.stops and s.stops[0] < start:
+            s.stops.pop(0)
+        if not s.stops or s.stops[0] != start:
+            return
+        s.stops.pop(0)
+        sid = self._snapshot(s.st, start)
+        if sid is not None:
+            prefixes.remember(self, list(s.prompt[:start]), s.st, {"sid": sid, "pos": start, "mtp_len": start}, None)
             self._sweep()
+
+    def keep_end(self, s, logits) -> None:
+        """After the prompt's last chunk: keep its exact end (state and last-row logits) for exact repeats, as the
+        point one token before it (``prefixes``' prompt-end convention). A request that merely extends this point
+        resumes at the aligned boundary below it instead (``place``)."""
+        n = len(s.prompt)
+        if n < 2:
+            return
+        sid = self._snapshot(s.st, n)
+        if sid is None:
+            return
+        snap = {"sid": sid, "pos": n - 1, "mtp_len": n - 1, "exact": True,
+                "prompt_end": {"token": s.prompt[-1], "state": {"sid": sid, "pos": n, "mtp_len": n},
+                               "tail": None, "head": logits.clone(), "last": None}}
+        prefixes.remember(self, list(s.prompt[:n - 1]), s.st, snap, None)
+        self._sweep()
+
+    def _aligned(self, prompt, cached: int):
+        """The longest kept chunk-boundary point at or below ``cached`` that prefixes ``prompt`` (its length and
+        snapshot id), or (0, None)."""
+        from .target import PROMPT_ROWS
+        best = (0, None)
+        for ids, _st, snap, _tail in self.kept:
+            n = len(ids)
+            if best[0] < n <= cached and n % PROMPT_ROWS == 0 and not snap.get("exact") and prompt[:n] == ids:
+                best = (n, snap["sid"])
+        return best
 
     def retire_slot(self, s) -> None:
         """A finished stream's slot: idle kept when it holds points, else free (its caches released)."""
@@ -237,4 +278,5 @@ class PrefixOwner:
         for ids, slot, _snap, _tail in kept:
             ends[id(slot)] = max(ends.get(id(slot), 0), len(ids))
         return {"entries": len(kept), "capacity": self.keep, "slots": len(ends), "tokens": sum(ends.values()),
-                "snapshots": len(self.snap_ids), **dict(self.prefix_counters), "host": None}
+                "snapshots": len(self.snap_ids), **dict(self.prefix_counters),
+                "host": None if self.host_tier is None else self.host_tier.record()}

@@ -270,9 +270,13 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     host_bytes = getattr(args, "prefix_host_bytes", None)
     if host_bytes is not None and (type(host_bytes) is not int or not 0 <= host_bytes <= sys.maxsize):
         raise ValueError("--prefix-host-bytes must be a nonnegative byte count")
-    if host_bytes and (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
-                       or history != "gpu" or getattr(args, "vram_experts", None) is not None):
-        raise ValueError("--prefix-host-bytes requires Flash Next CUDA GGUF GPU histories")
+    gemma_tp8 = backend == "cuda" and getattr(family, "model_type", "") in ("gemma4", "gemma4_text") \
+        and getattr(args, "tp", 1) == 8
+    if host_bytes and not gemma_tp8 and (
+            backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+            or history != "gpu" or getattr(args, "vram_experts", None) is not None):
+        raise ValueError("--prefix-host-bytes requires Flash Next CUDA GGUF GPU histories or Gemma 4 on eight V100s "
+                         "(--tp 8)")
     windows = getattr(args, "kv_full_windows", None)
     if getattr(args, "kv_short_window", None) is not None and (
             backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
