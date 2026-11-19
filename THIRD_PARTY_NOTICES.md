@@ -163,8 +163,8 @@ The MTP layer TensorFold drafts with comes from that checkpoint's last shard (MI
 `deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja` is the unmodified `chat_template.jinja` of
 [google/gemma-4-26B-A4B-it](https://huggingface.co/google/gemma-4-26B-A4B-it) (revision 4d7ae49), published by Google
 under the Apache License 2.0. See [the license text](LICENSES/Apache-2.0.txt).
-`deploy/gb10/gemma4-chat-template-harness-20261119.jinja` is a modified copy of that template (Apache-2.0); its
-header states the changes.
+`deploy/gb10/gemma4-chat-template-harness-20261119.jinja` and `-20261119-t4.jinja` are modified copies of that
+template (Apache-2.0); their headers state the changes.
 
 TensorFold ships no model weights. The `z-lab/Qwen3.8-27B-DFlash2` model card states Apache-2.0.
 The optional `incoai/GLM-5.3-Flash-DFlash2` model card states CC BY-NC-ND 4.0, for non-commercial use
