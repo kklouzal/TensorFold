@@ -900,6 +900,26 @@ def test_incremental_generation_pays_prompt_plus_initial_reply_and_funds_ahead(m
     assert p.used == 0
 
 
+def test_reply_tokens_past_the_paid_ceiling_are_funded_before_presentation(monkeypatch):
+    # A gate's fix tokens follow scheduler output that already reached the paid
+    # ceiling; App.run funds len(out)+len(new) and only then presents them.
+    monkeypatch.setattr(hp, "OUTPUT_INITIAL_TOKENS", 8)
+    monkeypatch.setattr(hp, "PRESENTATION_INITIAL_BYTES", 8)
+    p, calls = presentation_pool(1 << 20, table=(128,))
+    p.generation_bound = (lambda amount, output, extent, *, presentation_bytes=None:
+                          (extent + presentation_bytes, presentation_bytes, 0, 0))
+    owner = p.lease()
+    owner.generation(body_bytes=0, output_tokens=1000, extent_tokens=1100, prompt_tokens=100)
+    chunk = [0] * 10                             # 8 produced at the ceiling + 2 fix tokens
+    with pytest.raises(RuntimeError):
+        owner.present(chunk)                     # unfunded past the ceiling: never silently over budget
+    owner.fund_output(len(chunk))
+    owner.present(chunk)
+    assert owner._funded_output >= 10 and owner._presented_bytes == 1280
+    owner.close()
+    assert p.used == 0
+
+
 def test_output_funding_ceiling_parks_production_until_paid_and_follows_continuations():
     from tensorfold.cuda.output_mailbox import OutputFunding, OutputMailbox
 

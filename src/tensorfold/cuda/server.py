@@ -1616,6 +1616,10 @@ class App:
 
             serving: list[Any] = [None]
 
+            def client_alive() -> bool:
+                """A host-payload growth wait's ~1 s tick: keepalive, and False once the client left."""
+                return bool(emit(None)) and not (cancelled is not None and cancelled())
+
             def on_tokens(new: list[int]) -> bool:
                 # True stops the engine after this round; engines that finish on both ranks keep calling and get True
                 if stopped["client"] or stopped["stop"] or failed[0] is not None:
@@ -1625,14 +1629,15 @@ class App:
                         if not emit(None) or (cancelled is not None and cancelled()):
                             stopped["client"] = True
                         elif presentation_owner is not None:
-                            presentation_owner.fund_output(len(out), tick=lambda: bool(emit(None)) and not (
-                                cancelled is not None and cancelled()))
+                            presentation_owner.fund_output(len(out), tick=client_alive)
                         return stopped["client"]
                     if presentation_owner is not None:
-                        # Pay these tokens' decoded text/reply/encoder bytes before any
-                        # list or string grows; a bounded wait then fails this request.
-                        presentation_owner.present(new, tick=lambda: bool(emit(None)) and not (
-                            cancelled is not None and cancelled()))
+                        # Before ``out`` or any string grows: keep the paid reply ceiling (and its
+                        # token-proportional owners) ahead of these tokens -- a gate's fix tokens are
+                        # not scheduler-produced and may pass the old ceiling -- then pay their
+                        # decoded text/reply/encoder bytes. A bounded wait then fails this request.
+                        presentation_owner.fund_output(len(out) + len(new), tick=client_alive)
+                        presentation_owner.present(new, tick=client_alive)
                     if stops.strings:
                         kept = []
                         for token in new:             # token by token: the round's width cannot move the cut
@@ -1663,10 +1668,6 @@ class App:
                                 grammar_state[0].advance([token])
                     stream.add(new)
                     new = fed
-                    if presentation_owner is not None:
-                        # Keep the scheduler's paid reply ceiling ahead of this reply (bounded wait, as above).
-                        presentation_owner.fund_output(len(out), tick=lambda: bool(emit(None)) and not (
-                            cancelled is not None and cancelled()))
                     reasoning, answer = visible(False)
                     delta: dict[str, Any] = {}
                     if len(reasoning) > sent["reasoning"]:

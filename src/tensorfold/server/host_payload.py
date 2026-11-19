@@ -457,10 +457,7 @@ class HostPayloadLease:
             return
         if self._generation_shape is None:
             raise RuntimeError("output presentation requires its paid generation phase")
-        added = 0
-        for token in tokens:
-            added += table[token]
-        needed = self._presented_bytes + added
+        needed = self._presented_bytes + sum(map(table.__getitem__, tokens))
         if needed > self._funded_presentation:
             target = min(max(needed, self._funded_presentation + self._funded_presentation // 2),
                          self._funded_output * self.pool.piece_bytes_max)
