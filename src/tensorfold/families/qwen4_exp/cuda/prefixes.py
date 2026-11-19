@@ -195,6 +195,17 @@ def _count(owner, kind, cached):
 
 
 def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, extent=None):
+    """``_place`` a request; the slot's writes then wait (GPU-side) for any host-tier spill still reading its rows."""
+
+    placed = _place(owner, prompt, reuse, principal=principal, extent=extent)
+    if getattr(owner, "host_tier", None) is not None:
+        from .prefix_host import await_spill
+
+        await_spill(placed[0])
+    return placed
+
+
+def _place(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, extent=None):
     """Copy a fork into spare capacity; else resume a chain in place when that keeps more than it discards.
 
     ``extent`` (prompt + reply + speculative guard rows) restricts every placement, resume and fork target to
@@ -217,6 +228,10 @@ def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, exte
         try:
             if owner._grow(spare, len(prompt) + owner.depth + 2, protect=best[1]):
                 spare.begin_sequence_generation()
+                if getattr(owner, "host_tier", None) is not None:
+                    from .prefix_host import await_spill
+
+                    await_spill(spare)                  # the fork writes this slot before slot_for returns
                 state, tail, n, end = _resumed(best, prompt)
                 restored = spare.copy_prefix(best[1], n, state["mtp_len"],
                     **({"indexer_snapshot": state["compact_indexer"], "poison_control": owner.poison_control}

@@ -23,6 +23,7 @@ use beyond its best VRAM point by ``MIN_GAIN`` tokens is restored.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 
 import torch
@@ -52,6 +53,14 @@ def _bytes_of(tensor):
     return tensor.reshape(-1).view(torch.uint8)
 
 
+def await_spill(st):
+    """Order a slot's next write after a pending spill of its rows (a GPU-side wait, no host sync)."""
+    ready = getattr(st, "host_spill_ready", None)
+    if ready is not None:
+        torch.cuda.current_stream().wait_event(ready)
+        st.host_spill_ready = None
+
+
 class HostPrefixTier:
     """One rank's pinned host slab and the rank-replicated host entry table."""
 
@@ -62,6 +71,10 @@ class HostPrefixTier:
         self.blocks = capacity_bytes // block_bytes
         self.capacity = self.blocks * block_bytes
         self.slab = torch.empty(self.capacity, dtype=torch.uint8, pin_memory=pin)
+        self.device = torch.device(device)
+        # Spills copy on their own stream, after everything already queued on the coordinator's stream, so decode
+        # and prefill keep running; a slot's next writer and a restore of the entry wait on the spill's event.
+        self.stream = torch.cuda.Stream(self.device) if self.device.type == "cuda" else None
         self.free = list(range(self.blocks - 1, -1, -1))      # pop() hands out ascending blocks
         self.entries: list[dict] = []
         self.device, self.comm = torch.device(device), comm
@@ -83,6 +96,9 @@ class HostPrefixTier:
 
     def _put(self, blocks, cursor, tensor):
         source = _bytes_of(tensor.contiguous())
+        if self.stream is not None:
+            # The copy reads this device memory on the side stream: keep it from reuse until that work is done.
+            source.record_stream(self.stream)
         region = _Region(cursor[0], source.numel(), tensor.dtype, tuple(tensor.shape))
         for view, at in self._views(blocks, region.offset, region.nbytes):
             view.copy_(source[at:at + view.numel()], non_blocking=True)
@@ -268,21 +284,35 @@ class HostPrefixTier:
         cursor = [0]
         placement = st.history_placement
         layers = []
-        for ordinal, cache, pool, count in self._layers(st, rows, mtp_rows):
-            runs = []
-            for start, offset, length in self._runs(cache, count, placement.page_tokens):
-                runs.append((start, length, [self._put(blocks, cursor, tensor[offset:offset + length])
-                                             for tensor in self._cache_tensors(cache)]))
-            pooled = None
-            if st.history_rank == placement.indexer_owner(st.history_slot, ordinal, include_mtp=hasattr(st, "mtp_kc")):
-                pooled = self._put(blocks, cursor, pool[:count // st.ratio])
-            layers.append((ordinal, count, tuple(cache.owners[:(count + placement.page_tokens - 1)
-                                                               // placement.page_tokens]), runs, pooled))
-        packed = [(list(point[0]), self._pack(blocks, cursor, point[2]),
-                   None if point[3] is None else self._pack(blocks, cursor, point[3])) for point in fresh]
+        context = contextlib.nullcontext()
+        if self.stream is not None:
+            # After the rows' writers and any queued restore that read these blocks (stream order).
+            self.stream.wait_stream(torch.cuda.current_stream(self.device))
+            context = torch.cuda.stream(self.stream)
+        ready = None
+        with context:
+            for ordinal, cache, pool, count in self._layers(st, rows, mtp_rows):
+                runs = []
+                for start, offset, length in self._runs(cache, count, placement.page_tokens):
+                    runs.append((start, length, [self._put(blocks, cursor, tensor[offset:offset + length])
+                                                 for tensor in self._cache_tensors(cache)]))
+                pooled = None
+                if st.history_rank == placement.indexer_owner(st.history_slot, ordinal,
+                                                              include_mtp=hasattr(st, "mtp_kc")):
+                    pooled = self._put(blocks, cursor, pool[:count // st.ratio])
+                layers.append((ordinal, count, tuple(cache.owners[:(count + placement.page_tokens - 1)
+                                                                   // placement.page_tokens]), runs, pooled))
+            packed = [(list(point[0]), self._pack(blocks, cursor, point[2]),
+                       None if point[3] is None else self._pack(blocks, cursor, point[3])) for point in fresh]
+            if self.stream is not None:
+                ready = torch.cuda.Event()
+                ready.record(self.stream)
         if cursor[0] > len(blocks) * self.block_bytes:
             raise RuntimeError("host prefix spill exceeded its rank-agreed allocation")
+        if ready is not None:
+            st.host_spill_ready = ready              # prefixes.slot_for: the slot's next writer waits on it
         self.entries.append({"principal": principal, "points": packed, "blocks": blocks, "layers": layers,
+                             "ready": ready,
                              "rows": rows, "mtp_rows": mtp_rows, "kv_identity": st.kv_identity,
                              "class": self.owner_class(placement, st.history_slot, len(st.kc) + hasattr(st, "mtp_kc")),
                              "used": self.clock, "uses": 1})
@@ -314,6 +344,9 @@ class HostPrefixTier:
         placement = st.history_placement
         for reader in tuple(st.history_native_readers):
             reader.wait_native_reuse()
+        await_spill(st)
+        if entry["ready"] is not None:
+            torch.cuda.current_stream(self.device).wait_event(entry["ready"])
         blocks = entry["blocks"]
         caches = {ordinal: (cache, pool) for ordinal, cache, pool, _count in
                   self._layers(st, entry["rows"], entry["mtp_rows"])}
