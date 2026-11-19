@@ -2561,9 +2561,9 @@ exact-graph catalogue, captured at startup), RotorQuant Q4 `rotorquant-iso64-nor
 KV and 32 complete 262,144-token windows. The previous default (ordinary launcher,
 FP16 KV, Torch reference experts) took 266 s to the first token of a 2,014-token
 prompt; it remains available as `TF_V100_LAUNCH=reference` for teacher and
-qualification tools. Until the HTTP host-payload reservation becomes incremental,
-thinking-on requests (the default) at this context are admitted three or four at a
-time and further ones get HTTP 503; `TF_THINKING=off` gives full 32-way concurrency. Numbers and limits: [production launch](deploy/v100/README.md#production-launch-compose-default).
+qualification tools. Thinking-on requests (the default) are admitted on all 32 lanes:
+HTTP host payload grows with each reply instead of reserving the whole 262,144-token
+window up front (32 simultaneous thinking requests ran at once). Numbers and limits: [production launch](deploy/v100/README.md#production-launch-compose-default).
 
 Personal V100 deployment profiles cap Q8 KV at 24 concurrent requests and the
 SM70 Q4 profiles (`rotorquant-iso64-norm4-h64`, the default, and `rotorquant-iso4-sm70-v1`)

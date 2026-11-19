@@ -129,11 +129,10 @@ tf_v100_production_launch() {
         --execution-rows "$rows" --grouped-gate-up-rows 4 "${args[@]:split}"
         --execution-profile-manifest "$base/profile.json" --no-prefill-fp8)
   [[ -n ${TF_EXPERT_TENSOR_PARALLEL_SIZE:-} ]] || args+=(--expert-tensor-parallel-size 4)
-  # Thinking stays on (the server default); TF_THINKING=off adds --no-thinking. A
-  # thinking/tool/grammar request currently reserves HTTP host payload for the
-  # whole context window (three or four fit at 262,144 tokens; more are refused
-  # with 503), a plain request only for its prompt plus max_tokens. The queue timeout
-  # lets requests wait for FIFO and host payload capacity instead of an immediate 503.
+  # Thinking stays on (the server default); TF_THINKING=off adds --no-thinking. HTTP
+  # host payload grows with each reply (prompt + paid reply tokens + decoded text), so
+  # all 32 lanes admit thinking requests. The queue timeout lets requests wait for FIFO
+  # and host payload capacity (and a growing reply for more) instead of an immediate 503.
   [[ ${TF_THINKING:-on} == on ]] || args+=(--no-thinking)
   args+=(--queue-timeout-s "${TF_QUEUE_TIMEOUT_S:-900}")
   export TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN=grouped-v1 TF_SMALL_GATHER_BYTES=262144

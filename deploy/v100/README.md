@@ -60,14 +60,20 @@ Admission and queueing: `TF_MAX_PENDING_REQUESTS` defaults to 64 (32 running plu
 64 x 9,437,212 bytes; `TF_QUEUE_TIMEOUT_S` (default 900) bounds a request's wait, and
 only a full queue returns HTTP 503. Thinking stays on by default (`TF_THINKING=off`
 starts the server with `--no-thinking`; a request can still set
-`chat_template_kwargs.enable_thinking`). Current limit: a thinking, tool or
-structured-output request reserves HTTP host payload for the whole 262,144-token
-window, so only three or four such requests are admitted at a time (measured: 3 of
-8 simultaneous) and further ones receive HTTP 503 ("host payload capacity is busy")
-until one finishes; the queue timeout does not cover this phase. Requests with
-thinking off reserve only their prompt plus `max_tokens`: 64 simultaneous ones were
-all admitted (32 running, 32 queued, last TTFT 51 s) and the 65th-72nd received 503
-"request capacity reached". An incremental reservation is in progress.
+`chat_template_kwargs.enable_thinking`). HTTP host payload grows with each reply:
+a request pays its prompt plus 4,096 reply tokens and 64 KiB of decoded text, the
+scheduler holds the reply to its paid token count, and the server pays more (by half
+again) ahead of it. Measured: 32 simultaneous thinking requests (4,000-token prompts,
+1,024-token replies) all decoding at once with about 0.5 GB of pool each (Q4; INT8
+at 24 lanes: 24 running, 8 queued), 48 simultaneous ones all served (16 queued). A
+request whose prompt and reply reach the full 262,144 tokens holds about 4.3 GB plus
+its decoded text, so the pool bounds how many can be that long at the same time: a
+growth that does not fit waits up to `TF_QUEUE_TIMEOUT_S`, then that request alone
+ends with `server_is_overloaded` (an error event and `[DONE]` on a stream; no
+truncated success). The queue timeout also covers a queued request's first payload
+grant. Requests with thinking off: 64 simultaneous ones were all admitted (32
+running, 32 queued, last TTFT 51 s) and the 65th-72nd received 503 "request capacity
+reached".
 
 The ordinary fixed-profile HTTP source path now derives a shared host-payload
 allowance from the existing physical/cgroup guard after fixed obligations.
