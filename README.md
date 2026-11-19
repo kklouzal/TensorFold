@@ -1678,7 +1678,9 @@ Replies are unchanged: greedy and seeded sampled chat replies equal the previous
 replies equal `"draft": false` replies, and replies resumed from a kept prefix (in place, forked, exact repeat,
 extensions) equal cold replies bitwise, because kept states sit on prefill chunk boundaries. Teacher-forced exact
 repeats score identically to cold on quality corpus v2. Multi-request results are listed in the
-[concurrency note](docs/gemma4-sm70-concurrency.md#validation).
+[concurrency note](docs/gemma4-sm70-concurrency.md#validation). Later the same day, measured row tiles for the
+multi-row decode kernels (replies unchanged, 23/23) raised per-request greedy 4K decode at `--parallel 8` from
+271 / 139 / 113 / 63 to 284 / 187 / 124 / 67 tok/s at C1 / C2 / C4 / C8 (A B B A, same image).
 
 #### Gemma 4 26B-A4B AEON NVFP4 on eight V100s (2026-11-15)
 

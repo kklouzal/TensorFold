@@ -153,6 +153,13 @@ Evidence in the claude-perf ledger section "Gemma 4 V100 parity (g4p)"; one serv
   `--parallel 8` serves C1 at the same speed. Per-request decode at `--parallel 8`, greedy 4K: C2 139, C4 114,
   C8 62 tok/s (sampled 128, 86, 53): DFlash verify rows are compute-bound FP32 GEMV rows (about 0.85 ms per extra
   row), so batches gain less than serial batching would suggest.
+- Measured row tiles and outputs per warp for the decode GEMVs, router and expert gate/up (2026-11-19; bitwise per
+  row, golden 23/23 identical): round ms at position 2000, 8-rank graph replay, `3943baa1` -> this change: S1 5.12 ->
+  4.60, S2 6.27 -> 5.86, S4 7.67 -> 7.11, S8 11.38 -> 9.97, R1 9.44 -> 9.00, R2 16.33 -> 12.23, R4 21.65 -> 18.73,
+  R8 33.18 -> 31.06. Per-request greedy 4K decode at `--parallel 8` (A B B A means, one 4K cell each): C1 270.8 ->
+  284.3, C2 138.7 -> 186.9, C4 112.7 -> 124.2, C8 62.6 -> 67.3 tok/s; prefill unchanged. Remaining per-row cost at
+  R4/R8 is led by the routed experts and the NCCL all-gather of decode partials above the 256 KiB small-gather
+  mailbox (2.6 / 7.0 ms of the 18.7 / 31.1 ms rounds).
 - Eight and twelve concurrent thinking-on requests with `max_tokens` 200,000 at `--parallel 8`: all 200; eight
   ran at once, the rest queued.
 - Robustness: three queued requests at `--parallel 1`, client disconnects during a 30K-token prefill and during
