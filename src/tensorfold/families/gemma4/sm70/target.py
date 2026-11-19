@@ -121,6 +121,15 @@ class Layout:
         self.dev.copy_(torch.from_numpy(self.host), non_blocking=True)
 
 
+# Full-attention KV formats (--kv-dtype): name -> native format (RotorQuant kernel codec, 0 = FP16) and bytes of one
+# 512-wide K or V row (codes, then one four-byte metadata word per 128 values; gemma4.cu kv_row_bytes).
+KV_FORMATS = {"fp16": 0, "rotorquant8-norm": 8, "rotorquant-iso64-norm4-h64": 11}
+
+
+def kv_row_bytes(fmt: int, d: int) -> int:
+    return {0: 2 * d, 8: d + 4 * (d // 128), 11: d // 2 + 4 * (d // 128)}[fmt]
+
+
 class Pool:
     """Every KV slot's caches on this rank. Sliding-window rings exist for every slot from startup ([layers, slots,
     ring, head_dim], ring positions -1 when empty; every sliding layer of a slot holds the same positions);
@@ -130,11 +139,16 @@ class Pool:
     Prefix reuse: rows below a kept point stay valid in the full caches (later rows are rewritten before any read);
     the ring rows a point needs (its last ``window`` positions) are copied out by ``snapshot`` right after the prompt
     chunk containing the point (a chunk of PROMPT_ROWS rows never overwrites them: ring = window + PROMPT_ROWS) and
-    written back by ``restore``."""
+    written back by ``restore``.
+
+    Full caches hold FP16 rows or, with a quantized ``target.kv_format``, uint8 rows of ``kv_row_bytes`` (codes and
+    scales together, so attach/grow/copy/host-tier copies stay row slices); rings and snapshots stay FP16."""
 
     def __init__(self, target, slots: int):
         c, dev = target.c, target.device
         self.target, self.slots = target, slots
+        self.fmt = KV_FORMATS[target.kv_format]
+        self.row = kv_row_bytes(self.fmt, c.global_head_dim)
         sliding = [layer.sliding for layer in target.w.layers]
         n = sum(sliding)
         self.ring_k = torch.zeros((n, slots, target.ring, c.head_dim), dtype=torch.float16, device=dev)
@@ -156,11 +170,18 @@ class Pool:
 
     def token_bytes(self) -> int:
         """Full-attention cache bytes one token position adds to a slot."""
-        return self.full_layers * 2 * self.target.c.global_head_dim * 2
+        return self.full_layers * 2 * self.row
 
     def snapshot_bytes(self) -> int:
         """Device bytes of one kept point's ring rows (``snapshot``)."""
         return self.ring_k.shape[0] * (self.target.c.window + 1) * self.target.c.head_dim * 2 * 2
+
+    def _full(self, capacity: int):
+        """Zeroed full caches (masked keys of a visited chunk must be finite: zero codes and scales decode to 0)."""
+        if self.fmt:
+            return torch.zeros((self.full_layers, 2, capacity, self.row), dtype=torch.uint8, device=self.target.device)
+        return torch.zeros((self.full_layers, 2, capacity, self.target.c.global_head_dim), dtype=torch.float16,
+                           device=self.target.device)
 
     def _bind(self, slot, t):
         self.full[slot], self.capacity[slot] = t, t.shape[2]
@@ -172,8 +193,7 @@ class Pool:
         empty the slot's rings: a new sequence."""
         if capacity % CHUNK:
             raise ValueError("a KV slot's capacity must be a multiple of the attention chunk")
-        self._bind(slot, torch.zeros((self.full_layers, 2, capacity, self.target.c.global_head_dim),
-                                     dtype=torch.float16, device=self.target.device))
+        self._bind(slot, self._full(capacity))
         self.ring_p[:, slot].fill_(-1)
 
     def grow(self, slot: int, capacity: int, rows: int):
@@ -181,8 +201,7 @@ class Pool:
         if capacity % CHUNK or rows > min(capacity, self.capacity[slot]):
             raise ValueError("a KV slot grows to a chunk multiple holding its kept rows")
         old = self.full[slot]
-        t = torch.zeros((self.full_layers, 2, capacity, self.target.c.global_head_dim), dtype=torch.float16,
-                        device=self.target.device)
+        t = self._full(capacity)
         t[:, :, :rows].copy_(old[:, :, :rows])
         self._bind(slot, t)
 
@@ -219,7 +238,10 @@ class Pool:
 
 
 class Target:
-    def __init__(self, weights, comm, *, context: int, slots: int = 1):
+    def __init__(self, weights, comm, *, context: int, slots: int = 1, kv_format: str = "fp16"):
+        if kv_format not in KV_FORMATS:
+            raise ValueError(f"Gemma 4 SM70 full-attention KV formats: {', '.join(KV_FORMATS)}")
+        self.kv_format = kv_format
         ext = extension()
         self.ext = ext
         self.w = weights
@@ -265,7 +287,8 @@ class Target:
             self._scratch[key] = t
         return t[:n].view(shape)
 
-    def _attention(self, q, lay, heads, d, ktab, vtab, ptab, slots, window, out, *, noncausal=False, scale=1.0):
+    def _attention(self, q, lay, heads, d, ktab, vtab, ptab, slots, window, out, *, noncausal=False, scale=1.0,
+                   fmt=0):
         """Per-segment split-key attention. ``slots``: keys a segment's chunks may span (its ring, or the linear
         extent). Splits follow the one-stream rule (160 blocks over a segment's tiles), so a segment's arithmetic
         does not depend on the other segments of the launch."""
@@ -277,7 +300,7 @@ class Target:
         pm = self._buf("attn_pm", (splits, tiles * 16))
         pl = self._buf("attn_pl", (splits, tiles * 16))
         self.ext.attn(q, heads, d, ktab, vtab, ptab, lay.seg(heads), tiles, small, slots, window,
-                      1 if noncausal else 0, scale, chunks, splits, po, pm, pl, out)
+                      1 if noncausal else 0, scale, chunks, splits, po, pm, pl, out, fmt)
 
     def _reduce(self, part, name, prompt):
         # prompt: also wide decode forwards (rank-order identity with the all-gather is not their contract)
@@ -382,11 +405,11 @@ class Target:
         for i, layer in enumerate(self.w.layers):
             n = layer.norms
             if layer.sliding:
-                d, kt, vt, pt = c.head_dim, pool.sk_tab[si], pool.sv_tab[si], pool.sp_tab[si]
+                d, kt, vt, pt, fmt = c.head_dim, pool.sk_tab[si], pool.sv_tab[si], pool.sp_tab[si], 0
                 si += 1
                 inv, ring, window, slots = self.inverse["sliding"], self.ring, c.window, self.ring
             else:
-                d, kt, vt, pt = c.global_head_dim, pool.fk_tab[fi], pool.fv_tab[fi], None
+                d, kt, vt, pt, fmt = c.global_head_dim, pool.fk_tab[fi], pool.fv_tab[fi], None, pool.fmt
                 fi += 1
                 inv, ring, window = self.inverse["full"], 0, 0
                 # Decode/verify rows span the largest capacity, eager or graph: the split partition (keys per
@@ -401,9 +424,9 @@ class Target:
                 self._project(x, rows, layer.qkv, proj_n, proj, proj_n, False, wide)
             q = self._buf("q", (rows, 2, d), torch.float16)
             ext.qkv_prep(proj, rows, 2, d, 1 if layer.sliding else 0, n["q"], n["k"], inv, lay.row_pos, lay.row_slot,
-                         q, kt, vt, pt, ring, c.eps)
+                         q, kt, vt, pt, ring, c.eps, fmt)
             att = self._buf("att", (rows, 2 * d), xdt)
-            self._attention(q, lay, 2, d, kt, vt, pt, slots, window, att)
+            self._attention(q, lay, 2, d, kt, vt, pt, slots, window, att, fmt=fmt)
             if prompt:
                 self._matmul_prompt(att, layer.o, o_red)
             else:

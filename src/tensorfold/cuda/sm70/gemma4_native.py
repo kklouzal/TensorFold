@@ -17,11 +17,13 @@ def extension():
         raise RuntimeError("Gemma 4 SM70 kernels require an actual SM70 device")
     root = Path(__file__).parent
     sources = [root / "gemma4_bindings.cpp", root / "gemma4.cu"]
+    headers = [root / "rotorquant_q4.cuh", root / "rotorquant_q4_tables.cuh"]   # quantized KV codec (Flash Next's)
     flags = ["-O3", "--use_fast_math=false"]
     identity = hashlib.sha256(repr(flags).encode())
-    for source in sources:
+    for source in [*sources, *headers]:
         identity.update(source.name.encode() + b"\0" + source.read_bytes())
-    module = build.load("tf_sm70_gemma4_" + identity.hexdigest()[:20], stage_sources(sources), need=(7, 0),
+    module = build.load("tf_sm70_gemma4_" + identity.hexdigest()[:20], stage_sources(sources, headers=headers),
+                        need=(7, 0),
                         extra_cuda_cflags=["-O3"], extra_cflags=["-O3"])
     if module.profile != PROFILE:
         raise RuntimeError("compiled Gemma 4 SM70 numerical profile differs from the declared source")

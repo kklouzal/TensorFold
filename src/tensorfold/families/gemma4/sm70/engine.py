@@ -63,7 +63,7 @@ class Gemma4SM70Engine:
                  drafter_bits: int = 8, depth: int | None = None, no_drafts: bool = False, streams: int = 1,
                  eos_token_ids=None, chat_template_file=None, chat_template_name=None, graphs: bool = True,
                  keep_slots: int | None = None, prefix_host_bytes: int | None = None,
-                 queue_timeout_s: float | None = None) -> None:
+                 queue_timeout_s: float | None = None, kv_format: str = "fp16") -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -134,7 +134,7 @@ class Gemma4SM70Engine:
                           "(--prefix-host-bytes sets it explicitly)", flush=True)
                 self.host_per_rank = 0
         self.host_layout = {}
-        self.target = Target(self.w, self.comm, context=self.context_window, slots=slots)
+        self.target = Target(self.w, self.comm, context=self.context_window, slots=slots, kv_format=kv_format)
         self.vocab = self.w.config.vocab
         self.head = None
         self.block = 1
@@ -214,7 +214,7 @@ class Gemma4SM70Engine:
         if rank == 0:
             fits = self.budget // self.slot_bytes(self.target.alloc)
             print(f"[tensorfold] Gemma 4 SM70: --parallel {streams}, KV budget {self.budget / 2**30:.2f} GiB/rank "
-                  f"({self.token_bytes} B/token + rings): {fits} streams of {self.context_window} tokens fit at "
+                  f"({self.token_bytes} B/token, full-attention KV {kv_format}, + rings): {fits} streams of {self.context_window} tokens fit at "
                   "once; longer admissions wait for memory", flush=True)
             curve = ", ".join(f"{'?SRT'[m]}{b}: {ms:.1f}" for (m, b), ms in sorted(self.costs.items()))
             print(f"[tensorfold] round ms by shape (calibration, position 0): {curve}", flush=True)

@@ -154,7 +154,7 @@ def test_gemma4_kernels():
             po = torch.empty(splits, rpad, D, device=dev); pm = torch.empty(splits, rpad, device=dev); pl = torch.empty_like(pm)
             out = torch.empty(R, D, device=dev)
             ext.attn(q.view(R, D).to(dev), H, D, tab(kd), tab(vd), tab(pd) if ring else None, seg, tiles, R <= 16, S,
-                     window, 0, 1.0, chunks, splits, po, pm, pl, out)
+                     window, 0, 1.0, chunks, splits, po, pm, pl, out, 0)
             ref = attn_ref(q.view(R, D), k, v, qpos, kpos, window)
             check(f"attn D{D} rows{rows} len{length} win{window} splits{splits}", out, ref, 3e-3)
     # qkv_prep: compare with torch reference
@@ -167,7 +167,7 @@ def test_gemma4_kernels():
     qo = torch.empty(M, Hq, D, dtype=torch.float16, device=dev)
     ext.qkv_prep(x.to(dev), M, Hq, D, 1, qw.to(dev), kw.to(dev), inv.to(dev),
                  torch.arange(2046, 2046 + M, dtype=torch.int32, device=dev), torch.zeros(M, dtype=torch.int32, device=dev),
-                 qo, tab(kc), tab(vc), tab(kp), 2048, 1e-6)
+                 qo, tab(kc), tab(vc), tab(kp), 2048, 1e-6, 0)
     def rope_ref(t, w, pos):
         t = t.double(); t = t / torch.sqrt((t * t).mean(-1, keepdim=True) + 1e-6) * (w.double() if w is not None else 1)
         a, b = t[..., :D // 2], t[..., D // 2:]
@@ -373,9 +373,9 @@ def test_gemma4_dflash_context_kv_bank_and_strided_cache(bits, layers, rows):
         expected_k, expected_v = k.clone(), v.clone()
         part = projected[:, i * 2 * d:(i + 1) * 2 * d]
         draft.ext.qkv_prep(part, rows, 0, d, 2, qw, kw, inv, pos, slot, part,
-                           tab(k), tab(v), None, 0, 1e-6)
+                           tab(k), tab(v), None, 0, 1e-6, 0)
         draft.ext.qkv_prep(original[i], rows, 0, d, 2, qw, kw, inv, pos, slot, original[i],
-                           tab(expected_k), tab(expected_v), None, 0, 1e-6)
+                           tab(expected_k), tab(expected_v), None, 0, 1e-6, 0)
         assert torch.equal(k.view(torch.int16), expected_k.view(torch.int16))
         assert torch.equal(v.view(torch.int16), expected_v.view(torch.int16))
         assert torch.all(k[:19] == 123) and torch.all(k[19 + rows:] == 123)
@@ -565,14 +565,14 @@ def test_gemma4_attention_segments_equal_single_stream_calls(D, n, ring):
     pl = torch.empty_like(pm)
     out = torch.empty(len(lengths) * n * H, D, device=dev)
     ext.attn(q.view(-1, D), H, D, tab(*ks), tab(*vs), tab(*ps) if ring else None, seg, tiles, small, S, window,
-             0, 1.0, chunks, splits, po, pm, pl, out)
+             0, 1.0, chunks, splits, po, pm, pl, out, 0)
     for g, L in enumerate(lengths):
         one, t1 = segs([(0, L, n)], H)
         po1 = torch.empty(splits, t1 * 16, D, device=dev); pm1 = torch.empty(splits, t1 * 16, device=dev)
         pl1 = torch.empty_like(pm1)
         ref = torch.empty(n * H, D, device=dev)
         ext.attn(q[g * n:(g + 1) * n].reshape(-1, D).contiguous(), H, D, tab(ks[g]), tab(vs[g]),
-                 tab(ps[g]) if ring else None, one, t1, small, S, window, 0, 1.0, chunks, splits, po1, pm1, pl1, ref)
+                 tab(ps[g]) if ring else None, one, t1, small, S, window, 0, 1.0, chunks, splits, po1, pm1, pl1, ref, 0)
         assert torch.equal(out[g * n * H:(g + 1) * n * H].view(torch.int32), ref.view(torch.int32))
 
 

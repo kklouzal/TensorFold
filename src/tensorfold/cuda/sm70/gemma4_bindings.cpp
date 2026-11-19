@@ -25,10 +25,10 @@ void ffn_tail_cuda(const Tensor&, int64_t, int64_t, int64_t, Tensor&, const Tens
 void embed_cuda(const Tensor&, int64_t, const Tensor&, int64_t, double, Tensor&);
 void qkv_prep_cuda(const Tensor&, int64_t, int64_t, int64_t, int64_t, const Tensor&, const Tensor&, const Tensor&,
                    const Tensor&, const Tensor&, Tensor&, const Tensor&, const Tensor&, const c10::optional<Tensor>&,
-                   int64_t, double);
+                   int64_t, double, int64_t);
 void attn_cuda(const Tensor&, int64_t, int64_t, const Tensor&, const Tensor&, const c10::optional<Tensor>&,
                const Tensor&, int64_t, bool, int64_t, int64_t, int64_t, double, int64_t, int64_t, Tensor&, Tensor&,
-               Tensor&, Tensor&);
+               Tensor&, Tensor&, int64_t);
 
 void w4_mma_cuda(const Tensor&, int64_t, const Tensor&, const Tensor&, const Tensor&, int64_t, int64_t, Tensor&,
                  int64_t, bool, Tensor&, Tensor&, Tensor&);

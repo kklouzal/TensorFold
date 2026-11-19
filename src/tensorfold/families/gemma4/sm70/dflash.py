@@ -249,7 +249,7 @@ class DFlash:
             ring = self.rings[i]
             self.ext.qkv_prep(kv, rows, 0, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, lay.row_pos,
                               lay.row_slot, kv, self.k_tab[i], self.v_tab[i],
-                              None if ring is None else self.p_tab[i], 0 if ring is None else RING, self.cfg.eps)
+                              None if ring is None else self.p_tab[i], 0 if ring is None else RING, self.cfg.eps, 0)
 
     # ------------------------------------------------------------------------------------------- proposals
     @torch.inference_mode()
@@ -269,7 +269,7 @@ class DFlash:
             q = torch.empty((rows, H, d), dtype=torch.float16, device=self.device)
             ext.qkv_prep(qkv, rows, H, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, lay.row_pos,
                          lay.row_slot, q, self.k_tab[i], self.v_tab[i], None if ring is None else self.p_tab[i],
-                         0 if ring is None else RING, cfg.eps)
+                         0 if ring is None else RING, cfg.eps, 0)
             att = torch.empty((rows, H * d), dtype=torch.float32, device=self.device)
             self.t._attention(q, lay, H, d, self.k_tab[i], self.v_tab[i], None if ring is None else self.p_tab[i],
                               self.alloc if ring is None else RING, cfg.sliding_window if layer["sliding"] else 0,

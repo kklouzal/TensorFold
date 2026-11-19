@@ -17,6 +17,7 @@
 #include <mma.h>
 #include <cstdint>
 #include <cmath>
+#include "rotorquant_q4.cuh"
 
 namespace g4 {
 
@@ -872,11 +873,38 @@ __global__ void embed(const int64_t* __restrict__ ids, const __nv_bfloat16* __re
 
 // ---------------------------------------------------------------------------------------------- q/k/v prep
 // x: [M, ldx] FP32 projections: q heads at [0, Hq*D), k at [Hq*D, (Hq+1)*D), v (has_v) at [(Hq+1)*D, (Hq+2)*D).
+// Quantized full-attention KV (FMT = RotorQuant kernel codec; 0 = FP16). One cache row per position holds the
+// D/128 groups' codes (FMT 8 `rotorquant8-norm`: one index byte per value; FMT 11 `rotorquant-iso64-norm4-h64`:
+// two nibbles per byte, low first) followed by one four-byte metadata word per group (FMT 8: FP32 corrected scale;
+// FMT 11: the FP16 corrected scales of values 0..63 | 64..127). Encoding is tf_rq4's Flash Next codec, per row and
+// group (row-local: a row's bytes depend only on its own FP32 values). Values are stored in the codec's rotated
+// basis; queries are rotated into it and attention outputs rotated back in attn_merge. A row whose group fails the
+// codec's finite/range checks stores a NaN scale: its non-finite values reach attention as in the FP16 cache.
+template <int FMT> __host__ __device__ constexpr int kv_code_bytes(int D) { return FMT == 8 ? D : FMT == 11 ? D / 2 : 2 * D; }
+template <int FMT> __host__ __device__ constexpr int kv_row_bytes(int D) {
+    return FMT == 0 ? 2 * D : kv_code_bytes<FMT>(D) + 4 * (D / 128);
+}
+
+// One D-value row (thread i: values i and i + D/2, blockDim D/2, every thread calls) encoded into `row`.
+template <int FMT>
+__device__ __forceinline__ void kv_store(uint8_t* row, int D, float lo, float hi, int i, float* shared, int* flags) {
+    float* scales = reinterpret_cast<float*>(row + kv_code_bytes<FMT>(D));
+    const tf_rq4::GroupAny any{flags};
+#pragma unroll
+    for (int part = 0; part < 2; ++part) {
+        tf_rq4::Encoded e = tf_rq4::encode_component<FMT, tf_rq4::GroupAny>(part ? hi : lo, i, shared, 1, any);
+        if (e.errors) e.scale = __int_as_float(0x7fc00000);
+        const int64_t base = part ? D / 2 : 0;
+        if constexpr (FMT == 8) tf_rq4::store_encoded8(e, i, row, scales, base, D, true);
+        else tf_rq4::store_encoded_halves(e, i, shared, row, scales, base, D, true);
+    }
+}
+
 // grid (M, Hq + 1), D/2 threads; thread i owns rotary pair (i, i + D/2). Row m sits at position row_pos[m] of
 // KV slot row_slot[m]; the slot's caches are ktab/vtab[slot] (and its ring positions ptab[slot], nullable).
 // q -> learned RMS, RoPE -> qout[m, h, :] (FP16).  k -> learned RMS, RoPE -> kc[cache row].
 // v -> unweighted RMS of v (or of k when !has_v: K=V layers) -> vc[cache row]. key_pos[cache row] = position.
-template <typename QT>
+template <typename QT, int FMT>
 __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D, int v_mode,
         const __nv_bfloat16* __restrict__ qw, const __nv_bfloat16* __restrict__ kw, const float* __restrict__ inv_freq,
         const int* __restrict__ row_pos, const int* __restrict__ row_slot, QT* __restrict__ qout,
@@ -901,20 +929,31 @@ __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D
     const float angle = (float)pos * inv_freq[i];
     float sn, cs;
     sincosf(angle, &sn, &cs);
-    const float r1 = a * cs - b * sn, r2 = b * cs + a * sn;
+    float r1 = a * cs - b * sn, r2 = b * cs + a * sn;
+    // FMT: D/2 = 256 threads (D = 512) cover groups 0-1 with values i and groups 2-3 with values i + D/2.
+    __shared__ float rq[FMT ? 256 : 1];
+    __shared__ int rq_flags[FMT ? 2 : 1];
     if (h < Hq) {
+        if constexpr (FMT != 0) {
+            r1 = tf_rq4::rotate_component<FMT, false>(r1, i, rq);
+            r2 = tf_rq4::rotate_component<FMT, false>(r2, i, rq);
+        }
         QT* q = qout + ((int64_t)m * Hq + h) * D;
         q[i] = cast_out<QT>(r1);
         q[i + half_d] = cast_out<QT>(r2);
         return;
     }
     const int cache = row_slot[m];
-    half* __restrict__ kc = reinterpret_cast<half*>(ktab[cache]);
-    half* __restrict__ vc = reinterpret_cast<half*>(vtab[cache]);
     int* __restrict__ key_pos = ptab ? reinterpret_cast<int*>(ptab[cache]) : nullptr;
     const int slot = ring ? pos % ring : pos;
-    kc[(int64_t)slot * D + i] = __float2half_rn(r1);
-    kc[(int64_t)slot * D + i + half_d] = __float2half_rn(r2);
+    if constexpr (FMT == 0) {
+        half* __restrict__ kc = reinterpret_cast<half*>(ktab[cache]);
+        kc[(int64_t)slot * D + i] = __float2half_rn(r1);
+        kc[(int64_t)slot * D + i + half_d] = __float2half_rn(r2);
+    } else {
+        kv_store<FMT>(reinterpret_cast<uint8_t*>(ktab[cache]) + (int64_t)slot * kv_row_bytes<FMT>(D), D, r1, r2, i,
+                      rq, rq_flags);
+    }
     if (i == 0 && key_pos) key_pos[slot] = pos;
     float v1 = x1, v2 = x2, vinv = inv;
     if (v_mode == 2) {
@@ -933,8 +972,14 @@ __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D
         for (int w = 0; w < warps; ++w) vt += scratch[w];
         vinv = rsqrtf(vt / D + eps);
     }
-    vc[(int64_t)slot * D + i] = __float2half_rn(v1 * vinv);
-    vc[(int64_t)slot * D + i + half_d] = __float2half_rn(v2 * vinv);
+    if constexpr (FMT == 0) {
+        half* __restrict__ vc = reinterpret_cast<half*>(vtab[cache]);
+        vc[(int64_t)slot * D + i] = __float2half_rn(v1 * vinv);
+        vc[(int64_t)slot * D + i + half_d] = __float2half_rn(v2 * vinv);
+    } else {
+        kv_store<FMT>(reinterpret_cast<uint8_t*>(vtab[cache]) + (int64_t)slot * kv_row_bytes<FMT>(D), D, v1 * vinv,
+                      v2 * vinv, i, rq, rq_flags);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------- attention
@@ -961,26 +1006,80 @@ struct Segs {
     const int* tile_r0;
 };
 
-template <int D, int AC>
+template <int D, int AC, int FMT = 0>
 struct AttnSmem {
     static constexpr int QLD = D + 8, PLD = AC + 8;
-    static constexpr size_t bytes = 16 * QLD * 2 + 16 * AC * 4 + 16 * PLD * 2 + 16 * D * 4;
+    static constexpr int SLD = 128 + 8;                       // FMT: per-warp FP16 staging of 16 keys x one group
+    static constexpr int TABLE = FMT == 8 ? 256 : FMT == 11 ? 16 : 0;
+    static constexpr size_t base = 16 * QLD * 2 + 16 * AC * 4 + 16 * PLD * 2 + 16 * D * 4;
+    static constexpr size_t bytes = base + (FMT ? 4 * 16 * SLD * 2 + TABLE * 4 : 0);
 };
 
+// 16 consecutive quantized cache rows (from `rows`), group g (values 128 g .. 128 g + 127) -> FP16 stg[key][col]
+// (row stride SLD), value = FP16(centroid * scale) in the stored (rotated) basis. One warp, every lane calls.
+template <int FMT, int D, int SLD>
+__device__ __forceinline__ void kv_stage16(const uint8_t* rows, int g, half* stg, const float* table, int lane) {
+    constexpr int RB = kv_row_bytes<FMT>(D), CB = kv_code_bytes<FMT>(D);
+    if constexpr (FMT == 8) {
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const int idx = lane + 32 * j, key = idx >> 3, part = idx & 7;
+            const uint8_t* r = rows + (int64_t)key * RB;
+            const uint4 c = *reinterpret_cast<const uint4*>(r + g * 128 + part * 16);
+            const float sc = reinterpret_cast<const float*>(r + CB)[g];
+            const uint32_t w[4] = {c.x, c.y, c.z, c.w};
+            __align__(16) half2 h[8];
+#pragma unroll
+            for (int b = 0; b < 4; ++b) {
+                h[2 * b] = __floats2half2_rn(table[w[b] & 255u] * sc, table[(w[b] >> 8) & 255u] * sc);
+                h[2 * b + 1] = __floats2half2_rn(table[(w[b] >> 16) & 255u] * sc, table[w[b] >> 24] * sc);
+            }
+            uint4* dst = reinterpret_cast<uint4*>(stg + key * SLD + part * 16);
+            dst[0] = reinterpret_cast<const uint4*>(h)[0];
+            dst[1] = reinterpret_cast<const uint4*>(h)[1];
+        }
+    } else {
+        static_assert(FMT == 11, "quantized KV formats: 8, 11");
+#pragma unroll
+        for (int j = 0; j < 2; ++j) {
+            const int idx = lane + 32 * j, key = idx >> 2, part = idx & 3;   // part: 32 values, 64-value half part / 2
+            const uint8_t* r = rows + (int64_t)key * RB;
+            const uint4 c = *reinterpret_cast<const uint4*>(r + g * 64 + part * 16);
+            const float sc = tf_rq4::half_group_scale(reinterpret_cast<const float*>(r + CB)[g], part >> 1);
+            const uint32_t w[4] = {c.x, c.y, c.z, c.w};
+            __align__(16) half2 h[16];
+#pragma unroll
+            for (int b = 0; b < 16; ++b) {
+                const uint32_t byte = (w[b >> 2] >> (8 * (b & 3))) & 255u;
+                h[b] = __floats2half2_rn(table[byte & 15u] * sc, table[byte >> 4] * sc);
+            }
+            uint4* dst = reinterpret_cast<uint4*>(stg + key * SLD + part * 32);
+#pragma unroll
+            for (int u = 0; u < 4; ++u) dst[u] = reinterpret_cast<const uint4*>(h)[u];
+        }
+    }
+}
+
 // RING: the slot's caches are rings with per-row positions (ptab); else linear (slot row = position).
-template <int D, int AC, bool RING>
+// FMT (linear D = 512 caches only): K/V rows are quantized (kv_row_bytes); each warp dequantizes the 16 keys x 128
+// values its next MMAs read into its own FP16 staging tile. q is in the codec's rotated basis, and so is the output.
+template <int D, int AC, bool RING, int FMT = 0>
 __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, int H, const int64_t* __restrict__ ktab,
         const int64_t* __restrict__ vtab, const int64_t* __restrict__ ptab, Segs sg, int S, int window,
         int noncausal, float scale, int chunks, float* __restrict__ po, float* __restrict__ pm, float* __restrict__ pl, int Rpad) {
-    constexpr int QLD = AttnSmem<D, AC>::QLD, PLD = AttnSmem<D, AC>::PLD;
+    using SM = AttnSmem<D, AC, FMT>;
+    constexpr int QLD = SM::QLD, PLD = SM::PLD, SLD = SM::SLD;
+    static_assert(FMT == 0 || (D == 512 && !RING), "quantized KV: linear 512-wide caches");
     extern __shared__ __align__(32) unsigned char smem[];
     half* qs = reinterpret_cast<half*>(smem);
     float* ss = reinterpret_cast<float*>(qs + 16 * QLD);
     half* ps = reinterpret_cast<half*>(ss + 16 * AC);
     float* os = reinterpret_cast<float*>(ps + 16 * PLD);
+    float* table = reinterpret_cast<float*>(reinterpret_cast<half*>(os + 16 * D) + 4 * 16 * SLD);
     __shared__ int qpos[16];
     __shared__ float row_m[16], row_l[16], row_a[16];
     const int split = blockIdx.x, tile = blockIdx.y, t = threadIdx.x, warp = t >> 5;
+    half* stg = reinterpret_cast<half*>(os + 16 * D) + warp * 16 * SLD;           // FMT only: this warp's tile
     const int p0 = tile * 16;                       // padded partial rows
     const int seg = sg.tile_seg[tile], r0 = sg.tile_r0[tile], R = sg.rows[seg] * H, base = sg.pos[seg];
     const int cache = sg.slot[seg];
@@ -1012,6 +1111,8 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
         row_l[t] = 0.f;
     }
     for (int i = t; i < 16 * D; i += 128) os[i] = 0.f;
+    if constexpr (FMT != 0)
+        for (int i = t; i < SM::TABLE; i += 128) table[i] = tf_rq4::selected_centroid<FMT == 8 ? 8 : 3>(i);
     for (int i = t; i < 16 * (D / 8); i += 128) {
         const int row = i / (D / 8), c8 = i % (D / 8);
         uint4 v = make_uint4(0, 0, 0, 0);
@@ -1044,14 +1145,31 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
         for (int kt = warp; kt < AC / 16; kt += 4) {
             wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc;
             wmma::fill_fragment(acc, 0.f);
-            const half* kb = kc + (int64_t)(k0 + kt * 16) * D;
+            if constexpr (FMT != 0) {
+                const uint8_t* kb = reinterpret_cast<const uint8_t*>(kc) + (int64_t)(k0 + kt * 16) * kv_row_bytes<FMT>(D);
+                for (int g = 0; g < D / 128; ++g) {
+                    kv_stage16<FMT, D, SLD>(kb, g, stg, table, t & 31);
+                    __syncwarp();
+#pragma unroll
+                    for (int d = 0; d < 128; d += 16) {
+                        wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
+                        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b;
+                        wmma::load_matrix_sync(a, qs + g * 128 + d, QLD);
+                        wmma::load_matrix_sync(b, stg + d, SLD);
+                        wmma::mma_sync(acc, a, b, acc);
+                    }
+                    __syncwarp();
+                }
+            } else {
+                const half* kb = kc + (int64_t)(k0 + kt * 16) * D;
 #pragma unroll 4
-            for (int d = 0; d < D; d += 16) {
-                wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
-                wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b;
-                wmma::load_matrix_sync(a, qs + d, QLD);
-                wmma::load_matrix_sync(b, kb + d, D);
-                wmma::mma_sync(acc, a, b, acc);
+                for (int d = 0; d < D; d += 16) {
+                    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
+                    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b;
+                    wmma::load_matrix_sync(a, qs + d, QLD);
+                    wmma::load_matrix_sync(b, kb + d, D);
+                    wmma::mma_sync(acc, a, b, acc);
+                }
             }
             wmma::store_matrix_sync(ss + kt * 16, acc, AC, wmma::mem_row_major);
         }
@@ -1103,12 +1221,25 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
             for (int kk = 0; kk < AC; kk += 16) {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
                 wmma::load_matrix_sync(a, ps + kk, PLD);
-                const half* vb = vc + (int64_t)(k0 + kk) * D + warp * COLS;
+                if constexpr (FMT != 0) {       // this warp's COLS = 128 output values are group `warp`
+                    kv_stage16<FMT, D, SLD>(reinterpret_cast<const uint8_t*>(vc) + (int64_t)(k0 + kk) * kv_row_bytes<FMT>(D),
+                                            warp, stg, table, t & 31);
+                    __syncwarp();
 #pragma unroll
-                for (int f = 0; f < FR; ++f) {
-                    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b;
-                    wmma::load_matrix_sync(b, vb + f * 16, D);
-                    wmma::mma_sync(acc[f], a, b, acc[f]);
+                    for (int f = 0; f < FR; ++f) {
+                        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b;
+                        wmma::load_matrix_sync(b, stg + f * 16, SLD);
+                        wmma::mma_sync(acc[f], a, b, acc[f]);
+                    }
+                    __syncwarp();
+                } else {
+                    const half* vb = vc + (int64_t)(k0 + kk) * D + warp * COLS;
+#pragma unroll
+                    for (int f = 0; f < FR; ++f) {
+                        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b;
+                        wmma::load_matrix_sync(b, vb + f * 16, D);
+                        wmma::mma_sync(acc[f], a, b, acc[f]);
+                    }
                 }
             }
 #pragma unroll
@@ -1128,11 +1259,14 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
 
 // out[row, :] = sum_s e^(m_s - M) o_s / sum_s e^(m_s - M) l_s, splits with l_s == 0 skipped. One block per
 // padded row r (pad rows exit); out row = (segment row0) * H + segment-local attention row.
-template <typename OT>
+// FMT: the folded row is in the codec's rotated basis; every 128-value group is rotated back before the store
+// (blockDim 128, D a multiple of 128: every thread takes part in every group's rotation).
+template <typename OT, int FMT = 0>
 __global__ void attn_merge(const float* __restrict__ po, const float* __restrict__ pm, const float* __restrict__ pl,
                            int splits, int Rpad, int D, int H, Segs sg, OT* __restrict__ out) {
     extern __shared__ float wts[];          // [splits] fold weights (0: an empty split)
     __shared__ float red[4];
+    __shared__ float rot[FMT ? 128 : 1];
     const int r = blockIdx.x, t = threadIdx.x;
     const int seg = sg.tile_seg[r >> 4], local = sg.tile_r0[r >> 4] + (r & 15);
     if (local >= sg.rows[seg] * H) return;
@@ -1159,7 +1293,9 @@ __global__ void attn_merge(const float* __restrict__ po, const float* __restrict
         float acc = 0.f;
         for (int s = 0; s < splits; ++s)
             if (wts[s] != 0.f) acc = fmaf(wts[s], po[((int64_t)s * Rpad + r) * D + d], acc);
-        out[d] = cast_out<OT>(acc * inv);
+        float value = acc * inv;
+        if constexpr (FMT != 0) value = tf_rq4::rotate_component<FMT, true>(value, t, rot);
+        out[d] = cast_out<OT>(value);
     }
 }
 
@@ -1463,13 +1599,18 @@ void embed_cuda(const Tensor& ids, int64_t M, const Tensor& table, int64_t D, do
 
 void qkv_prep_cuda(const Tensor& x, int64_t M, int64_t Hq, int64_t D, int64_t v_mode, const Tensor& qw, const Tensor& kw,
                    const Tensor& inv_freq, const Tensor& row_pos, const Tensor& row_slot, Tensor& qout,
-                   const Tensor& ktab, const Tensor& vtab, const c10::optional<Tensor>& ptab, int64_t ring, double eps) {
+                   const Tensor& ktab, const Tensor& vtab, const c10::optional<Tensor>& ptab, int64_t ring, double eps,
+                   int64_t fmt) {
     const dim3 grid(M, Hq + 1);
-#define G4_QP(T) g4::qkv_prep<T><<<grid, D / 2, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)Hq, (int)D, \
+    TORCH_CHECK(fmt == 0 || ((fmt == 8 || fmt == 11) && D == 512 && ring == 0 && !ptab.has_value()),
+                "quantized KV (format 8 or 11) is for linear 512-wide caches");
+#define G4_QP(T, F) g4::qkv_prep<T, F><<<grid, D / 2, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)Hq, (int)D, \
         (int)v_mode, cptr<__nv_bfloat16>(qw), cptr<__nv_bfloat16>(kw), cptr<float>(inv_freq), cptr<int>(row_pos), \
         cptr<int>(row_slot), ptr<T>(qout), cptr<int64_t>(ktab), cptr<int64_t>(vtab), \
         ptab.has_value() ? cptr<int64_t>(*ptab) : nullptr, (int)ring, (float)eps)
-    if (qout.scalar_type() == at::kHalf) G4_QP(half); else G4_QP(float);
+#define G4_QPF(F) do { if (qout.scalar_type() == at::kHalf) G4_QP(half, F); else G4_QP(float, F); } while (0)
+    if (fmt == 8) G4_QPF(8); else if (fmt == 11) G4_QPF(11); else G4_QPF(0);
+#undef G4_QPF
 #undef G4_QP
 }
 
@@ -1481,18 +1622,18 @@ g4::Segs segs(const Tensor& seg) {
     return g4::Segs{b, b + s, b + 2 * s, b + 3 * s, b + 4 * s, b + 5 * s};
 }
 
-template <int D, int AC, bool RING>
+template <int D, int AC, bool RING, int FMT = 0>
 void attn_launch(const Tensor& q, int64_t H, const Tensor& ktab, const Tensor& vtab,
                  const c10::optional<Tensor>& ptab, const g4::Segs& sg, int64_t tiles, int64_t S, int64_t window,
                  int64_t noncausal, double scale, int64_t chunks, int64_t splits, Tensor& po, Tensor& pm, Tensor& pl) {
     static bool configured = false;
-    const size_t bytes = g4::AttnSmem<D, AC>::bytes;
+    const size_t bytes = g4::AttnSmem<D, AC, FMT>::bytes;
     if (!configured) {
-        C10_CUDA_CHECK(cudaFuncSetAttribute(g4::attn_split<D, AC, RING>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes));
+        C10_CUDA_CHECK(cudaFuncSetAttribute(g4::attn_split<D, AC, RING, FMT>, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)bytes));
         configured = true;
     }
     const dim3 grid(splits, tiles);
-    g4::attn_split<D, AC, RING><<<grid, 128, bytes, stream()>>>(cptr<half>(q), (int)H, cptr<int64_t>(ktab),
+    g4::attn_split<D, AC, RING, FMT><<<grid, 128, bytes, stream()>>>(cptr<half>(q), (int)H, cptr<int64_t>(ktab),
         cptr<int64_t>(vtab), ptab.has_value() ? cptr<int64_t>(*ptab) : nullptr, sg, (int)S, (int)window,
         (int)noncausal, (float)scale, (int)chunks, ptr<float>(po), ptr<float>(pm), ptr<float>(pl), (int)(tiles * 16));
 }
@@ -1502,25 +1643,32 @@ void attn_launch(const Tensor& q, int64_t H, const Tensor& ktab, const Tensor& v
 void attn_cuda(const Tensor& q, int64_t H, int64_t D, const Tensor& ktab, const Tensor& vtab,
                const c10::optional<Tensor>& ptab, const Tensor& seg, int64_t tiles, bool small, int64_t S,
                int64_t window, int64_t noncausal, double scale, int64_t chunks, int64_t splits, Tensor& po, Tensor& pm,
-               Tensor& pl, Tensor& out) {
+               Tensor& pl, Tensor& out, int64_t fmt) {
     const g4::Segs sg = segs(seg);
     const bool ring = ptab.has_value();
+    TORCH_CHECK(fmt == 0 || ((fmt == 8 || fmt == 11) && D == 512 && !ring),
+                "quantized KV (format 8 or 11) is for linear 512-wide caches");
 #define G4_ATT(DD) (small ? (ring ? attn_launch<DD, 64, true> : attn_launch<DD, 64, false>) \
                           : (ring ? attn_launch<DD, 256, true> : attn_launch<DD, 256, false>)) \
         (q, H, ktab, vtab, ptab, sg, tiles, S, window, noncausal, scale, chunks, splits, po, pm, pl)
-    if (D == 128) G4_ATT(128);
+#define G4_ATTQ(F) (small ? attn_launch<512, 64, false, F> : attn_launch<512, 256, false, F>) \
+        (q, H, ktab, vtab, ptab, sg, tiles, S, window, noncausal, scale, chunks, splits, po, pm, pl)
+    if (fmt == 8) G4_ATTQ(8);
+    else if (fmt == 11) G4_ATTQ(11);
+    else if (D == 128) G4_ATT(128);
     else if (D == 256) G4_ATT(256);
     else if (D == 512) G4_ATT(512);
     else TORCH_CHECK(false, "attention head width must be 128, 256 or 512");
+#undef G4_ATTQ
 #undef G4_ATT
     const size_t bytes = splits * sizeof(float);
     const int Rpad = (int)(tiles * 16);
-    if (out.scalar_type() == at::kHalf)
-        g4::attn_merge<half><<<Rpad, 128, bytes, stream()>>>(cptr<float>(po), cptr<float>(pm), cptr<float>(pl),
-            (int)splits, Rpad, (int)D, (int)H, sg, ptr<half>(out));
-    else
-        g4::attn_merge<float><<<Rpad, 128, bytes, stream()>>>(cptr<float>(po), cptr<float>(pm), cptr<float>(pl),
-            (int)splits, Rpad, (int)D, (int)H, sg, ptr<float>(out));
+#define G4_MERGE(T, F) g4::attn_merge<T, F><<<Rpad, 128, bytes, stream()>>>(cptr<float>(po), cptr<float>(pm), \
+        cptr<float>(pl), (int)splits, Rpad, (int)D, (int)H, sg, ptr<T>(out))
+#define G4_MERGEF(F) do { if (out.scalar_type() == at::kHalf) G4_MERGE(half, F); else G4_MERGE(float, F); } while (0)
+    if (fmt == 8) G4_MERGEF(8); else if (fmt == 11) G4_MERGEF(11); else G4_MERGEF(0);
+#undef G4_MERGEF
+#undef G4_MERGE
 }
 
 namespace {
