@@ -189,3 +189,12 @@ def test_host_tier_spills_evicted_chain_and_restores_it():
     d = stream(range(1600))                          # exact repeat of a: its exact end, from host
     o.place(d, 2048, True)
     assert d.cached == 1600 and d.head is LOGITS
+
+
+def test_host_record_feeds_the_metrics_families():
+    from tensorfold.server import metrics
+    o = Owner(FakeEngine(budget=10**9), host=64 << 20)
+    record = o.prefix_usage()["host"]
+    for key in ("capacity_bytes_per_rank", "used_bytes_per_rank", "entries", "spills", "restores", "evictions"):
+        assert key in record
+    assert metrics is not None

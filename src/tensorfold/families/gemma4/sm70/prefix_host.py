@@ -120,5 +120,7 @@ class HostTier:
         return list(ids), snap, None
 
     def record(self) -> dict:
-        return {"capacity_bytes": self.blocks * BLOCK_BYTES, "used_bytes": sum(self.taken) * BLOCK_BYTES,
-                "entries": len(self.entries), **dict(self.counters)}
+        """The /stats ``prefix_cache.host`` record (keys as Flash Next's tier, read by server.metrics)."""
+        return {"capacity_bytes_per_rank": self.blocks * BLOCK_BYTES, "used_bytes_per_rank": sum(self.taken) * BLOCK_BYTES,
+                "entries": len(self.entries), "points": sum(len(entry["points"]) for entry in self.entries),
+                **dict(self.counters)}
