@@ -70,7 +70,8 @@ neither borrows nor keeps. Usage reports the reused tokens as `prompt_tokens_det
   snapshot; a resume in place restores the snapshot. A slot whose capacity is too small grows by copying its rows.
 - Memory: attached full caches and snapshots are charged to the KV budget. A request that needs room first releases
   free slots' caches, then evicts the least valuable idle chains; it waits only for memory live streams hold.
-- Host tier (`--prefix-host-bytes`, off by default): points `prefixes` drops are copied (full-cache rows below the
+- Host tier (`--prefix-host-bytes`; on by default since 2026-11-19: 64 GiB across the ranks, at most a quarter of
+  MemAvailable, the smallest rank's choice; `0` disables): points `prefixes` drops are copied (full-cache rows below the
   chain's longest point and every point's snapshot) into one pinned slab per rank allocated at startup, in
   contiguous runs of 2 MiB blocks (least valuable entries evicted first), and restored byte-exactly into a free
   slot when a prompt extends a host point by at least 64 tokens beyond its best VRAM point. Copies are ordered on

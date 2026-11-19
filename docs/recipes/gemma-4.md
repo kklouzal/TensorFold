@@ -114,8 +114,8 @@ reports the reused tokens as `usage.prompt_tokens_details.cached_tokens`. States
 chunk boundaries at or before the template's message starts and the prompt end, plus each prompt's exact end for
 exact repeats, so a resumed request computes exactly the chunks a cold prefill would and replies identically.
 Kept conversations live in `max(8, --parallel)` extra slots and in the KV budget; the least valuable idle ones are
-evicted when a request needs room. `--prefix-host-bytes BYTES` (off by default) adds a pinned host-RAM tier
-(BYTES across the eight ranks) that keeps evicted points and restores them on a later hit. See
+evicted when a request needs room. A pinned host-RAM tier (on by default: 64 GiB across the eight ranks, at most a quarter of MemAvailable;
+`--prefix-host-bytes BYTES` sets it, `0` disables) keeps evicted points and restores them on a later hit. See
 [concurrent serving](../gemma4-sm70-concurrency.md#prompt-prefix-reuse) for the design and measurements.
 
 `--parallel N` (1-32; `auto` means 1) serves up to N requests together through the shared CUDA scheduler
