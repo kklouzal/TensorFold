@@ -955,3 +955,16 @@ def test_output_funding_does_not_keep_its_mailbox_or_payload_borrow_alive():
     gc.collect()
     assert ref() is None
     funding.extend(16)                           # a retired call's mailbox is simply gone
+
+
+def test_header_budget_bounds_the_parsed_header_block_and_overflows_as_line_too_long():
+    import http.client
+    import io
+
+    block = b"".join(b"X-Field-%d: %s\r\n" % (n, b"v" * 20) for n in range(10)) + b"\r\n"
+    parsed = http.client.parse_headers(hp.HeaderBudget(io.BytesIO(block), limit=len(block)))
+    assert len(parsed) == 10
+    stream = io.BytesIO(block + b"after")
+    with pytest.raises(http.client.LineTooLong):
+        http.client.parse_headers(hp.HeaderBudget(stream, limit=len(block) - 1))
+    assert stream.tell() <= len(block)          # at most one byte past the budget was read

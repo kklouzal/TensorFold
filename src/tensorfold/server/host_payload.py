@@ -32,6 +32,32 @@ PRESENTATION_INITIAL_BYTES = 1 << 16
 # A generation's first paid reply-token count in incremental mode; fund_output() keeps the ceiling at least half of
 # this ahead of the produced reply (40+ s of decode at 100 tok/s), so a lane never parks while the pool has room.
 OUTPUT_INITIAL_TOKENS = 4096
+# Total header-field bytes the certified HTTP handler lets the stdlib parser read (after the request line); a
+# larger header block gets HTTP 431 before more is read. It bounds the prepaid per-handler header proof, which
+# otherwise covers the parser's own 101 lines x 64 KiB (about 438 MB per connection). Common proxies and clients
+# stay far below it (nginx: 8 KiB per line, 32 KiB total by default).
+HEADER_BLOCK_BYTES = 64 << 10
+
+
+class HeaderBudget:
+    """``readline`` for http.client.parse_headers that stops after ``limit`` total bytes.
+
+    An overflow raises LineTooLong, which the selected http.server.parse_request answers with HTTP 431; at most one
+    byte beyond the limit was read. Nothing else of the wrapped stream is exposed.
+    """
+
+    def __init__(self, stream, limit=HEADER_BLOCK_BYTES):
+        self._stream, self.remaining = stream, limit
+
+    def readline(self, size=-1):
+        import http.client
+
+        cap = self.remaining + 1 if size is None or size < 0 else min(size, self.remaining + 1)
+        line = self._stream.readline(cap)
+        self.remaining -= len(line)
+        if self.remaining < 0:
+            raise http.client.LineTooLong("total HTTP header bytes")
+        return line
 
 
 def _bytes(value):

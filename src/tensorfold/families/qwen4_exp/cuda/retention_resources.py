@@ -1665,7 +1665,7 @@ def finalize_backend_resources(catalog, *, tokenizer, scheduler, request_limit, 
 
 
 def _http_header_resources(policy):
-    """Selected HTTP/email parser's pre-body phase; no parser limit changes.
+    """Selected HTTP/email parser's pre-body phase; parser limits unchanged, header block bounded by the handler.
 
     Raw lines/joined bytes, Latin1 text, outer StringIO, partial StringIO's
     old/new storage, split lines, header name/value folding and defect text are
@@ -1699,7 +1699,12 @@ def _http_header_resources(policy):
     layout = _python_layout()
     def bound(extent, lines):
         return 64 * extent + (lines + 2) * 128 * layout["dict_entry"] + policy.frame_work
-    maximum = (http.client._MAXHEADERS + 2) * (http.client._MAXLINE + 1)
+    # The certified handler reads header fields through host_payload.HeaderBudget, so the block after the
+    # request line (<= _MAXLINE + 1 bytes) is at most HEADER_BLOCK_BYTES plus the one overflowing byte.
+    from tensorfold.server.host_payload import HEADER_BLOCK_BYTES
+
+    maximum = min((http.client._MAXHEADERS + 2) * (http.client._MAXLINE + 1),
+                  http.client._MAXLINE + 1 + HEADER_BLOCK_BYTES + 1)
     return {"identity": authority.model_prefix, "maximum_input_bytes": maximum,
             "maximum_header_lines": http.client._MAXHEADERS + 1,
             "payload_bytes": bound(maximum, http.client._MAXHEADERS + 1), "bound": bound}

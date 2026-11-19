@@ -127,7 +127,14 @@ def bind_handler(handler_type, app):
                 raise
 
         def parse_operation(self):
-            result = original_parse(self)
+            from .host_payload import HeaderBudget
+
+            stream = self.rfile
+            self.rfile = HeaderBudget(stream)            # the paid header proof covers this many bytes
+            try:
+                result = original_parse(self)
+            finally:
+                self.rfile = stream
             if result:
                 fields = self.headers._headers
                 if any(type(name) is not str or type(value) is not str for name, value in fields):
