@@ -308,7 +308,7 @@ class HostPrefixTier:
         if ready is not None:
             st.host_spill_ready = ready              # prefixes.slot_for: the slot's next writer waits on it
         self.entries.append({"principal": principal, "points": packed, "blocks": blocks, "layers": layers,
-                             "ready": ready,
+                             "ready": ready, "bytes": need,
                              "rows": rows, "mtp_rows": mtp_rows, "kv_identity": st.kv_identity,
                              "class": self.owner_class(placement, st.history_slot, len(st.kc) + hasattr(st, "mtp_kc")),
                              "used": self.clock, "uses": 1})
@@ -365,7 +365,7 @@ class HostPrefixTier:
         self.counters["hits"] += 1
         self.counters["restores"] += 1
         self.counters["restored_tokens"] += len(ids)
-        self.counters["restore_bytes"] += len(blocks) * self.block_bytes
+        self.counters["restore_bytes"] += entry["bytes"]
         return list(ids), self._unpack(blocks, snap), None if tail is None else self._unpack(blocks, tail)
 
     def record(self):

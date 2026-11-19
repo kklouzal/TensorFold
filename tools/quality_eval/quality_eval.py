@@ -200,7 +200,7 @@ def cachecheck(args) -> None:
         raise SystemExit("not a frozen corpus token file")
     limit = args.continuation_limit
     base = args.url.rstrip("/")
-    cold_docs, cached_docs, skipped, hits = [], [], [], 0
+    cold_docs, cached_docs, skipped, misses = [], [], [], []
     t0 = time.perf_counter()
     documents = list(corpus["documents"])
     if args.shuffle_seed is not None:            # a representative prefix when --max-seconds stops early
@@ -235,9 +235,10 @@ def cachecheck(args) -> None:
         n = int(cached.get("cached_tokens") or 0)
         expected = len(prime) - 1 if args.mode == "extend" else len(doc["prompt"])
         if n != expected:
-            print(f"{doc['id']}: cached {n} tokens, expected {expected} (not counted as a hit)")
-        else:
-            hits += 1
+            # Excluded from both runs: a miss scores (nearly) the same rows twice and would dilute the comparison.
+            print(f"{doc['id']}: cached {n} tokens, expected {expected} (a miss: excluded)")
+            misses.append(doc["id"])
+            continue
         keep = {row["position"] for row in cached["prompt"]}
         if [row["id"] for row in cached["continuation"]] != doc["continuation"]:
             raise SystemExit(f"{doc['id']}: the cached request scored different continuation tokens")
@@ -249,7 +250,8 @@ def cachecheck(args) -> None:
         if len(cold_docs) % 10 == 0:
             write()
     seconds = time.perf_counter() - t0
-    print(f"{args.mode}: {len(cold_docs)} documents ({hits} exact hits), {len(skipped)} shorter than {args.min_prompt} "
+    print(f"{args.mode}: {len(cold_docs)} documents (exact hits; {len(misses)} misses excluded), "
+          f"{len(skipped)} shorter than {args.min_prompt} "
           f"skipped, {seconds:.1f}s; identical rows: "
           f"{sum(a['prefill'] == b['prefill'] and a['decode'] == b['decode'] for a, b in zip(cold_docs, cached_docs))}")
     write()

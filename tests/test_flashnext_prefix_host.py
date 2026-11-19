@@ -193,3 +193,21 @@ def test_spills_agree_point_sizes_once_per_shape_not_per_spill(monkeypatch):
     assert len(calls) == 1 and len(host.entries) == 5
     host.spill([([90] * 8, source, snapshot(8), torch.ones(3))], None)   # a point with an MTP tail: a new shape
     assert len(calls) == 2
+
+
+def test_restoring_a_shorter_point_grows_the_slot_to_the_entrys_longest_point():
+    # A slot chain spills every ladder point with one copy of the rows below its longest point; restoring a
+    # shorter point copies those rows too, so the target's page table must cover them before restore().
+    host = tier(capacity=1 << 20)
+    decoder = owner([], host)
+    grown = []
+    decoder._grow = lambda st, rows, **_kw: grown.append(rows) or True
+    source = state(0, rank=0, rows=256)
+    long_ids = list(range(200))
+    prefixes.remember(decoder, long_ids[:80], source, snapshot(80), None)
+    prefixes.remember(decoder, long_ids, source, snapshot(200), None)
+    prefixes.slot_for(decoder, [7] * 30, True)                     # spills both points of slot 0's chain
+    decoder.free.append(state(8, rank=0, rows=256, seed=80))
+    grown.clear()
+    _slot, _resume, cached = prefixes.slot_for(decoder, long_ids[:80] + [5000] * 10, True)
+    assert cached == 80 and grown[0] >= 200

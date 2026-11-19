@@ -162,12 +162,13 @@ def _restore_host(owner, prompt, principal, extent):
     if dst is not None:
         dst = owner.free.pop(dst)
     else:
-        idle = _idle(owner, owner._busy(), extent=extent, where=usable)
-        if idle is None:
-            return None
         dst = evict(owner, None, extent=extent, where=usable)
+        if dst is None:
+            return None
     try:
-        if not owner._grow(dst, len(prompt) + owner.depth + 2):
+        # restore() copies the entry's rows below its LONGEST point (a chain's ladder can pass this prompt), so the
+        # slot's page table must already cover them.
+        if not owner._grow(dst, rows):
             owner.free.append(dst)
             return None
         dst.begin_sequence_generation()

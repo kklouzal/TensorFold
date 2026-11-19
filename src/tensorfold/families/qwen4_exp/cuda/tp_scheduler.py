@@ -1295,7 +1295,10 @@ class TensorParallelDecoder:
                 with self.engine._lifecycle:
                     if self.engine._closing:
                         return None
-        body = json_nesting.loads(self.comm.store.get(key))
+        raw = self.comm.store.get(key)
+        if len(raw) > self.frame_bytes:      # the pipe receiver's configured bound, before parsing
+            raise ValueError(f"tensor-parallel command exceeds its {self.frame_bytes}-byte configured envelope")
+        body = json_nesting.loads(raw)
         if body["kind"] == "stop" or body.get("control", {}).get("admission_policy", "legacy") != "fifo":
             self.comm.store.delete_key(key)
         body["sequence"] = self.sequence
