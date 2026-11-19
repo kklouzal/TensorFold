@@ -9,7 +9,8 @@ copies only its own pages: no collective, and the restored rows and snapshot are
 point (the request then runs exactly as a resume of that point would).
 
 Determinism across tensor-parallel ranks: every decision here is a pure function of the replicated kept tables, the
-request and rank-agreed byte counts (one all-gather per spill), so all ranks hold the same entries in the same blocks.
+request and rank-identical byte counts (rows from the page placement; each point shape's size agreed once by an
+all-gather), so all ranks hold the same entries in the same blocks.
 The cache key is the ordered token IDs, the request principal (FIFO), and the State ``kv_identity`` (model KV format,
 history/indexer layout, logical context); the process's weights, prefix policy and tokenizer are fixed for its
 lifetime and nothing is persisted. Memory: one pinned slab of ``capacity`` bytes per rank, allocated at startup and
@@ -65,6 +66,7 @@ class HostPrefixTier:
         self.entries: list[dict] = []
         self.device, self.comm = torch.device(device), comm
         self.clock = 0.0
+        self._point_bounds = {}
         self.counters = {"spills": 0, "spill_bytes": 0, "spill_skipped": 0, "restores": 0, "restore_bytes": 0,
                          "restored_tokens": 0, "evictions": 0, "lookups": 0, "hits": 0}
 
@@ -182,16 +184,32 @@ class HostPrefixTier:
                 + tuple(placement.indexer_owner(slot, layer, include_mtp=layers > placement.target_layers)
                         for layer in range(layers)))
 
-    def _history_bytes(self, st, rows, mtp_rows):
+    @staticmethod
+    def _history_bound(st, rows, mtp_rows):
+        """Bytes the largest rank copies for these rows: the same on every rank, from the page placement alone."""
+        import math
+
         placement = st.history_placement
         total = 0
-        for ordinal, cache, pool, count in self._layers(st, rows, mtp_rows):
-            for start, offset, length in self._runs(cache, count, placement.page_tokens):
-                total += sum(tensor[offset:offset + length].numel() * tensor.element_size()
-                             for tensor in self._cache_tensors(cache))
-            if st.history_rank == placement.indexer_owner(st.history_slot, ordinal, include_mtp=hasattr(st, "mtp_kc")):
-                total += pool[:count // st.ratio].numel() * pool.element_size()
+        for ordinal, cache, pool, count in HostPrefixTier._layers(st, rows, mtp_rows):
+            row_bytes = sum(math.prod(tensor.shape[1:]) * tensor.element_size()
+                            for tensor in HostPrefixTier._cache_tensors(cache))
+            owned = max(placement.local_rows(st.history_slot, ordinal, count, rank) for rank in range(placement.world))
+            total += owned * row_bytes + (count // st.ratio) * pool.shape[-1] * pool.element_size()
         return total
+
+    def _point_bound(self, point):
+        """A point's snapshot/tail bytes: fixed-size tensors (recurrent state, rows, compact tails on their owner
+        rank), so one all-gather per point shape agrees the largest rank's size; later spills reuse it."""
+        local = self._tensor_bytes(point[2]) + self._tensor_bytes(point[3])
+        key = ("prompt_end" in point[2], point[3] is None)
+        bound = self._point_bounds.get(key)
+        if bound is None:
+            bound = self._agree(local)
+            self._point_bounds[key] = bound
+        elif local > bound:
+            raise RuntimeError("host prefix point outgrew its rank-agreed size")
+        return bound
 
     # ------------------------------------------------------------------------------------------- policy
     def _value(self, entry):
@@ -205,14 +223,13 @@ class HostPrefixTier:
         self.free.extend(reversed(victim["blocks"]))
         self.counters["evictions"] += 1
 
-    def _agree(self, local_bytes, failed):
+    def _agree(self, local_bytes):
         comm = self.comm
         if comm is None or comm.world == 1:
-            return local_bytes, failed
+            return local_bytes
         from tensorfold.cuda.capacity import gather_ints
 
-        rows = gather_ints(torch, comm.all_gather, [local_bytes, int(failed)], world=comm.world)
-        return max(row[0] for row in rows), any(row[1] for row in rows)
+        return max(row[0] for row in gather_ints(torch, comm.all_gather, [local_bytes], world=comm.world))
 
     # ------------------------------------------------------------------------------------------- spill
     def spill(self, points, principal):
@@ -237,18 +254,12 @@ class HostPrefixTier:
                    for point in fresh)
         mtp_rows = max(max(point[2]["mtp_len"], point[2].get("prompt_end", {}).get("state", {}).get("mtp_len", 0))
                        for point in fresh)
-        local_error = None
-        local = 0
-        try:
-            for reader in tuple(st.history_native_readers):
-                reader.wait_native_reuse()
-            local = self._history_bytes(st, rows, mtp_rows) + sum(
-                self._tensor_bytes(point[2]) + self._tensor_bytes(point[3]) for point in fresh)
-        except (ValueError, RuntimeError) as error:
-            local_error = error
-        need, failed = self._agree(local, local_error is not None)
+        for reader in tuple(st.history_native_readers):
+            reader.wait_native_reuse()
+        # Rank-identical without a per-spill collective: rows from the placement, points from agreed sizes.
+        need = self._history_bound(st, rows, mtp_rows) + sum(self._point_bound(point) for point in fresh)
         blocks_needed = -(-need // self.block_bytes)
-        if failed or blocks_needed > self.blocks:
+        if blocks_needed > self.blocks:
             self.counters["spill_skipped"] += 1
             return
         while len(self.free) < blocks_needed:
@@ -288,7 +299,8 @@ class HostPrefixTier:
                 continue
             for index, (ids, _snap, _tail) in enumerate(entry["points"]):
                 n = len(ids)
-                if length < n < len(prompt) and prompt[:n] == ids:
+                # The O(1) end/start checks reject almost every other prompt before the full comparison.
+                if length < n < len(prompt) and prompt[n - 1] == ids[-1] and prompt[0] == ids[0] and prompt[:n] == ids:
                     found, length = (entry, index), n
         return found
 

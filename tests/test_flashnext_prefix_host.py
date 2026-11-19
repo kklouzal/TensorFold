@@ -16,6 +16,9 @@ class Placement:
     def indexer_owner(self, slot, layer, *, include_mtp=True):
         return (slot * (self.target_layers + int(include_mtp)) + layer) % self.world
 
+    def local_rows(self, slot, layer, rows, rank):      # every page of a (slot, layer) on one rank of the group
+        return -(-rows // PAGE) * PAGE if rank % 4 == (slot + layer) % 4 else 0
+
 
 def cache(rows, rank, slot, layer, seed):
     owners = [4 * (rank // 4) + ((slot + layer) % 4) for _ in range(-(-rows // PAGE))]
@@ -178,3 +181,15 @@ def test_host_point_must_save_min_gain_tokens_beyond_the_best_vram_point(gain, r
     decoder.free.append(state(8, rank=0, rows=256, seed=80))
     _slot, _resume, cached = prefixes.slot_for(decoder, long_ids + [1], True)
     assert (cached == 200) is restored
+
+
+def test_spills_agree_point_sizes_once_per_shape_not_per_spill(monkeypatch):
+    host = tier(capacity=1 << 20)
+    calls = []
+    monkeypatch.setattr(host, "_agree", lambda local: calls.append(local) or local)
+    source = state(0, rank=0)
+    for n in range(5):
+        host.spill([([50 + n] * 8, source, snapshot(8, seed=n), None)], None)
+    assert len(calls) == 1 and len(host.entries) == 5
+    host.spill([([90] * 8, source, snapshot(8), torch.ones(3))], None)   # a point with an MTP tail: a new shape
+    assert len(calls) == 2
