@@ -41,7 +41,7 @@ def auto_capacity_bytes() -> int:
 class _Region:
     """A byte range of an entry's blocks, laid out sequentially; copies split at block boundaries."""
 
-    __slots__ = ("offset", "nbytes", "dtype", "shape")
+    __slots__ = ("dtype", "nbytes", "offset", "shape")
 
     def __init__(self, offset, nbytes, dtype, shape):
         self.offset, self.nbytes, self.dtype, self.shape = offset, nbytes, dtype, shape

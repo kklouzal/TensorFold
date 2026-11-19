@@ -107,7 +107,7 @@ def test_capacity_is_bounded_and_eviction_drops_the_lowest_value_entry():
     host.spill([(list(range(8)), a, snapshot(8), None)], None)
     host.spill([([100] * 8, b, snapshot(8, seed=3), None)], None)
     host.spill([([101] * 8, b, snapshot(8, seed=4), None)], None)
-    first, second, third = host.entries
+    first, second, _third = host.entries
     host.restore(first, 0, state(8, rank=0, seed=30))              # used again: worth more than the others
     host.spill([([102] * 8, b, snapshot(8, seed=5), None)], None)  # full: the least valuable goes
     assert host.record()["evictions"] == 1 and first in host.entries and second not in host.entries
@@ -162,7 +162,7 @@ def test_a_slot_with_other_page_ownership_is_never_a_restore_target():
     prefixes.remember(decoder, ids, state(0, rank=0), snapshot(20), None)
     prefixes.slot_for(decoder, [7] * 30, True)                     # spills slot 0's chain
     decoder.free.append(state(1, rank=0, seed=40))                  # residue 1: other ranks own its pages
-    slot, resume, cached = prefixes.slot_for(decoder, ids + [1], True)
+    _slot, resume, cached = prefixes.slot_for(decoder, ids + [1], True)
     assert resume is None and cached == 0 and decoder.prefix_counters["host_hits"] == 0
 
 

@@ -400,7 +400,7 @@ class HostPayloadLease:
             self.output_funding = OutputFunding(funded)
 
     def _pay_generation(self, presentation, funded, *, wait):
-        body_bytes, output_tokens, extent_tokens, prompt_tokens = self._generation_shape
+        body_bytes, _output_tokens, extent_tokens, prompt_tokens = self._generation_shape
         extent = extent_tokens if prompt_tokens is None else min(extent_tokens, prompt_tokens + funded)
         if presentation is None:
             bound = self.pool.generation_bound(body_bytes, funded, extent)

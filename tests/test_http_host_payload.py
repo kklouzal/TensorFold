@@ -802,14 +802,14 @@ def test_presentation_growth_waits_ahead_of_new_requests_then_succeeds(monkeypat
         try:
             owner.present([2], tick=lambda: ticks.append(1) or True)        # needs +120
             order.append("grow")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - the thread reports any failure to the test
             errors.append(error)
 
     def admit():
         try:
             fresh.set("body", 50)
             order.append("fresh")
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 - the thread reports any failure to the test
             errors.append(error)
     grower = threading.Thread(target=grow)
     grower.start()

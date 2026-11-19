@@ -175,7 +175,7 @@ def _restore_host(owner, prompt, principal, extent):
         point = (ids, dst, snap, tail)
         state, resumed_tail, cached, end = _resumed(point, prompt)
         remember(owner, ids, dst, snap, tail, principal=principal)    # kept in its new slot, as a resume in place
-    except BaseException as primary:  # noqa: BLE001 - retain the popped slot even on cancellation
+    except BaseException as primary:  # retain the popped slot even on cancellation
         try:
             owner._quarantine(dst)
             owner._retire_failed_slot(dst)
