@@ -429,7 +429,7 @@ __global__ void w4_dequant(const uint8_t* __restrict__ codes, const uint8_t* __r
 template <int MAXM, int R>
 __global__ void __launch_bounds__(256) bf16_rows(const float* __restrict__ x, int64_t ldx, int M,
         const __nv_bfloat16* __restrict__ w, int N, int K, float* __restrict__ out, int64_t ldo, float softcap) {
-    // MAXM5 is an exact-five specialization, reachable only from M==5 dispatch.
+    // MAXM5 is an exact-five specialization, dispatched only for whole 5-row tiles.
     // Other templates retain their original runtime row bounds.
     const int m0 = blockIdx.y * MAXM;     // row tile
     x += m0 * ldx;
@@ -1207,25 +1207,35 @@ const __nv_bfloat16* bptr(const c10::optional<Tensor>& t) {
 }  // namespace
 
 namespace {
+// Row tiles. A call of M rows runs ceil(M / T) tiles of T rows on grid.y (instance MAXM = T; the last tile may be
+// partial, except T = 5, chosen only for whole tiles). A row's arithmetic never depends on T (MAXM only bounds the
+// rows one thread walks), so the tile is a pure speed choice, bitwise row-count invariant. Tiles measured on V100 at
+// the Gemma 4 26B rank shapes (single GPU, 1..40 rows, build-cache/g4p/rows kb sweep 2026-11-19): 8- and 16-row
+// tiles lose to 5/6-row tiles from 6 rows on (register pressure, fewer blocks); GEGLU gate/up prefers one row per
+// tile up to 16 rows (2x faster at 2..16 rows), the router two.
+int w4_tile(int64_t M, bool geglu) {
+    if (geglu) return M <= 16 ? 1 : 3;
+    if (M <= 1) return 1;
+    if (M <= 4) return 4;
+    return M % 5 == 0 ? 5 : 6;
+}
+
 template <bool GEGLU, int R, int L>
 void w4_rows_launch(const Tensor& x, int64_t M, const Tensor& codes, const Tensor& scales, const Tensor& rowmul,
                     int64_t N, int64_t K, Tensor& out, int64_t ldo) {
     const int64_t per_block = g4::WARPS * (32 / L) * R;
-    const dim3 grid((N + per_block - 1) / per_block, M > 16 ? (M + 15) / 16 : 1);   // > 16 rows: 16-row tiles
+    const int T = w4_tile(M, GEGLU);
+    const dim3 grid((N + per_block - 1) / per_block, (M + T - 1) / T);
     const int64_t ldx = x.stride(0);
 #define G4_ROWS(MM) g4::w4_rows<MM, GEGLU, R, L><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, \
         cptr<uint8_t>(codes), cptr<uint8_t>(scales), cptr<float>(rowmul), (int)N, (int)K, ptr<float>(out), ldo)
-    if (M <= 1) G4_ROWS(1);
-    else if (M <= 4) G4_ROWS(4);
-    else if (M <= 8) {
-        // Only the three actual Gemma projection layouts get an exact-five
-        // instance. Other supported layouts retain their existing row tile.
-        if constexpr ((!GEGLU && ((R == 4 && L == 32) || (R == 2 && L == 16)))
-                      || (GEGLU && R == 1 && L == 32)) {
-            if (M == 5) G4_ROWS(5);
-            else G4_ROWS(8);
-        } else G4_ROWS(8);
-    } else G4_ROWS(16);
+    switch (T) {
+        case 1: G4_ROWS(1); break;
+        case 3: G4_ROWS(3); break;
+        case 4: G4_ROWS(4); break;
+        case 5: G4_ROWS(5); break;
+        default: G4_ROWS(6); break;
+    }
 #undef G4_ROWS
 }
 }  // namespace
@@ -1307,38 +1317,64 @@ void expert_prompt_combine_cuda(const Tensor& y, const Tensor& dest, const Tenso
 }
 
 namespace {
+// Row tiles as for w4_rows (see w4_tile). BF16 head: 4-row tiles from 6 to 16 rows, 5 on whole 5-row tiles, else
+// the 16-row tile (32 rows: 16 measured fastest).
+int bf16_tile(int64_t M) {
+    if (M <= 1) return 1;
+    if (M <= 4) return 4;
+    if (M % 5 == 0) return 5;
+    return M <= 16 ? 4 : 16;
+}
+
 template <int R>
 void bf16_launch(const Tensor& x, int64_t M, const Tensor& w, int64_t N, int64_t K, Tensor& out, int64_t ldo,
                  double softcap) {
-    const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R), M > 16 ? (M + 15) / 16 : 1);
+    const int T = bf16_tile(M);
+    const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R), (M + T - 1) / T);
     const int64_t ldx = x.stride(0);
 #define G4_BF(MM) g4::bf16_rows<MM, R><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, \
         cptr<__nv_bfloat16>(w), (int)N, (int)K, ptr<float>(out), ldo, (float)softcap)
-    if (M <= 1) G4_BF(1);
-    else if (M <= 4) G4_BF(4);
-    else if (M <= 8) {
-        if (M == 5) G4_BF(5);
-        else G4_BF(8);
-    } else G4_BF(16);
+    switch (T) {
+        case 1: G4_BF(1); break;
+        case 4: G4_BF(4); break;
+        case 5: G4_BF(5); break;
+        default: G4_BF(16); break;
+    }
 #undef G4_BF
 }
+
+// DFlash INT8 rows (private proposal copies, at most 16 rows): the vocabulary head takes 4-row tiles beyond five
+// rows; narrow (R = 2) and short-K (o_proj) matrices one row per tile (two-row tiles of three for narrow ones past
+// eight rows); the MLP matrices 6-row tiles beyond five rows.
+int i8_tile(int64_t M, int64_t N, int64_t K, int R) {
+    if (M <= 1) return 1;
+    if (N >= 16384) return M == 5 ? 5 : 4;
+    if (R == 2) return M <= 8 ? 1 : 3;
+    if (K <= 512) return 1;
+    if (M <= 4) return 4;
+    return M == 5 ? 5 : 6;
+}
+
 template <int R>
 void i8_launch(const Tensor& x, int64_t M, const Tensor& w, const Tensor& scale, int64_t N, int64_t K, Tensor& out,
                int64_t ldo, double softcap) {
-    const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R), M > 16 ? (M + 15) / 16 : 1);
+    const int T = i8_tile(M, N, K, R);
+    const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R), (M + T - 1) / T);
     const int64_t ldx = x.stride(0);
 #define G4_I8(MM, EXACT) g4::i8_rows<MM, R, EXACT><<<grid, 256, 0, stream()>>>(cptr<float>(x), ldx, (int)M, cptr<int8_t>(w), \
         cptr<float>(scale), (int)N, (int)K, ptr<float>(out), ldo, (float)softcap)
-    if (M <= 1) G4_I8(1, false);
-    else if (M <= 4) G4_I8(4, false);
-    else if (M == 5) {
-        if constexpr (R == 2) G4_I8(5, true);
-        // The two measured wide projection shapes favor fixed-row execution; other
-        // R4 shapes retain the measured bounded tile with runtime row guards.
-        else if (K == 2816 && (N == 1408 || N == 1280)) G4_I8(5, true);
-        else G4_I8(5, false);
-    } else if (M <= 8) G4_I8(8, false);
-    else G4_I8(16, false);
+    switch (T) {
+        case 1: G4_I8(1, false); break;
+        case 3: G4_I8(3, false); break;
+        case 4: G4_I8(4, false); break;
+        case 5:
+            // The two measured wide projection shapes favor fixed-row execution; other
+            // R4 shapes retain the measured bounded tile with runtime row guards.
+            if (R == 2 || (K == 2816 && (N == 1408 || N == 1280))) G4_I8(5, true);
+            else G4_I8(5, false);
+            break;
+        default: G4_I8(6, false); break;
+    }
 #undef G4_I8
 }
 }  // namespace
@@ -1355,17 +1391,18 @@ void i8_rows_cuda(const Tensor& x, int64_t M, const Tensor& w, const Tensor& sca
     else i8_launch<2>(x, M, w, scale, N, K, out, ldo, softcap);
 }
 
+// Router: two-row tiles beyond one row (measured 1.0-1.6x faster than 4..16-row tiles at 3..40 rows).
 void router_cuda(const Tensor& x, int64_t M, const Tensor& w, int64_t E, int64_t K, Tensor& logits, Tensor& counter,
                  int64_t topk, const Tensor& scale, int64_t first, int64_t count, Tensor& ids, Tensor& weights,
                  Tensor& local) {
-    TORCH_CHECK(E <= 256 && topk <= 8 && counter.numel() >= (M + 15) / 16,
-                "fused router serves <= 256 experts, top-k <= 8 and needs one counter per 16-row tile");
-    const dim3 grid((E + 1) / 2, M > 16 ? (M + 15) / 16 : 1);
+    const int T = M <= 1 ? 1 : 2;
+    TORCH_CHECK(E <= 256 && topk <= 8 && counter.numel() >= (M + T - 1) / T,
+                "fused router serves <= 256 experts, top-k <= 8 and needs one counter per 2-row tile");
+    const dim3 grid((E + 1) / 2, (M + T - 1) / T);
 #define G4_RT(MM) g4::router<MM><<<grid, 256, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)M, \
         cptr<__nv_bfloat16>(w), (int)E, (int)K, ptr<float>(logits), ptr<int>(counter), (int)topk, \
         cptr<__nv_bfloat16>(scale), (int)first, (int)count, ptr<int>(ids), ptr<float>(weights), ptr<int>(local))
-    if (M <= 1) G4_RT(1); else if (M <= 4) G4_RT(4); else if (M == 5) G4_RT(5);
-    else if (M <= 8) G4_RT(8); else G4_RT(16);
+    if (T == 1) G4_RT(1); else G4_RT(2);
 #undef G4_RT
 }
 

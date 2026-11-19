@@ -436,7 +436,7 @@ def test_gemma4_fused_router_matches_logits_and_routing():
     E, K = 128, 2816
     w = (torch.randn(E, K) * 0.05).bfloat16()
     scale = (torch.rand(E) + 0.5).bfloat16()
-    counter = torch.zeros(4, dtype=torch.int32, device=dev)
+    counter = torch.zeros(20, dtype=torch.int32, device=dev)   # one per two-row router tile
     for M in (1, 5, 16, 40):
         x = torch.randn(M, K)
         logits = torch.empty(M, E, device=dev)
@@ -484,6 +484,54 @@ def test_gemma4_row_tiles_equal_sixteen_row_calls(rows):
             part = torch.empty(m, N, device=dev)
             call(x[r0:r0 + m].contiguous(), m, part)
             assert torch.equal(whole[r0:r0 + m].view(torch.int32), part.view(torch.int32)), name
+
+
+@pytest.mark.parametrize("rows", [2, 3, 5, 6, 8, 10, 12, 16, 20, 40])
+def test_gemma4_rows_equal_one_row_calls(rows):
+    """Every row of a multi-row decode call (any row tile) equals its own one-row call (bitwise): W4 projections
+    and GEGLU, the BF16 head, DFlash INT8 rows and the fused router."""
+    from tensorfold.cuda.sm70.gemma4_native import extension
+    ext = extension()
+    dev = torch.device("cuda")
+    torch.manual_seed(13)
+
+    def same(name, call, x, n):
+        whole = torch.empty(rows, n, device=dev)
+        call(x, rows, whole)
+        one = torch.empty(1, n, device=dev)
+        for r in range(rows):
+            call(x[r:r + 1], 1, one)
+            assert torch.equal(whole[r].view(torch.int32), one[0].view(torch.int32)), f"{name} row {r} of {rows}"
+
+    for N, K, geglu in [(1024, 2816, False), (1536, 2816, False), (2816, 512, False), (272, 2816, True),
+                        (2816, 272, False)]:
+        codes, scales, rowmul = (t.to(dev) for t in rand_packed(2 * N if geglu else N, K))
+        same(f"w4 {N}x{K}", lambda xx, m, o: ext.w4_rows(xx, m, codes, scales, rowmul, N, K, o, N, geglu),
+             torch.randn(rows, K, device=dev), N)
+    head = (torch.randn(4096, 2816, device=dev) * 0.05).bfloat16()
+    same("bf16", lambda xx, m, o: ext.bf16_rows(xx, m, head, 4096, 2816, o, 4096, 30.0),
+         torch.randn(rows, 2816, device=dev), 4096)
+    for N, K in [(768, 2816), (2816, 512), (1408, 2816), (2816, 704), (32768, 2816)]:
+        q8 = torch.randint(-127, 128, (N, K), dtype=torch.int8, device=dev); sc = torch.rand(N, device=dev) * 1e-2
+        same(f"i8 {N}x{K}", lambda xx, m, o: ext.i8_rows(xx, m, q8, sc, N, K, o, N, 0.0),
+             torch.randn(rows, K, device=dev), N)
+    E, K = 128, 2816
+    w = (torch.randn(E, K, device=dev) * 0.05).bfloat16(); scale = (torch.rand(E, device=dev) + 0.5).bfloat16()
+    counter = torch.zeros(64, dtype=torch.int32, device=dev)
+    x = torch.randn(rows, K, device=dev)
+
+    def route(xx, m):
+        out = (torch.empty(m, E, device=dev), torch.empty(m, 8, dtype=torch.int32, device=dev),
+               torch.empty(m, 8, device=dev), torch.empty(m, 8, dtype=torch.int32, device=dev))
+        ext.router(xx, m, w, E, K, out[0], counter, 8, scale, 64, 64, out[1], out[2], out[3])
+        return out
+
+    whole = route(x, rows)
+    for r in range(rows):
+        one = route(x[r:r + 1], 1)
+        for a, b in zip(whole, one):
+            assert torch.equal(a[r].view(torch.int32), b[0].view(torch.int32)), f"router row {r} of {rows}"
+    assert int(counter.abs().sum().item()) == 0
 
 
 @pytest.mark.parametrize("D,n,ring", [(512, 1, 0), (512, 5, 0), (256, 5, 2048), (128, 5, 0), (256, 300, 2048)])

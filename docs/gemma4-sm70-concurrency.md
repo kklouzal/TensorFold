@@ -110,8 +110,9 @@ server prints its own budget at startup.
 
 ## Numerical contracts
 
-- Decode forwards use the C1 arithmetic for any number of rows by default. The W4/BF16/INT8 GEMVs and router run 16-row tiles with per-row arithmetic
-  independent of the row count. Each stream's attention is its own segment, with its own KV slot, the C1
+- Decode forwards use the C1 arithmetic for any number of rows by default. The W4/BF16/INT8 GEMVs and router run row
+  tiles chosen by row count (1 to 6 rows; 16 for wide BF16 heads), with per-row arithmetic independent of the row count
+  and the tile. Each stream's attention is its own segment, with its own KV slot, the C1
   chunk size and the C1 split rule. Per-stream results are therefore bitwise equal to the same stream alone.
   Batches beyond one row tile are compute-bound on CUDA cores (FP32 GEMVs at about 2 TFLOP/s).
 - Optional, off by default (`TF_GEMMA_WIDE_ROWS=N`): decode forwards of at least N rows use tensor cores. Activations are split into FP16 hi + lo (about 22 significant bits),

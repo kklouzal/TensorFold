@@ -247,8 +247,9 @@ class Target:
         self.shard = c.vocab // self.world
         self._scratch = {}
         self.frozen = False        # set after graph capture: captured scratch must never be reallocated
-        # fused router: one last-block counter per 16-row tile (zeroed; each tile's last block resets its own)
-        self.router_counter = torch.zeros(64, dtype=torch.int32, device=self.device)
+        # fused router: one last-block counter per 2-row tile (zeroed; each tile's last block resets its own), for
+        # up to 32 streams x 16-row blocks
+        self.router_counter = torch.zeros(256, dtype=torch.int32, device=self.device)
         self.pool = Pool(self, slots)
         self._head16 = None
 

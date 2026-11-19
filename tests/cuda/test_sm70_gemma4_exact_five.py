@@ -127,7 +127,7 @@ def test_router_exact_five_publication_and_replay(experts, topk, ties):
     if ties:
         weights.zero_()
     scales = (torch.rand(experts, device="cuda") + 0.5).bfloat16()
-    counter = torch.zeros(1, dtype=torch.int32, device="cuda")
+    counter = torch.zeros(3, dtype=torch.int32, device="cuda")   # one per two-row router tile
     ext = extension()
     before = (storage.clone(), weights.clone(), scales.clone())
 
@@ -144,10 +144,10 @@ def test_router_exact_five_publication_and_replay(experts, topk, ties):
 
     reference = buffers(6)
     call(6, reference)
-    assert int(counter.item()) == 0
+    assert int(counter.abs().sum().item()) == 0
 
     def check(rows, guarded):
-        assert int(counter.item()) == 0
+        assert int(counter.abs().sum().item()) == 0
         for actual, expected in zip(guarded, reference):
             if actual.is_floating_point():
                 _exact(actual[1:-1], expected[1:rows + 1])
