@@ -211,3 +211,23 @@ def test_restoring_a_shorter_point_grows_the_slot_to_the_entrys_longest_point():
     grown.clear()
     _slot, _resume, cached = prefixes.slot_for(decoder, long_ids[:80] + [5000] * 10, True)
     assert cached == 80 and grown[0] >= 200
+
+
+def test_an_entry_evicted_while_its_restore_target_grows_is_not_restored():
+    # Growing the target may spill another chain into the tier, which can evict this entry (its blocks then hold
+    # the new spill): the request must prefill cold instead of restoring overwritten bytes.
+    host = tier()
+    decoder = owner([], host)
+    ids = list(range(20))
+    prefixes.remember(decoder, ids, state(0, rank=0), snapshot(20), None)
+    prefixes.slot_for(decoder, [7] * 30, True)                     # spilled
+    target = state(8, rank=0, seed=40)
+    decoder.free.append(target)
+
+    def grow(st, rows, **_kw):
+        host.entries.clear()                                        # the spill this growth made evicted it
+        return True
+    decoder._grow = grow
+    slot, resume, cached = prefixes.slot_for(decoder, ids + [1, 2, 3], True)
+    assert resume is None and cached == 0 and host.record()["restores"] == 0
+    assert decoder.prefix_counters["host_hits"] == 0

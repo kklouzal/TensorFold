@@ -100,6 +100,13 @@ class HostTier:
         return found
 
     def restorable(self, entry, st) -> bool:
+        """Every slot can hold any entry (uniform slots). A pure check: ``prefixes`` calls it while scanning the
+        free list and the kept chains, so it must not evict or release anything."""
+        return True
+
+    def prepare(self, entry, st) -> bool:
+        """After ``st`` grew: room for the restored snapshot that ``restore`` charges (False: none; the caller
+        then also re-checks that ``entry`` survived any spill this made)."""
         return self.owner._room(self.owner.snap_bytes, st)
 
     def restore(self, entry, index, st):

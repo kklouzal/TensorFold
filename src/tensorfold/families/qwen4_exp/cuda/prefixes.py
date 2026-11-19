@@ -168,7 +168,11 @@ def _restore_host(owner, prompt, principal, extent):
     try:
         # restore() copies the entry's rows below its LONGEST point (a chain's ladder can pass this prompt), so the
         # slot's page table must already cover them.
-        if not owner._grow(dst, rows):
+        prepare = getattr(host, "prepare", None)
+        # Growing (or the tier's own preparation) may make room by spilling, and the tier may evict this very
+        # entry for that spill (its blocks then hold the new one): restore only an entry still present.
+        if (not owner._grow(dst, rows) or (prepare is not None and not prepare(entry, dst))
+                or all(held is not entry for held in host.entries)):
             owner.free.append(dst)
             return None
         dst.begin_sequence_generation()
