@@ -1394,7 +1394,11 @@ class App:
                 and prepared.calls is None):
             output = min(context, max(1, prepared.max_tokens))
         extent = min(context, len(prepared.prompt) + output)
-        owner.generation(body_bytes=owner.body_bytes, output_tokens=output, extent_tokens=extent)
+        # An engine whose scheduler holds each reply to its paid ceiling lets the token-proportional owners grow
+        # with the reply (fund_output) instead of paying the whole extent before the first token.
+        incremental = getattr(getattr(self, "engine", None), "supports_output_funding", False) is True
+        owner.generation(body_bytes=owner.body_bytes, output_tokens=output, extent_tokens=extent,
+                         **({"prompt_tokens": len(prepared.prompt)} if incremental else {}))
 
     def run(self, body: dict[str, Any], chat: bool, emit: Callable[[dict[str, Any]], bool], *,
             prepared: PreparedRequest | None = None, cancelled: Callable[[], bool] | None = None,
@@ -1620,6 +1624,9 @@ class App:
                     if not new:                # a tick while the request waits or its prompt fills: keepalive, client check
                         if not emit(None) or (cancelled is not None and cancelled()):
                             stopped["client"] = True
+                        elif presentation_owner is not None:
+                            presentation_owner.fund_output(len(out), tick=lambda: bool(emit(None)) and not (
+                                cancelled is not None and cancelled()))
                         return stopped["client"]
                     if presentation_owner is not None:
                         # Pay these tokens' decoded text/reply/encoder bytes before any
@@ -1656,6 +1663,10 @@ class App:
                                 grammar_state[0].advance([token])
                     stream.add(new)
                     new = fed
+                    if presentation_owner is not None:
+                        # Keep the scheduler's paid reply ceiling ahead of this reply (bounded wait, as above).
+                        presentation_owner.fund_output(len(out), tick=lambda: bool(emit(None)) and not (
+                            cancelled is not None and cancelled()))
                     reasoning, answer = visible(False)
                     delta: dict[str, Any] = {}
                     if len(reasoning) > sent["reasoning"]:
@@ -1848,6 +1859,10 @@ class App:
                     extra["progress"] = filled
                 if prepared.penalties is not None:      # a gate's continuation re-reads reply tokens as prompt: count them
                     extra["penalties"] = replace(prepared.penalties, prompt_length=len(prompt))
+                funding = None if presentation_owner is None else presentation_owner.output_funding
+                if funding is not None:
+                    funding.start(len(out))             # this call's mailbox gets the paid remainder
+                    extra["output_funding"] = funding
                 generation_started = True
                 stats = self.engine.generate(ids, count, sampling, feed, **extra)
                 if not cached:

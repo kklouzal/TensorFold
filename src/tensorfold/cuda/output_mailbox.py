@@ -12,6 +12,7 @@ from collections import deque
 import queue
 import threading
 import time
+import weakref
 
 
 class OutputMailbox:
@@ -35,6 +36,7 @@ class OutputMailbox:
         self._reserved = 0
         self._reservation = None
         self._wake = None
+        self._funded = None          # paid output ceiling (OutputFunding), None: the reply allowance alone
 
     def set_wake(self, callback):
         with self._changed:
@@ -57,8 +59,21 @@ class OutputMailbox:
 
     def _fits(self, count):
         inflight = 0 if self._inflight is None else self._inflight[1]
-        return count <= min(self.maximum_tokens - self._published_tokens - self._reserved,
+        funded = self.maximum_tokens if self._funded is None else min(self.maximum_tokens, self._funded)
+        return count <= min(funded - self._published_tokens - self._reserved,
                             self.production_capacity - self._queued_tokens - inflight - self._reserved)
+
+    def fund(self, tokens):
+        """Raise the paid output ceiling (monotonic); a lane parked on it becomes producible."""
+        if type(tokens) is not int or tokens < 0:
+            raise ValueError("funded output must be a nonnegative token count")
+        with self._changed:
+            if self._funded is not None and tokens < self._funded:
+                raise ValueError("funded output cannot shrink")
+            self._funded = tokens
+            wake = self._wake
+        if wake is not None:
+            wake()
 
     def available(self, count):
         """Nonblocking readmission eligibility; this does not acquire GPU/production credit."""
@@ -171,6 +186,43 @@ class OutputMailbox:
                     "terminal_cells": int(self._terminal is not None and not self._terminal_seen),
                     "scope": "engine_sequence",
                     "ownership": "CPU callback transport; network delivery is independent"}
+
+
+class OutputFunding:
+    """A request's paid output ceiling across its engine calls (budget/call continuations are new mailboxes).
+
+    The HTTP owner pays host payload for ``tokens`` reply tokens before raising it; ``bind`` gives each new mailbox
+    the remainder after the reply tokens that request already holds, so the scheduler never commits unpaid output.
+    The mailbox is held weakly: it carries the request's host-payload borrow, which must retire with the mailbox
+    (the funding lives on the payload lease, so a strong reference would keep that credit forever).
+    """
+
+    def __init__(self, tokens):
+        if type(tokens) is not int or tokens < 1:
+            raise ValueError("initial funded output must be a positive token count")
+        self.tokens, self.base, self._box = tokens, 0, None
+        self._lock = threading.Lock()
+
+    def start(self, produced):
+        """Before an engine call: the reply tokens the request already holds (its continuation's base)."""
+        if type(produced) is not int or not 0 <= produced <= self.tokens:
+            raise ValueError("a continuation cannot start past its funded output")
+        with self._lock:
+            self.base = produced
+
+    def bind(self, box):
+        with self._lock:
+            self._box = weakref.ref(box)
+            box.fund(self.tokens - self.base)
+
+    def extend(self, tokens):
+        with self._lock:
+            if tokens < self.tokens:
+                raise ValueError("funded output cannot shrink")
+            self.tokens = tokens
+            box = None if self._box is None else self._box()
+            if box is not None:
+                box.fund(tokens - self.base)
 
 
 class _Production:

@@ -3161,10 +3161,16 @@ class FlashNextEngine:
         self._sm70_import_plan = self._sm70_weight_plan = None
         self.__dict__.pop("_prepared_family_plan", None)
 
+    @property
+    def supports_output_funding(self) -> bool:
+        """Whether ``generate(output_funding=...)`` bounds committed reply tokens (FIFO production reservations)."""
+        scheduler = getattr(self, "scheduler", None)
+        return scheduler is not None and getattr(scheduler, "admission_policy", None) == "fifo"
+
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True, constraint=None,
                  stop_eos: bool = True, background: bool = False, probabilities=None, *, vision=None,
-                 progress=None, token_limit=None) -> dict[str, Any]:
+                 progress=None, token_limit=None, output_funding=None) -> dict[str, Any]:
         """``draft=False``: one token a round, no MTP drafts; ``background``: last, yielding lanes to waiting ones;
         ``progress``: the prompt's prefill progress under ``--parallel`` (``Scheduler.submit``), else unused."""
 
@@ -3206,7 +3212,10 @@ class FlashNextEngine:
                                             **({"vision": vision} if vision is not None else {}),
                                             **({"profile_epoch": self.serving_profiles.gate.current().epoch, "_error_retired": error_retired}
                                         if getattr(self, "serving_profiles", None) is not None else {}),
-                                     **({"progress": progress} if progress is not None else {}))
+                                     **({"progress": progress} if progress is not None else {}),
+                                     **({"output_funding": output_funding} if output_funding is not None else {}))
+                if output_funding is not None:
+                    raise ValueError("funded output requires the concurrent FIFO scheduler")
                 reuse = draft
                 if draft:
                     from .prefix_policy import serial_reuse_allowed

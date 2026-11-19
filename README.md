@@ -2693,6 +2693,29 @@ extent rather than the configured context (thinking/tool/grammar requests keep
 a full-context output envelope); SC117 at `--context 262144 --parallel 24`
 (image `cf8c0ff6`) now admits 24 simultaneous plain 4K or 64K-prompt requests
 with 512 output tokens instead of refusing 20 of 24 with HTTP 503.
+Output presentation (decoded text, reply/tool graphs and their future encoding)
+is now paid by each reply's actual decoded bytes instead of 262,144 tokens at the
+tokenizer's worst decoded piece (128 bytes), which was 84% of a thinking/tool/grammar
+envelope (about 44.7 GB each, so only about four fit). On the concurrent FIFO
+scheduler the token-proportional owners (Stream/follower/mailbox lists, RPC and ID
+forecasts) grow with the reply too: a generation pays its prompt plus 4,096 reply
+tokens and a 64 KiB text allowance; the scheduler holds each reply to its paid token
+ceiling (every emission window is reserved from the mailbox), and the HTTP owner
+raises the ceiling at least 2,048 tokens ahead of the reply and the text allowance by
+actual decoded bytes, each by half again. Other engines keep the whole extent up
+front. A growth that does not fit
+waits ahead of new requests for at most `--queue-timeout-s`, then ends only that
+request with `server_is_overloaded` (an error event and `[DONE]` on a stream; nothing
+is appended); a prepared request's first grant now waits in the FIFO until the queue
+deadline instead of refusing. `/stats` reports the pool (`host_payload`). On 8x V100
+with the production Compose (Q4, 32 x 262,144 windows, thinking on), 32 simultaneous
+thinking requests (4,000-token prompts, 1,024-token replies) all ran at once (32
+decoding, none waiting; about 0.5 GB of pool each against a 34.8 GB pool with the
+host prefix tier charged), 48 were all served (16 queued), and a 20,000-token
+thinking reply grew past its first allowances without errors. A request whose prompt
+and reply together reach the full 262,144 tokens still holds about 4.3 GB plus its
+decoded text at that point, so the pool bounds how many such long sequences can grow
+at the same time; the others wait, then fail as above.
 
 Ordinary TP admission now releases completed RPC frame payloads after a
 recoverable `NoRoom`, preserving the original exception and queued Stream data.

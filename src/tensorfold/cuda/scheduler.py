@@ -591,7 +591,7 @@ class Scheduler:
                progress: Callable[[int, int, int, float], bool] | None = None, penalties: Any = None,
                token_limit: Callable[[list[int], list[int]], tuple[int, bool]] | None = None,
                profile_epoch: int | None = None, _error_retired=None,
-               eligibility: Callable[[], str | None] | None = None) -> dict:
+               eligibility: Callable[[], str | None] | None = None, output_funding: Any = None) -> dict:
         """Decode one request; ``emit`` runs on the calling thread and returns True to stop. Returns its stats.
         While no tokens come (queued, or a long prompt filling) ``emit([])`` ticks every TICK_S: the caller keeps its
         connection alive and says whether its client left, and a request whose client left stops even mid-prompt.
@@ -617,6 +617,11 @@ class Scheduler:
         box = OutputMailbox(max(1, count), pending_tokens=self.output_queue_tokens)
         if self.admission_policy == "fifo":
             box.set_wake(self._media_wake)
+        if output_funding is not None:
+            # Only FIFO rounds reserve every emission window from the mailbox (``_production_plan``).
+            if self.admission_policy != "fifo":
+                raise ValueError("funded output requires FIFO production reservations")
+            output_funding.bind(box)
         cancel = threading.Event()
         stream = Stream(list(prompt), max(1, count), sampling, draft=draft, stop_eos=stop_eos, vision=vision,
                         constraint=constraint, background=background, probabilities=probabilities, cancel=cancel,

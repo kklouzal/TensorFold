@@ -29,6 +29,9 @@ _CURRENT = ContextVar("tensorfold_http_host_payload", default=None)
 # A generation's first decoded-presentation allowance; present() grows it by
 # at least half again each time, so a 262,144-token reply re-sizes ~30 times.
 PRESENTATION_INITIAL_BYTES = 1 << 16
+# A generation's first paid reply-token count in incremental mode; fund_output() keeps the ceiling at least half of
+# this ahead of the produced reply (40+ s of decode at 100 tok/s), so a lane never parks while the pool has room.
+OUTPUT_INITIAL_TOKENS = 4096
 
 
 def _bytes(value):
@@ -202,7 +205,8 @@ class HostPayloadLease:
         self._generation_output_bound = self._cache_output_bound = self._control_output_bound = 0
         self._ids_output_bound = 0
         self._generation_shape = None
-        self._funded_presentation = self._presented_bytes = 0
+        self._funded_presentation = self._presented_bytes = self._funded_output = 0
+        self.output_funding = None
         self._generation_ids_base = self._generation_rpc_base = 0
         self._snapshot_output_bound = self._snapshot_wire = self._snapshot_graph = 0
         self._ids_count = self._ids_entries = self._ids_positions = self._metadata_chars = 0
@@ -361,7 +365,7 @@ class HostPayloadLease:
         body.receive(0)  # Even an empty frame's {} parse has fixed working owners.
         return body
 
-    def generation(self, *, body_bytes, output_tokens, extent_tokens):
+    def generation(self, *, body_bytes, output_tokens, extent_tokens, prompt_tokens=None):
         """Pay one generation sized by its own prompt+output token extent.
 
         The phase includes forecast tokenizer-ID and submission-RPC
@@ -371,21 +375,35 @@ class HostPayloadLease:
         PRESENTATION_INITIAL_BYTES and grows through present() by the actual
         tokens' decoded byte bounds; otherwise every output token pays the
         tokenizer's worst-case decoded piece up front.
+
+        ``prompt_tokens`` (an engine that honors ``output_funding``) pays the
+        token-proportional owners for the prompt plus OUTPUT_INITIAL_TOKENS
+        reply tokens only; ``output_funding`` then holds the scheduler to the
+        paid reply count and fund_output() raises it ahead of production.
         """
+        self._generation_shape = (body_bytes, output_tokens, extent_tokens, prompt_tokens)
+        funded = output_tokens
+        if prompt_tokens is not None:
+            if type(prompt_tokens) is not int or prompt_tokens < 0:
+                raise ValueError("generation prompt must be a nonnegative token count")
+            funded = max(self._funded_output, min(output_tokens, OUTPUT_INITIAL_TOKENS))
         presentation = None
         if self.pool.piece_bytes is not None:
             presentation = max(self._funded_presentation, self._presented_bytes,
-                               min(PRESENTATION_INITIAL_BYTES, output_tokens * self.pool.piece_bytes_max))
-        self._generation_shape = (body_bytes, output_tokens, extent_tokens)
-        self._pay_generation(presentation, wait=None)
+                               min(PRESENTATION_INITIAL_BYTES, funded * self.pool.piece_bytes_max))
+        self._pay_generation(presentation, funded, wait=None)
+        if prompt_tokens is not None and self.output_funding is None:
+            from tensorfold.cuda.output_mailbox import OutputFunding
 
-    def _pay_generation(self, presentation, *, wait):
-        body_bytes, output_tokens, extent_tokens = self._generation_shape
+            self.output_funding = OutputFunding(funded)
+
+    def _pay_generation(self, presentation, funded, *, wait):
+        body_bytes, output_tokens, extent_tokens, prompt_tokens = self._generation_shape
+        extent = extent_tokens if prompt_tokens is None else min(extent_tokens, prompt_tokens + funded)
         if presentation is None:
-            bound = self.pool.generation_bound(body_bytes, output_tokens, extent_tokens)
+            bound = self.pool.generation_bound(body_bytes, funded, extent)
         else:
-            bound = self.pool.generation_bound(body_bytes, output_tokens, extent_tokens,
-                                               presentation_bytes=presentation)
+            bound = self.pool.generation_bound(body_bytes, funded, extent, presentation_bytes=presentation)
         amount, wire, ids_base, rpc_base = bound
         if amount < ids_base + rpc_base:
             raise ValueError("generation phase must contain its own ID/RPC prepayments")
@@ -400,7 +418,27 @@ class HostPayloadLease:
                 # sit inside its prepayment, so only the excess stays charged.
                 self.ids(0)
         self._funded_presentation = 0 if presentation is None else presentation
+        self._funded_output = funded
         self._generation_output_bound = max(self._generation_output_bound, wire)
+
+    def fund_output(self, produced, *, tick=None):
+        """Keep the paid reply ceiling at least OUTPUT_INITIAL_TOKENS/2 ahead of ``produced`` (incremental mode).
+
+        Growth is geometric and waits like present() (growth queue, at most the
+        pool's queue timeout, then CapacityError for this request only); until
+        it is paid the scheduler parks this request's lane at its ceiling.
+        """
+        funding = self.output_funding
+        if funding is None:
+            return
+        output_tokens = self._generation_shape[1]
+        if produced + OUTPUT_INITIAL_TOKENS // 2 <= self._funded_output or self._funded_output >= output_tokens:
+            return
+        funded = min(output_tokens, max(produced + OUTPUT_INITIAL_TOKENS,
+                                        self._funded_output + self._funded_output // 2))
+        presentation = None if self.pool.piece_bytes is None else self._funded_presentation
+        self._pay_generation(presentation, funded, wait={"seconds": self.pool.deadline_seconds, "tick": tick})
+        funding.extend(funded)
 
     def present(self, tokens, *, tick=None):
         """Fund decoded presentation for ``tokens`` BEFORE the caller appends/decodes them.
@@ -424,12 +462,12 @@ class HostPayloadLease:
             added += table[token]
         needed = self._presented_bytes + added
         if needed > self._funded_presentation:
-            output_tokens = self._generation_shape[1]
             target = min(max(needed, self._funded_presentation + self._funded_presentation // 2),
-                         output_tokens * self.pool.piece_bytes_max)
+                         self._funded_output * self.pool.piece_bytes_max)
             if needed > target:
                 raise RuntimeError("decoded presentation exceeded its per-token worst-case bound")
-            self._pay_generation(target, wait={"seconds": self.pool.deadline_seconds, "tick": tick})
+            self._pay_generation(target, self._funded_output,
+                                 wait={"seconds": self.pool.deadline_seconds, "tick": tick})
         self._presented_bytes = needed
 
     def _grow(self, role, amount, *, seconds, tick):

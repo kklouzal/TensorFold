@@ -880,3 +880,58 @@ def test_generation_grant_waits_with_its_frame_held_instead_of_refusing():
     assert done and queued.claims == {"body/1": 10, "generation": 50}
     queued.close()
     assert p.used == 0
+
+
+def test_incremental_generation_pays_prompt_plus_initial_reply_and_funds_ahead(monkeypatch):
+    monkeypatch.setattr(hp, "OUTPUT_INITIAL_TOKENS", 100)
+    p = pool(1 << 20)
+    calls = []
+    p.generation_bound = lambda amount, output, extent: (calls.append((output, extent)) or extent * 10, 0, 0, 0)
+    owner = p.lease()
+    owner.generation(body_bytes=0, output_tokens=262144, extent_tokens=262144, prompt_tokens=2000)
+    assert calls == [(100, 2100)] and owner.claims["generation"] == 21000
+    funding = owner.output_funding
+    assert funding.tokens == 100
+    owner.fund_output(40)                       # 40 + 50 <= 100: still ahead
+    assert calls == [(100, 2100)]
+    owner.fund_output(60)                       # less than half the initial allowance left: grow before parking
+    assert calls[-1] == (160, 2160) and funding.tokens == 160 and owner.claims["generation"] == 21600
+    owner.close()
+    assert p.used == 0
+
+
+def test_output_funding_ceiling_parks_production_until_paid_and_follows_continuations():
+    from tensorfold.cuda.output_mailbox import OutputFunding, OutputMailbox
+
+    funding = OutputFunding(8)
+    woke = []
+    first = OutputMailbox(1000)
+    first.set_wake(lambda: woke.append(1))
+    funding.start(0)
+    funding.bind(first)
+    lease = first.reserve(8)
+    assert lease is not None
+    first.put(("tokens", list(range(8))))
+    lease.close()
+    assert first.reserve(1) is None              # the paid ceiling, not the reply allowance, stops production
+    funding.extend(12)
+    assert woke and first.reserve(4) is not None
+    second = OutputMailbox(1000)                 # a budget/call continuation after 10 kept reply tokens
+    funding.start(10)
+    funding.bind(second)
+    assert second.available(2) and not second.available(3)
+    with pytest.raises(ValueError):
+        funding.extend(11)
+
+
+def test_output_funding_does_not_keep_its_mailbox_or_payload_borrow_alive():
+    from tensorfold.cuda.output_mailbox import OutputFunding, OutputMailbox
+
+    funding = OutputFunding(8)
+    box = OutputMailbox(100)
+    funding.bind(box)
+    ref = weakref.ref(box)
+    del box
+    gc.collect()
+    assert ref() is None
+    funding.extend(16)                           # a retired call's mailbox is simply gone
