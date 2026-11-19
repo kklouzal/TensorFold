@@ -1224,6 +1224,7 @@ int w4_tile(int64_t M, bool geglu) {
 template <bool GEGLU, int R, int L>
 void w4_rows_launch(const Tensor& x, int64_t M, const Tensor& codes, const Tensor& scales, const Tensor& rowmul,
                     int64_t N, int64_t K, Tensor& out, int64_t ldo) {
+    if (M <= 0) return;                   // an empty call writes nothing (a zero-height grid is a launch error)
     const int64_t per_block = g4::WARPS * (32 / L) * R;
     const int T = w4_tile(M, GEGLU);
     const dim3 grid((N + per_block - 1) / per_block, (M + T - 1) / T);
@@ -1334,6 +1335,7 @@ int bf16_tile(int64_t M) {
 template <int R>
 void bf16_launch(const Tensor& x, int64_t M, const Tensor& w, int64_t N, int64_t K, Tensor& out, int64_t ldo,
                  double softcap) {
+    if (M <= 0) return;
     const int T = bf16_tile(M);
     const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R), (M + T - 1) / T);
     const int64_t ldx = x.stride(0);
@@ -1363,6 +1365,7 @@ int i8_tile(int64_t M, int64_t N, int64_t K, int R) {
 template <int R>
 void i8_launch(const Tensor& x, int64_t M, const Tensor& w, const Tensor& scale, int64_t N, int64_t K, Tensor& out,
                int64_t ldo, double softcap) {
+    if (M <= 0) return;
     const int T = i8_tile(M, N, K, R);
     const dim3 grid((N + g4::WARPS * R - 1) / (g4::WARPS * R), (M + T - 1) / T);
     const int64_t ldx = x.stride(0);
@@ -1400,6 +1403,7 @@ void i8_rows_cuda(const Tensor& x, int64_t M, const Tensor& w, const Tensor& sca
 void router_cuda(const Tensor& x, int64_t M, const Tensor& w, int64_t E, int64_t K, Tensor& logits, Tensor& counter,
                  int64_t topk, const Tensor& scale, int64_t first, int64_t count, Tensor& ids, Tensor& weights,
                  Tensor& local) {
+    if (M <= 0) return;
     const int T = M <= 1 ? 1 : 2;
     TORCH_CHECK(E <= 256 && topk <= 8 && counter.numel() >= (M + T - 1) / T,
                 "fused router serves <= 256 experts, top-k <= 8 and needs one counter per 2-row tile");

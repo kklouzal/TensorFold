@@ -486,7 +486,8 @@ def test_gemma4_row_tiles_equal_sixteen_row_calls(rows):
             assert torch.equal(whole[r0:r0 + m].view(torch.int32), part.view(torch.int32)), name
 
 
-@pytest.mark.parametrize("rows", [2, 3, 5, 6, 8, 10, 12, 16, 20, 40])
+# 33: partial tiles past 16 rows (BF16 16-row tile, W4 6-row, GEGLU 3-row and an odd router tile).
+@pytest.mark.parametrize("rows", [2, 3, 5, 6, 8, 10, 12, 16, 20, 33, 40])
 def test_gemma4_rows_equal_one_row_calls(rows):
     """Every row of a multi-row decode call (any row tile) equals its own one-row call (bitwise): W4 projections
     and GEGLU, the BF16 head, DFlash INT8 rows and the fused router."""
