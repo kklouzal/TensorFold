@@ -1423,6 +1423,8 @@ class App:
         canonical_capture = None
         cache_frontend = False
         host_owner = self._http_generation_owner(cancelled)
+        # The same owner funds this reply's decoded presentation as it grows.
+        presentation_owner = host_owner
         if host_owner is not None and prepared is not None:
             # A refused caller-supplied Prepared stays caller-owned.
             self._reserve_http_generation(host_owner, prepared)
@@ -1619,6 +1621,11 @@ class App:
                         if not emit(None) or (cancelled is not None and cancelled()):
                             stopped["client"] = True
                         return stopped["client"]
+                    if presentation_owner is not None:
+                        # Pay these tokens' decoded text/reply/encoder bytes before any
+                        # list or string grows; a bounded wait then fails this request.
+                        presentation_owner.present(new, tick=lambda: bool(emit(None)) and not (
+                            cancelled is not None and cancelled()))
                     if stops.strings:
                         kept = []
                         for token in new:             # token by token: the round's width cannot move the cut

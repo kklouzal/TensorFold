@@ -564,7 +564,7 @@ class PresentationBound:
     escaped_id_wire_ratio: tuple | None = None
 
 
-def tokenizer_presentation_bound(tokenizer, *, precise_bytelevel=True):
+def tokenizer_presentation_bound(tokenizer, *, precise_bytelevel=True, piece_table=None):
     """Bind the ACTUAL loaded decoder and every lexical/added token.
 
     tokenizers 0.23.3 ByteLevel maps characters to bytes (or retains a token's
@@ -577,6 +577,9 @@ def tokenizer_presentation_bound(tokenizer, *, precise_bytelevel=True):
     emitted replacement characters; it cannot increase their UTF8 byte sum.
     Its enumerated per-piece maximum therefore bounds every concatenation.
     Other compositions keep affine bounds, including empty Fuse/Replace input.
+    With plain ByteLevel, an empty ``piece_table`` (array) receives each ID's
+    decoded UTF8 byte bound (0 for textless IDs); their sum over a reply bounds
+    its joined decode by the same argument. Other decoders leave it empty.
     """
     import tokenizers
     from tensorfold.token_metadata import tokenizer_identity, tokenizer_vocab_size
@@ -593,14 +596,20 @@ def tokenizer_presentation_bound(tokenizer, *, precise_bytelevel=True):
     plain_bytelevel = precise_bytelevel and state is not None and state["type"] == "ByteLevel"
     def larger_ratio(previous, numerator, denominator):
         return (numerator, denominator) if numerator * previous[1] > previous[0] * denominator else previous
+    if piece_table is not None and len(piece_table):
+        raise ValueError("decoded piece table must start empty")
     for index in range(vocab):
         piece = tokenizer.id_to_token(index)
+        if piece is None and plain_bytelevel and piece_table is not None:
+            piece_table.append(0)
         if piece is not None:  # Prepared UNUSED matrix rows have no text.
             maximum = max(maximum, len(piece.encode("utf-8")))
             if plain_bytelevel:
                 decoded = decoder.decode([piece])
                 decoded_bytes = len(decoded.encode("utf-8"))
                 decoded_maximum = max(decoded_maximum, decoded_bytes)
+                if piece_table is not None:
+                    piece_table.append(decoded_bytes)
                 denominator = len(str(index)) + 1  # decimal ID and its array separator
                 lexical_ratio = larger_ratio(lexical_ratio, len(piece.encode("utf-8")), denominator)
                 decoded_ratio = larger_ratio(decoded_ratio, decoded_bytes, denominator)
@@ -1076,7 +1085,8 @@ def _http_json_encoding_payload(encoded_bytes, policy, *, measured_depth=None):
 
 
 def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_bytes, copy_enabled,
-                               presentation_fixed=0, json_policy=None, output_tokens=None):
+                               presentation_fixed=0, json_policy=None, output_tokens=None,
+                               presentation_bytes=None):
     """Named future owned Python/NumPy payloads for ONE logical CPU owner.
 
     InputClaim independently pays the original full prompt and encoded replay.
@@ -1131,7 +1141,15 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
     # Incremental decode keeps before/after/accumulated text; stop/markup/reply
     # splitting can retain old and new presentation strings at the same call.
     # Count actual source string roles rather than assuming one byte/character.
-    chars = output_tokens * presentation + presentation_fixed
+    # ``presentation_bytes`` is a funded bound on the reply's decoded UTF8
+    # bytes (sum of its tokens' per-ID decoded bounds); default: worst case.
+    if presentation_bytes is None:
+        chars = output_tokens * presentation + presentation_fixed
+    else:
+        _size(presentation_bytes, "funded presentation bytes", zero=True)
+        if presentation_bytes > output_tokens * presentation:
+            raise ValueError("funded presentation exceeds its per-token worst case")
+        chars = presentation_bytes + presentation_fixed
     string = layout["unicode"] + 4 * chars + chars  # PEP393 payload plus possible UTF8 cache.
     text_roles = ("decoder.before", "decoder.after", "decoder.text", "decoder.append_slice", "decoder.new_text",
                   "final.before", "final.decoded", "final.slice", "final.joined", "app.raw", "app.reasoning",
@@ -1432,7 +1450,9 @@ def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_wait
     if decoder is None:
         raise ValueError("endpoint host resources require the actual bound decoder")
     copy_enabled = decoder.copy
-    bound = tokenizer_presentation_bound(tokenizer, precise_bytelevel=precise_payloads)
+    from array import array
+    piece_table = array("I")
+    bound = tokenizer_presentation_bound(tokenizer, precise_bytelevel=precise_payloads, piece_table=piece_table)
     # Tight native/JSON phase accounting is qualified for the actual plain
     # ByteLevel frontend. Other supported decoder compositions keep their
     # existing conservative projection rather than borrowing this proof.
@@ -1470,6 +1490,9 @@ def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_wait
         "baseline": baseline,
         "decoder": decoder,
         "copy_enabled": copy_enabled,
+        # Per-ID decoded byte bounds (plain ByteLevel only) for grow-by-actual
+        # HTTP presentation credit; empty keeps the worst-case per token.
+        "piece_table": piece_table if len(piece_table) == bound.vocab_size else None,
         "bound": bound,
         "json_policy": json_policy,
         "context": context,
@@ -1877,7 +1900,7 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
                 future_wire, policy, measured_depth=depth)["total_bytes"] - prepaid_encoder)
         return owned, future_wire
 
-    def generation_bound(amount, output_tokens, extent_tokens):
+    def generation_bound(amount, output_tokens, extent_tokens, *, presentation_bytes=None):
         """One admitted generation's owners, sized by its own token extent.
 
         extent_tokens bounds prompt plus every token the request may append
@@ -1891,7 +1914,8 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         terms = continuation_payload_bytes(context=extent_tokens, vocab_size=core["bound"].vocab_size,
             presentation=core["bound"].decoded_utf8_bytes_per_token,
             presentation_fixed=core["bound"].decoded_utf8_fixed_bytes, max_body_bytes=max(1, amount),
-            copy_enabled=core["copy_enabled"], json_policy=policy, output_tokens=output_tokens)
+            copy_enabled=core["copy_enabled"], json_policy=policy, output_tokens=output_tokens,
+            presentation_bytes=presentation_bytes)
         if record["output_queue_tokens"] is not None:
             terms["project_payload_bytes"] -= terms["mailbox"]
             terms["mailbox"] *= min(output_tokens, record["output_queue_tokens"])
@@ -1946,6 +1970,9 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
         control_bound=control_bound,
         deadline_seconds=scheduler.queue_timeout_s)
     pool.ids_bound = ids_bound
+    if core.get("piece_table") is not None and policy is not None and not core["bound"].decoded_utf8_fixed_bytes:
+        pool.piece_bytes = core["piece_table"]
+        pool.piece_bytes_max = core["bound"].decoded_utf8_bytes_per_token
     pool.tokenizer_serialized_chars = tokenizer_serialized_chars
     def segment_bound(limit, entries, text_chars):
         if limit > segment_limit:

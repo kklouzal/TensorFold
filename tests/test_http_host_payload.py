@@ -741,3 +741,142 @@ def test_execution_snapshot_copies_exact_generation_that_was_credited():
     record = observations.record(credit=credit)
     assert record["totals"] == dict(before[0]) and record["counts_complete"]
     assert observations.record()["totals"] == dict(newer[0])
+
+
+def presentation_pool(capacity, deadline=None, table=(1, 3, 128)):
+    p = pool(capacity, deadline=deadline)
+    calls = []
+
+    def bound(amount, output, extent, *, presentation_bytes=None):
+        calls.append(presentation_bytes)
+        return extent + presentation_bytes, presentation_bytes, 0, 0
+    p.generation_bound = bound
+    p.piece_bytes, p.piece_bytes_max = list(table), max(table)
+    return p, calls
+
+
+def test_generation_presentation_starts_small_and_grows_by_actual_decoded_bytes(monkeypatch):
+    monkeypatch.setattr(hp, "PRESENTATION_INITIAL_BYTES", 8)
+    p, calls = presentation_pool(10_000)
+    owner = p.lease()
+    owner.generation(body_bytes=0, output_tokens=1000, extent_tokens=1100)
+    assert calls == [8] and owner.claims["generation"] == 1108
+    owner.present([0, 1, 0])           # 5 bytes: inside the first allowance
+    assert calls == [8]
+    owner.present([1, 1])              # 11 > 8: geometric growth before appending
+    assert calls == [8, 12] and owner.claims["generation"] == 1112 and owner._presented_bytes == 11
+    owner.present([2])                 # one worst-case piece
+    assert calls[-1] == 139 and owner.claims["generation"] == 1239
+    owner.close()
+    assert p.used == 0
+
+
+def test_generation_presentation_never_exceeds_the_worst_case_and_tables_absent_keep_it():
+    p, calls = presentation_pool(10_000, table=(128,))
+    owner = p.lease()
+    owner.generation(body_bytes=0, output_tokens=2, extent_tokens=10)
+    assert calls == [256]               # min(initial allowance, output * worst piece)
+    owner.present([0, 0])
+    with pytest.raises(RuntimeError, match="worst-case"):
+        owner.present([0])
+    owner.close()
+    plain = pool(1000)
+    plain.generation_bound = lambda n, out, extent: (extent, 0, 0, 0)
+    other = plain.lease()
+    other.generation(body_bytes=0, output_tokens=5, extent_tokens=7)
+    other.present([1, 2, 3])            # no table: the admission already paid the worst case
+    assert other.claims["generation"] == 7
+    other.close()
+
+
+def test_presentation_growth_waits_ahead_of_new_requests_then_succeeds(monkeypatch):
+    monkeypatch.setattr(hp, "PRESENTATION_INITIAL_BYTES", 8)
+    p, _calls = presentation_pool(1200, deadline=5)
+    owner = p.lease()
+    owner.generation(body_bytes=0, output_tokens=1000, extent_tokens=1000)   # 1008
+    blocker = p.lease()
+    blocker.set("body", 180)                                                 # 12 left
+    fresh, order, errors, ticks = p.lease(), [], [], []
+
+    def grow():
+        try:
+            owner.present([2], tick=lambda: ticks.append(1) or True)        # needs +120
+            order.append("grow")
+        except Exception as error:
+            errors.append(error)
+
+    def admit():
+        try:
+            fresh.set("body", 50)
+            order.append("fresh")
+        except Exception as error:
+            errors.append(error)
+    grower = threading.Thread(target=grow)
+    grower.start()
+    with p._condition:
+        assert p._condition.wait_for(lambda: len(p._growers) == 1, timeout=2)
+    newcomer = threading.Thread(target=admit)
+    newcomer.start()
+    with p._condition:
+        assert p._condition.wait_for(lambda: len(p._waiters) == 1, timeout=2)
+    blocker.close()
+    grower.join(3)
+    newcomer.join(3)
+    assert not errors and order == ["grow", "fresh"] and owner.claims["generation"] == 1128
+    fresh.close()
+    owner.close()
+    assert p.used == 0 and not p._growers and not p._waiters
+
+
+def test_presentation_growth_wait_is_bounded_and_fails_only_that_request(monkeypatch):
+    monkeypatch.setattr(hp, "PRESENTATION_INITIAL_BYTES", 8)
+    p, _calls = presentation_pool(1200, deadline=0.3)
+    owner = p.lease()
+    owner.generation(body_bytes=0, output_tokens=1000, extent_tokens=1000)
+    other = p.lease()
+    other.set("body", 190)
+    start = time.monotonic()
+    with pytest.raises(CapacityError, match="stayed exhausted"):
+        owner.present([2])
+    assert 0.25 <= time.monotonic() - start < 2
+    assert owner.claims == {"generation": 1008} and owner._presented_bytes == 0 and not p._growers
+    assert p.failure is None and other.claims == {"body": 190}
+    owner.close()
+    other.close()
+    assert p.used == 0
+
+
+def test_presentation_growth_wait_stops_when_the_client_leaves(monkeypatch):
+    monkeypatch.setattr(hp, "PRESENTATION_INITIAL_BYTES", 8)
+    p, _calls = presentation_pool(1200, deadline=30)
+    owner = p.lease()
+    owner.generation(body_bytes=0, output_tokens=1000, extent_tokens=1000)
+    other = p.lease()
+    other.set("body", 190)
+    with pytest.raises(RequestCancelled):
+        owner.present([2], tick=lambda: False)
+    assert owner.claims == {"generation": 1008} and not p._growers
+    owner.close()
+    other.close()
+
+
+def test_generation_grant_waits_with_its_frame_held_instead_of_refusing():
+    p = pool(100, deadline=5)
+    p.generation_bound = lambda n, out, extent: (extent, 0, 0, 0)
+    running = p.lease()
+    running.set("generation", 80)
+    queued = p.lease()
+    queued.set("body/1", 10)
+    done = []
+    worker = threading.Thread(target=lambda: (queued.generation(body_bytes=0, output_tokens=1, extent_tokens=50),
+                                              done.append(True)))
+    worker.start()
+    with p._condition:
+        assert p._condition.wait_for(lambda: len(p._waiters) == 1, timeout=2)
+    # A live owner's ordinary phase is not starved by queued grants when it fits.
+    running.set("rpc", 5)
+    running.close()
+    worker.join(3)
+    assert done and queued.claims == {"body/1": 10, "generation": 50}
+    queued.close()
+    assert p.used == 0

@@ -2,9 +2,14 @@
 
 The pool is an application allocation bound, not an OS reservation or an RSS
 certificate. A lease outlives every borrower; closing a socket never retires a
-worker's borrow. Growing an allocated owner never waits for another growing
-owner: it either obtains the complete next phase or refuses before allocation.
-Only an initial, still-empty owner may wait in the bounded FIFO.
+worker's borrow. Every owner pays before allocation. An initial, still-empty
+owner and a prepared request's generation grant (holding only its parsed
+frame) wait in the bounded FIFO until the queue deadline. A running
+generation's output presentation grows by actual decoded bytes: it waits in a
+separate growth queue that is served before the FIFO, bounded by the pool's
+queue timeout, and then fails only that request with an explicit
+CapacityError. Other live-owner phases still obtain their whole phase or
+refuse before allocation without waiting.
 """
 from __future__ import annotations
 
@@ -21,6 +26,9 @@ from .errors import CapacityError
 
 
 _CURRENT = ContextVar("tensorfold_http_host_payload", default=None)
+# A generation's first decoded-presentation allowance; present() grows it by
+# at least half again each time, so a 262,144-token reply re-sizes ~30 times.
+PRESENTATION_INITIAL_BYTES = 1 << 16
 
 
 def _bytes(value):
@@ -132,7 +140,12 @@ class HostPayloadPool:
         self._condition = threading.Condition()
         self._leases = set()
         self._waiters = deque()
+        self._growers = deque()
         self.used = self.highwater = 0
+        # Decoded UTF8 byte bound per token ID (plain ByteLevel), set by the
+        # owning admission; None keeps the worst-case per-token presentation.
+        self.piece_bytes = None
+        self.piece_bytes_max = 0
         self.failure = None
         self.last_refusal = None
         self.capacity_changed = None
@@ -167,7 +180,7 @@ class HostPayloadPool:
                     "capacity_bytes": self.capacity, "reserved_bytes": self.used,
                     "highwater_bytes": self.highwater, "owners": len(self._leases),
                     "active_handlers": self.active_handlers,
-                    "waiters": len(self._waiters), "poisoned": self.failure is not None,
+                    "waiters": len(self._waiters), "growth_waiters": len(self._growers), "poisoned": self.failure is not None,
                     "last_refusal": None if self.last_refusal is None else dict(self.last_refusal)}
 
     def fixed_slots_full(self):
@@ -188,6 +201,8 @@ class HostPayloadLease:
         self.body_bytes = 0
         self._generation_output_bound = self._cache_output_bound = self._control_output_bound = 0
         self._ids_output_bound = 0
+        self._generation_shape = None
+        self._funded_presentation = self._presented_bytes = 0
         self._generation_ids_base = self._generation_rpc_base = 0
         self._snapshot_output_bound = self._snapshot_wire = self._snapshot_graph = 0
         self._ids_count = self._ids_entries = self._ids_positions = self._metadata_chars = 0
@@ -200,8 +215,13 @@ class HostPayloadLease:
         self.deadline = (None if pool.deadline_seconds is None else
                          time.monotonic() + pool.deadline_seconds)
 
-    def set(self, role, amount, *, allow_wait=True):
-        """Reserve a whole phase before allocation; a live owner's growth cannot wait."""
+    def set(self, role, amount, *, allow_wait=True, wait_with_claims=False):
+        """Reserve a whole phase before allocation.
+
+        Only an empty owner, or ``wait_with_claims`` (the generation grant of a
+        prepared request), may wait in the FIFO; growth waiters go first. Other
+        live-owner growth refuses atomically when capacity is short.
+        """
         amount = _bytes(amount)
         pool = self.pool
         with pool._condition:
@@ -221,11 +241,14 @@ class HostPayloadLease:
             ticket = None
             primary = None
             try:
-                while delta > pool.capacity - pool.used or (delta > 0 and pool._waiters
-                        and (ticket is None or pool._waiters[0] is not ticket)):
-                    # Waiting with allocated roots can deadlock all readers or
-                    # phase upgrades. Refuse atomically instead; no partial grow.
-                    if not allow_wait or any(self.claims.values()) or self.deadline is None:
+                live = any(self.claims.values())
+                while delta > pool.capacity - pool.used or (delta > 0 and (not live or wait_with_claims)
+                        and (pool._growers or pool._waiters
+                             and (ticket is None or pool._waiters[0] is not ticket))):
+                    # A live owner's ordinary phase upgrade never waits (it could
+                    # hold the roots others wait for); it refuses atomically.
+                    # Fresh and generation-grant waiters queue behind growth.
+                    if not allow_wait or (live and not wait_with_claims) or self.deadline is None:
                         raise self._capacity_error(role, amount,
                             "host payload capacity is busy; retry after consumers retire")
                     if self.cancelled is not None and self.cancelled():
@@ -342,19 +365,130 @@ class HostPayloadLease:
         """Pay one generation sized by its own prompt+output token extent.
 
         The phase includes forecast tokenizer-ID and submission-RPC
-        prepayments; ids()/rpc() charge only what exceeds them.
+        prepayments; ids()/rpc() charge only what exceeds them. With a
+        per-token decoded byte table, output presentation (decoded text,
+        reply/tool graphs and their future encoding) starts at
+        PRESENTATION_INITIAL_BYTES and grows through present() by the actual
+        tokens' decoded byte bounds; otherwise every output token pays the
+        tokenizer's worst-case decoded piece up front.
         """
-        amount, wire, ids_base, rpc_base = self.pool.generation_bound(body_bytes, output_tokens, extent_tokens)
+        presentation = None
+        if self.pool.piece_bytes is not None:
+            presentation = max(self._funded_presentation, self._presented_bytes,
+                               min(PRESENTATION_INITIAL_BYTES, output_tokens * self.pool.piece_bytes_max))
+        self._generation_shape = (body_bytes, output_tokens, extent_tokens)
+        self._pay_generation(presentation, wait=None)
+
+    def _pay_generation(self, presentation, *, wait):
+        body_bytes, output_tokens, extent_tokens = self._generation_shape
+        if presentation is None:
+            bound = self.pool.generation_bound(body_bytes, output_tokens, extent_tokens)
+        else:
+            bound = self.pool.generation_bound(body_bytes, output_tokens, extent_tokens,
+                                               presentation_bytes=presentation)
+        amount, wire, ids_base, rpc_base = bound
         if amount < ids_base + rpc_base:
             raise ValueError("generation phase must contain its own ID/RPC prepayments")
         if amount > self.claims.get("generation", 0):
-            self.set("generation", amount)
+            if wait is None:
+                self.set("generation", amount, wait_with_claims=True)
+            else:
+                self._grow("generation", amount, **wait)
             self._generation_ids_base, self._generation_rpc_base = ids_base, rpc_base
             if self.claims.get("tokenizer-ids"):
                 # Tokenization paid its IDs before this phase existed; they now
                 # sit inside its prepayment, so only the excess stays charged.
                 self.ids(0)
+        self._funded_presentation = 0 if presentation is None else presentation
         self._generation_output_bound = max(self._generation_output_bound, wire)
+
+    def present(self, tokens, *, tick=None):
+        """Fund decoded presentation for ``tokens`` BEFORE the caller appends/decodes them.
+
+        The sum of per-ID decoded UTF8 byte bounds bounds the joined decode
+        (ByteLevel joining cannot increase it), so every presentation string
+        role stays within the funded bytes. Growth is geometric. When the pool
+        is short this waits in the growth queue (served before new requests)
+        for at most the pool's queue timeout, calling ``tick()`` about once a
+        second (False means the client left), then raises CapacityError for
+        this request only; nothing was appended, so no output is truncated
+        silently. Without a queue timeout it refuses at once.
+        """
+        table = self.pool.piece_bytes
+        if table is None or not tokens:
+            return
+        if self._generation_shape is None:
+            raise RuntimeError("output presentation requires its paid generation phase")
+        added = 0
+        for token in tokens:
+            added += table[token]
+        needed = self._presented_bytes + added
+        if needed > self._funded_presentation:
+            output_tokens = self._generation_shape[1]
+            target = min(max(needed, self._funded_presentation + self._funded_presentation // 2),
+                         output_tokens * self.pool.piece_bytes_max)
+            if needed > target:
+                raise RuntimeError("decoded presentation exceeded its per-token worst-case bound")
+            self._pay_generation(target, wait={"seconds": self.pool.deadline_seconds, "tick": tick})
+        self._presented_bytes = needed
+
+    def _grow(self, role, amount, *, seconds, tick):
+        """Bounded growth wait of a live owner, ahead of the FIFO; refuse after ``seconds``."""
+        pool = self.pool
+        ticket = object()
+        start = time.monotonic()
+        next_tick = start + 1.0
+        queued = False
+        primary = None
+        try:
+            while True:
+                with pool._condition:
+                    pool._healthy()
+                    if self.closed:
+                        raise RuntimeError("retired HTTP host payload lease")
+                    delta = amount - self.claims.get(role, 0)
+                    if delta <= 0:
+                        return
+                    if sum(self.claims.values()) + delta > pool.capacity:
+                        raise self._capacity_error(role, amount,
+                            "request host payload exceeds the available physical/cgroup allowance")
+                    if delta <= pool.capacity - pool.used and (not pool._growers or pool._growers[0] is ticket):
+                        replacement = dict(self.claims)
+                        replacement[role] = amount
+                        used = pool.used + delta
+                        self.claims = replacement
+                        pool.used, pool.highwater = used, max(pool.highwater, used)
+                        pool._condition.notify_all()
+                        return
+                    if self.cancelled is not None and self.cancelled():
+                        raise RequestCancelled("client left while waiting for host payload growth")
+                    now = time.monotonic()
+                    if seconds is None or now - start >= seconds:
+                        raise self._capacity_error(role, amount,
+                            "host payload capacity stayed exhausted while this generation grew; "
+                            "the request stopped before its next output")
+                    if not queued:
+                        pool._growers.append(ticket)
+                        queued = True
+                    pool._condition.wait(min(0.05, seconds - (now - start)))
+                if tick is not None and time.monotonic() >= next_tick:
+                    next_tick = time.monotonic() + 1.0
+                    if not tick():
+                        raise RequestCancelled("client left while waiting for host payload growth")
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            if queued:
+                try:
+                    with pool._condition:
+                        if ticket in pool._growers:
+                            pool._growers.remove(ticket)
+                        pool._condition.notify_all()
+                except BaseException as cleanup:
+                    from tensorfold.cleanup import raise_failures
+                    pool.poison(primary if primary is not None else cleanup)
+                    raise_failures(primary, [cleanup])
 
     def rpc(self, encoded_bytes):
         # Generation prepays its forecast submission child/source allowance.

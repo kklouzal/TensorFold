@@ -112,6 +112,13 @@ def snapshot(app: Any, *, server: Any = None,
     adaptive = runtime.snapshot(app)
     if adaptive is not None:
         result["runtime"] = adaptive
+    pool = getattr(app, "host_payload_pool", None)
+    if pool is not None:
+        # Bounded scalar record: capacity, reserved/high-water bytes, owners and both wait queues.
+        record = pool.record()
+        if credit is not None:
+            credit(record)
+        result["host_payload"] = record
     return result
 
 
