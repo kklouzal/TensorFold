@@ -503,3 +503,25 @@ def test_iq4nl_ple_embed_equals_host_decode_then_native_embed(rows):
             invoke("ple_embed_iq4nl", True, rows, torch.from_numpy(packed).cuda(), heads, dims, out, xs, scale=1.0)
         results.append((out.view(torch.int16), xs))
     assert torch.equal(results[0][0], results[1][0]) and torch.equal(results[0][1], results[1][1])
+
+
+def test_iq4nl_ple_embed_torch_reference_captures_in_a_cuda_graph():
+    """The reference decode (no native family) runs inside whole-model graph capture: no host->device copies."""
+    from tensorfold.cuda.sm70 import family_ops
+
+    rows, heads, dims = 5, 16, 160
+    gen = torch.Generator(device="cuda").manual_seed(19)
+    packed = torch.randint(0, 256, (rows * heads, dims // 32, 18), dtype=torch.uint8, device="cuda", generator=gen)
+    scales = (torch.rand((rows * heads, dims // 32), device="cuda", generator=gen) * 2 - 1).half()
+    packed[..., :2] = scales.view(torch.uint8).view(rows * heads, dims // 32, 2)
+    packed = packed.reshape(rows * heads, -1)
+    eager = torch.empty((rows, heads * dims), device="cuda", dtype=torch.float16)
+    eager_xs = torch.empty((rows, heads * dims // 32), device="cuda")
+    family_ops._torch_ple_embed_iq4nl(rows, packed, heads, dims, eager, eager_xs, scale=0.5)
+    out, xs = torch.empty_like(eager), torch.empty_like(eager_xs)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        family_ops._torch_ple_embed_iq4nl(rows, packed, heads, dims, out, xs, scale=0.5)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert torch.equal(out.view(torch.int16), eager.view(torch.int16)) and torch.equal(xs, eager_xs)
