@@ -103,15 +103,36 @@ class Gemma4SM70Engine:
         # MemAvailable, agreed as the smallest rank's choice (every rank must lay out identical blocks).
         if prefix_host_bytes is not None and (type(prefix_host_bytes) is not int or prefix_host_bytes < 0):
             raise ValueError("prefix_host_bytes must be a nonnegative byte count")
-        from .prefix_host import BLOCK_BYTES
-        if prefix_host_bytes is None:
+        # Per rank, a power of two (pinned_slab_bytes: the pinned allocator rounds up to one, so this is the bytes
+        # actually pinned) of at least one 2 MiB block.
+        from tensorfold.families.qwen4_exp.cuda.prefix_host import pinned_slab_bytes
+        explicit = prefix_host_bytes is not None
+        if not explicit:
             prefix_host_bytes = min(HOST_DEFAULT_BYTES, _mem_available() // 4)
-        mine = torch.tensor([prefix_host_bytes // tp // BLOCK_BYTES * BLOCK_BYTES], dtype=torch.int64, device="cuda")
+        mine = torch.tensor([pinned_slab_bytes(prefix_host_bytes // tp)], dtype=torch.int64, device="cuda")
         agreed = torch.empty(tp, dtype=torch.int64, device="cuda")
         self.comm.all_gather(mine, agreed)
         self.host_per_rank = int(agreed.min())
-        self.host_slab = (torch.empty(self.host_per_rank, dtype=torch.uint8, pin_memory=True)
-                          if self.host_per_rank else None)
+        self.host_slab, failure = None, None
+        if self.host_per_rank:                    # rank-agreed, so every rank takes this branch and its all-gather
+            try:
+                self.host_slab = torch.empty(self.host_per_rank, dtype=torch.uint8, pin_memory=True)
+            except RuntimeError as error:         # cudaHostAlloc refused (host memory/locking limits)
+                failure = error
+            pinned = torch.tensor([failure is None], dtype=torch.int64, device="cuda")
+            every = torch.empty(tp, dtype=torch.int64, device="cuda")
+            self.comm.all_gather(pinned, every)
+            refused = [r for r, ok in enumerate(every.tolist()) if not ok]
+            if refused:
+                self.host_slab = None
+                message = (f"pinning the {self.host_per_rank} B/rank host prefix tier failed on rank(s) "
+                           f"{refused}" + ("" if failure is None else f": {failure}"))
+                if explicit:
+                    raise RuntimeError(f"--prefix-host-bytes {prefix_host_bytes}: {message}") from failure
+                if rank == 0:
+                    print(f"[tensorfold] Gemma 4 SM70: {message}; serving without the host prefix tier "
+                          "(--prefix-host-bytes sets it explicitly)", flush=True)
+                self.host_per_rank = 0
         self.host_layout = {}
         self.target = Target(self.w, self.comm, context=self.context_window, slots=slots)
         self.vocab = self.w.config.vocab

@@ -33,6 +33,18 @@ import copy
 import torch
 
 BLOCK_BYTES = 1 << 21        # fixed allocation unit of the pinned slab
+
+
+def pinned_slab_bytes(per_rank: int, block: int = BLOCK_BYTES) -> int:
+    """The largest per-rank slab not above ``per_rank`` that pinning allocates exactly, or 0 below one block.
+
+    PyTorch's pinned (CachingHostAllocator) allocation rounds every request up to a power of two (torch 2.16:
+    pinned_max_round_threshold and pinned_max_cached_size are unbounded by default), so a 6 GiB request pins 8 GiB.
+    A power-of-two slab (``block`` is one) keeps the pinned bytes equal to the bytes the host budget charges.
+    """
+    if type(per_rank) is not int or per_rank < block:
+        return 0
+    return 1 << (per_rank.bit_length() - 1)
 MIN_GAIN = 64                # tokens a host point must save beyond the best VRAM point (~23 ms of prefill)
 
 

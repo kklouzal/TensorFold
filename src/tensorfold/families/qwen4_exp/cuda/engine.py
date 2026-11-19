@@ -1416,7 +1416,7 @@ class FlashNextEngine:
             history_host_per_rank = history_maximum_owners * history_plan.host_bytes(history_host_limit)
             host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * history_host_per_rank
         # Host-RAM prefix tier (prefix_host): one pinned slab per rank, a fixed host obligation before the HTTP pool.
-        from .prefix_host import BLOCK_BYTES
+        from .prefix_host import pinned_slab_bytes
 
         prefix_host_supported = (unique_positions and concurrent and position_method == "mtp"
                                  and retention_policy is None and not vision)
@@ -1427,7 +1427,8 @@ class FlashNextEngine:
         if prefix_host_bytes and not prefix_host_supported:
             raise ValueError("--prefix-host-bytes requires concurrent SM70 unique TP8 GPU histories with MTP drafting, "
                              "no retention policy and no vision")
-        self.prefix_host_per_rank = prefix_host_bytes // tp // BLOCK_BYTES * BLOCK_BYTES
+        # Per rank, rounded down to the pinned allocator's power-of-two granularity (pinned == charged bytes).
+        self.prefix_host_per_rank = pinned_slab_bytes(prefix_host_bytes // tp)
         host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * self.prefix_host_per_rank
         adaptive_capacity = {}
         if self._owned_expert_plan is not None:

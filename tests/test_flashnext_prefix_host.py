@@ -231,3 +231,13 @@ def test_an_entry_evicted_while_its_restore_target_grows_is_not_restored():
     slot, resume, cached = prefixes.slot_for(decoder, ids + [1, 2, 3], True)
     assert resume is None and cached == 0 and host.record()["restores"] == 0
     assert decoder.prefix_counters["host_hits"] == 0
+
+
+def test_slab_sizes_are_what_pinning_allocates():
+    # The pinned allocator rounds a request up to a power of two: a slab is one (so pinned == charged bytes).
+    from tensorfold.families.qwen4_exp.cuda.prefix_host import BLOCK_BYTES, pinned_slab_bytes
+
+    gib = 1 << 30
+    assert pinned_slab_bytes(8 * gib) == 8 * gib                      # 64 GiB over eight ranks: unchanged
+    assert pinned_slab_bytes(6 * gib + 5) == 4 * gib                  # never above the request
+    assert pinned_slab_bytes(BLOCK_BYTES) == BLOCK_BYTES and pinned_slab_bytes(BLOCK_BYTES - 1) == 0
