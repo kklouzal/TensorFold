@@ -1,0 +1,88 @@
+# Gemma 4 26B-A4B (AEON compressed-tensors NVFP4) on eight V100-SXM2-32GB, TP8/ETP4, for Harness.
+# The configuration the V100 live server runs (2026-11-19): z-lab DFlash with private INT8 copies, 5 draft rows,
+# --parallel 8, the native 262,144-token context, thinking on, automatic prompt-prefix reuse. See
+# docs/recipes/gemma-4.md#eight-v100s-tp8etp4 and docs/gemma4-sm70-concurrency.md.
+# Set GEMMA4_MODEL_PATH, GEMMA4_DRAFTER_PATH and GEMMA4_TEMPLATE (a chat template file; Harness uses its own) and
+# build the verified image (deploy/v100/README.md). The first start compiles the Gemma CUDA extension into the cache.
+name: tensorfold-v100-gemma4
+
+services:
+  tensorfold:
+    image: ${TENSORFOLD_V100_IMAGE:-tensorfold-v100:verified}
+    container_name: gemma4-v100
+    entrypoint: [/opt/venv/bin/python, /src/deploy/v100/gemma4_tp_harness.py]
+    command:
+      - --gpus
+      - 0,1,2,3,4,5,6,7
+      - --
+      - /model
+      - --backend
+      - cuda
+      - --precision
+      - checkpoint
+      - --name
+      - gemma4-26b-a4b
+      - --alias
+      - gemma4-26b
+      - --parallel
+      - ${GEMMA4_PARALLEL:-8}
+      - --context
+      - ${GEMMA4_CONTEXT:-262144}
+      - --drafter
+      - /drafter
+      - --drafter-bits
+      - '8'
+      - --draft-rows
+      - ${GEMMA4_DRAFT_ROWS:-5}
+      - --chat-template
+      - /template.jinja
+      - --thinking
+      - --thinking-budget
+      - '0'
+      - --host
+      - ${GEMMA4_BIND_ADDRESS:-0.0.0.0}
+      - --port
+      - ${GEMMA4_PORT:-8000}
+    environment:
+      HF_HUB_OFFLINE: '1'
+      TENSORFOLD_NO_UPDATE_CHECK: '1'
+      PYTHONUNBUFFERED: '1'
+      OMP_NUM_THREADS: '1'
+      MAX_JOBS: '32'
+      # NVLink small all-gather for the per-layer FP32 decode partials (6.2 -> 5.0 ms per serial step, measured).
+      TF_SMALL_GATHER_BYTES: '262144'
+      TORCH_EXTENSIONS_DIR: /cache/extensions
+      GEMMA4_PORT: ${GEMMA4_PORT:-8000}
+    volumes:
+      - type: bind
+        source: ${GEMMA4_MODEL_PATH:?Set the AEON-7 Gemma-4-26B-A4B NVFP4 snapshot directory}
+        target: /model
+        read_only: true
+      - type: bind
+        source: ${GEMMA4_DRAFTER_PATH:?Set the z-lab gemma-4-26B-A4B-it-DFlash snapshot directory}
+        target: /drafter
+        read_only: true
+      - type: bind
+        source: ${GEMMA4_TEMPLATE:?Set the chat template file}
+        target: /template.jinja
+        read_only: true
+      - gemma4-v100-cache:/cache
+    gpus: all
+    network_mode: host
+    ipc: host
+    shm_size: 1g
+    restart: unless-stopped
+    security_opt:
+      - label=disable
+    ulimits:
+      memlock: -1
+      nofile: 1048576
+    healthcheck:
+      test: [CMD, /opt/venv/bin/python, -c, "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('GEMMA4_PORT', '8000') + '/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15m
+      retries: 3
+
+volumes:
+  gemma4-v100-cache:

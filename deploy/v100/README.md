@@ -324,6 +324,26 @@ missing `--max-pending-requests` or `--max-http-connections` before loading the
 model; other providers keep their existing optional limits. A full generation
 request limit returns HTTP503 with the existing retry header.
 
+## Gemma 4 26B-A4B on the same eight V100s
+
+[compose.gemma4.yaml](compose.gemma4.yaml) serves the AEON compressed-tensors NVFP4 Gemma 4 26B-A4B with the z-lab
+DFlash drafter for Harness, in the configuration the V100 trial server runs: `--parallel 8`, the native 262,144-token
+context, INT8 drafter copies with 5 draft rows, thinking on, automatic prompt-prefix reuse, and every rank started
+through the Harness entrypoint ([gemma4_tp_harness.py](gemma4_tp_harness.py)) so `/v1/tokenize` and Harness model
+metadata work. It needs the whole GPU set (stop the SC117 service first) and no NUMA plan.
+
+```sh
+GEMMA4_MODEL_PATH=/models/.../AEON-7--Gemma-4-26B-A4B-it-Uncensored-NVFP4/snapshots/<rev> \
+GEMMA4_DRAFTER_PATH=/models/.../z-lab--gemma-4-26B-A4B-it-DFlash/snapshots/<rev> \
+GEMMA4_TEMPLATE=/path/to/chat-template.jinja docker compose -f deploy/v100/compose.gemma4.yaml up -d
+```
+
+`GEMMA4_PARALLEL`, `GEMMA4_CONTEXT`, `GEMMA4_DRAFT_ROWS`, `GEMMA4_BIND_ADDRESS` and `GEMMA4_PORT` override the
+defaults. Add `--prefix-host-bytes BYTES` to the command for the opt-in host-RAM prefix tier. Design, memory and
+measurements: [Gemma 4 recipe](../../docs/recipes/gemma-4.md#eight-v100s-tp8etp4) and
+[concurrent serving](../../docs/gemma4-sm70-concurrency.md). The Compose file is validated with `docker compose
+config`; the trial server itself runs the same arguments from a source snapshot overlay.
+
 ## Current v6 source candidate
 
 The current specification is the normalized maintained copy of the home v6
