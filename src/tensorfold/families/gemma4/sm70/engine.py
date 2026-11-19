@@ -53,7 +53,7 @@ class Gemma4SM70Engine:
         from tensorfold.cuda.comm import open_comm
         from tensorfold.token_metadata import resolve_eos
         from . import weights as W
-        from .target import Target, PROMPT_ROWS, CHUNK
+        from .target import Target, PROMPT_ROWS, CHUNK, DECODE_ROWS
         from .graphs import Shape, MODE_SERIAL, MODE_ROUND, MODE_SERIAL_TAPS, buckets
 
         if tp != W.WORLD or not 0 <= rank < tp:
@@ -72,7 +72,7 @@ class Gemma4SM70Engine:
         self.w = W.load(model_dir, rank)
         # Slots: the live streams', ``keep_slots`` more for kept prefix chains (idle conversations), and the last
         # one pads graph batches.
-        self.keep_slots = keep_slots if keep_slots is not None else max(4, streams)
+        self.keep_slots = keep_slots if keep_slots is not None else max(8, streams)
         if type(self.keep_slots) is not int or self.keep_slots < 0:
             raise ValueError("keep_slots must be a nonnegative integer")
         slots = streams + self.keep_slots + 1
@@ -116,6 +116,10 @@ class Gemma4SM70Engine:
         self._forward(self.pad, 0, warm, F_SCORE | (F_APPEND if self.head is not None else 0), [0] * (warm + 1))
         torch.cuda.synchronize()
         transient = torch.cuda.max_memory_allocated() - torch.cuda.memory_allocated()
+        # Prompt tails of at most DECODE_ROWS rows (a prompt's last chunk, or a resumed prompt's suffix) take the
+        # decode arithmetic eagerly: size their scratch too (graph shapes may be narrower than DECODE_ROWS rows).
+        self._forward(self.pad, 0, DECODE_ROWS, F_SCORE | (F_APPEND if self.head is not None else 0),
+                      [0] * (DECODE_ROWS + 1))
         for mode in modes:
             shape = self.shapes[(mode, streams)]
             shape.stage([self.pad] * streams, [0] * streams, [0] * streams)
