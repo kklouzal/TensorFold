@@ -2225,13 +2225,15 @@ one layer per kind combination weighted by the model's 48-layer mix; `pf3/tools/
 1,024 rows 1,992 → 1,495 us per layer (gate/up 1,056 → 829, publication 206 → 61), with output
 and activation hashes equal to the previous kernels at 96, 256 and 1,024 rows. Not adopted:
 64-row down spans (down 573 → 640 us), register-prefetched down slices (no gain), and a
-second step of activation prefetch in gate/up (no gain). Follow-up (2026-11-19): the staged rows use a
-pitch of 24 or 40 words (was 22/26/29/35), so a warp's four decode rows start 8 banks apart; gate/up
-820-831 -> 812-814 us per layer at 1,024 rows over three interleaved pairs, bits unchanged (about
-0.1-0.2% of a 1,024-row pass, below what a fast pair resolves). An M + 4 epilogue pitch for C
-(no change) and the down kernel's next-slice register prefetch (down 578-585 -> 610 us) were not adopted. One fast pair on 8x V100 TP8/ETP4
+second step of activation prefetch in gate/up (no gain). One fast pair on 8x V100 TP8/ETP4
 (base `4bc07085`, `fb-base-t1f4e957b4063-prod` vs `fb-pf3-g2p`): prefill +5.3% geomean
 (trimmed +5.2%, every cell +4.9 to +5.8%), decode +2.3% (worst cell -0.5%); golden-vg2 identical.
+
+Follow-up (2026-11-19): the staged rows use a pitch of 24 or 40 words (was 22/26/29/35), so a
+warp's four decode rows start 8 banks apart. Gate/up 820-831 -> 812-814 us per layer at 1,024 rows
+over three interleaved pairs, bits unchanged; about 0.1-0.2% of a 1,024-row pass, below what a
+fast pair resolves. Not adopted: an M + 4 C-epilogue pitch in both kernels (no change) and the
+down kernel's next-slice register prefetch (down 578-585 -> 610 us, measured twice).
 
 **32 lanes with mixed resident windows (2026-11-18).** `--parallel 32 --kv-full-windows 20
 --kv-short-window 40960` serves 32 resident lanes: 20 complete 262,144-token windows plus 12
