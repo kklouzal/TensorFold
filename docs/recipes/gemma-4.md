@@ -134,10 +134,8 @@ the decoding streams progressed 2x faster, and that prompt's time to first token
 to 64K prompts, greedy and sampled). Startup captures a serial, a serial-with-drafter-taps and a
 DFlash round graph per bucket (1, 2, 3, 4, 6, 8, 12, ... up to N) and prints the per-rank KV budget. Each
 admitted request reserves full-attention KV for its prompt plus `max_tokens`; one that does not fit waits for a
-stream to finish. Every decode batch keeps the C1 arithmetic per stream (bitwise) by default; the tensor-core
-path for wide batches, whose replies may differ from C1, runs only with `TF_GEMMA_WIDE_ROWS=N` (forwards of at
-least N rows; see
-[concurrent serving](../gemma4-sm70-concurrency.md) for the memory table, numerical contract and validation).
+stream to finish. Every decode batch keeps the C1 arithmetic per stream (bitwise); see
+[concurrent serving](../gemma4-sm70-concurrency.md) for the memory table, numerical contract and validation.
 `--kv-dtype` selects the full-attention KV format (K and V alike): `bf16` keeps FP16 caches (the CLI default,
 10,752 B/token/rank), `rotorquant8-norm` stores RotorQuant Q8 (5,792 B/token: 16 instead of 8 full 262,144-token
 streams fit; the Compose default) and `rotorquant-iso64-norm4-h64` Q4 (3,232 B/token). Sliding-window rings stay

@@ -139,11 +139,12 @@ accepted lossy contract). Prefix reuse under Q8 replies identically to a cold Q8
   and the tile. Each stream's attention is its own segment, with its own KV slot, the C1
   chunk size and the C1 split rule. Per-stream results are therefore bitwise equal to the same stream alone.
   Batches beyond one row tile are compute-bound on CUDA cores (FP32 GEMVs at about 2 TFLOP/s).
-- Optional, off by default (`TF_GEMMA_WIDE_ROWS=N`): decode forwards of at least N rows use tensor cores. Activations are split into FP16 hi + lo (about 22 significant bits),
-  weights decode exactly to FP16, and accumulation is FP32. Routed experts are grouped per local expert at 96
-  or more rows (per-pair GEMVs below). The head is an exact per-row power-of-two-scaled FP16 copy of the BF16
-  shard. Partials are all-reduced instead of all-gathered and summed in rank order. These forwards are not
-  bitwise equal to C1. A stream's greedy reply can differ from its C1 reply once its padded batch is wide
+- A tensor-core decode path for wide batches (formerly `TF_GEMMA_WIDE_ROWS=N`) was evaluated and removed on
+  2026-11-20 as an unproven candidate; recover it from git history. Its forwards of at least N rows split
+  activations into FP16 hi + lo (about 22 significant bits), decoded weights exactly to FP16 and accumulated in
+  FP32, grouped routed experts per local expert at 96 or more rows, used an exact per-row power-of-two-scaled
+  FP16 copy of the BF16 head (DFlash proposal blocks wider than one row tile still use that head) and
+  all-reduced partials. These forwards were not bitwise equal to C1. A stream's greedy reply can differ from its C1 reply once its padded batch is wide
   (observed: 1 of 8 replies at C8 and 3 of 32 at C32 diverged late in otherwise coherent text): a
   load-dependent numerical result. Quality: teacher-forced through the wide arithmetic at C1
   (`TF_GEMMA_WIDE_ROWS=1`) against the default arithmetic, `tools/quality_eval`, draft rows 3, `--repeat 2`:
@@ -153,7 +154,7 @@ accepted lossy contract). Prefix reuse under Q8 replies identically to a cold Q8
 
   Top-k MoE routing amplifies the small arithmetic differences: median |Δ log-probability| was 6e-4 nats, with
   rare outliers of 2–3.5 nats late in documents. Neither interval is within the predeclared 0.005 margin, so
-  the wide arithmetic is not enabled. It awaits a larger frozen corpus. The default arithmetic's teacher-forced
+  the wide arithmetic was never enabled. The default arithmetic's teacher-forced
   scores were identical to the previous engine's for every prefill and decode position of corpus v1.
 - Prompt chunks keep the C1 prompt arithmetic and fixed boundaries.
 - The drafter's sliding layers read rings instead of linear caches, which reorders their attention sums.

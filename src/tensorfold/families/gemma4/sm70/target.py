@@ -25,12 +25,6 @@ DECODE_ROWS = 16
 PROMPT_ROWS = 1024          # default rows of one prompt forward (`serve --prefill-rows`; sliding ring = window + rows)
 MAX_PROMPT_ROWS = 4096      # largest --prefill-rows Gemma takes (rings and prompt scratch grow with it)
 CHUNK = 256                 # attention key chunk (native AC)
-EXPERT_MMA_ROWS = 96        # wide rows from which expert-grouped tensor cores beat per-pair GEMVs (measured)
-# Decode rows from which forwards take the tensor-core (wide) arithmetic. Off by default: its corpus comparison
-# against the bitwise path is inconclusive so far (docs/gemma4-sm70-concurrency.md), so every decode forward keeps
-# the C1 row-invariant arithmetic. TF_GEMMA_WIDE_ROWS=N enables it for forwards of at least N rows (experts
-# included), e.g. 17 for batches beyond one row tile or 1 to teacher-force a corpus through it at C1.
-WIDE_ROWS = 1 << 30
 # Decode rows from which each cross-rank sum takes the rank-ordered FP32 bulk all-reduce (NCCL.all_reduce_rows_f32;
 # bitwise the tails' rank-order sum of the gathered partials) instead of the all-gather (small gather up to 256 KiB
 # per rank, else NCCL). In-graph per call on 8x V100-SXM2 (gather vs bulk, us): attention [rows, 2816] 8/12/16/24/40
@@ -39,9 +33,6 @@ WIDE_ROWS = 1 << 30
 # In serving (--parallel 8, DFlash 3 rows, A B B A) the FFN bulk at 6 rows (C2 rounds) lost 1.2% decode, so the FFN
 # threshold sits at 8 rows, where the in-graph margin is 15%.
 BULK_REDUCE_ROWS = {"o_parts": 16, "red_parts": 8}
-if os.environ.get("TF_GEMMA_WIDE_ROWS"):
-    WIDE_ROWS = max(1, int(os.environ["TF_GEMMA_WIDE_ROWS"]))
-    EXPERT_MMA_ROWS = max(WIDE_ROWS, EXPERT_MMA_ROWS) if WIDE_ROWS > DECODE_ROWS else WIDE_ROWS
 
 
 class AllReduce:
@@ -344,7 +335,6 @@ class Target:
                       1 if noncausal else 0, scale, chunks, splits, po, pm, pl, out, fmt)
 
     def _reduce(self, part, name, prompt):
-        # prompt: also wide decode forwards (rank-order identity with the all-gather is not their contract)
         """Cross-rank sum source for a tail kernel: (tensor, world). Decode rows take the rank-ordered FP32 bulk
         all-reduce from BULK_REDUCE_ROWS[name] where the communicator admits the shape, else all-gather the FP32
         partials (small-collective path when configured) for the tail to sum in rank order (bitwise the same
@@ -366,25 +356,12 @@ class Target:
         self.comm.all_gather(part, parts)
         return parts, self.world
 
-    def _project(self, x, rows, packed, n, out, ldo, geglu, wide):
-        """Decode-row projection: the row-invariant W4 GEMV (exact C1 arithmetic) or, for wide forwards, the
-        tensor-core W4 kernel on hi/lo-split activations."""
-        if wide:
-            k = packed.k
-            self.ext.w4_mma(x, rows, packed.codes, packed.scales, packed.rowmul, n, k, out, ldo, geglu,
-                            *self._mma_scratch(rows))
-        else:
-            self.ext.w4_rows(x, rows, packed.codes, packed.scales, packed.rowmul, n, packed.k, out, ldo, geglu)
-
-    def _mma_scratch(self, rows):
-        """hi/lo FP16 activations and split-K partials (<= 8 splits x the widest projection: 8 expert slots x
-        GEGLU 2 x 176 x 8 splits per row) for a wide forward of ``rows`` rows."""
-        width = max(self.c.hidden, self.c.top_k * self.w.expert_width)
-        return (self._buf("x_hi", (rows * width,), torch.float16), self._buf("x_lo", (rows * width,), torch.float16),
-                self._buf("mma_part", (rows * 8 * self.c.top_k * 2 * self.w.expert_width,)))
+    def _project(self, x, rows, packed, n, out, ldo, geglu):
+        """Decode-row projection: the row-invariant W4 GEMV (exact C1 arithmetic)."""
+        self.ext.w4_rows(x, rows, packed.codes, packed.scales, packed.rowmul, n, packed.k, out, ldo, geglu)
 
     def head_wide(self, x, out, softcap):
-        """Wide rows through this rank's vocabulary shard: cuBLAS FP16 tensor cores on hi/lo-split rows and an exact
+        """Wide rows (DFlash proposal blocks beyond one row tile) through this rank's vocabulary shard: cuBLAS FP16 tensor cores on hi/lo-split rows and an exact
         per-row power-of-two scaled FP16 copy of the BF16 head (built once), FP32 accumulation, then the softcap."""
         if self._head16 is None:
             w = self.w.head.float()
@@ -454,7 +431,7 @@ class Target:
         ext.rms(h, rows, self.w.layers[0].norms["input"], D, c.eps, 1.0, x)
         tap_out = self._buf("prompt_taps" if prompt else "taps", (rows, len(self.tap_layers), D)) if taps else None
         return {"lay": lay, "rows": rows, "prompt": prompt, "logits": logits, "h": h, "x": x, "taps": tap_out,
-                "xdt": xdt, "wide": not prompt and rows >= WIDE_ROWS, "next": 0}
+                "xdt": xdt, "next": 0}
 
     @torch.inference_mode()
     def layers(self, state: dict, stop: int, marks=None) -> None:
@@ -467,7 +444,7 @@ class Target:
             events = [torch.cuda.Event(enable_timing=True)]
             events[0].record()
             marks.append((state["next"], events))
-        lay, rows, prompt, wide, xdt = state["lay"], state["rows"], state["prompt"], state["wide"], state["xdt"]
+        lay, rows, prompt, xdt = state["lay"], state["rows"], state["prompt"], state["xdt"]
         h, x, tap_out = state["h"], state["x"], state["taps"]
         red = self._buf("red", (rows, 2, D))
         o_red = self._buf("o_red", (rows, D))
@@ -498,7 +475,7 @@ class Target:
                 proj = self._matmul_prompt(x, layer.qkv)
             else:
                 proj = self._buf("proj", (rows, proj_n))
-                self._project(x, rows, layer.qkv, proj_n, proj, proj_n, False, wide)
+                self._project(x, rows, layer.qkv, proj_n, proj, proj_n, False)
             q = self._buf("q", (rows, 2, d), torch.float16)
             ext.qkv_prep(proj, rows, 2, d, 1 if layer.sliding else 0, n["q"], n["k"], inv, lay.row_pos, lay.row_slot,
                          q, kt, vt, pt, ring, c.eps, fmt)
@@ -507,8 +484,8 @@ class Target:
             if prompt:
                 self._matmul_prompt(att, layer.o, o_red)
             else:
-                self._project(att, rows, layer.o, D, o_red, D, False, wide)
-            o_src, o_world = self._reduce(o_red, "o_parts", prompt or wide)
+                self._project(att, rows, layer.o, D, o_red, D, False)
+            o_src, o_world = self._reduce(o_red, "o_parts", prompt)
             ext.attn_tail(o_src, rows, o_world, rows * D, h, n["post_attn"], n["pre_ff"], n["pre_ff2"], n["router_scale"],
                           self.router_root, c.eps, dense_in, expert_in, router_in)
             dense_out, routed_out = red[:, 0], red[:, 1]
@@ -529,27 +506,16 @@ class Target:
                 self._experts_prompt(layer, expert_in, local_sel, weights_sel, routed_out, rows)
             else:
                 act = self._buf("dense_act", (rows, width))
-                self._project(dense_in, rows, layer.gate_up, width, act, width, True, wide)
-                self._project(act, rows, layer.down, D, dense_out, 2 * D, False, wide)
+                self._project(dense_in, rows, layer.gate_up, width, act, width, True)
+                self._project(act, rows, layer.down, D, dense_out, 2 * D, False)
                 ew = self.w.expert_width
                 eact = self._buf("expert_act", (rows * c.top_k, ew))
                 eg, ed = layer.experts_gate_up, layer.experts_down
-                if wide and rows >= EXPERT_MMA_ROWS:
-                    # pairs grouped by local expert: each expert's weights decode once per 64 routed pairs, a K
-                    # range per block
-                    E = self.w.expert_count
-                    ext.w4_experts_mma(expert_in, rows, c.top_k, local_sel, weights_sel, eg.codes, eg.scales,
-                                       eg.rowmul, ed.codes, ed.scales, ed.rowmul, E, ew, D,
-                                       self._buf("expert_counts", (E,), torch.int32),
-                                       self._buf("expert_lists", (E, rows), torch.int32), eact,
-                                       self._buf("expert_y", (rows * c.top_k, D)), routed_out, 2 * D,
-                                       *self._mma_scratch(rows))
-                else:
-                    ext.w4_expert_gateup(expert_in, rows * c.top_k, c.top_k, local_sel, eg.codes, eg.scales,
-                                         eg.rowmul, ew, D, eact)
-                    ext.w4_expert_down(eact, rows, c.top_k, local_sel, weights_sel, ed.codes, ed.scales, ed.rowmul,
-                                       D, ew, routed_out, 2 * D)
-            red_src, red_world = self._reduce(red, "red_parts", prompt or wide)
+                ext.w4_expert_gateup(expert_in, rows * c.top_k, c.top_k, local_sel, eg.codes, eg.scales,
+                                     eg.rowmul, ew, D, eact)
+                ext.w4_expert_down(eact, rows, c.top_k, local_sel, weights_sel, ed.codes, ed.scales, ed.rowmul,
+                                   D, ew, routed_out, 2 * D)
+            red_src, red_world = self._reduce(red, "red_parts", prompt)
             following = self.w.layers[i + 1].norms["input"] if i + 1 < len(self.w.layers) else self.w.norm
             tap = None
             if tap_out is not None and i in self.tap_layers:
@@ -574,11 +540,8 @@ class Target:
             final = x if logits == "all" else x[rows - 1:]
             m = final.shape[0]
             out = self._buf("logits", (m, self.shard))
-            if state["wide"]:
-                self.head_wide(final, out, self.c.softcap)
-            else:
-                self.ext.bf16_rows(final.contiguous(), m, self.w.head, self.shard, self.c.hidden, out, self.shard,
-                                   self.c.softcap)
+            self.ext.bf16_rows(final.contiguous(), m, self.w.head, self.shard, self.c.hidden, out, self.shard,
+                               self.c.softcap)
         return out, state["taps"]
 
     def _experts_prompt(self, layer, x16, local, weights, out, rows):
