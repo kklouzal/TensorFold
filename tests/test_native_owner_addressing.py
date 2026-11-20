@@ -83,6 +83,6 @@ def test_shared_page_offsets_and_native_descriptor_addresses_cross_byte_boundari
     workspace.stage_native_descriptors([(state, 0, 1)], NS(index=0), 0, 1)
     words = workspace.descriptors[0].tolist()
     assert words[0] == cache.k.data_ptr() and words[4] == cache.page_offsets.data_ptr()
-    assert words[12] == physical
+    assert words[11] == physical
     assert words[0] + first * dim == cache.k[first].data_ptr()
     workspace.close()
