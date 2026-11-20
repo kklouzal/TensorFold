@@ -208,9 +208,10 @@ def test_eight_peer_request_metadata_and_replay_close_follow_final_ack(cohort, t
     prepared = PreparedReplayMedia(plan, probes, NS(close=close), NS())
     store = peers[0].comm.store
     # Scheduler and input-preparation protocols share the same actual store;
-    # the latter has an explicit 60-second retirement contract.
+    # the latter has an explicit 60-second retirement contract; a raised operation's error agreement has its own.
+    from tensorfold.families.qwen4_exp.cuda.tp_scheduler import ERROR_AGREEMENT_S
     def wait(keys, duration):
-        assert duration in (timedelta(hours=1), timedelta(seconds=60))
+        assert duration in (timedelta(hours=1), timedelta(seconds=60), timedelta(seconds=ERROR_AGREEMENT_S))
         with store.condition:
             assert store.condition.wait_for(lambda: all(key in store.data for key in keys), 5), keys
     store.wait = wait
@@ -418,27 +419,26 @@ def test_containment_failure_does_not_replace_original_cpu_outcome(monkeypatch, 
     assert control.failure is primary and engine._abort_comm and control.sequence == 0 and store.data == {}
 
 
-def test_rank_encoder_preserves_default_wire_and_explicit_compact_boundary(monkeypatch):
+def test_rank_encoder_preserves_default_wire_and_explicit_compact_boundary():
     from tensorfold.cuda import rank_protocol
 
     body = {"a": [1, 2], "label": "\u2603"}
     assert rank_protocol.bounded_json(body) == '{"a": [1, 2], "label": "\\u2603"}'
     compact = '{"a":[1,2],"label":"\\u2603"}'
-    monkeypatch.setattr(rank_protocol, "MAX_MESSAGE_BYTES", len(compact))
-    assert rank_protocol.bounded_json(body, separators=(",", ":")) == compact
+    # senders pass their configured frame bound (e788db80); the default is the global transport cap
+    assert rank_protocol.bounded_json(body, separators=(",", ":"), limit=len(compact)) == compact
     with pytest.raises(ValueError, match="transport envelope"):
-        rank_protocol.bounded_json(body)
+        rank_protocol.bounded_json(body, limit=len(compact))
 
 
-def test_combined_tp_wire_refusal_precedes_sequence_advance_and_publication(monkeypatch):
-    from tensorfold.cuda import rank_protocol
+def test_combined_tp_wire_refusal_precedes_sequence_advance_and_publication():
     from tensorfold.families.qwen4_exp.cuda.tp_scheduler import TensorParallelDecoder
     from test_flashnext_tp_scheduler import Decoder, Store
 
     store = Store()
     engine = NS(_abort_comm=False)
     control = TensorParallelDecoder(Decoder(0, 8, store), engine)
-    monkeypatch.setattr(rank_protocol, "MAX_MESSAGE_BYTES", 192)
+    control.frame_bytes = 192  # this cohort's configured command bound
     # Each individual string is legal; the enclosing control/request is not.
     with pytest.raises(ValueError, match="transport envelope"):
         control._invoke({"kind": "round", "first": "a" * 80, "second": "b" * 80})

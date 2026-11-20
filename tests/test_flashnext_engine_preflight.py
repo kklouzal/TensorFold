@@ -102,7 +102,8 @@ def test_sm70_accepts_qualified_cache_sides_before_model_setup(monkeypatch, tmp_
 
 @pytest.mark.parametrize('gguf,options', [
     (True, {'kv_dtype': 'bf16'}),
-    (True, {'kv_dtype': 'rotorquant8'}),
+    # rotorquant8 is an SM70 format since 01a19e02, but only symmetric (K=V): a mixed pair still refuses
+    (True, {'kv_key_dtype': 'rotorquant8', 'kv_value_dtype': 'int8'}),
     (False, {'kv_dtype': 'fp16'}),
     (False, {'kv_key_dtype': 'fp16', 'kv_value_dtype': 'int8'}),
 ])

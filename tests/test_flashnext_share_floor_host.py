@@ -1,4 +1,7 @@
-"""Exercise the production pass policy and piece widths without importing accelerator runtimes."""
+"""Exercise the production pass policy and piece widths without importing accelerator runtimes.
+
+The standalone-pass case runs the real _pass/_prepare_pass/_contain with the real (text-only, no-media) media
+and teacher-scoring helpers, which import torch but never initialize CUDA."""
 
 import ast
 from pathlib import Path
@@ -11,7 +14,8 @@ def _decoder():
     root = Path(__file__).resolve().parents[1] / "src/tensorfold/families/qwen4_exp/cuda"
     plan = ast.parse((root / "prompt_plan.py").read_text())
     source = ast.parse((root / "multi.py").read_text())
-    methods = {"_pass_rows", "pass_rows_for", "_pieces", "_points", "_keep_at", "_timed", "_pass"}
+    methods = {"_pass_rows", "pass_rows_for", "_pieces", "_points", "_keep_at", "_timed", "_pass", "_prepare_pass",
+               "_score_rows", "_contain"}
     nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
     nodes.extend(node for node in plan.body if isinstance(node, ast.FunctionDef) and node.name == "pass_limit"
                  or isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "CUTS" for t in node.targets))
@@ -27,6 +31,7 @@ def _decoder():
     dec.w = SimpleNamespace(meta={"execution_provider": "cuda"})
     dec.streams = {0: SimpleNamespace(done=False)}
     dec.prefill_rows, dec.share, dec.round_s, dec.row_s = 2048, 0.25, None, None
+    dec.gap_ms = None  # the constructor's value for a non-merged target
     return dec, namespace
 
 
@@ -74,10 +79,16 @@ def test_shared_prompt_row_floors_host():
 @pytest.mark.parametrize("converged,failed,prior", [(False, False, None), (False, False, 0.002),
                                                   (True, False, None), (False, True, None)])
 def test_standalone_pass_preserves_the_selected_calibration_policy(converged, failed, prior):
+    pytest.importorskip("torch")
+    from tensorfold.cleanup import raise_failures
+    from tensorfold.families.qwen4_exp.cuda import media_requests, teacher_scoring
+
     dec, namespace = _decoder()
+    namespace.update(__package__="tensorfold.families.qwen4_exp.cuda", media_requests=media_requests,
+                     teacher_scoring=teacher_scoring, raise_failures=raise_failures)
     stream = SimpleNamespace(st=object(), prompt=list(range(512)))
     pieces = [(stream, 0, 128), (stream, 128, 384)]
-    dec.converged, dec.row_s, dec.w, dec.pbuf = converged, prior, object(), SimpleNamespace()
+    dec.converged, dec.row_s, dec.w, dec.pbuf = converged, prior, SimpleNamespace(comm=None), SimpleNamespace()
     dec.pass_plan, dec.pass_index = None, 0
     dec._pieces, dec._note_passed = lambda *_: pieces, lambda _: None
     dec._prompt_candidates = lambda *_: None

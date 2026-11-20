@@ -196,14 +196,18 @@ def decoder_round(monkeypatch):
     decoder.kept, decoder.fills = [], {}
     decoder.arrived = lambda: False
     decoder.graphs = None
+    # the constructor's values for a non-merged, uncaptured two-proposal decoder
+    decoder.depth, decoder.gap_ms, decoder._grouped, decoder.native_gdn_capture = 2, None, None, False
     decoder._rotor_lookup = lambda *args: False
     decoder._make_room = lambda: []
     decoder._timed = lambda *args: None
     decoder._ends = lambda stream: ()
-    decoder._draft_all = lambda *args, **kwargs: None
+    # no drafting streams; the round's target commits still run exactly once (the _draft_all contract)
+    decoder._draft_all = lambda streams, new=None, commits=None: commits is None or commits()
     for sid in range(5):
         stream = Stream([1], 100)
-        stream.sid, stream.st = sid, SimpleNamespace(pos=1, discard_target_tentative=lambda: None)
+        stream.sid, stream.st = sid, SimpleNamespace(pos=1, capacity=100, image_positions=None,
+                                                      discard_target_tentative=lambda: None)
         stream.out, stream.context, stream.drafts = [10], [1, 10], [20, 30]
         decoder.streams[sid] = stream
     executed = []
@@ -591,6 +595,7 @@ def test_request_lifecycle_keeps_enabled_zero_proposal_mtp_warm_only_until_retir
 
     class State:
         history_slot = slot_generation = 0
+        capacity = 64  # the decoder's physical cache rows
         compact_indexer = None
         from tensorfold.families.qwen4_exp.kv_formats import get_pair
         kv_pair = get_pair("fp16")

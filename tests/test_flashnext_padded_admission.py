@@ -27,10 +27,10 @@ def geometry_wrapper(monkeypatch, streams, each, mtp, native):
     base = Geometry(lambda cap: cap*10, 123, 7)
     observed = []
     env = {"__package__": "tensorfold.families.qwen4_exp.cuda", "target_geometry":
-           lambda text, count: observed.append(text) or base, "tp": 8, "streams": streams,
+           lambda text, count, short=None: observed.append(text) or base, "tp": 8, "streams": streams,
            "each": each, "mtp": mtp, "rows0": 2048, "head_dim": 256,
            "concurrent": streams > 1, "row_envelope": lambda count: count * each,
-           "history_placement": None}
+           "history_placement": None, "owner_preparation": None}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), env)
     return env["sm70_geometry"], base, calls, observed
 

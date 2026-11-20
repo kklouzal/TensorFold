@@ -553,7 +553,7 @@ def test_completed_hc_capture_applies_eight_rank_pending_partials_without_mutati
                                   pss=torch.empty(rows, 1, 4), prefill=False,
                                   target_indexer_frame=None, target_indexer_coordinates=None,
                                   target_indexer_coordinate_storage=None, target_indexer_position=None,
-                                  input_preparation_context=None)
+                                  input_preparation_context=None, split=None)  # no split-capture handoff
         w.dflash2 = Runtime(rows) if enabled else None
         result = forward.compute(w, [(SimpleNamespace(kv_status=None), 0, rows)], buffers)
         return result, None if w.dflash2 is None else w.dflash2.features

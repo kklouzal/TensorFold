@@ -176,7 +176,7 @@ def join_replay(decoder, source, monkeypatch):
     """The real prompt-to-decode coordinator adopts Stream.continued's transcript."""
     replay = source.continued()
     replay.sid = source.sid
-    replay.st = NS(pos=len(replay.prompt), slot_generation=3,
+    replay.st = NS(pos=len(replay.prompt), slot_generation=3, capacity=decoder.capacity, image_positions=None,
                    discard_target_tentative=lambda: None)
     replay.st.dflash2 = NS(end=replay.st.pos, generation=3, enabled=source.draft,
                           profile_identity="fixture-only", check=lambda **_kw: None)

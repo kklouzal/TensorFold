@@ -17,6 +17,7 @@ class WarmModel:
 
     def __init__(self, *, adaptive, rows, eos=False, failure=None, returned_error=False):
         self.prefill_rows, self.capacity, self.depth = rows, 262147, 2
+        self.w = SimpleNamespace(meta={})  # not the SM70 provider: no GDN replay extension preload
         self.admission_policy = "legacy"
         self.streams, self.fills, self.passed, self.held = {}, {}, {}, {}
         self.filling, self.free, self.kept = [], [], []

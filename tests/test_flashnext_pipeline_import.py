@@ -260,8 +260,12 @@ def test_real_input_ple_table_and_global_ordinal_stay_exclusive_to_stage_zero(tm
     monkeypatch.setattr(module, "_dense", _cpu_dense)
     loaded = module.load_gguf(path, "cpu", tp=(0, 8), _pipeline_stage=PipelineStage(0), ple_on_ssd=True)
     try:
-        values = loaded.layers[1].ple.table.gather(np.array([0, 1], np.int64))
-        np.testing.assert_array_equal(values, decode_rows(source, raw).astype(np.float16))
+        table = loaded.layers[1].ple.table
+        values = table.gather(np.array([0, 1], np.int64))
+        # the table hands out the rows' packed IQ4_NL bytes; the forward decodes them on the GPU
+        assert table.iq4nl_rows
+        np.testing.assert_array_equal(values, raw)
+        assert np.isfinite(decode_rows(source, values).astype(np.float16)).all()
         assert loaded.layers[1].ple.table.rows == source.shape[0]
     finally:
         loaded.meta["ple_tables"].close(lambda: None)

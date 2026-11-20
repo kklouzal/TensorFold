@@ -139,7 +139,9 @@ class AbsoluteGrowthTests(unittest.TestCase):
               "cuda_limit_bytes": capacity.cuda_limit_bytes, "LIMIT_ENV": capacity.LIMIT_ENV,
               "time": SimpleNamespace(perf_counter=lambda: 1.0), "MIN_GAP": 32,
               "_slot": lambda *args, **kw: SimpleNamespace(), "prefill_begin": lambda *args, **kw: 0,
-              "image_rows": SimpleNamespace(begin=lambda *args: None)}
+              "image_rows": SimpleNamespace(begin=lambda *args: None),
+              # teacher_scoring.forced's contract without importing torch: no scoring request here
+              "teacher_scoring": SimpleNamespace(forced=lambda stream: getattr(stream.probabilities, "forced", None))}
         cls = source_class("src/tensorfold/families/qwen4_exp/cuda/multi.py", "MultiDecoder",
                            {"_cache_overlap", "_grow", "_flush", "_busy", "_evict_kept", "_drop_kept", "_make_room", "_slot_for",
                             "_remember", "_quarantine", "_retire_failed_slot",
@@ -150,7 +152,8 @@ class AbsoluteGrowthTests(unittest.TestCase):
         self.dec.kv_pair = first.kv_pair
         self.dec.fills, self.dec.held = {}, {}
         self.dec.graphs, self.dec.failed_slots = None, []
-        self.dec.controller = None
+        # the mixed_windows property's value for uniform slots (slot_limits None); sourced methods lose decorators
+        self.dec.controller, self.dec.mixed_windows = None, False
         self.dec.next_id, self.dec.keep = 0, 8
         self.dec.used, self.dec.clock = {}, 0
         self.dec.w, self.dec.buf, self.dec.mbuf, self.dec.pbuf = SimpleNamespace(comm=None, meta={"execution_provider": "cuda"}), None, None, None

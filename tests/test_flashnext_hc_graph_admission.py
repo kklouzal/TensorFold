@@ -204,11 +204,14 @@ def test_unmaterialized_or_busy_caller_refuses_before_native_effects(field, valu
 
 def test_readout_false_miss_continues_exact_original_but_none_is_legacy_handled():
     path = ROOT/'src/tensorfold/families/qwen4_exp/cuda/forward.py'
-    fn = next(n for n in ast.parse(path.read_bytes()).body if isinstance(n, ast.FunctionDef) and n.name == '_readout_plain')
+    tree = ast.parse(path.read_bytes()).body
+    fn = next(n for n in tree if isinstance(n, ast.FunctionDef) and n.name == '_readout_plain')
+    family = next(n for n in tree if isinstance(n, ast.FunctionDef) and n.name == '_family')  # real: glue here
     calls = []
     namespace = {'glue': NS(hc_normed=lambda *a: calls.append('norm'), hc_mix=lambda *a: calls.append('mix')),
                  '_down_act': lambda *a: calls.append('down'), '_mm': lambda *a: calls.append('up')}
-    unit = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), fn], type_ignores=[])
+    unit = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0),
+                            family, fn], type_ignores=[])
     exec(compile(ast.fix_missing_locations(unit), str(path), 'exec'), namespace)
     for handled, expected in [(False, ['plan', 'norm', 'down', 'up', 'mix']), (None, ['plan']), (True, ['plan'])]:
         calls.clear()
@@ -381,9 +384,11 @@ def test_actual_poison_callback_precedes_engine_cleanup_and_preserves_notificati
     e.comm = NS(close=lambda *, abort: events.append(('comm-close', abort)))
     e._abort_comm = False
     dec.recover_failed_slots = lambda: None
-    cls = source_class('tp_scheduler.py', 'TensorParallelDecoder', {'_poison_control'}, {'raise_failures': raise_failures})
+    from tensorfold.cuda.cohort import _exception_label
+    cls = source_class('tp_scheduler.py', 'TensorParallelDecoder', {'_poison_control', '_report_poison'},
+                       {'raise_failures': raise_failures, 'sys': sys})
     control = cls()
-    control.failure, control.engine = None, e
+    control.failure, control.engine, control.comm = None, e, NS(rank=0)
     dec.poison_control = control._poison_control
     notice = MemoryError('notification exhausted')
     module = ModuleType('tensorfold.cuda.cohort')
@@ -391,7 +396,7 @@ def test_actual_poison_callback_precedes_engine_cleanup_and_preserves_notificati
         events.append('cohort-notify')
         if notification_fails:
             raise notice
-    module.notify_failure = notify
+    module.notify_failure, module._exception_label = notify, _exception_label  # the real one-line poison label
     with patch.dict(sys.modules, {'tensorfold.cuda.cohort': module}):
         with pytest.raises(MemoryError, match='library') as raised:
             run()

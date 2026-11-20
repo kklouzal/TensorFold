@@ -119,15 +119,17 @@ def test_close_failed_fence_retains_owners_then_retry_releases():
 
 def test_forward_uses_owned_plan_only_when_enabled():
     path = ROOT/'src/tensorfold/families/qwen4_exp/cuda/forward.py'
-    fn = next(n for n in ast.parse(path.read_bytes()).body if isinstance(n, ast.FunctionDef)
-              and n.name == '_readout_plain')
+    tree = ast.parse(path.read_bytes()).body
+    fn = next(n for n in tree if isinstance(n, ast.FunctionDef) and n.name == '_readout_plain')
+    # the real kernel-family selector: no native family on these buffers, so the glue stand-in
+    family = next(n for n in tree if isinstance(n, ast.FunctionDef) and n.name == '_family')
     calls = []
     namespace = {'glue': SimpleNamespace(hc_normed=lambda *a: calls.append('original-norm'),
                                        hc_mix=lambda *a: calls.append('original-mix')),
                  '_down_act': lambda *a: calls.append('original-down'),
                  '_mm': lambda *a: calls.append('original-up')}
-    source = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), fn],
-                        type_ignores=[])
+    source = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0),
+                              family, fn], type_ignores=[])
     ast.fix_missing_locations(source)
     exec(compile(source, str(path), 'exec'), namespace)
     class Plans:
