@@ -574,7 +574,7 @@ class State:
 
         A successful check consumes one two-word readback; subsequent checks
         without new GPU writes do not synchronize. Numeric failures require
-        ``reset``; an ambiguous migration requires exclusive retirement and
+        ``reset``; an ambiguous history failure requires exclusive retirement and
         cannot be cleared by reset. CUDA/runtime failures propagate unchanged.
 
         ``inflight``: the caller latched this State's status after its last
@@ -813,7 +813,7 @@ class State:
     def layer_resize_bytes(self, rows: int) -> int:
         """Replacement GPU storage; the RAM owner's fixed ring/stages survive resize."""
         if getattr(self, "history_placement", None) is not None:
-            return 0  # Full-window arena is immutable; migration has its separate bounded overlap.
+            return 0  # Full-window arena is immutable.
         return self.layer_bytes(rows) - (getattr(self, "indexer_raw_device_bytes", None) or 0)
 
     def host_cache_bytes(self) -> int:
@@ -1069,11 +1069,7 @@ class State:
             result.update(attention_degree=placement.degree,
                           mtp_attention_degree=4 if hasattr(self, "mtp_kc") else None,
                           page_tokens=placement.page_tokens, rank=self.history_rank,
-                          qualification="source-only; SM70 distributed qualification pending")
-            pending = getattr(self, "_history_migration", None)
-            result.update(pending_attention_degree=None if pending is None else pending["target"].degree,
-                          migration_blocked_reason=None if pending is None else pending.get("blocked_reason"),
-                          migration_bytes=getattr(self, "history_migration_bytes", 0),
+                          qualification="source-only; SM70 distributed qualification pending",
                           holder_ranks=sorted({owner for cache in self.kc for owner in cache.owners}))
             arena = self.kc[0].arena
             if arena is not None:
@@ -1108,16 +1104,6 @@ class State:
                 "owner_rank": ((self.kc[layer] if layer < placement.target_layers else self.mtp_kc).owners[page] % 4
                                + head * 4),
                 "ownership_generation": self.history_generation}
-
-    def begin_history_migration(self, degree: int, *, overlap_bytes: int | None = None) -> None:
-        from .history_owner import begin_migration
-
-        begin_migration(self, degree, overlap_bytes=overlap_bytes)
-
-    def migrate_history_bundle(self) -> bool:
-        from .history_owner import migrate_next_bundle
-
-        return migrate_next_bundle(self)
 
     def set_rope_delta(self, delta: int) -> None:
         self.rope_delta = int(delta)
@@ -1159,9 +1145,6 @@ class State:
                 setattr(other, name, [v.clone() for v in value])
         other.cur = list(self.cur)
         other.history_native_readers = weakref.WeakSet()
-        # An independent oracle clone owns new cache allocations and actual
-        # page maps, but cannot borrow a live transition's mutable progress.
-        other._history_migration = None
         if self.compact_indexer is not None:
             other.compact_indexer = self.compact_indexer.clone(other.history_generations, other.kv_status)
             other.ikc = [other.compact_indexer.layer(i) for i in range(len(self.kc))]

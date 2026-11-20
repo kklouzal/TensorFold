@@ -1,4 +1,4 @@
-"""Eight real V100 ranks: unique owner execution and bounded live migration.
+"""Eight real V100 ranks: unique owner execution.
 
 These component gates require the pinned SM70 foundation. They do not replace
 full-checkpoint/context, output-quality, allocator-peak or performance gates.
@@ -59,7 +59,7 @@ def _worker(rank, port, format_name):
         state.kv_begin()
         actual = attention_layer(layer, w, [(state, 0, 3)], buffers, 3).clone()
         # Pre-existing complete-history attention is independent of the page
-        # owner/migration implementation. Query/indexer inputs are exactly zero.
+        # owner implementation. Query/indexer inputs are exactly zero.
         full = KVCache(257, 1, 256, device, pair=pair)
         for original, frame in ((full.k, codes), (full.v, values), (full.ks, scales), (full.vs, value_scales)):
             original[:132].copy_(frame)
@@ -72,13 +72,6 @@ def _worker(rank, port, format_name):
                                  v_bits=pair.value.bits, v_codec=pair.value.codec)
         assert torch.equal(actual, expected)
         state.set_pos(132)
-        state.begin_history_migration(4)
-        for _ in range(12):
-            if not state.migrate_history_bundle():
-                break
-        else:
-            raise AssertionError("finite native migration did not retire")
-        assert state.history_placement.degree == 4 and state.history_migration_bytes == 0
         logical = torch.arange(257, device=device)
         for cache in state.kc:
             offsets, owned = cache.local_indices(logical)
@@ -101,7 +94,7 @@ def _worker(rank, port, format_name):
 
 
 @pytest.mark.parametrize("format_name", ["int8", "rotorquant-planar4-sm70-v1"])
-def test_sm70_tp8_unique_histories_and_real_page_migration(format_name):
+def test_sm70_tp8_unique_histories(format_name):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the pinned V100 foundation")
     with socket.socket() as listener:

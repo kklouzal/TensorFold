@@ -33,7 +33,6 @@ def statistics(capacity=2):
             "capacity_plan": {
                 "session_capacity": {"resident_capacity": capacity, "context_tokens": 32,
                                      "full_context_commitments": capacity},
-                "resource_ledger_bytes": {"migration_overlap_limit": 64 << 20},
                 "speculation": {"method": "mtp"},
                 "kv_full_windows": {"materialized": True, "reserved": capacity, "stream_slots": capacity,
                     "ranks": [{"rank": rank, "materialized": True, "startup_capacities": [36] * capacity,
@@ -55,29 +54,20 @@ class Service:
         self.active = self.prefill = self.decode = self.cancelled = self.generations = 0
         self.kept = set()
         self.capacity = 2
-        self.degree, self.pending_degree = 4, None
-        self.pending_reads = 0
         self.settings = {"prefill_tokens": 16, "proposal_limit": 3, "row_budget": 16, "session_ceiling": 2}
         self.original = copy.deepcopy(self.settings)
         self.seen = []
 
     def runtime(self):
-        if self.pending_degree is not None:
-            self.pending_reads += 1
-            if self.pending_reads >= 2:
-                self.degree, self.pending_degree = self.pending_degree, None
-        migration = {"requested_degree": self.pending_degree or self.degree,
-                     "pending": self.pending_degree is not None, "blocked": None}
         return {"object": "tensorfold.runtime", "context_tokens": 32,
                 "capacity_plan": statistics()["capacity_plan"],
-                "execution": {"epoch": self.generations, "effective": copy.deepcopy(self.settings), "migration": migration},
+                "execution": {"epoch": self.generations, "effective": copy.deepcopy(self.settings)},
                 "sessions": {"allocated_slots": self.capacity, "retained": min(self.capacity, len(self.kept)) if self.keep else 0,
                              "active": self.active, "decode": self.decode, "prefill": self.prefill,
                              "admission_ceiling": self.settings["session_ceiling"]},
                 "placement": {"slots": [{"slot": index, "slot_generation": self.generations,
-                    "target_cached_length": 4 if self.kept else 0, "history_poisoned": False,
-                    "attention_degree": self.degree, "pending_attention_degree": self.pending_degree,
-                    "migration_bytes": 1024 if self.pending_degree else 0} for index in range(self.capacity)]}}
+                    "target_cached_length": 4 if self.kept else 0, "history_poisoned": False}
+                    for index in range(self.capacity)]}}
 
     def call(self, label, body=None, *, path=None, cancel=False, observer=None, **_kwargs):
         directory = self.out / label
@@ -86,10 +76,7 @@ class Service:
             self.seen.append((label, copy.deepcopy(body), path))
             if path == "/v1/runtime":
                 if body is not None:
-                    if "attention_degree" in body:
-                        self.pending_degree, self.pending_reads = body["attention_degree"], 0
-                    else:
-                        self.settings.update(body)
+                    self.settings.update(body)
                     result = {"object": "tensorfold.runtime.update"}
                 else:
                     result = self.runtime()
@@ -164,7 +151,7 @@ def service(monkeypatch):
 
 def test_explicit_request_lifecycle_counts_full_context_and_restores_live_settings(tmp_path):
     args = arguments(tmp_path, ["requests", "mixed", "burst", "cancel", "reuse", "retention",
-                                "migration", "oscillation", "limits", "zero-proposal", "stop", "context"])
+                                "limits", "zero-proposal", "stop", "context"])
     assert exercise.run(args) == 0
     report = json.loads((args.out / "suite.json").read_text())
     assert report["complete"] and report["passed"]
@@ -173,10 +160,9 @@ def test_explicit_request_lifecycle_counts_full_context_and_restores_live_settin
     assert report["inputs"]["exact"]["prompt_tokens"] + report["inputs"]["exact"]["max_tokens"] == 32
     assert report["inputs"]["overrun"]["fits"] is False
     assert all(row["status"] == "passed" for row in report["scenarios"])
-    assert Service.last.settings == Service.last.original and Service.last.degree == 4
+    assert Service.last.settings == Service.last.original
     outcomes = {row["scenario"]: row["result"] for row in report["scenarios"]}
     assert outcomes["retention"]["retained_before"] == outcomes["retention"]["retained_after"] == 2
-    assert outcomes["migration"]["partial_migration_observed"]
     assert outcomes["burst"]["observed"]["peak_active"] == 2
     assert any(row["status"] == "expected-refusal" for row in report["calls"])
     assert list(args.out.glob("*/timing.json"))
@@ -203,7 +189,7 @@ def test_actual_tokenizer_context_mismatch_stops_before_generation(monkeypatch, 
 
 
 def test_missing_explicit_long_request_is_unsupported_without_synthesizing_prompts(tmp_path):
-    args = arguments(tmp_path, ["mixed", "migration"], names=("short",))
+    args = arguments(tmp_path, ["mixed"], names=("short",))
     assert exercise.run(args) == 2
     report = json.loads((args.out / "suite.json").read_text())
     assert all(row["status"] == "unsupported" for row in report["scenarios"])

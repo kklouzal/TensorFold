@@ -83,18 +83,17 @@ def test_native_plan_without_a_qualified_profile_requires_explicit_startup_trial
 
 def test_a_new_admin_request_does_not_retroactively_reject_a_frozen_qualified_family():
     control = controller()
-    control.enable_migration(1)
     control.configure_execution_families(native=True, graph_rows=32)
     identity, evidence, table, work = native_packet(control, graph=GRAPH_FAMILY)
     control.bind_identity(identity, evidence=evidence)
     control.install_profiles(table)
     plan = control.freeze([0], workload=work)
-    control.request_migration(4)
+    control.invalidate_binding("observed runtime facts changed after the plan froze")
     boundary = control.freeze_boundary({name: plan[name] for name in control.maximum},
                                        family={name: plan[name] for name in REFERENCE}, profile_id=plan["profile_id"])
     control.apply_boundary(boundary)
     control.accept(plan)
-    assert control.record()["migration"]["pending"]
+    assert control.record()["profile_identity"] is None
     assert control.record()["execution_families"]["effective"]["kernel_family"] == KERNEL_FAMILY
     next_plan = control.freeze([0], workload=work)
     assert {name: next_plan[name] for name in REFERENCE} == REFERENCE

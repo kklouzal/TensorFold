@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-MIGRATION_OVERLAP_BYTES = 64 << 20  # initial specified candidate, not a measured optimum
-
 
 def _int(value: int, name: str, minimum: int = 0) -> int:
     if type(value) is not int or value < minimum:

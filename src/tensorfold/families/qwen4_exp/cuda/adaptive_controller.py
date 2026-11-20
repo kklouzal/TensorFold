@@ -105,10 +105,7 @@ class AdaptiveController:
         self.profiles = {}
         self.selected_profile = None
         self.profile_table_digest = None
-        self.migration = None
-        self.applied_migration = None
         self._profile_reservation = None
-        self._deferred_migration = None
         self.native_prepared = False
         self.prepared_kernel_family = KERNEL_FAMILY
         self.graph_rows = 0
@@ -255,10 +252,6 @@ class AdaptiveController:
                 profile_id = selected["id"]
             else:
                 profile_id = None
-            migration = None if self.migration is None else {
-                key: self.migration[key] for key in ("requested_degree", "request_epoch", "pending")}
-            if migration is not None and self.migration["blocked"] is not None:
-                migration["pending"] = False  # A blocked copy waits for an explicit retry, never every decode step.
         order = list(sessions)
         if len(order) != len(set(order)) or len(order) > self.slots:
             raise ValueError("an execution plan requires distinct admitted session IDs")
@@ -266,7 +259,7 @@ class AdaptiveController:
             after = next((index for index, sid in enumerate(order) if sid > self.last_served), len(order))
             order = order[after:] + order[:after]
         return {"epoch": self.epoch + 1, **values, "order": order,
-                "profile_id": profile_id, "migration": migration, **family}
+                "profile_id": profile_id, **family}
 
     def admission_limit(self):
         with self._lock:
@@ -349,9 +342,6 @@ class AdaptiveController:
         Only the serialized GPU worker enters this scope. The manifest owner
         keeps every rank in it through its final collective commit/abort vote;
         releasing it earlier would permit a leader-only generation change.
-        HTTP requests coalesce a deferred target without waiting for file IO or
-        another rank. They publish at release and invalidate old-placement
-        evidence before the next inference plan can be frozen.
         """
         reservation = object()
         with self._lock:
@@ -369,10 +359,6 @@ class AdaptiveController:
                 if self._profile_reservation is not reservation:
                     raise RuntimeError("execution-profile reservation ownership changed")
                 self._profile_reservation = None
-                deferred = self._deferred_migration
-                self._deferred_migration = None
-                if deferred is not None:
-                    self._request_migration(deferred)
         except BaseException as error:
             errors.append(error)
         raise_failures(primary, errors)
@@ -408,12 +394,11 @@ class AdaptiveController:
             raise ValueError("measured workload region exceeds the allocated session capacity")
         return _canonical(workload)
 
-    def replace_verified_profiles(self, identity, *, evidence, table, expected_migration_epoch):
+    def replace_verified_profiles(self, identity, *, evidence, table):
         """Validate a whole replacement before one locked publication.
 
         The worker's manifest verifier supplies actual content and placement
-        facts. A newer administrative migration invalidates that verification;
-        its queued request must never be cleared by a slow manifest read.
+        facts.
         """
         staged = AdaptiveController(slots=self.slots, row_budget=self.maximum["row_budget"],
                                     proposal_limit=self.maximum["proposal_limit"],
@@ -423,10 +408,6 @@ class AdaptiveController:
         staged.bind_identity(identity, evidence=evidence)
         staged.install_profiles(table)
         with self._lock:
-            actual_epoch = None if self.migration is None else self.migration["request_epoch"]
-            if (actual_epoch != expected_migration_epoch
-                    or self.migration is not None and self.migration["pending"]):
-                raise ValueError("placement changed or migration is pending during profile verification")
             self.identity, self.evidence, self.profiles = staged.identity, staged.evidence, staged.profiles
             self.profile_table_digest = staged.profile_table_digest
             self.selected_profile = None
@@ -471,45 +452,9 @@ class AdaptiveController:
             self.profile_table_digest = hashlib.sha256(_canonical(table).encode()).hexdigest()
             return self._record()
 
-    def enable_migration(self, degree):
-        if type(degree) is not int or degree not in (1, 2, 4):
-            raise ValueError("initial attention degree must be 1, 2 or 4")
-        with self._lock:
-            self.migration = {"requested_degree": degree, "request_epoch": 0,
-                              "pending": False, "blocked": None}
-            self.applied_migration = {"requested_degree": degree, "request_epoch": 0, "pending": False}
-
-    def request_migration(self, degree):
-        if type(degree) is not int or degree not in (1, 2, 4):
-            raise ValueError("attention degree must be 1, 2 or 4")
-        with self._lock:
-            if self.migration is None:
-                raise ValueError("this decoder has no bounded unique-history migration path")
-            if self._profile_reservation is not None:
-                self._deferred_migration = degree
-            else:
-                self._request_migration(degree)
-            return self._record()
-
-    def _request_migration(self, degree):
-        """Caller owns the controller lock; the latest deferred target wins."""
-        if degree != self.migration["requested_degree"] or self.migration["blocked"] is not None:
-            self.migration = {"requested_degree": degree,
-                              "request_epoch": self.migration["request_epoch"] + 1,
-                              "pending": True, "blocked": None}
-            # A performance proof for an old placement does not qualify
-            # a mixed owner table or a new placement. Rebind after it is
-            # measured; serving keeps the admitted canonical static plan.
-            self._invalidate_binding("attention ownership changed; rebind after stationary-placement verification")
-
-    def migration_status(self, *, request_epoch, pending, blocked=None):
-        with self._lock:
-            if self.migration is not None and self.migration["request_epoch"] == request_epoch:
-                self.migration = {**self.migration, "pending": pending, "blocked": blocked}
-
     def accept(self, plan):
         """Validate the leader's bounded plan before any state or collective work."""
-        if set(plan) != {"epoch", "order", "profile_id", "migration", *self.maximum, *FAMILY_FIELDS}:
+        if set(plan) != {"epoch", "order", "profile_id", *self.maximum, *FAMILY_FIELDS}:
             raise ValueError("execution plan fields do not match the supported contract")
         values = {name: plan[name] for name in self.maximum}
         self._validate(values)
@@ -527,25 +472,11 @@ class AdaptiveController:
         self._check_family(family, values["row_budget"])
         if family != REFERENCE and profile is None and family != self.trial_family:
             raise ValueError("native owner execution requires a frozen qualified profile or explicit startup trial")
-        migration = plan["migration"]
-        if migration is not None:
-            if (self.migration is None or not isinstance(migration, dict)
-                    or set(migration) != {"requested_degree", "request_epoch", "pending"}
-                    or type(migration["requested_degree"]) is not int or migration["requested_degree"] not in (1, 2, 4)
-                    or type(migration["pending"]) is not bool
-                    or type(migration["request_epoch"]) is not int
-                    or migration["request_epoch"] < self.applied_migration["request_epoch"]):
-                raise ValueError("execution plan migration generation is stale or invalid")
         with self._lock:
             self.effective = values
             self.epoch = plan["epoch"]
             self.selected_profile = profile
             self.effective_family = family
-            if migration is not None:
-                self.applied_migration = dict(migration)
-            if migration is not None and migration["request_epoch"] > self.migration["request_epoch"]:
-                self.migration = {**migration, "blocked": None}
-                self._invalidate_binding("attention ownership changed; rebind after stationary-placement verification")
 
     def select(self, work, plan):
         """Fair complete-window microbatch; never wait to fill an otherwise ready step."""
@@ -585,10 +516,10 @@ class AdaptiveController:
         with self._lock:
             return self.total_target_rows, self.total_prefill_tokens, self.total_committed_tokens
 
-    def observe_round(self, *, before, elapsed_s, migration_s, outcome):
+    def observe_round(self, *, before, elapsed_s, outcome):
         with self._lock:
             self.rounds += 1
-            self.round_observation = {"elapsed_s": elapsed_s, "migration_s": migration_s, "outcome": outcome,
+            self.round_observation = {"elapsed_s": elapsed_s, "outcome": outcome,
                                       "target_rows": self.total_target_rows - before[0],
                                       "prefill_tokens": self.total_prefill_tokens - before[1],
                                       "committed_tokens": self.total_committed_tokens - before[2]}
@@ -598,10 +529,10 @@ class AdaptiveController:
             # Lock owner protects these actual JSON values through all copies.
             # Never wait for payload credit while holding this identity lock.
             credit((self.configured, self.pending, self.effective, self.maximum,
-                self.identity, self.binding_invalidated_reason, self._deferred_migration,
+                self.identity, self.binding_invalidated_reason,
                 self.profile_table_digest, self.selected_profile, self.effective_family,
-                self.native_prepared, self.prepared_kernel_family, self.graph_rows, self.trial_family, self.migration,
-                self.applied_migration, self.observation, self.round_observation))
+                self.native_prepared, self.prepared_kernel_family, self.graph_rows, self.trial_family,
+                self.observation, self.round_observation))
         return {"configured": dict(self.configured),
                 "pending": None if self.pending is None else dict(self.pending),
                 "effective": dict(self.effective), "allocated_maximum": dict(self.maximum),
@@ -613,7 +544,6 @@ class AdaptiveController:
                 "profile_identity": None if self.identity is None else dict(self.identity),
                 "binding_invalidated_reason": self.binding_invalidated_reason,
                 "profile_transaction_active": self._profile_reservation is not None,
-                "deferred_migration": self._deferred_migration,
                 "profile_table_sha256": self.profile_table_digest, "registered_profiles": len(self.profiles),
                 "selected_profile": self.selected_profile,
                 "execution_families": {"effective": dict(self.effective_family),
@@ -621,13 +551,11 @@ class AdaptiveController:
                                        "prepared_kernel_family": self.prepared_kernel_family,
                                        "graph_rows": self.graph_rows,
                                        "trial": None if self.trial_family is None else dict(self.trial_family)},
-                "migration": None if self.migration is None else dict(self.migration),
-                "applied_migration": None if self.applied_migration is None else dict(self.applied_migration),
                 "last_step": dict(self.observation),
                 "timing_scope": "host_wall_including_observed_waits",
                 "device_step_elapsed_s": None,
                 "last_round": dict(self.round_observation),
-                "timing_contract": "last_round includes migration, prefill, decode and host control; last_step is a phase",
+                "timing_contract": "last_round includes prefill, decode and host control; last_step is a phase",
                 "work_observations": (self.work_observations.record() if credit is None else
                                       self.work_observations.record(credit=credit)),
                 "total_target_rows": self.total_target_rows,

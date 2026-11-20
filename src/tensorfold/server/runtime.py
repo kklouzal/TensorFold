@@ -94,7 +94,7 @@ def _snapshot_current(app: Any) -> dict[str, Any] | None:
                      "allocated_slots": controller.slots,
                      "admission_ceiling": controller.admission_limit(),
                      "queued": scheduler.waiting.qsize() + int(scheduler.held is not None)},
-        "placement": (None if placement is None else placement() if credit is None else placement(credit=credit)),
+        "placement": None if placement is None else placement(),
         "profile_manifest": manifest() if manifest is not None else None,
         "reading_contract": "advisory_host_snapshot_no_gpu_synchronization",
     }
@@ -104,9 +104,9 @@ def request(app: Any, body: Any) -> dict[str, Any]:
     """Validate the HTTP boundary, then publish a coalesced controller request."""
     if not isinstance(body, dict) or not body:
         raise RequestError("runtime settings must be a nonempty JSON object")
-    standalone = set(body) & {"profile_table", "profile_manifest", "attention_degree", "serving_profile"}
+    standalone = set(body) & {"profile_table", "profile_manifest", "serving_profile"}
     if standalone and len(body) != 1:
-        raise RequestError("profile registration or attention placement must be requested separately")
+        raise RequestError("profile registration or serving-profile selection must be requested separately")
     unknown = set(body) - SETTINGS - standalone
     if unknown:
         raise RequestError("unsupported runtime setting: " + ", ".join(sorted(unknown)))
@@ -141,8 +141,6 @@ def request(app: Any, body: Any) -> dict[str, Any]:
     del decoder  # The adaptive controller is host-only; keep no GPU model in HTTP error frames.
     if controller is None:
         raise RequestError("this engine has no adaptive runtime controls")
-    if "attention_degree" in body and getattr(controller, "migration", None) is None:
-        raise RequestError("live attention-degree updates are not enabled for fixed initial history placement")
     if "profile_manifest" in body:
         owner = getattr(scheduler, "request_execution_manifest", None)
         if not callable(owner):
@@ -155,8 +153,6 @@ def request(app: Any, body: Any) -> dict[str, Any]:
     def publish():
         if "profile_table" in body:
             return controller.install_profiles(body["profile_table"])
-        if "attention_degree" in body:
-            return controller.request_migration(body["attention_degree"])
         return controller.request(**body)
 
     owner = getattr(scheduler, "request_runtime", None)

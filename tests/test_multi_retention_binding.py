@@ -69,20 +69,3 @@ def test_binding_rejects_unmatched_geometry_before_changing_authority(materializ
         assert decoder.retention_catalog is None and decoder.kept == [] and catalog.prefix_entries == []
     finally:
         catalog.close(timeout=3)
-
-
-def test_transfer_or_drawn_mtp_guard_keeps_migration_pending_without_trimming():
-    """Caller control oracle; actual catalog/State protection is covered above and in catalog tests."""
-    calls = []
-    state = NS(history_placement=NS(degree=1), mtp_drafted=2, mtp_len=5)
-    state.set_mtp_len = lambda _value: pytest.fail("protected MTP history was trimmed")
-    state.begin_history_migration = lambda _value: pytest.fail("protected transfer source was mutated")
-    state.migrate_history_bundle = lambda: pytest.fail("protected transfer source was migrated")
-    decoder = object.__new__(MultiDecoder)
-    decoder.states, decoder.streams, decoder._migration_cursor = (state,), {}, 0
-    decoder.retention_catalog = NS(migration_blocked=lambda candidate: candidate is state)
-    decoder.controller = NS(migration_status=lambda **status: calls.append(status))
-    decoder._migration_bundle({"pending": True, "requested_degree": 2, "request_epoch": 9})
-    assert state.mtp_drafted == 2 and state.mtp_len == 5
-    assert calls == [{"request_epoch": 9, "pending": True,
-        "blocked": "retained transfer or issued MTP rows protect the pending state"}]

@@ -569,13 +569,8 @@ def _runtime(engine, *, previous_topology=None):
 
 def _placement(engine):
     """Actual stationary CPU owner/offset tables; no address or slot generation."""
-    migration = engine.multi.controller.record().get("migration")
-    if migration is not None and migration["pending"]:
-        raise ValueError("execution profiles cannot bind during a pending or mixed placement transition")
     hasher = hashlib.sha256()
     for state in engine.multi.states:
-        if getattr(state, "_history_migration", None) is not None:
-            raise ValueError("execution profiles cannot bind a partially migrated session")
         placement = getattr(state, "history_placement", None)
         caches = list(state.kc) + ([state.mtp_kc] if hasattr(state, "mtp_kc") else [])
         for layer, cache in enumerate(caches):
@@ -1020,8 +1015,8 @@ def bind_execution_manifest(engine, manifest_path, *, rebind=False, manifest_roo
             _fatal(engine, error)
             raise
 
-    # The reservation defers HTTP migration publication until all ranks have
-    # committed or refused and consumed/retired their operation outcomes.
+    # The reservation holds until all ranks have committed or refused and
+    # consumed/retired their operation outcomes.
     try:
         with engine.multi.controller.profile_transaction():
             try:
@@ -1076,8 +1071,6 @@ def _prepare_manifest(engine, manifest_path, *, rebind, manifest_root):
                     "padding": False, "truncation": False,
                     "templates": None if engine.chat_template is None else [
                         engine.chat_template.provenance(tools=False), engine.chat_template.provenance(tools=True)]}
-    migration = engine.multi.controller.record().get("migration")
-    migration_epoch = None if migration is None else migration["request_epoch"]
     if rebind:
         previous = engine._execution_bind_local
         host, numerics, runtime, topology, libraries = _runtime(engine, previous_topology=previous["topology"])
@@ -1102,7 +1095,7 @@ def _prepare_manifest(engine, manifest_path, *, rebind, manifest_root):
         ("host", "files", "numerics", "runtime", "topology", "placement", "tokenization")))
     return {"path": path, "manifest": manifest, "artifacts": artifacts, "checkpoint": checkpoint,
             "artifact_stats": artifact_stats, "expected": expected, "placement": placement,
-            "migration_epoch": migration_epoch, "files": files, "before": before, "local": local}
+            "files": files, "before": before, "local": local}
 
 
 def retention_identity_payload(engine):
@@ -1240,10 +1233,8 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
 
     def commit():
         # All fallible packet and table checks completed before this phase.
-        # profile_transaction keeps administrative migration publication deferred
-        # until every rank has committed/refused and consumed its outcome.
         engine.multi.controller.replace_verified_profiles(context["identity"], evidence=context["evidence"],
-            table=context["table"], expected_migration_epoch=context["migration_epoch"])
+                                                          table=context["table"])
         engine._execution_content_projection = context["content_projection"]
         engine._execution_input_authority = context["authority"]
         engine._execution_input_authorities = context["authorities"]

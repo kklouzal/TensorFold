@@ -249,9 +249,7 @@ def state_inventory(state, *, stream=None, pending_hc=None, recoveries=(), recov
         raise ValueError("retained State frontier exceeds its logical context")
     if state.target_tentative_length != state.pos or getattr(state, "media_input_span", None) is not None:
         raise ValueError("retained State capture requires its resolved target/input boundary")
-    # A partially completed physical migration is a valid mixed page map.
-    # Capture reads its actual committed owners/offsets; the actor excludes
-    # further migration while the transfer holds these source views.
+    # Capture reads its actual committed owners/offsets.
     for reader in tuple(state.history_native_readers):
         reader.wait_native_reuse()
     current = state.cur[0] if state.cur else 0

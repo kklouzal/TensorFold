@@ -375,10 +375,6 @@ class HostPrefixTier:
         tier, extent, rows, mtp_rows, generation = stamp
         if tier is not self or generation != st.slot_generation or not extent["alive"]:
             return None
-        # A history degree migration (MultiDecoder: migrate_history_bundle) permutes the slot's page owners without
-        # a new admission generation: rows held under another page ownership no longer match this rank's pages.
-        if extent["kv_identity"] != st.kv_identity or extent["class"] != self._owner_class_of(st):
-            return None
         return extent, rows, mtp_rows
 
     def hold(self, st, held, rows=None, mtp_rows=None):

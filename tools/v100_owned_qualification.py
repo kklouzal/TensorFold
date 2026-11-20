@@ -4153,7 +4153,7 @@ def _qualification_failure_record(engine, primary, requested_rows):
                    "session_execution_bytes", "next_session_execution_bytes")
     ledger_fields = ("session_state", "retained_recovery", "execution_arenas", "slot_metadata", "history",
                      "replacement_overlap", "serving_workspace", "graphs", "attention_scratch", "sm70_native_workspace",
-                     "kv_cohort_workspace", "expert_routing_extra", "migration_overlap_limit", "device_library_workspace",
+                     "kv_cohort_workspace", "expert_routing_extra", "device_library_workspace",
                      "retained_idle_recovery", "retained_restore_overlap", "media_mtp_boundary", "draft_history_execution",
                      "draft_replacement_overlap", "dflash_window_state", "dflash_recovery_snapshots",
                      "dflash_execution_workspace", "dflash_target_probability", "retained_device_dependencies")

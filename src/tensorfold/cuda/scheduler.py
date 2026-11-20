@@ -1390,11 +1390,9 @@ class Scheduler:
                 done += failed
                 leases, production = self._production_plan(media)
                 self._suspend_blocked()
-                maintenance = getattr(self.decoder, "maintenance_pending", None)
-                ready = maintenance is not None and maintenance()
                 runnable = getattr(self.decoder, "media_runnable", None)
                 active = self.decoder.live() > 0
-                execute = self._serving_profile_available and (ready or production and active and (runnable is None or runnable()))
+                execute = self._serving_profile_available and production and active and (runnable is None or runnable())
             if execute:
                 done += self.decoder.round()
                 ran = True
@@ -1503,18 +1501,16 @@ class Scheduler:
             idle = not self.decoder.live() and self.held is None
             if idle and self._stopping and not self._retiring:
                 return
-            maintenance = getattr(self.decoder, "maintenance_pending", None)
-            ready = maintenance is not None and maintenance()
             runnable = getattr(self.decoder, "media_runnable", None)
             media_wait = runnable is not None and not runnable() and (
                 self.decoder.live() or self._media_held_wait or self._retiring)
-            if media_wait and self._occupied() >= self._stream_limit() and not ready:
+            if media_wait and self._occupied() >= self._stream_limit():
                 first = self.waiting.get_control()
             else:
-                first = self.waiting.get() if (idle or media_wait) and not ready else None
-            if idle and not self._retiring and not ready and first is None:
+                first = self.waiting.get() if idle or media_wait else None
+            if idle and not self._retiring and first is None:
                 return                                                                # close()
-            if media_wait and not ready and first is None:
+            if media_wait and first is None:
                 self._stopping = True
             if idle:
                 self._execution_boundary()  # a control may arrive while the worker waits on the queue

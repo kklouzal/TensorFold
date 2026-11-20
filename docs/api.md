@@ -770,12 +770,10 @@ existing running and idle state. A zero proposal limit keeps enabled MTP
 conditioning current. Settings become effective at a globally coordinated batch
 boundary, including between bounded prefill chunks.
 
-Initial Flash Next TP8 unique-history serving uses a fixed degree-four map
-selected at preparation. `attention_degree` updates are not supported for this
-initial profile: they are rejected before scheduler publication or wake, preserving
-controller and retained state. Other bounded execution controls remain available.
-Low-level migration mechanisms remain research/reference code, not a new serving
-option or an ordinary live-placement API.
+Flash Next TP8 unique-history serving uses a fixed degree-four map selected at
+preparation; history ownership never changes while serving. There is no
+`attention_degree` setting: like any unknown field it is refused before
+scheduler publication or wake.
 
 Routed-expert parallelism is also a preparation-time selection:
 `--expert-tensor-parallel-size 8|4|2` requires a local Flash Next GGUF checkpoint,

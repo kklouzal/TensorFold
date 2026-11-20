@@ -1324,7 +1324,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     # Counts include old/working/result records and merge input footprints.
     source_records = {"stats_own": 10, "stats_both": 7, "stats_return_inputs": 19,
         "controller_maximum": 4, "controller_configured": 4, "controller_effective": 4,
-        "freeze_values_and_update": 8, "freeze_family": 2, "freeze_migration": 3,
+        "freeze_values_and_update": 8, "freeze_family": 2,
         "freeze_record": 10, "freeze_workload": 10, "boundary_values": 4,
         "boundary_family_and_replacement": 4, "boundary_record": 5}
     source_record_tables = {}
@@ -1811,10 +1811,9 @@ def _finalize_dynamic_http(catalog, record, core, materialized, scheduler, *,
     shell_payload = shell_nodes * (layout["dict_entry"] + layout["unicode"] + 5 * 128
         + integer_payload + layout["list"] + layout["tuple"] + 4 * layout["pointer"])
     shell_wire = shell_nodes * (4302 + 12 * 128 + 4)
-    # execution_manifest_record bounds its diagnostic to1024 characters;
-    # migration reasons are fixed text plus the validated <=8 rank IDs.
-    shell_payload += 2 * (layout["unicode"] + 5 * 1024)
-    shell_wire += 2 * 12 * 1024
+    # execution_manifest_record bounds its diagnostic to1024 characters.
+    shell_payload += layout["unicode"] + 5 * 1024
+    shell_wire += 12 * 1024
     fixed_rpc = (rpc.get("one_cohort_error_owner_bytes", 0)
                  + rpc.get("one_serialized_phase_bytes", 0)
                  + _total(rpc.get("leader_request_map_metadata", {}).values()))

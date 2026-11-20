@@ -74,8 +74,8 @@ rank-agreement digest substitutes for the map, and registration reads no IDs bac
 from CUDA.
 
 Placement uses actual owner ranks, relative page offsets, degree and geometry.
-It excludes raw GPU addresses and reusable slot generations. A pending or
-partial migration refuses binding. Degree 1 evidence cannot qualify degree 4.
+It excludes raw GPU addresses and reusable slot generations. Degree 1 evidence
+cannot qualify degree 4.
 The runtime manifest includes GPU UUID/rank mapping, CPU affinity, GPU/PCIe
 topology and NVLink status. Host identifiers are hashed. It uses an explicit
 allowlist of execution environment controls, including CUDA launch blocking and

@@ -3096,10 +3096,9 @@ was not changed. See
 [the A1 boundary and remaining gates](docs/v100-adaptive-validation.md#neutral-artifact-io-boundary-a1).
 
 Initial adaptive Flash Next TP8 unique-history serving now selects an explicit
-fixed degree-four ownership map. It charges zero dedicated live-migration overlap
-and does not enable live attention-degree updates. Prefix/COW, restore, recovery,
-replacement and other workspaces keep their separate charges. Migration mechanisms
-and independent oracles remain optional research, with no new serving flag.
+fixed degree-four ownership map; ownership never changes while serving (the live
+attention-degree migration prototype was removed 2026-11-20). Prefix/COW, restore,
+recovery, replacement and other workspaces keep their separate charges.
 Affected source and fresh installed-image controls pass. Each broader batch
 recorded 367 passed, four existing ABI/version failures and 12 frontend-version
 skips; those target gaps remain unqualified. This is not a measured capacity

@@ -227,14 +227,12 @@ MATRIX_AXES = {
                   "partly-filled-histories", "near-full-histories"],
     "workload": ["prefill-only", "decode-only", "mixed-long-prefill-decode",
                  "heterogeneous-acceptance", "routed-expert-skew"],
-    "transition": ["degree-1-to-2", "degree-2-to-1", "degree-1-to-4", "degree-4-to-1",
-                   "degree-2-to-4", "degree-4-to-2", "partial-migration", "threshold-oscillation",
-                   "arrivals-during-migration", "burst-one-to-capacity"],
+    "transition": ["burst-one-to-capacity"],
     "lifecycle": ["completion", "eos", "stop-string", "context-exhaustion", "cancellation",
                   "slot-reuse", "admission-limit-decrease", "admission-limit-increase", "pending-profile"],
     "speculation": ["all-accept", "early-rejection", "late-rejection", "zero-accept",
                     "zero-proposal-warm", "final-anchor-bonus", "accepted-prefix-recovery"],
-    "sustained": ["fill-drain-cycles", "graph-replacement", "allocator-fragmentation", "bounded-migration"],
+    "sustained": ["fill-drain-cycles", "graph-replacement", "allocator-fragmentation"],
 }
 
 
@@ -246,7 +244,7 @@ def matrix(stats, *, max_cases=100000):
         raise ValueError("computed capacity exceeds matrix case budget; raise --max-cases explicitly")
     # Every step is represented; thresholds never truncate a non-threshold or
     # above-32 endpoint. Other axes are explicit gates, not a Cartesian-product
-    # claim that a short-prompt HTTP run exercised state migration or retention.
+    # claim that a short-prompt HTTP run exercised state retention.
     return {"schema": "tensorfold.v100-adaptive-matrix", "schema_version": 1,
             "evidence": "test-plan-unrun", "profile": effective,
             "concurrency": list(range(1, capacity + 1)),

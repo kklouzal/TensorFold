@@ -179,7 +179,6 @@ class MultiDecoder:
         if self.input_preparation_context is not None:
             self.input_preparation_context.bind_decoder(self)
         self._execution_plan = None
-        self._round_migration_s = 0.0
         if w.meta.get("execution_provider") == "sm70":
             from .adaptive_controller import AdaptiveController
 
@@ -310,9 +309,6 @@ class MultiDecoder:
         self.states = tuple(self.free)
         if native_gdn_batch:
             self.round_tables.bind_native(self.states, self.buf)
-        self._migration_cursor = 0
-        # Prepared serving owns one fixed map. Migration mechanisms remain
-        # isolated research helpers, never enabled by ordinary initialization.
         self.failed_slots: list[State] = []          # bounded by slots; exclusive owners until retirement succeeds
         self.slot_bytes = sum(t.numel() * t.element_size() for t in _tensors(self.free[0]))
         self.window_bytes = self.free[0].cache_bytes(capacity)          # one stream's caches at the full window
@@ -1774,7 +1770,7 @@ class MultiDecoder:
         return [prefix_limit(lambda _new, _out, decision=decision: tuple(decision), new, s.out)
                 for s, new, decision in zip(streams, news, decisions)]
 
-    def history_record(self, *, credit=None):
+    def history_record(self):
         records = [state.history_record() for state in self.states]
         active = {id(stream.st) for stream in [*self.streams.values(), *self.filling] if stream.st is not None}
         catalog = getattr(self, "retention_catalog", None)
@@ -1791,9 +1787,7 @@ class MultiDecoder:
         result = {"slots": records, "active_request_slots": len(active),
                 "intentional_retained_sessions": 0 if retention is None else retention["sessions"],
                 "derived_prefix_slots": len(cached),
-                "derived_prefix_entries": len(self.kept),
-                "migration": None if self.controller is None else
-                (self.controller.record() if credit is None else self.controller.record(credit=credit))["migration"]}
+                "derived_prefix_entries": len(self.kept)}
         if catalog is not None:
             result.update(retained_gpu_slots=len(protected), retention=retention)
         return result
@@ -1804,63 +1798,6 @@ class MultiDecoder:
         if self._grouped is not None:                 # one pass's layers never mix kernel families
             self._grouped_ready = self._group(every=True)[1]
         return self.execution_manifest_installer(relative_name)
-
-    def maintenance_pending(self):
-        migration = None if self.controller is None else self.controller.migration
-        return migration is not None and migration["pending"] and migration["blocked"] is None
-
-    def _migrate_boundary(self, migration):
-        if self.controller is None or migration is None or not migration["pending"]:
-            return
-        if self._grouped is not None:
-            # A pass in layer groups leaves its states mid-pass (some layers' rows and DeltaNet states written, its
-            # indexer appends pending): finish it before any history page migrates (joined by _group_settle).
-            self._grouped_ready = self._group(every=True)[1]
-        started = time.perf_counter()
-        try:
-            self._migration_bundle(migration)
-        except BaseException as error:
-            self._memory_error = error
-            poison = getattr(self, "poison_control", None)
-            if poison is not None:
-                poison(error)
-            raise
-        finally:
-            self._round_migration_s = getattr(self, "_round_migration_s", 0.0) + time.perf_counter() - started
-
-    def _migration_bundle(self, migration):
-        if self.controller is None or migration is None or not migration["pending"]:
-            return
-        target, generation = migration["requested_degree"], migration["request_epoch"]
-        catalog = getattr(self, "retention_catalog", None)
-        retained_blocked = False
-        for offset in range(len(self.states)):
-            index = (self._migration_cursor + offset) % len(self.states)
-            state = self.states[index]
-            pending = getattr(state, "_history_migration", None)
-            if state.history_placement.degree == target and pending is None:
-                continue
-            if catalog is not None and catalog.migration_blocked(state):
-                retained_blocked = True
-                continue  # Issued MTP rows/transfer readers cannot be trimmed or mutated.
-            for stream in self.streams.values():
-                if stream.st is state:
-                    self._flush(stream)
-            if state.mtp_drafted:
-                state.set_mtp_len(state.mtp_len - state.mtp_drafted)
-                state.mtp_drafted = 0
-            if getattr(state, "_migration_request", None) != generation:
-                state.begin_history_migration(target)
-                state._migration_request = generation
-            moved = state.migrate_history_bundle()
-            self._migration_cursor = (index + 1) % len(self.states)
-            pending = getattr(state, "_history_migration", None)
-            blocked = ((pending.get("blocked_reason") or "next balanced bundle exceeds admitted migration overlap")
-                       if not moved and pending else None)
-            self.controller.migration_status(request_epoch=generation, pending=True, blocked=blocked)
-            return
-        self.controller.migration_status(request_epoch=generation, pending=retained_blocked,
-            **({"blocked": "retained transfer or issued MTP rows protect the pending state"} if retained_blocked else {}))
 
     def gap_inputs(self) -> dict:
         """This rank's layer-group cost estimates (ms); under tensor parallelism the leader's go with each round."""
@@ -2538,7 +2475,6 @@ class MultiDecoder:
             return self._round()
         started = time.perf_counter()
         before = self.controller.round_started()
-        self._round_migration_s = 0.0
         outcome = "ok"
         primary, result = None, None
         try:
@@ -2549,8 +2485,7 @@ class MultiDecoder:
         errors = []
         try:
             self.controller.work_observations.publish()
-            self.controller.observe_round(before=before, elapsed_s=time.perf_counter() - started,
-                                          migration_s=self._round_migration_s, outcome=outcome)
+            self.controller.observe_round(before=before, elapsed_s=time.perf_counter() - started, outcome=outcome)
         except BaseException as error:
             errors.append(error)
         raise_failures(primary, errors)
@@ -2568,7 +2503,6 @@ class MultiDecoder:
             plan = self.freeze_execution()
             self.controller.accept(plan)
             self.apply_execution_family()
-        self._migrate_boundary(None if plan is None else plan["migration"])
         pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
         cancelled = []
         if getattr(self.w, "dflash2", None) is not None:

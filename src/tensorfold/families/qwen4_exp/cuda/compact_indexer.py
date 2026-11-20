@@ -1097,10 +1097,6 @@ class CompactIndexer:
             if entry is not None:
                 entry.span = None
 
-    def has_pending_target(self):
-        return any(entry is not None and entry.span is not None and entry.span.resolved is None
-                   for entry in self.entries[:self.placement.target_layers])
-
     def snapshot(self, pos, mtp_len):
         self.wait_native_reuse()
         lengths = self.lengths(pos, mtp_len)

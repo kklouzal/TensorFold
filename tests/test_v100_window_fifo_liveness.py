@@ -36,9 +36,7 @@ def cohort(tmp_path, monkeypatch):
     decoder.prefill_rows, decoder.share, decoder.round_s, decoder.row_s = 256, .5, None, None
     decoder.pdl, decoder.converged = False, False
     decoder.arrived = lambda: False
-    decoder._migrate_boundary = lambda migration: None  # No physical migration in this CPU fixture.
     decoder._make_room = list  # No issued GPU owners exist in this CPU fixture.
-    decoder.maintenance_pending = lambda: False
     def unexpected_graph(*args, **kwargs):
         raise AssertionError('GPU graph must not execute before the prepared-window stop')
     decoder.graphs = SimpleNamespace(bound=object.__new__(ExactStateGraphs),

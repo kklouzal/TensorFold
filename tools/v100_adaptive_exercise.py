@@ -43,8 +43,8 @@ else:
     from worker_lifetime import Task, drain, raise_failures
 
 
-SCENARIOS = ("requests", "mixed", "burst", "cancel", "reuse", "retention", "migration",
-             "oscillation", "limits", "zero-proposal", "stop", "eos", "context", "correctness", "supplied-long")
+SCENARIOS = ("requests", "mixed", "burst", "cancel", "reuse", "retention", "limits", "zero-proposal", "stop", "eos",
+             "context", "correctness", "supplied-long")
 
 
 def load_oracles(named, *, budget_bytes):
@@ -358,7 +358,7 @@ class Suite:
         self.active_read_control = None  # one caller-owned group, retained through worker drain
         self.effective = None
         self.initial_runtime = None
-        self.changed_settings, self.changed_degree = False, False
+        self.changed_settings = False
         self.cancelled_group = False
         self.report = {"schema": "tensorfold.v100-adaptive-exercise", "schema_version": 1,
                        "evidence": "recorded-HTTP-scenarios", "complete": False, "passed": False,
@@ -474,11 +474,6 @@ class Suite:
             cached = slot.get("target_cached_length")
             if type(cached) is not int or not 0 <= cached <= self.effective["context_tokens"]:
                 raise ValueError("target cached position exceeds its logical context commitment")
-        migration_limit = (result.get("capacity_plan") or {}).get("resource_ledger_bytes", {}).get("migration_overlap_limit")
-        if type(migration_limit) is int and migration_limit >= 0:
-            occupancy = [slot.get("migration_bytes", 0) for slot in slots]
-            if any(type(value) is not int or value < 0 for value in occupancy) or sum(occupancy) > migration_limit:
-                raise ValueError("observed migration occupancy exceeds the admitted rank limit")
         return result
 
     def wait_runtime(self, label, condition, *, cleanup=False, observe=None):
@@ -490,9 +485,6 @@ class Suite:
                 observe(latest)
             if condition(latest):
                 return latest
-            blocked = ((latest.get("execution") or {}).get("migration") or {}).get("blocked")
-            if blocked:
-                raise Unsupported("runtime migration remains blocked: " + str(blocked))
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise Unsupported("required runtime condition was not observed before the polling deadline")
@@ -543,7 +535,7 @@ class Suite:
         if count > self.args.max_inflight or count * self.limits.response_bytes > self.args.batch_response_mib << 20:
             raise Unsupported("requested concurrent response/worker budgets need an explicit increase")
 
-    def concurrent(self, names, *, burst=False, degree_sequence=(), operation=None, history_floor=None):
+    def concurrent(self, names, *, burst=False, operation=None, history_floor=None):
         count = len(names)
         self.require_concurrency(count)
         ready, abort, first = threading.Event(), threading.Event(), threading.Event()
@@ -551,7 +543,7 @@ class Suite:
         self.active_read_control = control
         results, tasks, primary = [None] * count, [], None
         observed = {"peak_active": 0, "peak_prefill": 0, "peak_decode": 0,
-                    "mixed_prefill_decode": False, "partial_migration": False, "first_before_burst": False,
+                    "mixed_prefill_decode": False, "first_before_burst": False,
                     "retained_counts_while_active": []}
         if history_floor is not None:
             observed["advisory_all_active_histories"] = None
@@ -583,7 +575,6 @@ class Suite:
                         observed["advisory_all_active_histories"] = {"active": count, "minimum_tokens": history_floor,
                             "reading_contract": state.get("reading_contract"),
                             "slots": copy.deepcopy(active), "execution": copy.deepcopy(state.get("execution"))}
-            observed["partial_migration"] |= any(slot.get("pending_attention_degree") is not None for slot in slots)
             return state
 
         try:
@@ -603,10 +594,6 @@ class Suite:
                 if tasks[0].done.is_set():
                     observed["first_before_burst"] = False
             ready.set()
-            for degree in degree_sequence:
-                self.changed_degree = True
-                self.control({"attention_degree": degree})
-                sample()
             while not all(task.done.is_set() for task in tasks):
                 control.check()
                 failed = next((task.error for task in tasks if task.done.is_set() and task.error is not None), None)
@@ -647,25 +634,8 @@ class Suite:
                                   cleanup=True)
             except BaseException as error:
                 failures.append(error)
-        if self.changed_degree:
-            migration = self.initial_runtime["execution"].get("migration")
-            if migration is not None:
-                degree = migration["requested_degree"]
-                try:
-                    self.control({"attention_degree": degree}, cleanup=True)
-                    self.wait_runtime("restored-degree", lambda value: migration_done(value, degree), cleanup=True)
-                except BaseException as error:
-                    failures.append(error)
         if failures:
             raise_failures(None, failures)
-
-
-def migration_done(runtime, degree):
-    migration = (runtime.get("execution") or {}).get("migration")
-    slots = (runtime.get("placement") or {}).get("slots") or []
-    return bool(migration and migration.get("requested_degree") == degree and migration.get("pending") is False
-                and slots and all(slot.get("attention_degree") == degree
-                                  and slot.get("pending_attention_degree") is None for slot in slots))
 
 
 def exercise_scenario(suite, scenario):
@@ -726,33 +696,6 @@ def exercise_scenario(suite, scenario):
         if after["sessions"]["retained"] != capacity:
             raise ValueError("all-resident/one-active workload lost a retained session")
         return {"retained_before": capacity, "retained_after": capacity, "result": result}
-    if scenario in ("migration", "oscillation"):
-        suite.request(suite.choose("long"), "migration-retained-context")
-        initial = suite.runtime("before-migration")
-        if initial["sessions"]["retained"] == 0:
-            raise Unsupported("migration exercise requires an actually retained supplied long context")
-        if initial["execution"].get("migration") is None:
-            raise Unsupported("no bounded runtime ownership migration capability")
-        if scenario == "oscillation":
-            result = suite.concurrent([name] * min(2, capacity), degree_sequence=(1, 4, 2, 4, 1))
-            suite.wait_runtime("oscillation-settled", lambda value: migration_done(value, 1))
-            return result
-        transitions, observed = [], {"partial": False}
-
-        def observe(state):
-            observed["partial"] |= any(row.get("pending_attention_degree") is not None
-                                       for row in (state.get("placement") or {}).get("slots", []))
-
-        for degree in (1, 2, 1, 4, 2, 4, 1):
-            suite.changed_degree = True
-            suite.control({"attention_degree": degree})
-            state = suite.wait_runtime("migration-progress", lambda value: migration_done(value, degree), observe=observe)
-            transitions.append({"degree": degree, "execution_epoch": state["execution"]["epoch"]})
-            suite.request(name, "post-migration-request")
-        result = {"transitions": transitions, "partial_migration_observed": observed["partial"]}
-        if not observed["partial"]:
-            raise Unsupported("degree changes completed but partial migration was not observed", evidence=result)
-        return result
     if scenario == "limits":
         before = suite.runtime("before-ceiling-change")
         original = before["sessions"]["admission_ceiling"]

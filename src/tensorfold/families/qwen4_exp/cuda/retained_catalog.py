@@ -1224,11 +1224,6 @@ class RetainedCatalog:
                     values.append(owner.plan.state)
             return tuple({id(state): state for state in values}.values())
 
-    def migration_blocked(self, state):
-        with self._condition:
-            return any(handle.state is state and (handle.transfer is not None or handle.transfer_readers or state.mtp_drafted)
-                       for handle in self._handles.values())
-
     def take_released_states(self):
         """Actor removes these from derived caches before returning their slots."""
         with self._condition:
@@ -1289,8 +1284,7 @@ class RetainedCatalog:
                 or any(request.claimed for request in handle.consumers)):
             raise ValueError("only exclusively idle RAM-backed generations can suspend")
         generation = _next_generation(handle.transfer_generation, "transfer")
-        # Completed physical migration may have changed page offsets since the
-        # idle capture. Rebind actual source views before acquiring DMA leases.
+        # Rebind actual source views (current owners/offsets) before acquiring DMA leases.
         if handle.inventory is not None:
             pending = (None if handle.state.mtp_boundary is not None else handle.ready_handoff["pending_hc"])
             fresh = rebind_state_inventory(handle.state, handle.inventory, pending_hc=pending,

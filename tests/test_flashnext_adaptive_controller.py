@@ -452,41 +452,19 @@ def test_profile_selection_respects_requested_caps_and_unknown_work_axes():
     assert control.freeze([0], workload=work)["profile_id"] is None
 
 
-def test_new_placement_requires_new_identity_and_cannot_reuse_old_proofs():
-    control = controller()
-    identity, evidence, table, _ = profile_packet(control)
-    control.enable_migration(1)
-    control.bind_identity(identity, evidence=evidence)
-    control.install_profiles(table)
-    control.request_migration(4)
-    assert control.record()["profile_identity"] is None
-    assert control.record()["registered_profiles"] == 0
-    new_identity = {**identity, "placement": "b" * 64}
-    with pytest.raises(ValueError, match="exact live qualification"):
-        control.bind_identity(new_identity, evidence=evidence)
-    control.bind_identity(new_identity)
-    with pytest.raises(ValueError, match="differs"):
-        control.install_profiles(table)
-
-
-def test_manifest_replacement_is_atomic_and_rejects_a_newer_pending_migration():
+def test_manifest_replacement_is_atomic():
     from copy import deepcopy
 
     control = controller()
     identity, evidence, table, _ = profile_packet(control)
-    control.enable_migration(1)
     control.bind_identity(identity, evidence=evidence)
     control.install_profiles(table)
     before = control.record()
     bad = deepcopy(table)
     bad["profiles"][0]["evidence"]["resources"] = "e" * 64
     with pytest.raises(ValueError):
-        control.replace_verified_profiles(identity, evidence=evidence, table=bad, expected_migration_epoch=0)
+        control.replace_verified_profiles(identity, evidence=evidence, table=bad)
     assert control.record() == before
-    control.request_migration(4)
-    with pytest.raises(ValueError, match="migration is pending"):
-        control.replace_verified_profiles(identity, evidence=evidence, table=table, expected_migration_epoch=0)
-    assert control.record()["migration"]["pending"]
 
 
 def test_changed_runtime_facts_invalidate_proofs_without_changing_allocated_or_session_promises():
@@ -503,7 +481,7 @@ def test_changed_runtime_facts_invalidate_proofs_without_changing_allocated_or_s
     assert record["selected_profile"] is None and record["profile_table_sha256"] is None
     assert not control.evidence
     assert len(record["binding_invalidated_reason"]) == 512
-    for field in ("configured", "pending", "effective", "allocated_maximum", "migration", "epoch"):
+    for field in ("configured", "pending", "effective", "allocated_maximum", "epoch"):
         assert record[field] == before[field]
     with pytest.raises(ValueError, match="unbound"):
         control.install_profiles(table)
@@ -511,88 +489,15 @@ def test_changed_runtime_facts_invalidate_proofs_without_changing_allocated_or_s
     assert control.record()["binding_invalidated_reason"] is None
 
 
-def test_eight_rank_profile_commit_defers_http_migration_until_every_rank_acknowledges():
-    from concurrent.futures import ThreadPoolExecutor
-    import threading
-
-    controls = [controller(slots=1) for _ in range(8)]
-    packets = []
-    for control in controls:
-        control.enable_migration(1)
-        packets.append(profile_packet(control))
-    voted = [threading.Event() for _ in controls]
-    final_vote, committed = threading.Barrier(8), threading.Barrier(9)
-    commit_allowed, release = threading.Event(), threading.Event()
-
-    def rank_commit(rank):
-        control = controls[rank]
-        identity, evidence, table, _ = packets[rank]
-        with control.profile_transaction():
-            final_vote.wait(timeout=5)
-            voted[rank].set()
-            assert commit_allowed.wait(5)
-            control.replace_verified_profiles(identity, evidence=evidence, table=table, expected_migration_epoch=0)
-            committed.wait(timeout=5)
-            assert release.wait(5)
-
-    with ThreadPoolExecutor(max_workers=9) as workers:
-        futures = [workers.submit(rank_commit, rank) for rank in range(8)]
-        try:
-            assert all(event.wait(5) for event in voted)
-            # A real HTTP thread races after the final vote but before commit.
-            # It must return while all worker transactions remain reserved.
-            receipt = workers.submit(controls[0].request_migration, 4).result(timeout=1)
-            assert receipt["deferred_migration"] == 4
-            assert receipt["migration"]["request_epoch"] == 0
-            commit_allowed.set()
-            committed.wait(timeout=5)
-            assert all(control.record()["registered_profiles"] == 1 for control in controls)
-            assert all(control.record()["migration"]["request_epoch"] == 0 for control in controls)
-        finally:
-            commit_allowed.set()
-            release.set()
-        for future in futures:
-            future.result(timeout=5)
-    assert controls[0].record()["migration"]["request_epoch"] == 1
-    assert controls[0].record()["registered_profiles"] == 0
-    assert all(control.record()["migration"]["request_epoch"] == 0 for control in controls[1:])
-    # The next coordinator plan publishes that one request to the whole cohort.
-    plan = controls[0].freeze([])
-    for control in controls:
-        control.accept(plan)
-        assert control.record()["migration"]["requested_degree"] == 4
-        assert control.record()["registered_profiles"] == 0
-
-
-def test_profile_transaction_coalesces_and_cancels_deferred_requests_without_touching_effective_values():
+def test_refused_profile_transaction_preserves_primary_and_releases_the_reservation():
     control = controller()
-    control.enable_migration(1)
-    before = control.record()
-    with control.profile_transaction():
-        control.request_migration(4)
-        control.request_migration(2)
-        receipt = control.request_migration(1)
-        assert receipt["deferred_migration"] == 1
-        assert receipt["migration"] == before["migration"]
-        for field in ("effective", "epoch", "applied_migration", "allocated_maximum"):
-            assert receipt[field] == before[field]
-    after = control.record()
-    assert after["migration"] == before["migration"]
-    assert after["deferred_migration"] is None and not after["profile_transaction_active"]
-
-
-def test_refused_profile_transaction_preserves_primary_and_publishes_deferred_migration_after_abort():
-    control = controller()
-    control.enable_migration(1)
     primary = ValueError("the cohort rejected this profile packet")
     with pytest.raises(ValueError) as caught:
         with control.profile_transaction():
-            control.request_migration(4)
+            assert control.record()["profile_transaction_active"]
             raise primary
     assert caught.value is primary
-    record = control.record()
-    assert not record["profile_transaction_active"] and record["deferred_migration"] is None
-    assert record["migration"]["requested_degree"] == 4 and record["migration"]["pending"]
+    assert not control.record()["profile_transaction_active"]
 
 
 def test_measured_covering_region_serves_changing_histories_without_extrapolation():
@@ -634,147 +539,6 @@ def test_overlapping_regions_require_a_measured_order_instead_of_table_order():
     control.bind_identity(identity, evidence=evidence)
     with pytest.raises(ValueError, match="overlap"):
         control.install_profiles(table)
-
-
-def test_migration_runs_one_bundle_per_boundary_and_retains_partial_progress():
-    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
-
-    decoder = object.__new__(MultiDecoder)
-    decoder.controller = controller(slots=2)
-    decoder.controller.enable_migration(1)
-    decoder.controller.request_migration(4)
-    decoder._migration_cursor, decoder.streams = 0, {}
-    moved = []
-    states = []
-    for slot in range(2):
-        state = SimpleNamespace(history_placement=SimpleNamespace(degree=1), mtp_drafted=2, mtp_len=10)
-        state.set_mtp_len = lambda length, state=state: setattr(state, "mtp_len", length)
-
-        def begin(degree, state=state):
-            assert state.mtp_drafted == 0 and state.mtp_len == 8
-            state._history_migration = {"degree": degree, "remaining": 2}
-
-        def step(state=state, slot=slot):
-            pending = state._history_migration
-            if pending["remaining"]:
-                pending["remaining"] -= 1
-                moved.append(slot)
-                return True
-            state.history_placement.degree = pending["degree"]
-            state._history_migration = None
-            return False
-
-        state.begin_history_migration, state.migrate_history_bundle = begin, step
-        states.append(state)
-    decoder.states = tuple(states)
-    for _ in range(7):
-        before = len(moved)
-        plan = decoder.controller.freeze([])
-        decoder.controller.accept(plan)
-        decoder._migrate_boundary(plan["migration"])
-        assert len(moved) - before <= 1
-    assert moved == [0, 1, 0, 1]
-    assert all(state.history_placement.degree == 4 for state in states)
-    assert not decoder.maintenance_pending()
-
-
-def test_blocked_migration_does_not_request_an_idle_busy_loop():
-    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
-
-    decoder = object.__new__(MultiDecoder)
-    decoder.controller = controller(slots=1)
-    decoder.controller.enable_migration(1)
-    decoder.controller.request_migration(2)
-    decoder._migration_cursor, decoder.streams = 0, {}
-    state = SimpleNamespace(history_placement=SimpleNamespace(degree=1), mtp_drafted=0)
-    state.begin_history_migration = lambda degree: setattr(state, "_history_migration", {"target": degree})
-    state.migrate_history_bundle = lambda: False
-    decoder.states = (state,)
-    plan = decoder.controller.freeze([])
-    decoder.controller.accept(plan)
-    decoder._migrate_boundary(plan["migration"])
-    assert not decoder.maintenance_pending()
-    assert decoder.controller.record()["migration"]["blocked"]
-    assert not decoder.controller.freeze([])["migration"]["pending"]
-    previous = decoder.controller.record()["migration"]["request_epoch"]
-    decoder.controller.request_migration(2)
-    retry = decoder.controller.freeze([])["migration"]
-    assert retry["pending"] and retry["request_epoch"] == previous + 1
-
-
-@pytest.mark.parametrize("arrival", ["after_freeze", "after_accept"])
-def test_new_migration_request_cannot_change_a_frozen_cohort_bundle_or_be_cleared(arrival):
-    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
-
-    decoders, calls = [], []
-    for rank in range(2):
-        decoder = object.__new__(MultiDecoder)
-        decoder.controller = controller(slots=1)
-        decoder.controller.enable_migration(1)
-        decoder._migration_cursor, decoder.streams = 0, {}
-        state = SimpleNamespace(history_placement=SimpleNamespace(degree=1), mtp_drafted=0)
-
-        def begin(degree, state=state, rank=rank):
-            calls.append((rank, degree))
-            state._history_migration = {"target": degree}
-
-        def step(state=state):
-            state.history_placement.degree = state._history_migration["target"]
-            state._history_migration = None
-            return False
-
-        state.begin_history_migration, state.migrate_history_bundle = begin, step
-        decoder.states = (state,)
-        decoders.append(decoder)
-    leader, peer = decoders
-    leader.controller.request_migration(2)
-    old = leader.controller.freeze([])
-    if arrival == "after_freeze":
-        leader.controller.request_migration(4)
-    for decoder in decoders:
-        decoder.controller.accept(old)
-    if arrival == "after_accept":
-        leader.controller.request_migration(4)
-    for decoder in decoders:
-        decoder._migrate_boundary(old["migration"])
-        # Resolving the old generation must not clear the leader's new request.
-        decoder.controller.migration_status(request_epoch=old["migration"]["request_epoch"], pending=False)
-    assert calls == [(0, 2), (1, 2)]
-    latest = leader.controller.record()["migration"]
-    assert latest["pending"] and latest["requested_degree"] == 4 and latest["request_epoch"] == 2
-    new = leader.controller.freeze([])
-    for decoder in decoders:
-        decoder.controller.accept(new)
-        decoder._migrate_boundary(new["migration"])
-    assert calls == [(0, 2), (1, 2), (0, 4), (1, 4)]
-
-
-@pytest.mark.parametrize("failed", [False, True])
-def test_complete_round_timing_includes_idle_migration_and_failed_work(decoder_round, monkeypatch, failed):
-    from tensorfold.families.qwen4_exp.cuda import multi
-
-    decoder, _ = decoder_round
-    decoder.streams = {}
-    decoder.controller.enable_migration(1)
-    decoder.controller.request_migration(2)
-    now = [10.0]
-    monkeypatch.setattr(multi.time, "perf_counter", lambda: now[0])
-
-    def migrate(migration):
-        now[0] += 3.0
-        if failed:
-            raise RuntimeError("a migration failed after doing bounded work")
-
-    decoder._migration_bundle = migrate
-    if failed:
-        with pytest.raises(RuntimeError):
-            decoder.round()
-    else:
-        assert decoder.round() == []
-    record = decoder.controller.record()["last_round"]
-    assert record["elapsed_s"] == record["migration_s"] == 3.0
-    assert record["outcome"] == ("RuntimeError" if failed else "ok")
-    assert record["prefill_tokens"] == record["committed_tokens"] == 0
 
 
 def test_telemetry_failure_preserves_an_original_inference_failure(decoder_round):
@@ -1015,7 +779,7 @@ def test_synthetic_warmup_is_cleared_from_every_serving_measurement_plane():
     control.work_observations.configure_indexer(ratio=4, budget=2048, heads=4, target_caches=12)
     control.observe(active=1, scheduled=1, target_rows=3, prefill_tokens=5, committed_tokens=2,
                     max_history_tokens=5, elapsed_s=0.1)
-    control.observe_round(before=(0, 0, 0), elapsed_s=0.2, migration_s=0.0, outcome="ok")
+    control.observe_round(before=(0, 0, 0), elapsed_s=0.2, outcome="ok")
     control.work_observations.admission(SimpleNamespace(prompt=[0] * 5, carry=None, cached=0))
     settings, epoch = control.configured.copy(), control.epoch
     control.reset_observations()
@@ -1025,38 +789,3 @@ def test_synthetic_warmup_is_cleared_from_every_serving_measurement_plane():
     assert not any(reading["work_observations"]["totals"].values())
     assert control.configured == settings and control.epoch == epoch
     assert reading["work_observations"]["indexer_geometry"]["target_caches"] == 12
-
-
-def test_ordinary_multi_constructor_does_not_activate_qualifying_migration(monkeypatch):
-    """Actual initializer with resource-free buffers and an eligible research map."""
-    import torch
-    from tensorfold.families.qwen4_exp.cuda import multi
-    from tensorfold.families.qwen4_exp.cuda.history_placement import HistoryPlacement
-
-    arena = object()
-    placement = HistoryPlacement(8, 2, 12, degree=4)
-    cfg = SimpleNamespace(eos=(0,), index_ratio=4, index_budget=8, index_heads=2)
-    weights = SimpleNamespace(meta={"execution_provider": "sm70"}, cfg=cfg, comm=None,
-                              device=torch.device("cpu"), mtp=None, draft_ids=None,
-                              layers=[SimpleNamespace(linear=False) for _ in range(12)])
-    state = SimpleNamespace(history_placement=placement, kc=[SimpleNamespace(arena=arena)] * 12,
-                            kv_pair=object(), cache_bytes=lambda *args: 0)
-    from tensorfold.families.qwen4_exp.cuda import hc_plans
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(hc_plans, "enroll", lambda *args, **kwargs: None)
-    monkeypatch.setattr(multi.gdn_multi, "Scratch", lambda *args, **kwargs: SimpleNamespace(lin=0))
-    monkeypatch.setattr(multi.gdn_multi, "RoundTables", lambda *args, **kwargs: SimpleNamespace())
-    monkeypatch.setattr(multi.attn_multi, "StepTables", lambda *args, **kwargs: SimpleNamespace())
-    monkeypatch.setattr(multi, "State", lambda *args, **kwargs: state)
-    monkeypatch.setattr(multi, "Buffers", lambda w, rows, *args, **kwargs: SimpleNamespace(rows=rows))
-    monkeypatch.setattr(multi, "converges", lambda w: False)
-    monkeypatch.setattr(multi, "_tensors", lambda value: ())
-    decoder = multi.MultiDecoder(weights, slots=1, capacity=16, depth=0,
-                                 prefill_rows=16, graph_budget=0)
-    assert decoder.controller.migration is None
-    before = decoder.controller.record()
-    with pytest.raises(ValueError, match="no bounded unique-history migration"):
-        decoder.controller.request_migration(2)
-    assert decoder.controller.record() == before
-    assert not decoder.maintenance_pending()

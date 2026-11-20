@@ -1259,14 +1259,12 @@ internal default is not the serving selection. MTP retains its separately fixed
 four-way striping, and six-layer stages retain their actual worst-rank/tail skew
 rather than inheriting a twelve-layer balance assumption.
 
-The resource ledger retains `migration_overlap_limit` with value zero. This
-removes only the dedicated live-migration liability; prefix/COW, idle recovery,
+The resource ledger no longer has a `migration_overlap_limit` entry (removed with
+the migration prototype on 2026-11-20; earlier fixtures record it as zero). There
+is no dedicated live-migration liability; prefix/COW, idle recovery,
 restore, replacement, media and other workspace charges remain independent.
-Ordinary Multi initialization does not enable migration. Initial runtime
-`attention_degree` requests refuse before publication or scheduler wake without
-changing active/retained state; bounded execution controls remain available.
-The optional transfer algorithms and independent failure/partial-progress oracles
-are preserved, without an opt-in serving flag.
+`attention_degree` is not a runtime setting (refused like any unknown field);
+bounded execution controls remain available.
 
 The affected source and fresh installed-image controls passed. Each broader
 batch recorded **367 passed, four failed and 12 skipped**; the installed batch
@@ -2357,13 +2355,12 @@ even when publishing another snapshot cannot allocate. Counter exhaustion is
 visible and invalidates completeness instead of silently wrapping; these host snapshots are diagnostic readings, not
 new capacity or performance proofs.
 
-The historical optional migration prototype accepted standalone
+The historical optional migration prototype (removed 2026-11-20; recover it from
+git history) accepted standalone
 `{"attention_degree": 2}` updates, copied packed bytes through balanced bundles
-and published committed owner-map generations. Its blocking, partial-map and
-containment oracles remain research/reference evidence. Its 64 MiB/rank candidate
-allowance is not charged or enabled by initial serving; it was never a measured
-physical migration bound. Initial fixed-map serving does not expose these live
-updates. Any future migration adoption must restore its complete intermediate
+and published committed owner-map generations; its oracles went with it. Its
+64 MiB/rank candidate allowance was never charged by serving nor a measured
+physical migration bound. Any future migration adoption must restore its complete intermediate
 resource and lifecycle obligations and pass the governing qualification gates.
 Managed TP launches signal their supervisor on a fatal cohort operation so a
 peer blocked in a collective cannot strand process retirement. Unmanaged

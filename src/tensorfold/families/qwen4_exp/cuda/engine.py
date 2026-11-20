@@ -1472,10 +1472,6 @@ class FlashNextEngine:
                         costs["retained_restore_overlap"] = retention_header.per_rank_gpu_overlap_bytes
                     if media_extra:
                         costs["media_mtp_boundary"] = media_extra
-                    if history_placement is not None:
-                        # Initial ownership is fixed; COW/recovery/restore and
-                        # replacement keep their independent ledger charges.
-                        costs["migration_overlap_limit"] = 0
                     if dspark_plan is not None:
                         costs["draft_history_execution"] = dspark_plan.capacity_bytes(
                             count * total, main_rows=row_envelope(count), prompt_rows=rows0, slots=count)

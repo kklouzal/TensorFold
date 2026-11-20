@@ -278,7 +278,6 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         first, forty = make(text, 1), make(text, 40)
         a, b = first.breakdown_at(262145), forty.breakdown_at(262145)
         assert first.reserve == forty.reserve == 1
-        assert a["migration_overlap_limit"] == b["migration_overlap_limit"] == 0
         assert b["history"] > a["history"]
         assert a["sm70_native_workspace"] > 0  # Owner buffers remain charged with native kernels disabled.
         assert sum(b.values()) == forty.bytes_at(262145)

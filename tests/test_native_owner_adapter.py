@@ -335,23 +335,6 @@ def test_same_preallocated_native_pipeline_runs_each_phase_in_dependency_order(m
     assert events == ["statistics", "gather", "merge_statistics", "normalized_values", "gather", "merge_values"]
 
 
-def test_ownership_generation_exhaustion_precedes_every_page_copy_or_publication():
-    weights = _weights()
-    weights.comm.broadcast = lambda *args: pytest.fail("exhausted generation copied a page")
-    weights.comm.barrier = lambda: pytest.fail("exhausted generation entered transfer rendezvous")
-    weights.comm.all_gather = lambda *args: pytest.fail("exhausted generation entered a control vote")
-    state = State(weights, 257, 4, "int8")
-    state.history_generation = 2**63 - 1
-    state.history_generations[1].fill_(state.history_generation)
-    before = [cache.page_offsets.clone() for cache in state.kc]
-    state.begin_history_migration(4)
-    with pytest.raises(OverflowError, match="ownership generation exhausted"):
-        state.migrate_history_bundle()
-    assert state.history_generation == 2**63 - 1
-    assert state.history_generations[1] == 2**63 - 1
-    assert all(torch.equal(cache.page_offsets, prior) for cache, prior in zip(state.kc, before))
-
-
 def test_invalid_descriptor_lane_frame_does_not_modify_an_already_staged_table():
     weights = _weights()
     state = State(weights, 257, 4, "int8")

@@ -93,7 +93,7 @@ def test_matrix_covers_every_real_count_and_exact_non_threshold_endpoint(capacit
     assert value["concurrency"] == list(range(1, capacity + 1))
     assert value["contexts"] == [4096, 65536, 262144]
     assert value["evidence"] == "test-plan-unrun"
-    assert "partial-migration" in value["axes"]["transition"]
+    assert "burst-one-to-capacity" in value["axes"]["transition"]
     assert "all-resident-one-active" in value["axes"]["retention"]
     assert value["capacity_candidates"]["status"].endswith("not-measured-maxima")
 

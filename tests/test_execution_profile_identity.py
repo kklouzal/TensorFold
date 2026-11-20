@@ -50,7 +50,6 @@ def packet(tmp_path, monkeypatch):
         {"rank": 0, "uuid": "00000000-0000-0000-0000-000000000001"},
         {"library/kernel.so": library}))
     controller = AdaptiveController(slots=1, row_budget=1, proposal_limit=0, prefill_tokens=256)
-    controller.enable_migration(1)
     cache = NS(owners=[0, 0], offsets=(0, 128), reserved_rows=129)
     state = NS(history_slot=0, capacity=129, kc=[cache],
                history_placement=NS(degree=1, page_tokens=128))
@@ -72,11 +71,8 @@ def packet(tmp_path, monkeypatch):
     return engine, path, body, files
 
 
-@pytest.mark.parametrize("migration", [True, False])
-def test_exact_content_pass_is_opt_in_then_current_process_authority_reuses_hashes(packet, migration):
+def test_exact_content_pass_is_opt_in_then_current_process_authority_reuses_hashes(packet):
     engine, path, _, files = packet
-    if not migration:
-        engine.multi.controller.migration = engine.multi.controller.applied_migration = None
     identity.begin_execution_manifest(engine, path)
     first = identity.bind_execution_manifest(engine, path)
     assert first["verified_input_files"] == len(files)
@@ -147,11 +143,6 @@ def test_actual_owner_offsets_and_stationary_degree_are_bound_not_just_layout_na
     engine, path, _, _ = packet
     identity.begin_execution_manifest(engine, path)
     old = identity.bind_execution_manifest(engine, path)["identity"]
-    engine.multi.controller.request_migration(4)
-    with pytest.raises(ValueError, match="pending|mixed"):
-        identity.bind_execution_manifest(engine, path, rebind=True)
-    engine.multi.controller.migration_status(pending=False,
-        request_epoch=engine.multi.controller.record()["migration"]["request_epoch"])
     state = engine.multi.states[0]
     state.history_placement.degree = 4
     state.kc[0].owners = [0, 1]
@@ -162,14 +153,6 @@ def test_actual_owner_offsets_and_stationary_degree_are_bound_not_just_layout_na
     assert new["history_layout"] == old["history_layout"]
     assert new["source"] == old["source"]
     assert new["placement"] != old["placement"]
-
-
-def test_partial_page_move_refuses_binding_even_without_global_pending_flag(packet):
-    engine, path, _, _ = packet
-    identity.begin_execution_manifest(engine, path)
-    engine.multi.states[0]._history_migration = {"target": 4}
-    with pytest.raises(ValueError, match="partially migrated"):
-        identity.bind_execution_manifest(engine, path)
 
 
 def test_json_boundary_rejects_duplicate_keys_and_traversal(tmp_path):
@@ -284,7 +267,6 @@ def test_rank_zero_hashes_once_only_after_shared_opened_identity_agreement(packe
     second.multi = copy.copy(first.multi)
     second.multi.states = copy.deepcopy(first.multi.states)
     second.multi.controller = AdaptiveController(slots=1, row_budget=1, proposal_limit=0, prefill_tokens=256)
-    second.multi.controller.enable_migration(1)
     engines = [first, second]
     lock, values = threading.Condition(), {}
 
@@ -513,7 +495,6 @@ def _eight_rank_cohort(packet, monkeypatch):
         engine.multi = copy.copy(template.multi)
         engine.multi.states = copy.deepcopy(template.multi.states)
         engine.multi.controller = AdaptiveController(slots=1, row_budget=1, proposal_limit=0, prefill_tokens=256)
-        engine.multi.controller.enable_migration(1)
 
         def notify(error, rank=rank):
             with condition:
@@ -591,40 +572,6 @@ def test_uncertain_phase_publication_notifies_supervisor_without_entering_retire
     assert poison
     assert not any("/retired/" in key or "/ready/retirement/" in key for key in values)
     assert all(e._abort_comm for e in engines)
-
-
-def test_eight_rank_commit_defers_http_migration_between_final_vote_and_publication(packet, monkeypatch):
-    from concurrent.futures import ThreadPoolExecutor
-    import threading
-
-    engines, path, values, poison, _ = _eight_rank_cohort(packet, monkeypatch)
-    with ThreadPoolExecutor(max_workers=8) as workers:
-        for result in [workers.submit(identity.bind_execution_manifest, e, path) for e in engines]:
-            result.result(timeout=10)
-        ready, release = threading.Event(), threading.Event()
-        gate = threading.Barrier(8, action=ready.set)
-        original_phase = identity._phase
-
-        def phase(engine, channel, name, operation, **kwargs):
-            if name == "commit":
-                gate.wait(timeout=5)
-                assert release.wait(timeout=5)
-            return original_phase(engine, channel, name, operation, **kwargs)
-
-        monkeypatch.setattr(identity, "_phase", phase)
-        pending = [workers.submit(identity.bind_execution_manifest, e, path, rebind=True) for e in engines]
-        try:
-            assert ready.wait(timeout=5)
-            requested = engines[0].multi.controller.request_migration(4)
-            assert requested["profile_transaction_active"]
-            assert requested["deferred_migration"] == 4
-            assert requested["migration"]["request_epoch"] == 0
-        finally:
-            release.set()
-        results = [future.result(timeout=10) for future in pending]
-    assert all(r["identity"] == results[0]["identity"] for r in results)
-    assert engines[0].multi.controller.record()["migration"]["request_epoch"] == 1
-    assert not values and not poison
 
 
 @pytest.mark.torch
