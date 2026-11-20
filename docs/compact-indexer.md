@@ -64,7 +64,7 @@ Subsequent forward, restore, reset or slot reuse waits that fence when the
 coordinator changes CUDA streams. Partial operations still retire issued uses;
 failed retirement retains the borrowers and prevents either State's reuse.
 
-Guarded bitwise publication checks live slot/ownership generations before
+Guarded bitwise publication checks the live slot generation before
 writing persistent compact state. Snapshot/tail storage and execution arenas
 remain owned through their asynchronous consumers. Capacity geometry includes
 their fixed extents, recovery versions and role staging separately from growing

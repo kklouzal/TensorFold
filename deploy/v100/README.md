@@ -241,7 +241,7 @@ host commitments, with no materialized credit or catalog rebinding.
 Only that private worker selects an instance wrapper around its existing round.
 It snapshots C distinct active non-done Stream/State owners at a coherent pre-round
 boundary, requiring cached position >=N and actual prompt hashes, wire IDs,
-slot/ownership generations and coordinate/native identities. The original round
+slot generations and coordinate/native identities. The original round
 runs exactly once. A successful return permits one durable per-rank receipt;
 then the original method is restored. Failure poisons/notifies the existing
 supervisor. Normal workers and shipping round implementations are unchanged.
