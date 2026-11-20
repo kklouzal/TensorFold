@@ -76,15 +76,6 @@ def test_actual_private_caller_packs_once_and_reuses_rows(monkeypatch):
     assert calls == [(torch.Size([8, 5, 3, 256]), 0)]
 
 
-def test_all_empty_private_jobs_do_not_pack(monkeypatch):
-    from tensorfold.families.qwen4_exp.cuda import history_owner as module
-    from tests.test_sm70_global_normalization import test_actual_reference_layer_selects_batch_and_preserves_four_phase_order
-    monkeypatch.setattr(module, '_PRIVATE_EMPTY_PREFIX', 'cpu-empty-v1')
-    monkeypatch.setattr(module, '_first_page_empty', lambda *a: True)
-    monkeypatch.setattr(module, '_reference_query_rows', lambda *a: pytest.fail('all-empty rows gained a copy'))
-    test_actual_reference_layer_selects_batch_and_preserves_four_phase_order(monkeypatch)
-
-
 def test_default_none_caller_keeps_original_row_path(monkeypatch):
     from tensorfold.families.qwen4_exp.cuda import history_owner as module
     from tests.test_flashnext_history_placement import test_real_owner_layer_routes_both_tp_head_groups_with_batched_collectives

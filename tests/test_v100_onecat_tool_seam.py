@@ -108,8 +108,6 @@ def publisher(monkeypatch, tmp_path):
     monkeypatch.setattr(tool, "bound_receipt", lambda engine: {"rank": engine.rank})
     monkeypatch.setattr(tool, "_owned_q8_preparation_receipt", lambda engine: None)
     monkeypatch.setattr(tool, "_reference_tile_receipt", lambda *args: {})
-    for name in ("_half_policy", "_router_policy", "_empty_prefix_policy"):
-        monkeypatch.setattr(tool, name, lambda *args: {})
     monkeypatch.setattr(tool, "notify_failure", lambda: True)
     ready = []
     def mark_ready(name):

@@ -500,6 +500,10 @@ directory in `dense-GPU-source-v1/` and `graph-GPU-v3/`.
 
 ## Ordered Half MoE partial component checkpoint
 
+Removed 2026-11-20: this selector was never adopted, so its switch, native-half
+path, startup preparation and `half_partial_policy` receipt were deleted. The
+record below is historical; recover the trial from git history.
+
 The process-start private selector
 `TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL=native-half-v1` reuses the existing SM70
 CUDA kernel for ordered Half expert partials. It retains the original separate
@@ -549,6 +553,9 @@ Gate: `half-app-5fcc-v1/genuine-half-only-installed-gate-v1.json`, SHA256
 `25fb37f12c80042d4f0bce9bdfab947d564f9b48aea749ffddf548ced769236d`.
 
 ## Private shortcut for an empty first page
+
+Removed 2026-11-20: never adopted; the switch, shortcut and `empty_prefix_policy`
+receipt were deleted. The record below is historical.
 
 `TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX=cpu-empty-v1` is a process-fixed,
 default-off component trial. Unset or `inherit` retains the existing reference

@@ -248,7 +248,7 @@ def test_native_extension_declares_its_owned_source_root_with_the_real_stager(mo
         gdn_native.extension.cache_clear()
 
 
-@pytest.mark.parametrize('key', ['moe_selection_prepared', 'half_moe_partial_prepared'])
+@pytest.mark.parametrize('key', ['moe_selection_prepared'])
 @pytest.mark.parametrize('cleanup_fails', [False, True])
 def test_loaded_weights_are_owned_before_fallible_capability_publication(key, cleanup_fails):
     from tests.test_flashnext_t47_lifecycle_source import subject, roots
@@ -257,7 +257,7 @@ def test_loaded_weights_are_owned_before_fallible_capability_publication(key, cl
     cls_ast = next(n for n in ast.parse(source.read_bytes()).body
                    if isinstance(n, ast.ClassDef) and n.name == 'FlashNextEngine')
     initialize = next(n for n in cls_ast.body if isinstance(n, ast.FunctionDef) and n.name == '_initialize')
-    names = {'moe_selection_prepared', 'half_moe_partial_prepared'}
+    names = {'moe_selection_prepared'}
     def selected(node):
         if not isinstance(node, ast.Assign):
             return False
@@ -272,7 +272,7 @@ def test_loaded_weights_are_owned_before_fallible_capability_publication(key, cl
                     return True
         return False
     statements = [node for node in initialize.body if selected(node)]
-    assert len(statements) == 3
+    assert len(statements) == 2
     code = compile(ast.Module(body=statements, type_ignores=[]), str(source), 'exec')
     primary, secondary, events, owners = MemoryError('capability publication'), OSError('cache retirement'), [], []
     class Metadata(dict):
@@ -291,7 +291,7 @@ def test_loaded_weights_are_owned_before_fallible_capability_publication(key, cl
     engine = subject()
     def run(self, *args, **kwargs):
         owners.append(self)
-        exec(code, {'self': self, 'w': weights, 'moe_selection_prepared': object(), 'half_partial_prepared': object()})
+        exec(code, {'self': self, 'w': weights, 'moe_selection_prepared': object()})
     engine._initialize = run
     runtime = ModuleType('torch')
     def fence(device):

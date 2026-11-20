@@ -211,9 +211,6 @@ def validate_host_operation(host, inner):
             and host['environment'].get('TENSORFOLD_SM70_PROFILE', 'reference') == 'reference'
             and host['environment'].get('TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN') == 'grouped-v1',
             'prepared teacher fixed NONE numeric environment differs')
-    for key in ('TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL', 'TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS',
-                'TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX'):
-        require(host['environment'].get(key) in (None, 'inherit'), 'unrelated teacher numerical selector forbidden')
     if 'reference' in inner['operation']:
         mounts = [m for m in host['mounts'] if m['target'] == '/reference']
         require(len(mounts) == 1 and mounts[0]['read_only'] is True, 'prepared replay reference needs its own RO mount')

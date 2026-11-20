@@ -198,10 +198,6 @@ def test_host_prepared_dispatch_binds_flat_case_profile_and_new_contract_source(
         spec['environment'].update(TENSORFOLD_PREFILL_ROWS='256', TENSORFOLD_SM70_PROFILE='reference',
                                    TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN='grouped-v1')
         assert host.validate_data(spec)['mode'] == prepared.MODE
-        wrong = copy.deepcopy(spec)
-        wrong['environment']['TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS'] = 'native-serial-v1'
-        with pytest.raises(ValueError, match='unrelated'):
-            host.validate_data(wrong)
     finally:
         owner.doCleanups()
 

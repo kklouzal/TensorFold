@@ -1154,10 +1154,6 @@ void family_writeback_prepare_cuda() {
     cudaFuncAttributes attributes;
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, writeback_kernel));
 }
-void family_partial_prepare_cuda() {
-    cudaFuncAttributes attributes;
-    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, partial_kernel));
-}
 void family_writeback_cuda(const T& h, T& out, T& pss, int streams, int mode,
                            const O& branch, const O& inject, const O& y, const O& weights) {
     int rows = h.size(0), dims = h.size(1) / streams;

@@ -1677,8 +1677,6 @@ def validate_host_operation(host, inner, *, numa_bundle=None):
             and host['environment'].get('TENSORFOLD_NUMA_RECEIPT_DIR') == RECEIPT_DIR
             and host['environment'].get('NCCL_IGNORE_CPU_AFFINITY') == '0',
             'window numeric/placement environment differs')
-    for key in ('TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL', 'TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS', 'TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX'):
-        require(host['environment'].get(key) in (None, 'inherit'), 'unrelated numerical environment selection forbidden')
     source = operation['numa']['placement_source']
     require(all(inner['expected_app'].get(PLACEMENT_MEMBER, {}).get(k) == source[k] for k in ('bytes', 'sha256')),
             'installed window placement implementation differs')

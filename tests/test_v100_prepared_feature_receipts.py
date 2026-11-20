@@ -335,8 +335,6 @@ def test_worker_admits_and_publishes_prepared_marker_through_existing_callback(m
     monkeypatch.setattr(owned, "_history_resources", lambda *a: dict(per_rank_payload_bytes=100,
         global_host_obligation_bytes=800, receipt_bytes_limit=36864))
     monkeypatch.setattr(owned, "prepare_benchmark", lambda *a: seen.append("benchmark"))
-    for name in ("_half_policy", "_router_policy", "_empty_prefix_policy"):
-        monkeypatch.setattr(owned, name, lambda _: {})
     def publish(e, output, **kwargs):
         assert seen == ["benchmark"]
         marker = kwargs["prepared_features"]

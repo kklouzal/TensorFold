@@ -883,19 +883,13 @@ class FlashNextEngine:
                 raise ValueError("1Cat GU trial requires the existing uncaptured owned reference region")
             self._onecat_owner = OneCatFrameOwner(self._owned_expert_gate_up_requested,
                                             torch.device("cuda", torch.cuda.current_device()))
-        moe_selection_prepared = half_partial_prepared = gdn_value8_prepared = None
+        moe_selection_prepared = gdn_value8_prepared = None
         if self._owned_expert_requested:
             from .execution_identity import _phase, _retire_store, _fatal
             channel = 'tensorfold/flashnext/native-runtime-operators'
             def prepare_runtime_operators():
-                nonlocal moe_selection_prepared, half_partial_prepared, gdn_value8_prepared
-                result = {"gdn_batch": None, "moe_selection": None, "half_partial": None}
-                from tensorfold.cuda.sm70.family_ops import prepare_half_moe_partial
-
-                half_partial_prepared = prepare_half_moe_partial(torch.device("cuda", torch.cuda.current_device()))
-                if half_partial_prepared is not None:
-                    result["half_partial"] = {"module": half_partial_prepared.__name__, "operation": "partial",
-                                               "policy": "native-half-v1"}
+                nonlocal moe_selection_prepared, gdn_value8_prepared
+                result = {"gdn_batch": None, "moe_selection": None}
                 if native_gdn_batch:
                     from tensorfold.cuda.sm70 import gdn_native
 
@@ -1810,7 +1804,6 @@ class FlashNextEngine:
                     if vram_experts_pin != "off" else {}))
         self.w = w  # Preserve the original ownership handoff before fallible diagnostics.
         w.meta["moe_selection_prepared"] = moe_selection_prepared
-        w.meta["half_moe_partial_prepared"] = half_partial_prepared
         if source_is_gguf:
             weights_finished = time.perf_counter()
             # Diagnostics only: never constructor options, admission or numerical identity.

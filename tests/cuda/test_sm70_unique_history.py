@@ -113,13 +113,8 @@ def test_sm70_tp8_unique_histories(format_name):
             process.join(timeout=10)
 
 
-def _empty_prefix_worker(rank, port, format_name, start, policy):
+def _empty_prefix_worker(rank, port, format_name, start):
     """Fresh process and current frame fixture; never rewrites the legacy worker."""
-    import os
-    import sys
-
-    assert "tensorfold.families.qwen4_exp.cuda.history_owner" not in sys.modules
-    os.environ["TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX"] = policy
     from tensorfold.cleanup import raise_failures
     from tensorfold.cuda.comm import NCCL, validate_store_origin
     from tensorfold.cuda.sm70 import family_ops as ops
@@ -190,12 +185,6 @@ def _empty_prefix_worker(rank, port, format_name, start, policy):
         assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
         state.kv_check()
         assert state.kv_status[0].item() == 0
-        sentinel = torch.empty((1,), device=device)
-        capture = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(capture):
-            sentinel.fill_(1 if h._empty_prefix_reference_allowed(w, buffers) else 0)
-        capture.replay()
-        assert sentinel.item() == 0  # CPU page ownership never becomes a captured decision.
         comm.ready("empty-prefix-component-complete", every=1, timeout=60)
     except BaseException as error:
         primary = error
@@ -207,16 +196,15 @@ def _empty_prefix_worker(rank, port, format_name, start, policy):
     raise_failures(primary, errors)
 
 
-@pytest.mark.parametrize("policy", ["inherit", "cpu-empty-v1"])
 @pytest.mark.parametrize("format_name", ["int8", "rotorquant-iso4-sm70-v1"])
 @pytest.mark.parametrize("start", [0, 126])
-def test_sm70_tp8_empty_first_page_keeps_original_attention_bits(format_name, start, policy):
+def test_sm70_tp8_empty_first_page_keeps_original_attention_bits(format_name, start):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the pinned V100 foundation")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    context = torch.multiprocessing.spawn(_empty_prefix_worker, args=(port, format_name, start, policy),
+    context = torch.multiprocessing.spawn(_empty_prefix_worker, args=(port, format_name, start),
                                           nprocs=8, join=False)
     try:
         deadline = time.monotonic() + 180

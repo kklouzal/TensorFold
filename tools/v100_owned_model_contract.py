@@ -406,9 +406,8 @@ def validate_host_operation(host, inner):
 
 
 def _validate_reference_environment(host):
-    for key in ('TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL', 'TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS',
-                'TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX', 'TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN'):
-        require(host['environment'].get(key) in (None, 'inherit'), 'first teacher operation must inherit default selectors')
+    require(host['environment'].get('TENSORFOLD_PRIVATE_SM70_GROUPED_DOWN') in (None, 'inherit'),
+            'first teacher operation must inherit default selectors')
     require(host['environment'].get('TENSORFOLD_SM70_PROFILE', 'reference') == 'reference', 'first teacher profile must remain reference')
 
 

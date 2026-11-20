@@ -14,7 +14,6 @@ using T = at::Tensor;
 using O = std::optional<T>;
 
 void family_writeback_prepare_cuda();
-void family_partial_prepare_cuda();
 void family_writeback_cuda(const T&, T&, T&, int, int, const O&, const O&, const O&, const O&);
 void family_normed_cuda(const T&, const T&, const T&, T&, T&, int, float);
 void family_act_cuda(const T&, T&, T&, const O&, int, int);
@@ -707,7 +706,6 @@ void qsa_select512(const T& scores, const T& lengths, T output, T status) {
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("prepare_writeback", &family_writeback_prepare_cuda);
-    m.def("prepare_partial", &family_partial_prepare_cuda);
     m.def("prepare_owned_q8", &family_owned_q8_prepare_resident_cuda);
     m.def("owned_q8_prepare", &owned_q8_prepare<false>);
     m.def("owned_q8_prepare_window", &owned_q8_prepare<true>);

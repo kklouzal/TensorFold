@@ -9,7 +9,6 @@ The existing family owns all weights, request state, cache formats and buffers.
 from __future__ import annotations
 
 import math
-import os
 
 import torch
 import torch.nn.functional as F
@@ -941,13 +940,7 @@ def _torch_shift_windows(old, new, keep, channels):
 
 
 # Keep the hardware-generic implementations above as numerical references.
-# CPU tensors always use them. The private selector is for numerical oracle
-# tests; promotion follows the native component and full-forward receipts.
-# Operator-granular private experiment, fixed before worker preparation. This
-# never selects the other family kernels or the distinct F32 Triton FMA route.
-_PRIVATE_HALF_PARTIAL = os.environ.get("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL", "inherit")
-if _PRIVATE_HALF_PARTIAL not in ("inherit", "native-half-v1"):
-    raise ValueError("TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL requires inherit or native-half-v1")
+# CPU tensors always use them.
 _NATIVE_FAMILY = False
 _NATIVE_ATTENTION = False
 _reference = {name: globals()["_torch_" + name] for name in (
@@ -1150,42 +1143,7 @@ def add_streams(e, hs, out, streams):
     return _reference["add_streams"](e, hs, out, streams)
 
 
-def prepare_half_moe_partial(device):
-    """Make the selected private function resident before physical admission."""
-    if _PRIVATE_HALF_PARTIAL != "native-half-v1":
-        return None
-    device = torch.device(device)
-    if device.type != "cuda" or torch.cuda.get_device_capability(device) != (7, 0):
-        raise ValueError("private Half MoE partial requires actual SM70 preparation")
-    from .family_native import extension
-
-    with torch.cuda.device(device):
-        module = extension()
-        module.prepare_partial()
-    return module
-
-
 def moe_partial(y, wts, out, rows):
-    if (_PRIVATE_HALF_PARTIAL == "native-half-v1" and y.is_cuda and y.dtype == torch.float16
-            and torch.cuda.get_device_capability(y.device) == (7, 0)):
-        operands = (y, wts, out)
-        if (any(type(t) is not torch.Tensor or t.requires_grad or not t.is_contiguous()
-                or t.is_neg() or t.is_conj() for t in operands)
-                or (out.is_inference() and not torch.is_inference_mode_enabled())
-                or torch._C._overlaps(out, y) or torch._C._overlaps(out, wts)):
-            # The Torch temporary preserves generic/autograd/view and alias
-            # semantics; the owned raw kernel borrows disjoint plain storage.
-            return _reference["moe_partial"](y, wts, out, rows)
-        from .family_native import extension
-
-        # Existing ABI validates contiguous same-device Half/FP32 operands,
-        # geometry and live row bounds before the allocation-free launch.
-        result = extension().partial(y, wts, out, rows)
-        # The retained Torch oracle publishes one copy_, including an empty
-        # prefix. Raw extension writes do not publish Tensor mutation metadata.
-        if not out.is_inference():
-            torch.autograd.graph.increment_version(out)
-        return result
     native = _fused(out, half=False)
     if native is not None:
         return native.partial(y, wts, out, rows)

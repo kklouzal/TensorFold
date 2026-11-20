@@ -1058,7 +1058,7 @@ def _compare_prepared_expert_teacher(reference, candidate, *, method, down_metho
     prefixes = ('tf_onecat_gu_', 'tf_onecat_pack_') if method not in ('tensorfold', 'incumbent') else ()
     if down_method != 'tensorfold':
         prefixes += ('tf_onecat_down_',)
-    producers = ('runtime_cli_sha256', 'dense_implementation', 'half_partial_policy', 'private_router_policy', 'empty_prefix_policy')
+    producers = ('runtime_cli_sha256', 'dense_implementation')
     for rank in range(8):
         old, new = left['native'][rank], right['native'][rank]
         if any(name not in new or new[name]['sha256'] != item['sha256'] for name, item in old.items()):
@@ -1173,7 +1173,7 @@ def compare_owned_candidate_teacher(reference, candidate, *, method, read_timeou
             != _candidate_semantics(right, method, down_method, iq2_source, prefill_method,
                                     teacher_scope=teacher_scope)):
         raise ValueError('candidate unrelated actual State/RN/HC semantics differ')
-    producers = ('runtime_cli_sha256', 'dense_implementation', 'half_partial_policy', 'private_router_policy', 'empty_prefix_policy')
+    producers = ('runtime_cli_sha256', 'dense_implementation')
     for side, selected_method in ((left, None), (right, method)):
         first = side['startups'][0]
         for rank, startup in enumerate(side['startups']):
@@ -1593,7 +1593,7 @@ def seal_owned_teacher(output, prepared, launch_exit):
         # These are immutable producer/selection identities, not per-rank
         # allocation/free-memory, timings or local partition observations.
         producer = {key: startup.get(key) for key in ('tool_sha256', 'runtime_cli_sha256', 'dense_implementation',
-                    'half_partial_policy', 'private_router_policy', 'empty_prefix_policy', 'grouped_gate_up')}
+                                                      'grouped_gate_up')}
         producer['reference_tiles_requested'] = startup.get('reference_tile_preparation', {}).get('requested')
         if rank == 0:
             producer_identity = producer

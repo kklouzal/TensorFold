@@ -1083,7 +1083,7 @@ assert 'torch' not in sys.modules
     def test_model_mode_refuses_writable_assets_wrong_floors_missing_ranks_and_selection(self):
         spec, data = self.model_spec()
         c = host.model_contract
-        for change in ('writable-model', 'low-memory', 'short-deadline', 'four-ranks', 'optimized', 'private-select'):
+        for change in ('writable-model', 'low-memory', 'short-deadline', 'four-ranks', 'optimized'):
             bad = copy.deepcopy(spec)
             if change == 'writable-model':
                 bad['mounts'][-2]['read_only'] = False
@@ -1093,10 +1093,8 @@ assert 'torch' not in sys.modules
                 bad['timeouts']['run'] = 600
             elif change == 'four-ranks':
                 bad['uuids'] = bad['uuids'][:4]
-            elif change == 'optimized':
-                bad['environment']['TENSORFOLD_SM70_PROFILE'] = 'optimized'
             else:
-                bad['environment']['TENSORFOLD_PRIVATE_SM70_ROUTER_LOGITS'] = 'native-serial-v1'
+                bad['environment']['TENSORFOLD_SM70_PROFILE'] = 'optimized'
             with self.subTest(change=change), self.assertRaises(ValueError):
                 c.validate_host_operation(bad, data)
 

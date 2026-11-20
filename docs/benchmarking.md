@@ -782,7 +782,7 @@ Four clean runs used A/B/B/A order on image `60dcb0e2` (committed `69c3ce2c`),
 with TP8/ETP4/PP1, ISO4, cap32, context262144, MTP4, row budget32 and prefill256.
 Dense/Concat and owner attention retained their reference selections; Router
 remained `inherit`. A used inherited Half partials; B alone set
-`TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL=native-half-v1`. All eight workers attested
+`TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL=native-half-v1` (never adopted; removed 2026-11-20). All eight workers attested
 those selections. Original measured request bodies, 64 input/128 output tokens,
 one repetition per run and the untimed smoke/warmup procedures were unchanged.
 No build, profiler or other target job ran during timing.
