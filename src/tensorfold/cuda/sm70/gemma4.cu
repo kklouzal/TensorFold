@@ -873,7 +873,7 @@ __global__ void embed(const int64_t* __restrict__ ids, const __nv_bfloat16* __re
 
 // ---------------------------------------------------------------------------------------------- q/k/v prep
 // x: [M, ldx] FP32 projections: q heads at [0, Hq*D), k at [Hq*D, (Hq+1)*D), v (has_v) at [(Hq+1)*D, (Hq+2)*D).
-// Quantized target KV, full-attention and sliding-ring caches (FMT = RotorQuant kernel codec; 0 = FP16). One cache row per position holds the
+// Quantized full-attention KV (FMT = RotorQuant kernel codec; 0 = FP16). One cache row per position holds the
 // D/128 groups' codes (FMT 8 `rotorquant8-norm`: one index byte per value; FMT 11 `rotorquant-iso64-norm4-h64`:
 // two nibbles per byte, low first) followed by one four-byte metadata word per group (FMT 8: FP32 corrected scale;
 // FMT 11: the FP16 corrected scales of values 0..63 | 64..127). Encoding is tf_rq4's Flash Next codec, per row and
@@ -930,7 +930,7 @@ __global__ void qkv_prep(const float* __restrict__ x, int64_t ldx, int Hq, int D
     float sn, cs;
     sincosf(angle, &sn, &cs);
     float r1 = a * cs - b * sn, r2 = b * cs + a * sn;
-    // FMT: D/2 threads cover the first D/256 groups with values i and the rest with values i + D/2.
+    // FMT: D/2 = 256 threads (D = 512) cover groups 0-1 with values i and groups 2-3 with values i + D/2.
     __shared__ float rq[FMT ? 256 : 1];
     __shared__ int rq_flags[FMT ? 2 : 1];
     if (h < Hq) {
@@ -1009,24 +1009,24 @@ struct Segs {
 template <int D, int AC, int FMT = 0>
 struct AttnSmem {
     static constexpr int QLD = D + 8, PLD = AC + 8;
-    static constexpr int SLD = 64 + 8;                        // FMT: per-warp FP16 staging of 16 keys x 64 values
+    static constexpr int SLD = 128 + 8;                       // FMT: per-warp FP16 staging of 16 keys x one group
     static constexpr int TABLE = FMT == 8 ? 256 : FMT == 11 ? 16 : 0;
     static constexpr size_t base = 16 * QLD * 2 + 16 * AC * 4 + 16 * PLD * 2 + 16 * D * 4;
     static constexpr size_t bytes = base + (FMT ? 4 * 16 * SLD * 2 + TABLE * 4 : 0);
 };
 
-// 16 consecutive quantized cache rows (from `rows`), values 64 p .. 64 p + 63 (half of group p / 2) -> FP16
-// stg[key][col] (row stride SLD), value = FP16(centroid * scale) in the stored (rotated) basis. One warp, every lane.
+// 16 consecutive quantized cache rows (from `rows`), group g (values 128 g .. 128 g + 127) -> FP16 stg[key][col]
+// (row stride SLD), value = FP16(centroid * scale) in the stored (rotated) basis. One warp, every lane calls.
 template <int FMT, int D, int SLD>
-__device__ __forceinline__ void kv_stage(const uint8_t* rows, int p, half* stg, const float* table, int lane) {
+__device__ __forceinline__ void kv_stage16(const uint8_t* rows, int g, half* stg, const float* table, int lane) {
     constexpr int RB = kv_row_bytes<FMT>(D), CB = kv_code_bytes<FMT>(D);
     if constexpr (FMT == 8) {
 #pragma unroll
-        for (int j = 0; j < 2; ++j) {
-            const int idx = lane + 32 * j, key = idx >> 2, part = idx & 3;      // part: 16 values
+        for (int j = 0; j < 4; ++j) {
+            const int idx = lane + 32 * j, key = idx >> 3, part = idx & 7;
             const uint8_t* r = rows + (int64_t)key * RB;
-            const uint4 c = *reinterpret_cast<const uint4*>(r + p * 64 + part * 16);
-            const float sc = reinterpret_cast<const float*>(r + CB)[p >> 1];
+            const uint4 c = *reinterpret_cast<const uint4*>(r + g * 128 + part * 16);
+            const float sc = reinterpret_cast<const float*>(r + CB)[g];
             const uint32_t w[4] = {c.x, c.y, c.z, c.w};
             __align__(16) half2 h[8];
 #pragma unroll
@@ -1040,32 +1040,36 @@ __device__ __forceinline__ void kv_stage(const uint8_t* rows, int p, half* stg, 
         }
     } else {
         static_assert(FMT == 11, "quantized KV formats: 8, 11");
-        const int key = lane >> 1, part = lane & 1;                              // part: 32 values
-        const uint8_t* r = rows + (int64_t)key * RB;
-        const uint4 c = *reinterpret_cast<const uint4*>(r + p * 32 + part * 16);
-        const float sc = tf_rq4::half_group_scale(reinterpret_cast<const float*>(r + CB)[p >> 1], p & 1);
-        const uint32_t w[4] = {c.x, c.y, c.z, c.w};
-        __align__(16) half2 h[16];
 #pragma unroll
-        for (int b = 0; b < 16; ++b) {
-            const uint32_t byte = (w[b >> 2] >> (8 * (b & 3))) & 255u;
-            h[b] = __floats2half2_rn(table[byte & 15u] * sc, table[byte >> 4] * sc);
+        for (int j = 0; j < 2; ++j) {
+            const int idx = lane + 32 * j, key = idx >> 2, part = idx & 3;   // part: 32 values, 64-value half part / 2
+            const uint8_t* r = rows + (int64_t)key * RB;
+            const uint4 c = *reinterpret_cast<const uint4*>(r + g * 64 + part * 16);
+            const float sc = tf_rq4::half_group_scale(reinterpret_cast<const float*>(r + CB)[g], part >> 1);
+            const uint32_t w[4] = {c.x, c.y, c.z, c.w};
+            __align__(16) half2 h[16];
+#pragma unroll
+            for (int b = 0; b < 16; ++b) {
+                const uint32_t byte = (w[b >> 2] >> (8 * (b & 3))) & 255u;
+                h[b] = __floats2half2_rn(table[byte & 15u] * sc, table[byte >> 4] * sc);
+            }
+            uint4* dst = reinterpret_cast<uint4*>(stg + key * SLD + part * 32);
+#pragma unroll
+            for (int u = 0; u < 4; ++u) dst[u] = reinterpret_cast<const uint4*>(h)[u];
         }
-        uint4* dst = reinterpret_cast<uint4*>(stg + key * SLD + part * 32);
-#pragma unroll
-        for (int u = 0; u < 4; ++u) dst[u] = reinterpret_cast<const uint4*>(h)[u];
     }
 }
 
-// FMT (D = 256 or 512, linear or ring): K/V rows are quantized (kv_row_bytes); each warp dequantizes the 16 keys x
-// 64 values its next MMAs read into its own FP16 staging tile. q is in the codec's rotated basis, and so the output.
+// RING: the slot's caches are rings with per-row positions (ptab); else linear (slot row = position).
+// FMT (linear D = 512 caches only): K/V rows are quantized (kv_row_bytes); each warp dequantizes the 16 keys x 128
+// values its next MMAs read into its own FP16 staging tile. q is in the codec's rotated basis, and so is the output.
 template <int D, int AC, bool RING, int FMT = 0>
 __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, int H, const int64_t* __restrict__ ktab,
         const int64_t* __restrict__ vtab, const int64_t* __restrict__ ptab, Segs sg, int S, int window,
         int noncausal, float scale, int chunks, float* __restrict__ po, float* __restrict__ pm, float* __restrict__ pl, int Rpad) {
     using SM = AttnSmem<D, AC, FMT>;
     constexpr int QLD = SM::QLD, PLD = SM::PLD, SLD = SM::SLD;
-    static_assert(FMT == 0 || D == 256 || D == 512, "quantized KV: 256- or 512-wide caches");
+    static_assert(FMT == 0 || (D == 512 && !RING), "quantized KV: linear 512-wide caches");
     extern __shared__ __align__(32) unsigned char smem[];
     half* qs = reinterpret_cast<half*>(smem);
     float* ss = reinterpret_cast<float*>(qs + 16 * QLD);
@@ -1143,14 +1147,14 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
             wmma::fill_fragment(acc, 0.f);
             if constexpr (FMT != 0) {
                 const uint8_t* kb = reinterpret_cast<const uint8_t*>(kc) + (int64_t)(k0 + kt * 16) * kv_row_bytes<FMT>(D);
-                for (int g = 0; g < D / 64; ++g) {
-                    kv_stage<FMT, D, SLD>(kb, g, stg, table, t & 31);
+                for (int g = 0; g < D / 128; ++g) {
+                    kv_stage16<FMT, D, SLD>(kb, g, stg, table, t & 31);
                     __syncwarp();
 #pragma unroll
-                    for (int d = 0; d < 64; d += 16) {
+                    for (int d = 0; d < 128; d += 16) {
                         wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
                         wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> b;
-                        wmma::load_matrix_sync(a, qs + g * 64 + d, QLD);
+                        wmma::load_matrix_sync(a, qs + g * 128 + d, QLD);
                         wmma::load_matrix_sync(b, stg + d, SLD);
                         wmma::mma_sync(acc, a, b, acc);
                     }
@@ -1217,20 +1221,17 @@ __global__ void __launch_bounds__(128) attn_split(const half* __restrict__ q, in
             for (int kk = 0; kk < AC; kk += 16) {
                 wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> a;
                 wmma::load_matrix_sync(a, ps + kk, PLD);
-                if constexpr (FMT != 0) {       // this warp's COLS output values: COLS / 64 staged pieces
-                    const uint8_t* vb = reinterpret_cast<const uint8_t*>(vc) + (int64_t)(k0 + kk) * kv_row_bytes<FMT>(D);
+                if constexpr (FMT != 0) {       // this warp's COLS = 128 output values are group `warp`
+                    kv_stage16<FMT, D, SLD>(reinterpret_cast<const uint8_t*>(vc) + (int64_t)(k0 + kk) * kv_row_bytes<FMT>(D),
+                                            warp, stg, table, t & 31);
+                    __syncwarp();
 #pragma unroll
-                    for (int piece = 0; piece < COLS / 64; ++piece) {
-                        kv_stage<FMT, D, SLD>(vb, warp * (COLS / 64) + piece, stg, table, t & 31);
-                        __syncwarp();
-#pragma unroll
-                        for (int f = 0; f < 4; ++f) {
-                            wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b;
-                            wmma::load_matrix_sync(b, stg + f * 16, SLD);
-                            wmma::mma_sync(acc[piece * 4 + f], a, b, acc[piece * 4 + f]);
-                        }
-                        __syncwarp();
+                    for (int f = 0; f < FR; ++f) {
+                        wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> b;
+                        wmma::load_matrix_sync(b, stg + f * 16, SLD);
+                        wmma::mma_sync(acc[f], a, b, acc[f]);
                     }
+                    __syncwarp();
                 } else {
                     const half* vb = vc + (int64_t)(k0 + kk) * D + warp * COLS;
 #pragma unroll
@@ -1601,8 +1602,8 @@ void qkv_prep_cuda(const Tensor& x, int64_t M, int64_t Hq, int64_t D, int64_t v_
                    const Tensor& ktab, const Tensor& vtab, const c10::optional<Tensor>& ptab, int64_t ring, double eps,
                    int64_t fmt) {
     const dim3 grid(M, Hq + 1);
-    TORCH_CHECK(fmt == 0 || ((fmt == 8 || fmt == 11) && (D == 256 || D == 512)),
-                "quantized KV (format 8 or 11) is for 256- or 512-wide caches");
+    TORCH_CHECK(fmt == 0 || ((fmt == 8 || fmt == 11) && D == 512 && ring == 0 && !ptab.has_value()),
+                "quantized KV (format 8 or 11) is for linear 512-wide caches");
 #define G4_QP(T, F) g4::qkv_prep<T, F><<<grid, D / 2, 0, stream()>>>(cptr<float>(x), x.stride(0), (int)Hq, (int)D, \
         (int)v_mode, cptr<__nv_bfloat16>(qw), cptr<__nv_bfloat16>(kw), cptr<float>(inv_freq), cptr<int>(row_pos), \
         cptr<int>(row_slot), ptr<T>(qout), cptr<int64_t>(ktab), cptr<int64_t>(vtab), \
@@ -1645,16 +1646,15 @@ void attn_cuda(const Tensor& q, int64_t H, int64_t D, const Tensor& ktab, const 
                Tensor& pl, Tensor& out, int64_t fmt) {
     const g4::Segs sg = segs(seg);
     const bool ring = ptab.has_value();
-    TORCH_CHECK(fmt == 0 || fmt == 8 || fmt == 11, "KV formats: 0 (FP16), 8, 11");
+    TORCH_CHECK(fmt == 0 || ((fmt == 8 || fmt == 11) && D == 512 && !ring),
+                "quantized KV (format 8 or 11) is for linear 512-wide caches");
 #define G4_ATT(DD) (small ? (ring ? attn_launch<DD, 64, true> : attn_launch<DD, 64, false>) \
                           : (ring ? attn_launch<DD, 256, true> : attn_launch<DD, 256, false>)) \
         (q, H, ktab, vtab, ptab, sg, tiles, S, window, noncausal, scale, chunks, splits, po, pm, pl)
-#define G4_ATTQ(DD, R, F) (small ? attn_launch<DD, 64, R, F> : attn_launch<DD, 256, R, F>) \
+#define G4_ATTQ(F) (small ? attn_launch<512, 64, false, F> : attn_launch<512, 256, false, F>) \
         (q, H, ktab, vtab, ptab, sg, tiles, S, window, noncausal, scale, chunks, splits, po, pm, pl)
-    // Quantized: the target's linear full-attention (512) and sliding-ring (256) caches.
-    if (fmt != 0) TORCH_CHECK((D == 512 && !ring) || (D == 256 && ring), "quantized KV: linear 512 or ring 256");
-    if (fmt == 8) { if (D == 512) G4_ATTQ(512, false, 8); else G4_ATTQ(256, true, 8); }
-    else if (fmt == 11) { if (D == 512) G4_ATTQ(512, false, 11); else G4_ATTQ(256, true, 11); }
+    if (fmt == 8) G4_ATTQ(8);
+    else if (fmt == 11) G4_ATTQ(11);
     else if (D == 128) G4_ATT(128);
     else if (D == 256) G4_ATT(256);
     else if (D == 512) G4_ATT(512);

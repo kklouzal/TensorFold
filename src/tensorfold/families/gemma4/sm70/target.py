@@ -121,9 +121,8 @@ class Layout:
         self.dev.copy_(torch.from_numpy(self.host), non_blocking=True)
 
 
-# Target KV formats (--kv-dtype), full-attention and sliding caches alike: name -> native format (RotorQuant kernel
-# codec, 0 = FP16) and bytes of one K or V row (codes, then one four-byte metadata word per 128 values; gemma4.cu
-# kv_row_bytes).
+# Full-attention KV formats (--kv-dtype): name -> native format (RotorQuant kernel codec, 0 = FP16) and bytes of one
+# 512-wide K or V row (codes, then one four-byte metadata word per 128 values; gemma4.cu kv_row_bytes).
 KV_FORMATS = {"fp16": 0, "rotorquant8-norm": 8, "rotorquant-iso64-norm4-h64": 11}
 
 
@@ -142,19 +141,17 @@ class Pool:
     chunk containing the point (a chunk of PROMPT_ROWS rows never overwrites them: ring = window + PROMPT_ROWS) and
     written back by ``restore``.
 
-    Full caches and rings hold FP16 rows or, with a quantized ``target.kv_format``, uint8 rows of ``kv_row_bytes``
-    (codes and scales together, so attach/grow/copy, snapshots and host-tier copies stay row copies)."""
+    Full caches hold FP16 rows or, with a quantized ``target.kv_format``, uint8 rows of ``kv_row_bytes`` (codes and
+    scales together, so attach/grow/copy/host-tier copies stay row slices); rings and snapshots stay FP16."""
 
     def __init__(self, target, slots: int):
         c, dev = target.c, target.device
         self.target, self.slots = target, slots
         self.fmt = KV_FORMATS[target.kv_format]
         self.row = kv_row_bytes(self.fmt, c.global_head_dim)
-        self.ring_row = kv_row_bytes(self.fmt, c.head_dim)
         sliding = [layer.sliding for layer in target.w.layers]
         n = sum(sliding)
-        self.ring_k = (torch.zeros((n, slots, target.ring, self.ring_row), dtype=torch.uint8, device=dev) if self.fmt
-                       else torch.zeros((n, slots, target.ring, c.head_dim), dtype=torch.float16, device=dev))
+        self.ring_k = torch.zeros((n, slots, target.ring, c.head_dim), dtype=torch.float16, device=dev)
         self.ring_v = torch.zeros_like(self.ring_k)
         self.ring_p = torch.full((n, slots, target.ring), -1, dtype=torch.int32, device=dev)
         self.sk, self.sv, self.sp = list(self.ring_k.unbind(0)), list(self.ring_v.unbind(0)), list(self.ring_p.unbind(0))
@@ -177,7 +174,7 @@ class Pool:
 
     def snapshot_bytes(self) -> int:
         """Device bytes of one kept point's ring rows (``snapshot``)."""
-        return self.ring_k.shape[0] * (self.target.c.window + 1) * self.ring_row * 2
+        return self.ring_k.shape[0] * (self.target.c.window + 1) * self.target.c.head_dim * 2 * 2
 
     def _full(self, capacity: int):
         """Zeroed full caches (masked keys of a visited chunk must be finite: zero codes and scales decode to 0)."""
@@ -408,7 +405,7 @@ class Target:
         for i, layer in enumerate(self.w.layers):
             n = layer.norms
             if layer.sliding:
-                d, kt, vt, pt, fmt = c.head_dim, pool.sk_tab[si], pool.sv_tab[si], pool.sp_tab[si], pool.fmt
+                d, kt, vt, pt, fmt = c.head_dim, pool.sk_tab[si], pool.sv_tab[si], pool.sp_tab[si], 0
                 si += 1
                 inv, ring, window, slots = self.inverse["sliding"], self.ring, c.window, self.ring
             else:
