@@ -27,7 +27,7 @@ from .ops import OP_HRESTORE, OP_HSPILL
 BLOCK_BYTES = 1 << 21
 
 
-MAX_CHAIN = 8                # row extents a restore reads at most (``_base`` merges longer chains)
+MAX_CHAIN = 4                # row extents a restore reads at most (``_base`` merges longer chains)
 ALIGN = 256                  # byte alignment of an exact end's logits inside its entry
 
 
@@ -140,13 +140,11 @@ class HostTier:
             base, first = extent, have
         if base is None:
             return None, 0
-        if base["depth"] >= MAX_CHAIN:
-            # A restore copies once per extent of its chain: past MAX_CHAIN, this extent takes in its base's rows,
-            # and every further one no larger than what it copies (bounded chains, bounded copies again).
-            while base["parent"] is not None and (base["depth"] >= MAX_CHAIN
-                                                  or first - base["first"] <= rows - first):
-                first = min(first, base["first"])
-                base = base["parent"]
+        # A restore copies once per extent of its chain: this extent takes in every base extent no larger than what
+        # it copies (and its base past MAX_CHAIN): logarithmic chains, logarithmic copies again.
+        while base["parent"] is not None and (base["depth"] >= MAX_CHAIN or first - base["first"] <= rows - first):
+            first = min(first, base["first"])
+            base = base["parent"]
         return base, first
 
     @staticmethod

@@ -310,7 +310,7 @@ def test_a_chain_spilled_point_by_point_stores_its_shared_rows_once_and_restores
     host = tier(capacity=1 << 20)
     source = state(0, rank=0, rows=48)
     full, previous = [], 0
-    for n in (10, 23, 37):                                          # unaligned ends: partial pages are copied again
+    for n in (20, 30, 33):          # unaligned ends (partial pages copied again); each smaller than its base: no merge
         before = host.counters["spill_bytes"]
         host.spill([(list(range(n)), source, snapshot(n, seed=n), None)], None)
         full.append(host._history_bound(source, n, 0))
@@ -320,7 +320,7 @@ def test_a_chain_spilled_point_by_point_stores_its_shared_rows_once_and_restores
         previous = n
     assert host.counters["shared_bytes"] > 0 and host.record()["extents"] == 3
     assert host.counters["spill_bytes"] - sum(e["point_bytes"] for e in host.entries) < sum(full)
-    for n in (37, 10, 23):
+    for n in (33, 20, 30):
         target = state(8, rank=0, rows=48, seed=100 + n)
         entry, index = host.best(list(range(n)) + [999], None)
         host.restore(entry, index, target)
@@ -330,7 +330,7 @@ def test_a_chain_spilled_point_by_point_stores_its_shared_rows_once_and_restores
 def test_evicting_a_point_keeps_rows_its_sharers_still_restore_and_frees_them_with_the_last():
     host = tier(capacity=1 << 20)
     source = state(0, rank=0, rows=48)
-    for n in (12, 30, 44):
+    for n in (24, 36, 40):
         host.spill([(list(range(n)), source, snapshot(n, seed=n), None)], None)
     root = host.entries[0]["extent"]
     assert host.entries[2]["extent"]["parent"]["parent"] is root and root["users"] == 3
@@ -340,9 +340,9 @@ def test_evicting_a_point_keeps_rows_its_sharers_still_restore_and_frees_them_wi
     host._evict_one()
     assert root["alive"] and root["users"] == 2 and len(host.free) == free + len(victim["blocks"])
     target = state(8, rank=0, rows=48, seed=7)
-    entry, index = host.best(list(range(44)) + [1], None)
+    entry, index = host.best(list(range(40)) + [1], None)
     host.restore(entry, index, target)
-    same_rows(source, target, 44)
+    same_rows(source, target, 40)
     while host.entries:
         host._evict_one()
     assert not root["alive"] and host.record()["extents"] == 0 and len(host.free) == host.blocks
@@ -432,27 +432,27 @@ def test_mtp_rows_share_and_restore_as_their_own_dimension():
     host = tier(capacity=1 << 20)
     source = state(0, rank=0, rows=48)
     source.mtp_kc, source.mtp_pooled = cache(48, 0, 0, 4, 77), torch.randn((12, 3))
-    for n in (14, 31, 45):
+    for n in (24, 36, 40):
         snap = snapshot(n, seed=n)
         snap["mtp_len"] = n - 2                                     # the MTP rows lag the target's
         host.spill([(list(range(n)), source, snap, None)], None)
-    assert host.entries[-1]["extent"]["start"] == (28, 28) and host.entries[-1]["mtp_rows"] == 43
+    assert host.entries[-1]["extent"]["start"] == (36, 32) and host.entries[-1]["mtp_rows"] == 38
     target = state(8, rank=0, rows=48, seed=5)
     target.mtp_kc, target.mtp_pooled = cache(48, 0, 8, 4, 78), torch.randn((12, 3))
-    entry, index = host.best(list(range(45)) + [1], None)
+    entry, index = host.best(list(range(40)) + [1], None)
     host.restore(entry, index, target)
-    same_rows(source, target, 45)
+    same_rows(source, target, 40)
     a, b = source.mtp_kc, target.mtp_kc                             # rank 0 owns these MTP pages
     assert all(offset >= 0 for offset in a.offsets)
-    for page in range(-(-43 // PAGE)):
+    for page in range(-(-38 // PAGE)):
         if a.offsets[page] >= 0:
-            count = min(PAGE, 43 - page * PAGE)
+            count = min(PAGE, 38 - page * PAGE)
             assert torch.equal(a.k[a.offsets[page]:a.offsets[page] + count], b.k[b.offsets[page]:b.offsets[page] + count])
     if Placement().indexer_owner(0, 2, include_mtp=True) == 0:
-        assert torch.equal(target.mtp_pooled[:43 // 4], source.mtp_pooled[:43 // 4])
+        assert torch.equal(target.mtp_pooled[:38 // 4], source.mtp_pooled[:38 // 4])
 
 
-def test_long_chains_merge_so_a_restore_reads_at_most_max_chain_extents():
+def test_chains_merge_so_a_restore_reads_few_extents_and_rows_are_copied_a_logarithmic_number_of_times():
     from tensorfold.families.qwen4_exp.cuda.prefix_host import MAX_CHAIN
 
     host = tier(capacity=1 << 22)
@@ -462,9 +462,9 @@ def test_long_chains_merge_so_a_restore_reads_at_most_max_chain_extents():
     for n in ends:
         host.spill([(list(range(n)), source, snapshot(n, seed=n), None)], None)
     depths = [host.entries[i]["extent"]["depth"] for i in range(len(ends))]
-    assert max(depths) <= MAX_CHAIN and depths[MAX_CHAIN - 1] == MAX_CHAIN
+    assert max(depths) <= MAX_CHAIN and depths[2] == 2              # equal spills merge as a binary counter
     copied = host.counters["spill_bytes"] - sum(e["point_bytes"] for e in host.entries)
-    assert copied < 3 * host._history_bound(source, ends[-1], 0)      # each row copied a bounded number of times
+    assert copied < 4 * host._history_bound(source, ends[-1], 0), copied / host._history_bound(source, ends[-1], 0)
     for n in (ends[-1], ends[MAX_CHAIN], ends[3]):
         target = state(8, rank=0, rows=rows, seed=200 + n)
         entry, index = host.best(list(range(n)) + [999], None)

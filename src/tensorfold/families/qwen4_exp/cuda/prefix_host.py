@@ -54,7 +54,7 @@ def pinned_slab_bytes(per_rank: int, block: int = BLOCK_BYTES) -> int:
     if type(per_rank) is not int or per_rank < block:
         return 0
     return 1 << (per_rank.bit_length() - 1)
-MAX_CHAIN = 8                # row extents a restore reads at most (``_base`` merges longer chains)
+MAX_CHAIN = 4                # row extents a restore reads at most (``_base`` merges longer chains)
 MIN_GAIN = 64                # tokens a host point must save beyond the best VRAM point (~23 ms of prefill)
 
 
@@ -404,14 +404,13 @@ class HostPrefixTier:
             valid = (0, 0)
         align = math.lcm(st.history_placement.page_tokens, st.ratio)
         start = tuple(n if n <= v else v // align * align for n, v in zip(need, valid))
-        if base is not None and base["depth"] >= MAX_CHAIN:
-            # A restore copies once per extent of its chain: past MAX_CHAIN, this extent takes in its base's rows,
-            # and every further one no larger than what it copies, so chains stay short and each row is copied
-            # again only a bounded number of times as they merge.
-            while base["parent"] is not None and (base["depth"] >= MAX_CHAIN
-                                                  or start[0] - base["start"][0] <= rows - start[0]):
-                start = tuple(min(first, own) for first, own in zip(start, base["start"]))
-                base = base["parent"]
+        # A restore copies once per extent of its chain: this extent takes in every base extent no larger than what
+        # it copies (and its base past MAX_CHAIN), so chains stay logarithmic in their spills and each row is copied
+        # again only a logarithmic number of times as they merge.
+        while base is not None and base["parent"] is not None and (
+                base["depth"] >= MAX_CHAIN or start[0] - base["start"][0] <= rows - start[0]):
+            start = tuple(min(first, own) for first, own in zip(start, base["start"]))
+            base = base["parent"]
         return base, start
 
     def _copy_rows(self, st, rows, mtp_rows, start, parent, blocks):
@@ -574,14 +573,16 @@ class HostPrefixTier:
                 pages = -(-stop // page_tokens)
                 if tuple(cache.owners[:pages]) != owners[:pages]:
                     raise RuntimeError("host prefix restore target owns different history pages")
+                tensors = self._cache_tensors(cache)
                 for run, regions in runs:
-                    total = sum(n for _page, n in run)
-                    kept = tuple((page, min(n, stop - page * page_tokens)) for page, n in run
-                                 if page * page_tokens < stop)
-                    if not kept:
-                        continue
-                    for at, offset, length in self._targets(cache, kept):
-                        for tensor, region in zip(self._cache_tensors(cache), regions, strict=True):
+                    total = regions[0].shape[0]                     # the run's rows
+                    if run[-1][0] * page_tokens + run[-1][1] > stop:  # the restore ends inside this run
+                        run = tuple((page, min(n, stop - page * page_tokens)) for page, n in run
+                                    if page * page_tokens < stop)
+                        if not run:
+                            continue
+                    for at, offset, length in self._targets(cache, run):
+                        for tensor, region in zip(tensors, regions, strict=True):
                             row = region.nbytes // total
                             part = _Region(region.offset + at * row, length * row, region.dtype,
                                            (length, *region.shape[1:]))
