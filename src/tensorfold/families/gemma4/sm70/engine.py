@@ -561,9 +561,10 @@ class Gemma4SM70Engine:
 class Decoder(PrefixOwner):
     """The shared Scheduler's decoder on rank 0: slots, prompt chunks and batched decode rounds.
 
-    A round runs at most one prompt chunk (the oldest foreground filling request's next PROMPT_ROWS rows: fixed
-    boundaries, so a prompt's numerics never depend on load) and then one batched round over every decoding
-    stream (decode interleaves by scheduling, one round between chunks). Greedy requests
+    A round runs at most one prompt chunk (the oldest foreground filling request's next prompt_rows rows: fixed
+    boundaries, so a prompt's numerics never depend on load), or while streams decode one layer group of it, and
+    one batched round over every decoding stream (decode interleaves by scheduling: one round between chunks or
+    layer groups). Greedy requests
     without grammar/penalties draft with DFlash (``block`` verify rows a stream) when the measured round costs
     and acceptance favour it over serial steps; other requests take one row a round. All decoding streams of a
     mode share one batched forward (graph shape padded to a bucket)."""
@@ -587,11 +588,13 @@ class Decoder(PrefixOwner):
         engine.marks = [0.0, 0.0, 0.0]
         self.inflight = []                              # launched groups whose tokens are not decided yet
         self.split = None                               # (stream, chunk, remaining layer stops) of a paused chunk
-        self.round_ms = max(engine.costs.values())      # recent launch-to-done of a decode round (EMA)
+        self.round_ms = max(engine.costs.values())      # GPU time of a recent decode round (EMA; CUDA events)
         self.layer_ms = engine.warm_layer_ms            # per prompt row, per layer: the last measured chunk
         self.measuring = None                           # (rows, marks) of the chunk being timed
         import torch
-        self.done = torch.cuda.Event()
+        # The round's own GPU time, start to done: launch-to-done would include the prompt group queued ahead of it
+        # (the whole gap), which would shrink the next groups.
+        self.started, self.done = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         self._init_prefix(engine, engine.points)
         if engine.host_per_rank:
             from .prefix_host import HostTier
@@ -902,6 +905,7 @@ class Decoder(PrefixOwner):
         if serial:
             groups.append((MODE_SERIAL_TAPS if drafting and not groups else MODE_SERIAL, serial))
         self.inflight = []
+        self.started.record()
         for mode, group in groups:
             bucket = next(b for b in buckets(e.streams) if b >= len(group))
             entries, full = [], []
@@ -927,7 +931,7 @@ class Decoder(PrefixOwner):
         self.done.synchronize()
         now = time.perf_counter()
         if self.inflight:
-            self.round_ms = 0.8 * self.round_ms + 0.2 * (now - self.inflight[0][-1]) * 1000
+            self.round_ms = 0.8 * self.round_ms + 0.2 * self.started.elapsed_time(self.done)
         decided = []
         for mode, bucket, group, entries, full, (compact, proposals, rows, aligned), t0 in self.inflight:
             n = e.block if mode == MODE_ROUND else 1

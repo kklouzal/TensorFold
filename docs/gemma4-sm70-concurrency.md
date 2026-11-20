@@ -15,9 +15,18 @@ Each scheduler round is pipelined:
    own threads detokenize and stream while the GPU runs) and decide each stream's tokens;
 2. launch the next batched decode round at once for every stream that continues;
 3. while it runs, deliver the decided tokens and issue the next prompt chunk. Prompts fill round-robin (each
-   waiting prompt's next fixed 1,024-row chunk in turn, foreground first). Chunk boundaries are fixed per
-   prompt, so a prompt's arithmetic never depends on load. Concurrent prompts finish together and their
-   decode batches stay full, and every prompt chunk is followed by one batched decode round.
+   waiting prompt's next fixed 1,024-row chunk in turn, foreground first; `--prefill-rows` sets the chunk rows,
+   a multiple of 256 up to 4,096). Chunk boundaries are fixed per prompt, so a prompt's arithmetic never
+   depends on load. Concurrent prompts finish together and their decode batches stay full, and every prompt
+   chunk is followed by one batched decode round.
+4. while any stream decodes, a chunk runs in layer groups instead, one group per round, so the decode rounds
+   ride inside the prompt pass: a decoding stream waits for one group plus its round instead of the whole chunk
+   (decode stall during prefill). Groups are cut at layer boundaries by the per-layer cost the previous chunk
+   measured (CUDA events, read only once complete) so that a group plus the recent decode round is about 150 ms
+   (`Decoder.GAP_MS`). The chunk's kernels, rows and boundaries do not change, so its arithmetic is bitwise the
+   same for any grouping (the prompt's residual stream and drafter taps live in prompt-only scratch between
+   groups). A paused chunk continues before any other prompt; a request that leaves mid-chunk drops it on every
+   rank (its rows at or past the chunk start are rewritten before any read).
 
 Requests without grammar or penalties draft with DFlash, greedy and sampled alike. Every verify row is sampled
 from the target distribution by the request's own position-keyed sampler (`tensorfold.cuda.sampling.sample_rows`)
