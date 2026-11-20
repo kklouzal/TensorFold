@@ -16,9 +16,12 @@ history/indexer layout, logical context); the process's weights, prefix policy a
 lifetime and nothing is persisted. Memory: one pinned slab of ``capacity`` bytes per rank, allocated at startup and
 charged to the host commitment; entries take fixed blocks, so allocation never fails once admitted.
 
-Off unless ``--prefix-host-bytes`` is set: under a stream of unique prompts every eviction spills, which cost 1-2%
-of prefill/decode throughput on the 8xV100 production benchmark even with the copies on a side stream (the
-coordinator's packing work), while a repeated or extended prompt restores in milliseconds instead of seconds.
+On by default (``DEFAULT_BYTES`` across the ranks, at most a quarter of MemAvailable; ``--prefix-host-bytes 0``
+disables; a default slab that cannot be pinned starts without the tier): a repeated or extended prompt restores in
+milliseconds instead of seconds (11.4K tokens: 0.16 s against 3.8 s cold). Under a stream of unique prompts every
+eviction spills and nothing is restored, which measured about -0.9% prefill and -0.8..-1.9% decode (trimmed
+geomeans) on the 8xV100 production fastbench even with one copy per arena run (coordinator time ~3 ms/spill): the
+remaining cost is the ~48 MB/rank of device-to-host traffic per spill, mostly recurrent snapshots.
 
 Cost model (SC117, Q4 KV, TP8): restoring n tokens copies about 1 KiB/token/rank plus a ~14.6 MB recurrent snapshot
 per point over PCIe (~12 GB/s), about 1.2 ms + 85 ns/token, against ~364 us/token of prefill: any point a request can
@@ -34,6 +37,7 @@ import time
 import torch
 
 BLOCK_BYTES = 1 << 21        # fixed allocation unit of the pinned slab
+DEFAULT_BYTES = 64 << 30     # all ranks together when --prefix-host-bytes is unset (capped at MemAvailable / 4)
 
 
 def pinned_slab_bytes(per_rank: int, block: int = BLOCK_BYTES) -> int:
@@ -386,7 +390,6 @@ class HostPrefixTier:
 
     def restore(self, entry, index, st):
         """Copy ``entry``'s rows into the free, already admitted ``st`` and return (ids, snapshot, tail) on device."""
-        placement = st.history_placement
         for reader in tuple(st.history_native_readers):
             reader.wait_native_reuse()
         await_spill(st)

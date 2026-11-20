@@ -509,7 +509,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--vram-experts-pin off\|auto\|on` | `off`: pageable authority. With supported CUDA RAM experts, `auto` admits host registration or retains pageable bytes on explicit capacity/capability refusal; `on` requires registration. Unknown driver/cleanup failures remain errors. |
 | `--kv-full-windows N\|auto` | GGUF GPU-history CUDA computes and reserves complete windows; `auto` is explicit automatic selection and an integer constrains the count. Other supported Flash Next paths retain their existing numeric growth-window contracts; `auto` is refused there. |
 | `--kv-short-window TOKENS\|auto` | GGUF GPU-history CUDA with `--parallel P` above `--kv-full-windows N` (mixed resident windows): N slots keep the complete context and the other P-N slots are materialized at startup with one shorter prompt-plus-reply window (an explicit count is verified on every rank, never enlarged; `auto`, the default, takes the largest whole multiple of 1024 tokens the worst rank's memory solver retains and is refused while whole-round graphs use the automatic captured-round pool, which it would consume). A request is placed in the free slot with the shortest window that holds its prompt + `max_tokens` + speculative rows, and waits in FIFO order otherwise; while the FIFO head waits only for a longer window, up to P-N later requests that fit a free shorter slot may start ahead of it (they cannot take a window the head could use, and the head claims the next one that frees); prefix reuse only resumes or copies into fitting slots. Receipts record every slot's capacity. Retention policies, DSpark/DFlash2 and media are refused with mixed windows. |
-| `--prefix-host-bytes BYTES` | Flash Next concurrent SM70 unique TP8 GPU histories with MTP (the V100 production path): pinned host RAM, all ranks together, each rank's share rounded down to a power of two (PyTorch pins power-of-two blocks) (off by default; refused elsewhere; under a stream of unique prompts its spills cost 1-2% of prefill/decode throughput on the production benchmark, so enable it, e.g. 64 GiB, where repeated or shared prefixes dominate), charged as a fixed host obligation before the HTTP payload pool. Prompt points the GPU prefix cache drops by value are copied there and restored into a free slot with the same history-page ownership on a hit (bit-identical to the GPU-resident point); never written to disk. `/stats` `prefix_cache.host` and Prometheus `prefix_host_*` report it. Gemma 4 on eight V100s (`--tp 8`) enables it by default (64 GiB across the ranks, at most a quarter of MemAvailable, agreed by every rank; `0` disables): evicted kept points (full-cache rows and ring snapshots) are copied to one pinned slab per rank allocated at startup and restored byte-exactly into a free slot. |
+| `--prefix-host-bytes BYTES` | Flash Next concurrent SM70 unique TP8 GPU histories with MTP (the V100 production path): pinned host RAM, all ranks together, each rank's share rounded down to a power of two (PyTorch pins power-of-two blocks) (on by default: 64 GiB across the ranks, at most a quarter of MemAvailable, agreed by every rank; `0` disables; a default slab that cannot be pinned starts without the tier, an explicit one is a startup error; refused elsewhere; under a stream of unique prompts its spills cost about 1-2% of prefill/decode throughput on the production benchmark), charged as a fixed host obligation before the HTTP payload pool. Prompt points the GPU prefix cache drops by value are copied there and restored into a free slot with the same history-page ownership on a hit (bit-identical to the GPU-resident point); never written to disk. `/stats` `prefix_cache.host` and Prometheus `prefix_host_*` report it. Gemma 4 on eight V100s (`--tp 8`) enables it by default (64 GiB across the ranks, at most a quarter of MemAvailable, agreed by every rank; `0` disables): evicted kept points (full-cache rows and ring snapshots) are copied to one pinned slab per rank allocated at startup and restored byte-exactly into a free slot. |
 | `--ssd-experts GIB` | Unset. Supported MLX families stream checkpoint experts into a GPU pool; distinct from RAM-backed CUDA experts and unsupported with CUDA `--vram-experts`. See the [Flash Next recipe](docs/recipes/qwen3.8-flash-next.md). |
 | `--ple-on-ssd` | Off. Supported Flash Next affine, BF16, FP8 and NVFP4 n-gram layouts use bounded demand SSD reads with their original decoding/scale semantics. EXL3 retains its native mapped table and rejects this flag. |
 | `--kv-dtype FORMAT` | Flash Next CUDA `bf16`; shorthand selects both K and V formats. |
@@ -2091,17 +2091,21 @@ state like a greedy one (it used to prefill cold); cached-versus-cold NLL is
 equivalent on decode rows for Q4 and INT8 KV ([API notes](docs/api.md)). A prompt
 point the GPU cache drops by value (a slot reused, a point past the kept limit, a
 resume in place rewriting longer points) is copied into pinned host RAM
-(`--prefix-host-bytes`, opt-in) and restored into a free slot
+(`--prefix-host-bytes`, on by default since 2026-11-20) and restored into a free slot
 with the same history-page ownership when a later prompt extends it by at least 64
 more tokens than any GPU-resident point; restored state is bit-identical to the
 resident point. On 8x V100 (production Compose, a 4,883-token greedy prompt evicted
 by 24 longer prompts) the repeat's first token came after 0.061-0.078 s from host
 RAM against 1.80-1.82 s recomputed and 0.026-0.030 s still resident, for Q4 and INT8;
-replies matched the cold one and a concurrent stream's decode gaps were unchanged. The
-tier is off by default: on the production fastbench (unique prompts, so every eviction
-spills and nothing is restored) 64 GiB cost prefill -1.1% and decode -0.9% geomean
-against the tier off even with its copies on a side stream (the coordinator's per-spill
-packing work), while each restore saves seconds of prefill.
+replies matched the cold one and a concurrent stream's decode gaps were unchanged. On the
+production fastbench (unique prompts, so every eviction spills and nothing is
+restored) 64 GiB cost prefill -1.1% and decode -0.9% geomean against the tier off even
+with its copies on a side stream. Since 2026-11-20 a spill copies one run per layer
+tensor instead of one per history page (coordinator ~3 ms per spill) and the tier is
+on by default (64 GiB, at most a quarter of MemAvailable; `--prefix-host-bytes 0`
+disables): the remaining cost, measured over two prod pairs, is prefill -0.9% and
+decode -1.9% (trimmed geomeans; rq4: -0.7% / +0.1%), accepted for restores that take
+0.16 s instead of 3.8 s for an 11.4K-token prompt.
 A temperature-0.7 extension of a 14.6K-token prompt now starts after 0.31 s (5.16 s
 cold). `/stats` `prefix_cache` reports lookups and hits/tokens by tier (resumed in
 place, forked into a free slot, restored from host) and the host tier's record;

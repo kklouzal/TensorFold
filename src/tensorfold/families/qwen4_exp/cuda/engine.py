@@ -1416,19 +1416,27 @@ class FlashNextEngine:
             history_host_per_rank = history_maximum_owners * history_plan.host_bytes(history_host_limit)
             host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * history_host_per_rank
         # Host-RAM prefix tier (prefix_host): one pinned slab per rank, a fixed host obligation before the HTTP pool.
-        from .prefix_host import pinned_slab_bytes
+        from .prefix_host import DEFAULT_BYTES, pinned_slab_bytes
 
         prefix_host_supported = (unique_positions and concurrent and position_method == "mtp"
                                  and retention_policy is None and not vision)
-        if prefix_host_bytes is None:
-            prefix_host_bytes = 0                       # opt-in: see prefix_host's throughput note
-        if type(prefix_host_bytes) is not int or prefix_host_bytes < 0:
+        if prefix_host_bytes is not None and (type(prefix_host_bytes) is not int or prefix_host_bytes < 0):
             raise ValueError("prefix_host_bytes must be a nonnegative byte count")
         if prefix_host_bytes and not prefix_host_supported:
             raise ValueError("--prefix-host-bytes requires concurrent SM70 unique TP8 GPU histories with MTP drafting, "
                              "no retention policy and no vision")
+        explicit_host_tier = prefix_host_bytes is not None
+        if not explicit_host_tier:
+            # On by default where supported: DEFAULT_BYTES across the ranks, at most a quarter of MemAvailable.
+            from tensorfold.cuda.capacity import _meminfo
+
+            memory = _meminfo() if prefix_host_supported else None
+            prefix_host_bytes = 0 if memory is None else min(DEFAULT_BYTES, memory["MemAvailable"] // 4)
         # Per rank, rounded down to the pinned allocator's power-of-two granularity (pinned == charged bytes).
         self.prefix_host_per_rank = pinned_slab_bytes(prefix_host_bytes // tp)
+        if not explicit_host_tier and gather is not None:
+            # Every rank must lay out identical blocks (replicated entry tables): the smallest rank's choice.
+            self.prefix_host_per_rank = min(row[0] for row in gather([self.prefix_host_per_rank]))
         host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + tp * self.prefix_host_per_rank
         adaptive_capacity = {}
         if self._owned_expert_plan is not None:
@@ -2018,11 +2026,29 @@ class FlashNextEngine:
                                       **({"full_windows": resident_windows} if resident_windows is not None else {}),
                                       **({"slot_limits": tuple(self.mixed_windows["slot_capacities"])}
                                          if self.mixed_windows is not None else {}))
-            if self.prefix_host_per_rank:
+            if self.prefix_host_per_rank:              # rank-agreed: every rank takes this branch and its gather
                 from .prefix_host import HostPrefixTier
 
-                self.multi.host_tier = HostPrefixTier(self.prefix_host_per_rank, device=w.device, comm=w.comm)
+                failure = None
+                try:
+                    self.multi.host_tier = HostPrefixTier(self.prefix_host_per_rank, device=w.device, comm=w.comm)
+                except RuntimeError as error:         # cudaHostAlloc refused (host memory/locking limits)
+                    failure = error
+                flags = [[int(failure is None)]] if gather is None else gather([int(failure is None)])
+                refused = [r for r, (ok,) in enumerate(flags) if not ok]
+                if refused:
+                    self.multi.host_tier = None
+                    message = (f"pinning the {self.prefix_host_per_rank} B/rank host prefix tier failed on rank(s) "
+                               f"{refused}" + ("" if failure is None else f": {failure}"))
+                    if explicit_host_tier:
+                        raise RuntimeError(f"--prefix-host-bytes {prefix_host_bytes}: {message}") from failure
+                    if rank == 0:
+                        print(f"[tensorfold] {message}; serving without the host prefix tier "
+                              "(--prefix-host-bytes sets it explicitly)", flush=True)
+                    # Its bytes stay charged in the admitted host workspace (conservative); none are materialized.
+                    self.prefix_host_per_rank = 0
             self.capacity_plan["prefix_host"] = {"policy": "pinned-spill-on-evict-v1",
+                                                 "default": not explicit_host_tier,
                                                  "bytes_per_rank": self.prefix_host_per_rank,
                                                  "host_bytes": tp * self.prefix_host_per_rank}
             self.capacity_plan["native_gdn_batch"] = {"enabled": native_gdn_batch,

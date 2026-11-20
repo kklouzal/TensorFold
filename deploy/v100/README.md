@@ -75,16 +75,18 @@ grant. Requests with thinking off: 64 simultaneous ones were all admitted (32
 running, 32 queued, last TTFT 51 s) and the 65th-72nd received 503 "request capacity
 reached".
 
-Host-RAM prefix tier (opt-in) and its trade-off: with `TF_PREFIX_HOST_BYTES` set (for
-example `68719476736`, 64 GiB across the 8 ranks; empty or `0` = off, the default; never
-written to disk) prompt points the GPU prefix cache evicts are kept in pinned host RAM
+Host-RAM prefix tier (on by default) and its trade-off: `TF_PREFIX_HOST_BYTES` empty uses
+the server default (64 GiB across the 8 ranks, at most a quarter of MemAvailable; a
+default slab that cannot be pinned starts without the tier), `0` turns it off and any
+other value sets it explicitly (never written to disk): prompt points the GPU prefix cache evicts are kept in pinned host RAM
 and restored on a hit. Measured (Q4, a 4,883-token greedy prompt evicted by 24 longer
 prompts): the repeat's first token after 0.059-0.075 s from host RAM against 1.82 s
 recomputed with the tier off (0.027-0.032 s while still in GPU memory); replies
 identical to the cold one. Its cost: under a stream of unique prompts every eviction
-spills, and on the production fastbench 64 GiB cost prefill -1.1% and decode -0.9%
-geomean against the tier off, so enable it where repeated or shared prefixes
-(chat sessions, agent loops, common system prompts or documents) dominate. The tier is
+spills and nothing is restored; on the production fastbench 64 GiB costs prefill -0.9%
+and decode -1.9% (trimmed geomeans over two pairs, 2026-11-20), accepted for the
+restores repeated or shared prefixes (chat sessions, agent loops, common system prompts
+or documents) get; set `TF_PREFIX_HOST_BYTES=0` for pure unique-prompt traffic. The tier is
 a fixed host obligation that comes out of the HTTP payload pool thinking replies grow
 into: at Q4/32 the pool measured about 269 GB with the tier off, 234.7 GB with 32 GiB
 and 199.8 GB with 64 GiB (INT8/24 is larger). A thinking request is admitted with about
