@@ -32,3 +32,24 @@ the complete notice is retained in LICENSES/GGML-MIT.txt.
 No upstream NOTICE file
 applies to these paths at the pinned revision (complete tree audit).
 See onecat_LICENSE.txt for the complete Apache License2.0.
+
+DeepSeek-V4.1 dp4a experts (onecat_ds41.*), 1CatAI/1Cat-vLLM commit
+4d57473db67eb77a13018d179e4d95169e82044f, Apache-2.0 (SPDX preserved):
+onecat_ds41.cu adapts csrc/sm70_turbomind/ops/gguf_dp4a_sm70.cu (Git blob
+daf0385c453de5b778f790c6c6b14de098ef22d6): quantize_q8, v41_swiglu_q8,
+v41_shared_swiglu, gate_up, v41_gate_reuse/v41_reuse_plan, raw_down_unroute;
+the calling convention follows vllm/model_executor/layers/quantization/
+gguf_v41_moe.py _v41_experts (Git blob 86f874a9ea5b8a479f1fbc10e387a3eae22513d6).
+onecat_ds41_dp4a.cuh adapts csrc/sm70_turbomind/ops/gguf_q8_1.cuh (Git blob
+00e0f6990b72e7a5e647e2115ad826544ab613d7) and gguf_dp4a.cuh (Git blob
+6b941a23fd9084f9230841463a313f0fc04ebbb6), keeping only the IQ2_XXS/IQ2_XS/
+IQ1_M readers. onecat_ds41_codebooks.cuh is a byte-identical extract (IQ2_XXS,
+IQ2_XS, IQ1_S/IQ1_M tables only) of csrc/sm70_turbomind/lmdeploy/src/turbomind/
+kernels/gemm/lattice_codebooks.h (Git blob
+496cd80d70322df2e8fd2d9ced23aea0d9d7ed56), whose own SPDX is MIT (tables
+derived from gguf-py/llama.cpp ggml-common.h); no Apache-2.0 LMDeploy code
+(transform.h, matrix_ptr.h) is used. TensorFold modifications: V4.1
+instantiations only (adaptive reuse for M6 IQ1_M only); out-of-range expert
+ids trap; down uses built-in unit route weights (upstream's caller passes
+ones; x*1 is exact); alignment checks; no arithmetic change. The dequantize
+kernel is TensorFold-owned, written from ggml-quants.c (MIT).

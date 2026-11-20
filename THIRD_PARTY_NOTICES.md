@@ -17,6 +17,14 @@ CPU producer remains the independent wire-layout reference.
 and `gguf_dp4a.cuh` Q8_1 and integer-dot path with owned E256 routing,
 scratch and explicit reduction methods. Its GGML/llama.cpp integer formulas
 retain the [GGML MIT notice](LICENSES/GGML-MIT.txt).
+`onecat_ds41.cu` and `onecat_ds41_dp4a.cuh` adapt the DeepSeek-V4.1
+IQ2_XXS/IQ2_XS/IQ1_M Q8_1 integer-dot experts of `gguf_dp4a_sm70.cu`,
+`gguf_dp4a.cuh` and `gguf_q8_1.cuh` at 1Cat-vLLM revision
+[`4d57473db67eb77a13018d179e4d95169e82044f`](https://github.com/1CatAI/1Cat-vLLM/tree/4d57473db67eb77a13018d179e4d95169e82044f)
+without arithmetic changes; `onecat_ds41_codebooks.cuh` is a byte-identical
+extract of that revision's MIT-licensed `lattice_codebooks.h` (GGML tables,
+[GGML MIT notice](LICENSES/GGML-MIT.txt)); its GGML dequantizer follows
+llama.cpp `ggml-quants.c` (MIT). Blob ids and changes are in the notice below.
 These files retain the upstream Apache-2.0 SPDX and copyright notices.
 The bundled [license](src/tensorfold/cuda/sm70/onecat_LICENSE.txt) and
 [provenance notice](src/tensorfold/cuda/sm70/onecat_NOTICE.txt) accompany the
