@@ -851,15 +851,23 @@ class Decoder(PrefixOwner):
             return [L]
         cost = [ms * rows for ms in self.layer_ms]
         total = sum(cost)
-        parts = min(L, math.ceil(total / max(self.GAP_MS - self.round_ms, self.GAP_MS / 4)))
+        target = max(self.GAP_MS - self.round_ms, self.GAP_MS / 4)
+        parts = min(L, math.ceil(total / target))
         if parts <= 1:
             return [L]
-        stops, done = [], 0.0
-        for i, ms in enumerate(cost):
-            if done + ms / 2 >= total * (len(stops) + 1) / parts:     # cut at the nearest layer boundary
-                stops.append(i)
-            done += ms
-        return [x for x in stops if 0 < x < L] + [L]
+        while True:
+            stops, done = [], 0.0
+            for i, ms in enumerate(cost):
+                if done + ms / 2 >= total * (len(stops) + 1) / parts:     # cut at the nearest layer boundary
+                    stops.append(i)
+                done += ms
+            stops = sorted({x for x in stops if 0 < x < L}) + [L]
+            edges = [0] + stops
+            # A cut at the nearest boundary may overshoot by half a layer (a long-context full-attention layer is
+            # large): add groups until none exceeds the target (or every layer is its own group).
+            if parts >= L or max(sum(cost[a:b]) for a, b in zip(edges, edges[1:])) <= target:
+                return stops
+            parts += 1
 
     def _absorb(self) -> None:
         """Per-layer per-row costs from the timed chunk once its events completed (never waits)."""

@@ -88,3 +88,17 @@ def test_cancel_drops_the_paused_chunk_on_every_rank():
     d._fill()
     assert d.cancel([s]) == [s]
     assert d.e.ops[-1][:2] == (OP_LAYERS, -1) and d.split is None and s.pos == 0
+
+
+def test_plan_adds_groups_rather_than_overshoot_the_target():
+    cost = [0.002] * L
+    for i in (5, 11, 17, 23, 29):                    # long context: full-attention layers dominate
+        cost[i] = 0.05
+    d = decoder(cost)
+    d.streams = {0: object()}
+    stops = d._plan(1024)
+    edges = [0] + stops
+    groups = [sum(cost[a:b]) * 1024 for a, b in zip(edges, edges[1:])]
+    target = E.Decoder.GAP_MS - d.round_ms
+    assert stops[-1] == L and stops == sorted(set(stops))
+    assert max(groups) <= target or len(groups) == L
