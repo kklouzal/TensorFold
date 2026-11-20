@@ -150,16 +150,14 @@ def test_prompt_rows_run_in_owner_windows_with_one_raw_transaction(monkeypatch, 
     monkeypatch.setattr(ops, 'owned_q8_prepare_window', native)
     monkeypatch.setattr(history, '_prepare_reference', lambda *args, **kwargs: invocations.append('reference'))
     history.prepare(*item[:5], 0, rows, mtp=mtp)
-    if mtp:  # the MTP head's prompt absorb keeps the reference prepare
-        assert invocations == ['reference']
-        return
     assert [(at, start) for at, _, start in invocations] == [(p[0].data_ptr(), 127), (p[256].data_ptr(), 383)]
     axes = torch.cat([value for _, value, _ in invocations])
     expected = issued if issued is not None else (torch.arange(rows) + 127)[:, None].expand(-1, 3)
     assert torch.equal(axes, expected)
-    assert [event[0] for event in events] == ['append', 'pool']
+    assert [event[0] for event in events] == (['append', 'pool', 'prepare_commit', 'publish_commit']
+                                              if mtp else ['append', 'pool'])
     assert events[0][1][1] == 127 and torch.equal(events[0][1][2], p[:, -128:])
-    assert state.target_tentative_length == 427
+    assert state.target_tentative_length == (127 if mtp else 427)
 
 
 @torch.no_grad()

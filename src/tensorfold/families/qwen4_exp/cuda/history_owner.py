@@ -296,10 +296,6 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Select prepared Q8 writers while retaining the independent reference."""
     owner = getattr(buffers, 'history_owner', None)
     window_module = getattr(owner, 'owned_q8_window_preparation', None)
-    if window_module is not None and buffers.prefill and mtp:
-        # The MTP head's prompt absorb keeps the reference prepare: the native window there cost decode
-        # (SC117 10-cell matrix: decode 0.991x, prefill 1.011x against target-rows-only; ledger pf2).
-        window_module = None
     if window_module is not None:
         role = 'prefill' if buffers.prefill else 'mtp' if mtp else 'decode'
         if (buffers.owner_graph_family != 'uncaptured'

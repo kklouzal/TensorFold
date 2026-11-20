@@ -2250,9 +2250,9 @@ Target prompt rows now use the native owned-Q8 window preparation that decode an
 rows already used. It runs in windows of at most 256 rows at consecutive cache
 positions, and each prompt piece publishes its raw indexer keys in one compact-indexer
 transaction. Before, each piece took about 15 Torch operations per attention layer.
-The MTP head's absorb of the prompt keeps the reference preparation: with the native
-window there too, the matrix measured decode 0.991× and prefill 1.011× against
-target rows alone.
+The MTP head's absorb of the prompt kept the reference preparation until 2026-11-20
+(with the native window there too, this matrix measured decode 0.991× and prefill
+1.011× against target rows alone); see below.
 
 Eager indexer selection no longer uses a stable Torch argsort:
 - Prompt windows keep the Torch score arithmetic and select with `qsa_select512`'s
@@ -2298,6 +2298,19 @@ C24 and C32; 32 lanes, `m-profile7h32`; base `a8bc6834`, two server sessions per
 The two candidate sessions ran after the four reference and first-candidate
 sessions, not interleaved; the two reference sessions, first and fourth in that
 order, agree within 0.5%.
+
+**The MTP head's prompt absorb uses the native window too (2026-11-20).** The absorb's
+reference preparation was about 435 small Torch operations per 1,024-row piece (guards,
+RMS, M-RoPE, Hadamard, INT8 quantizers), host-bound at about 18 µs each: the GPU sat
+idle about 8 ms per piece (16-20 ms on a prompt's first piece). The native owned-Q8
+window takes those rows in 256-row windows like target prompt rows. Profile (C1 4K):
+absorb GPU idle 8.3-20.3 ms → 1.4-2.1 ms, absorb wall 22-39 ms → 13-22 ms. The window
+normalizes each row the way MTP decode rows do, so the MTP head's prompt rows change
+bits (the batched ATen RMS reduction differs); target outputs do not (golden-vg2
+identical), and draft acceptance on the matched long-prompt requests held (72.5% →
+72.6%). Fast protocol, 8 cells against 301ecd58: prefill +1.96% (trimmed +1.85%, every
+cell +0.8 to +2.7%), decode +0.23% (worst cell -2.43%, within the run-to-run noise of
+the overlap cells).
 
 **Prompt-sized MoE experts: staged IQ decode and vector publication (2026-11-18, bitwise).**
 Owned SC117 expert calls above `DECODE_MAX_ROWS` rows were bound by per-CTA serialized
