@@ -197,7 +197,8 @@ class MultiDecoder:
         self.share, self.round_s, self.row_s = 0.0 if self.merged else share, None, None
         # while replies decode, a prompt pass runs in layer groups, one per round (``_group``), each group plus its round
         # sized to DECODE_GAP_MS (merged targets; a pass with no live reply runs whole)
-        self.gap_ms = DECODE_GAP_MS if self.merged else None
+        # (not with media inputs: _group_start takes none, and their prompts ride merged passes whole)
+        self.gap_ms = DECODE_GAP_MS if self.merged and self.vision is None and self.media_runtime is None else None
         self.layer_ms = None              # GPU ms per prompt row of each layer, from the last grouped passes
         self.group_round_ms = None        # a grouped round's time beside its group (its decode round), EWMA
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
@@ -1819,6 +1820,10 @@ class MultiDecoder:
     def _migrate_boundary(self, migration):
         if self.controller is None or migration is None or not migration["pending"]:
             return
+        if self._grouped is not None:
+            # A pass in layer groups leaves its states mid-pass (some layers' rows and DeltaNet states written, its
+            # indexer appends pending): finish it before any history page migrates (joined by _group_settle).
+            self._grouped_ready = self._group(every=True)[1]
         started = time.perf_counter()
         try:
             self._migration_bundle(migration)

@@ -117,3 +117,16 @@ def test_without_decoding_replies_the_pass_completes_before_any_other(monkeypatc
     d._group()
     d._group_settle([])
     assert calls[-3:] == [(3, L), ("finish", ("pending", L)), ("joined", ["last"])] and d._grouped is None
+
+
+def test_a_history_migration_waits_for_the_grouped_pass_to_finish():
+    # Pages must not migrate while a pass in layer groups has its states mid-pass: the boundary first runs the
+    # pass's remaining layers (rank-identical: the migration plan is replicated), then migrates.
+    d = object.__new__(M.MultiDecoder)
+    order = []
+    d.controller = object()
+    d._grouped = SimpleNamespace()
+    d._group = lambda every=False: order.append(("group", every)) or (None, "done")
+    d._migration_bundle = lambda migration: order.append("migrate")
+    d._migrate_boundary({"pending": True})
+    assert order == [("group", True), "migrate"] and d._grouped_ready == "done"
