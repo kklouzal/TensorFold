@@ -362,7 +362,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16", action=_KVFormat,
                       help="KV cache: bf16 (default; fp16 for Flash Next GGUF/SM70), fp16, int8, int4, or a RotorQuant format. "
                            "INT8/INT4 use one fp16 scale per 32 values. RotorQuant uses packed Lloyd-Max codes and "
-                           "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA only). "
+                           "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA, and Gemma 4 on "
+                           "eight V100s (--tp 8): rotorquant8-norm or rotorquant-iso64-norm4-h64 for its target caches). "
                            "GGUF/SM70 supports fp16, int8, rotorquant-signed128-4 and "
                            "rotorquant-signed64-norm4")
     cuda.add_argument("--kv-key-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
