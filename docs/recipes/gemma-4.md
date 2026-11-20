@@ -94,7 +94,9 @@ TF_SMALL_GATHER_BYTES=262144 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6
 ```
 
 `TF_SMALL_GATHER_BYTES=262144` selects the NVLink small all-gather for the per-layer FP32 partial exchanges
-(measured 6.2 -> 5.0 ms per serial decode step). `--drafter-bits` is `16` (original BF16 companion, default) or `8` (private per-row INT8 W8A16 copies);
+(measured 6.2 -> 5.0 ms per serial decode step). `--drafter-bits` is `8` (private per-row INT8 W8A16 copies, the default since 2026-11-19) or `16` (original BF16 companion);
+at 3 rows and `--parallel 8`, 4K, two repeats, greedy/sampled per-request decode at C1 and C8 measured 283/251 and
+80/64 tok/s with INT8 against 277/243 and 79/66 with BF16;
 `--draft-rows` 2-16 (default 3); greedy DFlash replies equal serial replies bitwise for 2-8 rows (wider
 verify blocks use 256-key attention chunks). On the C1 greedy serving matrix (4K-64K prompts, `--context 66048`)
 scored with the server session as the unit, `--draft-rows 3` decoded 3.8% faster in aggregate than 5 with
