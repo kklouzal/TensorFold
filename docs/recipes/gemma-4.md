@@ -77,7 +77,8 @@ the others over same-host control pipes.
 Layout: sliding attention TP8 (two query heads and one KV head per rank), full attention two query heads
 per rank with its KV head replicated over four ranks, dense MLP 272/256 rows per rank, routed experts
 ETP4 x EP2 (64 experts per rank, intermediate slice 176). Decode rows all-gather FP32 partials and sum them
-in rank order; prompt rows all-reduce. The DFlash companion is split the same way (four query heads, one
+in rank order (from 16 attention rows / 8 FFN rows a rank-ordered FP32 bulk all-reduce, the same bits); prompt
+rows all-reduce. The DFlash companion is split the same way (four query heads, one
 KV head, MLP 704 per rank) and borrows the vocabulary-parallel BF16 target head.
 
 Arithmetic (`gemma4-sm70-w4a16-v1`): exact original FP4/E4M3 weights decoded in-kernel, FP16 activations
@@ -94,7 +95,7 @@ TF_SMALL_GATHER_BYTES=262144 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6
 ```
 
 `TF_SMALL_GATHER_BYTES=262144` selects the NVLink small all-gather for the per-layer FP32 partial exchanges
-(measured 6.2 -> 5.0 ms per serial decode step). `--drafter-bits` is `8` (private per-row INT8 W8A16 copies, the default since 2026-11-19) or `16` (original BF16 companion);
+(measured 6.2 -> 5.0 ms per serial decode step); the provider sets it by default, so the prefix is optional. `--drafter-bits` is `8` (private per-row INT8 W8A16 copies, the default since 2026-11-19) or `16` (original BF16 companion);
 at 3 rows and `--parallel 8`, 4K, two repeats, greedy/sampled per-request decode at C1 and C8 measured 283/251 and
 80/64 tok/s with INT8 against 277/243 and 79/66 with BF16;
 `--draft-rows` 2-16 (default 3); greedy DFlash replies equal serial replies bitwise for 2-8 rows (wider
@@ -112,8 +113,8 @@ is exactly the serial (`"draft": false`) reply. Requests with grammar constraint
 
 Prompt-prefix reuse is automatic: a request resumes from the longest kept prompt state its prompt extends (a
 previous turn of the conversation, a shared system block, an edited later message), at any temperature, and
-reports the reused tokens as `usage.prompt_tokens_details.cached_tokens`. States are kept at 1,024-row prefill
-chunk boundaries at or before the template's message starts and the prompt end, plus each prompt's exact end for
+reports the reused tokens as `usage.prompt_tokens_details.cached_tokens`. States are kept at prefill chunk
+boundaries (multiples of `--prefill-rows`, default 1,024) at or before the template's message starts and the prompt end, plus each prompt's exact end for
 exact repeats, so a resumed request computes exactly the chunks a cold prefill would and replies identically.
 Kept conversations live in extra slots (sized at startup so their rings take 1/16 of the free device memory: 26 at
 `--parallel 8`, at least `max(8, --parallel)`) and in the KV budget; the least valuable idle ones are
@@ -133,8 +134,9 @@ the decoding streams progressed 2x faster, and that prompt's time to first token
 to 64K prompts, greedy and sampled). Startup captures a serial, a serial-with-drafter-taps and a
 DFlash round graph per bucket (1, 2, 3, 4, 6, 8, 12, ... up to N) and prints the per-rank KV budget. Each
 admitted request reserves full-attention KV for its prompt plus `max_tokens`; one that does not fit waits for a
-stream to finish. Batches of at most 16 padded rows keep the C1 arithmetic per stream (bitwise); wider batches
-use tensor-core paths whose replies may differ from C1 (see
+stream to finish. Every decode batch keeps the C1 arithmetic per stream (bitwise) by default; the tensor-core
+path for wide batches, whose replies may differ from C1, runs only with `TF_GEMMA_WIDE_ROWS=N` (forwards of at
+least N rows; see
 [concurrent serving](../gemma4-sm70-concurrency.md) for the memory table, numerical contract and validation).
 `--kv-dtype` selects the full-attention KV format (K and V alike): `bf16` keeps FP16 caches (the CLI default,
 10,752 B/token/rank), `rotorquant8-norm` stores RotorQuant Q8 (5,792 B/token: 16 instead of 8 full 262,144-token
@@ -227,7 +229,7 @@ one step ahead as the server's pipelined engine runs it):
 | plus every load of `attn_tail` and `moe_tail` issued before their first reduction | | 11.7-11.9 (84-85 tok/s) |
 
 Through the server (`TF_GEMMA4_PIPELINE=1`, `tools/bench_openai.py`, 512 tokens, 5 reps, back to back on the
-same machine), median tok/s:
+same machine), median tok/s (`TF_GEMMA4_PIPELINE` and `TF_GEMMA4_FUSED` have since been removed):
 
 | Prompt | Temperature | mlx_lm forward (`TF_GEMMA4_FUSED=0`) | fused, first cut | fused, tails fixed |
 | --- | --- | --- | --- | --- |

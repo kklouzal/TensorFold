@@ -15,8 +15,8 @@ Each scheduler round is pipelined:
    own threads detokenize and stream while the GPU runs) and decide each stream's tokens;
 2. launch the next batched decode round at once for every stream that continues;
 3. while it runs, deliver the decided tokens and issue the next prompt chunk. Prompts fill round-robin (each
-   waiting prompt's next fixed 1,024-row chunk in turn, foreground first; `--prefill-rows` sets the chunk rows,
-   a multiple of 256 up to 4,096). Chunk boundaries are fixed per prompt, so a prompt's arithmetic never
+   waiting prompt's next fixed `--prefill-rows` chunk in turn, default 1,024 rows, a multiple of 256 up to 4,096;
+   foreground first). Chunk boundaries are fixed per prompt, so a prompt's arithmetic never
    depends on load. Concurrent prompts finish together and their decode batches stay full, and every prompt
    chunk is followed by one batched decode round.
 4. while any stream decodes, a chunk runs in layer groups instead, one group per round, so the decode rounds
@@ -62,18 +62,18 @@ drafting allowed reuses, at any temperature: the sampler does not change prompt 
 neither borrows nor keeps. Usage reports the reused tokens as `prompt_tokens_details.cached_tokens`; `/stats`
 `prefix_cache` and the Prometheus `prefix_cache_*` families report entries, lookups and hits/tokens by tier.
 
-- Points: 1,024-row prefill chunk boundaries at or before the chat template's message starts
+- Points: prefill chunk boundaries (multiples of `--prefill-rows`, default 1,024) at or before the chat template's message starts
   (`cuda.markers.resume_points`: the second message, the last assistant start and the last other message) and
   before the prompt end, plus each prompt's exact end (with its last-row logits) for exact repeats, kept as the
-  point one token before the end (`prefixes`' convention). Prefills are chunked at multiples of 1,024 from
+  point one token before the end (`prefixes`' convention). Prefills are chunked at multiples of `--prefill-rows` from
   position 0, and every resume starts on such a boundary (a request that merely extends an exact end resumes at the
   boundary below it), so a resumed request computes exactly the chunks a cold prefill of its prompt computes and
   replies bitwise like the cold request; an exact repeat computes no prompt row. The price is recomputing up to
-  1,023 rows of the shared prefix (measured below).
+  one chunk less one row of the shared prefix (1,023 rows at the default; measured below).
 - State of a point: full-attention caches are linear, so the rows below a point stay valid while later rows are
   rewritten before any read. Sliding-window rings are overwritten as a slot moves on, so the ring rows a point needs
   (its last window + 1 positions: 25 target layers and the drafter's sliding layers, 29.7 MB per rank) are copied
-  out when the prefill reaches the point (before the next chunk). The drafter ring is 3,072 rows (window 2,048 +
+  out when the prefill reaches the point (before the next chunk). The drafter ring is 3,072 rows at the default (window 2,048 +
   one chunk) so a chunk never overwrites the window behind the prompt end. Every prompt row feeds the drafter, so a
   kept point serves later drafting requests.
 - Slots: `--parallel` live streams plus slots for idle kept conversations (plus one padding slot); each slot's
@@ -94,9 +94,9 @@ neither borrows nor keeps. Usage reports the reused tokens as `prompt_tokens_det
 
 Per rank, every slot (live, kept and padding) has FP16 sliding-window rings from startup, for every `--kv-dtype`:
 
-- target: 25 layers × 2,048 rows × 256 × FP16 × K/V = 50 MiB;
-- drafter sliding layers: 4 × 2,304 rows × 128 × FP16 × K/V + positions = 4.5 MiB (rings replace the earlier
-  full-context linear caches).
+- target: 25 layers × 2,048 rows (window 1,024 + one 1,024-row chunk) × 256 × FP16 × K/V = 50 MiB;
+- drafter sliding layers: 4 × 3,072 rows (window 2,048 + one chunk) × 128 × FP16 × K/V + positions = 6.0 MiB (rings
+  replace the earlier full-context linear caches). Both grow with `--prefill-rows`.
 
 A stream's full-attention caches are allocated (zeroed) at admission with capacity
 `min(context, prompt + max_tokens + block)` rounded to 256 rows, and freed when it finishes:

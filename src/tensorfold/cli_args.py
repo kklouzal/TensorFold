@@ -214,14 +214,14 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                                  "model's generation config, else 0: off)")
     generation.add_argument("--presence-penalty", type=float, default=None,
                             help="-2 to 2: subtract this from every token the reply already holds (OpenAI; default 0: "
-                                 "off; the engines docs/api.md#penalties names)")
+                                 "off; only the engines named in docs/api.md#penalties)")
     generation.add_argument("--frequency-penalty", type=float, default=None,
                             help="-2 to 2: subtract this times a token's count in the reply (OpenAI; default 0: off; "
-                                 "the engines docs/api.md#penalties names)")
+                                 "only the engines named in docs/api.md#penalties)")
     generation.add_argument("--repetition-penalty", type=float, default=None,
                             help="above 0: divide positive (multiply other) scores of tokens in the prompt or reply by "
                                  "this (Hugging Face/vLLM; default: the model's generation config, else 1: off; the "
-                                 "engines docs/api.md#penalties names)")
+                                 "engines named in docs/api.md#penalties)")
     generation.add_argument("--thinking", action=argparse.BooleanOptionalAction, default=True,
                             help="open a think block when the chat template supports it")
     generation.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"), default=None,
@@ -286,18 +286,19 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "auto (Mac: up to 8, each started only while the projected memory fits the budget; "
                             "Flash Next GGUF GPU-history CUDA auto: computed equal full-context capacity; a number is its "
                             "session ceiling. Other CUDA auto: one at a time; explicit shared rounds depend "
-                            "on the family)")
+                            "on the family; Gemma 4 --tp 8: 1-32)")
     speed.add_argument("--decode-share", type=float, default=None, help="Mac: while prompts prefill, running replies "
                        "keep moving for this share of each chunk's time, and a new prompt starts at the next chunk "
                        "(default 0.25; 0: whole prompts first, in order, as 0.3.6.2). CUDA Flash Next --parallel: "
                        "replies decode inside each prompt pass; a share sizes the passes so a round's decoding takes "
-                       "it (default 0: whole passes)")
+                       "it (default 0: whole passes; tensor-parallel targets ignore it and run passes in automatic "
+                       "layer groups while replies decode)")
     speed.add_argument("--prefill-rows", type=_prefill_rows, default=None, metavar="N",
                        help="CUDA Flash Next: rows of one prompt piece (256 to 16,384; overrides "
                             "TENSORFOLD_PREFILL_ROWS; default 1,024 on V100, otherwise the engine's own plan). "
-                            "Larger pieces prefill faster and start replies sooner but pause running replies "
-                            "longer (SC117 on 8x V100, 2,048 vs 1,024: prefill +10%%, time to first token "
-                            "10-25%% lower, per-reply decode about 5%% slower at 8 or more concurrent requests). "
+                            "Larger pieces prefill faster and start replies sooner (SC117 on 8x V100, 2,048 vs "
+                            "1,024, measured before layer groups: prefill +10%%, time to first token 10-25%% "
+                            "lower, per-reply decode about 5%% slower at 8 or more concurrent requests). "
                             "Gemma 4 --tp 8: rows of one prompt chunk (a multiple of 256 up to 4,096; default "
                             "1,024); chunk boundaries and prefix-cache points are its multiples")
     speed.add_argument("--prefill-pass", type=int, default=8, help="Mac: prompt chunks one forward takes while a "
@@ -328,7 +329,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="Flash Next concurrent SM70 unique TP8 GPU histories, or Gemma 4 on eight V100s (--tp 8): "
                             "pinned host RAM (all ranks together) "
                             "that keeps prompt points the GPU prefix cache evicts, restored on a hit instead of "
-                            "prefilled again; never written to disk; each rank's share is rounded down to a power of two (the pinned allocator's granularity). Gemma 4 --tp 8: on by default (64 GiB, at most a quarter of MemAvailable; 0 disables). Flash Next: on by default where supported (64 GiB, at most a quarter of MemAvailable; 0 disables; under unique-prompt load its spills cost about 1-2%% of throughput)")
+                            "prefilled again; never written to disk; each rank's share is rounded down to a power of two (the pinned allocator's granularity). Gemma 4 --tp 8: on by default (64 GiB, at most a quarter of MemAvailable; 0 disables). Flash Next (MTP drafting, no retention policy, no vision): on by default where supported (64 GiB, at most a quarter of MemAvailable; 0 disables; under unique-prompt load its spills cost about 1-2%% of throughput)")
     speed.add_argument("--execution-profile-manifest", type=Path, default=None, metavar="PATH",
                        help="Flash Next GGUF GPU-history SM70: load measured execution profiles only after their "
                             "checkpoint, codec, runtime, kernel and hardware identities match this deployment")
@@ -351,7 +352,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--tp", type=int, choices=(1, 2, 4, 8), default=1,
                       help="tensor-parallel GPUs (one visible GPU per rank process); run the same model/settings on each")
     cuda.add_argument("--expert-tensor-parallel-size", type=int, choices=(2, 4, 8), default=None,
-                      help="prepared Flash Next GGUF TP8 routed-expert degree; EP=8/ETP, shared experts stay TP8 (PP1 only; V100 qualification pending)")
+                      help="prepared Flash Next GGUF TP8 routed-expert degree; EP=8/ETP, shared experts stay TP8 (PP1 only; V100 qualification pending); Gemma 4 --tp 8 requires 4")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
                       help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
     cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",
@@ -364,16 +365,19 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16", action=_KVFormat,
                       help="KV cache: bf16 (default; fp16 for Flash Next GGUF/SM70), fp16, int8, int4, or a RotorQuant format. "
                            "INT8/INT4 use one fp16 scale per 32 values. RotorQuant uses packed Lloyd-Max codes and "
-                           "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA, and Gemma 4 on "
-                           "eight V100s (--tp 8): rotorquant8-norm or rotorquant-iso64-norm4-h64 for its target full-attention caches; its sliding rings stay FP16). "
-                           "GGUF/SM70 supports fp16, int8, rotorquant-signed128-4 and "
-                           "rotorquant-signed64-norm4")
+                           "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA). "
+                           "Gemma 4 on eight V100s (--tp 8): bf16 (FP16 caches), rotorquant8-norm or "
+                           "rotorquant-iso64-norm4-h64 for its target full-attention caches; its sliding rings stay FP16. "
+                           "GGUF/SM70 supports fp16, int8, rotorquant-signed128-4, rotorquant-signed64-norm4, "
+                           "rotorquant8(-norm), rotorquant-planar4/iso4/iso64-norm4(-h64) and the compact "
+                           "rotorquant-planar4-sm70-v1/iso4-sm70-v1 (the eight-bit and Planar/Iso formats on "
+                           "unique-history owned paths only)")
     cuda.add_argument("--kv-key-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
                       help="Flash Next CUDA: key-cache format; overrides the key side of --kv-dtype")
     cuda.add_argument("--kv-value-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
                       help="Flash Next CUDA: value-cache format; overrides the value side of --kv-dtype")
     cuda.add_argument("--prefix-cache-bytes", type=int, default=None,
-                      help="Gemma 4 MoE on CUDA: shared prefix-cache byte allowance (0 disables); "
+                      help="Gemma 4 MoE on one GPU (refused with --tp 8): shared prefix-cache byte allowance (0 disables); "
                            "default uses the context-derived allowance. Explicit bytes keep the requested "
                            "or native context and must fit full memory admission; no entry ceiling")
     cuda.add_argument("--spark-global-gqa", action="store_true", default=False,

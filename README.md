@@ -478,7 +478,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | Flags | Default / contract |
 | --- | --- |
 | `--parallel N\|auto` | `auto`: MLX up to 8 while projected memory fits; GGUF GPU-history CUDA computes full-context resident capacity; other CUDA providers use 1. On the adaptive path, an integer is an admission ceiling. |
-| `--draft-method auto\|none\|mtp\|dspark` | Flash Next CUDA selects an implemented method; `none` omits drafter resources. DFlash is separate and not yet a Flash Next serving choice. |
+| `--draft-method auto\|none\|mtp\|dspark\|dflash2` | Flash Next CUDA selects an implemented method; `none` omits drafter resources. `dflash2` requires TP8 GGUF and an exact execution-profile pairing manifest ([recipe](docs/recipes/qwen3.8-flash-next.md)). |
 | `--execution-profile-manifest FILE` | Opt-in GGUF SM70 input/runtime binding and verified execution-profile receipts. GGUF shards are bound by size and header digest (payloads are not hashed); metadata, source and loaded libraries are hashed once; normal startup does not do this work. See the [manifest contract](docs/execution-profile-manifest.md). |
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
@@ -486,7 +486,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--clip-sampled-verification` | Gemma4 non-dense CUDA with enabled DFlash: explicitly clip sampled target verification to remaining room, preserving full proposal sampling. Default off; no precision/geometry/classifier change. |
 | `--delta4-head` | Gemma CT NVFP4 MoE on CUDA only: lossless tied BF16 Delta4 storage using fixed reuse16, default off. Preserves the existing drafter/vision/template/context selections. Cannot combine with ModelOpt's separate `--lossless-head`; no graph, clipping or cache candidate is enabled. |
 | `--prepare-global-prompt` | Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: one admitted context-sized shared BF16 global-prompt K/V scratch pair, default off. At the AEON131072 profile this is512 MiB. Does not enable trig, persistent cache, draft graphs or clipping. |
-| `--draft-rows N` | CUDA Gemma4 MoE with DFlash: 2–128 rows, default 16, with `--parallel 1`. E2B DFlash2: 2–8 rows, default 8, one lane; [correctness baseline and validation scope](docs/recipes/gemma-4-e2b.md). CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
+| `--draft-rows N` | CUDA Gemma4 MoE with DFlash: 2–128 rows, default 16, with `--parallel 1`. Gemma 4 `--tp 8` on V100s: 2–16 rows, default 3, any `--parallel`. E2B DFlash2: 2–8 rows, default 8, one lane; [correctness baseline and validation scope](docs/recipes/gemma-4-e2b.md). CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
 | `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 4 on CUDA. Startup 0 retains legacy structural-disable behavior under `auto`; explicit `--draft-method mtp` requires a positive allocated maximum. Adaptive runtime `proposal_limit: 0` keeps enabled MTP warm. |
 | `--mtp-confidence P` | Flash Next CUDA default `0.70`; range 0–1, stops later low-confidence drafts. |
 | `--lane-kernels auto\|on\|off` | `auto`; Qwen dense lane kernels on GPUs with tensor units. |
@@ -512,7 +512,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--prefix-host-bytes BYTES` | Flash Next concurrent SM70 unique TP8 GPU histories with MTP (the V100 production path): pinned host RAM, all ranks together, each rank's share rounded down to a power of two (PyTorch pins power-of-two blocks) (on by default: 64 GiB across the ranks, at most a quarter of MemAvailable, agreed by every rank; `0` disables; a default slab that cannot be pinned starts without the tier, an explicit one is a startup error; refused elsewhere; under a stream of unique prompts its spills cost about 1-2% of prefill/decode throughput on the production benchmark), charged as a fixed host obligation before the HTTP payload pool. Prompt points the GPU prefix cache drops by value are copied there and restored into a free slot with the same history-page ownership on a hit (bit-identical to the GPU-resident point); never written to disk. A spill copies only the history rows past those the tier already holds for that slot's conversation (shared, reference-counted row extents), so each row is stored once per conversation rather than once per spilled point. `/stats` `prefix_cache.host` and Prometheus `prefix_host_*` report it. Gemma 4 on eight V100s (`--tp 8`) enables it by default (64 GiB across the ranks, at most a quarter of MemAvailable, agreed by every rank; `0` disables): evicted kept points (full-cache rows and ring snapshots) are copied to one pinned slab per rank allocated at startup and restored byte-exactly into a free slot; its full-cache rows are shared across a conversation's spills the same way. |
 | `--ssd-experts GIB` | Unset. Supported MLX families stream checkpoint experts into a GPU pool; distinct from RAM-backed CUDA experts and unsupported with CUDA `--vram-experts`. See the [Flash Next recipe](docs/recipes/qwen3.8-flash-next.md). |
 | `--ple-on-ssd` | Off. Supported Flash Next affine, BF16, FP8 and NVFP4 n-gram layouts use bounded demand SSD reads with their original decoding/scale semantics. EXL3 retains its native mapped table and rejects this flag. |
-| `--kv-dtype FORMAT` | Flash Next CUDA `bf16`; shorthand selects both K and V formats. Gemma 4 `--tp 8` on V100s: `bf16` (FP16 caches, the CLI default), `rotorquant8-norm` (Q8, the Compose default) or `rotorquant-iso64-norm4-h64` (Q4), same format on K and V; see the [Gemma 4 recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4). |
+| `--kv-dtype FORMAT` | Flash Next CUDA `bf16` (GGUF or `--family-manifest` without an explicit format: `fp16`); shorthand selects both K and V formats. Gemma 4 `--tp 8` on V100s: `bf16` (FP16 caches, the CLI default), `rotorquant8-norm` (Q8, the Compose default) or `rotorquant-iso64-norm4-h64` (Q4), same format on K and V; see the [Gemma 4 recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4). |
 | `--kv-key-dtype FORMAT`, `--kv-value-dtype FORMAT` | Unset; independently override their side of `--kv-dtype`. |
 | `--yarn-factor FACTOR` | Flash Next, Qwen3.8 dense and Qwen3.6 on CUDA: checkpoint factor unless overridden; finite factor ≥1. `--context` still governs admission. Qwen3.8 dense and Qwen3.6 extended-window qualification is pending ([27B](docs/recipes/qwen3.8-27b.md#context-and-yarn) and [Qwen3.6](docs/recipes/qwen3.6-moe.md#context-and-yarn) recipes). |
 
@@ -1736,7 +1736,7 @@ C1 greedy, five repeats a session; acceptance and engine round time shown from
 | 2 | 229.1 / 220.0 / 215.5 / 203.2 / 189.9 | 0.66 → 0.59 | 7.25 → 8.35 |
 | 3 | 241.7 / 227.9 / 221.4 / 211.2 / 192.7 | 1.03 → 0.84 | 8.40 → 9.55 |
 | 4 | 241.1 / 229.3 / 219.6 / 210.0 / 189.8 | 1.22 → 0.96 | 9.22 → 10.33 |
-| 5 (current default) | 236.1 / 222.1 / 212.6 / 203.2 / 182.0 | 1.30 → 1.02 | 9.76 → 11.08 |
+| 5 (previous default) | 236.1 / 222.1 / 212.6 / 203.2 / 182.0 | 1.30 → 1.02 | 9.76 → 11.08 |
 
 Rows 3–5 are geometric means over two server sessions (ten repeats); rows 2
 over one. Scored with the server session as the unit (each arm's sessions plus
@@ -1785,8 +1785,10 @@ taps. On the Gemma-tokenized quality corpus (7,517 teacher-forced tokens), mean
 per-token |log-probability difference| from an independent exact FP32 W4A16
 reference is 0.364 (chat 0.105) versus 1Cat's 0.434 (chat 0.144). Chat and raw-completion SSE stream per verified round (a raw prompt that ends
 inside an opened channel keeps the chat holdback; [API](docs/api.md)). Pending:
-image/video input, `--parallel` above 1 and native 262,144-token qualification.
-Sampled requests decode serially: a rejection-sampled DFlash trial (seeded
+image/video input, `--parallel` above 1 and native 262,144-token qualification
+(`--parallel` superseded 2026-11-19: 1-32, see above).
+Sampled requests decode serially (superseded 2026-11-19: sampled requests draft with DFlash, see above): a
+rejection-sampled DFlash trial (seeded
 replies reproducible) measured 187/123/112 tok/s (code/prose/list) against
 171/154/179 serially, and an adaptive switch to serial did not beat serial
 either, so it was not adopted. `--no-graphs` serves eagerly with the same greedy

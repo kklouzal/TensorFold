@@ -67,14 +67,16 @@ tensorfold serve Vontra/Qwen3.8-27B-MLX-4bit --name local-model --host 0.0.0.0 -
 The first start compiles kernels. Container removal discards an unpersisted installation and cache;
 use a retained container or configure persistent storage when downloads should survive removal.
 There is no `tensorfold[cuda]` extra. Qwen3.8-27B, Flash Next and Nemotron have one- and two-rank CUDA
-engines; GLM requires two ranks. Nemotron CUDA uses its included MTP head and 4-bit/group-64 weights.
+engines; Flash Next GGUF on V100s (SM70) also runs `--tp 4` and `--tp 8`; Gemma 4 26B-A4B on eight V100s
+requires `--tp 8`; GLM requires two ranks. Nemotron CUDA uses its included MTP head and 4-bit/group-64 weights.
 Qwen3.8-27B CUDA requires DFlash2 unless `--no-drafts` selects the serial reference. Flash Next also reads
 the NVFP4 (ModelOpt FP4) checkpoint `ukisai/Swift-1.5-Qwen3.8-Flash-Next-NVFP4` as it ships — its PLE layer
 included, whose table ships as BF16 rows with no per-shard `scales`, a layout the reader takes as it is.
 
-CUDA `--parallel auto` serves one request at a time. To share rounds, set `--parallel N` greater than
-one for Qwen3.8-27B on one or two tensor ranks, or Flash Next on one tensor rank.
-Flash Next refuses concurrent tensor-parallel execution. Its separate same-host NCCL expert-rank mode
+CUDA `--parallel auto` serves one request at a time, except Flash Next GGUF GPU histories, which compute
+equal full-context capacity. To share rounds, set `--parallel N` greater than one for Qwen3.8-27B on one or
+two tensor ranks, Flash Next on one rank, Flash Next GGUF/SM70 on TP1/2/4/8, or Gemma 4 `--tp 8` (1-32).
+Other Flash Next checkpoints refuse concurrent tensor-parallel execution. Its separate same-host NCCL expert-rank mode
 keeps request state and vision on rank 0 and supports concurrent requests; see the
 [desktop guide](docs/desktop-report-remediation.md) for asymmetric GPU shards and coverage limits.
 GLM and Nemotron CUDA keep serial request scheduling.

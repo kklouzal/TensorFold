@@ -425,12 +425,14 @@ reply still equals its solo run. The cost is decode speed while prompts fill: a 
 most of the experts, so live replies decode at about a tenth of their usual rate during a burst's prefill (2.6-3.2
 of 32-41 tok/s on one Spark) instead of stopping. `--decode-share S` sizes the passes so a round's decoding takes
 that share of the pass's time: 0.25 about doubles decode during a prefill and roughly halves prompt speed. The
-default, 0, keeps whole passes.
+default, 0, keeps whole passes. On tensor-parallel targets, where a round's window rides the prompt pass's rows,
+the share is forced to 0; while replies decode, passes run in automatic layer groups with a decode round after each
+(about 175 ms per group and round, since 2026-11-20).
 
 Prompt piece sizing retains the fork's admitted workspace plan. The default
-chunk geometry is 2,048 rows; the runtime can select a smaller fitting plan.
-`TENSORFOLD_PREFILL_ROWS=N` (256 through 16,384) explicitly sizes prompt buffers
-and enters the capacity estimate. Shared-round pacing retains its 128-row floor
+chunk geometry is 2,048 rows (1,024 on V100/SM70); the runtime can select a smaller fitting plan.
+`serve --prefill-rows N` or `TENSORFOLD_PREFILL_ROWS=N` (256 through 16,384; the flag overrides the
+environment) explicitly sizes prompt buffers and enters the capacity estimate. Shared-round pacing retains its 128-row floor
 and bounds each pass by the prepared prompt workspace. The current GB10 profile
 explicitly selects 2,048 rows. Choose a value from matched complete-request
 measurements on the actual host; an upstream auto-calibration policy is not

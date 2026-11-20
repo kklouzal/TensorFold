@@ -739,9 +739,12 @@ prompt-piece geometry, not a change to logical context, MTP depth or a serving m
 budget.
 
 The size trades prefill and time to first token against the decoding of replies
-already running, which pauses while each prompt piece runs. Measured on SC117, 8×
-V100 TP8/ETP4, MTP4, INT8 KV, 24 lanes, on the 8-cell greedy grid (4K and 16K prompts
-at C1, C8, C16, C24), 2,048 against 1,024 rows:
+already running. Since 2026-11-20, while replies decode, a prompt piece on the TP8
+target runs in automatic layer groups, so replies wait about one group (175 ms target
+with its decode round) instead of the whole piece. Measured before layer groups, when
+replies paused for each whole piece, on SC117, 8× V100 TP8/ETP4, MTP4, INT8 KV, 24
+lanes, on the 8-cell greedy grid (4K and 16K prompts at C1, C8, C16, C24), 2,048
+against 1,024 rows:
 - prefill +10%;
 - time to first token 10–25% lower;
 - total output tokens per second over each cell +4–8%;

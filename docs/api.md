@@ -242,9 +242,10 @@ request yields when a foreground request needs its lane or memory, then restarts
 suppressed.
 Session-title requests are also treated as background work.
 
-On CUDA, `--parallel auto` serves one request at a time. An explicit `--parallel N` above one shares rounds
-for Qwen3.8-27B on one or two ranks, Flash Next on one rank, Flash Next GGUF/SM70 on TP1/2/4/8,
-and Qwen3.6 on one rank; GLM and Nemotron stay serialized. The GGUF provider uses the same scheduler
+On CUDA, `--parallel auto` serves one request at a time, except Flash Next GGUF GPU histories, which compute equal
+full-context capacity. An explicit `--parallel N` above one shares rounds for Qwen3.8-27B on one or two ranks,
+Flash Next on one rank, Flash Next GGUF/SM70 on TP1/2/4/8, Gemma 4 on eight V100s (`--tp 8`, 1-32) and Qwen3.6 on
+one rank; GLM and Nemotron stay serialized. The GGUF provider uses the same scheduler
 and per-request cancellation. See the [V100 qualification](v100-flashnext-validation.md) for its tested scope.
 For engines with a prefill progress callback, development source also polls
 client cancellation at prompt chunk boundaries, including nonstream requests

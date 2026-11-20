@@ -9,6 +9,20 @@ GitHub has the full notes and the measurements behind them.
   release with CPython 3.15 wheels; `--ssd-experts` builds with nanobind 3.1.0. MLX 0.32.4 has not been tested on a
   Mac yet: the MLX tests and the golden and bit-exactness checks still need to run there, and the bit-exact claims in
   the notes below were measured on MLX 0.32.2/0.32.3 and are unverified on 0.32.4.
+- **Gemma 4 26B-A4B on eight V100s (`--tp 8`) serves concurrent requests.** `--parallel 1-32` shares batched
+  decode rounds through the CUDA scheduler, sampled requests draft with DFlash, and prompt prefixes are reused
+  automatically with replies equal to a cold prefill. A pinned host-RAM prefix tier is on by default (64 GiB across
+  the ranks, at most a quarter of MemAvailable; `--prefix-host-bytes 0` disables). `--drafter-bits` defaults to 8
+  (private INT8 W8A16 drafter copies), and the V100 Compose profile stores the full-attention KV as RotorQuant Q8
+  (`--kv-dtype rotorquant8-norm`). See the [Gemma 4 recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4).
+- **Flash Next on eight V100s keeps evicted prompt points in host RAM by default** (`--prefix-host-bytes`, 64 GiB
+  across the ranks, at most a quarter of MemAvailable; `0` disables), restored bit-identically on a later hit.
+- **`--prefill-rows N`** sets the prompt-piece rows of Flash Next on CUDA (256-16,384, overrides
+  `TENSORFOLD_PREFILL_ROWS`; default 1,024 on V100) and the prompt-chunk rows of Gemma 4 `--tp 8` (a multiple of 256
+  up to 4,096, default 1,024).
+- **Replies keep decoding while prompts fill** on Flash Next tensor-parallel targets and Gemma 4 `--tp 8`: a prompt
+  pass runs in automatic layer groups with a decode round after each, so a reply waits about 175 ms instead of the
+  whole pass. Prompt arithmetic and replies are unchanged; there is no setting.
 
 ## 0.6.6 (6 Oct 2026)
 

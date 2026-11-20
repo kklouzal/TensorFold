@@ -248,8 +248,10 @@ whose rows never depend on their chunk; an EXL3 27B's prompt bits change with it
 
 ## Requests and memory
 
-CUDA `--parallel auto` serves one request at a time. Set an explicit `--parallel N` above one for shared
-Qwen3.8-27B or Flash Next rounds on one or two ranks; Nemotron, GLM and Qwen3.6 remain serialized. The shared
+CUDA `--parallel auto` serves one request at a time, except Flash Next GGUF GPU histories, which compute equal
+full-context capacity. Set an explicit `--parallel N` above one for shared rounds: Qwen3.8-27B on one or two ranks,
+Flash Next on one rank, Flash Next GGUF/SM70 on TP1/2/4/8, Gemma 4 on eight V100s (`--tp 8`, 1-32) and Qwen3.6 on
+one rank; Nemotron and GLM remain serialized. The shared
 scheduler admits requests between decode rounds, then verifies each active stream's drafts together and commits
 each stream independently. On the 27B, a new prompt prefills 1,024 tokens a round while the other streams keep
 decoding, and its state is kept at message starts (the second message and the last assistant turn), so prompts that

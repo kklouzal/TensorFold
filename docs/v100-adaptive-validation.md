@@ -2566,7 +2566,7 @@ see [the update above](#independent-serial-router-trial). History follows.
 
 The separate private preparation field `prepared_router: owned-serial-router-v1`
 selects a resident operator on each actual Weights/decode/MTP Buffers owner.
-The campaign `inputs` command accepts `--prepared-router owned-serial-router-v1`;
+The campaign `inputs` command accepted `--prepared-router owned-serial-router-v1` (since removed);
 its default omits this field. This requires an explicit unqualified trial in
 the private TP8/ETP4 HC4/reference-profile NONE/MTP region. It does not set
 `_NATIVE_LOGITS`, the import-time environment selector, top-k or expert weights.

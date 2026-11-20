@@ -257,8 +257,9 @@ failure and cold-to-warm stability controls are retained.
 `v100_onecat_campaign.py inputs --preparation PATH --preparation-sha256 SHA`
 accepts one complete preparation object from the existing execution-manifest
 schema. Both arguments are required together and exclude `--native-family`,
-`--prepared-linears`, `--prepared-router` and `--coordinate-staging`; omitting
-them retains the existing default and four independent flag paths. The request
+`--prepared-linears` and `--coordinate-staging`; omitting
+them retains the existing default and three independent flag paths (a fourth,
+`--prepared-router`, has since been removed). The request
 uses the existing16-MiB execution-manifest bound, a regular non-symlink file and
 an external lowercase SHA256. The CPU input container receives a read-only
 mount and authenticates the exact bytes before model discovery/hashing. The
