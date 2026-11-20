@@ -124,8 +124,13 @@ evicted when a request needs room. A pinned host-RAM tier (on by default: 64 GiB
 `--parallel N` (1-32; `auto` means 1) serves up to N requests together through the shared CUDA scheduler
 (`--parallel 8` is the tested setting: one request decodes as fast as with `--parallel 1`, and eight requests
 of up to 200,000 reply tokens fit the KV budget at the full 262,144-token context): prompts prefill in
-fixed 1,024-row chunks, round-robin across waiting prompts, with one batched decode round (all decoding
-streams, padded to a graph bucket) between chunks. Startup captures a serial, a serial-with-drafter-taps and a
+fixed 1,024-row chunks (`--prefill-rows N`, a multiple of 256 up to 4,096, changes the chunk), round-robin
+across waiting prompts, with one batched decode round (all decoding streams, padded to a graph bucket) between
+chunks. While any stream decodes, a chunk runs in layer groups with a decode round between groups, so a
+decoding stream waits for one group (target 175 ms with its round) instead of the whole chunk; the prompt's
+arithmetic is unchanged (2026-11-20, a 30K prompt arriving with 7 decoding streams: decode gap p99 371 -> 180 ms,
+the decoding streams progressed 2x faster, and that prompt's time to first token grew 14%; p99 at most 180 ms up
+to 64K prompts, greedy and sampled). Startup captures a serial, a serial-with-drafter-taps and a
 DFlash round graph per bucket (1, 2, 3, 4, 6, 8, 12, ... up to N) and prints the per-rank KV budget. Each
 admitted request reserves full-attention KV for its prompt plus `max_tokens`; one that does not fit waits for a
 stream to finish. Batches of at most 16 padded rows keep the C1 arithmetic per stream (bitwise); wider batches
