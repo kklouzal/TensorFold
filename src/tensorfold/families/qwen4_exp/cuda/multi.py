@@ -2440,7 +2440,10 @@ class MultiDecoder:
         ended = cancelled + self._make_room()          # all issued work from the previous round has resolved
         ended += self._join_ends()
         live = [s for s in self.streams.values() if self._runnable(s)]
-        if self.filling and (not live or not self.mixes):
+        # A merged window takes its rows out of the pass: when the pass quota (e.g. an administered prefill_tokens)
+        # cannot hold the widest window beside prompt rows, the pass runs alone so prompts keep filling.
+        alone = bool(self.merged and live and self._pass_rows() <= (self.depth + 1) * len(live))
+        if self.filling and (not live or not self.mixes or alone):
             ended += self._fill()                      # passes alone; a prompt that ends here joins this round
             live = [s for s in self.streams.values() if self._runnable(s)]
         if not live:
@@ -2518,7 +2521,7 @@ class MultiDecoder:
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
         # merged rounds keep the pass's rows: the window's rows come out of the prompt room
         pieces, psegs = [], None
-        if self.filling and self.mixes:
+        if self.filling and self.mixes and not alone:
             room = self._pass_rows() - (segs[-1][2] if self.merged else 0)
             pieces = self._pieces(room) if room > 0 else []
         marks = self._output_marks([*live, *(s for s, _, _ in pieces)]) if self.controller is not None else None
