@@ -4645,6 +4645,11 @@ def worker(argv):
             receipt_failed = True  # publish_receipt already poisoned/notified before CLI retirement.
             raise
     try:
+        # Import the SM70 operator modules before the ordinary constructor, as the removed policy attestations did.
+        # Without it SC117 decode measured about -1.4% at C>=8 (four A/B pairs; with this order: parity), 2026-11-20
+        # polish2 ledger. The cause is unresolved; keep the order until it is understood.
+        from tensorfold.cuda.sm70 import family_ops, routing_native  # noqa: F401
+        from tensorfold.families.qwen4_exp.cuda import history_owner  # noqa: F401
         if selected.router_row_input is not None:
             if selected.history_input is not None or selected.benchmark_plan is not None:
                 raise ValueError("router row capture is a separate controlled procedure")
