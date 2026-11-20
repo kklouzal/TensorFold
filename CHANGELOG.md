@@ -23,6 +23,12 @@ GitHub has the full notes and the measurements behind them.
 - **Replies keep decoding while prompts fill** on Flash Next tensor-parallel targets and Gemma 4 `--tp 8`: a prompt
   pass runs in automatic layer groups with a decode round after each, so a reply waits about 175 ms instead of the
   whole pass. Prompt arithmetic and replies are unchanged; there is no setting.
+- **Removed never-adopted experiments.** `TF_GEMMA_WIDE_ROWS` (Gemma 4 `--tp 8` tensor-core decode for wide
+  batches, off by default) and the private Flash Next V100 switches `TENSORFOLD_PRIVATE_SM70_MOE_PARTIAL` and
+  `TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX` are gone. Flash Next's `/v1/runtime` drops the history-degree migration
+  fields (`migration`, `applied_migration`, `deferred_migration`; per slot `pending_attention_degree`,
+  `migration_blocked_reason`, `migration_bytes`) and the capacity ledger's `migration_overlap_limit`, which never
+  changed in serving; an `attention_degree` update is refused as an unknown setting.
 
 ## 0.6.6 (6 Oct 2026)
 
