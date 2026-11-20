@@ -48,7 +48,7 @@ void family_qsa_rows_long_cuda(const T&, const T&, const T&, T&, T&, T&, T&, T&,
 
 void family_owned_q8_prepare_resident_cuda();
 void family_owned_q8_prepare_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&,
-    T&, T&, T&, T&, const T&, const T&, T&, int64_t, int64_t, int64_t, int64_t, int64_t,
+    T&, T&, T&, T&, const T&, const T&, T&, int64_t, int64_t, int64_t, int64_t,
     int, int, int, int, int, float, float, int, int, int);
 
 void family_owned_q8_prepare_rows_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&,
@@ -264,7 +264,7 @@ void shift(T old, const T& rows, int keep, int channels) {
 template<bool WINDOW>
 void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
         const T& freq, T q, T iq, T k, T v, T ks, T vs, const T& offsets,
-        const T& generations, T status, int64_t slot, int64_t owner, int64_t start,
+        const T& generations, T status, int64_t slot, int64_t start,
         int64_t logical, int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
         int index_dim, double eps, double amplitude, int section1, int section2, int codec) {
     check_half(p); epsilon(eps);
@@ -291,8 +291,8 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
         && axes.dim() == 2 && axes.size(0) == rows && axes.size(1) == 3
         && qw.numel() == 256 && kw.numel() == 256 && iw.numel() == index_dim && freq.dim() == 1
         && freq.numel() > 0 && freq.numel() * 2 <= std::min(256, index_dim)
-        && generations.numel() == 2 && status.numel() == 2, "owned Q8 output/control geometry");
-    TORCH_CHECK(slot >= 0 && owner >= 0 && logical > 0 && logical <= INT32_MAX && physical >= 0 && physical <= INT32_MAX
+        && generations.numel() == 1 && status.numel() == 2, "owned Q8 output/control geometry");
+    TORCH_CHECK(slot >= 0 && logical > 0 && logical <= INT32_MAX && physical >= 0 && physical <= INT32_MAX
         && start >= 0 && start <= logical - rows && page_tokens > 0 && page_tokens % 4 == 0
         && offsets.dim() == 1 && offsets.numel() == (logical + page_tokens - 1) / page_tokens
         && k.numel() >= physical * (nibbles ? 128 : 256) && v.numel() >= physical * (nibbles ? 128 : 256)
@@ -309,7 +309,7 @@ void owned_q8_prepare(const T& p, const T& axes, const T& qw, const T& kw, const
     }
     c10::cuda::CUDAGuard guard(p.device());
     family_owned_q8_prepare_cuda(p, axes, qw, kw, iw, freq, q, iq, k, v, ks, vs, offsets, generations,
-        status, slot, owner, start, logical, physical, page_tokens, layer, qheads, index_heads, index_dim,
+        status, slot, start, logical, physical, page_tokens, layer, qheads, index_heads, index_dim,
         float(eps), float(amplitude), section1, section2, codec);
 }
 

@@ -24,7 +24,7 @@ def fixture(rows, *, mtp=False, owned_pages=(0, 2), pos=127):
     for tensor in (cache.k, cache.v, cache.ks, cache.vs):
         tensor.fill_(7)
     events = []
-    expected = (7, 3)
+    expected = 7
     class Entry:
         def pool(self, *args):
             events.append(('pool', args))
@@ -41,8 +41,8 @@ def fixture(rows, *, mtp=False, owned_pages=(0, 2), pos=127):
         return Entry()
     state = NS(pos=pos, mtp_len=pos, att_index={0: 0}, kc=[cache], mtp_kc=cache,
         history_rank=0, history_placement=placement, history_slot=0,
-        slot_generation=expected[0], history_generation=expected[1],
-        history_generations=torch.tensor(expected), kv_status=torch.tensor([0, -2], dtype=torch.int32),
+        slot_generation=expected,
+        history_generations=torch.tensor([expected]), kv_status=torch.tensor([0, -2], dtype=torch.int32),
         compact_indexer=NS(append=append), pooled=[object()], mtp_pooled=object(),
         target_tentative_length=pos)
     frequency = torch.linspace(.0001, .03, 64)
@@ -92,8 +92,8 @@ def test_native_row_views_and_window_versions_match_independent_reference(rows, 
                             (args[6], buffers.q), (args[7], buffers.iq)):
             assert value.shape[0] == step and value.is_contiguous()
             assert value.data_ptr() == base[row:row+step].data_ptr()
-        assert args[17] == state.pos+row
-        assert args[21] == layer.index
+        assert args[15] == state.slot_generation and args[16] == state.pos+row
+        assert args[20] == layer.index
     deltas = [[t._version-v for t, v in zip(tensors(item), versions)]
               for item, versions in zip((old, new), before)]
     assert deltas[0] == deltas[1]
@@ -121,12 +121,12 @@ def test_selected_roles_keep_one_raw_transaction_and_commit_only_mtp(monkeypatch
     assert [event[0] for event in events] == (['append', 'pool', 'prepare_commit', 'publish_commit']
                                               if mtp else ['append', 'pool'])
     assert events[0][1][0:2] == (1 if mtp else 0, 127)
-    assert events[0][2] == {'mtp': mtp, 'expected': (7, 3)}
+    assert events[0][2] == {'mtp': mtp, 'expected': 7}
     assert (state.pos, state.mtp_len) == (127, 127)
     assert state.target_tentative_length == (127 if mtp else 132)
     if mtp:
-        assert events[-2][1:] == (132, (7, 3))
-        assert events[-1][1:] == ('prepared', 132, (7, 3))
+        assert events[-2][1:] == (132, 7)
+        assert events[-1][1:] == ('prepared', 132, 7)
 
 
 @pytest.mark.parametrize('mtp', [False, True])

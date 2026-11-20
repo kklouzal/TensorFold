@@ -137,7 +137,7 @@ def test_seeded_owner_numerical_diagnostic(format_name, degree, group, sparse, c
                                  "output": differences(output, state.out[row])})
     for state in states:
         assert state.status.cpu().tolist() == [0, -2]
-        assert state.generations.cpu().tolist() == [0, 0]
+        assert state.generations.cpu().tolist() == [0]
         if not sparse:
             assert torch.equal(state.out[1], torch.zeros_like(state.out[1]))
     report = {"schema": "sm70-owner-numerical-diagnostic-v1", "diagnostic_only": True,

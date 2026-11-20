@@ -40,8 +40,8 @@ __device__ __forceinline__ bool active(const int64_t* descriptor, int layer) {
     }
     if (within >= count) return false;
     const int64_t* generations = pointer<const int64_t>(descriptor[meta::GENERATIONS]);
-    if (generations == nullptr || descriptor[meta::EXPECTED_SLOT] < 0 || descriptor[meta::EXPECTED_OWNER] < 0
-            || generations[0] != descriptor[meta::EXPECTED_SLOT] || generations[1] != descriptor[meta::EXPECTED_OWNER]) {
+    if (generations == nullptr || descriptor[meta::EXPECTED_SLOT] < 0
+            || generations[0] != descriptor[meta::EXPECTED_SLOT]) {
         latch(descriptor, 32, layer);
         return false;
     }

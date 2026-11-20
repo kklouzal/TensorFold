@@ -42,7 +42,7 @@ def workspace_bytes(rows):
 def generation_bytes(slots):
     if type(slots) is not int or slots < 0:
         raise ValueError("history generation slots must be a nonnegative integer")
-    return slots * 2 * 8
+    return slots * 8
 
 
 # (bits, kernel codec): kernel codec 12 is descriptor codec 4 at eight bits (rotorquant8), 8 is rotorquant8-norm.

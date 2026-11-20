@@ -134,7 +134,7 @@ class RetainedHost:
         result = cls.__new__(cls)
         result.stream, result.delivery, result.fill = stream, delivery, fill
         result._source = weakref.ref(stream.st)
-        result._source_generation = (stream.st.slot_generation, stream.st.history_generation)
+        result._source_generation = stream.st.slot_generation
         result._detached = False
         result.profile = stream.st.coordinate_profile_identity
         result.position, result.mtp_len = stream.st.pos, stream.st.mtp_len
@@ -145,7 +145,7 @@ class RetainedHost:
     def detach(self, state):
         """After catalog capture takes the GPU owner; readers remain catalog-owned."""
         if (self.closed or self._detached or self._source() is not state or self.stream.st is not state
-                or (state.slot_generation, state.history_generation) != self._source_generation):
+                or state.slot_generation != self._source_generation):
             raise RuntimeError("retained host cannot detach a different or already reused State")
         self.stream.st = None
         self._detached = True
@@ -157,7 +157,7 @@ class RetainedHost:
         if type(handoff) is not dict or handoff.get("host") is not self:
             raise RetentionMismatch("CPU continuation needs its actual completed catalog handoff")
         if not self._detached and (self.stream.st is not state or self._source() is not state
-                or (state.slot_generation, state.history_generation) != self._source_generation):
+                or state.slot_generation != self._source_generation):
             raise RuntimeError("resident CPU continuation belongs to a different or reused State")
         if self._detached and self.stream.st is not None:
             raise RuntimeError("retained CPU continuation is already attached to another State")

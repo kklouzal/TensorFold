@@ -640,7 +640,7 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     if history_placement is not None:
         from tensorfold.cuda.sm70.paged_attention import generation_bytes
 
-        state_bytes += generation_bytes(streams)  # stable slot/ownership words per full-window State
+        state_bytes += generation_bytes(streams)  # one slot-generation word per full-window State
     recovery_bytes = (keep + streams * points) * (rec + conv + tail + int(mtp) * hc * d * 2)
     fixed = state_bytes + recovery_bytes  # retained plus a pass's points
     slots = int(t.get("num_experts_per_tok", 1)) + 1

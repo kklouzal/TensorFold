@@ -104,7 +104,7 @@ def raw_grid(module, item, *, start=None):
     return module.owned_q8_prepare_window(p, buffers.target_indexer_coordinates,
         a.q_scale, a.k_scale, a.iq_scale, weights.inv_freq, buffers.q, buffers.iq,
         cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets, state.history_generations,
-        state.kv_status, state.slot_generation, state.history_generation,
+        state.kv_status, state.slot_generation,
         state.pos if start is None else start, cache.logical_capacity, cache.capacity,
         cache.placement.page_tokens, layer.index, c.heads, c.index_heads, c.index_dim,
         c.eps, 1., 11, 10, 0)
@@ -121,7 +121,7 @@ def test_grid_faults_cannot_publish_colliding_or_invalid_rows(mtp, fault):
     values = (buffers.q, buffers.iq, cache.k, cache.v, cache.ks, cache.vs)
     before = [value.clone() for value in values]
     if fault == 'generation':
-        state.history_generations[1] += 1
+        state.history_generations[0] += 1
     elif fault == 'collision':
         cache.page_offsets[1] = 127  # logical127 and128 now share physical127.
     else:
@@ -221,8 +221,8 @@ def fixture(start=64, *, rank=0, owned=True, pattern='random', capacity=385, own
     for t in (cache.k, cache.v, cache.ks, cache.vs):
         t.fill_(7)
     state = NS(pos=start, att_index={0: 0}, kc=[cache], history_rank=rank,
-               history_placement=placement, history_slot=0, slot_generation=7, history_generation=3,
-               history_generations=torch.tensor([7, 3], device=device, dtype=torch.int64),
+               history_placement=placement, history_slot=0, slot_generation=7,
+               history_generations=torch.tensor([7], device=device, dtype=torch.int64),
                kv_status=torch.tensor([0, -2], device=device, dtype=torch.int32),
                compact_indexer=object(), pooled=[None], target_tentative_length=start)
     def norm(width):

@@ -39,9 +39,9 @@ def test_header_only_native_workspace_has_exact_bytes_and_safe_inactive_views():
     before = workspace.nbytes
     workspace.prepare_native(pair=get_pair("int8"))
     expected = native_owner_workspace_bytes(7)
-    assert workspace.nbytes - before == expected["device_bytes"] == 236 * 7 + 4
-    assert workspace.descriptors_host.nbytes == 136 * 7
-    assert expected["host_staging_bytes"] == 136 * 7 + expected["host_metadata_bytes"]
+    assert workspace.nbytes - before == expected["device_bytes"] == 228 * 7 + 4
+    assert workspace.descriptors_host.nbytes == 128 * 7
+    assert expected["host_staging_bytes"] == 128 * 7 + expected["host_metadata_bytes"]
     assert workspace.native_states is None
     workspace.clear_native_inputs(7)
     views = workspace.native_views(7)
@@ -141,9 +141,8 @@ def test_descriptor_words_name_retained_storage_and_zero_every_inactive_row():
         assert words[:8] == [cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
                              cache.page_offsets.data_ptr(), state.history_generations.data_ptr(),
                              state.kv_status.data_ptr(), state.pos_dev.data_ptr()]
-        assert words[9:14] == [state.slot_generation, state.history_generation, 257,
-                               cache.capacity, cache.page_offsets.numel()]
-        assert words[14:] == [offset, state.history_placement.indexer_owner(state.history_slot, 0), cache.merge_order]
+        assert words[9:13] == [state.slot_generation, 257, cache.capacity, cache.page_offsets.numel()]
+        assert words[13:] == [offset, state.history_placement.indexer_owner(state.history_slot, 0), cache.merge_order]
     assert workspace.descriptors[0, 8] == workspace.descriptors[2, 8]
     assert workspace.descriptors[0, 8] != workspace.descriptors[3, 8]
     assert workspace.lane_rows[:2].tolist() == [3, 2]
@@ -188,9 +187,9 @@ def test_storage_replacement_needs_retirement_before_catalogue_rebind():
 def test_slot_generation_has_exact_device_words_and_no_signed_wrap():
     weights = _weights()
     state = State(weights, 257, 4, "int8")
-    assert state.history_generations.nbytes == 16 and state.history_generations.tolist() == [0, 0]
+    assert state.history_generations.nbytes == 8 and state.history_generations.tolist() == [0]
     state.reset(weights)
-    assert state.slot_generation == 1 and state.history_generations.tolist() == [1, 0]
+    assert state.slot_generation == 1 and state.history_generations.tolist() == [1]
     state.slot_generation = 2**63 - 1
     state.history_generations[0].fill_(state.slot_generation)
     before = state.conv.clone()

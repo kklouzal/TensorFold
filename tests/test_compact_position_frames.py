@@ -31,7 +31,7 @@ def prepared(*, mtp=False, profile_identity="1" * 64, context_identity=None, hos
             positions=object(), comm=None, meta={"coordinate_profile_identity": context_identity}))
     states, windows = [], []
     for first, start, generation, media in ((0, 7, 3, "a"), (2, 12, 9, "b")):
-        state = NS(pos=start, mtp_len=start, slot_generation=generation, history_generation=1,
+        state = NS(pos=start, mtp_len=start, slot_generation=generation,
                    position_profile_identity=position.identity, position_epoch=position.epoch,
                    coordinate_profile_identity=profile_identity, media_profile_identity=None, media_identity=media * 64,
                    media_input_span=None,
@@ -262,7 +262,7 @@ def test_native_writer_increments_the_actual_shared_frame_counter_before_submiss
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: NS())
     monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: 0, raising=False)
     native.publish(torch.zeros(4, 3, dtype=torch.int64), buffers.target_indexer_coordinates, 0,
-                   torch.zeros(2, dtype=torch.int64), (0, 0), torch.tensor([0, -2], dtype=torch.int32), 1)
+                   torch.zeros(1, dtype=torch.int64), 0, torch.tensor([0, -2], dtype=torch.int32), 1)
     with pytest.raises(ValueError, match="mutated"):
         validate_target_indexer_frame(buffers, segments)
 

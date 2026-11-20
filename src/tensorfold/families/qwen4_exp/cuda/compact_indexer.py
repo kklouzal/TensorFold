@@ -166,7 +166,7 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
             raise ValueError("coordinate segments must cover the staged rows")
         _position_span(state, first, last, position, mtp=mtp, explicit=True)
         start = state.mtp_len if mtp else state.pos
-        rows.append((state, state.slot_generation, state.history_generation, start, first, last))
+        rows.append((state, state.slot_generation, start, first, last))
         cursor = last
     stage = buffers.compact_indexer_stage
     candidate = IndexerFrame(getattr(buffers, prefix + "_indexer_frame_id") + 1,
@@ -178,9 +178,9 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
                 or type(window.source) not in (IssuedCoordinates, _TextCoordinates)
                 or type(window.source) is IssuedCoordinates and window.source.tensor.device != storage.device):
             raise ValueError("issued coordinate windows must cover every execution row in order")
-        while cursor >= rows[segment][5]:
+        while cursor >= rows[segment][4]:
             segment += 1
-        state, _slot, _owner, start, first, last = rows[segment]
+        state, _slot, start, first, last = rows[segment]
         if window.last > last or state.coordinate_profile_identity is None:
             raise ValueError("issued coordinate windows require one current admitted State context")
         if window.source_owner is not None:
@@ -331,7 +331,7 @@ def _validate_frame(buffers, segments, *, mtp):
     for recorded, (state, first, last) in zip(frame.segments, segments):
         start = state.mtp_len if mtp else state.pos
         if (recorded[0] is not state or recorded[1:] !=
-                (state.slot_generation, state.history_generation, start, first, last)):
+                (state.slot_generation, start, first, last)):
             raise ValueError("indexer coordinates no longer belong to their cache row/generation")
         _position_span(state, first, last, position, mtp=mtp, explicit=True)
     for state, first, last, start, issued in frame.issued:
@@ -644,7 +644,7 @@ class Span:
     staging: Staging | None
     epoch: int
     mtp: bool
-    expected: tuple
+    expected: int
     resolved: int | None = None
 
     @property
@@ -790,7 +790,7 @@ class Cache:
     def begin_proposals(self, expected):
         if self.base is not None:
             if self.base_expected != expected:
-                raise ValueError("compact proposal base belongs to an older sequence/owner generation")
+                raise ValueError("compact proposal base belongs to an older sequence generation")
             return
         if not len(self.proposal_raw):
             raise ValueError("this compact cache has no speculative method span")

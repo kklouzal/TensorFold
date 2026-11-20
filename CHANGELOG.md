@@ -29,6 +29,7 @@ GitHub has the full notes and the measurements behind them.
   fields (`migration`, `applied_migration`, `deferred_migration`; per slot `pending_attention_degree`,
   `migration_blocked_reason`, `migration_bytes`) and the capacity ledger's `migration_overlap_limit`, which never
   changed in serving; an `attention_degree` update is refused as an unknown setting.
+  Its per-slot `ownership_generation` (always 0 since migration was removed) is gone too; `slot_generation` remains.
 
 ## 0.6.6 (6 Oct 2026)
 

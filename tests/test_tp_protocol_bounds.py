@@ -20,8 +20,7 @@ def recorded_state(value):
     state = [(wire, s.sid, s.count, s.cached, len(s.out), s.out[-8:], s.drafts, s.owed,
               bool(s.done), bool(s.waiting), None if s.st is None else [
                   s.st.pos, getattr(s.st, "mtp_len", None), getattr(s.st, "mtp_drafted", None),
-                  getattr(s.st, "cur", None), getattr(s.st, "slot_generation", None),
-                  getattr(s.st, "history_generation", None)],
+                  getattr(s.st, "cur", None), getattr(s.st, "slot_generation", None)],
               None if s.error is None else type(s.error).__name__) for wire, s in value.requests.items()]
     c = value.decoder.controller
     record = [state, None if c is None else [c.epoch, c.effective, c.last_served, c.effective_family],
@@ -40,7 +39,7 @@ def test_streamed_digest_matches_all_legacy_utf8_bytes_without_joined_encoder_ou
     value.requests = {}
     for index in range(count):
         stream = Stream([1, 2], 20, st=None if index % 2 else NS(
-            pos=19, mtp_len=18, mtp_drafted=2, cur=[2, 1], slot_generation=7, history_generation=3),
+            pos=19, mtp_len=18, mtp_drafted=2, cur=[2, 1], slot_generation=7),
             sid=index, out=list(range(12)), drafts=[3, 5], owed=[8, 9])
         stream.cached, stream.done, stream.waiting = index, bool(index % 3), bool(index % 5)
         stream.admission_ticket, stream.principal = index + 11, "\u96ea\U0001f600" * 17

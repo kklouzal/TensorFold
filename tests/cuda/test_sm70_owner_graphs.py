@@ -98,7 +98,7 @@ def _populate_compact_indexer(state, staging, raw, coordinates, weight, frequenc
     no frontier, generation, position or span field is assigned by the fixture.
     """
     # Continue the caller's original KV frame: never clear earlier sticky errors.
-    expected = (state.slot_generation, state.history_generation)
+    expected = state.slot_generation
     staging.begin(mtp=False)
     with staging.reading(mtp=False, borrowers=(raw, coordinates)):
         for ordinal, owner in enumerate(state.compact_indexer.entries):

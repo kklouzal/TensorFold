@@ -32,8 +32,8 @@ def fixture(monkeypatch, tmp_path, *, fault=None):
             placement=NS(page_tokens=128), offsets=(0,), k=torch.full((128, 1, 256), 9, dtype=torch.int8),
             v=torch.full((128, 1, 256), 9, dtype=torch.int8), ks=torch.full((128, 1, 8), 9, dtype=torch.float16),
             vs=torch.full((128, 1, 8), 9, dtype=torch.float16))
-        states.append(NS(pos=64, history_slot=index, history_rank=0, slot_generation=1, history_generation=0,
-                         history_generations=torch.tensor([1, 0]), kv_status=torch.tensor([0, -2], dtype=torch.int32),
+        states.append(NS(pos=64, history_slot=index, history_rank=0, slot_generation=1,
+                         history_generations=torch.tensor([1]), kv_status=torch.tensor([0, -2], dtype=torch.int32),
                          cache=cache))
     streams = {i: NS(st=state, done=False, out=[1, 2], index=i) for i, state in enumerate(states)}
     buf.gdn_tables = NS(segs=[(state, i, i+1) for i, state in enumerate(states)])
@@ -197,6 +197,7 @@ def test_mismatch_emits_only_initialized_owned_outputs_and_prestatus(monkeypatch
     assert caught.value is f.witness.mismatch
     record = json.loads((f.witness.directory/'first-mismatch.json').read_text())
     assert record['owned'] is False and not record['P3_valid']
+    assert record['generation'] == f.states[0].slot_generation == 1
     assert 'actual_k' not in record['files'] and 'expected_k' in record['files']
     values = np.load(f.witness.directory/'initial_status.npy')
     assert values.tolist() == [8, 2]

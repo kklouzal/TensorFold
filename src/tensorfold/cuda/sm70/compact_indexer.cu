@@ -8,9 +8,9 @@
 
 namespace {
 __global__ void publish_kernel(const uint8_t* source, uint8_t* destination, int64_t bytes,
-                               const int64_t* generations, int64_t slot, int64_t owner,
+                               const int64_t* generations, int64_t slot,
                                int* status, int layer) {
-    if (generations[0] != slot || generations[1] != owner) {
+    if (generations[0] != slot) {
         if (!blockIdx.x && !threadIdx.x) { atomicOr(status, 32); atomicCAS(status + 1, -2, layer); }
         return;
     }
@@ -24,7 +24,7 @@ __global__ void publish_kernel(const uint8_t* source, uint8_t* destination, int6
 namespace lane {
 enum Word : int {
     ENABLE = 0, RING_RAW, RING_COORDS, PROTECTED, PROTECTED_COORDS, STAGE_RAW, STAGE_COORDS, POOLED,
-    GENERATIONS, STATUS, EXPECTED_SLOT, EXPECTED_OWNER, POSITION, FIRST, ROWS, POOLED_ROWS,
+    GENERATIONS, STATUS, EXPECTED_SLOT, POSITION, FIRST, ROWS, POOLED_ROWS,
     PROPOSAL_RAW, PROPOSAL_COORDS, PROPOSAL_OFFSET, RING_COMMIT, COUNT
 };
 }
@@ -53,7 +53,7 @@ __global__ void round_stage_kernel(const __half* ik, const int64_t* tables, int 
     const int64_t* stage_coords = word<const int64_t>(t, lane::STAGE_COORDS);
     __half* stage = word<__half>(t, lane::STAGE_RAW);
     for (int64_t at = threadIdx.x; at < rows * DIM; at += blockDim.x) stage[at] = ik[first * DIM + at];
-    if (generations[0] != t[lane::EXPECTED_SLOT] || generations[1] != t[lane::EXPECTED_OWNER]) {
+    if (generations[0] != t[lane::EXPECTED_SLOT]) {
         if (!threadIdx.x) latch(status, 32, layer);
         return;
     }
@@ -145,7 +145,7 @@ __global__ void round_pool_kernel(const __half* ik, const int64_t* tables, const
     }
     const bool ok = isfinite(value) && fabsf(value) <= 1073741824.f;
     if (__syncthreads_or(!ok) && !col) latch(status, 16, layer);
-    const bool current = generations[0] == t[lane::EXPECTED_SLOT] && generations[1] == t[lane::EXPECTED_OWNER];
+    const bool current = generations[0] == t[lane::EXPECTED_SLOT];
     const bool fits = group0 + groups <= t[lane::POOLED_ROWS];
     if (!current || !fits) {
         if (!col) latch(status, 32, layer);
@@ -156,12 +156,12 @@ __global__ void round_pool_kernel(const __half* ik, const int64_t* tables, const
 }
 
 void compact_publish_cuda(const at::Tensor& source, at::Tensor& destination, int64_t offset,
-                          const at::Tensor& generations, int64_t slot, int64_t owner, at::Tensor& status, int layer) {
+                          const at::Tensor& generations, int64_t slot, at::Tensor& status, int layer) {
     const int64_t bytes = source.numel() * source.element_size();
     const int blocks = int(std::min<int64_t>((bytes - 1) / 256 + 1, 65535));
     publish_kernel<<<blocks, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const uint8_t*>(source.data_ptr()), reinterpret_cast<uint8_t*>(destination.data_ptr()) + offset,
-        bytes, generations.data_ptr<int64_t>(), slot, owner, status.data_ptr<int>(), layer);
+        bytes, generations.data_ptr<int64_t>(), slot, status.data_ptr<int>(), layer);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

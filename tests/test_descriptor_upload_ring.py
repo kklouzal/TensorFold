@@ -186,7 +186,7 @@ def test_real_owner_keeps_gpu_slab_addresses_generations_and_inactive_tails(poli
         hosts.add(owner.descriptors_host.data_ptr())
         assert pointers == (owner.descriptors.data_ptr(), owner.global_stats.data_ptr(), owner.lane_rows.data_ptr())
         assert owner.descriptors[:count, 9].tolist() == [state.slot_generation] * count
-        assert owner.descriptors[:count, 10].tolist() == [state.history_generation] * count
+        assert owner.descriptors[:count, 10].tolist() == [state.capacity] * count  # LOGICAL_CAPACITY follows the slot word
         assert torch.count_nonzero(owner.descriptors[count:]) == 0
     assert len(hosts) == (1 if policy is None else 2)
     record = owner.allocation_record()

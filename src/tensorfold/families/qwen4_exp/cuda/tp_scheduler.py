@@ -731,8 +731,7 @@ class TensorParallelDecoder:
                   None if stream.st is None else [stream.st.pos, getattr(stream.st, "mtp_len", None),
                                                   getattr(stream.st, "mtp_drafted", None),
                                                   getattr(stream.st, "cur", None),
-                                                  getattr(stream.st, "slot_generation", None),
-                                                  getattr(stream.st, "history_generation", None)],
+                                                  getattr(stream.st, "slot_generation", None)],
                   None if stream.error is None else type(stream.error).__name__)
                  for wire, stream in self.requests.items()]
         controller = getattr(self.decoder, "controller", None)

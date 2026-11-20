@@ -92,7 +92,6 @@ def test_physical_rebind_reuses_owned_canonical_bytes_without_a_python_token_arc
     # A controlled replacement models the physical-identity boundary; values
     # and semantic frontier remain unchanged. Device migration has its own tests.
     materialized.kc[0].k = materialized.kc[0].k.clone()
-    materialized.history_generation += 1
     monkeypatch.setattr(state_retention, "canonical_tokens", lambda *_a, **_kw: pytest.fail("canonical input was rebuilt"))
     rebound = state_retention.rebind_state_inventory(materialized, old, recovery_versions=0)
     after = next(part for part in rebound.parts if part.name == "history.kv.0.0.0.k")
@@ -101,7 +100,8 @@ def test_physical_rebind_reuses_owned_canonical_bytes_without_a_python_token_arc
     assert next(part for part in rebound.parts if part.name == "state.canonical_ids") is canonical
     assert rebound.metadata["request"] == old.metadata["request"]
     assert rebound.metadata["method"]["draws"] == old.metadata["method"]["draws"]
-    assert rebound.metadata["source_history_generation"] == materialized.history_generation
+    assert rebound.metadata["source_slot_generation"] == old.metadata["source_slot_generation"] == materialized.slot_generation
+    assert "source_history_generation" not in rebound.metadata
     materialized.set_pos(materialized.pos - 1)
     with pytest.raises(ValueError, match="semantic generation"):
         state_retention.rebind_state_inventory(materialized, rebound, recovery_versions=0)
@@ -209,7 +209,7 @@ def test_new_turn_rewinds_restored_mtp_proposal_base_and_device_counter():
             stage = Staging(4, len(source.kc) + 1, "cpu", mtp=True)
             begin(entry, stage, torch.full((2, 128), 9, dtype=torch.float16),
                   torch.tensor([[5, 5, 5], [6, 6, 6]], dtype=torch.int64), mtp=True)
-            entry.publish_commit(entry.prepare_commit(7, (0, 0)), 7, (0, 0))
+            entry.publish_commit(entry.prepare_commit(7, 0), 7, 0)
         source.mtp_len, source.mtp_drafted = 7, 2
         source.mtp_pos.fill_(7)
         stream = Stream([1] * 5, 8, st=source)

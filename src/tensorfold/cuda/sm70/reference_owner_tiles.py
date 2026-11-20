@@ -148,8 +148,8 @@ class ReferenceTiles:
             raise ValueError("actual reference tile preparer differs from its prepared owner/source")
         return {**self.record(), "preparation": dict(preparation), "receive_slab_bytes": workspace.nbytes}
 
-    def context(self, *, status, generations, slot_generation, owner_generation, layer):
-        return _Context(self, status, generations, slot_generation, owner_generation, layer)
+    def context(self, *, status, generations, slot_generation, layer):
+        return _Context(self, status, generations, slot_generation, layer)
 
 
 class _Context:
@@ -157,12 +157,12 @@ class _Context:
     def arithmetic(self):
         return self.owner.arithmetic
 
-    def __init__(self, owner, status, generations, slot, generation, layer):
-        if (any(type(v) is not int or not 0 <= v < 2**63 for v in (slot, generation))
+    def __init__(self, owner, status, generations, slot, layer):
+        if (type(slot) is not int or not 0 <= slot < 2**63
                 or type(layer) is not int or not 0 <= layer < 2**31):
             raise ValueError("reference tile generations/layer require exact bounded integers")
         self.owner, self.status, self.generations = owner, status, generations
-        self.slot, self.generation, self.layer = slot, generation, layer
+        self.slot, self.layer = slot, layer
 
     @contextmanager
     def tile(self, cache, positions, visible):
@@ -183,7 +183,7 @@ class _Context:
             extension().keys(cache.k, cache.ks, cache.page_offsets, positions, visible,
                 self.generations, self.status, owner.indices, owner.mask, owner.half,
                 cache.logical_capacity, cache.placement.page_tokens, bits, codec,
-                self.slot, self.generation, self.layer)
+                self.slot, self.layer)
             tile = _Tile(self, cache, positions.numel(), token)
             yield tile
         finally:
@@ -207,7 +207,7 @@ class _Tile:
         cache = self.cache
         extension().values(cache.v, cache.vs, owner.indices, owner.mask, context.generations,
             context.status, owner.half, self.count, cache.value_format.bits, cache.value_format.codec,
-            context.slot, context.generation, context.layer)
+            context.slot, context.layer)
         return owner.half[:self.count]
 
 

@@ -1234,7 +1234,7 @@ def owned_q8_prepare_window(module, projection, coordinates, weights, cache, sta
         operator(projection[row:row + step], coordinates[row:row + step],
             a.q_scale, a.k_scale, a.iq_scale, frequency, query[row:row + step], iq[row:row + step],
             cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets,
-            state.history_generations, state.kv_status, state.slot_generation, state.history_generation,
+            state.history_generations, state.kv_status, state.slot_generation,
             start + row, cache.logical_capacity, cache.capacity, cache.placement.page_tokens, layer.index,
             c.heads, c.index_heads, c.index_dim, c.eps, amplitude, sections[1], sections[2], owned_codec(cache))
     # Reference: eight guards (16 status writes) and two quantizer status pairs
@@ -1263,7 +1263,7 @@ def owned_q8_prepare(module, projection, coordinates, weights, cache, state, lay
     ik = _guard(projection[:, at:at + c.index_dim], state.kv_status, 16, layer.index)
     module.owned_q8_prepare(projection, coordinates, a.q_scale, a.k_scale, a.iq_scale, frequency,
         query, iq, cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets,
-        state.history_generations, state.kv_status, state.slot_generation, state.history_generation,
+        state.history_generations, state.kv_status, state.slot_generation,
         start, cache.logical_capacity, cache.capacity, cache.placement.page_tokens, layer.index,
         c.heads, c.index_heads, c.index_dim, c.eps, amplitude, sections[1], sections[2], owned_codec(cache))
     # Match incumbent copy_/sticky-status publication counters. Aliased cache

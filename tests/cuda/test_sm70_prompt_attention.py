@@ -3,7 +3,7 @@
 Layout-exact synthetic owner state for one KV-head group (ranks 0..3):
 unique-history Q8 pages ([phys,1,256] int8 codes, [phys,1,8] FP16 group
 scales, -1 page offsets for foreign pages, owner = 1 ^ (page % degree)),
-canonical selections [8,rows,idw+2], 17-word descriptors and gathered FP16
+canonical selections [8,rows,idw+2], 16-word descriptors and gathered FP16
 queries. Both pipelines share the RN statistics merge and value merge:
 
   RN : rn_local_statistics -> rn_merge -> rn_probabilities -> rn_partial_values
@@ -28,7 +28,7 @@ from tensorfold.cuda.sm70 import prompt_attention as tc  # noqa: E402
 DIM, HEADS, WORLD, BUDGET, RATIO = 256, 12, 8, 2048, 4
 WIDTH = BUDGET + RATIO + 2
 OWNER = 5  # indexer owner rank whose selection slice every descriptor names
-SLOT_GENERATION, HISTORY_GENERATION, LAYER = 7, 9, 3
+SLOT_GENERATION, LAYER = 7, 3
 ROWS, PADDING, PAGE_TOKENS = 48, 8, 128
 
 
@@ -101,10 +101,10 @@ def build(first, degree, generator, kv=(8, 0)):
             selections[OWNER, row, WIDTH - 2] = visible
     position = torch.tensor([first], dtype=torch.int32, device=device)
     live = torch.tensor([ROWS - PADDING], dtype=torch.int32, device=device)
-    generations = torch.tensor([SLOT_GENERATION, HISTORY_GENERATION], dtype=torch.int64, device=device)
+    generations = torch.tensor([SLOT_GENERATION], dtype=torch.int64, device=device)
     tables = [torch.tensor([[c["k"].data_ptr(), c["v"].data_ptr(), c["ks"].data_ptr(), c["vs"].data_ptr(),
                              c["offsets"].data_ptr(), generations.data_ptr(), c["status"].data_ptr(),
-                             position.data_ptr(), live.data_ptr(), SLOT_GENERATION, HISTORY_GENERATION, capacity,
+                             position.data_ptr(), live.data_ptr(), SLOT_GENERATION, capacity,
                              c["physical"], pages, row, OWNER, merge_word] for row in range(ROWS)],
                            dtype=torch.int64, device=device) for c in caches]
     return dict(q=q, selections=selections, caches=caches, tables=tables, keep=(position, live, generations),

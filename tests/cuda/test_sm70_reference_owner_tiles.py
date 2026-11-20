@@ -19,7 +19,7 @@ def prepared(state):
     slab = torch.empty((8, 2, 12, 256), dtype=torch.float32, device="cuda")
     prep = ReferenceTiles(slab)
     ctx = prep.context(status=state.status, generations=state.generations,
-                       slot_generation=0, owner_generation=0, layer=3)
+                       slot_generation=0, layer=3)
     return prep, ctx
 
 
@@ -97,7 +97,7 @@ def test_epoch_change_between_key_and_value_latches_without_reading_stale_payloa
     prep, ctx = prepared(state)
     ids = torch.arange(17, dtype=torch.int64, device="cuda")
     with ctx.tile(cache, ids, ids < 10) as tile:
-        state.generations[1] += 1
+        state.generations[0] += 1
         out = tile.values()
         assert torch.count_nonzero(out) == 0
     assert state.status.cpu().tolist() == [32, 3]
@@ -128,7 +128,7 @@ def test_prepared_tail_and_reuse_keep_buffer_addresses_and_refuse_aliases():
     with pytest.raises(RuntimeError, match="overlap"):
         extension().keys(cache.k, cache.ks, cache.page_offsets, ids, ids < 7, state.generations,
             prep.indices.view(torch.int32)[:2], prep.indices, prep.mask, prep.half,
-            512, 128, 8, 0, 0, 0, 3)
+            512, 128, 8, 0, 0, 3)
 
 
 @pytest.mark.parametrize("fault,expected", [("epoch", 32), ("page", 32), ("metadata", 8)])

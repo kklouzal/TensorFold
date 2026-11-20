@@ -338,19 +338,19 @@ def test_private_reset_retires_real_unresolved_compact_staging_without_weakening
     staging = Staging(1, 12, 'cpu', mtp=False)
     begin(entry, staging, torch.ones((1, 128), dtype=torch.float16), torch.zeros((1, 3), dtype=torch.int64))
     with pytest.raises(ValueError, match='unresolved raw staging'):
-        entry.validate_append(0, 1, (0, 0))
+        entry.validate_append(0, 1, 0)
     events = []
     monkeypatch.setattr(exact_graphs, '_kv_check', lambda *a, **kw: events.append('validate-status'))
     monkeypatch.setattr(exact_graphs.torch.cuda, 'synchronize', lambda *a: events.append('retire-device-work'))
     def reset(weights, *, new_sequence):
         assert new_sequence is False and events == ['validate-status', 'retire-device-work']
-        entry.reset((0, 0))
+        entry.reset(0)
         events.append('reset-private-state')
     state.reset = reset
     graph._reset_warm_states([(state, 0, 1)])
     assert events == ['validate-status', 'retire-device-work', 'reset-private-state']
     assert entry.span is None and entry.n == 0
-    entry.validate_append(0, 1, (0, 0))  # Original frontier guard now has a genuinely reset cache.
+    entry.validate_append(0, 1, 0)  # Original frontier guard now has a genuinely reset cache.
 
 
 @pytest.mark.parametrize('role', ['verify', 'mtp'])

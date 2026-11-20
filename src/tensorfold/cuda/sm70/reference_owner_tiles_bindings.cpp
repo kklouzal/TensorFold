@@ -6,9 +6,9 @@
 using T = at::Tensor;
 void reference_tiles_prepare_cuda();
 void reference_keys_cuda(const T&,const T&,const T&,const T&,const T&,const T&,T&,T&,T&,T&,
-                         int,int,int,int,int64_t,int64_t,int);
+                         int,int,int,int,int64_t,int);
 void reference_values_cuda(const T&,const T&,const T&,const T&,const T&,T&,T&,
-                           int,int,int,int64_t,int64_t,int);
+                           int,int,int,int64_t,int);
 namespace {
 void tensor(const T& value,const T& owner,at::ScalarType dtype,const char* name) {
     TORCH_CHECK(value.is_cuda() && value.device()==owner.device() && value.scalar_type()==dtype
@@ -24,12 +24,12 @@ void payload(const T& data,const T& scales,int64_t bits,int64_t codec) {
     auto prop=at::cuda::getDeviceProperties(data.get_device());
     TORCH_CHECK(prop->major==7 && prop->minor==0,"reference tiles require SM70");
 }
-void controls(const T& data,const T& generations,T& status,T& out,int64_t slot,int64_t owner,int64_t layer) {
+void controls(const T& data,const T& generations,T& status,T& out,int64_t slot,int64_t layer) {
     tensor(generations,data,at::kLong,"history generations");
     tensor(status,data,at::kInt,"sticky status");
     tensor(out,data,at::kHalf,"reference working tile");
-    TORCH_CHECK(generations.dim()==1 && generations.numel()==2 && status.dim()==1 && status.numel()==2
-        && out.sizes()==at::IntArrayRef({128,256}) && slot>=0 && owner>=0 && layer>=0 && layer<=INT_MAX,
+    TORCH_CHECK(generations.dim()==1 && generations.numel()==1 && status.dim()==1 && status.numel()==2
+        && out.sizes()==at::IntArrayRef({128,256}) && slot>=0 && layer>=0 && layer<=INT_MAX,
         "reference tile control/working extents differ");
 }
 void indices(const T& data,const T& offsets,const T& masks) {
@@ -39,8 +39,8 @@ void indices(const T& data,const T& offsets,const T& masks) {
 }
 void keys(const T& data,const T& scales,const T& pages,const T& positions,const T& visible,
     const T& generations,T status,T offsets,T masks,T out,int64_t logical,int64_t page_tokens,
-    int64_t bits,int64_t codec,int64_t slot,int64_t owner,int64_t layer) {
-    payload(data,scales,bits,codec);controls(data,generations,status,out,slot,owner,layer);indices(data,offsets,masks);
+    int64_t bits,int64_t codec,int64_t slot,int64_t layer) {
+    payload(data,scales,bits,codec);controls(data,generations,status,out,slot,layer);indices(data,offsets,masks);
     tensor(pages,data,at::kLong,"page offsets");tensor(positions,data,at::kLong,"logical positions");
     tensor(visible,data,at::kBool,"causal visibility");
     TORCH_CHECK(logical>0 && logical<=INT_MAX && page_tokens>0 && page_tokens<=INT_MAX
@@ -53,16 +53,16 @@ void keys(const T& data,const T& scales,const T& pages,const T& positions,const 
     tensorfold::check_disjoint(status,{&data,&scales,&pages,&positions,&visible,&generations},"reference status overlap");
     c10::cuda::CUDAGuard guard(data.device());
     reference_keys_cuda(data,scales,pages,positions,visible,generations,status,offsets,masks,out,
-        logical,page_tokens,bits,codec,slot,owner,layer);
+        logical,page_tokens,bits,codec,slot,layer);
 }
 void values(const T& data,const T& scales,const T& offsets,const T& masks,const T& generations,
-    T status,T out,int64_t count,int64_t bits,int64_t codec,int64_t slot,int64_t owner,int64_t layer) {
-    payload(data,scales,bits,codec);controls(data,generations,status,out,slot,owner,layer);indices(data,offsets,masks);
+    T status,T out,int64_t count,int64_t bits,int64_t codec,int64_t slot,int64_t layer) {
+    payload(data,scales,bits,codec);controls(data,generations,status,out,slot,layer);indices(data,offsets,masks);
     TORCH_CHECK(count>=0 && count<=128,"reference value tile exceeds its prepared rows");
     tensorfold::check_disjoint(out,{&data,&scales,&offsets,&masks,&generations,&status},"reference value tile overlap");
     tensorfold::check_disjoint(status,{&data,&scales,&offsets,&masks,&generations},"reference status overlap");
     c10::cuda::CUDAGuard guard(data.device());
-    reference_values_cuda(data,scales,offsets,masks,generations,status,out,count,bits,codec,slot,owner,layer);
+    reference_values_cuda(data,scales,offsets,masks,generations,status,out,count,bits,codec,slot,layer);
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME,module) {
     module.def("prepare", &reference_tiles_prepare_cuda, "Load reference preparation CUDA functions before budgeting");

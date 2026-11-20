@@ -93,9 +93,9 @@ def test_domain_is_checked_before_half_probability_addressing_without_truncation
     state = shard(4, 0, rows=1)
     offsets = torch.full((32,), -1, dtype=torch.int64, device='cuda')
     state.table[:, 4] = offsets.data_ptr()
-    state.table[:, 11] = 4096
-    state.table[:, 12] = 0
-    state.table[:, 13] = 32
+    state.table[:, 10] = 4096
+    state.table[:, 11] = 0
+    state.table[:, 12] = 32
     state.position.fill_(end - 1)
     state.selection = torch.zeros((8, 1, 2054), dtype=torch.int32, device='cuda')
     state.selection[0, 0, :count] = torch.arange(count, dtype=torch.int32, device='cuda')
@@ -140,7 +140,7 @@ def test_probability_schema_and_alias_refuse_before_any_launch_or_status_mutatio
 
 def test_stale_generation_initializes_bounded_scratch_and_keeps_first_layer_status():
     state = shard(4, 0, rows=1)
-    state.generations[1] = 1
+    state.generations[0] = 1
     probability = torch.full((1, 12, 2051), 7., dtype=torch.float16, device='cuda')
     operator.rn_local_statistics(state.query, state.selection, state.table, state.stats,
                                  group_start=0, page_tokens=128, layer=state.layer,
@@ -418,14 +418,14 @@ def test_whole_native_phases_fit_independent_decoded_operator_enclosures(case, r
     for packed in fixture.packed:
         state = NS(**{name: getattr(packed, name).cuda() for name in ('k', 'v', 'ks', 'vs')})
         state.offsets = torch.tensor(packed.offsets, dtype=torch.int64, device='cuda')
-        state.generations = torch.zeros(2, dtype=torch.int64, device='cuda')
+        state.generations = torch.zeros(1, dtype=torch.int64, device='cuda')
         state.status = torch.tensor([0, -2], dtype=torch.int32, device='cuda')
         state.position = torch.tensor([fixture.end - 1], dtype=torch.int32, device='cuda')
         state.live = torch.tensor([1], dtype=torch.int32, device='cuda')
         state.layer = torch.tensor([3], dtype=torch.int32, device='cuda')
         state.table = torch.tensor([[state.k.data_ptr(), state.v.data_ptr(), state.ks.data_ptr(), state.vs.data_ptr(),
             state.offsets.data_ptr(), state.generations.data_ptr(), state.status.data_ptr(), state.position.data_ptr(),
-            state.live.data_ptr(), 0, 0, fixture.logical, packed.physical, len(packed.offsets), 0, 0,
+            state.live.data_ptr(), 0, fixture.logical, packed.physical, len(packed.offsets), 0, 0,
             fixture.merge_word]], dtype=torch.int64, device='cuda')
         state.stats = torch.empty((1, 12, 2), dtype=torch.float32, device='cuda')
         state.global_stats = torch.empty_like(state.stats)

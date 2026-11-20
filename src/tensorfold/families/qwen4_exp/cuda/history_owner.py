@@ -308,7 +308,7 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
         if ik is not None:
             if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
                     include_mtp=hasattr(state, 'mtp_kc')):
-                expected = (state.slot_generation, state.history_generation)
+                expected = state.slot_generation
                 entry = state.compact_indexer.append(ai, pos, ik.half(), coordinates,
                     buffers.compact_indexer_stage, start, stop, mtp=mtp, expected=expected)
                 entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale,
@@ -344,7 +344,7 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
                         include_mtp=hasattr(state, 'mtp_kc')):
                     entry = state.compact_indexer.append(ai, state.pos, ik.half(), coordinates,
                         buffers.compact_indexer_stage, start, stop, mtp=False,
-                        expected=(state.slot_generation, state.history_generation))
+                        expected=state.slot_generation)
                     entry.pool(state.pooled[ai], a.ik_scale, position.inv_freq, c.eps,
                                position.sections, position.amplitude)
                 state.target_tentative_length = state.pos + 1
@@ -407,11 +407,11 @@ def _prepare_reference(projection, state, layer, weights, buffers, start, stop, 
                                                                   include_mtp=hasattr(state, "mtp_kc")):
         entry = state.compact_indexer.append(ai, pos, ik.half(), coordinates,
             buffers.compact_indexer_stage, start, stop, mtp=mtp,
-            expected=(state.slot_generation, state.history_generation))
+            expected=state.slot_generation)
         entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, frequencies,
                    c.eps, sections, amplitude)
         if mtp:
-            expected = (state.slot_generation, state.history_generation)
+            expected = state.slot_generation
             entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)
     if not mtp:
         state.target_tentative_length = pos + rows
@@ -678,7 +678,7 @@ class OwnerBuffers:
         if self.reference_tiles is None:
             return None
         return self.reference_tiles.context(status=state.kv_status, generations=state.history_generations,
-            slot_generation=state.slot_generation, owner_generation=state.history_generation, layer=layer)
+            slot_generation=state.slot_generation, layer=layer)
 
     def allocation_record(self):
         """Owned tensor extents, separated from observed driver/graph residency.
@@ -726,9 +726,9 @@ class OwnerBuffers:
         # is checked once against the generated ABI authority before any pointer
         # table exists; a reordered interface cannot quietly reinterpret addresses.
         expected = ("K_DATA", "V_DATA", "K_METADATA", "V_METADATA", "PAGE_OFFSETS", "GENERATIONS",
-                    "STATUS", "POSITION", "LIVE_ROWS", "EXPECTED_SLOT", "EXPECTED_OWNER",
+                    "STATUS", "POSITION", "LIVE_ROWS", "EXPECTED_SLOT",
                     "LOGICAL_CAPACITY", "PHYSICAL_ROWS", "PAGE_COUNT", "ROW_OFFSET", "INDEXER_OWNER", "MERGE_ORDER")
-        if ABI_VERSION != 1 or WORD_BYTES != 8 or FIELDS != expected:
+        if ABI_VERSION != 2 or WORD_BYTES != 8 or FIELDS != expected:
             raise RuntimeError("native descriptor packing differs from its generated schema")
         prepared_buckets = self.native_buckets if buckets is None and self.native_buckets else row_buckets(self.rows, buckets)
         if self.native_buckets and self.native_buckets != prepared_buckets:
@@ -836,7 +836,7 @@ class OwnerBuffers:
             tensors = self._state_storage(state)
             if any(not isinstance(tensor, torch.Tensor) or tensor.device != self.queries.device for tensor in tensors):
                 raise ValueError("native catalogue storage must share its workspace device")
-            controls = [(state.history_generations, torch.int64, (2,)), (state.kv_status, torch.int32, (2,)),
+            controls = [(state.history_generations, torch.int64, (1,)), (state.kv_status, torch.int32, (2,)),
                         (state.pos_dev, torch.int32, (1,))]
             if hasattr(state, "mtp_kc"):
                 controls.append((state.mtp_pos, torch.int32, (1,)))
@@ -894,8 +894,7 @@ class OwnerBuffers:
             current = self._state_storage(state)
             if registered is None or registered[0] is not state or registered[1] != self._storage_signature(current):
                 raise RuntimeError("native descriptor points outside its retained canonical storage catalogue")
-            if (type(state.slot_generation) is not int or type(state.history_generation) is not int
-                    or not 0 <= state.slot_generation <= 2**63 - 1 or not 0 <= state.history_generation <= 2**63 - 1):
+            if type(state.slot_generation) is not int or not 0 <= state.slot_generation <= 2**63 - 1:
                 raise OverflowError("native descriptor generation exceeds signed int64")
             if mtp and not hasattr(state, "mtp_kc"):
                 raise ValueError("native MTP descriptors require the selected resident MTP cache")
@@ -921,14 +920,14 @@ class OwnerBuffers:
         for lane, (state, first, last, begin, end, cache, position, index_owner) in enumerate(spans):
             self.lane_rows[lane].fill_(last - first)
             live_pointer = self.lane_rows.data_ptr() + lane * self.lane_rows.element_size()
-            # One lane's rows share every word but ROW_OFFSET (field 14): fill the block, then the offsets.
+            # One lane's rows share every word but ROW_OFFSET (field 13): fill the block, then the offsets.
             block = self.descriptor_host_words[begin - base:end - base]
             block[:] = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
                         cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
-                        position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
+                        position.data_ptr(), live_pointer, state.slot_generation,
                         state.capacity, cache.capacity, cache.page_offsets.numel(), 0, index_owner,
                         cache.merge_order)
-            block[:, 14] = np.arange(begin - first, end - first, dtype=np.int64)
+            block[:, 13] = np.arange(begin - first, end - first, dtype=np.int64)
         if ring is None:
             self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
             if self.descriptor_upload is not None:
@@ -1321,16 +1320,15 @@ class OwnerBuffers:
                 raise RuntimeError("round descriptor points outside its retained canonical storage catalogue")
             if not mtp and state.att_index != ordinals:
                 raise ValueError("round tables require the prepared attention ordinal map")
-            slot, owner = state.slot_generation, state.history_generation
-            if (type(slot) is not int or type(owner) is not int
-                    or not 0 <= slot <= 2**63 - 1 or not 0 <= owner <= 2**63 - 1):
+            slot = state.slot_generation
+            if type(slot) is not int or not 0 <= slot <= 2**63 - 1:
                 raise OverflowError("native descriptor generation exceeds signed int64")
             count, pos = last - first, state.mtp_len if mtp else state.pos
             if type(pos) is not int or not 0 <= pos <= state.capacity - count or state.compact_indexer is None:
                 raise ValueError("append range must fit the promised logical history")
             indexer = state.compact_indexer
             indexer._wait_transfer()
-            expected = (slot, owner)
+            expected = slot
             live[lane] = count
             live_pointer = live_base + 4 * lane
             placement, include_mtp = state.history_placement, hasattr(state, "mtp_kc")
@@ -1342,10 +1340,10 @@ class OwnerBuffers:
                 index_owner = placement.indexer_owner(state.history_slot, ai, include_mtp=include_mtp)
                 block = desc[index, first:last]
                 block[:] = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
-                            cache.page_offsets.data_ptr(), generations, status, position, live_pointer, slot, owner,
+                            cache.page_offsets.data_ptr(), generations, status, position, live_pointer, slot,
                             state.capacity, cache.capacity, cache.page_offsets.numel(), 0, index_owner,
                             cache.merge_order)
-                block[:, 14] = np.arange(count)
+                block[:, 13] = np.arange(count)
                 entry = indexer.entries[ai]
                 if (entry is not None) != (index_owner == self.rank):
                     raise ValueError("compact indexer ownership differs from its canonical placement")
@@ -1358,7 +1356,7 @@ class OwnerBuffers:
                 offset = -1 if entry.base is None else pos - entry.base
                 lanes[index, lane] = (1, entry.raw.data_ptr(), entry.coordinates.data_ptr(), entry.protected.data_ptr(),
                                       entry.protected_coordinates.data_ptr(), raw.data_ptr(), axes.data_ptr(),
-                                      table.data_ptr(), generations, status, slot, owner, position, first, count,
+                                      table.data_ptr(), generations, status, slot, position, first, count,
                                       table.shape[0], entry.proposal_raw.data_ptr(),
                                       entry.proposal_coordinates.data_ptr(), offset, int(mtp))
                 appends.append((entry, ai, first, pos, count, expected, offset))

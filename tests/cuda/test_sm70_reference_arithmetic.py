@@ -107,8 +107,8 @@ def run_case(arithmetic, format_name, count, mode='normal'):
     k, ks = _encode(key, pair.key, status, 3, error=2)
     v, vs = _encode(value, pair.value, status, 3, error=4)
     cache.append(0, k, v, ks, vs)
-    generations = torch.zeros(2, dtype=torch.int64, device='cuda')
-    context = tiles.context(status=status, generations=generations, slot_generation=0, owner_generation=0, layer=3)
+    generations = torch.zeros(1, dtype=torch.int64, device='cuda')
+    context = tiles.context(status=status, generations=generations, slot_generation=0, layer=3)
     query = torch.randn((12, 256), dtype=torch.float16, device='cuda') * .02
     if mode == 'nonfinite':
         query[0, 0] = torch.inf
@@ -123,7 +123,7 @@ def run_case(arithmetic, format_name, count, mode='normal'):
     destinations = (stats[:, 0], stats[:, 1])
     result = torch.empty((12, 256), device='cuda')
     for stale in (False, True):
-        generations[1].fill_(int(stale))
+        generations[0].fill_(int(stale))
         visible = selected % 7 != 0
         if mode == 'empty':
             visible.zero_()

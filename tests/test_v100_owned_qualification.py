@@ -457,7 +457,7 @@ def test_private_prefix_uses_real_supervisor_failure_and_process_retirement(monk
 
 def history_fixture(tmp_path):
     coordinate, identity = 'a' * 64, ('owned-etp4-native-slots-v1', 8, 4)
-    states = [NS(pos=12, history_slot=index, slot_generation=3, history_generation=7,
+    states = [NS(pos=12, history_slot=index, slot_generation=3,
                  coordinate_profile_identity=coordinate,
                  kv_identity=(("owned-expert-native", identity), ("coordinate-profile-v1", coordinate)))
               for index in range(2)]
@@ -543,7 +543,7 @@ def test_private_round_refuses_falsified_owner_before_model(channel, tmp_path, b
     elif bad == 'slot':
         state.history_slot = 1
     elif bad == 'generation':
-        state.history_generation = -1
+        state.slot_generation = -1
     else:
         engine.multi.streams[0].count = 3
     observer.install()
@@ -659,7 +659,7 @@ def history_acceptance_packet(tmp_path, monkeypatch):
     root = tmp_path / 'workers'
     root.mkdir()
     for rank in range(8):
-        owners = [{'wire': index, 'slot': index, 'slot_generation': 3, 'ownership_generation': 7,
+        owners = [{'wire': index, 'slot': index, 'slot_generation': 3,
                    'cached_length': 4032, 'prompt_tokens': 4032, 'prompt_token_ids_sha256': pair['prompt_token_ids_sha256']}
                   for index, pair in enumerate(result['cases'].values())]
         receipt = {'schema': 'tensorfold.private-owned-history-v1', 'rank': rank, 'world': 8,
@@ -959,7 +959,7 @@ def test_router_capture_selects_c8_and_alone_once_preserving_original_calls_and_
     placement = NS(indexer_owner=lambda slot, layer: (slot + layer) % 8,
                    kv_owner=lambda slot, layer, head, page: (slot + layer) % 4 ^ page)
     streams = [NS(prompt=[index] * 64, count=128, draft=True, sampling=NS(temperature=0, seed=None, top_k=0, top_p=1, min_p=0),
-                  st=NS(history_slot=slot, slot_generation=1, history_generation=2, att_index={3: 0}, history_placement=placement))
+                  st=NS(history_slot=slot, slot_generation=1, att_index={3: 0}, history_placement=placement))
                for slot, index in enumerate((2, 7))]
     class Matrix:
         def __init__(self, shape, pointer):

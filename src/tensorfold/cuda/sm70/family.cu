@@ -421,7 +421,7 @@ __device__ __forceinline__ void owned_q8_prepare_row(const __half* p, const int6
         const float* qw, const float* kw, const float* iw, const float* freq,
         __half* queries, __half* iq, void* kc, void* vc, void* ks, void* vs,
         const int64_t* offsets, const int64_t* generations, int* status,
-        int64_t expected_slot, int64_t expected_owner, int64_t window_start, int64_t window_rows,
+        int64_t expected_slot, int64_t window_start, int64_t window_rows,
         int64_t start, int64_t logical, int64_t physical, int page_tokens, int layer, int qheads,
         int index_heads, int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
     __shared__ float shared[512], normalized[256];
@@ -429,7 +429,7 @@ __device__ __forceinline__ void owned_q8_prepare_row(const __half* p, const int6
     const int unit = blockIdx.x, col = threadIdx.x;
     if (!col) {
         destination = -2;
-        if (generations[0] != expected_slot || generations[1] != expected_owner
+        if (generations[0] != expected_slot
                 || start < 0 || start >= logical) {
             atomicOr(status, 32); atomicCAS(status + 1, -2, layer);
         } else {
@@ -549,14 +549,14 @@ __global__ void owned_q8_prepare_kernel(const __half* p, const int64_t* coordina
         const float* qw, const float* kw, const float* iw, const float* freq,
         __half* queries, __half* iq, void* kc, void* vc, void* ks, void* vs,
         const int64_t* offsets, const int64_t* generations, int* status,
-        int64_t expected_slot, int64_t expected_owner, int64_t start, int64_t logical,
+        int64_t expected_slot, int64_t start, int64_t logical,
         int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
         int index_dim, int rotary_half, float eps, float rope_scale, int section1, int section2) {
     const int row = blockIdx.y;
     owned_q8_prepare_row<CODEC>(p + int64_t(row) * (2 * qheads * 256 + 512 + (index_heads + 1) * index_dim),
         coordinates + int64_t(row) * 3, qw, kw, iw, freq, queries + int64_t(row) * qheads * 256,
         iq + int64_t(row) * index_heads * index_dim, kc, vc, ks, vs, offsets, generations, status,
-        expected_slot, expected_owner, start, gridDim.y, start + row, logical, physical, page_tokens, layer,
+        expected_slot, start, gridDim.y, start + row, logical, physical, page_tokens, layer,
         qheads, index_heads, index_dim, rotary_half, eps, rope_scale, section1, section2);
 }
 
@@ -596,7 +596,7 @@ __global__ void owned_q8_prepare_rows_kernel(const __half* p, const int64_t* coo
         word_pointer<void>(d[owner_words::K_DATA]), word_pointer<void>(d[owner_words::V_DATA]),
         word_pointer<void>(d[owner_words::K_METADATA]), word_pointer<void>(d[owner_words::V_METADATA]),
         word_pointer<const int64_t>(d[owner_words::PAGE_OFFSETS]), word_pointer<const int64_t>(d[owner_words::GENERATIONS]),
-        status, d[owner_words::EXPECTED_SLOT], d[owner_words::EXPECTED_OWNER], window_start, rows,
+        status, d[owner_words::EXPECTED_SLOT], window_start, rows,
         window_start + within, d[owner_words::LOGICAL_CAPACITY], d[owner_words::PHYSICAL_ROWS], page_tokens, layer,
         qheads, index_heads, index_dim, rotary_half, eps, rope_scale, section1, section2);
 }
@@ -1455,7 +1455,7 @@ void family_owned_q8_prepare_resident_cuda() {
 
 void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const T& kw, const T& iw,
         const T& freq, T& q, T& iq, T& k, T& v, T& ks, T& vs, const T& offsets,
-        const T& generations, T& status, int64_t slot, int64_t owner, int64_t start,
+        const T& generations, T& status, int64_t slot, int64_t start,
         int64_t logical, int64_t physical, int page_tokens, int layer, int qheads, int index_heads,
         int index_dim, float eps, float amplitude, int section1, int section2, int codec) {
     auto launch = [&](auto selected) {
@@ -1463,7 +1463,7 @@ void family_owned_q8_prepare_cuda(const T& p, const T& axes, const T& qw, const 
                                                              at::cuda::getCurrentCUDAStream()>>>(
             ptr<__half>(p), axes.data_ptr<int64_t>(), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(freq),
             ptr<__half>(q), ptr<__half>(iq), k.data_ptr(), v.data_ptr(), ks.data_ptr(), vs.data_ptr(),
-            offsets.data_ptr<int64_t>(), generations.data_ptr<int64_t>(), status.data_ptr<int>(), slot, owner, start,
+            offsets.data_ptr<int64_t>(), generations.data_ptr<int64_t>(), status.data_ptr<int>(), slot, start,
             logical, physical, page_tokens, layer, qheads, index_heads, index_dim, freq.numel(), eps, amplitude,
             section1, section2);
     };

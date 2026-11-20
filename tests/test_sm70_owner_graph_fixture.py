@@ -60,7 +60,7 @@ def test_real_prefill_span_pool_and_cut_preserve_kv_and_owned_tail(rank):
     for ordinal, entry in enumerate(state.compact_indexer.entries):
         if entry is not None:
             assert entry.n == 129 and entry.span.start == 0 and entry.span.end == 133
-            assert entry.span.expected == (state.slot_generation, state.history_generation)
+            assert entry.span.expected == state.slot_generation
             assert entry.span.staging is stage and entry.span.resolved == 129
             assert torch.equal(entry.raw, expected_tail)
             assert torch.equal(entry.coordinates, expected_coordinates)

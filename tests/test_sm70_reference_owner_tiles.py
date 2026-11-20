@@ -30,11 +30,11 @@ def test_paid_slab_views_are_disjoint_and_no_additional_storage_is_allocated():
     assert p.workspace is p.mask is p.indices is p.half is None
 
 
-@pytest.mark.parametrize("slot,generation,layer", [(True, 0, 0), (-1, 0, 0), (0, 2**63, 0), (0, 0, 2**31)])
-def test_context_refuses_invalid_epoch_controls_before_device_use(slot, generation, layer):
+@pytest.mark.parametrize("slot,layer", [(True, 0), (-1, 0), (2**63, 0), (0, 2**31)])
+def test_context_refuses_invalid_epoch_controls_before_device_use(slot, layer):
     p = ReferenceTiles(aligned())
     with pytest.raises(ValueError, match="bounded integers"):
-        p.context(status=None, generations=None, slot_generation=slot, owner_generation=generation, layer=layer)
+        p.context(status=None, generations=None, slot_generation=slot, layer=layer)
 
 
 def test_insufficient_or_unaligned_slab_refuses_before_view_construction():

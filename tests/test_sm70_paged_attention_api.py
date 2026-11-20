@@ -11,9 +11,9 @@ from tensorfold.cuda.sm70 import paged_attention_descriptor as descriptor
 
 @pytest.mark.parametrize("rows", [0, 1, 32, 96, 128, 257])
 def test_workspace_is_bounded_by_rows_not_retained_context(rows):
-    assert operator.DESCRIPTOR_WORDS == 17 and operator.DESCRIPTOR_BYTES == 136
-    assert operator.workspace_bytes(rows) == rows * (136 + 12 * 2 * 4)
-    assert operator.generation_bytes(rows) == rows * 16
+    assert operator.DESCRIPTOR_WORDS == 16 and operator.DESCRIPTOR_BYTES == 128
+    assert operator.workspace_bytes(rows) == rows * (128 + 12 * 2 * 4)
+    assert operator.generation_bytes(rows) == rows * 8
 
 
 @pytest.mark.parametrize("invalid", [-1, True, 3.5, None])

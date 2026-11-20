@@ -369,7 +369,7 @@ def test_actual_eight_state_mtp_staging_binds_gold_device_ids_and_coordinates(fa
     windows = []
     for index, case in enumerate(data['sequences']):
         state = SimpleNamespace(pos=4, mtp_len=3, capacity=262149, history_slot=index,
-            slot_generation=1, history_generation=1, image_positions=None, rope_delta=index,
+            slot_generation=1, image_positions=None, rope_delta=index,
             position_profile_identity=position.identity, position_epoch=position.epoch,
             coordinate_profile_identity='b'*64, media_identity=None, media_input_span=None,
             media_profile_identity=None, mtp_boundary=None, pos_dev=torch.zeros(1, dtype=torch.int32))

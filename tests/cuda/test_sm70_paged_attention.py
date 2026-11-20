@@ -44,14 +44,14 @@ def shard(degree, rank, *, rows=2, group=0, sparse=True, key=(8, 0), value=(8, 0
     k, ks = payload(key, is_value=False)
     v, vs = payload(value, is_value=True)
     page_offsets = torch.tensor(offsets, dtype=torch.int64, device="cuda")
-    generations = torch.zeros(2, dtype=torch.int64, device="cuda")
+    generations = torch.zeros(1, dtype=torch.int64, device="cuda")
     status = torch.tensor([0, -2], dtype=torch.int32, device="cuda")
     position = torch.tensor([510 if sparse else 6], dtype=torch.int32, device="cuda")
     live = torch.tensor([rows], dtype=torch.int32, device="cuda")
     layer = torch.tensor([3], dtype=torch.int32, device="cuda")
     records = [[k.data_ptr(), v.data_ptr(), ks.data_ptr(), vs.data_ptr(), page_offsets.data_ptr(),
                 generations.data_ptr(), status.data_ptr(), position.data_ptr(), live.data_ptr(),
-                0, 0, logical, physical, 4, row, 0, 0] for row in range(rows)]
+                0, logical, physical, 4, row, 0, 0] for row in range(rows)]
     descriptor = torch.tensor(records, dtype=torch.int64, device="cuda")
     # Row0dense has7keys, so this fixture uses one dense row at end8 below.
     if not sparse:
@@ -262,7 +262,7 @@ def test_extreme_finite_scores_use_global_maximum_without_exp_overflow():
 
 def test_captured_operator_reads_current_layer_and_generation_controls():
     state = shard(1, 0)
-    state.generations[1] = 1
+    state.generations[0] = 1
     statistics(state)  # Prepare extension and allocator before capture.
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):

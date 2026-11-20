@@ -26,8 +26,8 @@ def test_raw_publication_refuses_actual_exhausted_counter_before_submission(monk
     torch._C._autograd._unsafe_set_version_counter([destination], [MAX_MUTATION_VERSION])
     monkeypatch.setattr(native, "extension", lambda: pytest.fail("raw submission after exhausted counter"))
     with pytest.raises(ValueError, match="version exhausted"):
-        native.publish(torch.ones_like(destination), destination, 0, torch.zeros(2, dtype=torch.int64),
-                       (0, 0), torch.tensor([0, -2], dtype=torch.int32), 0)
+        native.publish(torch.ones_like(destination), destination, 0, torch.zeros(1, dtype=torch.int64),
+                       0, torch.tensor([0, -2], dtype=torch.int32), 0)
     assert destination._version == MAX_MUTATION_VERSION and torch.count_nonzero(destination) == 0
 
 

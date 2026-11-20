@@ -35,7 +35,7 @@ class Tensor:
 
 def state():
     s = NS(compact_indexer=None, image_positions=None, rope_delta=0, pos=9, mtp_len=8, mtp_drafted=0,
-           capacity=32, version=0, slot_generation=0, history_generation=0, kv_identity=(("int8", "int8"), "policy"), cur=[0])
+           capacity=32, version=0, slot_generation=0, kv_identity=(("int8", "int8"), "policy"), cur=[0])
     for name in ("rec", "conv", "ple_tail", "pos_dev", "mtp_pos", "history_generations", "kv_status", "mtp_ikc", "mtp_pooled"):
         setattr(s, name, Tensor(name.encode()))
     s.ikc, s.pooled = [Tensor(b"ikc")], [Tensor(b"pooled")]

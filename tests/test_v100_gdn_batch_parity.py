@@ -29,7 +29,7 @@ def fixture(tmp_path, monkeypatch, fault=False, engine_type=NS):
                   g=torch.zeros(1, 6), b=torch.zeros(1, 6))
     states = [NS(rec=torch.full((2, 1, 6, 128, 128), float(i)), conv=torch.zeros(1, 3, 1280),
                  cur=[i%2], scratch=[scratch()], history_slot=i, slot_generation=2,
-                 history_generation=3, pos=64) for i in range(24)]
+                 pos=64) for i in range(24)]
     shared = NS(k=torch.empty(6*128*128), q=torch.empty(280),
                 v=torch.empty(1536, dtype=torch.float16), g=torch.empty(6), beta=torch.empty(6), lin=1)
     dec = NS(gdn=shared, buf=object(), held={}, states=states)
@@ -317,12 +317,12 @@ def test_actual_benchmark_prepare_target_before_join_uses_retained_authority(tmp
     states[0].pos = 128  # A mutable position is observation, not prepare authority.
     assert observations.target(segments, prefill=True) == 'target-result'
     assert not dec.streams and witness.prefill_pending is None
-    assert witness.segments[1]['rows'][0][6] == 128 and witness.segments[1]['rows'][0][9] == 0
+    assert witness.segments[1]['rows'][0][5] == 128 and witness.segments[1]['rows'][0][8] == 0
     assert dec._joined(pieces) == 'joined-result'
     assert events == ['prepare', 'target-before-join', 'join']
 
 
-@pytest.mark.parametrize('changed', ['slot-generation', 'history-generation', 'stream-state',
+@pytest.mark.parametrize('changed', ['slot-generation', 'stream-state',
                                      'wire', 'request', 'order', 'span'])
 def test_prefill_reused_or_changed_authority_refuses_and_releases(tmp_path, monkeypatch, changed):
     _, witness, _, _, states, _, _, _, _ = fixture(tmp_path, monkeypatch)
@@ -330,8 +330,6 @@ def test_prefill_reused_or_changed_authority_refuses_and_releases(tmp_path, monk
     witness.segment('prepare-prefill', segments, pieces)
     if changed == 'slot-generation':
         states[0].slot_generation += 1
-    elif changed == 'history-generation':
-        states[0].history_generation += 1
     elif changed == 'stream-state':
         streams[0].st = states[3]
     elif changed == 'wire':

@@ -111,7 +111,7 @@ class RetainedHandle:
     failure: BaseException | None = None
     transfer: object = None
     clean_state: object = None
-    clean_generation: tuple | None = None
+    clean_generation: int | None = None
     transfer_generation: int = 0
     canonical_ids: object = None
     retiring_keys: tuple = ()
@@ -1496,7 +1496,7 @@ class RetainedCatalog:
         else:
             host = handle.host if continuation == "same-request" else None
             handoff = {**transfer.handoff, "host": host, "continuation": continuation}
-            clean = (handle.state.slot_generation, handle.state.history_generation)
+            clean = handle.state.slot_generation
             following = source.transfer_readers - 1
             release = None
         if direction == "restore" and source is not handle and not handle.transient:
@@ -1973,7 +1973,7 @@ class RetainedCatalog:
         channel = self._channel(transfer)
         previous_parts = {}
         if (handle.clean_state is handle.state and handle.manifest is not None
-                and handle.clean_generation == (handle.state.slot_generation, handle.state.history_generation)):
+                and handle.clean_generation == handle.state.slot_generation):
             local = handle.manifest[self.rank]
             previous_parts = {old["name"]: (old, key) for old, key in zip(local["specs"], local["keys"], strict=True)}
         try:
@@ -2005,7 +2005,7 @@ class RetainedCatalog:
             handle.manifest, handle.keys = tuple(rows), tuple(keys)
             published = True
             handle.clean_state = handle.state
-            handle.clean_generation = (handle.state.slot_generation, handle.state.history_generation)
+            handle.clean_generation = handle.state.slot_generation
             for index, key in enumerate(old_keys):
                 self._ram.release(key)
                 handle.retiring_keys = old_keys[index + 1:]

@@ -35,13 +35,13 @@ def publish(source, destination, at, generations, expected, status, layer):
         # Raw extension writes bypass dispatcher mutation tracking. Invalidate
         # every issued view before submission, including a guarded no-op.
         torch.autograd.graph.increment_version(destination)
-        return extension().publish(source, destination, at, generations, *expected, status, layer)
+        return extension().publish(source, destination, at, generations, expected, status, layer)
     tensors = (source, destination, generations, status)
     if (not all(value.device == source.device and value.is_contiguous() for value in tensors)
             or source.ndim < 1 or destination.ndim != source.ndim or source.dtype != destination.dtype
             or source.shape[1:] != destination.shape[1:] or type(at) is not int or at < 0
             or len(source) > len(destination) or at > len(destination) - len(source)
-            or generations.dtype != torch.int64 or generations.numel() != 2
+            or generations.dtype != torch.int64 or generations.numel() != 1
             or status.dtype != torch.int32 or status.numel() != 2):
         raise ValueError("compact publication requires matching contiguous owned rows and controls")
     for control in (generations, status):
@@ -49,7 +49,7 @@ def publish(source, destination, at, generations, expected, status, layer):
         begin, end = control.data_ptr(), control.data_ptr() + control.nbytes
         if first < end and begin < last:
             raise ValueError("compact publication destination aliases its generation/status control")
-    if tuple(generations.tolist()) != expected:
+    if int(generations[0]) != expected:
         status[0].bitwise_or_(32)
         if int(status[1]) == -2:
             status[1] = layer
@@ -60,8 +60,8 @@ def publish(source, destination, at, generations, expected, status, layer):
 # Round-table lane words: host packing order of the device enum lane::Word in
 # compact_indexer.cu (keep both in the same order; check_round fixes the width).
 ROUND_LANE_FIELDS = ("ENABLE", "RING_RAW", "RING_COORDS", "PROTECTED", "PROTECTED_COORDS", "STAGE_RAW",
-                     "STAGE_COORDS", "POOLED", "GENERATIONS", "STATUS", "EXPECTED_SLOT", "EXPECTED_OWNER",
-                     "POSITION", "FIRST", "ROWS", "POOLED_ROWS", "PROPOSAL_RAW", "PROPOSAL_COORDS", "PROPOSAL_OFFSET",
+                     "STAGE_COORDS", "POOLED", "GENERATIONS", "STATUS", "EXPECTED_SLOT", "POSITION",
+                     "FIRST", "ROWS", "POOLED_ROWS", "PROPOSAL_RAW", "PROPOSAL_COORDS", "PROPOSAL_OFFSET",
                      "RING_COMMIT")
 ROUND_LANE_WORDS = len(ROUND_LANE_FIELDS)
 ROUND_GROUPS = 16

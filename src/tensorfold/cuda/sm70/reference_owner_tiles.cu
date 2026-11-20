@@ -10,8 +10,8 @@ __device__ void fail(int* status, int bit, int layer) {
     atomicOr(status, bit);
     atomicCAS(status + 1, -2, layer);
 }
-__device__ bool epoch(const int64_t* generations, int64_t slot, int64_t owner, int* status, int layer) {
-    if (generations[0] == slot && generations[1] == owner) return true;
+__device__ bool epoch(const int64_t* generations, int64_t slot, int* status, int layer) {
+    if (generations[0] == slot) return true;
     if (!threadIdx.x) fail(status, 32, layer);
     return false;
 }
@@ -32,11 +32,11 @@ __device__ __half decode(const void* data, const void* scales, int bits, int cod
 __global__ void keys_kernel(const void* data, const void* scales, const int64_t* pages,
     const int64_t* positions, const bool* visible, const int64_t* generations, int* status,
     int64_t* indices, bool* masks, __half* out, int logical, int physical, int page_tokens,
-    int bits, int codec, int64_t slot, int64_t owner, int layer) {
+    int bits, int codec, int64_t slot, int layer) {
     const int row = blockIdx.x, col = threadIdx.x;
     __shared__ int64_t offset;
     __shared__ bool mask;
-    const bool live = epoch(generations, slot, owner, status, layer);
+    const bool live = epoch(generations, slot, status, layer);
     if (!col) {
         mask = false;
         offset = 0;
@@ -61,9 +61,9 @@ __global__ void keys_kernel(const void* data, const void* scales, const int64_t*
 }
 __global__ void values_kernel(const void* data, const void* scales, const int64_t* indices,
     const bool* masks, const int64_t* generations, int* status, __half* out,
-    int physical, int bits, int codec, int64_t slot, int64_t owner, int layer) {
+    int physical, int bits, int codec, int64_t slot, int layer) {
     const int row = blockIdx.x, col = threadIdx.x;
-    const bool live = epoch(generations, slot, owner, status, layer);
+    const bool live = epoch(generations, slot, status, layer);
     const int64_t at = indices[row];
     const bool valid = live && masks[row] && at >= 0 && at < physical;
     if (live && masks[row] && !valid && !col) fail(status, 32, layer);
@@ -74,21 +74,21 @@ __global__ void values_kernel(const void* data, const void* scales, const int64_
 void reference_keys_cuda(const at::Tensor& data, const at::Tensor& scales, const at::Tensor& pages,
     const at::Tensor& positions, const at::Tensor& visible, const at::Tensor& generations, at::Tensor& status,
     at::Tensor& indices, at::Tensor& masks, at::Tensor& out, int logical, int page_tokens,
-    int bits, int codec, int64_t slot, int64_t owner, int layer) {
+    int bits, int codec, int64_t slot, int layer) {
     if (!positions.numel()) return;
     keys_kernel<<<positions.numel(),256,0,at::cuda::getCurrentCUDAStream()>>>(data.data_ptr(),scales.data_ptr(),
         pages.data_ptr<int64_t>(),positions.data_ptr<int64_t>(),visible.data_ptr<bool>(),generations.data_ptr<int64_t>(),
         status.data_ptr<int>(),indices.data_ptr<int64_t>(),masks.data_ptr<bool>(),reinterpret_cast<__half*>(out.data_ptr()),
-        logical,data.size(0),page_tokens,bits,codec,slot,owner,layer);
+        logical,data.size(0),page_tokens,bits,codec,slot,layer);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 void reference_values_cuda(const at::Tensor& data, const at::Tensor& scales, const at::Tensor& indices,
     const at::Tensor& masks, const at::Tensor& generations, at::Tensor& status, at::Tensor& out,
-    int count, int bits, int codec, int64_t slot, int64_t owner, int layer) {
+    int count, int bits, int codec, int64_t slot, int layer) {
     if (!count) return;
     values_kernel<<<count,256,0,at::cuda::getCurrentCUDAStream()>>>(data.data_ptr(),scales.data_ptr(),
         indices.data_ptr<int64_t>(),masks.data_ptr<bool>(),generations.data_ptr<int64_t>(),status.data_ptr<int>(),
-        reinterpret_cast<__half*>(out.data_ptr()),data.size(0),bits,codec,slot,owner,layer);
+        reinterpret_cast<__half*>(out.data_ptr()),data.size(0),bits,codec,slot,layer);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

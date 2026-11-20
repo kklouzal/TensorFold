@@ -5,12 +5,12 @@
 #include <limits>
 
 using T = at::Tensor;
-void compact_publish_cuda(const T&, T&, int64_t, const T&, int64_t, int64_t, T&, int);
+void compact_publish_cuda(const T&, T&, int64_t, const T&, int64_t, T&, int);
 void compact_round_stage_cuda(const T&, const T&, int);
 void compact_round_pool_cuda(const T&, const T&, const T&, const T&, double, double, int, int, int);
 
 void publish(const T& source, T destination, int64_t at, const T& generations,
-             int64_t slot, int64_t owner, T status, int layer) {
+             int64_t slot, T status, int layer) {
     TORCH_CHECK(source.is_cuda() && source.is_contiguous() && destination.is_cuda()
         && destination.device() == source.device() && destination.is_contiguous()
         && source.scalar_type() == destination.scalar_type() && source.dim() >= 1
@@ -19,8 +19,8 @@ void publish(const T& source, T destination, int64_t at, const T& generations,
     TORCH_CHECK(at >= 0 && source.size(0) <= destination.size(0)
         && at <= destination.size(0) - source.size(0), "compact publication exceeds its owned rows");
     TORCH_CHECK(generations.is_cuda() && generations.device() == source.device()
-        && generations.is_contiguous() && generations.scalar_type() == at::kLong && generations.numel() == 2
-        && slot >= 0 && owner >= 0 && status.is_cuda() && status.device() == source.device()
+        && generations.is_contiguous() && generations.scalar_type() == at::kLong && generations.numel() == 1
+        && slot >= 0 && status.is_cuda() && status.device() == source.device()
         && status.is_contiguous() && status.scalar_type() == at::kInt && status.numel() == 2,
         "compact publication needs its live generation and status owners");
     TORCH_CHECK(destination.stride(0) <= std::numeric_limits<int64_t>::max() / destination.element_size(),
@@ -34,15 +34,15 @@ void publish(const T& source, T destination, int64_t at, const T& generations,
     at::assert_no_overlap(destination, generations);
     at::assert_no_overlap(destination, status);
     c10::cuda::CUDAGuard guard(source.device());
-    if (source.numel()) compact_publish_cuda(source, destination, at * stride, generations, slot, owner, status, layer);
+    if (source.numel()) compact_publish_cuda(source, destination, at * stride, generations, slot, status, layer);
 }
 
-// Round-table lanes: [lanes, 20] int64 words owned by the canonical round owner.
+// Round-table lanes: [lanes, 19] int64 words owned by the canonical round owner.
 // Every pointer word references a retained State/staging tensor; capacity was
 // validated on the host before the table was published.
 void check_round(const T& tables, const T& owner) {
     TORCH_CHECK(tables.is_cuda() && tables.device() == owner.device() && tables.is_contiguous()
-        && tables.scalar_type() == at::kLong && tables.dim() == 2 && tables.size(1) == 20,
+        && tables.scalar_type() == at::kLong && tables.dim() == 2 && tables.size(1) == 19,
         "compact round lane table geometry");
 }
 

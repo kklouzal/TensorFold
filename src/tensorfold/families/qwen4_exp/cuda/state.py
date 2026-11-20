@@ -362,8 +362,8 @@ class State:
             raise ValueError("history session slot must be a nonnegative integer")
         self.history_slot, self.history_rank = slot, int(w.meta.get("rank", 0))
         self.history_comm = getattr(w, "comm", None) if self.history_placement is not None else None
-        self.history_generation = self.slot_generation = 0
-        self.history_generations = (torch.zeros((2,), dtype=torch.int64, device=dev)
+        self.slot_generation = 0
+        self.history_generations = (torch.zeros((1,), dtype=torch.int64, device=dev)
                                     if self.history_placement is not None else None)
         self.history_native_readers = weakref.WeakSet()
         self.compact_indexer = None
@@ -710,7 +710,7 @@ class State:
 
     def _compact_commit(self, pos, mtp_len, *, target=True, mtp=True):
         try:
-            if self.compact_indexer.commit(pos, mtp_len, (self.slot_generation, self.history_generation),
+            if self.compact_indexer.commit(pos, mtp_len, self.slot_generation,
                                            target=target, mtp=mtp):
                 self._kv_pending = True
         except BaseException as error:
@@ -722,7 +722,7 @@ class State:
             # The caller's ordinary readback validated the refresh; this
             # stream-ordered carry publication joins the next status packet.
             self.kv_begin()
-            self.compact_indexer.begin_mtp_proposals((self.slot_generation, self.history_generation))
+            self.compact_indexer.begin_mtp_proposals(self.slot_generation)
 
     def _publish_indexer_positions(self, pos: int, mtp_len: int) -> None:
         """Publish a restored/reset pair without mixing old and new extents."""
@@ -1018,7 +1018,7 @@ class State:
                 self._kv_pending = False
                 self._kv_error = None
             if self.compact_indexer is not None:
-                self.compact_indexer.reset((self.slot_generation, self.history_generation))
+                self.compact_indexer.reset(self.slot_generation)
                 self.pos = self.mtp_len = 0
                 self._kv_pending = True
             self.conv.zero_()
@@ -1049,7 +1049,6 @@ class State:
         result = {"layout": "replicated" if placement is None else "unique",
                   "slot": getattr(self, "history_slot", 0),
                   "slot_generation": getattr(self, "slot_generation", 0),
-                  "ownership_generation": getattr(self, "history_generation", 0),
                   "target_cached_length": self.pos,
                   "target_tentative_length": getattr(self, "target_tentative_length", self.pos),
                   "draft_valid_length": self.mtp_len - self.mtp_drafted,
@@ -1102,8 +1101,7 @@ class State:
                 "tentative_rows": min(placement.page_tokens, max(0, tentative - start)),
                 "codec_identity": self.kv_identity,
                 "owner_rank": ((self.kc[layer] if layer < placement.target_layers else self.mtp_kc).owners[page] % 4
-                               + head * 4),
-                "ownership_generation": self.history_generation}
+                               + head * 4)}
 
     def set_rope_delta(self, delta: int) -> None:
         self.rope_delta = int(delta)
@@ -1289,7 +1287,7 @@ class State:
         try:
             if self.compact_indexer is not None:
                 self.compact_indexer.restore(snap["compact_indexer"], snap["pos"], snap["mtp_len"],
-                                              (self.slot_generation, self.history_generation))
+                                              self.slot_generation)
             if getattr(self, "indexer_history_owner", None) is not None:
                 self.indexer_history_owner.restore(snap.get("indexer_history"), lengths)
             self.rec[0].copy_(snap["rec"])

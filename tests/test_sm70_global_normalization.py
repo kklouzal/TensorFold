@@ -230,7 +230,7 @@ def test_actual_reference_layer_selects_batch_and_preserves_four_phase_order(mon
     owner.reference_tiles.bind_global_statistics(owner.partial, owner.global_stats)
     state = NS(history_placement=HistoryPlacement(8, 2, 12), history_slot=1, pos=0,
                att_index={0: 0}, graph_rows=None, kv_status=torch.tensor([0, -2], dtype=torch.int32),
-               history_generations=torch.tensor([0, 0], dtype=torch.int64), slot_generation=0, history_generation=0,
+               history_generations=torch.tensor([0], dtype=torch.int64), slot_generation=0,
                kc=[NS(capacity=0, merge_order=0, value_format=NS(codec=0, quantized=False))])
     buffers = NS(history_owner=owner, owner_kernel_family='torch-reference', owner_graph_family='uncaptured',
                  owner_graphs=None, q=torch.zeros((rows, 3, 256)), pa=None,

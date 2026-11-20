@@ -273,7 +273,7 @@ class _RouterRows:
             attention_layer = min(state.att_index)
             ordinal = state.att_index[attention_layer]
             record = {"wire": wire, "prompt_sha256": digest, "slot": state.history_slot,
-                      "slot_generation": state.slot_generation, "ownership_generation": state.history_generation,
+                      "slot_generation": state.slot_generation,
                       "prompt_start": start, "count": count, "first": rows, "last": rows + count,
                       "sampling": sampling, "draft": stream.draft,
                       "attention_model_layer": attention_layer, "attention_ordinal": ordinal,
@@ -1033,7 +1033,7 @@ class _GDNBatchParity:
                             or any(previous[0] is state for previous in bound)):
                         raise ValueError('GDN prepare segment differs from authoritative piece/order')
                     authority = self._segment_authority(state, stream)
-                    generation = (state.history_slot, state.slot_generation, state.history_generation)
+                    generation = (state.history_slot, state.slot_generation)
                     bound.append((state, stream, authority, start, count, begin, end, generation))
                 pending = tuple(bound)  # Strong ownership, bounded to this single prepare pass.
                 entries = pending
@@ -1044,7 +1044,7 @@ class _GDNBatchParity:
                 for (state, begin, end), entry in zip(segments, pending):
                     prior, stream, authority, start, count, first, last, generation = entry
                     if (state is not prior or begin != first or end != last or end-begin != count
-                            or (state.history_slot, state.slot_generation, state.history_generation) != generation
+                            or (state.history_slot, state.slot_generation) != generation
                             or self._segment_authority(state, stream) != authority):
                         raise ValueError('GDN target prefill changed State/generation/request/span/order')
                 entries = pending
@@ -1059,7 +1059,7 @@ class _GDNBatchParity:
                     stream = matches[0]
                     authority = self._segment_authority(state, stream)
                     entries.append((state, stream, authority, state.pos, end-begin, begin, end,
-                                    (state.history_slot, state.slot_generation, state.history_generation)))
+                                    (state.history_slot, state.slot_generation)))
             else:
                 raise ValueError('unknown GDN segment journal transition')
             for state, stream, authority, start, count, begin, end, generation in entries:
@@ -1172,7 +1172,7 @@ class _GDNBatchParity:
                     write_json(target, {'layer': layer, 'rows': n,
                         'benchmark_segments': self.segments[self.segment_count-1],
                         'sources': self.sources, 'files': files, 'negative_decay': negative_decay,
-                        'states': [[s.history_slot, s.slot_generation, s.history_generation, s.pos, s.cur[layer], a, z]
+                        'states': [[s.history_slot, s.slot_generation, s.pos, s.cur[layer], a, z]
                                    for s, a, z in segs],
                         'keep_present': [getattr(s.scratch[layer], 'keep_rows', None) is not None for s, _, _ in segs]})
                 except BaseException as error:
@@ -1331,7 +1331,7 @@ def _q8_parity_resources(plan, output):
     slabs = {'projection': ((1, 2688), 'float16'), 'coordinates': ((1, 3), 'int64'),
              'q_scale': ((256,), 'float32'), 'k_scale': ((256,), 'float32'),
              'iq_scale': ((128,), 'float32'), 'frequency': ((64,), 'float32'),
-             'initial_status': ((2,), 'int32'), 'generations': ((2,), 'int64'), 'flags': ((7,), 'bool')}
+             'initial_status': ((2,), 'int32'), 'generations': ((1,), 'int64'), 'flags': ((7,), 'bool')}
     slabs.update({side+'_'+key: value for side in ('expected', 'actual') for key, value in fields.items()})
     widths = {'float16': 2, 'float32': 4, 'int32': 4, 'int64': 8, 'int8': 1, 'bool': 1}
     payload = sum(math.prod(shape)*widths[dtype] for shape, dtype in slabs.values())
@@ -1456,7 +1456,7 @@ class _Q8PreparationParity:
                     or any(row[0] is state for row in bindings)):
                 raise ValueError('Q8 witness lost current24-State request authority')
             bindings.append((state, stream, wire, request['index'], request['prompt_sha256'],
-                             state.slot_generation, state.history_generation, state.pos))
+                             state.slot_generation, state.pos))
         self.bindings, self.observer = tuple(bindings), observer
         self.round_thread = threading.current_thread()
         self.selected = self.active = True
@@ -1526,7 +1526,7 @@ class _Q8PreparationParity:
             row = next(((begin, end) for st, begin, end in tables.segs if st is state), None)
             if (binding is None or binding[1].st is not state or binding[1].done
                     or self.engine.tp_decoder.wires.get(id(binding[1])) != binding[2]
-                    or (state.slot_generation, state.history_generation, state.pos) != binding[5:]
+                    or (state.slot_generation, state.pos) != binding[5:]
                     or row is None or row[1]-row[0] != 1 or layer.index not in self.layers
                     or weights is not self.engine.w or start != state.pos or self.calls >= 288
                     or (id(state), layer.index) in self.seen
@@ -1576,7 +1576,7 @@ class _Q8PreparationParity:
                 self.primary = self.mismatch  # Recognized numeric primary BEFORE fallible evidence/metadata.
                 try:
                     metadata = {'rank': self.rank, 'layer': layer.index, 'slot': state.history_slot,
-                        'generation': list(binding[5:7]), 'position': start, 'wire': binding[2],
+                        'generation': binding[5], 'position': start, 'wire': binding[2],
                         'request_index': binding[3], 'prompt_sha256': binding[4], 'owned': physical >= 0,
                         'cohort_id': self.resources['cohort_id']}
                     inputs = {'projection': projection, 'coordinates': coordinates,
@@ -2124,14 +2124,14 @@ class _HistoryAttestation:
                     or len(stream.prompt) != data["N"] or stream.count != data["R"]):
                 raise ValueError("history attestation owner differs from its prepared identity/geometry")
             rows.append({"wire": tp.wires[id(stream)], "slot": state.history_slot,
-                         "slot_generation": state.slot_generation, "ownership_generation": state.history_generation,
+                         "slot_generation": state.slot_generation,
                          "cached_length": state.pos, "prompt_tokens": len(stream.prompt),
                          "prompt_token_ids_sha256": _prompt_digest(stream.prompt)})
         if ({row["prompt_token_ids_sha256"] for row in rows} != set(data["prompt_token_ids_sha256"])
                 or len({row["wire"] for row in rows}) != data["C"]
                 or len({row["slot"] for row in rows}) != data["C"]
                 or any(type(row[key]) is not int or row[key] < 0 for row in rows
-                       for key in ("wire", "slot", "slot_generation", "ownership_generation", "cached_length"))
+                       for key in ("wire", "slot", "slot_generation", "cached_length"))
                 or type(tp.prefix_operation) is not int or tp.prefix_operation < 0):
             raise ValueError("history attestation corpus, wire, slot or generation mismatch")
         return {"schema": "tensorfold.private-owned-history-v1", "rank": engine.rank, "world": engine.tp,
@@ -4919,7 +4919,7 @@ def accept_history(output, client_report):
                 or {row["prompt_token_ids_sha256"] for row in owners} != hashes
                 or len(hashes) != capacity or any(
                     any(type(row[key]) is not int or row[key] < 0 for key in
-                        ("wire", "slot", "slot_generation", "ownership_generation", "cached_length", "prompt_tokens"))
+                        ("wire", "slot", "slot_generation", "cached_length", "prompt_tokens"))
                     or row["prompt_tokens"] != receipt["N"] or row["cached_length"] < receipt["N"] for row in owners)):
             raise ValueError("worker owners do not match the C actual client histories")
         facts = {key: receipt[key] for key in ("prefix_sequence", "input_sha256", "C", "N", "R", "L",

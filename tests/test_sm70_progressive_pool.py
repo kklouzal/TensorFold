@@ -185,7 +185,7 @@ def test_every_admitted_sm70_state_uses_the_same_progressive_indexer_contract(fo
     coordinates = torch.arange(35, dtype=torch.int64)[:, None].expand(-1, 3)
     staging = Staging(13, state.layers, "cpu", mtp=False)
     staging.begin(mtp=False)
-    state.compact_indexer.append(0, 0, raw[:3], coordinates[:3], staging, 0, 3, mtp=False, expected=(0, 0))
+    state.compact_indexer.append(0, 0, raw[:3], coordinates[:3], staging, 0, 3, mtp=False, expected=0)
     state.set_pos(3)
     pooled.fill_(17)
     expected = pooled.clone()
@@ -193,7 +193,7 @@ def test_every_admitted_sm70_state_uses_the_same_progressive_indexer_contract(fo
     _legacy_pool(raw, expected, *options, 4, 13)
     staging.begin(mtp=False)
     entry = state.compact_indexer.append(0, 3, raw[3:16], coordinates[3:16], staging, 0, 13,
-                                          mtp=False, expected=(0, 0))
+                                          mtp=False, expected=0)
     entry.pool(pooled, options[1], options[2], options[3], (11, 11, 10), 1.0)
     assert state.ikc[0].shape == (4, 128)
     assert torch.equal(pooled.view(torch.uint8), expected.view(torch.uint8))

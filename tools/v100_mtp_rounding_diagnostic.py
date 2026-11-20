@@ -237,7 +237,7 @@ def state_metadata(state):
             and getattr(state, "dspark_runtime", None) is None and getattr(state, "dflash2", None) is None
             and state.image_positions is None and not state.rope_delta, "only original plain text tiny State is supported")
     return {name: getattr(state, name) for name in ("pos", "mtp_len", "mtp_drafted", "capacity", "version",
-                                                   "slot_generation", "history_generation", "kv_identity")} | {"cur": list(state.cur)}
+                                                   "slot_generation", "kv_identity")} | {"cur": list(state.cur)}
 
 
 def state_tensors(state):

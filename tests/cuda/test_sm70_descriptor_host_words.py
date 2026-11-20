@@ -47,7 +47,7 @@ def test_pinned_words_match_original_rows_across_producer_streams(mtp, base, cou
                 expected[row - base].copy_(torch.tensor((
                     cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
                     cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
-                    position.data_ptr(), live, state.slot_generation, state.history_generation,
+                    position.data_ptr(), live, state.slot_generation,
                     state.capacity, cache.capacity, cache.page_offsets.numel(), row - first,
                     state.history_placement.indexer_owner(state.history_slot, ai, include_mtp=True),
                     cache.merge_order,

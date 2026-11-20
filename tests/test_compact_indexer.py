@@ -15,7 +15,7 @@ from tensorfold.families.qwen4_exp.cuda.history_placement import compact_cache_b
 
 
 def cache(*, capacity=128, proposals=0):
-    generations = torch.zeros(2, dtype=torch.int64)
+    generations = torch.zeros(1, dtype=torch.int64)
     status = torch.tensor([0, -2], dtype=torch.int32)
     return Cache(capacity, 128, "cpu", generations, status, layer=3,
                  proposal_rows=proposals, mtp=proposals > 0)
@@ -24,7 +24,7 @@ def cache(*, capacity=128, proposals=0):
 def begin(entry, stage, raw, coords, *, mtp=False):
     stage.begin(mtp=mtp)
     target, axes, epoch = stage.span(0, 0, len(raw), mtp=mtp)
-    span = Span(entry.n, target, axes, stage, epoch, mtp, (0, 0))
+    span = Span(entry.n, target, axes, stage, epoch, mtp, 0)
     entry.begin(span, raw, coords)
     return span
 
@@ -62,7 +62,7 @@ def test_all_group_splits_and_every_cut_match_full_history(chunks):
             assert torch.equal(snapshot["raw"], expected)
             assert torch.equal(snapshot["coordinates"], axes)
             assert snapshot["pooled_valid"] == cut // 4
-        entry.publish_commit(entry.prepare_commit(start + count, (0, 0)), start + count, (0, 0))
+        entry.publish_commit(entry.prepare_commit(start + count, 0), start + count, 0)
         assert torch.equal(pooled[:entry.n // 4], reference[:entry.n // 4])
         assert entry.raw.shape == (4, 128)
 
@@ -75,17 +75,17 @@ def test_rejected_members_never_become_valid_and_rollback_preserves_pending_tail
     pooled, gamma, frequencies = torch.zeros(32, 128).half(), torch.ones(128), torch.tensor([0.3])
     begin(entry, stage, raw[:3], coords[:3])
     entry.pool(pooled, gamma, frequencies, 1e-6, (1, 1, 1), 1.0)
-    entry.publish_commit(entry.prepare_commit(3, (0, 0)), 3, (0, 0))
+    entry.publish_commit(entry.prepare_commit(3, 0), 3, 0)
     before = entry.snapshot(3)
     begin(entry, stage, raw[3:12], coords[3:12])
     entry.pool(pooled, gamma, frequencies, 1e-6, (1, 1, 1), 1.0)
     if accepted:
-        entry.publish_commit(entry.prepare_commit(3 + accepted, (0, 0)), 3 + accepted, (0, 0))
+        entry.publish_commit(entry.prepare_commit(3 + accepted, 0), 3 + accepted, 0)
         with pytest.raises(ValueError, match="rejected"):
             entry.snapshot(12)
     else:
         entry.span = None
-    entry.restore(before, 3, (0, 0))
+    entry.restore(before, 3, 0)
     assert entry.n == 3 and torch.equal(entry.raw, before["raw"])
     assert torch.equal(entry.coordinates, before["coordinates"])
     replacement = raw[3:8].neg()
@@ -106,19 +106,19 @@ def test_mtp_base_and_every_intermediate_cut_survive_shared_stage_reuse():
     pooled, gamma, freq = torch.zeros(32, 128).half(), torch.ones(128), torch.tensor([0.1])
     begin(entry, stage, raw[:3], coords[:3], mtp=True)
     entry.pool(pooled, gamma, freq, 1e-6, (1, 1, 1), 1.0)
-    entry.publish_commit(entry.prepare_commit(3, (0, 0)), 3, (0, 0))
+    entry.publish_commit(entry.prepare_commit(3, 0), 3, 0)
     base = entry.snapshot(3)
-    entry.begin_proposals((0, 0))
+    entry.begin_proposals(0)
     for position in range(3, 10):
         begin(entry, stage, raw[position:position + 1], coords[position:position + 1], mtp=True)
         entry.pool(pooled, gamma, freq, 1e-6, (1, 1, 1), 1.0)
-        entry.publish_commit(entry.prepare_commit(position + 1, (0, 0)), position + 1, (0, 0))
+        entry.publish_commit(entry.prepare_commit(position + 1, 0), position + 1, 0)
         stage.mtp.fill_(-777)  # Another request is free to use the shared execution arena.
     for cut in range(3, 11):
         expected, axes = expected_tail(raw, coords, cut)
         assert torch.equal(entry.snapshot(cut)["raw"], expected)
         assert torch.equal(entry.snapshot(cut)["coordinates"], axes)
-    entry.publish_commit(entry.prepare_commit(3, (0, 0)), 3, (0, 0))
+    entry.publish_commit(entry.prepare_commit(3, 0), 3, 0)
     assert entry.base is None and torch.equal(entry.raw, base["raw"])
 
 
@@ -134,7 +134,7 @@ def test_owned_bytes_are_context_independent_and_match_actual_tensor_extents():
 def test_stale_generation_does_not_publish_model_bytes():
     source, destination = torch.ones(4, 128).half(), torch.full((4, 128), 7).half()
     status = torch.tensor([0, -2], dtype=torch.int32)
-    publish(source, destination, 0, torch.tensor([4, 9]), (3, 9), status, 7)
+    publish(source, destination, 0, torch.tensor([4]), 3, status, 7)
     assert torch.all(destination == 7) and status.tolist() == [32, 7]
 
 
@@ -142,7 +142,7 @@ def test_stale_generation_does_not_publish_model_bytes():
 def test_prefix_transfer_retires_kv_pool_uses_on_both_states_even_without_owned_indexer(monkeypatch, failure):
     placement = NS(target_layers=1, indexer_owner=lambda *args, **kwargs: 0)
     owners = [CompactIndexer(placement, slot, 7, 32, 1, 128, "cpu",
-                             torch.zeros(2, dtype=torch.int64), torch.tensor([0, -2], dtype=torch.int32),
+                             torch.zeros(1, dtype=torch.int64), torch.tensor([0, -2], dtype=torch.int32),
                              proposal_rows=0, layer_ids=(3,)) for slot in (0, 1)]
     assert all(owner.entries == [None] for owner in owners)
     events, current = [], [2]
@@ -211,7 +211,7 @@ def test_prefix_transfer_retires_kv_pool_uses_on_both_states_even_without_owned_
 
 def test_prefix_transfer_wait_failure_cannot_be_reclassified_as_fresh_exhaustion(monkeypatch):
     placement = NS(target_layers=1, indexer_owner=lambda *args, **kwargs: 0)
-    owner = CompactIndexer(placement, 0, 7, 32, 1, 128, "cpu", torch.zeros(2, dtype=torch.int64),
+    owner = CompactIndexer(placement, 0, 7, 32, 1, 128, "cpu", torch.zeros(1, dtype=torch.int64),
                            torch.tensor([0, -2], dtype=torch.int32), proposal_rows=0, layer_ids=(3,))
     failure = MemoryError("failed transfer wait")
     class Stream:
@@ -231,11 +231,11 @@ def test_prefix_transfer_wait_failure_cannot_be_reclassified_as_fresh_exhaustion
 
 @pytest.mark.parametrize("control", ["generations", "status"])
 def test_publication_rejects_destination_control_alias_before_any_write(control):
-    generations, status = torch.tensor([3, 5], dtype=torch.int64), torch.tensor([0, -2], dtype=torch.int32)
+    generations, status = torch.tensor([3], dtype=torch.int64), torch.tensor([0, -2], dtype=torch.int32)
     destination = generations if control == "generations" else status
     before = destination.clone()
     with pytest.raises(ValueError, match="aliases"):
-        publish(torch.zeros_like(destination), destination, 0, generations, (3, 5), status, 7)
+        publish(torch.zeros_like(destination), destination, 0, generations, 3, status, 7)
     assert torch.equal(destination, before)
 
 
@@ -267,7 +267,7 @@ def test_cross_stream_cut_reads_extend_cache_and_shared_staging_retirement(monke
         staging.target_epoch = 1
         staging.target[0].fill_(7)
         staging.coordinates.fill_(99)
-        entry.span = Span(0, staging.target[0], staging.coordinates, staging, 1, False, (0, 0))
+        entry.span = Span(0, staging.target[0], staging.coordinates, staging, 1, False, 0)
         length = 2
     else:
         entry.n = length = 2
@@ -350,11 +350,11 @@ def test_issued_writer_with_failed_fence_blocks_reset_and_other_stream_reuse(mon
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: Stream())
     monkeypatch.setattr(torch._C, "_cuda_getCurrentRawStream", lambda index: 2, raising=False)
     with pytest.raises(MemoryError) as caught:
-        entry._copy(torch.ones_like(entry.raw), entry.raw, (0, 0))
+        entry._copy(torch.ones_like(entry.raw), entry.raw, 0)
     assert caught.value is error and torch.all(entry.raw == 1)
     assert entry._retirement_error is error and len(waits) == 1
     with pytest.raises(MemoryError) as reused:
-        entry.reset((0, 0))
+        entry.reset(0)
     assert reused.value is error and len(waits) == 1 and torch.all(entry.raw == 1)
 
 
@@ -416,7 +416,7 @@ def test_coordinate_frame_binds_own_rows_generations_and_coordinate_storage(mtp)
                             prefix + "_indexer_coordinates": None, prefix + "_indexer_frame": None,
                             prefix + "_indexer_position": position,
                             prefix + "_indexer_frame_id": 0})
-    state = NS(pos=19, mtp_len=18, slot_generation=2, history_generation=3,
+    state = NS(pos=19, mtp_len=18, slot_generation=2,
                position_profile_identity=position.identity, position_epoch=position.epoch,
                coordinate_profile_identity="1" * 64, media_identity=None)
     segs, coords = [(state, 0, 2)], torch.tensor([[100, 20, 30], [200, 40, 60]], dtype=torch.int64)
@@ -476,14 +476,14 @@ def test_unique_prefix_relocates_captured_tail_after_shared_staging_was_reused()
             entry = source.compact_indexer.entries[ordinal]
             if entry is not None:
                 source.compact_indexer.append(ordinal, 0, raw[:13] + ordinal, coordinates[:13],
-                    stage, 0, 13, mtp=False, expected=(0, 0))
+                    stage, 0, 13, mtp=False, expected=0)
                 source.pooled[ordinal].fill_(ordinal + 0.25)
         source.set_pos(13)
         stage.begin(mtp=True)
         source.mtp_kc.append(0, key[:9], -key[:9], scale[:9], scale[:9])
         if source.compact_indexer.entries[-1] is not None:
             source.compact_indexer.append(12, 0, raw[:9] + 12, coordinates[:9],
-                stage, 0, 9, mtp=True, expected=(0, 0))
+                stage, 0, 9, mtp=True, expected=0)
             source.mtp_pooled.fill_(12.25)
         source.set_mtp_len(9)
         snapshot = {**source.snapshot(), "pos": 10, "mtp_len": 6,
@@ -621,11 +621,11 @@ def test_prefix_cohort_refuses_before_mutation_or_contains_uncertain_transfer(mo
 
 def bound(entry, stage, raw, coords, *, first=0, ordinal=0, mtp=False):
     """One cache's rows of the current frame, bound through the staging registry (as execution binds them)."""
-    span = stage.bind(ordinal, first, first + len(raw), entry.n, mtp=mtp, expected=(0, 0))
+    span = stage.bind(ordinal, first, first + len(raw), entry.n, mtp=mtp, expected=0)
     entry.begin(span, raw, coords)
     entry.pool(torch.zeros(64, 128).half(), torch.ones(128), torch.tensor([0.1]), 1e-6, (1, 1, 1), 1.0)
     if mtp:  # MTP windows count at once (State commits its kept rows later)
-        entry.publish_commit(entry.prepare_commit(entry.n + len(raw), (0, 0)), entry.n + len(raw), (0, 0))
+        entry.publish_commit(entry.prepare_commit(entry.n + len(raw), 0), entry.n + len(raw), 0)
     return span
 
 
@@ -656,9 +656,9 @@ def test_padded_refresh_commits_its_kept_rows_after_a_prestaged_frame(keep):
     snapshot = entry.snapshot(6 + keep)
     expected, axes = expected_tail(raw, coords, 6 + keep)
     assert torch.equal(snapshot["raw"], expected) and torch.equal(snapshot["coordinates"], axes)
-    entry.publish_commit(entry.prepare_commit(6 + keep, (0, 0)), 6 + keep, (0, 0))
+    entry.publish_commit(entry.prepare_commit(6 + keep, 0), 6 + keep, 0)
     assert entry.n == 6 + keep and torch.equal(entry.raw, expected) and torch.equal(entry.coordinates, axes)
-    other = entry.clone(torch.zeros(2, dtype=torch.int64), torch.tensor([0, -2], dtype=torch.int32))
+    other = entry.clone(torch.zeros(1, dtype=torch.int64), torch.tensor([0, -2], dtype=torch.int32))
     assert torch.equal(other.raw, expected)
 
 
@@ -670,7 +670,7 @@ def test_without_retain_the_restaged_role_refuses_the_old_span():
     bound(entry, stage, raw[:5], coords[:5], mtp=True)
     restage(stage, mtp=True)
     with pytest.raises(ValueError, match="reused before its cut/commit resolved"):
-        entry.prepare_commit(3, (0, 0))
+        entry.prepare_commit(3, 0)
 
 
 def test_abandoned_prestage_keeps_spans_readable_and_a_later_frame_replaces_them():
@@ -701,13 +701,13 @@ def test_multi_stream_frame_spans_each_keep_their_own_rows_across_chained_presta
     restage(stage, mtp=True)
     for cut in range(0, 6):
         assert torch.equal(b.snapshot(cut)["raw"], expected_tail(raw[20:], coords[20:], cut)[0]), cut
-    a.publish_commit(a.prepare_commit(3, (0, 0)), 3, (0, 0))
-    a.begin_proposals((0, 0))
+    a.publish_commit(a.prepare_commit(3, 0), 3, 0)
+    a.begin_proposals(0)
     stage.begin(mtp=True)                        # a's proposal step (the actual launch of the early frame)
     bound(a, stage, raw[30:31], coords[30:31], mtp=True)
     stage.retain(mtp=True)                       # prestage during a's proposal
     restage(stage, mtp=True)
-    b.publish_commit(b.prepare_commit(2, (0, 0)), 2, (0, 0))
+    b.publish_commit(b.prepare_commit(2, 0), 2, 0)
     expected, axes = expected_tail(raw[20:], coords[20:], 2)
     assert torch.equal(b.raw, expected) and torch.equal(b.coordinates, axes)
     assert a.span.staging is None and b.span.staging is None
@@ -721,7 +721,7 @@ def test_target_role_retains_each_ordinal_channel():
     bound(low, stage, raw[:3], coords[:3], ordinal=2)
     bound(high, stage, raw[8:11], coords[:3], ordinal=9)
     for entry in (low, high):
-        entry.publish_commit(entry.prepare_commit(3, (0, 0)), 3, (0, 0))
+        entry.publish_commit(entry.prepare_commit(3, 0), 3, 0)
     stage.retain(mtp=False)
     restage(stage, mtp=False)
     assert torch.equal(low.snapshot(2)["raw"][:2], raw[:2])
@@ -745,19 +745,19 @@ def test_role_commits_leave_the_other_roles_frontier_alone():
     """set_pos commits target entries only; set_mtp_len the MTP entry only (an MTP step in flight)."""
     raw, coords = history()
     placement = NS(target_layers=2, indexer_owner=lambda slot, ordinal, include_mtp: 0)
-    indexer = CompactIndexer(placement, 0, 0, 128, 3, 128, "cpu", torch.zeros(2, dtype=torch.int64),
+    indexer = CompactIndexer(placement, 0, 0, 128, 3, 128, "cpu", torch.zeros(1, dtype=torch.int64),
                              torch.tensor([0, -2], dtype=torch.int32), proposal_rows=8, layer_ids=[0, 1, 2])
     target, mtp = Staging(8, 3, "cpu", mtp=True), Staging(8, 3, "cpu", mtp=True)
     target.begin(mtp=False)
     for ordinal in range(2):
-        indexer.append(ordinal, 0, raw[:3], coords[:3], target, 0, 3, mtp=False, expected=(0, 0))
+        indexer.append(ordinal, 0, raw[:3], coords[:3], target, 0, 3, mtp=False, expected=0)
     mtp.begin(mtp=True)
-    indexer.append(2, 0, raw[10:15], coords[10:15], mtp, 0, 5, mtp=True, expected=(0, 0))
+    indexer.append(2, 0, raw[10:15], coords[10:15], mtp, 0, 5, mtp=True, expected=0)
     entry = indexer.entries[2]
-    entry.publish_commit(entry.prepare_commit(5, (0, 0)), 5, (0, 0))  # a padded refresh counts at once
-    assert indexer.commit(3, 0, (0, 0), mtp=False)                    # target commit at the old mtp_len
+    entry.publish_commit(entry.prepare_commit(5, 0), 5, 0)  # a padded refresh counts at once
+    assert indexer.commit(3, 0, 0, mtp=False)                    # target commit at the old mtp_len
     assert entry.n == 5 and entry.span.resolved == 5                  # not rolled back to 0
     assert [indexer.entries[i].n for i in range(2)] == [3, 3]
-    assert indexer.commit(0, 2, (0, 0), target=False)                 # the refresh keeps 2 of its 5 rows
+    assert indexer.commit(0, 2, 0, target=False)                 # the refresh keeps 2 of its 5 rows
     assert entry.n == 2 and [indexer.entries[i].n for i in range(2)] == [3, 3]
     assert torch.equal(entry.raw, expected_tail(raw[10:], coords[10:], 2)[0])

@@ -14,7 +14,7 @@ import torch
 from .method_retention import commit_method_restore, method_inventory, method_restore_targets
 from .retained_parts import TensorPart, part_specs
 
-SCHEMA = "qwen4exp-complete-state-v1"
+SCHEMA = "qwen4exp-complete-state-v2"
 
 
 def canonical_tokens(stream, position, *, new_turn=False):
@@ -277,7 +277,7 @@ def state_inventory(state, *, stream=None, pending_hc=None, recoveries=(), recov
         "pos": state.pos, "mtp_len": state.mtp_len, "mtp_drafted": state.mtp_drafted,
         "rope_delta": state.rope_delta, "mtp_participating": state.media_mtp_enabled,
         "source_slot": state.history_slot, "source_rank": state.history_rank,
-        "source_slot_generation": state.slot_generation, "source_history_generation": state.history_generation,
+        "source_slot_generation": state.slot_generation,
         "indexers": index_metadata, "recoveries": recovery_metadata, "method": method.metadata,
         "media_profile": state.media_profile_identity, "media_identity": state.media_identity,
         "canonical_sha256": canonical_sha,
@@ -559,7 +559,7 @@ def commit_state_restore(plan):
                         getattr(entry, name).zero_()
                 entry.n, entry.origin, entry.base = source["length"], source["origin"], source["base"]
                 entry.proposal_count, entry.span = source["proposal_count"], None
-                entry.base_expected = (state.slot_generation, state.history_generation) if entry.base is not None else None
+                entry.base_expected = state.slot_generation if entry.base is not None else None
         state.pos, state.target_tentative_length = metadata["pos"], metadata["pos"]
         state.mtp_len, state.mtp_drafted = handoff["mtp_len"], handoff["mtp_drafted"]
         state.pos_dev.fill_(state.pos)

@@ -8,7 +8,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_
 
 HEADS, DIM, RATIO, BUDGET = 4, 128, 4, 2048
 TOP, WIDTH = BUDGET // RATIO, BUDGET + RATIO + 2
-STATUS, POSITION, LIVE_ROWS, ROW_OFFSET, INDEXER_OWNER, WORDS = 6, 7, 8, 14, 15, 17
+STATUS, POSITION, LIVE_ROWS, ROW_OFFSET, INDEXER_OWNER, WORDS = 6, 7, 8, 13, 14, 16
 
 
 @pytest.fixture(scope='module')

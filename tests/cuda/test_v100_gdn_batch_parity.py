@@ -20,7 +20,7 @@ def test_live_scalar_before_native_batch_raw_state_and_evidence(tmp_path, monkey
     gdn_native.extension().prepare_batch(6)
     static, states, b, weight, norm, bias, _, decay = setup(6, 'masked')
     for i, state in enumerate(states):
-        state.history_slot, state.slot_generation, state.history_generation, state.pos = i, 1, 2, 64
+        state.history_slot, state.slot_generation, state.pos = i, 1, 64
     # Explicit synthetic caller-owned unused scratch; no model/State mirror.
     shared = NS(k=torch.empty(6*128*128, device='cuda'), q=torch.empty(280, device='cuda'),
                 v=torch.empty(1536, device='cuda', dtype=torch.float16),

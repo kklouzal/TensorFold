@@ -3,9 +3,9 @@
 #include <cstdint>
 
 namespace tf_sm70_paged {
-constexpr int ABI_VERSION = 1;
+constexpr int ABI_VERSION = 2;
 constexpr int WORD_BYTES = 8;
-constexpr const char* SCHEMA_ID = "tf-sm70-paged-28a8078f656c3e86f24bc601168c4b7c3db7bd3b52147753fdd157728c677c22";
+constexpr const char* SCHEMA_ID = "tf-sm70-paged-8a49fe84fa00271477b4c87d9245781a37e075a44e4e2e6c92317adc53414ddd";
 static_assert(sizeof(int64_t) == WORD_BYTES);
 static_assert(sizeof(uintptr_t) == WORD_BYTES);
 enum Word : int {
@@ -19,13 +19,12 @@ enum Word : int {
     POSITION = 7,
     LIVE_ROWS = 8,
     EXPECTED_SLOT = 9,
-    EXPECTED_OWNER = 10,
-    LOGICAL_CAPACITY = 11,
-    PHYSICAL_ROWS = 12,
-    PAGE_COUNT = 13,
-    ROW_OFFSET = 14,
-    INDEXER_OWNER = 15,
-    MERGE_ORDER = 16,
-    WORD_COUNT = 17
+    LOGICAL_CAPACITY = 10,
+    PHYSICAL_ROWS = 11,
+    PAGE_COUNT = 12,
+    ROW_OFFSET = 13,
+    INDEXER_OWNER = 14,
+    MERGE_ORDER = 15,
+    WORD_COUNT = 16
 };
 }  // namespace tf_sm70_paged
