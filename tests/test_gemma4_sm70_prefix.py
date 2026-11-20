@@ -36,9 +36,9 @@ class FakeEngine:
             assert b in self.snaps
         elif op == ops.OP_HSPILL:
             assert all(sid in self.snaps for sid in ids[1:1 + ids[0]])
-        elif op == ops.OP_HRESTORE:                  # d (entry snapshot index, new id) pairs
-            assert len(ids) == 2 * d
-            self.snaps.update(ids[1::2])
+        elif op == ops.OP_HRESTORE:                  # d (entry snapshot index, new id) pairs, c row copies
+            assert len(ids) == 2 * d + 3 * c
+            self.snaps.update(ids[1:2 * d:2])
 
 
 class Owner(PrefixOwner):
@@ -192,8 +192,9 @@ def test_host_tier_spills_evicted_chain_and_restores_it(monkeypatch):
     finish(o, b)
     assert o.host_tier.counters["spills"] == 1 and len(o.host_tier.entries) == 1
     (entry,) = o.host_tier.entries
-    # The exact end's logits sit after the rows and snapshots, inside the entry's own blocks.
-    assert stored and min(stored) >= entry["start"] * prefix_host.BLOCK_BYTES + entry["rows"] * TOKEN + SNAP
+    # The exact end's logits sit after the snapshots, inside the entry's own blocks (its rows: the extent's, before).
+    assert entry["extent"]["start"] + entry["extent"]["blocks"] == entry["start"]
+    assert stored and min(stored) >= entry["start"] * prefix_host.BLOCK_BYTES + SNAP
     assert max(stored) + (1 << 20) <= (entry["start"] + entry["blocks"]) * prefix_host.BLOCK_BYTES
     c = stream(list(range(1600)) + [1, 2])           # extends a: its aligned point restored from host
     o.place(c, 2048, True)
@@ -266,3 +267,76 @@ def test_host_restore_cycles_keep_the_ledger(monkeypatch):
         assert c.cached == 1024
         finish(o, c)
     assert o.held == ledger(o)
+
+
+class SlabEngine(FakeEngine):
+    """FakeEngine whose host ops run the real engine's slab copies on CPU tensors (rows: layer, k/v, row, width)."""
+
+    def __init__(self, budget, slots=4, capacity=4096, keep_slots=3):
+        import torch
+
+        from tensorfold.families.gemma4.sm70.engine import Gemma4SM70Engine
+        super().__init__(budget, keep_slots=keep_slots)
+        self.token_bytes = 2 * 2 * 3 * 2              # 2 layers x k/v x width 3 x FP16
+        g = torch.Generator().manual_seed(0)
+        self.target.pool.full = {i: torch.randn((2, 2, capacity, 3), generator=g).half() for i in range(slots)}
+        self.host_slab = torch.zeros(64 << 20, dtype=torch.uint8)
+        self.host_layout, self.host_extents, self.device_snaps = {}, {}, {}
+        self._run_host = Gemma4SM70Engine._host_op
+
+    def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
+        import torch
+        if op == ops.OP_SNAP:
+            self.device_snaps[c] = ((0, 0, torch.full((2,), float(c)), torch.full((3,), float(c))), None)
+        if op in (ops.OP_HSPILL, ops.OP_HRESTORE):
+            self.ops.append((op, a, b, c))
+            saved, self.snaps = self.snaps, self.device_snaps
+            try:
+                self._run_host(self, op, a, b, c, d, list(ids))
+            finally:
+                self.snaps = saved
+            if op == ops.OP_HRESTORE:
+                self.snaps.update(ids[1:2 * d:2])
+            return None
+        return super().announce(op, a, b, c, d, ids)
+
+
+def test_gemma_conversation_turns_share_host_rows_and_restore_them_byte_exact(monkeypatch):
+    import torch
+
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)
+    e = SlabEngine(budget=3 * 4096 * 12 + 16 * SNAP, keep_slots=1)
+    e.head = None
+    o = Owner(e, points=lambda ids: [1100], host=64 << 20)
+    e.target.pool.snapshot_bytes = lambda: SNAP
+    tier = o.host_tier
+    hist = list(range(1100))
+    expect = {}
+    for turn in range(3):
+        hist = hist + [turn + 1] * 1000
+        s = stream(hist)
+        o.place(s, len(s.prompt) + 16, True)
+        fill(o, s)
+        expect[turn] = e.target.pool.full[s.slot][:, :, :len(hist)].clone()
+        finish(o, s)
+        other = stream([7 + turn] * 1500)              # evicts the conversation: spilled to host
+        o.place(other, 2048, True)
+        fill(o, other)
+        finish(o, other)
+    # each later spill of the conversation copies only rows past those already in host (aligned chunks: 1,024 rows)
+    assert tier.counters["shared_bytes"] >= 4 * 1024 * e.token_bytes
+    copied = {id(x["extent"]): x["extent"] for x in tier.entries}
+    assert all(x["first"] < x["end"] for x in copied.values())
+    from tensorfold.families.qwen4_exp.cuda import prefixes
+    while (victim := prefixes.evict(o, None)) is not None:     # every idle chain to host, as _room does
+        o._sweep()
+        o.free.append(victim)
+        o._release(victim)
+    # the latest turn restores rows byte-exact from its chain into a slot that held other rows
+    s = stream(hist + [99] * 5)
+    o.place(s, len(s.prompt) + 16, True)
+    assert o.prefix_counters["host_hits"] >= 1 and s.cached >= 2048
+    assert [op for op in e.ops if op[0] == ops.OP_HRESTORE][-1][3] >= 2    # rows from a chain of extents
+    got = e.target.pool.full[s.slot][:, :, :s.cached]
+    assert torch.equal(got, expect[2][:, :, :s.cached])

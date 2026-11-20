@@ -179,6 +179,7 @@ def _restore_host(owner, prompt, principal, extent):
         ids, snap, tail = host.restore(entry, index, dst)
         point = (ids, dst, snap, tail)
         state, resumed_tail, cached, end = _resumed(point, prompt)
+        host.hold(dst, host.held(dst), state["pos"], state["mtp_len"])     # the request writes from its resume row
         remember(owner, ids, dst, snap, tail, principal=principal)    # kept in its new slot, as a resume in place
     except BaseException as primary:  # retain the popped slot even on cancellation
         try:
@@ -241,6 +242,8 @@ def _place(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, extent
                 restored = spare.copy_prefix(best[1], n, state["mtp_len"],
                     **({"indexer_snapshot": state["compact_indexer"], "poison_control": owner.poison_control}
                        if spare.compact_indexer is not None else {}))
+                if getattr(owner, "host_tier", None) is not None:   # the copied rows equal the source's host rows
+                    owner.host_tier.hold(spare, owner.host_tier.held(best[1]), n, state["mtp_len"])
                 _use(owner, best[1])
                 state = state if restored is None else {**state, "compact_indexer": restored}
                 _count(owner, "fork", n)
@@ -264,7 +267,11 @@ def _place(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, extent
         if _lost(owner.kept, best) > cold:
             best = None
     if best is not None:
+        host = getattr(owner, "host_tier", None)
+        held = None if host is None else host.held(best[1])
         best[1].begin_sequence_generation()
+        if host is not None:
+            host.hold(best[1], held)        # a resume keeps the slot's rows: they stay until the request writes
         n = len(best[0])
         _spill(owner, [k for k in owner.kept if k[1] is best[1]          # the resume rewrites their rows past n
                        and not (len(k[0]) <= n and best[0][:len(k[0])] == k[0])])
@@ -272,6 +279,8 @@ def _place(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, extent
                       or len(k[0]) <= n and best[0][:len(k[0])] == k[0]]
         _use(owner, best[1])
         state, tail, cached, end = _resumed(best, prompt)
+        if host is not None:
+            host.hold(best[1], host.held(best[1]), state["pos"], state["mtp_len"])
         if end is None:     # this prompt rewrites the end's last row (and MTP row) in place: the end no longer holds
             best[2].pop("prompt_end", None)
         _count(owner, "resume", cached)

@@ -36,6 +36,7 @@ class Slot:
     def __init__(self, owner, index: int) -> None:
         self.owner, self.index = owner, index
         self.capacity = 0                  # attached full-cache rows (0: detached)
+        self.slot_generation = 0           # admissions so far (prefix_host.held: rows known only within one)
 
     @property
     def limit(self) -> int:
@@ -43,7 +44,8 @@ class Slot:
         return self.owner.e.target.alloc
 
     def begin_sequence_generation(self) -> None:
-        """Nothing slot-generation-scoped to retire here: every write is ordered on the one device stream."""
+        """A new admission (every write is ordered on the one device stream: nothing to retire)."""
+        self.slot_generation += 1
 
     def copy_prefix(self, src: "Slot", n: int, mtp_len: int, **_ignored):
         self.owner.e.announce(OP_COPY, src.index, self.index, n)
@@ -106,6 +108,7 @@ class PrefixOwner:
     def _release(self, st: Slot) -> None:
         self.held -= self._bytes(st)
         st.capacity = 0
+        st.host_rows = None                              # its rows are gone
         self.e.announce(OP_DETACH, st.index)
 
     def _grow(self, st: Slot, rows: int, protect=None) -> bool:
@@ -126,6 +129,7 @@ class PrefixOwner:
 
     def _drop_kept(self, st: Slot) -> None:
         self.kept = [k for k in self.kept if k[1] is not st]
+        st.host_rows = None                              # prefix_host.held: no host rows are known to equal it
         self.used.pop(id(st), None)
         self._sweep()
 
@@ -198,6 +202,8 @@ class PrefixOwner:
                 aligned, sid = self._aligned(s.prompt, cached)
                 self._recount(cached - aligned)
                 cached = aligned
+            if self.host_tier is not None:               # this request writes its rows from ``cached``
+                self.host_tier.hold(st, self.host_tier.held(st), cached)
             if sid is None:
                 self.e.announce(OP_ATTACH, st.index, st.capacity)          # same capacity: empty rings only
             else:

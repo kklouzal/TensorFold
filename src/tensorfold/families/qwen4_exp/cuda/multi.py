@@ -729,6 +729,7 @@ class MultiDecoder:
 
     def _drop_kept(self, st: State) -> None:
         self.kept = [k for k in self.kept if k[1] is not st]
+        st.host_rows = None              # prefix_host.held: no host rows are known to equal a dropped slot's
 
     def _cache_overlap(self, st, rows):
         return cache_resize_overlap(st, rows, auxiliary=getattr(self, "full_windows", None) is not None)

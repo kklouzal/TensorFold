@@ -128,7 +128,7 @@ class Gemma4SM70Engine:
                     print(f"[tensorfold] Gemma 4 SM70: {message}; serving without the host prefix tier "
                           "(--prefix-host-bytes sets it explicitly)", flush=True)
                 self.host_per_rank = 0
-        self.host_layout = {}
+        self.host_layout, self.host_extents = {}, {}    # prefix_host entries' snapshots, row extents
         # Slots: the live streams', ``keep_slots`` more for kept prefix chains (idle conversations, resumed in place
         # from VRAM), and the last one pads graph batches. Each slot's rings exist from startup, while a kept chain's
         # full caches come from the KV budget, so the slot count, not the budget, caps how many conversations stay
@@ -297,52 +297,63 @@ class Gemma4SM70Engine:
 
     def _host_op(self, op, a, b, c, d, ids):
         """Host prefix tier copies (prefix_host.py), ordered on the device stream; slab offsets follow from the
-        copied tensors' shapes, identical on every rank."""
+        copied tensors' shapes, identical on every rank. A row extent stores rows [first, end) row-major (row, layer,
+        k/v, width), so any row range of it is one contiguous host span."""
         import torch
         pool, head, slab = self.target.pool, self.head, self.host_slab
-        if op == OP_HSPILL:                    # entry a <- slot b rows [0, c) + snapshots, from block d
-            n = ids[0]
-            sids, gone = ids[1:1 + n], ids[1 + n:]
+        caches = (pool,) if head is None else (pool, head)
+        if op == OP_HSPILL:                    # entry a <- slot b: extent rows [first, c) from its block, snapshots
+            n = ids[0]                         # from block d; ids: n, sids, extent id (-1: none), first, block, gone
+            sids, (xid, first, xblock), gone = ids[1:1 + n], ids[1 + n:4 + n], ids[4 + n:]
             for hid in gone:
                 self.host_layout.pop(hid, None)
-            at = d * (2 << 20)
-            regions = []
+                self.host_extents.pop(hid, None)
+            at = 0
 
             def put(t):
                 nonlocal at
                 size = t.numel() * t.element_size()
                 slab[at:at + size].view(t.dtype).view(t.shape).copy_(t, non_blocking=True)
-                regions.append((at, t.dtype, tuple(t.shape)))
+                region = (at, t.dtype, tuple(t.shape))
                 at += size
+                return region
 
-            put(pool.full[b][:, :, :c])
-            if head is not None:
-                put(head.full[b][:, :, :c])
-            snaps = []
+            if xid >= 0:
+                at = xblock * (2 << 20)
+                self.host_extents[xid] = (first, [put(cache.full[b][:, :, first:c].permute(2, 0, 1, 3))
+                                                  for cache in caches])
+            at = d * (2 << 20)
+            regions, snaps = [], []
             for sid in sids:
                 target, drafter = self.snaps[sid]
                 snaps.append((target[:2], None if drafter is None else drafter[:2]))
                 for t in (target[2], target[3]) + (() if drafter is None else (drafter[2], drafter[3])):
-                    put(t)
+                    regions.append(put(t))
             self.host_layout[a] = (regions, snaps)
-        else:                                  # OP_HRESTORE: entry a -> slot b rows [0, c), d snapshots: ids pairs
-            #                                    (entry snapshot index, new snapshot id)
+        else:                                  # OP_HRESTORE: entry a -> slot b; ids: d (entry snapshot index, new
+            #                                    snapshot id) pairs, then c (extent id, first row, end row) copies
             regions, snaps = self.host_layout[a]
 
-            def get(i):
-                at, dtype, shape = regions[i]
+            def get(region):
+                at, dtype, shape = region
                 size = torch.Size(shape).numel() * torch.empty((), dtype=dtype).element_size()
                 return slab[at:at + size].view(dtype).view(shape)
 
-            pool.full[b][:, :, :c].copy_(get(0), non_blocking=True)
-            first = 1
-            if head is not None:
-                head.full[b][:, :, :c].copy_(get(1), non_blocking=True)
-                first = 2
+            def rows_of(region, lo, hi):        # rows [lo, hi) of an extent region (row-major: contiguous)
+                at, dtype, shape = region
+                row = torch.Size(shape[1:]).numel() * torch.empty((), dtype=dtype).element_size()
+                return slab[at + lo * row:at + hi * row].view(dtype).view((hi - lo, *shape[1:]))
+
+            for xid, lo, hi in zip(ids[2 * d::3], ids[2 * d + 1::3], ids[2 * d + 2::3]):
+                first, rows = self.host_extents[xid]
+                for cache, region in zip(caches, rows):
+                    cache.full[b][:, :, lo:hi].permute(2, 0, 1, 3).copy_(rows_of(region, lo - first, hi - first),
+                                                                          non_blocking=True)
+            device = pool.full[b].device
             per = 2 if head is None else 4
-            dev = lambda i: get(i).to("cuda", non_blocking=True)
+            dev = lambda i: get(regions[i]).to(device, non_blocking=True)
             for k, sid in zip(ids[0:2 * d:2], ids[1:2 * d:2]):
-                base = first + per * k
+                base = per * k
                 target, drafter = snaps[k]
                 self.snaps[sid] = ((*target, dev(base), dev(base + 1)),
                                    None if drafter is None else (*drafter, dev(base + 2), dev(base + 3)))

@@ -40,7 +40,11 @@ def state(slot, rank=None, rows=32, seed=0):
                     for layer in range(2)],
             history_placement=Placement(), history_rank=rank, history_slot=slot, ratio=4, kv_identity=("q4", 262144),
             limit=rows, history_native_readers=(), name=f"slot{slot}")
-    st.begin_sequence_generation = lambda: 0
+    st.slot_generation = 0
+
+    def begin():
+        st.slot_generation += 1
+    st.begin_sequence_generation = begin
     return st
 
 
@@ -105,13 +109,15 @@ def test_capacity_is_bounded_and_eviction_drops_the_lowest_value_entry():
     probe = tier()
     a, b = state(0, rank=0), state(4, rank=0, seed=20)
     probe.spill([(list(range(8)), a, snapshot(8), None)], None)
-    each = len(probe.entries[0]["blocks"])
+    each = len(probe.entries[0]["blocks"]) + len(probe.entries[0]["extent"]["blocks"])
     host = tier(capacity=3 * each * 256, block=256)
     host.spill([(list(range(8)), a, snapshot(8), None)], None)
     host.spill([([100] * 8, b, snapshot(8, seed=3), None)], None)
+    b.begin_sequence_generation()                                   # other content in the slot: a new admission
     host.spill([([101] * 8, b, snapshot(8, seed=4), None)], None)
     first, second, _third = host.entries
     host.restore(first, 0, state(8, rank=0, seed=30))              # used again: worth more than the others
+    b.begin_sequence_generation()
     host.spill([([102] * 8, b, snapshot(8, seed=5), None)], None)  # full: the least valuable goes
     assert host.record()["evictions"] == 1 and first in host.entries and second not in host.entries
     assert len(host.free) == 0 and host.blocks == 3 * each
@@ -189,8 +195,10 @@ def test_spills_agree_point_sizes_once_per_shape_not_per_spill(monkeypatch):
     monkeypatch.setattr(host, "_agree", lambda local: calls.append(local) or local)
     source = state(0, rank=0)
     for n in range(5):
+        source.begin_sequence_generation()                          # each other content: a new admission
         host.spill([([50 + n] * 8, source, snapshot(8, seed=n), None)], None)
     assert len(calls) == 1 and len(host.entries) == 5
+    source.begin_sequence_generation()
     host.spill([([90] * 8, source, snapshot(8), torch.ones(3))], None)   # a point with an MTP tail: a new shape
     assert len(calls) == 2
 
@@ -270,8 +278,8 @@ def test_striped_pages_spill_as_one_run_and_restore_page_by_page_into_any_arena_
     target = state(8, rank=1, rows=rows, seed=50)
     target.kc = [striped(rows, 1, 60 + layer, arena_offset=PAGE, gap=gap) for layer in range(2)]
     host.spill([(list(range(rows - 1)), source, snapshot(rows - 1), None)], None)
-    layers = host.entries[0]["layers"]
-    assert all(len(runs) == 1 and [page for page, _n in runs[0][0]] == [1, 5, 9] for _o, _c, _w, runs, _p in layers)
+    layers = host.entries[0]["extent"]["layers"]
+    assert all(len(runs) == 1 and [page for page, _n in runs[0][0]] == [1, 5, 9] for _o, _f, _c, _w, runs, _p in layers)
     host.restore(host.entries[0], 0, target)
     for layer in range(2):
         for page in (1, 5, 9):
@@ -288,3 +296,177 @@ def test_slab_copies_span_consecutive_blocks():
     assert [(view.numel(), at) for view, at in pieces] == [(668, 0), (32, 668)]
     assert pieces[0][0].data_ptr() == host.slab[3 * 256 + 100:].data_ptr()
     assert pieces[1][0].data_ptr() == host.slab[9 * 256:].data_ptr()
+
+
+def same_rows(source, target, rows):
+    for layer in range(2):
+        for a, b in zip(owned_rows(source, layer, rows), owned_rows(target, layer, rows), strict=True):
+            assert all(torch.equal(x, y) for x, y in zip(a, b))
+        if Placement().indexer_owner(source.history_slot, layer, include_mtp=False) == source.history_rank:
+            assert torch.equal(target.pooled[layer][:rows // 4], source.pooled[layer][:rows // 4])
+
+
+def test_a_chain_spilled_point_by_point_stores_its_shared_rows_once_and_restores_every_point():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0, rows=48)
+    full, previous = [], 0
+    for n in (10, 23, 37):                                          # unaligned ends: partial pages are copied again
+        before = host.counters["spill_bytes"]
+        host.spill([(list(range(n)), source, snapshot(n, seed=n), None)], None)
+        full.append(host._history_bound(source, n, 0))
+        rows = host.counters["spill_bytes"] - before - host.entries[-1]["point_bytes"]
+        assert rows == host._history_bound(source, n, 0, (previous // PAGE * PAGE, 0))
+        assert host.entries[-1]["extent"]["start"] == (previous // PAGE * PAGE, 0)
+        previous = n
+    assert host.counters["shared_bytes"] > 0 and host.record()["extents"] == 3
+    assert host.counters["spill_bytes"] - sum(e["point_bytes"] for e in host.entries) < sum(full)
+    for n in (37, 10, 23):
+        target = state(8, rank=0, rows=48, seed=100 + n)
+        entry, index = host.best(list(range(n)) + [999], None)
+        host.restore(entry, index, target)
+        same_rows(source, target, n)
+
+
+def test_evicting_a_point_keeps_rows_its_sharers_still_restore_and_frees_them_with_the_last():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0, rows=48)
+    for n in (12, 30, 44):
+        host.spill([(list(range(n)), source, snapshot(n, seed=n), None)], None)
+    root = host.entries[0]["extent"]
+    assert host.entries[2]["extent"]["parent"]["parent"] is root and root["users"] == 3
+    victim = host.entries[0]
+    free = len(host.free)
+    victim["used"] = -1e9                                           # the least valuable: evicted next
+    host._evict_one()
+    assert root["alive"] and root["users"] == 2 and len(host.free) == free + len(victim["blocks"])
+    target = state(8, rank=0, rows=48, seed=7)
+    entry, index = host.best(list(range(44)) + [1], None)
+    host.restore(entry, index, target)
+    same_rows(source, target, 44)
+    while host.entries:
+        host._evict_one()
+    assert not root["alive"] and host.record()["extents"] == 0 and len(host.free) == host.blocks
+
+
+def test_a_shared_entry_is_worth_more_than_the_same_entry_holding_its_rows_alone():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0, rows=48)
+    host.spill([(list(range(40)), source, snapshot(40), None)], None)
+    alone = host._value(host.entries[0])
+    host.spill([(list(range(44)), source, snapshot(44), None)], None)
+    assert host._value(host.entries[0]) > alone
+
+
+def test_a_resume_in_place_carries_the_slots_host_rows_and_a_new_admission_drops_them():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0, rows=64)
+    decoder = owner([], host)
+    turn = list(range(20))
+    prefixes.remember(decoder, turn, source, snapshot(20), None)
+    host.spill([(turn, source, snapshot(20), None)], None)          # (as remember would past keep)
+    slot, _resume, cached = prefixes.slot_for(decoder, turn + [7] * 10, True)
+    assert slot is source and cached == 20 and host.held(source) is not None
+    longer = turn + [7] * 10 + [8] * 10
+    before = host.counters["shared_bytes"]
+    host.spill([(longer, source, snapshot(40), None)], None)
+    assert host.counters["shared_bytes"] > before and host.entries[-1]["extent"]["parent"] is host.entries[0]["extent"]
+    target = state(8, rank=0, rows=64, seed=9)
+    host.restore(host.entries[-1], 0, target)
+    same_rows(source, target, 40)
+    source.begin_sequence_generation()                              # a new admission that does not carry them
+    assert host.held(source) is None
+
+
+def test_history_that_changes_without_a_new_admission_is_refused():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0)
+    host.spill([(list(range(8)), source, snapshot(8), None)], None)
+    with pytest.raises(RuntimeError, match="stale"):
+        host.spill([([5] * 12, source, snapshot(12), None)], None)
+
+
+def test_a_restored_conversation_spills_only_its_new_rows():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0, rows=64)
+    decoder = owner([], host)
+    turn = list(range(30))
+    host.spill([(turn, source, snapshot(30), None)], None)
+    target = state(8, rank=0, rows=64, seed=11)
+    decoder.free.append(target)
+    slot, _resume, cached = prefixes.slot_for(decoder, turn + [3] * 5, True)
+    assert slot is target and cached == 30 and host.held(target)[1] == 30
+    # the next turn's rows past 30 are the target's own; its spill copies only them (and the partial page below)
+    nxt = turn + [3] * 20
+    host.spill([(nxt, target, snapshot(50), None)], None)
+    extent = host.entries[-1]["extent"]
+    assert extent["parent"] is host.entries[0]["extent"] and extent["start"] == (28, 0)
+    third = state(16, rank=0, rows=64, seed=13)
+    host.restore(host.entries[-1], 0, third)
+    same_rows(target, third, 50)
+    same_rows(source, third, 30)
+
+
+def test_a_fork_shares_the_source_rows_below_its_copy_only_with_the_same_page_ownership():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0, rows=64)
+    host.spill([(list(range(40)), source, snapshot(40), None)], None)
+    same_class, other = state(8, rank=0, rows=64), state(1, rank=0, rows=64)
+    for spare in (same_class, other):
+        spare.begin_sequence_generation()
+        host.hold(spare, host.held(source), 36, 0)
+    assert host.held(same_class)[1:] == (36, 0) and host.held(other) is None
+
+
+def test_rows_mostly_past_what_a_spill_can_use_are_copied_again_not_pinned():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0, rows=64)
+    host.spill([(list(range(60)), source, snapshot(60), None)], None)
+    long_extent = host.entries[0]["extent"]
+    source.begin_sequence_generation()
+    host.hold(source, host.held(source), 8, 0)                       # a resume at 8 of a 60-row extent
+    host.spill([(list(range(20)), source, snapshot(20), None)], None)
+    assert host.entries[-1]["extent"]["parent"] is None and long_extent["users"] == 1
+
+
+def test_mtp_rows_share_and_restore_as_their_own_dimension():
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0, rows=48)
+    source.mtp_kc, source.mtp_pooled = cache(48, 0, 0, 4, 77), torch.randn((12, 3))
+    for n in (14, 31, 45):
+        snap = snapshot(n, seed=n)
+        snap["mtp_len"] = n - 2                                     # the MTP rows lag the target's
+        host.spill([(list(range(n)), source, snap, None)], None)
+    assert host.entries[-1]["extent"]["start"] == (28, 28) and host.entries[-1]["mtp_rows"] == 43
+    target = state(8, rank=0, rows=48, seed=5)
+    target.mtp_kc, target.mtp_pooled = cache(48, 0, 8, 4, 78), torch.randn((12, 3))
+    entry, index = host.best(list(range(45)) + [1], None)
+    host.restore(entry, index, target)
+    same_rows(source, target, 45)
+    a, b = source.mtp_kc, target.mtp_kc                             # rank 0 owns these MTP pages
+    assert all(offset >= 0 for offset in a.offsets)
+    for page in range(-(-43 // PAGE)):
+        if a.offsets[page] >= 0:
+            count = min(PAGE, 43 - page * PAGE)
+            assert torch.equal(a.k[a.offsets[page]:a.offsets[page] + count], b.k[b.offsets[page]:b.offsets[page] + count])
+    if Placement().indexer_owner(0, 2, include_mtp=True) == 0:
+        assert torch.equal(target.mtp_pooled[:43 // 4], source.mtp_pooled[:43 // 4])
+
+
+def test_long_chains_merge_so_a_restore_reads_at_most_max_chain_extents():
+    from tensorfold.families.qwen4_exp.cuda.prefix_host import MAX_CHAIN
+
+    host = tier(capacity=1 << 22)
+    rows = 4 * 40 + 4
+    source = state(0, rank=0, rows=rows)
+    ends = [4 * n for n in range(1, 41)]                            # page ends: no partial page copied again
+    for n in ends:
+        host.spill([(list(range(n)), source, snapshot(n, seed=n), None)], None)
+    depths = [host.entries[i]["extent"]["depth"] for i in range(len(ends))]
+    assert max(depths) <= MAX_CHAIN and depths[MAX_CHAIN - 1] == MAX_CHAIN
+    copied = host.counters["spill_bytes"] - sum(e["point_bytes"] for e in host.entries)
+    assert copied < 3 * host._history_bound(source, ends[-1], 0)      # each row copied a bounded number of times
+    for n in (ends[-1], ends[MAX_CHAIN], ends[3]):
+        target = state(8, rank=0, rows=rows, seed=200 + n)
+        entry, index = host.best(list(range(n)) + [999], None)
+        host.restore(entry, index, target)
+        same_rows(source, target, n)
