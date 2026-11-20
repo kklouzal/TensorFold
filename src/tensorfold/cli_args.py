@@ -291,8 +291,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        "keep moving for this share of each chunk's time, and a new prompt starts at the next chunk "
                        "(default 0.25; 0: whole prompts first, in order, as 0.3.6.2). CUDA Flash Next --parallel: "
                        "replies decode inside each prompt pass; a share sizes the passes so a round's decoding takes "
-                       "it (default 0: whole passes; tensor-parallel targets ignore it and run passes in automatic "
-                       "layer groups while replies decode)")
+                       "it (default 0: whole passes; tensor-parallel GGUF-expert targets without DFlash, DSpark, a RAM "
+                       "indexer or EXL3 ignore it and run passes in automatic layer groups while replies decode)")
     speed.add_argument("--prefill-rows", type=_prefill_rows, default=None, metavar="N",
                        help="CUDA Flash Next: rows of one prompt piece (256 to 16,384; overrides "
                             "TENSORFOLD_PREFILL_ROWS; default 1,024 on V100, otherwise the engine's own plan). "
