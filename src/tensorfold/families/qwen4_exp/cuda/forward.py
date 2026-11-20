@@ -1205,6 +1205,176 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
         raise
 
 
+def merges(w: Weights) -> bool:
+    """Whether a tensor-parallel decode window can ride a prompt pass's rows (``compute_merged``)."""
+
+    return (w.comm is not None and getattr(w, "x3", None) is None and getattr(w, "dspark", None) is None
+            and getattr(w, "dflash2", None) is None and getattr(w, "meta", {}).get("indexer_history", "gpu") != "ram"
+            and getattr(w, "_private_g3_prefill", None) is None
+            and all(getattr(getattr(getattr(layer, "moe", None), "experts", None), "kernel", None) in ("gguf", "sm70_dense")
+                    for layer in w.layers))
+
+
+def _ple_rows(p, src: Buffers, dst: Buffers, rows: int, at: int) -> None:
+    """Copy the first ``rows`` rows' staged n-gram table entries of ``src`` to ``dst`` from row ``at`` (``stage_ple_rows``)."""
+
+    k = src.ple_w.shape[0] // src.rows                       # table entries per buffer row
+    names = (("ple_q",) if getattr(p.table, "iq4nl_rows", False) else ("ple_v",)
+             if getattr(p.table, "bits", 4) == 16 else ("ple_w", "ple_s", "ple_b"))
+    for name in names:
+        getattr(dst, name)[at * k:(at + rows) * k].copy_(getattr(src, name)[:rows * k])
+
+
+def compute_merged(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence[Seg], pb: Buffers, *,
+                   ends: Sequence[int] = (), cuts: Sequence[Cut] = (),
+                   prefill_embeddings: torch.Tensor | None = None) -> tuple:
+    """A decode window riding a prompt pass under tensor parallelism: one forward over the pass's rows [0, Rp) and the
+    window's rows [Rp, Rp + Rd) of ``pb``.
+
+    Every row-wise operation (embedding, n-gram branch, hyper-connections, projections, router, experts, their
+    reductions) runs once on all rows with the prompt pass's kernels. Only the sequence mixers stay per frame: the
+    window's attention and DeltaNet chain run on ``db`` (the decode owner, its tentative per-row states), their
+    inputs copied from and outputs copied back to ``pb``. The window's streams, n-gram rows, DeltaNet projections and
+    logits/candidates end in ``db``, where the round's sampling, acceptance, ``commit`` and MTP drafting read them.
+    The window's rows therefore take the prompt pass's arithmetic (the computation every prompt row gets), not the
+    decode kernels' bits. Both frames' codec status stays pending (``_kv_begin``); the caller checks it."""
+
+    from .compact_indexer import validate_target_indexer_frame
+    from .history_owner import attention_layer
+
+    if not merges(w):
+        raise ValueError("a merged window needs tensor-parallel GGUF experts without draft-feature runtimes")
+    validate_target_indexer_frame(db, dsegs)
+    validate_target_indexer_frame(pb, psegs)
+    c = w.cfg
+    Rd, Rp = dsegs[-1][2], psegs[-1][2]
+    R = Rp + Rd
+    if R > pb.rows:
+        raise ValueError(f"a pass of {Rp} rows and a window of {Rd} exceed the prompt buffers' {pb.rows}")
+    if dsegs[0][1] != 0 or psegs[0][1] != 0:
+        raise ValueError("merged frames start at row 0 of their buffers")
+    if prefill_embeddings is not None and (
+            not isinstance(prefill_embeddings, torch.Tensor) or prefill_embeddings.shape != (Rp, c.hidden)
+            or prefill_embeddings.dtype != pb.h.dtype or prefill_embeddings.device != pb.h.device
+            or prefill_embeddings.requires_grad):
+        from .input_preparation import reject_prepared
+
+        reject_prepared(pb, ValueError("merged mixed-prefill inputs differ from the admitted window"))
+    _kv_begin(dsegs)
+    _kv_begin(psegs)
+    if db.ple_late is not None:                          # the window's n-gram rows, before they are copied
+        stage_late(w, db)
+    if prefill_embeddings is None:
+        _embed(w, pb.ids[:Rp], c.streams, pb.h[:Rp])
+        image_rows.embed(psegs, pb, c.streams)
+    else:
+        pb.h[:Rp].view(Rp, c.streams, c.hidden).copy_(prefill_embeddings[:, None, :])
+    _embed(w, db.ids[:Rd], c.streams, pb.h[Rp:R])
+    copied_ple = False
+    pending = None
+    for layer in w.layers:
+        h = pb.h
+        if layer.ple is not None:
+            if not copied_ple:
+                _ple_rows(layer.ple, db, pb, Rd, Rp)
+                copied_ple = True
+            if pending is not None:
+                _writeback(h, pb, R, c, pending)
+                pending = None
+            _merged_ple(layer, w, psegs, dsegs, db, pb, Rp, R)
+        if pending is None:
+            hc_block(layer.attn_hc, pb, R, c.eps, c.streams, c.low, 0, None, pb.inj_a, h)
+        else:
+            mode, a, wts, inj = pending
+            if mode == 2:
+                hc_block(layer.attn_hc, pb, R, c.eps, c.streams, c.low, 2, inj[:R], pb.inj_a, h, y=a, wts=wts)
+            else:
+                hc_block(layer.attn_hc, pb, R, c.eps, c.streams, c.low, mode, inj[:R], pb.inj_a, h, branch=a)
+        if layer.linear:
+            g = layer.gdn
+            li = dsegs[0][0].lin_index[layer.index]
+            _mm(pb.mixed[:R], g.proj, pb.xs_mixed[:R], pb.proj[0, :R], pb)
+            at: dict[int, list[Cut]] = {}
+            for cut in sorted(cuts, key=lambda cut: cut.row):
+                at.setdefault(cut.at, []).append(cut)
+            for st, a0, a1 in psegs:
+                _prefill_chain(g, st, li, pb, a0, a1, c, at.get(a0, ()))
+            db.proj[li, :Rd].copy_(pb.proj[0, Rp:R])
+            gdn_chain(layer, w, dsegs, db, Rd)
+            pb.gout[Rp:R].copy_(db.gout[:Rd])
+            pb.gxs[Rp:R].copy_(db.gxs[:Rd])
+            mode, branch = _out_proj(w, pb, pb.gout[:R], g.out, pb.gxs[:R], R)
+        else:
+            a = layer.attn
+            _mm(pb.mixed[:R], a.proj, pb.xs_mixed[:R], pb.pa[:R], pb)
+            o = attention_layer(layer, w, psegs, pb, Rp)
+            if o.data_ptr() != pb.attn_o.data_ptr():
+                pb.attn_o[:Rp].copy_(o[:Rp])
+            db.pa[:Rd].copy_(pb.pa[Rp:R])
+            pb.attn_o[Rp:R].copy_(attention_layer(layer, w, dsegs, db, Rd)[:Rd])
+            _family(pb).attn_gate(pb.attn_o[:R], pb.pa[:R], pb.gated[:R], pb.xs_gated[:R], q_heads=c.heads,
+                                  head_dim=c.head_dim)
+            mode, branch = _out_proj(w, pb, pb.gated[:R], a.o, pb.xs_gated[:R], R)
+        hc_block(layer.mlp_hc, pb, R, c.eps, c.streams, c.low, mode, pb.inj_a[:R], pb.inj_m, h, branch=branch)
+        moe_mode, a, wts = moe_block(layer, w, pb, R)
+        pending = (moe_mode, a, wts, pb.inj_m)
+    # The last write-back on every row; then the window's rows leave for the decode buffers before the prompt's
+    # head re-indexes pb.pss.
+    pb.streams[:R].copy_(pb.h[:R])
+    _writeback(pb.streams, pb, R, c, pending)
+    db.streams[:Rd].copy_(pb.streams[Rp:R])
+    db.pss[:Rd].copy_(pb.pss[Rp:R])
+    _readout(w.mixer, db, db.streams, Rd, c.eps, c.streams, c.low, None)
+    logits = _mm(db.mixed[:Rd], w.head, db.xs_mixed[:Rd], db.logits[:Rd], db)
+    candidates(w, db, logits, Rd, offset=int(w.meta["vocab_offset"]))
+    heads = None
+    if ends:
+        heads = _prompt_head(w, pb, Rp, ends)
+    return logits, heads
+
+
+def _merged_ple(layer: LayerW, w: Weights, psegs, dsegs, db: Buffers, pb: Buffers, Rp: int, R: int) -> None:
+    """``ple_block`` on all merged rows; the window's conv tails write their n-gram rows to ``db`` (``commit``)."""
+
+    c, p = w.cfg, layer.ple
+    if getattr(p.table, "iq4nl_rows", False):
+        _family(pb).ple_embed_iq4nl(R, pb.ple_q, p.ngram.heads, p.ngram.dims, pb.ple_emb[:R], pb.xs_ple[:R],
+                                    scale=p.table.weight_scale)
+    elif getattr(p.table, "bits", 4) == 16:
+        _family(pb).ple_embed_bf16(R, pb.ple_v, p.ngram.heads, p.ngram.dims, pb.ple_emb[:R], pb.xs_ple[:R],
+                                   scale=getattr(p.table, "weight_scale", 1.0))
+    else:
+        glue.ple_embed(R, pb.ple_w, pb.ple_s, pb.ple_b, p.ngram.heads, p.ngram.dims, pb.ple_emb[:R], pb.xs_ple[:R],
+                       scale=getattr(p.table, "weight_scale", 1.0))
+    _mm(pb.ple_emb[:R], p.key, pb.xs_ple[:R], pb.ple_keys[:R], pb)
+    _mm(pb.ple_emb[:R], p.value, pb.xs_ple[:R], pb.ple_vals[:R], pb)
+    _family(pb).ple_gate(pb.ple_keys[:R], pb.ple_vals[:R], pb.h[:R], p.norm_key, p.norm_query, pb.ple_gated[:R],
+                         pb.ple_pss[:R], c.eps, c.streams, valid_rows=None, independent_rows=False)
+    ple_conv_streams(layer, w, psegs, pb)
+    for st, a0, a1 in dsegs:
+        r0, r1 = Rp + a0, Rp + a1
+        _family(pb).ple_conv(pb.ple_gated[r0:r1], pb.ple_pss[r0:r1], p.norm_conv, st.ple_tail, p.conv, pb.h[r0:r1],
+                             pb.h[r0:r1], db.ple_nrow[a0:a1], c.eps, c.streams, c.ngram_size)
+
+
+def _prompt_head(w: Weights, b: Buffers, R: int, ends: Sequence[int]) -> torch.Tensor:
+    """``finish``'s prompt head on already written-back streams: the ``ends`` rows' read-out and logits."""
+
+    c = w.cfg
+    if len(ends) > 1:
+        at = torch.tensor(list(ends), dtype=torch.long, device=b.pss.device)
+        b.pss[:len(ends)].copy_(b.pss.index_select(0, at))
+        rows = b.streams.index_select(0, at)
+    else:
+        b.pss[0].copy_(b.pss[ends[0]])
+        rows = b.streams[ends[0]:ends[0] + 1]
+    n = len(ends)
+    _readout(w.mixer, b, rows, n, c.eps, c.streams, c.low, None)
+    out = _mm(b.mixed[:n], w.head, b.xs_mixed[:n], b.logits[:n], b)
+    candidates(w, b, out, n, offset=int(w.meta["vocab_offset"]))
+    return out
+
+
 @torch.no_grad()
 def forward(w: Weights, st: State, b: Buffers, tokens: Sequence[int], *, logits: bool = True,
             cut: Cut | None = None, features=None):

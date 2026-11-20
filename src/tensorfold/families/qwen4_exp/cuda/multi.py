@@ -35,7 +35,8 @@ from .decode import (
     PREFILL_ROWS, WARM_TAIL, Engine, SamplingShard, _gathered_fits, choose_gathered,
     draft, entry_end, prefill_begin, tp_sample_rows,
 )
-from .forward import Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
+from .forward import (Cut, KVWords, _kv_check, commit, compute, compute_merged, compute_mixed, converges, cut_snapshot,
+                      merges, read_ahead, stage)
 from .mtp import mtp_compute, mtp_prestage, mtp_stage, mtp_tokens
 from .prompt_plan import CUTS, POINTS, pass_limit
 from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room
@@ -82,6 +83,13 @@ def _padded_counts(lengths, total, width):
 
 class MultiDecoder:
     """Rounds over the live streams; ``slots`` streams at most, each with ``capacity`` tokens of context."""
+
+    merged = False                                   # a tensor-parallel window rides prompt passes (compute_merged)
+
+    @property
+    def mixes(self) -> bool:
+        """Whether a round's window and the next prompt pass share one forward (one GPU or merged rows)."""
+        return self.converged or self.merged
 
     def __init__(self, w, *, slots: int, capacity: int, depth: int = DEPTH, confidence: float = CONFIDENCE,
                  stop_eos: bool = True, keep: int = 8, kv_dtype: str = "bf16", prefill_rows: int = PREFILL_ROWS,
@@ -178,8 +186,11 @@ class MultiDecoder:
                 target_caches=sum(not layer.linear for layer in w.layers))
         # a round's window and a prompt pass share each layer's expert launch: the pass's buffers hold both
         self.converged, self.prefill_rows = converges(w), prefill_rows
-        # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes)
-        self.share, self.round_s, self.row_s = share, None, None
+        # tensor parallel: a round's window rides the next prompt pass's rows (compute_merged), within prefill_rows
+        self.merged = not self.converged and merges(w)
+        # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes);
+        # a merged window rides the pass's rows instead, so its passes stay whole
+        self.share, self.round_s, self.row_s = 0.0 if self.merged else share, None, None
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
         self.mbuf = Buffers(w, rows, capacity, owner_role="mtp") if w.mtp is not None else None
         self.speculation = MethodGeometry("mtp" if self.mbuf is not None else
@@ -2429,7 +2440,7 @@ class MultiDecoder:
         ended = cancelled + self._make_room()          # all issued work from the previous round has resolved
         ended += self._join_ends()
         live = [s for s in self.streams.values() if self._runnable(s)]
-        if self.filling and (not live or not self.converged):
+        if self.filling and (not live or not self.mixes):
             ended += self._fill()                      # passes alone; a prompt that ends here joins this round
             live = [s for s in self.streams.values() if self._runnable(s)]
         if not live:
@@ -2482,7 +2493,7 @@ class MultiDecoder:
         width = self.depth + 1
         # Padded rows count as submitted rows in the controller's observations
         # and must fit its row budget like the real rows the plan selected.
-        pad = (dflash is None and not grammars and not (self.filling and self.converged)
+        pad = (dflash is None and not grammars and not (self.filling and self.mixes)
                and (plan is None or width * len(live) <= plan["row_budget"])
                and not self.buf.rotor_lookup and all(s.st.image_positions is None for s in live)
                and all(len(s.drafts) < width and s.st.pos + width <= s.st.capacity for s in live)
@@ -2505,7 +2516,11 @@ class MultiDecoder:
         context = getattr(self.buf, "input_preparation_context", None)
         windows, segs = prepare_decode() if context is None else context.prepare("decode-window", prepare_decode)
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
-        pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
+        # merged rounds keep the pass's rows: the window's rows come out of the prompt room
+        pieces, psegs = [], None
+        if self.filling and self.mixes:
+            room = self._pass_rows() - (segs[-1][2] if self.merged else 0)
+            pieces = self._pieces(room) if room > 0 else []
         marks = self._output_marks([*live, *(s for s, _, _ in pieces)]) if self.controller is not None else None
         cuts, pwindows, pends = [], None, None
         if pieces:
@@ -2539,7 +2554,8 @@ class MultiDecoder:
                 from .media_mtp import target_inputs
 
                 with target_inputs(self.w, self.pbuf, pwindows, psegs) as merged:
-                    logits, heads = compute_mixed(self.w, segs, self.buf, psegs, self.pbuf, ends=pends, cuts=cuts,
+                    logits, heads = (compute_merged if self.merged else compute_mixed)(
+                        self.w, segs, self.buf, psegs, self.pbuf, ends=pends, cuts=cuts,
                                                   **({"prefill_embeddings": merged} if merged is not None else {}))
                 heads = heads[:len(pends)].clone() if pends else None
             else:                                      # a captured forward when one serves this round, else eager

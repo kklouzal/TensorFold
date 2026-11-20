@@ -490,7 +490,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 4 on CUDA. Startup 0 retains legacy structural-disable behavior under `auto`; explicit `--draft-method mtp` requires a positive allocated maximum. Adaptive runtime `proposal_limit: 0` keeps enabled MTP warm. |
 | `--mtp-confidence P` | Flash Next CUDA default `0.70`; range 0–1, stops later low-confidence drafts. |
 | `--lane-kernels auto\|on\|off` | `auto`; Qwen dense lane kernels on GPUs with tensor units. |
-| `--decode-share F` | MLX default `0.25`, leaving replies progressing during chunked prefill. Flash Next CUDA shared rounds default 0; a positive share sizes prompt passes to allow decoding inside them. |
+| `--decode-share F` | MLX default `0.25`, leaving replies progressing during chunked prefill. Flash Next CUDA shared rounds default 0; a positive share sizes one-GPU prompt passes to allow decoding inside them. Tensor-parallel GGUF experts (V100 TP8) carry each round's verify window inside the next prompt pass's rows instead, so the share does not size their passes. |
 | `--prefill-fp8`, `--no-prefill-fp8` | CUDA supported prompt kernels; default BF16 activations. FP8 prefill explicitly reduces activation precision. |
 | `--precision checkpoint\|full` | CUDA NVFP4 default `checkpoint`: checkpoint-native math when supported, with the documented stored-weight path otherwise. `full` uses BF16 activations against stored weights. |
 | `--tp N` | Default 1; tensor-parallel counts remain family-specific. Matching checkpoint/configuration is required across ranks. `--tp 8` also selects the eight-V100 Gemma 4 26B-A4B CT NVFP4 provider (TP8 attention/dense, ETP4 x EP2 experts; [recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)). |
@@ -2579,6 +2579,46 @@ End to end on 8× V100 (prod config, 24 lanes):
   best cell dropped; worst cell C16 4K −1.25%), so not established by itself;
   golden-vg2 identical. The change is accepted on the bitwise identity and the in-graph
   saving.
+
+**Decode windows ride prompt passes under tensor parallelism (2026-11-20).** While prompts
+are filling, a tensor-parallel round no longer runs a separate decode/MTP-verify forward
+after each prompt pass. The round's verify window joins the next prompt pass instead, as
+extra rows (`compute_merged` in `families/qwen4_exp/cuda/forward.py`).
+- **Shared:** every row-wise operation runs once over the pass's rows plus the window's
+  rows, on the prompt kernels. That covers the embedding, n-gram branch,
+  hyper-connections, projections, router, owned experts and their NCCL sums.
+- **Separate:** each frame keeps its own sequence mixers. The window's attention and
+  DeltaNet chain run on the decode owner and buffers, with tentative per-row states, so
+  acceptance, commits, sampling and MTP drafting are unchanged.
+- **Row budget:** the window's rows come out of the pass's prefill rows, so there is no
+  new memory. A 32-lane RotorQuant Q4 configuration starts unchanged.
+- **Numerics:** the window's rows take the prompt pass's arithmetic, not the decode
+  kernels' bits. That is the same computation every prompt row gets.
+  - Quality was checked with `quality_eval` teacher-forced scoring while a background
+    prompt load kept passes filling (85 corpus-v2 documents, 64 continuation tokens
+    each, 5,355 decode rows). Decode rows were equivalent: d −0.00011,
+    CI95 [−0.00214, +0.00181], margin 0.005.
+  - Single-request replies never merge; golden-vg2 is identical.
+- **Not used for:** one-GPU converged rounds keep sharing only the expert launch.
+  Draft-feature runtimes (DFlash/DSpark), RAM indexer history and EXL3 keep separate
+  rounds. `--decode-share` no longer sizes merged passes.
+
+Fast protocol on 8× V100, `f5259ac6` base vs this change:
+
+| Config | Prefill geomean | Decode geomean | Notable cells |
+|---|---|---|---|
+| prod: 24 lanes, INT8 KV, two pairs | +0.88% | +5.29% | C16/C24 decode +9 to +12%; worst cell C1 16K decode −1.16% |
+| rq4: 32 lanes, RotorQuant Q4, 10 cells | +1.77% | +6.60% | C32 4K +4.9% prefill / +13.0% decode; worst cell C8 4K prefill −0.67% |
+
+While a prompt fills (one session, stall workload), the live decode gap fell:
+
+| Workload | Gap p50, before → after | Gap p99, before → after |
+|---|---|---|
+| C8 4K, one prompt every 1.5 s | 397 → 377 ms | 474 → 406 ms |
+| C24 4K, all prompts sent together | 457 → 358 ms | 605 → 592 ms |
+
+The 200 ms decode-gap budget during prefill is still not met. Each live stream waits one
+whole pass.
 
 ## V100 (SM70) adaptive development status
 
