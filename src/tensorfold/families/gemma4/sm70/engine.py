@@ -572,7 +572,7 @@ class Decoder(PrefixOwner):
     PROBE = 32          # serial rounds of drafting streams before one DFlash round refreshes the acceptance rate
     # Target decode gap while a prompt fills (ms): one layer group of the prompt chunk plus one decode round. The
     # user's budget is a live-stream gap p99 <= 200 ms; the margin covers cost-estimate error and the p99 spread.
-    GAP_MS = 150.0
+    GAP_MS = 175.0
 
     def __init__(self, engine: Gemma4SM70Engine):
         self.e = engine
