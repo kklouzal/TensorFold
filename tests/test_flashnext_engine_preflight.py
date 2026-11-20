@@ -82,7 +82,8 @@ def test_ram_indexer_history_requires_gguf_before_model_or_cuda(monkeypatch, tmp
         engine.FlashNextEngine(tmp_path, indexer_history='ram')
 
 
-@pytest.mark.parametrize('key,value', [('fp16', 'fp16'), ('fp16', 'int8'), ('int8', 'fp16'), ('int8', 'int8')])
+@pytest.mark.parametrize('key,value', [('fp16', 'fp16'), ('fp16', 'int8'), ('int8', 'fp16'), ('int8', 'int8'),
+                                       ('rotorquant8', 'rotorquant8')])  # symmetric RotorQuant Q8 (01a19e02)
 def test_sm70_accepts_qualified_cache_sides_before_model_setup(monkeypatch, tmp_path, key, value):
     from tensorfold.cuda import chat_template
     from tensorfold import gguf_file as gguf
