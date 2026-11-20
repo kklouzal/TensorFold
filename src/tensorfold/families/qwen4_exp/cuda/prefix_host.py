@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import time
 
 import torch
 
@@ -89,15 +90,21 @@ class HostPrefixTier:
         self.clock = 0.0
         self._point_bounds = {}
         self.counters = {"spills": 0, "spill_bytes": 0, "spill_skipped": 0, "restores": 0, "restore_bytes": 0,
-                         "restored_tokens": 0, "evictions": 0, "lookups": 0, "hits": 0}
+                         "restored_tokens": 0, "evictions": 0, "lookups": 0, "hits": 0,
+                         "spill_seconds": 0.0}           # coordinator-thread time issuing spills (telemetry)
 
     # ------------------------------------------------------------------------------------------------- layout
     def _views(self, blocks, offset, nbytes):
-        """(slab view, start within the region) pieces covering ``nbytes`` at ``offset`` of the entry's blocks."""
+        """(slab view, start within the region) pieces covering ``nbytes`` at ``offset`` of the entry's blocks; a run
+        of consecutive slab blocks is one piece (one copy)."""
         done = 0
         while done < nbytes:
             index, within = divmod(offset + done, self.block_bytes)
-            take = min(nbytes - done, self.block_bytes - within)
+            last = index
+            while last + 1 < len(blocks) and blocks[last + 1] == blocks[last] + 1 \
+                    and (last + 1 - index) * self.block_bytes - within < nbytes - done:
+                last += 1
+            take = min(nbytes - done, (last + 1 - index) * self.block_bytes - within)
             start = blocks[index] * self.block_bytes + within
             yield self.slab[start:start + take], done
             done += take
@@ -178,19 +185,37 @@ class HostPrefixTier:
 
     @staticmethod
     def _runs(cache, rows, page_tokens):
-        """Maximal runs of this rank's pages below ``rows`` that are contiguous in its arena: (first row, offset,
-        count)."""
+        """This rank's pages below ``rows`` grouped into maximal runs contiguous in its arena: (arena offset, rows,
+        ((page, rows), ...)). A rank packs its owned pages back to back, so with pages striped over the group (every
+        fourth page per rank) a layer is still one run: one copy per tensor, not one per page."""
         runs = []
         for page in range((rows + page_tokens - 1) // page_tokens):
             offset = cache.offsets[page]
             if offset < 0:
                 continue
             count = min(page_tokens, rows - page * page_tokens)
-            if runs and runs[-1][0] + runs[-1][2] == page * page_tokens and runs[-1][1] + runs[-1][2] == offset:
-                runs[-1][2] += count
+            if runs and runs[-1][0] + runs[-1][1] == offset:
+                runs[-1][1] += count
+                runs[-1][2].append((page, count))
             else:
-                runs.append([page * page_tokens, offset, count])
-        return runs
+                runs.append([offset, count, [(page, count)]])
+        return [(offset, count, tuple(pages)) for offset, count, pages in runs]
+
+    @staticmethod
+    def _targets(cache, pages):
+        """(source row within the run, target arena offset, rows) copies placing a run's ``pages`` in ``cache``:
+        consecutive pages whose target offsets are contiguous share one copy."""
+        copies, at = [], 0
+        for page, count in pages:
+            offset = cache.offsets[page] if page < len(cache.offsets) else -1
+            if offset < 0:
+                raise RuntimeError("host prefix restore target lacks an owned history run")
+            if copies and copies[-1][1] + copies[-1][2] == offset and copies[-1][0] + copies[-1][2] == at:
+                copies[-1][2] += count
+            else:
+                copies.append([at, offset, count])
+            at += count
+        return copies
 
     @staticmethod
     def _cache_tensors(cache):
@@ -262,6 +287,13 @@ class HostPrefixTier:
         Called at the same ordered point on every rank. A point whose ids and principal an entry already holds is
         not copied again (its use is counted); the rest share one copy of the slot's rows below the longest point.
         """
+        began = time.perf_counter()
+        try:
+            self._spill(points, principal)
+        finally:
+            self.counters["spill_seconds"] += time.perf_counter() - began
+
+    def _spill(self, points, principal):
         fresh = []
         for point in points:
             same = next((entry for entry in self.entries if entry["principal"] == principal
@@ -297,19 +329,24 @@ class HostPrefixTier:
             # After the rows' writers and any queued restore that read these blocks (stream order).
             self.stream.wait_stream(torch.cuda.current_stream(self.device))
             context = torch.cuda.stream(self.stream)
-        ready = None
+        ready = rows_ready = None
         with context:
             for ordinal, cache, pool, count in self._layers(st, rows, mtp_rows):
                 runs = []
-                for start, offset, length in self._runs(cache, count, placement.page_tokens):
-                    runs.append((start, length, [self._put(blocks, cursor, tensor[offset:offset + length])
-                                                 for tensor in self._cache_tensors(cache)]))
+                for offset, length, pages in self._runs(cache, count, placement.page_tokens):
+                    runs.append((pages, [self._put(blocks, cursor, tensor[offset:offset + length])
+                                         for tensor in self._cache_tensors(cache)]))
                 pooled = None
                 if st.history_rank == placement.indexer_owner(st.history_slot, ordinal,
                                                               include_mtp=hasattr(st, "mtp_kc")):
                     pooled = self._put(blocks, cursor, pool[:count // st.ratio])
                 layers.append((ordinal, count, tuple(cache.owners[:(count + placement.page_tokens - 1)
                                                                    // placement.page_tokens]), runs, pooled))
+            if self.stream is not None:
+                # The slot's own rows are read by now: its next writer waits only for these copies. The snapshots
+                # below are the kept points' own device copies (record_stream keeps them alive), not slot memory.
+                rows_ready = torch.cuda.Event()
+                rows_ready.record(self.stream)
             packed = [(list(point[0]), self._pack(blocks, cursor, point[2]),
                        None if point[3] is None else self._pack(blocks, cursor, point[3])) for point in fresh]
             if self.stream is not None:
@@ -317,8 +354,8 @@ class HostPrefixTier:
                 ready.record(self.stream)
         if cursor[0] > len(blocks) * self.block_bytes:
             raise RuntimeError("host prefix spill exceeded its rank-agreed allocation")
-        if ready is not None:
-            st.host_spill_ready = ready              # prefixes.slot_for: the slot's next writer waits on it
+        if rows_ready is not None:
+            st.host_spill_ready = rows_ready         # prefixes.slot_for: the slot's next writer waits on it
         self.entries.append({"principal": principal, "points": packed, "blocks": blocks, "layers": layers,
                              "ready": ready, "bytes": need,
                              "rows": rows, "mtp_rows": mtp_rows, "kv_identity": st.kv_identity,
@@ -362,13 +399,14 @@ class HostPrefixTier:
             cache, pool = caches[ordinal]
             if tuple(cache.owners[:len(owners)]) != owners:
                 raise RuntimeError("host prefix restore target owns different history pages")
-            targets = {start: offset for start, offset, _length in self._runs(cache, count, placement.page_tokens)}
-            for start, length, regions in runs:
-                offset = targets.get(start)
-                if offset is None:
-                    raise RuntimeError("host prefix restore target lacks an owned history run")
-                for tensor, region in zip(self._cache_tensors(cache), regions, strict=True):
-                    self._get_into(blocks, region, tensor[offset:offset + length])
+            for pages, regions in runs:
+                total = sum(rows for _page, rows in pages)
+                for at, offset, length in self._targets(cache, pages):
+                    for tensor, region in zip(self._cache_tensors(cache), regions, strict=True):
+                        row = region.nbytes // total
+                        part = _Region(region.offset + at * row, length * row, region.dtype,
+                                       (length, *region.shape[1:]))
+                        self._get_into(blocks, part, tensor[offset:offset + length])
             if pooled is not None:
                 self._get_into(blocks, pooled, pool[:count // st.ratio])
         ids, snap, tail = entry["points"][index]

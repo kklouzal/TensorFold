@@ -241,3 +241,50 @@ def test_slab_sizes_are_what_pinning_allocates():
     assert pinned_slab_bytes(8 * gib) == 8 * gib                      # 64 GiB over eight ranks: unchanged
     assert pinned_slab_bytes(6 * gib + 5) == 4 * gib                  # never above the request
     assert pinned_slab_bytes(BLOCK_BYTES) == BLOCK_BYTES and pinned_slab_bytes(BLOCK_BYTES - 1) == 0
+
+
+def striped(rows, rank, seed, arena_offset=0, gap=None):
+    """A degree-4 layer: the group's ranks own every fourth page in turn, packed back to back in the rank's arena
+    from ``arena_offset`` (``gap``: a page index after which the packing skips a page, i.e. a target arena laid out
+    differently from the source)."""
+    owners = [4 * (rank // 4) + page % 4 for page in range(-(-rows // PAGE))]
+    offsets, owned = [], arena_offset
+    for page, owner in enumerate(owners):
+        offsets.append(owned if owner == rank else -1)
+        owned += PAGE if owner == rank else 0
+        owned += PAGE if owner == rank and page == gap else 0
+    generator = torch.Generator().manual_seed(seed)
+    size = owned + PAGE
+    return NS(k=torch.randint(0, 255, (size, 1, 8), dtype=torch.uint8, generator=generator),
+              v=torch.randint(0, 255, (size, 1, 8), dtype=torch.uint8, generator=generator),
+              ks=torch.randn((size, 1, 2), generator=generator).half(), vs=torch.randn((size, 1, 2), generator=generator).half(),
+              key_format=NS(quantized=True), value_format=NS(quantized=True), offsets=tuple(offsets), owners=owners)
+
+
+@pytest.mark.parametrize("gap", [None, 5])
+def test_striped_pages_spill_as_one_run_and_restore_page_by_page_into_any_arena_layout(gap):
+    rows = 46                                                   # 12 pages, the last partial: rank 1 owns 1, 5, 9
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=1, rows=rows)
+    source.kc = [striped(rows, 1, 3 + layer) for layer in range(2)]
+    target = state(8, rank=1, rows=rows, seed=50)
+    target.kc = [striped(rows, 1, 60 + layer, arena_offset=PAGE, gap=gap) for layer in range(2)]
+    host.spill([(list(range(rows - 1)), source, snapshot(rows - 1), None)], None)
+    layers = host.entries[0]["layers"]
+    assert all(len(runs) == 1 and [page for page, _n in runs[0][0]] == [1, 5, 9] for _o, _c, _w, runs, _p in layers)
+    host.restore(host.entries[0], 0, target)
+    for layer in range(2):
+        for page in (1, 5, 9):
+            count = min(PAGE, rows - page * PAGE)
+            a, b = source.kc[layer], target.kc[layer]
+            for name in ("k", "v", "ks", "vs"):
+                assert torch.equal(getattr(a, name)[a.offsets[page]:a.offsets[page] + count],
+                                   getattr(b, name)[b.offsets[page]:b.offsets[page] + count])
+
+
+def test_slab_copies_span_consecutive_blocks():
+    host = tier(capacity=1 << 12, block=256)
+    pieces = list(host._views([3, 4, 5, 9], 100, 700))
+    assert [(view.numel(), at) for view, at in pieces] == [(668, 0), (32, 668)]
+    assert pieces[0][0].data_ptr() == host.slab[3 * 256 + 100:].data_ptr()
+    assert pieces[1][0].data_ptr() == host.slab[9 * 256:].data_ptr()
