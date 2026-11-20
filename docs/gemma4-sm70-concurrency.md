@@ -65,8 +65,10 @@ neither borrows nor keeps. Usage reports the reused tokens as `prompt_tokens_det
   out when the prefill reaches the point (before the next chunk). The drafter ring is 3,072 rows (window 2,048 +
   one chunk) so a chunk never overwrites the window behind the prompt end. Every prompt row feeds the drafter, so a
   kept point serves later drafting requests.
-- Slots: `--parallel` live streams plus `max(8, --parallel)` slots for idle kept conversations (plus one padding
-  slot); each slot's rings exist from startup. A fork copies the full-cache rows below the point and restores the
+- Slots: `--parallel` live streams plus slots for idle kept conversations (plus one padding slot); each slot's
+  rings exist from startup. By default all slots' target rings take 1/16 of the device memory free after the
+  weights (the smallest rank's count, at least `max(8, --parallel)` kept): 26 kept-conversation slots at
+  `--parallel 8` on 32 GB V100s, 33 at `--parallel 1` (measured startup lines). A fork copies the full-cache rows below the point and restores the
   snapshot; a resume in place restores the snapshot. A slot whose capacity is too small grows by copying its rows.
 - Memory: attached full caches and snapshots are charged to the KV budget. A request that needs room first releases
   free slots' caches, then evicts the least valuable idle chains; it waits only for memory live streams hold.
@@ -79,7 +81,7 @@ neither borrows nor keeps. Usage reports the reused tokens as `prompt_tokens_det
 
 ## Memory
 
-Per rank, every slot (`--parallel` + 1 padding slot) has sliding-window rings from startup:
+Per rank, every slot (live, kept and padding) has FP16 sliding-window rings from startup, for every `--kv-dtype`:
 
 - target: 25 layers × 2,048 rows × 256 × FP16 × K/V = 50 MiB;
 - drafter sliding layers: 4 × 2,304 rows × 128 × FP16 × K/V + positions = 4.5 MiB (rings replace the earlier
@@ -88,26 +90,36 @@ Per rank, every slot (`--parallel` + 1 padding slot) has sliding-window rings fr
 A stream's full-attention caches are allocated (zeroed) at admission with capacity
 `min(context, prompt + max_tokens + block)` rounded to 256 rows, and freed when it finishes:
 
-- target: 5 global layers × 512 × FP16 × K/V = 10,240 B per token;
-- drafter full layer: 128 × FP16 × K/V = 512 B per token.
+- target: 5 global layers × 512 × FP16 × K/V = 10,240 B per token (`--kv-dtype bf16`, the CLI default), or
+  5 × 528 B × K/V = 5,280 B with `--kv-dtype rotorquant8-norm` (Q8: 512 one-byte codes plus four per-128 FP32
+  scales per row; the Compose default), or 5 × 272 B × K/V = 2,720 B with `rotorquant-iso64-norm4-h64` (Q4);
+- drafter full layer: 128 × FP16 × K/V = 512 B per token (FP16 for every format).
 
-Total 10,752 B/token/rank. Admission takes bytes from a ledger. Its budget is the smallest, over all ranks, of
+Total 10,752 B/token/rank FP16, 5,792 Q8, 3,232 Q4. Admission takes bytes from a ledger. Its budget is the smallest, over all ranks, of
 free device memory after loading, warm-up and graph capture, minus the measured prompt-chunk transient and
 1 GiB. A request that does not fit waits (`NoRoom`, held first in line) until a stream finishes. A request
 larger than the whole budget is refused.
 
-| Per-stream tokens (prompt + output) | KV per stream (MiB, rank) | Streams in a 24.5 GiB budget |
-| ---: | ---: | ---: |
-| 4,096 + 1,024 | 58 + 55 rings | ≥ 32 |
-| 16,384 + 1,024 | 184 + 55 rings | ≥ 32 |
-| 32,768 + 1,024 | 352 + 55 rings | ≥ 32 (61 by bytes) |
-| 65,536 + 4,096 | 720 + 55 rings | 32 (34 by bytes) |
-| 131,072 + 4,096 | 1,392 + 55 rings | 17 |
-| 262,144 | 2,694 + 55 rings | 9 |
+| Per-stream tokens (prompt + output) | FP16 KV per stream (MiB, rank) | Q8 KV per stream | FP16 streams | Q8 streams |
+| ---: | ---: | ---: | ---: | ---: |
+| 4,096 + 1,024 | 52 | 28 | 32 (445 by bytes) | 32 (826) |
+| 16,384 + 1,024 | 178 | 96 | 32 (130) | 32 (243) |
+| 32,768 + 1,024 | 346 | 187 | 32 (67) | 32 (125) |
+| 65,536 + 4,096 | 714 | 385 | 32 | 32 (60) |
+| 131,072 + 4,096 | 1,386 | 747 | 16 | 31 |
+| 262,144 | 2,688 | 1,448 | 8 | 16 |
 
-The 24.5 GiB budget is the measured startup value at `--parallel 8` and `--parallel 32` with `--context 32768`
-(source in this change, image `cf8c0ff6`); it shrinks slightly with the graph catalogue and context. The
-server prints its own budget at startup.
+Stream counts are for the 22.82 GiB budget measured at startup with `--parallel 8`, the full 262,144-token
+context and 26 kept-conversation slots (rings are allocated at startup, outside the budget; 32 is the stream
+limit). The server prints its own budget and slot count at startup.
+
+Only the full-attention caches are quantized. Quantizing the rings as well (measured, not adopted) would halve their
+50 MiB/slot target share but decoded 1-10% slower at C1-C8 (3 runs vs 1, 2026-11-20): every token reads the
+25 sliding layers' rings. Q8 vs FP16 on the same snapshot (`--parallel 8`, 3 draft rows, greedy, prefill/decode
+tok/s change): C1 4K -2.5/-4.6%, 16K -5.6/-3.2%, 64K -16.1/-9.4%; C4 4K -3.0/-0.7%, 16K -5.4/-6.7%; C8 4K
+-0.7/+0.3%, 16K -5.1/-6.8%. Teacher-forced corpus-v2 NLL vs FP16 (268 documents): prefill d +0.0046 nats, CI95
+[-0.0063, +0.0145]; decode d -0.0015, CI95 [-0.0092, +0.0053] (no measured loss beyond noise; the format is an
+accepted lossy contract). Prefix reuse under Q8 replies identically to a cold Q8 prefill (188 exact repeats).
 
 ## Numerical contracts
 

@@ -330,7 +330,7 @@ request limit returns HTTP503 with the existing retry header.
 
 [compose.gemma4.yaml](compose.gemma4.yaml) serves the AEON compressed-tensors NVFP4 Gemma 4 26B-A4B with the z-lab
 DFlash drafter for Harness, in the configuration the V100 trial server runs: `--parallel 8`, the native 262,144-token
-context, INT8 drafter copies with 3 draft rows, thinking on, automatic prompt-prefix reuse, and every rank started
+context, RotorQuant Q8 KV (`--kv-dtype rotorquant8-norm`), INT8 drafter copies with 3 draft rows, thinking on, automatic prompt-prefix reuse, and every rank started
 through the Harness entrypoint ([gemma4_tp_harness.py](gemma4_tp_harness.py)) so `/v1/tokenize` and Harness model
 metadata work. It needs the whole GPU set (stop the SC117 service first) and no NUMA plan.
 
@@ -342,7 +342,7 @@ GEMMA4_TEMPLATE=/path/to/chat-template.jinja docker compose -f deploy/v100/compo
 
 Requests beyond `--parallel` queue for a free lane; one that no lane took within `--queue-timeout-s` (900 s
 by default) gets HTTP 503 instead of waiting without bound. `GEMMA4_PARALLEL`, `GEMMA4_CONTEXT`,
-`GEMMA4_DRAFT_ROWS`, `GEMMA4_QUEUE_TIMEOUT_S`, `GEMMA4_BIND_ADDRESS` and `GEMMA4_PORT` override the defaults. The host-RAM prefix tier is on by default (64 GiB across the ranks, capped at a quarter of MemAvailable); add `--prefix-host-bytes 0` to the command to disable it. Design, memory and
+`GEMMA4_DRAFT_ROWS`, `GEMMA4_KV_DTYPE` (`bf16` for FP16 KV), `GEMMA4_QUEUE_TIMEOUT_S`, `GEMMA4_BIND_ADDRESS` and `GEMMA4_PORT` override the defaults. The host-RAM prefix tier is on by default (64 GiB across the ranks, capped at a quarter of MemAvailable); add `--prefix-host-bytes 0` to the command to disable it. Design, memory and
 measurements: [Gemma 4 recipe](../../docs/recipes/gemma-4.md#eight-v100s-tp8etp4) and
 [concurrent serving](../../docs/gemma4-sm70-concurrency.md). The Compose file is validated with `docker compose
 config`; the trial server itself runs the same arguments from a source snapshot overlay.

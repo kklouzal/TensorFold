@@ -115,7 +115,8 @@ previous turn of the conversation, a shared system block, an edited later messag
 reports the reused tokens as `usage.prompt_tokens_details.cached_tokens`. States are kept at 1,024-row prefill
 chunk boundaries at or before the template's message starts and the prompt end, plus each prompt's exact end for
 exact repeats, so a resumed request computes exactly the chunks a cold prefill would and replies identically.
-Kept conversations live in `max(8, --parallel)` extra slots and in the KV budget; the least valuable idle ones are
+Kept conversations live in extra slots (sized at startup so their rings take 1/16 of the free device memory: 26 at
+`--parallel 8`, at least `max(8, --parallel)`) and in the KV budget; the least valuable idle ones are
 evicted when a request needs room. A pinned host-RAM tier (on by default: 64 GiB across the eight ranks, at most a quarter of MemAvailable;
 `--prefix-host-bytes BYTES` sets it, `0` disables) keeps evicted points and restores them on a later hit. See
 [concurrent serving](../gemma4-sm70-concurrency.md#prompt-prefix-reuse) for the design and measurements.
@@ -130,8 +131,13 @@ admitted request reserves full-attention KV for its prompt plus `max_tokens`; on
 stream to finish. Batches of at most 16 padded rows keep the C1 arithmetic per stream (bitwise); wider batches
 use tensor-core paths whose replies may differ from C1 (see
 [concurrent serving](../gemma4-sm70-concurrency.md) for the memory table, numerical contract and validation).
+`--kv-dtype` selects the full-attention KV format (K and V alike): `bf16` keeps FP16 caches (the CLI default,
+10,752 B/token/rank), `rotorquant8-norm` stores RotorQuant Q8 (5,792 B/token: 16 instead of 8 full 262,144-token
+streams fit; the Compose default) and `rotorquant-iso64-norm4-h64` Q4 (3,232 B/token). Sliding-window rings stay
+FP16. Q8 measured no NLL loss beyond noise and is 0-16% slower than FP16 (most at 64K); see
+[concurrent serving](../gemma4-sm70-concurrency.md#memory).
 Refused on this provider:
-`--vision`, `--parallel` above 32, `--kv-dtype` other than the FP16 default, and the GB10-only options
+`--vision`, `--parallel` above 32, `--kv-key-dtype`/`--kv-value-dtype`, and the GB10-only options
 `--delta4-head`, `--prepare-global-prompt`, `--dflash-head-w4a16`, `--clip-sampled-verification`,
 `--lossless-head`, `--prefix-cache-bytes` (the GB10 archive; this provider's cache is automatic),
 `--spark-global-gqa` and `--spark-sampled-q`. See [the README results](../../README.md#gemma-4-26b-a4b-aeon-nvfp4-on-eight-v100s-2026-11-15)

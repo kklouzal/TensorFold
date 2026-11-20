@@ -1,6 +1,6 @@
 # Gemma 4 26B-A4B (AEON compressed-tensors NVFP4) on eight V100-SXM2-32GB, TP8/ETP4, for Harness.
 # The configuration the V100 live server runs (2026-11-19): z-lab DFlash with private INT8 copies, 3 draft rows,
-# --parallel 8, the native 262,144-token context, thinking on, automatic prompt-prefix reuse. See
+# --parallel 8, RotorQuant Q8 KV, the native 262,144-token context, thinking on, automatic prompt-prefix reuse. See
 # docs/recipes/gemma-4.md#eight-v100s-tp8etp4 and docs/gemma4-sm70-concurrency.md.
 # Set GEMMA4_MODEL_PATH, GEMMA4_DRAFTER_PATH and GEMMA4_TEMPLATE (a chat template file; Harness uses its own) and
 # build the verified image (deploy/v100/README.md). The first start compiles the Gemma CUDA extension into the cache.
@@ -34,6 +34,9 @@ services:
       - '8'
       - --draft-rows
       - ${GEMMA4_DRAFT_ROWS:-3}
+      # RotorQuant Q8 KV (K and V, 8-bit codes + per-128 scales); bf16 keeps FP16 caches.
+      - --kv-dtype
+      - ${GEMMA4_KV_DTYPE:-rotorquant8-norm}
       - --chat-template
       - /template.jinja
       - --thinking
