@@ -2617,8 +2617,38 @@ While a prompt fills (one session, stall workload), the live decode gap fell:
 | C8 4K, one prompt every 1.5 s | 397 → 377 ms | 474 → 406 ms |
 | C24 4K, all prompts sent together | 457 → 358 ms | 605 → 592 ms |
 
-The 200 ms decode-gap budget during prefill is still not met. Each live stream waits one
-whole pass.
+**Replies keep decoding while prompts fill (2026-11-20).** While any reply decodes, a
+prompt pass whose estimated cost exceeds the target runs in groups of layers, one group per
+round, with an ordinary decode round after each. A reply then waits about one group plus
+one round (target 175 ms, the same constant as Gemma 4's layer groups) instead of the whole
+pass. There is no setting:
+- **Automatic:** groups are cut from measured per-layer GPU time (CUDA events) and the
+  round's time beside its group. Every rank cuts the same layers, from the leader's
+  estimates. A pass with no live reply, or one that fits the target, runs whole (merged
+  rounds, above).
+- **Numerics:** a grouped pass runs the standalone pass's kernels in the same order, so its
+  prompt rows are the standalone pass's rows; the rounds between groups are ordinary decode
+  rounds. golden-vg2 is identical.
+- **Trade (intended):** prompt throughput while prompts and replies overlap, for replies
+  that never stall behind a whole pass.
+
+Fast protocol on 8× V100 (prod, 24 lanes), tip `ea4988e3` base vs this change. C1 cells
+(no overlap) are neutral (prefill −0.4/−0.6%, decode −0.7/−0.1%). In the overlap cells:
+
+| Cell | Prefill | Decode median | Gap while prompts fill, p50 / p99, before → after |
+|---|---|---|---|
+| C8 4K | −17.8% | −0.9% | 373 / 408 → 160 / 191 ms |
+| C8 16K | −13.2% | +7.4% | 382 / 413 → 159 / 193 ms |
+| C16 4K | −22.0% | −4.6% | 359 / 536 → 160 / 198 ms |
+| C16 16K | −6.7% | −8.4% | 361 / 418 → 162 / 209 ms |
+| C24 4K | −25.6% | −2.4% | 356 / 531 → 167 / 218 ms |
+| C24 16K | −8.3% | −4.1% | 360 / 585 → 169 / 250 ms (max 609 → 256) |
+
+The decode median is a per-request average from first to last token. Before, almost every
+request in a sync cell got its first token at the end of all prompt fills and then decoded
+with nothing filling. Now replies start as their prompts finish and decode partly beside
+prompts still filling, so the average falls at C16/C24 although no round is slower and no
+reply stalls.
 
 ## V100 (SM70) adaptive development status
 
