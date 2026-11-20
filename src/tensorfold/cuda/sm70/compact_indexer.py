@@ -88,7 +88,7 @@ def prepare(device):
     with torch.inference_mode(False):
         source = torch.zeros((1, 1), dtype=torch.float16, device=device)
         destination = torch.empty_like(source)
-    generations = torch.zeros(2, dtype=torch.int64, device=device)
+    generations = torch.zeros(1, dtype=torch.int64, device=device)
     status = torch.tensor([0, -2], dtype=torch.int32, device=device)
-    publish(source, destination, 0, generations, (0, 0), status, -1)
+    publish(source, destination, 0, generations, 0, status, -1)
     torch.cuda.synchronize(device)
