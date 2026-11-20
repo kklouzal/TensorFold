@@ -44,6 +44,38 @@ BLOCK_BYTES = 1 << 21        # fixed allocation unit of the pinned slab
 DEFAULT_BYTES = 64 << 30     # all ranks together when --prefix-host-bytes is unset (capped at MemAvailable / 4)
 
 
+def default_bytes() -> int:
+    """The tier's size across the ranks when ``--prefix-host-bytes`` is unset: ``DEFAULT_BYTES``, at most a quarter
+    of the host's MemAvailable (0, the tier off, when /proc/meminfo is unreadable)."""
+    from tensorfold.cuda.capacity import _meminfo
+
+    memory = _meminfo()
+    return 0 if memory is None else min(DEFAULT_BYTES, memory["MemAvailable"] // 4)
+
+
+def pin_agreed(allocate, gather_ok, per_rank: int, *, explicit: bool, requested: int, rank: int, lane: str = ""):
+    """``allocate()`` (pins this rank's slab or tier), then one collective ``gather_ok(ok)`` -> every rank's flag,
+    called exactly once on every rank whatever happened here. Returns the allocation, or None on every rank when any
+    rank's pinning was refused (cudaHostAlloc: host memory/locking limits): an explicit size then fails startup, the
+    default serves without the tier."""
+    failure = None
+    try:
+        allocated = allocate()
+    except RuntimeError as error:
+        allocated, failure = None, error
+    refused = [r for r, ok in enumerate(gather_ok(failure is None)) if not ok]
+    if not refused:
+        return allocated
+    message = (f"pinning the {per_rank} B/rank host prefix tier failed on rank(s) "
+               f"{refused}" + ("" if failure is None else f": {failure}"))
+    if explicit:
+        raise RuntimeError(f"--prefix-host-bytes {requested}: {message}") from failure
+    if rank == 0:
+        print(f"[tensorfold] {lane}{message}; serving without the host prefix tier "
+              "(--prefix-host-bytes sets it explicitly)", flush=True)
+    return None
+
+
 def pinned_slab_bytes(per_rank: int, block: int = BLOCK_BYTES) -> int:
     """The largest per-rank slab not above ``per_rank`` that pinning allocates exactly, or 0 below one block.
 

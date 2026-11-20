@@ -91,6 +91,11 @@ def indexed_prefill_rows(capability: tuple[int, int] | None = None) -> int | Non
 DECODE_GAP_MS = 175.0
 
 
+def group_target(gap_ms: float, round_ms: float) -> float:
+    """A layer group's cost target (ms): the gap less one decode round, but at least a quarter of the gap."""
+    return max(gap_ms - round_ms, gap_ms / 4)
+
+
 def layer_groups(cost: list[float], target: float) -> list[int]:
     """Layer stops (exclusive ends, the last = every layer) of a prompt pass run in groups between decode rounds:
     groups of about equal ``cost`` (per layer, any unit), each at most ``target`` unless a single layer exceeds it.

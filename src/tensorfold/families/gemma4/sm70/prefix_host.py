@@ -1,5 +1,5 @@
-"""Host-RAM tier for Gemma 4 SM70 prefix reuse (opt-in ``--prefix-host-bytes``): spill kept points instead of
-dropping them, restore them into a free slot on a later hit.
+"""Host-RAM tier for Gemma 4 SM70 prefix reuse (on by default, ``--prefix-host-bytes`` sizes it, 0 disables): spill
+kept points instead of dropping them, restore them into a free slot on a later hit.
 
 ``prefixes`` (qwen4_exp) calls ``spill`` with the points of one slot chain it is about to drop (evicted, past
 ``keep``, or rewritten by a resume in place) while that slot's rows are still intact, and ``best``/``restore`` when
@@ -22,10 +22,9 @@ derives identical slab offsets from identical tensor shapes. Nothing is persiste
 
 from __future__ import annotations
 
+from tensorfold.families.qwen4_exp.cuda.prefix_host import BLOCK_BYTES
+
 from .ops import OP_HRESTORE, OP_HSPILL
-
-BLOCK_BYTES = 1 << 21
-
 
 MAX_CHAIN = 4                # row extents a restore reads at most (``_base`` merges longer chains)
 ALIGN = 256                  # byte alignment of an exact end's logits inside its entry

@@ -152,6 +152,25 @@ def prompt_rows() -> int:
     return rows
 
 
+def ring_snapshot(ring_k, ring_v, slot: int, pos: int, window: int, ring: int):
+    """A slot's sliding-ring rows of positions [pos - window - 1, pos) (a point at ``pos`` or ``pos`` - 1 resumes
+    from it): (lo, pos, K rows, V rows). Target and drafter rings alike."""
+    lo = max(0, pos - window - 1)
+    index = torch.arange(lo, pos, device=ring_k.device) % ring
+    return lo, pos, ring_k[:, slot].index_select(1, index), ring_v[:, slot].index_select(1, index)
+
+
+def ring_restore(ring_k, ring_v, ring_p, slot: int, snap, ring: int) -> None:
+    """Write a ``ring_snapshot`` back into a slot's rings; every other ring row is emptied."""
+    lo, pos, k, v = snap
+    at = torch.arange(lo, pos, device=ring_k.device)
+    index = at % ring
+    ring_k[:, slot].index_copy_(1, index, k)
+    ring_v[:, slot].index_copy_(1, index, v)
+    ring_p[:, slot].fill_(-1)
+    ring_p[:, slot].index_copy_(1, index, at.to(torch.int32).expand(ring_p.shape[0], -1).contiguous())
+
+
 def ring_slot_bytes(weights, rows: int = PROMPT_ROWS) -> int:
     """Device bytes one slot's target sliding-window rings take on this rank (FP16 K and V, int32 positions; ``Pool``)
     with ``rows``-row prompt chunks."""
@@ -245,25 +264,11 @@ class Pool:
             raise ValueError("a prefix copy exceeds a slot's capacity")
         self.full[dst][:, :, :rows].copy_(self.full[src][:, :, :rows])
 
-    def _rows(self, pos):
-        lo = max(0, pos - self.target.c.window - 1)
-        return lo, torch.arange(lo, pos, device=self.target.device)
-
     def snapshot(self, slot: int, pos: int):
-        """The ring rows of positions [pos - window - 1, pos) (a point at ``pos`` or ``pos`` - 1 resumes from it)."""
-        lo, at = self._rows(pos)
-        index = at % self.target.ring
-        return (lo, pos, self.ring_k[:, slot].index_select(1, index), self.ring_v[:, slot].index_select(1, index))
+        return ring_snapshot(self.ring_k, self.ring_v, slot, pos, self.target.c.window, self.target.ring)
 
     def restore(self, slot: int, snap):
-        """Write a snapshot's rows back into the slot's rings; every other ring row is emptied."""
-        lo, pos, k, v = snap
-        at = torch.arange(lo, pos, device=self.target.device)
-        index = at % self.target.ring
-        self.ring_k[:, slot].index_copy_(1, index, k)
-        self.ring_v[:, slot].index_copy_(1, index, v)
-        self.ring_p[:, slot].fill_(-1)
-        self.ring_p[:, slot].index_copy_(1, index, at.to(torch.int32).expand(self.ring_p.shape[0], -1).contiguous())
+        ring_restore(self.ring_k, self.ring_v, self.ring_p, slot, snap, self.target.ring)
 
 
 class Target:

@@ -23,11 +23,6 @@ from tensorfold.families.qwen4_exp.cuda import prefixes
 from .ops import OP_ATTACH, OP_COPY, OP_DETACH, OP_DROP, OP_GROW, OP_RESTORE, OP_SNAP
 
 
-def entry_end(prompt) -> int:
-    """Where a prompt's kept point ends: one token early (a next turn re-renders the generation prompt's tail)."""
-    return max(1, len(prompt) - 1)
-
-
 class Slot:
     """One KV slot as ``prefixes`` sees it: identity, resident window (``limit``) and the fork copy."""
 
@@ -67,8 +62,7 @@ class PrefixOwner:
         self.keep = 4 * max(1, engine.keep_slots)        # kept points (a prompt keeps up to four)
         self.depth = engine.block - 1
         self.host_tier = None
-        self.prefix_counters = dict.fromkeys(("lookups", "resume_hits", "resume_tokens", "fork_hits", "fork_tokens",
-                                              "host_hits", "host_tokens"), 0)
+        self.prefix_counters = dict.fromkeys(prefixes.COUNTERS, 0)
         self.points = points                             # message starts of a prompt (markers), or None
         self.held = 0                                    # ledger bytes: attached full caches + snapshots
         self.snap_bytes = engine.target.pool.snapshot_bytes() + (
@@ -224,7 +218,7 @@ class PrefixOwner:
         one computes exactly the chunks a cold prefill of its prompt would: its replies equal the cold ones."""
         rows = self.e.prompt_rows
         found = self.points(s.prompt) if self.points is not None else []
-        bounds = {p // rows * rows for p in (*found, entry_end(s.prompt))}
+        bounds = {p // rows * rows for p in (*found, prefixes.entry_end(s.prompt))}
         return sorted(b for b in bounds if s.cached < b < len(s.prompt))
 
     def keep_before(self, s, start: int) -> None:
@@ -277,10 +271,4 @@ class PrefixOwner:
         self._release(st)
 
     def prefix_usage(self) -> dict:
-        kept = self.kept
-        ends: dict[int, int] = {}
-        for ids, slot, _snap, _tail in kept:
-            ends[id(slot)] = max(ends.get(id(slot), 0), len(ids))
-        return {"entries": len(kept), "capacity": self.keep, "slots": len(ends), "tokens": sum(ends.values()),
-                "snapshots": len(self.snap_ids), **dict(self.prefix_counters),
-                "host": None if self.host_tier is None else self.host_tier.record()}
+        return prefixes.usage(self, self.kept, snapshots=len(self.snap_ids))

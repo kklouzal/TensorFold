@@ -14,7 +14,7 @@ import torch
 from tensorfold.cleanup import raise_failures, rollback
 from tensorfold.cuda import pdl
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes, gather_ints
-from tensorfold.cuda.geometry import DECODE_GAP_MS, layer_groups
+from tensorfold.cuda.geometry import DECODE_GAP_MS, group_target, layer_groups
 from tensorfold.cuda.kernels import gdn
 from tensorfold.cuda.logprobs import capture
 from tensorfold.cuda.markers import MIN_GAP
@@ -372,10 +372,8 @@ class MultiDecoder:
         self.used: dict[int, int] = {}                   # retention (prefixes.py): id(slot) -> clock at its last use
         self.clock = 0
         self.host_tier = None                            # prefix_host.HostPrefixTier: spilled points (engine binds)
-        # Automatic prefix reuse by tier (prefixes.slot_for): lookups, and hits/tokens resumed in place, forked
-        # into a free slot or restored from host RAM (worker thread; /stats reads ints).
-        self.prefix_counters = dict.fromkeys(("lookups", "resume_hits", "resume_tokens", "fork_hits", "fork_tokens",
-                                              "host_hits", "host_tokens"), 0)
+        # prefixes.COUNTERS (worker thread; /stats reads ints).
+        self.prefix_counters = dict.fromkeys(prefixes.COUNTERS, 0)
 
     def _rotor_lookup(self, request, participants=1):
         return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
@@ -1008,19 +1006,13 @@ class MultiDecoder:
         active = sum(max(0, st.cache_bytes() - st.cache_bytes(first)) for st in active_states.values())
         retained = sum(max(0, st.cache_bytes() - st.cache_bytes(first)) for st in protected if id(st) not in active_states)
         per_token = -(-self.window_bytes // self.capacity) if self.capacity else 0
-        kept = self.kept
-        ends: dict[int, int] = {}
-        for ids, slot, _snap, _tail in kept:
-            ends[id(slot)] = max(ends.get(id(slot), 0), len(ids))
         kv = {"budget_bytes": budget, "held_bytes": gate.held, "active_bytes": active,
               "usage_ratio": round(active / budget, 6) if budget > 0 else None, "bytes_per_token": per_token,
               "free_tokens_estimate": max(0, budget - active - retained) // per_token if per_token else None}
         if catalog is not None:
             kv["protected_idle_bytes"] = retained
         return {"kv": kv,
-                "prefix_cache": {"entries": len(kept), "capacity": self.keep, "slots": len(ends),
-                                 "tokens": sum(ends.values()), **dict(self.prefix_counters),
-                                 "host": None if self.host_tier is None else self.host_tier.record()},
+                "prefix_cache": prefixes.usage(self, self.kept),
                 "memory_waits": gate.waits, "memory_stops": gate.ends}
 
     @torch.no_grad()
@@ -1889,7 +1881,7 @@ class MultiDecoder:
         if round_ms is None or row_ms is None and None in layer_ms:
             return None
         cost = [(row_ms / L if ms is None else ms) * rows for ms in layer_ms]
-        stops = layer_groups(cost, max(self.gap_ms - round_ms, self.gap_ms / 4))
+        stops = layer_groups(cost, group_target(self.gap_ms, round_ms))
         return None if stops == [L] else stops
 
     def _group_step(self):

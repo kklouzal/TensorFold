@@ -16,19 +16,19 @@ a stream finishes.
 from __future__ import annotations
 
 import array
-import math
 import os
 import struct
 import time
 from pathlib import Path
 from typing import Any, Callable
 
-from tensorfold.cuda.geometry import DECODE_GAP_MS, layer_groups
+from tensorfold.cuda.geometry import DECODE_GAP_MS, group_target, layer_groups
 from tensorfold.engine.draft_acceptance import accepted_prefix as _accepted
 
 from .ops import (OP_ATTACH, OP_BATCH, OP_COPY, OP_DETACH, OP_DROP, OP_FORWARD, OP_GROW, OP_HRESTORE, OP_HSPILL,
                   OP_LAYERS, OP_RESTORE, OP_SNAP, OP_STOP)
 from .prefix import PrefixOwner
+from .prefix_host import BLOCK_BYTES, _to_slab
 F_LOGITS_LAST, F_APPEND, F_SCORE = 2, 4, 16
 STOP_SHIFT = 8                  # OP_FORWARD flags >> STOP_SHIFT: the layer a split prompt forward pauses at (0: all)
 SCORE_TOP = 20
@@ -38,21 +38,6 @@ RING_SHARE = (1, 16)            # default keep_slots: all slots' target rings in
 _HEAD = struct.Struct("<qqqqq")  # op, a, b, c, d
 PIPE_TIMEOUT = 600.0
 TRACE = os.environ.get("TF_GEMMA_ROUND_TRACE") == "1"     # diagnostic: per-shape round timing lines on rank 0
-
-
-HOST_DEFAULT_BYTES = 64 << 30   # host prefix tier across the eight ranks when --prefix-host-bytes is unset
-
-
-def _mem_available() -> int:
-    """The host's MemAvailable (bytes), or 0 when /proc/meminfo has none (the tier then stays off)."""
-    try:
-        with open("/proc/meminfo") as f:
-            for line in f:
-                if line.startswith("MemAvailable:"):
-                    return int(line.split()[1]) * 1024
-    except OSError:
-        pass
-    return 0
 
 
 class Gemma4SM70Engine:
@@ -97,39 +82,32 @@ class Gemma4SM70Engine:
         self.snaps = {}                           # prefix snapshot id -> (target rings, drafter rings) on this rank
         # Host prefix tier (prefix_host.py, on by default; --prefix-host-bytes 0 disables): one pinned slab per rank,
         # allocated before the KV budget and the HTTP host pool are measured; host entry id -> its tensors' slab
-        # regions on this rank. Unset: HOST_DEFAULT_BYTES across the ranks, but at most a quarter of the host's
-        # MemAvailable, agreed as the smallest rank's choice (every rank must lay out identical blocks).
+        # regions on this rank. Unset: Flash Next's default (prefix_host.default_bytes: 64 GiB across the ranks, at
+        # most a quarter of the host's MemAvailable), agreed as the smallest rank's choice (every rank must lay out
+        # identical blocks).
         if prefix_host_bytes is not None and (type(prefix_host_bytes) is not int or prefix_host_bytes < 0):
             raise ValueError("prefix_host_bytes must be a nonnegative byte count")
         # Per rank, a power of two (pinned_slab_bytes: the pinned allocator rounds up to one, so this is the bytes
         # actually pinned) of at least one 2 MiB block.
-        from tensorfold.families.qwen4_exp.cuda.prefix_host import pinned_slab_bytes
+        from tensorfold.families.qwen4_exp.cuda.prefix_host import default_bytes, pin_agreed, pinned_slab_bytes
         explicit = prefix_host_bytes is not None
         if not explicit:
-            prefix_host_bytes = min(HOST_DEFAULT_BYTES, _mem_available() // 4)
+            prefix_host_bytes = default_bytes()
         mine = torch.tensor([pinned_slab_bytes(prefix_host_bytes // tp)], dtype=torch.int64, device="cuda")
         agreed = torch.empty(tp, dtype=torch.int64, device="cuda")
         self.comm.all_gather(mine, agreed)
         self.host_per_rank = int(agreed.min())
-        self.host_slab, failure = None, None
+        self.host_slab = None
         if self.host_per_rank:                    # rank-agreed, so every rank takes this branch and its all-gather
-            try:
-                self.host_slab = torch.empty(self.host_per_rank, dtype=torch.uint8, pin_memory=True)
-            except RuntimeError as error:         # cudaHostAlloc refused (host memory/locking limits)
-                failure = error
-            pinned = torch.tensor([failure is None], dtype=torch.int64, device="cuda")
-            every = torch.empty(tp, dtype=torch.int64, device="cuda")
-            self.comm.all_gather(pinned, every)
-            refused = [r for r, ok in enumerate(every.tolist()) if not ok]
-            if refused:
-                self.host_slab = None
-                message = (f"pinning the {self.host_per_rank} B/rank host prefix tier failed on rank(s) "
-                           f"{refused}" + ("" if failure is None else f": {failure}"))
-                if explicit:
-                    raise RuntimeError(f"--prefix-host-bytes {prefix_host_bytes}: {message}") from failure
-                if rank == 0:
-                    print(f"[tensorfold] Gemma 4 SM70: {message}; serving without the host prefix tier "
-                          "(--prefix-host-bytes sets it explicitly)", flush=True)
+            def every_rank(ok):
+                every = torch.empty(tp, dtype=torch.int64, device="cuda")
+                self.comm.all_gather(torch.tensor([ok], dtype=torch.int64, device="cuda"), every)
+                return every.tolist()
+
+            self.host_slab = pin_agreed(lambda: torch.empty(self.host_per_rank, dtype=torch.uint8, pin_memory=True),
+                                        every_rank, self.host_per_rank, explicit=explicit,
+                                        requested=prefix_host_bytes, rank=rank, lane="Gemma 4 SM70: ")
+            if self.host_slab is None:
                 self.host_per_rank = 0
         self.host_layout, self.host_extents = {}, {}    # prefix_host entries' snapshots, row extents
         # Slots: the live streams', ``keep_slots`` more for kept prefix chains (idle conversations, resumed in place
@@ -324,17 +302,16 @@ class Gemma4SM70Engine:
 
             def put(t):
                 nonlocal at
-                size = t.numel() * t.element_size()
-                slab[at:at + size].view(t.dtype).view(t.shape).copy_(t, non_blocking=True)
+                _to_slab(slab, at, t)
                 region = (at, t.dtype, tuple(t.shape))
-                at += size
+                at += t.numel() * t.element_size()
                 return region
 
             if xid >= 0:
-                at = xblock * (2 << 20)
+                at = xblock * BLOCK_BYTES
                 self.host_extents[xid] = (first, [put(cache.full[b][:, :, first:c].permute(2, 0, 1, 3))
                                                   for cache in caches])
-            at = d * (2 << 20)
+            at = d * BLOCK_BYTES
             regions, snaps = [], []
             for sid in sids:
                 target, drafter = self.snaps[sid]
@@ -562,8 +539,8 @@ class Gemma4SM70Engine:
 class Decoder(PrefixOwner):
     """The shared Scheduler's decoder on rank 0: slots, prompt chunks and batched decode rounds.
 
-    A round runs at most one prompt chunk (the oldest foreground filling request's next prompt_rows rows: fixed
-    boundaries, so a prompt's numerics never depend on load), or while streams decode one layer group of it, and
+    A round runs at most one prompt chunk (the next foreground filling request's next prompt_rows rows, round-robin;
+    fixed boundaries, so a prompt's numerics never depend on load), or while streams decode one layer group of it, and
     one batched round over every decoding stream (decode interleaves by scheduling: one round between chunks or
     layer groups). Greedy requests
     without grammar/penalties draft with DFlash (``block`` verify rows a stream) when the measured round costs
@@ -751,9 +728,10 @@ class Decoder(PrefixOwner):
         return len(s.out) + len(chosen) >= s.count or (s.stop_eos and chosen[-1] in self.eos)
 
     def _fill(self) -> list:
-        """The next fixed 1,024-row chunk of the next filling request, round-robin: concurrent prompts finish
-        together, so their decode batches stay full. While streams decode, a chunk runs in layer groups, one per
-        round (``_plan``), so each decode round waits for one group instead of the whole chunk."""
+        """The next fixed ``prompt_rows``-row chunk (``--prefill-rows``) of the next filling request, round-robin:
+        concurrent prompts finish together, so their decode batches stay full. While streams decode, a chunk runs in
+        layer groups, one per round (``_plan``), so each decode round waits for one group instead of the whole
+        chunk."""
         e = self.e
         if self.split is not None:                  # the paused chunk continues first (one paused forward at most)
             s, chunk, plan = self.split
@@ -851,8 +829,7 @@ class Decoder(PrefixOwner):
         if not self.streams:
             return [L]
         cost = [ms * rows for ms in self.layer_ms]
-        target = max(self.GAP_MS - self.round_ms, self.GAP_MS / 4)
-        return layer_groups(cost, target)
+        return layer_groups(cost, group_target(self.GAP_MS, self.round_ms))
 
     def _absorb(self) -> None:
         """Per-layer per-row costs from the timed chunk once its events completed (never waits)."""

@@ -16,20 +16,42 @@ LADDER = 4096          # tokens: the nearest band of a chain's ladder, each fart
 _UNSCOPED = object()   # Legacy policy only; None is the explicit local/no-auth domain in selected FIFO profiles.
 
 
+def entry_end(prompt) -> int:
+    """Where a prompt's kept point ends: one token early, since a next turn re-renders the generation prompt's tail
+    there (a turn sent back without its reasoning renders ``<think>`` and two newlines in its place)."""
+    return max(1, len(prompt) - 1)
+
+
+# Automatic prefix reuse by tier (``slot_for``): lookups, and hits/tokens resumed in place, forked into a free slot or
+# restored from host RAM (the owner's ``prefix_counters``).
+COUNTERS = ("lookups", "resume_hits", "resume_tokens", "fork_hits", "fork_tokens", "host_hits", "host_tokens")
+
+
+def usage(owner, kept, **extra) -> dict:
+    """The /stats ``prefix_cache`` record of ``kept`` (the caller reads ``owner.kept`` once; ``extra`` keys go
+    before the counters)."""
+    ends: dict[int, int] = {}
+    for ids, slot, _snap, _tail in kept:
+        ends[id(slot)] = max(ends.get(id(slot), 0), len(ids))
+    return {"entries": len(kept), "capacity": owner.keep, "slots": len(ends), "tokens": sum(ends.values()), **extra,
+            **dict(owner.prefix_counters), "host": None if owner.host_tier is None else owner.host_tier.record()}
+
+
 def fits(st, extent) -> bool:
     """Whether a slot's resident window holds a request's whole extent (None: uniform slots, every slot fits)."""
     return extent is None or st.limit >= extent
 
 
-def _take_free(owner, extent=None):
-    """Remove and return the free slot that fits ``extent`` with the shortest window (best fit keeps longer
-    windows for longer requests); among equal windows the last, as ``pop()``. None when no free slot fits."""
-    if extent is None:
+def _take_free(owner, extent=None, where=None):
+    """Remove and return the free slot that fits ``extent`` (and passes ``where``) with the shortest window (best fit
+    keeps longer windows for longer requests); among equal windows the last, as ``pop()``. None when none fits."""
+    if extent is None and where is None:
         return owner.free.pop() if owner.free else None
     index = None
     for i in range(len(owner.free) - 1, -1, -1):
         st = owner.free[i]
-        if fits(st, extent) and (index is None or st.limit < owner.free[index].limit):
+        if (fits(st, extent) and (where is None or where(st))
+                and (index is None or st.limit < owner.free[index].limit)):
             index = i
     return None if index is None else owner.free.pop(index)
 
@@ -154,17 +176,11 @@ def _restore_host(owner, prompt, principal, extent):
     def usable(st):
         return host.restorable(entry, st) and fits(st, extent) and st.limit >= rows
 
-    dst = None
-    for i in range(len(owner.free) - 1, -1, -1):            # best fit, as _take_free
-        st = owner.free[i]
-        if usable(st) and (dst is None or st.limit < owner.free[dst].limit):
-            dst = i
-    if dst is not None:
-        dst = owner.free.pop(dst)
-    else:
+    dst = _take_free(owner, where=usable)
+    if dst is None:
         dst = evict(owner, None, extent=extent, where=usable)
-        if dst is None:
-            return None
+    if dst is None:
+        return None
     try:
         # restore() copies the entry's rows below its LONGEST point (a chain's ladder can pass this prompt), so the
         # slot's page table must already cover them.

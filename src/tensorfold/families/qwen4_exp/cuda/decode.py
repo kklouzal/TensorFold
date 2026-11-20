@@ -24,6 +24,7 @@ from .forward import Cut, commit, cut_snapshot, forward, read_ahead
 from . import image_rows
 from .state import CAND, Buffers, State
 from .mtp import mtp_forward
+from .prefixes import entry_end  # noqa: F401 (also the decoders' import point)
 from .weights import Weights
 
 
@@ -213,10 +214,6 @@ def _gathered_fits(sampling: Sampling | None) -> bool:
 PREFILL_ROWS = 2048      # rows of a prompt chunk
 
 
-def entry_end(prompt: Sequence[int]) -> int:
-    """Where a prompt's kept state ends: one token early, since a next turn sent back without its reasoning renders ``<think>`` and two newlines there."""
-
-    return max(1, len(prompt) - 1)
 
 
 class Engine:

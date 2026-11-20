@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 
 from ..dflash_metadata import checked_headers
-from .target import CHUNK, DECODE_ROWS
+from .target import CHUNK, DECODE_ROWS, ring_restore, ring_snapshot
 
 # Sliding drafter layers' ring rows: window (2048) + the target's prompt rows (3,072 at the default 1,024), a multiple
 # of the 256-key chunk: a prompt chunk containing a kept point leaves the window behind it in the ring (prefix
@@ -190,18 +190,10 @@ class DFlash:
         self.full[dst][:, :, :rows].copy_(self.full[src][:, :, :rows])
 
     def snapshot(self, slot: int, pos: int):
-        lo = max(0, pos - self.window - 1)
-        index = torch.arange(lo, pos, device=self.device) % self.ring
-        return (lo, pos, self.ring_k[:, slot].index_select(1, index), self.ring_v[:, slot].index_select(1, index))
+        return ring_snapshot(self.ring_k, self.ring_v, slot, pos, self.window, self.ring)
 
     def restore(self, slot: int, snap):
-        lo, pos, k, v = snap
-        at = torch.arange(lo, pos, device=self.device)
-        index = at % self.ring
-        self.ring_k[:, slot].index_copy_(1, index, k)
-        self.ring_v[:, slot].index_copy_(1, index, v)
-        self.ring_p[:, slot].fill_(-1)
-        self.ring_p[:, slot].index_copy_(1, index, at.to(torch.int32).expand(self.ring_p.shape[0], -1).contiguous())
+        ring_restore(self.ring_k, self.ring_v, self.ring_p, slot, snap, self.ring)
 
     def _linear(self, x, w, key, prompt=False):
         rows = x.shape[0]
