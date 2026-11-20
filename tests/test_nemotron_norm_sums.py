@@ -57,8 +57,6 @@ def test_a_projection_handed_the_sums_gives_its_own_bits():
     w = _normal((1024, D), 10, 0.02)
     q, s, b = mx.quantize(w, group_size=64, bits=4)
     sbt = lane_qmm.pack_scales(s, b)
-    lane_qmm._xs_cache.clear()
     own = lane_qmm.lane_matmul(out, q, sbt)
-    lane_qmm._xs_cache.clear()
     handed = lane_qmm.lane_matmul(lane_glue.remember(out, xs), q, sbt)
     assert _same(own, handed)

@@ -150,11 +150,11 @@ class Owner:
         owner._context = dense_backends.Context(owner.device, backend=selection.backend,
                                                 max_plans=owner.resources['max_plans'])
         owner.native_module = type(owner._context._native).__module__
-        for role, resource in owner.resources['roles'].items():
+        for role, spec in owner.resources['roles'].items():
             owner._arenas[role] = arena = {}
-            arena['input'] = torch.zeros(resource['input_elements'], dtype=torch.float16, device=device)
-            arena['output'] = torch.empty(resource['output_float_elements'], dtype=torch.float32, device=device)
-            arena['partial'] = torch.empty(resource['partial_shape'], dtype=torch.float32, device=device)
+            arena['input'] = torch.zeros(spec['input_elements'], dtype=torch.float16, device=device)
+            arena['output'] = torch.empty(spec['output_float_elements'], dtype=torch.float32, device=device)
+            arena['partial'] = torch.empty(spec['partial_shape'], dtype=torch.float32, device=device)
         actual = sum(t.numel() * t.element_size() for arena in owner._arenas.values() for t in arena.values())
         if actual != owner.resources['tensor_bytes']:
             raise MemoryError('dense projection tensors disagree with their pre-admission forecast')

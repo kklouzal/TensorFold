@@ -1,6 +1,5 @@
 """Single-V100 exact original packet, binding and dynamic graph oracles."""
 
-import numpy as np
 import pytest
 import torch
 

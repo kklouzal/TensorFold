@@ -1,8 +1,7 @@
 """Tensor-core (mma.m8n8k4) local phases for SM70 unique-history prompt attention.
 
 Selected by ``history_owner`` for prefill owners of the RN family with ordinary
-Q8 (bits 8, codec 0) or owned RotorQuant caches (``paged_attention.KERNEL_FORMATS``)
-unless ``TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION=0``.
+Q8 (bits 8, codec 0) or owned RotorQuant caches (``paged_attention.KERNEL_FORMATS``).
 It replaces the per-row RN local statistics/probability/value phases with one
 CTA per query row that shares every compacted local K/V tile across the twelve
 GQA heads of the KV head. Descriptor/selection/status semantics (shared device

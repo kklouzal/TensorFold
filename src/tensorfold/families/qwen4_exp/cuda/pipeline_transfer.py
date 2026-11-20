@@ -208,10 +208,6 @@ class HCTransport:
             self.poison_control(error)
             raise
 
-    @property
-    def device_payload_bytes(self):
-        return self.max_rows * self.slot_count * _ROW_BYTES if self.rank == 1 else 0
-
     def poison_control(self, error):
         if self._poison is None:
             self._poison = error

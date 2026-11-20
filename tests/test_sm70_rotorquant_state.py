@@ -15,7 +15,6 @@ from tensorfold.families.qwen4_exp.cuda.sm70_kv import (
     ROTOR_Q4_NORM,
     COMPACT_Q4,
     COMPACT_ISO4,
-    EIGHT_BIT,
     OWNED_ONLY,
     ROTOR_Q8,
     ROTOR_Q8_NORM,

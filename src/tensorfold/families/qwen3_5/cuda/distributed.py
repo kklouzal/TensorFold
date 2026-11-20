@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-import os
 from typing import Sequence
 
 import torch
@@ -277,9 +276,6 @@ def gather_rank_partials(local: torch.Tensor, group=None,
     if dist.get_backend(group) == "nccl" and not local.is_cuda:
         raise ValueError("NCCL partial must be on CUDA")
     local = local.contiguous()
-    if os.environ.get("TF_TP_REDUCE") == "allreduce":
-        dist.all_reduce(local, op=dist.ReduceOp.SUM, group=group)
-        return local.to(dtype)
     gathered = torch.empty((2 * local.shape[0], local.shape[1]), dtype=local.dtype, device=local.device)
     dist.all_gather_into_tensor(gathered, local, group=group)
     rank_parts = gathered.view(2, *local.shape)

@@ -184,8 +184,6 @@ def test_payload_order_exact_bytes_and_source_readiness(pair):
     args = source()
     a, b = together(lambda: pair[0].submit(ticket(), **args), lambda: pair[1].submit(ticket()))
     assert isinstance(a, p.HCLease) and isinstance(b, p.HCLease)
-    assert pair[1].device_payload_bytes == 4 * 2 * (20480 + 12 + 4)
-    assert pair[0].device_payload_bytes == 0
     assert [c[3] for c in pair[0].comm.calls] == [40960, 24, 8]
     assert [c[1:4] for c in pair[0].comm.calls] == [c[1:4] for c in pair[1].comm.calls]
     slot = pair[0]._slots[a.slot]

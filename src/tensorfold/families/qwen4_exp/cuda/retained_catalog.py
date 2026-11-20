@@ -861,24 +861,6 @@ class RetainedCatalog:
         except BaseException as error:
             self._publication_failed(handle, error)
 
-    def reserve_eligibility(self):
-        """Leader's nonblocking quota predicate before a fresh GPU claim."""
-        self.check_health()
-        if self.policy is None:
-            return None
-        with self._condition:
-            if self._terminal:
-                raise RetentionError("retained service is shutting down")
-            if sum(handle.role == "logical" and not handle.transient for handle in self._handles.values()) >= self.policy.max_sessions:
-                return "tier_unavailable"
-            if self.policy.tier == "ram":
-                reclaimable = sum(handle.future_bytes for handle in self._handles.values()
-                    if handle.role == "prefix" and not handle.consumers and not handle.request_holds
-                    and not handle.transfer_readers and handle.transfer is None)
-                if self._reserved - reclaimable + self.minimum_future_bytes > self.policy.ram_bytes:
-                    return "tier_unavailable"
-        return None
-
     def reserve_pending(self, reference, *, future_bytes):
         """One logical API operation may run several fresh backend subruns."""
         self.check_health()

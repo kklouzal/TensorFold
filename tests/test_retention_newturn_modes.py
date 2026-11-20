@@ -10,7 +10,7 @@ torch = pytest.importorskip("torch")
 
 from tensorfold.cleanup import finish, rollback
 from tensorfold.cuda.streams import Stream
-from tensorfold.families.qwen4_exp.cuda.media_mtp import MTPBoundary
+from tensorfold.families.qwen4_exp.cuda.media_mtp import MTPBoundary, bind_context
 from tensorfold.families.qwen4_exp.cuda.position_coordinates import copy_coordinates, issue_coordinates
 from tensorfold.families.qwen4_exp.cuda.retained_catalog import (
     LogicalReference, RetentionCapacity, RetentionError, make_retention_catalog,
@@ -46,7 +46,7 @@ def states(request, method, enabled):
         for state, mode in ((source, enabled), (destination, False)):
             bind_reference_inputs(weights, state)
             state.media_inputs_enabled = True
-            state.bind_media_context(PROFILE, MEDIA)
+            bind_context(state, PROFILE, MEDIA)
             state.media_mtp_enabled = mode
     source.pos = source.target_tentative_length = 4
     source.pos_dev.fill_(4)

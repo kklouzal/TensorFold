@@ -1123,16 +1123,6 @@ class State:
         self.rope_delta = int(delta)
         self.rope_delta_dev.fill_(int(delta))
 
-    def bind_media_context(self, profile_identity, media_identity):
-        from .media_mtp import bind_context
-
-        bind_context(self, profile_identity, media_identity)
-
-    def attach_media_input_span(self, span, *, profile_identity, media_identity):
-        from .media_mtp import attach_span
-
-        attach_span(self, span, profile_identity=profile_identity, media_identity=media_identity)
-
     def retire_media_input_span(self, *, cancelled=False):
         from .media_mtp import retire_span
 

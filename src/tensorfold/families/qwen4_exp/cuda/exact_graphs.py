@@ -60,10 +60,6 @@ class ExactStateGraphs:
         self.round_pieces = {"verify": {}, "mtp": {}}
         self.round_hits = {"verify": 0, "mtp": 0}
         self.round_reason = {}
-        flag = os.environ.get("TENSORFOLD_PRIVATE_SM70_ROUND_CAPTURE", "1")
-        if flag not in ("0", "1"):
-            raise ValueError("round attention capture flag must be 0 or 1")
-        self.round_enabled = flag == "1"
 
     def _catalogue(self, states):
         """Original finite shape order; selection never changes live capacity."""
@@ -195,8 +191,6 @@ class ExactStateGraphs:
 
     def _round_ready(self, kind, segs):
         """None when this role's keys capture attention inside the round graph."""
-        if not self.round_enabled:
-            return "disabled by TENSORFOLD_PRIVATE_SM70_ROUND_CAPTURE=0"
         source = self.dec.buf if kind == "verify" else self.dec.mbuf
         workspace = getattr(source, "history_owner", None)
         if workspace is None:

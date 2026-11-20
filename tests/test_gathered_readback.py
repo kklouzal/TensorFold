@@ -187,7 +187,6 @@ def test_forecast_is_retained_and_host_allocation_deferred_until_complete_admiss
           'gathered_readback':{'policy':POLICY,'host_budget_bytes':need}}
     owner=OwnerPreparation(base,role_rows={'decode':3,'mtp':2,'prefill':16},manifest_sha256='a'*64)
     assert owner.gathered_readbacks=={}
-    assert owner.gathered_host_payload_bytes()==4128*5
     assert owner.gathered_readback_forecast==costs
     assert owner.gathered_host_resources()['host_admission_bytes']==need
     with pytest.raises(RuntimeError,match='admitted prepared owner'):

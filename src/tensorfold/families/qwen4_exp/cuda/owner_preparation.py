@@ -963,9 +963,6 @@ class OwnerPreparation:
                 "included_in_physical_free_baseline": True, "future_owner_persistent_bytes": 0,
                 "qualification": "UNQUALIFIED: source-built foundation and real SM70 model/quality/performance gates required"}
 
-    def gathered_host_payload_bytes(self):
-        return sum(cost['host_payload_bytes'] for cost in self.gathered_readback_forecast.values())
-
     def gathered_host_resources(self):
         """One-rank explicit headers/payload peak; setup retires before service.
 

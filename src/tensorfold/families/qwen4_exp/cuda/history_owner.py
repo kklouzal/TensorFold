@@ -25,13 +25,6 @@ from tensorfold.cuda.sm70.attention_backends import (OWNER_FAMILY as ATEN_KERNEL
                                                     FLASH_OWNER_FAMILY as FLASH_KERNEL_FAMILY)
 
 
-# Process-fixed prefill local attention for RN-family Q8 owners: "fused-v1"
-# (default) selects the tensor-core prompt_attention phases; "0" keeps the RN
-# per-row local phases.
-_PROMPT_ATTENTION = os.environ.get("TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION", "fused-v1")
-if _PROMPT_ATTENTION not in ("0", "fused-v1"):
-    raise ValueError("TENSORFOLD_PRIVATE_SM70_PROMPT_ATTENTION requires 0 or fused-v1")
-
 # Component-only, process-fixed trial. Ordinary serving retains the incumbent.
 _PRIVATE_EMPTY_PREFIX = os.environ.get("TENSORFOLD_PRIVATE_SM70_EMPTY_PREFIX", "inherit")
 if _PRIVATE_EMPTY_PREFIX not in ("inherit", "cpu-empty-v1"):
@@ -1504,7 +1497,7 @@ class OwnerBuffers:
     def _prompt_attention_selected(self):
         """Prefill RN-family owners over ordinary Q8 or owned RotorQuant pages use the tensor-core local phases."""
         from .owner_execution import RN_KERNEL_FAMILY
-        return (_PROMPT_ATTENTION == "fused-v1" and self.prefill and self.native_kernel_family == RN_KERNEL_FAMILY
+        return (self.prefill and self.native_kernel_family == RN_KERNEL_FAMILY
                 and self.native_codec is not None)
 
     @staticmethod

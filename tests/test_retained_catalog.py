@@ -121,12 +121,10 @@ def test_required_future_claim_reclaims_optional_ram_only_after_its_reader_retir
     temporary = catalog.reserve_temporary("p")
     reader = catalog.borrow_prefix(prefix, principal="p")
     reference = LogicalReference("p", "response:required", 1)
-    assert catalog.reserve_eligibility() == "tier_unavailable"
     with pytest.raises(RetentionCapacity, match="future RAM"):
         catalog.reserve(reference, future_bytes=future)
     assert prefix.serial in catalog._handles
     reader.close()
-    assert catalog.reserve_eligibility() is None
     logical = catalog.reserve(reference, future_bytes=future)
     assert prefix.serial not in catalog._handles
     assert catalog.record()["future_backing_bytes"] == 2 * future

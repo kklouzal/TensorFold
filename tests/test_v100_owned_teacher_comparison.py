@@ -391,7 +391,7 @@ def test_actual_activation_identity_requires_sha256_before_normalization(tmp_pat
 # fixtures above: no teacher-client/model-result/typed Host files are supplied.
 def _standalone(root, mode, reference=None, method=None, fault=None, arrays=None,
                 down_method='tensorfold', iq2_source='active-frame', prefill_method='tensorfold'):
-    original = _side(root, mode, reference, arrays=arrays)
+    _side(root, mode, reference, arrays=arrays)
     authority_path = root / 'teacher/teacher-authority.json'
     a = json.loads(authority_path.read_text())
     base = ['owned-etp4-native-slots-v1', 8, 4, 512, 640, 2560, 11, 32, 4096, False, 'grouped-v1']

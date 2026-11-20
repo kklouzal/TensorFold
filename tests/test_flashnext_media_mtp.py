@@ -126,7 +126,7 @@ def test_standalone_state_defaults_to_no_prepared_media_capability(request):
     st = State(weights, 32, 4, "fp16", limit=32)
     assert not st.media_inputs_enabled
     with pytest.raises(ValueError, match="admitted media capability"):
-        st.bind_media_context(PROFILE, MEDIA)
+        media_mtp.bind_context(st, PROFILE, MEDIA)
 
 
 def test_bound_state_requires_engine_binding_before_allocation(request, monkeypatch):
@@ -300,7 +300,8 @@ def test_real_state_media_boundary_clone_restore_and_prewrite_identity_guard(req
     actual = weights.embed[0].lookup(torch.tensor(tokens[1:])).clone()
     mtp.mtp_forward(weights, st, buf, tokens[1:], hc[:2], logits=False, next_inputs=actual)
     st.set_mtp_len(2)
-    st.bind_media_context(PROFILE, None)  # kernel math above is the legacy-text reference; lifecycle below is explicit.
+    # Kernel math above is the legacy-text reference; lifecycle below is explicit.
+    media_mtp.bind_context(st, PROFILE, None)
     coordinates = issued([[2, 2, 2]], start=2, generation=st.slot_generation, media=None,
                           position=st.media_target_position)
     st.mtp_boundary = media_mtp.capture_boundary(st, 3, hc[2:3], coordinates, source_position=st.media_target_position)
@@ -316,7 +317,7 @@ def test_real_state_media_boundary_clone_restore_and_prewrite_identity_guard(req
             st.restore(wrong)
     st.reset(weights)
     assert st.mtp_boundary is None and st.media_profile_identity is None
-    st.bind_media_context(PROFILE, None)
+    media_mtp.bind_context(st, PROFILE, None)
     st.restore(snap)
     assert st.pos == 3 and st.mtp_len == 2 and st.mtp_boundary.row == 2
     assert st.mtp_boundary.generation == st.slot_generation == 1
@@ -407,7 +408,7 @@ def test_real_state_reset_retires_actual_span_and_clears_request_context(request
         position=st.media_target_position, rope_delta=0, profile_identity=PROFILE,
         generation=st.slot_generation, media_identity=MEDIA, max_rows=2, hidden_size=weights.cfg.hidden,
         vocab_size=weights.cfg.vocab, roles=("target", "mtp"))
-    st.attach_media_input_span(ready, profile_identity=PROFILE, media_identity=MEDIA)
+    media_mtp.attach_span(st, ready, profile_identity=PROFILE, media_identity=MEDIA)
     with media_mtp.borrow_span(st, "target") as lease:
         assert lease.rows(0, [4]).shape == (1, weights.cfg.hidden)
     st.reset(weights)
@@ -469,7 +470,7 @@ def test_actual_ready_span_deferred_visual_lookahead_and_final_text_anchor(reque
             rope_delta=0, profile_identity=PROFILE,
             generation=st.slot_generation, media_identity=MEDIA, max_rows=3, hidden_size=weights.cfg.hidden,
             vocab_size=weights.cfg.vocab, roles=("target", "mtp"))
-        st.attach_media_input_span(ready, profile_identity=PROFILE, media_identity=MEDIA)
+        media_mtp.attach_span(st, ready, profile_identity=PROFILE, media_identity=MEDIA)
         n = end - start
         buf.ids[:n].copy_(torch.tensor(prompt[start:end], dtype=torch.int32))
         buf.ple_v.fill_(.125)
@@ -524,7 +525,7 @@ def test_actual_mixed_plain_and_visual_input_frames_keep_each_generation_and_hid
         position=media.media_target_position, rope_delta=0, profile_identity=PROFILE,
         generation=media.slot_generation, media_identity=MEDIA, max_rows=2, hidden_size=weights.cfg.hidden,
         vocab_size=weights.cfg.vocab, roles=("target", "mtp"))
-    media.attach_media_input_span(ready, profile_identity=PROFILE, media_identity=MEDIA)
+    media_mtp.attach_span(media, ready, profile_identity=PROFILE, media_identity=MEDIA)
     media.image_positions = coordinates  # bounded independent legacy numerical oracle
     segments = [(media, 0, 2), (plain, 2, 4)]
     buf.ids[:4].copy_(torch.tensor([*prompt, *text[:2]], dtype=torch.int32))
