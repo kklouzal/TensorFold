@@ -30,6 +30,15 @@ def choose(receipt: dict, text: dict, capability: tuple[int, int], *, world: int
     return IDLE_ROWS, workspace
 
 
+def merged_room(pass_rows: int, window_rows: int) -> int:
+    """Prompt rows of a pass that a round's verify window of ``window_rows`` rides (``compute_merged``): the window's
+    rows come out of the pass quota. 0: the quota cannot hold the window beside any prompt row, so the pass runs alone
+    first (else no prompt would fill while replies decode). With the widest window ((depth + 1) x live replies) this
+    is the round's merge decision; a staged window is never wider, so a merging round always has room."""
+
+    return max(0, pass_rows - window_rows)
+
+
 def pass_limit(rows: int, live: bool, share: float, round_s: float | None, row_s: float | None,
                minimum: int = 128) -> int:
     """Live replies retain the released pass bound; an idle decoder can use its full prompt workspace."""
