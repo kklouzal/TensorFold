@@ -53,7 +53,7 @@ def test_window_exact_reference_bytes_status_and_versions(mtp, rows, pattern, ow
     module = ops.prepare_owned_q8(new[0].device)
     calls = []
     def invoke(*args):
-        calls.append((args[17], args[21], args[0].shape[0]))
+        calls.append((args[16], args[20], args[0].shape[0]))
         return (module.owned_q8_prepare_window if dispatch == 'grid-v1' else module.owned_q8_prepare)(*args)
     new[4].history_owner = NS(owned_q8_window_preparation=NS(owned_q8_prepare=invoke, owned_q8_prepare_window=invoke),
         owned_q8_window_role=new[4].owner_role, rows=rows,
