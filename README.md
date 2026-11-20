@@ -1681,6 +1681,14 @@ repeats score identically to cold on quality corpus v2. Multi-request results ar
 [concurrency note](docs/gemma4-sm70-concurrency.md#validation). Later the same day, measured row tiles for the
 multi-row decode kernels (replies unchanged, 23/23) raised per-request greedy 4K decode at `--parallel 8` from
 271 / 139 / 113 / 63 to 284 / 187 / 124 / 67 tok/s at C1 / C2 / C4 / C8 (A B B A, same image).
+The two per-layer cross-rank sums of decode rows (attention output [rows, 2816], FFN [rows, 2, 2816]) take a
+rank-ordered FP32 bulk all-reduce from 16 attention rows and 8 FFN rows instead of the all-gather of every rank's
+FP32 partials: the same rank-0-first FP32 adds the tail kernels performed on the gathered partials, so the sums are
+bitwise unchanged per row (signed zeros, NaN, infinities and subnormals included; the tails then read one summed
+input). Fewer rows keep the gather, which measured faster there. Per-request decode at `--parallel 8`, INT8 DFlash 3
+rows, 4K prompts (B A A B on python-0.6 `11b01918`, image `4b2661d8`): greedy C1 / C2 / C4 / C8 294.0 / 199.6 /
+128.0 / 78.0 -> 294.3 / 199.0 / 133.4 / 84.1 tok/s, sampled 252.9 / 173.8 / 108.1 / 65.3 -> 253.3 / 173.8 /
+114.3 / 68.8; prefill unchanged; greedy and seeded sampled replies identical (23/23).
 
 #### Gemma 4 26B-A4B AEON NVFP4 on eight V100s (2026-11-15)
 
@@ -2028,7 +2036,13 @@ decode geomean +1.96% (trimmed +1.45%), C16 4K/16K +1.3/+5.6%, C24 +4.9/+2.3%, C
 +0.4/+0.6%, prefill +0.05%; greedy golden identical. The 33-row threshold and the 160-row ceiling are
 bitwise extensions justified by the in-graph timings above (C32 is not yet in the fast decision run).
 `tests/cuda/test_sm70_small_gather.py` checks it bitwise against the gathered oracle (5-160 rows,
-eager, in-graph, near generation wrap).
+eager, in-graph, near generation wrap). A communicator opened with `row_reduce=True, fp32_rows=True` (the
+eight-V100 Gemma 4 provider's) sizes its phase-2 slots for FP32 sums as well (15.6 MiB per GPU at the default
+ceiling) and also serves `NCCL.all_reduce_rows_f32`: a copy of the bulk kernel with the FP32 sums as its output (16-byte
+phase-2 words), bitwise the gathered partials summed rank 0 first. The test checks it at 1-73 rows of 2816 and
+5632 columns with signed zeros, NaN, infinities and subnormals, eager and in-graph. The FP16 bulk, LL all-reduce
+and small-gather kernels compile to the same SASS as before (sm_70, image `4b2661d8`), so Flash Next's collectives
+are unchanged.
 
 The [2026-11-15 pending-experiment closeout](docs/verification-sc117-optimization-closeout-20261115.md)
 retains the verified runtime: quantized dense and fused-HC prototypes were not adopted, and the

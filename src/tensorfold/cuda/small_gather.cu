@@ -337,7 +337,7 @@ constexpr int kMaxBulkChunks = 4;
 
 struct BulkParams {
   const float* send;
-  void* recv;              // Out [rows, dims]
+  __half* recv;            // FP16 [rows, dims] (FP32 for bulk_allreduce_f32_kernel)
   unsigned char* box[kMaxWorld];  // bulk mailbox base of every mapped rank (own included)
   uint32_t* state;
   const volatile int* abort;
@@ -406,29 +406,7 @@ __device__ __forceinline__ void bulk_copy(unsigned char* to, const unsigned char
   for (long long e = threadIdx.x; e < bytes / 16; e += blockDim.x) dst[e] = __ldcg(src + e);
 }
 
-// Phase-2 payload of one float4 of sums: the FP16 rounding (8 bytes) or the FP32 sums themselves (16 bytes).
-template <typename Out> struct BulkWord;
-template <> struct BulkWord<__half> {
-  using T = uint2;
-  static __device__ __forceinline__ T make(float4 a) {
-    const __half2 lo = __floats2half2_rn(a.x, a.y), hi = __floats2half2_rn(a.z, a.w);
-    uint2 word;
-    word.x = *reinterpret_cast<const uint32_t*>(&lo);
-    word.y = *reinterpret_cast<const uint32_t*>(&hi);
-    return word;
-  }
-};
-template <> struct BulkWord<float> {
-  using T = uint4;
-  static __device__ __forceinline__ T make(float4 a) {
-    return make_uint4(__float_as_uint(a.x), __float_as_uint(a.y), __float_as_uint(a.z), __float_as_uint(a.w));
-  }
-};
-
-// Out = __half: one FP16 rounding of the sums; Out = float: the FP32 sums (bitwise a rank-ordered consumer's).
-template <typename Out>
 __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) {
-  using Word = typename BulkWord<Out>::T;
   __shared__ uint32_t shared_generation;
   if (threadIdx.x == 0) {
     uint32_t next = *reinterpret_cast<volatile uint32_t*>(q.state) + 1u;
@@ -437,7 +415,7 @@ __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) 
   __syncthreads();
   const uint32_t generation = shared_generation, parity = generation & 1u;
   const int role = blockIdx.y, others = q.world - 1;
-  const int p1_row = q.slice * 4, p2_row = q.slice * int(sizeof(Out));  // bytes per row of one slice
+  const int p1_row = q.slice * 4, p2_row = q.slice * 2;  // bytes per row of one slice
   const int p2_slot = q.world * (1 + q.regions);
   bool aborted = false;
   auto chunk_rows = [&](int c) { return min(q.chunk_rows, q.rows - c * q.chunk_rows); };
@@ -475,7 +453,7 @@ __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) 
         bulk_set(flag, 0u);
       }
     }
-  } else if (role == 2) {  // reducer: rank-ordered FP32 sums of this rank's slice (then the Out conversion)
+  } else if (role == 2) {  // reducer: rank-ordered FP32 sums of this rank's slice, one FP16 rounding
     for (int c = blockIdx.x; c < q.chunks && !aborted; c += gridDim.x) {
       bool good = true;
       if (threadIdx.x < q.world && threadIdx.x != q.rank) {  // one waiting thread per source
@@ -496,10 +474,13 @@ __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) 
           if (source == 0) a = x;
           else { a.x = a.x + x.x; a.y = a.y + x.y; a.z = a.z + x.z; a.w = a.w + x.w; }  // rank order
         }
-        const Word word = BulkWord<Out>::make(a);
+        const __half2 lo = __floats2half2_rn(a.x, a.y), hi = __floats2half2_rn(a.z, a.w);
+        uint2 word;
+        word.x = *reinterpret_cast<const uint32_t*>(&lo);
+        word.y = *reinterpret_cast<const uint32_t*>(&hi);
         for (uint32_t mask = q.direct; mask; mask &= mask - 1)
-          reinterpret_cast<Word*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, p2_slot + q.rank) + out_offset)[e] = word;
-        *reinterpret_cast<Word*>(static_cast<Out*>(q.recv) + (long long)r * q.dims + col) = word;
+          reinterpret_cast<uint2*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, p2_slot + q.rank) + out_offset)[e] = word;
+        *reinterpret_cast<uint2*>(q.recv + (long long)r * q.dims + col) = word;
       }
       bulk_publish_fence();
       if (threadIdx.x == 0)
@@ -518,11 +499,129 @@ __global__ void __launch_bounds__(kThreads) bulk_allreduce_kernel(BulkParams q) 
       const uint32_t out = q.forward[c % kSplit][source];
       const int n = chunk_rows(c) * (q.slice / 4);
       for (int e = threadIdx.x; e < n; e += blockDim.x) {
-        const Word word = __ldcg(reinterpret_cast<const Word*>(from) + e);
+        const uint2 word = __ldcg(reinterpret_cast<const uint2*>(from) + e);
         for (uint32_t mask = out; mask; mask &= mask - 1)
-          reinterpret_cast<Word*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, slot) + offset)[e] = word;
+          reinterpret_cast<uint2*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, slot) + offset)[e] = word;
         const int r = c * q.chunk_rows + e / (q.slice / 4), col = source * q.slice + (e % (q.slice / 4)) * 4;
-        *reinterpret_cast<Word*>(static_cast<Out*>(q.recv) + (long long)r * q.dims + col) = word;
+        *reinterpret_cast<uint2*>(q.recv + (long long)r * q.dims + col) = word;
+      }
+      if (out) bulk_publish_fence();
+      else __syncthreads();
+      if (threadIdx.x == 0) {
+        for (uint32_t mask = out; mask; mask &= mask - 1) bulk_set(bulk_flag(q, __ffs(mask) - 1, parity, slot, c), generation);
+        bulk_set(flag, 0u);
+      }
+    }
+  }
+  if (__syncthreads_or(aborted) == 0 && threadIdx.x == 0) {
+    __threadfence();
+    if (atomicAdd(q.state + 1, 1u) == gridDim.x * gridDim.y - 1) {
+      q.state[1] = 0u;
+      q.state[0] = generation;
+    }
+  }
+}
+
+// FP32-output variant of bulk_allreduce_kernel (allreduce_bulk_f32; wide mailbox): the same roles, routes, flags and
+// rank-ordered FP32 sums, with the sums themselves as 16-byte phase-2 words instead of one FP16 rounding (bitwise
+// what a rank-ordered consumer of the gathered partials forms). A separate kernel, not a template of the FP16 one:
+// the FP16 kernel's code stays exactly as Flash Next measured it.
+__global__ void __launch_bounds__(kThreads) bulk_allreduce_f32_kernel(BulkParams q) {
+  float* const recv = reinterpret_cast<float*>(q.recv);  // FP32 [rows, dims] for this kernel
+  __shared__ uint32_t shared_generation;
+  if (threadIdx.x == 0) {
+    uint32_t next = *reinterpret_cast<volatile uint32_t*>(q.state) + 1u;
+    shared_generation = next == 0u ? 2u : next;
+  }
+  __syncthreads();
+  const uint32_t generation = shared_generation, parity = generation & 1u;
+  const int role = blockIdx.y, others = q.world - 1;
+  const int p1_row = q.slice * 4, p2_row = q.slice * 4;  // bytes per row of one slice
+  const int p2_slot = q.world * (1 + q.regions);
+  bool aborted = false;
+  auto chunk_rows = [&](int c) { return min(q.chunk_rows, q.rows - c * q.chunk_rows); };
+  if (role == 0) {  // sender: this rank's slice of every other owner, chunk by chunk
+    for (int u = blockIdx.x; u < others * q.chunks; u += gridDim.x) {
+      const int c = u / others, k = u % others, owner = k < q.rank ? k : k + 1;
+      const int relay = q.via[c % kSplit][owner];
+      const int peer = relay < 0 ? owner : relay;
+      const int slot = relay < 0 ? q.rank : q.world + q.rank * q.regions + q.ordinal[q.rank][owner];
+      unsigned char* to = q.box[peer] + bulk_data(q, parity, slot) + (long long)c * q.chunk_rows * p1_row;
+      const int n = chunk_rows(c) * (q.slice / 4);
+      for (int e = threadIdx.x; e < n; e += blockDim.x) {
+        const int r = c * q.chunk_rows + e / (q.slice / 4), col = owner * q.slice + (e % (q.slice / 4)) * 4;
+        reinterpret_cast<float4*>(to)[e] = *reinterpret_cast<const float4*>(q.send + (long long)r * q.dims + col);
+      }
+      bulk_publish_fence();
+      if (threadIdx.x == 0) bulk_set(bulk_flag(q, peer, parity, slot, c), generation);
+    }
+  } else if (role == 1) {  // transit relay: forward (source, region, chunk) items this rank relays
+    for (int u = blockIdx.x; u < q.world * q.regions * q.chunks && !aborted; u += gridDim.x) {
+      const int c = u / (q.world * q.regions), source = u / q.regions % q.world, o = u % q.regions;
+      const int destination = q.far[source][o];
+      if (source == q.rank || destination < 0 || destination == q.rank
+          || !(q.forward[c % kSplit][source] >> destination & 1u))
+        continue;
+      const int slot = q.world + source * q.regions + o;
+      uint32_t* flag = bulk_flag(q, q.rank, parity, slot, c);
+      if (!bulk_wait(flag, generation, q.abort)) { aborted = true; break; }
+      const long long offset = (long long)c * q.chunk_rows * p1_row;
+      bulk_copy(q.box[destination] + bulk_data(q, parity, source) + offset,
+                q.box[q.rank] + bulk_data(q, parity, slot) + offset, (long long)chunk_rows(c) * p1_row);
+      bulk_publish_fence();
+      if (threadIdx.x == 0) {
+        bulk_set(bulk_flag(q, destination, parity, source, c), generation);
+        bulk_set(flag, 0u);
+      }
+    }
+  } else if (role == 2) {  // reducer: rank-ordered FP32 sums of this rank's slice
+    for (int c = blockIdx.x; c < q.chunks && !aborted; c += gridDim.x) {
+      bool good = true;
+      if (threadIdx.x < q.world && threadIdx.x != q.rank) {  // one waiting thread per source
+        good = bulk_spin(bulk_flag(q, q.rank, parity, threadIdx.x, c), generation, q.abort);
+      }
+      if (__syncthreads_or(!good)) { aborted = true; break; }
+      const int n = chunk_rows(c) * (q.slice / 4);
+      const long long in_offset = (long long)c * q.chunk_rows * p1_row, out_offset = (long long)c * q.chunk_rows * p2_row;
+      for (int e = threadIdx.x; e < n; e += blockDim.x) {
+        const int r = c * q.chunk_rows + e / (q.slice / 4), col = q.rank * q.slice + (e % (q.slice / 4)) * 4;
+        float4 a = make_float4(0.f, 0.f, 0.f, 0.f);
+        #pragma unroll
+        for (int source = 0; source < kMaxWorld; ++source) {
+          if (source >= q.world) continue;
+          float4 x;
+          if (source == q.rank) x = *reinterpret_cast<const float4*>(q.send + (long long)r * q.dims + col);
+          else x = __ldcg(reinterpret_cast<const float4*>(q.box[q.rank] + bulk_data(q, parity, source) + in_offset) + e);
+          if (source == 0) a = x;
+          else { a.x = a.x + x.x; a.y = a.y + x.y; a.z = a.z + x.z; a.w = a.w + x.w; }  // rank order
+        }
+        const uint4 word = make_uint4(__float_as_uint(a.x), __float_as_uint(a.y), __float_as_uint(a.z), __float_as_uint(a.w));
+        for (uint32_t mask = q.direct; mask; mask &= mask - 1)
+          reinterpret_cast<uint4*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, p2_slot + q.rank) + out_offset)[e] = word;
+        *reinterpret_cast<uint4*>(recv + (long long)r * q.dims + col) = word;
+      }
+      bulk_publish_fence();
+      if (threadIdx.x == 0)
+        for (uint32_t mask = q.direct; mask; mask &= mask - 1)
+          bulk_set(bulk_flag(q, __ffs(mask) - 1, parity, p2_slot + q.rank, c), generation);
+      if (threadIdx.x < q.world && threadIdx.x != q.rank) bulk_set(bulk_flag(q, q.rank, parity, threadIdx.x, c), 0u);
+    }
+  } else {  // phase-2 receiver (and relay) of one source's summed slice
+    const int source = q.order[role - 2];
+    const int slot = p2_slot + source;
+    for (int c = blockIdx.x; c < q.chunks && !aborted; c += gridDim.x) {
+      uint32_t* flag = bulk_flag(q, q.rank, parity, slot, c);
+      if (!bulk_wait(flag, generation, q.abort)) { aborted = true; break; }
+      const long long offset = (long long)c * q.chunk_rows * p2_row;
+      const unsigned char* from = q.box[q.rank] + bulk_data(q, parity, slot) + offset;
+      const uint32_t out = q.forward[c % kSplit][source];
+      const int n = chunk_rows(c) * (q.slice / 4);
+      for (int e = threadIdx.x; e < n; e += blockDim.x) {
+        const uint4 word = __ldcg(reinterpret_cast<const uint4*>(from) + e);
+        for (uint32_t mask = out; mask; mask &= mask - 1)
+          reinterpret_cast<uint4*>(q.box[__ffs(mask) - 1] + bulk_data(q, parity, slot) + offset)[e] = word;
+        const int r = c * q.chunk_rows + e / (q.slice / 4), col = source * q.slice + (e % (q.slice / 4)) * 4;
+        *reinterpret_cast<uint4*>(recv + (long long)r * q.dims + col) = word;
       }
       if (out) bulk_publish_fence();
       else __syncthreads();
@@ -805,9 +904,9 @@ class SmallGather {
     }
     int per_sm = 0, sms = 0;
     check(cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device_), "SM count");
-    check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, bulk_allreduce_kernel<__half>, kThreads, 0), "occupancy");
+    check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, bulk_allreduce_kernel, kThreads, 0), "occupancy");
     bulk_row_blocks_[0] = std::max(1, per_sm * sms / (2 * (world_ + 2)));
-    check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, bulk_allreduce_kernel<float>, kThreads, 0), "occupancy");
+    check(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, bulk_allreduce_f32_kernel, kThreads, 0), "occupancy");
     bulk_row_blocks_[1] = std::max(1, per_sm * sms / (2 * (world_ + 2)));
     bulk_connected_ = true;
   }
@@ -846,7 +945,7 @@ class SmallGather {
       check(cudaStreamWaitEvent(stream, tail_, 0), "stream join");
     BulkParams q{};
     q.send = reinterpret_cast<const float*>(send);
-    q.recv = reinterpret_cast<void*>(recv);
+    q.recv = reinterpret_cast<__half*>(recv);
     for (int r = 0; r < kMaxWorld; ++r) q.box[r] = bulk_box_[r];
     q.state = state_;
     q.abort = abort_device_;
@@ -879,7 +978,10 @@ class SmallGather {
     for (int r = 0; r < kMaxWorld; ++r) q.order[r] = order_[r];
     const long long units = (long long)(world_ - 1) * q.chunks;
     const long long blocks = std::min<long long>(units, bulk_row_blocks_[f32]);
-    bulk_allreduce_kernel<Out><<<dim3(unsigned(blocks), unsigned(world_ + 2)), kThreads, 0, stream>>>(q);
+    if constexpr (f32)
+      bulk_allreduce_f32_kernel<<<dim3(unsigned(blocks), unsigned(world_ + 2)), kThreads, 0, stream>>>(q);
+    else
+      bulk_allreduce_kernel<<<dim3(unsigned(blocks), unsigned(world_ + 2)), kThreads, 0, stream>>>(q);
     check(cudaGetLastError(), "launch");
     check(cudaEventRecord(tail_, stream), "stream tail");
     has_tail_ = true;

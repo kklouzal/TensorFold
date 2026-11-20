@@ -173,6 +173,13 @@ Evidence in the claude-perf ledger section "Gemma 4 V100 parity (g4p)"; one serv
   284.3, C2 138.7 -> 186.9, C4 112.7 -> 124.2, C8 62.6 -> 67.3 tok/s; prefill unchanged. Remaining per-row cost at
   R4/R8 is led by the routed experts and the NCCL all-gather of decode partials above the 256 KiB small-gather
   mailbox (2.6 / 7.0 ms of the 18.7 / 31.1 ms rounds).
+- Rank-ordered FP32 bulk all-reduce of the decode partials (2026-11-20; bitwise per row, golden 23/23 identical):
+  attention sums from 16 rows, FFN sums from 8 rows (`BULK_REDUCE_ROWS` in target.py); the tails take world=1.
+  In-graph per call (gather vs bulk): attention 12/16/24/40 rows 32.1/40.9/52.5/73.1 vs 35.1/34.9/39.4/46.1 us,
+  FFN 6/8/24/40 rows 32.2/40.9/75.8/105.7 vs 30.9/34.9/50.4/63.4 us. FFN bulk at 6 rows lost 1.2% at C2 in serving,
+  hence 8. Calibrated rounds (DFlash 3 rows) R4 13.1 -> 12.2, R6 16.7 -> 15.3, R8 20.0 -> 18.5 ms. Per-request 4K
+  decode at `--parallel 8`, B A A B means: greedy C4 128.0 -> 133.4, C8 78.0 -> 84.1; sampled C4 108.1 -> 114.3,
+  C8 65.3 -> 68.8 tok/s; C1/C2 keep the gather path (unchanged within 0.3%).
 - Eight and twelve concurrent thinking-on requests with `max_tokens` 200,000 at `--parallel 8`: all 200; eight
   ran at once, the rest queued.
 - Robustness: three queued requests at `--parallel 1`, client disconnects during a 30K-token prefill and during
