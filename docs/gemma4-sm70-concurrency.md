@@ -22,8 +22,8 @@ Each scheduler round is pipelined:
 4. while any stream decodes, a chunk runs in layer groups instead, one group per round, so the decode rounds
    ride inside the prompt pass: a decoding stream waits for one group plus its round instead of the whole chunk
    (decode stall during prefill). Groups are cut at layer boundaries by the per-layer cost the previous chunk
-   measured (CUDA events, read only once complete) so that a group plus the recent decode round is about 150 ms
-   (`Decoder.GAP_MS`). The chunk's kernels, rows and boundaries do not change, so its arithmetic is bitwise the
+   measured (CUDA events, read only once complete) so that a group plus the recent decode round (its own GPU
+   time) is about 175 ms (`Decoder.GAP_MS`; measured gap p99 184 ms with 7 decoding streams, budget 200). The chunk's kernels, rows and boundaries do not change, so its arithmetic is bitwise the
    same for any grouping (the prompt's residual stream and drafter taps live in prompt-only scratch between
    groups). A paused chunk continues before any other prompt; a request that leaves mid-chunk drops it on every
    rank (its rows at or past the chunk start are rewritten before any read).
