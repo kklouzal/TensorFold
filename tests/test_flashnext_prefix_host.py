@@ -470,3 +470,18 @@ def test_long_chains_merge_so_a_restore_reads_at_most_max_chain_extents():
         entry, index = host.best(list(range(n)) + [999], None)
         host.restore(entry, index, target)
         same_rows(source, target, n)
+
+
+def test_host_rows_are_not_built_on_after_a_history_degree_migration():
+    # migrate_history_bundle permutes a slot's page owners within one admission generation: the rows the slab
+    # holds for it were laid out under the old ownership, so a later spill must not reference them.
+    host = tier(capacity=1 << 20)
+    source = state(0, rank=0)
+    host.spill([(list(range(8)), source, snapshot(8), None)], None)
+    assert host.held(source) is not None
+
+    class Migrated(Placement):
+        degree = 2
+
+    source.history_placement = Migrated()
+    assert host.held(source) is None
