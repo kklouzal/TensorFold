@@ -1017,15 +1017,6 @@ struct AttnSmem {
 
 // 16 consecutive quantized cache rows (from `rows`), values 64 p .. 64 p + 63 (half of group p / 2) -> FP16
 // stg[key][col] (row stride SLD), value = FP16(centroid * scale) in the stored (rotated) basis. One warp, every lane.
-// 16 code bytes of a cache row: one 16-byte load when rows keep 16-byte alignment (512-wide rows), else two 8-byte
-// loads (256-wide rows are 264 / 136 bytes: 8-byte aligned only).
-template <int RB>
-__device__ __forceinline__ uint4 kv_load16(const uint8_t* p) {
-    if constexpr (RB % 16 == 0) return *reinterpret_cast<const uint4*>(p);
-    const uint2 a = reinterpret_cast<const uint2*>(p)[0], b = reinterpret_cast<const uint2*>(p)[1];
-    return make_uint4(a.x, a.y, b.x, b.y);
-}
-
 template <int FMT, int D, int SLD>
 __device__ __forceinline__ void kv_stage(const uint8_t* rows, int p, half* stg, const float* table, int lane) {
     constexpr int RB = kv_row_bytes<FMT>(D), CB = kv_code_bytes<FMT>(D);
@@ -1034,7 +1025,7 @@ __device__ __forceinline__ void kv_stage(const uint8_t* rows, int p, half* stg, 
         for (int j = 0; j < 2; ++j) {
             const int idx = lane + 32 * j, key = idx >> 2, part = idx & 3;      // part: 16 values
             const uint8_t* r = rows + (int64_t)key * RB;
-            const uint4 c = kv_load16<RB>(r + p * 64 + part * 16);
+            const uint4 c = *reinterpret_cast<const uint4*>(r + p * 64 + part * 16);
             const float sc = reinterpret_cast<const float*>(r + CB)[p >> 1];
             const uint32_t w[4] = {c.x, c.y, c.z, c.w};
             __align__(16) half2 h[8];
@@ -1051,7 +1042,7 @@ __device__ __forceinline__ void kv_stage(const uint8_t* rows, int p, half* stg, 
         static_assert(FMT == 11, "quantized KV formats: 8, 11");
         const int key = lane >> 1, part = lane & 1;                              // part: 32 values
         const uint8_t* r = rows + (int64_t)key * RB;
-        const uint4 c = kv_load16<RB>(r + p * 32 + part * 16);
+        const uint4 c = *reinterpret_cast<const uint4*>(r + p * 32 + part * 16);
         const float sc = tf_rq4::half_group_scale(reinterpret_cast<const float*>(r + CB)[p >> 1], p & 1);
         const uint32_t w[4] = {c.x, c.y, c.z, c.w};
         __align__(16) half2 h[16];
