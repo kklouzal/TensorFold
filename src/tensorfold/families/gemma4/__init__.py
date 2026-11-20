@@ -170,7 +170,8 @@ def check_cuda_prefix_cache_metadata(config, *, flag="--prefix-cache-bytes"):
 
 CUDA_TP8 = True   # --tp 8: the eight-V100 TP8/ETP4 provider (families/gemma4/sm70)
 # --kv-dtype: bf16 is the default (FP16 caches on SM70); the RotorQuant formats quantize the --tp 8 provider's
-# full-attention caches (sm70/target.KV_FORMATS); every other Gemma 4 CUDA route refuses kv_dtype.
+# target full-attention caches only (sliding rings, snapshots and the drafter stay FP16; sm70/target.KV_FORMATS);
+# every other Gemma 4 CUDA route refuses kv_dtype.
 CUDA_KV_DTYPES = ("bf16", "rotorquant8-norm", "rotorquant-iso64-norm4-h64")
 SM70_OPTIONS = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "eos_token_ids", "chat_template_file",
                 "chat_template_name", "vision", "kv_dtype", "expert_tensor_parallel_size", "graphs", "prefix_host_bytes",

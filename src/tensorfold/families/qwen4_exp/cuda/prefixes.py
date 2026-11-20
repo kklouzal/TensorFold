@@ -171,7 +171,7 @@ def _restore_host(owner, prompt, principal, extent):
         prepare = getattr(host, "prepare", None)
         # Growing (or the tier's own preparation) may make room by spilling, and the tier may evict this very
         # entry for that spill (its blocks then hold the new one): restore only an entry still present.
-        if (not owner._grow(dst, rows) or (prepare is not None and not prepare(entry, dst))
+        if (not owner._grow(dst, rows) or (prepare is not None and not prepare(entry, index, dst))
                 or all(held is not entry for held in host.entries)):
             owner.free.append(dst)
             return None

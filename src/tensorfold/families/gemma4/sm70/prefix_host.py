@@ -9,6 +9,10 @@ blocks of each rank's pinned slab (allocated at startup, so the HTTP host pool i
 ordered on the device stream (no host synchronization): a later write to the slot or the slab region follows them.
 Restored rows and snapshots are byte copies, so a restored point resumes exactly as the VRAM-resident point would.
 
+A restore also keeps the entry's shorter points along the restored one (a conversation's system block and earlier
+message starts), so they travel with the chain to its next spill; the entry, left holding only older requests' exact
+ends, drops to the lowest value and is evicted before any other entry.
+
 Rank 0 owns the entry table and decides; every rank executes the same copies (``OP_HSPILL``/``OP_HRESTORE``) and
 derives identical slab offsets from identical tensor shapes. Nothing is persisted.
 """
@@ -125,27 +129,68 @@ class HostTier:
         free list and the kept chains, so it must not evict or release anything."""
         return True
 
-    def prepare(self, entry, st) -> bool:
-        """After ``st`` grew: room for the restored snapshot that ``restore`` charges (False: none; the caller
-        then also re-checks that ``entry`` survived any spill this made)."""
-        return self.owner._room(self.owner.snap_bytes, st)
+    def _shorter(self, entry, index) -> list[int]:
+        """The entry's other points the restored point extends (their rows are below it): kept again with it."""
+        ids = entry["points"][index][0]
+        return [j for j, (other, _meta) in enumerate(entry["points"])
+                if j != index and len(other) < len(ids) and ids[:len(other)] == other]
+
+    def prepare(self, entry, index, st) -> bool:
+        """After ``st`` grew: room for the snapshots ``restore`` charges, the restored point's and those of the
+        entry's shorter points along it (a conversation's system block and earlier messages stay resumable and
+        travel with the chain to its next spill), else the restored point's alone (False: none; the caller then
+        also re-checks that ``entry`` survived any spill this made)."""
+        o = self.owner
+        points = [index] + self._shorter(entry, index)
+        snaps = {entry["points"][j][1]["snap"] for j in points}
+        if len(snaps) > 1 and o._room(len(snaps) * o.snap_bytes, st):
+            self._plan = (entry["hid"], index, points)
+            return True
+        self._plan = (entry["hid"], index, [index])
+        return o._room(o.snap_bytes, st)
 
     def restore(self, entry, index, st):
+        """Rows below the entry's longest point and the planned points' snapshots into ``st`` (one ``OP_HRESTORE``).
+        The shorter points are kept on the chain here; the restored point is returned for ``prefixes`` to keep. What
+        the chain now keeps is spilled again with it, so an entry left holding only older exact ends (exact repeats of
+        superseded requests) drops to the lowest value: other entries' points outlive it."""
+        from tensorfold.families.qwen4_exp.cuda.prefixes import remember
         o = self.owner
+        plan = getattr(self, "_plan", None)
+        points = plan[2] if plan is not None and plan[:2] == (entry["hid"], index) else [index]
+        self._plan = None
+        sids, pairs = {}, []
+        for j in points:
+            k = entry["points"][j][1]["snap"]
+            if k not in sids:
+                sids[k], o.next_snap = o.next_snap, o.next_snap + 1
+                pairs += [k, sids[k]]
+        o.e.announce(OP_HRESTORE, entry["hid"], st.index, entry["rows"], len(sids), pairs)
+        for sid in sids.values():
+            o.snap_ids.add(sid)
+        o.held += len(sids) * o.snap_bytes
+        for j in points[1:]:
+            ids, meta = entry["points"][j]
+            remember(o, list(ids), st, self._snap(meta, sids[meta["snap"]]), None)
+        rest = [m for j, (_ids, m) in enumerate(entry["points"]) if j not in points]
+        if len(points) > 1 and all(m["exact"] for m in rest):
+            # Everything else this entry holds serves only exact repeats of its older requests: evicted first.
+            entry["value"] = 0
+        else:
+            entry["value"] = o.clock + len(entry["points"][index][0])
         ids, meta = entry["points"][index]
-        sid, o.next_snap = o.next_snap, o.next_snap + 1
-        o.e.announce(OP_HRESTORE, entry["hid"], st.index, entry["rows"], meta["snap"], [sid])
-        o.snap_ids.add(sid)
-        o.held += o.snap_bytes
+        self.counters["restores"] += 1
+        self.counters["restore_bytes"] += entry["rows"] * o.e.token_bytes + len(sids) * o.snap_bytes
+        return list(ids), self._snap(meta, sids[meta["snap"]]), None
+
+    @staticmethod
+    def _snap(meta, sid) -> dict:
         snap = {"sid": sid, "pos": meta["pos"], "mtp_len": meta["pos"], **({"exact": True} if meta["exact"] else {})}
         end = meta["prompt_end"]
         if end is not None:
             snap["prompt_end"] = {"token": end["token"], "state": {"sid": sid, "pos": end["pos"], "mtp_len": end["pos"]},
                                   "tail": None, "head": end["head"].to("cuda", non_blocking=True), "last": None}
-        entry["value"] = o.clock + len(ids)
-        self.counters["restores"] += 1
-        self.counters["restore_bytes"] += entry["rows"] * o.e.token_bytes + o.snap_bytes
-        return list(ids), snap, None
+        return snap
 
     def record(self) -> dict:
         """The /stats ``prefix_cache.host`` record (keys as Flash Next's tier, read by server.metrics)."""

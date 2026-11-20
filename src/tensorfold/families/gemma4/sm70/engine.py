@@ -31,6 +31,7 @@ F_LOGITS_LAST, F_APPEND, F_SCORE = 2, 4, 16
 SCORE_TOP = 20
 MAX_STREAMS = 32
 SAFETY = 1 << 30                # bytes left free per rank beyond the measured prompt transient
+RING_SHARE = (1, 16)            # default keep_slots: all slots' target rings in this share of the free memory
 _HEAD = struct.Struct("<qqqqq")  # op, a, b, c, d
 PIPE_TIMEOUT = 600.0
 TRACE = os.environ.get("TF_GEMMA_ROUND_TRACE") == "1"     # diagnostic: per-shape round timing lines on rank 0
@@ -89,13 +90,6 @@ class Gemma4SM70Engine:
         os.environ.setdefault("TF_SMALL_GATHER_BYTES", "262144")
         self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.w = W.load(model_dir, rank)
-        # Slots: the live streams', ``keep_slots`` more for kept prefix chains (idle conversations), and the last
-        # one pads graph batches.
-        self.keep_slots = keep_slots if keep_slots is not None else max(8, streams)
-        if type(self.keep_slots) is not int or self.keep_slots < 0:
-            raise ValueError("keep_slots must be a nonnegative integer")
-        slots = streams + self.keep_slots + 1
-        self.pad = slots - 1
         self.snaps = {}                           # prefix snapshot id -> (target rings, drafter rings) on this rank
         # Host prefix tier (prefix_host.py, on by default; --prefix-host-bytes 0 disables): one pinned slab per rank,
         # allocated before the KV budget and the HTTP host pool are measured; host entry id -> its tensors' slab
@@ -134,6 +128,23 @@ class Gemma4SM70Engine:
                           "(--prefix-host-bytes sets it explicitly)", flush=True)
                 self.host_per_rank = 0
         self.host_layout = {}
+        # Slots: the live streams', ``keep_slots`` more for kept prefix chains (idle conversations, resumed in place
+        # from VRAM), and the last one pads graph batches. Each slot's rings exist from startup, while a kept chain's
+        # full caches come from the KV budget, so the slot count, not the budget, caps how many conversations stay
+        # hot. Unset: as many slots as fit their target rings into RING_SHARE of the device memory free after the
+        # weights (the smallest rank's count; at least max(8, streams) kept; rings stay FP16 for every --kv-dtype).
+        if keep_slots is None:
+            from .target import ring_slot_bytes
+            free = torch.tensor([torch.cuda.mem_get_info()[0]], dtype=torch.int64, device="cuda")
+            every = torch.empty(tp, dtype=torch.int64, device="cuda")
+            self.comm.all_gather(free, every)
+            fit = int(every.min()) * RING_SHARE[0] // RING_SHARE[1] // ring_slot_bytes(self.w)
+            keep_slots = max(8, streams, fit - streams - 1)
+        if type(keep_slots) is not int or keep_slots < 0:
+            raise ValueError("keep_slots must be a nonnegative integer")
+        self.keep_slots = keep_slots
+        slots = streams + keep_slots + 1
+        self.pad = slots - 1
         self.target = Target(self.w, self.comm, context=self.context_window, slots=slots, kv_format=kv_format)
         self.vocab = self.w.config.vocab
         self.head = None
@@ -214,8 +225,9 @@ class Gemma4SM70Engine:
         if rank == 0:
             fits = self.budget // self.slot_bytes(self.target.alloc)
             print(f"[tensorfold] Gemma 4 SM70: --parallel {streams}, KV budget {self.budget / 2**30:.2f} GiB/rank "
-                  f"({self.token_bytes} B/token, full-attention KV {kv_format}, + rings): {fits} streams of {self.context_window} tokens fit at "
-                  "once; longer admissions wait for memory", flush=True)
+                  f"({self.token_bytes} B/token, full-attention KV {kv_format}, + FP16 rings): {fits} streams of "
+                  f"{self.context_window} tokens fit at once; longer admissions wait for memory; {self.keep_slots} "
+                  "slots keep idle conversations", flush=True)
             curve = ", ".join(f"{'?SRT'[m]}{b}: {ms:.1f}" for (m, b), ms in sorted(self.costs.items()))
             print(f"[tensorfold] round ms by shape (calibration, position 0): {curve}", flush=True)
             from tensorfold.cuda.markers import resume_points
@@ -312,7 +324,8 @@ class Gemma4SM70Engine:
                 for t in (target[2], target[3]) + (() if drafter is None else (drafter[2], drafter[3])):
                     put(t)
             self.host_layout[a] = (regions, snaps)
-        else:                                  # OP_HRESTORE: entry a -> slot b rows [0, c), snapshot d -> id ids[0]
+        else:                                  # OP_HRESTORE: entry a -> slot b rows [0, c), d snapshots: ids pairs
+            #                                    (entry snapshot index, new snapshot id)
             regions, snaps = self.host_layout[a]
 
             def get(i):
@@ -326,11 +339,12 @@ class Gemma4SM70Engine:
                 head.full[b][:, :, :c].copy_(get(1), non_blocking=True)
                 first = 2
             per = 2 if head is None else 4
-            base = first + per * d
             dev = lambda i: get(i).to("cuda", non_blocking=True)
-            target, drafter = snaps[d]
-            self.snaps[ids[0]] = ((*target, dev(base), dev(base + 1)),
-                                  None if drafter is None else (*drafter, dev(base + 2), dev(base + 3)))
+            for k, sid in zip(ids[0:2 * d:2], ids[1:2 * d:2]):
+                base = first + per * k
+                target, drafter = snaps[k]
+                self.snaps[sid] = ((*target, dev(base), dev(base + 1)),
+                                   None if drafter is None else (*drafter, dev(base + 2), dev(base + 3)))
 
     # ---------------------------------------------------------------------------------------------- shared ops
     def _forward(self, slot, start, rows, flags, ids):

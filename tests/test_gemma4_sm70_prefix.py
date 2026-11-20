@@ -36,8 +36,9 @@ class FakeEngine:
             assert b in self.snaps
         elif op == ops.OP_HSPILL:
             assert all(sid in self.snaps for sid in ids[1:1 + ids[0]])
-        elif op == ops.OP_HRESTORE:
-            self.snaps.add(ids[0])
+        elif op == ops.OP_HRESTORE:                  # d (entry snapshot index, new id) pairs
+            assert len(ids) == 2 * d
+            self.snaps.update(ids[1::2])
 
 
 class Owner(PrefixOwner):
@@ -213,3 +214,55 @@ def test_host_record_feeds_the_metrics_families():
     for key in ("capacity_bytes_per_rank", "used_bytes_per_rank", "entries", "spills", "restores", "evictions"):
         assert key in record
     assert metrics is not None
+
+
+def test_host_tier_keeps_one_copy_per_conversation(monkeypatch):
+    # Two conversations alternate through one VRAM chain: each turn restores the other's host entry with its
+    # shorter points (the system block stays resumable and is spilled again with the chain); the entry left behind
+    # holds only an older request's exact end and is worth least.
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)
+    e = FakeEngine(budget=6144 * TOKEN + 8 * SNAP)            # one conversation at a time in VRAM
+    o = Owner(e, points=lambda ids: [1100], host=256 << 20)
+    tier = o.host_tier
+    hist = {"a": list(range(1100)), "b": [9] * 1100}            # a 1,100-token system block each
+    for turn in range(4):
+        for c in ("a", "b"):
+            hist[c] = hist[c] + [turn + 1] * 1000           # the next user message (and the reply before it)
+            s = stream(hist[c])
+            o.place(s, len(s.prompt) + 16, True)
+            if turn:
+                assert s.cached >= 1024 * (turn + 1) - 1024, (turn, c, s.cached)
+            fill(o, s)
+            finish(o, s)
+    live = [x for x in tier.entries if x["value"] > 0]
+    assert len(live) <= 2                                    # one valued copy per conversation, not one per turn
+    held = [ids for y in live for ids, _ in y["points"]] + [k[0] for k in o.kept]
+    for x in tier.entries:                                   # the rest hold only older requests' exact ends
+        if x["value"] == 0:
+            assert all(ids in held for ids, m in x["points"] if not m["exact"])
+    edit = stream(hist["a"][:1100] + [5] * 700)              # an edit after a's system block: resumes at it
+    o.place(edit, 2048, True)
+    assert edit.cached == 1024
+    assert o.held == ledger(o)
+
+
+def test_host_restore_cycles_keep_the_ledger(monkeypatch):
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)
+    e = FakeEngine(budget=2048 * TOKEN + 3 * SNAP)
+    o = Owner(e, host=64 << 20)
+    a = stream(range(1600))
+    o.place(a, 2048, True)
+    fill(o, a)
+    finish(o, a)
+    for _ in range(2):                                       # b evicts a; then a's restore is evicted unchanged
+        b = stream([9] * 1600)
+        o.place(b, 2048, True)
+        fill(o, b)
+        finish(o, b)
+        c = stream(list(range(1600)) + [1, 2])
+        o.place(c, 2048, True)
+        assert c.cached == 1024
+        finish(o, c)
+    assert o.held == ledger(o)

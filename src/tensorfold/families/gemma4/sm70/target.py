@@ -130,6 +130,12 @@ def kv_row_bytes(fmt: int, d: int) -> int:
     return {0: 2 * d, 8: d + 4 * (d // 128), 11: d // 2 + 4 * (d // 128)}[fmt]
 
 
+def ring_slot_bytes(weights) -> int:
+    """Device bytes one slot's target sliding-window rings take on this rank (FP16 K and V, int32 positions; ``Pool``)."""
+    c, n = weights.config, sum(layer.sliding for layer in weights.layers)
+    return n * (c.window + PROMPT_ROWS) * (2 * 2 * c.head_dim + 4)
+
+
 class Pool:
     """Every KV slot's caches on this rank. Sliding-window rings exist for every slot from startup ([layers, slots,
     ring, head_dim], ring positions -1 when empty; every sliding layer of a slot holds the same positions);
