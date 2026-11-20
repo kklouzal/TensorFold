@@ -85,6 +85,36 @@ def indexed_prefill_rows(capability: tuple[int, int] | None = None) -> int | Non
     return SM70_PREFILL_ROWS if capability == (7, 0) else None
 
 
+# While replies decode, a prompt pass runs in layer groups with a decode round after each, so a reply waits about one
+# group plus one round (ms) instead of the whole pass (Flash Next TP merged targets and Gemma 4 SM70). User decision
+# (2026-11-20): the prompt throughput this costs while prompts and replies overlap is the intended trade.
+DECODE_GAP_MS = 175.0
+
+
+def layer_groups(cost: list[float], target: float) -> list[int]:
+    """Layer stops (exclusive ends, the last = every layer) of a prompt pass run in groups between decode rounds:
+    groups of about equal ``cost`` (per layer, any unit), each at most ``target`` unless a single layer exceeds it.
+    Cuts fall at the nearest layer boundary; since one may overshoot by half a layer (a long-context attention
+    layer is large), groups are added until none exceeds the target (or every layer is its own group)."""
+
+    L = len(cost)
+    total = sum(cost)
+    parts = min(L, math.ceil(total / target))
+    if parts <= 1:
+        return [L]
+    while True:
+        stops, done = [], 0.0
+        for i, ms in enumerate(cost):
+            if done + ms / 2 >= total * (len(stops) + 1) / parts:     # cut at the nearest layer boundary
+                stops.append(i)
+            done += ms
+        stops = sorted({x for x in stops if 0 < x < L}) + [L]
+        edges = [0] + stops
+        if parts >= L or max(sum(cost[a:b]) for a, b in zip(edges, edges[1:])) <= target:
+            return stops
+        parts += 1
+
+
 def size(info: dict, name: str = "tensor") -> int:
     return math.prod(info["shape"]) * itemsize(info, name)
 

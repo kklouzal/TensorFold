@@ -102,3 +102,4 @@ def test_plan_adds_groups_rather_than_overshoot_the_target():
     target = E.Decoder.GAP_MS - d.round_ms
     assert stops[-1] == L and stops == sorted(set(stops))
     assert max(groups) <= target or len(groups) == L
+

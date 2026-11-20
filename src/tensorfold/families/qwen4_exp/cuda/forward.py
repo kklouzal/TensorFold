@@ -1333,6 +1333,38 @@ def compute_merged(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequenc
     return logits, heads
 
 
+def prompt_begin(w: Weights, segs: Sequence[Seg], b: Buffers) -> None:
+    """``compute``'s entry for a prompt pass run in layer groups (``prompt_layers``, then ``finish``): the frame's
+    check, codec status pending, embedding. Only where ``merges(w)``: no draft-feature runtime or RAM history owns
+    the pass, so these steps with ``prompt_layers`` and ``finish`` are ``compute``'s own, kernel for kernel."""
+
+    from .compact_indexer import validate_target_indexer_frame
+
+    if not b.prefill or b.split is not None or getattr(b, "g3_prefill_owner", None) is not None or not merges(w):
+        raise ValueError("a grouped prompt pass needs eager prompt buffers on a merged-round target")
+    validate_target_indexer_frame(b, segs)
+    _kv_begin(segs)
+    R, c = segs[-1][2], w.cfg
+    _embed(w, b.ids[:R], c.streams, b.h[:R])
+    image_rows.embed(segs, b, c.streams)
+
+
+def prompt_layers(w: Weights, segs: Sequence[Seg], b: Buffers, pending, l0: int, l1: int, *,
+                  cuts: Sequence[Cut] = (), marks: list | None = None):
+    """Layers [l0, l1) of a grouped prompt pass; returns the pending write-back (``layer_forward``), which lives in
+    ``b`` (its MoE gather/partials and injections), so other frames may run before the next group. ``marks``: a
+    CUDA timing event is recorded after each layer."""
+
+    R = segs[-1][2]
+    for layer in w.layers[l0:l1]:
+        pending = layer_forward(layer, w, segs, b, R, pending, cuts=cuts)
+        if marks is not None:
+            event = torch.cuda.Event(enable_timing=True)
+            event.record()
+            marks.append(event)
+    return pending
+
+
 def _merged_ple(layer: LayerW, w: Weights, psegs, dsegs, db: Buffers, pb: Buffers, Rp: int, R: int) -> None:
     """``ple_block`` on all merged rows; the window's conv tails write their n-gram rows to ``db`` (``commit``)."""
 

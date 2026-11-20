@@ -902,6 +902,8 @@ class TensorParallelDecoder:
                                               for wire, limit in body["media_limits"]}
             if "execution" in body:
                 self.decoder.accept_execution(body["execution"])
+            if "gap" in body:
+                self.decoder._gap_inputs = body["gap"]
             return self.decoder.round()
         if kind == "media_failure":
             from tensorfold.vision.images_http import ImageInputError
@@ -1143,6 +1145,9 @@ class TensorParallelDecoder:
         freeze = getattr(self.decoder, "freeze_execution", None)
         if freeze is not None:
             body["execution"] = freeze()
+        if getattr(self.decoder, "gap_ms", None) is not None:
+            # layer groups follow the leader's measured costs, so every rank cuts a pass at the same layers
+            body["gap"] = self.decoder.gap_inputs()
         return ended + self._invoke(body)
 
     def input_readiness(self):

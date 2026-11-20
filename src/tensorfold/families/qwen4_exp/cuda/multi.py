@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from functools import partial
+from types import SimpleNamespace
 
 import numpy as np
 import torch
@@ -13,6 +14,7 @@ import torch
 from tensorfold.cleanup import raise_failures, rollback
 from tensorfold.cuda import pdl
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes, gather_ints
+from tensorfold.cuda.geometry import DECODE_GAP_MS, layer_groups
 from tensorfold.cuda.kernels import gdn
 from tensorfold.cuda.logprobs import capture
 from tensorfold.cuda.markers import MIN_GAP
@@ -36,7 +38,7 @@ from .decode import (
     draft, entry_end, prefill_begin, tp_sample_rows,
 )
 from .forward import (Cut, KVWords, _kv_check, commit, compute, compute_merged, compute_mixed, converges, cut_snapshot,
-                      merges, read_ahead, stage)
+                      finish, merges, prompt_begin, prompt_layers, read_ahead, stage)
 from .mtp import mtp_compute, mtp_prestage, mtp_stage, mtp_tokens
 from .prompt_plan import CUTS, POINTS, merged_room, pass_limit
 from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room
@@ -85,6 +87,8 @@ class MultiDecoder:
     """Rounds over the live streams; ``slots`` streams at most, each with ``capacity`` tokens of context."""
 
     merged = False                                   # a tensor-parallel window rides prompt passes (compute_merged)
+    gap_ms = None                                    # merged targets: DECODE_GAP_MS (prompt passes in layer groups)
+    _grouped = _grouped_ready = _gap_inputs = None   # a grouped pass in flight / completed; the round's cost estimates
 
     @property
     def mixes(self) -> bool:
@@ -191,6 +195,11 @@ class MultiDecoder:
         # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes);
         # a merged window rides the pass's rows instead, so its passes stay whole
         self.share, self.round_s, self.row_s = 0.0 if self.merged else share, None, None
+        # while replies decode, a prompt pass runs in layer groups, one per round (``_group``), each group plus its round
+        # sized to DECODE_GAP_MS (merged targets; a pass with no live reply runs whole)
+        self.gap_ms = DECODE_GAP_MS if self.merged else None
+        self.layer_ms = None              # GPU ms per prompt row of each layer, from the last grouped passes
+        self.group_round_ms = None        # a grouped round's time beside its group (its decode round), EWMA
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
         self.mbuf = Buffers(w, rows, capacity, owner_role="mtp") if w.mtp is not None else None
         self.speculation = MethodGeometry("mtp" if self.mbuf is not None else
@@ -1799,6 +1808,8 @@ class MultiDecoder:
     def install_execution_manifest(self, relative_name):
         if self.execution_manifest_installer is None:
             raise ValueError("execution-profile manifest verification was not enabled at startup")
+        if self._grouped is not None:                 # one pass's layers never mix kernel families
+            self._grouped_ready = self._group(every=True)[1]
         return self.execution_manifest_installer(relative_name)
 
     def maintenance_pending(self):
@@ -1853,6 +1864,131 @@ class MultiDecoder:
             return
         self.controller.migration_status(request_epoch=generation, pending=retained_blocked,
             **({"blocked": "retained transfer or issued MTP rows protect the pending state"} if retained_blocked else {}))
+
+    def gap_inputs(self) -> dict:
+        """This rank's layer-group cost estimates (ms); under tensor parallelism the leader's go with each round."""
+
+        return {"layer_ms": None if self.layer_ms is None else list(self.layer_ms),
+                "row_ms": None if self.row_s is None else self.row_s * 1e3,
+                "round_ms": self.group_round_ms if self.group_round_ms is not None else
+                None if self.round_s is None else self.round_s * 1e3}
+
+    def _layer_stops(self, rows: int) -> list[int] | None:
+        """Layer stops of a prompt pass of ``rows`` rows beside decoding replies, or None: a merged
+        whole pass (it fits the target in one group, or no cost is measured yet). Pure in the round's estimates."""
+
+        inputs = self._gap_inputs if self._gap_inputs is not None else self.gap_inputs()
+        L = len(self.w.layers)
+        layer_ms, row_ms, round_ms = inputs["layer_ms"], inputs["row_ms"], inputs["round_ms"]
+        layer_ms = [None] * L if layer_ms is None else layer_ms
+        if round_ms is None or row_ms is None and None in layer_ms:
+            return None
+        cost = [(row_ms / L if ms is None else ms) * rows for ms in layer_ms]
+        stops = layer_groups(cost, max(self.gap_ms - round_ms, self.gap_ms / 4))
+        return None if stops == [L] else stops
+
+    def _group_step(self):
+        """This round's layer group: ((pass, group timing marks, completion or None) or None, failed streams).
+        A pass starts here when a whole one would exceed the gap target; a failure ends its prompts alone (``_pass``)."""
+
+        pieces = None if self._grouped is None else self._grouped.pieces
+        try:
+            if pieces is None:
+                pieces = self._pieces()
+                stops = self._layer_stops(sum(n for _, _, n in pieces)) if pieces else None
+                if stops is None:
+                    return None, []
+                self._group_start(pieces, stops)
+            g = self._grouped
+            marks, completed = self._group()
+            return (g, marks, completed), []
+        except Exception as exc:                         # noqa: BLE001  (these requests fail, the others go on)
+            self._grouped = None
+            if self.controller is not None:
+                self.controller.work_observations.incomplete(exc)
+            if getattr(self.pbuf, "input_preparation_context", None) is not None:
+                from .input_preparation import reject_prepared
+
+                reject_prepared(self.pbuf, exc)
+            return None, self._failed(pieces, self._contain(exc))
+
+    def _group_start(self, pieces, stops: list[int]) -> None:
+        """Stage a pass to run in layer groups ending at ``stops`` (``_pass``'s frame; no media inputs)."""
+
+        if getattr(self, "media_runtime", None) is not None or getattr(self, "vision", None) is not None:
+            raise ValueError("grouped prompt passes take no media inputs")
+        self._note_passed(pieces)
+        self.pbuf.rotor_lookup = False                  # rounds run beside it (as for a merged pass)
+        context = getattr(self.pbuf, "input_preparation_context", None)
+
+        def operation():
+            return self._prepare_pass(pieces)
+
+        _windows, segs, ends, cuts = operation() if context is None else context.prepare("prefill-window", operation)
+        self._grouped = SimpleNamespace(pieces=pieces, segs=segs, ends=ends, cuts=cuts, stops=list(stops), layer=0,
+                                        pending=None, spent=0.0)
+        prompt_begin(self.w, segs, self.pbuf)
+
+    def _group(self, every: bool = False):
+        """The grouped pass's next layer group (``every``: all its remaining layers): (timing marks, completion), the
+        completion (pass, heads, lasts) once its last layer, head, status check and MTP absorb (``_absorb``) ran.
+        The pass's prompt arithmetic is ``compute``'s, kernel for kernel: groups only let rounds run between layers."""
+
+        g, L = self._grouped, len(self.w.layers)
+        stop = L if every else g.stops.pop(0)
+        t0 = time.perf_counter()
+        start = torch.cuda.Event(enable_timing=True)
+        start.record()
+        events = [start]
+        g.pending = prompt_layers(self.w, g.segs, self.pbuf, g.pending, g.layer, stop, cuts=g.cuts, marks=events)
+        marks, g.layer = (g.layer, g.segs[-1][2], events), stop
+        if stop < L:
+            g.spent += time.perf_counter() - t0
+            return marks, None
+        self._grouped = None
+        logits = finish(self.w, self.w.mixer, self.pbuf, g.segs[-1][2], g.pending, logits=bool(g.ends), ends=g.ends)
+        _kv_check(g.segs, comm=self.w.comm)
+        if self.controller is not None:
+            self.controller.work_observations.target(
+                g.segs, prefill=True, replay_rows=sum(n for stream, _, n in g.pieces if stream.carry is not None))
+        heads = logits[:len(g.ends)].clone() if g.ends else None
+        lasts = self._absorb(g.pieces, g.segs, g.cuts)
+        g.spent += time.perf_counter() - t0
+        return marks, (g, heads, lasts)
+
+    def _group_settle(self, live) -> list[Stream]:
+        """Before a round: join a pass completed outside one; with no reply decoding, or a cancelled prompt in it, the
+        grouped pass in flight runs its remaining layers at once and joins (no partial pass is ever left behind)."""
+
+        ended = []
+        if self._grouped is not None and (not live or any(s.cancel is not None and s.cancel.is_set()
+                                                          for s, _, _ in self._grouped.pieces)):
+            pieces = self._grouped.pieces
+            try:
+                self._grouped_ready = self._group(every=True)[1]
+            except Exception as exc:                     # noqa: BLE001  (these requests fail, the others go on)
+                self._grouped = None
+                if self.controller is not None:
+                    self.controller.work_observations.incomplete(exc)
+                return self._failed(pieces, self._contain(exc))
+        if self._grouped_ready is not None:
+            (g, heads, lasts), self._grouped_ready = self._grouped_ready, None
+            ended += self._joined(g.pieces, heads, lasts, g.spent / len(g.pieces))
+        return ended
+
+    def _group_timed(self, marks, seconds: float) -> None:
+        """A grouped round's costs once its events completed (the round's host wait follows the group): each of the
+        group's layers' GPU ms per row, and the round's time beside the group."""
+
+        first, rows, events = marks
+        if not events[-1].query():
+            return
+        layer_ms = [None] * len(self.w.layers) if self.layer_ms is None else self.layer_ms
+        for j in range(1, len(events)):
+            layer_ms[first + j - 1] = events[j - 1].elapsed_time(events[j]) / rows
+        self.layer_ms = layer_ms
+        other = max(0.0, seconds * 1e3 - events[0].elapsed_time(events[-1]))
+        self.group_round_ms = other if self.group_round_ms is None else 0.7 * self.group_round_ms + 0.3 * other
 
     def _timed(self, seconds: float, rows: int) -> None:
         """A round's wall time: a round alone updates its estimate, a round with a pass the seconds a row adds."""
@@ -1961,6 +2097,10 @@ class MultiDecoder:
                 heads = logits[:len(ends)].clone() if ends else None
                 lasts = self._absorb(pieces, segs, cuts)
                 completed = True
+                if self.gap_ms is not None and self.row_s is None:
+                    # a first per-row estimate (the absorb's status gather waited for the pass), so the first pass
+                    # beside decoding replies can already run in layer groups
+                    self.row_s = (time.perf_counter() - t0) / sum(n for _, _, n in pieces)
             except Exception as exc:                         # noqa: BLE001  (these requests fail, the others go on)
                 primary = exc
                 if getattr(self.pbuf, "input_preparation_context", None) is not None:
@@ -2352,6 +2492,11 @@ class MultiDecoder:
         fails its checks (``snapshot``, ``kv_validate_snapshot``) is not kept: that stream ends with the error and its
         slot keeps nothing, so ``finish`` frees it; the others still stop."""
 
+        # A grouped pass in flight has committed some layers' DeltaNet states: its prompts stop after it completes
+        # (the next round runs its remaining layers at once; ``_group_settle``), so this keeps them filling.
+        busy = {s.sid for g in (self._grouped, self._grouped_ready and self._grouped_ready[0]) if g
+                for s, _, _ in g.pieces}
+        streams = [s for s in streams if s.sid not in busy]
         for s in streams:
             if getattr(self, "admission_policy", "legacy") == "fifo" and s.sid in self.streams:
                 self._flush(s)
@@ -2443,7 +2588,8 @@ class MultiDecoder:
         # A merged window takes its rows out of the pass: when the pass quota (e.g. an administered prefill_tokens)
         # cannot hold the widest window beside prompt rows, the pass runs alone so prompts keep filling.
         alone = bool(self.merged and live and not merged_room(self._pass_rows(), (self.depth + 1) * len(live)))
-        if self.filling and (not live or not self.mixes or alone):
+        ended += self._group_settle(live)
+        if self.filling and self._grouped is None and (not live or not self.mixes or alone):
             ended += self._fill()                      # passes alone; a prompt that ends here joins this round
             live = [s for s in self.streams.values() if self._runnable(s)]
         if not live:
@@ -2484,6 +2630,12 @@ class MultiDecoder:
             live = [by_id[sid] for sid in selected]
             if not live:
                 return failed + ended
+        # replies waiting: the next layer group of a grouped pass (started here when a whole pass would exceed the
+        # target); this round then runs alone, after the group
+        grouped, group_t0 = None, time.perf_counter()
+        if self.gap_ms is not None and (self._grouped is not None or self.filling and self.mixes and not alone):
+            grouped, failure = self._group_step()
+            ended += failure
         active_count = len(plan["order"]) if plan is not None else len(live)
         self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
@@ -2496,7 +2648,7 @@ class MultiDecoder:
         width = self.depth + 1
         # Padded rows count as submitted rows in the controller's observations
         # and must fit its row budget like the real rows the plan selected.
-        pad = (dflash is None and not grammars and not (self.filling and self.mixes)
+        pad = (dflash is None and not grammars and not (self.filling and self.mixes and grouped is None)
                and (plan is None or width * len(live) <= plan["row_budget"])
                and not self.buf.rotor_lookup and all(s.st.image_positions is None for s in live)
                and all(len(s.drafts) < width and s.st.pos + width <= s.st.capacity for s in live)
@@ -2521,10 +2673,12 @@ class MultiDecoder:
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
         # merged rounds keep the pass's rows: the window's rows come out of the prompt room
         pieces, psegs = [], None
-        if self.filling and self.mixes and not alone:
+        if self.filling and self.mixes and not alone and grouped is None:
             room = merged_room(self._pass_rows(), segs[-1][2]) if self.merged else self._pass_rows()
             pieces = self._pieces(room) if room > 0 else []
-        marks = self._output_marks([*live, *(s for s, _, _ in pieces)]) if self.controller is not None else None
+        completed = None if grouped is None else grouped[2]     # a grouped pass that ended with this round's group
+        marks = self._output_marks([*live, *(s for s, _, _ in pieces), *(s for s, _, _ in (
+            completed[0].pieces if completed else ()))]) if self.controller is not None else None
         cuts, pwindows, pends = [], None, None
         if pieces:
             self._note_passed(pieces)
@@ -2723,12 +2877,19 @@ class MultiDecoder:
         for s, a0, keep, _new, _last in kept:
             if s.done:
                 self._capture_retained(s, frame=self.buf, row=a0 + len(keep) - 1 if keep else None)
-        self._timed(spent, sum(n for _, _, n in pieces))
+        if grouped is None:
+            self._timed(spent, sum(n for _, _, n in pieces))
+        else:
+            self._group_timed(grouped[1], time.perf_counter() - group_t0)
         if pieces:                                     # prompts that ended in this round's pass join the next
             ended += self._joined(pieces, heads, lasts, spent / len(pieces))
+        if completed:
+            g, heads, lasts = completed
+            ended += self._joined(g.pieces, heads, lasts, g.spent / len(g.pieces))
         if self.controller is not None:
             self.controller.observe(active=active_count, scheduled=len(live), target_rows=segs[-1][2],
-                                    prefill_tokens=sum(n for _, _, n in pieces),
+                                    prefill_tokens=sum(n for _, _, n in (*pieces, *(completed[0].pieces if completed
+                                                                                     else ()))),
                                     committed_tokens=self._useful_outputs(marks),
                                     max_history_tokens=max(s.st.pos for s in live),
                                     elapsed_s=time.perf_counter() - t0)
@@ -3241,6 +3402,7 @@ class MultiDecoder:
 
     def drop(self, error=None) -> list[Stream]:
         prior, errors = tuple(self.failed_slots), []
+        self._grouped = self._grouped_ready = None   # its prompts are among the dropped filling streams
         live = [s for s in self.streams.values() if not s.done] + self.filling
         self.filling, self.fills = [], {}
         for s in live:
