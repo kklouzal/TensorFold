@@ -248,7 +248,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "
                             "copy a floating target head or borrow a stored quantized head. CUDA Gemma4 DFlash: "
                             "16 (default), or experimental 8 (FP8) with an original BF16 or lossless Sym8/Delta4 tied head; "
-                            "FP8 adds a private proposal-head copy. "
+                            "FP8 adds a private proposal-head copy; on eight V100s (--tp 8) 8 (private per-row INT8 "
+                            "W8A16 copies, default) or 16 (BF16). "
                             "Gemma E4B native assistant/EAGLE3 require BF16 (16). The target verifies every draft")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block. CUDA Gemma4 MoE DFlash: 2-128 "
