@@ -35,7 +35,9 @@ WIDE_ROWS = 1 << 30
 # per rank, else NCCL). In-graph per call on 8x V100-SXM2 (gather vs bulk, us): attention [rows, 2816] 8/12/16/24/40
 # rows 24.7/32.1/40.9/52.5/73.1 vs 31.2/35.1/34.9/39.4/46.1; FFN [rows, 5632] 4/5/6/8/24/40 rows
 # 23.5/28.0/32.2/40.9/75.8/105.7 vs 30.3/27.6/30.9/34.9/50.4/63.4 (the tail also reads one partial instead of 8).
-BULK_REDUCE_ROWS = {"o_parts": 16, "red_parts": 5}
+# In serving (--parallel 8, DFlash 3 rows, A B B A) the FFN bulk at 6 rows (C2 rounds) lost 1.2% decode, so the FFN
+# threshold sits at 8 rows, where the in-graph margin is 15%.
+BULK_REDUCE_ROWS = {"o_parts": 16, "red_parts": 8}
 if os.environ.get("TF_GEMMA_WIDE_ROWS"):
     WIDE_ROWS = max(1, int(os.environ["TF_GEMMA_WIDE_ROWS"]))
     EXPERT_MMA_ROWS = max(WIDE_ROWS, EXPERT_MMA_ROWS) if WIDE_ROWS > DECODE_ROWS else WIDE_ROWS
