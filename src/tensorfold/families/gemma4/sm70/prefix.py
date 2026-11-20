@@ -196,8 +196,7 @@ class PrefixOwner:
                     self.free.append(st)
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for KV memory until a live stream finishes")
             sid, s.head = resume["state"]["sid"], resume.get("head")
-            from .target import PROMPT_ROWS
-            if s.head is None and cached % PROMPT_ROWS:
+            if s.head is None and cached % self.e.prompt_rows:
                 # An exact-end point extended: resume at the aligned boundary below it (exact chunk arithmetic).
                 aligned, sid = self._aligned(s.prompt, cached)
                 self._recount(cached - aligned)
@@ -220,12 +219,12 @@ class PrefixOwner:
                 self.prefix_counters[tier + "_tokens"] -= tokens
 
     def _stops(self, s) -> list[int]:
-        """Chunk boundaries (multiples of PROMPT_ROWS) this prompt keeps states at: the boundary at or before each
+        """Chunk boundaries (multiples of the engine's prompt_rows) this prompt keeps states at: the boundary at or before each
         message start and before its end. Prefill chunks are aligned to these boundaries, so a request resuming at
         one computes exactly the chunks a cold prefill of its prompt would: its replies equal the cold ones."""
-        from .target import PROMPT_ROWS
+        rows = self.e.prompt_rows
         found = self.points(s.prompt) if self.points is not None else []
-        bounds = {p // PROMPT_ROWS * PROMPT_ROWS for p in (*found, entry_end(s.prompt))}
+        bounds = {p // rows * rows for p in (*found, entry_end(s.prompt))}
         return sorted(b for b in bounds if s.cached < b < len(s.prompt))
 
     def keep_before(self, s, start: int) -> None:
@@ -259,11 +258,10 @@ class PrefixOwner:
     def _aligned(self, prompt, cached: int):
         """The longest kept chunk-boundary point at or below ``cached`` that prefixes ``prompt`` (its length and
         snapshot id), or (0, None)."""
-        from .target import PROMPT_ROWS
         best = (0, None)
         for ids, _st, snap, _tail in self.kept:
             n = len(ids)
-            if best[0] < n <= cached and n % PROMPT_ROWS == 0 and not snap.get("exact") and prompt[:n] == ids:
+            if best[0] < n <= cached and n % self.e.prompt_rows == 0 and not snap.get("exact") and prompt[:n] == ids:
                 best = (n, snap["sid"])
         return best
 

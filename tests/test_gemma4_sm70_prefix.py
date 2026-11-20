@@ -16,6 +16,7 @@ SNAP = 1000           # ledger bytes per snapshot
 class FakeEngine:
     def __init__(self, budget, streams=1, keep_slots=2):
         self.streams, self.keep_slots, self.block, self.budget = streams, keep_slots, 3, budget
+        self.prompt_rows = 1024
         self.target = SimpleNamespace(alloc=1 << 20, pool=SimpleNamespace(snapshot_bytes=lambda: SNAP))
         self.head = None
         self.token_bytes = TOKEN

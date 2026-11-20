@@ -297,7 +297,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "TENSORFOLD_PREFILL_ROWS; default 1,024 on V100, otherwise the engine's own plan). "
                             "Larger pieces prefill faster and start replies sooner but pause running replies "
                             "longer (SC117 on 8x V100, 2,048 vs 1,024: prefill +10%%, time to first token "
-                            "10-25%% lower, per-reply decode about 5%% slower at 8 or more concurrent requests)")
+                            "10-25%% lower, per-reply decode about 5%% slower at 8 or more concurrent requests). "
+                            "Gemma 4 --tp 8: rows of one prompt chunk (a multiple of 256 up to 4,096; default "
+                            "1,024); chunk boundaries and prefix-cache points are its multiples")
     speed.add_argument("--prefill-pass", type=int, default=8, help="Mac: prompt chunks one forward takes while a "
                        "prompt fills alone, for models with a prompt pass (1: one chunk a forward, as 0.5.0)")
     speed.add_argument("--pass-cache-gib", type=float, default=16.0, help="Mac: MLX's cache of freed buffers during "

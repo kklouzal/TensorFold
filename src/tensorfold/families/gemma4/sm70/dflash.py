@@ -3,7 +3,7 @@
 TP8 layout: fc output rows 352 per rank (all-gathered), 4 query heads + KV head r per layer, MLP 704 rows per
 rank; o_proj/down row-parallel with FP32 all-reduce. Original BF16 weights (decode GEMV reads BF16 directly;
 prompt rows use FP32 copies). Context K/V of target taps live in per-slot caches (sliding layers: rings of
-RING rows with ring positions; full layers: linear, attached per admitted stream). A proposal block (anchor +
+ring rows with ring positions; full layers: linear, attached per admitted stream). A proposal block (anchor +
 mask rows) writes its own K/V at the positions it covers; the verify's taps of those same positions then
 replace them (every verified row, accepted or not: later blocks start inside that range and rewrite the rest
 before any read), so no round carries pending state.
@@ -18,10 +18,11 @@ from pathlib import Path
 import torch
 
 from ..dflash_metadata import checked_headers
-from .target import DECODE_ROWS, PROMPT_ROWS
+from .target import CHUNK, DECODE_ROWS
 
-RING = 3072     # sliding drafter layers: window (2048) + PROMPT_ROWS, a multiple of the 256-key chunk: a prompt
-#                 chunk containing a kept point leaves the window behind it in the ring (prefix snapshots)
+# Sliding drafter layers' ring rows: window (2048) + the target's prompt rows (3,072 at the default 1,024), a multiple
+# of the 256-key chunk: a prompt chunk containing a kept point leaves the window behind it in the ring (prefix
+# snapshots).
 
 
 class DFlash:
@@ -100,16 +101,15 @@ class DFlash:
         self.context_kv = self._pack_context_kv()
         exponent = torch.arange(0, d, 2, dtype=torch.int64).float() / d
         self.inv_freq = (1.0 / (cfg.rope.theta ** exponent)).to(dev).contiguous()
-        if any(layer["sliding"] and cfg.sliding_window + max(block, PROMPT_ROWS) > RING for layer in self.layers):
-            raise ValueError("Gemma DFlash sliding window exceeds its ring")
+        self.ring = -(-(cfg.sliding_window + max(block, target.prompt_rows)) // CHUNK) * CHUNK
         self.alloc = target.alloc
         self.slots = slots
-        # per layer: (k, v, positions) ring views [slots, RING, d] of stacked sliding tensors, or None (full layers,
+        # per layer: (k, v, positions) ring views [slots, self.ring, d] of stacked sliding tensors, or None (full layers,
         # attached per slot)
         sliding = [layer["sliding"] for layer in self.layers]
-        self.ring_k = torch.zeros((sum(sliding), slots, RING, d), dtype=torch.float16, device=dev)
+        self.ring_k = torch.zeros((sum(sliding), slots, self.ring, d), dtype=torch.float16, device=dev)
         self.ring_v = torch.zeros_like(self.ring_k)
-        self.ring_p = torch.full((sum(sliding), slots, RING), -1, dtype=torch.int32, device=dev)
+        self.ring_p = torch.full((sum(sliding), slots, self.ring), -1, dtype=torch.int32, device=dev)
         self.window = cfg.sliding_window
         self.rings, j = [], 0
         for flag in sliding:
@@ -191,13 +191,13 @@ class DFlash:
 
     def snapshot(self, slot: int, pos: int):
         lo = max(0, pos - self.window - 1)
-        index = torch.arange(lo, pos, device=self.device) % RING
+        index = torch.arange(lo, pos, device=self.device) % self.ring
         return (lo, pos, self.ring_k[:, slot].index_select(1, index), self.ring_v[:, slot].index_select(1, index))
 
     def restore(self, slot: int, snap):
         lo, pos, k, v = snap
         at = torch.arange(lo, pos, device=self.device)
-        index = at % RING
+        index = at % self.ring
         self.ring_k[:, slot].index_copy_(1, index, k)
         self.ring_v[:, slot].index_copy_(1, index, v)
         self.ring_p[:, slot].fill_(-1)
@@ -249,7 +249,7 @@ class DFlash:
             ring = self.rings[i]
             self.ext.qkv_prep(kv, rows, 0, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, lay.row_pos,
                               lay.row_slot, kv, self.k_tab[i], self.v_tab[i],
-                              None if ring is None else self.p_tab[i], 0 if ring is None else RING, self.cfg.eps, 0)
+                              None if ring is None else self.p_tab[i], 0 if ring is None else self.ring, self.cfg.eps, 0)
 
     # ------------------------------------------------------------------------------------------- proposals
     @torch.inference_mode()
@@ -269,10 +269,10 @@ class DFlash:
             q = torch.empty((rows, H, d), dtype=torch.float16, device=self.device)
             ext.qkv_prep(qkv, rows, H, d, 2, layer["q_norm"], layer["k_norm"], self.inv_freq, lay.row_pos,
                          lay.row_slot, q, self.k_tab[i], self.v_tab[i], None if ring is None else self.p_tab[i],
-                         0 if ring is None else RING, cfg.eps, 0)
+                         0 if ring is None else self.ring, cfg.eps, 0)
             att = torch.empty((rows, H * d), dtype=torch.float32, device=self.device)
             self.t._attention(q, lay, H, d, self.k_tab[i], self.v_tab[i], None if ring is None else self.p_tab[i],
-                              self.alloc if ring is None else RING, cfg.sliding_window if layer["sliding"] else 0,
+                              self.alloc if ring is None else self.ring, cfg.sliding_window if layer["sliding"] else 0,
                               att, noncausal=not layer["causal"], scale=d ** -0.5)
             x = x + self._reduce(self._linear(att, layer["o"], f"o{i}"), "dflash_o")
             h = self._rms(x, layer["post_norm"])

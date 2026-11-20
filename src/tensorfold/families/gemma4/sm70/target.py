@@ -22,7 +22,8 @@ from tensorfold.cuda.sm70.gemma4_native import extension
 from ..cuda.weights import TAP_LAYERS
 
 DECODE_ROWS = 16
-PROMPT_ROWS = 1024          # rows of one prompt forward (sliding ring = window + PROMPT_ROWS)
+PROMPT_ROWS = 1024          # default rows of one prompt forward (`serve --prefill-rows`; sliding ring = window + rows)
+MAX_PROMPT_ROWS = 4096      # largest --prefill-rows Gemma takes (rings and prompt scratch grow with it)
 CHUNK = 256                 # attention key chunk (native AC)
 EXPERT_MMA_ROWS = 96        # wide rows from which expert-grouped tensor cores beat per-pair GEMVs (measured)
 # Decode rows from which forwards take the tensor-core (wide) arithmetic. Off by default: its corpus comparison
@@ -139,10 +140,23 @@ def kv_row_bytes(fmt: int, d: int) -> int:
     return {0: 2 * d, 8: d + 4 * (d // 128), 11: d // 2 + 4 * (d // 128)}[fmt]
 
 
-def ring_slot_bytes(weights) -> int:
-    """Device bytes one slot's target sliding-window rings take on this rank (FP16 K and V, int32 positions; ``Pool``)."""
+def prompt_rows() -> int:
+    """Rows of one prompt chunk: `serve --prefill-rows` (TENSORFOLD_PREFILL_ROWS, read the same on every rank), a
+    multiple of the 256-key attention chunk up to MAX_PROMPT_ROWS; default PROMPT_ROWS. Chunk boundaries (and the
+    prefix cache's kept points) are multiples of it from position 0, fixed for the server's life."""
+    from tensorfold.cuda.geometry import PREFILL_ROWS_ENV, prefill_rows_value
+    value = os.environ.get(PREFILL_ROWS_ENV, "").strip()
+    rows = prefill_rows_value(value) if value else PROMPT_ROWS
+    if rows % CHUNK or rows > MAX_PROMPT_ROWS:
+        raise ValueError(f"Gemma 4 --tp 8 --prefill-rows: a multiple of {CHUNK} up to {MAX_PROMPT_ROWS}, not {rows}")
+    return rows
+
+
+def ring_slot_bytes(weights, rows: int = PROMPT_ROWS) -> int:
+    """Device bytes one slot's target sliding-window rings take on this rank (FP16 K and V, int32 positions; ``Pool``)
+    with ``rows``-row prompt chunks."""
     c, n = weights.config, sum(layer.sliding for layer in weights.layers)
-    return n * (c.window + PROMPT_ROWS) * (2 * 2 * c.head_dim + 4)
+    return n * (c.window + rows) * (2 * 2 * c.head_dim + 4)
 
 
 class Pool:
@@ -153,7 +167,7 @@ class Pool:
 
     Prefix reuse: rows below a kept point stay valid in the full caches (later rows are rewritten before any read);
     the ring rows a point needs (its last ``window`` positions) are copied out by ``snapshot`` right after the prompt
-    chunk containing the point (a chunk of PROMPT_ROWS rows never overwrites them: ring = window + PROMPT_ROWS) and
+    chunk containing the point (a chunk of prompt_rows rows never overwrites them: ring = window + prompt_rows) and
     written back by ``restore``.
 
     Full caches hold FP16 rows or, with a quantized ``target.kv_format``, uint8 rows of ``kv_row_bytes`` (codes and
@@ -253,7 +267,8 @@ class Pool:
 
 
 class Target:
-    def __init__(self, weights, comm, *, context: int, slots: int = 1, kv_format: str = "fp16"):
+    def __init__(self, weights, comm, *, context: int, slots: int = 1, kv_format: str = "fp16",
+                 prompt_rows: int = PROMPT_ROWS):
         if kv_format not in KV_FORMATS:
             raise ValueError(f"Gemma 4 SM70 full-attention KV formats: {', '.join(KV_FORMATS)}")
         self.kv_format = kv_format
@@ -267,7 +282,8 @@ class Target:
         self.all_reduce = AllReduce(comm) if comm is not None else (lambda t: None)
         self.context = context
         self.alloc = -(-(context + DECODE_ROWS) // CHUNK) * CHUNK    # largest slot capacity (decode chunk bound)
-        self.ring = c.window + PROMPT_ROWS
+        self.prompt_rows = prompt_rows
+        self.ring = c.window + prompt_rows
         if self.ring % CHUNK:
             raise ValueError("sliding ring must be a multiple of the attention chunk")
         self.tap_layers = tuple(i for i in TAP_LAYERS if i < c.layers)
@@ -288,6 +304,11 @@ class Target:
         # up to 32 streams x 16-row blocks
         self.router_counter = torch.zeros(256, dtype=torch.int32, device=self.device)
         self.pool = Pool(self, slots)
+        # layer -> its index among the sliding (ring) or the full-attention layers (address tables)
+        self._layer_index, counts = [], [0, 0]
+        for layer in weights.layers:
+            self._layer_index.append(counts[layer.sliding])
+            counts[layer.sliding] += 1
         self._head16 = None
 
     # ------------------------------------------------------------------------------------------ helpers
@@ -395,28 +416,54 @@ class Target:
         """Rows ``ids`` at the layout's slots/positions (uploaded by the caller). logits: 'all' | 'last' | 'none'
         (this rank's vocab shard, softcapped).
 
-        ``prompt``: one segment of up to PROMPT_ROWS rows on the prompt arithmetic (FP16 activations, dequantized
+        ``prompt``: one segment of up to prompt_rows rows on the prompt arithmetic (FP16 activations, dequantized
         tensor-core GEMMs, all-reduced partials). Otherwise every row takes the decode arithmetic (FP32-activation
         GEMVs, all-gathered partials summed in rank order), identical per row for any number of rows/segments.
         Full-attention decode chunks span the largest slot capacity (later keys are never visited), so one CUDA
         graph per layout shape serves every position. Returns (local_logits [n, shard] or None, taps
         [rows, 6, hidden] FP32 or None), views of target-owned scratch valid until the next forward."""
+        state = self.begin(ids, lay, prompt=prompt, logits=logits, taps=taps, embeddings=embeddings)
+        self.layers(state, len(self.w.layers))
+        return self.end(state)
+
+    @torch.inference_mode()
+    def begin(self, ids, lay, *, prompt: bool, logits: str = "all", taps: bool = False, embeddings=None) -> dict:
+        """Embed the rows: the state ``layers`` advances and ``end`` finishes (``forward`` = all three).
+
+        A prompt forward may be advanced in several ``layers`` calls with decode forwards (graph replays) between
+        them: its residual stream and taps live in prompt-only scratch ("prompt_h", "prompt_taps"), which no decode
+        forward touches; every other buffer is used within one layer. The kernel sequence, and so the arithmetic, is
+        the same however the layers are grouped."""
         rows = lay.rows
-        if prompt and (lay.count != 1 or rows > PROMPT_ROWS):
-            raise ValueError("Gemma 4 prompt forwards take one segment of at most PROMPT_ROWS rows")
-        pool = self.pool
+        if prompt and (lay.count != 1 or rows > self.prompt_rows):
+            raise ValueError("Gemma 4 prompt forwards take one segment of at most prompt_rows rows")
         c, ext = self.c, self.ext
         D = c.hidden
-        h = self._buf("h", (rows, D))
+        h = self._buf("prompt_h" if prompt else "h", (rows, D))
         if embeddings is None:
             ext.embed(ids.to(torch.int64).contiguous(), rows, self.w.embed, D, self.embed_scale, h)
         else:
             h.copy_(embeddings)
         xdt = torch.float16 if prompt else torch.float32
-        wide = not prompt and rows >= WIDE_ROWS         # tensor-core decode arithmetic (rows of one tile stay exact)
         x = self._buf("x", (rows, D), xdt)
         ext.rms(h, rows, self.w.layers[0].norms["input"], D, c.eps, 1.0, x)
-        tap_out = self._buf("taps", (rows, len(self.tap_layers), D)) if taps else None
+        tap_out = self._buf("prompt_taps" if prompt else "taps", (rows, len(self.tap_layers), D)) if taps else None
+        return {"lay": lay, "rows": rows, "prompt": prompt, "logits": logits, "h": h, "x": x, "taps": tap_out,
+                "xdt": xdt, "wide": not prompt and rows >= WIDE_ROWS, "next": 0}
+
+    @torch.inference_mode()
+    def layers(self, state: dict, stop: int, marks=None) -> None:
+        """Advance ``state`` through layers [state['next'], ``stop``). ``marks``: a list that receives (first layer,
+        [CUDA event at entry, one after each layer]) (the leader's per-layer cost measurement), or None."""
+        pool = self.pool
+        c, ext = self.c, self.ext
+        D = c.hidden
+        if marks is not None:
+            events = [torch.cuda.Event(enable_timing=True)]
+            events[0].record()
+            marks.append((state["next"], events))
+        lay, rows, prompt, wide, xdt = state["lay"], state["rows"], state["prompt"], state["wide"], state["xdt"]
+        h, x, tap_out = state["h"], state["x"], state["taps"]
         red = self._buf("red", (rows, 2, D))
         o_red = self._buf("o_red", (rows, D))
         dense_in = self._buf("dense_in", (rows, D), xdt)
@@ -426,16 +473,16 @@ class Target:
         ids_sel = self._buf("route_ids", (rows, c.top_k), torch.int32)
         weights_sel = self._buf("route_w", (rows, c.top_k))
         local_sel = self._buf("route_local", (rows, c.top_k), torch.int32)
-        si = fi = 0
-        for i, layer in enumerate(self.w.layers):
+        for i in range(state["next"], stop):
+            layer = self.w.layers[i]
             n = layer.norms
             if layer.sliding:
+                si = self._layer_index[i]
                 d, kt, vt, pt, fmt = c.head_dim, pool.sk_tab[si], pool.sv_tab[si], pool.sp_tab[si], 0
-                si += 1
                 inv, ring, window, slots = self.inverse["sliding"], self.ring, c.window, self.ring
             else:
+                fi = self._layer_index[i]
                 d, kt, vt, pt, fmt = c.global_head_dim, pool.fk_tab[fi], pool.fv_tab[fi], None, pool.fmt
-                fi += 1
                 inv, ring, window = self.inverse["full"], 0, 0
                 # Decode/verify rows span the largest capacity, eager or graph: the split partition (keys per
                 # split) is then fixed, so every forward of a segment shape is bitwise equal; splits wholly after
@@ -503,19 +550,31 @@ class Target:
             if tap_out is not None and i in self.tap_layers:
                 tap = tap_out[:, self.tap_layers.index(i)]
             if i + 1 == len(self.w.layers) and prompt:   # the head reads the final norm in FP32 on both paths
-                x = self._buf("x_final", (rows, D))
+                x = state["x"] = self._buf("x_final", (rows, D))
             ext.ffn_tail(red_src, rows, red_world, rows * 2 * D, h, n["post_ff1"], n["post_ff2"], n["post_ff"],
                          n["scalar"], following, c.eps, x, tap)
+            if marks is not None:
+                events.append(torch.cuda.Event(enable_timing=True))
+                events[-1].record()
+        state["next"] = max(state["next"], stop)
+
+    @torch.inference_mode()
+    def end(self, state: dict):
+        """The head over the finished state: (local_logits or None, taps or None), as ``forward``."""
+        if state["next"] != len(self.w.layers):
+            raise RuntimeError("a Gemma 4 forward ended before its last layer")
+        rows, logits, x = state["rows"], state["logits"], state["x"]
         out = None
         if logits != "none":
             final = x if logits == "all" else x[rows - 1:]
             m = final.shape[0]
             out = self._buf("logits", (m, self.shard))
-            if wide:
-                self.head_wide(final, out, c.softcap)
+            if state["wide"]:
+                self.head_wide(final, out, self.c.softcap)
             else:
-                ext.bf16_rows(final.contiguous(), m, self.w.head, self.shard, D, out, self.shard, c.softcap)
-        return out, tap_out
+                self.ext.bf16_rows(final.contiguous(), m, self.w.head, self.shard, self.c.hidden, out, self.shard,
+                                   self.c.softcap)
+        return out, state["taps"]
 
     def _experts_prompt(self, layer, x16, local, weights, out, rows):
         """Prompt experts: one batch for short chunks, otherwise groups of sixteen.
