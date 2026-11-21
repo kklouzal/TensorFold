@@ -11,11 +11,15 @@ from dataclasses import dataclass
 import re
 
 GEMMA_STRING = '<|"|>'
+# DeepSeek DSML: V4's <｜DSML｜tool_calls> and V4.1's leading-space " calls" / " invoke" / " parameter" tags
+DSML41_CALLS = ("<｜DSML｜ calls>", "</｜DSML｜ calls>")
 CALL_MARKS = (("<tool_call>", "</tool_call>"), ("<|tool_call>", "<tool_call|>"),
-              ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>"))
+              ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>"), DSML41_CALLS)
 _PARAMETER_CLOSE = re.compile(r'</parameter>', re.IGNORECASE)
 _PARAMETER_OPEN = re.compile(r'<parameter=([^>\s]+)>', re.IGNORECASE)
-_DSML_PARAMETER_CLOSE = re.compile(r'</｜DSML｜parameter>')
+# a DSML parameter's opener and its closing tag: its value is opaque data until that tag
+_DSML_PARAMETERS = (('<｜DSML｜parameter ', re.compile(r'</｜DSML｜parameter>')),
+                    ('<｜DSML｜ parameter ', re.compile(r'</｜DSML｜ parameter>')))
 _FUNCTION = re.compile(r'<function=[^>\s]+>', re.IGNORECASE)
 _NAMESPACE = re.compile(r'<([A-Za-z_][\w.-]*):tool_call>', re.IGNORECASE)
 _REGION_START = re.compile(r'[<"`~]')
@@ -183,6 +187,13 @@ def xml_parameter_fields(text: str, *, finished=True) -> tuple[list[tuple[str, s
     return fields, ''.join(residue)
 
 
+def _parameter_close(text, at):
+    """The closing-tag pattern of an XML or DSML parameter opening at ``at``, else None."""
+    if text[at:at + 11].lower() == '<parameter=':
+        return _PARAMETER_CLOSE
+    return next((close for opener, close in _DSML_PARAMETERS if text.startswith(opener, at)), None)
+
+
 def _call_end(text, start, opener, closer, insensitive, *, repeated=True, finished=False):
     cursor = payload = start + len(opener)
     # Adjacent repeated openers are envelope slips, never value rewrites.
@@ -196,9 +207,7 @@ def _call_end(text, start, opener, closer, insensitive, *, repeated=True, finish
     while cursor < len(text):
         if text.startswith(GEMMA_STRING, cursor) or text[cursor] == '"':
             cursor = _quote_end(text, cursor)
-        elif text[cursor:cursor + 11].lower() == '<parameter=' or text.startswith('<｜DSML｜parameter ', cursor):
-            parameter_end = '</parameter>' if text[cursor:cursor + 11].lower() == '<parameter=' else '</｜DSML｜parameter>'
-            close_pattern = _PARAMETER_CLOSE if parameter_end == '</parameter>' else _DSML_PARAMETER_CLOSE
+        elif (close_pattern := _parameter_close(text, cursor)) is not None:
             matched = _parameter_end(text, cursor, close_pattern, finished=finished)
             if matched is None:
                 return MarkupRegion('call', start, len(text), opener, closer, payload, len(text), False)

@@ -146,11 +146,12 @@ def thinking_switch(value: Any) -> bool | None:
     return None
 
 
-def thinking_fields(body: dict[str, Any], levels: frozenset[str] = frozenset()) -> dict[str, Any]:
+def thinking_fields(body: dict[str, Any], levels: frozenset[str] = frozenset(), *,
+                    numeric: bool = False) -> dict[str, Any]:
     """A request's ``reasoning_effort`` and ``enable_thinking`` where it sets them; unset is the server's default.
 
     ``chat_template_kwargs.thinking`` (the switch DeepSeek-V4 clients such as pi send) is heard as ``enable_thinking``
-    when that is absent."""
+    when that is absent. ``numeric``: the renderer also takes an integer effort 1-100 (DeepSeek-V4.1's budget)."""
 
     kwargs = body.get("chat_template_kwargs") or {}
     switch = thinking_switch(kwargs.get("thinking")) if isinstance(kwargs, dict) else None
@@ -161,9 +162,13 @@ def thinking_fields(body: dict[str, Any], levels: frozenset[str] = frozenset()) 
     if effort is None and isinstance(kwargs, dict):
         effort = kwargs.get("reasoning_effort")           # where vLLM's clients put it
     if effort is not None:
-        if not isinstance(effort, str) or effort not in EFFORTS:
-            raise RequestError("reasoning_effort must be none, minimal, low, medium, high, xhigh or max")
-        fields["reasoning_effort"] = coerce_effort(effort, levels)
+        names = "none, minimal, low, medium, high, xhigh" + (", max or an integer 1-100" if numeric else " or max")
+        if numeric and type(effort) is int and 1 <= effort <= 100:
+            fields["reasoning_effort"] = effort
+        elif not isinstance(effort, str) or effort not in EFFORTS:
+            raise RequestError(f"reasoning_effort must be {names}")
+        else:
+            fields["reasoning_effort"] = coerce_effort(effort, levels)
         fields["enable_thinking"] = effort != "none"
     if isinstance(kwargs, dict) and "enable_thinking" in kwargs:          # an explicit switch wins
         fields["enable_thinking"] = bool(kwargs["enable_thinking"])

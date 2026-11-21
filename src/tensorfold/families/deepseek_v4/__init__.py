@@ -114,6 +114,18 @@ def kernel_version(model: Any) -> str:
     return f"{MODEL_TYPES[0]}-{KERNEL_VERSION}-" + digest.hexdigest()[:12]
 
 
+def cuda_chat_template(model_dir: str | Path, *, template_file=None, template_name=None):
+    """The CUDA server's prompt renderer: DeepSeek-V4.1's own encoder and DSML call grammar (serving_v41); the
+    checkpoint's Jinja template (None) otherwise."""
+    from tensorfold.families import read_config
+
+    if read_config(model_dir).get("model_type") != V41:
+        return None
+    from .serving_v41 import chat_template
+
+    return chat_template(model_dir, template_file=template_file, template_name=template_name)
+
+
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
                 master_port: int = 29551, no_drafts: bool = False, context: int | None = None, **options: Any):
     """DeepSeek-V4.1-Flash GGUF on eight V100s: TP8 attention/dense, ETP4 x EP2 routed experts."""
