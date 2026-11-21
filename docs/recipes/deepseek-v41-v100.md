@@ -33,6 +33,7 @@ about 520 s.
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
 | `--queue-timeout-s S` | Bounds the queue wait (503 after). |
 | `--no-graphs` | Eager decode, for A/B checks only. |
+| `--vision` | Image input (needs `mmproj_file` and `vision_bias_file` in `config.json`; see "Image input"). |
 
 ## What runs
 
@@ -81,6 +82,34 @@ KL of about 1.8e-2 and per-token |d| up to about 0.015 on this corpus (a chaotic
 d was -0.0013 (CI [-0.0091, +0.0055]) and decode d +0.0022 (CI [-0.0008, +0.0058]), both within the floor. As a cheap
 smoke test, known answers scored 9/10 with thinking off and 10/10 with thinking on.
 
+## Image input (`--vision`)
+
+`--vision` serves OpenAI `image_url` content parts (data URLs; public HTTPS URLs also with `--vision-urls`) in user
+messages and tool results. The model directory's `config.json` names the mmproj and the vision router bias:
+
+```json
+"mmproj_file": "/models/ds41-gsq-rco/mmproj-DeepSeek-V4.1-Flash-1017-BF16.gguf",
+"vision_bias_file": "/models/ds41-gsq-rco/exp_probs_b_vl.f32"
+```
+
+- Prompts: DeepSeek's V4.1 encoder renders each image part as one `<｜deepseek_image｜>` (id 129264) in block order,
+  the message's parts joined with `\n\n`. Request text that spells the placeholder is refused. Each placeholder
+  expands to the image's span, `[START] ([IMAGE] * w + [NEWLINE]) * h + [END]`, at most 1024 tokens per image
+  (upstream's resize plan, Pillow `ImageOps.pad` with grey 127). Unlike the friend's server, EXIF orientation is
+  applied before the plan. `--vision-max-images` (default 4) and `--vision-image-tokens` (default 4096) bound a
+  request.
+- Tower: the mmproj ViT (32 x 1024) and 3 x 3 aligner on GPU 0 of rank 0, the friend's patch-150 numerics (BF16
+  weights widened exactly to FP16, FP16 GEMMs with FP32 accumulation, FP32 residual, norms and RoPE). It is loaded
+  before the KV pool is sized and warmed at startup on the plan's largest image. Rank 0 encodes and broadcasts
+  each prompt chunk's image rows to the other ranks. While other streams decode, an encode runs in groups of
+  tower blocks under the 175 ms policy, as prompt chunks do.
+- Backbone: image rows replace the image token's embedding. They route their experts with the vision bias
+  (`exp_probs_b_vl`), and they are dead Engram n-gram members (`valid & ~image`), as upstream does. Text-only
+  steps run exactly the text model's kernels.
+- Prompt cache: an image span's positions carry ids derived from the image's pixels (sha256), so a kept point is
+  reused only by a prompt with the same images. Points stay at message boundaries. Prompt scoring
+  (`/v1/tensorfold/score`) stays text only.
+
 ## Diagnostics (never for serving or benchmarks)
 
 - `TENSORFOLD_DS41_ENGRAM_TRACE=FILE`: rank 0 appends each forward's Engram row ids to FILE. **It disables the decode
@@ -91,5 +120,5 @@ smoke test, known answers scored 9/10 with thinking off and 10/10 with thinking 
 
 ## Not yet
 
-DSpark drafting and vision (the image tower has a parity port) are not merged into the serving lane. Startup time and
+DSpark drafting is not merged into the serving lane. Startup time and
 the C1 16K prefill gap are open optimization items.

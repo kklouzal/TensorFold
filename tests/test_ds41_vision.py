@@ -159,3 +159,12 @@ def test_decoder_encodes_frames_in_groups_and_feeds_each_chunk_its_rows():
     assert all(stop - start <= per for _, start, stop in groups) and groups[-1][2] == V.LAYERS
     assert rounds == len(d.e.tower.groups)                  # every group (and each frame's last) ends a round
     assert torch.equal(d.e.image_features, torch.cat([span_a, span_b]))
+
+
+def test_serve_admits_vision_for_deepseek_v41():
+    from tensorfold.vision.config import validate_vision_config
+    raw = {"model_type": "deepseek_v41", "image_token_id": V.IMAGE_TOKEN_ID,
+           "vision_config": dict(V._VISION_CONFIG, rope_theta=10000)}
+    assert validate_vision_config(raw, "deepseek_v41") is raw["vision_config"]
+    with pytest.raises(ValueError):
+        validate_vision_config(dict(raw, image_token_id=7), "deepseek_v41")
