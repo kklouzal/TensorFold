@@ -55,12 +55,13 @@ class _Pointer:
 class HostEngram:
     """The two tables, shared by every rank on the host; ``rows``: rows of table 0 and table 1."""
 
-    def __init__(self, path, offset: int, rows: tuple[int, int], rank: int, *, threads: int = 16):
+    def __init__(self, path, offset: int, rows: tuple[int, int], rank: int, store, *, threads: int = 16,
+                 key: str = "ds41/engram"):
         self.rows = tuple(int(r) for r in rows)
         self.size = sum(self.rows) * ROW_BYTES
         self.fd, self.address, self.registered = -1, 0, False
         self._base = self._length = 0                       # the page-aligned file mapping holding the table
-        self.fill_seconds = self.register_seconds = 0.0   # startup phases
+        self.fill_seconds = self.wait_seconds = self.register_seconds = 0.0   # startup phases
         started = time.perf_counter()
         try:
             self.fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
@@ -75,7 +76,15 @@ class HostEngram:
             # not in the page cache); the registration's own single-threaded pin then finds them present.
             _populate(self._base, self._length, threads)
             self.fill_seconds = time.perf_counter() - started
-            self._register(rank)
+            if rank == 0:
+                self._register(rank)
+                store.set(key, str(self.size))
+            else:
+                size = int(store.get(key).decode())
+                self.wait_seconds = time.perf_counter() - started - self.fill_seconds
+                if size != self.size:
+                    raise RuntimeError(f"rank 0's Engram table has {size} bytes, expected {self.size}")
+                self._register(rank)
             self.pointer = _Pointer(self.address)     # UVA: the host address is valid on the device
         except BaseException:
             self.close()
@@ -90,10 +99,10 @@ class HostEngram:
             self.register_seconds = time.perf_counter() - t0
 
     def _register_now(self, rank):
-        # Every rank registers its own mapping at once. The earlier sealed-memfd table needed rank 0's registration
-        # first (m1g: five of eight registrations made while rank 0's was in flight failed, "Cannot map memory ...
-        # of 0x19bffe4 pages"); the file-backed table registered concurrently on all eight ranks without failure
-        # (start/diag hostreg_file st-hreg2, 2 x 8 registrations: 15.8-17.9 s each vs 6.7 s + 15.8 s ordered).
+        # Rank 0 registers before it publishes the table; the followers register after it, concurrently. m1g: five
+        # of eight registrations made while rank 0's own was in flight failed (kernel "Cannot map memory ... of
+        # 0x19bffe4 pages": the driver's long-term pin came back short); m1e's seven follower registrations after
+        # rank 0 all passed.
         code = torch.cuda.cudart().cudaHostRegister(self._base, self._length,
                                                     _REGISTER_PORTABLE | _REGISTER_MAPPED | _REGISTER_READ_ONLY)
         if int(code) != 0:

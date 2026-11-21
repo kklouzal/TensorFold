@@ -119,15 +119,15 @@ class DS41Engine:
         self.engram = None
         mapping = None
         if layers is None or len(layers) > min(g.engram_layers):
-            # The Engram mapping (page tables and registration: host and driver work, no device memory) runs on
+            # The Engram mapping (page tables, ordered registrations: host and driver work, no device memory) runs on
             # its own thread while this one loads the weights; the forward first reads it in _warm, after the join.
             from concurrent.futures import ThreadPoolExecutor
             rows = W.engram_split(shards, g)
 
             def map_engram():
                 with clock.phase("engram") as note:
-                    e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank)
-                    note[0] = f"fill {e.fill_seconds:.1f} register {e.register_seconds:.1f}"
+                    e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
+                    note[0] = f"fill {e.fill_seconds:.1f} wait {e.wait_seconds:.1f} register {e.register_seconds:.1f}"
                 return e
             mapping = ThreadPoolExecutor(1, thread_name_prefix="ds41-engram")
             engram = mapping.submit(map_engram)
