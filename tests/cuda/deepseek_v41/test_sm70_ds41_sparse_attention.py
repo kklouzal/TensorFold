@@ -1,0 +1,224 @@
+"""Fused sparse attention (ds41_sparse_attention, patch 181 at TP8) vs patch 87's gather + bmm path and an FP64
+oracle, on packed pool pages, slot rings and multi-request steps; run as a script for the single-GPU timings.
+
+    pytest -q test_sm70_ds41_sparse_attention.py
+    python test_sm70_ds41_sparse_attention.py OUT.json      # timings (8K / 16K prompt chunks, decode M=1..32)
+"""
+
+import json
+import sys
+from types import SimpleNamespace
+
+import pytest
+import torch
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+
+H, BLOCK = 8, 64
+SOURCES = {2: 2, 8: 2, 14: 2, 20: 1}       # the lane's KV sources and ratios (config compress_ratios)
+
+
+def build(requests, *, source=2, compressed=True, qscale=2.0, seed=0, dev="cuda"):
+    """A step of ``requests`` [(start, tokens)] on the packed pool: (args, kwargs) of mu_packed.attend.
+
+    Earlier positions of each request are in its pages (compressed rows from random latents) and its slot ring;
+    top-512 positions are random distinct live rows per token (all live rows below 512, -1 padded)."""
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+
+    g = torch.Generator(device=dev).manual_seed(seed)
+    layout = pk.PackedLayout(SOURCES, BLOCK)
+    ratio = SOURCES[source]
+    R = len(requests)
+    pages_per = [-(-(s + t) // BLOCK) for s, t in requests]
+    width = max(pages_per)
+    order = torch.randperm(sum(pages_per), generator=g, device=dev).int()
+    table = torch.full((R, width), -1, dtype=torch.int32, device=dev)
+    at = 0
+    for r, n in enumerate(pages_per):
+        table[r, :n] = order[at:at + n]
+        at += n
+    cache = torch.zeros(sum(pages_per), layout.page_bytes, dtype=torch.uint8, device=dev)
+    slots = R + 2
+    ring = (torch.randn(slots + 1, pk.RING, 512, generator=g, device=dev) * 0.3).half()
+    for r, (s, t) in enumerate(requests):          # every earlier position's compressed row in the pages
+        p = torch.arange(s + t, device=dev)
+        latent = (torch.randn(s + t, 512, generator=g, device=dev) * 0.3).half()
+        pk.insert_rows(cache, latent, p, torch.ones_like(p, dtype=torch.bool), torch.full_like(p, r, dtype=torch.int32),
+                       table, layout=layout, layer=source, compressed=True)
+    T = sum(t for _, t in requests)
+    positions = torch.cat([torch.arange(s, s + t, device=dev) for s, t in requests])
+    token_req = torch.cat([torch.full((t,), r, dtype=torch.int32, device=dev) for r, (_, t) in enumerate(requests)])
+    qsl = torch.tensor([0] + list(torch.tensor([t for _, t in requests]).cumsum(0)), dtype=torch.int32, device=dev)
+    req_slot = torch.tensor([r + 1 for r in range(R)], dtype=torch.int32, device=dev)
+    valid = torch.ones(T, dtype=torch.bool, device=dev)
+    if T > 3:
+        valid[T // 3] = False                       # an invalid row (padding) in the middle
+    step = SimpleNamespace(valid=valid, token_req=token_req, qsl=qsl)
+    query = (torch.randn(T, H, 512, generator=g, device=dev) * qscale).half()
+    window = (torch.randn(T, 512, generator=g, device=dev) * 0.3).half()
+    sink = torch.randn(H, generator=g, device=dev)
+    kw = {}
+    if compressed:
+        n_c = (positions + 1) // ratio
+        topk = torch.empty(T, 512, dtype=torch.int32, device=dev)
+        for a in range(0, T, 512):
+            b = min(a + 512, T)
+            top = int(n_c[a:b].max())
+            score = torch.rand(b - a, max(top, 512), generator=g, device=dev)
+            col = torch.arange(score.shape[1], device=dev)
+            score = torch.where(col[None] < n_c[a:b, None], score, -1.0)
+            v, i = score.topk(512, dim=1)
+            topk[a:b] = torch.where(v >= 0, i, -1).int()
+        kw = dict(cache=cache, block_table=table, layout=layout, source=source, topk=topk)
+    return (query, positions, step, req_slot, ring, window, sink), kw
+
+
+def reference(args, kw):
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    return pk.attend(*args, **kw)
+
+
+def fused(args, kw, **extra):
+    from tensorfold.cuda.sm70 import ds41_sparse_attention as sa
+    return sa.attend(*args, **kw, **extra)
+
+
+def oracle(args, kw, rows):
+    """FP64 attention of token ``rows`` over the reference's gathered FP16 keys (exact decodes of the pages)."""
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    query, positions, step, req_slot, ring, window, sink = args
+    width = pk.WINDOW + (512 if kw else 0)
+    out = []
+    for t in rows.tolist():
+        keys = torch.empty(1, width, 512, dtype=torch.float16, device=query.device)
+        unused = torch.empty(1, width, dtype=torch.bool, device=query.device)
+        pk.gather_attention(keys, unused, t, t + 1, positions, step.valid, step.token_req, step.qsl, req_slot,
+                            ring, window, cache=kw.get("cache"), block_table=kw.get("block_table"),
+                            layout=kw.get("layout"), layer=kw.get("source"), topk=kw.get("topk"))
+        k = keys[0].double()
+        s = (query[t].double() @ k.T) * 512 ** -0.5
+        s = torch.where(unused[0][None], float("-inf"), s)
+        z = sink.double()[:, None]
+        m = torch.maximum(s.max(1, keepdim=True).values, z)
+        e = (s - m).exp()
+        p = e / (e.sum(1, keepdim=True) + (z - m).exp())
+        out.append(p @ k)
+    return torch.stack(out)
+
+
+def compare(args, kw, ref, new, samples=96):
+    rows = torch.linspace(0, ref.shape[0] - 1, min(samples, ref.shape[0]), device=ref.device).long().unique()
+    exact = oracle(args, kw, rows)
+    def err(x):
+        d = x[rows].double() - exact
+        return float(d.abs().max()), float(d.norm() / exact.norm())
+    same = float((ref.view(torch.int16) == new.view(torch.int16)).float().mean())
+    return {"equal_fp16_words": same, "max_abs_ref_vs_new": float((ref.float() - new.float()).abs().max()),
+            "ref_vs_oracle": err(ref), "new_vs_oracle": err(new)}
+
+
+CASES = [
+    ("prefill 1 req from 0, ratio 2", [(0, 1536)], 2, True),
+    ("prefill chunk after 6K (ring + pages), ratio 1", [(6144, 1024)], 20, True),
+    ("mixed: 2 prefill + 3 decode rows, ratio 2", [(0, 700), (3000, 300), (5000, 1), (77, 1), (600, 1)], 8, True),
+    ("window-only layer, chunk after 200", [(200, 900), (0, 3)], 0, False),
+]
+
+
+@pytest.mark.parametrize("name,requests,source,compressed", CASES, ids=[c[0] for c in CASES])
+@pytest.mark.parametrize("qscale", [0.5, 4.0])
+def test_fused_matches_patch87_and_oracle(name, requests, source, compressed, qscale):
+    args, kw = build(requests, source=source if compressed else 2, compressed=compressed, qscale=qscale)
+    ref, new = reference(args, kw), fused(args, kw)
+    torch.cuda.synchronize()
+    assert torch.isfinite(new).all()
+    stats = compare(args, kw, ref, new)
+    print(name, qscale, stats)
+    # FP32 accumulation in either order: the fused error vs FP64 stays within the reference's own (plus one
+    # FP16 ulp of the output scale) and outputs agree to a few FP16 ulps.
+    ref_abs, ref_rel = stats["ref_vs_oracle"]
+    new_abs, new_rel = stats["new_vs_oracle"]
+    scale = float(ref.float().abs().max())
+    assert new_rel <= ref_rel * 1.5 + 1e-4, stats
+    assert new_abs <= ref_abs + scale * 2 ** -10, stats
+    assert stats["max_abs_ref_vs_new"] <= scale * 2 ** -8, stats
+
+
+@pytest.mark.parametrize("tokens", [1, 4, 16])
+def test_split_mode_matches(tokens):
+    requests = [(3000 + 97 * r, 1) for r in range(tokens)]
+    args, kw = build(requests, source=2, qscale=4.0)
+    ref, new = reference(args, kw), fused(args, kw)
+    split = fused(args, kw, split=True)
+    torch.cuda.synchronize()
+    stats = compare(args, kw, ref, split)
+    print("split", tokens, stats, "split vs unsplit max", float((split.float() - new.float()).abs().max()))
+    ref_abs, ref_rel = stats["ref_vs_oracle"]
+    assert stats["new_vs_oracle"][1] <= ref_rel * 1.5 + 1e-4, stats
+
+
+def test_invalid_rows_and_rejections():
+    args, kw = build([(0, 64)], source=2)
+    new = fused(args, kw)
+    ref = reference(args, kw)
+    torch.cuda.synchronize()
+    dead = ~args[2].valid
+    # invalid rows: no live key, the sink alone -> zero output, as in the reference
+    assert torch.equal(new[dead], ref[dead]) and float(new[dead].abs().max()) == 0.0
+    with pytest.raises(RuntimeError):
+        fused((args[0][:, :4].contiguous(),) + args[1:], kw)       # 4 heads: refused
+    with pytest.raises(RuntimeError):
+        bad = dict(kw, topk=kw["topk"][:, :256].contiguous())
+        fused(args, bad)
+
+
+def _time(fn, reps):
+    for _ in range(3):
+        fn()
+    torch.cuda.synchronize()
+    times = []
+    for _ in range(reps):
+        a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        a.record()
+        fn()
+        b.record()
+        b.synchronize()
+        times.append(a.elapsed_time(b))
+    times.sort()
+    return {"median_ms": times[len(times) // 2], "min_ms": times[0], "max_ms": times[-1], "reps": reps}
+
+
+def bench(out_path):
+    from tensorfold.cuda.sm70 import ds41_sparse_attention as sa
+    results = {"device": torch.cuda.get_device_name(), "cases": []}
+    shapes = [("chunk 8192 from 0", [(0, 8192)]), ("chunk 8192 from 8192 (16K prompt)", [(8192, 8192)])]
+    for label, requests in shapes:
+        for source, compressed in ((2, True), (20, True), (2, False)):
+            args, kw = build(requests, source=source, compressed=compressed, qscale=2.0)
+            ref, new = reference(args, kw), fused(args, kw)
+            torch.cuda.synchronize()
+            row = {"shape": label, "source": source if compressed else None, "ratio": SOURCES[source] if compressed else 0,
+                   "numerics": compare(args, kw, ref, new, samples=48),
+                   "patch87": _time(lambda: reference(args, kw), 10),
+                   "fused": _time(lambda: fused(args, kw), 10)}
+            row["speedup"] = row["patch87"]["median_ms"] / row["fused"]["median_ms"]
+            print(json.dumps(row), flush=True)
+            results["cases"].append(row)
+            del args, kw, ref, new
+            torch.cuda.empty_cache()
+    for m in (1, 2, 4, 8, 16, 24, 32):
+        requests = [(4000 + 131 * r, 1) for r in range(m)]
+        args, kw = build(requests, source=2, qscale=2.0)
+        scratch = torch.empty(sa.split_scratch_floats(m), dtype=torch.float32, device="cuda")
+        out = torch.empty_like(args[0])
+        row = {"shape": f"decode M={m}", "source": 2, "patch87": _time(lambda: reference(args, kw), 50),
+               "fused": _time(lambda: fused(args, kw, out=out), 50),
+               "fused_split": _time(lambda: fused(args, kw, out=out, split=True, split_scratch=scratch), 50)}
+        print(json.dumps(row), flush=True)
+        results["cases"].append(row)
+    with open(out_path, "w") as f:
+        json.dump(results, f, indent=1)
+
+
+if __name__ == "__main__":
+    bench(sys.argv[1])
