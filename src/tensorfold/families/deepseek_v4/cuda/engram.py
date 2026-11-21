@@ -29,8 +29,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import torch
-import triton
-import triton.language as tl
+
+from .kernels.triton_utils import jit, tl
 
 ROW_BYTES = 144
 ROW_VALUES = 256
@@ -74,6 +74,7 @@ class HostEngram:
                 import fcntl
                 fcntl.fcntl(self.fd, _F_ADD_SEALS, _F_SEAL_SEAL | _F_SEAL_SHRINK | _F_SEAL_GROW | _F_SEAL_WRITE)
                 self.address = _map(self.fd, self.size, _PROT_READ)
+                self._register(rank)
                 store.set(key, f"{os.getpid()} {self.fd} {self.size}")
             else:
                 pid, fd, size = (int(v) for v in store.get(key).decode().split())
@@ -81,17 +82,25 @@ class HostEngram:
                     raise RuntimeError(f"rank 0's Engram table has {size} bytes, expected {self.size}")
                 self.fd = os.open(f"/proc/{pid}/fd/{fd}", os.O_RDONLY | os.O_CLOEXEC)
                 self.address = _map(self.fd, self.size, _PROT_READ)
-            code = torch.cuda.cudart().cudaHostRegister(self.address, self.size,
-                                                    _REGISTER_PORTABLE | _REGISTER_MAPPED | _REGISTER_READ_ONLY)
-            if int(code) != 0:
-                raise RuntimeError(f"cudaHostRegister of the Engram table failed (CUDA error {int(code)})")
-            self.registered = True
-            _require_host(self.address)
+                self._register(rank)
             self.pointer = _Pointer(self.address)     # UVA: the host address is valid on the device
         except BaseException:
             self.close()
             raise
         self.seconds = time.perf_counter() - started
+
+    def _register(self, rank):
+        # Rank 0 registers before it publishes the table; the followers register after it, concurrently. m1g: five
+        # of eight registrations made while rank 0's own was in flight failed (kernel "Cannot map memory ... of
+        # 0x19bffe4 pages": the driver's long-term pin came back short); m1e's seven follower registrations after
+        # rank 0 all passed.
+        code = torch.cuda.cudart().cudaHostRegister(self.address, self.size,
+                                                    _REGISTER_PORTABLE | _REGISTER_MAPPED | _REGISTER_READ_ONLY)
+        if int(code) != 0:
+            raise RuntimeError(f"rank {rank}: cudaHostRegister of the {self.size >> 30} GiB Engram table failed "
+                               f"(CUDA error {int(code)}; the kernel log names the short page pin)")
+        self.registered = True
+        _require_host(self.address)
 
     device_bytes = 0          # Engram table bytes resident in VRAM: none, by construction (verified in __init__)
 
@@ -173,7 +182,7 @@ def _fill(address, total, path, offset, threads):
         view.release()
 
 
-@triton.jit
+@jit                    # the SM70 Triton 3.2 profile's launch options (ptx_version 83 for CUDA 12.9)
 def _gather_iq4nl(hashes, table, out, CHANNEL, BASE, ROWS, HEADS: tl.constexpr):
     pid = tl.program_id(0)
     token = pid // HEADS

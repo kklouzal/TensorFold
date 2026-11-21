@@ -2,6 +2,8 @@
 # Provenance: friend overlay patch 85 (SPDX Apache-2.0), snapshot lp-snap-c1es8-numa-admit2-imgtext-share2-fix5-ram4-stepbud-ram3-memfix-ctx1m-ppovl-opt2-pfx-1-eng-pfxfix4,
 #   patches/ds41mu_files/local_mu_paged.py (sha256 3ac959e66df2226bde2736e987e91daab6ceffff9a27f6ada12d5c951a742712).
 # TensorFold changes: imports through the package's triton_utils; kernels and wrappers verbatim.
+# - tl.dot -> triton_utils.fma_dot(_acc): the FP32 FMA dot his Triton 3.6 runs on SM70 (Triton 3.2's MMAv1
+#   results cannot be reduced on SM70; see triton_utils).
 # - @triton.jit -> triton_utils.jit: the same JITFunction; launches add the SM70 Triton 3.2 profile options
 #   (ptx_version=83, needed with CUDA 12.9 ptxas). Kernel arithmetic unchanged.
 # - Lint-only source edits: range(0, n) -> range(n) for the 0/1-trip loops (identical Triton loop).
@@ -33,7 +35,7 @@ Pure Triton; no vLLM import.
 
 import torch
 
-from .triton_utils import jit, tl, triton
+from .triton_utils import fma_dot_acc, jit, tl, triton
 
 
 def _check_table(block_table, cache):
@@ -263,7 +265,7 @@ def _mu_index_scores(
                 q + (t * H + h)[:, None] * 128 + k * 32 + d[None, :], (h < H)[:, None], 0.0
             )
             kv = tl.load(cache + base + k * 32 + d[None, :], inside[:, None], 0.0)
-            acc = tl.dot(qv, tl.trans(kv), acc)
+            acc = fma_dot_acc(qv, tl.trans(kv), acc)
         score = acc.to(tl.float16).to(tl.float32)
         score = tl.maximum(score, 0.0)
         wv = tl.load(w + t * H + h, h < H, 0.0).to(tl.float32)

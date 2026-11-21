@@ -2,6 +2,8 @@
 # Provenance: friend overlay patch 87 (SPDX Apache-2.0), snapshot lp-snap-c1es8-numa-admit2-imgtext-share2-fix5-ram4-stepbud-ram3-memfix-ctx1m-ppovl-opt2-pfx-1-eng-pfxfix4,
 #   patches/ds41mu_files/local_mu_packed.py (sha256 73d7e820dbf31321f26a5c4676b2d69353a3d5ec9fa744234526db81d638efe0).
 # TensorFold changes (kernel arithmetic and wrapper validation verbatim):
+# - tl.dot -> triton_utils.fma_dot(_acc): the FP32 FMA dot his Triton 3.6 runs on SM70 (Triton 3.2's MMAv1
+#   results cannot be reduced on SM70; see triton_utils).
 # - @triton.jit -> triton_utils.jit: the same JITFunction; launches add the SM70 Triton 3.2 profile options
 #   (ptx_version=83, needed with CUDA 12.9 ptxas). Kernel arithmetic unchanged.
 # - vllm.models.deepseek_v41.{attention_ops,kv_pack} -> the vendored package modules; triton via triton_utils.
@@ -78,7 +80,7 @@ from .kv_pack import (
     unpack_c_row,
 )
 from .mu_topk import topk as _topk
-from .triton_utils import jit, tl, triton
+from .triton_utils import fma_dot, jit, tl, triton
 
 LOG = "LOCAL-PATCH 87"
 # Window ring rows per slot and layer: a token at p reads p-127..p, of which
@@ -266,7 +268,7 @@ def _pk_index_scores(
                     lo.to(tl.float32, bitcast=True), hi.to(tl.float32, bitcast=True)
                 )
                 kv = tl.reshape(pair, (BN, 32)).to(tl.float16)  # unscaled E2M1, exact
-                piece = tl.dot(qv, tl.trans(kv))
+                piece = fma_dot(qv, tl.trans(kv))
                 exponent = tl.load(base + 64 + g, inside, 127).to(tl.int32)
                 acc += piece * (exponent << 23).to(tl.float32, bitcast=True)[None, :]
             score = tl.maximum(acc.to(tl.float16).to(tl.float32), 0.0)

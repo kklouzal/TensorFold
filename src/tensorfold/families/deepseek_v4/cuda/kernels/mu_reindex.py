@@ -2,6 +2,8 @@
 # Provenance: friend overlay patch 170 (SPDX Apache-2.0), snapshot lp-snap-c1es8-numa-admit2-imgtext-share2-fix5-ram4-stepbud-ram3-memfix-ctx1m-ppovl-opt2-pfx-1-eng-pfxfix4,
 #   patches/ds41mu_files/local_ds41_mu_reindex.py (sha256 4a7e181eab7f29cd711a2bc5d1b20c209cd08ca71da29fc4f2325360314a0995).
 # TensorFold changes (kernel arithmetic, candidate rules and prefill selector verbatim):
+# - tl.dot -> triton_utils.fma_dot(_acc): the FP32 FMA dot his Triton 3.6 runs on SM70 (Triton 3.2's MMAv1
+#   results cannot be reduced on SM70; see triton_utils).
 # - @triton.jit -> triton_utils.jit: the same JITFunction; launches add the SM70 Triton 3.2 profile options
 #   (ptx_version=83, needed with CUDA 12.9 ptxas). Kernel arithmetic unchanged.
 # - vLLM imports -> the vendored package (attention_ops, mu_packed, index_topk, mu_topk); triton via triton_utils.
@@ -69,7 +71,7 @@ from . import mu_packed as pk
 from .attention_ops import _e2m1_bits
 from .index_topk import index_topk
 from .mu_topk import topk as _seg_topk
-from .triton_utils import jit, tl, triton
+from .triton_utils import fma_dot, jit, tl, triton
 
 LOG = "LOCAL-PATCH 170"
 TOP_K = 512
@@ -171,7 +173,7 @@ def _rx_scores(
                     lo.to(tl.float32, bitcast=True), hi.to(tl.float32, bitcast=True)
                 )
                 kv = tl.reshape(pair, (BN, 32)).to(tl.float16)  # unscaled E2M1, exact
-                piece = tl.dot(qv, tl.trans(kv))
+                piece = fma_dot(qv, tl.trans(kv))
                 exponent = tl.load(base + 64 + g, inside, 127).to(tl.int32)
                 acc += piece * (exponent << 23).to(tl.float32, bitcast=True)[None, :]
             score = tl.maximum(acc.to(tl.float16).to(tl.float32), 0.0)

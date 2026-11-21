@@ -3,6 +3,8 @@
 # Provenance: 1Cat-vLLM 4d57473db67eb77a13018d179e4d95169e82044f
 #   vllm/models/deepseek_v41/attention_ops.py (blob f9dfadc1cbb0a602a7eb56dce19ac09da67e2b58)
 # TensorFold changes (kernel arithmetic verbatim):
+# - tl.dot -> triton_utils.fma_dot(_acc): the FP32 FMA dot his Triton 3.6 runs on SM70 (Triton 3.2's MMAv1
+#   results cannot be reduced on SM70; see triton_utils).
 # - @triton.jit -> triton_utils.jit: the same JITFunction; launches add the SM70 Triton 3.2 profile options
 #   (ptx_version=83, needed with CUDA 12.9 ptxas). Kernel arithmetic unchanged.
 # - vllm.triton_utils -> triton_utils; vllm.envs flags -> module constants at the friend's production values:
@@ -24,7 +26,7 @@ import torch
 
 from .index_topk import index_topk, index_topk_parallel
 from .kv_pack import C_ROW, I_ROW, pack_c_group, pack_i_group, unpack_c_row
-from .triton_utils import jit, on_triton_device, tl, triton
+from .triton_utils import fma_dot, jit, on_triton_device, tl, triton
 
 
 @jit
@@ -410,14 +412,14 @@ def _sparse_attention_fused(
         dead = (tl.load(unused + token * WIDTH + k, live, 1) != 0) | ~live
         rows = addr.to(tl.pointer_type(tl.float16))
         kv = tl.load(rows[:, None] + d[None, :], ~dead[:, None], 0.0)
-        s = tl.dot(query, tl.trans(kv)) * scale
+        s = fma_dot(query, tl.trans(kv)) * scale
         s = tl.where(dead[None, :], float("-inf"), s)
         m_new = tl.maximum(m, tl.max(s, 1))
         safe = tl.where(m_new == float("-inf"), 0.0, m_new)
         prob = tl.exp(s - safe[:, None])
         alpha = tl.exp(m - safe)
         l = l * alpha + tl.sum(prob, 1)
-        acc = acc * alpha[:, None] + tl.dot(prob.to(tl.float16), kv)
+        acc = acc * alpha[:, None] + fma_dot(prob.to(tl.float16), kv)
         m = m_new
     z = tl.load(sink + h)
     top = tl.maximum(m, z)
@@ -598,7 +600,7 @@ def _index_scores(
         sign = ((code >> 3) & 1).to(tl.uint32) << 31
         mag = (mag.to(tl.uint32, bitcast=True) | sign).to(tl.float32, bitcast=True)
         kv = (mag * (exponent << 23).to(tl.float32, bitcast=True)).to(tl.float16)
-        score = tl.dot(qv, tl.trans(kv)).to(tl.float16).to(tl.float32)
+        score = fma_dot(qv, tl.trans(kv)).to(tl.float16).to(tl.float32)
         score = tl.maximum(score, 0.0)
         wv = tl.load(w + tt * H + hh, tt < T, 0.0).to(tl.float32)
         score = (score * wv[:, None]).to(tl.float16).to(tl.float32)
@@ -710,7 +712,7 @@ def _decode_block(
         hi = _e2m1_bits((byte >> 4) & 7) | (((byte >> 7) & 1).to(tl.uint32) << 31)
         pair = tl.join(lo.to(tl.float32, bitcast=True), hi.to(tl.float32, bitcast=True))
         kv = tl.reshape(pair, (BN, 32)).to(tl.float16)  # unscaled E2M1, exact
-        part = tl.dot(qv, tl.trans(kv))
+        part = fma_dot(qv, tl.trans(kv))
         exponent = tl.load(base + 64 + g, live, 127).to(tl.int32)
         acc += part * (exponent << 23).to(tl.float32, bitcast=True)[None, :]
     score = tl.maximum(acc.to(tl.float16).to(tl.float32), 0.0)
