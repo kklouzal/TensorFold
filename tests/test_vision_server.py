@@ -557,7 +557,7 @@ def test_cuda_required_call_continuation_keeps_the_images(monkeypatch, tmp_path)
     monkeypatch.setattr(qwen_processing, "continued",
                         lambda prepared, ids, config: grown.append((prepared, list(ids), config)) or NS(ids=list(ids)))
     cuts = iter([(0, [1000])])
-    app._call_gate = lambda prompt, tools: NS(cut=lambda new: next(cuts, None), observe=lambda token: None)
+    app._call_gate = lambda prompt, tools, *, thinking=False: NS(cut=lambda new: next(cuts, None), observe=lambda token: None)
     tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "object", "properties": {}}}}]
     body = {"messages": image_messages(), "max_tokens": 4, "tools": tools, "tool_choice": "required"}
     prepared = app.prepare(body, True)
