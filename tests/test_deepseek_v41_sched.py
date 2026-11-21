@@ -90,9 +90,9 @@ def _fake_target(monkeypatch, layers=5, engram=(2,)):
         SimpleNamespace(index=i, engram_wkv=object() if i in engram else None, ratio=i % 2, hc=hc(i),
                         attn_norm=1 + i / 10, ffn_norm=1 - i / 20) for i in range(layers)])
     t.compressed_rope, t.window_rope = "compressed", "window"
-    t.attention = lambda ly, x, step, table, shared: (log.append(("attention", ly.index, table)), x * (1 + ly.index / 9) + 1)[1]
-    t.moe = lambda ly, x, image: (log.append(("moe", ly.index)), x * 0.5 - ly.index / 3)[1]
-    t.engram_layer = lambda ly, hidden, hashes, step, valid: (log.append(("engram", ly.index)), hidden * 1.01 + 0.5)[1]
+    t.attention = lambda ly, x, step, table, shared, shard: (log.append(("attention", ly.index, table)), x * (1 + ly.index / 9) + 1)[1]
+    t.moe = lambda ly, x, image, shard, rows: (log.append(("moe", ly.index)), x * 0.5 - ly.index / 3)[1]
+    t.engram_layer = lambda ly, hidden, hashes, step, valid, shard: (log.append(("engram", ly.index)), hidden * 1.01 + 0.5)[1]
     return t, log
 
 
@@ -103,7 +103,7 @@ def _run(t, stops):
     pre[:, 0] = 1
     st = {"step": None, "hashes": None, "hidden": hidden, "pre": pre, "shared": {"topk": None}, "mix": None,
           "half": None, "next": 0, "result": None,
-          "valid": None, "image": None}
+          "valid": None, "image": None, "shard": None}
     for stop in stops:
         t.layers(st, stop)
     assert st["next"] == t.units
@@ -136,7 +136,7 @@ def test_marks_time_each_unit(monkeypatch):
     monkeypatch.setattr(torch.cuda, "Event", Event)
     st = {"step": None, "hashes": None, "hidden": torch.ones(2, 4, 8), "pre": torch.ones(2, 4), "shared": {},
           "mix": None, "half": None, "next": 0, "result": None,
-          "valid": None, "image": None}
+          "valid": None, "image": None, "shard": None}
     marks = []
     t.layers(st, 1, marks)
     t.layers(st, 4, marks)
@@ -195,3 +195,52 @@ def test_bucket():
     assert [d._bucket(n) for n in (1, 3, 9, 17, 32)] == [1, 4, 16, 24, 32]
     d.e.graphs = None
     assert d._bucket(9) == 9
+
+
+@pytest.mark.parametrize("tokens", [57, 64, 1024, 1031, 4100, 8192])
+def test_shards_cover_every_row_once_and_none_is_empty(tokens):
+    from tensorfold.families.deepseek_v4.cuda.target import Shard
+    shards = [Shard.of(tokens, r, 8) for r in range(8)]
+    assert all(s.rows >= 1 and s.size == shards[0].size for s in shards)
+    covered = [i for s in shards for i in range(s.first, s.first + s.rows)]
+    assert covered == list(range(tokens))
+    x = torch.arange(tokens * 2, dtype=torch.float16).view(tokens, 2)
+    padded = shards[0].padded(x)
+    assert padded.shape == (8 * shards[0].size, 2) and padded.dtype == torch.float32
+    assert torch.equal(padded[:tokens], x.float()) and not padded[tokens:].any()
+
+
+def test_engram_layer_with_a_shard_looks_up_every_row_and_gates_its_own(monkeypatch):
+    """K15: the column-sharded Engram projection needs every row on every rank; the gate takes the shard's rows."""
+    from tensorfold.families.deepseek_v4.cuda import target as T
+    from tensorfold.families.deepseek_v4.cuda.kernels import engram as kengram
+    tokens, h = 64, 4
+    shard = T.Shard.of(tokens, 3, 8)
+    seen = {}
+
+    class Engram:
+        def lookup(self, hashes, channel, out):
+            assert out.shape[0] == hashes.shape[0] == tokens and out.is_contiguous()
+            out.copy_(hashes[:, 0, :1].to(out.dtype).expand_as(out))      # row r carries r
+            return out
+
+    def gate(hidden, projected, q, k, valid, inplace=False):
+        seen.update(hidden=hidden.shape, projected=projected.clone(), valid=valid.clone())
+        return hidden
+
+    monkeypatch.setattr(kengram, "apply_engram_gate", gate)
+    t = object.__new__(T.Target)
+    t.g = SimpleNamespace(engram_layers=(1,))
+    t.engram = Engram()
+    t.engram_rows = torch.empty(tokens, 6, dtype=torch.float16)
+    t.c = SimpleNamespace(gather=lambda x: x)
+    t._linear = lambda x, w: x
+    hashes = torch.arange(tokens)[:, None, None].expand(tokens, 2, 24).contiguous()
+    step = SimpleNamespace(valid=torch.arange(tokens) % 5 != 0)
+    hidden = torch.zeros(shard.rows, 4, h)
+    ly = SimpleNamespace(index=1, engram_wkv=None, engram_q=None, engram_k=None)
+    t.engram_layer(ly, hidden, hashes, step, step.valid, shard)
+    rows = torch.arange(shard.first, shard.first + shard.rows)
+    assert seen["hidden"] == (shard.rows, 4, h)
+    assert torch.equal(seen["projected"][:, 0], rows.half())
+    assert torch.equal(seen["valid"], step.valid[rows])

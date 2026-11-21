@@ -120,6 +120,36 @@ class Collectives:
         self._all_reduce(rows)
         return rows
 
+    # ---- sequence-parallel prompt rows (target.Shard): rank r owns rows [r * S, min((r + 1) * S, T))
+    def scatter_sum(self, padded: torch.Tensor, shard) -> torch.Tensor:
+        """FP32 NCCL reduce-scatter of [W * S, dims] FP32 partials (rows >= T zero): this rank's FP32 row sums
+        [rows, dims] of its shard, rounded once to FP16 (the FP32 sum ``sum`` rounds, on 1 / W of the rows)."""
+        import ctypes
+        rows, dims = padded.shape
+        if padded.dtype != torch.float32 or not padded.is_contiguous() or rows != WORLD * shard.size:
+            raise ValueError("scatter_sum needs contiguous FP32 [world x shard size, dims] partials")
+        out = torch.empty(shard.size, dims, dtype=torch.float32, device=padded.device)
+        comm = self.world
+        fn = comm.lib.ncclReduceScatter
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                       ctypes.c_void_p, ctypes.c_void_p]
+        fn.restype = ctypes.c_int
+        stream = torch.cuda.current_stream().cuda_stream
+        comm._check(fn(padded.data_ptr(), out.data_ptr(), out.numel(), _NCCL_TYPES[torch.float32], _NCCL_SUM,
+                       comm.comm, stream))
+        return out[:shard.rows].to(torch.float16)
+
+    def gather_rows(self, part: torch.Tensor, shard) -> torch.Tensor:
+        """Every rank's shard rows [rows, ...] concatenated in rank order: the full [T, ...] tensor (exact copies)."""
+        part = part.contiguous()
+        if part.shape[0] != shard.size:     # a short last shard sends S rows (the rows past T are never read)
+            padded = torch.empty((shard.size,) + tuple(part.shape[1:]), dtype=part.dtype, device=part.device)
+            padded[:part.shape[0]].copy_(part)
+            part = padded
+        recv = torch.empty((WORLD * shard.size,) + tuple(part.shape[1:]), dtype=part.dtype, device=part.device)
+        self.world.all_gather(part, recv)
+        return recv[:shard.tokens]
+
     def gather(self, part: torch.Tensor) -> torch.Tensor:
         """Concatenate the eight ranks' parts along the last dimension, rank order."""
         part = part.contiguous()
