@@ -6,6 +6,11 @@ same-host control pipes as one small frame before rank 0 issues its own identica
 
 Per-stream state lives in slots (patch 85's SlotTable semantics): KV pages, the window rings, the Engram n-gram
 history and the ratio-2 compressor partials. A slot is reset when a stream takes it; the last slot is scratch.
+
+Serving (``serve=True``, the family's ``cuda_engine``): rank 0 owns the shared CUDA Scheduler and this provider's
+``Decoder`` (the Gemma 4 SM70 Decoder's round structure): one batched decode forward over every decoding stream a
+round, and between rounds the next prompt chunk of a filling stream; while streams decode, a chunk runs in layer
+groups sized from measured per-layer costs so a decode round waits about ``DECODE_GAP_MS`` (175 ms), not a chunk.
 """
 
 from __future__ import annotations
@@ -17,19 +22,24 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-OP_ATTACH, OP_DETACH, OP_STEP, OP_STOP = 1, 2, 3, 9
+OP_ATTACH, OP_DETACH, OP_STEP, OP_LAYERS, OP_STOP = 1, 2, 3, 4, 9
 _HEAD = struct.Struct("<qqqqq")
 PIPE_TIMEOUT = 600.0
-MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens)
+MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
+MAX_STREAMS = 32
 RESERVE = 3 << 30          # bytes left free per rank for prompt transients, after the KV pool
 
 
 class DS41Engine:
     tp = 8
-    concurrent = False
+    concurrent = True                # serving: the shared Scheduler runs concurrent streams
+    supports_canonical_prefix_archive = False
+    supports_teacher_forcing = False
+    penalties_supported = True
 
     def __init__(self, model_dir: Path, *, rank: int, tp: int, master: str = "", master_port: int = 29551,
-                 context: int | None = None, slots: int = 4, max_tokens: int = MAX_TOKENS, **_options) -> None:
+                 context: int | None = None, slots: int = 4, max_tokens: int = MAX_TOKENS, parallel: int | None = None,
+                 serve: bool = False, queue_timeout_s: float | None = None, **_options) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -41,9 +51,14 @@ class DS41Engine:
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8 (TP8 attention/dense, ETP4 x EP2 experts)")
         model_dir = Path(model_dir)
+        if parallel is not None:
+            if type(parallel) is not int or not 1 <= parallel <= MAX_STREAMS:
+                raise ValueError(f"DeepSeek-V4.1 SM70 serves --parallel 1 to {MAX_STREAMS}")
+            slots = parallel
+        self.streams = slots
         raw = read_config(model_dir)
         self.geometry = g = W.Geometry.from_config(raw)
-        self.context = min(int(context or g.max_positions), g.max_positions)
+        self.context = self.context_window = min(int(context or g.max_positions), g.max_positions)
         self.rank, self.world = rank, tp
         self.vocab = g.vocab
         self.max_tokens = max_tokens
@@ -82,16 +97,60 @@ class DS41Engine:
         self.slots = slots + 1
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device)
+        self.layer_count = len(self.w.layers)
+        self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
+        self.layer_marks = None             # rank 0: per-layer CUDA events of the prompt forward being timed
+        self._warm()
         self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
         if rank == 0 and sorted(self.pipes.piped()) != list(range(1, tp)):
             raise RuntimeError("DeepSeek-V4.1 SM70 requires all eight ranks on one host (control pipes)")
         self.load_seconds = time.perf_counter() - started
+        self.pages = pages
+        self.page_bytes = page_bytes
+        self.decoder = self.scheduler = None
+        self._closed = False
         if rank == 0:
             print(f"[tensorfold] DeepSeek-V4.1 SM70: loaded in {self.load_seconds:.0f} s (Engram table "
                   f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s, host RAM only: VRAM residency "
                   f"{self.engram.device_bytes} B + per-step working buffer "
                   f"{self.target.engram_rows.numel() * 2 >> 20} MiB); KV pool {pages} pages of "
                   f"{page_bytes} B ({pages * 64} tokens), {slots} streams", flush=True)
+        if rank == 0 and serve:
+            from tensorfold.cuda.scheduler import Scheduler
+            self.decoder = Decoder(self)
+            # Requests beyond --parallel wait in the scheduler's queue; --queue-timeout-s bounds that wait (503 after).
+            self.scheduler = Scheduler(self.decoder, max_streams=slots, queue_timeout_s=queue_timeout_s)
+            try:
+                self.scheduler.start()
+            except BaseException as primary:
+                try:
+                    self.scheduler.close()
+                except BaseException as cleanup:
+                    raise primary from cleanup
+                raise
+
+    def _warm(self):
+        """Startup, every rank, no control frames: build the native extensions and compile the forward's Triton
+        kernels on slot 0 (a prompt chunk past the grouped-experts and prefill-indexer thresholds, then one decode
+        row), so the first request builds nothing. Slot 0 is reset by its next attach."""
+        import torch
+        from tensorfold.cuda.sm70 import ds41_prefill_moe, onecat_ds41
+        from .target import DECODE_MAX
+        ds41_prefill_moe.prepare()
+        onecat_ds41.prepare()
+        rows = max(ds41_prefill_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
+        with torch.inference_mode():
+            self._attach(0, rows + 1)
+            self.layer_marks = [] if self.rank == 0 else None
+            self._step([(0, 0, rows)], [self.geometry.bos] * rows, [rows - 1])
+            if self.rank == 0:          # the Decoder's first per-layer, per-row prompt cost estimate (ms)
+                torch.cuda.synchronize()
+                (_, events), = self.layer_marks
+                self.warm_layer_ms = [events[j - 1].elapsed_time(events[j]) / rows for j in range(1, len(events))]
+            self.layer_marks = None
+            self._step([(0, rows, 1)], [self.geometry.bos], [0])
+            self._detach(0)
+        torch.cuda.synchronize()
 
     def _barrier(self):
         import torch
@@ -109,9 +168,11 @@ class DS41Engine:
     def _detach(self, slot):
         self.target.pool.detach(slot)
 
-    def _step(self, entries, ids, logits_rows):
+    def _step(self, entries, ids, logits_rows, stop=0):
         """entries: [(slot, start, count)] in row order; ids: the tokens; logits_rows: token rows to score.
-        Returns rank 0's full-vocabulary FP32 logits [len(logits_rows), vocab] (None elsewhere)."""
+        Returns rank 0's full-vocabulary FP32 logits [len(logits_rows), vocab] (None elsewhere). With
+        0 < ``stop`` < layers the forward pauses after layer ``stop`` (``_layers`` continues it) and returns None;
+        the pause changes no kernel or row."""
         import torch
         from .target import Step, DECODE_MAX
         device = self.target.device
@@ -141,7 +202,33 @@ class DS41Engine:
                     qsl=t(qsl, torch.int32), qsl_cpu=qsl, num_reqs=len(entries), req_slot=t(req_slot, torch.int32),
                     block_table=t(table, torch.int32), prefill=prefill, decode_index=decode_index)
         del rows
-        local = self.target.forward(step, t(logits_rows, torch.long) if logits_rows else None)
+        state = self.target.begin(step)
+        rows = t(logits_rows, torch.long) if logits_rows else None
+        marks = self.layer_marks if qsl[-1] > len(entries) else None     # prompt chunks only, never decode rows
+        if 0 < stop < self.layer_count:
+            if self.part is not None:
+                raise RuntimeError("a DeepSeek-V4.1 prompt forward began while another one is paused")
+            self.part = (state, rows)
+            self.target.layers(state, stop, marks)
+            return None
+        self.target.layers(state, self.layer_count, marks)
+        return self._end(state, rows)
+
+    def _layers(self, stop):
+        """Advance the paused prompt forward to layer ``stop`` (< 0: drop it); at the last layer finish it. Decode
+        forwards may run between its layers (other slots; ``Target.begin``)."""
+        if stop < 0:
+            self.part = None
+            return None
+        state, rows = self.part
+        self.target.layers(state, stop, self.layer_marks)
+        if stop < self.layer_count:
+            return None
+        self.part = None
+        return self._end(state, rows)
+
+    def _end(self, state, rows):
+        local = self.target.end(state, rows)
         if local is None:
             return None
         full = self.coll.gather(local)
@@ -157,7 +244,9 @@ class DS41Engine:
             entries = [tuple(ids[i:i + 3]) for i in range(0, n, 3)]
             tokens = ids[n:n + b]
             rows = ids[n + b:n + b + c]
-            return self._step(entries, tokens, rows)
+            return self._step(entries, tokens, rows, d)
+        if op == OP_LAYERS:
+            return self._layers(a)
         raise RuntimeError(f"unknown DeepSeek-V4.1 control operation {op}")
 
     def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
@@ -182,9 +271,35 @@ class DS41Engine:
                 self._run(op, a, b, c, d, list(payload))
 
     # ---------------------------------------------------------------------------------------- leader
-    def step(self, entries, ids, logits_rows):
+    def step(self, entries, ids, logits_rows, stop=0):
         payload = [v for e in entries for v in e] + list(ids) + list(logits_rows)
-        return self.announce(OP_STEP, len(entries), len(ids), len(logits_rows), 0, payload)
+        return self.announce(OP_STEP, len(entries), len(ids), len(logits_rows), stop, payload)
+
+    def generate(self, prompt: list[int], max_tokens: int, sampling, on_tokens: Callable[[list[int]], Any],
+                 draft: bool = True, stop_eos: bool = True, *, vision=None, constraint=None,
+                 background: bool = False, progress=None, penalties=None, cache_prompt: bool = True,
+                 probabilities=None, **_ignored) -> dict[str, Any]:
+        if self.rank != 0:
+            raise RuntimeError("only rank 0 generates")
+        if vision is not None:
+            raise ValueError("DeepSeek-V4.1 SM70 does not serve image input yet")
+        if not isinstance(prompt, (list, tuple)) or not prompt or any(
+                type(t) is not int or not 0 <= t < self.vocab for t in prompt):
+            raise ValueError("DeepSeek-V4.1 needs a nonempty list of in-vocabulary prompt token IDs")
+        if type(max_tokens) is not int or max_tokens < 1:
+            raise ValueError("max_tokens must be a positive integer")
+        if len(prompt) + max_tokens > self.context:
+            raise ValueError(f"prompt and reply exceed the {self.context}-token admitted context")
+        if self._closed or self.scheduler is None:
+            raise RuntimeError("DeepSeek-V4.1 SM70 engine is not serving")
+        options = {"background": True} if background else {}
+        if penalties is not None and penalties.active:
+            options["penalties"] = penalties
+        return self.scheduler.submit(list(prompt), max_tokens, sampling, False, on_tokens, stop_eos=stop_eos,
+                                     constraint=constraint, probabilities=probabilities, progress=progress, **options)
+
+    def drain(self) -> None:
+        """Requests retire inside the scheduler; nothing to fence for a caller."""
 
     def greedy(self, prompt: list[int], max_tokens: int, slot: int = 0, on_token: Callable | None = None,
                stop_eos: bool = True, top_logprobs: int = 0) -> dict[str, Any]:
@@ -231,7 +346,353 @@ class DS41Engine:
         return {"tokens": out, "logprobs": logprobs, "prefill_s": t1 - t0, "decode_s": t2 - t1,
                 "decode_tok_s": (len(out) - 1) / (t2 - t1) if len(out) > 1 else 0.0}
 
+    def score(self, prompt: list[int], continuation: list[int], slot: int = 0) -> list[float]:
+        """Teacher-forced log probabilities of ``continuation`` after ``prompt`` (rank 0; prompt chunks as greedy)."""
+        import torch
+        if self.rank != 0:
+            raise RuntimeError("only rank 0 scores")
+        tokens = list(prompt) + list(continuation)
+        first = len(prompt) - 1                      # row whose logits predict continuation[0]
+        out = []
+        with torch.inference_mode():
+            self.announce(OP_ATTACH, slot, len(tokens))
+            at = 0
+            while at < len(tokens) - 1:
+                n = min(self.max_tokens, len(tokens) - 1 - at)
+                rows = [r for r in range(n) if at + r >= first]
+                logits = self.step([(slot, at, n)], tokens[at:at + n], rows)
+                if rows:
+                    targets = torch.tensor([tokens[at + r + 1] for r in rows], device=logits.device)
+                    lp = torch.log_softmax(logits.float(), -1).gather(1, targets[:, None])[:, 0]
+                    out += lp.tolist()
+                at += n
+            self.announce(OP_DETACH, slot)
+        return out
+
     def close(self) -> None:
-        if self.rank == 0:
-            self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
-        self.engram.close()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.rank == 0:
+                try:
+                    if self.scheduler is not None:
+                        self.scheduler.close()
+                        self.scheduler = None
+                finally:
+                    self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
+        finally:
+            self.engram.close()
+
+
+class Decoder:
+    """The shared Scheduler's decoder on rank 0: slots, prompt chunks and batched decode rounds.
+
+    A round decides the batch in flight, launches the next batch over every decoding stream (one row each), then
+    delivers the decided tokens and runs the next prompt chunk of the next filling request (round-robin, fixed
+    ``max_tokens`` boundaries: a prompt's arithmetic never depends on load). While streams decode, the chunk runs
+    in layer groups (one per round) of about equal measured cost, so a decoding stream waits one group plus its
+    round (about ``GAP_MS``), not the whole chunk (the Gemma 4 SM70 Decoder's schedule)."""
+
+    def __init__(self, engine: DS41Engine):
+        import torch
+        from tensorfold.cuda.geometry import DECODE_GAP_MS
+        self.e = engine
+        self.GAP_MS = DECODE_GAP_MS
+        self.streams: dict = {}
+        self.filling: list = []
+        self.next_id = 0
+        self._broken = None
+        self.eos = tuple(engine.eos)
+        self.free_slots = list(range(engine.streams - 1, -1, -1))   # the last slot (engine.streams) is scratch
+        self.inflight = None                         # (group, entries, logits, t0) of the launched decode batch
+        self.split = None                            # (stream, chunk, remaining layer stops) of a paused chunk
+        self.round_ms = 50.0                         # GPU time of a recent decode round (EMA; CUDA events)
+        self.layer_ms = list(engine.warm_layer_ms)   # per prompt row, per layer: the last measured chunk
+        self.measuring = None
+        self.started, self.done = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+
+    @property
+    def broken(self):
+        return self._broken
+
+    @broken.setter
+    def broken(self, error):
+        """Fail closed: after a failed operation the ranks may disagree; the TP supervisor retires the cohort."""
+        if error is None or self._broken is not None:
+            return
+        self._broken = error
+        print(f"[tensorfold] DeepSeek-V4.1 SM70 cohort failed: {type(error).__name__}: {error}; retiring every rank",
+              flush=True)
+        from tensorfold.cuda.cohort import notify_failure
+        try:
+            notify_failure()
+        except Exception as failure:          # noqa: BLE001 - the original failure stays the served error
+            print(f"[tensorfold] TP supervisor notification failed: {failure}", flush=True)
+
+    def live(self) -> int:
+        return len(self.streams) + len(self.filling)
+
+    def usage(self) -> dict:
+        pool = self.e.target.pool
+        held = (pool.pages - len(pool.free)) * self.e.page_bytes
+        budget = pool.pages * self.e.page_bytes
+        per_token = self.e.page_bytes // 64
+        return {"kv": {"budget_bytes": budget, "held_bytes": held, "active_bytes": held,
+                       "usage_ratio": round(held / budget, 6) if budget else None, "bytes_per_token": per_token,
+                       "free_tokens_estimate": len(pool.free) * 64}}
+
+    def _check(self):
+        if self._broken is not None:
+            raise RuntimeError("DeepSeek-V4.1 SM70 ranks may be out of step after an error; restart the server") \
+                from self._broken
+
+    def _ends(self, s):
+        return self.eos if s.stop_eos else ()
+
+    # ------------------------------------------------------------------------------------------ admission
+    def admit(self, s) -> None:
+        from tensorfold.cuda.memory_gate import NoRoom
+        from tensorfold.engine.penalties import History
+        self._check()
+        e = self.e
+        if s.vision is not None:
+            raise ValueError("DeepSeek-V4.1 SM70 does not serve image input yet")
+        capacity = len(s.prompt) + s.count
+        if capacity > e.context:
+            raise ValueError(f"prompt and reply exceed the {e.context}-token admitted context")
+        need = -(-capacity // 64)
+        if need > e.pages:
+            raise ValueError(f"a {len(s.prompt)}-token prompt with {s.count} reply tokens needs {need} KV pages per "
+                             f"GPU; {e.pages} exist")
+        if need > len(e.target.pool.free) or not self.free_slots:
+            raise NoRoom("DeepSeek-V4.1 KV pages or slots are in use; waiting for a stream to finish")
+        slot = self.free_slots.pop()
+        try:
+            e.announce(OP_ATTACH, slot, capacity)
+        except BaseException as error:
+            self.free_slots.append(slot)
+            self.broken = error
+            raise
+        s.slot, s.st, s.pos = slot, slot, 0
+        s.sid, self.next_id = self.next_id, self.next_id + 1
+        s.history = History(s.penalties, s.prompt) if s.penalties is not None and s.penalties.active else None
+        s.forced = getattr(s.probabilities, "forced", None)
+        self.filling.append(s)
+
+    def cancel(self, gone) -> list:
+        """Filling requests whose clients left end now (their slots retire in ``finish``)."""
+        out = []
+        for s in gone:
+            if self.split is not None and self.split[0] is s:
+                self.split = None
+                self.e.announce(OP_LAYERS, -1)
+            if s in self.filling:
+                self.filling.remove(s)
+                s.done, s.finished = True, time.perf_counter()
+                out.append(s)
+        return out
+
+    def finish(self, done) -> None:
+        for s in done:
+            self.streams.pop(getattr(s, "sid", None), None)
+            if s in self.filling:
+                self.filling.remove(s)
+            slot = getattr(s, "slot", None)
+            if slot is None:
+                continue
+            s.slot = s.st = None
+            if self._broken is None:
+                try:
+                    self.e.announce(OP_DETACH, slot)
+                except BaseException as error:
+                    self.broken = error
+                    raise
+                self.free_slots.append(slot)
+
+    def drop(self, error=None) -> list:
+        """After an error in a round: forget every live stream; the ranks can no longer be trusted to agree."""
+        live = [s for s in self.streams.values() if not s.done] + self.filling
+        self.streams, self.filling, self.inflight, self.split = {}, [], None, None
+        if self._broken is None:
+            self.broken = error or RuntimeError("a DeepSeek-V4.1 SM70 round failed")
+        return live
+
+    # ------------------------------------------------------------------------------------------ rounds
+    def round(self) -> list:
+        """Wait for the batch in flight and decide its tokens, launch the next batch at once, then (while it runs)
+        deliver the decided tokens and run the next prompt chunk or layer group."""
+        import torch
+        self._check()
+        done = []
+        with torch.inference_mode():
+            try:
+                decided = self._collect() if self.inflight is not None else []
+                ending = {id(s) for s, chosen in decided if chosen is None or self._ends_after(s, chosen)}
+                live = [s for s in self.streams.values() if not s.done and id(s) not in ending]
+                if live:
+                    self._launch(live, {id(s): chosen for s, chosen in decided if chosen is not None})
+                for s, chosen in decided:
+                    if chosen is not None:
+                        s.take(chosen, self._ends(s))
+                    if s.done:
+                        done.append(s)
+                if self.filling or self.split is not None:
+                    done += self._fill()
+            except BaseException as error:
+                self.broken = error
+                raise
+        return done
+
+    def _ends_after(self, s, chosen):
+        return len(s.out) + len(chosen) >= s.count or (s.stop_eos and chosen[-1] in self.eos)
+
+    def _fill(self) -> list:
+        e = self.e
+        if self.split is not None:                  # the paused chunk continues first (one paused forward at most)
+            s, chunk, plan = self.split
+            stop = plan.pop(0) if self.streams and plan else e.layer_count
+            t0 = time.perf_counter()
+            out = e.announce(OP_LAYERS, stop)
+            s.prefill_s += time.perf_counter() - t0
+            if stop < e.layer_count:
+                return []
+            self.split = None
+            return self._filled(s, chunk, out)
+        foreground = [x for x in self.filling if not x.background]
+        s = (foreground or self.filling)[0]
+        n, start = len(s.prompt), s.pos
+        stop = min(n, start + e.max_tokens)
+        last = stop == n
+        plan = self._plan(stop - start)
+        t0 = time.perf_counter()
+        out = e.step([(s.slot, start, stop - start)], s.prompt[start:stop], [stop - start - 1] if last else [],
+                     plan[0] if plan[0] < e.layer_count else 0)
+        s.prefill_s += time.perf_counter() - t0
+        if plan[0] < e.layer_count:
+            self.split = (s, (start, stop, last), plan[1:])
+            return []
+        return self._filled(s, (start, stop, last), out)
+
+    def _filled(self, s, chunk, logits) -> list:
+        start, stop, last = chunk
+        n = len(s.prompt)
+        s.pos = stop
+        self.filling.remove(s)
+        if s.on_fill is not None:
+            s.on_fill(stop)
+        if not last:
+            self.filling.append(s)                     # round-robin: back of the line
+            return []
+        s.context = list(s.prompt)
+        s.started = time.perf_counter()
+        self.streams[s.sid] = s
+        try:
+            first = self._choose(s, logits[-1:], n)
+        except Exception as error:          # noqa: BLE001  (this request fails alone)
+            s.error, s.done, s.finished = error, True, time.perf_counter()
+            return [s]
+        s.take([first], self._ends(s))
+        return [s] if s.done else []
+
+    def _plan(self, rows) -> list:
+        """Layer stops of the next prompt chunk (the last is every layer): one forward with no stream decoding,
+        otherwise groups of about equal measured cost so a group plus a decode round stays near GAP_MS. The
+        grouping changes no kernel, so it may follow the load."""
+        from tensorfold.cuda.geometry import group_target, layer_groups
+        e = self.e
+        L = e.layer_count
+        self._absorb()
+        if rows > 64:
+            self.measuring = (rows, [])
+            e.layer_marks = self.measuring[1]
+        if not self.streams:
+            return [L]
+        return layer_groups([ms * rows for ms in self.layer_ms], group_target(self.GAP_MS, self.round_ms))
+
+    def _absorb(self) -> None:
+        """Per-layer per-row costs from the timed chunk once its events completed (never waits)."""
+        if self.measuring is None:
+            return
+        rows, marks = self.measuring
+        self.measuring, self.e.layer_marks = None, None
+        ms = [None] * self.e.layer_count
+        for first, events in marks:
+            if not events[-1].query():
+                return
+            for j in range(1, len(events)):
+                ms[first + j - 1] = events[j - 1].elapsed_time(events[j]) / rows
+        if None not in ms:
+            self.layer_ms = ms
+
+    def _launch(self, live, pending):
+        """Launch one decode forward over ``live`` (row order = stream order); ``pending``: decided, undelivered
+        tokens."""
+        e = self.e
+        entries, ids = [], []
+        for s in live:
+            extra = pending.get(id(s), ())
+            token = extra[-1] if extra else s.out[-1]
+            entries.append((s.slot, len(s.prompt) + len(s.out) + len(extra) - 1, 1))
+            ids.append(token)
+        self.started.record()
+        t0 = time.perf_counter()
+        logits = e.step(entries, ids, list(range(len(entries))))
+        self.done.record()
+        self.inflight = (live, entries, logits, t0)
+
+    def _collect(self):
+        """Wait for the batch in flight; decide each stream's token: [(stream, [token] | None)]."""
+        live, entries, logits, t0 = self.inflight
+        self.inflight = None
+        self.done.synchronize()
+        self.round_ms = 0.8 * self.round_ms + 0.2 * self.started.elapsed_time(self.done)
+        decided = []
+        for g, s in enumerate(live):
+            if s.done or self.streams.get(s.sid) is not s:
+                continue                                    # ended/cancelled/yielded after this launch
+            try:
+                chosen = [self._choose(s, logits[g:g + 1], entries[g][1] + 1, emitted=len(s.out))]
+                s.counted(1)
+            except Exception as error:          # noqa: BLE001  (this request fails alone)
+                s.error, s.done, s.finished = error, True, time.perf_counter()
+                decided.append((s, None))
+                continue
+            decided.append((s, chosen))
+        return decided
+
+    def _choose(self, s, row, position, emitted=0) -> int:
+        """Sample (or force) the token at ``position`` from one full-vocabulary row; advance grammar/penalties."""
+        from tensorfold.cuda.sampling import sample_rows
+        if s.forced is not None:
+            token = s.forced[emitted]
+        else:
+            if s.constraint is not None:
+                row = row.clone()
+                s.constraint.mask(row)
+            if s.history is not None:
+                row = s.history.apply(row, copy=s.constraint is None)
+            token = sample_rows(row, [position], s.sampling)[0]
+        if s.probabilities is not None:
+            self._score(s, row, position - 1, token)
+        if s.constraint is not None:
+            s.constraint.advance([token])
+        if s.history is not None:
+            s.history.extend([token])
+        return token
+
+    @staticmethod
+    def _score(s, logits, position, token):
+        """Probabilities sink: log probability of ``token`` after ``position`` (+ top)."""
+        import torch
+        sink = s.probabilities
+        lp = torch.log_softmax(logits[-1:].float(), -1)[0]
+        if sink.top:
+            values, ids = torch.topk(lp, sink.top)
+            tops, topv = ids.tolist(), values.tolist()
+        else:
+            tops, topv = [], []
+        nxt = position + 1
+        if nxt < sink.start:
+            return
+        sink.add([nxt], [token], [float(lp[token])], [tops], [topv])

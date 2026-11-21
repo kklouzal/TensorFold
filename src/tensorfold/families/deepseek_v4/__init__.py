@@ -124,4 +124,4 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     from .cuda.engine import DS41Engine
 
     return DS41Engine(Path(model_dir), rank=rank, tp=tp, master=master, master_port=master_port, context=context,
-                      **options)
+                      serve=True, **options)

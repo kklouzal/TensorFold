@@ -267,13 +267,19 @@ class Target:
         projected = self.c.gather(self._linear(rows, ly.engram_wkv))
         return apply_engram_gate(hidden, projected, ly.engram_q, ly.engram_k, step.valid, inplace=True)
 
-    # ---- the whole forward
+    # ---- the whole forward (begin / layers / end: a prompt chunk may pause between layers while decode rounds run)
     def forward(self, step: Step, logits_rows: torch.Tensor | None):
         """Run every layer for ``step``; return this rank's vocabulary-shard logits [rows, vocab / 8] (FP32) of
         ``logits_rows`` (None: no logits)."""
-        from .kernels.mhc import collapse_hc, expand_hc, hc_mixes
-        from .kernels.mhc_fused import hc_transition
-        w, g = self.w, self.g
+        state = self.begin(step)
+        self.layers(state, len(self.w.layers))
+        return self.end(state, logits_rows)
+
+    def begin(self, step: Step) -> dict:
+        """Hash and embed ``step``'s tokens; the returned state runs through ``layers`` then ``end``. A paused
+        state holds only its own tensors: per-slot KV, rings, Engram history and C2 partials are written in layer
+        order, so other forwards may run between its layers (they touch other slots)."""
+        g = self.g
         tokens = step.ids.shape[0]
         hashes = self.hash_state(step.ids, step.positions, step.valid, step.token_req, step.qsl, step.req_slot)
         self.hash_state.commit_all(step.ids, step.positions, step.valid, step.qsl, step.req_slot, step.num_reqs,
@@ -285,10 +291,25 @@ class Target:
         hidden = hidden.float()[:, None].expand(-1, g.hc, -1).contiguous()
         pre = torch.zeros(tokens, g.hc, device=hidden.device, dtype=torch.float32)
         pre[:, 0] = 1
-        shared = {"topk": None}
-        state = None
+        return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": {"topk": None},
+                "mix": None, "next": 0, "result": None}
+
+    def layers(self, st: dict, stop: int, marks: list | None = None) -> None:
+        """Advance ``st`` through layers [st["next"], stop). ``marks``: append (first layer, CUDA events at the
+        start and after each layer) for the caller's per-layer cost estimate."""
+        from .kernels.mhc import collapse_hc, expand_hc, hc_mixes
+        from .kernels.mhc_fused import hc_transition
+        w = self.w
         layers = w.layers
-        for i, ly in enumerate(layers):
+        step, hashes, shared = st["step"], st["hashes"], st["shared"]
+        hidden, pre, state = st["hidden"], st["pre"], st["mix"]
+        events = None
+        if marks is not None:
+            events = [torch.cuda.Event(enable_timing=True)]
+            events[0].record()
+            marks.append((st["next"], events))
+        for i in range(st["next"], stop):
+            ly = layers[i]
             if ly.engram_wkv is not None:
                 hidden = self.engram_layer(ly, hidden, hashes, step)
                 state = None
@@ -313,8 +334,16 @@ class Target:
                 hidden = expand_hc(y, hidden, ffn_mix[1], ffn_mix[2], inplace=True)
                 state = None
             else:
-                result, _ = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, w.norm)
+                st["result"], _ = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, w.norm)
+            if events is not None:
+                events.append(torch.cuda.Event(enable_timing=True))
+                events[-1].record()
+        st.update(hidden=hidden, pre=pre, mix=state, next=max(st["next"], stop))
+
+    def end(self, st: dict, logits_rows: torch.Tensor | None):
+        if st["next"] != len(self.w.layers):
+            raise RuntimeError("a DeepSeek-V4.1 forward ended before its last layer")
         if logits_rows is None:
             return None
-        rows = result.index_select(0, logits_rows)
-        return self._linear(rows, w.head).float()
+        rows = st["result"].index_select(0, logits_rows)
+        return self._linear(rows, self.w.head).float()
