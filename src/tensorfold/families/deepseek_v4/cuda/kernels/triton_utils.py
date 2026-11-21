@@ -10,8 +10,10 @@ there ``tldevice.exp`` is ``tl.exp`` (NumPy FP32 exp): a CPU-test capability onl
 the wrappers that choose between a Triton kernel and a CPU torch path exercise the kernel on CPU.
 ``jit`` is ``triton.jit`` whose launches (``kernel[grid](...)`` and ``warmup``) also pass the process-lifetime
 ``tensorfold.cuda.sm70.triton_options.COMPILER_OPTIONS`` (the explicit SM70 Triton 3.2 profile's ``ptx_version=83``;
-Triton 3.2 cannot derive a PTX version from CUDA 12.9's ptxas). Explicit launch options take precedence. With no
-profile selected, or under the interpreter, it is exactly ``triton.jit``. Options do not change kernel arithmetic.
+Triton 3.2 cannot derive a PTX version from CUDA 12.9's ptxas). Explicit launch options take precedence. Under
+Triton 3.2.0 a launch of an already compiled specialization takes ``_cached_launch`` (Triton's own cache-hit steps
+without the per-launch backend construction: the same compiled kernel and arguments). Under the interpreter it is
+exactly ``triton.jit``. Options do not change kernel arithmetic.
 ``fma_dot`` is the vendored kernels' ``tl.dot`` as the friend's Triton 3.6 runs it on SM70: Triton >= 3.3 has no
 MMAv1 (Volta) lowering and computes an FP16 dot as FP32 FMAs, K in order. Triton 3.2 would pick MMAv1, whose
 results it cannot reduce on SM70 (tl.sum/tl.max of any MMAv1 dot result aborts: "Failed to compute parent layout
@@ -45,16 +47,57 @@ else:
 def jit(fn=None, **options):
     def decorate(function):
         kernel = triton.jit(function, **options)
-        if COMPILER_OPTIONS and not INTERPRET:
-            run = kernel.run
-
-            def profiled_run(*args, **kwargs):
-                return run(*args, **{**COMPILER_OPTIONS, **kwargs})
-
-            kernel.run = profiled_run  # JITFunction.__getitem__ and warmup dispatch through self.run
+        if not INTERPRET and (COMPILER_OPTIONS or triton.__version__ == _LAUNCH_VERSION):
+            kernel.run = _cached_launch(kernel, kernel.run)  # __getitem__ and warmup dispatch through self.run
         return kernel
 
     return decorate if fn is None else decorate(fn)
+
+
+_LAUNCH_VERSION = "3.2.0"     # the JITFunction.run whose cache-hit steps _cached_launch restates
+
+
+def _cached_launch(kernel, run):
+    """``kernel.run`` for launches of an already compiled specialization: Triton 3.2's ``JITFunction.run`` steps
+    for a cache hit (the same binder, cache key, kernel cache, global-value check, grid canonicalization, stream and
+    ``CompiledKernel.run`` call), without the per-launch target / backend construction (``make_backend``,
+    ``get_current_target``: device capability and properties) that only a compile needs. A miss, a warmup, a pre-run
+    hook or an unbuilt binder go through Triton's own ``run`` (which compiles and caches). The launched kernel and its
+    arguments are identical. Pinned to Triton 3.2.0's ``JITFunction.run`` (ds41-short K36: about 0.5k Triton
+    launches per DS41 prompt forward)."""
+    from triton.runtime.driver import driver
+
+    active = driver.active
+    current_device, current_stream = active.get_current_device, active.get_current_stream
+    not_present = object()
+    cached = triton.__version__ == _LAUNCH_VERSION   # another Triton: its own run (plus the profile options)
+
+    def launch(*args, grid, warmup, **kwargs):
+        if COMPILER_OPTIONS:
+            kwargs = {**COMPILER_OPTIONS, **kwargs}
+        if not cached or warmup or kernel.binder is None or kernel.pre_run_hooks:
+            return run(*args, grid=grid, warmup=warmup, **kwargs)
+        kwargs["debug"] = kwargs.get("debug", False) or os.environ.get("TRITON_DEBUG", "0") == "1"
+        device = current_device()
+        bound_args, sig_and_spec, constexpr_vals, non_constexpr_vals, excess_kwargs = kernel.binder(*args, **kwargs)
+        compiled = kernel.cache[device].get(''.join(sig_and_spec) + str((constexpr_vals, excess_kwargs)))
+        if compiled is None:
+            return run(*args, grid=grid, warmup=False, **kwargs)
+        for (name, _), (val, globals_dict) in kernel.used_global_vals.items():
+            if (new := globals_dict.get(name, not_present)) != val:
+                raise RuntimeError(
+                    f"Global variable {name} has changed since we compiled this kernel, from {val} to {new}")
+        if callable(grid):
+            grid = grid(bound_args)
+        size = len(grid)
+        stream = current_stream(device)
+        compiled.run(grid[0], grid[1] if size > 1 else 1, grid[2] if size > 2 else 1, stream, compiled.function,
+                     compiled.packed_metadata, compiled.launch_metadata(grid, stream, *non_constexpr_vals),
+                     kernel.CompiledKernel.launch_enter_hook, kernel.CompiledKernel.launch_exit_hook,
+                     *non_constexpr_vals)
+        return compiled
+
+    return launch
 
 
 @triton.jit
