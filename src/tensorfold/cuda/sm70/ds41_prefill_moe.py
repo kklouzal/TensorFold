@@ -65,12 +65,12 @@ def workspace_bytes(routes, tile=TILE, route_cap=ROUTE_CAP, max_expert_routes=No
 
 
 def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, *, out=None,
-            tile=TILE, route_cap=ROUTE_CAP):
+            fused=True, tile=TILE, route_cap=ROUTE_CAP):
     """Routed experts for FP16 x [M, 5120], top-6 local ids/probabilities -> FP16 [M, 5120]."""
     if gate_type not in EXPERT_TYPES or down_type not in EXPERT_TYPES:
         raise ValueError("V4.1 prefill experts require IQ2_XXS/IQ2_XS/IQ1_M carriers")
     if out is None:
         out = torch.empty_like(x)
     extension().experts(out, x, ids, probabilities, gate, up, down, int(gate_type), int(down_type), int(left),
-                        int(tile), int(route_cap))
+                        int(tile), int(route_cap), bool(fused))
     return out

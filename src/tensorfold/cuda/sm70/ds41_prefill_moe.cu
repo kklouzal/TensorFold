@@ -24,6 +24,7 @@
 #include <c10/cuda/CUDAException.h>
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
+#include <mma.h>
 #include <algorithm>
 #include <cstdint>
 #include <vector>
@@ -96,6 +97,171 @@ __global__ void combine_routes(half* out, const half* down, const int32_t* posit
   }
 }
 
+// ---- Fused grouped GEMM: IQ rows decoded into shared memory inside the K loop (no FP16 weight bank) ----
+// One CTA = 64 sorted routes of one expert x 128 B rows; 8 warps as 2 (M) x 4 (N), each 32 x 32 of
+// WMMA 16x16x16 FP16 products with FP32 accumulators. The decoded values are exactly the dequant
+// kernel's (ggml FP32 products rounded once to FP16). Double-buffered: the next K step's activations
+// and decoded weights are fetched into registers while the current step's products run.
+//   Gated (gate|up): B rows 0..63 = gate rows c0..c0+63, rows 64..127 = the same up rows; warp n
+//   covers gate and up columns 16n..16n+15, so its gate/up accumulators match element for element.
+//   A rows are x[token[p]]. Epilogue: hidden[p][c0 + j] = fp16((silu(min(g,10)) * clamp(u)) * w[p]).
+//   Down: B rows = down rows n0..n0+127, K window [left, left + 576); A rows = hidden[p];
+//   epilogue: down_rows[p][n0 + j] = fp16(acc).
+struct Work {
+  int32_t expert, begin, rows, unused;
+};
+constexpr int kBM = 64, kBN = 128, kBK = 32, kPad = 8, kLd = kBK + kPad, kThreads = 256;
+constexpr int kStage = 32 + 4;  // per-warp FP32 staging row stride (32 columns + pad)
+
+template <int Type, int Block, int Bytes, bool Gated>
+__global__ void __launch_bounds__(kThreads, 2)
+grouped_iq_gemm(const half* a_src, const int64_t* a_rows, const uint8_t* bank0, const uint8_t* bank1,
+                int64_t expert_bytes, int64_t row_bytes, const Work* work, int k_total, int k_first,
+                const float* weights, half* out, int out_ld) {
+  namespace wmma = nvcuda::wmma;
+  constexpr int kLoopHalves = 2 * (kBM + kBN) * kLd;
+  constexpr int kStageFloats = 8 * 32 * kStage;
+  constexpr int kBytes = (kLoopHalves * 2 > kStageFloats * 4) ? kLoopHalves * 2 : kStageFloats * 4;
+  __shared__ __align__(128) unsigned char smem[kBytes];
+  half* sa = reinterpret_cast<half*>(smem);           // [2][kBM][kLd]
+  half* sb = sa + 2 * kBM * kLd;                       // [2][kBN][kLd]
+  const Work job = work[blockIdx.y];
+  const int tid = threadIdx.x, warp = tid / 32, wm = warp / 4, wn = warp % 4;
+  const int col0 = blockIdx.x * (Gated ? kBN / 2 : kBN);
+
+  // This thread's A piece: row tid / 4, halves 8 * (tid % 4) of the K step.
+  const int a_row = tid / 4, a_col = 8 * (tid % 4);
+  const half* a_ptr = nullptr;
+  if (a_row < job.rows) {
+    const int64_t p = job.begin + a_row;
+    a_ptr = a_src + (a_rows ? a_rows[p] : p) * int64_t(k_total) + a_col;
+  }
+  // This thread's two B pieces: rows tid / 4 and 64 + tid / 4, values 8 * (tid % 4) of the K step.
+  const uint8_t* b_ptr[2];
+#pragma unroll
+  for (int i = 0; i < 2; ++i) {
+    const int r = tid / 4 + 64 * i;
+    const uint8_t* bank = (Gated && i == 1) ? bank1 : bank0;
+    const int n = Gated ? col0 + tid / 4 : col0 + r;
+    b_ptr[i] = bank + int64_t(job.expert) * expert_bytes + int64_t(n) * row_bytes;
+  }
+  uint4 a_reg;
+  uint4 b_reg[2];
+  auto fetch = [&](int k) {
+    a_reg = a_ptr ? *reinterpret_cast<const uint4*>(a_ptr + k) : make_uint4(0, 0, 0, 0);
+    const int kk = k_first + k + a_col;
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+      float y[8];
+      decode8<Type>(b_ptr[i] + int64_t(kk / Block) * Bytes, (kk % Block) / 8, y);
+      __align__(16) half h[8];
+#pragma unroll
+      for (int j = 0; j < 8; ++j) h[j] = __float2half_rn(y[j]);
+      b_reg[i] = *reinterpret_cast<const uint4*>(h);
+    }
+  };
+  auto publish = [&](int buffer) {
+    *reinterpret_cast<uint4*>(sa + (buffer * kBM + a_row) * kLd + a_col) = a_reg;
+#pragma unroll
+    for (int i = 0; i < 2; ++i)
+      *reinterpret_cast<uint4*>(sb + (buffer * kBN + tid / 4 + 64 * i) * kLd + a_col) = b_reg[i];
+  };
+
+  wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[2][2];
+#pragma unroll
+  for (int i = 0; i < 2; ++i)
+#pragma unroll
+    for (int j = 0; j < 2; ++j) wmma::fill_fragment(acc[i][j], 0.f);
+  // B fragment j of warp n: Gated -> rows 16n (gate) and 64 + 16n (up); down -> rows 32n + 16j.
+  const int b_row[2] = {Gated ? 16 * wn : 32 * wn, Gated ? 64 + 16 * wn : 32 * wn + 16};
+
+  fetch(0);
+  publish(0);
+  __syncthreads();
+  const int steps = k_total / kBK;
+  for (int step = 0; step < steps; ++step) {
+    const int buffer = step & 1;
+    if (step + 1 < steps) fetch((step + 1) * kBK);
+#pragma unroll
+    for (int kk = 0; kk < kBK; kk += 16) {
+      wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::row_major> fa[2];
+      wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::col_major> fb[2];
+#pragma unroll
+      for (int i = 0; i < 2; ++i)
+        wmma::load_matrix_sync(fa[i], sa + (buffer * kBM + 32 * wm + 16 * i) * kLd + kk, kLd);
+#pragma unroll
+      for (int j = 0; j < 2; ++j)
+        wmma::load_matrix_sync(fb[j], sb + (buffer * kBN + b_row[j]) * kLd + kk, kLd);
+#pragma unroll
+      for (int i = 0; i < 2; ++i)
+#pragma unroll
+        for (int j = 0; j < 2; ++j) wmma::mma_sync(acc[i][j], fa[i], fb[j], acc[i][j]);
+    }
+    if (step + 1 < steps) publish(buffer ^ 1);
+    __syncthreads();
+  }
+
+  // Epilogue through a per-warp FP32 staging tile [32][kStage] (the loop buffers are dead).
+  float* stage = reinterpret_cast<float*>(smem) + warp * 32 * kStage;
+  if constexpr (Gated) {
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+#pragma unroll
+      for (int e = 0; e < acc[i][0].num_elements; ++e) {
+        float g = acc[i][0].x[e], u = acc[i][1].x[e];
+        g = g > 10.f ? 10.f : g;
+        u = u > 10.f ? 10.f : u;
+        u = u < -10.f ? -10.f : u;
+        acc[i][0].x[e] = __fmul_rn(__fdiv_rn(g, __fadd_rn(1.f, expf(-g))), u);
+      }
+      wmma::store_matrix_sync(stage + 16 * i * kStage, acc[i][0], kStage, wmma::mem_row_major);
+    }
+    __syncwarp();
+    const int lane = tid % 32;
+    for (int idx = lane; idx < 32 * 16; idx += 32) {
+      const int r = idx / 16, c = idx % 16, row = 32 * wm + r;
+      if (row < job.rows) {
+        const int64_t p = job.begin + row;
+        out[p * out_ld + col0 + 16 * wn + c] = __float2half_rn(__fmul_rn(stage[r * kStage + c], weights[p]));
+      }
+    }
+  } else {
+#pragma unroll
+    for (int i = 0; i < 2; ++i)
+#pragma unroll
+      for (int j = 0; j < 2; ++j)
+        wmma::store_matrix_sync(stage + 16 * i * kStage + 16 * j, acc[i][j], kStage, wmma::mem_row_major);
+    __syncwarp();
+    const int lane = tid % 32;
+    for (int idx = lane; idx < 32 * 32; idx += 32) {
+      const int r = idx / 32, c = idx % 32, row = 32 * wm + r;
+      if (row < job.rows)
+        out[int64_t(job.begin + row) * out_ld + col0 + 32 * wn + c] = __float2half_rn(stage[r * kStage + c]);
+    }
+  }
+}
+
+template <bool Gated>
+void launch_grouped(int64_t type, const half* a_src, const int64_t* a_rows, const torch::Tensor& bank0,
+                    const torch::Tensor* bank1, const Work* work, int jobs, int k_total, int k_first,
+                    const float* weights, half* out, int out_ld, int n_tiles, cudaStream_t stream) {
+  const int64_t row_bytes = bank0.size(2), expert_bytes = bank0.size(1) * row_bytes;
+  const uint8_t* b0 = bank0.data_ptr<uint8_t>();
+  const uint8_t* b1 = bank1 ? bank1->data_ptr<uint8_t>() : nullptr;
+  const dim3 grid(n_tiles, jobs);
+#define DS41_GROUPED(T, B, S)                                                                              \
+  grouped_iq_gemm<T, B, S, Gated><<<grid, kThreads, 0, stream>>>(a_src, a_rows, b0, b1, expert_bytes,     \
+                                                                 row_bytes, work, k_total, k_first,      \
+                                                                 weights, out, out_ld)
+  switch (type) {
+    case 16: DS41_GROUPED(16, 256, 66); break;
+    case 17: DS41_GROUPED(17, 256, 74); break;
+    default: DS41_GROUPED(29, 256, 56); break;
+  }
+#undef DS41_GROUPED
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 int grid_for(int64_t work) {
   return int(std::max<int64_t>(1, std::min<int64_t>((work + 255) / 256, 65535 * 8)));
 }
@@ -163,7 +329,7 @@ void check_bank(const torch::Tensor& bank, const torch::Tensor& x, int64_t rows,
 void ds41_prefill_experts(torch::Tensor out, const torch::Tensor& x, const torch::Tensor& ids,
                           const torch::Tensor& probabilities, const torch::Tensor& gate, const torch::Tensor& up,
                           const torch::Tensor& down, int64_t gate_type, int64_t down_type, int64_t left,
-                          int64_t tile, int64_t route_cap) {
+                          int64_t tile, int64_t route_cap, bool fused) {
   TORCH_CHECK(x.is_cuda(), "V4.1 prefill MoE requires CUDA tensors");
   const auto* props = at::cuda::getDeviceProperties(x.get_device());
   TORCH_CHECK(props->major == 7 && props->minor == 0, "V4.1 prefill MoE requires SM70");
@@ -232,6 +398,30 @@ void ds41_prefill_experts(torch::Tensor out, const torch::Tensor& x, const torch
   auto position = torch::full({m * kTop}, -1, ids.options());
   position.index_put_({routed}, torch::arange(routes, ids.options()));
   const auto used_dev = torch::from_blob(used.data(), {int64_t(used.size())}, torch::kInt32).to(x.device());
+
+  if (fused) {
+    std::vector<Work> jobs;
+    for (size_t i = 0; i < used.size(); ++i)
+      for (int64_t at = first[i]; at < first[i + 1]; at += kBM)
+        jobs.push_back({used[i], int32_t(at), int32_t(std::min<int64_t>(kBM, first[i + 1] - at)), 0});
+    TORCH_CHECK(jobs.size() <= 65535 && routes <= INT32_MAX, "V4.1 prefill MoE: too many route tiles");
+    auto jobs_dev = torch::from_blob(jobs.data(), {int64_t(jobs.size() * sizeof(Work))}, torch::kUInt8)
+                        .to(x.device());
+    const auto* work = reinterpret_cast<const Work*>(jobs_dev.data_ptr());
+    auto hidden = torch::empty({routes, kRows}, x.options());
+    auto down_rows = torch::empty({routes, kHidden}, x.options());
+    auto* hs = reinterpret_cast<half*>(hidden.data_ptr());
+    auto* rows_out = reinterpret_cast<half*>(down_rows.data_ptr());
+    launch_grouped<true>(gate_type, reinterpret_cast<const half*>(x.data_ptr()), tokens.data_ptr<int64_t>(),
+                         gate, &up, work, int(jobs.size()), kHidden, 0, weights.data_ptr<float>(), hs, kRows,
+                         kRows / (kBN / 2), stream);
+    launch_grouped<false>(down_type, hs, nullptr, down, nullptr, work, int(jobs.size()), kRows, int(left),
+                          nullptr, rows_out, kHidden, kHidden / kBN, stream);
+    combine_routes<<<grid_for(m * (kHidden / 8)), 256, 0, stream>>>(
+        reinterpret_cast<half*>(out.data_ptr()), rows_out, position.data_ptr<int32_t>(), m);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return;
+  }
 
   // Tiles of consecutive used experts: <= tile experts and <= max(route_cap, one expert's routes).
   std::vector<std::pair<int64_t, int64_t>> tiles;  // [begin, end) indices into `used`
