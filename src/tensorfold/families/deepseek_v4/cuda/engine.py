@@ -39,7 +39,8 @@ class DS41Engine:
 
     def __init__(self, model_dir: Path, *, rank: int, tp: int, master: str = "", master_port: int = 29551,
                  context: int | None = None, slots: int = 4, max_tokens: int = MAX_TOKENS, parallel: int | None = None,
-                 serve: bool = False, queue_timeout_s: float | None = None, **_options) -> None:
+                 serve: bool = False, queue_timeout_s: float | None = None, graphs: bool = True,
+                 **_options) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -100,7 +101,18 @@ class DS41Engine:
         self.layer_count = len(self.w.layers)
         self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
         self.layer_marks = None             # rank 0: per-layer CUDA events of the prompt forward being timed
+        from .graphs import DecodeGraphs, SlotPages
+        self.slot_pages = SlotPages(self.slots, -(-self.target.hash_state.max_context // BLOCK), device)
+        self.graphs = None
         self._warm()
+        # Decode forwards replay startup CUDA graphs (every rank, same order, no control frames; never lazily).
+        # The Engram lookup trace (rank 0) reads ids on the host every forward, so tracing keeps the eager decode;
+        # every rank decides from the same environment (all ranks capture, or none).
+        if graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE"):
+            self.graphs = DecodeGraphs(self, slots)
+        elif rank == 0:
+            print("[tensorfold] DeepSeek-V4.1 SM70: eager decode (" +
+                  ("graphs disabled)" if not graphs else "TENSORFOLD_DS41_ENGRAM_TRACE set)"), flush=True)
         self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
         if rank == 0 and sorted(self.pipes.piped()) != list(range(1, tp)):
             raise RuntimeError("DeepSeek-V4.1 SM70 requires all eight ranks on one host (control pipes)")
@@ -110,6 +122,9 @@ class DS41Engine:
         self.decoder = self.scheduler = None
         self._closed = False
         if rank == 0:
+            if self.graphs is not None:
+                print(f"[tensorfold] DeepSeek-V4.1 SM70: decode graphs for batches {list(self.graphs.sizes)} captured "
+                      f"in {self.graphs.seconds:.1f} s, {self.graphs.bytes / 2**20:.0f} MiB", flush=True)
             print(f"[tensorfold] DeepSeek-V4.1 SM70: loaded in {self.load_seconds:.0f} s (Engram table "
                   f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s, host RAM only: VRAM residency "
                   f"{self.engram.device_bytes} B + per-step working buffer "
@@ -162,25 +177,32 @@ class DS41Engine:
     # ---------------------------------------------------------------------------------------- operations
     def _attach(self, slot, tokens):
         self.target.pool.detach(slot)
-        self.target.pool.attach(slot, tokens)
+        self.slot_pages.set(slot, self.target.pool.attach(slot, tokens))
         self.target.reset_slot(slot)
 
     def _detach(self, slot):
         self.target.pool.detach(slot)
+        self.slot_pages.set(slot, ())
 
     def _step(self, entries, ids, logits_rows, stop=0):
         """entries: [(slot, start, count)] in row order; ids: the tokens; logits_rows: token rows to score.
         Returns rank 0's full-vocabulary FP32 logits [len(logits_rows), vocab] (None elsewhere). With
         0 < ``stop`` < layers the forward pauses after layer ``stop`` (``_layers`` continues it) and returns None;
-        the pause changes no kernel or row."""
+        the pause changes no kernel or row. One row per entry, every row scored and ``stop`` 0 (a decode batch,
+        or a one-token prompt chunk) replays the batch's startup graph; ``stop`` = layers runs the same
+        forward eagerly."""
         import torch
         from .target import Step, DECODE_MAX
         device = self.target.device
         pool = self.target.pool
         positions, token_req, qsl = [], [], [0]
-        for r, (slot, start, count) in enumerate(entries):
+        for slot, start, count in entries:
             if start + count > len(pool.owned.get(slot, ())) * 64:
                 raise RuntimeError(f"slot {slot}: positions up to {start + count} exceed its KV pages")
+        if (stop == 0 and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
+                and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
+            return self.graphs.run(entries, ids)
+        for r, (slot, start, count) in enumerate(entries):
             positions.extend(range(start, start + count))
             token_req.extend([r] * count)
             qsl.append(qsl[-1] + count)
@@ -302,9 +324,10 @@ class DS41Engine:
         """Requests retire inside the scheduler; nothing to fence for a caller."""
 
     def greedy(self, prompt: list[int], max_tokens: int, slot: int = 0, on_token: Callable | None = None,
-               stop_eos: bool = True, top_logprobs: int = 0) -> dict[str, Any]:
+               stop_eos: bool = True, top_logprobs: int = 0, eager: bool = False) -> dict[str, Any]:
         """Single-stream greedy generation (the M1 correctness path): prompt chunks, then one token a step.
-        With ``top_logprobs`` > 0 the result also carries each step's chosen-token logprob and its top entries."""
+        With ``top_logprobs`` > 0 the result also carries each step's chosen-token logprob and its top entries.
+        ``eager``: decode steps run the eager forward instead of the startup graphs (A/B checks)."""
         import torch
         if self.rank != 0:
             raise RuntimeError("only rank 0 generates")
@@ -339,7 +362,8 @@ class DS41Engine:
                     on_token(token)
                 if len(out) >= max_tokens or (stop_eos and token in self.eos):
                     break
-                logits = self.step([(slot, len(prompt) + len(out) - 1, 1)], [token], [0])
+                logits = self.step([(slot, len(prompt) + len(out) - 1, 1)], [token], [0],
+                                   self.layer_count if eager else 0)
                 token = choose(logits[-1])
             t2 = time.perf_counter()
             self.announce(OP_DETACH, slot)
@@ -382,6 +406,7 @@ class DS41Engine:
                 finally:
                     self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
         finally:
+            self.graphs = None              # graphs read the mapped Engram table: release them first
             self.engram.close()
 
 
