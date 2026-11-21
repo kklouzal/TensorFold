@@ -38,7 +38,8 @@ MAX_ROWS = 32                        # dense_rows: up to 4 8-row tiles per weigh
 ROWS_BAND = 64                       # dense_rows (in 32-row passes) up to here, restore + cuBLAS above (measured)
 TARGET_CTAS = 80                     # 1Cat VLLM_V41_DMV_CTAS default
 _TILE4 = {(4, 1)}                    # (warps, tp) configs whose 4-tile instance fits shared memory
-RESTORE_BYTES = 32 << 20             # FP16 restore chunk for rows > MAX_ROWS
+RESTORE_BYTES = 40 << 20             # FP16 restore chunk for rows > MAX_ROWS: every projection but the head in one
+                                     # GEMM (engram_wkv 3200 x 6144 = 37.5 MiB)
 
 
 @lru_cache(maxsize=1)
