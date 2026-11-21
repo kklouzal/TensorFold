@@ -62,6 +62,7 @@ class DS41Engine:
         shards = W.Shards(resolve(entry), resolve(engram_file))
         rows = W.engram_split(shards, g)
         self.engram = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
+        print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
         self._barrier()
         self.w = W.load(shards, g, rank, device)
         shards.close()
@@ -84,7 +85,9 @@ class DS41Engine:
             from tensorfold.token_metadata import resolve_eos
             self.eos = resolve_eos(model_dir, g.eos, vocab_size=self.vocab)
             print(f"[tensorfold] DeepSeek-V4.1 SM70: loaded in {self.load_seconds:.0f} s (Engram table "
-                  f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s); KV pool {pages} pages of "
+                  f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s, host RAM only: VRAM residency "
+                  f"{self.engram.device_bytes} B + per-step working buffer "
+                  f"{self.target.engram_rows.numel() * 2 >> 20} MiB); KV pool {pages} pages of "
                   f"{page_bytes} B ({pages * 64} tokens), {slots} streams", flush=True)
 
     def _barrier(self):
@@ -181,8 +184,9 @@ class DS41Engine:
         return self.announce(OP_STEP, len(entries), len(ids), len(logits_rows), 0, payload)
 
     def greedy(self, prompt: list[int], max_tokens: int, slot: int = 0, on_token: Callable | None = None,
-               stop_eos: bool = True) -> dict[str, Any]:
-        """Single-stream greedy generation (the M1 correctness path): prompt chunks, then one token a step."""
+               stop_eos: bool = True, top_logprobs: int = 0) -> dict[str, Any]:
+        """Single-stream greedy generation (the M1 correctness path): prompt chunks, then one token a step.
+        With ``top_logprobs`` > 0 the result also carries each step's chosen-token logprob and its top entries."""
         import torch
         if self.rank != 0:
             raise RuntimeError("only rank 0 generates")
@@ -198,8 +202,19 @@ class DS41Engine:
                 at += n
             torch.cuda.synchronize()
             t1 = time.perf_counter()
-            out = []
-            token = int(logits[-1].argmax())
+            out, logprobs = [], []
+
+            def choose(row):
+                if top_logprobs:
+                    lp = torch.log_softmax(row.float(), -1)
+                    values, ids = lp.topk(top_logprobs)
+                    chosen = int(ids[0])
+                    logprobs.append({"logprob": float(values[0]),
+                                     "top": [[int(i), float(v)] for i, v in zip(ids.tolist(), values.tolist())]})
+                    return chosen
+                return int(row.argmax())
+
+            token = choose(logits[-1])
             while True:
                 out.append(token)
                 if on_token is not None:
@@ -207,10 +222,10 @@ class DS41Engine:
                 if len(out) >= max_tokens or (stop_eos and token in self.eos):
                     break
                 logits = self.step([(slot, len(prompt) + len(out) - 1, 1)], [token], [0])
-                token = int(logits[-1].argmax())
+                token = choose(logits[-1])
             t2 = time.perf_counter()
             self.announce(OP_DETACH, slot)
-        return {"tokens": out, "prefill_s": t1 - t0, "decode_s": t2 - t1,
+        return {"tokens": out, "logprobs": logprobs, "prefill_s": t1 - t0, "decode_s": t2 - t1,
                 "decode_tok_s": (len(out) - 1) / (t2 - t1) if len(out) > 1 else 0.0}
 
     def close(self) -> None:

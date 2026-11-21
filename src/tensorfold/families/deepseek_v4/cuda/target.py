@@ -136,6 +136,12 @@ class Target:
                 self.c2[layer.index] = mu_state.MuC2State(layer.comp_norm, slots=slots - 1, trap=True)
         self.local = range(w.group * (g.experts // EP), (w.group + 1) * (g.experts // EP))
         self.engram_rows = torch.empty(max_tokens, 24 * 256, dtype=torch.float16, device=device)
+        # Engram lookup telemetry for the deferred hot-row VRAM cache candidate (off unless the variable names a
+        # file; rank 0 only, since every rank looks up the same rows): appends each forward's valid hashed row ids
+        # (int64 [tokens, 2 tables, 24 heads], table-local) for offline hit-rate / churn analysis.
+        import os
+        trace = os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE") if w.rank == 0 else None
+        self.engram_trace = open(trace, "ab") if trace else None
 
     # ---- slot lifecycle (every rank, same order)
     def reset_slot(self, slot: int) -> None:
@@ -267,6 +273,8 @@ class Target:
         hashes = self.hash_state(step.ids, step.positions, step.valid, step.token_req, step.qsl, step.req_slot)
         self.hash_state.commit_all(step.ids, step.positions, step.valid, step.qsl, step.req_slot, step.num_reqs,
                                    step.token_req)
+        if self.engram_trace is not None:
+            self.engram_trace.write(hashes[step.valid].cpu().numpy().tobytes())
         hidden = self.embed(step.ids)
         # FP16 cannot carry the HC residual range of valid special tokens: the stream stays FP32 (upstream)
         hidden = hidden.float()[:, None].expand(-1, g.hc, -1).contiguous()

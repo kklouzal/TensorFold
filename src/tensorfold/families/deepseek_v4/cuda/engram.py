@@ -2,9 +2,17 @@
 
 Rank 0 copies the IQ4_NL rows of the llama.cpp Engram file (one ``per_layer_token_embd`` tensor, the two per-layer
 tables back to back) into one sealed memfd and locks its pages; the other ranks map the same pages read-only
-(``/proc/<pid>/fd/<fd>``, same host and user). Every rank registers its mapping with CUDA as mapped host memory, so
+(``/proc/<pid>/fd/<fd>``, same host and user). The read-only mappings are registered with cudaHostRegisterReadOnly
+(without it the driver refuses a PROT_READ range: CUDA error 1, m1c; a 110 GB shared read-write registration did not
+finish in 10 min, diag/hostreg2 2026-11-21, while read-only took 149 s). Every rank registers its mapping with CUDA as mapped host memory, so
 a step's gather reads only the rows it needs (48 x 144 B per token) straight from RAM inside the forward: no host
-thread, no synchronization, and graph-capturable. This replaces 1Cat-vLLM's file reader (SharedEngramReader,
+thread, no synchronization, and graph-capturable.
+
+Binding rule (the user, 2026-11-21): the Engram table lives in system RAM only, never in VRAM, for any model: no
+full or per-layer copy, no GPU row cache/LRU/hot-row residency, no prefetch into a persistent device table. The only
+Engram data on a GPU is the caller's per-step working buffer (``lookup``'s ``out``: the current tokens' rows, decoded
+and consumed in the same forward). ``HostEngram`` verifies at startup that its table address is host memory to the
+CUDA driver (``device_bytes`` is then 0). This replaces 1Cat-vLLM's file reader (SharedEngramReader,
 csrc/gguf_shared_engram.h) and the friend's RAM/holder patches 83/160 with one resident copy.
 
 Decode arithmetic: llama.cpp/1Cat ``dequantize_block_iq4_nl``: value = half(float(d) * kvalues_iq4nl[q]); element
@@ -27,7 +35,10 @@ ROW_VALUES = 256
 HEADS = 24                    # hashed rows per token per table
 KVALUES = (-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113)   # kvalues_iq4nl (the kernel's where-tree)
 _COPY = 256 << 20
-_REGISTER_PORTABLE, _REGISTER_MAPPED = 1, 2
+_REGISTER_PORTABLE, _REGISTER_MAPPED, _REGISTER_READ_ONLY = 1, 2, 8
+# Linux <linux/fcntl.h> sealing constants (the image's Python 3.15 fcntl module does not export them)
+_F_ADD_SEALS = 1033
+_F_SEAL_SEAL, _F_SEAL_SHRINK, _F_SEAL_GROW, _F_SEAL_WRITE = 1, 2, 4, 8
 
 
 class _Pointer:
@@ -59,8 +70,7 @@ class HostEngram:
                 finally:
                     _unmap(writable, self.size)
                 import fcntl
-                fcntl.fcntl(self.fd, fcntl.F_ADD_SEALS,
-                            fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE | fcntl.F_SEAL_SEAL)
+                fcntl.fcntl(self.fd, _F_ADD_SEALS, _F_SEAL_SEAL | _F_SEAL_SHRINK | _F_SEAL_GROW | _F_SEAL_WRITE)
                 self.address = _map(self.fd, self.size, _PROT_READ)
                 if _LIBC.mlock(ctypes.c_void_p(self.address), ctypes.c_size_t(self.size)) != 0:
                     raise OSError(ctypes.get_errno(), f"mlock of the {self.size >> 30} GiB Engram table failed "
@@ -72,15 +82,19 @@ class HostEngram:
                     raise RuntimeError(f"rank 0's Engram table has {size} bytes, expected {self.size}")
                 self.fd = os.open(f"/proc/{pid}/fd/{fd}", os.O_RDONLY | os.O_CLOEXEC)
                 self.address = _map(self.fd, self.size, _PROT_READ)
-            code = torch.cuda.cudart().cudaHostRegister(self.address, self.size, _REGISTER_PORTABLE | _REGISTER_MAPPED)
+            code = torch.cuda.cudart().cudaHostRegister(self.address, self.size,
+                                                    _REGISTER_PORTABLE | _REGISTER_MAPPED | _REGISTER_READ_ONLY)
             if int(code) != 0:
                 raise RuntimeError(f"cudaHostRegister of the Engram table failed (CUDA error {int(code)})")
             self.registered = True
+            _require_host(self.address)
             self.pointer = _Pointer(self.address)     # UVA: the host address is valid on the device
         except BaseException:
             self.close()
             raise
         self.seconds = time.perf_counter() - started
+
+    device_bytes = 0          # Engram table bytes resident in VRAM: none, by construction (verified in __init__)
 
     def lookup(self, hashes: torch.Tensor, channel: int, out: torch.Tensor) -> torch.Tensor:
         """Decoded rows [T, 24 * 256] FP16 of table ``channel`` for ``hashes`` [T, 2, 24] (table-local ids;
@@ -113,6 +127,19 @@ _LIBC.mmap.restype = ctypes.c_void_p
 _LIBC.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
 _LIBC.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
 _PROT_READ, _PROT_WRITE, _MAP_SHARED = 1, 2, 1
+
+
+_CU_POINTER_ATTRIBUTE_MEMORY_TYPE, _CU_MEMORYTYPE_HOST = 2, 1
+
+
+def _require_host(address):
+    """Fail unless the CUDA driver reports ``address`` as host memory (the no-VRAM Engram rule)."""
+    cuda = ctypes.CDLL("libcuda.so.1")
+    kind = ctypes.c_uint(0)
+    code = cuda.cuPointerGetAttribute(ctypes.byref(kind), _CU_POINTER_ATTRIBUTE_MEMORY_TYPE,
+                                      ctypes.c_uint64(address))
+    if code != 0 or kind.value != _CU_MEMORYTYPE_HOST:
+        raise RuntimeError(f"the Engram table must be host memory (driver memory type {kind.value}, CUresult {code})")
 
 
 def _map(fd, size, prot):
