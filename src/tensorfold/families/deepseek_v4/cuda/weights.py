@@ -168,11 +168,17 @@ class Loader:
 
     CHUNK_BYTES = 64 << 20
 
-    def __init__(self, shards: Shards, rank: int, device):
+    def __init__(self, shards: Shards, rank: int, device, staging):
         import torch
         self.s, self.rank, self.device = shards, rank, device
         self.t, self.e, self.g = rank, rank % ETP, rank // ETP
         self.torch = torch
+        self.staging = staging          # staging.Staging: pinned-buffer uploads of the large byte ranges
+
+    def _rows(self, t, first, count):
+        """Original bytes uint8 [count, row_bytes] of rows [first, first + count) of ``t``, on the device."""
+        out = self.torch.empty((count, t.row_bytes), dtype=self.torch.uint8, device=self.device)
+        return self.staging.copy(t.path, [t.row_span(first, count)], out)
 
     # --- primitives
     def floating(self, name, dtype):
@@ -202,7 +208,7 @@ class Loader:
         """FP16 (or ``dtype``) [rows, cols] of a 2-D projection; ``rows``/``cols`` select a (start, count) slice."""
         torch = self.torch
         dtype = dtype or torch.float16
-        t, data = self.s.rows(name)
+        t = self.s.tensors[name]
         if t.ggml_type in (0, 1, 30):
             full = self.floating(name, torch.float32).reshape(t.rows, t.shape[-1])
             out = full
@@ -213,7 +219,7 @@ class Loader:
             step = max(1, self.CHUNK_BYTES // t.row_bytes)
             for at in range(0, count, step):
                 n = min(step, count - at)
-                packed = torch.from_numpy(np.array(data[first + at:first + at + n])).to(self.device)
+                packed = self._rows(t, first + at, n)
                 native.dequantize(packed, t.ggml_type, t.shape[-1], out=out[at:at + n])
             _check_finite(name, out)
             rows = None
@@ -228,7 +234,7 @@ class Loader:
         original row bytes in bounded chunks; the only resident copy of the projection."""
         from tensorfold.cuda.sm70 import ds41_dense as dense
         torch = self.torch
-        t, data = self.s.rows(name)
+        t = self.s.tensors[name]
         if t.ggml_type not in dense.FORMAT:
             raise ValueError(f"{name}: dmv13 planes take Q8_0 / Q5_K, found {FORMATS[t.ggml_type][0]}")
         first, count = rows if rows is not None else (0, t.rows)
@@ -239,8 +245,7 @@ class Loader:
         step = max(32, self.CHUNK_BYTES // t.row_bytes // 32 * 32)
         for at in range(0, count, step):
             n = min(step, count - at)
-            packed = torch.from_numpy(np.array(data[first + at:first + at + n])).to(self.device)
-            out.pack(packed, t.ggml_type, c0 // 32, tile0=at // 32)
+            out.pack(self._rows(t, first + at, n), t.ggml_type, c0 // 32, tile0=at // 32)
         return out
 
     def column_planes(self, name, parts=TP):
@@ -279,7 +284,7 @@ class Loader:
     def expert_bank(self, name, down: bool):
         """Original bytes of this rank's experts: gate/up [192, 576, rb], down [192, 5120, 3 blocks]."""
         torch = self.torch
-        t, data = self.s.raw(name)
+        t = self.s.tensors[name]
         kind = t.ggml_type
         if kind not in EXPERT_TYPES:
             raise ValueError(f"{name}: routed experts must be IQ2_XXS, IQ2_XS or IQ1_M, found {FORMATS[kind][0]}")
@@ -287,7 +292,7 @@ class Loader:
         experts, out_rows, k = t.shape
         local = experts // EP
         first = self.g * local
-        view = data.reshape(experts, out_rows, k // block * size)[first:first + local]
+        row = k // block * size                     # bytes of one output row of one expert
         if down:
             inter = k
             share = inter // ETP
@@ -295,14 +300,17 @@ class Loader:
             left = self.e * share - b0 * block
             if left + share > 3 * block or (b0 + 3) * block > inter:
                 raise ValueError("down carrier does not cover the rank's 576 columns")
-            part = view[:, :, b0 * size:(b0 + 3) * size]
+            # the group's experts are one contiguous byte range; the rank's three blocks per row are cut on the GPU
+            whole = torch.empty((local, out_rows, row), dtype=torch.uint8, device=self.device)
+            self.staging.copy(t.path, [(t.offset + first * out_rows * row, local * out_rows * row)], whole)
+            out = whole[:, :, b0 * size:(b0 + 3) * size].contiguous()
+            del whole
         else:
             share = out_rows // ETP
-            part = view[:, self.e * share:(self.e + 1) * share]
+            out = torch.empty((local, share, row), dtype=torch.uint8, device=self.device)
+            self.staging.copy(t.path, [(t.offset + ((first + e) * out_rows + self.e * share) * row, share * row)
+                                       for e in range(local)], out)
             left = 0
-        out = torch.empty(part.shape, dtype=torch.uint8, device=self.device)
-        for e in range(local):
-            out[e].copy_(torch.from_numpy(np.array(part[e])))
         return out, kind, left
 
 
@@ -371,9 +379,17 @@ class Weights:
 
 
 def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | None = None) -> Weights:
+    from .staging import Staging
+    staging = Staging()
+    try:
+        return _load(Loader(shards, rank, device, staging), shards, geometry, rank, device, layers)
+    finally:
+        staging.close()
+
+
+def _load(L, shards, geometry, rank, device, layers):
     import torch
     from tensorfold.cuda.sm70 import ds41_dense as dense
-    L = Loader(shards, rank, device)
     g = geometry
     f32 = torch.float32
     scratch = dense.Scratch(device)
