@@ -67,9 +67,8 @@ def _cached_launch(kernel, run):
     launches per DS41 prompt forward)."""
     from triton.runtime.driver import driver
 
-    active = driver.active
-    current_device, current_stream = active.get_current_device, active.get_current_stream
-    not_present = object()
+    devices = []      # the active driver's (current device, current stream), resolved at the first launch: importing
+    not_present = object()   # the kernels must not need a GPU driver (CPU tests and tools import them)
     cached = triton.__version__ == _LAUNCH_VERSION   # another Triton: its own run (plus the profile options)
 
     def launch(*args, grid, warmup, **kwargs):
@@ -78,6 +77,9 @@ def _cached_launch(kernel, run):
         if not cached or warmup or kernel.binder is None or kernel.pre_run_hooks:
             return run(*args, grid=grid, warmup=warmup, **kwargs)
         kwargs["debug"] = kwargs.get("debug", False) or os.environ.get("TRITON_DEBUG", "0") == "1"
+        if not devices:
+            devices.extend((driver.active.get_current_device, driver.active.get_current_stream))
+        current_device, current_stream = devices
         device = current_device()
         bound_args, sig_and_spec, constexpr_vals, non_constexpr_vals, excess_kwargs = kernel.binder(*args, **kwargs)
         compiled = kernel.cache[device].get(''.join(sig_and_spec) + str((constexpr_vals, excess_kwargs)))
