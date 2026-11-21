@@ -125,6 +125,21 @@ class ChatTemplate:
         return self.literals.encode(tokenizer, text, segments=segments, **options)
 
 
+def load_chat_template(model_dir, *, template_file=None, template_name=None):
+    """The server's prompt renderer: the family's own (its package's ``cuda_chat_template``, e.g. DeepSeek-V4.1's
+    encoder), else the checkpoint's Jinja template."""
+    root = Path(model_dir)
+    if (root / "config.json").is_file():
+        from tensorfold.families import families, model_type
+
+        family = families().get(model_type(root))
+        hook = getattr(family.package, "cuda_chat_template", None) if family is not None else None
+        own = hook(root, template_file=template_file, template_name=template_name) if hook is not None else None
+        if own is not None:
+            return own
+    return ChatTemplate(model_dir, template_file=template_file, template_name=template_name)
+
+
 def prepare_chat_template(model_dir, *, template_file=None, template_name=None):
     """Capture before engine preparation; bare model APIs may have no chat metadata."""
     if template_file is None and template_name is None:
@@ -141,7 +156,7 @@ def prepare_chat_template(model_dir, *, template_file=None, template_name=None):
         with _regular_stream(path):
             pass
     try:
-        return ChatTemplate(model_dir, template_file=template_file, template_name=template_name)
+        return load_chat_template(model_dir, template_file=template_file, template_name=template_name)
     except MissingChatTemplate:
         if template_file is not None or template_name is not None:
             raise

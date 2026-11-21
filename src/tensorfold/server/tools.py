@@ -9,7 +9,7 @@ from typing import Any
 
 from tensorfold.tool_parameters import decode_parameter, parameter_schemas
 from tensorfold.server.gemma_values import GEMMA_OPEN, gemma_json
-from tensorfold.markup_lex import markup_regions, xml_function_frames, xml_parameter_fields
+from tensorfold.markup_lex import DSML41_CALLS, markup_regions, xml_function_frames, xml_parameter_fields
 
 def tool_spec_name(tool: dict[str, Any]) -> str:
     function = tool.get("function") if isinstance(tool, dict) else None
@@ -358,8 +358,9 @@ def tool_calls_complete(text: str, tools, *, finished: bool = True) -> bool:
             match = re.match(r'^(?:call)?:([\w.-]+)\s*\{', body)
             if match is not None and match[1].lower() in known:
                 return False
-        elif region.opener == '<｜DSML｜tool_calls>':
-            match = re.match(r'^<｜DSML｜invoke name="([^"]+)">', body)
+        elif region.opener in ('<｜DSML｜tool_calls>', DSML41_CALLS[0]):
+            invoke = '<｜DSML｜invoke' if region.opener == '<｜DSML｜tool_calls>' else '<｜DSML｜ invoke'
+            match = re.match(re.escape(invoke) + r' name="([^"]+)">', body)
             if match is not None and match[1].lower() in known:
                 return False
         elif any(body.lower().startswith('<function=' + name + '>') for name in known):

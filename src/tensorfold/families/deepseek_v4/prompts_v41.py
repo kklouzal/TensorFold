@@ -81,6 +81,21 @@ def _generation(text: Any, messages: list[dict[str, Any]], thinking: bool, add_g
     return text
 
 
+def render_literals(messages: list[dict[str, Any]], protection: Any, *, tools: list[dict[str, Any]] | None = None,
+                    thinking: bool = False, reasoning_effort: Any = None, add_generation_prompt: bool = True,
+                    max_bytes: int | None = None) -> Any:
+    """The V4.1 prompt as a ``RenderedPrompt``: encoder-written controls trusted, request strings data
+    (``protection``: the tokenizer's ``PromptLiterals``; ``max_bytes`` bounds the request values it reads)."""
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import trusted
+    from .literal_prompts_v41 import encode
+
+    msgs, thinking, effort = _prepare(messages, tools, thinking, reasoning_effort)
+    values, _ = protection.protect(msgs, **({"max_bytes": max_bytes} if max_bytes is not None else {}))
+    text = encode(values, thinking_mode="thinking" if thinking else "chat", reasoning_effort=effort)
+    return RenderedPrompt(_generation(text, messages, thinking, add_generation_prompt, trusted), protection.literals)
+
+
 class DeepSeekV41Tokenizer(DeepSeekTokenizer):
     """The checkpoint's tokenizer with ``apply_chat_template`` rendered by DeepSeek's V4.1 encoder."""
 
@@ -88,23 +103,19 @@ class DeepSeekV41Tokenizer(DeepSeekTokenizer):
                                enable_thinking=False, thinking_mode=None, reasoning_effort=None, renderer=None, **_):
         """Keep Python encoder authority while tracking semantic input origins."""
         import json
-        from tensorfold.server.prompt_literals import PromptEncodingError, PromptLiterals, RenderedPrompt, native_tokenizer
-        from tensorfold.server.prompt_origin import trusted
-        from .literal_prompts_v41 import encode, reserved_tokens
+        from tensorfold.server.prompt_literals import PromptEncodingError, PromptLiterals, native_tokenizer
+        from .literal_prompts_v41 import reserved_tokens
 
         backend = native_tokenizer(self._inner)
         if backend is None:
             raise PromptEncodingError("DeepSeek tokenizer does not expose ordinary literal encoding")
         thinking = thinking_mode == "thinking" if thinking_mode is not None else bool(enable_thinking)
-        msgs, thinking, effort = _prepare(messages, tools, thinking, reasoning_effort)
         source = [SOURCE]
         reserved = reserved_tokens(backend)
         protection = (renderer.protection(backend, source, reserved) if renderer is not None else
                       PromptLiterals(json.loads(backend.to_str()), source, reserved))
-        values, _ = protection.protect(msgs)
-        text = encode(values, thinking_mode="thinking" if thinking else "chat", reasoning_effort=effort)
-        return RenderedPrompt(_generation(text, messages, thinking, add_generation_prompt, trusted),
-                              protection.literals)
+        return render_literals(messages, protection, tools=tools, thinking=thinking, reasoning_effort=reasoning_effort,
+                               add_generation_prompt=add_generation_prompt)
 
     def apply_chat_template(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
                             add_generation_prompt: bool = True, tokenize: bool = True, enable_thinking: bool = False,

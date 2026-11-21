@@ -42,7 +42,7 @@ from tensorfold.server.tools import (
 )
 
 from tensorfold.cuda import health
-from tensorfold.cuda.chat_template import ChatTemplate
+from tensorfold.cuda.chat_template import ChatTemplate, load_chat_template
 from tensorfold.cuda.reply_text import StopStrings, StreamDecoder, hide_tool_calls, parse_tool_calls
 from tensorfold.cuda.turns import Turns, Yield
 from tensorfold.server.text import CHANNEL_MARKERS, THINK_MARKERS, is_title_request, reasoning_count, split_thinking
@@ -605,7 +605,8 @@ class App:
         self.template = getattr(engine, "chat_template", None)
         options = (None if chat_template_file is None else str(Path(chat_template_file).expanduser().resolve()), chat_template_name)
         if self.template is None:
-            self.template = ChatTemplate(model_dir, template_file=chat_template_file, template_name=chat_template_name)
+            self.template = load_chat_template(model_dir, template_file=chat_template_file,
+                                               template_name=chat_template_name)
         elif options != (None, None) and options != self.template.options:
             raise ValueError("engine and server must use the same captured chat template selection")
         self.segments = _segment_encoder(self.tok, self.template)
@@ -978,8 +979,9 @@ class App:
             raise RequestError("chat_template_kwargs must be a JSON object or null")
         kwargs = dict(kwargs)
         # reasoning_effort and enable_thinking as the Mac server reads them: the template hears an effort when thinking
-        levels = self.template.selected(tools=tools).efforts
-        fields = thinking_fields(body, levels)
+        route = self.template.selected(tools=tools)
+        levels = route.efforts
+        fields = thinking_fields(body, levels, numeric=getattr(route, "numeric_efforts", False))
         fixed = self._fixed_thinking(tools)
         if fixed is not None:
             if "enable_thinking" in fields and fields["enable_thinking"] is not fixed:
@@ -1512,7 +1514,9 @@ class App:
             stream = StreamDecoder(self.tok, ends, literal=gemma and split_reasoning)
             # streamed calls go out as argument deltas while written (as on the Mac); one-call requests keep the end parser
             strict = prepared.calls
-            calls_stream = ((strict.reader() if strict is not None else ToolCallStreamer(tools))
+            family_calls = getattr(self.template, "calls", None)   # a renderer's own call grammar (DeepSeek-V4.1 DSML)
+            calls_stream = ((strict.reader() if strict is not None else
+                             family_calls.streamer(tools) if family_calls is not None else ToolCallStreamer(tools))
                             if tools and not policy.single and body.get("stream")
                             and (prepared.grammar is None or strict is not None)
                             and (strict is not None or not gemma) else None)
@@ -1615,7 +1619,8 @@ class App:
 
                     answer = hide_gemma_calls(answer, finished=finished)
                 elif tools and prepared.grammar is None:
-                    answer = (policy.content(answer, finished=finished) if policy.single
+                    answer = (policy.content(answer, finished=finished) if policy.single else
+                              family_calls.hide(answer, finished=finished) if family_calls is not None
                               else hide_tool_calls(answer, finished=finished))
                 if tools and (prepared.grammar is None or strict is not None):
                     answer = visible_tool_prose(answer)
@@ -2004,7 +2009,8 @@ class App:
                             raw_answer = answer_raw[0]
                         else:
                             raw_answer = split_thinking(text, finished=True, markers=markers)[1] if split_reasoning else text
-                        parse = parse_tool_calls_from_content if gemma else parse_tool_calls
+                        parse = (family_calls.parse if family_calls is not None else
+                                 parse_tool_calls_from_content if gemma else parse_tool_calls)
                         content, calls = parse(raw_answer, tools, max_calls=policy.max_calls, finished=normal_tool_end())
                         calls_complete = tool_calls_complete(raw_answer, tools, finished=normal_tool_end())
                         shown = policy.content(content)
@@ -2019,7 +2025,8 @@ class App:
                     # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
                     streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
                     if streamed > len(calls or ()):
-                        content = hide_tool_calls(content, finished=True).strip()   # those calls are the streamed deltas
+                        hide = family_calls.hide if family_calls is not None else hide_tool_calls
+                        content = hide(content, finished=True).strip()   # those calls are the streamed deltas
                     sent_text = answer[:sent["content"]]
                     lead = sent_text if content.startswith(sent_text) else sent_text.lstrip()
                     tail = content[len(lead):] if content.startswith(lead) else ""
