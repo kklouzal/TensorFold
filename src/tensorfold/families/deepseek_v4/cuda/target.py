@@ -10,8 +10,8 @@ TensorFold changes, recorded: TP8 attention/dense (8 query heads, 1 output group
 instead of TP4, and experts ETP4 x EP2 (rank r holds experts [192 (r // 4), +192) at TP slice r % 4) instead of
 PP2 x TP4; a layer's routed and shared partials form one 8-rank sum. Every cross-rank sum is accumulated in FP32
 and rounded once (upstream sums FP16 partials of 4 ranks); the decode indexer's per-rank head sums stay FP32.
-Dense projections run as FP16 GEMMs over weights decoded once at load (upstream's restore+GEMM; its M<=8 dmv13
-route is an optimization not yet ported). The Engram rows come from mapped host memory (``engram.py``).
+Q8_0 / Q5_K dense projections stay quantized as 1Cat dmv13 planes (``tensorfold.cuda.sm70.ds41_dense``: dmv13 /
+patch 112 for <= 32 rows, bounded restore + cuBLAS above); the embedding is vocabulary-sharded (one FP16 sum). The Engram rows come from mapped host memory (``engram.py``).
 """
 
 from __future__ import annotations
@@ -34,14 +34,16 @@ class Collectives:
         self.world = world
 
     def _all_reduce(self, tensor):
+        """In-place NCCL sum of an FP32 or FP16 tensor."""
         import ctypes
+        kind = {torch.float32: 7, torch.float16: 6}[tensor.dtype]
         comm = self.world
         fn = comm.lib.ncclAllReduce
         fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
                        ctypes.c_void_p, ctypes.c_void_p]
         fn.restype = ctypes.c_int
         stream = torch.cuda.current_stream().cuda_stream
-        comm._check(fn(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(), 7, 0, comm.comm, stream))
+        comm._check(fn(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(), kind, 0, comm.comm, stream))
 
     def sum(self, partial: torch.Tensor, dtype=None) -> torch.Tensor:
         """8-rank sum of partials, accumulated in FP32 and rounded once to ``dtype`` (default: the partial's)."""
@@ -161,12 +163,19 @@ class Target:
 
     @staticmethod
     def _linear(x, weight):
+        from tensorfold.cuda.sm70.ds41_dense import Group
+        if isinstance(weight, Group):
+            return weight(x)[0]
         return torch.matmul(x, weight.t())
 
     def embed(self, ids):
-        from tensorfold.cuda.sm70 import onecat_ds41 as native
-        rows = self.w.embed.index_select(0, ids)
-        return native.dequantize(rows, self.w.embed_type, self.g.hidden)
+        """Vocabulary-shard lookup: this rank decodes the rows of the ids it owns (others +0), one exact FP16 sum
+        over the 8 ranks (exactly one rank contributes each row)."""
+        from tensorfold.cuda.sm70 import ds41_dense as dense
+        rows = torch.empty(ids.shape[0], self.g.hidden, dtype=torch.float16, device=ids.device)
+        dense.q5k_rows(self.w.embed, ids, self.w.embed_first, rows)
+        self.c._all_reduce(rows)
+        return rows
 
     # ---- attention (patch 87 attention_forward)
     def attention(self, ly, x, step: Step, table, shared):
@@ -174,7 +183,7 @@ class Target:
         from .kernels import mu_packed as pk
         tokens = x.shape[0]
         positions = step.positions
-        q_low, kv_low = self._linear(x, ly.wq_a), self._linear(x, ly.wkv)
+        q_low, kv_low = ly.qa_kv(x)
         qr = self._norm(q_low, ly.q_norm)
         query = qr_ops.apply_rope(self._linear(qr, ly.wq_b).view(tokens, -1, 512), positions, table)
         window = qr_ops.attention_qdq(qr_ops.apply_rope(self._norm(kv_low, ly.kv_norm), positions, table))
@@ -197,8 +206,8 @@ class Target:
         output = self._attend(query, step, pool.rings[ly.index], window, ly.sink, **extra)
         pk.insert_ring(pool.rings[ly.index], window, positions, step.valid, step.token_req, step.qsl, step.req_slot)
         output = qr_ops.apply_rope(output, positions, table, inverse=True)
-        output = qr_ops.attention_qdq(output.reshape(tokens, ly.wo_a.shape[0], -1))
-        projected = torch.bmm(output.transpose(0, 1), ly.wo_a.transpose(1, 2)).transpose(0, 1).reshape(tokens, -1)
+        output = qr_ops.attention_qdq(output.reshape(tokens, 1, -1))      # TP8: one output group per rank
+        projected = self._linear(output.reshape(tokens, -1), ly.wo_a)
         return self.c.sum(self._linear(projected, ly.wo_b))
 
     def _compress(self, ly, x, step):
@@ -253,7 +262,7 @@ class Target:
                 out[at:end] = native.v41_experts(x[at:end].contiguous(), local[at:end], weights[at:end],
                                                  ly.exp_gate, ly.exp_up, ly.exp_down, ly.gate_up_type,
                                                  ly.down_type, ly.down_left)
-        hidden = native.shared_swiglu(self._linear(x, ly.sh_gate), self._linear(x, ly.sh_up))
+        hidden = native.shared_swiglu(*ly.sh_gu(x))
         total = out.float() + self._linear(hidden, ly.sh_down).float()
         self.c._all_reduce(total)
         return total.half()

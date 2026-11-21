@@ -223,6 +223,46 @@ class Loader:
             out = out[:, cols[0]:cols[0] + cols[1]]
         return out.to(dtype).contiguous()
 
+    def planes(self, name, rows=None, cols=None):
+        """dmv13 planes (``ds41_dense.Planes``) of a Q8_0 / Q5_K [rows, cols] slice, packed on the GPU from the
+        original row bytes in bounded chunks; the only resident copy of the projection."""
+        from tensorfold.cuda.sm70 import ds41_dense as dense
+        torch = self.torch
+        t, data = self.s.rows(name)
+        if t.ggml_type not in dense.FORMAT:
+            raise ValueError(f"{name}: dmv13 planes take Q8_0 / Q5_K, found {FORMATS[t.ggml_type][0]}")
+        first, count = rows if rows is not None else (0, t.rows)
+        c0, width = cols if cols is not None else (0, t.shape[-1])
+        if c0 % 32 or width % 32:
+            raise ValueError(f"{name}: column window must align to the 32-value quantization steps")
+        out = dense.Planes(dense.FORMAT[t.ggml_type], count, width, self.device)
+        step = max(32, self.CHUNK_BYTES // t.row_bytes // 32 * 32)
+        for at in range(0, count, step):
+            n = min(step, count - at)
+            packed = torch.from_numpy(np.array(data[first + at:first + at + n])).to(self.device)
+            out.pack(packed, t.ggml_type, c0 // 32, tile0=at // 32)
+        return out
+
+    def column_planes(self, name, parts=TP):
+        t = self.s.tensors[name]
+        n = t.rows // parts
+        return self.planes(name, rows=(self.t * n, n))
+
+    def row_planes(self, name, parts=TP):
+        t = self.s.tensors[name]
+        n = t.shape[-1] // parts
+        return self.planes(name, cols=(self.t * n, n))
+
+    def router_gate(self, name):
+        """The router gate in BF16 when that is exact (the GGUF stores it as BF16, so FP32 values widen from
+        it); otherwise FP32. fp32_projection widens BF16 to the same FP32 operands."""
+        torch = self.torch
+        value = self.floating(name, torch.float32)
+        narrow = value.to(torch.bfloat16)
+        if self.s.tensors[name].ggml_type == 30 or torch.equal(narrow.float(), value):
+            return narrow.contiguous()
+        return value
+
     def column(self, name, parts=TP):
         """This rank's ColumnParallel rows (output features)."""
         t = self.s.tensors[name]
@@ -300,6 +340,8 @@ class Layer:
     sh_down: object = None         # [5120, 288]
     hc: dict = field(default_factory=dict)
     engram_wkv: object = None      # [3200, 6144]
+    qa_kv: object = None           # dmv13 group (wq_a, wkv): one launch for both same-input outputs
+    sh_gu: object = None           # dmv13 group (sh_gate, sh_up)
     engram_q: object = None        # fp32 [4, 5120]
     engram_k: object = None
     source: int = -1
@@ -312,14 +354,16 @@ class Weights:
     geometry: Geometry
     rank: int
     layers: list
-    embed: object                  # Q5_K bytes [vocab, row_bytes] (rows decoded on lookup)
+    embed: object                  # Q5_K bytes of this rank's vocabulary rows [vocab / 8, row_bytes]
     embed_type: int
-    head: object                   # fp16 [vocab / 8, 5120]
+    embed_first: int               # first vocabulary row of ``embed``
+    head: object                   # dmv13 group of the head's [vocab / 8, 5120] rows
     norm: object
     engram_token_map: object
     engram_primes: object
     engram_offsets: object
     engram_multipliers: object
+    dense_scratch: object = None   # ds41_dense.Scratch shared by every dmv13 group of this rank
 
     @property
     def group(self):
@@ -328,24 +372,29 @@ class Weights:
 
 def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | None = None) -> Weights:
     import torch
+    from tensorfold.cuda.sm70 import ds41_dense as dense
     L = Loader(shards, rank, device)
     g = geometry
     f32 = torch.float32
+    scratch = dense.Scratch(device)
+    group = lambda *members: dense.Group(members, scratch)   # noqa: E731
     out = []
     for i in (layers if layers is not None else range(g.layers)):
         p = f"blk.{i}."
         ly = Layer(index=i, ratio=g.compress_ratios[i])
         ly.attn_norm, ly.ffn_norm = L.floating(p + "attn_norm.weight", f32), L.floating(p + "ffn_norm.weight", f32)
-        ly.wq_a, ly.wkv = L.dense(p + "attn_q_a.weight"), L.dense(p + "attn_kv.weight")
+        wq_a, wkv = L.planes(p + "attn_q_a.weight"), L.planes(p + "attn_kv.weight")
+        ly.wq_a, ly.wkv, ly.qa_kv = group(wq_a), group(wkv), group(wq_a, wkv)
         ly.q_norm, ly.kv_norm = L.floating(p + "attn_q_a_norm.weight", f32), L.floating(p + "attn_kv_a_norm.weight", f32)
-        ly.wq_b = L.column(p + "attn_q_b.weight")
+        ly.wq_b = group(L.column_planes(p + "attn_q_b.weight"))
         groups = g.o_groups // TP
         t = shards.tensors[p + "attn_output_a.weight"]
         if t.shape != (g.o_groups, g.o_lora, g.heads * g.head_dim // g.o_groups):
             raise ValueError(f"{p}attn_output_a: unexpected shape {t.shape}")
-        ly.wo_a = L.dense(p + "attn_output_a.weight", rows=(L.t * groups * g.o_lora, groups * g.o_lora)).view(
-            groups, g.o_lora, -1)
-        ly.wo_b = L.row(p + "attn_output_b.weight")
+        if groups != 1:
+            raise ValueError("TP8 holds exactly one output group per rank")
+        ly.wo_a = group(L.planes(p + "attn_output_a.weight", rows=(L.t * g.o_lora, g.o_lora)))
+        ly.wo_b = group(L.row_planes(p + "attn_output_b.weight"))
         heads = g.heads // TP
         ly.sink = L.floating(p + "attn_sinks.weight", f32)[L.t * heads:(L.t + 1) * heads].contiguous()
         ly.owns_kv = i in g.kv_sources
@@ -362,36 +411,44 @@ def load(shards: Shards, geometry: Geometry, rank: int, device, layers: range | 
         if ly.has_indexer:
             ly.idx_wq_b = L.column(p + "indexer.attn_q_b.weight")
             ly.idx_proj = L.column(p + "indexer.proj.weight")
-        ly.gate = L.dense(p + "ffn_gate_inp.weight", dtype=f32)
+        ly.gate = L.router_gate(p + "ffn_gate_inp.weight")
         ly.gate_bias = L.floating(p + "exp_probs_b.bias", f32)
         ly.exp_gate, ly.gate_up_type, _ = L.expert_bank(p + "ffn_gate_exps.weight", down=False)
         ly.exp_up, up_type, _ = L.expert_bank(p + "ffn_up_exps.weight", down=False)
         if up_type != ly.gate_up_type:
             raise ValueError(f"{p}: gate/up expert formats differ")
         ly.exp_down, ly.down_type, ly.down_left = L.expert_bank(p + "ffn_down_exps.weight", down=True)
-        ly.sh_gate, ly.sh_up = L.column(p + "ffn_gate_shexp.weight"), L.column(p + "ffn_up_shexp.weight")
-        ly.sh_down = L.row(p + "ffn_down_shexp.weight")
+        sh_gate, sh_up = L.column_planes(p + "ffn_gate_shexp.weight"), L.column_planes(p + "ffn_up_shexp.weight")
+        ly.sh_gate, ly.sh_up, ly.sh_gu = group(sh_gate), group(sh_up), group(sh_gate, sh_up)
+        ly.sh_down = group(L.row_planes(p + "ffn_down_shexp.weight"))
         for branch in ("attn", "ffn"):
             for part in ("fn", "base", "scale"):
                 ly.hc[f"{branch}_{part}"] = L.floating(p + f"hc_{branch}_{part}.weight", f32)
         if i in g.engram_layers:
-            ly.engram_wkv = L.column(p + "engram_wkv.weight")
+            ly.engram_wkv = group(L.column_planes(p + "engram_wkv.weight"))
             ly.engram_q = L.floating(p + "engram_q.weight", f32)
             ly.engram_k = L.floating(p + "engram_k.weight", f32)
         out.append(ly)
         torch.cuda.empty_cache()
-    t, data = shards.rows("token_embd.weight")
-    if t.ggml_type not in DENSE_TYPES + (14,):
-        raise ValueError("token_embd must be a K/Q8 quantized table")
-    embed = torch.from_numpy(np.array(data)).to(device)
     vocab = g.vocab // TP
-    head = L.dense("output.weight", rows=(L.t * vocab, vocab))
-    return Weights(geometry=g, rank=rank, layers=out, embed=embed, embed_type=t.ggml_type, head=head,
+    embed, embed_type = _embedding_shard(shards, L.t * vocab, vocab, device)
+    head = group(L.planes("output.weight", rows=(L.t * vocab, vocab)))
+    return Weights(geometry=g, rank=rank, layers=out, embed=embed, embed_type=embed_type,
+                   embed_first=L.t * vocab, head=head, dense_scratch=scratch,
                    norm=L.floating("output_norm.weight", f32),
                    engram_token_map=L.integers("engram_token_map.weight", torch.int32),
                    engram_primes=L.integers("engram_primes.weight", torch.int64),
                    engram_offsets=L.integers("engram_offsets.weight", torch.int64),
                    engram_multipliers=L.integers("engram_multipliers.weight", torch.int64))
+
+
+def _embedding_shard(shards: Shards, first: int, count: int, device):
+    """Q5_K bytes of vocabulary rows [first, first + count) (the TP8 vocabulary shard of the embedding)."""
+    import torch
+    t, data = shards.rows("token_embd.weight")
+    if t.ggml_type != 13 or t.rows % TP:
+        raise ValueError("token_embd must be a Q5_K table whose rows divide over the 8 ranks")
+    return torch.from_numpy(np.array(data[first:first + count])).to(device), t.ggml_type
 
 
 def engram_split(shards: Shards, geometry: Geometry) -> tuple[int, int]:
