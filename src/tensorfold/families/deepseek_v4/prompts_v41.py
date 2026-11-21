@@ -22,6 +22,46 @@ EFFORTS = {"low": "low", "medium": 75, "high": "high", "xhigh": 100, "max": "max
 SOURCE = "DeepSeek-V4.1 native Python encoder 13231c59"
 
 
+def message_points(token_id: Any) -> Any:
+    """Where a V4.1 prompt's token ids end a message (``token_id``: the tokenizer's control-token lookup) ->
+    ``points(ids)``: the sorted positions p in (0, len(ids)) at which the encoder's framing starts the next one.
+
+      * a ``<｜User｜>`` (a user turn or a group of tool results), a later ``<｜System｜>`` or a
+        ``<｜latest_reminder｜>`` at p: the system prompt, the assistant reply (thinking and DSML calls through its
+        EOS) or the message before it ends at p;
+      * an ``<｜Assistant｜>`` at a, with its ``<think>`` / ``</think>`` at a + 1: the user turn and its generation
+        header end at a + 2 (else a + 1), where the reply starts; a prompt that ends there (the generation prompt)
+        ends at this point, so its next turn (which re-renders that header, thinking kept or not) resumes on it.
+
+    Request text never encodes as a control token (``literal_prompts_v41``), so these ids are the encoder's own
+    framing. Every point is a function of the ids before it and the id at it, never of the ids after it."""
+
+    import numpy as np
+
+    from .vendor import encoding_dsv41 as native
+
+    def need(text: str) -> int:
+        found = token_id(text)
+        if found is None:
+            raise ValueError(f"the tokenizer has no {text} control token")
+        return int(found)
+
+    openers = np.array([need(native.USER_SP_TOKEN), need(native.SYSTEM_SP_TOKEN),
+                        need(native.LATEST_REMINDER_SP_TOKEN)], dtype=np.int64)
+    assistant = need(ASSISTANT)
+    thinks = np.array([need(native.thinking_start_token), need(native.thinking_end_token)], dtype=np.int64)
+
+    def points(ids: Any) -> list[int]:
+        arr = np.asarray(ids, dtype=np.int64)
+        starts = np.flatnonzero(np.isin(arr, openers))
+        heads = np.flatnonzero(arr[:-1] == assistant)
+        ends = heads + 1 + np.isin(arr[heads + 1], thinks)
+        found = np.union1d(starts, ends)
+        return [int(p) for p in found if 0 < p < len(arr)]
+
+    return points
+
+
 def _text_only(value: Any) -> None:
     if isinstance(value, list):
         for block in value:

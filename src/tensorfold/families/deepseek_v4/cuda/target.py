@@ -4,7 +4,8 @@ packed attention (overlay patches 85/87), on TensorFold-owned KV pages, slots an
 Order and arithmetic follow 1Cat-vLLM 4d57473d ``vllm/models/deepseek_v41/model.py`` (``_forward_fused``:
 VLLM_V41_HC_FUSED=1, VLLM_V41_ROUTER_FUSED=1) with patch 87's ``attention_forward`` (packed FP4 KV rows on the
 GPU, per-slot window rings, row-wise decode indexer, single-request prefill indexer). Kernels are the vendored
-1Cat/overlay Triton kernels (``.kernels``) and the 1Cat SM70 GGUF expert ops (``tensorfold.cuda.sm70.onecat_ds41``).
+1Cat/overlay Triton kernels (``.kernels``), the 1Cat SM70 GGUF expert ops (``tensorfold.cuda.sm70.onecat_ds41``) and,
+below the grouped-prefill threshold, the friend's expert-major decode experts (``ds41_decode_moe``, patch 240 EM3).
 
 TensorFold changes, recorded: TP8 attention/dense (8 query heads, 1 output group, 4 indexer heads per rank)
 instead of TP4, and experts ETP4 x EP2 (rank r holds experts [192 (r // 4), +192) at TP slice r % 4) instead of
@@ -83,9 +84,23 @@ class Pool:
 
 
 # ------------------------------------------------------------------------------------------------ the model
+PREFILL_MOE = ("lattice", "lattice16")
+
+
+def prefill_moe_mode():
+    """The prefill routed experts' arithmetic (TENSORFOLD_DS41_PREFILL_MOE, default 'lattice'; A/B until the lead's
+    decision): 'lattice' = exact weight decode + FP32 gate/up (ds41_lattice_moe exact=True), 'lattice16' = the
+    friend's FP16 arithmetic (exact=False)."""
+    import os
+    mode = os.environ.get("TENSORFOLD_DS41_PREFILL_MOE", "lattice")
+    if mode not in PREFILL_MOE:
+        raise ValueError(f"TENSORFOLD_DS41_PREFILL_MOE must be one of {PREFILL_MOE}")
+    return mode
+
+
 class Target:
     def __init__(self, w: Weights, comm: Collectives, *, slots: int, pages: int, max_tokens: int, context: int,
-                 engram, device):
+                 engram, device, lattice):
         from .kernels import quant_rope, mu_state
         self.w, self.c, self.g = w, comm, w.geometry
         self.device = device
@@ -109,6 +124,12 @@ class Target:
                 self.c2[layer.index] = mu_state.MuC2State(layer.comp_norm, slots=slots - 1, trap=True)
         self.local = range(w.group * (g.experts // EP), (w.group + 1) * (g.experts // EP))
         self.engram_rows = torch.empty(max_tokens, 24 * 256, dtype=torch.float16, device=device)
+        from tensorfold.cuda.sm70 import ds41_decode_moe
+        self.decode_moe = ds41_decode_moe.Workspace(device)   # routed experts below the grouped-prefill threshold
+        # Prefill routed experts (>= MIN_TOKENS rows): the friend's TurboMind lattice path (ds41_lattice_moe); its
+        # canonical-bank workspace is the caller's (allocated before the KV pool is sized).
+        self.prefill_moe = prefill_moe_mode()
+        self.lattice = lattice
         # Engram lookup telemetry for the deferred hot-row VRAM cache candidate (off unless the variable names a
         # file; rank 0 only, since every rank looks up the same rows): appends each forward's valid hashed row ids
         # (int64 [tokens, 2 tables, 24 heads], table-local) for offline hit-rate / churn analysis.
@@ -215,7 +236,8 @@ class Target:
 
     # ---- MoE
     def moe(self, ly, x):
-        from tensorfold.cuda.sm70 import ds41_prefill_moe as prefill_moe, onecat_ds41 as native
+        from tensorfold.cuda.sm70 import ds41_lattice_moe as lattice_moe
+        from tensorfold.cuda.sm70 import onecat_ds41 as native
         from .kernels.mhc import fp32_projection
         from .kernels.router import route_topk
         g = self.g
@@ -226,16 +248,13 @@ class Target:
         mine = (local >= 0) & (local < len(self.local))
         local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
         weights = torch.where(mine, probabilities.float(), torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
-        if x.shape[0] >= prefill_moe.MIN_TOKENS:  # grouped prefill experts (one host sync; not captured)
-            out = prefill_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
-                                      ly.gate_up_type, ly.down_type, ly.down_left)
-        else:
-            out = torch.empty_like(x)
-            for at in range(0, x.shape[0], 6):
-                end = min(at + 6, x.shape[0])
-                out[at:end] = native.v41_experts(x[at:end].contiguous(), local[at:end], weights[at:end],
-                                                 ly.exp_gate, ly.exp_up, ly.exp_down, ly.gate_up_type,
-                                                 ly.down_type, ly.down_left)
+        if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
+            out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
+                                      ly.gate_up_type, ly.down_type, ly.down_left, self.lattice,
+                                      exact=self.prefill_moe == "lattice")
+        else:  # expert-major decode experts (the friend's EM3), bit-equal to the 6-row op, graph-capturable
+            out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
+                                          ly.gate_up_type, ly.down_type, ly.down_left)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
         total = out.float() + self._linear(hidden, ly.sh_down).float()
         return self.c.sum(total, torch.float16)
@@ -254,7 +273,7 @@ class Target:
         """Run every layer for ``step``; return this rank's vocabulary-shard logits [rows, vocab / 8] (FP32) of
         ``logits_rows`` (None: no logits)."""
         state = self.begin(step)
-        self.layers(state, len(self.w.layers))
+        self.layers(state, self.units)
         return self.end(state, logits_rows)
 
     def begin(self, step: Step) -> dict:
@@ -274,56 +293,68 @@ class Target:
         pre = torch.zeros(tokens, g.hc, device=hidden.device, dtype=torch.float32)
         pre[:, 0] = 1
         return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": {"topk": None},
-                "mix": None, "next": 0, "result": None}
+                "mix": None, "half": None, "next": 0, "result": None}
+
+    @property
+    def units(self) -> int:
+        """Pause points of a forward: two units per layer (attention, then experts)."""
+        return 2 * len(self.w.layers)
 
     def layers(self, st: dict, stop: int, marks: list | None = None) -> None:
-        """Advance ``st`` through layers [st["next"], stop). ``marks``: append (first layer, CUDA events at the
-        start and after each layer) for the caller's per-layer cost estimate."""
+        """Advance ``st`` through units [st["next"], stop): unit 2i is layer i's attention (with its Engram and
+        HC transition), unit 2i+1 its experts (with the transition into layer i+1). A pause at either changes no
+        kernel or row, so a paused prompt forward computes exactly what an unpaused one does. ``marks``: append
+        (first unit, CUDA events at the start and after each unit) for the caller's per-unit cost estimate."""
         from .kernels.mhc import collapse_hc, expand_hc, hc_mixes
         from .kernels.mhc_fused import hc_transition
         w = self.w
         layers = w.layers
         step, hashes, shared = st["step"], st["hashes"], st["shared"]
-        hidden, pre, state = st["hidden"], st["pre"], st["mix"]
+        hidden, pre, state, half = st["hidden"], st["pre"], st["mix"], st["half"]
         events = None
         if marks is not None:
             events = [torch.cuda.Event(enable_timing=True)]
             events[0].record()
             marks.append((st["next"], events))
-        for i in range(st["next"], stop):
+        for u in range(st["next"], stop):
+            i, second = divmod(u, 2)
             ly = layers[i]
-            if ly.engram_wkv is not None:
-                hidden = self.engram_layer(ly, hidden, hashes, step)
-                state = None
-            if state is None:
-                attn_mix = hc_mixes(hidden, ly.hc["attn_fn"], ly.hc["attn_scale"], ly.hc["attn_base"])
-                inputs = collapse_hc(hidden, pre, ly.attn_norm)
+            if not second:
+                if ly.engram_wkv is not None:
+                    hidden = self.engram_layer(ly, hidden, hashes, step)
+                    state = None
+                if state is None:
+                    attn_mix = hc_mixes(hidden, ly.hc["attn_fn"], ly.hc["attn_scale"], ly.hc["attn_base"])
+                    inputs = collapse_hc(hidden, pre, ly.attn_norm)
+                else:
+                    inputs, attn_mix = state
+                table = self.compressed_rope if ly.ratio else self.window_rope
+                y = self.attention(ly, inputs, step, table, shared)
+                half = hc_transition(hidden, y, attn_mix[1], attn_mix[2], attn_mix[0], ly.ffn_norm,
+                                     ly.hc["ffn_fn"], ly.hc["ffn_scale"], ly.hc["ffn_base"])
             else:
-                inputs, attn_mix = state
-            table = self.compressed_rope if ly.ratio else self.window_rope
-            y = self.attention(ly, inputs, step, table, shared)
-            inputs, ffn_mix = hc_transition(hidden, y, attn_mix[1], attn_mix[2], attn_mix[0], ly.ffn_norm,
-                                            ly.hc["ffn_fn"], ly.hc["ffn_scale"], ly.hc["ffn_base"])
-            y = self.moe(ly, inputs)
-            pre = ffn_mix[0]
-            following = layers[i + 1] if i + 1 < len(layers) else None
-            if following is not None and following.engram_wkv is None:
-                inputs, mix = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, following.attn_norm,
-                                            following.hc["attn_fn"], following.hc["attn_scale"],
-                                            following.hc["attn_base"])
-                state = (inputs, mix)
-            elif following is not None:
-                hidden = expand_hc(y, hidden, ffn_mix[1], ffn_mix[2], inplace=True)
-                state = None
-            else:
-                st["result"], _ = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, w.norm)
+                inputs, ffn_mix = half
+                half = None
+                y = self.moe(ly, inputs)
+                pre = ffn_mix[0]
+                following = layers[i + 1] if i + 1 < len(layers) else None
+                if following is not None and following.engram_wkv is None:
+                    inputs, mix = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, following.attn_norm,
+                                                following.hc["attn_fn"], following.hc["attn_scale"],
+                                                following.hc["attn_base"])
+                    state = (inputs, mix)
+                elif following is not None:
+                    hidden = expand_hc(y, hidden, ffn_mix[1], ffn_mix[2], inplace=True)
+                    state = None
+                else:
+                    st["result"], _ = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, w.norm)
             if events is not None:
                 events.append(torch.cuda.Event(enable_timing=True))
                 events[-1].record()
-        st.update(hidden=hidden, pre=pre, mix=state, next=max(st["next"], stop))
+        st.update(hidden=hidden, pre=pre, mix=state, half=half, next=max(st["next"], stop))
 
     def end(self, st: dict, logits_rows: torch.Tensor | None):
-        if st["next"] != len(self.w.layers):
+        if st["next"] != self.units:
             raise RuntimeError("a DeepSeek-V4.1 forward ended before its last layer")
         if logits_rows is None:
             return None

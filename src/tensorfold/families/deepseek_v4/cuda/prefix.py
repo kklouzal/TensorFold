@@ -18,14 +18,16 @@ of its first h tokens only (patch 85's slot semantics; every kernel resolves its
   * No other per-slot state: the decode/prefill indexers read only the pages (Full mode, no patch-170 reuse
     state); DeepSeek-V4.1's compress ratios are 0/1/2 (no ratio 4 / 128 groups to align to).
 
-So the state at any forward boundary of a slot is exact. What decides where a point may be kept is the arithmetic of
-the rows a resumed request still computes: its prompt chunks must be the chunks a cold prefill of the same prompt
-runs (same rows per forward, so the same GEMM shapes, MoE path, indexer path and reductions). Cold prompts chunk at
-multiples of ``prompt_rows`` from position 0 (load-invariant), so points are kept only at those boundaries (at or
-before each message start and the prompt end: ``PrefixOwner._stops``) plus the exact prompt end with its last-row
-logits (an exact repeat computes no prompt row; its reply is the cold reply). A request extending an exact end
-resumes at the aligned point below it (``place``). Under these rules a cached request's every computed row is
-bitwise the cold request's (verified with tools/quality_eval cachecheck).
+So the state at any forward boundary of a slot is exact, and a point may be kept wherever a prompt chunk ends.
+Where they end is a cost choice: a prompt forward costs about 0.21 s plus 0.45 ms per row at TP8 (pfx2-a), so a
+prompt is split only where a later request is likely to resume (``chunk_splits``): the system prompt's end (the first
+of the renderer's ``message_points``: a prefix other conversations share), the last message's start (a regenerated
+or re-rendered turn -- thinking without tools re-renders the previous header -- resumes there) and every
+``prompt_rows`` rows in between; a next turn that extends the prompt resumes at its exact end. Chunking every message
+boundary instead (bitwise cached == cold by construction, pfx2-a cachecheck 22/22 identical) cost 1.28-1.85x the
+one-chunk cold prefill on multi-turn prompts. So a resumed request computes its rows in other chunks than a cold
+prefill of its prompt would: equal up to the reductions' rounding, gated by tools/quality_eval cachecheck compare
+(cached vs cold NLL). An exact repeat computes no prompt row at all (its reply is the cold reply).
 
 Ranks: rank 0's owner decides and announces the Gemma ``ops`` codes; every rank runs ``SlotState`` on its own
 tensors in announcement order (identical shapes and page ids, so snapshot ids and slab offsets are rank-replicated).
@@ -60,6 +62,35 @@ def snapshot_bytes(layers: int, c2_sources: int) -> int:
 def extent_bytes(layout, first: int, end: int) -> int:
     """Bytes of the KV rows of positions [first, end) (every source's rows first // r .. end // r)."""
     return sum((end // ratio - first // ratio) * (C_ROW + I_ROW) for ratio, _, _, _ in layout.regions.values())
+
+
+MIN_CHUNK = 256          # rows: no split closer than this to the previous one (a forward costs ~470 rows' work)
+
+
+def chunk_splits(points, start: int, n: int, rows: int) -> list[int]:
+    """Where a prompt computed from ``start`` splits its chunks in (start, n): its first message point at least
+    MIN_CHUNK rows into the prompt (the system prompt's end, when past ``start``) and its last one (``points``
+    sorted), each at least MIN_CHUNK rows past the previous split, and every ``rows`` rows past the previous split."""
+    first = next((p for p in points if p >= MIN_CHUNK), None)
+    ahead = [p for p in points if start < p < n]
+    wanted = sorted({first, ahead[-1]}) if ahead and first is not None and start < first < n else ahead[-1:]
+    out: list[int] = []
+    prev = start
+    for p in (*wanted, n):
+        while p - prev > rows:
+            prev += rows
+            out.append(prev)
+        if p < n and p - prev >= MIN_CHUNK:
+            out.append(p)
+            prev = p
+    return out
+
+
+def chunk_end(bounds, start: int, n: int) -> int:
+    """Where the prompt chunk at ``start`` ends: the next split, or the prompt end."""
+    from bisect import bisect_right
+    k = bisect_right(bounds, start)
+    return bounds[k] if k < len(bounds) else n
 
 
 def default_keep_slots(streams: int) -> int:
@@ -115,7 +146,7 @@ class PrefixOwner(_gemma.PrefixOwner):
         self.kept: list = []
         self.used: dict[int, int] = {}
         self.clock = 0
-        self.keep = 4 * max(1, engine.keep_slots)        # kept points (a prompt keeps up to four)
+        self.keep = 6 * max(1, engine.keep_slots)        # kept points (a prompt: its splits and its end)
         self.depth = 0                                   # no drafter rows past the prompt
         self.prefix_counters = dict.fromkeys(prefixes.COUNTERS, 0)
         self.points = points
@@ -130,26 +161,70 @@ class PrefixOwner(_gemma.PrefixOwner):
     def _cap(self, rows: int) -> int:
         return min(self.e.context, -(-rows // BLOCK) * BLOCK)
 
+    def place(self, s, capacity: int, reuse: bool) -> None:
+        super().place(s, capacity, reuse)
+        if not reuse:
+            s.bounds = self._splits(s)
+
+    def _splits(self, s) -> list[int]:
+        if getattr(s, "message_points", None) is None:
+            s.message_points = self.points(s.prompt) if self.points is not None else []
+        return chunk_splits(s.message_points, s.cached, len(s.prompt), self.e.prompt_rows)
+
+    def _stops(self, s) -> list[int]:
+        """Every split of this request's chunks keeps a point (``s.bounds``: its chunks end on them)."""
+        s.bounds = self._splits(s)
+        return list(s.bounds)
+
+    def _resume_at(self, s, st, resume, cached: int, sid):
+        """A kept point's state is exact at its length, except an exact end's: kept one token early (``prefixes``'
+        prompt-end convention), its snapshot holds the state at the prompt end (``at``), one token (``next``)
+        further. A prompt continuing with that token resumes there (a next turn: the exact end extended; a fork
+        copies that row too); any other lands on the longest kept point below whose state is at its length, or
+        cold, and the points of ``st`` past the landing go (this request rewrites their rows), so no point whose
+        state is not at its length is resumed there. (``prefixes`` demotes an end it resumes without its end:
+        ``at`` and ``next`` stay; such a point never spills, ``HostTier._servable``.)"""
+        state = resume["state"]
+        if s.head is not None or state_at(state) == cached:
+            return cached, sid
+        if state_at(state) == cached + 1 < len(s.prompt) and state.get("next") == s.prompt[cached]:
+            src = next((k[1] for k in self.kept if k[2] is state), st)
+            if src is not st:                            # a fork copied the point's rows: also the end's last
+                self.e.announce(OP_COPY, src.index, st.index, cached + 1)
+            self._recount(-1)
+            return cached + 1, sid
+        aligned, sid = 0, None
+        for ids, _st, snap, _tail in self.kept:
+            n = len(ids)
+            if aligned < n <= cached and state_at(snap) == n and s.prompt[:n] == ids:
+                aligned, sid = n, snap["sid"]
+        self._recount(cached - aligned)
+        if any(k[1] is st and len(k[0]) > aligned for k in self.kept):
+            self.kept = [k for k in self.kept if not (k[1] is st and len(k[0]) > aligned)]
+            self._sweep()
+        return aligned, sid
+
     def keep_end(self, s, logits) -> None:
-        """The exact prompt end (state at n and last-row logits) for exact repeats. Gemma's kept point for it sits
-        one token early (n - 1) and an extension resumes it there when n - 1 is a chunk boundary; here the state at
-        n cannot resume at n - 1 (the Engram history and C2 state are past it), so when n - 1 is a boundary the
-        exact end joins the boundary point ``keep_before`` kept there (the extension resumes that point's state),
-        and without that point it is not kept."""
+        """The exact prompt end (state at n) as the point one token early with the last-row logits (an exact
+        repeat computes nothing) and the token past it (``next``: a prompt continuing it resumes at n). When n - 1
+        is a kept split, that point serves both (one row computed)."""
         n = len(s.prompt)
-        if n < 2 or (n - 1) % self.e.prompt_rows:
-            return super().keep_end(s, logits)
         ids = list(s.prompt[:n - 1])
-        point = next((k for k in self.kept if k[1] is s.st and k[0] == ids and not k[2].get("exact")), None)
-        if point is None:
+        if n < 2 or any(k[1] is s.st and k[0] == ids and state_at(k[2]) == n - 1 for k in self.kept):
             return
         sid = self._snapshot(s.st, n)
         if sid is None:
             return
-        snap = {**point[2], "prompt_end": {"token": s.prompt[-1], "state": {"sid": sid, "pos": n, "mtp_len": n},
-                                           "tail": None, "head": logits.clone(), "last": None}}
-        prefixes.remember(self, ids, s.st, snap, None)
+        end = {"token": s.prompt[-1], "state": {"sid": sid, "pos": n, "mtp_len": n}, "tail": None,
+               "head": logits.clone(), "last": None}
+        prefixes.remember(self, ids, s.st, {"sid": sid, "pos": n - 1, "mtp_len": n - 1, "exact": True, "at": n,
+                                            "next": s.prompt[-1], "prompt_end": end}, None)
         self._sweep()
+
+
+def state_at(snap) -> int:
+    """The position a kept point's snapshot holds the state of (an exact end's ``at``, else its ``pos``)."""
+    return snap.get("at", snap["pos"])
 
 
 class HostTier(_gemma_host.HostTier):
@@ -157,6 +232,33 @@ class HostTier(_gemma_host.HostTier):
 
     def _rows_bytes(self, first: int, rows: int) -> int:
         return extent_bytes(self.owner.e.layout, first, rows)
+
+    def _servable(self, point) -> bool:
+        """Any point whose state is at its length (every split: a resume needs no alignment here) and an exact end
+        with its end; an exact end ``prefixes`` demoted (its state one row past it) serves nothing from here."""
+        snap = point[2]
+        return snap.get("prompt_end") is not None if snap.get("exact") else state_at(snap) == len(point[0])
+
+    def best(self, prompt, principal):
+        """Gemma 4 SM70's lookup, where an exact end also serves a prompt continuing it (``_resume_at``)."""
+        found, length = None, 0
+        for entry in self.entries:
+            if entry["principal"] != principal:
+                continue
+            for index, (ids, meta) in enumerate(entry["points"]):
+                n = len(ids)
+                if meta["exact"] and (len(prompt) <= n or prompt[n] != meta["prompt_end"]["token"]):
+                    continue
+                if length < n < len(prompt) and prompt[n - 1] == ids[-1] and prompt[:n] == ids:
+                    found, length = (entry, index), n
+        return found
+
+    @staticmethod
+    def _snap(meta, sid) -> dict:
+        snap = _gemma_host.HostTier._snap(meta, sid)
+        if meta["exact"]:                    # the snapshot holds the end's state (``PrefixOwner.keep_end``)
+            snap.update(at=meta["prompt_end"]["pos"], next=meta["prompt_end"]["token"])
+        return snap
 
 
 # ---------------------------------------------------------------------------------------------- every rank: copies

@@ -190,11 +190,7 @@ class PrefixOwner:
                     self.free.append(st)
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for KV memory until a live stream finishes")
             sid, s.head = resume["state"]["sid"], resume.get("head")
-            if s.head is None and cached % self.e.prompt_rows:
-                # An exact-end point extended: resume at the aligned boundary below it (exact chunk arithmetic).
-                aligned, sid = self._aligned(s.prompt, cached)
-                self._recount(cached - aligned)
-                cached = aligned
+            cached, sid = self._resume_at(s, st, resume, cached, sid)
             if self.host_tier is not None:               # this request writes its rows from ``cached``
                 self.host_tier.hold(st, self.host_tier.held(st), cached)
             if sid is None:
@@ -204,6 +200,15 @@ class PrefixOwner:
         s.st, s.slot, s.cached, s.pos = st, st.index, cached, cached
         s.stops = self._stops(s) if reuse else []
         s.keep_end = reuse
+
+    def _resume_at(self, s, st, resume, cached: int, sid):
+        """Where a placed request resumes (its cached count and the snapshot to restore): an exact-end point
+        extended resumes at the aligned boundary below it (exact chunk arithmetic)."""
+        if s.head is None and cached % self.e.prompt_rows:
+            aligned, sid = self._aligned(s.prompt, cached)
+            self._recount(cached - aligned)
+            cached = aligned
+        return cached, sid
 
     def _recount(self, tokens: int) -> None:
         """Take back reused tokens a placement counted but the request recomputes (its latest counted tier)."""

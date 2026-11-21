@@ -112,7 +112,7 @@ class Shape:
         state = t.begin(step)
         t.index_context = self.index_context
         try:
-            t.layers(state, e.layer_count)
+            t.layers(state, t.units)
         finally:
             t.index_context = t.context
         local = t.end(state, self.rows)
