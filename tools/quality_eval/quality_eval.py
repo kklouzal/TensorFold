@@ -10,11 +10,12 @@
       TensorFold: POST /v1/tensorfold/score (the server must run with TENSORFOLD_PRIVATE_SCORE=1). Every
       document's prompt tokens are scored by prompt-pass (prefill) rows and its continuation by teacher-forced
       decode/MTP-verify rows (``--continuation-limit N``: only the first N, for prefill-path runs). vLLM: /v1/completions with ``prompt_logprobs`` over prompt+continuation (one pass).
-  cachecheck --tokens corpus.tokens.json --mode extend|repeat --out-cold COLD.json --out-cached CACHED.json
+  cachecheck --tokens corpus.tokens.json --mode extend|repeat|prime --out-cold COLD.json --out-cached CACHED.json
         [--url ...] [--top 20] [--continuation-limit N] [--min-prompt 64] [--align ROWS]
       Prefix-cache qualification (TensorFold only). Per document: prime the server's prompt cache with a plain
       greedy /v1/completions request (``extend``: the first half of the prompt plus one token; ``repeat``: the
-      whole prompt), score the document borrowing that state (score ``reuse``), then score it cold. Writes two
+      whole prompt; ``prime``: the document's ``prime`` ids, e.g. an earlier turn of its conversation, expecting
+      its ``cached`` tokens reused), score the document borrowing that state (score ``reuse``), then score it cold. Writes two
       runs restricted to the rows the cached request computed, so ``compare COLD.json CACHED.json`` judges them.
       ``--align ROWS``: the server keeps extension points only at multiples of ROWS (its prompt-chunk boundaries,
       e.g. DeepSeek-V4.1 SM70's 8192), so an ``extend`` hit resumes at the boundary at or below the prime's end.
@@ -233,7 +234,9 @@ def cachecheck(args) -> None:
             continue
         if limit is not None:
             doc = {**doc, "continuation": doc["continuation"][:limit]}
-        prime = doc["prompt"][:len(doc["prompt"]) // 2 + 1] if args.mode == "extend" else doc["prompt"]
+        prime = {"extend": doc["prompt"][:len(doc["prompt"]) // 2 + 1], "repeat": doc["prompt"]}.get(args.mode)
+        if args.mode == "prime":                 # the document's own prime (an earlier turn) and expected hit
+            prime = doc["prime"]
         body = {"prompt": prime, "max_tokens": 1, "temperature": 0}
         if args.model:
             body["model"] = args.model
@@ -241,7 +244,7 @@ def cachecheck(args) -> None:
         cached = _score_rows(args.url, doc, args.top, args.model, True)
         cold = _score_rows(args.url, doc, args.top, args.model, False)
         n = int(cached.get("cached_tokens") or 0)
-        expected = len(prime) - 1 if args.mode == "extend" else len(doc["prompt"])
+        expected = {"extend": len(prime) - 1, "repeat": len(doc["prompt"])}.get(args.mode, doc.get("cached"))
         if args.align and args.mode == "extend":
             expected = expected // args.align * args.align
         if n != expected or not expected:       # (an aligned prime shorter than ROWS reuses nothing)
@@ -440,7 +443,7 @@ def main(argv=None) -> None:
     p.set_defaults(run=score)
     p = sub.add_parser("cachecheck")
     p.add_argument("--tokens", required=True)
-    p.add_argument("--mode", choices=("extend", "repeat"), required=True)
+    p.add_argument("--mode", choices=("extend", "repeat", "prime"), required=True)
     p.add_argument("--out-cold", required=True)
     p.add_argument("--out-cached", required=True)
     p.add_argument("--url", default="http://127.0.0.1:8000")

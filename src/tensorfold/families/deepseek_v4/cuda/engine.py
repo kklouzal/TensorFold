@@ -595,7 +595,8 @@ class Decoder(PrefixOwner):
         reuse = bool(s.draft and s.vision is None)
         if hasattr(s.probabilities, "add_prompt") and not getattr(s.probabilities, "reuse", False):
             reuse = False
-        s.bounds = self.bounds(s.prompt)              # every request's chunks end on them (reused or not)
+        if getattr(s, "bounds", None) is None:       # every request's chunks end on them (reused or not)
+            s.bounds = self.bounds(s.prompt)
         try:
             self.place(s, capacity, reuse)
         except NoRoom:
