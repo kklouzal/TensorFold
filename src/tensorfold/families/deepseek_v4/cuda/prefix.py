@@ -146,7 +146,7 @@ class PrefixOwner(_gemma.PrefixOwner):
         self.kept: list = []
         self.used: dict[int, int] = {}
         self.clock = 0
-        self.keep = 6 * max(1, engine.keep_slots)        # kept points (a prompt: its splits, two ends)
+        self.keep = 6 * max(1, engine.keep_slots)        # kept points (a prompt: its splits and its end)
         self.depth = 0                                   # no drafter rows past the prompt
         self.prefix_counters = dict.fromkeys(prefixes.COUNTERS, 0)
         self.points = points
@@ -177,16 +177,26 @@ class PrefixOwner(_gemma.PrefixOwner):
         return list(s.bounds)
 
     def _resume_at(self, s, st, resume, cached: int, sid):
-        """Any kept point's state is exact at its length, except an exact end's (at the prompt end, one token past
-        its length): a prompt merely extending that point lands on the longest kept point below it, or cold. Points
-        of ``st`` past the landing go (this request rewrites their rows), so no exact point without its prompt end
-        (``prefixes`` removes it on a resume in place) stays kept or spills."""
-        if s.head is not None or not resume["state"].get("exact"):
+        """A kept point's state is exact at its length, except an exact end's: kept one token early (``prefixes``'
+        prompt-end convention), its snapshot holds the state at the prompt end (``at``), one token (``next``)
+        further. A prompt continuing with that token resumes there (a next turn: the exact end extended; a fork
+        copies that row too); any other lands on the longest kept point below whose state is at its length, or
+        cold, and the points of ``st`` past the landing go (this request rewrites their rows), so no point whose
+        state is not at its length is resumed there. (``prefixes`` demotes an end it resumes without its end:
+        ``at`` and ``next`` stay; such a point never spills, ``HostTier._servable``.)"""
+        state = resume["state"]
+        if s.head is not None or state_at(state) == cached:
             return cached, sid
+        if state_at(state) == cached + 1 < len(s.prompt) and state.get("next") == s.prompt[cached]:
+            src = next((k[1] for k in self.kept if k[2] is state), st)
+            if src is not st:                            # a fork copied the point's rows: also the end's last
+                self.e.announce(OP_COPY, src.index, st.index, cached + 1)
+            self._recount(-1)
+            return cached + 1, sid
         aligned, sid = 0, None
         for ids, _st, snap, _tail in self.kept:
             n = len(ids)
-            if aligned < n <= cached and not snap.get("exact") and s.prompt[:n] == ids:
+            if aligned < n <= cached and state_at(snap) == n and s.prompt[:n] == ids:
                 aligned, sid = n, snap["sid"]
         self._recount(cached - aligned)
         if any(k[1] is st and len(k[0]) > aligned for k in self.kept):
@@ -195,25 +205,26 @@ class PrefixOwner(_gemma.PrefixOwner):
         return aligned, sid
 
     def keep_end(self, s, logits) -> None:
-        """The exact prompt end (state at n): for exact repeats as the point one token early with the last-row
-        logits (``prefixes``' prompt-end convention: the state at n cannot resume at n - 1, so ``_resume_at`` never
-        lands on it), and as the point at n for a prompt extending it (a next turn). When n - 1 is a kept split
-        the exact end joins that point (whose state is at n - 1) instead."""
+        """The exact prompt end (state at n) as the point one token early with the last-row logits (an exact
+        repeat computes nothing) and the token past it (``next``: a prompt continuing it resumes at n). When n - 1
+        is a kept split, that point serves both (one row computed)."""
         n = len(s.prompt)
-        if n < 2:
+        ids = list(s.prompt[:n - 1])
+        if n < 2 or any(k[1] is s.st and k[0] == ids and state_at(k[2]) == n - 1 for k in self.kept):
             return
         sid = self._snapshot(s.st, n)
         if sid is None:
             return
-        ids = list(s.prompt[:n - 1])
         end = {"token": s.prompt[-1], "state": {"sid": sid, "pos": n, "mtp_len": n}, "tail": None,
                "head": logits.clone(), "last": None}
-        point = next((k for k in self.kept if k[1] is s.st and k[0] == ids and not k[2].get("exact")), None)
-        snap = ({**point[2], "prompt_end": end} if point is not None else
-                {"sid": sid, "pos": n - 1, "mtp_len": n - 1, "exact": True, "prompt_end": end})
-        prefixes.remember(self, ids, s.st, snap, None)
-        prefixes.remember(self, list(s.prompt), s.st, {"sid": sid, "pos": n, "mtp_len": n}, None)
+        prefixes.remember(self, ids, s.st, {"sid": sid, "pos": n - 1, "mtp_len": n - 1, "exact": True, "at": n,
+                                            "next": s.prompt[-1], "prompt_end": end}, None)
         self._sweep()
+
+
+def state_at(snap) -> int:
+    """The position a kept point's snapshot holds the state of (an exact end's ``at``, else its ``pos``)."""
+    return snap.get("at", snap["pos"])
 
 
 class HostTier(_gemma_host.HostTier):
@@ -221,6 +232,33 @@ class HostTier(_gemma_host.HostTier):
 
     def _rows_bytes(self, first: int, rows: int) -> int:
         return extent_bytes(self.owner.e.layout, first, rows)
+
+    def _servable(self, point) -> bool:
+        """Any point whose state is at its length (every split: a resume needs no alignment here) and an exact end
+        with its end; an exact end ``prefixes`` demoted (its state one row past it) serves nothing from here."""
+        snap = point[2]
+        return snap.get("prompt_end") is not None if snap.get("exact") else state_at(snap) == len(point[0])
+
+    def best(self, prompt, principal):
+        """Gemma 4 SM70's lookup, where an exact end also serves a prompt continuing it (``_resume_at``)."""
+        found, length = None, 0
+        for entry in self.entries:
+            if entry["principal"] != principal:
+                continue
+            for index, (ids, meta) in enumerate(entry["points"]):
+                n = len(ids)
+                if meta["exact"] and (len(prompt) <= n or prompt[n] != meta["prompt_end"]["token"]):
+                    continue
+                if length < n < len(prompt) and prompt[n - 1] == ids[-1] and prompt[:n] == ids:
+                    found, length = (entry, index), n
+        return found
+
+    @staticmethod
+    def _snap(meta, sid) -> dict:
+        snap = _gemma_host.HostTier._snap(meta, sid)
+        if meta["exact"]:                    # the snapshot holds the end's state (``PrefixOwner.keep_end``)
+            snap.update(at=meta["prompt_end"]["pos"], next=meta["prompt_end"]["token"])
+        return snap
 
 
 # ---------------------------------------------------------------------------------------------- every rank: copies

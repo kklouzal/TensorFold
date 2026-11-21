@@ -207,15 +207,15 @@ def test_owner_exact_repeat_extension_and_boundary_end():
     assert _restored(o) == 200                           # (a fork: the chain keeps its end at 200 too)
     cached, _ = _serve(o, p + [7, 8, 9])                 # an extension resumes the exact end's state
     assert cached == 200 and _restored(o) == 200
-    # n - 1 on a boundary: the exact end joins that boundary point (no resume of the state at n at n - 1)
+    # n - 1 on a split: that point serves the exact repeat (no resume of the state at n at n - 1)
     q = list(range(500, 629))                            # 129 tokens: n - 1 = 128
     _serve(o, q)
-    cached, _ = _serve(o, q[:128] + [3, 4])              # the joined point resumes at 128
+    cached, _ = _serve(o, q[:128] + [3, 4])              # the split at 128 resumes
     assert cached == 128 and _restored(o) == 128
     _serve(o, q)
     cached, _ = _serve(o, q + [1])
     assert cached == 129
-    cached, _ = _serve(o, q + [1])                       # its exact end joined q's end point at 129
+    cached, _ = _serve(o, q + [1])                       # its own end (q's was resumed without its logits)
     assert cached == 130
     assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
     assert set(o.e.snaps) == o.snap_ids
@@ -349,3 +349,59 @@ def test_owner_extension_spill_restore_and_dead_exact_points(monkeypatch):
     assert _serve(o, p4)[0] == len(p4)                                        # and its exact repeat
     assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
     assert set(o.e.snaps) == o.snap_ids
+
+
+def _honest(o):
+    """No kept or spilled point claims a state other than its snapshot's (``prefix.at``)."""
+    from tensorfold.families.deepseek_v4.cuda.prefix import state_at as at
+    for ids, _st, snap, _tail in o.kept:
+        if snap.get("exact"):
+            assert snap.get("prompt_end") is not None and at(snap) == len(ids) + 1
+        else:                                            # a split, or an end resumed without its end (``next``)
+            assert at(snap) == len(ids) or (at(snap) == len(ids) + 1 and "next" in snap)
+    for entry in o.host_tier.entries:
+        for _ids, meta in entry["points"]:
+            assert not meta["exact"] or meta["prompt_end"] is not None
+
+
+def test_owner_extension_demotion_spill_and_repeats(monkeypatch):
+    """host_probe3's path on this lane: A keeps its exact end, B extends A in place (``prefixes`` demotes A's
+    end: its state stays one row past the point), C diverges at A's last token (lands below; never resumed one
+    row early), other prompts push the chains to the host tier, then B's repeat and extension restore from host."""
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)
+    o = _host_owner()
+    a = [1] + _msg(1, 2099)
+    b = a + _msg(2, 100)
+    assert _serve(o, a)[0] == 0
+    assert _serve(o, b)[0] == len(a)                     # in place, from A's end (demoted: no logits now)
+    assert _serve(o, b)[0] == len(b)
+    c = a[:-1] + [7] + _msg(3, 50)
+    cached, s = _serve(o, c)
+    assert cached < len(a) - 1 and (cached == 0 or _restored(o) == cached)
+    _honest(o)
+    for i in range(12):
+        _serve(o, [1] + _msg(100 + i, 2500) + [U] + _msg(200 + i, 300) + [A, T])
+        _honest(o)
+    hits = o.prefix_counters["host_hits"]
+    assert _serve(o, b)[0] == len(b)                     # B's repeat: its exact end from host RAM
+    assert _serve(o, b + _msg(4, 30))[0] == len(b)       # and an extension of it
+    assert o.prefix_counters["host_hits"] > hits
+    _honest(o)
+    assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
+    assert set(o.e.snaps) == o.snap_ids
+
+
+def test_owner_fork_of_an_exact_end_copies_its_last_row():
+    """A prompt continuing a kept end while that chain holds a longer point forks it: the fork copies the
+    point's rows and the end's last one, and resumes the end's state."""
+    from tensorfold.families.deepseek_v4.cuda.prefix import OP_COPY
+    o = _owner(rows=8192)
+    o.e.context = 1 << 16
+    a = [1] + _msg(1, 699)
+    _serve(o, a)
+    _serve(o, a + _msg(2, 300))                          # in place: the chain now holds a longer end
+    cached, s = _serve(o, a + _msg(3, 40))               # continues a's end, not the longer one: a fork
+    assert cached == len(a) and _restored(o) == len(a)
+    copies = [x for x in o.e.ops if x[0] == OP_COPY]
+    assert copies[-2][3] == len(a) - 1 and copies[-1][1:] == (copies[-2][1], copies[-2][2], len(a))
