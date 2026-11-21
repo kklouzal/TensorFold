@@ -130,11 +130,14 @@ class Shape:
         return self.body()
 
     def capture(self, pool, stream) -> None:
+        t0 = time.perf_counter()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
             for _ in range(2):          # compile/grow every kernel and scratch outside capture
                 self.body()
         torch.cuda.current_stream().wait_stream(stream)
+        stream.synchronize()            # (startup timeline: the warm-up runs' share of the capture time)
+        self.warm_seconds = time.perf_counter() - t0
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph, pool=pool, stream=stream):
             self.out = self.body()
@@ -170,6 +173,7 @@ class DecodeGraphs:
                 self.trace.append((key, before - torch.cuda.mem_get_info()[0], torch.cuda.memory_reserved()))
         torch.cuda.synchronize()
         self.seconds = time.perf_counter() - t0
+        self.warm_seconds = sum(shape.warm_seconds for shape in self.shapes.values())
         torch.cuda.empty_cache()
         self.bytes = before - torch.cuda.mem_get_info()[0]
 

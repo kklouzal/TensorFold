@@ -62,6 +62,7 @@ class DS41Engine:
         from .engram import HostEngram
         from .collectives import Collectives
         from .target import Target
+        from .startup import Timeline
 
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8 (TP8 attention/dense, ETP4 x EP2 experts)")
@@ -84,11 +85,14 @@ class DS41Engine:
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         device = torch.device("cuda", 0)
         started = time.perf_counter()
+        self.timeline = clock = Timeline(rank)
+        clock.add("init", started, 0.0)
         # The Flash Next / Gemma 4 NVLink small all-gather mailbox (collectives.py: small gathers and the LL row
         # all-reduce); every rank sets the same value before the communicator opens (its open checks they agree).
         from tensorfold.cuda import small_gather
         os.environ.setdefault(small_gather.ENV, str(small_gather.MAX_CAPACITY))
-        self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
+        with clock.phase("comm"):
+            self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
         from .prefix import default_keep_slots, host_slab
@@ -112,18 +116,24 @@ class DS41Engine:
         self.engram = None
         if layers is None or len(layers) > min(g.engram_layers):
             rows = W.engram_split(shards, g)
-            self.engram = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
+            with clock.phase("engram") as note:
+                self.engram = e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
+                note[0] = f"fill {e.fill_seconds:.1f} wait {e.wait_seconds:.1f} register {e.register_seconds:.1f}"
             print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
         if layers is not None:
             print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
-        self._barrier()
-        self.w = W.load(shards, g, rank, device, layers=layers)
-        shards.close()
+        with clock.phase("barrier"):
+            self._barrier()
+        with clock.phase("weights"):
+            self.w = W.load(shards, g, rank, device, layers=layers)
+            shards.close()
+            torch.cuda.synchronize()
         # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
         # sized, so it does not come out of RESERVE.
         from tensorfold.cuda.sm70 import ds41_lattice_moe
-        lattice = ds41_lattice_moe.Workspace(device)
-        torch.cuda.synchronize()
+        with clock.phase("lattice-ws"):
+            lattice = ds41_lattice_moe.Workspace(device)
+            torch.cuda.synchronize()
         free = torch.cuda.mem_get_info()[0]
         mine = torch.tensor([free], dtype=torch.int64, device=device)
         every = torch.empty(tp, dtype=torch.int64, device=device)
@@ -140,8 +150,10 @@ class DS41Engine:
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
         pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
+        target_started = time.perf_counter()
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice)
+        clock.add("target", target_started, time.perf_counter() - target_started)
         self.layer_count = len(self.w.layers)
         self.units = self.target.units      # pause points of a prompt forward (attention, experts per layer)
         from .prefix import SlotState
@@ -163,7 +175,9 @@ class DS41Engine:
         # The Engram lookup trace (rank 0) reads ids on the host every forward, so tracing keeps the eager decode;
         # every rank decides from the same environment (all ranks capture, or none).
         if capture:
-            self.graphs = DecodeGraphs(self, slots)
+            with clock.phase("graphs") as note:
+                self.graphs = DecodeGraphs(self, slots)
+                note[0] = f"{len(self.graphs.keys)}, warm-up runs {self.graphs.warm_seconds:.1f}"
             spare = torch.cuda.mem_get_info()[0] + torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
             if self.graphs.bytes > graph_bytes or spare < RESERVE:
                 raise RuntimeError(f"DeepSeek-V4.1 SM70 rank {rank}: decode graphs took {self.graphs.bytes >> 20} MiB "
@@ -175,15 +189,18 @@ class DS41Engine:
         # The host tier's pinned slab (Gemma 4 SM70 sizing, on by default), pinned after the Engram registration and
         # the weights: pinning while the Engram table registers slowed m-pf1's registration 4x.
         pinned = time.perf_counter()
-        self.host_per_rank, self.host_slab = host_slab(self.comm, rank, tp, prefix_host_bytes)
+        with clock.phase("slab"):
+            self.host_per_rank, self.host_slab = host_slab(self.comm, rank, tp, prefix_host_bytes)
         self.prefix.slab = self.host_slab
         if rank == 0:
             print(f"[tensorfold] DeepSeek-V4.1 SM70: host prefix tier {self.host_per_rank >> 20} MiB/rank pinned in "
                   f"{time.perf_counter() - pinned:.1f} s", flush=True)
-        self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
+        with clock.phase("pipes"):
+            self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
         if rank == 0 and sorted(self.pipes.piped()) != list(range(1, tp)):
             raise RuntimeError("DeepSeek-V4.1 SM70 requires all eight ranks on one host (control pipes)")
         self.load_seconds = time.perf_counter() - started
+        print(clock.line(), flush=True)
         self.pages = pages
         self.page_bytes = page_bytes
         self.decoder = self.scheduler = None
@@ -224,9 +241,12 @@ class DS41Engine:
         import torch
         from tensorfold.cuda.sm70 import ds41_lattice_moe, ds41_sparse_attention, onecat_ds41
         from .target import DECODE_MAX
-        ds41_lattice_moe.prepare()
-        ds41_sparse_attention.prepare()
-        onecat_ds41.prepare()
+        clock = self.timeline
+        with clock.phase("warm-ext"):
+            ds41_lattice_moe.prepare()
+            ds41_sparse_attention.prepare()
+            onecat_ds41.prepare()
+        warm_started = time.perf_counter()
         rows = max(ds41_lattice_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
         with torch.inference_mode():
             self._attach(0, rows + 1)
@@ -240,6 +260,7 @@ class DS41Engine:
             self._step([(0, rows, 1)], [self.geometry.bos], [0])
             self._detach(0)
         torch.cuda.synchronize()
+        clock.add("warm-forward", warm_started, time.perf_counter() - warm_started)
 
     def _barrier(self):
         import torch

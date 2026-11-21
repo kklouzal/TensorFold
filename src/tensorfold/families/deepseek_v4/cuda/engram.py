@@ -61,6 +61,7 @@ class HostEngram:
         self.rows = tuple(int(r) for r in rows)
         self.size = sum(self.rows) * ROW_BYTES
         self.fd, self.address, self.registered = -1, 0, False
+        self.fill_seconds = self.wait_seconds = self.register_seconds = 0.0   # startup phases (rank 0 fills)
         started = time.perf_counter()
         try:
             if rank == 0:
@@ -71,6 +72,7 @@ class HostEngram:
                     _fill(writable, self.size, path, offset, threads)
                 finally:
                     _unmap(writable, self.size)
+                self.fill_seconds = time.perf_counter() - started
                 import fcntl
                 fcntl.fcntl(self.fd, _F_ADD_SEALS, _F_SEAL_SEAL | _F_SEAL_SHRINK | _F_SEAL_GROW | _F_SEAL_WRITE)
                 self.address = _map(self.fd, self.size, _PROT_READ)
@@ -78,6 +80,7 @@ class HostEngram:
                 store.set(key, f"{os.getpid()} {self.fd} {self.size}")
             else:
                 pid, fd, size = (int(v) for v in store.get(key).decode().split())
+                self.wait_seconds = time.perf_counter() - started
                 if size != self.size:
                     raise RuntimeError(f"rank 0's Engram table has {size} bytes, expected {self.size}")
                 self.fd = os.open(f"/proc/{pid}/fd/{fd}", os.O_RDONLY | os.O_CLOEXEC)
@@ -90,6 +93,13 @@ class HostEngram:
         self.seconds = time.perf_counter() - started
 
     def _register(self, rank):
+        t0 = time.perf_counter()
+        try:
+            self._register_now(rank)
+        finally:
+            self.register_seconds = time.perf_counter() - t0
+
+    def _register_now(self, rank):
         # Rank 0 registers before it publishes the table; the followers register after it, concurrently. m1g: five
         # of eight registrations made while rank 0's own was in flight failed (kernel "Cannot map memory ... of
         # 0x19bffe4 pages": the driver's long-term pin came back short); m1e's seven follower registrations after
