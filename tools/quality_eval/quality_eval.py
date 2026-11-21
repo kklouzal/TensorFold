@@ -60,6 +60,12 @@ def tokenize(args) -> None:
     tok.backend_tokenizer.no_padding()
     tok.backend_tokenizer.no_truncation()
     template = None
+    if getattr(args, "deepseek_v41", False):
+        # DeepSeek-V4.1 is served through DeepSeek's own V4.1 encoder (families/deepseek_v4/prompts_v41), not Jinja.
+        from tensorfold.families.deepseek_v4.prompts_v41 import DeepSeekV41Tokenizer
+        v41 = DeepSeekV41Tokenizer(tok)
+        render_prompt_ids = lambda _tok, messages, enable_thinking, add_generation_prompt: v41.apply_chat_template(
+            messages, add_generation_prompt=add_generation_prompt, thinking_mode="chat")
     if args.chat_template:
         # The served template (``serve --chat-template``) replaces the checkpoint's, as the server does.
         template = Path(args.chat_template)
@@ -411,6 +417,8 @@ def main(argv=None) -> None:
     p.add_argument("--corpus", required=True)
     p.add_argument("--tokenizer", required=True, help="directory holding tokenizer.json and tokenizer_config.json")
     p.add_argument("--chat-template", help="the served chat template file (default: the checkpoint's own)")
+    p.add_argument("--deepseek-v41", action="store_true",
+                   help="render chat documents with DeepSeek's V4.1 encoder, as the DeepSeek-V4.1 server does")
     p.add_argument("--out", required=True)
     p.set_defaults(run=tokenize)
     p = sub.add_parser("score")

@@ -25,6 +25,8 @@ from typing import Any, Callable
 OP_ATTACH, OP_DETACH, OP_STEP, OP_LAYERS, OP_STOP = 1, 2, 3, 4, 9
 _HEAD = struct.Struct("<qqqqq")
 PIPE_TIMEOUT = 600.0
+F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer): score every row; and the last row
+SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
 RESERVE = 3 << 30          # bytes left free per rank for prompt transients, after the KV pool
@@ -34,7 +36,7 @@ class DS41Engine:
     tp = 8
     concurrent = True                # serving: the shared Scheduler runs concurrent streams
     supports_canonical_prefix_archive = False
-    supports_teacher_forcing = False
+    supports_teacher_forcing = True      # /v1/tensorfold/score (tools/quality_eval: the lane's perplexity gate)
     penalties_supported = True
 
     def __init__(self, model_dir: Path, *, rank: int, tp: int, master: str = "", master_port: int = 29551,
@@ -169,6 +171,7 @@ class DS41Engine:
         self.target.pool.detach(slot)
 
     def _step(self, entries, ids, logits_rows, stop=0):
+        flags, stop = stop & ~0xFFFF, stop & 0xFFFF
         """entries: [(slot, start, count)] in row order; ids: the tokens; logits_rows: token rows to score.
         Returns rank 0's full-vocabulary FP32 logits [len(logits_rows), vocab] (None elsewhere). With
         0 < ``stop`` < layers the forward pauses after layer ``stop`` (``_layers`` continues it) and returns None;
@@ -203,7 +206,10 @@ class DS41Engine:
                     block_table=t(table, torch.int32), prefill=prefill, decode_index=decode_index)
         del rows
         state = self.target.begin(step)
-        rows = t(logits_rows, torch.long) if logits_rows else None
+        if flags & F_SCORE:                # logits_rows carries each row's next token: score all rows
+            rows = (logits_rows, bool(flags & F_LAST))
+        else:
+            rows = t(logits_rows, torch.long) if logits_rows else None
         marks = self.layer_marks if qsl[-1] > len(entries) else None     # prompt chunks only, never decode rows
         if 0 < stop < self.layer_count:
             if self.part is not None:
@@ -228,11 +234,42 @@ class DS41Engine:
         return self._end(state, rows)
 
     def _end(self, state, rows):
+        import torch
+        if isinstance(rows, tuple):                 # F_SCORE: (targets, last)
+            targets, last = rows
+            local = self.target.end(state, torch.arange(len(targets), device=self.target.device))
+            scores = self._score_rows(local, targets)
+            if not last:
+                return scores
+            full = self.coll.gather(local[-1:].contiguous())
+            return (scores, full) if self.rank == 0 else None
         local = self.target.end(state, rows)
         if local is None:
             return None
         full = self.coll.gather(local)
         return full if self.rank == 0 else None
+
+    def _score_rows(self, local, targets):
+        """Per row: (target log probability, top log probabilities, top ids) merged across the vocabulary shards
+        (each rank sends its log-sum-exp, target logit and top entries; the Gemma 4 SM70 provider's packet)."""
+        import torch
+        rows, shard = local.shape
+        base = self.rank * shard
+        lse = torch.logsumexp(local, -1)
+        t = torch.tensor(targets, dtype=torch.int64, device=local.device) - base
+        inside = (t >= 0) & (t < shard)
+        tl = torch.where(inside, local.gather(1, t.clamp(0, shard - 1)[:, None])[:, 0],
+                         torch.full_like(lse, float("-inf")))
+        tv, ti = torch.topk(local, SCORE_TOP, -1)
+        packet = torch.cat([lse[:, None], tl[:, None], tv, (ti + base).float()], 1).contiguous()
+        recv = torch.empty((self.world,) + tuple(packet.shape), dtype=torch.float32, device=local.device)
+        self.comm.all_gather(packet, recv)
+        glse = torch.logsumexp(recv[:, :, 0], 0)
+        target = recv[:, :, 1].max(0).values - glse
+        values = recv[:, :, 2:2 + SCORE_TOP].permute(1, 0, 2).reshape(rows, -1)
+        index = recv[:, :, 2 + SCORE_TOP:].permute(1, 0, 2).reshape(rows, -1)
+        top, order = torch.topk(values, SCORE_TOP, -1)
+        return target.tolist(), (top - glse[:, None]).tolist(), index.gather(1, order).long().tolist()
 
     def _run(self, op, a, b, c, d, ids):
         if op == OP_ATTACH:
@@ -565,18 +602,33 @@ class Decoder:
         stop = min(n, start + e.max_tokens)
         last = stop == n
         plan = self._plan(stop - start)
+        sink = s.probabilities if hasattr(s.probabilities, "add_prompt") else None
+        layer = plan[0] if plan[0] < e.layer_count else 0
         t0 = time.perf_counter()
-        out = e.step([(s.slot, start, stop - start)], s.prompt[start:stop], [stop - start - 1] if last else [],
-                     plan[0] if plan[0] < e.layer_count else 0)
+        if sink is not None:
+            # every row scored for its next prompt token (a last chunk's final row against the first forced token,
+            # unused) in the serving chunk's own forward; a last chunk also returns its last row
+            after = s.prompt[stop] if not last else (s.forced[0] if s.forced is not None else 0)
+            out = e.step([(s.slot, start, stop - start)], s.prompt[start:stop], s.prompt[start + 1:stop] + [after],
+                         layer | F_SCORE | (F_LAST if last else 0))
+        else:
+            out = e.step([(s.slot, start, stop - start)], s.prompt[start:stop], [stop - start - 1] if last else [],
+                         layer)
         s.prefill_s += time.perf_counter() - t0
         if plan[0] < e.layer_count:
-            self.split = (s, (start, stop, last), plan[1:])
+            self.split = (s, (start, stop, last, sink), plan[1:])
             return []
-        return self._filled(s, (start, stop, last), out)
+        return self._filled(s, (start, stop, last, sink), out)
 
-    def _filled(self, s, chunk, logits) -> list:
-        start, stop, last = chunk
+    def _filled(self, s, chunk, out) -> list:
+        start, stop, last, sink = chunk
         n = len(s.prompt)
+        logits = out
+        if sink is not None:                   # scored chunk: scores, or (scores, last row) for a last chunk
+            (tl, tv, ti), logits = out if last else (out, None)
+            for r in range(stop - start - (1 if last else 0)):
+                pos = start + r + 1
+                sink.add_prompt([pos], [s.prompt[pos]], [tl[r]], [ti[r][:sink.top]], [tv[r][:sink.top]])
         s.pos = stop
         self.filling.remove(s)
         if s.on_fill is not None:
@@ -696,3 +748,5 @@ class Decoder:
         if nxt < sink.start:
             return
         sink.add([nxt], [token], [float(lp[token])], [tops], [topv])
+        if hasattr(sink, "origins"):
+            sink.origins([nxt], ["prompt-end" if nxt == len(s.prompt) else (0, 1)])
