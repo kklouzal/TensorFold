@@ -1,0 +1,74 @@
+DeepSeek-V4.1 TurboMind lattice prefill MoE component (vendored for TensorFold's ds41_lattice_moe)
+
+Sources:
+- 1Cat-vLLM (https://github.com/1CatAI/1Cat-vLLM) revision 4d57473db67eb77a13018d179e4d95169e82044f, Apache-2.0:
+  the SM70 TurboMind GEMM templates under csrc/sm70_turbomind/lmdeploy/src/turbomind (TurboMind / LMDeploy,
+  Copyright (c) OpenMMLab, Apache-2.0, as forked by 1Cat with the GGUF lattice quant types), the prefill transcode
+  csrc/sm70_turbomind/ops/gguf_prefill_transcode{.cuh,_sm70.cu} and csrc/sm70_tile_runtime_signal.cuh.
+  turbomind/kernels/gemm/lattice_codebooks.h carries GGML / llama.cpp tables under MIT (its own header;
+  LICENSES/GGML-MIT.txt).
+- The friend's 1Cat overlay patch 340 (ds41_kern340, rev 1; kern340/src/ds41kern_*.{cu,cuh}, SPDX Apache-2.0):
+  the tile-variant instantiations and the fixed-kernel launch op; its measured rule
+  (misc/ds41-knobs/kern340-rule.json, enabled in his production runtime) is the RULE table in ds41_lattice_moe.py.
+- The glue kernels in ../ds41_lattice_moe.cu port patch 140 (ds41_pf_moe, local_ds41_pf_moe.py Triton kernels).
+
+TensorFold changes to the vendored files (nothing else differs; "modified" rows below):
+- every quoted #include is rewritten to a path relative to the including file (TensorFold's SM70 JIT admits no
+  extra include roots); applies to all files that include another vendored file;
+- ds41kern_op.cu: the TORCH_LIBRARY(ds41kern) registration and <torch/library.h> are replaced by the
+  ds41kern::lattice_gemm_op / variant_name_op entry points for the pybind module.
+
+Files (vendored path <- origin, upstream sha256):
+ds41kern_op.cu  <-  friend overlay patch 340 kern340/src/ds41kern_op.cu  sha256 067542e57919f0495ae314720d6ad8e3be5fce7bd53f5fb7f67bccf20d551d2f  modified (see above)
+ds41kern_t16.cu  <-  friend overlay patch 340 kern340/src/ds41kern_t16.cu  sha256 71b72e0771e8ee4722297b22ae6427920da28d8f505d227c62763c3015dbb653  identical
+ds41kern_t17.cu  <-  friend overlay patch 340 kern340/src/ds41kern_t17.cu  sha256 5e4591981d96ae2b9cfd8ee72b4bb415d3a6851a5be183920ebce505d96d1e42  identical
+ds41kern_t29.cu  <-  friend overlay patch 340 kern340/src/ds41kern_t29.cu  sha256 f895fb98ddbee95247ef3a15af37afc0f1ff569de2524bf3f094643370b57df0  identical
+ds41kern_variants.cuh  <-  friend overlay patch 340 kern340/src/ds41kern_variants.cuh  sha256 e0368846d36a1f7d42dd485196d45d0db1fe28b7174672406ba17abe132dab6b  modified (see above)
+gguf_prefill_transcode.cuh  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/ops/gguf_prefill_transcode.cuh  sha256 aea18320050d1f31774f7d544bb62bcb96357c4eff7fb6db30ae2d51d28a4360  identical
+gguf_prefill_transcode_sm70.cu  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/ops/gguf_prefill_transcode_sm70.cu  sha256 0ef1f0788715d5585c4103584fb77a947e7669569a93d05c321374f3ea3e04ed  identical
+sm70_tile_runtime_signal.cuh  <-  1Cat-vLLM 4d57473d csrc/sm70_tile_runtime_signal.cuh  sha256 91f2977cbdd206c7bbf37f40330fcd99a1266f04da585b713f1c4e514982c350  identical
+turbomind/core/check.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/core/check.h  sha256 830fdf749d3b4b86f7802dd5bb01d65c09ca7a877381977f52884c469de60038  identical
+turbomind/core/data_type.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/core/data_type.h  sha256 49adb973b870bb89e7572da307e196edb9b9cbfd5f17a941c940faa19b34ba6a  modified (see above)
+turbomind/kernels/attention/quantization.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/attention/quantization.h  sha256 997ca2c16bc047c7c219039800bca1d3b0a75668c95c0fce88d289e1a4d50419  modified (see above)
+turbomind/kernels/core/array.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/array.h  sha256 0b05361e2de4b6a13bcb3761f1e743c168d1c98dbba3463854d711e74eb2361c  modified (see above)
+turbomind/kernels/core/array_ops.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/array_ops.h  sha256 4e8a07ae04dc1d4cc194357ded24e441c39a3f735442c4dd4624fe802f5140ea  modified (see above)
+turbomind/kernels/core/common.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/common.h  sha256 cc57ba9e7806a4348f44081625c721c6f683e1b49749f7271dedeb13e1e42246  identical
+turbomind/kernels/core/data_type.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/data_type.h  sha256 707fce6edf227e94a32444491be4c6af3fa1cc85ace561c8d3174137013c7730  modified (see above)
+turbomind/kernels/core/layout.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/layout.h  sha256 233251bfea729014be2168b508a325e2c3ab31fac5ce71eb58a10ab05b201139  modified (see above)
+turbomind/kernels/core/math.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/math.h  sha256 1d5a444fac3663b41b30571a9dd18381c930cb7d341bc05b5c1e7d51e36b41a1  modified (see above)
+turbomind/kernels/core/meta.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/meta.h  sha256 9b70b53f5f49695c7880be3caa9c021b36b5580c1be2a2ea28efb520f54cb8e7  identical
+turbomind/kernels/core/mma.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/mma.h  sha256 c978b646408d9ddb9ebb8ec4b7e07c68725c63e076be77f7af877ca8ee61bc70  modified (see above)
+turbomind/kernels/core/smem.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/smem.h  sha256 c713377bdcd0b9b0a619e1eed6e0b06782015421e085533e392f38d259076a46  modified (see above)
+turbomind/kernels/core/sub_byte_ptr.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/sub_byte_ptr.h  sha256 a10a8c8f127c8136c133c65f222f4ac80e2e26bac142c110eff8a5c015c7c95a  modified (see above)
+turbomind/kernels/core/sync.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/core/sync.h  sha256 b280b9c98f980980f0ae4f2f42f7d919048f4e896f5fdc73a71018b2628b6e05  identical
+turbomind/kernels/gemm/arch.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/arch.h  sha256 097ea44bbf387e5f8c9b7e29c3dc21819f39c9a32a27252d1c8eaa28544993e4  identical
+turbomind/kernels/gemm/arch/config_sm70_s884.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/arch/config_sm70_s884.h  sha256 902560efd78cda8bbb24c67ab0fa7b00024eb9e9dd899e064f47153be25cef10  modified (see above)
+turbomind/kernels/gemm/arch/mma_sm70.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/arch/mma_sm70.h  sha256 e885b4d2f0ffc95776589cbe3307559341e825e920a471b4208d6aeaa8c73f6a  modified (see above)
+turbomind/kernels/gemm/arch/operand_sm70_s884.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/arch/operand_sm70_s884.h  sha256 a0f9ac1925113a7e9669b37f27d655444b25fa942a42ce05d48b5e34e0844e0c  modified (see above)
+turbomind/kernels/gemm/arch/smem_copy_sm70.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/arch/smem_copy_sm70.h  sha256 408368b786b93cd88e498513ac71fa9470e8854bdeebe00217d333db520b8482  modified (see above)
+turbomind/kernels/gemm/context.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/context.h  sha256 7733c7d48a52ff119cba30c0da663f2c935d49910c2df293651fa2ca12e63dc9  modified (see above)
+turbomind/kernels/gemm/cp_async.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/cp_async.h  sha256 db83410c0c2802ecf208d384129eab5a2c37e8425b3b78785b5e06ddd927a5ed  identical
+turbomind/kernels/gemm/cta_map.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/cta_map.h  sha256 4e5b1659fbab95c83dc82f8764778a96ba955a13456bd38813a8fe195552c9be  modified (see above)
+turbomind/kernels/gemm/desc.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/desc.h  sha256 622999b327471c94e443d081b196c8ede1f54d4065fc9d6f8b35bfb193012460  modified (see above)
+turbomind/kernels/gemm/epilogue.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/epilogue.h  sha256 aa8e8173a4fa00f689fcc38df8f6b90bae42ade04bf79d6e47961ffa4c1dba45  modified (see above)
+turbomind/kernels/gemm/gemm_universal.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/gemm_universal.h  sha256 2e7961392137a5a5ca0395fea6f388a95d96593c0c6bbadfb3f7a09ddb0bc3d4  modified (see above)
+turbomind/kernels/gemm/iterator.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/iterator.h  sha256 9a96272032696dad66e28be009012561fd98d9796dea47bade1e8a1bd16dd6b7  modified (see above)
+turbomind/kernels/gemm/iterator_sm70.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/iterator_sm70.h  sha256 b7db284715a1f180dec573074896186d8355c082c20b86ec79a8e22eb306d12c  modified (see above)
+turbomind/kernels/gemm/kernel.cu  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/kernel.cu  sha256 3c7e07df633e87924f08bbd2f03295402baf1105e3358e01a31609be3405cc05  modified (see above)
+turbomind/kernels/gemm/kernel.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/kernel.h  sha256 b477aff18366692b98889ab73078f516a9810001a98a43f0a5729c5f7f9e3390  modified (see above)
+turbomind/kernels/gemm/kernel_impl.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/kernel_impl.h  sha256 f73d3064a31045c921f7154d27fd11712c43cb17597498e36e53b340074b67bd  modified (see above)
+turbomind/kernels/gemm/lattice_codebooks.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/lattice_codebooks.h  sha256 f5b8962a7a2722a44d0a209a9fbafee4f1482fd2ad7953a8d61c9212ececa22c  identical
+turbomind/kernels/gemm/lattice_transform.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/lattice_transform.h  sha256 9cab95b6918f42504b4a0b73831cdff052a25749b9f97344ab372f8541d224d1  modified (see above)
+turbomind/kernels/gemm/mainloop_sm70.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/mainloop_sm70.h  sha256 45fc6801338ab706a2e8393e4d8cda24416ae0cc1101061771a8eaeccdb449ec  modified (see above)
+turbomind/kernels/gemm/matrix_ptr.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/matrix_ptr.h  sha256 71184e0e4529902b48cc3edf50c08c53d518024849a86262f78c4018173a6b6e  modified (see above)
+turbomind/kernels/gemm/operand.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/operand.h  sha256 4f68b196a997b3ca4187b31c3a831b6ce20937883e0ebb374bf4d48e97d84fb1  modified (see above)
+turbomind/kernels/gemm/predicate.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/predicate.h  sha256 a7dc394324dc6ca8e78b56fd1098e2b9e54595c609221f733c143d214a6031d7  identical
+turbomind/kernels/gemm/scheduler_sm70.cuh  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/scheduler_sm70.cuh  sha256 2aef17b2ac33bf1860b102b2c17d2ce11d2e7ee9dbe7c90c9b525be8d3deaa0a  modified (see above)
+turbomind/kernels/gemm/simt.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/simt.h  sha256 bc900c794e2c8011f695ac6883a93d745abb2fb4f6f941a683780fb7eb793fb8  identical
+turbomind/kernels/gemm/smem_copy.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/smem_copy.h  sha256 c8be68e9814f9704b7e39bca229f3b65595e94862008c0ca14f82e062e5f97c4  modified (see above)
+turbomind/kernels/gemm/thread_group_map.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/thread_group_map.h  sha256 255926f390bf9adb7410a19cef03619fb98eb51f3bce655c2350bf1b11f4ab9d  modified (see above)
+turbomind/kernels/gemm/thread_map.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/thread_map.h  sha256 9ef1489aee635e4db5b8973d0a0edccd0a00af7e8eb3f396fb21ae50fed16019  modified (see above)
+turbomind/kernels/gemm/tiled_mma.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/tiled_mma.h  sha256 8e2920c10cc60d808a10099ae6cac17a44e97e3a53a2ff4b7fd5a6744ababe06  modified (see above)
+turbomind/kernels/gemm/transform.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/transform.h  sha256 e783882dba8a4b817e9b7eedb6c03f16327e6ade4263250a17dce2493afe576a  modified (see above)
+turbomind/kernels/gemm/types.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/types.h  sha256 b0798ea7459eada8e94ec8e0d55cc457b1b1f1b0ac32b6535e07bb85371f1a79  modified (see above)
+turbomind/kernels/gemm/utils.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/utils.h  sha256 f5abc2ac819a84a3e9a0cef5b8996f58624ddc68d40213300797dc04f9308b9e  modified (see above)

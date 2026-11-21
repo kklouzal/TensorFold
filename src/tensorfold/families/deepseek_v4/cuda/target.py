@@ -138,6 +138,17 @@ class Target:
                 self.c2[layer.index] = mu_state.MuC2State(layer.comp_norm, slots=slots - 1, trap=True)
         self.local = range(w.group * (g.experts // EP), (w.group + 1) * (g.experts // EP))
         self.engram_rows = torch.empty(max_tokens, 24 * 256, dtype=torch.float16, device=device)
+        # Prefill routed experts (A/B switch, one implementation per process): "ours" = ds41_prefill_moe (fused
+        # WMMA, in-loop IQ decode), "lattice" = the friend's TurboMind lattice path (ds41_lattice_moe; its
+        # canonical-bank workspace lives with this Target).
+        import os
+        self.prefill_moe = os.environ.get("TENSORFOLD_DS41_PREFILL_MOE", "ours")
+        if self.prefill_moe not in ("ours", "lattice"):
+            raise ValueError("TENSORFOLD_DS41_PREFILL_MOE must be 'ours' or 'lattice'")
+        self.lattice = None
+        if self.prefill_moe == "lattice":
+            from tensorfold.cuda.sm70 import ds41_lattice_moe
+            self.lattice = ds41_lattice_moe.Workspace(device)
         # Engram lookup telemetry for the deferred hot-row VRAM cache candidate (off unless the variable names a
         # file; rank 0 only, since every rank looks up the same rows): appends each forward's valid hashed row ids
         # (int64 [tokens, 2 tables, 24 heads], table-local) for offline hit-rate / churn analysis.
@@ -241,7 +252,8 @@ class Target:
 
     # ---- MoE
     def moe(self, ly, x):
-        from tensorfold.cuda.sm70 import ds41_prefill_moe as prefill_moe, onecat_ds41 as native
+        from tensorfold.cuda.sm70 import ds41_lattice_moe as lattice_moe, ds41_prefill_moe as prefill_moe
+        from tensorfold.cuda.sm70 import onecat_ds41 as native
         from .kernels.mhc import fp32_projection
         from .kernels.router import route_topk
         g = self.g
@@ -252,7 +264,10 @@ class Target:
         mine = (local >= 0) & (local < len(self.local))
         local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
         weights = torch.where(mine, probabilities.float(), torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
-        if x.shape[0] >= prefill_moe.MIN_TOKENS:  # grouped prefill experts (one host sync; not captured)
+        if self.lattice is not None and x.shape[0] >= lattice_moe.MIN_TOKENS:   # no host sync
+            out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
+                                      ly.gate_up_type, ly.down_type, ly.down_left, self.lattice)
+        elif self.lattice is None and x.shape[0] >= prefill_moe.MIN_TOKENS:  # grouped (one host sync; not captured)
             out = prefill_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left)
         else:
