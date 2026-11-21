@@ -23,7 +23,8 @@ import time
 import numpy as np
 import torch
 
-sys.path.insert(0, __file__.rsplit("/", 1)[0])
+HERE = __file__.rsplit("/", 1)[0]
+sys.path[:0] = [HERE, HERE.rsplit("/", 1)[0]]  # tests/cuda (the oracle module), tests (its fixtures)
 from test_sm70_onecat_ds41 import bank, checkpoint  # noqa: E402
 
 from tensorfold.cuda.sm70 import ds41_decode_moe as em, onecat_ds41 as dec  # noqa: E402
