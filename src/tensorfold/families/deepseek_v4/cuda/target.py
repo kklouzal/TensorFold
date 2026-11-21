@@ -232,7 +232,7 @@ class Target:
 
     # ---- MoE
     def moe(self, ly, x):
-        from tensorfold.cuda.sm70 import onecat_ds41 as native
+        from tensorfold.cuda.sm70 import ds41_prefill_moe as prefill_moe, onecat_ds41 as native
         from .kernels.mhc import fp32_projection
         from .kernels.router import route_topk
         g = self.g
@@ -243,11 +243,16 @@ class Target:
         mine = (local >= 0) & (local < len(self.local))
         local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
         weights = torch.where(mine, probabilities.float(), torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
-        out = torch.empty_like(x)
-        for at in range(0, x.shape[0], 6):
-            end = min(at + 6, x.shape[0])
-            out[at:end] = native.v41_experts(x[at:end].contiguous(), local[at:end], weights[at:end], ly.exp_gate,
-                                             ly.exp_up, ly.exp_down, ly.gate_up_type, ly.down_type, ly.down_left)
+        if x.shape[0] >= prefill_moe.MIN_TOKENS:  # grouped prefill experts (one host sync; not captured)
+            out = prefill_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
+                                      ly.gate_up_type, ly.down_type, ly.down_left)
+        else:
+            out = torch.empty_like(x)
+            for at in range(0, x.shape[0], 6):
+                end = min(at + 6, x.shape[0])
+                out[at:end] = native.v41_experts(x[at:end].contiguous(), local[at:end], weights[at:end],
+                                                 ly.exp_gate, ly.exp_up, ly.exp_down, ly.gate_up_type,
+                                                 ly.down_type, ly.down_left)
         hidden = native.shared_swiglu(self._linear(x, ly.sh_gate), self._linear(x, ly.sh_up))
         total = out.float() + self._linear(hidden, ly.sh_down).float()
         self.c._all_reduce(total)
