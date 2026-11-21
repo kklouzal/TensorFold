@@ -10,9 +10,12 @@ DEFAULT_ROUND_MS = 50.0     # a decode round's GPU time before any round of a co
 
 
 class UnitCosts:
-    """Per-unit GPU time (ms) of a prompt chunk as a function of its rows: linear through two measured anchors
-    (a small chunk, the startup warm-up, and the latest large one); with only the small anchor, proportional to
-    the rows (an overestimate for larger chunks, since part of a unit's time is fixed per launch)."""
+    """Per-unit GPU time (ms) of a prompt chunk as a function of its rows, from two measured anchors: a small chunk
+    (first the startup warm-up) and a large one, at least twice its rows. Between them, linear; beyond them, the
+    bound the measurement gives (a unit's time never falls with more rows, and per row never rises, a part of it
+    being fixed per launch): below the small anchor its time, above the large one its time scaled by the rows.
+    The anchors' slope is never extrapolated: from two small chunks (fixed launch cost dominates, so their times
+    are flat within noise) it would put a large chunk near the small one's cost and run it in one group."""
 
     def __init__(self, rows: int, ms: list[float]):
         if rows < 1 or not ms:
@@ -21,25 +24,36 @@ class UnitCosts:
         self.large = None
 
     def add(self, rows: int, ms: list[float]) -> None:
-        """A completed chunk's per-unit times. Chunks of at least twice the small anchor's rows replace the large
-        anchor; smaller ones replace the small anchor while staying at most half the large anchor's rows."""
-        if len(ms) != len(self.small[1]):
+        """A completed chunk's per-unit times replace the anchor of its size: the large one for a chunk of at least
+        half its rows (and twice the small one's), the small one for a chunk of at most twice its rows (and half the
+        large one's). Without a large anchor, a chunk at least twice the small anchor's rows becomes it, and one at
+        most half of them becomes the small anchor, the old one the large. Chunks in between change neither."""
+        if rows < 1 or len(ms) != len(self.small[1]):
             raise ValueError("a unit cost sample must time every unit")
-        if rows >= 2 * self.small[0]:
+        r0 = self.small[0]
+        if self.large is None:
+            if rows >= 2 * r0:
+                self.large = (rows, list(ms))
+            elif 2 * rows <= r0:
+                self.large, self.small = self.small, (rows, list(ms))
+            else:
+                self.small = (rows, list(ms))
+            return
+        r1 = self.large[0]
+        if 2 * rows >= r1 and rows >= 2 * r0:
             self.large = (rows, list(ms))
-        elif rows >= 1 and (self.large is None or 2 * rows <= self.large[0]):
+        elif rows <= 2 * r0 and 2 * rows <= r1:
             self.small = (rows, list(ms))
 
     def predict(self, rows: int) -> list[float]:
         r0, m0 = self.small
-        if self.large is None:
-            return [ms * rows / r0 for ms in m0]
+        if rows <= r0:
+            return list(m0)
+        if self.large is None or rows >= self.large[0]:
+            r1, m1 = self.large or self.small
+            return [ms * rows / r1 for ms in m1]
         r1, m1 = self.large
-        out = []
-        for a, b in zip(m0, m1):
-            slope = max(0.0, (b - a) / (r1 - r0))
-            out.append(max(0.0, a + slope * (rows - r0)))
-        return out
+        return [a + max(0.0, b - a) * (rows - r0) / (r1 - r0) for a, b in zip(m0, m1)]
 
 
 class RoundCosts:

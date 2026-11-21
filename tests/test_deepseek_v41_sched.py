@@ -11,27 +11,46 @@ torch = pytest.importorskip("torch")
 
 # ----------------------------------------------------------------------------------------------- schedule
 
-def test_unit_costs_proportional_then_linear():
+def test_unit_costs_interpolate_inside_and_bound_outside_the_anchors():
     from tensorfold.families.deepseek_v4.cuda.schedule import UnitCosts
     c = UnitCosts(256, [10.0, 20.0])
-    assert c.predict(512) == [20.0, 40.0]               # one anchor: proportional (an overestimate)
+    assert c.predict(512) == [20.0, 40.0]               # one anchor: proportional above it (an overestimate)
+    assert c.predict(64) == [10.0, 20.0]                # and its own time below it (a unit never gets dearer)
     c.add(4096, [100.0, 40.0])
     got = c.predict(2048)                                # linear between (256, a) and (4096, b)
     assert got[0] == pytest.approx(10 + 90 * (2048 - 256) / 3840)
     assert got[1] == pytest.approx(20 + 20 * (2048 - 256) / 3840)
-    assert c.predict(8192)[0] == pytest.approx(10 + 90 * (8192 - 256) / 3840)
-    c.add(300, [1.0, 1.0])                               # not at most half the large anchor? 600 <= 4096: small
+    assert c.predict(8192) == pytest.approx([200.0, 80.0])   # above the large anchor: its time per row
+    c.add(1000, [1.0, 1.0])                              # neither anchor's size: no change
+    assert c.small[0] == 256 and c.large[0] == 4096
+    c.add(300, [1.0, 1.0])                               # at most twice the small anchor's rows: the small one
     assert c.small == (300, [1.0, 1.0])
     c.add(8192, [200.0, 80.0])
     assert c.large == (8192, [200.0, 80.0])
-    c.add(5000, [1.0, 1.0])                              # >= 2 x small: the newest large chunk
+    c.add(5000, [1.0, 1.0])                              # at least half the large anchor's rows: the large one
     assert c.large[0] == 5000
     with pytest.raises(ValueError):
         c.add(512, [1.0])
-    # a measured large chunk cheaper per unit than the warm-up never predicts below zero or a negative slope
+    # a measured large chunk cheaper per unit than the warm-up never predicts below the warm-up
     d = UnitCosts(256, [50.0])
     d.add(1024, [40.0])
-    assert d.predict(8192) == [50.0]
+    assert d.predict(512) == [50.0] and d.predict(8192) == [320.0]
+
+
+def test_small_chunks_never_set_the_cost_of_a_large_one():
+    """Short chat turns (14..57 rows) cost the fixed launch time per unit, flat within noise; their two anchors' slope
+    put a 4096-row chunk near their own cost, so it ran in one group (a 1.4 s stall) while streams decoded. The
+    estimate beyond the largest measured chunk is now that chunk's time per row, and the warm-up stays an anchor."""
+    from tensorfold.families.deepseek_v4.cuda.schedule import UnitCosts
+    warm = [2.2] * 80                                    # 256 rows
+    c = UnitCosts(256, warm)
+    for rows, ms in ((18, 1.26), (14, 1.25), (35, 1.27), (31, 1.24), (44, 1.24), (57, 1.21)):
+        c.add(rows, [ms + 0.02 * (u % 3) for u in range(80)])     # noise across units
+    assert sum(c.predict(4096)) >= sum(warm) * 4096 / 256
+    big = [17.0] * 80
+    c.add(4096, big)
+    c.add(40, [1.25] * 80)                               # a later short turn keeps the large anchor
+    assert c.large == (4096, big) and c.predict(4096) == big
 
 
 def test_round_costs_bounds_for_unmeasured_buckets():
