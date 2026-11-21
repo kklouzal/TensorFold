@@ -12,7 +12,7 @@ differ in the last FP16 bits (see tests/cuda/deepseek_v41/test_sm70_ds41_sparse_
 Operands are ``mu_packed.attend``'s: query [T, 8, 512] FP16, the layer's ring [S + 1, 128, 512] FP16, this
 forward's window latents [T, 512] FP16, the Step's qsl / req_slot / positions / valid / token_req, the pool's
 packed pages / block table / layout region and top-512 int32 positions (compressed layers), the [8] FP32 sinks.
-Graph-capturable (no host synchronization or allocation; split mode takes its scratch from the caller).
+Graph-capturable (no host synchronization; allocates only ``out`` when not given).
 """
 
 from functools import lru_cache
@@ -21,7 +21,6 @@ from pathlib import Path
 
 import torch
 
-HEADS, DIM, WINDOW, TOPK, SPLITS = 8, 512, 128, 512, 5
 SCALE = 512 ** -0.5
 
 
@@ -49,18 +48,9 @@ def prepare():
     return extension()
 
 
-def split_scratch_floats(tokens: int) -> int:
-    """FP32 scratch of split mode for ``tokens`` rows: scores [T, 8, 640] then partials [T, 5, 8, 512]."""
-    return tokens * (HEADS * (WINDOW + TOPK) + SPLITS * HEADS * DIM)
-
-
 def attend(query, positions, step, req_slot, window_ring, window, sink, *, cache=None, block_table=None,
-           layout=None, source=None, topk=None, out=None, split=False, split_scratch=None):
-    """Sparse attention output [T, 8, 512] FP16 (``mu_packed.attend``'s contract and operands).
-
-    split=True (compressed layers only): 5 CTAs per token (scores, per-split softmax + P.K, ordered FP32
-    combine), for steps of few tokens; ``split_scratch`` FP32 of ``split_scratch_floats(T)`` (allocated here
-    when None)."""
+           layout=None, source=None, topk=None, out=None):
+    """Sparse attention output [T, 8, 512] FP16 (``mu_packed.attend``'s contract and operands)."""
     if out is None:
         out = torch.empty_like(query)
     compressed = cache is not None
@@ -71,10 +61,7 @@ def attend(query, positions, step, req_slot, window_ring, window, sink, *, cache
             raise ValueError("compressed sparse attention needs the top-512 positions")
     else:
         ratio, c_offset, block_size = 1, 0, 1
-    if split and split_scratch is None:
-        split_scratch = torch.empty(split_scratch_floats(query.shape[0]), dtype=torch.float32, device=query.device)
     extension().attend(out, query, window_ring, window, step.qsl, req_slot, cache if compressed else None,
                        block_table if compressed else None, positions, step.valid, step.token_req,
-                       topk if compressed else None, sink, SCALE, block_size, ratio, c_offset, 0, query.shape[0],
-                       bool(split), split_scratch)
+                       topk if compressed else None, sink, SCALE, block_size, ratio, c_offset, 0, query.shape[0])
     return out

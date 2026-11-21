@@ -9,7 +9,9 @@
 //     (heads 8..15) MMAs, accumulators and softmax slots are dropped; fragment layouts, key streaming, the
 //     dequantization and the softmax arithmetic are his, unchanged.
 //   - 80 registers and ~16 KB shared memory per CTA (ptxas, sm_70): 6 CTAs (24 warps) per SM instead of 3.
-//   - pybind11 module (TensorFold JIT build) instead of TORCH_LIBRARY; the split mode's scratch is passed in.
+//   - pybind11 module (TensorFold JIT build) instead of TORCH_LIBRARY.
+//   - His split mode (5 CTAs per token for <= 16-token steps) is not ported: inside the lane's decode CUDA graphs
+//     patch 87's gather + bmm is faster at every decode bucket (gpuq attn-2: M=1 19 us vs 43 us split).
 //
 // Contract (patch 87 _attend: gather + bmm Q.K^T FP32 + _sink_softmax + bmm P.K with V = K):
 //   out[t, h, :] = FP16( sum_k p[t, h, k] * key[t, k, :] ),  p = FP16(softmax over the 128 window keys and the
@@ -243,7 +245,7 @@ __device__ __forceinline__ void load_query(const Args& a, int64_t t, half* qs) {
 __device__ __forceinline__ int slot_of(int e) { return (e >> 1) & 1; }
 constexpr float kLog2e = 1.44269502162933349609375f;  // 0x3FB8AA3B, Triton's tl.exp
 
-// C element (head, dim) of P.K accumulator o[j][e] for this lane (same mapping in the split partials).
+// C element (head, dim) of P.K accumulator o[j][e] for this lane.
 __device__ __forceinline__ int out_head(int lane, int e) { return (lane & 1) + ((lane >> 4) << 2) + (e & 2); }
 __device__ __forceinline__ int out_dim(int lane, int warp, int j, int e) {
   // logical column 8 qp + (lane & 2) + (e & 4) + (e & 1) = B lane (qp, h' = (e & 4) >> 2), element
@@ -377,108 +379,6 @@ __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
   store_out(a, k.t, o);
 }
 
-// ---------------- split mode (few tokens): S = W / 128 CTAs per token
-constexpr int kSplitKeys = 128;
-constexpr int kSPLd = kSplitKeys + 8;
-
-// 1: raw scaled scores (-inf for unused keys) of this split's 128 keys -> scores[t][8][W].
-template <int W>
-__global__ __launch_bounds__(kThreads) void split_scores_kernel(Args a, float* scores) {
-  __shared__ __align__(16) half qs[kHeads * kQLd];
-  __shared__ uint64_t desc[kSplitKeys];
-  const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
-  const int split = blockIdx.y, key0 = split * kSplitKeys;
-  const Token k = token_of(a, a.first + blockIdx.x);
-  load_query(a, k.t, qs);
-  for (int i = threadIdx.x; i < kSplitKeys; i += kThreads)
-    desc[i] = describe(a, key0 + i, k.t, k.r, k.position, k.live, k.s0, k.start, k.slot);
-  __syncthreads();
-  const int arow = (lane & 3) + ((lane >> 4) << 2);
-  const int bkey = ((lane & 12) << 1) + (lane & 3) + ((lane >> 4) << 2);
-  const int tile = split * kWarps + warp;  // 32 keys
-  float lo[8];
-  tile_scores(tile * 32 < kWindow, desc[warp * 32 + bkey], qs + arow * kQLd, lo);
-  const int crow = (lane & 1) + ((lane >> 4) << 2);
-  const int cbase = ((lane & 12) << 1) + (lane & 2);
-  float* row = scores + (int64_t(blockIdx.x) * kHeads) * W;
-#pragma unroll
-  for (int e = 0; e < 8; ++e) {
-    const int head = crow + ((e & 2) ? 2 : 0);
-    const int col = cbase + (e & 4) + (e & 1);
-    row[head * W + tile * 32 + col] = desc[warp * 32 + col] != 0 ? __fmul_rn(lo[e], a.scale) : -INFINITY;
-  }
-}
-
-// 2: softmax over the token's W scores (every split recomputes m and the sum in the
-// same order), FP16 probabilities of its own keys, P.K over them -> partial[t][split][8][512].
-template <int W>
-__global__ __launch_bounds__(kThreads) void split_pv_kernel(Args a, const float* scores, float* partial) {
-  __shared__ __align__(16) half ps[kHeads * kSPLd];
-  __shared__ uint64_t desc[kSplitKeys];
-  __shared__ float stat[2][kHeads];
-  const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
-  const int split = blockIdx.y, key0 = split * kSplitKeys;
-  const Token k = token_of(a, a.first + blockIdx.x);
-  for (int i = threadIdx.x; i < kSplitKeys; i += kThreads)
-    desc[i] = describe(a, key0 + i, k.t, k.r, k.position, k.live, k.s0, k.start, k.slot);
-  const float* row = scores + (int64_t(blockIdx.x) * kHeads) * W;
-  constexpr int kHeadsPerWarp = kHeads / kWarps;  // warp w: heads 2w, 2w + 1; lanes stride the W scores
-  for (int h = kHeadsPerWarp * warp; h < kHeadsPerWarp * (warp + 1); ++h) {
-    float m = -INFINITY;
-    for (int c = lane; c < W; c += 32) m = fmaxf(m, row[h * W + c]);
-#pragma unroll
-    for (int o = 16; o; o >>= 1) m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, o));
-    m = fmaxf(m, a.sink[h]);
-    float s = 0.f;
-    for (int c = lane; c < W; c += 32) s += ex2_approx(__fmul_rn(__fsub_rn(row[h * W + c], m), kLog2e));
-#pragma unroll
-    for (int o = 16; o; o >>= 1) s += __shfl_xor_sync(0xffffffffu, s, o);
-    if (lane == 0) {
-      stat[0][h] = m;
-      stat[1][h] = __fadd_rn(s, ex2_approx(__fmul_rn(__fsub_rn(a.sink[h], m), kLog2e)));
-    }
-  }
-  __syncthreads();
-  for (int i = threadIdx.x; i < kHeads * kSplitKeys; i += kThreads) {
-    const int h = i / kSplitKeys, c = i % kSplitKeys;
-    const float x = ex2_approx(__fmul_rn(__fsub_rn(row[h * W + key0 + c], stat[0][h]), kLog2e));
-    ps[h * kSPLd + c] = __float2half_rn(div_full(x, stat[1][h]));
-  }
-  __syncthreads();
-  const int arow = (lane & 3) + ((lane >> 4) << 2);
-  const int qp = (lane >> 2) & 3, hh = lane >> 4, kr = lane & 3;
-  const int dbase = 128 * warp + 16 * (2 * qp + hh);
-  float o[4][8];
-#pragma unroll
-  for (int j = 0; j < 4; ++j)
-#pragma unroll
-    for (int e = 0; e < 8; ++e) o[j][e] = 0.f;
-  pv_steps(desc, key0, ps + arow * kSPLd, key0, key0 / 4, (key0 + kSplitKeys) / 4, dbase, kr, o);
-  // partial[t][split][head][dim], FP32 (same element mapping as store_out)
-  float* dst = partial + ((int64_t(blockIdx.x) * gridDim.y + split) * kHeads) * kDim;
-#pragma unroll
-  for (int j = 0; j < 4; ++j)
-#pragma unroll
-    for (int e = 0; e < 8; e += 2)
-      *reinterpret_cast<float2*>(dst + out_head(lane, e) * kDim + out_dim(lane, warp, j, e)) =
-          make_float2(o[j][e], o[j][e + 1]);
-}
-
-// 3: out = FP16(sum over splits in order).
-__global__ __launch_bounds__(256) void split_combine_kernel(Args a, const float* partial, int splits) {
-  const int64_t t = a.first + blockIdx.x;
-  const float* src = partial + int64_t(blockIdx.x) * splits * kHeads * kDim;
-  for (int i = threadIdx.x; i < kHeads * kDim / 2; i += blockDim.x) {
-    float x = 0.f, y = 0.f;
-    for (int s = 0; s < splits; ++s) {
-      const float2 v = *reinterpret_cast<const float2*>(src + s * kHeads * kDim + 2 * i);
-      x = s ? x + v.x : v.x;
-      y = s ? y + v.y : v.y;
-    }
-    *reinterpret_cast<__half2*>(a.out + t * kHeads * kDim + 2 * i) = __floats2half2_rn(x, y);
-  }
-}
-
 template <int W>
 void launch_w(const Args& a, int tokens, cudaStream_t stream) {
   static bool carved = false;
@@ -497,17 +397,14 @@ void launch(const Args& a, int tokens, cudaStream_t stream) {
   else launch_w<kWindow>(a, tokens, stream);
 }
 
-constexpr int kSplits = (kWindow + 512) / kSplitKeys;
-
 void require(bool ok, const char* what) { TORCH_CHECK(ok, "ds41_sparse_attention: ", what); }
 
-// split_scratch: FP32 >= tokens * (8 * 640 + 5 * 8 * 512) floats when split mode runs (else unused).
 void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::Tensor values,
             torch::Tensor qsl, torch::Tensor req_slot, std::optional<torch::Tensor> cache,
             std::optional<torch::Tensor> table, torch::Tensor positions, torch::Tensor valid,
             torch::Tensor token_req, std::optional<torch::Tensor> topk, torch::Tensor sink,
             double scale, int64_t block_size, int64_t ratio, int64_t offset, int64_t first,
-            int64_t last, bool split, std::optional<torch::Tensor> split_scratch) {
+            int64_t last) {
   require(query.scalar_type() == torch::kFloat16 && query.is_contiguous() && query.dim() == 3 &&
               query.size(1) == kHeads && query.size(2) == kDim,
           "query must be FP16 [N, 8, 512]");
@@ -575,29 +472,12 @@ void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::T
     a.table_stride = table->stride(0);
     a.topk = topk->data_ptr<int32_t>();
     a.topk_count = 512;
-  } else {
-    require(!split, "split mode needs compressed keys");
   }
   if (last == first) return;
   const c10::cuda::CUDAGuard guard(device);
   const int tokens = int(last - first);
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  if (split) {
-    constexpr int W = kWindow + 512;
-    const int64_t need = int64_t(tokens) * (kHeads * W + kSplits * kHeads * kDim);
-    require(split_scratch.has_value() && split_scratch->scalar_type() == torch::kFloat32 &&
-                split_scratch->is_contiguous() && split_scratch->numel() >= need &&
-                split_scratch->device() == device,
-            "split scratch FP32 [tokens * (8 * 640 + 5 * 8 * 512)]");
-    float* scores = split_scratch->data_ptr<float>();
-    float* partial = scores + int64_t(tokens) * kHeads * W;
-    const dim3 grid(tokens, kSplits);
-    split_scores_kernel<W><<<grid, kThreads, 0, stream>>>(a, scores);
-    split_pv_kernel<W><<<grid, kThreads, 0, stream>>>(a, scores, partial);
-    split_combine_kernel<<<tokens, 256, 0, stream>>>(a, partial, kSplits);
-  } else {
-    launch(a, tokens, stream);
-  }
+  launch(a, tokens, stream);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -608,7 +488,7 @@ void ds41_sparse_attend(torch::Tensor out, torch::Tensor query, torch::Tensor ri
                         std::optional<torch::Tensor> table, torch::Tensor positions, torch::Tensor valid,
                         torch::Tensor token_req, std::optional<torch::Tensor> topk, torch::Tensor sink,
                         double scale, int64_t block_size, int64_t ratio, int64_t offset, int64_t first,
-                        int64_t last, bool split, std::optional<torch::Tensor> split_scratch) {
+                        int64_t last) {
   ds41_sparse_attention::attend(out, query, ring, values, qsl, req_slot, cache, table, positions, valid, token_req,
-                                topk, sink, scale, block_size, ratio, offset, first, last, split, split_scratch);
+                                topk, sink, scale, block_size, ratio, offset, first, last);
 }

@@ -24,6 +24,12 @@ from .weights import EP, WORLD, Geometry, Weights
 
 DECODE_MAX = 8                 # patch 85: requests with more tokens take the single-request prefill indexer
 BLOCK = 64                     # KV page: tokens per page (the friend's production --block-size 64)
+# Fewest step tokens for the fused sparse attention (ds41_sparse_attention), from single-GPU timings at 180 W
+# (attn-1 eager, attn-2 inside CUDA graphs): compressed layers keep patch 87's gather + bmm for graph-replayed decode
+# buckets (<= 32 rows: 19-140 us vs the fused 43-147 us split / 108-168 us unsplit) and take the fused kernel above
+# (eager 8192-row chunks 36 ms -> 8 ms; 48 graph rows 224 -> 199 us); window-only layers take it from 2 rows.
+FUSED_MIN_COMPRESSED = 33
+FUSED_MIN_WINDOW = 2
 
 
 # ------------------------------------------------------------------------------------------- collectives
@@ -235,6 +241,13 @@ class Target:
 
     def _attend(self, query, step, ring, window, sink, *, cache=None, block_table=None, layout=None, layer=None,
                 topk=None):
+        """Sparse attention [T, 8, 512]: the fused kernel (patch 181 at TP8, ``ds41_sparse_attention``: keys
+        streamed from the ring / pages, no gathered key buffer) from FUSED_MIN_* step tokens, else patch 87's
+        gather + bmm passes (decode buckets of compressed layers); both read the same keys and FP16 probabilities."""
+        if query.shape[0] >= (FUSED_MIN_COMPRESSED if cache is not None else FUSED_MIN_WINDOW):
+            from tensorfold.cuda.sm70 import ds41_sparse_attention as fused
+            return fused.attend(query.contiguous(), step.positions, step, step.req_slot, ring, window.contiguous(),
+                                sink, cache=cache, block_table=block_table, layout=layout, source=layer, topk=topk)
         from .kernels import mu_packed as pk
         return pk.attend(query, step.positions, step, step.req_slot, ring, window, sink, cache=cache,
                          block_table=block_table, layout=layout, source=layer, topk=topk)

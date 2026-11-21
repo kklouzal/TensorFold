@@ -144,19 +144,6 @@ def test_fused_matches_patch87_and_oracle(name, requests, source, compressed, qs
     assert stats["max_abs_ref_vs_new"] <= scale * 2 ** -8, stats
 
 
-@pytest.mark.parametrize("tokens", [1, 4, 16])
-def test_split_mode_matches(tokens):
-    requests = [(3000 + 97 * r, 1) for r in range(tokens)]
-    args, kw = build(requests, source=2, qscale=4.0)
-    ref, new = reference(args, kw), fused(args, kw)
-    split = fused(args, kw, split=True)
-    torch.cuda.synchronize()
-    stats = compare(args, kw, ref, split)
-    print("split", tokens, stats, "split vs unsplit max", float((split.float() - new.float()).abs().max()))
-    ref_abs, ref_rel = stats["ref_vs_oracle"]
-    assert stats["new_vs_oracle"][1] <= ref_rel * 1.5 + 1e-4, stats
-
-
 def test_invalid_rows_and_rejections():
     args, kw = build([(0, 64)], source=2)
     new = fused(args, kw)
@@ -189,7 +176,6 @@ def _time(fn, reps):
 
 
 def bench(out_path):
-    from tensorfold.cuda.sm70 import ds41_sparse_attention as sa
     results = {"device": torch.cuda.get_device_name(), "cases": []}
     shapes = [("chunk 8192 from 0", [(0, 8192)]), ("chunk 8192 from 8192 (16K prompt)", [(8192, 8192)])]
     for label, requests in shapes:
@@ -209,16 +195,55 @@ def bench(out_path):
     for m in (1, 2, 4, 8, 16, 24, 32):
         requests = [(4000 + 131 * r, 1) for r in range(m)]
         args, kw = build(requests, source=2, qscale=2.0)
-        scratch = torch.empty(sa.split_scratch_floats(m), dtype=torch.float32, device="cuda")
         out = torch.empty_like(args[0])
         row = {"shape": f"decode M={m}", "source": 2, "patch87": _time(lambda: reference(args, kw), 50),
-               "fused": _time(lambda: fused(args, kw, out=out), 50),
-               "fused_split": _time(lambda: fused(args, kw, out=out, split=True, split_scratch=scratch), 50)}
+               "fused": _time(lambda: fused(args, kw, out=out), 50)}
         print(json.dumps(row), flush=True)
         results["cases"].append(row)
     with open(out_path, "w") as f:
         json.dump(results, f, indent=1)
 
 
+def _graph_time(fn, reps=200):
+    """Median per-call time of ``fn`` replayed from a CUDA graph of 20 back-to-back calls (decode-graph conditions)."""
+    for _ in range(3):
+        fn()
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        with torch.cuda.graph(graph, stream=stream):
+            for _ in range(20):
+                fn()
+    torch.cuda.synchronize()
+    times = []
+    for _ in range(reps // 20):
+        a, b = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        a.record()
+        graph.replay()
+        b.record()
+        b.synchronize()
+        times.append(a.elapsed_time(b) / 20)
+    times.sort()
+    return times[len(times) // 2]
+
+
+def bench_decode_graphs(out_path):
+    """Decode-size steps (M = 1..64 one-token requests) of every layer kind, timed inside CUDA graphs."""
+    rows = []
+    for source, compressed in ((2, True), (20, True), (2, False)):
+        for m in (1, 2, 4, 8, 16, 24, 32, 48, 64):
+            requests = [(4000 + 131 * r, 1) for r in range(m)]
+            args, kw = build(requests, source=source, compressed=compressed, qscale=2.0)
+            out = torch.empty_like(args[0])
+            row = {"m": m, "ratio": SOURCES[source] if compressed else 0,
+                   "patch87_ms": _graph_time(lambda: reference(args, kw)),
+                   "fused_ms": _graph_time(lambda: fused(args, kw, out=out))}
+            print(json.dumps(row), flush=True)
+            rows.append(row)
+    with open(out_path, "w") as f:
+        json.dump({"device": torch.cuda.get_device_name(), "graph_rows": rows}, f, indent=1)
+
+
 if __name__ == "__main__":
-    bench(sys.argv[1])
+    (bench_decode_graphs if sys.argv[1:2] == ["--graphs"] else bench)(sys.argv[-1])
