@@ -294,6 +294,11 @@ def hc_transition(
 _V3_GROUPS = 8
 
 
+def PARTS_ROWS_PER(tokens):
+    """Tokens per program of the V3 transition's first kernel (1: the vendored per-token kernel; hc_rows above)."""
+    return 1
+
+
 @jit
 def _v3_new_residual(residual, y, post, comb, t, col, H: tl.constexpr):
     base = residual + t * 4 * H
@@ -469,10 +474,12 @@ def _hc_transition3(
     norm_eps,
     hc_eps,
     iters,
+    rows_per=None,
 ):
     tokens = residual.shape[0]
     mix = fn is not None
     device = residual.device
+    rows_per = PARTS_ROWS_PER(tokens) if rows_per is None else rows_per
     cbuf = torch.empty(tokens, H, dtype=torch.float32, device=device)
     csq = torch.empty(tokens, CHUNKS, dtype=torch.float32, device=device)
     if mix:
@@ -485,25 +492,31 @@ def _hc_transition3(
         dots = sq = pre = post_n = comb_n = csq
     out = torch.empty(tokens, H, dtype=torch.float16, device=device)
     groups = _V3_GROUPS if mix else 1
-    _transition_parts3[(tokens, CHUNKS, groups)](
-        residual,
-        y,
-        post,
-        comb,
-        fn if mix else post,
-        collapse_pre,
-        cbuf,
-        dots,
-        sq,
-        csq,
-        MIX=mix,
-        H=H,
-        COLS=COLS,
-        CHUNKS=CHUNKS,
-        ROWS=24 // groups,
-        num_warps=4,
-        enable_fp_fusion=False,
-    )
+    if rows_per > 1:   # TensorFold: the row-blocked first kernel (hc_rows; bitwise _transition_parts3)
+        from .hc_rows import _transition_parts3_rows
+        _transition_parts3_rows[(-(-tokens // rows_per), CHUNKS, groups)](
+            residual, y, post, comb, fn if mix else post, collapse_pre, cbuf, dots, sq, csq, tokens, MIX=mix, H=H,
+            COLS=COLS, CHUNKS=CHUNKS, ROWS=24 // groups, ROWS_PER=rows_per, num_warps=4, enable_fp_fusion=False)
+    else:
+        _transition_parts3[(tokens, CHUNKS, groups)](
+            residual,
+            y,
+            post,
+            comb,
+            fn if mix else post,
+            collapse_pre,
+            cbuf,
+            dots,
+            sq,
+            csq,
+            MIX=mix,
+            H=H,
+            COLS=COLS,
+            CHUNKS=CHUNKS,
+            ROWS=24 // groups,
+            num_warps=4,
+            enable_fp_fusion=False,
+        )
     _transition_finish3[(tokens, CHUNKS)](
         residual,
         y,
