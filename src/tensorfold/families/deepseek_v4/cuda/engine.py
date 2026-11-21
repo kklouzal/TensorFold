@@ -144,8 +144,8 @@ class DS41Engine:
         self.token_bytes = self.layout.bytes_per_token
         self.snap_bytes = self.prefix.snap_bytes
         self.budget = pages * page_bytes            # the prefix owner's ledger: slot pages and snapshot pages
-        # Prompt chunks split at most prompt_rows apart and where prefix points are kept (prefix.chunk_splits: the
-        # prompt's first and last message boundary), independent of load.
+        # Prompt chunks split at most prompt_rows apart (no point kept there) and where prefix points are kept
+        # (prefix.chunk_splits: the prompt's first and last message boundary), independent of load.
         self.prompt_rows = max_tokens
         self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
         self.layer_marks = None             # rank 0: per-unit CUDA events of the prompt forward being timed

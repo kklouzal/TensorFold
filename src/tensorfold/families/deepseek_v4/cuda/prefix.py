@@ -19,15 +19,26 @@ of its first h tokens only (patch 85's slot semantics; every kernel resolves its
     state); DeepSeek-V4.1's compress ratios are 0/1/2 (no ratio 4 / 128 groups to align to).
 
 So the state at any forward boundary of a slot is exact, and a point may be kept wherever a prompt chunk ends.
-Where they end is a cost choice: a prompt forward costs about 0.21 s plus 0.45 ms per row at TP8 (pfx2-a), so a
-prompt is split only where a later request is likely to resume (``chunk_splits``): the system prompt's end (the first
-of the renderer's ``message_points``: a prefix other conversations share), the last message's start (a regenerated
-or re-rendered turn -- thinking without tools re-renders the previous header -- resumes there) and every
-``prompt_rows`` rows in between; a next turn that extends the prompt resumes at its exact end. Chunking every message
-boundary instead (bitwise cached == cold by construction, pfx2-a cachecheck 22/22 identical) cost 1.28-1.85x the
-one-chunk cold prefill on multi-turn prompts. So a resumed request computes its rows in other chunks than a cold
-prefill of its prompt would: equal up to the reductions' rounding, gated by tools/quality_eval cachecheck compare
-(cached vs cold NLL). An exact repeat computes no prompt row at all (its reply is the cold reply).
+Points are kept only at natural breaks (the user's rule): message boundaries (``message_points``) and the exact prompt
+end. Where chunks end is a cost choice: a prompt forward costs about 0.21 s plus 0.45 ms per row at TP8 (pfx2-a), so a
+prompt is split only where a later request is likely to resume (``chunk_splits``), each split keeping a point: the
+system prompt's end (the first of the renderer's ``message_points``: a prefix other conversations share) and the last
+message's start (a regenerated or re-rendered turn -- thinking without tools re-renders the previous header --
+resumes there); a next turn that extends the prompt resumes at its exact end. ``prompt_rows`` (8192) only caps a
+chunk's rows: those splits keep no point. Chunking every message boundary instead (bitwise cached == cold by
+construction, pfx2-a cachecheck 22/22 identical) cost 1.28-1.85x the one-chunk cold prefill on multi-turn prompts.
+
+Cached vs cold: the capped splits continue from the previous split, so a resume from the system prompt's end or a
+last message's start computes exactly the chunks a cold prefill of its prompt computes from there (bitwise equal).
+A next turn resumed at the previous prompt's exact end computes its rows in other chunks than its cold prefill would:
+equal up to the reductions' rounding, gated by tools/quality_eval cachecheck compare (cached vs cold NLL). An exact
+repeat computes no prompt row at all (its reply is the cold reply).
+
+Retention (``prefixes``' GreedyDual with this lane's hooks): the points a chain's latest request kept (its last
+message's start, its exact end, a cold prompt's system point) are ``prefix_protected``: never a ladder's spare and
+worth all their tokens, so a conversation's newest points outlive its older ones and other chains' history points;
+``prefix_reach`` lets the host tier compare against where a VRAM point actually resumes (an exact end a prompt does
+not continue reaches only the point below it).
 
 Ranks: rank 0's owner decides and announces the Gemma ``ops`` codes; every rank runs ``SlotState`` on its own
 tensors in announcement order (identical shapes and page ids, so snapshot ids and slab offsets are rank-replicated).
@@ -70,7 +81,9 @@ MIN_CHUNK = 256          # rows: no split closer than this to the previous one (
 def chunk_splits(points, start: int, n: int, rows: int) -> list[int]:
     """Where a prompt computed from ``start`` splits its chunks in (start, n): its first message point at least
     MIN_CHUNK rows into the prompt (the system prompt's end, when past ``start``) and its last one (``points``
-    sorted), each at least MIN_CHUNK rows past the previous split, and every ``rows`` rows past the previous split."""
+    sorted), each at least MIN_CHUNK rows past the previous split (``PrefixOwner._stops`` keeps points there), and
+    every ``rows`` rows past the previous split (a chunk cap only). The caps continue from the previous split, so the
+    splits past a kept message point are the same whether a prompt starts cold or resumes there."""
     first = next((p for p in points if p >= MIN_CHUNK), None)
     ahead = [p for p in points if start < p < n]
     wanted = sorted({first, ahead[-1]}) if ahead and first is not None and start < first < n else ahead[-1:]
@@ -154,6 +167,8 @@ class PrefixOwner(_gemma.PrefixOwner):
         self.snap_bytes = engine.snap_bytes
         self.snap_ids: set[int] = set()
         self.next_snap = 0
+        self.turns = 0                                   # requests placed (``Slot.turn``: a chain's latest)
+        self.turn_of: dict[int, int] = {}                # snapshot id -> the request (turn) that kept it
         self._extent = 0
         self._counted = None
         self.host_tier = HostTier(self, engine.host_per_rank) if engine.host_per_rank else None
@@ -163,6 +178,8 @@ class PrefixOwner(_gemma.PrefixOwner):
 
     def place(self, s, capacity: int, reuse: bool) -> None:
         super().place(s, capacity, reuse)
+        self.turns += 1
+        s.st.turn = self.turns                           # the points this request keeps: its chain's latest
         if not reuse:
             s.bounds = self._splits(s)
 
@@ -172,9 +189,43 @@ class PrefixOwner(_gemma.PrefixOwner):
         return chunk_splits(s.message_points, s.cached, len(s.prompt), self.e.prompt_rows)
 
     def _stops(self, s) -> list[int]:
-        """Every split of this request's chunks keeps a point (``s.bounds``: its chunks end on them)."""
+        """The splits of this request's chunks (``s.bounds``) that are message boundaries keep a point; the
+        ``prompt_rows`` cap's splits do not (points only at natural breaks)."""
         s.bounds = self._splits(s)
-        return list(s.bounds)
+        marks = set(s.message_points)
+        return [b for b in s.bounds if b in marks]
+
+    # ---- retention hooks (``prefixes``)
+    def _snapshot(self, st, pos: int):
+        sid = super()._snapshot(st, pos)
+        if sid is not None:
+            self.turn_of[sid] = getattr(st, "turn", 0)
+        return sid
+
+    def _sweep(self) -> None:
+        super()._sweep()
+        for sid in [sid for sid in self.turn_of if sid not in self.snap_ids]:
+            del self.turn_of[sid]
+
+    def prefix_protected(self, entry) -> bool:
+        """Whether ``entry`` is one of the points its chain's latest request kept (a host restore's snapshots carry
+        no request: older)."""
+        turn = self.turn_of.get(entry[2]["sid"])
+        return turn is not None and turn == max(self.turn_of.get(k[2]["sid"], -1) for k in self.kept
+                                                 if k[1] is entry[1])
+
+    def prefix_reach(self, entry, prompt) -> int:
+        """Where a resume from VRAM point ``entry`` lands for ``prompt`` (``_resumed`` then ``_resume_at``)."""
+        ids, snap, n = entry[0], entry[2], len(entry[0])
+        end = snap.get("prompt_end")
+        if end is not None and len(prompt) == n + 1 and prompt[-1] == end["token"]:
+            return n + 1
+        if state_at(snap) == n:
+            return n
+        if state_at(snap) == n + 1 < len(prompt) and snap.get("next") == prompt[n]:
+            return n + 1
+        return max((len(k[0]) for k in self.kept if len(k[0]) <= n and state_at(k[2]) == len(k[0])
+                    and prompt[:len(k[0])] == k[0]), default=0)
 
     def _resume_at(self, s, st, resume, cached: int, sid):
         """A kept point's state is exact at its length, except an exact end's: kept one token early (``prefixes``'
@@ -234,7 +285,7 @@ class HostTier(_gemma_host.HostTier):
         return extent_bytes(self.owner.e.layout, first, rows)
 
     def _servable(self, point) -> bool:
-        """Any point whose state is at its length (every split: a resume needs no alignment here) and an exact end
+        """Any point whose state is at its length (a message boundary: a resume needs no alignment here) and an exact end
         with its end; an exact end ``prefixes`` demoted (its state one row past it) serves nothing from here."""
         snap = point[2]
         return snap.get("prompt_end") is not None if snap.get("exact") else state_at(snap) == len(point[0])

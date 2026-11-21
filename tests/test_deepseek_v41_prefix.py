@@ -207,16 +207,20 @@ def test_owner_exact_repeat_extension_and_boundary_end():
     assert _restored(o) == 200                           # (a fork: the chain keeps its end at 200 too)
     cached, _ = _serve(o, p + [7, 8, 9])                 # an extension resumes the exact end's state
     assert cached == 200 and _restored(o) == 200
-    # n - 1 on a split: that point serves the exact repeat (no resume of the state at n at n - 1)
-    q = list(range(500, 629))                            # 129 tokens: n - 1 = 128
+    assert not any(len(k[0]) % 64 == 0 for k in o.kept)  # the 64-row cap's splits keep no point
+    assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
+    # n - 1 on a kept (message) split: that point serves the exact repeat (no resume of the state at n at n - 1)
+    o = _owner(rows=8192)
+    o.keep, o.points = 64, _toy_points
+    q = list(range(500, 800)) + [U]                      # 301 tokens: a message point at n - 1 = 300
     _serve(o, q)
-    cached, _ = _serve(o, q[:128] + [3, 4])              # the split at 128 resumes
-    assert cached == 128 and _restored(o) == 128
+    cached, _ = _serve(o, q[:300] + [3, 4])              # the split at 300 resumes
+    assert cached == 300 and _restored(o) == 300
     _serve(o, q)
     cached, _ = _serve(o, q + [1])
-    assert cached == 129
+    assert cached == 301
     cached, _ = _serve(o, q + [1])                       # its own end (q's was resumed without its logits)
-    assert cached == 130
+    assert cached == 302
     assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
     assert set(o.e.snaps) == o.snap_ids
 
@@ -405,3 +409,65 @@ def test_owner_fork_of_an_exact_end_copies_its_last_row():
     assert cached == len(a) and _restored(o) == len(a)
     copies = [x for x in o.e.ops if x[0] == OP_COPY]
     assert copies[-2][3] == len(a) - 1 and copies[-1][1:] == (copies[-2][1], copies[-2][2], len(a))
+
+
+def test_owner_cap_splits_keep_no_point_and_resumes_compute_the_cold_chunks():
+    """Points only at natural breaks: a 20K-token message splits its chunks at the 8192-row cap but keeps no point
+    there; a resume from the system prompt's end computes exactly the chunks its cold prefill computes from there."""
+    o = _owner(rows=8192)
+    o.e.context, o.e.budget, o.keep, o.points = 1 << 16, 10 ** 8, 64, _toy_points
+    system = [1] + _msg(1, 300)
+    p1 = system + [U] + _msg(2, 20000) + [A, T]
+    _, s = _serve(o, p1)
+    assert s.chunks == [0, 301, 301 + 8192, 301 + 2 * 8192] == _cold_chunks(p1)
+    assert sorted(len(k[0]) for k in o.kept) == [301, len(p1) - 1]
+    p2 = system + [U] + _msg(3, 20000) + [A, T]
+    cached, s = _serve(o, p2)
+    assert cached == 301 and s.chunks == _cold_chunks(p2)[1:]
+    # an edit inside the long message (a capped split at 8493 would have served it: a mid-message point) resumes
+    # at the system prompt's end
+    p3 = p1[:12000] + [5] + p1[12001:]
+    assert _serve(o, p3)[0] == 301
+
+
+def test_owner_keeps_the_newest_turns_last_message_point():
+    """Under the entry cap, each conversation's newest points (its last message's start and its exact end) outlive
+    its older history points: a turn whose header re-renders (thinking without tools) resumes at the last message's
+    start of the latest turn, not further back."""
+    o = _owner(rows=8192)
+    o.e.context, o.e.budget, o.points = 1 << 16, 10 ** 8, _toy_points
+    system = [1] + _msg(1, 300)
+    convs = [system + [U] + _msg(10 + i, 300) + [A, T] for i in range(4)]     # four chains in four slots
+    for i in range(4):
+        _serve(o, convs[i])
+    for turn in range(6):                    # (the plain GreedyDual ladder lost 20 of these 24 newest points)
+        for i in range(4):
+            p = convs[i] + _msg(20 + 7 * turn + i, 300) + [E, U] + _msg(60 + 7 * turn + i, 300) + [A, T]
+            assert _serve(o, p)[0] == len(convs[i])
+            convs[i] = p
+            assert len(o.kept) <= o.keep
+            for c in convs[:i + 1] if turn == 0 else convs:
+                last = max(_toy_points(c))
+                assert any(k[0] == c[:last] for k in o.kept), (turn, i)
+    p = convs[0][:-1] + [T + 10] + _msg(99, 100) + [E, U] + _msg(98, 100) + [A, T]
+    assert _serve(o, p)[0] == max(_toy_points(convs[0]))
+
+
+def test_host_point_beats_an_exact_end_its_prompt_cannot_continue(monkeypatch):
+    """The host tier's MIN_GAIN compares against where a VRAM point resumes: an exact end whose next token the
+    prompt does not continue reaches only the point below it, so a longer host point is restored."""
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)
+    o = _host_owner()
+    p1 = [1] + _msg(1, 300) + [U] + _msg(2, 300) + [U] + _msg(3, 300) + [A, T]
+    _serve(o, p1)
+    assert sorted(len(k[0]) for k in o.kept) == [301, 602, len(p1) - 1]
+    o.host_tier.spill(list(o.kept), None)                # the chain in host RAM too, then its 602 point gone
+    o.kept = [k for k in o.kept if len(k[0]) != 602]
+    o._sweep()
+    q = p1[:-1] + [T + 10] + _msg(4, 100) + [E, U] + _msg(5, 100) + [A, T]   # a re-rendered header
+    hits = o.prefix_counters["host_hits"]
+    cached, s = _serve(o, q)
+    assert cached == 602 and o.prefix_counters["host_hits"] == hits + 1
+    assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
+    assert set(o.e.snaps) == o.snap_ids
