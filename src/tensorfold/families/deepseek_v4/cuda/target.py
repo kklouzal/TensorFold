@@ -248,7 +248,7 @@ class Target:
         return pk.select_positions(query, weights, step.positions, step, self.pool.cache, step.block_table,
                                    layout=self.pool.layout, source=ly.source, ratio=ly.ratio,
                                    width=self.index_context // ly.ratio, all_reduce=self._sum_half,
-                                   score_dtype=torch.float32)
+                                   score_dtype=torch.float32, row_split=(self.w.rank, 8, self.c.world.all_gather))
 
     def _sum_half(self, scores):
         """The indexer's TP sum: FP32 (decode) or FP16 (prefill tiles) per-rank scores, one FP16 rounding."""

@@ -204,6 +204,108 @@ def select_compressed_positions(
     return result
 
 
+# ---- prefill indexer rows split over the TP ranks (the friend's overlay patch 180, ds41_pf_index, at TP8)
+ROW_SPLIT_MIN = 128          # fewest prefill rows (patch 180's VLLM_LOCAL_DS41_PF_INDEX_MIN)
+_ROW_GROUP = 32              # rows per interleave group (causal balance)
+_ROW_TILE_BYTES = 64 << 20   # FP16 [rows, 32 heads, keys] score tile per rank
+
+
+@jit
+def _pf_term(base, wb, HEAD: tl.constexpr, L, c, m):
+    x = tl.load(base + HEAD * L + c, mask=m, other=0.0)
+    x = tl.where(x > 0, x, 0.0).to(tl.float16)                                   # relu_
+    w = tl.load(wb + HEAD)
+    return (x.to(tl.float32) * w.to(tl.float32)).to(tl.float16).to(tl.float32)  # mul_ (FP16 product)
+
+
+@jit
+def _pf_combine(scores, weights, out, L, OUT_STRIDE, GROUPS: tl.constexpr, BLOCK: tl.constexpr):
+    """out[r, c] = rank-ordered FP32 sum over g of fp16(sum_h fp16(relu(s[r, g, h, c]) * w[r, g, h])), 4 heads
+    per group (one TP8 rank's heads), rounded once to FP16."""
+    r = tl.program_id(0).to(tl.int64)
+    c = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
+    m = c < L
+    total = tl.zeros((BLOCK,), dtype=tl.float32)
+    for g in tl.static_range(GROUPS):
+        base = scores + ((r * GROUPS + g) * 4) * L
+        wb = weights + (r * GROUPS + g) * 4
+        y0 = _pf_term(base, wb, 0, L, c, m)
+        y1 = _pf_term(base, wb, 1, L, c, m)
+        y2 = _pf_term(base, wb, 2, L, c, m)
+        y3 = _pf_term(base, wb, 3, L, c, m)
+        # Tensor.sum(1) over one rank's 4 heads: an FP32 accumulator from +0 (-0 maps to +0), head order
+        p = (((tl.where(y0 == 0, 0.0, y0) + y1) + y2) + y3).to(tl.float16).to(tl.float32)
+        # the cross-rank FP32 sum of the FP16 partials in rank order (Collectives' rank-ordered paths)
+        if g == 0:
+            total = p
+        else:
+            total = total + p
+    tl.store(out + r * OUT_STRIDE + c, total.to(tl.float16), mask=m)
+
+
+def select_rows_split(q, weights, keys, positions, valid, ratio, *, first_position, rank, world, all_gather,
+                      top_k=512):
+    """select_compressed_positions for one prefill request with its rows split over the ``world`` ranks instead
+    of its heads (patch 180): each rank receives every rank's 4 index heads for its rows (one all-gather of the
+    [rows, 4, 128] queries and [rows, 4] weights), scores all 32 heads for its rows only, trimmed to each tile's
+    longest causal row, combines them in one pass (``_pf_combine``) and takes the same index_topk; the [rows,
+    512] selections are all-gathered. No [rows, keys] score all-reduce. Rows are interleaved over the ranks in
+    groups of 32. The positions of the request's rows are ``first_position + i`` (a prompt chunk).
+
+    Arithmetic: each head's FP16 score, relu and FP16 weight product as the reference; per-rank 4-head sums as
+    Tensor.sum(1); the cross-rank sum of the FP16 partials in FP32 rank order (the reference sums them by the
+    NCCL FP32 all-reduce: equal whenever the eight-term FP32 sum is exact, i.e. the partials span <= 13
+    binades)."""
+    tokens, heads = q.shape[0], q.shape[1]
+    if q.dtype != torch.float16 or q.shape[2] != 128 or weights.shape != (tokens, heads) or keys.shape[1] != 128:
+        raise ValueError("V4.1 row-split indexer requires FP16 [rows, heads, 128] queries")
+    unit = _ROW_GROUP * world
+    padded = -(-tokens // unit) * unit
+    groups = padded // unit
+    pad = padded - tokens
+
+    def rows_padded(x):
+        if not pad:
+            return x.contiguous()
+        return torch.cat([x, x.new_zeros((pad,) + tuple(x.shape[1:]))])
+
+    def exchange(x):        # [padded, heads, ...] this rank's heads -> [mine, world * heads, ...] all heads, my rows
+        send = rows_padded(x)
+        recv = torch.empty((world,) + tuple(send.shape), dtype=send.dtype, device=send.device)
+        all_gather(send, recv)
+        mine = recv.view(world, groups, world, _ROW_GROUP, *x.shape[1:])[:, :, rank]   # [src, G, 32, heads, ...]
+        order = (1, 2, 0) + tuple(range(3, mine.ndim))
+        return mine.permute(order).reshape(groups * _ROW_GROUP, world * heads, *x.shape[2:])
+
+    mine_q, mine_w = exchange(q), exchange(weights).contiguous()
+    rows = [g * unit + rank * _ROW_GROUP + i for g in range(groups) for i in range(_ROW_GROUP)]
+    index = torch.tensor(rows, dtype=torch.long).to(q.device, non_blocking=True)
+    pos_mine = torch.cat([positions, positions.new_zeros(pad)]).index_select(0, index)
+    val_mine = torch.cat([valid, valid.new_zeros(pad)]).index_select(0, index)
+    lengths = [((first_position + r + 1) // ratio) if r < tokens else 0 for r in rows]   # host: no sync
+    picked = torch.empty(len(rows), top_k, dtype=torch.int32, device=q.device)
+    all_heads = world * heads
+    first = 0
+    while first < len(rows):
+        last = min(first + 1024, len(rows))
+        width = min(keys.shape[0], max(top_k, max(lengths[first:last])))
+        span = max(_ROW_GROUP, _ROW_TILE_BYTES // (all_heads * width * 2) // _ROW_GROUP * _ROW_GROUP)
+        if span < last - first:
+            last = first + span
+            width = min(keys.shape[0], max(top_k, max(lengths[first:last])))
+        n = last - first
+        scores = torch.mm(mine_q[first:last].reshape(-1, 128), keys[:width].T).view(n, all_heads, width)
+        combined = torch.empty(n, width, dtype=torch.float16, device=q.device)
+        _pf_combine[(n, triton.cdiv(width, 1024))](scores, mine_w[first:last], combined, width, combined.stride(0),
+                                                    GROUPS=world, BLOCK=1024, num_warps=4)
+        del scores
+        index_topk(picked[first:last], combined, pos_mine[first:last], val_mine[first:last], ratio, top_k)
+        first = last
+    full = torch.empty((world,) + tuple(picked.shape), dtype=picked.dtype, device=picked.device)
+    all_gather(picked, full)
+    return full.view(world, groups, _ROW_GROUP, top_k).transpose(0, 1).reshape(padded, top_k)[:tokens]
+
+
 @jit
 def _gather_attention(
     window_cache,
