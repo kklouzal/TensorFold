@@ -209,6 +209,39 @@ def test_host_tier_spills_evicted_chain_and_restores_it(monkeypatch):
     assert d.cached == 1600 and d.head is LOGITS
 
 
+def test_an_extension_resumed_in_place_demotes_the_exact_end_it_rewrites(monkeypatch):
+    # b extends a's exact end in place, rewriting its last row: the point keeps no end and is no longer exact, so it
+    # is not spilled as an end-less exact point (whose lookup failed on the missing end).
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)
+    e = FakeEngine(budget=2048 * TOKEN + 4 * SNAP)
+    o = Owner(e, host=64 << 20)
+    a = stream(range(1600))
+    o.place(a, 2048, True)
+    fill(o, a)
+    finish(o, a)
+    b = stream(list(range(1600)) + [1, 2])
+    o.place(b, 2048, True)
+    assert b.cached == 1024 and o.prefix_counters["resume_hits"] == 1
+    (demoted,) = [k[2] for k in o.kept if len(k[0]) == 1599]
+    assert "prompt_end" not in demoted and "exact" not in demoted
+    fill(o, b)
+    finish(o, b)
+    other = stream([9] * 1600)                       # evicts the chain: spilled to the host tier
+    o.place(other, 2048, True)
+    fill(o, other)
+    finish(o, other)
+    spilled = [(len(ids), m["exact"], m["prompt_end"] is not None) for x in o.host_tier.entries
+               for ids, m in x["points"]]
+    assert all(exact == end for _n, exact, end in spilled) and (1024, False, False) in spilled
+    assert all(n % 1024 == 0 or exact for n, exact, _end in spilled)
+    d = stream(range(1600))                          # a's repeat: its end is gone, the aligned point serves it
+    o.place(d, 2048, True)
+    assert d.cached == 1024 and d.head is None and o.prefix_counters["host_hits"] == 1
+    finish(o, d)
+    assert o.held == ledger(o)
+
+
 def test_host_record_feeds_the_metrics_families():
     from tensorfold.server import metrics
     o = Owner(FakeEngine(budget=10**9), host=64 << 20)
@@ -305,7 +338,8 @@ class SlabEngine(FakeEngine):
 def test_gemma_conversation_turns_share_host_rows_and_restore_them_byte_exact(monkeypatch):
     import torch
 
-    from tensorfold.families.gemma4.sm70 import prefix_host
+    from tensorfold.families.gemma4.sm70 import engine, prefix_host
+    assert engine._to_slab is prefix_host._to_slab        # bound before the stub: the engine's slab copies stay real
     monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)
     e = SlabEngine(budget=3 * 4096 * 12 + 16 * SNAP, keep_slots=1)
     e.head = None

@@ -34,6 +34,8 @@ SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
 RESERVE = 3 << 30          # bytes left free per rank for prompt transients, after the KV pool
+GRAPH_EACH_BYTES = 40 << 20 # decode graph memory per captured bucket (sizing bound; measured ~30 MiB)
+GRAPH_BYTES = 128 << 20     # + the graphs' shared torch pool (measured ~40 MiB)
 
 
 class DS41Engine:
@@ -117,7 +119,13 @@ class DS41Engine:
         page_bytes = PackedLayout({l: g.compress_ratios[l] for l in g.kv_sources}, BLOCK).page_bytes
         self.slots = slots + keep_slots + 1          # streams, kept chains, the scratch slot
         ring_bytes = self.slots * g.layers * 128 * 512 * 2
-        pages = max(1, (int(every.min()) - RESERVE - ring_bytes) // page_bytes)
+        # The decode graphs are captured after the KV pool exists, so their memory comes out of the free memory too:
+        # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
+        # 606 MiB for 18 buckets on one capture stream).
+        from .graphs import buckets
+        capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
+        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(buckets(slots)) if capture else 0
+        pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device)
         self.layer_count = len(self.w.layers)
@@ -139,8 +147,13 @@ class DS41Engine:
         # Decode forwards replay startup CUDA graphs (every rank, same order, no control frames; never lazily).
         # The Engram lookup trace (rank 0) reads ids on the host every forward, so tracing keeps the eager decode;
         # every rank decides from the same environment (all ranks capture, or none).
-        if graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE"):
+        if capture:
             self.graphs = DecodeGraphs(self, slots)
+            spare = torch.cuda.mem_get_info()[0] + torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
+            if self.graphs.bytes > graph_bytes or spare < RESERVE:
+                raise RuntimeError(f"DeepSeek-V4.1 SM70 rank {rank}: decode graphs took {self.graphs.bytes >> 20} MiB "
+                                   f"(sized {graph_bytes >> 20} MiB); {spare >> 20} MiB left for prompt transients, "
+                                   f"{RESERVE >> 20} MiB required")
         elif rank == 0:
             print("[tensorfold] DeepSeek-V4.1 SM70: eager decode (" +
                   ("graphs disabled)" if not graphs else "TENSORFOLD_DS41_ENGRAM_TRACE set)"), flush=True)

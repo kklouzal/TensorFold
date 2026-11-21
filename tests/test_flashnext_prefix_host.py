@@ -164,6 +164,22 @@ def test_eviction_spills_the_chain_and_a_later_prompt_restores_it_from_host():
         assert all(torch.equal(x, y) for x, y in zip(a, b))
 
 
+def test_an_extension_restored_from_host_drops_the_prompt_end_it_rewrites():
+    # Its rows from the point on are rewritten, the end's last row first: a later exact repeat must not join the end.
+    host = tier()
+    decoder = owner([], host)
+    ids = list(range(20))
+    snap = snapshot(20)
+    snap["prompt_end"] = {"token": 5, "state": snapshot(21, seed=2), "tail": None, "last": torch.ones(3),
+                          "head": torch.ones(4)}
+    prefixes.remember(decoder, ids, state(0, rank=0), snap, None)
+    prefixes.slot_for(decoder, [7] * 30, True)                     # spilled with its end
+    decoder.free.append(state(8, rank=0, seed=40))
+    _slot, resume, cached = prefixes.slot_for(decoder, ids + [1, 2, 3], True)
+    assert cached == 20 and "head" not in resume and decoder.prefix_counters["host_hits"] == 1
+    assert [k[0] for k in decoder.kept] == [ids] and "prompt_end" not in decoder.kept[0][2]
+
+
 def test_a_slot_with_other_page_ownership_is_never_a_restore_target():
     host = tier()
     decoder = owner([], host)

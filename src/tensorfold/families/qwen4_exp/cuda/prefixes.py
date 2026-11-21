@@ -81,6 +81,14 @@ def _resumed(entry, prompt):
     return entry[2], entry[3], len(entry[0]), None
 
 
+def _drop_end(snap) -> None:
+    """A prompt resuming a kept point without its end rewrites the end's last row (and MTP row): the point keeps only
+    its own state. A point marked ``exact`` (Gemma 4: its snapshot is the end's, which also resumes the point one row
+    earlier) serves exact repeats only through its end, so it becomes an ordinary point: never exact without an end."""
+    snap.pop("prompt_end", None)
+    snap.pop("exact", None)
+
+
 def _resume(state, tail, end, entry):
     resume = {"state": state, "tail": tail}
     if end is not None:     # the kept point it came from, which a refused admission keeps again
@@ -195,6 +203,8 @@ def _restore_host(owner, prompt, principal, extent):
         ids, snap, tail = host.restore(entry, index, dst)
         point = (ids, dst, snap, tail)
         state, resumed_tail, cached, end = _resumed(point, prompt)
+        if end is None:     # as a resume in place: this prompt rewrites the restored end's last row
+            _drop_end(snap)
         host.hold(dst, host.held(dst), state["pos"], state["mtp_len"])     # the request writes from its resume row
         remember(owner, ids, dst, snap, tail, principal=principal)    # kept in its new slot, as a resume in place
     except BaseException as primary:  # retain the popped slot even on cancellation
@@ -298,7 +308,7 @@ def _place(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED, extent
         if host is not None:
             host.hold(best[1], host.held(best[1]), state["pos"], state["mtp_len"])
         if end is None:     # this prompt rewrites the end's last row (and MTP row) in place: the end no longer holds
-            best[2].pop("prompt_end", None)
+            _drop_end(best[2])
         _count(owner, "resume", cached)
         return best[1], _resume(state, tail, end, best), cached
     idle = _take_free(owner, extent)
