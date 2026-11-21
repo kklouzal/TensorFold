@@ -266,6 +266,7 @@ if section("c2"):
         up._pool_c2[(n,)](
             kv, score, positions, partial, candidates, norm, out, complete,
             N=n, D=512, EPS=1e-20, BLOCK=512,
+            enable_fp_fusion=False,  # as upstream's own launch (compression.py C2 pool): no FMA contraction
         )
         up._commit_c2[(1,)](
             partial, candidates, metadata, position, torch.tensor([n]), D=512, BLOCK=512

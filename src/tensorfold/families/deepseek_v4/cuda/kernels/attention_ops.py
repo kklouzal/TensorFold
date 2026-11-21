@@ -26,7 +26,7 @@ import torch
 
 from .index_topk import index_topk, index_topk_parallel
 from .kv_pack import C_ROW, I_ROW, pack_c_group, pack_i_group, unpack_c_row
-from .triton_utils import fma_dot, jit, on_triton_device, tl, triton
+from .triton_utils import fma_dot, fma_dot_acc, jit, on_triton_device, tl, triton
 
 
 @jit
@@ -397,38 +397,62 @@ def _sparse_attention_fused(
     WIDTH: tl.constexpr,
     BK: tl.constexpr,
 ):
-    """One query token, all heads: online softmax with the attention sink, K = V."""
+    """One query token, all heads: online softmax with the attention sink, K = V.
+
+    TensorFold (Triton 3.2 / SM70): the 512-wide latent is handled as four 128-column quarters. The FP32 FMA dots
+    (fma_dot) stage their operands in shared memory as FP32, and the whole-row form needed 100352 B (> 96 KiB on
+    V100). Same arithmetic: QK^T chains the quarters through fma_dot_acc (the FMA dot adds K in order onto its
+    accumulator, so this is the single K = 512 dot) and PV columns are independent per quarter."""
     token = tl.program_id(0)
     h = tl.arange(0, HEADS)
-    d = tl.arange(0, 512)
-    query = tl.load(q + (token * HEADS + h[:, None]) * 512 + d[None, :])
+    c = tl.arange(0, 128)
+    row = q + (token * HEADS + h[:, None]) * 512 + c[None, :]
+    q0 = tl.load(row)
+    q1 = tl.load(row + 128)
+    q2 = tl.load(row + 256)
+    q3 = tl.load(row + 384)
     m = tl.full((HEADS,), float("-inf"), tl.float32)
     l = tl.zeros((HEADS,), tl.float32)
-    acc = tl.zeros((HEADS, 512), tl.float32)
+    acc0 = tl.zeros((HEADS, 128), tl.float32)
+    acc1 = tl.zeros((HEADS, 128), tl.float32)
+    acc2 = tl.zeros((HEADS, 128), tl.float32)
+    acc3 = tl.zeros((HEADS, 128), tl.float32)
     for kb in range(0, WIDTH, BK):
         k = kb + tl.arange(0, BK)
         live = k < WIDTH
         addr = tl.load(addresses + token * WIDTH + k, live, 0)
         dead = (tl.load(unused + token * WIDTH + k, live, 1) != 0) | ~live
-        rows = addr.to(tl.pointer_type(tl.float16))
-        kv = tl.load(rows[:, None] + d[None, :], ~dead[:, None], 0.0)
-        s = fma_dot(query, tl.trans(kv)) * scale
+        rows = addr.to(tl.pointer_type(tl.float16))[:, None] + c[None, :]
+        kv0 = tl.load(rows, ~dead[:, None], 0.0)
+        kv1 = tl.load(rows + 128, ~dead[:, None], 0.0)
+        kv2 = tl.load(rows + 256, ~dead[:, None], 0.0)
+        kv3 = tl.load(rows + 384, ~dead[:, None], 0.0)
+        s = fma_dot(q0, tl.trans(kv0))
+        s = fma_dot_acc(q1, tl.trans(kv1), s)
+        s = fma_dot_acc(q2, tl.trans(kv2), s)
+        s = fma_dot_acc(q3, tl.trans(kv3), s) * scale
         s = tl.where(dead[None, :], float("-inf"), s)
         m_new = tl.maximum(m, tl.max(s, 1))
         safe = tl.where(m_new == float("-inf"), 0.0, m_new)
         prob = tl.exp(s - safe[:, None])
         alpha = tl.exp(m - safe)
         l = l * alpha + tl.sum(prob, 1)
-        acc = acc * alpha[:, None] + fma_dot(prob.to(tl.float16), kv)
+        p16 = prob.to(tl.float16)
+        acc0 = acc0 * alpha[:, None] + fma_dot(p16, kv0)
+        acc1 = acc1 * alpha[:, None] + fma_dot(p16, kv1)
+        acc2 = acc2 * alpha[:, None] + fma_dot(p16, kv2)
+        acc3 = acc3 * alpha[:, None] + fma_dot(p16, kv3)
         m = m_new
     z = tl.load(sink + h)
     top = tl.maximum(m, z)
     factor = tl.exp(m - top)
     total = l * factor + tl.exp(z - top)
-    result = acc * (factor / total)[:, None]
-    tl.store(
-        out + (token * HEADS + h[:, None]) * 512 + d[None, :], result.to(tl.float16)
-    )
+    ratio = (factor / total)[:, None]
+    dst = out + (token * HEADS + h[:, None]) * 512 + c[None, :]
+    tl.store(dst, (acc0 * ratio).to(tl.float16))
+    tl.store(dst + 128, (acc1 * ratio).to(tl.float16))
+    tl.store(dst + 256, (acc2 * ratio).to(tl.float16))
+    tl.store(dst + 384, (acc3 * ratio).to(tl.float16))
 
 
 _FUSED_SPARSE = False
