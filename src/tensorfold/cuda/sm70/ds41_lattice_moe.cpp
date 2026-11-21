@@ -11,7 +11,7 @@ std::string variant_name_op(int64_t, int64_t);
 }  // namespace ds41kern
 void gguf_prefill_transcode_sm70(torch::Tensor, torch::Tensor, int64_t, int64_t, torch::Tensor,
                                  std::optional<torch::Tensor>, torch::Tensor, torch::Tensor, int64_t, int64_t,
-                                 int64_t, int64_t, int64_t, int64_t, torch::Tensor);
+                                 int64_t, int64_t, int64_t, int64_t, torch::Tensor, bool);
 void ds41_lattice_rows(const torch::Tensor&, torch::Tensor, torch::Tensor, int64_t);
 void ds41_lattice_tile_lists(const torch::Tensor&, torch::Tensor, torch::Tensor, int64_t, int64_t);
 void ds41_lattice_swiglu(const torch::Tensor&, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,

@@ -108,6 +108,13 @@ class DS41Engine:
         self._barrier()
         self.w = W.load(shards, g, rank, device, layers=layers)
         shards.close()
+        # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
+        # sized, so it does not come out of RESERVE.
+        from .target import prefill_moe_mode
+        lattice = None
+        if prefill_moe_mode() != "ours":
+            from tensorfold.cuda.sm70 import ds41_lattice_moe
+            lattice = ds41_lattice_moe.Workspace(device)
         torch.cuda.synchronize()
         free = torch.cuda.mem_get_info()[0]
         mine = torch.tensor([free], dtype=torch.int64, device=device)
@@ -125,7 +132,7 @@ class DS41Engine:
         graph_bytes = GRAPH_ROW_BYTES * max(buckets(slots)) if capture else 0
         pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
-                             context=self.context, engram=self.engram, device=device)
+                             context=self.context, engram=self.engram, device=device, lattice=lattice)
         self.layer_count = len(self.w.layers)
         from .prefix import SlotState
         self.prefix = SlotState(self.target)

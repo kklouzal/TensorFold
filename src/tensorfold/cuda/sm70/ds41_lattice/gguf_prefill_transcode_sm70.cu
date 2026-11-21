@@ -9,7 +9,7 @@
 namespace {
 using namespace vllm::sm70_gguf::transcode;
 
-template <int Type>
+template <int Type, bool Exact = false>
 void launch(torch::Tensor& dst_w, torch::Tensor& dst_s, int64_t w_stride,
             int64_t s_stride, const torch::Tensor& src0,
             const std::optional<torch::Tensor>& src1,
@@ -21,7 +21,7 @@ void launch(torch::Tensor& dst_w, torch::Tensor& dst_s, int64_t w_stride,
   if (items == 0) return;
   const int grid = static_cast<int>(std::min<int64_t>(ctas, items));
   const size_t smem = size_t(kPack) * src_stride;
-  auto kernel = transcode_kernel<Type>;
+  auto kernel = transcode_kernel<Type, Exact>;
   if (smem > 48 * 1024)
     C10_CUDA_CHECK(cudaFuncSetAttribute(
         kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, int(smem)));
@@ -49,7 +49,8 @@ void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
                                  torch::Tensor experts, torch::Tensor count,
                                  int64_t ctas, int64_t source_type,
                                  int64_t n_out, int64_t k, int64_t k_offset,
-                                 int64_t src_stride, torch::Tensor error) {
+                                 int64_t src_stride, torch::Tensor error,
+                                 bool exact) {
   TORCH_CHECK(dst_w.is_cuda() && dst_s.is_cuda() && src0.is_cuda() &&
                   experts.is_cuda() && count.is_cuda() && error.is_cuda() &&
                   count.scalar_type() == at::kInt && count.numel() >= 1 &&
@@ -81,6 +82,23 @@ void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
     launch<TYPE>(dst_w, dst_s, w_stride, s_stride, src0, src1, experts, count, \
                  ctas, n_out, k, k_offset, src_stride, error);                 \
     break;
+  // TensorFold: exact = the exact-sub-scale stats encoding (GroupExact), IQ2_XXS / IQ2_XS / IQ1_M.
+  if (exact) {
+    switch (source_type) {
+#define EXACT(TYPE, BLOCK, BYTES)                                              \
+  case TYPE:                                                                   \
+    TORCH_CHECK(rows_ok(BLOCK, BYTES), "prefill transcode: GGUF type ", TYPE,  \
+                " rows do not cover the requested columns");                   \
+    launch<TYPE, true>(dst_w, dst_s, w_stride, s_stride, src0, src1, experts,  \
+                       count, ctas, n_out, k, k_offset, src_stride, error);    \
+    return;
+      EXACT(16, 256, 66)
+      EXACT(17, 256, 74)
+      EXACT(29, 256, 56)
+#undef EXACT
+    }
+    TORCH_CHECK(false, "prefill transcode: no exact encoding for GGUF type ", source_type);
+  }
   switch (source_type) {
     CASE(16, 256, 66)
     CASE(17, 256, 74)

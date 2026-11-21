@@ -137,12 +137,13 @@ using Config_GgufBitPlane =
               Transform_HMMA_SM70_BitPlane<LowBits, HighBits, GroupSize>,
               Operand_V_Pack<uint64_t>, kRowMajor, half, raster_order, group_axis>;
 
-template<int Type, int GroupSize, Order raster_order, int group_axis = -1>
+// TensorFold: Exact selects the exact-sub-scale lattice decode, Tc the output type (float: no FP16 rounding of C).
+template<int Type, int GroupSize, Order raster_order, int group_axis = -1, bool Exact = false, class Tc = half>
 using Config_GgufLattice = Sm70_s884<Operand_A<half>, Transform_Default, VoidOperand,
-    Operand_B_Pack<uint2_t>, Transform_HMMA_SM70_Lattice<Type,GroupSize>,
+    Operand_B_Pack<uint2_t>, Transform_HMMA_SM70_Lattice<Type,GroupSize,1,Exact>,
     Operand_V_Pack<std::conditional_t<Type == 18 || Type == 21,uint64_t,
         std::conditional_t<Type == 19 || Type == 29,uint16_t,uint32_t>>>,
-    kRowMajor, half, raster_order, group_axis>;
+    kRowMajor, Tc, raster_order, group_axis>;
 
 template <Order raster_order, int group_axis = -1>
 using Config_GgufLut4_IQ =

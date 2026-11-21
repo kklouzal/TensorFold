@@ -1,9 +1,10 @@
 """DeepSeek-V4.1 prefill routed experts: the friend's TurboMind lattice path (ds41_lattice_moe) against the FP32
 oracle and our fused WMMA path (ds41_prefill_moe), on real checkpoint bytes.
 
-Asserted: finite, deterministic, probability-0 routes have no effect, no transcode scale overflow, error vs the
-FP32 oracle no larger than the 1Cat-rounding emulation's bound. Printed (the A/B record, not asserted): rel L2 of
-both paths vs the oracle, and per-layer time of both paths on real 192-expert rank banks at 512..16384 rows.
+Asserted: finite, deterministic, probability-0 routes have no effect, no transcode overflow; vs the FP32 oracle the
+exact lattice decode (default) within 5% of ours' rel L2 (same rounding points, different FP32 K order) and the
+friend's FP16 decode (exact=False) within twice the 1Cat-rounding emulation. Printed (the A/B record): rel L2 of
+the three paths vs the oracle, and per-layer time of the three on real 192-expert rank banks at 512..16384 rows.
 """
 
 import pytest
@@ -29,7 +30,7 @@ def test_lattice_experts_against_fp32(ops, kind):
     lat, ours, ws = ops
     carriers = Carriers(kind)
     generator = torch.Generator().manual_seed(600 + kind)
-    worst = [0.0, 0.0]
+    worst = [0.0, 0.0, 0.0]
     for r in (0, 1, 2, 3):
         banks, weights, left = carriers.rank(r)
         for m in SIZES:
@@ -41,15 +42,20 @@ def test_lattice_experts_against_fp32(ops, kind):
             assert torch.isfinite(out).all()
             again = lat.experts(x, ids, p, *banks, kind, kind, left, ws)
             assert torch.equal(out.view(torch.int16), again.view(torch.int16))
+            friend = lat.experts(x, ids, p, *banks, kind, kind, left, ws, exact=False)
+            assert torch.isfinite(friend).all()
             mine = error(ours.experts(x, ids, p, *banks, kind, kind, left), expected)
-            got = error(out, expected)
-            worst = [max(worst[0], got[0]), max(worst[1], mine[0])]
-            print(f"type {kind} rank {r} left {left} M{m}: lattice rel_l2 {got[0]:.3g} max_abs {got[1]:.3g} | "
-                  f"ours {mine[0]:.3g} / {mine[1]:.3g} | 1Cat-rounding emulation {emulated[0]:.3g} / "
-                  f"{emulated[1]:.3g} | ref_max {expected.abs().max().item():.3g}")
-            assert got[0] <= 2 * emulated[0]
+            got, fp16 = error(out, expected), error(friend, expected)
+            worst = [max(worst[0], got[0]), max(worst[1], fp16[0]), max(worst[2], mine[0])]
+            print(f"type {kind} rank {r} left {left} M{m}: lattice exact rel_l2 {got[0]:.4g} max_abs {got[1]:.3g} | "
+                  f"lattice fp16 {fp16[0]:.4g} / {fp16[1]:.3g} | ours {mine[0]:.4g} / {mine[1]:.3g} | "
+                  f"1Cat-rounding emulation {emulated[0]:.3g} / {emulated[1]:.3g} | ref_max "
+                  f"{expected.abs().max().item():.3g}")
+            # The exact path has ours' rounding points (only the FP32 K order differs).
+            assert got[0] <= 1.05 * mine[0]
+            assert fp16[0] <= 2 * emulated[0]
     ws.check()
-    print(f"type {kind} worst rel_l2: lattice {worst[0]:.3g} ours {worst[1]:.3g}")
+    print(f"type {kind} worst rel_l2: lattice exact {worst[0]:.4g} lattice fp16 {worst[1]:.4g} ours {worst[2]:.4g}")
 
 
 def test_lattice_dropped_routes(ops):
@@ -88,11 +94,14 @@ def test_lattice_timing_192_experts(ops):
             local = torch.where(mine, ids - 192, 0).to(torch.int32).cuda()
             p = torch.where(mine, p, 0).cuda()
             a = timed(lambda: lat.experts(x, local, p, *banks, gate_type, down_type, left, ws), 7)
+            f = timed(lambda: lat.experts(x, local, p, *banks, gate_type, down_type, left, ws, exact=False), 7)
             b = timed(lambda: ours.experts(x, local, p, *banks, gate_type, down_type, left), 7)
             same = (lat.experts(x, local, p, *banks, gate_type, down_type, left, ws).float()
                     - ours.experts(x, local, p, *banks, gate_type, down_type, left).float())
-            print(f"{prefix} types {gate_type}/{down_type} M{m}: lattice median {a[len(a) // 2]:.3f} ms "
-                  f"[{a[0]:.3f}, {a[-1]:.3f}] | ours median {b[len(b) // 2]:.3f} ms [{b[0]:.3f}, {b[-1]:.3f}] | "
-                  f"ours/lattice {b[len(b) // 2] / a[len(a) // 2]:.3f} | max |diff| {same.abs().max().item():.3g}")
+            med = [t[len(t) // 2] for t in (a, f, b)]
+            print(f"{prefix} types {gate_type}/{down_type} M{m}: lattice exact median {med[0]:.3f} ms "
+                  f"[{a[0]:.3f}, {a[-1]:.3f}] | lattice fp16 median {med[1]:.3f} ms [{f[0]:.3f}, {f[-1]:.3f}] | "
+                  f"ours median {med[2]:.3f} ms [{b[0]:.3f}, {b[-1]:.3f}] | ours/exact {med[2] / med[0]:.3f} "
+                  f"fp16/exact {med[1] / med[0]:.3f} | exact-ours max |diff| {same.abs().max().item():.3g}")
     ws.check()
     print(f"lattice workspace {ws.nbytes / 2**20:.0f} MiB (tile {ws.tile})")

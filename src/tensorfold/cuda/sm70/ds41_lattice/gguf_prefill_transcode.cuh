@@ -244,6 +244,56 @@ struct Group<22> {
   }
 };
 
+// TensorFold exact-sub-scale encoding (Transform_HMMA_SM70_Lattice Exact): the stats keep the block's FP16 d
+// verbatim (low 16 bits) and the group's 4-bit sub-scale s at bits 24..27 (IQ1_M: the 3-bit sub-scale in bits
+// 11..13 of both packets; its stats are d alone). Packets and index bits are Group<Type>'s. The error flag is
+// raised if the group's largest decodable weight (d * (2s+1)/8 * 43, IQ1_M d * (2s+1) * 1.125) overflows FP16.
+template <int Type>
+struct GroupExact;
+
+template <>
+struct GroupExact<16> {
+  __device__ static uint32_t decode(const uint8_t* row, int k0,
+                                    uint16_t (&packets)[4], int* error) {
+    Group<16>::decode(row, k0, packets, error);  // packets (its flag is implied by ours)
+    const uint8_t* b = row + (k0 / 256) * 66;
+    const uint32_t s = u32(b + 6 + ((k0 % 256) / 32) * 8) >> 28;
+    to_f16(f16(b) * (0.5f + float(s)) * 0.25f * 43.f, error);
+    return uint32_t(u16(b)) | (s << 24);
+  }
+};
+
+template <>
+struct GroupExact<17> {
+  __device__ static uint32_t decode(const uint8_t* row, int k0,
+                                    uint16_t (&packets)[2], int* error) {
+    const uint32_t high = Group<17>::decode(row, k0, packets, error) >> 16;
+    const uint8_t* b = row + (k0 / 256) * 74;
+    const int sub = (k0 % 256) / 16;
+    const uint32_t s = (b[66 + sub / 2] >> (4 * (sub % 2))) & 15;
+    to_f16(f16(b) * (0.5f + float(s)) * 0.25f * 43.f, error);
+    return uint32_t(u16(b)) | (high << 16) | (s << 24);
+  }
+};
+
+template <>
+struct GroupExact<29> {
+  __device__ static uint16_t decode(const uint8_t* row, int k0,
+                                    uint16_t (&packets)[2], int* error) {
+    Group<29>::decode(row, k0, packets, error);
+    const uint8_t* b = row + (k0 / 256) * 56;
+    const int sub = (k0 % 256) / 16;
+    const uint16_t bits = (u16(b + 48) >> 12) | ((u16(b + 50) >> 8) & 0x00f0) |
+                          ((u16(b + 52) >> 4) & 0x0f00) |
+                          (u16(b + 54) & 0xf000);
+    const int local = (u16(b + 48 + 2 * (sub / 4)) >> (3 * (sub % 4))) & 7;
+    to_f16(__half2float(__ushort_as_half(bits)) * float(2 * local + 1) * 1.125f, error);
+#pragma unroll
+    for (int q = 0; q < 2; ++q) packets[q] |= uint16_t(local << 11);
+    return bits;
+  }
+};
+
 // LUT4: 32 codes of one group, low nibbles of bytes 0..15 then high nibbles.
 __device__ __forceinline__ void lut4_packets(const uint8_t* q,
                                              uint32_t (&packets)[4]) {
@@ -323,7 +373,7 @@ struct Group<42> {  // Q2_0: 64-value blocks, value = code * d - d
 // or host-mapped); rows are contiguous with `src_stride` bytes. src1 selects
 // gate/up interleaving. Output columns cover source columns
 // [k_offset, k_offset + k). dst_w/dst_s: stacked canonical banks.
-template <int Type>
+template <int Type, bool Exact = false>
 __global__ void __launch_bounds__(kThreads)
     transcode_kernel(uint8_t* __restrict__ dst_w, uint8_t* __restrict__ dst_s,
                      int64_t w_stride, int64_t s_stride,
@@ -364,8 +414,11 @@ __global__ void __launch_bounds__(kThreads)
       const int r = interleave ? lane / 2 : lane;
       const uint8_t* row = smem + (source * rows + r) * src_stride;
       Packet packets[octets];
-      const auto stat =
-          Group<Type>::decode(row, k_offset + g * F::kGroup, packets, error);
+      typename F::Stat stat;
+      if constexpr (Exact)
+        stat = GroupExact<Type>::decode(row, k_offset + g * F::kGroup, packets, error);
+      else
+        stat = Group<Type>::decode(row, k_offset + g * F::kGroup, packets, error);
 #pragma unroll
       for (int q = 0; q < octets; ++q)
         weight[(int64_t(pack) * (k / 8) + g * octets + q) * kPack + lane] =

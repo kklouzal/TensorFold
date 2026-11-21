@@ -31,8 +31,10 @@ struct Padded<Sm70_s884<A, TA, U, B, TB, V, oc, Tc, ro, ga>> {
   using type = Sm70_s884<Operand_A_BatchPadded<half>, TA, U, B, TB, V, oc, Tc, ro, ga>;
 };
 
-// Keep in sync with kVariantNames in ds41kern_op.cu.
-constexpr int kVariants = 9;
+// Keep in sync with kVariants in ds41kern_op.cu. TensorFold: 9..13 are the exact-sub-scale decode
+// (Transform_HMMA_SM70_Lattice Exact) at the tilings the patch-340 rule uses: 9/10 = 6/7 with FP32 output (gate|up
+// into the SwiGLU unrounded), 11/12/13 = 3/6/7 with FP16 output (down).
+constexpr int kVariants = 14;
 
 template <int Type, int Group>
 Kernel* make_variant(int v);
@@ -44,6 +46,8 @@ Kernel* make_variant(int v);
     using P = typename Padded<G>::type;                                                  \
     using D = cache_policy::Default;                                                     \
     using S = cache_policy::Stream;                                                      \
+    using EF = typename Padded<Config_GgufLattice<TYPE, GROUP, kColMajor, 0, true, float>>::type; \
+    using EH = typename Padded<Config_GgufLattice<TYPE, GROUP, kColMajor, 0, true, half>>::type;  \
     switch (v) {                                                                         \
       case 0: /* production: 32x128x32, 1x4 warps (warp 32x32), plain A */             \
         return new KernelImpl<typename G::template Type<32, 128, 32, 1, 4, 1, D, S, 2,  \
@@ -72,6 +76,21 @@ Kernel* make_variant(int v);
       case 8: /* plain A, 1x2 warps (isolates the warp-shape effect) */                  \
         return new KernelImpl<typename G::template Type<32, 128, 32, 1, 2, 1, D, S, 2,  \
                                                         true, 1, GROUP>::Kernel>();     \
+      case 9:                                                                            \
+        return new KernelImpl<typename EF::template Type<16, 128, 32, 1, 4, 1, D, S, 2, \
+                                                         true, 1, GROUP>::Kernel>();    \
+      case 10:                                                                           \
+        return new KernelImpl<typename EF::template Type<32, 128, 64, 1, 4, 1, D, S, 2, \
+                                                         true, 1, GROUP>::Kernel>();    \
+      case 11:                                                                           \
+        return new KernelImpl<typename EH::template Type<32, 256, 32, 1, 4, 1, D, S, 2, \
+                                                         true, 1, GROUP>::Kernel>();    \
+      case 12:                                                                           \
+        return new KernelImpl<typename EH::template Type<16, 128, 32, 1, 4, 1, D, S, 2, \
+                                                         true, 1, GROUP>::Kernel>();    \
+      case 13:                                                                           \
+        return new KernelImpl<typename EH::template Type<32, 128, 64, 1, 4, 1, D, S, 2, \
+                                                         true, 1, GROUP>::Kernel>();    \
     }                                                                                    \
     return nullptr;                                                                      \
   }

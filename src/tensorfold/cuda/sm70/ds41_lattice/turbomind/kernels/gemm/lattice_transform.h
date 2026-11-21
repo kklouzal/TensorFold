@@ -6,8 +6,15 @@
 #include "../core/array.h"
 namespace turbomind::gemm {
 
-template<int Type, int GroupSize, int Replicas = 1>
+// TensorFold (Exact = true, IQ2_XXS / IQ2_XS / IQ1_M only): the stats word carries the source's FP16 super-block
+// scale d verbatim and the group's integer sub-scale s (bits 24..27; IQ1_M: packet bits 11..13), so the decoded
+// weight is fp16(d * ((2s+1)/8 * signed grid)) [IQ1_M: fp16(d * ((2s+1) * (grid + delta)))]: the inner product is
+// exact in FP16 (<= 11 significant bits), the one rounding is the HMUL by d, i.e. ggml's FP32 product rounded once
+// to FP16. Exact = false keeps the friend's FP16 scale (d * (2s+1)/8 rounded at transcode) times grid, rounded
+// again.
+template<int Type, int GroupSize, int Replicas = 1, bool Exact = false>
 struct Transform_HMMA_SM70_Lattice {
+  static_assert(!Exact || Type == 16 || Type == 17 || Type == 29);
   using Codebook = LatticeCodebook<Type>;
   static constexpr int kReplicas = Replicas;
   static_assert(kReplicas == 1 || (Codebook::kWidth == 4 && kReplicas == 8));
@@ -41,6 +48,12 @@ struct Transform_HMMA_SM70_Lattice {
       const uint16_t packet = (const uint16_t&)data[k][m];
       uint32_t scale = metadata & 65535U;
       scale |= scale << 16;
+      half2 factor;  // Exact: the group's exact sub-scale factor
+      if constexpr (Exact) {
+        const float f = Type == 29 ? float(2 * ((packet >> 11) & 7) + 1)
+                                   : float(2 * ((metadata >> 24) & 15) + 1) * 0.125f;
+        factor = __float2half2_rn(f);
+      }
       // A lattice row is exactly four/eight consecutive biased bytes.
       // Fetch the row as aligned words once, then unpack FP16 pairs in
       // registers instead of repeatedly reading adjacent shared halfwords.
@@ -77,6 +90,7 @@ struct Transform_HMMA_SM70_Lattice {
           sign_mask |= ((signs >> (i+1)) & 1) << 31;
           (uint32_t&)values ^= sign_mask;
         }
+        if constexpr (Exact) values = __hmul2(values,factor);  // exact
         (half2&)decoded[i] = __hmul2(values,(const half2&)scale);
       }
       dst[m] = decoded;

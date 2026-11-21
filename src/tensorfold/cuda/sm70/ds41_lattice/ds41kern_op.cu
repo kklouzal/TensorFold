@@ -25,7 +25,7 @@
 
 namespace ds41kern {
 using turbomind::gemm::Kernel;
-constexpr int kVariants = 9;
+constexpr int kVariants = 14;
 template <int Type, int Group>
 Kernel* make_variant(int v);
 template <> Kernel* make_variant<16, 32>(int v);
@@ -101,7 +101,10 @@ void lattice_gemm(torch::Tensor out, torch::Tensor input, torch::Tensor offsets,
                   offsets.device() == input.device() && weight_ptrs.device() == input.device() &&
                   stats_ptrs.device() == input.device(),
               "ds41kern: tensors must share a CUDA device");
-  TORCH_CHECK(input.scalar_type() == torch::kFloat16 && out.scalar_type() == torch::kFloat16 &&
+  // TensorFold: variants 9/10 (exact decode, FP32 C) write FP32; every other variant FP16.
+  const bool float_out = variant == 9 || variant == 10;
+  TORCH_CHECK(input.scalar_type() == torch::kFloat16 &&
+                  out.scalar_type() == (float_out ? torch::kFloat32 : torch::kFloat16) &&
                   offsets.scalar_type() == torch::kInt32 &&
                   weight_ptrs.scalar_type() == torch::kUInt8 &&
                   stats_ptrs.scalar_type() == torch::kUInt8 && input.dim() == 2 &&
@@ -134,7 +137,7 @@ void lattice_gemm(torch::Tensor out, torch::Tensor input, torch::Tensor offsets,
     layout.num = (int)num_experts;
   }
   MatrixLayout a{kHalf, kRowMajor, (int)m, (int)k, (int)input.stride(0)};
-  MatrixLayout d{kHalf, kRowMajor, (int)m, (int)n, (int)out.stride(0)};
+  MatrixLayout d{float_out ? kFloat : kHalf, kRowMajor, (int)m, (int)n, (int)out.stride(0)};
   a.num = d.num = (int)num_experts;
   a.offsets = d.offsets = offsets.data_ptr<int>();
   a.idxs = indexed ? a_indices->data_ptr<int>() : nullptr;

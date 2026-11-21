@@ -115,9 +115,21 @@ class Pool:
 
 
 # ------------------------------------------------------------------------------------------------ the model
+PREFILL_MOE = ("ours", "lattice", "lattice16")
+
+
+def prefill_moe_mode():
+    """The process's prefill routed-experts implementation (TENSORFOLD_DS41_PREFILL_MOE, default 'ours')."""
+    import os
+    mode = os.environ.get("TENSORFOLD_DS41_PREFILL_MOE", "ours")
+    if mode not in PREFILL_MOE:
+        raise ValueError(f"TENSORFOLD_DS41_PREFILL_MOE must be one of {PREFILL_MOE}")
+    return mode
+
+
 class Target:
     def __init__(self, w: Weights, comm: Collectives, *, slots: int, pages: int, max_tokens: int, context: int,
-                 engram, device):
+                 engram, device, lattice=None):
         from .kernels import quant_rope, mu_state
         self.w, self.c, self.g = w, comm, w.geometry
         self.device = device
@@ -138,17 +150,15 @@ class Target:
                 self.c2[layer.index] = mu_state.MuC2State(layer.comp_norm, slots=slots - 1, trap=True)
         self.local = range(w.group * (g.experts // EP), (w.group + 1) * (g.experts // EP))
         self.engram_rows = torch.empty(max_tokens, 24 * 256, dtype=torch.float16, device=device)
-        # Prefill routed experts (A/B switch, one implementation per process): "ours" = ds41_prefill_moe (fused
-        # WMMA, in-loop IQ decode), "lattice" = the friend's TurboMind lattice path (ds41_lattice_moe; its
-        # canonical-bank workspace lives with this Target).
-        import os
-        self.prefill_moe = os.environ.get("TENSORFOLD_DS41_PREFILL_MOE", "ours")
-        if self.prefill_moe not in ("ours", "lattice"):
-            raise ValueError("TENSORFOLD_DS41_PREFILL_MOE must be 'ours' or 'lattice'")
-        self.lattice = None
-        if self.prefill_moe == "lattice":
-            from tensorfold.cuda.sm70 import ds41_lattice_moe
-            self.lattice = ds41_lattice_moe.Workspace(device)
+        # Prefill routed experts (A/B switch, one implementation per process, prefill_moe_mode()): "ours" =
+        # ds41_prefill_moe (fused WMMA, in-loop IQ decode); "lattice" = the friend's TurboMind lattice path with the
+        # exact weight decode and FP32 gate/up (ds41_lattice_moe exact=True, our rounding points); "lattice16" = the
+        # same path with the friend's FP16 arithmetic (exact=False). The lattice canonical-bank workspace is the
+        # caller's (allocated before the KV pool is sized).
+        self.prefill_moe = prefill_moe_mode()
+        if (self.prefill_moe != "ours") != (lattice is not None):
+            raise ValueError(f"prefill experts {self.prefill_moe!r} need a lattice workspace exactly when not 'ours'")
+        self.lattice = lattice
         # Engram lookup telemetry for the deferred hot-row VRAM cache candidate (off unless the variable names a
         # file; rank 0 only, since every rank looks up the same rows): appends each forward's valid hashed row ids
         # (int64 [tokens, 2 tables, 24 heads], table-local) for offline hit-rate / churn analysis.
@@ -266,7 +276,8 @@ class Target:
         weights = torch.where(mine, probabilities.float(), torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
         if self.lattice is not None and x.shape[0] >= lattice_moe.MIN_TOKENS:   # no host sync
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
-                                      ly.gate_up_type, ly.down_type, ly.down_left, self.lattice)
+                                      ly.gate_up_type, ly.down_type, ly.down_left, self.lattice,
+                                      exact=self.prefill_moe == "lattice")
         elif self.lattice is None and x.shape[0] >= prefill_moe.MIN_TOKENS:  # grouped (one host sync; not captured)
             out = prefill_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left)
