@@ -11,13 +11,14 @@ One resident copy per projection: the planes (Q8_0 9 bits/weight incl. the dupli
 ggml FP16 decode), Q5_K ``fp16(q * fp16(d * sc) + fp16(-dmin * m))`` (one FP16 FMA over FP16-rounded
 coefficients; the ggml decode rounds ``d * sc * q - dmin * m`` once).
 
-* ``rows <= MAX_ROWS``: ``dense_rows`` (mma.m8n8k4, FP32 accumulation, deterministic split-K in-launch).
+* ``rows <= ROWS_BAND``: ``dense_rows`` (mma.m8n8k4, FP32 accumulation, deterministic split-K in-launch) in
+  passes of up to ``MAX_ROWS`` rows; every row's value is independent of the row count.
 * more rows: each member is restored to FP16 in bounded row chunks of ``Scratch.restore`` (the same weights,
   decoded by the kernel's own ``decode``) and multiplied with ``torch.matmul`` (no persistent FP16 copy).
 
 Contracts. ``Scratch`` is shared by every ``Group`` of one device and serves calls issued in one stream order
 (split-K counters start zero and every completed launch leaves them zero; the restore buffer is reused by the
-next call). Calls are graph-capturable for ``rows <= MAX_ROWS`` (no allocation besides the outputs, which the
+next call). Calls are graph-capturable for ``rows <= ROWS_BAND`` (no allocation besides the outputs, which the
 caller may pass). The caller retains inputs and outputs until current-stream completion.
 """
 
@@ -32,6 +33,7 @@ import torch
 Q5K, Q8 = 1, 4                       # dmv13 plane formats
 FORMAT = {8: Q8, 13: Q5K}            # GGUF type -> plane format
 MAX_ROWS = 32                        # dense_rows: up to 4 8-row tiles per weight pass
+ROWS_BAND = 64                       # dense_rows (in 32-row passes) up to here, restore + cuBLAS above (measured)
 TARGET_CTAS = 80                     # 1Cat VLLM_V41_DMV_CTAS default
 _TILE4 = {(4, 1)}                    # (warps, tp) configs whose 4-tile instance fits shared memory
 RESTORE_BYTES = 32 << 20             # FP16 restore chunk for rows > MAX_ROWS
@@ -193,7 +195,7 @@ class Group:
             parts.append(torch.matmul(x, weight.t()))
         return torch.cat(parts, dim=-1)
 
-    def __call__(self, x, outs=None, *, max_rows: int = MAX_ROWS):
+    def __call__(self, x, outs=None, *, max_rows: int = ROWS_BAND):
         if x.dtype != torch.float16 or x.ndim != 2 or x.shape[1] != self.k or x.device != self.scratch.device:
             raise ValueError(f"dmv13 group expects FP16 [rows, {self.k}] on {self.scratch.device}")
         rows = x.shape[0]

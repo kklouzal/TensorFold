@@ -10,7 +10,8 @@
 #   their dispatch are unreachable and removed; the bf16 widening condition reduces to ``normalized``.
 # - Triton/torch-fallback selection uses on_triton_device() (== tensor.is_cuda in compiled runs; also CPU
 #   tensors under TRITON_INTERPRET=1 so interpreter tests exercise the kernels).
-# - Triton 3.2 rewrites: none.
+# - Triton 3.2 rewrites: _row_projection reads BF16 coefficients as int16 bit patterns widened by a 16-bit
+#   shift (BF16 -> FP32 is exactly that); Triton 3.2 emits cvt.f32.bf16, which ptxas rejects below sm_80.
 """V4.1 delayed pre-mix primitives, with FP32 HC residual storage.
 
 The next sublayer consumes the returned pre-mix. It must not be folded into
@@ -34,6 +35,7 @@ def _row_projection(
     NORMALIZE: tl.constexpr,
     EPS: tl.constexpr,
     BLOCK: tl.constexpr,
+    BF16_BITS: tl.constexpr = False,
 ):
     row, col = tl.program_id(0), tl.program_id(1)
     index = tl.arange(0, BLOCK)
@@ -44,7 +46,10 @@ def _row_projection(
         k = first * BLOCK + index
         a = tl.load(x + row * K + k, k < K, 0).to(tl.float32)
         # BF16 storage of BF16-exact coefficients widens to the same FP32.
-        b = tl.load(weight + col * K + k, k < K, 0).to(tl.float32)
+        if BF16_BITS:
+            b = (tl.load(weight + col * K + k, k < K, 0).to(tl.int32) << 16).to(tl.float32, bitcast=True)
+        else:
+            b = tl.load(weight + col * K + k, k < K, 0).to(tl.float32)
         dot += tl.sum(a * b, 0)
         if NORMALIZE:
             squares += tl.sum(a * a, 0)
@@ -127,15 +132,17 @@ def fp32_projection(x, weight, *, normalized=False, eps=1e-20):
                 enable_fp_fusion=False,
             )
             return result
+        bits = weight.dtype == torch.bfloat16
         _row_projection[(x.shape[0], weight.shape[0])](
             x,
-            weight,
+            weight.view(torch.int16) if bits else weight,
             result,
             K=x.shape[1],
             N=weight.shape[0],
             NORMALIZE=normalized,
             EPS=eps,
             BLOCK=1024,
+            BF16_BITS=bits,
             enable_fp_fusion=False,
         )
         return result

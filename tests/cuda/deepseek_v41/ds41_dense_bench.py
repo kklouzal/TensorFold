@@ -168,14 +168,20 @@ def main(out_path):
             prefill[m] = row
         entry["prefill"] = prefill
         report["ops"][op] = entry
-        print(op, json.dumps({k2: v for k2, v in entry.items() if k2 not in ("decode", "prefill")}), flush=True)
+        print(op, {k2: v for k2, v in entry.items() if k2 not in ("decode", "prefill", "numerics")}, flush=True)
+        for i, item in enumerate(num):
+            print("  numerics", i, {a: (b if isinstance(b, bool) else {c: f"{d:.3e}" for c, d in b.items()})
+                                    for a, b in item.items()}, flush=True)
         for m, v in decode.items():
             print(f"  M={m:3d} dmv13 {v['dmv13_us'][0]:8.1f} us  fp16 {v['fp16_matmul_us'][0]:8.1f} us", flush=True)
         for m, v in prefill.items():
             print(f"  M={m:5d} " + "  ".join(f"{a} {b[0]:9.1f}" for a, b in v.items()), flush=True)
         del groups, fp16
         torch.cuda.empty_cache()
-    report["gate_bf16"] = gate_check(loader, device)
+    try:
+        report["gate_bf16"] = gate_check(loader, device)
+    except Exception as error:  # noqa: BLE001 - recorded in the report, the timings above stand
+        report["gate_bf16"] = {"error": repr(error)[:2000]}
     print("gate", report["gate_bf16"], flush=True)
     Path(out_path).write_text(json.dumps(report, indent=1))
 

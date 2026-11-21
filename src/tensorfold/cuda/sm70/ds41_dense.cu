@@ -138,32 +138,41 @@ __global__ void pack_kernel(const uint8_t* __restrict__ raw, long long row_bytes
   }
 }
 
-// One thread per (tile, group, lane): dmv13's load + decode of 4 steps.
+// One warp per (tile, group): dmv13's load + decode of 4 steps (lane L holds row rowmap(L)), transposed
+// through shared memory so each store instruction writes two contiguous 256-byte row segments.
+constexpr int RESTORE_WARPS = 4;
 template <int FMT>
-__global__ void restore_kernel(Seg sg, int tile0, int tiles, int rows, int K, int S, int G,
-                               half* __restrict__ out, long long ld) {
-  const long long total = static_cast<long long>(tiles) * G * 32;
-  for (long long id = blockIdx.x * static_cast<long long>(blockDim.x) + threadIdx.x; id < total;
-       id += static_cast<long long>(gridDim.x) * blockDim.x) {
-    const int lane = static_cast<int>(id % 32);
-    const int g = static_cast<int>((id / 32) % G);
-    const int t = tile0 + static_cast<int>(id / (32LL * G));
-    const int row = t * 32 + rowmap(lane);
-    if (row >= rows) continue;
+__global__ void __launch_bounds__(32 * RESTORE_WARPS)
+    restore_kernel(Seg sg, int tile0, int tiles, int rows, int K, int S, int G,
+                   half* __restrict__ out, long long ld) {
+  __shared__ uint4 buf[RESTORE_WARPS][32][17];  // 32 rows x 128 halves, padded against bank conflicts
+  const int warp = threadIdx.x / 32, lane = threadIdx.x % 32;
+  const long long items = static_cast<long long>(tiles) * G;
+  for (long long it = static_cast<long long>(blockIdx.x) * RESTORE_WARPS + warp; it < items;
+       it += static_cast<long long>(gridDim.x) * RESTORE_WARPS) {
+    const int g = static_cast<int>(it % G);
+    const int t = tile0 + static_cast<int>(it / G);
     Ld<FMT> A;
     load<FMT>(A, sg, t, g, S, G, lane);
-    half* o = out + static_cast<long long>(row - tile0 * 32) * ld;
+    const int r = rowmap(lane);
 #pragma unroll
     for (int st = 0; st < 4; ++st) {
-      const int k0 = (g * 4 + st) * 32;
-      if (k0 >= K) break;
       uint32_t hw[16];
       decode<FMT>(A, st, hw, nullptr);
-      uint4* dst = reinterpret_cast<uint4*>(o + k0);
 #pragma unroll
       for (int i = 0; i < 4; ++i)
-        dst[i] = make_uint4(hw[4 * i], hw[4 * i + 1], hw[4 * i + 2], hw[4 * i + 3]);
+        buf[warp][r][st * 4 + i] = make_uint4(hw[4 * i], hw[4 * i + 1], hw[4 * i + 2], hw[4 * i + 3]);
     }
+    __syncwarp();
+#pragma unroll 4
+    for (int p = 0; p < 16; ++p) {
+      const int rr = 2 * p + (lane >> 4), c = lane & 15;
+      const int row = t * 32 + rr, col = g * 128 + c * 8;
+      if (row < rows && col < K)
+        *reinterpret_cast<uint4*>(out + static_cast<long long>(row - tile0 * 32) * ld + col) =
+            buf[warp][rr][c];
+    }
+    __syncwarp();
   }
 }
 
@@ -421,9 +430,10 @@ void ds41_restore_planes(torch::Tensor codes, torch::Tensor high, torch::Tensor 
   sg.fmt = static_cast<int>(fmt);
   const int64_t tiles = (count + 31) / 32;
   const int rows = static_cast<int>(32 * tile0 + count);
-  const long long total = tiles * G * 32;
-  const int threads = 128;
-  const int blocks = static_cast<int>(std::min<long long>((total + threads - 1) / threads, 65535));
+  const long long items = tiles * G;
+  const int threads = 32 * RESTORE_WARPS;
+  const int blocks = static_cast<int>(
+      std::min<long long>((items + RESTORE_WARPS - 1) / RESTORE_WARPS, 65535));
   auto st = at::cuda::getCurrentCUDAStream();
   half* o = reinterpret_cast<half*>(out.data_ptr());
   if (fmt == Q8)

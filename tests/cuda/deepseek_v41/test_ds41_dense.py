@@ -128,9 +128,9 @@ def test_rows_band(specs):
     group, weights = _group(specs, len(specs) + specs[0][1])
     k = specs[0][2]
     torch.manual_seed(0)
-    x32 = torch.randn(32, k, dtype=torch.float16, device="cuda")
+    x32 = torch.randn(64, k, dtype=torch.float16, device="cuda")
     full = group(x32)
-    for m in (1, 3, 8, 9, 16, 17, 24, 32):
+    for m in (1, 3, 8, 9, 16, 17, 24, 32, 33, 48, 64):
         outs = group(x32[:m].clone())
         for got, ref_all, w in zip(outs, full, weights):
             # every row equals its row in any other launch (1Cat dmv13 rows are batch invariant; patch 112)
@@ -191,3 +191,13 @@ def test_real_projections_against_fp16_decode():
             assert torch.equal(got, fp16)
         else:  # Q5_K: dmv13 rounds the sub-block scale / min to FP16 first
             assert float((got.float() - fp16.float()).abs().max()) <= 2 * float(fp16.float().abs().max()) * 2 ** -10
+
+
+def test_router_gate_bf16_matches_fp32():
+    from tensorfold.families.deepseek_v4.cuda.kernels.mhc import fp32_projection
+    torch.manual_seed(3)
+    w32 = torch.randn(384, 5120, device="cuda").to(torch.bfloat16).float()   # BF16-exact FP32 coefficients
+    w16 = w32.to(torch.bfloat16)
+    for m in (1, 2, 5, 6, 8, 64):
+        x = torch.randn(m, 5120, dtype=torch.float16, device="cuda")
+        assert torch.equal(fp32_projection(x, w16), fp32_projection(x, w32))
