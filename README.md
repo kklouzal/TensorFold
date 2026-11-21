@@ -1666,7 +1666,8 @@ decode experts and TurboMind lattice prefill experts (with an exact weight decod
 prefix points at message boundaries with the pinned host tier, and the 175 ms decode-during-prefill policy. On SC117
 (180 W, image `67b43e682057`, `--parallel 32 --context 65536`) its 10-cell prefill beats the frozen 1Cat-vLLM
 reference in 9 of 10 cells, from +14% to +93%; C1 16K is the exception at -8%. Whole-run output is at or above the
-reference in every cell. The quality gate (NLL-delta CI vs the first passing build) passed. Commands, the full table
+reference in every cell. Per-user decode is lower at 8 or more concurrent requests (for example 8.1 vs 27.2 tok/s
+at C32 16K), because every admitted user streams at once; it is higher at C1. The quality gate (NLL-delta CI vs the first passing build) passed. Commands, the full table
 and diagnostics are in the [recipe](docs/recipes/deepseek-v41-v100.md). DSpark drafts and vision are pending.
 
 #### Gemma 4 on eight V100s: prompt reuse, sampled drafts, `--parallel` (2026-11-19)
