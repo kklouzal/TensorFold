@@ -251,7 +251,7 @@ class Target:
         """Run every layer for ``step``; return this rank's vocabulary-shard logits [rows, vocab / 8] (FP32) of
         ``logits_rows`` (None: no logits)."""
         state = self.begin(step)
-        self.layers(state, len(self.w.layers))
+        self.layers(state, self.units)
         return self.end(state, logits_rows)
 
     def begin(self, step: Step) -> dict:
@@ -271,56 +271,68 @@ class Target:
         pre = torch.zeros(tokens, g.hc, device=hidden.device, dtype=torch.float32)
         pre[:, 0] = 1
         return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": {"topk": None},
-                "mix": None, "next": 0, "result": None}
+                "mix": None, "half": None, "next": 0, "result": None}
+
+    @property
+    def units(self) -> int:
+        """Pause points of a forward: two units per layer (attention, then experts)."""
+        return 2 * len(self.w.layers)
 
     def layers(self, st: dict, stop: int, marks: list | None = None) -> None:
-        """Advance ``st`` through layers [st["next"], stop). ``marks``: append (first layer, CUDA events at the
-        start and after each layer) for the caller's per-layer cost estimate."""
+        """Advance ``st`` through units [st["next"], stop): unit 2i is layer i's attention (with its Engram and
+        HC transition), unit 2i+1 its experts (with the transition into layer i+1). A pause at either changes no
+        kernel or row, so a paused prompt forward computes exactly what an unpaused one does. ``marks``: append
+        (first unit, CUDA events at the start and after each unit) for the caller's per-unit cost estimate."""
         from .kernels.mhc import collapse_hc, expand_hc, hc_mixes
         from .kernels.mhc_fused import hc_transition
         w = self.w
         layers = w.layers
         step, hashes, shared = st["step"], st["hashes"], st["shared"]
-        hidden, pre, state = st["hidden"], st["pre"], st["mix"]
+        hidden, pre, state, half = st["hidden"], st["pre"], st["mix"], st["half"]
         events = None
         if marks is not None:
             events = [torch.cuda.Event(enable_timing=True)]
             events[0].record()
             marks.append((st["next"], events))
-        for i in range(st["next"], stop):
+        for u in range(st["next"], stop):
+            i, second = divmod(u, 2)
             ly = layers[i]
-            if ly.engram_wkv is not None:
-                hidden = self.engram_layer(ly, hidden, hashes, step)
-                state = None
-            if state is None:
-                attn_mix = hc_mixes(hidden, ly.hc["attn_fn"], ly.hc["attn_scale"], ly.hc["attn_base"])
-                inputs = collapse_hc(hidden, pre, ly.attn_norm)
+            if not second:
+                if ly.engram_wkv is not None:
+                    hidden = self.engram_layer(ly, hidden, hashes, step)
+                    state = None
+                if state is None:
+                    attn_mix = hc_mixes(hidden, ly.hc["attn_fn"], ly.hc["attn_scale"], ly.hc["attn_base"])
+                    inputs = collapse_hc(hidden, pre, ly.attn_norm)
+                else:
+                    inputs, attn_mix = state
+                table = self.compressed_rope if ly.ratio else self.window_rope
+                y = self.attention(ly, inputs, step, table, shared)
+                half = hc_transition(hidden, y, attn_mix[1], attn_mix[2], attn_mix[0], ly.ffn_norm,
+                                     ly.hc["ffn_fn"], ly.hc["ffn_scale"], ly.hc["ffn_base"])
             else:
-                inputs, attn_mix = state
-            table = self.compressed_rope if ly.ratio else self.window_rope
-            y = self.attention(ly, inputs, step, table, shared)
-            inputs, ffn_mix = hc_transition(hidden, y, attn_mix[1], attn_mix[2], attn_mix[0], ly.ffn_norm,
-                                            ly.hc["ffn_fn"], ly.hc["ffn_scale"], ly.hc["ffn_base"])
-            y = self.moe(ly, inputs)
-            pre = ffn_mix[0]
-            following = layers[i + 1] if i + 1 < len(layers) else None
-            if following is not None and following.engram_wkv is None:
-                inputs, mix = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, following.attn_norm,
-                                            following.hc["attn_fn"], following.hc["attn_scale"],
-                                            following.hc["attn_base"])
-                state = (inputs, mix)
-            elif following is not None:
-                hidden = expand_hc(y, hidden, ffn_mix[1], ffn_mix[2], inplace=True)
-                state = None
-            else:
-                st["result"], _ = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, w.norm)
+                inputs, ffn_mix = half
+                half = None
+                y = self.moe(ly, inputs)
+                pre = ffn_mix[0]
+                following = layers[i + 1] if i + 1 < len(layers) else None
+                if following is not None and following.engram_wkv is None:
+                    inputs, mix = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, following.attn_norm,
+                                                following.hc["attn_fn"], following.hc["attn_scale"],
+                                                following.hc["attn_base"])
+                    state = (inputs, mix)
+                elif following is not None:
+                    hidden = expand_hc(y, hidden, ffn_mix[1], ffn_mix[2], inplace=True)
+                    state = None
+                else:
+                    st["result"], _ = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, w.norm)
             if events is not None:
                 events.append(torch.cuda.Event(enable_timing=True))
                 events[-1].record()
-        st.update(hidden=hidden, pre=pre, mix=state, next=max(st["next"], stop))
+        st.update(hidden=hidden, pre=pre, mix=state, half=half, next=max(st["next"], stop))
 
     def end(self, st: dict, logits_rows: torch.Tensor | None):
-        if st["next"] != len(self.w.layers):
+        if st["next"] != self.units:
             raise RuntimeError("a DeepSeek-V4.1 forward ended before its last layer")
         if logits_rows is None:
             return None

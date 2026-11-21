@@ -9,8 +9,9 @@ history and the ratio-2 compressor partials. A slot is reset when a stream takes
 
 Serving (``serve=True``, the family's ``cuda_engine``): rank 0 owns the shared CUDA Scheduler and this provider's
 ``Decoder`` (the Gemma 4 SM70 Decoder's round structure): one batched decode forward over every decoding stream a
-round, and between rounds the next prompt chunk of a filling stream; while streams decode, a chunk runs in layer
-groups sized from measured per-layer costs so a decode round waits about ``DECODE_GAP_MS`` (175 ms), not a chunk.
+round, and between rounds the next prompt chunk of a filling stream; while streams decode, a chunk runs in groups
+of units (each layer's attention, then its experts) cut every round from measured costs so a decoding stream waits
+about ``DECODE_GAP_MS`` (175 ms), not a chunk.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .prefix import OPS as PREFIX_OPS, PrefixOwner
+from .schedule import RoundCosts, UnitCosts
 
 # The Gemma 4 SM70 operation codes (the prefix owner announces them; prefix.SlotState runs the prefix ones); OP_STEP
 # (this provider's batched forward) takes Gemma's OP_FORWARD code.
@@ -36,6 +38,7 @@ MAX_STREAMS = 32
 RESERVE = 3 << 30          # bytes left free per rank for prompt transients, after the KV pool
 GRAPH_EACH_BYTES = 40 << 20 # decode graph memory per captured bucket (sizing bound; measured ~30 MiB)
 GRAPH_BYTES = 128 << 20     # + the graphs' shared torch pool (measured ~40 MiB)
+TRACE = bool(os.environ.get("TENSORFOLD_DS41_SCHED_TRACE"))   # diagnostic: the Decoder's group plans and costs
 
 
 class DS41Engine:
@@ -134,6 +137,7 @@ class DS41Engine:
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device)
         self.layer_count = len(self.w.layers)
+        self.units = self.target.units      # pause points of a prompt forward (attention, experts per layer)
         from .prefix import SlotState
         self.prefix = SlotState(self.target)
         self.layout = self.target.pool.layout
@@ -144,7 +148,7 @@ class DS41Engine:
         # them, so a resumed prompt computes exactly the cold chunks (prefix.py).
         self.prompt_rows = max_tokens
         self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
-        self.layer_marks = None             # rank 0: per-layer CUDA events of the prompt forward being timed
+        self.layer_marks = None             # rank 0: per-unit CUDA events of the prompt forward being timed
         from .graphs import DecodeGraphs, SlotPages
         self.slot_pages = SlotPages(self.slots, -(-self.target.hash_state.max_context // BLOCK), device)
         self.graphs = None
@@ -224,10 +228,10 @@ class DS41Engine:
             self._attach(0, rows + 1)
             self.layer_marks = [] if self.rank == 0 else None
             self._step([(0, 0, rows)], [self.geometry.bos] * rows, [rows - 1])
-            if self.rank == 0:          # the Decoder's first per-layer, per-row prompt cost estimate (ms)
+            if self.rank == 0:          # the Decoder's first per-unit prompt cost sample (ms at ``rows`` rows)
                 torch.cuda.synchronize()
                 (_, events), = self.layer_marks
-                self.warm_layer_ms = [events[j - 1].elapsed_time(events[j]) / rows for j in range(1, len(events))]
+                self.warm_unit_ms = (rows, [events[j - 1].elapsed_time(events[j]) for j in range(1, len(events))])
             self.layer_marks = None
             self._step([(0, rows, 1)], [self.geometry.bos], [0])
             self._detach(0)
@@ -258,10 +262,10 @@ class DS41Engine:
         flags, stop = stop & ~0xFFFF, stop & 0xFFFF
         """entries: [(slot, start, count)] in row order; ids: the tokens; logits_rows: token rows to score.
         Returns rank 0's full-vocabulary FP32 logits [len(logits_rows), vocab] (None elsewhere). With
-        0 < ``stop`` < layers the forward pauses after layer ``stop`` (``_layers`` continues it) and returns None;
-        the pause changes no kernel or row. One row per entry, every row scored and ``stop`` 0 (a decode batch,
-        or a one-token prompt chunk) replays the batch's startup graph; ``stop`` = layers runs the same
-        forward eagerly."""
+        0 < ``stop`` < units the forward pauses after unit ``stop`` (``Target.layers``: attention and experts of
+        each layer; ``_layers`` continues it) and returns None; the pause changes no kernel or row. One row per
+        entry, every row scored and ``stop`` 0 (a decode batch, or a one-token prompt chunk) replays the batch's
+        startup graph; ``stop`` = units runs the same forward eagerly."""
         import torch
         from .target import Step, DECODE_MAX
         device = self.target.device
@@ -301,24 +305,24 @@ class DS41Engine:
         else:
             rows = t(logits_rows, torch.long) if logits_rows else None
         marks = self.layer_marks if qsl[-1] > len(entries) else None     # prompt chunks only, never decode rows
-        if 0 < stop < self.layer_count:
+        if 0 < stop < self.units:
             if self.part is not None:
                 raise RuntimeError("a DeepSeek-V4.1 prompt forward began while another one is paused")
             self.part = (state, rows)
             self.target.layers(state, stop, marks)
             return None
-        self.target.layers(state, self.layer_count, marks)
+        self.target.layers(state, self.units, marks)
         return self._end(state, rows)
 
     def _layers(self, stop):
-        """Advance the paused prompt forward to layer ``stop`` (< 0: drop it); at the last layer finish it. Decode
-        forwards may run between its layers (other slots; ``Target.begin``)."""
+        """Advance the paused prompt forward to unit ``stop`` (< 0: drop it); at the last unit finish it. Decode
+        forwards may run between its units (other slots; ``Target.begin``)."""
         if stop < 0:
             self.part = None
             return None
         state, rows = self.part
         self.target.layers(state, stop, self.layer_marks)
-        if stop < self.layer_count:
+        if stop < self.units:
             return None
         self.part = None
         return self._end(state, rows)
@@ -478,7 +482,7 @@ class DS41Engine:
                 if len(out) >= max_tokens or (stop_eos and token in self.eos):
                     break
                 logits = self.step([(slot, len(prompt) + len(out) - 1, 1)], [token], [0],
-                                   self.layer_count if eager else 0)
+                                   self.units if eager else 0)
                 token = choose(logits[-1])
             t2 = time.perf_counter()
             self.announce(OP_DETACH, slot)
@@ -532,8 +536,10 @@ class Decoder(PrefixOwner):
     A round decides the batch in flight, launches the next batch over every decoding stream (one row each), then
     delivers the decided tokens and runs the next prompt chunk of the next filling request (round-robin, fixed
     ``max_tokens`` boundaries: a prompt's arithmetic never depends on load). While streams decode, the chunk runs
-    in layer groups (one per round) of about equal measured cost, so a decoding stream waits one group plus its
-    round (about ``GAP_MS``), not the whole chunk (the Gemma 4 SM70 Decoder's schedule).
+    in groups of units (one per round; a unit is a layer's attention or its experts, half a layer, so the groups
+    fit the gap where whole layers of an 8192-row chunk do not), each group cut when it starts from the measured
+    costs (``schedule``), so a decoding stream waits one group plus its round (about ``GAP_MS``), not the whole
+    chunk (the Gemma 4 SM70 Decoder's schedule).
 
     Slots and their pages come from the prompt-prefix owner (``prefix.PrefixOwner``, the Gemma 4 SM70 / Flash Next
     policy): admission places a request in a kept chain (resume in place, fork, host tier) or cold; prompt chunks
@@ -551,10 +557,12 @@ class Decoder(PrefixOwner):
         self._broken = None
         self.eos = tuple(engine.eos)
         self.inflight = None                         # (group, entries, logits, t0) of the launched decode batch
-        self.split = None                            # (stream, chunk, remaining layer stops) of a paused chunk
-        self.round_ms = 50.0                         # GPU time of a recent decode round (EMA; CUDA events)
-        self.layer_ms = list(engine.warm_layer_ms)   # per prompt row, per layer: the last measured chunk
-        self.measuring = None
+        self.split = None                            # (stream, chunk, next unit) of a paused chunk
+        self.costs = UnitCosts(*engine.warm_unit_ms)  # per-unit prompt cost model (CUDA events of past chunks)
+        self.rounds = RoundCosts()                   # GPU time of a decode round per batch bucket (CUDA events)
+        self.timing = None                           # (rows, per-group marks) of the chunk in flight
+        self.timed = None                            # (rows, marks) of the last chunk, until its events complete
+        self.bucket = 0                              # the batch bucket of the decode round in flight
         self.started, self.done = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
         self._init_prefix(engine, engine.points)
 
@@ -633,7 +641,7 @@ class Decoder(PrefixOwner):
         out = []
         for s in gone:
             if self.split is not None and self.split[0] is s:
-                self.split = None
+                self.split = self.timing = self.e.layer_marks = None
                 self.e.announce(OP_LAYERS, -1)
             if s in self.filling:
                 self.filling.remove(s)
@@ -660,6 +668,7 @@ class Decoder(PrefixOwner):
         """After an error in a round: forget every live stream; the ranks can no longer be trusted to agree."""
         live = [s for s in self.streams.values() if not s.done] + self.filling
         self.streams, self.filling, self.inflight, self.split = {}, [], None, None
+        self.timing = self.timed = self.e.layer_marks = None
         if self._broken is None:
             self.broken = error or RuntimeError("a DeepSeek-V4.1 SM70 round failed")
         return live
@@ -696,14 +705,16 @@ class Decoder(PrefixOwner):
     def _fill(self) -> list:
         e = self.e
         if self.split is not None:                  # the paused chunk continues first (one paused forward at most)
-            s, chunk, plan = self.split
-            stop = plan.pop(0) if self.streams and plan else e.layer_count
+            s, chunk, at = self.split
+            stop = self._stop(chunk[1] - chunk[0], at)
             t0 = time.perf_counter()
             out = e.announce(OP_LAYERS, stop)
             s.prefill_s += time.perf_counter() - t0
-            if stop < e.layer_count:
+            if stop < e.units:
+                self.split = (s, chunk, stop)
                 return []
             self.split = None
+            self._timed()
             return self._filled(s, chunk, out)
         foreground = [x for x in self.filling if not x.background]
         s = (foreground or self.filling)[0]
@@ -715,9 +726,12 @@ class Decoder(PrefixOwner):
         stop = min(n, (start // rows + 1) * rows)
         last = stop == n
         self.keep_before(s, start)
-        plan = self._plan(stop - start)
+        self._absorb()
+        self.timing = (stop - start, [])
+        e.layer_marks = self.timing[1]
+        unit = self._stop(stop - start, 0)
         sink = s.probabilities if hasattr(s.probabilities, "add_prompt") else None
-        layer = plan[0] if plan[0] < e.layer_count else 0
+        layer = unit if unit < e.units else 0
         t0 = time.perf_counter()
         if sink is not None:
             # every row scored for its next prompt token (a last chunk's final row against the first forced token,
@@ -729,9 +743,10 @@ class Decoder(PrefixOwner):
             out = e.step([(s.slot, start, stop - start)], s.prompt[start:stop], [stop - start - 1] if last else [],
                          layer)
         s.prefill_s += time.perf_counter() - t0
-        if plan[0] < e.layer_count:
-            self.split = (s, (start, stop, last, sink, True), plan[1:])
+        if unit < e.units:
+            self.split = (s, (start, stop, last, sink, True), unit)
             return []
+        self._timed()
         return self._filled(s, (start, stop, last, sink, True), out)
 
     def _filled(self, s, chunk, out) -> list:
@@ -765,35 +780,58 @@ class Decoder(PrefixOwner):
         s.take([first], self._ends(s))
         return [s] if s.done else []
 
-    def _plan(self, rows) -> list:
-        """Layer stops of the next prompt chunk (the last is every layer): one forward with no stream decoding,
-        otherwise groups of about equal measured cost so a group plus a decode round stays near GAP_MS. The
-        grouping changes no kernel, so it may follow the load."""
+    def _stop(self, rows, at) -> int:
+        """The unit after which the prompt chunk of ``rows`` rows, now at unit ``at``, pauses next: every remaining
+        unit with no stream decoding; otherwise the first of equal-cost groups of the rest, each at most a gap
+        less the next decode round (``layer_groups``), planned again every round from the measured costs, this
+        chunk's measured progress and the batch now decoding. The pause changes no kernel, so it may follow load."""
         from tensorfold.cuda.geometry import group_target, layer_groups
         e = self.e
-        L = e.layer_count
-        self._absorb()
-        if rows > 64:
-            self.measuring = (rows, [])
-            e.layer_marks = self.measuring[1]
         if not self.streams:
-            return [L]
-        return layer_groups([ms * rows for ms in self.layer_ms], group_target(self.GAP_MS, self.round_ms))
+            return e.units
+        cost = self.costs.predict(rows)
+        done = [(first, events) for first, events in self.timing[1] if events[-1].query()]
+        if done:                                    # this chunk so far: measured / predicted (context, load)
+            spent = sum(events[0].elapsed_time(events[-1]) for _, events in done)
+            planned = sum(sum(cost[first:first + len(events) - 1]) for first, events in done)
+            if planned > 0:
+                cost = [c * spent / planned for c in cost]
+        round_ms = self.rounds.estimate(self._bucket(len(self.streams)))
+        stop = at + layer_groups(cost[at:], group_target(self.GAP_MS, round_ms))[0]
+        if TRACE:
+            print(f"[ds41 sched] rows {rows} units {at}-{stop} predicted {sum(cost[at:stop]):.1f} ms round "
+                  f"{round_ms:.1f} ms streams {len(self.streams)}", flush=True)
+        return stop
+
+    def _timed(self) -> None:
+        """The chunk in flight finished: its marks wait for ``_absorb`` (never waits on the GPU)."""
+        self.timed, self.timing = self.timing, None
+        self.e.layer_marks = None
 
     def _absorb(self) -> None:
-        """Per-layer per-row costs from the timed chunk once its events completed (never waits)."""
-        if self.measuring is None:
+        """Per-unit costs of the last chunk once its events completed (never waits; until then it stays queued)."""
+        if self.timed is None:
             return
-        rows, marks = self.measuring
-        self.measuring, self.e.layer_marks = None, None
-        ms = [None] * self.e.layer_count
+        rows, marks = self.timed
+        if not all(events[-1].query() for _, events in marks):
+            return
+        self.timed = None
+        ms = [None] * self.e.units
         for first, events in marks:
-            if not events[-1].query():
-                return
             for j in range(1, len(events)):
-                ms[first + j - 1] = events[j - 1].elapsed_time(events[j]) / rows
+                ms[first + j - 1] = events[j - 1].elapsed_time(events[j])
         if None not in ms:
-            self.layer_ms = ms
+            self.costs.add(rows, ms)
+            if TRACE:
+                print(f"[ds41 sched] chunk rows {rows} groups {len(marks)} {sum(ms):.1f} ms "
+                      f"(attention {sum(ms[0::2]):.1f}, experts {sum(ms[1::2]):.1f})", flush=True)
+
+    def _bucket(self, count) -> int:
+        """The decode batch a round over ``count`` streams runs as (its graph bucket; eager: ``count``)."""
+        graphs = self.e.graphs
+        if graphs is None or count > graphs.sizes[-1]:
+            return count
+        return next(b for b in graphs.sizes if b >= count)
 
     def _launch(self, live, pending):
         """Launch one decode forward over ``live`` (row order = stream order); ``pending``: decided, undelivered
@@ -809,6 +847,7 @@ class Decoder(PrefixOwner):
         t0 = time.perf_counter()
         logits = e.step(entries, ids, list(range(len(entries))))
         self.done.record()
+        self.bucket = self._bucket(len(entries))
         self.inflight = (live, entries, logits, t0)
 
     def _collect(self):
@@ -816,7 +855,7 @@ class Decoder(PrefixOwner):
         live, entries, logits, t0 = self.inflight
         self.inflight = None
         self.done.synchronize()
-        self.round_ms = 0.8 * self.round_ms + 0.2 * self.started.elapsed_time(self.done)
+        self.rounds.add(self.bucket, self.started.elapsed_time(self.done))
         decided = []
         for g, s in enumerate(live):
             if s.done or self.streams.get(s.sid) is not s:

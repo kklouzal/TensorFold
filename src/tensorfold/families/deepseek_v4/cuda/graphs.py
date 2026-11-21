@@ -89,7 +89,7 @@ class Shape:
         self.req_slot[:self.count].copy_(self.staged[2])
         torch.index_select(e.slot_pages.table, 0, self.req_slot[:self.count], out=step.block_table)
         state = t.begin(step)
-        t.layers(state, e.layer_count)
+        t.layers(state, t.units)
         return e.coll.gather(t.end(state, self.rows))
 
     def run(self):
