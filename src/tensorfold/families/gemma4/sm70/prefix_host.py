@@ -161,6 +161,12 @@ class HostTier:
     # ------------------------------------------------------------------------------------------ prefixes surface
     def spill(self, points, principal) -> None:
         o = self.owner
+        # A host point serves exact repeats (an exact end) or extensions from an aligned chunk boundary (``best``,
+        # ``PrefixOwner.place``'s exact chunk arithmetic). A former exact end whose end a resume rewrote (``prefixes``
+        # drops both) is neither unless aligned: its rows would be copied for nothing.
+        points = [k for k in points if k[2].get("exact") or len(k[0]) % o.e.prompt_rows == 0]
+        if not points:
+            return
         st = points[0][1]
         if not st.capacity:
             return
