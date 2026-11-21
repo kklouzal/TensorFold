@@ -101,5 +101,5 @@ class Prebuild:
             self.done = True
             self.pool.shutdown(wait=True)
             slowest = max(self.jobs, key=lambda n: self.jobs[n].result())
-            self.timeline.add(f"extensions (slowest {slowest.rsplit('.', 1)[1]} {self.jobs[slowest].result():.1f})",
+            self.timeline.add(f"extensions (slowest {slowest.rsplit('.', 1)[-1]} {self.jobs[slowest].result():.1f})",
                               self.started, time.perf_counter() - self.started)
