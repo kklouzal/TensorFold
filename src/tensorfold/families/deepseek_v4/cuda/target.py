@@ -213,8 +213,10 @@ class Target:
         query = rope_qdq(query, step.positions, table, fp4=True, group=32)
         weights = self._linear(x, ly.idx_proj) * (1.0 / 64.0)
         width = self.index_context // ly.ratio
-        if not step.prefill and step.decode_index is None and index_shard.eligible(query.shape[1], WORLD, width):
-            # decode rows: every rank scores all 32 heads over its 1/8 of the key blocks (K4, index_shard)
+        if (tokens > 1 and not step.prefill and step.decode_index is None
+                and index_shard.eligible(query.shape[1], WORLD, width)):
+            # decode rows: every rank scores all 32 heads over its 1/8 of the key blocks (K4, index_shard; one row
+            # keeps the head-sharded scores: 98-118 vs 104-123 us per rank, dec-k4r / dec-k4b)
             return index_shard.select_decode(query, weights, step.positions, step.valid, step.token_req,
                                              self.pool.cache, step.block_table, layout=self.pool.layout,
                                              source=ly.source, ratio=ly.ratio, width=width, rank=self.w.rank,
