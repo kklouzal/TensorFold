@@ -11,7 +11,7 @@
       document's prompt tokens are scored by prompt-pass (prefill) rows and its continuation by teacher-forced
       decode/MTP-verify rows (``--continuation-limit N``: only the first N, for prefill-path runs). vLLM: /v1/completions with ``prompt_logprobs`` over prompt+continuation (one pass).
   cachecheck --tokens corpus.tokens.json --mode extend|repeat|prime --out-cold COLD.json --out-cached CACHED.json
-        [--url ...] [--top 20] [--continuation-limit N] [--min-prompt 64] [--align ROWS]
+        [--url ...] [--top 20] [--continuation-limit N] [--min-prompt 64] [--align ROWS] [--prime-first]
       Prefix-cache qualification (TensorFold only). Per document: prime the server's prompt cache with a plain
       greedy /v1/completions request (``extend``: the first half of the prompt plus one token; ``repeat``: the
       whole prompt; ``prime``: the document's ``prime`` ids, e.g. an earlier turn of its conversation, expecting
@@ -19,6 +19,8 @@
       runs restricted to the rows the cached request computed, so ``compare COLD.json CACHED.json`` judges them.
       ``--align ROWS``: the server keeps extension points only at multiples of ROWS (its prompt-chunk boundaries,
       e.g. DeepSeek-V4.1 SM70's 8192), so an ``extend`` hit resumes at the boundary at or below the prime's end.
+      ``--prime-first``: prime every document before scoring any, so with more documents than the server keeps in
+      VRAM the early hits come from what later primes evicted (the host tier).
   compare A.json B.json [--margin 0.005] [--prefill-kinds PREFIX,...] [--out RESULT.json]
       Paired per-token statistics of B against A per path and kind, and a verdict (see ``compare``'s doc).
       ``--prefill-kinds`` restricts only the prefill verdict to those document kinds; decode keeps every document
@@ -209,7 +211,7 @@ def cachecheck(args) -> None:
         raise SystemExit("not a frozen corpus token file")
     limit = args.continuation_limit
     base = args.url.rstrip("/")
-    cold_docs, cached_docs, skipped, misses = [], [], [], []
+    cold_docs, cached_docs, misses = [], [], []
     t0 = time.perf_counter()
     documents = list(corpus["documents"])
     if args.shuffle_seed is not None:            # a representative prefix when --max-seconds stops early
@@ -225,22 +227,32 @@ def cachecheck(args) -> None:
                 "runs": [{"seconds": round(time.perf_counter() - t0, 3), "documents": docs}]},
                 separators=(",", ":")) + "\n", encoding="utf-8")
 
-    for doc in documents:
-        if args.max_seconds is not None and time.perf_counter() - t0 > args.max_seconds:
-            print(f"stopped after {args.max_seconds}s")
-            break
-        if len(doc["prompt"]) < args.min_prompt:
-            skipped.append(doc["id"])
-            continue
-        if limit is not None:
-            doc = {**doc, "continuation": doc["continuation"][:limit]}
+    def primed(doc):
         prime = {"extend": doc["prompt"][:len(doc["prompt"]) // 2 + 1], "repeat": doc["prompt"]}.get(args.mode)
         if args.mode == "prime":                 # the document's own prime (an earlier turn) and expected hit
             prime = doc["prime"]
+        return prime
+
+    def post_prime(prime):
         body = {"prompt": prime, "max_tokens": 1, "temperature": 0}
         if args.model:
             body["model"] = args.model
         _post(base + "/v1/completions", body)
+
+    skipped = [doc["id"] for doc in documents if len(doc["prompt"]) < args.min_prompt]
+    documents = [doc for doc in documents if len(doc["prompt"]) >= args.min_prompt]
+    if args.prime_first:
+        for doc in documents:
+            post_prime(primed(doc))
+    for doc in documents:
+        if args.max_seconds is not None and time.perf_counter() - t0 > args.max_seconds:
+            print(f"stopped after {args.max_seconds}s")
+            break
+        if limit is not None:
+            doc = {**doc, "continuation": doc["continuation"][:limit]}
+        prime = primed(doc)
+        if not args.prime_first:
+            post_prime(prime)
         cached = _score_rows(args.url, doc, args.top, args.model, True)
         cold = _score_rows(args.url, doc, args.top, args.model, False)
         n = int(cached.get("cached_tokens") or 0)
@@ -454,6 +466,7 @@ def main(argv=None) -> None:
     p.add_argument("--align", type=int, help="extend: hits resume at the multiple of ROWS at or below the prime end")
     p.add_argument("--shuffle-seed", type=int, help="score documents in this seeded random order")
     p.add_argument("--max-seconds", type=float, help="stop starting new documents after this long (results so far kept)")
+    p.add_argument("--prime-first", action="store_true", help="prime every document before scoring any")
     p.set_defaults(run=cachecheck)
     p = sub.add_parser("compare")
     p.add_argument("a")
