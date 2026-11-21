@@ -710,6 +710,7 @@ class Decoder(PrefixOwner):
         self.ahead = None                            # a run-ahead batch launched behind ``inflight`` (``_launch_ahead``)
         self.split = None                            # (stream, chunk, next unit) of a paused chunk
         self.finishing = None                        # (stream, chunk, result) of a chunk whose last unit was launched
+                                                     # (None, None, None) keeps only that round's launch ordering
         self.costs = UnitCosts(*engine.warm_unit_ms)  # per-unit prompt cost model (CUDA events of past chunks)
         self.rounds = RoundCosts()                   # GPU time of a decode round per batch bucket (CUDA events)
         self.timing = None                           # (rows, per-group marks) of the chunk in flight
@@ -807,7 +808,9 @@ class Decoder(PrefixOwner):
                 self.split = self.timing = self.e.layer_marks = None
                 self.e.announce(OP_LAYERS, -1)
             if self.finishing is not None and self.finishing[0] is s:
-                self.finishing = None
+                # A one-row prompt may have replayed a graph after the decode batch in flight. Keep the launch
+                # barrier for that batch, but release the cancelled prompt's result and skip its completion.
+                self.finishing = (None, None, None) if self.inflight is not None else None
             if s in self.filling:
                 self.filling.remove(s)
                 s.done, s.finished = True, time.perf_counter()
@@ -870,7 +873,8 @@ class Decoder(PrefixOwner):
                     if s.done:
                         done.append(s)
                 if finishing is not None:
-                    done += self._filled(*finishing)
+                    if finishing[0] is not None:
+                        done += self._filled(*finishing)
                     live = [s for s in self.streams.values() if not s.done and id(s) not in ending]
                     if live and self.inflight is None:
                         self._launch(live, {})          # every decided token is delivered: none pending

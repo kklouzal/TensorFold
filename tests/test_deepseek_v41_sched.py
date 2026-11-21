@@ -386,6 +386,38 @@ def _serve(d, streams):
             d.streams.pop(s.sid, None)
 
 
+def test_a_cancelled_one_row_prompt_does_not_supply_run_ahead_tokens(monkeypatch):
+    from tensorfold.families.deepseek_v4.cuda import engine as E
+
+    d, clock = _timeline_decoder(monkeypatch, lambda rows: 1.0)
+    step = d.e.step
+    last_graph_slot = None
+
+    def replay(entries, ids, logits_rows, flags=0):
+        nonlocal last_graph_slot
+        if len(entries) == 1 and entries[0][2] == 1 and logits_rows == [0]:
+            slot = entries[0][0]
+            if flags & E.F_AHEAD:
+                assert last_graph_slot == slot, "run-ahead took a token from another stream's replay"
+            last_graph_slot = slot
+        return step(entries, ids, logits_rows, flags)
+
+    d.e.step = replay
+    decoding = _Stream(0, 64, 10, clock)
+    d.filling.append(decoding)
+    while not decoding.out:
+        d.round()
+
+    cancelled = _Stream(1, 1, 2, clock)
+    d.filling.append(cancelled)
+    d.round()
+    assert d.inflight is not None and last_graph_slot == cancelled.slot
+    assert d.cancel([cancelled]) == [cancelled]
+
+    _serve(d, [])
+    assert decoding.out == [7] * decoding.count and cancelled.out == []
+
+
 def test_a_chunks_last_group_does_not_hold_back_a_decoded_token(monkeypatch):
     """A decoding stream waits about one group plus a round between tokens, also where a prompt chunk ends: the
     chunk's result is read after the round's decided tokens are delivered, not before (which held the token decided
