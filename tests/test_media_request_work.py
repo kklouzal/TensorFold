@@ -199,7 +199,12 @@ def test_actual_bad_work_is_retired_before_tp_publication_and_next_unit_pixels(t
             with pytest.raises(ImageInputError) as caught:
                 initial_ready()
             assert caught.value is failure
-            assert producer.context.ordinal == 0 and leader.sequence == 0 and store.data == {}
+            assert producer.context.ordinal == 0 and leader.sequence == 0
+            if leader.pipes is None:
+                assert store.data == {}
+            else:  # Control pipes hold only their unresolved rendezvous until the first command resolves it.
+                assert leader.pipes.peers is None
+                assert all(key.startswith("tensorfold/flashnext/pipes/") for key in store.data), store.data
         else:
             initial_ready()
             leader.admit(stream)
