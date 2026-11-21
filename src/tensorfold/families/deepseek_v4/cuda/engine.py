@@ -291,11 +291,12 @@ class DS41Engine:
         rows = len(entries) + 8
         req_slot = [slot for slot, _, _ in entries] + [self.slots - 1] * 8
         t = lambda v, dt: torch.tensor(v, dtype=dt).to(device, non_blocking=True)
-        prefill = [(r, qsl[r], qsl[r + 1]) for r in range(len(entries)) if qsl[r + 1] - qsl[r] > DECODE_MAX]
+        prefill = [(r, qsl[r], qsl[r + 1], entries[r][1] + entries[r][2] - 1) for r in range(len(entries))
+                   if qsl[r + 1] - qsl[r] > DECODE_MAX]
         decode_index = None
         if prefill:
             inside = set()
-            for _, s0, s1 in prefill:
+            for _, s0, s1, _ in prefill:
                 inside.update(range(s0, s1))
             rest = [i for i in range(qsl[-1]) if i not in inside]
             decode_index = t(rest, torch.long) if rest else torch.empty(0, dtype=torch.long, device=device)

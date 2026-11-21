@@ -2,6 +2,7 @@
 # Provenance: friend overlay patch 170 (SPDX Apache-2.0), snapshot lp-snap-c1es8-numa-admit2-imgtext-share2-fix5-ram4-stepbud-ram3-memfix-ctx1m-ppovl-opt2-pfx-1-eng-pfxfix4,
 #   patches/ds41mu_files/local_ds41_mu_reindex.py (sha256 4a7e181eab7f29cd711a2bc5d1b20c209cd08ca71da29fc4f2325360314a0995).
 # TensorFold changes (kernel arithmetic, candidate rules and prefill selector verbatim):
+# - step.prefill entries may carry extra host fields after (r, s0, s1) (Target.Step's last position): ignored.
 # - tl.dot -> triton_utils.fma_dot(_acc): the FP32 FMA dot his Triton 3.6 runs on SM70 (Triton 3.2's MMAv1
 #   results cannot be reduced on SM70; see triton_utils).
 # - @triton.jit -> triton_utils.jit: the same JITFunction; launches add the SM70 Triton 3.2 profile options
@@ -381,7 +382,7 @@ def select(
     else:
         cand = None
     topk_fn = _seg_topk
-    decode_rows = tokens - sum(s1 - s0 for _, s0, s1 in step.prefill)
+    decode_rows = tokens - sum(s1 - s0 for _, s0, s1, *_ in step.prefill)
     if decode_rows > 0:
         rows = step.decode_index
         pick = (lambda t: t) if rows is None else (lambda t: t.index_select(0, rows))
@@ -419,7 +420,7 @@ def select(
             result.copy_(picked)
         else:
             result.index_copy_(0, rows, picked)
-    for r, s0, s1 in step.prefill:
+    for r, s0, s1, *_ in step.prefill:
         end = int(positions[s1 - 1].item() + 1) // ratio
         keys = pk.unpack_request_index(
             cache, block_table[r], end, max(end, TOP_K), layout=layout, layer=source
