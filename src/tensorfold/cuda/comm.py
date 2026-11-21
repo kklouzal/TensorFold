@@ -564,6 +564,34 @@ class NCCL:
             small.allreduce_bulk_f32(a, b, rows, dims, torch._C._cuda_getCurrentRawStream(self.device.index))
             return True
 
+    def all_reduce_rows_mode(self, send: torch.Tensor, recv: torch.Tensor, bulk: bool) -> bool:
+        """``all_reduce_rows`` with the size policy left to the caller: ``bulk`` takes the bulk row all-reduce,
+        else the low-latency one (no row thresholds). Same sums (rank 0 first, FP32, one FP16 rounding into
+        recv), same contract; returns False (nothing submitted) when the small collectives are off or the
+        selected path does not admit the shape. Every rank must make the same selection for the same shape."""
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("all_reduce_rows_mode: communicator admission is closed")
+            small = self.small_gather
+            if small is None or not _SMALL_ALLREDUCE:
+                return False
+            if (not isinstance(send, torch.Tensor) or not isinstance(recv, torch.Tensor) or send.ndim != 2
+                    or send.dtype != torch.float32 or recv.dtype != torch.float16 or recv.shape != send.shape
+                    or send.device != self.device or recv.device != self.device
+                    or not send.is_contiguous() or not recv.is_contiguous()):
+                raise ValueError("all_reduce_rows_mode: contiguous FP32 [rows, dims] input and FP16 output required")
+            rows, dims = send.shape
+            if (small.bulk_chunk_rows(rows, dims) if bulk else small.reduce_lines(rows, dims)) == 0:
+                return False
+            a, b = send.data_ptr(), recv.data_ptr()
+            if bulk and (a % 16 or b % 8):  # a rank-local fallback would desynchronize the cohort's calls
+                raise ValueError("all_reduce_rows_mode: bulk rows need 16-byte aligned input and 8-byte aligned output")
+            if a < b + recv.numel() * 2 and b < a + send.numel() * 4:
+                raise ValueError("all_reduce_rows_mode: input and output must not overlap")
+            stream = torch._C._cuda_getCurrentRawStream(self.device.index)
+            (small.allreduce_bulk if bulk else small.allreduce)(a, b, rows, dims, stream)
+            return True
+
     def all_reduce_half(self, send: torch.Tensor, recv: torch.Tensor) -> bool:
         """Sum every rank's FP32 [rows, dims] partials in place, then round once to FP16 into recv.
 
