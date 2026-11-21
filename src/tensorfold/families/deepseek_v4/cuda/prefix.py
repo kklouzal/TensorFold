@@ -181,7 +181,9 @@ class PrefixOwner(_gemma.PrefixOwner):
     def _resume_at(self, s, st, resume, cached: int, sid):
         """A resume lands on a boundary of ``s``'s prompt, from a state kept exactly there: else (an exact end
         extended, or a kept point that is not a boundary of this prompt) on the longest kept boundary point below
-        it, or cold. Points of ``st`` past that landing go: this request rewrites their rows in other chunks."""
+        it, or cold. Points of ``st`` past that landing go: this request rewrites their rows in other chunks. (This
+        includes an exact point resumed in place, whose prompt end ``prefixes`` then removed: its state is at its
+        end, not its length, so it would serve nothing; it never stays kept or spills.)"""
         if s.head is not None or (cached in s.bounds and not resume["state"].get("exact")):
             return cached, sid
         aligned, sid = 0, None

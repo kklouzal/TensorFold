@@ -132,8 +132,12 @@ class _Engine:
     def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
         from tensorfold.families.deepseek_v4.cuda import prefix
         self.ops.append((op, a, b, c))
+        self.ids = ids
         if op == prefix.OP_SNAP:
             self.snaps[c] = b
+        elif op == prefix.OP_HRESTORE:                    # (entry snapshot index, new snapshot id) pairs
+            for sid in list(ids)[1:2 * d:2]:
+                self.snaps[sid] = "host"
         elif op == prefix.OP_DROP:
             del self.snaps[a]
 
@@ -148,6 +152,22 @@ def _owner(rows=64):
     o.e, o.streams, o.filling = _Engine(rows), {}, []
     o._init_prefix(o.e, None)
     return o
+
+
+class _Head:
+    """A last-row logits stand-in whose device/host copies are itself."""
+
+    def clone(self):
+        return self
+
+    def to(self, *args, **kwargs):
+        return self
+
+    def numel(self):
+        return 1 << 18
+
+    def element_size(self):
+        return 4
 
 
 def _serve(o, prompt, reuse=True):
@@ -169,7 +189,7 @@ def _serve(o, prompt, reuse=True):
             start = chunk_end(s.bounds, start, len(prompt))
         o.filling.remove(s)
         if s.keep_end:
-            o.keep_end(s, torch.zeros(1, 8))
+            o.keep_end(s, _Head())
     o.retire_slot(s)
     return cached, s
 
@@ -287,13 +307,50 @@ def test_owner_lands_only_on_the_new_prompts_boundaries():
     assert all(len(k[0]) <= 602 or len(k[0]) >= len(p2) - 1 for k in o.kept)
 
 
-def test_host_best_skips_an_exact_point_whose_end_was_superseded():
-    """pf2: a spilled exact point whose prompt end a resume in place had dropped (prompt_end None) crashed the
-    host lookup of the next request."""
-    from tensorfold.families.gemma4.sm70.prefix_host import HostTier
-    meta = lambda exact, end: {"pos": 3, "snap": 0, "exact": exact, "prompt_end": end}
-    tier = SimpleNamespace(entries=[{"principal": None, "points": [([1, 2], meta(False, None)),
-                                                                   ([1, 2, 3], meta(True, None)),
-                                                                   ([1, 2, 3, 4], meta(True, {"token": 5}))]}])
-    assert HostTier.best(tier, [1, 2, 3, 9, 9], None)[1] == 0
-    assert HostTier.best(tier, [1, 2, 3, 4, 5], None)[1] == 2
+
+def _host_owner(mib=64):
+    """An owner with the DeepSeek host tier over a real page layout (slab copies are the ranks' work: stubbed)."""
+    from tensorfold.families.deepseek_v4.cuda.prefix import PrefixOwner
+
+    class Owner(PrefixOwner):
+        broken = None
+
+    o = Owner()
+    o.e, o.streams, o.filling = _Engine(8192, pages=4000), {}, []
+    o.e.context = 1 << 16
+    o.e.layout = _target().pool.layout
+    o.e.host_per_rank = mib << 20
+    o.e.host_slab = torch.zeros(mib << 20, dtype=torch.uint8)
+    o._init_prefix(o.e, _toy_points)
+    return o
+
+
+def test_owner_extension_spill_restore_and_dead_exact_points(monkeypatch):
+    """A conversation's chain is extended (in place), superseded by others until it spills to the host tier, then
+    continued from host RAM on a boundary; exact points whose end a resume removed never stay kept or spill."""
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)   # the ranks' copies
+    o = _host_owner()
+    p1 = [1] + _msg(1, 300) + [U] + _msg(2, 300) + [A, T]
+    n1 = len(p1)
+    _serve(o, p1)
+    # thinking without tools: the next turn re-renders p1's header, resuming p1's exact point (popped in place)
+    p2 = p1[:n1 - 1] + [T + 10] + _msg(3, 300) + [E, U] + _msg(4, 300) + [A, T]
+    assert _serve(o, p2)[0] == 301
+    p3 = p2 + _msg(5, 280) + [E, U] + _msg(6, 400) + [A, T]                  # extension in place
+    assert _serve(o, p3)[0] == len(p2)
+    for k in o.kept:
+        assert not (k[2].get("exact") and k[2].get("prompt_end") is None)
+    for i in range(12):                                                      # longer conversations take every slot
+        _serve(o, [1] + _msg(100 + i, 2500) + [U] + _msg(200 + i, 300) + [A, T])
+    assert all(len(k[0]) < 1000 or k[0][:20] != p3[:20] for k in o.kept)    # p3's chain left VRAM
+    spilled = [m for e in o.host_tier.entries for _ids, m in e["points"]]
+    assert spilled and not any(m["exact"] and m["prompt_end"] is None for m in spilled)
+    hits = o.prefix_counters["host_hits"]
+    p4 = p3 + _msg(7, 300) + [E, U] + _msg(8, 300) + [A, T]
+    cached, s = _serve(o, p4)
+    assert o.prefix_counters["host_hits"] == hits + 1
+    assert cached == len(p3) and s.chunks == [c for c in _cold_chunks(p4) if c >= cached]
+    assert _serve(o, p4)[0] == len(p4)                                        # and its exact repeat
+    assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
+    assert set(o.e.snaps) == o.snap_ids
