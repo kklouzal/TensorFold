@@ -17,8 +17,10 @@
 //     dense_mv order) and a K bound on the activation loads, so K % 128 != 0
 //     (K = 288) reads zero activations against zero padded planes instead of
 //     requiring DMV_FULLK's K % 128 == 0.
-//   * restore_planes: planes -> FP16 [rows, K] with dmv13's own decode<FMT>,
-//     i.e. exactly the weights the small-M kernel multiplies (prefill GEMMs).
+//   * restore_planes: planes -> FP16 [rows, K] for the prefill GEMMs: Q8_0 with
+//     dmv13's own decode (exactly the ggml FP16 decode), Q5_K with the exact
+//     FP32 sub-block coefficients of the kept super-block headers (exactly the
+//     ggml decode; dmv13's FP16-rounded scale/min moved prefill NLL +0.015).
 //   * q5k_rows: vocabulary-shard embedding lookup: Q5_K rows of the ids this
 //     rank owns decoded with ggml-quants.c's FP32 product rounded once to FP16;
 //     rows of foreign ids are +0.
@@ -138,13 +140,36 @@ __global__ void pack_kernel(const uint8_t* __restrict__ raw, long long row_bytes
   }
 }
 
+// Q5_K step st of a loaded group with exact FP32 coefficients s = d * sc, m = dmin * mn (ggml
+// dequantize_row_q5_K: y = s * q - m in FP32, q * s exact, rounded once to FP16); same bit layout and
+// k order as decode<Q5K>, which instead multiplies FP16-rounded s and -m.
+__device__ __forceinline__ void decode_q5k_exact(const Ld<Q5K>& L, int st, float s, float m,
+                                                 uint32_t (&hw)[16]) {
+  const uint32_t MAGIC = 0x64006400u;
+  const uint32_t hb = word(L.hi[0], st);
+  const uint32_t cr[4] = {L.c[st][0].x, L.c[st][0].y, L.c[st][0].z, L.c[st][0].w};
+#pragma unroll
+  for (int c = 0; c < 4; ++c) {
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+      const int sft = 4 * c + j - 4;
+      const uint32_t sh = sft >= 0 ? (hb >> (sft >= 0 ? sft : 0)) : (hb << (sft < 0 ? -sft : 0));
+      const uint32_t h = lop_or(cr[c] >> (4 * j), 0x000f000fu, lop_or(sh, 0x00100010u, MAGIC));
+      const float2 q = __half22float2(h2(h));  // 1024 + q, exact
+      hw[4 * c + j] = u32(__floats2half2_rn(fmaf(q.x - 1024.0f, s, -m), fmaf(q.y - 1024.0f, s, -m)));
+    }
+  }
+}
+
 // One warp per (tile, group): dmv13's load + decode of 4 steps (lane L holds row rowmap(L)), transposed
-// through shared memory so each store instruction writes two contiguous 256-byte row segments.
+// through shared memory so each store instruction writes two contiguous 256-byte row segments. Q5_K
+// decodes with the exact coefficients of the original super-block headers (``head``: 16 bytes d, dmin,
+// scales per row and super-block of the window, SB per row, the first at step first_step / 8 * 8).
 constexpr int RESTORE_WARPS = 4;
 template <int FMT>
 __global__ void __launch_bounds__(32 * RESTORE_WARPS)
-    restore_kernel(Seg sg, int tile0, int tiles, int rows, int K, int S, int G,
-                   half* __restrict__ out, long long ld) {
+    restore_kernel(Seg sg, const uint8_t* __restrict__ head, int first_step, int SB, int tile0,
+                   int tiles, int rows, int K, int S, int G, half* __restrict__ out, long long ld) {
   __shared__ uint4 buf[RESTORE_WARPS][32][17];  // 32 rows x 128 halves, padded against bank conflicts
   const int warp = threadIdx.x / 32, lane = threadIdx.x % 32;
   const long long items = static_cast<long long>(tiles) * G;
@@ -158,7 +183,22 @@ __global__ void __launch_bounds__(32 * RESTORE_WARPS)
 #pragma unroll
     for (int st = 0; st < 4; ++st) {
       uint32_t hw[16];
-      decode<FMT>(A, st, hw, nullptr);
+      if constexpr (FMT == Q5K) {
+        const int row = t * 32 + r, sidx = g * 4 + st;
+        float s = 0.0f, m = 0.0f;
+        if (row < rows && sidx < S) {
+          const int gs = first_step + sidx;
+          const uint8_t* hb =
+              head + (static_cast<long long>(row) * SB + gs / 8 - first_step / 8) * 16;
+          int sc, mn;
+          k_scale_min(hb + 4, gs % 8, sc, mn);
+          s = f16_bits(hb) * static_cast<float>(sc);
+          m = f16_bits(hb + 2) * static_cast<float>(mn);
+        }
+        decode_q5k_exact(A, st, s, m, hw);
+      } else {
+        decode<FMT>(A, st, hw, nullptr);
+      }
 #pragma unroll
       for (int i = 0; i < 4; ++i)
         buf[warp][r][st * 4 + i] = make_uint4(hw[4 * i], hw[4 * i + 1], hw[4 * i + 2], hw[4 * i + 3]);
@@ -407,8 +447,9 @@ void ds41_pack_planes(torch::Tensor raw, int64_t gtype, int64_t first_step, int6
 }
 
 // Planes rows [32 tile0, 32 tile0 + out.size(0)) -> FP16 out [count, K] (row stride out.stride(0)).
-void ds41_restore_planes(torch::Tensor codes, torch::Tensor high, torch::Tensor scale, int64_t fmt,
-                         int64_t n, int64_t K, int64_t tile0, torch::Tensor out) {
+void ds41_restore_planes(torch::Tensor codes, torch::Tensor high, torch::Tensor scale,
+                         torch::Tensor head, int64_t fmt, int64_t n, int64_t K, int64_t first_step,
+                         int64_t tile0, torch::Tensor out) {
   const c10::cuda::CUDAGuard guard(codes.device());
   TORCH_CHECK(fmt_ok(fmt), "ds41_dense: restore admits Q5_K / Q8_0 planes");
   TORCH_CHECK(out.is_cuda() && out.scalar_type() == torch::kFloat16 && out.dim() == 2 &&
@@ -422,12 +463,18 @@ void ds41_restore_planes(torch::Tensor codes, torch::Tensor high, torch::Tensor 
                   scale.numel() == plane_bytes(fmt, tiles_all, G, 2) &&
                   high.numel() == plane_bytes(fmt, tiles_all, G, 1),
               "ds41_dense: plane sizes");
+  const int64_t SB = (first_step + S + 7) / 8 - first_step / 8;
+  if (fmt == Q5K)
+    TORCH_CHECK(head.is_cuda() && head.scalar_type() == torch::kUInt8 && head.is_contiguous() &&
+                    first_step >= 0 && head.numel() == n * SB * 16,
+                "ds41_dense: Q5_K restore needs the [n, super-blocks, 16] header plane");
   Seg sg{};
   sg.codes = reinterpret_cast<const uint4*>(codes.data_ptr());
   sg.high = high.numel() ? reinterpret_cast<const uint4*>(high.data_ptr()) : nullptr;
   sg.scale = reinterpret_cast<const uint4*>(scale.data_ptr());
   sg.n = static_cast<int>(n);
   sg.fmt = static_cast<int>(fmt);
+  const uint8_t* hp = fmt == Q5K ? head.data_ptr<uint8_t>() : nullptr;
   const int64_t tiles = (count + 31) / 32;
   const int rows = static_cast<int>(32 * tile0 + count);
   const long long items = tiles * G;
@@ -437,11 +484,13 @@ void ds41_restore_planes(torch::Tensor codes, torch::Tensor high, torch::Tensor 
   auto st = at::cuda::getCurrentCUDAStream();
   half* o = reinterpret_cast<half*>(out.data_ptr());
   if (fmt == Q8)
-    restore_kernel<Q8><<<blocks, threads, 0, st>>>(sg, int(tile0), int(tiles), rows, int(K), int(S),
-                                                  int(G), o, out.stride(0));
+    restore_kernel<Q8><<<blocks, threads, 0, st>>>(sg, hp, int(first_step), int(SB), int(tile0),
+                                                  int(tiles), rows, int(K), int(S), int(G), o,
+                                                  out.stride(0));
   else
-    restore_kernel<Q5K><<<blocks, threads, 0, st>>>(sg, int(tile0), int(tiles), rows, int(K),
-                                                   int(S), int(G), o, out.stride(0));
+    restore_kernel<Q5K><<<blocks, threads, 0, st>>>(sg, hp, int(first_step), int(SB), int(tile0),
+                                                   int(tiles), rows, int(K), int(S), int(G), o,
+                                                   out.stride(0));
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

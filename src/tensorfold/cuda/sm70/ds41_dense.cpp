@@ -2,8 +2,8 @@
 #include <vector>
 void ds41_pack_planes(torch::Tensor, int64_t, int64_t, int64_t, torch::Tensor, torch::Tensor,
                       torch::Tensor);
-void ds41_restore_planes(torch::Tensor, torch::Tensor, torch::Tensor, int64_t, int64_t, int64_t,
-                         int64_t, torch::Tensor);
+void ds41_restore_planes(torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int64_t,
+                         int64_t, int64_t, int64_t, int64_t, torch::Tensor);
 void ds41_dense_rows(torch::Tensor, std::vector<torch::Tensor>, std::vector<torch::Tensor>,
                      std::vector<torch::Tensor>, std::vector<torch::Tensor>, std::vector<int64_t>,
                      std::vector<int64_t>, int64_t, int64_t, int64_t, torch::Tensor, torch::Tensor,
