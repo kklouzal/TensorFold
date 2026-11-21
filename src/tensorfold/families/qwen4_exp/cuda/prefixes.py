@@ -7,6 +7,11 @@ unused one still ages out. A slot is used when a prompt keeps a point in it or r
 
 Past ``keep``, a chain's spare points go before any value: a chain keeps one point a doubling of distance from its end
 (its ``LADDER``), so a prompt that diverges anywhere in it resumes within about that distance again, not cold.
+
+Two optional owner hooks refine this for lanes whose points are not all equally resumable (absent: the policy above):
+``prefix_protected(entry)`` marks points (DeepSeek-V4.1: those its chain's latest request kept) that are never a
+ladder's spare and are worth all their tokens, as a chain's end; ``prefix_reach(entry, prompt)`` is how far a resume
+from a VRAM point actually reaches (the host tier's ``MIN_GAIN`` comparison).
 """
 
 from tensorfold.cleanup import raise_failures
@@ -106,6 +111,11 @@ def _lost(kept, entry) -> int:
     return max(len(k[0]) for k in kept if k[1] is entry[1]) - len(entry[0])
 
 
+def _protected(owner, entry) -> bool:
+    hook = getattr(owner, "prefix_protected", None)
+    return hook is not None and hook(entry)
+
+
 def _value(owner, entry) -> int:
     return owner.used.get(id(entry[1]), 0) + len(entry[0])
 
@@ -129,10 +139,11 @@ def _idle(owner, busy, *spared, extent=None, where=None):
     return min(chains.values(), key=lambda k: _value(owner, k), default=None)
 
 
-def _spare(kept) -> list:
+def _spare(kept, protected=lambda entry: False) -> list:
     """Points a chain's ladder does not need: in each band of distance from its end, [2^b, 2^(b+1)) * LADDER, all but
     the farthest (a prompt diverging inside the band resumes there rather than a band farther out). Never its end, nor
-    its root (its shortest point, as a rule the system block other conversations share). ``kept`` ascends by value, as
+    its root (its shortest point, as a rule the system block other conversations share), nor a ``protected`` point
+(it neither takes nor fills its band). ``kept`` ascends by value, as
     ``remember`` sorts it, so a chain's points come shortest first."""
 
     ends: dict[int, tuple[int, int]] = {}
@@ -143,7 +154,7 @@ def _spare(kept) -> list:
     for k in kept:
         root, end = ends[id(k[1])]
         gap = end - len(k[0])
-        if gap == 0 or len(k[0]) == root:
+        if gap == 0 or len(k[0]) == root or protected(k):
             continue
         band = (id(k[1]), (gap // LADDER).bit_length())
         if band in bands:                            # its band's farthest point came first
@@ -177,7 +188,9 @@ def _restore_host(owner, prompt, principal, extent):
         return None
     entry, index = found
     vram = _best(owner.kept, prompt, principal=principal)
-    if vram is not None and len(entry["points"][index][0]) - len(vram[0]) < MIN_GAIN:
+    reach = getattr(owner, "prefix_reach", None)
+    if vram is not None and len(entry["points"][index][0]) - (
+            len(vram[0]) if reach is None else reach(vram, prompt)) < MIN_GAIN:
         return None
     rows = max(entry["rows"], len(prompt) + owner.depth + 2)
 
@@ -344,8 +357,10 @@ def evict(owner, keep, protect=None, *, new_sequence=False, extent=None, where=N
 
 def _worth(owner, entry) -> int:
     """What dropping one entry loses: its slot's clock plus the tokens it saves past the next shorter point of its chain
-    (all of them for a chain's end, which a prompt that extends it resumes from, or a lone point)."""
+    (all of them for a chain's end, which a prompt that extends it resumes from, a lone point or a protected one)."""
 
+    if _protected(owner, entry):
+        return owner.used.get(id(entry[1]), 0) + len(entry[0])
     lengths = [len(k[0]) for k in owner.kept if k[1] is entry[1]]
     shorter = [n for n in lengths if n < len(entry[0])]
     saved = len(entry[0]) - max(shorter) if shorter and len(entry[0]) < max(lengths) else len(entry[0])
@@ -368,7 +383,7 @@ def remember(owner, ids, st, snap, tail, *, principal=_UNSCOPED) -> None:
         owner.kept = [entry for entry in owner.kept if not same(entry)] + [(ids, st, snap, tail)]
     _use(owner, st)
     while len(owner.kept) > owner.keep:
-        spare = _spare(owner.kept)
+        spare = _spare(owner.kept, lambda k: _protected(owner, k))
         if spare:                                                   # a ladder's spare point: the clock stays
             entry = min(spare, key=lambda k: _value(owner, k))
         else:
