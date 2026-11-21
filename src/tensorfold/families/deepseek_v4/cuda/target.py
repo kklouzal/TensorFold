@@ -1,0 +1,307 @@
+"""DeepSeek-V4.1-Flash forward on one SM70 rank: the 1Cat-vLLM DS41 forward with the friend's multi-request
+packed attention (overlay patches 85/87), on TensorFold-owned KV pages, slots and collectives, in the TP8 x (ETP4 x EP2) layout of the Flash Next and Gemma 4 lanes.
+
+Order and arithmetic follow 1Cat-vLLM 4d57473d ``vllm/models/deepseek_v41/model.py`` (``_forward_fused``:
+VLLM_V41_HC_FUSED=1, VLLM_V41_ROUTER_FUSED=1) with patch 87's ``attention_forward`` (packed FP4 KV rows on the
+GPU, per-slot window rings, row-wise decode indexer, single-request prefill indexer). Kernels are the vendored
+1Cat/overlay Triton kernels (``.kernels``) and the 1Cat SM70 GGUF expert ops (``tensorfold.cuda.sm70.onecat_ds41``).
+
+TensorFold changes, recorded: TP8 attention/dense (8 query heads, 1 output group, 4 indexer heads per rank)
+instead of TP4, and experts ETP4 x EP2 (rank r holds experts [192 (r // 4), +192) at TP slice r % 4) instead of
+PP2 x TP4; a layer's routed and shared partials form one 8-rank sum. Every cross-rank sum is accumulated in FP32
+and rounded once (upstream sums FP16 partials of 4 ranks); the decode indexer's per-rank head sums stay FP32.
+Dense projections run as FP16 GEMMs over weights decoded once at load (upstream's restore+GEMM; its M<=8 dmv13
+route is an optimization not yet ported). The Engram rows come from mapped host memory (``engram.py``).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+
+from .weights import EP, WORLD, Geometry, Weights
+
+DECODE_MAX = 8                 # patch 85: requests with more tokens take the single-request prefill indexer
+BLOCK = 64                     # KV page: tokens per page (the friend's production --block-size 64)
+
+
+# ------------------------------------------------------------------------------------------- collectives
+class Collectives:
+    """FP32 sums and gathers over the 8-rank communicator (TP8 attention/dense and the ETP4 x EP2 experts)."""
+
+    def __init__(self, world):
+        self.world = world
+
+    def _all_reduce(self, tensor):
+        import ctypes
+        comm = self.world
+        fn = comm.lib.ncclAllReduce
+        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                       ctypes.c_void_p, ctypes.c_void_p]
+        fn.restype = ctypes.c_int
+        stream = torch.cuda.current_stream().cuda_stream
+        comm._check(fn(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(), 7, 0, comm.comm, stream))
+
+    def sum(self, partial: torch.Tensor, dtype=None) -> torch.Tensor:
+        """8-rank sum of partials, accumulated in FP32 and rounded once to ``dtype`` (default: the partial's)."""
+        total = partial.float().contiguous()
+        self._all_reduce(total)
+        return total.to(dtype or partial.dtype)
+
+    def gather(self, part: torch.Tensor) -> torch.Tensor:
+        """Concatenate the eight ranks' parts along the last dimension, rank order."""
+        part = part.contiguous()
+        recv = torch.empty((WORLD,) + tuple(part.shape), dtype=part.dtype, device=part.device)
+        self.world.all_gather(part, recv)
+        return torch.cat(list(recv.unbind(0)), dim=-1)
+
+
+# --------------------------------------------------------------------------------------------- batch view
+@dataclass
+class Step:
+    """One forward's batch: requests in row order, each a contiguous run of tokens (patch 85's MuStep)."""
+
+    ids: torch.Tensor            # [T] int64
+    positions: torch.Tensor      # [T] int64
+    valid: torch.Tensor          # [T] bool
+    token_req: torch.Tensor      # [T] int32 request row of each token (-1 padding)
+    qsl: torch.Tensor            # [R + 1] int32 query start offsets
+    qsl_cpu: list
+    num_reqs: int
+    req_slot: torch.Tensor       # [rows] int32 slot of each request row (scratch for padding rows)
+    block_table: torch.Tensor    # [R, pages] int32 page ids of each request row
+    prefill: list                # [(r, s0, s1)]: requests with > DECODE_MAX tokens
+    decode_index: torch.Tensor | None   # token rows of the other requests (None: all rows)
+
+
+class Pool:
+    """Packed KV pages (patch 87 PackedLayout: per source, B/r compressed rows of 288 B then B/r index rows of
+    68 B) and per-slot window rings [slots, 128, 512] FP16 for every layer. Identical on every rank."""
+
+    def __init__(self, geometry: Geometry, pages: int, slots: int, device):
+        from .kernels.mu_packed import PackedLayout, RING
+        sources = {layer: geometry.compress_ratios[layer] for layer in geometry.kv_sources}
+        self.layout = PackedLayout(sources, BLOCK)
+        self.pages = pages
+        self.cache = torch.zeros(pages, self.layout.page_bytes, dtype=torch.uint8, device=device)
+        self.rings = [torch.zeros(slots, RING, 512, dtype=torch.float16, device=device)
+                      for _ in range(geometry.layers)]
+        self.free = list(range(pages - 1, -1, -1))    # lowest page first (pop from the end)
+        self.owned: dict[int, list[int]] = {}
+
+    def token_bytes(self) -> int:
+        return self.layout.bytes_per_token
+
+    def attach(self, slot: int, tokens: int) -> list[int]:
+        need = -(-tokens // BLOCK)
+        have = self.owned.setdefault(slot, [])
+        if need > len(have) + len(self.free):
+            raise MemoryError(f"KV pool exhausted: {need - len(have)} more pages needed, {len(self.free)} free")
+        while len(have) < need:
+            have.append(self.free.pop())
+        return have
+
+    def detach(self, slot: int) -> None:
+        for page in reversed(self.owned.pop(slot, [])):
+            self.free.append(page)
+        self.free.sort(reverse=True)
+
+    def reset_ring(self, slot: int) -> None:
+        for ring in self.rings:
+            ring[slot].zero_()
+
+
+# ------------------------------------------------------------------------------------------------ the model
+class Target:
+    def __init__(self, w: Weights, comm: Collectives, *, slots: int, pages: int, max_tokens: int, context: int,
+                 engram, device):
+        from .kernels import quant_rope, mu_state
+        self.w, self.c, self.g = w, comm, w.geometry
+        self.device = device
+        self.slots = slots                    # the last slot is scratch (padding rows)
+        self.context = context
+        self.max_tokens = max_tokens
+        self.pool = Pool(self.g, pages, slots, device)
+        self.engram = engram
+        self.window_rope = quant_rope.rope_table().to(device)
+        self.compressed_rope = quant_rope.rope_table(compressed=True).to(device)
+        g = self.g
+        self.hash_state = mu_state.MuEngramHashState(
+            w.engram_token_map, w.engram_primes, w.engram_offsets, w.engram_multipliers, slots=slots - 1,
+            pad_token_id=g.engram_pad, max_tokens=max_tokens, max_context=max(16384, context), trap=True)
+        self.c2 = {}
+        for layer in w.layers:
+            if layer.owns_kv and layer.ratio == 2:
+                self.c2[layer.index] = mu_state.MuC2State(layer.comp_norm, slots=slots - 1, trap=True)
+        self.local = range(w.group * (g.experts // EP), (w.group + 1) * (g.experts // EP))
+        self.engram_rows = torch.empty(max_tokens, 24 * 256, dtype=torch.float16, device=device)
+
+    # ---- slot lifecycle (every rank, same order)
+    def reset_slot(self, slot: int) -> None:
+        self.pool.reset_ring(slot)
+        self.hash_state.reset_slot(slot)
+        for state in self.c2.values():
+            state.reset_slot(slot)
+
+    # ---- small pieces
+    def _norm(self, x, weight):
+        from .kernels.norm import short_rms_norm
+        if (x.dtype == torch.float16 and x.ndim == 2 and 1 <= x.shape[0] <= 6 and x.shape[1] in (128, 512, 1280, 5120)
+                and x.is_contiguous()):
+            return short_rms_norm(x, weight, self.g.eps)
+        values = x.float()
+        return (values * torch.rsqrt(values.square().mean(-1, keepdim=True) + self.g.eps) * weight).to(x.dtype)
+
+    @staticmethod
+    def _linear(x, weight):
+        return torch.matmul(x, weight.t())
+
+    def embed(self, ids):
+        from tensorfold.cuda.sm70 import onecat_ds41 as native
+        rows = self.w.embed.index_select(0, ids)
+        return native.dequantize(rows, self.w.embed_type, self.g.hidden)
+
+    # ---- attention (patch 87 attention_forward)
+    def attention(self, ly, x, step: Step, table, shared):
+        from .kernels import quant_rope as qr_ops
+        from .kernels import mu_packed as pk
+        tokens = x.shape[0]
+        positions = step.positions
+        q_low, kv_low = self._linear(x, ly.wq_a), self._linear(x, ly.wkv)
+        qr = self._norm(q_low, ly.q_norm)
+        query = qr_ops.apply_rope(self._linear(qr, ly.wq_b).view(tokens, -1, 512), positions, table)
+        window = qr_ops.attention_qdq(qr_ops.apply_rope(self._norm(kv_low, ly.kv_norm), positions, table))
+        pool = self.pool
+        extra = {}
+        if ly.ratio:
+            if ly.owns_kv:
+                latent = self._compress(ly, x, step)
+                key = self._norm(self._linear(latent, ly.idx_wk), ly.idx_k_norm)
+                key = qr_ops.apply_rope(key, (positions - (ly.ratio - 1)).clamp_min(0), table)
+                pk.insert_rows(pool.cache, key, positions, step.valid, step.token_req, step.block_table,
+                               layout=pool.layout, layer=ly.index, compressed=False)
+                compact = qr_ops.apply_rope(latent, (positions - ly.ratio + 1).clamp_min(0), table)
+                pk.insert_rows(pool.cache, compact, positions, step.valid, step.token_req, step.block_table,
+                               layout=pool.layout, layer=ly.index, compressed=True)
+            if ly.has_indexer:
+                shared["topk"] = self._select(ly, x, qr, step, table)
+            extra = dict(cache=pool.cache, block_table=step.block_table, layout=pool.layout, layer=ly.source,
+                         topk=shared["topk"])
+        output = self._attend(query, step, pool.rings[ly.index], window, ly.sink, **extra)
+        pk.insert_ring(pool.rings[ly.index], window, positions, step.valid, step.token_req, step.qsl, step.req_slot)
+        output = qr_ops.apply_rope(output, positions, table, inverse=True)
+        output = qr_ops.attention_qdq(output.reshape(tokens, ly.wo_a.shape[0], -1))
+        projected = torch.bmm(output.transpose(0, 1), ly.wo_a.transpose(1, 2)).transpose(0, 1).reshape(tokens, -1)
+        return self.c.sum(self._linear(projected, ly.wo_b))
+
+    def _compress(self, ly, x, step):
+        if ly.ratio == 1:
+            return self._norm(self._linear(x, ly.comp_wkv), ly.comp_norm)
+        xf = x.float()
+        values, scores = self._linear(xf, ly.comp_wkv), self._linear(xf, ly.comp_wgate)
+        state = self.c2[ly.index]
+        latent, _ = state(values, scores, step.positions, step.token_req, step.qsl, step.req_slot)
+        state.commit_all(values, scores, step.positions, step.qsl, step.req_slot, step.num_reqs, step.token_req)
+        return latent
+
+    def _select(self, ly, x, qr, step, table):
+        """top-512 compressed positions per token (patch 87 ``_select``: Full layers, segmented top-k)."""
+        from .kernels import quant_rope as qr_ops
+        from .kernels import mu_packed as pk
+        tokens = x.shape[0]
+        query = self._linear(qr, ly.idx_wq_b).view(tokens, -1, 128)
+        query = qr_ops.attention_qdq(qr_ops.apply_rope(query, step.positions, table), fp4=True, group=32)
+        weights = self._linear(x, ly.idx_proj) * (1.0 / 64.0)
+        return pk.select_positions(query, weights, step.positions, step, self.pool.cache, step.block_table,
+                                   layout=self.pool.layout, source=ly.source, ratio=ly.ratio,
+                                   width=self.context // ly.ratio, all_reduce=self.c.sum,
+                                   score_dtype=torch.float32)
+
+    def _attend(self, query, step, ring, window, sink, *, cache=None, block_table=None, layout=None, layer=None,
+                topk=None):
+        from .kernels import mu_packed as pk
+        return pk.attend(query, step.positions, step, step.req_slot, ring, window, sink, cache=cache,
+                         block_table=block_table, layout=layout, source=layer, topk=topk)
+
+    # ---- MoE
+    def moe(self, ly, x):
+        from tensorfold.cuda.sm70 import onecat_ds41 as native
+        from .kernels.mhc import fp32_projection
+        from .kernels.router import route_topk
+        g = self.g
+        logits = fp32_projection(x, ly.gate)
+        probabilities, ids = route_topk(logits.float(), ly.gate_bias, g.top_k, g.routed_scale)
+        first = self.local.start
+        local = ids.to(torch.int32) - first
+        mine = (local >= 0) & (local < len(self.local))
+        local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
+        weights = torch.where(mine, probabilities.float(), torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
+        out = torch.empty_like(x)
+        for at in range(0, x.shape[0], 6):
+            end = min(at + 6, x.shape[0])
+            out[at:end] = native.v41_experts(x[at:end].contiguous(), local[at:end], weights[at:end], ly.exp_gate,
+                                             ly.exp_up, ly.exp_down, ly.gate_up_type, ly.down_type, ly.down_left)
+        hidden = native.shared_swiglu(self._linear(x, ly.sh_gate), self._linear(x, ly.sh_up))
+        total = out.float() + self._linear(hidden, ly.sh_down).float()
+        self.c._all_reduce(total)
+        return total.half()
+
+    # ---- Engram
+    def engram_layer(self, ly, hidden, hashes, step):
+        from .kernels.engram import apply_engram_gate
+        tokens = hidden.shape[0]
+        channel = self.g.engram_layers.index(ly.index)
+        rows = self.engram.lookup(hashes, channel, self.engram_rows[:tokens])
+        projected = self.c.gather(self._linear(rows, ly.engram_wkv))
+        return apply_engram_gate(hidden, projected, ly.engram_q, ly.engram_k, step.valid, inplace=True)
+
+    # ---- the whole forward
+    def forward(self, step: Step, logits_rows: torch.Tensor | None):
+        """Run every layer for ``step``; return this rank's vocabulary-shard logits [rows, vocab / 8] (FP32) of
+        ``logits_rows`` (None: no logits)."""
+        from .kernels.mhc import collapse_hc, expand_hc, hc_mixes
+        from .kernels.mhc_fused import hc_transition
+        w, g = self.w, self.g
+        tokens = step.ids.shape[0]
+        hashes = self.hash_state(step.ids, step.positions, step.valid, step.token_req, step.qsl, step.req_slot)
+        self.hash_state.commit_all(step.ids, step.positions, step.valid, step.qsl, step.req_slot, step.num_reqs,
+                                   step.token_req)
+        hidden = self.embed(step.ids)
+        # FP16 cannot carry the HC residual range of valid special tokens: the stream stays FP32 (upstream)
+        hidden = hidden.float()[:, None].expand(-1, g.hc, -1).contiguous()
+        pre = torch.zeros(tokens, g.hc, device=hidden.device, dtype=torch.float32)
+        pre[:, 0] = 1
+        shared = {"topk": None}
+        state = None
+        layers = w.layers
+        for i, ly in enumerate(layers):
+            if ly.engram_wkv is not None:
+                hidden = self.engram_layer(ly, hidden, hashes, step)
+                state = None
+            if state is None:
+                attn_mix = hc_mixes(hidden, ly.hc["attn_fn"], ly.hc["attn_scale"], ly.hc["attn_base"])
+                inputs = collapse_hc(hidden, pre, ly.attn_norm)
+            else:
+                inputs, attn_mix = state
+            table = self.compressed_rope if ly.ratio else self.window_rope
+            y = self.attention(ly, inputs, step, table, shared)
+            inputs, ffn_mix = hc_transition(hidden, y, attn_mix[1], attn_mix[2], attn_mix[0], ly.ffn_norm,
+                                            ly.hc["ffn_fn"], ly.hc["ffn_scale"], ly.hc["ffn_base"])
+            y = self.moe(ly, inputs)
+            pre = ffn_mix[0]
+            following = layers[i + 1] if i + 1 < len(layers) else None
+            if following is not None and following.engram_wkv is None:
+                inputs, mix = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, following.attn_norm,
+                                            following.hc["attn_fn"], following.hc["attn_scale"],
+                                            following.hc["attn_base"])
+                state = (inputs, mix)
+            elif following is not None:
+                hidden = expand_hc(y, hidden, ffn_mix[1], ffn_mix[2], inplace=True)
+                state = None
+            else:
+                result, _ = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, w.norm)
+        if logits_rows is None:
+            return None
+        rows = result.index_select(0, logits_rows)
+        return self._linear(rows, w.head).float()

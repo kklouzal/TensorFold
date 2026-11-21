@@ -639,7 +639,7 @@ Mechanisms that make throughput scale (model-agnostic reading):
    micro-batch's GPU time; 262 also removed the last stage's host serialization on the sampled-token D2H.
 3. Every batch size has a graph (holes in the capture grid cost 4-10 %).
 4. Host costs proportional to context/requests removed (173, 183, 186) - decisive at long context, ~2 % at short.
-5. No speculation (DS41 spec analyzer: projected all-segment speedup c1 x1.108, c4 x0.954, c8 x0.748; SPEC ACCEPT NO-GO,
+5. No speculation (DS41 n-gram/suffix spec analyzer, not DSpark: projected all-segment speedup c1 x1.108, c4 x0.954, c8 x0.748; SPEC ACCEPT NO-GO,
    R/seqdstune-1p.log). Qwen production also runs no MTP (C8 460.9).
 
 Prefill 8K/32K (idle): 1422/2194 (10-31) -> 140 PF_MOE 2576/2734 (seqds7c) -> 181 PF_ATTN 3113/3607 (seqdsnext1b) -> 184
@@ -807,7 +807,9 @@ durability), NUMA host allocator (272), pinned staging.
 - NCCL_PROTO=LL128,Simple; NCCL_MAX_CTAS=8/BUFFSIZE 4 MiB: no gain. numa_balancing=0, EngineCore on node 1: noise.
 - CPU thread herding/pinning: c8 -12.3 % (hostclk-1, aborted).
 - 231 rev 3 synchronous host saves in the step: c4x128K x0.890; rev 4 async still x0.978 (failed its 0.98 gate; adopted by owner).
-- Speculation for DS41 (DSpark): SPEC ACCEPT NO-GO (1.48 acc/step on content+tool; c8 projected x0.748).
+- Speculation for DS41: the SPEC ACCEPT NO-GO (1.48 acc/step on content+tool; c8 projected x0.748) is draft-free
+  n-gram/suffix speculation only (bench/dstune/spec_accept.py, "best suffix k4"), not DSpark. DeepSeek's 1017 DSpark
+  head (shards 44-46, MIT) was never measured on his production server (build-cache/friend-1cat-20261120/DRAFTERS.md).
 
 ### 7. Generalizable lessons / methodology
 

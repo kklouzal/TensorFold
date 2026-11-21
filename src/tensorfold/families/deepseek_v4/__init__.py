@@ -1,11 +1,13 @@
-"""DeepSeek-V4-Flash (model_type ``deepseek_v4``): an MLX engine on a 256 GB Mac."""
+"""DeepSeek-V4-Flash (model_type ``deepseek_v4``): an MLX engine on a 256 GB Mac; DeepSeek-V4.1-Flash
+(``deepseek_v41``, GGUF): a CUDA engine on eight V100s (``cuda/``, ported from 1Cat-vLLM's DS41 path)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
 
-MODEL_TYPES = ("deepseek_v4",)
+MODEL_TYPES = ("deepseek_v4", "deepseek_v41")
+V41 = "deepseek_v41"
 TITLE = "DeepSeek-V4-Flash"
 LANES = True
 # affine 4-bit groups of 64, routed experts in mxfp4 (DeepSeek's own FP4 bytes)
@@ -17,7 +19,7 @@ KERNEL_VERSION = "v1"
 # the shared GLM-5.3 pieces this engine runs (hyper-connections, row linears), hashed into snapshot keys
 KERNEL_DEPENDENCIES = ("tensorfold.kernels.qdot", "tensorfold.kernels.glm.flash.v1", "tensorfold.families.glm5_next.linear",
                        "tensorfold.families.glm5_next.model")
-QUANT_METHODS = {"mlx": ("mlx",)}
+QUANT_METHODS = {"mlx": ("mlx",), "cuda": ("gguf",)}
 # buffers of 200 ops and 200 MB, so a prompt chunk's memory frees as it runs; no TF32: row kernels repeat fp32
 MLX_ENV = {"MLX_MAX_OPS_PER_BUFFER": "200", "MLX_MAX_MB_PER_BUFFER": "200", "MLX_ENABLE_TF32": "0"}
 LEAST_MLX = (0, 32, 4)
@@ -33,6 +35,15 @@ def check(model_dir: str | Path) -> None:
     from tensorfold.families.deepseek_v4.weights import unreadable
 
     config = read_config(model_dir)
+    if config.get("model_type") == V41:
+        from tensorfold.families.deepseek_v4.cuda.weights import Geometry
+
+        Geometry.from_config(config)
+        for key in ("gguf_file", "engram_file"):
+            if not config.get(key) or not (Path(model_dir) / config[key]).is_file():
+                raise ValueError(f"DeepSeek-V4.1's config.json must name an existing {key} "
+                                 "(the GGUF backbone's first shard and the llama.cpp Engram file)")
+        return
     Config.from_dict(config)
     bad = unreadable(config)
     if bad:
@@ -59,6 +70,11 @@ def _require_mlx(least: tuple[int, ...]) -> None:
 
 def load(model_dir: Path, **options: Any) -> tuple[Any, Any]:
     """The MLX engine and its tokenizer."""
+
+    from tensorfold.families import read_config
+
+    if read_config(model_dir).get("model_type") == V41:
+        raise ValueError("DeepSeek-V4.1-Flash runs on the CUDA backend (eight V100s); the Mac engine reads V4")
 
     import mlx.core as mx
 
@@ -96,3 +112,16 @@ def kernel_version(model: Any) -> str:
             digest.update(path.read_bytes())
     digest.update(mx.__version__.encode())
     return f"{MODEL_TYPES[0]}-{KERNEL_VERSION}-" + digest.hexdigest()[:12]
+
+
+def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
+                master_port: int = 29551, no_drafts: bool = False, context: int | None = None, **options: Any):
+    """DeepSeek-V4.1-Flash GGUF on eight V100s: TP8 attention/dense, ETP4 x EP2 routed experts."""
+    from tensorfold.families import read_config
+
+    if read_config(model_dir).get("model_type") != V41:
+        raise ValueError("the CUDA engine serves DeepSeek-V4.1-Flash GGUF (model_type deepseek_v41)")
+    from .cuda.engine import DS41Engine
+
+    return DS41Engine(Path(model_dir), rank=rank, tp=tp, master=master, master_port=master_port, context=context,
+                      **options)
