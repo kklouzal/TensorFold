@@ -13,8 +13,6 @@
 #   (_transition_parts_tok/_hc_transition_tok). hc_transition dispatch: V3 for 1..8 tokens, otherwise the
 #   windowed per-token kernels, as upstream at these values.
 # - Triton 3.2 rewrites: none.
-# - _transition_parts takes PARTS_TOK tokens per program: the friend's overlay patch 192 (ds41_hc_exact,
-#   dsp4_files/local_ds41_hc_exact.py ``_transition_parts_x``), whose words equal the per-token kernel's.
 """Fused V4.1 HC transition: expand (in place) + next mixes + delayed collapse.
 
 One sublayer boundary of DeepSeek-V4.1 is
@@ -39,9 +37,24 @@ CHUNKS = H // COLS  # 20
 
 
 @jit
-def _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t, chunk, col,
-                 H: tl.constexpr, CHUNKS: tl.constexpr, MIX: tl.constexpr):
-    """Upstream ``_transition_parts``' body for token ``t`` up to the mix dots (the same expressions)."""
+def _transition_parts(
+    residual,
+    y,
+    post,
+    comb,
+    fn,
+    cpre,
+    cbuf,
+    dots,
+    squares,
+    csquares,
+    MIX: tl.constexpr,
+    H: tl.constexpr,
+    COLS: tl.constexpr,
+    CHUNKS: tl.constexpr,
+):
+    t, chunk = tl.program_id(0), tl.program_id(1)
+    col = chunk * COLS + tl.arange(0, COLS)
     base = residual + t * 4 * H
     r0 = tl.load(base + 0 * H + col)
     r1 = tl.load(base + 1 * H + col)
@@ -97,78 +110,15 @@ def _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t, chun
             squares + t * CHUNKS + chunk,
             tl.sum(n0 * n0 + n1 * n1 + n2 * n2 + n3 * n3, 0),
         )
-    return n0, n1, n2, n3
-
-
-@jit
-def _token_dot(w, n0, n1, n2, n3, dots, t, chunk, r, col, H: tl.constexpr, CHUNKS: tl.constexpr):
-    d = (
-        tl.load(w + 0 * H + col) * n0
-        + tl.load(w + 1 * H + col) * n1
-        + tl.load(w + 2 * H + col) * n2
-        + tl.load(w + 3 * H + col) * n3
-    )
-    tl.store(dots + (t * CHUNKS + chunk) * 24 + r, tl.sum(d, 0))
-
-
-@jit
-def _transition_parts(
-    residual,
-    y,
-    post,
-    comb,
-    fn,
-    cpre,
-    cbuf,
-    dots,
-    squares,
-    csquares,
-    MIX: tl.constexpr,
-    H: tl.constexpr,
-    COLS: tl.constexpr,
-    CHUNKS: tl.constexpr,
-    TOK: tl.constexpr,
-):
-    # Patch 192 (ds41_hc_exact): TOK tokens per program, each token's values separate [COLS] vectors from
-    # upstream's per-token expressions and the same 1-D tl.sum, so every word equals upstream's per-token kernel;
-    # only fn's loads are shared (once per program and mix row instead of once per token). The launch covers a
-    # multiple of TOK tokens (hc_transition launches the rest with TOK 1), so no slot is masked.
-    block, chunk = tl.program_id(0), tl.program_id(1)
-    col = chunk * COLS + tl.arange(0, COLS)
-    t0 = block * TOK
-    a0, b0, c0, d0 = _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t0 + 0, chunk, col, H, CHUNKS, MIX)
-    if TOK > 1:
-        a1, b1, c1, d1 = _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t0 + 1, chunk, col, H, CHUNKS, MIX)
-    if TOK > 2:
-        a2, b2, c2, d2 = _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t0 + 2, chunk, col, H, CHUNKS, MIX)
-    if TOK > 3:
-        a3, b3, c3, d3 = _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t0 + 3, chunk, col, H, CHUNKS, MIX)
-    if TOK > 4:
-        a4, b4, c4, d4 = _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t0 + 4, chunk, col, H, CHUNKS, MIX)
-    if TOK > 5:
-        a5, b5, c5, d5 = _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t0 + 5, chunk, col, H, CHUNKS, MIX)
-    if TOK > 6:
-        a6, b6, c6, d6 = _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t0 + 6, chunk, col, H, CHUNKS, MIX)
-    if TOK > 7:
-        a7, b7, c7, d7 = _token_parts(residual, y, post, comb, cpre, cbuf, csquares, squares, t0 + 7, chunk, col, H, CHUNKS, MIX)
-    if MIX:
         for r in tl.static_range(24):
             w = fn + r * 4 * H
-            _token_dot(w, a0, b0, c0, d0, dots, t0 + 0, chunk, r, col, H, CHUNKS)
-            if TOK > 1:
-                _token_dot(w, a1, b1, c1, d1, dots, t0 + 1, chunk, r, col, H, CHUNKS)
-            if TOK > 2:
-                _token_dot(w, a2, b2, c2, d2, dots, t0 + 2, chunk, r, col, H, CHUNKS)
-            if TOK > 3:
-                _token_dot(w, a3, b3, c3, d3, dots, t0 + 3, chunk, r, col, H, CHUNKS)
-            if TOK > 4:
-                _token_dot(w, a4, b4, c4, d4, dots, t0 + 4, chunk, r, col, H, CHUNKS)
-            if TOK > 5:
-                _token_dot(w, a5, b5, c5, d5, dots, t0 + 5, chunk, r, col, H, CHUNKS)
-            if TOK > 6:
-                _token_dot(w, a6, b6, c6, d6, dots, t0 + 6, chunk, r, col, H, CHUNKS)
-            if TOK > 7:
-                _token_dot(w, a7, b7, c7, d7, dots, t0 + 7, chunk, r, col, H, CHUNKS)
+            d = (
+                tl.load(w + 0 * H + col) * n0
+                + tl.load(w + 1 * H + col) * n1
+                + tl.load(w + 2 * H + col) * n2
+                + tl.load(w + 3 * H + col) * n3
+            )
+            tl.store(dots + (t * CHUNKS + chunk) * 24 + r, tl.sum(d, 0))
 
 
 @jit
@@ -231,7 +181,6 @@ def _transition_finish(
 
 
 _WINDOW = 2048
-PARTS_TOK = 2   # tokens per _transition_parts program (patch 192's production value; 1..8, words unchanged)
 
 
 def hc_transition(
@@ -297,30 +246,24 @@ def hc_transition(
             pre_w, post_w, comb_w = pre[a:b], post_n[a:b], comb_n[a:b]
         else:
             pre_w = post_w = comb_w = csq
-        # PARTS_TOK tokens per program over the largest multiple, the rest one token per program (same words)
-        full = n - n % PARTS_TOK
-        for first, last, tok in ((0, full, PARTS_TOK), (full, n, 1)):
-            if last == first:
-                continue
-            _transition_parts[((last - first) // tok, CHUNKS)](
-                residual[a + first:a + last],
-                y[a + first:a + last],
-                post[a + first:a + last],
-                comb[a + first:a + last],
-                fn if mix else post,
-                collapse_pre[a + first:a + last],
-                cbuf[first:],
-                dots[first:],
-                sq[first:],
-                csq[first:],
-                MIX=mix,
-                H=H,
-                COLS=COLS,
-                CHUNKS=CHUNKS,
-                TOK=tok,
-                num_warps=4,
-                enable_fp_fusion=False,
-            )
+        _transition_parts[(n, CHUNKS)](
+            residual[a:b],
+            y[a:b],
+            post[a:b],
+            comb[a:b],
+            fn if mix else post,
+            collapse_pre[a:b],
+            cbuf,
+            dots,
+            sq,
+            csq,
+            MIX=mix,
+            H=H,
+            COLS=COLS,
+            CHUNKS=CHUNKS,
+            num_warps=4,
+            enable_fp_fusion=False,
+        )
         _transition_finish[(n,)](
             dots,
             sq,
