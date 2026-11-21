@@ -29,8 +29,10 @@ EXPERT_TYPES = (16, 17, 29)
 MAX_ROWS = 64  # rows per launch sequence; more rows run in pieces of 64 (rows are independent)
 
 # Variant schedule per weight type: [(first M, variant), ...] steps (gate/up "g<type>", down "d<type>").
-# PROVISIONAL: the friend's production EM3 schedule (bench/results/ds41/dmoe-schedule.json, his V100 bench);
-# replaced by our sweep (tests/cuda/bench_ds41_decode_moe.py).
+# The friend's production EM3 schedule (his bench/results/ds41/dmoe-schedule.json). Kept on evidence: on one of
+# our V100s (180 W, 192-expert rank banks, his measured decode routing marginals; gpuq/runs/em2-3, 2026-11-21)
+# it beat our own per-kernel sweep's schedule on the 40-layer estimate at M >= 4 (by 1-6 %; ours was 2-3 %
+# faster at M 1-2, one seed: not adopted, a post-parity A/B candidate). tests/cuda/bench_ds41_decode_moe.py.
 SCHEDULE = {
     "g16": [(1, 16), (3, 4), (4, 20), (6, 4), (8, 20), (12, 4)],
     "g17": [(1, 10), (2, 4), (3, 20), (8, 4), (12, 20)],

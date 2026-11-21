@@ -27,8 +27,10 @@ import torch
 
 HIDDEN, ROWS, TOP = 5120, 576, 6
 EXPERT_TYPES = (16, 17, 29)
-# Fewest tokens for which this op replaces the decode op's per-6-row loop: measured crossover on one
-# 192-expert rank layer (blk.27, GPU 0 at 180 W) between 65 tokens (loop faster) and 256 (this faster).
+# Fewest tokens for which this op replaces the decode op (ds41_decode_moe). Set when the decode op was the
+# 6-row loop (crossover blk.27 between 65 and 256 tokens). The expert-major decode op is faster still at 384
+# tokens (blk.0: 4.07 vs 6.93 ms, gpuq/runs/em2-3), but this op is the more accurate one (FP16 activations,
+# FP32 gate/up; no Q8_1), so the threshold stays an accuracy boundary until a perplexity A/B decides it.
 MIN_TOKENS = 128
 
 
