@@ -196,3 +196,57 @@ def test_a_cut_or_malformed_block_is_no_call(model_dir):
     app = app_for(model_dir, bad, 2)
     result = app.run(body, True, lambda d: True)
     assert not result["calls"] and result["finish"] == "stop" and "invoke" in result["content"]
+
+
+def test_image_parts_expand_through_the_vision_frontend(model_dir, monkeypatch):
+    """--vision: each image part renders as one trusted placeholder (request text spelling it is refused) and the
+    frontend expands it to the image's span; the prompt-cache ids of a span follow the image's pixels."""
+    pytest.importorskip("PIL")
+    import base64
+    import io
+
+    from PIL import Image
+    from tokenizers import AddedToken, Tokenizer
+
+    from tensorfold.cuda.server import App
+    from tensorfold.families.deepseek_v4.cuda import vision as V
+    from tensorfold.token_metadata import load_tokenizer
+
+    tok = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
+    tok.add_tokens([AddedToken(native.IMAGE_PLACEHOLDER, special=False)])
+    tok.save(str(model_dir / "tokenizer.json"))
+    image_id = tok.token_to_id(native.IMAGE_PLACEHOLDER)
+    monkeypatch.setattr(V, "IMAGE_TOKEN_ID", image_id)
+    engine = Scripted(load_tokenizer(model_dir))
+    engine.vision = V.Frontend(model_dir)
+    app = App(engine, model_dir, "ds41")
+
+    def url(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (600, 400), color).save(buf, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    def prepared(*colors, text="What is it?"):
+        parts = [{"type": "text", "text": text}, *({"type": "image_url", "image_url": {"url": url(c)}} for c in colors)]
+        return app.prepare_for_count({"max_tokens": 8, "messages": [{"role": "user", "content": parts}]}, True)
+
+    red = prepared("red")
+    vision = red.vision
+    n_llm_h, n_llm_w, _, _ = V.plan_image_grid(600, 400)
+    span = V.num_image_tokens(n_llm_h, n_llm_w)
+    assert len(vision.blocks) == 1 and vision.blocks[0][1] - vision.blocks[0][0] == span
+    assert list(red.prompt) == list(vision.token_ids) and red.prompt.count(image_id) == span
+    a, b = vision.blocks[0]
+    text = app.tok.decode(list(red.prompt[:a]) + [image_id] + list(red.prompt[b:]), skip_special_tokens=False)
+    assert text == (native.bos_token + native.USER_SP_TOKEN + "What is it?\n\n" + native.IMAGE_PLACEHOLDER +
+                    native.ASSISTANT_SP_TOKEN + native.thinking_end_token)
+    with pytest.raises(RequestError):
+        prepared("red", text="What is " + native.IMAGE_PLACEHOLDER + "?")
+    vocab = 1000
+    keys = V.prefix_ids(vision, vocab)
+    assert keys[:a] == list(red.prompt[:a]) and keys[b:] == list(red.prompt[b:])
+    assert all(vocab <= k < 1 << 31 for k in keys[a:b]) and len(set(keys[a:b])) == 8
+    assert keys == V.prefix_ids(prepared("red").vision, vocab)
+    assert keys[a:b] != V.prefix_ids(prepared("blue").vision, vocab)[a:b]
+    two = prepared("red", "blue").vision
+    assert len(two.blocks) == 2 and two.token_ids.count(image_id) == 2 * span

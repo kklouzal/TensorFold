@@ -50,6 +50,11 @@ class Step:
     block_table: torch.Tensor    # [R, pages] int32 page ids of each request row
     prefill: list                # [(r, s0, s1, last position)]: requests with > DECODE_MAX tokens (host values)
     decode_index: torch.Tensor | None   # token rows of the other requests (None: all rows)
+    # Image input (vision.py): rows of image spans (ids IMAGE_TOKEN_ID), their mask and their FP16 features; None
+    # in every text step, whose forward is then exactly the text model's
+    image: torch.Tensor | None = None          # [T] bool
+    image_rows: torch.Tensor | None = None     # [V] int64, ascending
+    features: torch.Tensor | None = None       # [V, 5120] FP16
 
 
 class Pool:
@@ -92,7 +97,7 @@ class Pool:
 # ------------------------------------------------------------------------------------------------ the model
 class Target:
     def __init__(self, w: Weights, comm: Collectives, *, slots: int, pages: int, max_tokens: int, context: int,
-                 engram, device, lattice):
+                 engram, device, lattice, bias_vl=None):
         from .kernels import quant_rope, mu_state
         self.w, self.c, self.g = w, comm, w.geometry
         self.device = device
@@ -121,6 +126,7 @@ class Target:
         # Prefill routed experts (>= MIN_TOKENS rows): the friend's TurboMind lattice path (ds41_lattice_moe); its
         # canonical-bank workspace is the caller's (allocated before the KV pool is sized).
         self.lattice = lattice
+        self.bias_vl = bias_vl             # [layers, experts] FP32: image rows' router bias (--vision), else None
         # Engram lookup telemetry for the deferred hot-row VRAM cache candidate (off unless the variable names a
         # file; rank 0 only, since every rank looks up the same rows): appends each forward's valid hashed row ids
         # (int64 [tokens, 2 tables, 24 heads], table-local) for offline hit-rate / churn analysis.
@@ -233,14 +239,19 @@ class Target:
                          block_table=block_table, layout=layout, source=layer, topk=topk)
 
     # ---- MoE
-    def moe(self, ly, x):
+    def moe(self, ly, x, image=None):
         from tensorfold.cuda.sm70 import ds41_lattice_moe as lattice_moe
         from tensorfold.cuda.sm70 import onecat_ds41 as native
         from .kernels.mhc import fp32_projection
         from .kernels.router import route_topk
         g = self.g
         logits = fp32_projection(x, ly.gate)
-        probabilities, ids = route_topk(logits.float(), ly.gate_bias, g.top_k, g.routed_scale)
+        if image is None:
+            probabilities, ids = route_topk(logits.float(), ly.gate_bias, g.top_k, g.routed_scale)
+        else:       # image rows route with the vision bias (upstream Gate.bias_vl; weights stay unbiased)
+            from .vision import route_with_vision
+            probabilities, ids = route_with_vision(logits.float(), ly.gate_bias, self.bias_vl[ly.index], image,
+                                                   g.top_k, g.routed_scale)
         first = self.local.start
         local = ids.to(torch.int32) - first
         mine = (local >= 0) & (local < len(self.local))
@@ -257,13 +268,13 @@ class Target:
         return self.c.sum(total, torch.float16)
 
     # ---- Engram
-    def engram_layer(self, ly, hidden, hashes, step):
+    def engram_layer(self, ly, hidden, hashes, step, valid):
         from .kernels.engram import apply_engram_gate
         tokens = hidden.shape[0]
         channel = self.g.engram_layers.index(ly.index)
         rows = self.engram.lookup(hashes, channel, self.engram_rows[:tokens])
         projected = self.c.gather(self._linear(rows, ly.engram_wkv))
-        return apply_engram_gate(hidden, projected, ly.engram_q, ly.engram_k, step.valid, inplace=True)
+        return apply_engram_gate(hidden, projected, ly.engram_q, ly.engram_k, valid, inplace=True)
 
     # ---- the whole forward (begin / layers / end: a prompt chunk may pause between layers while decode rounds run)
     def forward(self, step: Step, logits_rows: torch.Tensor | None):
@@ -279,18 +290,26 @@ class Target:
         order, so other forwards may run between its layers (they touch other slots)."""
         g = self.g
         tokens = step.ids.shape[0]
-        hashes = self.hash_state(step.ids, step.positions, step.valid, step.token_req, step.qsl, step.req_slot)
-        self.hash_state.commit_all(step.ids, step.positions, step.valid, step.qsl, step.req_slot, step.num_reqs,
+        # Image-span rows are dead Engram n-gram members (upstream: valid & ~image into the hash state, its commit
+        # and the Engram gate); KV and attention keep every row.
+        valid = step.valid if step.image is None else step.valid & ~step.image
+        hashes = self.hash_state(step.ids, step.positions, valid, step.token_req, step.qsl, step.req_slot)
+        self.hash_state.commit_all(step.ids, step.positions, valid, step.qsl, step.req_slot, step.num_reqs,
                                    step.token_req)
         if self.engram_trace is not None:
-            self.engram_trace.write(hashes[step.valid].cpu().numpy().tobytes())
+            self.engram_trace.write(hashes[valid].cpu().numpy().tobytes())
         hidden = self.embed(step.ids)
+        if step.image is not None:        # the tower's FP16 span rows replace the image token's embedding
+            if self.bias_vl is None:
+                raise RuntimeError("an image step on an engine without the vision router bias")
+            hidden.index_copy_(0, step.image_rows, step.features)
         # FP16 cannot carry the HC residual range of valid special tokens: the stream stays FP32 (upstream)
         hidden = hidden.float()[:, None].expand(-1, g.hc, -1).contiguous()
         pre = torch.zeros(tokens, g.hc, device=hidden.device, dtype=torch.float32)
         pre[:, 0] = 1
         return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": {"topk": None},
-                "mix": None, "half": None, "next": 0, "result": None}
+                "mix": None, "half": None, "next": 0, "result": None, "valid": valid,
+                "image": step.image}
 
     @property
     def units(self) -> int:
@@ -318,7 +337,7 @@ class Target:
             ly = layers[i]
             if not second:
                 if ly.engram_wkv is not None:
-                    hidden = self.engram_layer(ly, hidden, hashes, step)
+                    hidden = self.engram_layer(ly, hidden, hashes, step, st["valid"])
                     state = None
                 if state is None:
                     attn_mix = hc_mixes(hidden, ly.hc["attn_fn"], ly.hc["attn_scale"], ly.hc["attn_base"])
@@ -332,7 +351,7 @@ class Target:
             else:
                 inputs, ffn_mix = half
                 half = None
-                y = self.moe(ly, inputs)
+                y = self.moe(ly, inputs, st["image"])
                 pre = ffn_mix[0]
                 following = layers[i + 1] if i + 1 < len(layers) else None
                 if following is not None and following.engram_wkv is None:

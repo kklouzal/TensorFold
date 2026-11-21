@@ -152,6 +152,20 @@ def _render_message(o, index, messages, thinking_mode, drop_thinking, reasoning_
     return prompt
 
 
+def _trust_placeholders(blocks):
+    """The placeholder text blocks ``process_image_messages`` put where image blocks were are the encoder's own
+    control text: trusted, so each encodes as the image token. Request strings are OriginText data and upstream
+    refuses the placeholder inside them, so only the encoder's own (plain ``str``) blocks are affected."""
+    for block in blocks or ():
+        if not isinstance(block, dict):
+            continue
+        text = block.get('text')
+        if (block.get('type') == 'text' and type(text) is str and text == native.IMAGE_PLACEHOLDER):
+            block['text'] = trusted(native.IMAGE_PLACEHOLDER)
+        elif block.get('type') == 'tool_result' and isinstance(block.get('content'), list):
+            _trust_placeholders(block['content'])
+
+
 def encode(messages, *, thinking_mode, reasoning_effort, drop_thinking=True):
     """``encode_messages`` of the vendored encoder (no context, BOS added), with output origins."""
     o = _V41Origin()
@@ -160,6 +174,8 @@ def encode(messages, *, thinking_mode, reasoning_effort, drop_thinking=True):
     messages = native.merge_tool_messages(messages)
     messages = native.sort_tool_results_by_call_order(messages)
     messages, _ = native.process_image_messages(messages)
+    for msg in messages:
+        _trust_placeholders(msg.get('content_blocks'))
     prompt = o.bos_token
     effective_drop_thinking = drop_thinking and not any(m.get('tools') for m in messages)
     if thinking_mode == 'thinking' and effective_drop_thinking:

@@ -233,9 +233,11 @@ class V41ChatTemplate:
         from tensorfold.server.messages import normalize_messages
         from tensorfold.server.prompt_literals import MAX_RENDER_BYTES, PromptEncodingError
 
-        if allow_images or allow_audio:
-            raise TemplateError("DeepSeek-V4.1 is served text only: no image or audio inputs")
-        messages = normalize_messages(messages)        # leading instructions merged; later system turns kept
+        if allow_audio:
+            raise TemplateError("DeepSeek-V4.1 takes no audio inputs")
+        # leading instructions merged; later system turns kept; image parts only where the server's vision frontend
+        # asks (``allow_images``: it expands each image's one placeholder)
+        messages = normalize_messages(messages, allow_images=bool(allow_images))
         limit = MAX_RENDER_BYTES if max_render_bytes is None else max_render_bytes
         try:
             if extra is not None and not isinstance(extra, dict):
@@ -246,7 +248,8 @@ class V41ChatTemplate:
                 render_credit(0, 0)
             text = render_literals(messages, self.literals, tools=tools or None, thinking=bool(enable_thinking),
                                    reasoning_effort=(extra or {}).get("reasoning_effort"),
-                                   add_generation_prompt=add_generation_prompt, max_bytes=limit)
+                                   add_generation_prompt=add_generation_prompt, max_bytes=limit,
+                                   images=bool(allow_images))
             if render_credit is not None:
                 render_credit(len(text), 1)
             if len(str.__str__(text).encode("utf-8")) > limit:

@@ -379,7 +379,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Gemma 4 E4B | `DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking` | CUDA BF16 candidate; [recipe](docs/recipes/gemma-4-e4b.md) | Native Google assistant and EAGLE3 candidates; comparison pending, neither is DFlash |
 | Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4; ModelOpt NVFP4 ([recipe](docs/recipes/gemma-4-26b-modelopt.md)) | MLX; initial CUDA trial; AEON-7 NVFP4 on eight V100s with `--tp 8` ([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)) | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
-| DeepSeek-V4.1-Flash-1017 GGUF | GSQ-RCO IQ2_XXS backbone + IQ4_NL Engram (host RAM) | CUDA SM70 on eight V100s, TP8/ETP4 x EP2, up to 32 streams ([recipe](docs/recipes/deepseek-v41-v100.md)) | None yet (DSpark port pending) |
+| DeepSeek-V4.1-Flash-1017 GGUF | GSQ-RCO IQ2_XXS backbone + IQ4_NL Engram (host RAM) | CUDA SM70 on eight V100s, TP8/ETP4 x EP2, up to 32 streams, image input with `--vision` ([recipe](docs/recipes/deepseek-v41-v100.md)) | None yet (DSpark port pending) |
 | Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |
 | Qwen3.8-27B EXL3, experimental | `turboderp/Qwen3.8-27B-exl3`, branches `3.00bpw` / `4.00bpw` | CUDA | DFlash2 and context copies |
 | Flash Next EXL3, experimental | `turboderp/Qwen3.8-Flash-Next-exl3`, branch `3.05bpw_h5_ng5` | CUDA | Included MTP and context copies |
@@ -1668,7 +1668,12 @@ prefix points at message boundaries with the pinned host tier, and the 175 ms de
 reference in 9 of 10 cells, from +14% to +93%; C1 16K is the exception at -8%. Whole-run output is at or above the
 reference in every cell. Per-user decode is lower at 8 or more concurrent requests (for example 8.1 vs 27.2 tok/s
 at C32 16K), because every admitted user streams at once; it is higher at C1. The quality gate (NLL-delta CI vs the first passing build) passed. Commands, the full table
-and diagnostics are in the [recipe](docs/recipes/deepseek-v41-v100.md). DSpark drafts and vision are pending.
+and diagnostics are in the [recipe](docs/recipes/deepseek-v41-v100.md). DSpark drafts are pending.
+
+Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The tower
+runs the friend's numerics, bitwise equal to his tower, on GPU 0 (0.91 GiB, which takes 1.1M tokens from the KV
+pool). The prompt cache keys image spans by their pixels. On SC117 it answered 7/7 describe/OCR/count checks.
+TTFT was about 1.1 s for one 994-token image and 4.25 s for four. Text matrix cells were unchanged within 0.3%.
 
 #### Gemma 4 on eight V100s: prompt reuse, sampled drafts, `--parallel` (2026-11-19)
 

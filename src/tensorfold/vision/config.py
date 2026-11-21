@@ -14,6 +14,10 @@ def validate_vision_config(config, family):
             return config['vision_config']
         from tensorfold.families.gemma4.cuda.vision import validate_vision_config as gemma
         return gemma(config)
+    if family == 'deepseek_v41':    # DeepSeek-V4.1-Flash on the eight-V100 CUDA lane (mmproj tower, config.json)
+        from tensorfold.families.deepseek_v4.cuda.vision import check_config
+        check_config(config)
+        return config['vision_config']
     if family not in FAMILIES:
         raise ValueError('--vision supports GLM-5.3-Flash, Flash Next and Qwen3.5/3.8 dense checkpoints '
                          'with their vision tower')
