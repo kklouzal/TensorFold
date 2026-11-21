@@ -39,9 +39,10 @@ class _PreparationView:
     """Native _prepare policy view; context admission belongs to generation.
 
 All state and helpers retain the initialized App's ownership. In the pinned
-CUDA _prepare method, the only context lookup is the direct image preparation
-limit. Removing it here permits oversized history counts without changing App,
-its tokenizer, its engine, or any independent image safety limit.
+CUDA _prepare method (and the _prepare_impl body it delegates to, which runs
+on this view), the only context lookup is the direct image preparation limit.
+Removing it here permits oversized history counts without changing App, its
+tokenizer, its engine, or any independent image safety limit.
 """
 
     render_budget_bytes = MAX_BODY_BYTES
@@ -51,6 +52,11 @@ its tokenizer, its engine, or any independent image safety limit.
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._app, name)
+
+    def _prepare_impl(self, *args: Any, **kwargs: Any) -> Any:
+        # App._prepare delegates its policy body to _prepare_impl; __getattr__
+        # would bind that to the App and bypass every override of this view.
+        return type(self._app)._prepare_impl(self, *args, **kwargs)
 
     def _context_limit(self) -> None:
         return None
