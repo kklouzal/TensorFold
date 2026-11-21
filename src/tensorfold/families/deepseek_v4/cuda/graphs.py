@@ -4,7 +4,9 @@ A ``Shape`` (bucket B) owns static device inputs: one staged int64 [3, B] upload
 slots), constant token_req / qsl / valid, and the batch's block table gathered inside the graph from ``SlotPages``
 (every slot's KV pages at the fixed width of the admitted context, -1 past its pages). The graph body is the eager
 forward (``Target.begin/layers/end``) plus the logits all-gather, so a replay issues exactly the eager kernels and
-collectives. Captured identically on every rank at startup (bodies contain NCCL calls), largest bucket first, in
+collectives. The graph's output is the compact greedy packet (per rank and row: shard maximum, its global column, a
+NaN/+inf flag; all-gathered, 8 x [B, 3] FP32: ``round_sampling``); the full-vocabulary rows are gathered eagerly after
+the replay only when a caller needs them (every rank alike: the OP_STEP flags). Captured identically on every rank at startup (bodies contain NCCL calls), largest bucket first, in
 one shared memory pool; never lazily.
 
 Padding rows (B real streams in a larger bucket) are position-0 tokens of the scratch slot (the last slot) whose
@@ -14,6 +16,12 @@ inserts and index/attention reads skip page -1, so padding writes no state and r
 stay at their reset values.
 
 Buckets: the friend's vLLM FULL_DECODE_ONLY capture sizes (1..16, 24, 32) up to --parallel, plus --parallel.
+
+Index classes: buckets of at least ``CLASS_MIN`` streams are also captured with the decode indexer sized for
+``INDEX_CLASSES`` positions below the admitted context (``Target.index_context``): a replay takes the smallest class
+holding every row's position + 1, so the indexer's per-rank FP32 scores, their 8-rank sum and the top-512 read
+cover the live lengths, not the context (every row's top-512 reads only its own (position + 1) // ratio scores
+either way). The cross-rank sum's collective follows the narrower size (``Collectives.path``).
 """
 
 from __future__ import annotations
@@ -23,13 +31,22 @@ import time
 import numpy as np
 import torch
 
+from .round_sampling import compact_packet
 from .target import Step
 
 BUCKETS = tuple(range(1, 17)) + (24, 32)
+INDEX_CLASSES = (8192, 32768)
+CLASS_MIN = 4
 
 
 def buckets(streams: int) -> tuple[int, ...]:
     return tuple(sorted({b for b in BUCKETS if b < streams} | {streams}))
+
+
+def shape_keys(streams: int, context: int) -> list[tuple[int, int]]:
+    """Every captured (bucket, index context) pair."""
+    classes = [c for c in INDEX_CLASSES if c < context]
+    return [(b, c) for b in buckets(streams) for c in ([*classes, context] if b >= CLASS_MIN else [context])]
 
 
 class SlotPages:
@@ -52,10 +69,10 @@ class SlotPages:
 
 
 class Shape:
-    def __init__(self, engine, count: int):
+    def __init__(self, engine, count: int, index_context: int):
         t = engine.target
         dev = t.device
-        self.e, self.count = engine, count
+        self.e, self.count, self.index_context = engine, count, index_context
         self.scratch = engine.slots - 1
         self.pad_id = engine.geometry.bos
         self.host = np.zeros((3, count), dtype=np.int64)
@@ -72,6 +89,10 @@ class Shape:
                          prefill=[], decode_index=None)
         self.graph = None
         self.out = None
+        self.local = None               # this rank's FP32 logits shard [count, vocab / 8] (graph-owned)
+        # rank 0: the compact packet's landing buffer (one decode batch in flight at a time)
+        self.host_compact = torch.empty((engine.world, count, 3), dtype=torch.float32, pin_memory=True) \
+            if engine.rank == 0 else None
 
     def stage(self, entries, ids) -> None:
         """entries [(slot, position, 1)] in row order, ids their tokens; the rest of the bucket pads."""
@@ -89,11 +110,20 @@ class Shape:
         self.req_slot[:self.count].copy_(self.staged[2])
         torch.index_select(e.slot_pages.table, 0, self.req_slot[:self.count], out=step.block_table)
         state = t.begin(step)
-        t.layers(state, t.units)
-        return e.coll.gather(t.end(state, self.rows))
+        t.index_context = self.index_context
+        try:
+            t.layers(state, t.units)
+        finally:
+            t.index_context = t.context
+        local = t.end(state, self.rows)
+        self.local = local
+        packed = compact_packet(local, e.rank)
+        recv = torch.empty((e.world,) + tuple(packed.shape), dtype=torch.float32, device=local.device)
+        e.comm.all_gather(packed, recv)
+        return recv
 
     def run(self):
-        """The staged batch's full-vocabulary FP32 logits [count, vocab] (graph-owned: valid until the next run)."""
+        """The staged batch's compact packet [world, count, 3] (graph-owned: valid until the next run)."""
         if self.graph is not None:
             self.graph.replay()
             return self.out
@@ -118,7 +148,10 @@ class DecodeGraphs:
     def __init__(self, engine, streams: int):
         self.e = engine
         self.sizes = buckets(streams)
-        self.shapes = {b: Shape(engine, b) for b in self.sizes}
+        context = engine.target.context
+        self.keys = shape_keys(streams, context)
+        self.classes = {b: sorted(c for k, c in self.keys if k == b) for b in self.sizes}
+        self.shapes = {key: Shape(engine, *key) for key in self.keys}
         torch.cuda.synchronize()
         before = torch.cuda.mem_get_info()[0]
         self.reserved_before = torch.cuda.memory_reserved()
@@ -129,12 +162,12 @@ class DecodeGraphs:
         # Inference mode as every forward (the warm-up's persistent scratch is inference tensors); the static
         # inputs above stay normal tensors so staging works from any caller.
         with torch.inference_mode():
-            for b in sorted(self.sizes, reverse=True):
-                shape = self.shapes[b]
+            for key in sorted(self.keys, reverse=True):
+                shape = self.shapes[key]
                 shape.stage([], [])
                 shape.capture(pool, stream)
                 torch.cuda.synchronize()
-                self.trace.append((b, before - torch.cuda.mem_get_info()[0], torch.cuda.memory_reserved()))
+                self.trace.append((key, before - torch.cuda.mem_get_info()[0], torch.cuda.memory_reserved()))
         torch.cuda.synchronize()
         self.seconds = time.perf_counter() - t0
         torch.cuda.empty_cache()
@@ -143,9 +176,25 @@ class DecodeGraphs:
     def bucket(self, n: int) -> int | None:
         return next((b for b in self.sizes if b >= n), None)
 
-    def run(self, entries, ids):
-        """Replay the smallest bucket holding ``entries``; rank 0 gets its own copy of the real rows' logits."""
-        shape = self.shapes[self.bucket(len(entries))]
+    def index_class(self, bucket: int, entries) -> int:
+        """The smallest captured index context of ``bucket`` holding every row's position + 1."""
+        need = max(entry[1] for entry in entries) + 1
+        return next(c for c in self.classes[bucket] if c >= need)
+
+    def run(self, entries, ids, compact=False, full=True):
+        """Replay the smallest bucket holding ``entries``. ``full``: the real rows' full-vocabulary FP32 logits are
+        gathered after the replay (every rank). Rank 0 gets those rows (``compact`` False), or (the compact packet's
+        pinned host buffer [world, bucket, 3], copied behind the replay, landed once the caller's later event
+        completes; the rows or None); other ranks get None."""
+        n = len(entries)
+        bucket = self.bucket(n)
+        shape = self.shapes[(bucket, self.index_class(bucket, entries))]
         shape.stage(entries, ids)
-        out = shape.run()
-        return out[:len(entries)].clone() if self.e.rank == 0 else None
+        packet = shape.run()
+        rows = self.e.coll.gather(shape.local[:n]) if full else None
+        if self.e.rank != 0:
+            return None
+        if not compact:
+            return rows
+        shape.host_compact.copy_(packet, non_blocking=True)
+        return shape.host_compact, rows

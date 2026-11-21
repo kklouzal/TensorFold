@@ -112,6 +112,9 @@ class Target:
         self.device = device
         self.slots = slots                    # the last slot is scratch (padding rows)
         self.context = context
+        # positions the decode indexer's score rows cover (its FP32 cross-rank sum and top-512 read width //
+        # ratio): the admitted context, or a smaller startup graph class (graphs.py) every row of the batch fits
+        self.index_context = context
         self.max_tokens = max_tokens
         self.pool = Pool(self.g, pages, slots, device)
         self.engram = engram
@@ -224,7 +227,7 @@ class Target:
         weights = self._linear(x, ly.idx_proj) * (1.0 / 64.0)
         return pk.select_positions(query, weights, step.positions, step, self.pool.cache, step.block_table,
                                    layout=self.pool.layout, source=ly.source, ratio=ly.ratio,
-                                   width=self.context // ly.ratio, all_reduce=self._sum_half,
+                                   width=self.index_context // ly.ratio, all_reduce=self._sum_half,
                                    score_dtype=torch.float32)
 
     def _sum_half(self, scores):

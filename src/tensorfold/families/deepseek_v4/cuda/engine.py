@@ -32,6 +32,8 @@ from tensorfold.families.gemma4.sm70.ops import OP_ATTACH, OP_DETACH, OP_FORWARD
 _HEAD = struct.Struct("<qqqqq")
 PIPE_TIMEOUT = 600.0
 F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer): score every row; and the last row
+# graph decode flags: return the compact greedy packet (``round_sampling``); and also gather the full rows
+F_COMPACT, F_FULL = 1 << 22, 1 << 23
 SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
@@ -134,9 +136,9 @@ class DS41Engine:
         # The decode graphs are captured after the KV pool exists, so their memory comes out of the free memory too:
         # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
         # 606 MiB for 18 buckets on one capture stream).
-        from .graphs import buckets
+        from .graphs import shape_keys
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
-        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(buckets(slots)) if capture else 0
+        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
         pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice)
@@ -188,8 +190,9 @@ class DS41Engine:
         self._closed = False
         if rank == 0:
             if self.graphs is not None:
-                print(f"[tensorfold] DeepSeek-V4.1 SM70: decode graphs for batches {list(self.graphs.sizes)} captured "
-                      f"in {self.graphs.seconds:.1f} s, {self.graphs.bytes / 2**20:.0f} MiB", flush=True)
+                print(f"[tensorfold] DeepSeek-V4.1 SM70: decode graphs for batches {list(self.graphs.sizes)} "
+                      f"(index classes {self.graphs.classes[self.graphs.sizes[-1]]}; {len(self.graphs.keys)} graphs) "
+                      f"captured in {self.graphs.seconds:.1f} s, {self.graphs.bytes / 2**20:.0f} MiB", flush=True)
             engram = ("not mapped (development smoke)" if self.engram is None else
                       f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s, host RAM only: VRAM residency "
                       f"{self.engram.device_bytes} B")
@@ -277,7 +280,8 @@ class DS41Engine:
                 raise RuntimeError(f"slot {slot}: positions up to {start + count} exceed its KV pages")
         if (stop == 0 and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
-            return self.graphs.run(entries, ids)
+            compact = bool(flags & F_COMPACT)
+            return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL))
         for r, (slot, start, count) in enumerate(entries):
             positions.extend(range(start, start + count))
             token_req.extend([r] * count)
@@ -835,7 +839,10 @@ class Decoder(PrefixOwner):
 
     def _launch(self, live, pending):
         """Launch one decode forward over ``live`` (row order = stream order); ``pending``: decided, undelivered
-        tokens."""
+        tokens. Plain greedy streams decide from the graph's compact packet; the full rows are gathered only for the
+        others, whose sampling work is queued behind the forward (``round_sampling``): the round's one host wait
+        (``_collect``) covers every stream."""
+        from .round_sampling import RowSampling, needs_row
         e = self.e
         entries, ids = [], []
         for s in live:
@@ -843,31 +850,55 @@ class Decoder(PrefixOwner):
             token = extra[-1] if extra else s.out[-1]
             entries.append((s.slot, len(s.prompt) + len(s.out) + len(extra) - 1, 1))
             ids.append(token)
+        need = [g for g, s in enumerate(live) if needs_row(s)]
         self.started.record()
         t0 = time.perf_counter()
-        logits = e.step(entries, ids, list(range(len(entries))))
+        out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0))
+        compact, rows = out if isinstance(out, tuple) else (None, out)      # an eager forward: full rows only
+        if compact is None:
+            need = list(range(len(live)))
+        positions = [entry[1] + 1 for entry in entries]
+        sampled = RowSampling(live, positions, rows, need) if need else None
         self.done.record()
         self.bucket = self._bucket(len(entries))
-        self.inflight = (live, entries, logits, t0)
+        self.inflight = (live, positions, compact, rows, sampled, t0)
 
     def _collect(self):
         """Wait for the batch in flight; decide each stream's token: [(stream, [token] | None)]."""
-        live, entries, logits, t0 = self.inflight
+        from .round_sampling import greedy_tokens
+        live, positions, compact, rows, sampled, t0 = self.inflight
         self.inflight = None
         self.done.synchronize()
         self.rounds.add(self.bucket, self.started.elapsed_time(self.done))
+        greedy = greedy_tokens(compact, len(live)) if compact is not None else None
+        chosen_rows = sampled.choose() if sampled is not None else {}
         decided = []
         for g, s in enumerate(live):
             if s.done or self.streams.get(s.sid) is not s:
                 continue                                    # ended/cancelled/yielded after this launch
             try:
-                chosen = [self._choose(s, logits[g:g + 1], entries[g][1] + 1, emitted=len(s.out))]
+                if s.forced is not None:
+                    token = s.forced[len(s.out)]
+                elif g in chosen_rows:
+                    token = chosen_rows[g]
+                else:
+                    token, error = greedy[g]
+                    if error is not None:
+                        raise error
+                if isinstance(token, Exception):
+                    raise token
+                if s.probabilities is not None:
+                    self._score(s, sampled.scored[g], positions[g] - 1, token)
+                if s.constraint is not None:
+                    s.constraint.advance([token])
+                if s.history is not None:
+                    s.history.extend([token])
                 s.counted(1)
             except Exception as error:          # noqa: BLE001  (this request fails alone)
                 s.error, s.done, s.finished = error, True, time.perf_counter()
                 decided.append((s, None))
                 continue
-            decided.append((s, chosen))
+            decided.append((s, [token]))
         return decided
 
     def _choose(self, s, row, position, emitted=0) -> int:
