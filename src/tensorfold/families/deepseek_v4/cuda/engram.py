@@ -1,10 +1,12 @@
 """DeepSeek-V4.1 Engram tables in host RAM, read by the GPU through mapped (zero-copy) host memory.
 
 Rank 0 copies the IQ4_NL rows of the llama.cpp Engram file (one ``per_layer_token_embd`` tensor, the two per-layer
-tables back to back) into one sealed memfd and locks its pages; the other ranks map the same pages read-only
+tables back to back) into one sealed memfd; the other ranks map the same pages read-only
 (``/proc/<pid>/fd/<fd>``, same host and user). The read-only mappings are registered with cudaHostRegisterReadOnly
 (without it the driver refuses a PROT_READ range: CUDA error 1, m1c; a 110 GB shared read-write registration did not
-finish in 10 min, diag/hostreg2 2026-11-21, while read-only took 149 s). Every rank registers its mapping with CUDA as mapped host memory, so
+finish in 10 min, diag/hostreg2 2026-11-21, while read-only took 149 s). The registration pins the pages
+(resident, never swapped); rank 0 does not mlock them: an mlocked sealed range failed registration (CUDA error 1,
+m1e) while the seven unlocked mappings of the same memfd registered in ~10 s each, concurrently. Every rank registers its mapping with CUDA as mapped host memory, so
 a step's gather reads only the rows it needs (48 x 144 B per token) straight from RAM inside the forward: no host
 thread, no synchronization, and graph-capturable.
 
@@ -72,9 +74,6 @@ class HostEngram:
                 import fcntl
                 fcntl.fcntl(self.fd, _F_ADD_SEALS, _F_SEAL_SEAL | _F_SEAL_SHRINK | _F_SEAL_GROW | _F_SEAL_WRITE)
                 self.address = _map(self.fd, self.size, _PROT_READ)
-                if _LIBC.mlock(ctypes.c_void_p(self.address), ctypes.c_size_t(self.size)) != 0:
-                    raise OSError(ctypes.get_errno(), f"mlock of the {self.size >> 30} GiB Engram table failed "
-                                                      "(raise the memlock ulimit)")
                 store.set(key, f"{os.getpid()} {self.fd} {self.size}")
             else:
                 pid, fd, size = (int(v) for v in store.get(key).decode().split())

@@ -47,6 +47,9 @@ class DS41Engine:
         self.rank, self.world = rank, tp
         self.vocab = g.vocab
         self.max_tokens = max_tokens
+        if rank == 0:              # metadata errors fail before the weights load
+            from tensorfold.token_metadata import resolve_eos
+            self.eos = resolve_eos(model_dir, g.eos, vocab_size=self.vocab)
         torch.cuda.set_device(0)
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         device = torch.device("cuda", 0)
@@ -80,10 +83,10 @@ class DS41Engine:
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device)
         self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
+        if rank == 0 and sorted(self.pipes.piped()) != list(range(1, tp)):
+            raise RuntimeError("DeepSeek-V4.1 SM70 requires all eight ranks on one host (control pipes)")
         self.load_seconds = time.perf_counter() - started
         if rank == 0:
-            from tensorfold.token_metadata import resolve_eos
-            self.eos = resolve_eos(model_dir, g.eos, vocab_size=self.vocab)
             print(f"[tensorfold] DeepSeek-V4.1 SM70: loaded in {self.load_seconds:.0f} s (Engram table "
                   f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s, host RAM only: VRAM residency "
                   f"{self.engram.device_bytes} B + per-step working buffer "
