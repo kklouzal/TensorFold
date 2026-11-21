@@ -7,9 +7,11 @@ launch, split-K choice), ``quantization/gguf_dmv13_dense.py`` (plane layout and 
 patch 184 (large M: dequantize + cuBLAS HGEMM). Kernels: ``ds41_dense.cu``.
 
 One resident copy per projection: the planes (Q8_0 9 bits/weight incl. the duplicated FP16 scale word, Q5_K
-6 bits/weight). Weights are exactly what the 1Cat route multiplies: Q8_0 ``fp16(q * d)`` (identical to the
-ggml FP16 decode), Q5_K ``fp16(q * fp16(d * sc) + fp16(-dmin * m))`` (one FP16 FMA over FP16-rounded
-coefficients; the ggml decode rounds ``d * sc * q - dmin * m`` once).
+6 bits/weight plus its 16-byte super-block headers, 0.5 bit/weight). dense_rows multiplies what the 1Cat route
+multiplies: Q8_0 ``fp16(q * d)`` (identical to the ggml FP16 decode), Q5_K ``fp16(q * fp16(d * sc) + fp16(-dmin
+* m))`` (one FP16 FMA over FP16-rounded coefficients). The restore (prefill GEMMs) decodes the ggml FP16 weights
+exactly: Q5_K ``fp16(d * sc * q - dmin * m)`` in FP32 from the kept headers (the FP16-rounded coefficients cost
++0.015 nats/token prefill NLL on the DS41 corpus).
 
 * ``rows <= ROWS_BAND``: ``dense_rows`` (mma.m8n8k4, FP32 accumulation, deterministic split-K in-launch) in
   passes of up to ``MAX_ROWS`` rows; every row's value is independent of the row count.
@@ -36,7 +38,8 @@ MAX_ROWS = 32                        # dense_rows: up to 4 8-row tiles per weigh
 ROWS_BAND = 64                       # dense_rows (in 32-row passes) up to here, restore + cuBLAS above (measured)
 TARGET_CTAS = 80                     # 1Cat VLLM_V41_DMV_CTAS default
 _TILE4 = {(4, 1)}                    # (warps, tp) configs whose 4-tile instance fits shared memory
-RESTORE_BYTES = 32 << 20             # FP16 restore chunk for rows > MAX_ROWS
+RESTORE_BYTES = 40 << 20             # FP16 restore chunk for rows > MAX_ROWS: every projection but the head in one
+                                     # GEMM (engram_wkv 3200 x 6144 = 37.5 MiB)
 
 
 @lru_cache(maxsize=1)
@@ -82,6 +85,10 @@ class Planes:
         sizes = plane_bytes(fmt, n, k)
         self.codes, self.high, self.scale = (torch.empty(s, dtype=torch.uint8, device=device) for s in sizes)
         self.tiles = -(-n // 32)
+        # Q5_K: the original 16-byte super-block headers (d, dmin, 6-bit scales/mins) of the column window, so the
+        # restore decodes with the exact FP32 coefficients (the scale plane holds them rounded to FP16 for dmv13)
+        self.first_step = None
+        self.head = torch.empty(0, dtype=torch.uint8, device=device)   # allocated by the first pack
 
     @property
     def shape(self):
@@ -89,7 +96,12 @@ class Planes:
 
     @property
     def nbytes(self) -> int:
-        return self.codes.numel() + self.high.numel() + self.scale.numel()
+        return self.codes.numel() + self.high.numel() + self.scale.numel() + self.head.numel()
+
+    def _blocks(self, first_step: int) -> tuple[int, int]:
+        """(first, count) Q5_K super-blocks covering column steps [first_step, +k / 32)."""
+        first = first_step // 8
+        return first, (first_step + self.k // 32 + 7) // 8 - first
 
     def pack(self, raw: torch.Tensor, ggml_type: int, first_step: int, tile0: int = 0) -> None:
         """Planes of rows [32 tile0, +raw rows) from original GGUF row bytes ``raw`` (CUDA uint8 [rows, bytes],
@@ -110,10 +122,24 @@ class Planes:
             return t[tile0 * per:end * per]
         extension().pack_planes(raw, int(ggml_type), int(first_step), self.k // 32, part(self.codes),
                                 part(self.high), part(self.scale))
+        if self.fmt == Q5K:
+            if self.first_step is None:
+                self.first_step = int(first_step)
+                self.head = torch.empty(self.n * 16 * self._blocks(first_step)[1], dtype=torch.uint8,
+                                        device=self.codes.device)
+            elif self.first_step != first_step:
+                raise ValueError("every pack chunk of a projection takes the same column window")
+            b0, nb = self._blocks(first_step)
+            heads = raw[:, 176 * b0:176 * (b0 + nb)].reshape(rows, nb, 176)[:, :, :16]
+            self.head.view(self.n, nb, 16)[32 * tile0:32 * tile0 + rows].copy_(heads)
 
     def restore(self, out: torch.Tensor, tile0: int = 0) -> torch.Tensor:
-        """FP16 rows [32 tile0, +out rows) into ``out`` [count, k] (the weights dense_rows multiplies)."""
-        extension().restore_planes(self.codes, self.high, self.scale, self.fmt, self.n, self.k, int(tile0), out)
+        """FP16 rows [32 tile0, +out rows) into ``out`` [count, k]: the ggml FP16 decode (Q8_0: also what
+        dense_rows multiplies; Q5_K: dense_rows multiplies FP16-rounded sub-block coefficients)."""
+        if self.fmt == Q5K and self.first_step is None:
+            raise ValueError("restore of unpacked Q5_K planes")
+        extension().restore_planes(self.codes, self.high, self.scale, self.head, self.fmt, self.n, self.k,
+                                   int(self.first_step or 0), int(tile0), out)
         return out
 
 

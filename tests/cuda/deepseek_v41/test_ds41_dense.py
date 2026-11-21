@@ -98,34 +98,37 @@ def test_pack_restore_exact(gtype, n, k, first):
     raw = (_q8_rows if gtype == 8 else _q5k_rows)(rng, n, total)
     planes = _planes(raw, gtype, k, first)
     got = planes.restore(torch.empty(n, k, dtype=torch.float16, device="cuda")).cpu().numpy()
-    expect = dmv13_weights(raw, gtype, total)[:, first * 32:first * 32 + k]
+    # the restore is exactly the ggml FP16 decode (Q5_K: FP32 coefficients from the kept super-block headers)
+    expect = ggml_fp32(raw, gtype, total).astype(np.float16)[:, first * 32:first * 32 + k]
     assert np.array_equal(got.view(np.uint16), expect.view(np.uint16))
-    if gtype == 8:  # Q8_0 planes hold exactly the ggml FP16 decode
-        ref = native.dequantize(torch.from_numpy(raw).cuda(), 8, total)[:, first * 32:first * 32 + k]
-        assert torch.equal(ref.cpu(), torch.from_numpy(got))
+    ref = native.dequantize(torch.from_numpy(raw).cuda(), gtype, total)[:, first * 32:first * 32 + k]
+    assert torch.equal(ref.cpu(), torch.from_numpy(got))
     # partial restore by tiles
     if n > 32:
         part = planes.restore(torch.empty(n - 32, k, dtype=torch.float16, device="cuda"), tile0=1)
         assert np.array_equal(part.cpu().numpy().view(np.uint16), expect[32:].view(np.uint16))
-    assert planes.nbytes == sum(dense.plane_bytes(planes.fmt, n, k))
+    blocks = 0 if gtype == 8 else (first + k // 32 + 7) // 8 - first // 8
+    assert planes.nbytes == sum(dense.plane_bytes(planes.fmt, n, k)) + n * 16 * blocks
 
 
 def _group(specs, seed):
     from tensorfold.cuda.sm70 import ds41_dense as dense
     rng = np.random.default_rng(seed)
     scratch = dense.Scratch("cuda", restore_bytes=8 << 20)
-    members, weights = [], []
+    members, weights, exact = [], [], []
     for gtype, n, k in specs:
-        raw = (_q8_rows if gtype == 8 else _q5k_rows)(rng, n, (k + 255) // 256 * 256)
+        total = (k + 255) // 256 * 256
+        raw = (_q8_rows if gtype == 8 else _q5k_rows)(rng, n, total)
         members.append(_planes(raw, gtype, k))
-        weights.append(torch.from_numpy(dmv13_weights(raw, gtype, (k + 255) // 256 * 256)[:, :k]).cuda())
-    return dense.Group(members, scratch), weights
+        weights.append(torch.from_numpy(dmv13_weights(raw, gtype, total)[:, :k]).cuda())
+        exact.append(torch.from_numpy(ggml_fp32(raw, gtype, total).astype(np.float16)[:, :k]).cuda())
+    return dense.Group(members, scratch), weights, exact
 
 
 @pytest.mark.parametrize("specs", [[(8, 1280, 5120), (8, 512, 5120)], [(13, 4096, 1280)], [(13, 5120, 288)],
                                    [(13, 288, 5120), (13, 288, 5120)], [(13, 1024, 4096)], [(13, 512, 5120), (8, 96, 5120)]])
 def test_rows_band(specs):
-    group, weights = _group(specs, len(specs) + specs[0][1])
+    group, weights, _ = _group(specs, len(specs) + specs[0][1])
     k = specs[0][2]
     torch.manual_seed(0)
     x32 = torch.randn(64, k, dtype=torch.float16, device="cuda")
@@ -142,7 +145,7 @@ def test_rows_band(specs):
 
 
 def test_rows_k_bound_ignores_columns_past_k():
-    group, weights = _group([(13, 5120, 288)], 7)
+    group, _, _ = _group([(13, 5120, 288)], 7)
     wide = torch.full((8, 384), float("nan"), dtype=torch.float16, device="cuda")
     wide[:, :288] = torch.randn(8, 288, dtype=torch.float16, device="cuda")
     got = group(wide[:, :288])[0]
@@ -151,7 +154,7 @@ def test_rows_k_bound_ignores_columns_past_k():
 
 
 def test_gemm_band_matches_restored_weights():
-    group, weights = _group([(13, 3200, 6144)], 11)    # 3200 x 6144 > 8 MiB restore chunk: two chunks
+    group, _, weights = _group([(13, 3200, 6144)], 11)    # 3200 x 6144 > 8 MiB restore chunk: two chunks
     x = torch.randn(80, 6144, dtype=torch.float16, device="cuda")
     got = group(x)[0]
     ref = torch.matmul(x, weights[0].t())        # cuBLAS may pick other kernels per chunk width: tolerance
@@ -182,15 +185,13 @@ def test_real_projections_against_fp16_decode():
     shards = Shards(Path(config["gguf_file"]), Path(config["engram_file"]))
     loader = Loader(shards, 3, torch.device("cuda"))
     for name, kind in (("blk.0.attn_q_a.weight", None), ("blk.0.attn_kv.weight", None),
-                       ("blk.0.ffn_down_shexp.weight", "row"), ("blk.0.attn_q_b.weight", "column")):
+                       ("blk.0.ffn_down_shexp.weight", "row"), ("blk.0.attn_q_b.weight", "column"),
+                       ("blk.3.attn_output_b.weight", "row"), ("blk.3.ffn_up_shexp.weight", "column")):
         planes = (loader.planes(name) if kind is None else loader.row_planes(name) if kind == "row"
                   else loader.column_planes(name))
         fp16 = loader.dense(name) if kind is None else loader.row(name) if kind == "row" else loader.column(name)
         got = planes.restore(torch.empty(planes.n, planes.k, dtype=torch.float16, device="cuda"))
-        if shards.tensors[name].ggml_type == 8:
-            assert torch.equal(got, fp16)
-        else:  # Q5_K: dmv13 rounds the sub-block scale / min to FP16 first
-            assert float((got.float() - fp16.float()).abs().max()) <= 2 * float(fp16.float().abs().max()) * 2 ** -10
+        assert torch.equal(got, fp16)   # the prefill weights are the ggml FP16 decode (Q5_K: exact coefficients)
 
 
 def test_router_gate_bf16_matches_fp32():
