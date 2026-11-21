@@ -113,29 +113,45 @@ def default_keep_slots(streams: int) -> int:
     return max(8, streams)
 
 
-def host_slab(comm, rank: int, tp: int, requested: int | None):
+class HostSlab:
     """The host tier's pinned slab of this rank (Gemma 4 SM70's sizing: ``requested`` bytes across the ranks, unset:
-    Flash Next's ``default_bytes``; a power of two per rank, agreed as the smallest rank's) -> (bytes, slab)."""
-    from tensorfold.families.qwen4_exp.cuda.prefix_host import default_bytes, pin_agreed, pinned_slab_bytes
-    if requested is not None and (type(requested) is not int or requested < 0):
-        raise ValueError("prefix_host_bytes must be a nonnegative byte count")
-    explicit = requested is not None
-    total = requested if explicit else default_bytes()
-    mine = torch.tensor([pinned_slab_bytes(total // tp)], dtype=torch.int64, device="cuda")
-    agreed = torch.empty(tp, dtype=torch.int64, device="cuda")
-    comm.all_gather(mine, agreed)
-    per_rank = int(agreed.min())
-    if not per_rank:
-        return 0, None
+    Flash Next's ``default_bytes``; a power of two per rank, agreed as the smallest rank's). The size is agreed at
+    construction (one collective); the pinning then runs on its own thread (host and driver work only) so it overlaps
+    the rest of the startup, until ``finish`` (one collective, every rank) -> (bytes, slab). No CUDA graph may be
+    captured in between (a pinned allocation is not allowed during a global-mode capture)."""
 
-    def every_rank(ok):
-        flags = torch.empty(tp, dtype=torch.int64, device="cuda")
-        comm.all_gather(torch.tensor([ok], dtype=torch.int64, device="cuda"), flags)
-        return flags.tolist()
+    def __init__(self, comm, rank: int, tp: int, requested: int | None):
+        from tensorfold.families.qwen4_exp.cuda.prefix_host import default_bytes, pinned_slab_bytes
+        if requested is not None and (type(requested) is not int or requested < 0):
+            raise ValueError("prefix_host_bytes must be a nonnegative byte count")
+        self.comm, self.rank, self.tp = comm, rank, tp
+        self.explicit = requested is not None
+        self.total = requested if self.explicit else default_bytes()
+        mine = torch.tensor([pinned_slab_bytes(self.total // tp)], dtype=torch.int64, device="cuda")
+        agreed = torch.empty(tp, dtype=torch.int64, device="cuda")
+        comm.all_gather(mine, agreed)
+        self.per_rank = int(agreed.min())
+        self._pin = None
+        if self.per_rank:
+            from concurrent.futures import ThreadPoolExecutor
+            pool = ThreadPoolExecutor(1, thread_name_prefix="ds41-slab")
+            self._pin = pool.submit(lambda: torch.empty(self.per_rank, dtype=torch.uint8, pin_memory=True))
+            pool.shutdown(wait=False)
 
-    slab = pin_agreed(lambda: torch.empty(per_rank, dtype=torch.uint8, pin_memory=True), every_rank, per_rank,
-                      explicit=explicit, requested=total, rank=rank, lane="DeepSeek-V4.1 SM70: ")
-    return (per_rank, slab) if slab is not None else (0, None)
+    def finish(self):
+        from tensorfold.families.qwen4_exp.cuda.prefix_host import pin_agreed
+        if not self.per_rank:
+            return 0, None
+        tp = self.tp
+
+        def every_rank(ok):
+            flags = torch.empty(tp, dtype=torch.int64, device="cuda")
+            self.comm.all_gather(torch.tensor([ok], dtype=torch.int64, device="cuda"), flags)
+            return flags.tolist()
+
+        slab = pin_agreed(self._pin.result, every_rank, self.per_rank, explicit=self.explicit, requested=self.total,
+                          rank=self.rank, lane="DeepSeek-V4.1 SM70: ")
+        return (self.per_rank, slab) if slab is not None else (0, None)
 
 
 # ---------------------------------------------------------------------------------------------- rank 0: the owner

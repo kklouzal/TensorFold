@@ -98,7 +98,7 @@ class DS41Engine:
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
-        from .prefix import default_keep_slots, host_slab
+        from .prefix import HostSlab, default_keep_slots
         if keep_slots is None:
             keep_slots = default_keep_slots(slots)
         if type(keep_slots) is not int or keep_slots < 0:
@@ -144,6 +144,11 @@ class DS41Engine:
         shards.close()
         with clock.phase("barrier"):
             self._barrier()
+        # The host tier's pinned slab (Gemma 4 SM70 sizing, on by default) pins on its own thread from here (every
+        # rank's Engram registration is done: pinning while the Engram table registers slowed m-pf1's registration
+        # 4x) until before the graph capture.
+        slab_started = time.perf_counter()
+        slab = HostSlab(self.comm, rank, tp, prefix_host_bytes)
         # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
         # sized, so it does not come out of RESERVE.
         from tensorfold.cuda.sm70 import ds41_lattice_moe
@@ -187,6 +192,13 @@ class DS41Engine:
         self.slot_pages = SlotPages(self.slots, -(-self.target.hash_state.max_context // BLOCK), device)
         self.graphs = None
         self._warm()
+        with clock.phase("slab-join"):
+            self.host_per_rank, self.host_slab = slab.finish()
+        clock.add("slab", slab_started, time.perf_counter() - slab_started)
+        self.prefix.slab = self.host_slab
+        if rank == 0:
+            print(f"[tensorfold] DeepSeek-V4.1 SM70: host prefix tier {self.host_per_rank >> 20} MiB/rank pinned "
+                  f"(beside the warm-up: {time.perf_counter() - slab_started:.1f} s)", flush=True)
         # Decode forwards replay startup CUDA graphs (every rank, same order, no control frames; never lazily).
         # The Engram lookup trace (rank 0) reads ids on the host every forward, so tracing keeps the eager decode;
         # every rank decides from the same environment (all ranks capture, or none).
@@ -202,15 +214,6 @@ class DS41Engine:
         elif rank == 0:
             print("[tensorfold] DeepSeek-V4.1 SM70: eager decode (" +
                   ("graphs disabled)" if not graphs else "TENSORFOLD_DS41_ENGRAM_TRACE set)"), flush=True)
-        # The host tier's pinned slab (Gemma 4 SM70 sizing, on by default), pinned after the Engram registration and
-        # the weights: pinning while the Engram table registers slowed m-pf1's registration 4x.
-        pinned = time.perf_counter()
-        with clock.phase("slab"):
-            self.host_per_rank, self.host_slab = host_slab(self.comm, rank, tp, prefix_host_bytes)
-        self.prefix.slab = self.host_slab
-        if rank == 0:
-            print(f"[tensorfold] DeepSeek-V4.1 SM70: host prefix tier {self.host_per_rank >> 20} MiB/rank pinned in "
-                  f"{time.perf_counter() - pinned:.1f} s", flush=True)
         with clock.phase("pipes"):
             self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
         if rank == 0 and sorted(self.pipes.piped()) != list(range(1, tp)):
