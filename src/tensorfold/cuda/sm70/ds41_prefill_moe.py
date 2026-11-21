@@ -1,4 +1,4 @@
-"""DeepSeek-V4.1 routed-expert prefill for SM70: FP16 dequantized tiles and cuBLAS tensor-op GEMMs.
+"""DeepSeek-V4.1 routed-expert prefill for SM70: grouped WMMA GEMMs decoding the IQ rows in their K loops.
 
 The operands are ``onecat_ds41.v41_experts``'s (one EP/ETP rank's original GGUF
 expert bytes: gate/up [E, 576, 20*block], down [E, 5120, 3*block] with ``left``
@@ -7,17 +7,16 @@ in 0/64/128/192; FP16 x [M, 5120]; int32 local ids and FP32 probabilities
 
 Arithmetic (see ds41_prefill_moe.cu): routes with probability 0 are dropped
 (exactly +/-0 in the reference). Weights are ggml-quants.c FP32 products rounded
-once to FP16; activations stay FP16 (no Q8_1); gate/up accumulate in FP32 and
-stay FP32 into the clamped SwiGLU times the probability, which rounds to FP16;
-down accumulates in FP32 (no reduced-precision split-K) and rounds per route to
-FP16; the token output is the FP32 sum of its routes in top-k order, rounded
-to FP16. A routed id outside [0, E) raises after the call's one host
-synchronization (before any expert work is enqueued).
+once to FP16; activations stay FP16 (no Q8_1); products accumulate in FP32;
+gate/up stay FP32 into the clamped SwiGLU times the probability, which rounds to
+FP16; down rounds per route to FP16; the token output is the FP32 sum of its
+routes in top-k order, rounded to FP16. Deterministic (fixed reduction orders).
+A routed id outside [0, E) raises after the call's one host synchronization,
+before any expert work is enqueued.
 
 Not graph-capturable: one stream synchronization per call and current-stream
-caching-allocator workspace, released at return. Workspace per call:
-``workspace_bytes``. The caller retains operands until current-stream
-completion.
+caching-allocator workspace (``workspace_bytes``), released at return. The
+caller retains operands until current-stream completion.
 """
 
 from functools import lru_cache
@@ -28,7 +27,9 @@ import torch
 
 HIDDEN, ROWS, TOP = 5120, 576, 6
 EXPERT_TYPES = (16, 17, 29)
-TILE, ROUTE_CAP = 32, 16384
+# Fewest tokens for which this op replaces the decode op's per-6-row loop: measured crossover on one
+# 192-expert rank layer (blk.27, GPU 0 at 180 W) between 65 tokens (loop faster) and 256 (this faster).
+MIN_TOKENS = 128
 
 
 @lru_cache(maxsize=1)
@@ -47,7 +48,7 @@ def extension():
         identity.update(path.name.encode() + b"\0" + path.read_bytes())
     staged = stage_sources(sources, headers=headers)
     return build.load("tf_ds41_prefill_moe_" + identity.hexdigest()[:20], staged, need=(7, 0),
-                      extra_cflags=["-O3"], extra_cuda_cflags=flags, extra_ldflags=["-lcublas"])
+                      extra_cflags=["-O3"], extra_cuda_cflags=flags)
 
 
 def prepare():
@@ -55,26 +56,18 @@ def prepare():
     return extension()
 
 
-def workspace_bytes(routes, tile=TILE, route_cap=ROUTE_CAP, max_expert_routes=None):
-    """Upper bound of one call's device workspace for ``routes`` nonzero-probability routes."""
-    largest = routes if max_expert_routes is None else max_expert_routes
-    tile_routes = min(routes, max(route_cap, largest))
-    weights = tile * (2 * ROWS * HIDDEN + HIDDEN * ROWS) * 2
-    per_tile_route = HIDDEN * 2 + 2 * ROWS * 4 + ROWS * 2
-    return weights + tile_routes * per_tile_route + routes * (HIDDEN * 2 + 24)
+def workspace_bytes(tokens, routes):
+    """Upper bound of one call's transient device workspace for ``routes`` nonzero-probability routes."""
+    route_tables = tokens * TOP * (4 + 8 + 8 + 8 + 4 + 8)  # bucket, sort keys/order, counts input, position
+    tiles = (routes // 64 + 1 + 384) * 16
+    return routes * (ROWS + HIDDEN) * 2 + routes * (8 + 4) + route_tables + tiles
 
 
-def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, *, out=None,
-            rows=64, tile=TILE, route_cap=ROUTE_CAP):
-    """Routed experts for FP16 x [M, 5120], top-6 local ids/probabilities -> FP16 [M, 5120].
-
-    ``rows``: 64 or 128 routes per fused-GEMM tile; 0 selects the dequantized-tile cuBLAS path
-    (``tile`` experts per FP16 weight tile, ``route_cap`` routes per tile).
-    """
+def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, *, out=None):
+    """Routed experts for FP16 x [M, 5120], top-6 local ids/probabilities -> FP16 [M, 5120]."""
     if gate_type not in EXPERT_TYPES or down_type not in EXPERT_TYPES:
         raise ValueError("V4.1 prefill experts require IQ2_XXS/IQ2_XS/IQ1_M carriers")
     if out is None:
         out = torch.empty_like(x)
-    extension().experts(out, x, ids, probabilities, gate, up, down, int(gate_type), int(down_type), int(left),
-                        int(tile), int(route_cap), int(rows))
+    extension().experts(out, x, ids, probabilities, gate, up, down, int(gate_type), int(down_type), int(left))
     return out

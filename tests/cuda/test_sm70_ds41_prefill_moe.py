@@ -1,4 +1,4 @@
-"""DeepSeek-V4.1 prefill routed experts (dequantized FP16 tiles + cuBLAS) on real checkpoint bytes.
+"""DeepSeek-V4.1 prefill routed experts (grouped GEMMs with in-loop IQ decode) on real checkpoint bytes.
 
 The oracle is an FP32 product of the NumPy-dequantized FP16 weights
 (test_sm70_onecat_ds41.reference, ggml-quants.c order), with FP32 gate/up and
@@ -85,36 +85,34 @@ def test_prefill_experts_against_fp32(ops, kind):
             expected = oracle(x, ids, p, weights)
             decode = error(decode_loop(dec, x, ids, p, banks, kind, left), expected)
             emulated = error(oracle(x, ids, p, weights, half_projections=True).half(), expected)
-            for rows in (64, 128, 0):
-                out = pre.experts(x, ids, p, *banks, kind, kind, left, rows=rows)
-                assert torch.isfinite(out).all()
-                again = pre.experts(x, ids, p, *banks, kind, kind, left, rows=rows)
-                assert torch.equal(out.view(torch.int16), again.view(torch.int16))
-                got = error(out, expected)
-                print(f"type {kind} rank {r} left {left} M{m} {f'fused{rows}' if rows else 'cublas'}: rel_l2 "
-                      f"{got[0]:.3g} max_abs {got[1]:.3g} | decode {decode[0]:.3g} / {decode[1]:.3g} | "
-                      f"1Cat-rounding {emulated[0]:.3g} / {emulated[1]:.3g} | ref_max {expected.abs().max().item():.3g}")
-                assert got[0] <= decode[0] and got[0] <= emulated[0]
+            out = pre.experts(x, ids, p, *banks, kind, kind, left)
+            assert torch.isfinite(out).all()
+            again = pre.experts(x, ids, p, *banks, kind, kind, left)
+            assert torch.equal(out.view(torch.int16), again.view(torch.int16))
+            got = error(out, expected)
+            print(f"type {kind} rank {r} left {left} M{m}: prefill rel_l2 {got[0]:.3g} max_abs {got[1]:.3g} | "
+                  f"decode {decode[0]:.3g} / {decode[1]:.3g} | 1Cat-rounding {emulated[0]:.3g} / "
+                  f"{emulated[1]:.3g} | ref_max {expected.abs().max().item():.3g}")
+            assert got[0] <= decode[0] and got[0] <= emulated[0]
 
 
-@pytest.mark.parametrize("rows", [64, 128, 0])
 @pytest.mark.parametrize("kind", [16, 29])
-def test_dropped_routes_and_bad_ids(ops, kind, rows):
+def test_dropped_routes_and_bad_ids(ops, kind):
     pre, _ = ops
     banks, _, left = Carriers(kind).rank(1)
     generator = torch.Generator().manual_seed(500 + kind)
     x = torch.randn(65, 5120, generator=generator).half().cuda()
     ids, p = routes(65, LOCAL, generator)
-    base = pre.experts(x, ids, p, *banks, kind, kind, left, rows=rows)
+    base = pre.experts(x, ids, p, *banks, kind, kind, left)
     moved = torch.where(p == 0, (ids + 3) % LOCAL, ids).to(torch.int32)
     assert torch.equal(base.view(torch.int16),
-                       pre.experts(x, moved, p, *banks, kind, kind, left, rows=rows).view(torch.int16))
-    none = pre.experts(x, ids, torch.zeros_like(p), *banks, kind, kind, left, rows=rows)
+                       pre.experts(x, moved, p, *banks, kind, kind, left).view(torch.int16))
+    none = pre.experts(x, ids, torch.zeros_like(p), *banks, kind, kind, left)
     assert not none.view(torch.int16).any()
     bad = ids.clone()
     bad[3, int(torch.nonzero(p[3])[0])] = LOCAL
     with pytest.raises(RuntimeError, match="outside"):
-        pre.experts(x, bad, p, *banks, kind, kind, left, rows=rows)
+        pre.experts(x, bad, p, *banks, kind, kind, left)
 
 
 def rank_banks(layer_prefix=None):
@@ -149,16 +147,14 @@ def test_prefill_timing_192_experts(ops):
     pre, dec = ops
     prefix, banks, gate_type, down_type, left = rank_banks()
     generator = torch.Generator().manual_seed(41)
-    for m in (7, 65, 256, 512, 2048, 8192):
+    for m in (7, 65, 128, 256, 512, 2048, 8192):
         x = torch.randn(m, 5120, generator=generator).half().cuda()
         ids = torch.rand(m, 384, generator=generator).argsort(-1)[:, :6]
         p = torch.softmax(torch.randn(m, 6, generator=generator), -1).float()
         mine = ids >= 192
         local = torch.where(mine, ids - 192, 0).to(torch.int32).cuda()
         p = torch.where(mine, p, 0).cuda()
-        a = timed(lambda: pre.experts(x, local, p, *banks, gate_type, down_type, left, rows=0), 5)
-        f = timed(lambda: pre.experts(x, local, p, *banks, gate_type, down_type, left, rows=64), 5)
-        g = timed(lambda: pre.experts(x, local, p, *banks, gate_type, down_type, left, rows=128), 5)
+        a = timed(lambda: pre.experts(x, local, p, *banks, gate_type, down_type, left), 5)
 
         def loop():
             out = torch.empty_like(x)
@@ -169,8 +165,6 @@ def test_prefill_timing_192_experts(ops):
             return out
 
         b = timed(loop, 3 if m >= 2048 else 5)
-        print(f"{prefix} types {gate_type}/{down_type} M{m} routes {int((p != 0).sum())}: fused64 median "
-              f"{f[len(f) // 2]:.3f} ms [{f[0]:.3f}, {f[-1]:.3f}] | fused128 median "
-              f"{g[len(g) // 2]:.3f} ms [{g[0]:.3f}, {g[-1]:.3f}] | cublas median "
+        print(f"{prefix} types {gate_type}/{down_type} M{m} routes {int((p != 0).sum())}: prefill median "
               f"{a[len(a) // 2]:.3f} ms [{a[0]:.3f}, {a[-1]:.3f}] | decode loop median {b[len(b) // 2]:.3f} ms "
-              f"[{b[0]:.3f}, {b[-1]:.3f}] | workspace {pre.workspace_bytes(int((p != 0).sum())) / 2**20:.0f} MiB")
+              f"[{b[0]:.3f}, {b[-1]:.3f}] | workspace {pre.workspace_bytes(m, int((p != 0).sum())) / 2**20:.0f} MiB")
