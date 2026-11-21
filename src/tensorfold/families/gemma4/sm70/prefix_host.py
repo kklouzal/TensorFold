@@ -233,10 +233,8 @@ class HostTier:
                 continue
             for index, (ids, meta) in enumerate(entry["points"]):
                 n = len(ids)
-                if meta["exact"] and (meta["prompt_end"] is None
-                                      or not (len(prompt) == n + 1 and prompt[-1] == meta["prompt_end"]["token"])):
-                    continue                    # an exact end serves only exact repeats (aligned points the rest);
-                    #                             one whose end a resume rewrote in place serves nothing
+                if meta["exact"] and not (len(prompt) == n + 1 and prompt[-1] == meta["prompt_end"]["token"]):
+                    continue                    # an exact end serves only exact repeats (aligned points the rest)
                 if length < n < len(prompt) and prompt[n - 1] == ids[-1] and prompt[:n] == ids:
                     found, length = (entry, index), n
         return found
