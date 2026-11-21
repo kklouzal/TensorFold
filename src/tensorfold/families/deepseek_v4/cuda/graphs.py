@@ -6,7 +6,10 @@ slots), constant token_req / qsl / valid, and the batch's block table gathered i
 forward (``Target.begin/layers/end``) plus the logits all-gather, so a replay issues exactly the eager kernels and
 collectives. The graph's output is the compact greedy packet (per rank and row: shard maximum, its global column, a
 NaN/+inf flag; all-gathered, 8 x [B, 3] FP32: ``round_sampling``); the full-vocabulary rows are gathered eagerly after
-the replay only when a caller needs them (every rank alike: the OP_STEP flags). Captured identically on every rank at startup (bodies contain NCCL calls), largest bucket first, in
+the replay only when a caller needs them (every rank alike: the OP_STEP flags). Every rank also derives each row's
+greedy token from the gathered packet on the device (``Shape.next_ids``: the first rank holding the row maximum,
+its column; the same rule as ``round_sampling.greedy_tokens`` on the host), so a run-ahead round (``run(ahead=True)``)
+takes its token ids from the previous replay without a host round trip (``engine.Decoder``). Captured identically on every rank at startup (bodies contain NCCL calls), largest bucket first, in
 one shared memory pool; never lazily.
 
 Padding rows (B real streams in a larger bucket) are position-0 tokens of the scratch slot (the last slot) whose
@@ -90,9 +93,11 @@ class Shape:
         self.graph = None
         self.out = None
         self.local = None               # this rank's FP32 logits shard [count, vocab / 8] (graph-owned)
-        # rank 0: the compact packet's landing buffer (one decode batch in flight at a time)
-        self.host_compact = torch.empty((engine.world, count, 3), dtype=torch.float32, pin_memory=True) \
-            if engine.rank == 0 else None
+        self.next_ids = None            # int64 [count]: each row's greedy token from the packet (graph-owned)
+        # rank 0: the compact packet's landing buffers, alternating (two decode batches in flight: run-ahead)
+        self.host_compact = [torch.empty((engine.world, count, 3), dtype=torch.float32, pin_memory=True)
+                             for _ in range(2)] if engine.rank == 0 else None
+        self.flip = 0
 
     def stage(self, entries, ids) -> None:
         """entries [(slot, position, 1)] in row order, ids their tokens; the rest of the bucket pads."""
@@ -120,6 +125,9 @@ class Shape:
         packed = compact_packet(local, e.rank)
         recv = torch.empty((e.world,) + tuple(packed.shape), dtype=torch.float32, device=local.device)
         e.comm.all_gather(packed, recv)
+        # greedy_tokens' rule on the device: torch.argmax takes the first (lowest) rank among equal maxima
+        choice = recv[:, :, 0].argmax(0)
+        self.next_ids = recv[:, :, 1].gather(0, choice[None])[0].long()
         return recv
 
     def run(self):
@@ -151,6 +159,7 @@ class DecodeGraphs:
         context = engine.target.context
         self.keys = shape_keys(streams, context)
         self.classes = {b: sorted(c for k, c in self.keys if k == b) for b in self.sizes}
+        self.last = None                        # (Shape, rows) of the last replay (run-ahead token source)
         self.shapes = {key: Shape(engine, *key) for key in self.keys}
         torch.cuda.synchronize()
         before = torch.cuda.mem_get_info()[0]
@@ -181,20 +190,32 @@ class DecodeGraphs:
         need = max(entry[1] for entry in entries) + 1
         return next(c for c in self.classes[bucket] if c >= need)
 
-    def run(self, entries, ids, compact=False, full=True):
+    def run(self, entries, ids, compact=False, full=True, ahead=False):
         """Replay the smallest bucket holding ``entries``. ``full``: the real rows' full-vocabulary FP32 logits are
         gathered after the replay (every rank). Rank 0 gets those rows (``compact`` False), or (the compact packet's
         pinned host buffer [world, bucket, 3], copied behind the replay, landed once the caller's later event
-        completes; the rows or None); other ranks get None."""
+        completes; the rows or None); other ranks get None. ``ahead``: the rows' token ids are the previous replay's
+        device greedy tokens (``ids`` ignored): the same rows in the same order, one position on, stream-ordered
+        behind that replay. A packet buffer stays valid until the second later run."""
         n = len(entries)
         bucket = self.bucket(n)
         shape = self.shapes[(bucket, self.index_class(bucket, entries))]
-        shape.stage(entries, ids)
+        if ahead:
+            last = self.last
+            if last is None or last[1] != n:
+                raise RuntimeError("a run-ahead decode round needs the previous replay of the same rows")
+            shape.stage(entries, [shape.pad_id] * n)
+            shape.staged[0, :n].copy_(last[0].next_ids[:n])
+        else:
+            shape.stage(entries, ids)
         packet = shape.run()
+        self.last = (shape, n)
         rows = self.e.coll.gather(shape.local[:n]) if full else None
         if self.e.rank != 0:
             return None
         if not compact:
             return rows
-        shape.host_compact.copy_(packet, non_blocking=True)
-        return shape.host_compact, rows
+        host = shape.host_compact[shape.flip]
+        shape.flip ^= 1
+        host.copy_(packet, non_blocking=True)
+        return host, rows

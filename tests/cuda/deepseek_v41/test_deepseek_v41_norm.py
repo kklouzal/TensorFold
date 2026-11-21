@@ -40,9 +40,9 @@ def test_short_rms_fp32_reference_row_invariance_and_graph(hidden, magnitude):
 def test_short_rms_rejects_outside_qualified_geometry():
     weight = torch.ones(512, dtype=torch.float32, device="cuda")
     for x in (
-        torch.ones(7, 512, dtype=torch.float16, device="cuda"),
+        torch.ones(65, 512, dtype=torch.float16, device="cuda"),
         torch.ones(6, 512, dtype=torch.float32, device="cuda"),
         torch.ones(6, 1024, dtype=torch.float16, device="cuda")[:, ::2],
     ):
-        with pytest.raises(ValueError, match="FP16 M1..6"):
+        with pytest.raises(ValueError, match="FP16 M1..64"):
             short_rms_norm(x, weight, 1e-20)

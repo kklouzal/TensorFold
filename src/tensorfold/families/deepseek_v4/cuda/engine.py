@@ -35,6 +35,7 @@ F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer)
 # graph decode flags: return the compact greedy packet (``round_sampling``); and also gather the full rows
 F_COMPACT, F_FULL = 1 << 22, 1 << 23
 F_IMAGE = 1 << 24          # a prompt chunk with image rows: rank 0 broadcasts their features after the frame
+F_AHEAD = 1 << 25           # run-ahead round: token ids from the previous replay's device greedy tokens (graphs.py)
 SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
@@ -348,7 +349,10 @@ class DS41Engine:
         if (stop == 0 and not flags & F_IMAGE and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
             compact = bool(flags & F_COMPACT)
-            return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL))
+            return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL),
+                                   ahead=bool(flags & F_AHEAD))
+        if flags & F_AHEAD:
+            raise RuntimeError("a run-ahead decode round must replay a startup graph")
         for r, (slot, start, count) in enumerate(entries):
             positions.extend(range(start, start + count))
             token_req.extend([r] * count)
@@ -651,14 +655,16 @@ class Decoder(PrefixOwner):
         self.next_id = 0
         self._broken = None
         self.eos = tuple(engine.eos)
-        self.inflight = None                         # (group, entries, logits, t0) of the launched decode batch
+        self.inflight = None                         # the launched decode batch (``_launch``), oldest first
+        self.ahead = None                            # a run-ahead batch launched behind ``inflight`` (``_launch_ahead``)
         self.split = None                            # (stream, chunk, next unit) of a paused chunk
         self.costs = UnitCosts(*engine.warm_unit_ms)  # per-unit prompt cost model (CUDA events of past chunks)
         self.rounds = RoundCosts()                   # GPU time of a decode round per batch bucket (CUDA events)
         self.timing = None                           # (rows, per-group marks) of the chunk in flight
         self.timed = None                            # (rows, marks) of the last chunk, until its events complete
-        self.bucket = 0                              # the batch bucket of the decode round in flight
-        self.started, self.done = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        # round timing events, alternating (two decode batches in flight under run-ahead)
+        self.events = [(torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)) for _ in range(2)]
+        self.flip = 0
         self._init_prefix(engine, engine.points)
 
     @property
@@ -772,7 +778,7 @@ class Decoder(PrefixOwner):
     def drop(self, error=None) -> list:
         """After an error in a round: forget every live stream; the ranks can no longer be trusted to agree."""
         live = [s for s in self.streams.values() if not s.done] + self.filling
-        self.streams, self.filling, self.inflight, self.split = {}, [], None, None
+        self.streams, self.filling, self.inflight, self.ahead, self.split = {}, [], None, None, None
         self.timing = self.timed = self.e.layer_marks = None
         if self._broken is None:
             self.broken = error or RuntimeError("a DeepSeek-V4.1 SM70 round failed")
@@ -781,16 +787,21 @@ class Decoder(PrefixOwner):
     # ------------------------------------------------------------------------------------------ rounds
     def round(self) -> list:
         """Wait for the batch in flight and decide its tokens, launch the next batch at once, then (while it runs)
-        deliver the decided tokens and run the next prompt chunk or layer group."""
+        deliver the decided tokens and run the next prompt chunk or layer group. Run-ahead: when the batch in flight
+        can only continue unchanged (``_can_run_ahead``), its successor is launched before the wait, its token ids
+        taken on the device from the batch in flight (graphs ``ahead``), so the GPU never idles on this host work."""
         import torch
         self._check()
         done = []
         with torch.inference_mode():
             try:
+                if self.inflight is not None and self._can_run_ahead():
+                    self._launch_ahead()
                 decided = self._collect() if self.inflight is not None else []
+                self.inflight, self.ahead = self.ahead, None
                 ending = {id(s) for s, chosen in decided if chosen is None or self._ends_after(s, chosen)}
                 live = [s for s in self.streams.values() if not s.done and id(s) not in ending]
-                if live:
+                if live and self.inflight is None:
                     self._launch(live, {id(s): chosen for s, chosen in decided if chosen is not None})
                 for s, chosen in decided:
                     if chosen is not None:
@@ -999,7 +1010,8 @@ class Decoder(PrefixOwner):
             entries.append((s.slot, len(s.prompt) + len(s.out) + len(extra) - 1, 1))
             ids.append(token)
         need = [g for g, s in enumerate(live) if needs_row(s)]
-        self.started.record()
+        started, done = self._events()
+        started.record()
         t0 = time.perf_counter()
         out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0))
         compact, rows = out if isinstance(out, tuple) else (None, out)      # an eager forward: full rows only
@@ -1007,17 +1019,52 @@ class Decoder(PrefixOwner):
             need = list(range(len(live)))
         positions = [entry[1] + 1 for entry in entries]
         sampled = RowSampling(live, positions, rows, need) if need else None
-        self.done.record()
-        self.bucket = self._bucket(len(entries))
-        self.inflight = (live, positions, compact, rows, sampled, t0)
+        done.record()
+        self.inflight = (live, positions, compact, rows, sampled, t0, (started, done, self._bucket(len(entries))),
+                         entries)
+
+    def _events(self):
+        pair = self.events[self.flip]
+        self.flip ^= 1
+        return pair
+
+    def _can_run_ahead(self) -> bool:
+        """The batch in flight continues unchanged one more round whatever tokens it decides: every stream plain
+        greedy (its token is the packet's argmax: ``round_sampling.plain``), still decoding, with at least two reply
+        tokens left (no count-based end after this batch), the batch a graph replay and no stream added since its
+        launch. A stream that ends on an end token in the batch in flight wastes its run-ahead row: that row writes the
+        stream's state one position past its reply, inside its admitted pages, as a reply token would (the slot is
+        retired behind it in stream order; prefix points never lie past a prompt end)."""
+        from .round_sampling import plain
+        live, compact, entries = self.inflight[0], self.inflight[2], self.inflight[7]
+        if compact is None or self.e.graphs is None:
+            return False
+        current = [s for s in self.streams.values() if not s.done]
+        if len(current) != len(live) or any(a is not b for a, b in zip(current, live)):
+            return False
+        return all(plain(s) and len(s.out) + 2 <= s.count for s in live)
+
+    def _launch_ahead(self) -> None:
+        """Launch the run-ahead successor of the batch in flight: same streams and rows, one position on, token ids
+        on the device (F_AHEAD)."""
+        e = self.e
+        live, positions, old_entries = self.inflight[0], self.inflight[1], self.inflight[7]
+        entries = [(slot, position, 1) for (slot, _, _), position in zip(old_entries, positions)]
+        started, done = self._events()
+        started.record()
+        t0 = time.perf_counter()
+        compact, rows = e.step(entries, [0] * len(entries), list(range(len(entries))), F_COMPACT | F_AHEAD)
+        done.record()
+        self.ahead = (live, [entry[1] + 1 for entry in entries], compact, rows, None, t0,
+                      (started, done, self._bucket(len(entries))), entries)
 
     def _collect(self):
         """Wait for the batch in flight; decide each stream's token: [(stream, [token] | None)]."""
         from .round_sampling import greedy_tokens
-        live, positions, compact, rows, sampled, t0 = self.inflight
+        live, positions, compact, rows, sampled, t0, (started, done, bucket), _ = self.inflight
         self.inflight = None
-        self.done.synchronize()
-        self.rounds.add(self.bucket, self.started.elapsed_time(self.done))
+        done.synchronize()
+        self.rounds.add(bucket, started.elapsed_time(done))
         greedy = greedy_tokens(compact, len(live)) if compact is not None else None
         chosen_rows = sampled.choose() if sampled is not None else {}
         decided = []

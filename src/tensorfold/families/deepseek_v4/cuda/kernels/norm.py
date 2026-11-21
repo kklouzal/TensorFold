@@ -7,10 +7,13 @@
 #   (ptx_version=83, needed with CUDA 12.9 ptxas). Kernel arithmetic unchanged.
 # - vllm.triton_utils -> triton_utils.
 # - short_rms_norm: x.is_cuda -> on_triton_device(x) (identical in compiled runs; CPU only under TRITON_INTERPRET).
+# - short_rms_norm takes 1..band.BAND_ROWS (64) rows (the friend's patch 89 band; the kernel is one program per row,
+#   so a row's result does not depend on M).
 """One-launch FP32 RMS arithmetic for V4.1's short FP16 rows."""
 
 import torch
 
+from .band import BAND_ROWS
 from .triton_utils import jit, on_triton_device, tl, triton
 
 
@@ -29,7 +32,7 @@ def short_rms_norm(x, weight, eps):
         x.ndim != 2
         or not on_triton_device(x)
         or x.dtype != torch.float16
-        or not 1 <= x.shape[0] <= 6
+        or not 1 <= x.shape[0] <= BAND_ROWS
         or x.shape[1] not in (128, 512, 1280, 5120)
         or not x.is_contiguous()
         or weight.shape != (x.shape[1],)
@@ -37,7 +40,7 @@ def short_rms_norm(x, weight, eps):
         or weight.device != x.device
         or not weight.is_contiguous()
     ):
-        raise ValueError("V4.1 short RMS requires FP16 M1..6 and FP32 weights")
+        raise ValueError(f"V4.1 short RMS requires FP16 M1..{BAND_ROWS} and FP32 weights")
     output = torch.empty_like(x)
     _short_rms[(x.shape[0],)](
         x,

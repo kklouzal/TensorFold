@@ -143,8 +143,8 @@ class Target:
 
     # ---- small pieces
     def _norm(self, x, weight):
-        from .kernels.norm import short_rms_norm
-        if (x.dtype == torch.float16 and x.ndim == 2 and 1 <= x.shape[0] <= 6 and x.shape[1] in (128, 512, 1280, 5120)
+        from .kernels.norm import BAND_ROWS, short_rms_norm
+        if (x.dtype == torch.float16 and x.ndim == 2 and 1 <= x.shape[0] <= BAND_ROWS and x.shape[1] in (128, 512, 1280, 5120)
                 and x.is_contiguous()):
             return short_rms_norm(x, weight, self.g.eps)
         values = x.float()
@@ -169,12 +169,13 @@ class Target:
     def attention(self, ly, x, step: Step, table, shared):
         from .kernels import quant_rope as qr_ops
         from .kernels import mu_packed as pk
+        from .kernels.rope_qdq import rope_qdq
         tokens = x.shape[0]
         positions = step.positions
         q_low, kv_low = ly.qa_kv(x)
         qr = self._norm(q_low, ly.q_norm)
         query = qr_ops.apply_rope(self._linear(qr, ly.wq_b).view(tokens, -1, 512), positions, table)
-        window = qr_ops.attention_qdq(qr_ops.apply_rope(self._norm(kv_low, ly.kv_norm), positions, table))
+        window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table)     # qdq(rope(.)) in one launch
         pool = self.pool
         extra = {}
         if ly.ratio:
@@ -193,8 +194,7 @@ class Target:
                          topk=shared["topk"])
         output = self._attend(query, step, pool.rings[ly.index], window, ly.sink, **extra)
         pk.insert_ring(pool.rings[ly.index], window, positions, step.valid, step.token_req, step.qsl, step.req_slot)
-        output = qr_ops.apply_rope(output, positions, table, inverse=True)
-        output = qr_ops.attention_qdq(output.reshape(tokens, 1, -1))      # TP8: one output group per rank
+        output = rope_qdq(output, positions, table, inverse=True)   # TP8: one output group per rank; qdq(rope^-1)
         projected = self._linear(output.reshape(tokens, -1), ly.wo_a)
         return self.c.sum(self._linear(projected, ly.wo_b))
 
@@ -210,12 +210,23 @@ class Target:
 
     def _select(self, ly, x, qr, step, table):
         """top-512 compressed positions per token (patch 87 ``_select``: Full layers, segmented top-k)."""
-        from .kernels import quant_rope as qr_ops
+        from .kernels import index_shard
         from .kernels import mu_packed as pk
+        from .kernels.rope_qdq import rope_qdq
+        from .weights import WORLD
         tokens = x.shape[0]
         query = self._linear(qr, ly.idx_wq_b).view(tokens, -1, 128)
-        query = qr_ops.attention_qdq(qr_ops.apply_rope(query, step.positions, table), fp4=True, group=32)
+        query = rope_qdq(query, step.positions, table, fp4=True, group=32)
         weights = self._linear(x, ly.idx_proj) * (1.0 / 64.0)
+        width = self.index_context // ly.ratio
+        if (tokens > 1 and not step.prefill and step.decode_index is None
+                and index_shard.eligible(query.shape[1], WORLD, width)):
+            # decode rows: every rank scores all 32 heads over its 1/8 of the key blocks (K4, index_shard; one row
+            # keeps the head-sharded scores: 98-118 vs 104-123 us per rank, dec-k4r / dec-k4b)
+            return index_shard.select_decode(query, weights, step.positions, step.valid, step.token_req,
+                                             self.pool.cache, step.block_table, layout=self.pool.layout,
+                                             source=ly.source, ratio=ly.ratio, width=width, rank=self.w.rank,
+                                             comm=self.c.world)
         return pk.select_positions(query, weights, step.positions, step, self.pool.cache, step.block_table,
                                    layout=self.pool.layout, source=ly.source, ratio=ly.ratio,
                                    width=self.index_context // ly.ratio, all_reduce=self._sum_half,
@@ -242,21 +253,24 @@ class Target:
     def moe(self, ly, x, image=None):
         from tensorfold.cuda.sm70 import ds41_lattice_moe as lattice_moe
         from tensorfold.cuda.sm70 import onecat_ds41 as native
+        from .kernels.band import add_halves, route_local
         from .kernels.mhc import fp32_projection
-        from .kernels.router import route_topk
         g = self.g
         logits = fp32_projection(x, ly.gate)
         if image is None:
-            probabilities, ids = route_topk(logits.float(), ly.gate_bias, g.top_k, g.routed_scale)
+            # the router epilogue and this rank's EP2 mapping in one launch (local id, weight 0 for the other group)
+            local, weights = route_local(logits, ly.gate_bias, g.top_k, g.routed_scale, self.local.start,
+                                         len(self.local))
         else:       # image rows route with the vision bias (upstream Gate.bias_vl; weights stay unbiased)
             from .vision import route_with_vision
             probabilities, ids = route_with_vision(logits.float(), ly.gate_bias, self.bias_vl[ly.index], image,
                                                    g.top_k, g.routed_scale)
-        first = self.local.start
-        local = ids.to(torch.int32) - first
-        mine = (local >= 0) & (local < len(self.local))
-        local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
-        weights = torch.where(mine, probabilities.float(), torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
+            first = self.local.start
+            local = ids.to(torch.int32) - first
+            mine = (local >= 0) & (local < len(self.local))
+            local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
+            weights = torch.where(mine, probabilities.float(),
+                                  torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left, self.lattice)
@@ -264,8 +278,7 @@ class Target:
             out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                           ly.gate_up_type, ly.down_type, ly.down_left)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
-        total = out.float() + self._linear(hidden, ly.sh_down).float()
-        return self.c.sum(total, torch.float16)
+        return self.c.sum(add_halves(out, self._linear(hidden, ly.sh_down)), torch.float16)
 
     # ---- Engram
     def engram_layer(self, ly, hidden, hashes, step, valid):
