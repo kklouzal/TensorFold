@@ -34,7 +34,10 @@ PIPE_TIMEOUT = 600.0
 F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer): score every row; and the last row
 # graph decode flags: return the compact greedy packet (``round_sampling``); and also gather the full rows
 F_COMPACT, F_FULL = 1 << 22, 1 << 23
-F_IMAGE = 1 << 24          # a prompt chunk with image rows: rank 0 broadcasts their features after the frame
+F_IMAGE = 1 << 24          # a prompt chunk with image rows: their features are every rank's staged tower rows
+# The TP8 vision tower's operations (``OP_TOWER``, kind in a; every rank runs its shard, ``DS41Engine._tower``)
+OP_TOWER = 32
+T_BEGIN, T_RUN, T_SPAN, T_STAGE, T_FREE = range(5)
 SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
@@ -121,14 +124,16 @@ class DS41Engine:
         self._barrier()
         self.w = W.load(shards, g, rank, device, layers=layers)
         shards.close()
-        # Image input (--vision): the vision router bias on every rank, the mmproj tower on rank 0 only (it encodes,
-        # then broadcasts each prompt chunk's image rows). Loaded before the KV pool is sized, so the pool pays for
-        # it; the KV pool is sized by the smallest rank, so one rank's tower costs every rank the same pages as a
-        # replicated one would, without seven idle copies.
+        # Image input (--vision): the vision router bias and a TP8 part of the mmproj tower on every rank (each rank
+        # reads only its part). Every rank encodes in step (``_tower``), so each ends with the same span and a prompt
+        # chunk's image rows need no broadcast. Loaded before the KV pool is sized, so the pool pays for it; the pool
+        # is sized by the smallest rank, which with the tower split is every rank's 1/8.
         self.tower = self.vision = None
         self.bias_vl = None
+        self.tower_states, self.tower_spans = {}, {}     # handle -> paused encode / finished span (every rank)
+        self.tower_handles = 0                           # rank 0: the next encode's handle
         if vision_offload:
-            raise ValueError("DeepSeek-V4.1 SM70 keeps its vision tower on GPU 0: --vision-offload is unsupported")
+            raise ValueError("DeepSeek-V4.1 SM70 keeps its vision tower in VRAM: --vision-offload is unsupported")
         if vision:
             from . import vision as V
             V.check_config(raw)
@@ -140,13 +145,13 @@ class DS41Engine:
             if table.shape[0] != g.layers:
                 raise ValueError(f"the vision router bias has {table.shape[0]} layers; the model has {g.layers}")
             self.bias_vl = torch.from_numpy(table).to(device)
+            tensors = V.read_mmproj(resolve(mmproj), rank, tp)
+            self.tower = V.VisionTower(tensors, device, rank=rank, world=tp, comm=self.coll)
+            del tensors
             if rank == 0:
-                tensors = V.read_mmproj(resolve(mmproj))
-                self.tower = V.VisionTower(tensors, device)
-                del tensors
                 self.vision = V.Frontend(model_dir, allow_urls=vision_urls)
-                print(f"[tensorfold] DeepSeek-V4.1 SM70: vision tower on GPU 0 of rank 0, "
-                      f"{self.tower.nbytes() / 2**30:.2f} GiB (FP16 GEMMs, FP32 residual); vision router bias "
+                print(f"[tensorfold] DeepSeek-V4.1 SM70: vision tower TP{tp}, {self.tower.nbytes() / 2**30:.3f} GiB "
+                      f"per rank (FP16 GEMMs, FP32 residual and all-reduce); vision router bias "
                       f"sha256 {'matches' if digest == V.BIAS_VL_SHA256 else 'DIFFERS from'} upstream's", flush=True)
         # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
         # sized, so it does not come out of RESERVE.
@@ -172,7 +177,7 @@ class DS41Engine:
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice,
                              bias_vl=self.bias_vl)
-        self.image_features = None          # rank 0: the next F_IMAGE step's image rows [n, 5120] FP16
+        self.image_features = None          # every rank: the next F_IMAGE step's image rows [n, 5120] FP16
         self.layer_count = len(self.w.layers)
         self.units = self.target.units      # pause points of a prompt forward (attention, experts per layer)
         from .prefix import SlotState
@@ -275,9 +280,10 @@ class DS41Engine:
         torch.cuda.synchronize()
 
     def _warm_tower(self):
-        """Rank 0: encode the plan's largest image (93 x 93 patches, 994 tokens) once, so its kernels, cuBLAS
-        handles and allocator blocks exist before the first request, and time its blocks: ``tower_block_ms`` is
-        the per-block cost the Decoder cuts encodes in groups by while streams decode (scaled by patch count, which
+        """Every rank, in step: encode the plan's largest image (93 x 93 patches, 994 tokens) once through the
+        serving operations (pixel broadcast, blocks, span, stage), so their kernels, cuBLAS handles, NCCL paths and
+        allocator blocks exist before the first request, and time its blocks: ``tower_block_ms`` (rank 0's) is the
+        per-block cost the Decoder cuts encodes in groups by while streams decode (scaled by patch count, which
         overestimates smaller images: attention is quadratic)."""
         import numpy as np
         import torch
@@ -287,26 +293,66 @@ class DS41Engine:
         free = torch.cuda.mem_get_info()[0]
         torch.cuda.reset_peak_memory_stats()
         before = torch.cuda.memory_allocated()
-        st = self.tower.start_frame(frame)
         events = [torch.cuda.Event(enable_timing=True) for _ in range(V.LAYERS + 1)]
+        self._tower(T_BEGIN, -1, side, side, (), V.pinned_patches(frame) if self.rank == 0 else None)
         events[0].record()
         for b in range(V.LAYERS):
-            self.tower.run(st, b + 1)
+            self._tower(T_RUN, -1, b + 1)
             events[b + 1].record()
-        span = self.tower.span(frame, st)
+        self._tower(T_SPAN, -1)
+        self._tower(T_STAGE, 0, 0, 0, [-1, 0, frame.tokens, 1])
+        span, self.image_features = self.image_features, None
         torch.cuda.synchronize()
-        if span.shape != (frame.tokens, V.OUT_DIM) or not bool(torch.isfinite(span).all()):
+        if span.shape != (frame.tokens, V.OUT_DIM) or not bool(torch.isfinite(span).all()) or self.tower_spans:
             raise RuntimeError("DeepSeek-V4.1 vision tower warm-up produced an invalid span")
         self.tower_patches = side * side
         ms = [events[b].elapsed_time(events[b + 1]) for b in range(V.LAYERS)]
         self.tower_block_ms = max(ms)
         self.tower_peak = torch.cuda.max_memory_allocated() - before
-        del st, span
-        print(f"[tensorfold] DeepSeek-V4.1 SM70: vision tower warm ({frame.tokens}-token image): blocks "
-              f"{sum(ms):.0f} ms ({self.tower_block_ms:.1f} ms max), transient peak {self.tower_peak >> 20} MiB "
-              f"of {free >> 20} MiB free", flush=True)
+        del span
+        if self.rank == 0:
+            print(f"[tensorfold] DeepSeek-V4.1 SM70: vision tower warm ({frame.tokens}-token image): blocks "
+                  f"{sum(ms):.0f} ms ({self.tower_block_ms:.1f} ms max), transient peak {self.tower_peak >> 20} MiB "
+                  f"of {free >> 20} MiB free", flush=True)
         if self.tower_peak > RESERVE:
             raise RuntimeError("the DeepSeek-V4.1 vision tower's transients exceed the prompt reserve")
+
+    def _tower(self, kind, handle, x=0, y=0, ids=(), pixels=None):
+        """One vision tower operation on this rank's TP part (every rank, same order: the collectives pair up).
+        T_BEGIN: encode ``handle`` of an x * y patch grid; rank 0's uint8 ``pixels`` (pinned CPU) are broadcast
+        from GPU 0 to every rank. T_RUN: its blocks up to x. T_SPAN: finish it into its span. T_STAGE: ``ids`` =
+        (handle, first, end, release) quadruples: the next F_IMAGE step's rows are those span rows in order;
+        released spans are dropped. T_FREE: drop the encodes and spans of handles ``ids``."""
+        import torch
+        from .vision import PATCH
+        if kind == T_BEGIN:
+            if handle in self.tower_states or handle in self.tower_spans:
+                raise RuntimeError(f"vision encode {handle} already exists")
+            device = self.target.device
+            if self.rank == 0:
+                patches = pixels.to(device, non_blocking=True)
+            else:
+                patches = torch.empty((x * y, 3, PATCH, PATCH), dtype=torch.uint8, device=device)
+            self.comm.broadcast(patches, 0)
+            self.tower_states[handle] = self.tower.begin(patches, x, y)
+        elif kind == T_RUN:
+            self.tower.run(self.tower_states[handle], x)
+        elif kind == T_SPAN:
+            self.tower_spans[handle] = self.tower.span(self.tower_states.pop(handle))
+        elif kind == T_STAGE:
+            rows = []
+            for i in range(0, len(ids), 4):
+                h, first, end, release = ids[i:i + 4]
+                rows.append(self.tower_spans[h][first:end])
+                if release:
+                    del self.tower_spans[h]
+            self.image_features = torch.cat(rows).contiguous()
+        elif kind == T_FREE:
+            for h in ids:
+                self.tower_states.pop(h, None)
+                self.tower_spans.pop(h, None)
+        else:
+            raise RuntimeError(f"unknown DeepSeek-V4.1 vision tower operation {kind}")
 
     def _barrier(self):
         import torch
@@ -374,13 +420,9 @@ class DS41Engine:
             if not rows_at:
                 raise RuntimeError("an image step without image rows")
             ids = [IMAGE_TOKEN_ID if token >= self.vocab else token for token in ids]
-            if self.rank == 0:
-                features, self.image_features = self.image_features, None
-                if features is None or features.shape != (len(rows_at), OUT_DIM) or features.dtype != torch.float16:
-                    raise RuntimeError("the image step's features do not match its image rows")
-            else:
-                features = torch.empty(len(rows_at), OUT_DIM, dtype=torch.float16, device=device)
-            self.comm.broadcast(features, 0)
+            features, self.image_features = self.image_features, None       # staged by T_STAGE on every rank
+            if features is None or features.shape != (len(rows_at), OUT_DIM) or features.dtype != torch.float16:
+                raise RuntimeError("the image step's features do not match its image rows")
             image_rows = t(rows_at, torch.long)
             image = torch.zeros(len(ids), dtype=torch.bool, device=device)
             image[image_rows] = True
@@ -472,6 +514,8 @@ class DS41Engine:
             return self._step(entries, tokens, rows, d)
         if op == OP_LAYERS:
             return self._layers(a)
+        if op == OP_TOWER:
+            return self._tower(a, b, c, d, ids)
         if op in PREFIX_OPS:
             out = self.prefix.run(op, a, b, c, d, ids)
             if op == OP_GROW:                   # the slot gained pages: the graphs' device page table follows
@@ -504,6 +548,29 @@ class DS41Engine:
     def step(self, entries, ids, logits_rows, stop=0):
         payload = [v for e in entries for v in e] + list(ids) + list(logits_rows)
         return self.announce(OP_STEP, len(entries), len(ids), len(logits_rows), stop, payload)
+
+    # the vision tower (every rank runs its TP part; ``_tower``); handles are rank 0's
+    def tower_begin(self, frame) -> int:
+        from .vision import pinned_patches
+        handle, self.tower_handles = self.tower_handles, self.tower_handles + 1
+        pixels = pinned_patches(frame)
+        self.pipes.send(_HEAD.pack(OP_TOWER, T_BEGIN, handle, frame.n_vit_h, frame.n_vit_w))
+        self._tower(T_BEGIN, handle, frame.n_vit_h, frame.n_vit_w, (), pixels)
+        return handle
+
+    def tower_run(self, handle: int, stop: int) -> None:
+        self.announce(OP_TOWER, T_RUN, handle, stop)
+
+    def tower_span(self, handle: int) -> None:
+        self.announce(OP_TOWER, T_SPAN, handle)
+
+    def tower_stage(self, pieces) -> None:
+        """pieces: [(handle, first, end, release)] -> every rank's ``image_features`` for the next F_IMAGE step."""
+        self.announce(OP_TOWER, T_STAGE, ids=[v for piece in pieces for v in piece])
+
+    def tower_free(self, handles) -> None:
+        if handles:
+            self.announce(OP_TOWER, T_FREE, ids=list(handles))
 
     def generate(self, prompt: list[int], max_tokens: int, sampling, on_tokens: Callable[[list[int]], Any],
                  draft: bool = True, stop_eos: bool = True, *, vision=None, constraint=None,
@@ -750,6 +817,7 @@ class Decoder(PrefixOwner):
                 self.e.announce(OP_LAYERS, -1)
             if s in self.filling:
                 self.filling.remove(s)
+                self._release(s)
                 s.done, s.finished = True, time.perf_counter()
                 out.append(s)
         return out
@@ -759,6 +827,12 @@ class Decoder(PrefixOwner):
             self.streams.pop(getattr(s, "sid", None), None)
             if s in self.filling:
                 self.filling.remove(s)
+                if self._broken is None:
+                    try:
+                        self._release(s)
+                    except BaseException as error:
+                        self.broken = error
+                        raise
             if getattr(s, "st", None) is None:
                 continue
             s.slot = None
@@ -836,7 +910,7 @@ class Decoder(PrefixOwner):
             s.prefill_s += time.perf_counter() - t0
             if not ready:                          # an encode group ran this round; the chunk waits for the rest
                 return []
-            image = F_IMAGE if e.image_features is not None else 0
+            image = F_IMAGE if any(a < stop and b > start for a, b in s.vision.blocks) else 0
         self.keep_before(s, start)
         self._absorb()
         self.timing = (stop - start, [])
@@ -893,44 +967,54 @@ class Decoder(PrefixOwner):
         return [s] if s.done else []
 
     def _encode(self, s, start: int, stop: int) -> bool:
-        """Rank 0: the image rows of prompt chunk [start, stop) of ``s`` into ``e.image_features`` (None: no image
-        row in it). Frames are encoded in tower blocks; while streams decode, one group of blocks a round, each
-        group's predicted cost at most the decode gap (as prompt units are cut), so an image never stalls decoding
-        streams for its whole encode. Returns False while an encode is unfinished. Only spans a later chunk still
-        reads stay (``s.encoded``)."""
-        import torch
+        """The image rows of prompt chunk [start, stop) of ``s`` into every rank's ``e.image_features`` (None: no
+        image row in it). Frames are encoded (every rank its TP part of the tower) in tower blocks; while streams
+        decode, one group of blocks a round, each group's predicted cost at most the decode gap (as prompt units
+        are cut), so an image never stalls decoding streams for its whole encode. Returns False while an encode is
+        unfinished. Only spans a later chunk still reads stay (``s.encoded``: frame index -> span handle)."""
         from tensorfold.cuda.geometry import group_target
         from .vision import LAYERS
         e = self.e
-        tower = e.tower
         need = [i for i, (a, b) in enumerate(s.vision.blocks) if a < stop and b > start]
         for i in need:
             if i in s.encoded:
                 continue
             frame = s.vision.frames[i]
             if s.encoding is None or s.encoding[0] != i:
-                s.encoding = (i, tower.start_frame(frame))
-            st = s.encoding[1]
+                if s.encoding is not None:
+                    e.tower_free([s.encoding[1]])
+                s.encoding = (i, e.tower_begin(frame), 0)
+            _, handle, done = s.encoding
             end = LAYERS
             if self.streams:
                 block = e.tower_block_ms * frame.patches.shape[0] / e.tower_patches
                 target = group_target(self.GAP_MS, self.rounds.estimate(self._bucket(len(self.streams))))
-                end = min(LAYERS, st["next"] + max(1, int(target // max(block, 1e-3))))
-            tower.run(st, end)
-            if st["next"] < LAYERS:
+                end = min(LAYERS, done + max(1, int(target // max(block, 1e-3))))
+            e.tower_run(handle, end)
+            if end < LAYERS:
+                s.encoding = (i, handle, end)
                 return False
-            s.encoded[i] = tower.span(frame, st)
-            s.encoding = None
+            e.tower_span(handle)
+            s.encoded[i], s.encoding = handle, None
             if self.streams:                       # the aligner closed this round's group
                 return False
-        rows = []
+        pieces = []
         for i in need:
             a, b = s.vision.blocks[i]
-            rows.append(s.encoded[i][max(a, start) - a:min(b, stop) - a])
+            pieces.append((s.encoded[i], max(a, start) - a, min(b, stop) - a, int(b <= stop)))
             if b <= stop:
                 del s.encoded[i]
-        e.image_features = torch.cat(rows).contiguous() if rows else None
+        if pieces:
+            e.tower_stage(pieces)
         return True
+
+    def _release(self, s) -> None:
+        """Drop the tower encodes and spans an unfinished image request still holds (every rank)."""
+        if getattr(s, "vision", None) is None:
+            return
+        handles = list(s.encoded.values()) + ([s.encoding[1]] if s.encoding is not None else [])
+        s.encoded, s.encoding = {}, None
+        self.e.tower_free(handles)
 
     def _stop(self, rows, at) -> int:
         """The unit after which the prompt chunk of ``rows`` rows, now at unit ``at``, pauses next: every remaining

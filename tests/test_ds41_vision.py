@@ -99,24 +99,49 @@ def test_preprocess_pads_grey_and_patchifies():
     assert np.array_equal(image, expected)
 
 
-class _Tower:
-    """A stand-in tower: a frame's span row j is (frame tag, j); ``run`` records each group of blocks."""
+def _span(frame):
+    """The stand-in tower's span of ``frame``: row j is (frame tag, j)."""
+    import torch
+    tag = float(ord(frame.content_hash))
+    return torch.arange(frame.tokens, dtype=torch.float16)[:, None].expand(-1, V.OUT_DIM) + 1000 * tag
 
-    def __init__(self):
-        self.groups = []
 
-    def start_frame(self, frame):
-        return {"frame": frame, "next": 0}
+class _Engine:
+    """The Decoder's tower operations (``DS41Engine.tower_*``) on a stand-in tower; records each group of blocks
+    and the live handles (what every rank would hold)."""
 
-    def run(self, st, stop):
-        self.groups.append((st["frame"].content_hash, st["next"], stop))
-        st["next"] = max(st["next"], stop)
+    def __init__(self, block_ms):
+        self.tower_block_ms, self.tower_patches, self.image_features = block_ms, 54, None
+        self.groups, self.states, self.spans, self.next = [], {}, {}, 0
 
-    def span(self, frame, st):
+    def tower_begin(self, frame):
+        handle, self.next = self.next, self.next + 1
+        self.states[handle] = [frame, 0]
+        return handle
+
+    def tower_run(self, handle, stop):
+        st = self.states[handle]
+        self.groups.append((st[0].content_hash, st[1], stop))
+        st[1] = max(st[1], stop)
+
+    def tower_span(self, handle):
+        frame, done = self.states.pop(handle)
+        assert done == V.LAYERS
+        self.spans[handle] = _span(frame)
+
+    def tower_stage(self, pieces):
         import torch
-        assert st["next"] == V.LAYERS
-        tag = float(ord(frame.content_hash))
-        return torch.arange(frame.tokens, dtype=torch.float16)[:, None].expand(-1, V.OUT_DIM) + 1000 * tag
+        rows = []
+        for h, first, end, release in pieces:
+            rows.append(self.spans[h][first:end])
+            if release:
+                del self.spans[h]
+        self.image_features = torch.cat(rows)
+
+    def tower_free(self, handles):
+        for h in handles:
+            self.states.pop(h, None)
+            self.spans.pop(h, None)
 
 
 def _decoder(streams=0, block_ms=40.0):
@@ -124,7 +149,7 @@ def _decoder(streams=0, block_ms=40.0):
 
     from tensorfold.families.deepseek_v4.cuda.engine import Decoder
     d = object.__new__(Decoder)
-    d.e = SimpleNamespace(tower=_Tower(), tower_block_ms=block_ms, tower_patches=54, image_features=None)
+    d.e = _Engine(block_ms)
     d.streams = dict.fromkeys(range(streams))
     d.GAP_MS = 175.0
     d.rounds = SimpleNamespace(estimate=lambda bucket: 25.0)
@@ -140,13 +165,16 @@ def test_decoder_encodes_frames_in_groups_and_feeds_each_chunk_its_rows():
     s.vision, s.encoded, s.encoding = prepared, {}, None
     d = _decoder()
     assert d._encode(s, 0, 6)                               # nothing decoding: the whole frame at once
-    assert d.e.tower.groups == [("a", 0, V.LAYERS)]
-    span_a = d.e.tower.span(a, {"next": V.LAYERS})
+    assert d.e.groups == [("a", 0, V.LAYERS)]
+    span_a, span_b = _span(a), _span(b)
     assert torch.equal(d.e.image_features, span_a[0:5]) and set(s.encoded) == {0}   # a straddles into the next chunk
+    assert set(d.e.spans) == {s.encoded[0]}
     assert d._encode(s, 6, 17)
-    span_b = d.e.tower.span(b, {"next": V.LAYERS})
     assert torch.equal(d.e.image_features, torch.cat([span_a[5:10], span_b]))
-    assert s.encoded == {} and len(d.e.tower.groups) == 2   # frame a was encoded once
+    assert s.encoded == {} and len(d.e.groups) == 2         # frame a was encoded once
+    assert not d.e.spans and not d.e.states                 # every rank's spans released after their last chunk
+    d.e.image_features = None
+    assert d._encode(s, 16, 18) and d.e.image_features is None   # a text-only chunk stages nothing
     # streams decoding: groups of floor(gap target / per-block estimate) blocks, one group a round
     from tensorfold.cuda.geometry import group_target
     d = _decoder(streams=3)
@@ -155,10 +183,118 @@ def test_decoder_encodes_frames_in_groups_and_feeds_each_chunk_its_rows():
     while not d._encode(s, 0, 17):
         rounds += 1
     per = max(1, int(group_target(175.0, 25.0) // 40.0))
-    groups = [g for g in d.e.tower.groups if g[0] == "a"]
+    groups = [g for g in d.e.groups if g[0] == "a"]
     assert all(stop - start <= per for _, start, stop in groups) and groups[-1][2] == V.LAYERS
-    assert rounds == len(d.e.tower.groups)                  # every group (and each frame's last) ends a round
+    assert rounds == len(d.e.groups)                        # every group (and each frame's last) ends a round
     assert torch.equal(d.e.image_features, torch.cat([span_a, span_b]))
+    assert not d.e.spans and not d.e.states
+
+
+def test_decoder_releases_an_unfinished_encode():
+    d = _decoder(streams=3)
+    s = type("S", (), {})()
+    a, b = _frame(6, 9, "a"), _frame(3, 3, "b")
+    s.vision = V.expand_placeholders([V.IMAGE_TOKEN_ID, 7, V.IMAGE_TOKEN_ID], [a, b])
+    s.encoded, s.encoding = {}, None
+    while s.encoding is None or not s.encoded:              # frame a finished, frame b part-encoded
+        assert not d._encode(s, 0, len(s.vision.token_ids))
+    assert d.e.states and d.e.spans
+    d._release(s)
+    assert not d.e.states and not d.e.spans and s.encoded == {} and s.encoding is None
+
+
+def _random_tower(gen, layers):
+    """Full-size mmproj tensors (torch order, FP32) with ``layers`` blocks, the read_mmproj names."""
+    import torch
+
+    def r(*shape, scale=0.02):
+        return torch.randn(*shape, generator=gen) * scale
+
+    t = {"v.patch_embd.weight": r(V.DIM, 3, V.PATCH, V.PATCH), "v.patch_embd.bias": r(V.DIM),
+         "v.post_ln.weight": 1 + r(V.DIM), "mm.1.weight": r(V.OUT_DIM, V.DIM * 9), "mm.1.bias": r(V.OUT_DIM),
+         "mm.2.weight": r(V.OUT_DIM, V.OUT_DIM), "mm.2.bias": r(V.OUT_DIM), "v.token_embd.img_start": r(V.OUT_DIM),
+         "v.token_embd.img_end": r(V.OUT_DIM), "v.image_newline": r(V.OUT_DIM)}
+    for i in range(layers):
+        p = f"v.blk.{i}."
+        t.update({p + "attn_qkv.weight": r(3 * V.DIM, V.DIM, scale=0.05), p + "attn_qkv.bias": r(3 * V.DIM),
+                  p + "attn_out.weight": r(V.DIM, V.DIM), p + "attn_out.bias": r(V.DIM),
+                  p + "ffn_gate.weight": r(V.INTER, V.DIM), p + "ffn_up.weight": r(V.INTER, V.DIM),
+                  p + "ffn_down.weight": r(V.DIM, V.INTER), p + "ln1.weight": 1 + r(V.DIM),
+                  p + "ln2.weight": 1 + r(V.DIM)})
+    return t
+
+
+def test_take_shard_partitions_megatron_parts():
+    import torch
+    full = torch.arange(3 * 16 * 2, dtype=torch.float32).reshape(48, 2)       # q | k | v of 16 rows each
+    parts = [V.take_shard(full, "v.blk.0.attn_qkv.weight", r, 8) for r in range(8)]
+    assert all(p.shape == (6, 2) for p in parts)
+    assert torch.equal(parts[3], torch.cat([full[6:8], full[22:24], full[38:40]]))
+    cols = torch.arange(4 * 16, dtype=torch.float32).reshape(4, 16)
+    assert torch.equal(torch.cat([V.take_shard(cols, "mm.2.weight", r, 8) for r in range(8)], 1), cols)
+    rows = torch.arange(16, dtype=torch.float32)
+    assert torch.equal(torch.cat([V.take_shard(rows, "mm.1.bias", r, 8) for r in range(8)]), rows)
+    assert V.take_shard(rows, "mm.2.bias", 3, 8) is rows and V.take_shard(full, "v.blk.0.attn_qkv.weight", 0, 1) is full
+    with pytest.raises(ValueError):
+        V.take_shard(torch.zeros(10, 3), "mm.1.weight", 0, 8)
+
+
+def test_tp8_tower_equals_the_whole_tower(monkeypatch):
+    """Eight simulated ranks (threads; FP32 sums in rank order) against the one-device tower, FP32 compute on the
+    CPU, 2 blocks: the same span up to FP32 reassociation, bitwise the same on every rank."""
+    import threading
+
+    import torch
+    monkeypatch.setattr(V, "LAYERS", 2)
+    # the CPU has no memory-efficient SDPA kernel: the math backend for both arms
+    monkeypatch.setattr(V.VisionTower, "_attention",
+                        lambda self, q, k, v: torch.nn.functional.scaled_dot_product_attention(
+                            q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0))[0])
+    full = _random_tower(torch.Generator().manual_seed(7), 2)
+    gen = torch.Generator().manual_seed(3)
+    frame = V.ImageFrame(torch.randint(0, 256, (7 * 8, 3, V.PATCH, V.PATCH), generator=gen,
+                                       dtype=torch.uint8).numpy(), 7, 8, "x")
+    one = V.VisionTower(full, "cpu", compute=torch.float32)
+    whole = one.encode(frame, torch.float32)
+    world = 8
+    barrier, parts = threading.Barrier(world), [None] * world
+
+    class Coll:
+        def __init__(self, rank):
+            self.rank = rank
+
+        def sum(self, partial, dtype):
+            parts[self.rank] = partial
+            barrier.wait()
+            total = parts[0].clone()
+            for p in parts[1:]:
+                total += p
+            barrier.wait()
+            return total.to(dtype)
+
+    towers = [V.VisionTower({n: V.take_shard(t, n, r, world) for n, t in full.items()}, "cpu",
+                            compute=torch.float32, rank=r, world=world, comm=Coll(r)) for r in range(world)]
+    assert all(t.nbytes() < 1.05 * one.nbytes() / world for t in towers)     # replicated parts are small
+    out, errors = [None] * world, []
+
+    def run(r):
+        try:
+            out[r] = towers[r].encode(frame, torch.float32)
+        except BaseException as error:          # noqa: BLE001 - reported below
+            errors.append(error)
+            barrier.abort()
+
+    threads = [threading.Thread(target=run, args=(r,)) for r in range(world)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert all(torch.equal(o, out[0]) for o in out)
+    assert out[0].shape == (frame.tokens, V.OUT_DIM)
+    rel = float((out[0] - whole).norm() / whole.norm())
+    assert rel < 1e-5, rel
+    assert torch.equal(out[0][0], whole[0]) and torch.equal(out[0][-1], whole[-1])
 
 
 def test_serve_admits_vision_for_deepseek_v41():
