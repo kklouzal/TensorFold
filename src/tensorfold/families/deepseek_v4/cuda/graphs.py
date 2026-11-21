@@ -4,7 +4,9 @@ A ``Shape`` (bucket B) owns static device inputs: one staged int64 [3, B] upload
 slots), constant token_req / qsl / valid, and the batch's block table gathered inside the graph from ``SlotPages``
 (every slot's KV pages at the fixed width of the admitted context, -1 past its pages). The graph body is the eager
 forward (``Target.begin/layers/end``) plus the logits all-gather, so a replay issues exactly the eager kernels and
-collectives. Captured identically on every rank at startup (bodies contain NCCL calls), largest bucket first, in
+collectives. The graph's output is the compact greedy packet (per rank and row: shard maximum, its global column, a
+NaN/+inf flag; all-gathered, 8 x [B, 3] FP32: ``round_sampling``); the full-vocabulary rows are gathered eagerly after
+the replay only when a caller needs them (every rank alike: the OP_STEP flags). Captured identically on every rank at startup (bodies contain NCCL calls), largest bucket first, in
 one shared memory pool; never lazily.
 
 Padding rows (B real streams in a larger bucket) are position-0 tokens of the scratch slot (the last slot) whose
@@ -23,6 +25,7 @@ import time
 import numpy as np
 import torch
 
+from .round_sampling import compact_packet
 from .target import Step
 
 BUCKETS = tuple(range(1, 17)) + (24, 32)
@@ -72,6 +75,10 @@ class Shape:
                          prefill=[], decode_index=None)
         self.graph = None
         self.out = None
+        self.local = None               # this rank's FP32 logits shard [count, vocab / 8] (graph-owned)
+        # rank 0: the compact packet's landing buffer (one decode batch in flight at a time)
+        self.host_compact = torch.empty((engine.world, count, 3), dtype=torch.float32, pin_memory=True) \
+            if engine.rank == 0 else None
 
     def stage(self, entries, ids) -> None:
         """entries [(slot, position, 1)] in row order, ids their tokens; the rest of the bucket pads."""
@@ -90,10 +97,15 @@ class Shape:
         torch.index_select(e.slot_pages.table, 0, self.req_slot[:self.count], out=step.block_table)
         state = t.begin(step)
         t.layers(state, e.layer_count)
-        return e.coll.gather(t.end(state, self.rows))
+        local = t.end(state, self.rows)
+        self.local = local
+        packed = compact_packet(local, e.rank)
+        recv = torch.empty((e.world,) + tuple(packed.shape), dtype=torch.float32, device=local.device)
+        e.comm.all_gather(packed, recv)
+        return recv
 
     def run(self):
-        """The staged batch's full-vocabulary FP32 logits [count, vocab] (graph-owned: valid until the next run)."""
+        """The staged batch's compact packet [world, count, 3] (graph-owned: valid until the next run)."""
         if self.graph is not None:
             self.graph.replay()
             return self.out
@@ -143,9 +155,19 @@ class DecodeGraphs:
     def bucket(self, n: int) -> int | None:
         return next((b for b in self.sizes if b >= n), None)
 
-    def run(self, entries, ids):
-        """Replay the smallest bucket holding ``entries``; rank 0 gets its own copy of the real rows' logits."""
-        shape = self.shapes[self.bucket(len(entries))]
+    def run(self, entries, ids, compact=False, full=True):
+        """Replay the smallest bucket holding ``entries``. ``full``: the real rows' full-vocabulary FP32 logits are
+        gathered after the replay (every rank). Rank 0 gets those rows (``compact`` False), or (the compact packet's
+        pinned host buffer [world, bucket, 3], copied behind the replay, landed once the caller's later event
+        completes; the rows or None); other ranks get None."""
+        n = len(entries)
+        shape = self.shapes[self.bucket(n)]
         shape.stage(entries, ids)
-        out = shape.run()
-        return out[:len(entries)].clone() if self.e.rank == 0 else None
+        packet = shape.run()
+        rows = self.e.coll.gather(shape.local[:n]) if full else None
+        if self.e.rank != 0:
+            return None
+        if not compact:
+            return rows
+        shape.host_compact.copy_(packet, non_blocking=True)
+        return shape.host_compact, rows

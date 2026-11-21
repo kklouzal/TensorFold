@@ -30,6 +30,8 @@ from tensorfold.families.gemma4.sm70.ops import OP_ATTACH, OP_DETACH, OP_FORWARD
 _HEAD = struct.Struct("<qqqqq")
 PIPE_TIMEOUT = 600.0
 F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer): score every row; and the last row
+# graph decode flags: return the compact greedy packet (``round_sampling``); and also gather the full rows
+F_COMPACT, F_FULL = 1 << 22, 1 << 23
 SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
@@ -272,7 +274,8 @@ class DS41Engine:
                 raise RuntimeError(f"slot {slot}: positions up to {start + count} exceed its KV pages")
         if (stop == 0 and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
-            return self.graphs.run(entries, ids)
+            compact = bool(flags & F_COMPACT)
+            return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL))
         for r, (slot, start, count) in enumerate(entries):
             positions.extend(range(start, start + count))
             token_req.extend([r] * count)
@@ -797,7 +800,10 @@ class Decoder(PrefixOwner):
 
     def _launch(self, live, pending):
         """Launch one decode forward over ``live`` (row order = stream order); ``pending``: decided, undelivered
-        tokens."""
+        tokens. Plain greedy streams decide from the graph's compact packet; the full rows are gathered only for the
+        others, whose sampling work is queued behind the forward (``round_sampling``): the round's one host wait
+        (``_collect``) covers every stream."""
+        from .round_sampling import RowSampling, needs_row
         e = self.e
         entries, ids = [], []
         for s in live:
@@ -805,30 +811,54 @@ class Decoder(PrefixOwner):
             token = extra[-1] if extra else s.out[-1]
             entries.append((s.slot, len(s.prompt) + len(s.out) + len(extra) - 1, 1))
             ids.append(token)
+        need = [g for g, s in enumerate(live) if needs_row(s)]
         self.started.record()
         t0 = time.perf_counter()
-        logits = e.step(entries, ids, list(range(len(entries))))
+        out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0))
+        compact, rows = out if isinstance(out, tuple) else (None, out)      # an eager forward: full rows only
+        if compact is None:
+            need = list(range(len(live)))
+        positions = [entry[1] + 1 for entry in entries]
+        sampled = RowSampling(live, positions, rows, need) if need else None
         self.done.record()
-        self.inflight = (live, entries, logits, t0)
+        self.inflight = (live, positions, compact, rows, sampled, t0)
 
     def _collect(self):
         """Wait for the batch in flight; decide each stream's token: [(stream, [token] | None)]."""
-        live, entries, logits, t0 = self.inflight
+        from .round_sampling import greedy_tokens
+        live, positions, compact, rows, sampled, t0 = self.inflight
         self.inflight = None
         self.done.synchronize()
         self.round_ms = 0.8 * self.round_ms + 0.2 * self.started.elapsed_time(self.done)
+        greedy = greedy_tokens(compact, len(live)) if compact is not None else None
+        chosen_rows = sampled.choose() if sampled is not None else {}
         decided = []
         for g, s in enumerate(live):
             if s.done or self.streams.get(s.sid) is not s:
                 continue                                    # ended/cancelled/yielded after this launch
             try:
-                chosen = [self._choose(s, logits[g:g + 1], entries[g][1] + 1, emitted=len(s.out))]
+                if s.forced is not None:
+                    token = s.forced[len(s.out)]
+                elif g in chosen_rows:
+                    token = chosen_rows[g]
+                else:
+                    token, error = greedy[g]
+                    if error is not None:
+                        raise error
+                if isinstance(token, Exception):
+                    raise token
+                if s.probabilities is not None:
+                    self._score(s, sampled.scored[g], positions[g] - 1, token)
+                if s.constraint is not None:
+                    s.constraint.advance([token])
+                if s.history is not None:
+                    s.history.extend([token])
                 s.counted(1)
             except Exception as error:          # noqa: BLE001  (this request fails alone)
                 s.error, s.done, s.finished = error, True, time.perf_counter()
                 decided.append((s, None))
                 continue
-            decided.append((s, chosen))
+            decided.append((s, [token]))
         return decided
 
     def _choose(self, s, row, position, emitted=0) -> int:
