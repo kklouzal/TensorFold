@@ -34,6 +34,19 @@ TensorFold uses [MLX](https://github.com/ml-explore/mlx) and
 [mlx-lm](https://github.com/ml-explore/mlx-lm), MIT License, Copyright © 2023 Apple Inc.
 They are installed as dependencies.
 
+## 1Cat DeepSeek-V4.1 Triton kernels
+
+`src/tensorfold/families/deepseek_v4/cuda/kernels/` vendors the DeepSeek-V4.1 Triton kernels of
+[1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM/tree/4d57473db67eb77a13018d179e4d95169e82044f),
+revision `4d57473db67eb77a13018d179e4d95169e82044f` (mHC, router, C2 compression, Engram hashing, attention,
+RoPE/QDQ, norm, indexer top-k, KV packing, SwiGLU, Markov drafting and the software FP8 helpers), and the
+multi-request slot, paged, packed, reindex and top-k kernels of a 1Cat overlay snapshot (`mu_*.py`), all under
+the Apache License 2.0 with their original SPDX lines. TensorFold replaces the vLLM imports and environment flags
+with plain Triton and fixed production constants and records each change and Triton 3.2 rewrite in the file
+header. The [license](src/tensorfold/families/deepseek_v4/cuda/kernels/onecat_v41_LICENSE.txt) and
+[provenance notice](src/tensorfold/families/deepseek_v4/cuda/kernels/onecat_v41_NOTICE.txt), with each file's
+Git blob or SHA-256, accompany the component. Inclusion does not qualify or select a serving path.
+
 ## Gemma E4B EAGLE3 adapter
 
 The first-layer boundary in `src/tensorfold/families/gemma4/cuda/eagle3.py` and

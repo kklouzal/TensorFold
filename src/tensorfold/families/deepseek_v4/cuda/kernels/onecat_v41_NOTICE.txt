@@ -1,0 +1,38 @@
+1CatAI/1Cat-vLLM source reuse, Apache-2.0
+Copyright contributors to the vLLM project (original SPDX lines preserved in every file).
+
+Upstream commit 4d57473db67eb77a13018d179e4d95169e82044f (Git blob ids per file header):
+  mhc.py            vllm/model_executor/kernels/mhc/deepseek_v41.py          913f2334e78c41d345b4d368a3369e11730152f7
+  mhc_fused.py      vllm/model_executor/kernels/mhc/deepseek_v41_fused.py    c38b06bf47b77240a20f65bcda1c5588e9631017
+  router.py         vllm/model_executor/kernels/mhc/deepseek_v41_router.py   983db097ea2acd0cc1dc867785edadd562f73bc9
+  compression.py    vllm/model_executor/kernels/deepseek_v41_compression.py  270eb5a7a3007d50d4de931feb5900e86af3bd31
+  engram.py         vllm/model_executor/layers/deepseek_v41_engram.py        1f99192f7dbfac9a3182cdddf5f866faced88d6a
+  shared_protocol.py vllm/model_executor/layers/quantization/gguf_shared_protocol.py (_fail_if only) 18ca5aec7011254f3e758fe522346c9d22dab7d2
+  attention_ops.py  vllm/models/deepseek_v41/attention_ops.py                f9dfadc1cbb0a602a7eb56dce19ac09da67e2b58
+  quant_rope.py     vllm/models/deepseek_v41/quant_rope.py                   aa848699e3a115f773e1c44efe81244cc7dc7210
+  norm.py           vllm/models/deepseek_v41/norm.py                         9f32f42bdfa6c0e107cc681ab1597a17fa1c48e4
+  index_topk.py     vllm/models/deepseek_v41/index_topk.py                   af2ac70f9e48e7cc8e0fbbbafb763b3a057bbf0c
+  kv_pack.py        vllm/models/deepseek_v41/kv_pack.py                      6c5dca12573be09893aa90358835d47fcabab537
+  kv_store.py       vllm/models/deepseek_v41/kv_store.py (kernels only)      69d83fb56dac4fc1e2645d5c0911c50d64b3f61a
+  activations.py    vllm/models/deepseek_v41/activations.py (C op -> Triton) 434d2af62cf3a7d4f5394bbf0e75399439403000
+  markov_fused.py   vllm/models/deepseek_v41/markov_fused.py                 284616ed140e753c33a0634ab1f37bb650a82289
+  sparse_prefill_bmm.py vllm/models/deepseek_v4/common/ops/sparse_prefill_bmm.py 9b2be25acea5e8ea9fb746021da5ed87a1cb16a9
+  fp8_software.py   vllm/models/deepseek_v4/common/ops/fp8_software.py       e4c4e348af3bf577dc610d25f115e727e143c062
+
+Friend overlay (SPDX Apache-2.0), snapshot
+lp-snap-c1es8-numa-admit2-imgtext-share2-fix5-ram4-stepbud-ram3-memfix-ctx1m-ppovl-opt2-pfx-1-eng-pfxfix4,
+patches/ds41mu_files (SHA-256 of the source file):
+  mu_state.py    local_mu_state.py         acbaca1a13b778afff9628ed35bf35f703cc97d6b6ba6712de291f82437ad936
+  mu_paged.py    local_mu_paged.py         3ac959e66df2226bde2736e987e91daab6ceffff9a27f6ada12d5c951a742712
+  mu_packed.py   local_mu_packed.py        73d7e820dbf31321f26a5c4676b2d69353a3d5ec9fa744234526db81d638efe0
+  mu_slots.py    local_mu_model.py (pure helpers) b5ee701db3a4d421374d76b99f2ca7c5b9956fab211ec5fa0b30e763690b52bd
+  mu_reindex.py  local_ds41_mu_reindex.py  4a7e181eab7f29cd711a2bc5d1b20c209cd08ca71da29fc4f2325360314a0995
+  mu_topk.py     local_ds41_mu_topk.py     aa262b57e2b9c08970b7bd2adf1bfd516a975cddb75c25b6e8ca7b255637d3cb
+
+TensorFold modifications (detailed per file header): vLLM imports and vllm.envs flags replaced by plain Triton
+and module constants at the friend's production values; vLLM cache/metadata glue, native CUDA-extension paths,
+debug and timing paths not vendored; Triton 3.2 rewrites with identical results; Triton-interpreter (CPU test)
+forms of libdevice exp, the PTX trap and cvt.rni. triton_utils.py and the tests' harness glue are TensorFold-owned.
+The DeepSeek MIT notice (vllm/third_party/deepseek_v41/LICENSE) covers only that upstream directory; none of
+these files derive from it. No upstream NOTICE file applies to these paths at the pinned revision.
+See onecat_v41_LICENSE.txt for the complete Apache License 2.0 (byte-identical to upstream LICENSE).
