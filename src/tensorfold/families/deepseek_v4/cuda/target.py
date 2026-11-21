@@ -302,7 +302,7 @@ class Target:
     # ---- Engram
     def engram_layer(self, ly, hidden, hashes, step, shard=None):
         from .kernels.engram import apply_engram_gate
-        tokens = hidden.shape[0]
+        tokens = hashes.shape[0]        # every row of the step (with a shard, hidden holds only this rank's)
         channel = self.g.engram_layers.index(ly.index)
         rows = self.engram.lookup(hashes, channel, self.engram_rows[:tokens])
         projected = self.c.gather(self._linear(rows, ly.engram_wkv))

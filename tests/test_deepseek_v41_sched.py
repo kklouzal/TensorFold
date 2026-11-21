@@ -206,3 +206,39 @@ def test_shards_cover_every_row_once_and_none_is_empty(tokens):
     padded = shards[0].padded(x)
     assert padded.shape == (8 * shards[0].size, 2) and padded.dtype == torch.float32
     assert torch.equal(padded[:tokens], x.float()) and not padded[tokens:].any()
+
+
+def test_engram_layer_with_a_shard_looks_up_every_row_and_gates_its_own(monkeypatch):
+    """K15: the column-sharded Engram projection needs every row on every rank; the gate takes the shard's rows."""
+    from tensorfold.families.deepseek_v4.cuda import target as T
+    from tensorfold.families.deepseek_v4.cuda.kernels import engram as kengram
+    tokens, h = 64, 4
+    shard = T.Shard.of(tokens, 3, 8)
+    seen = {}
+
+    class Engram:
+        def lookup(self, hashes, channel, out):
+            assert out.shape[0] == hashes.shape[0] == tokens and out.is_contiguous()
+            out.copy_(hashes[:, 0, :1].to(out.dtype).expand_as(out))      # row r carries r
+            return out
+
+    def gate(hidden, projected, q, k, valid, inplace=False):
+        seen.update(hidden=hidden.shape, projected=projected.clone(), valid=valid.clone())
+        return hidden
+
+    monkeypatch.setattr(kengram, "apply_engram_gate", gate)
+    t = object.__new__(T.Target)
+    t.g = SimpleNamespace(engram_layers=(1,))
+    t.engram = Engram()
+    t.engram_rows = torch.empty(tokens, 6, dtype=torch.float16)
+    t.c = SimpleNamespace(gather=lambda x: x)
+    t._linear = lambda x, w: x
+    hashes = torch.arange(tokens)[:, None, None].expand(tokens, 2, 24).contiguous()
+    step = SimpleNamespace(valid=torch.arange(tokens) % 5 != 0)
+    hidden = torch.zeros(shard.rows, 4, h)
+    ly = SimpleNamespace(index=1, engram_wkv=None, engram_q=None, engram_k=None)
+    t.engram_layer(ly, hidden, hashes, step, shard)
+    rows = torch.arange(shard.first, shard.first + shard.rows)
+    assert seen["hidden"] == (shard.rows, 4, h)
+    assert torch.equal(seen["projected"][:, 0], rows.half())
+    assert torch.equal(seen["valid"], step.valid[rows])
