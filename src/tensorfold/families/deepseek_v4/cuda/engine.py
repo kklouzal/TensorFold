@@ -121,6 +121,9 @@ class DS41Engine:
         if layers is None or len(layers) > min(g.engram_layers):
             # The Engram mapping (page tables, ordered registrations: host and driver work, no device memory) runs on
             # its own thread while this one loads the weights; the forward first reads it in _warm, after the join.
+            # The page-table populate (and, from a cold page cache, the file reads) overlap the load; the driver
+            # serializes the registration itself with the load's CUDA calls (start/diag loadprof: W.load alone 8-10 s,
+            # 20-28 s beside a 7-16 s registration).
             from concurrent.futures import ThreadPoolExecutor
             rows = W.engram_split(shards, g)
 

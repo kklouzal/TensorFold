@@ -22,9 +22,15 @@ python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backe
 ```
 
 The container needs `--ipc host --ulimit memlock=-1:-1 --cap-add IPC_LOCK` for the host-mapped Engram table and the
-pinned prefix tier. Startup with warm extension caches takes about 105-111 s, including about 47 s to map the Engram
-table and 17 s to capture the decode graphs. A first start that has to JIT-build the native extensions took up to
-about 520 s.
+pinned prefix tier. With warm extension caches and the model files in the page cache, launch to `/v1/models` takes
+about 47-48 s (it took 144-375 s before the startup work; with the model files dropped from the page cache, 126 s
+against 166 s). Every rank maps the Engram table read-only straight from the GGUF file (its page-cache pages are the one
+host copy; no second 103 GiB copy) and registers it on a thread while the weights load through pinned staging
+buffers; the host tier's slab pins beside the warm-up; the decode graphs take about 9 s. Each rank prints one
+`startup (...)` line with every phase's start, wall time, CPU time and storage reads. A first start that has to
+JIT-build the native extensions builds all six at once (about 210 s of compilation, measured on the CPU, against
+713 s one after another). The model file must not be rewritten in place while a server runs: its pages are the
+registered Engram table.
 
 | Flag | DeepSeek-V4.1 SM70 |
 | --- | --- |
@@ -91,5 +97,5 @@ smoke test, known answers scored 9/10 with thinking off and 10/10 with thinking 
 
 ## Not yet
 
-DSpark drafting and vision (the image tower has a parity port) are not merged into the serving lane. Startup time and
-the C1 16K prefill gap are open optimization items.
+DSpark drafting and vision (the image tower has a parity port) are not merged into the serving lane. The C1 16K
+prefill gap is an open optimization item.
