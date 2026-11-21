@@ -32,6 +32,38 @@ BLOCK = 64                     # KV page: tokens per page (the friend's producti
 # (eager 8192-row chunks 36 ms -> 8 ms; 48 graph rows 224 -> 199 us); window-only layers take it from 2 rows.
 FUSED_MIN_COMPRESSED = 33
 FUSED_MIN_WINDOW = 2
+# Fewest step tokens for sequence-parallel HC (Shard): prompt chunks from here keep the FP32 HC residual, its
+# transitions, the Engram gate and routing on 1/8 of the rows per rank; decode rows and graphs never take it.
+SP_MIN = 1024
+
+
+@dataclass(frozen=True)
+class Shard:
+    """Megatron-style sequence parallelism of one forward's rows: rank r owns rows [first, first + rows) with
+    ``first`` = r * size, size = ceil(tokens / 8) (the last ranks' shards may be shorter; every rank has >= 1 row
+    above 56 tokens). Cross-rank sums of row partials are FP32 reduce-scatters (rounded once to FP16 per shard,
+    as the FP32 all-reduce rounds), followed by FP16 all-gathers of the normalized next-sublayer inputs."""
+
+    tokens: int
+    size: int
+    first: int
+    rows: int
+
+    @classmethod
+    def of(cls, tokens: int, rank: int, world: int):
+        size = -(-tokens // world)
+        first = rank * size
+        return cls(tokens, size, first, max(0, min(tokens, first + size) - first))
+
+    def take(self, x):
+        return x[self.first:self.first + self.rows]
+
+    def padded(self, partial):
+        """[world * size, dims] FP32 copy of [tokens, dims] partials, zero rows past ``tokens``."""
+        out = torch.empty(self.size * 8, partial.shape[-1], dtype=torch.float32, device=partial.device)
+        out[:self.tokens].copy_(partial)
+        out[self.tokens:].zero_()
+        return out
 
 
 # --------------------------------------------------------------------------------------------- batch view
@@ -160,7 +192,7 @@ class Target:
         return self.c.exact_sum_half(rows)
 
     # ---- attention (patch 87 attention_forward)
-    def attention(self, ly, x, step: Step, table, shared):
+    def attention(self, ly, x, step: Step, table, shared, shard=None):
         from .kernels import quant_rope as qr_ops
         from .kernels import mu_packed as pk
         tokens = x.shape[0]
@@ -190,7 +222,10 @@ class Target:
         output = qr_ops.apply_rope(output, positions, table, inverse=True)
         output = qr_ops.attention_qdq(output.reshape(tokens, 1, -1))      # TP8: one output group per rank
         projected = self._linear(output.reshape(tokens, -1), ly.wo_a)
-        return self.c.sum(self._linear(projected, ly.wo_b))
+        partial = self._linear(projected, ly.wo_b)
+        if shard is not None:
+            return self.c.scatter_sum(shard.padded(partial), shard)
+        return self.c.sum(partial)
 
     def _compress(self, ly, x, step):
         if ly.ratio == 1:
@@ -233,14 +268,18 @@ class Target:
                          block_table=block_table, layout=layout, source=layer, topk=topk)
 
     # ---- MoE
-    def moe(self, ly, x):
+    def moe(self, ly, x, shard=None, x_rows=None):
+        """Experts for ``x`` [T, H]; with ``shard``, routing runs on this rank's rows ``x_rows`` (gathered after) and
+        the result is this rank's FP16 shard rows."""
         from tensorfold.cuda.sm70 import ds41_lattice_moe as lattice_moe
         from tensorfold.cuda.sm70 import onecat_ds41 as native
         from .kernels.mhc import fp32_projection
         from .kernels.router import route_topk
         g = self.g
-        logits = fp32_projection(x, ly.gate)
+        logits = fp32_projection(x if shard is None else x_rows, ly.gate)
         probabilities, ids = route_topk(logits.float(), ly.gate_bias, g.top_k, g.routed_scale)
+        if shard is not None:
+            probabilities, ids = self.c.gather_rows(probabilities, shard), self.c.gather_rows(ids, shard)
         first = self.local.start
         local = ids.to(torch.int32) - first
         mine = (local >= 0) & (local < len(self.local))
@@ -253,17 +292,24 @@ class Target:
             out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                           ly.gate_up_type, ly.down_type, ly.down_left)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
+        if shard is not None:
+            total = shard.padded(out)
+            total[:shard.tokens] += self._linear(hidden, ly.sh_down)
+            return self.c.scatter_sum(total, shard)
         total = out.float() + self._linear(hidden, ly.sh_down).float()
         return self.c.sum(total, torch.float16)
 
     # ---- Engram
-    def engram_layer(self, ly, hidden, hashes, step):
+    def engram_layer(self, ly, hidden, hashes, step, shard=None):
         from .kernels.engram import apply_engram_gate
         tokens = hidden.shape[0]
         channel = self.g.engram_layers.index(ly.index)
         rows = self.engram.lookup(hashes, channel, self.engram_rows[:tokens])
         projected = self.c.gather(self._linear(rows, ly.engram_wkv))
-        return apply_engram_gate(hidden, projected, ly.engram_q, ly.engram_k, step.valid, inplace=True)
+        valid = step.valid
+        if shard is not None:       # every rank projects all rows (column-sharded weight); gates its own rows
+            projected, valid = shard.take(projected), shard.take(valid)
+        return apply_engram_gate(hidden, projected, ly.engram_q, ly.engram_k, valid, inplace=True)
 
     # ---- the whole forward (begin / layers / end: a prompt chunk may pause between layers while decode rounds run)
     def forward(self, step: Step, logits_rows: torch.Tensor | None):
@@ -285,12 +331,15 @@ class Target:
         if self.engram_trace is not None:
             self.engram_trace.write(hashes[step.valid].cpu().numpy().tobytes())
         hidden = self.embed(step.ids)
+        shard = Shard.of(tokens, self.w.rank, 8) if tokens >= SP_MIN else None
+        if shard is not None:       # this rank's rows of the HC residual
+            hidden = shard.take(hidden)
         # FP16 cannot carry the HC residual range of valid special tokens: the stream stays FP32 (upstream)
         hidden = hidden.float()[:, None].expand(-1, g.hc, -1).contiguous()
-        pre = torch.zeros(tokens, g.hc, device=hidden.device, dtype=torch.float32)
+        pre = torch.zeros(hidden.shape[0], g.hc, device=hidden.device, dtype=torch.float32)
         pre[:, 0] = 1
         return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": {"topk": None},
-                "mix": None, "half": None, "next": 0, "result": None}
+                "mix": None, "half": None, "next": 0, "result": None, "shard": shard}
 
     @property
     def units(self) -> int:
@@ -306,7 +355,9 @@ class Target:
         from .kernels.mhc_fused import hc_transition
         w = self.w
         layers = w.layers
-        step, hashes, shared = st["step"], st["hashes"], st["shared"]
+        step, hashes, shared, shard = st["step"], st["hashes"], st["shared"], st["shard"]
+        # with a shard, HC state (hidden, pre, mixes) holds this rank's rows; sublayer inputs are gathered whole
+        full = (lambda rows: rows) if shard is None else (lambda rows: self.c.gather_rows(rows, shard))
         hidden, pre, state, half = st["hidden"], st["pre"], st["mix"], st["half"]
         events = None
         if marks is not None:
@@ -318,28 +369,29 @@ class Target:
             ly = layers[i]
             if not second:
                 if ly.engram_wkv is not None:
-                    hidden = self.engram_layer(ly, hidden, hashes, step)
+                    hidden = self.engram_layer(ly, hidden, hashes, step, shard)
                     state = None
                 if state is None:
                     attn_mix = hc_mixes(hidden, ly.hc["attn_fn"], ly.hc["attn_scale"], ly.hc["attn_base"])
-                    inputs = collapse_hc(hidden, pre, ly.attn_norm)
+                    inputs = full(collapse_hc(hidden, pre, ly.attn_norm))
                 else:
                     inputs, attn_mix = state
                 table = self.compressed_rope if ly.ratio else self.window_rope
-                y = self.attention(ly, inputs, step, table, shared)
-                half = hc_transition(hidden, y, attn_mix[1], attn_mix[2], attn_mix[0], ly.ffn_norm,
-                                     ly.hc["ffn_fn"], ly.hc["ffn_scale"], ly.hc["ffn_base"])
+                y = self.attention(ly, inputs, step, table, shared, shard)
+                rows, ffn_mix = hc_transition(hidden, y, attn_mix[1], attn_mix[2], attn_mix[0], ly.ffn_norm,
+                                              ly.hc["ffn_fn"], ly.hc["ffn_scale"], ly.hc["ffn_base"])
+                half = (full(rows), ffn_mix, rows)
             else:
-                inputs, ffn_mix = half
+                inputs, ffn_mix, rows = half
                 half = None
-                y = self.moe(ly, inputs)
+                y = self.moe(ly, inputs, shard, rows)
                 pre = ffn_mix[0]
                 following = layers[i + 1] if i + 1 < len(layers) else None
                 if following is not None and following.engram_wkv is None:
                     inputs, mix = hc_transition(hidden, y, ffn_mix[1], ffn_mix[2], pre, following.attn_norm,
                                                 following.hc["attn_fn"], following.hc["attn_scale"],
                                                 following.hc["attn_base"])
-                    state = (inputs, mix)
+                    state = (full(inputs), mix)
                 elif following is not None:
                     hidden = expand_hc(y, hidden, ffn_mix[1], ffn_mix[2], inplace=True)
                     state = None
@@ -355,5 +407,6 @@ class Target:
             raise RuntimeError("a DeepSeek-V4.1 forward ended before its last layer")
         if logits_rows is None:
             return None
-        rows = st["result"].index_select(0, logits_rows)
+        result = st["result"] if st["shard"] is None else self.c.gather_rows(st["result"], st["shard"])
+        rows = result.index_select(0, logits_rows)
         return self._linear(rows, self.w.head).float()

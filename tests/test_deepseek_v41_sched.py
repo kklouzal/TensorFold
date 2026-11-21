@@ -90,9 +90,9 @@ def _fake_target(monkeypatch, layers=5, engram=(2,)):
         SimpleNamespace(index=i, engram_wkv=object() if i in engram else None, ratio=i % 2, hc=hc(i),
                         attn_norm=1 + i / 10, ffn_norm=1 - i / 20) for i in range(layers)])
     t.compressed_rope, t.window_rope = "compressed", "window"
-    t.attention = lambda ly, x, step, table, shared: (log.append(("attention", ly.index, table)), x * (1 + ly.index / 9) + 1)[1]
-    t.moe = lambda ly, x: (log.append(("moe", ly.index)), x * 0.5 - ly.index / 3)[1]
-    t.engram_layer = lambda ly, hidden, hashes, step: (log.append(("engram", ly.index)), hidden * 1.01 + 0.5)[1]
+    t.attention = lambda ly, x, step, table, shared, shard: (log.append(("attention", ly.index, table)), x * (1 + ly.index / 9) + 1)[1]
+    t.moe = lambda ly, x, shard, rows: (log.append(("moe", ly.index)), x * 0.5 - ly.index / 3)[1]
+    t.engram_layer = lambda ly, hidden, hashes, step, shard: (log.append(("engram", ly.index)), hidden * 1.01 + 0.5)[1]
     return t, log
 
 
@@ -102,7 +102,7 @@ def _run(t, stops):
     pre = torch.zeros(6, 4, dtype=torch.float64)
     pre[:, 0] = 1
     st = {"step": None, "hashes": None, "hidden": hidden, "pre": pre, "shared": {"topk": None}, "mix": None,
-          "half": None, "next": 0, "result": None}
+          "half": None, "next": 0, "result": None, "shard": None}
     for stop in stops:
         t.layers(st, stop)
     assert st["next"] == t.units
@@ -134,7 +134,7 @@ def test_marks_time_each_unit(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "Event", Event)
     st = {"step": None, "hashes": None, "hidden": torch.ones(2, 4, 8), "pre": torch.ones(2, 4), "shared": {},
-          "mix": None, "half": None, "next": 0, "result": None}
+          "mix": None, "half": None, "next": 0, "result": None, "shard": None}
     marks = []
     t.layers(st, 1, marks)
     t.layers(st, 4, marks)
@@ -193,3 +193,16 @@ def test_bucket():
     assert [d._bucket(n) for n in (1, 3, 9, 17, 32)] == [1, 4, 16, 24, 32]
     d.e.graphs = None
     assert d._bucket(9) == 9
+
+
+@pytest.mark.parametrize("tokens", [57, 64, 1024, 1031, 4100, 8192])
+def test_shards_cover_every_row_once_and_none_is_empty(tokens):
+    from tensorfold.families.deepseek_v4.cuda.target import Shard
+    shards = [Shard.of(tokens, r, 8) for r in range(8)]
+    assert all(s.rows >= 1 and s.size == shards[0].size for s in shards)
+    covered = [i for s in shards for i in range(s.first, s.first + s.rows)]
+    assert covered == list(range(tokens))
+    x = torch.arange(tokens * 2, dtype=torch.float16).view(tokens, 2)
+    padded = shards[0].padded(x)
+    assert padded.shape == (8 * shards[0].size, 2) and padded.dtype == torch.float32
+    assert torch.equal(padded[:tokens], x.float()) and not padded[tokens:].any()
