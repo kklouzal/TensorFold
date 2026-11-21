@@ -10,6 +10,7 @@ MODEL_TYPES = ("deepseek_v4", "deepseek_v41")
 V41 = "deepseek_v41"
 TITLE = "DeepSeek-V4-Flash"
 LANES = True
+CUDA_TP8 = True              # DeepSeek-V4.1 GGUF: TP8 attention/dense + ETP4 x EP2 experts on eight V100s
 # affine 4-bit groups of 64, routed experts in mxfp4 (DeepSeek's own FP4 bytes)
 MODELS = ("mlx-community/DeepSeek-V4-Flash-4bit",)
 # DeepSeek's DSpark blocks converted (MIT); TensorFold/DeepSeek-V4-Flash-MTP-MLX holds the MTP layer the same way
@@ -31,8 +32,6 @@ def check(model_dir: str | Path) -> None:
     import sys
 
     from tensorfold.families import OWN_MODEL_HELP, read_config
-    from tensorfold.families.deepseek_v4.config import Config
-    from tensorfold.families.deepseek_v4.weights import unreadable
 
     config = read_config(model_dir)
     if config.get("model_type") == V41:
@@ -44,6 +43,9 @@ def check(model_dir: str | Path) -> None:
                 raise ValueError(f"DeepSeek-V4.1's config.json must name an existing {key} "
                                  "(the GGUF backbone's first shard and the llama.cpp Engram file)")
         return
+    from tensorfold.families.deepseek_v4.config import Config
+    from tensorfold.families.deepseek_v4.weights import unreadable
+
     Config.from_dict(config)
     bad = unreadable(config)
     if bad:

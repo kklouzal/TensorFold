@@ -550,7 +550,7 @@ def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
                  or getattr(args, "family_manifest", None) is not None))
     tp8 = gguf or getattr(getattr(family, "package", None), "CUDA_TP8", False)
     if type(tp) is not int or tp not in (1, 2, 4, 8) or tp == 8 and not tp8:
-        raise ValueError("--tp must be 1, 2 or 4; Flash Next GGUF and Gemma 4 CT NVFP4 (eight V100s) support 8")
+        raise ValueError("--tp must be 1, 2 or 4; Flash Next GGUF, Gemma 4 CT NVFP4 and DeepSeek-V4.1 GGUF (eight V100s) support 8")
     if type(rank) is not int or rank < 0:
         raise ValueError("--rank must be a nonnegative integer")
     if tp > 1 and not getattr(args, "master", ""):
