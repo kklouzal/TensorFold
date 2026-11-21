@@ -16,6 +16,12 @@ inserts and index/attention reads skip page -1, so padding writes no state and r
 stay at their reset values.
 
 Buckets: the friend's vLLM FULL_DECODE_ONLY capture sizes (1..16, 24, 32) up to --parallel, plus --parallel.
+
+Index classes: buckets of at least ``CLASS_MIN`` streams are also captured with the decode indexer sized for
+``INDEX_CLASSES`` positions below the admitted context (``Target.index_context``): a replay takes the smallest class
+holding every row's position + 1, so the indexer's per-rank FP32 scores, their 8-rank sum and the top-512 read
+cover the live lengths, not the context (every row's top-512 reads only its own (position + 1) // ratio scores
+either way). The cross-rank sum's collective follows the narrower size (``Collectives.path``).
 """
 
 from __future__ import annotations
@@ -29,10 +35,18 @@ from .round_sampling import compact_packet
 from .target import Step
 
 BUCKETS = tuple(range(1, 17)) + (24, 32)
+INDEX_CLASSES = (8192, 32768)
+CLASS_MIN = 4
 
 
 def buckets(streams: int) -> tuple[int, ...]:
     return tuple(sorted({b for b in BUCKETS if b < streams} | {streams}))
+
+
+def shape_keys(streams: int, context: int) -> list[tuple[int, int]]:
+    """Every captured (bucket, index context) pair."""
+    classes = [c for c in INDEX_CLASSES if c < context]
+    return [(b, c) for b in buckets(streams) for c in ([*classes, context] if b >= CLASS_MIN else [context])]
 
 
 class SlotPages:
@@ -55,10 +69,10 @@ class SlotPages:
 
 
 class Shape:
-    def __init__(self, engine, count: int):
+    def __init__(self, engine, count: int, index_context: int):
         t = engine.target
         dev = t.device
-        self.e, self.count = engine, count
+        self.e, self.count, self.index_context = engine, count, index_context
         self.scratch = engine.slots - 1
         self.pad_id = engine.geometry.bos
         self.host = np.zeros((3, count), dtype=np.int64)
@@ -96,7 +110,11 @@ class Shape:
         self.req_slot[:self.count].copy_(self.staged[2])
         torch.index_select(e.slot_pages.table, 0, self.req_slot[:self.count], out=step.block_table)
         state = t.begin(step)
-        t.layers(state, e.layer_count)
+        t.index_context = self.index_context
+        try:
+            t.layers(state, e.layer_count)
+        finally:
+            t.index_context = t.context
         local = t.end(state, self.rows)
         self.local = local
         packed = compact_packet(local, e.rank)
@@ -130,7 +148,10 @@ class DecodeGraphs:
     def __init__(self, engine, streams: int):
         self.e = engine
         self.sizes = buckets(streams)
-        self.shapes = {b: Shape(engine, b) for b in self.sizes}
+        context = engine.target.context
+        self.keys = shape_keys(streams, context)
+        self.classes = {b: sorted(c for k, c in self.keys if k == b) for b in self.sizes}
+        self.shapes = {key: Shape(engine, *key) for key in self.keys}
         torch.cuda.synchronize()
         before = torch.cuda.mem_get_info()[0]
         self.reserved_before = torch.cuda.memory_reserved()
@@ -141,12 +162,12 @@ class DecodeGraphs:
         # Inference mode as every forward (the warm-up's persistent scratch is inference tensors); the static
         # inputs above stay normal tensors so staging works from any caller.
         with torch.inference_mode():
-            for b in sorted(self.sizes, reverse=True):
-                shape = self.shapes[b]
+            for key in sorted(self.keys, reverse=True):
+                shape = self.shapes[key]
                 shape.stage([], [])
                 shape.capture(pool, stream)
                 torch.cuda.synchronize()
-                self.trace.append((b, before - torch.cuda.mem_get_info()[0], torch.cuda.memory_reserved()))
+                self.trace.append((key, before - torch.cuda.mem_get_info()[0], torch.cuda.memory_reserved()))
         torch.cuda.synchronize()
         self.seconds = time.perf_counter() - t0
         torch.cuda.empty_cache()
@@ -155,13 +176,19 @@ class DecodeGraphs:
     def bucket(self, n: int) -> int | None:
         return next((b for b in self.sizes if b >= n), None)
 
+    def index_class(self, bucket: int, entries) -> int:
+        """The smallest captured index context of ``bucket`` holding every row's position + 1."""
+        need = max(entry[1] for entry in entries) + 1
+        return next(c for c in self.classes[bucket] if c >= need)
+
     def run(self, entries, ids, compact=False, full=True):
         """Replay the smallest bucket holding ``entries``. ``full``: the real rows' full-vocabulary FP32 logits are
         gathered after the replay (every rank). Rank 0 gets those rows (``compact`` False), or (the compact packet's
         pinned host buffer [world, bucket, 3], copied behind the replay, landed once the caller's later event
         completes; the rows or None); other ranks get None."""
         n = len(entries)
-        shape = self.shapes[self.bucket(n)]
+        bucket = self.bucket(n)
+        shape = self.shapes[(bucket, self.index_class(bucket, entries))]
         shape.stage(entries, ids)
         packet = shape.run()
         rows = self.e.coll.gather(shape.local[:n]) if full else None

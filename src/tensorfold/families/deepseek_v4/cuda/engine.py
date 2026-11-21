@@ -129,9 +129,9 @@ class DS41Engine:
         # The decode graphs are captured after the KV pool exists, so their memory comes out of the free memory too:
         # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
         # 606 MiB for 18 buckets on one capture stream).
-        from .graphs import buckets
+        from .graphs import shape_keys
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
-        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(buckets(slots)) if capture else 0
+        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
         pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device)
@@ -182,8 +182,9 @@ class DS41Engine:
         self._closed = False
         if rank == 0:
             if self.graphs is not None:
-                print(f"[tensorfold] DeepSeek-V4.1 SM70: decode graphs for batches {list(self.graphs.sizes)} captured "
-                      f"in {self.graphs.seconds:.1f} s, {self.graphs.bytes / 2**20:.0f} MiB", flush=True)
+                print(f"[tensorfold] DeepSeek-V4.1 SM70: decode graphs for batches {list(self.graphs.sizes)} "
+                      f"(index classes {self.graphs.classes[self.graphs.sizes[-1]]}; {len(self.graphs.keys)} graphs) "
+                      f"captured in {self.graphs.seconds:.1f} s, {self.graphs.bytes / 2**20:.0f} MiB", flush=True)
             engram = ("not mapped (development smoke)" if self.engram is None else
                       f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s, host RAM only: VRAM residency "
                       f"{self.engram.device_bytes} B")
