@@ -1,4 +1,5 @@
-"""DeepSeek-V4.1-Flash image input on SM70: preprocessing, placeholder expansion, the mmproj ViT + aligner, and the
+"""DeepSeek-V4.1-Flash image input on SM70: the server frontend, preprocessing, placeholder expansion and prompt-cache
+ids, the mmproj ViT + aligner (resumable by blocks), and the
 vision router bias.
 
 Provenance (arithmetic and plan ported, recorded): the friend's overlay patch 150

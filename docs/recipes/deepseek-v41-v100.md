@@ -110,6 +110,25 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   reused only by a prompt with the same images. Points stay at message boundaries. Prompt scoring
   (`/v1/tensorfold/score`) stays text only.
 
+Measured on SC117 (180 W, image `67b43e682057`, `--parallel 32 --context 65536 --prefix-host-bytes 16G --vision`,
+source ds41-vision2 1921ae48):
+
+- Tower parity (one V100, real mmproj, 7 images including tall/wide/largest): the FP16 tower is bitwise equal to the
+  friend's patch-150 tower, and the FP32 oracle is within relative L2 1e-4 of upstream's FP32 math. Group-wise
+  encodes are bitwise equal to whole ones.
+- Answers (greedy, thinking off): two photos described correctly, OCR of a rendered "TENSORFOLD 2026", counts of 5
+  and 3 circles, and a two-image question: 7/7. An exact repeat reused all 456 prompt tokens (TTFT 1.49 s cold,
+  0.05 s cached). The other photo at the same size reused none and was described as itself.
+- TTFT: about 1.14 s for one 994-token image (the tower takes about 0.63 s of it). For four such images (3,989
+  prompt tokens) it is 4.25 s, about 940 prompt tok/s, against about 2,960 tok/s for a 4K text prompt.
+- Cost: the tower takes 0.91 GiB on rank 0, and the KV pool is sized by the smallest rank, so the pool drops from
+  7,780,032 to 6,681,984 tokens. The warm-up's transient peak (577 MiB) fits in the 3 GiB prompt reserve. Startup
+  takes about 20 s longer.
+- Text requests: with `--vision`, the 20 greedy known-answer replies (thinking off and on) were identical to the
+  base build's, and the C1/C8 4K/16K matrix cells matched within 0.3% on the same hold.
+- Decoding streams: while a four-image prompt encoded and filled, the largest gap in a decoding stream was 0.26 s.
+  A text prompt of the same size gave 0.27 to 0.40 s (the existing prompt-group policy).
+
 ## Diagnostics (never for serving or benchmarks)
 
 - `TENSORFOLD_DS41_ENGRAM_TRACE=FILE`: rank 0 appends each forward's Engram row ids to FILE. **It disables the decode
