@@ -244,3 +244,165 @@ def test_engram_layer_with_a_shard_looks_up_every_row_and_gates_its_own(monkeypa
     assert seen["hidden"] == (shard.rows, 4, h)
     assert torch.equal(seen["projected"][:, 0], rows.half())
     assert torch.equal(seen["valid"], step.valid[rows])
+
+
+# ----------------------------------------------------------------------------------------------- the round timeline
+
+class _Timeline:
+    """One GPU stream and the rank-0 host on a modelled clock (ms): work queues behind the stream's last work;
+    an event completes when the work queued before it did; a host wait advances the host to it."""
+
+    def __init__(self):
+        self.now = self.gpu = 0.0
+
+    def run(self, ms, host=0.2):
+        self.now += host
+        self.gpu = max(self.gpu, self.now) + ms
+        return self.gpu
+
+
+def _timeline_decoder(monkeypatch, unit_ms, round_ms=20.0, units=8, warm_rows=256):
+    """The real Decoder over a fake engine: decode rounds of ``round_ms``, prompt units of ``unit_ms(rows)``."""
+    from tensorfold.families.deepseek_v4.cuda import engine as E
+    from tensorfold.families.deepseek_v4.cuda import round_sampling as RS
+    from tensorfold.families.deepseek_v4.cuda.schedule import RoundCosts, UnitCosts
+    clock = _Timeline()
+
+    class Event:
+        def __init__(self, **_):
+            self.t = None
+
+        def record(self):
+            self.t = max(clock.gpu, clock.now)
+
+        def query(self):
+            return clock.now >= self.t
+
+        def synchronize(self):
+            clock.now = max(clock.now, self.t)
+
+        def elapsed_time(self, other):
+            return other.t - self.t
+
+    class Logits:                                   # a chunk's last-row logits: reading them waits for the chunk
+        def __init__(self):
+            self.t = clock.gpu
+
+        def __getitem__(self, _):
+            return self
+
+    class Engine:
+        def __init__(self):
+            self.units, self.graphs, self.layer_marks, self.image_features = units, SimpleNamespace(sizes=(1, 2, 4)), None, None
+            self.rows = self.at = None
+
+        def _units(self, stop):
+            events = None
+            if self.layer_marks is not None:
+                events = [Event()]
+                events[0].record()
+                self.layer_marks.append((self.at, events))
+            for _ in range(self.at, stop):
+                clock.run(unit_ms(self.rows))
+                if events is not None:
+                    events.append(Event())
+                    events[-1].record()
+            self.at = stop
+            return Logits() if stop == self.units else None
+
+        def step(self, entries, ids, logits_rows, flags=0):
+            if flags & E.F_COMPACT:
+                clock.run(round_ms)
+                return ("packet", None)
+            stop = flags & 0xFFFF
+            self.rows, self.at = sum(c for _, _, c in entries), 0
+            return self._units(stop if 0 < stop < self.units else self.units)
+
+        def announce(self, op, stop, *_):
+            assert op == E.OP_LAYERS
+            return self._units(stop)
+
+    monkeypatch.setattr(E, "time", SimpleNamespace(perf_counter=lambda: clock.now / 1e3))
+    monkeypatch.setattr(torch.cuda, "Event", Event)
+    monkeypatch.setattr(RS, "greedy_tokens", lambda packet, n: [(7, None)] * n)
+    d = object.__new__(E.Decoder)
+    d.e = Engine()
+    d.GAP_MS, d.streams, d.filling, d._broken, d.eos = 175.0, {}, [], None, ()
+    d.inflight = d.ahead = d.split = d.finishing = d.timing = None
+    d.timed = []
+    d.costs = UnitCosts(warm_rows, [unit_ms(warm_rows)] * units)
+    d.rounds = RoundCosts()
+    d.events = [(Event(), Event()) for _ in range(2)]
+    d.flip = 0
+    d.keep_before = lambda s, start: None
+
+    def choose(s, row, position, emitted=0):          # sampling the first token reads the chunk's logits
+        clock.now = max(clock.now, row.t)
+        return 7
+    d._choose = choose
+    return d, clock
+
+
+class _Stream:
+    def __init__(self, sid, rows, count, clock):
+        self.sid, self.slot, self.prompt, self.count, self.bounds, self.clock = sid, sid, [1] * rows, count, [], clock
+        self.pos, self.head, self.vision, self.background, self.probabilities = 0, None, None, False, None
+        self.prefill_s, self.keep_end, self.on_fill, self.forced = 0.0, False, None, None
+        self.constraint = self.history = self.sampling = None
+        self.done, self.stop_eos, self.out, self.times = False, False, [], []
+
+    def take(self, new, eos=()):
+        self.out += new
+        self.times += [self.clock.now] * len(new)
+        self.done = len(self.out) >= self.count
+
+    def counted(self, rows):
+        pass
+
+
+def _serve(d, streams):
+    d.filling += streams
+    while d.live():
+        for s in d.round():
+            d.streams.pop(s.sid, None)
+
+
+def test_a_chunks_last_group_does_not_hold_back_a_decoded_token(monkeypatch):
+    """A decoding stream waits about one group plus a round between tokens, also where a prompt chunk ends: the
+    chunk's result is read after the round's decided tokens are delivered, not before (which held the token decided
+    behind the previous group until the last group finished as well: two groups and a round)."""
+    unit = 40.0
+    d, clock = _timeline_decoder(monkeypatch, lambda rows: unit * rows / 4096)
+    decoding = _Stream(0, 64, 40, clock)
+    _serve(d, [decoding])                       # learns the unit cost of a 64-row chunk, decodes to the end
+    decoding = _Stream(1, 64, 60, clock)
+    d.filling.append(decoding)
+    while not decoding.out:
+        d.round()
+    filling = [_Stream(2 + i, 4096, 2, clock) for i in range(3)]
+    _serve(d, filling)
+    assert all(s.done for s in filling)
+    gaps = [b - a for a, b in zip(decoding.times, decoding.times[1:])]
+    # groups of at most 175 - 20 ms: 3 units (120 ms); one group, one round and host work per gap
+    assert max(gaps) <= 3 * unit + 20.0 + 10.0, gaps
+
+
+def test_a_chunk_measurement_unread_when_the_next_chunk_starts_is_kept(monkeypatch):
+    """Under load a chunk run whole (or any chunk the host did not wait for) is still running when the next one
+    starts; its per-unit costs are read once its events complete instead of being replaced by the next chunk's."""
+    d, clock = _timeline_decoder(monkeypatch, lambda rows: 10.0)
+    read = []
+    add = d.costs.add
+    d.costs.add = lambda rows, ms: (read.append((rows, ms)), add(rows, ms))
+    for rows in (4096, 8192):
+        d.timing = (rows, [])
+        d.e.layer_marks = d.timing[1]
+        d.e.rows, d.e.at = rows, 0
+        d.e._units(d.e.units)
+        d._timed()
+        d._absorb()                              # still running: nothing read yet, nothing dropped
+        assert read == []
+    clock.now = clock.gpu
+    d._absorb()
+    assert d.timed == [] and [rows for rows, _ in read] == [4096, 8192]     # both read, oldest first
+    assert all(ms == pytest.approx([10.0] * 8, abs=0.5) for _, ms in read)
