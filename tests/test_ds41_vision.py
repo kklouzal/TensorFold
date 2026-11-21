@@ -97,3 +97,65 @@ def test_preprocess_pads_grey_and_patchifies():
     from PIL import Image, ImageOps
     expected = np.asarray(ImageOps.pad(Image.fromarray(rgb), (best_w, best_h), color=V.PAD_COLOR)).transpose(2, 0, 1)
     assert np.array_equal(image, expected)
+
+
+class _Tower:
+    """A stand-in tower: a frame's span row j is (frame tag, j); ``run`` records each group of blocks."""
+
+    def __init__(self):
+        self.groups = []
+
+    def start_frame(self, frame):
+        return {"frame": frame, "next": 0}
+
+    def run(self, st, stop):
+        self.groups.append((st["frame"].content_hash, st["next"], stop))
+        st["next"] = max(st["next"], stop)
+
+    def span(self, frame, st):
+        import torch
+        assert st["next"] == V.LAYERS
+        tag = float(ord(frame.content_hash))
+        return torch.arange(frame.tokens, dtype=torch.float16)[:, None].expand(-1, V.OUT_DIM) + 1000 * tag
+
+
+def _decoder(streams=0, block_ms=40.0):
+    from types import SimpleNamespace
+
+    from tensorfold.families.deepseek_v4.cuda.engine import Decoder
+    d = object.__new__(Decoder)
+    d.e = SimpleNamespace(tower=_Tower(), tower_block_ms=block_ms, tower_patches=54, image_features=None)
+    d.streams = dict.fromkeys(range(streams))
+    d.GAP_MS = 175.0
+    d.rounds = SimpleNamespace(estimate=lambda bucket: 25.0)
+    d._bucket = lambda count: count
+    return d
+
+
+def test_decoder_encodes_frames_in_groups_and_feeds_each_chunk_its_rows():
+    import torch
+    a, b = _frame(6, 9, "a"), _frame(3, 3, "b")            # 10 and 4 tokens
+    prepared = V.expand_placeholders([5, V.IMAGE_TOKEN_ID, 7, V.IMAGE_TOKEN_ID, 8], [a, b])   # spans [1,11) [12,16)
+    s = type("S", (), {})()
+    s.vision, s.encoded, s.encoding = prepared, {}, None
+    d = _decoder()
+    assert d._encode(s, 0, 6)                               # nothing decoding: the whole frame at once
+    assert d.e.tower.groups == [("a", 0, V.LAYERS)]
+    span_a = d.e.tower.span(a, {"next": V.LAYERS})
+    assert torch.equal(d.e.image_features, span_a[0:5]) and set(s.encoded) == {0}   # a straddles into the next chunk
+    assert d._encode(s, 6, 17)
+    span_b = d.e.tower.span(b, {"next": V.LAYERS})
+    assert torch.equal(d.e.image_features, torch.cat([span_a[5:10], span_b]))
+    assert s.encoded == {} and len(d.e.tower.groups) == 2   # frame a was encoded once
+    # streams decoding: groups of floor(gap target / per-block estimate) blocks, one group a round
+    from tensorfold.cuda.geometry import group_target
+    d = _decoder(streams=3)
+    s.encoded, s.encoding = {}, None
+    rounds = 0
+    while not d._encode(s, 0, 17):
+        rounds += 1
+    per = max(1, int(group_target(175.0, 25.0) // 40.0))
+    groups = [g for g in d.e.tower.groups if g[0] == "a"]
+    assert all(stop - start <= per for _, start, stop in groups) and groups[-1][2] == V.LAYERS
+    assert rounds == len(d.e.tower.groups)                  # every group (and each frame's last) ends a round
+    assert torch.equal(d.e.image_features, torch.cat([span_a, span_b]))
