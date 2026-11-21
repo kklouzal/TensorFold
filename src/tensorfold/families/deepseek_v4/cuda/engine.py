@@ -110,11 +110,8 @@ class DS41Engine:
         shards.close()
         # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
         # sized, so it does not come out of RESERVE.
-        from .target import prefill_moe_mode
-        lattice = None
-        if prefill_moe_mode() != "ours":
-            from tensorfold.cuda.sm70 import ds41_lattice_moe
-            lattice = ds41_lattice_moe.Workspace(device)
+        from tensorfold.cuda.sm70 import ds41_lattice_moe
+        lattice = ds41_lattice_moe.Workspace(device)
         torch.cuda.synchronize()
         free = torch.cuda.mem_get_info()[0]
         mine = torch.tensor([free], dtype=torch.int64, device=device)
@@ -215,14 +212,11 @@ class DS41Engine:
         kernels on slot 0 (a prompt chunk past the grouped-experts and prefill-indexer thresholds, then one decode
         row), so the first request builds nothing. Slot 0 is reset by its next attach."""
         import torch
-        from tensorfold.cuda.sm70 import ds41_prefill_moe, onecat_ds41
+        from tensorfold.cuda.sm70 import ds41_lattice_moe, onecat_ds41
         from .target import DECODE_MAX
-        ds41_prefill_moe.prepare()
-        if self.target.lattice is not None:
-            from tensorfold.cuda.sm70 import ds41_lattice_moe
-            ds41_lattice_moe.prepare()
+        ds41_lattice_moe.prepare()
         onecat_ds41.prepare()
-        rows = max(ds41_prefill_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
+        rows = max(ds41_lattice_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
         with torch.inference_mode():
             self._attach(0, rows + 1)
             self.layer_marks = [] if self.rank == 0 else None

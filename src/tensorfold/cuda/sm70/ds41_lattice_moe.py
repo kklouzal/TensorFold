@@ -9,8 +9,9 @@ HMMA grouped GEMM (lattice decode in the main loop, FP32 accumulation, FP16 out;
 the rank's K window [left, left + 576) the same way; the token output is the FP32 sum of its routes in top-k order,
 rounded to FP16.
 
-Same operands and output as ``ds41_prefill_moe.experts`` (one EP/ETP rank's original GGUF expert bytes, FP16 x
-[M, 5120], int32 local ids and FP32 probabilities [M, 6]; probability-0 routes (other EP half) contribute nothing).
+Operands are ``onecat_ds41.v41_experts``'s (one EP/ETP rank's original GGUF expert bytes, FP16 x [M, 5120], int32
+local ids in [0, E) and FP32 probabilities [M, 6]; probability-0 routes (other EP half) contribute nothing); the
+output is the same FP16 [M, 5120] partial. Ids are the caller's invariant (Target.moe), not validated here.
 TensorFold adaptation for EP2 x ETP4: probability-0 routes sort behind a sentinel expert so the GEMMs never see them
 (the friend's TP4 ranks hold all 384 experts). No host synchronization; operands and the workspace must outlive
 current-stream completion.
@@ -19,7 +20,8 @@ Numerics. ``exact=True`` (TensorFold, the default): every weight is ggml's FP32 
 FP16 (the canonical stats keep the source FP16 block scale d and the integer sub-scale; the decode forms
 (2s+1)/8 * signed grid exactly in FP16 and rounds once in the HMUL by d), gate/up leave the GEMM in FP32 into the
 clamped SwiGLU (FP32), times the probability, rounded to FP16; down rounds per route to FP16; the token output is
-the FP32 sum of its routes. These are ds41_prefill_moe's rounding points; only the FP32 K summation order differs.
+the FP32 sum of its routes (the rounding points of the fused-WMMA path this replaced, ds41_prefill_moe, whose
+outputs it matched bitwise in lat2-x1).
 ``exact=False`` is the friend's patch 140 arithmetic: the transcode rounds the block scale d * (2s+1)/8 to FP16 and
 the decode rounds its product with the grid value again, and gate/up round to FP16 before the SwiGLU (about 2.6x
 the rel L2 error vs the FP32 oracle). K order is the kernel's (no split-K). The transcode flags in
