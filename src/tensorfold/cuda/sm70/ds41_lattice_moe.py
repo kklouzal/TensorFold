@@ -62,8 +62,11 @@ def extension():
                                        "gguf_prefill_transcode_sm70.cu")),
                _VENDOR / "turbomind" / "kernels" / "gemm" / "kernel.cu"]
     headers = sorted(p for p in _VENDOR.rglob("*") if p.suffix in (".h", ".cuh"))
+    # The friend's kern340/src/build.sh flags (default FMA contraction, like his build); TurboMind uses the CUDA
+    # half/bfloat16 operators that Torch's extension defaults disable.
     flags = ["-O3", "-std=c++20", "--expt-relaxed-constexpr", "--expt-extended-lambda", "-DENABLE_SM70_TURBOMIND=1",
-             "-DNDEBUG"]       # the friend's kern340/src/build.sh flags (default FMA contraction, like his build)
+             "-DNDEBUG", "-U__CUDA_NO_HALF_OPERATORS__", "-U__CUDA_NO_HALF_CONVERSIONS__",
+             "-U__CUDA_NO_HALF2_OPERATORS__", "-U__CUDA_NO_BFLOAT16_CONVERSIONS__"]
     identity = hashlib.sha256(repr(flags).encode())
     for path in [*sources, *headers]:
         identity.update(str(path.relative_to(_HERE)).encode() + b"\0" + path.read_bytes())
