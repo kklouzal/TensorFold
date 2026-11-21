@@ -137,8 +137,8 @@ class Target:
 
     # ---- small pieces
     def _norm(self, x, weight):
-        from .kernels.norm import short_rms_norm
-        if (x.dtype == torch.float16 and x.ndim == 2 and 1 <= x.shape[0] <= 6 and x.shape[1] in (128, 512, 1280, 5120)
+        from .kernels.norm import BAND_ROWS, short_rms_norm
+        if (x.dtype == torch.float16 and x.ndim == 2 and 1 <= x.shape[0] <= BAND_ROWS and x.shape[1] in (128, 512, 1280, 5120)
                 and x.is_contiguous()):
             return short_rms_norm(x, weight, self.g.eps)
         values = x.float()
@@ -236,16 +236,12 @@ class Target:
     def moe(self, ly, x):
         from tensorfold.cuda.sm70 import ds41_lattice_moe as lattice_moe
         from tensorfold.cuda.sm70 import onecat_ds41 as native
+        from .kernels.band import add_halves, route_local
         from .kernels.mhc import fp32_projection
-        from .kernels.router import route_topk
         g = self.g
         logits = fp32_projection(x, ly.gate)
-        probabilities, ids = route_topk(logits.float(), ly.gate_bias, g.top_k, g.routed_scale)
-        first = self.local.start
-        local = ids.to(torch.int32) - first
-        mine = (local >= 0) & (local < len(self.local))
-        local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
-        weights = torch.where(mine, probabilities.float(), torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
+        # the router epilogue and this rank's EP2 mapping in one launch (local id, weight 0 for the other group)
+        local, weights = route_local(logits, ly.gate_bias, g.top_k, g.routed_scale, self.local.start, len(self.local))
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left, self.lattice)
@@ -253,8 +249,7 @@ class Target:
             out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                           ly.gate_up_type, ly.down_type, ly.down_left)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
-        total = out.float() + self._linear(hidden, ly.sh_down).float()
-        return self.c.sum(total, torch.float16)
+        return self.c.sum(add_halves(out, self._linear(hidden, ly.sh_down)), torch.float16)
 
     # ---- Engram
     def engram_layer(self, ly, hidden, hashes, step):
