@@ -10,7 +10,7 @@ import torch
 
 from tensorfold.cuda.sampling import sample_rows
 from tensorfold.engine.exact_sampling import Sampling
-from tensorfold.families.deepseek_v4.cuda.round_sampling import RowSampling, compact_packet, greedy_tokens
+from tensorfold.families.deepseek_v4.cuda.round_sampling import RowSampling, _Nucleus, compact_packet, greedy_tokens
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 WORLD, SHARD = 8, 16160            # DS41: 129280 = 8 x 16160
@@ -84,3 +84,15 @@ def test_row_sampling_matches_sample_rows(seed):
             assert isinstance(got[g], ValueError) and str(got[g]) == str(error), g
             continue
         assert got[g] == want, (g, p)
+
+
+def test_nucleus_scaling_bits_match_nucleus_rows():
+    """The batched per-row temperature scaling gives nucleus_rows' exact FP64 words (its Python-scalar divide)."""
+    rows = _rows(6, 3)
+    temps = [0.8, 0.7, 1.3, 0.6, 2.0, 1e-9]
+    batch = _Nucleus(rows, temps)
+    for g, t in enumerate(temps):
+        scores = rows[g:g + 1].float().double()
+        top = scores.max(dim=-1).values
+        want = (scores - top[:, None]) / max(float(t), 1e-6)
+        assert torch.equal(batch.scaled[g:g + 1].view(torch.int64), want.view(torch.int64)), t

@@ -73,10 +73,12 @@ class _Nucleus:
         self.width = width
         scores = rows.float().double()
         top = scores.max(dim=-1, keepdim=True).values
-        temps = torch.tensor([max(float(t), 1e-6) for t in temperatures], dtype=torch.float64).to(
+        # ``nucleus_rows`` divides by a Python scalar, which CUDA computes as a multiply by its FP64 reciprocal
+        # (div_true's CPU-scalar path): the same reciprocal per row keeps those bits
+        inverse = torch.tensor([1.0 / max(float(t), 1e-6) for t in temperatures], dtype=torch.float64).to(
             rows.device, non_blocking=True)[:, None]
         header = torch.cat([top.view(torch.int64), score_flags(scores).to(torch.int64)[:, None]], dim=1)
-        self.scaled = (scores - top) / temps
+        self.scaled = (scores - top) * inverse
         self.mass = torch.floor(torch.exp(self.scaled) * MASS).to(torch.int64)
         count = min(NUCLEUS, width)
         vals, cols = torch.topk(self.scaled, count, dim=-1)
