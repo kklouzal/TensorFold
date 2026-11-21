@@ -291,7 +291,13 @@ class DS41Engine:
     def _warm(self):
         """Startup, every rank, no control frames: build the native extensions and compile the forward's Triton
         kernels on slot 0 (a prompt chunk past the grouped-experts and prefill-indexer thresholds, then one decode
-        row), so the first request builds nothing. Slot 0 is reset by its next attach."""
+        row), so the first request builds nothing. Slot 0 is reset by its next attach.
+
+        The Decoder's first per-unit cost sample is timed on a second identical chunk: the first one's units carry
+        the process's first-use host stalls (kernel loads and compiles, library handles, allocator growth; seconds
+        on layer 0's units), and that sample stays the small cost anchor, so a chunk planned from it ran unit 0 and
+        unit 1 alone and then, its measured progress scaled by those inflated predictions, every other unit in one
+        group (``Decoder._stop``): a whole 4096-row chunk between two decode rounds."""
         import torch
         from tensorfold.cuda.sm70 import ds41_lattice_moe, ds41_sparse_attention, onecat_ds41
         from .target import DECODE_MAX
@@ -303,6 +309,8 @@ class DS41Engine:
         warm_started = time.perf_counter()
         rows = max(ds41_lattice_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
         with torch.inference_mode():
+            self._attach(0, rows + 1)
+            self._step([(0, 0, rows)], [self.geometry.bos] * rows, [rows - 1])
             self._attach(0, rows + 1)
             self.layer_marks = [] if self.rank == 0 else None
             self._step([(0, 0, rows)], [self.geometry.bos] * rows, [rows - 1])
@@ -701,10 +709,11 @@ class Decoder(PrefixOwner):
         self.inflight = None                         # the launched decode batch (``_launch``), oldest first
         self.ahead = None                            # a run-ahead batch launched behind ``inflight`` (``_launch_ahead``)
         self.split = None                            # (stream, chunk, next unit) of a paused chunk
+        self.finishing = None                        # (stream, chunk, result) of a chunk whose last unit was launched
         self.costs = UnitCosts(*engine.warm_unit_ms)  # per-unit prompt cost model (CUDA events of past chunks)
         self.rounds = RoundCosts()                   # GPU time of a decode round per batch bucket (CUDA events)
         self.timing = None                           # (rows, per-group marks) of the chunk in flight
-        self.timed = None                            # (rows, marks) of the last chunk, until its events complete
+        self.timed = []                              # [(rows, marks)] of finished chunks, oldest first, until read
         # round timing events, alternating (two decode batches in flight under run-ahead)
         self.events = [(torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)) for _ in range(2)]
         self.flip = 0
@@ -797,6 +806,8 @@ class Decoder(PrefixOwner):
             if self.split is not None and self.split[0] is s:
                 self.split = self.timing = self.e.layer_marks = None
                 self.e.announce(OP_LAYERS, -1)
+            if self.finishing is not None and self.finishing[0] is s:
+                self.finishing = None
             if s in self.filling:
                 self.filling.remove(s)
                 s.done, s.finished = True, time.perf_counter()
@@ -822,7 +833,8 @@ class Decoder(PrefixOwner):
         """After an error in a round: forget every live stream; the ranks can no longer be trusted to agree."""
         live = [s for s in self.streams.values() if not s.done] + self.filling
         self.streams, self.filling, self.inflight, self.ahead, self.split = {}, [], None, None, None
-        self.timing = self.timed = self.e.layer_marks = None
+        self.finishing = self.timing = self.e.layer_marks = None
+        self.timed = []
         if self._broken is None:
             self.broken = error or RuntimeError("a DeepSeek-V4.1 SM70 round failed")
         return live
@@ -832,25 +844,36 @@ class Decoder(PrefixOwner):
         """Wait for the batch in flight and decide its tokens, launch the next batch at once, then (while it runs)
         deliver the decided tokens and run the next prompt chunk or layer group. Run-ahead: when the batch in flight
         can only continue unchanged (``_can_run_ahead``), its successor is launched before the wait, its token ids
-        taken on the device from the batch in flight (graphs ``ahead``), so the GPU never idles on this host work."""
+        taken on the device from the batch in flight (graphs ``ahead``), so the GPU never idles on this host work.
+
+        A prompt chunk whose last unit the previous round launched finishes here (``finishing``), after this round's
+        decided tokens are delivered: reading its result waits for that unit, which runs behind the batch just
+        decided, so a decoding stream's token never waits for the chunk's last group as well (two groups and a
+        round). The next batch launches after it, with the stream that just filled."""
         import torch
         self._check()
         done = []
         with torch.inference_mode():
             try:
-                if self.inflight is not None and self._can_run_ahead():
+                finishing, self.finishing = self.finishing, None
+                if self.inflight is not None and finishing is None and self._can_run_ahead():
                     self._launch_ahead()
                 decided = self._collect() if self.inflight is not None else []
                 self.inflight, self.ahead = self.ahead, None
                 ending = {id(s) for s, chosen in decided if chosen is None or self._ends_after(s, chosen)}
                 live = [s for s in self.streams.values() if not s.done and id(s) not in ending]
-                if live and self.inflight is None:
+                if live and self.inflight is None and finishing is None:
                     self._launch(live, {id(s): chosen for s, chosen in decided if chosen is not None})
                 for s, chosen in decided:
                     if chosen is not None:
                         s.take(chosen, self._ends(s))
                     if s.done:
                         done.append(s)
+                if finishing is not None:
+                    done += self._filled(*finishing)
+                    live = [s for s in self.streams.values() if not s.done and id(s) not in ending]
+                    if live and self.inflight is None:
+                        self._launch(live, {})          # every decided token is delivered: none pending
                 if self.filling or self.split is not None:
                     done += self._fill()
             except BaseException as error:
@@ -874,7 +897,8 @@ class Decoder(PrefixOwner):
                 return []
             self.split = None
             self._timed()
-            return self._filled(s, chunk, out)
+            self.finishing = (s, chunk, out)        # read next round, after its decided tokens (``round``)
+            return []
         foreground = [x for x in self.filling if not x.background]
         s = (foreground or self.filling)[0]
         n, start = len(s.prompt), s.pos
@@ -913,7 +937,8 @@ class Decoder(PrefixOwner):
             self.split = (s, (start, stop, last, sink, True), unit)
             return []
         self._timed()
-        return self._filled(s, (start, stop, last, sink, True), out)
+        self.finishing = (s, (start, stop, last, sink, True), out)
+        return []
 
     def _filled(self, s, chunk, out) -> list:
         """Prompt chunk ``chunk`` (start, stop, last, scoring sink, computed: False for an exact repeat's kept
@@ -1010,18 +1035,21 @@ class Decoder(PrefixOwner):
         return stop
 
     def _timed(self) -> None:
-        """The chunk in flight finished: its marks wait for ``_absorb`` (never waits on the GPU)."""
-        self.timed, self.timing = self.timing, None
-        self.e.layer_marks = None
+        """The chunk in flight was launched to its end: its marks wait for ``_absorb`` (never waits on the GPU)
+        behind any earlier chunk's still unread ones. The queue holds at most the chunks launched since the host
+        last waited on the GPU: a round's decode wait or a last chunk's result read completes every earlier one, so
+        only a prompt's own chunks filling with no stream decoding (at most context / MAX_TOKENS) stay unread."""
+        self.timed.append(self.timing)
+        self.timing = self.e.layer_marks = None
 
     def _absorb(self) -> None:
-        """Per-unit costs of the last chunk once its events completed (never waits; until then it stays queued)."""
-        if self.timed is None:
-            return
-        rows, marks = self.timed
-        if not all(events[-1].query() for _, events in marks):
-            return
-        self.timed = None
+        """Per-unit costs of the finished chunks whose events completed, oldest first (never waits; the rest stay
+        queued). No measurement is dropped: one that had not completed when the next chunk began would otherwise
+        be lost, and under load every chunk run whole is still running then."""
+        while self.timed and all(events[-1].query() for _, events in self.timed[0][1]):
+            self._sample(*self.timed.pop(0))
+
+    def _sample(self, rows, marks) -> None:
         ms = [None] * self.e.units
         for first, events in marks:
             for j in range(1, len(events)):
