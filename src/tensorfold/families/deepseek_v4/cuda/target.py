@@ -204,12 +204,21 @@ class Target:
 
     def _select(self, ly, x, qr, step, table):
         """top-512 compressed positions per token (patch 87 ``_select``: Full layers, segmented top-k)."""
+        from .kernels import index_shard
         from .kernels import mu_packed as pk
         from .kernels.rope_qdq import rope_qdq
+        from .weights import WORLD
         tokens = x.shape[0]
         query = self._linear(qr, ly.idx_wq_b).view(tokens, -1, 128)
         query = rope_qdq(query, step.positions, table, fp4=True, group=32)
         weights = self._linear(x, ly.idx_proj) * (1.0 / 64.0)
+        width = self.index_context // ly.ratio
+        if not step.prefill and step.decode_index is None and index_shard.eligible(query.shape[1], WORLD, width):
+            # decode rows: every rank scores all 32 heads over its 1/8 of the key blocks (K4, index_shard)
+            return index_shard.select_decode(query, weights, step.positions, step.valid, step.token_req,
+                                             self.pool.cache, step.block_table, layout=self.pool.layout,
+                                             source=ly.source, ratio=ly.ratio, width=width, rank=self.w.rank,
+                                             comm=self.c.world)
         return pk.select_positions(query, weights, step.positions, step, self.pool.cache, step.block_table,
                                    layout=self.pool.layout, source=ly.source, ratio=ly.ratio,
                                    width=self.index_context // ly.ratio, all_reduce=self._sum_half,
