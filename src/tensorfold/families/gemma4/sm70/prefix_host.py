@@ -158,13 +158,17 @@ class HostTier:
             extent = extent["parent"]
         return blocks
 
+    def _servable(self, point) -> bool:
+        """Whether a kept point serves a later request from host RAM: an exact end, or an aligned chunk boundary."""
+        return bool(point[2].get("exact")) or len(point[0]) % self.owner.e.prompt_rows == 0
+
     # ------------------------------------------------------------------------------------------ prefixes surface
     def spill(self, points, principal) -> None:
         o = self.owner
         # A host point serves exact repeats (an exact end) or extensions from an aligned chunk boundary (``best``,
         # ``PrefixOwner.place``'s exact chunk arithmetic). A former exact end whose end a resume rewrote (``prefixes``
         # drops both) is neither unless aligned: its rows would be copied for nothing.
-        points = [k for k in points if k[2].get("exact") or len(k[0]) % o.e.prompt_rows == 0]
+        points = [k for k in points if self._servable(k)]
         if not points:
             return
         st = points[0][1]

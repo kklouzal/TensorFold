@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tensorfold.families.gemma4.sm70.ops import OP_RESTORE
+
 torch = pytest.importorskip("torch")
 
 
@@ -130,8 +132,12 @@ class _Engine:
     def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
         from tensorfold.families.deepseek_v4.cuda import prefix
         self.ops.append((op, a, b, c))
+        self.ids = ids
         if op == prefix.OP_SNAP:
             self.snaps[c] = b
+        elif op == prefix.OP_HRESTORE:                    # (entry snapshot index, new snapshot id) pairs
+            for sid in list(ids)[1:2 * d:2]:
+                self.snaps[sid] = "host"
         elif op == prefix.OP_DROP:
             del self.snaps[a]
 
@@ -148,46 +154,68 @@ def _owner(rows=64):
     return o
 
 
+class _Head:
+    """A last-row logits stand-in whose device/host copies are itself."""
+
+    def clone(self):
+        return self
+
+    def to(self, *args, **kwargs):
+        return self
+
+    def numel(self):
+        return 1 << 18
+
+    def element_size(self):
+        return 4
+
+
 def _serve(o, prompt, reuse=True):
-    """A request through admission, its chunks (keep_before / keep_end as the Decoder calls them) and retirement."""
+    """A request through admission, its chunks (keep_before / keep_end as the Decoder calls them) and retirement;
+    returns (cached tokens, request) with ``s.chunks`` the chunk starts it computed."""
+    from tensorfold.families.deepseek_v4.cuda.prefix import chunk_end
     s = SimpleNamespace(prompt=list(prompt), count=4, draft=True)
     o.place(s, o._cap(len(prompt) + 4), reuse)
     cached = s.cached
-    rows = o.e.prompt_rows
+    s.chunks = []
     if s.head is None:
         o.filling.append(s)
         start = s.pos
-        assert start % rows == 0                         # every computed chunk is a cold chunk
+        assert all(s.cached < b < len(prompt) for b in s.bounds)
         while start < len(prompt):
+            s.chunks.append(start)
             o.keep_before(s, start)
-            start = min(len(prompt), (start // rows + 1) * rows)
+            start = chunk_end(s.bounds, start, len(prompt))
         o.filling.remove(s)
         if s.keep_end:
-            o.keep_end(s, torch.zeros(1, 8))
+            o.keep_end(s, _Head())
     o.retire_slot(s)
     return cached, s
 
 
+def _restored(o):
+    return o.e.snaps[[x for x in o.e.ops if x[0] == OP_RESTORE][-1][2]]
+
+
 def test_owner_exact_repeat_extension_and_boundary_end():
-    from tensorfold.families.deepseek_v4.cuda import prefix
     o = _owner()
+    o.keep = 64                                          # placement only: no entry evicted
     p = list(range(1, 201))                              # 200 tokens: chunks [0,64) [64,128) [128,192) [192,200)
     assert _serve(o, p)[0] == 0
     cached, s = _serve(o, p)
     assert cached == 200                                 # exact repeat: the kept end's state and logits
-    sid = o.e.ops[-1][2] if o.e.ops[-1][0] == prefix.OP_RESTORE else None
-    assert sid is not None and o.e.snaps[sid] == 200
-    cached, _ = _serve(o, p + [7, 8, 9])                 # an extension resumes the aligned point below the end
-    assert cached == 192
-    assert o.e.snaps[[x for x in o.e.ops if x[0] == prefix.OP_RESTORE][-1][2]] == 192
-    # n - 1 on a boundary: the exact end joins that boundary point (no resume of the state at n at n - 1)
+    assert _restored(o) == 200                           # (a fork: the chain keeps its end at 200 too)
+    cached, _ = _serve(o, p + [7, 8, 9])                 # an extension resumes the exact end's state
+    assert cached == 200 and _restored(o) == 200
+    # n - 1 on a split: that point serves the exact repeat (no resume of the state at n at n - 1)
     q = list(range(500, 629))                            # 129 tokens: n - 1 = 128
     _serve(o, q)
+    cached, _ = _serve(o, q[:128] + [3, 4])              # the split at 128 resumes
+    assert cached == 128 and _restored(o) == 128
+    _serve(o, q)
     cached, _ = _serve(o, q + [1])
-    assert cached == 128
-    restored = [x for x in o.e.ops if x[0] == prefix.OP_RESTORE][-1]
-    assert o.e.snaps[restored[2]] == 128
-    cached, _ = _serve(o, q + [1])                       # (the in-place extension superseded q's own end)
+    assert cached == 129
+    cached, _ = _serve(o, q + [1])                       # its own end (q's was resumed without its logits)
     assert cached == 130
     assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
     assert set(o.e.snaps) == o.snap_ids
@@ -199,3 +227,181 @@ def test_owner_no_reuse_keeps_nothing():
     _serve(o, p, reuse=False)
     assert not o.kept and not o.snap_ids
     assert _serve(o, p)[0] == 0
+
+
+def test_chunk_splits_rules():
+    from tensorfold.families.deepseek_v4.cuda.prefix import chunk_end, chunk_splits
+    assert chunk_splits([], 0, 100, 64) == [64]
+    assert chunk_splits([], 0, 128, 64) == [64]                 # a split never ends the prompt
+    assert chunk_splits([300, 400, 900], 0, 1000, 8192) == [300, 900]          # the first and the last point
+    assert chunk_splits([1, 300, 900], 0, 1000, 8192) == [300, 900]   # (a point at the prompt's start: no split)
+    assert chunk_splits([1, 900], 0, 1000, 8192) == [900]
+    assert chunk_splits([300, 400, 900], 400, 1000, 8192) == [900]             # resumed: the last point only
+    assert chunk_splits([300], 0, 20000, 8192) == [300, 300 + 8192, 300 + 2 * 8192]
+    assert chunk_splits([300, 900], 950, 20000, 8192) == [950 + 8192, 950 + 2 * 8192]
+    assert chunk_end([300, 900], 0, 1000) == 300 and chunk_end([300, 900], 900, 1000) == 1000
+
+
+U, A, T, E = 9000, 9001, 9002, 9003           # toy controls: message start, assistant, think token, EOS
+
+
+def _toy_points(ids):
+    return [p for p in range(1, len(ids)) if ids[p] == U or (p >= 2 and ids[p - 2] == A and ids[p - 1] == T)]
+
+
+def _msg(seed, n):
+    return [100 + (seed * 131 + i * 7) % 5000 for i in range(n)]
+
+
+def _cold_chunks(prompt):
+    o = _owner(rows=8192)
+    o.points = _toy_points
+    return _serve(o, prompt, reuse=False)[1].chunks
+
+
+def test_owner_resumes_at_message_boundaries():
+    o = _owner(rows=8192)
+    o.e.context = 1 << 16
+    o.points = _toy_points
+    p1 = [1] + _msg(1, 300) + [U] + _msg(2, 300) + [A, T]                    # system, user, generation header
+    n1 = len(p1)
+    assert _serve(o, p1)[1].chunks == [0, 301] == _cold_chunks(p1)          # split at the system prompt's end
+    # an agent turn: the reply (reasoning, call) and a tool result extend the prompt; it resumes at its end
+    p2 = p1 + _msg(3, 280) + [E, U] + _msg(4, 400) + [A, T]
+    cached, s = _serve(o, p2)
+    assert cached == n1 and _restored(o) == n1
+    assert s.chunks == [n1, n1 + 281]                                        # and at the tool result's start
+    assert _cold_chunks(p2) == [0, 301, n1 + 281]
+    # an exact repeat computes nothing; a regenerated last turn resumes at that message's start
+    assert _serve(o, p2)[0] == len(p2)
+    p3 = p2[:n1 + 282] + _msg(5, 500) + [A, T]
+    cached, s = _serve(o, p3)
+    assert cached == n1 + 281 and s.chunks == [cached]
+    # thinking without tools re-renders the previous header (</think>): the turn resumes at that user message
+    p4 = p1[:n1 - 1] + [T + 10] + _msg(6, 300) + [E, U] + _msg(7, 300) + [A, T]
+    cached, s = _serve(o, p4)
+    assert cached == 301 and s.chunks == [301, 905]
+    # another conversation with the same system prompt resumes after it
+    cached, s = _serve(o, [1] + _msg(1, 300) + [U] + _msg(9, 600) + [A, T])
+    assert cached == 301
+    assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
+    assert set(o.e.snaps) == o.snap_ids
+
+
+def test_owner_extension_of_an_exact_end_and_of_its_ids_less_one():
+    """A prompt extending a kept end resumes its state; one sharing all but its last id (a re-rendered header)
+    lands on the longest kept point below, and the chain's points past it go."""
+    o = _owner(rows=8192)
+    o.e.context = 1 << 16
+    o.points = _toy_points
+    p1 = [1] + _msg(1, 300) + [U] + _msg(2, 300) + [U] + _msg(3, 300)        # raw prompt, ends mid-message
+    _serve(o, p1)
+    assert _serve(o, p1 + _msg(4, 50))[0] == len(p1)
+    p3 = p1[:-1] + _msg(5, 80)
+    cached, s = _serve(o, p3)
+    assert cached == 602 and s.chunks == [602]
+    assert all(len(k[0]) <= 602 or k[0][:len(p3) - 80] == p3[:len(p3) - 80] for k in o.kept)
+
+
+def _host_owner(mib=64):
+    """An owner with the DeepSeek host tier over a real page layout (slab copies are the ranks' work: stubbed)."""
+    from tensorfold.families.deepseek_v4.cuda.prefix import PrefixOwner
+
+    class Owner(PrefixOwner):
+        broken = None
+
+    o = Owner()
+    o.e, o.streams, o.filling = _Engine(8192, pages=4000), {}, []
+    o.e.context = 1 << 16
+    o.e.layout = _target().pool.layout
+    o.e.host_per_rank = mib << 20
+    o.e.host_slab = torch.zeros(mib << 20, dtype=torch.uint8)
+    o._init_prefix(o.e, _toy_points)
+    return o
+
+
+def test_owner_extension_spill_restore_and_dead_exact_points(monkeypatch):
+    """A conversation's chain is extended (in place), superseded by others until it spills to the host tier, then
+    continued from host RAM on a boundary; exact points whose end a resume removed never stay kept or spill."""
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)   # the ranks' copies
+    o = _host_owner()
+    p1 = [1] + _msg(1, 300) + [U] + _msg(2, 300) + [A, T]
+    n1 = len(p1)
+    _serve(o, p1)
+    # thinking without tools: the next turn re-renders p1's header, resuming p1's exact point (popped in place)
+    p2 = p1[:n1 - 1] + [T + 10] + _msg(3, 300) + [E, U] + _msg(4, 300) + [A, T]
+    assert _serve(o, p2)[0] == 301
+    p3 = p2 + _msg(5, 280) + [E, U] + _msg(6, 400) + [A, T]                  # extension in place
+    assert _serve(o, p3)[0] == len(p2)
+    for k in o.kept:
+        assert not (k[2].get("exact") and k[2].get("prompt_end") is None)
+    for i in range(12):                                                      # longer conversations take every slot
+        _serve(o, [1] + _msg(100 + i, 2500) + [U] + _msg(200 + i, 300) + [A, T])
+    assert all(len(k[0]) < 1000 or k[0][:20] != p3[:20] for k in o.kept)    # p3's chain left VRAM
+    spilled = [m for e in o.host_tier.entries for _ids, m in e["points"]]
+    assert spilled and not any(m["exact"] and m["prompt_end"] is None for m in spilled)
+    hits = o.prefix_counters["host_hits"]
+    p4 = p3 + _msg(7, 300) + [E, U] + _msg(8, 300) + [A, T]
+    cached, s = _serve(o, p4)
+    assert o.prefix_counters["host_hits"] == hits + 1
+    assert cached == len(p3) and s.chunks == [len(p3), len(p3) + 301]
+    assert _serve(o, p4)[0] == len(p4)                                        # and its exact repeat
+    assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
+    assert set(o.e.snaps) == o.snap_ids
+
+
+def _honest(o):
+    """No kept or spilled point claims a state other than its snapshot's (``prefix.at``)."""
+    from tensorfold.families.deepseek_v4.cuda.prefix import state_at as at
+    for ids, _st, snap, _tail in o.kept:
+        if snap.get("exact"):
+            assert snap.get("prompt_end") is not None and at(snap) == len(ids) + 1
+        else:                                            # a split, or an end resumed without its end (``next``)
+            assert at(snap) == len(ids) or (at(snap) == len(ids) + 1 and "next" in snap)
+    for entry in o.host_tier.entries:
+        for _ids, meta in entry["points"]:
+            assert not meta["exact"] or meta["prompt_end"] is not None
+
+
+def test_owner_extension_demotion_spill_and_repeats(monkeypatch):
+    """host_probe3's path on this lane: A keeps its exact end, B extends A in place (``prefixes`` demotes A's
+    end: its state stays one row past the point), C diverges at A's last token (lands below; never resumed one
+    row early), other prompts push the chains to the host tier, then B's repeat and extension restore from host."""
+    from tensorfold.families.gemma4.sm70 import prefix_host
+    monkeypatch.setattr(prefix_host, "_to_slab", lambda slab, offset, tensor: tensor)
+    o = _host_owner()
+    a = [1] + _msg(1, 2099)
+    b = a + _msg(2, 100)
+    assert _serve(o, a)[0] == 0
+    assert _serve(o, b)[0] == len(a)                     # in place, from A's end (demoted: no logits now)
+    assert _serve(o, b)[0] == len(b)
+    c = a[:-1] + [7] + _msg(3, 50)
+    cached, s = _serve(o, c)
+    assert cached < len(a) - 1 and (cached == 0 or _restored(o) == cached)
+    _honest(o)
+    for i in range(12):
+        _serve(o, [1] + _msg(100 + i, 2500) + [U] + _msg(200 + i, 300) + [A, T])
+        _honest(o)
+    hits = o.prefix_counters["host_hits"]
+    assert _serve(o, b)[0] == len(b)                     # B's repeat: its exact end from host RAM
+    assert _serve(o, b + _msg(4, 30))[0] == len(b)       # and an extension of it
+    assert o.prefix_counters["host_hits"] > hits
+    _honest(o)
+    assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
+    assert set(o.e.snaps) == o.snap_ids
+
+
+def test_owner_fork_of_an_exact_end_copies_its_last_row():
+    """A prompt continuing a kept end while that chain holds a longer point forks it: the fork copies the
+    point's rows and the end's last one, and resumes the end's state."""
+    from tensorfold.families.deepseek_v4.cuda.prefix import OP_COPY
+    o = _owner(rows=8192)
+    o.e.context = 1 << 16
+    a = [1] + _msg(1, 699)
+    _serve(o, a)
+    _serve(o, a + _msg(2, 300))                          # in place: the chain now holds a longer end
+    cached, s = _serve(o, a + _msg(3, 40))               # continues a's end, not the longer one: a fork
+    assert cached == len(a) and _restored(o) == len(a)
+    copies = [x for x in o.e.ops if x[0] == OP_COPY]
+    assert copies[-2][3] == len(a) - 1 and copies[-1][1:] == (copies[-2][1], copies[-2][2], len(a))
