@@ -804,6 +804,39 @@ docker build --network=none \
   -f deploy/v100/Dockerfile.application-wheel -t tensorfold-v100:app-owned-update .
 ```
 
+The serving image carries Pillow, which TensorFold's image loader
+(`tensorfold.vision.images`, the `vision` extra) imports. `Dockerfile.pillow`
+adds only that closure between the runtime-profile and application images:
+offline, it installs the exact official `pillow==13.0.0` cp315 wheel named
+with its sha256 by the generated
+[media runtime-support lock](requirements-media-runtime-offline-amd64.lock)
+(`--require-hashes --no-deps`), then runs `pip check`, a codec check
+(JPEG/zlib/WebP) and before/after SDK process audits. Torch, CUDA, NCCL,
+Triton and the sealed foundation bytes are unchanged. The full CPU
+processor/decoder closure (torchvision, PyAV, FFmpeg, dav1d) stays in
+`Dockerfile.media`, whose lock already contains the same Pillow pin.
+
+```bash
+docker build --network=none \
+  --build-arg "SOURCE_IMAGE=tensorfold-v100:py315-triton32-${SOURCE_COMMIT}" \
+  --build-context pillow_wheels=/path/to/dir-with-pillow-13.0.0-cp315-wheel \
+  -f deploy/v100/Dockerfile.pillow -t "tensorfold-v100:py315-pillow-${SOURCE_COMMIT}" .
+# then Dockerfile.application-wheel with APPLICATION_IMAGE=tensorfold-v100:py315-pillow-${SOURCE_COMMIT}
+```
+
+`tensorfold-v100:py315-app-48c51356-pillow13` (`sha256:67b43e68…`) is the
+48c51356 application (the same whole wheel `ec0650f4` as `4b2661d8`) on
+`py315-pillow-48c51356` (`5cdbd3f3`); its installed distributions differ from
+`4b2661d8` only by `pillow==13.0.0`, and its image configuration is identical.
+On 8x V100 (2026-11-21, snapshot `rb-7a06a5a5` overlaid) it passed Flash Next
+golden-vg2 (prod INT8 session, IDENTICAL; the session's protected source binding
+audit included) and Gemma 4 golden_g4 (live configuration, 23/23 keys IDENTICAL,
+drafted == undrafted 9/9). The CPU suite (`tests/` minus `tests/cuda`) on the
+same tree went from 408 failed / 23,505 passed / 22 errors on `4b2661d8` to
+391 / 23,886 / 2: the media/vision modules that failed to collect without Pillow
+now run; five tests that Pillow had skipped now fail on stale fixtures
+unrelated to the image.
+
 The refresh's final repaired core `829ebca2` and media `a817b9a4` images passed
 actual source binding/pip checks, protected SDK/media audits, 25 installed
 controls and 88 frontend/replay checks. The standalone native socket fixture

@@ -1,0 +1,16 @@
+# Add only the hash-pinned Pillow CPU image closure (TensorFold's `vision` image
+# loader, tensorfold.vision.images) to an exact source/runtime-profile image.
+# Torch/CUDA/NCCL/Triton and the sealed foundation bytes are unchanged; the full
+# CPU processor/decoder closure stays in Dockerfile.media. pillow_wheels holds the
+# official PyPI wheel named by the generated media runtime-support lock.
+ARG SOURCE_IMAGE
+FROM ${SOURCE_IMAGE}
+COPY --chmod=0444 deploy/v100/requirements-media-runtime-offline-amd64.lock \
+    /opt/tensorfold-pins/requirements-pillow-offline-amd64.lock
+RUN --network=none --mount=from=pillow_wheels,target=/pillow-wheels \
+    python /opt/tensorfold-pins/source_foundation.py audit-process \
+    && python -m pip install --no-index --no-deps --find-links /pillow-wheels --require-hashes \
+         -r /opt/tensorfold-pins/requirements-pillow-offline-amd64.lock \
+    && python -m pip check \
+    && python -c "import PIL, PIL.Image; from PIL import features; assert PIL.__version__ == '13.0.0', PIL.__version__; assert all(features.check(name) for name in ('jpg', 'zlib', 'webp')), 'Pillow codec closure incomplete'" \
+    && python /opt/tensorfold-pins/source_foundation.py audit-process
