@@ -168,6 +168,12 @@ copyright notice are retained in `LICENSES/DeepSeek-MIT.txt`.
 The MTP layer TensorFold drafts with comes from that checkpoint's last shard (MIT), converted by
 `families/deepseek_v4/convert.py`.
 
+`src/tensorfold/families/deepseek_v4/vendor/encoding_dsv41.py` is the unmodified `encoding/encoding.py` of
+[deepseek-ai/DeepSeek-V4.1-Flash-1017](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash-1017) (revision 08c8657,
+SHA-256 `13231c592e958fb39e2af6001dae69d90e7a36b265702b9b390236fb387599e2`), MIT License, Copyright (c) 2023 DeepSeek. `families/deepseek_v4/literal_prompts_v41.py`
+is a maintained adaptation of its `encode_messages` and `render_message` that routes string construction through
+prompt-origin values and resolves the last-user index once; the encoder's helpers and templates are used unchanged.
+
 `deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja` is the unmodified `chat_template.jinja` of
 [google/gemma-4-26B-A4B-it](https://huggingface.co/google/gemma-4-26B-A4B-it) (revision 4d7ae49), published by Google
 under the Apache License 2.0. See [the license text](LICENSES/Apache-2.0.txt).

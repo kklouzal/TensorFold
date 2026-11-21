@@ -29,8 +29,11 @@ class _Template(str):
 
 class _NativeOrigin:
     """A private helper view, never installed into the native module namespace."""
+    def __init__(self, module=native):
+        self._native = module
+
     def __getattr__(self, name):
-        value = getattr(native, name)
+        value = getattr(self._native, name)
         if isinstance(value, str):
             return _Template(value) if '{' in value else trusted(value)
         if name == 'DS_TASK_SP_TOKENS':
@@ -45,14 +48,13 @@ class _NativeOrigin:
     def unsupported(value):
         return origin_concat((trusted('[Unsupported '), as_origin(value), trusted(']')))
 
-    @staticmethod
-    def to_json(value):
+    def to_json(self, value):
         # Match the native serialization/error policy; serialized semantic data
         # cannot authorize any model control, including decoded JSON escapes.
-        return OriginText(native.to_json(value))
+        return OriginText(self._native.to_json(value))
 
     def render_tools(self, tools):
-        return _Template(native.TOOLS_TEMPLATE).format(
+        return _Template(self._native.TOOLS_TEMPLATE).format(
             tool_schemas=self.join('\n', [self.to_json(tool) for tool in tools]),
             dsml_token=self.dsml_token, thinking_start_token=self.thinking_start_token,
             thinking_end_token=self.thinking_end_token)
