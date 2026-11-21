@@ -86,6 +86,9 @@ def setup():
     tensors = V.read_mmproj(MMPROJ)
     ref_vision = _module("ds41_ref_vision", Path(REF) / "vision.py")
     ref_ip = _module("ds41_ref_image_processor", Path(REF) / "image_processor.py")
+    # upstream builds its RoPE tables on the CPU; only their placement changes here (values unchanged)
+    cpu_cos_sin = ref_vision.get_vision_cos_sin
+    ref_vision.get_vision_cos_sin = lambda *a: tuple(t.cuda() for t in cpu_cos_sin(*a))
     import types
 
     args = types.SimpleNamespace(
