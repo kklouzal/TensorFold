@@ -48,7 +48,7 @@ class Step:
     num_reqs: int
     req_slot: torch.Tensor       # [rows] int32 slot of each request row (scratch for padding rows)
     block_table: torch.Tensor    # [R, pages] int32 page ids of each request row
-    prefill: list                # [(r, s0, s1)]: requests with > DECODE_MAX tokens
+    prefill: list                # [(r, s0, s1, last position)]: requests with > DECODE_MAX tokens (host values)
     decode_index: torch.Tensor | None   # token rows of the other requests (None: all rows)
 
 

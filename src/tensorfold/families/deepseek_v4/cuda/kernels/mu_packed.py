@@ -23,6 +23,8 @@
 # - The overlay's private copy of attention_ops._e2m1_bits (identical body) is imported instead.
 # - Lint-only source edits: range(0, n) -> range(n) for the 0/1-trip loops (identical Triton loop).
 # - Triton 3.2: no rewrite was needed.
+# - select_positions (ds41-short, K36): a prefill request's live length comes from the host (step.prefill's 4th
+#   field, its last position) instead of positions[s1 - 1].item(): no host sync per indexer layer; same value.
 """LOCAL-PATCH 87 (ds41_mu_packed) paged FP4 latent rows.
 
 Multi-request DeepSeek-V4.1 (patch 85) with the compressed latents and indexer
@@ -553,14 +555,14 @@ def select_positions(
     query [T, H, 128] FP16 is the indexer query after RoPE and the FP4 (group 32) QDQ; weights [T, H] FP16 is
     weights_proj(x) * (1 / 64); width = max_model_len // ratio; all_reduce is the TP sum (identity at TP1).
     Decode rows (step.decode_index, or every row when None) share one index_scores launch, then the
-    segmented top-k (VLLM_LOCAL_DS41_MU_TOPK_SEG=1); each step.prefill request (r, s0, s1) unpacks its live
+    segmented top-k (VLLM_LOCAL_DS41_MU_TOPK_SEG=1); each step.prefill request (r, s0, s1, end) unpacks its live
     index keys once and runs select_compressed_positions. VLLM_LOCAL_DS41_MU_INDEX=paged (the production
     mode), so the overlay's "loop" A/B branch is not vendored. score_dtype=torch.float32 (TP8) keeps the
     rank-local decode scores unrounded through all_reduce and rounds the sum to FP16 once; the FP16 default
     is the overlay's arithmetic."""
     tokens = query.shape[0]
     result = torch.full((tokens, 512), -1, dtype=torch.int32, device=query.device)
-    decode_rows = tokens - sum(s1 - s0 for _, s0, s1 in step.prefill)
+    decode_rows = tokens - sum(s1 - s0 for _, s0, s1, _ in step.prefill)
     if decode_rows > 0:
         rows = step.decode_index
         pick = (lambda t: t) if rows is None else (lambda t: t.index_select(0, rows))
@@ -578,10 +580,11 @@ def select_positions(
             picked = torch.empty(q_d.shape[0], 512, dtype=torch.int32, device=query.device)
             _topk(picked, scores, pos_d, valid_d, ratio, 512)
             result.index_copy_(0, rows, picked)
-    for r, s0, s1 in step.prefill:
+    for r, s0, s1, last in step.prefill:
         # Single-sequence packed prefill: unpack the live keys once, then the
-        # reference cuBLAS path (select_packed_positions' prefill branch).
-        end = int(positions[s1 - 1].item() + 1) // ratio
+        # reference cuBLAS path (select_packed_positions' prefill branch). ``last`` is the request's last position
+        # (positions[s1 - 1]) from the host (TensorFold: no device read, no host sync per indexer layer).
+        end = (last + 1) // ratio
         keys = unpack_request_index(
             cache, block_table[r], end, max(end, 512), layout=layout, layer=source
         )

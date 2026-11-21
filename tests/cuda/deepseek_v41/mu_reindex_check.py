@@ -329,7 +329,7 @@ if section("select"):
         cache, table, _ = build_pages(LAYOUT, 20, totals)
         qsl, positions, valid, token_req = make_batch(lengths, starts)
         T = positions.numel()
-        prefill = [(1, int(qsl[1]), int(qsl[2]))]
+        prefill = [(1, int(qsl[1]), int(qsl[2]), starts[1] + lengths[1] - 1)]   # Target.Step: (r, s0, s1, last position)
         decode_index = torch.tensor([t for t in range(T) if not qsl[1] <= t < qsl[2]], dtype=torch.long)
         step = types.SimpleNamespace(prefill=prefill, decode_index=decode_index, valid=valid,
                                      token_req=token_req, qsl=qsl, qsl_cpu=qsl, num_reqs=4)
