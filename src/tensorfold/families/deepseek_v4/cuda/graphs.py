@@ -133,8 +133,7 @@ class Shape:
         t0 = time.perf_counter()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
-            for _ in range(2):          # compile/grow every kernel and scratch outside capture
-                self.body()
+            self.body()                 # compile/grow every kernel and scratch outside capture (one run does it)
         torch.cuda.current_stream().wait_stream(stream)
         stream.synchronize()            # (startup timeline: the warm-up runs' share of the capture time)
         self.warm_seconds = time.perf_counter() - t0
