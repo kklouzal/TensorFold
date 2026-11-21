@@ -38,13 +38,14 @@ LIMIT = 10.0
 LATTICE = {16: (32, 4), 17: (16, 4), 29: (16, 2)}
 TILE = 128          # experts per canonical tile (the friend's production VLLM_LOCAL_DS41_PF_MOE_TILE)
 CTAS = 640          # transcode CTAs (patch 140 default)
-# Fewest chunk rows for the lattice (below: Target.moe's EM3 decode experts). The friend's production
-# VLLM_LOCAL_DS41_PF_MOE_MIN is 128. On real 192-expert rank banks (tests/cuda/bench_ds41_moe_crossover.py, 1 GPU,
-# 180 W, all-calls routing histogram; 40-layer layer-count-weighted GPU ms) EM3 is faster through 320 rows (128:
-# 56.7 vs 139.3, 256: 118.0 vs 170.3, 320: 151.1 vs 178.7), about even at 384 (180.1 vs 185.8; the whole 8-rank
-# prompt forward was 5 ms slower with EM3 there: 268.9 vs 263.5 ms) and slower from 448 (210.8 vs 193.2). The
-# lattice transcodes every touched expert per call (a fixed ~2.5 ms per layer); EM3's cost grows per 64-row piece.
-MIN_TOKENS = 321
+# Fewest chunk rows for the lattice (below: Target.moe's EM3 decode experts): the friend's production
+# VLLM_LOCAL_DS41_PF_MOE_MIN. K38 (ds41-short, tests/cuda/bench_ds41_moe_crossover.py on real 192-expert rank banks,
+# 1 GPU, 180 W, 40-layer GPU ms): EM3 is faster than the lattice through 320 rows (128: 56.7 vs 139.3, 256: 118.0 vs
+# 170.3; the lattice transcodes every touched expert per call, ~2.5 ms per layer) and the 8-rank prompt forward
+# took 110.8 vs 143.4 ms at 128 rows, but EM3's Q8_1 activations put its output 1.2e-2 (rel L2) from the lattice's
+# and the corpus prefill NLL moved d +0.016 (CI [-0.003, +0.041], short-s1): less accurate, so the lattice keeps
+# every chunk from 128 rows. Below 128 the lattice is 2.4-3.5x slower than EM3 (no gain to buy with accuracy).
+MIN_TOKENS = 128
 # Patch 340 rule measured by the friend on his V100s (misc/ds41-knobs/kern340-rule.json, "enabled": 1 in his
 # production runtime): (decoder, n, k) -> [(max routes per call, variant, swizzle)]. Routes per call are the
 # chunk's token rows x 6 (his TP4 ranks route every token to their 384 experts; an EP2 rank sees half the routes on

@@ -40,9 +40,9 @@ about 520 s.
   index-score classes 8192 / 32768 / `--context`, sized by the batch's live maximum length. Decode also uses small
   all-gathers and an LL row all-reduce for small sums, a compact device greedy argmax with batched round sampling
   (one host wait per round), and expert-major routed experts (the friend's EM3 kernels, bit-exact with the per-6-row
-  op) below 321 rows, prompt chunks included (faster than the lattice there; see Prefill).
-- Prefill: the friend's TurboMind lattice grouped GEMMs for routed experts at 321 or more rows (the friend uses 128;
-  below 321 rows the lattice's per-call expert transcode makes it slower than EM3 on our banks). They use TensorFold's
+  op) below 128 rows.
+- Prefill: the friend's TurboMind lattice grouped GEMMs for routed experts at 128 or more rows. EM3 is faster up to
+  about 320 rows, but its Q8_1 activations are less accurate, so the lattice keeps those chunks. They use TensorFold's
   exact weight decode with FP32 gate/up, which is bitwise equal to the earlier grouped op. The friend's FP16 lattice
   arithmetic was removed because it had 2.6x the operator error. Prefill also uses fused sparse attention (the
   friend's patch 181 at 8 heads per rank) and dmv13 dense GEMMs with exact FP32 Q5_K restore coefficients.
