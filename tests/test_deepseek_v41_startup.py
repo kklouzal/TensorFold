@@ -56,3 +56,43 @@ def test_prebuild_reraises_a_build_failure():
     prebuild.wait(good)
     with pytest.raises(RuntimeError, match="nvcc"):
         prebuild.wait()
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_engram_unmaps_after_device_retirement(monkeypatch, rank):
+    torch = pytest.importorskip("torch")
+    from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine
+
+    e = object.__new__(DS41Engine)
+    e._closed, e.rank, e.graphs = False, rank, object()
+    actions = []
+
+    def unmap():
+        assert e.graphs is None
+        actions.append("unmap")
+
+    e.scheduler = types.SimpleNamespace(close=lambda: actions.append("drain")) if rank == 0 else None
+    e.pipes = types.SimpleNamespace(send=lambda _: actions.append("stop peers"))
+    e.engram = types.SimpleNamespace(close=unmap)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: actions.append("device fence"))
+    e.close()
+    e.close()
+    assert actions == (["drain", "stop peers"] if rank == 0 else []) + ["device fence", "unmap"]
+
+
+def test_engram_stays_mapped_if_device_retirement_fails(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from tensorfold.families.deepseek_v4.cuda.engine import DS41Engine
+
+    e = object.__new__(DS41Engine)
+    graph = object()
+    e._closed, e.rank, e.graphs = False, 1, graph
+    e.engram = types.SimpleNamespace(close=lambda: pytest.fail("released unretired mapping"))
+
+    def fail():
+        raise RuntimeError("device progress failed")
+
+    monkeypatch.setattr(torch.cuda, "synchronize", fail)
+    with pytest.raises(RuntimeError, match="device progress failed"):
+        e.close()
+    assert e.graphs is graph

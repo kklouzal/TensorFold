@@ -86,8 +86,13 @@ class HostEngram:
                     raise RuntimeError(f"rank 0's Engram table has {size} bytes, expected {self.size}")
                 self._register(rank)
             self.pointer = _Pointer(self.address)     # UVA: the host address is valid on the device
-        except BaseException:
-            self.close()
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                from tensorfold.cleanup import raise_failures
+
+                raise_failures(primary, (cleanup,))
             raise
         self.seconds = time.perf_counter() - started
 
@@ -129,7 +134,9 @@ class HostEngram:
 
     def close(self):
         if self.registered:
-            torch.cuda.cudart().cudaHostUnregister(self._base)
+            code = torch.cuda.cudart().cudaHostUnregister(self._base)
+            if int(code) != 0:
+                raise RuntimeError(f"cudaHostUnregister of the Engram table failed (CUDA error {int(code)})")
             self.registered = False
         if self._base:
             _unmap(self._base, self._length)

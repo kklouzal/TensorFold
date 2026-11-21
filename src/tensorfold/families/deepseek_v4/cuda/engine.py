@@ -662,21 +662,28 @@ class DS41Engine:
         return out
 
     def close(self) -> None:
+        import torch
+        from tensorfold.cleanup import finish
+
         if self._closed:
             return
         self._closed = True
-        try:
-            if self.rank == 0:
-                try:
-                    if self.scheduler is not None:
-                        self.scheduler.close()
-                        self.scheduler = None
-                finally:
-                    self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
-        finally:
-            self.graphs = None              # graphs read the mapped Engram table: release them first
-            if self.engram is not None:
-                self.engram.close()
+        if self.rank == 0:
+            def stop():
+                self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
+
+            if self.scheduler is None:
+                stop()
+            else:
+                finish((self.scheduler.close, stop))
+                self.scheduler = None
+        # The last request can stop after a successor graph was already queued. Host worker exit and OP_STOP
+        # only establish that no more work will be issued. Each rank fences its outstanding users of Engram
+        # before destroying their graphs and unregistering the table. A failed fence leaves the mapping owned.
+        torch.cuda.synchronize()
+        self.graphs = None
+        if self.engram is not None:
+            self.engram.close()
 
 
 class Decoder(PrefixOwner):
