@@ -20,43 +20,11 @@ from dataclasses import dataclass
 
 import torch
 
-from .weights import EP, WORLD, Geometry, Weights
+from .collectives import Collectives
+from .weights import EP, Geometry, Weights
 
 DECODE_MAX = 8                 # patch 85: requests with more tokens take the single-request prefill indexer
 BLOCK = 64                     # KV page: tokens per page (the friend's production --block-size 64)
-
-
-# ------------------------------------------------------------------------------------------- collectives
-class Collectives:
-    """FP32 sums and gathers over the 8-rank communicator (TP8 attention/dense and the ETP4 x EP2 experts)."""
-
-    def __init__(self, world):
-        self.world = world
-
-    def _all_reduce(self, tensor):
-        """In-place NCCL sum of an FP32 or FP16 tensor."""
-        import ctypes
-        kind = {torch.float32: 7, torch.float16: 6}[tensor.dtype]
-        comm = self.world
-        fn = comm.lib.ncclAllReduce
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
-                       ctypes.c_void_p, ctypes.c_void_p]
-        fn.restype = ctypes.c_int
-        stream = torch.cuda.current_stream().cuda_stream
-        comm._check(fn(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(), kind, 0, comm.comm, stream))
-
-    def sum(self, partial: torch.Tensor, dtype=None) -> torch.Tensor:
-        """8-rank sum of partials, accumulated in FP32 and rounded once to ``dtype`` (default: the partial's)."""
-        total = partial.float().contiguous()
-        self._all_reduce(total)
-        return total.to(dtype or partial.dtype)
-
-    def gather(self, part: torch.Tensor) -> torch.Tensor:
-        """Concatenate the eight ranks' parts along the last dimension, rank order."""
-        part = part.contiguous()
-        recv = torch.empty((WORLD,) + tuple(part.shape), dtype=part.dtype, device=part.device)
-        self.world.all_gather(part, recv)
-        return torch.cat(list(recv.unbind(0)), dim=-1)
 
 
 # --------------------------------------------------------------------------------------------- batch view
@@ -174,8 +142,7 @@ class Target:
         from tensorfold.cuda.sm70 import ds41_dense as dense
         rows = torch.empty(ids.shape[0], self.g.hidden, dtype=torch.float16, device=ids.device)
         dense.q5k_rows(self.w.embed, ids, self.w.embed_first, rows)
-        self.c._all_reduce(rows)
-        return rows
+        return self.c.exact_sum_half(rows)
 
     # ---- attention (patch 87 attention_forward)
     def attention(self, ly, x, step: Step, table, shared):
@@ -230,8 +197,12 @@ class Target:
         weights = self._linear(x, ly.idx_proj) * (1.0 / 64.0)
         return pk.select_positions(query, weights, step.positions, step, self.pool.cache, step.block_table,
                                    layout=self.pool.layout, source=ly.source, ratio=ly.ratio,
-                                   width=self.context // ly.ratio, all_reduce=self.c.sum,
+                                   width=self.context // ly.ratio, all_reduce=self._sum_half,
                                    score_dtype=torch.float32)
+
+    def _sum_half(self, scores):
+        """The indexer's TP sum: FP32 (decode) or FP16 (prefill tiles) per-rank scores, one FP16 rounding."""
+        return self.c.sum(scores, torch.float16)
 
     def _attend(self, query, step, ring, window, sink, *, cache=None, block_table=None, layout=None, layer=None,
                 topk=None):
@@ -264,8 +235,7 @@ class Target:
                                                  ly.down_type, ly.down_left)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
         total = out.float() + self._linear(hidden, ly.sh_down).float()
-        self.c._all_reduce(total)
-        return total.half()
+        return self.c.sum(total, torch.float16)
 
     # ---- Engram
     def engram_layer(self, ly, hidden, hashes, step):

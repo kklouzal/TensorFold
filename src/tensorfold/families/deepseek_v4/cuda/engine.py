@@ -55,7 +55,8 @@ class DS41Engine:
         from tensorfold.cuda.control_pipes import ControlPipes
         from . import weights as W
         from .engram import HostEngram
-        from .target import Collectives, Target
+        from .collectives import Collectives
+        from .target import Target
 
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8 (TP8 attention/dense, ETP4 x EP2 experts)")
@@ -78,6 +79,10 @@ class DS41Engine:
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         device = torch.device("cuda", 0)
         started = time.perf_counter()
+        # The Flash Next / Gemma 4 NVLink small all-gather mailbox (collectives.py: small gathers and the LL row
+        # all-reduce); every rank sets the same value before the communicator opens (its open checks they agree).
+        from tensorfold.cuda import small_gather
+        os.environ.setdefault(small_gather.ENV, str(small_gather.MAX_CAPACITY))
         self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.

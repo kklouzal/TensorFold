@@ -564,6 +564,31 @@ class NCCL:
             small.allreduce_bulk_f32(a, b, rows, dims, torch._C._cuda_getCurrentRawStream(self.device.index))
             return True
 
+    def all_reduce_rows_ll(self, send: torch.Tensor, recv: torch.Tensor) -> bool:
+        """``all_reduce_rows``' low-latency row all-reduce with the size policy left to the caller (no row
+        thresholds): the same sums (rank 0 first, FP32, one FP16 rounding into recv) and contract. Returns False
+        (nothing submitted) when the small collectives are off or the mailbox does not admit the shape; every
+        rank must select it for the same shapes."""
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("all_reduce_rows_ll: communicator admission is closed")
+            small = self.small_gather
+            if small is None or not _SMALL_ALLREDUCE:
+                return False
+            if (not isinstance(send, torch.Tensor) or not isinstance(recv, torch.Tensor) or send.ndim != 2
+                    or send.dtype != torch.float32 or recv.dtype != torch.float16 or recv.shape != send.shape
+                    or send.device != self.device or recv.device != self.device
+                    or not send.is_contiguous() or not recv.is_contiguous()):
+                raise ValueError("all_reduce_rows_ll: contiguous FP32 [rows, dims] input and FP16 output required")
+            rows, dims = send.shape
+            if small.reduce_lines(rows, dims) == 0:
+                return False
+            a, b = send.data_ptr(), recv.data_ptr()
+            if a < b + recv.numel() * 2 and b < a + send.numel() * 4:
+                raise ValueError("all_reduce_rows_ll: input and output must not overlap")
+            small.allreduce(a, b, rows, dims, torch._C._cuda_getCurrentRawStream(self.device.index))
+            return True
+
     def all_reduce_half(self, send: torch.Tensor, recv: torch.Tensor) -> bool:
         """Sum every rank's FP32 [rows, dims] partials in place, then round once to FP16 into recv.
 
