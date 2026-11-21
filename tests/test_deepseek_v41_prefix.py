@@ -285,3 +285,15 @@ def test_owner_lands_only_on_the_new_prompts_boundaries():
     cached, s = _serve(o, p2)
     assert cached == 602 and s.chunks == [c for c in _cold_chunks(p2) if c >= cached]
     assert all(len(k[0]) <= 602 or len(k[0]) >= len(p2) - 1 for k in o.kept)
+
+
+def test_host_best_skips_an_exact_point_whose_end_was_superseded():
+    """pf2: a spilled exact point whose prompt end a resume in place had dropped (prompt_end None) crashed the
+    host lookup of the next request."""
+    from tensorfold.families.gemma4.sm70.prefix_host import HostTier
+    meta = lambda exact, end: {"pos": 3, "snap": 0, "exact": exact, "prompt_end": end}
+    tier = SimpleNamespace(entries=[{"principal": None, "points": [([1, 2], meta(False, None)),
+                                                                   ([1, 2, 3], meta(True, None)),
+                                                                   ([1, 2, 3, 4], meta(True, {"token": 5}))]}])
+    assert HostTier.best(tier, [1, 2, 3, 9, 9], None)[1] == 0
+    assert HostTier.best(tier, [1, 2, 3, 4, 5], None)[1] == 2
