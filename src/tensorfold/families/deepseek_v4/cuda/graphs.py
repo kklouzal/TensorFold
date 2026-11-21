@@ -124,10 +124,13 @@ class DecodeGraphs:
         before = torch.cuda.mem_get_info()[0]
         t0 = time.perf_counter()
         pool = torch.cuda.graph_pool_handle()
-        for b in sorted(self.sizes, reverse=True):
-            shape = self.shapes[b]
-            shape.stage([], [])
-            shape.capture(pool)
+        # Inference mode as every forward (the warm-up's persistent scratch is inference tensors); the static
+        # inputs above stay normal tensors so staging works from any caller.
+        with torch.inference_mode():
+            for b in sorted(self.sizes, reverse=True):
+                shape = self.shapes[b]
+                shape.stage([], [])
+                shape.capture(pool)
         torch.cuda.synchronize()
         self.seconds = time.perf_counter() - t0
         torch.cuda.empty_cache()
