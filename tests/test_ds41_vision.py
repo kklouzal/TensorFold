@@ -27,6 +27,17 @@ def test_plan_bounds_extreme_aspects(size):
     assert best_h % V.PATCH == 0 and best_w % V.PATCH == 0 and V.llm_grid(best_h, best_w) == (n_llm_h, n_llm_w)
 
 
+def test_warmup_grid_covers_the_maximum_admitted_patch_count():
+    from tensorfold.vision.images import ImageLimits
+
+    side = ImageLimits().max_dimension
+    widthwise = V.plan_image_grid(side, 1)
+    heightwise = V.plan_image_grid(1, side)
+    assert (widthwise[2] // V.PATCH, widthwise[3] // V.PATCH) == V.MAX_PATCH_GRID == (3, 3063)
+    assert (heightwise[2] // V.PATCH, heightwise[3] // V.PATCH) == (1533, 3)
+    assert V.num_image_tokens(*widthwise[:2]) == V.num_image_tokens(*heightwise[:2]) == V.MAX_TOKENS
+
+
 def _frame(n_vit_h, n_vit_w, tag):
     patches = np.zeros((n_vit_h * n_vit_w, 3, V.PATCH, V.PATCH), np.uint8)
     return V.ImageFrame(patches, n_vit_h, n_vit_w, tag)

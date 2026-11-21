@@ -45,6 +45,9 @@ IMAGE_PLACEHOLDER = "<｜deepseek_image｜>"
 PATCH = 14
 MERGE = 3
 MAX_TOKENS = 1024
+# h * (w + 1) + 2 <= MAX_TOKENS implies h * w <= MAX_TOKENS - 3. Each output cell uses at most
+# MERGE * MERGE patches. A panoramic 8192 x 1 source accepted by the image frontend reaches this bound.
+MAX_PATCH_GRID = (MERGE, (MAX_TOKENS - 3) * MERGE)
 MIN_PIXELS = 544 * 544
 DIM = 1024
 HEADS = 16

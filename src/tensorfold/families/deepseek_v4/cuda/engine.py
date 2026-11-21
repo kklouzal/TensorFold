@@ -327,15 +327,14 @@ class DS41Engine:
         clock.add("warm-forward", warm_started, time.perf_counter() - warm_started)
 
     def _warm_tower(self):
-        """Rank 0: encode the plan's largest image (93 x 93 patches, 994 tokens) once, so its kernels, cuBLAS
-        handles and allocator blocks exist before the first request, and time its blocks: ``tower_block_ms`` is
-        the per-block cost the Decoder cuts encodes in groups by while streams decode (scaled by patch count, which
-        overestimates smaller images: attention is quadratic)."""
+        """Rank 0 warms the tower at the supported patch-count bound and measures the block cost used by the
+        Decoder's image scheduling. The Decoder scales the sample by patch count for smaller frames."""
         import numpy as np
         import torch
         from . import vision as V
-        side = 93
-        frame = V.ImageFrame(np.zeros((side * side, 3, V.PATCH, V.PATCH), np.uint8), side, side, "warm")
+        height, width = V.MAX_PATCH_GRID
+        patches = height * width
+        frame = V.ImageFrame(np.zeros((patches, 3, V.PATCH, V.PATCH), np.uint8), height, width, "warm")
         free = torch.cuda.mem_get_info()[0]
         torch.cuda.reset_peak_memory_stats()
         before = torch.cuda.memory_allocated()
@@ -349,7 +348,7 @@ class DS41Engine:
         torch.cuda.synchronize()
         if span.shape != (frame.tokens, V.OUT_DIM) or not bool(torch.isfinite(span).all()):
             raise RuntimeError("DeepSeek-V4.1 vision tower warm-up produced an invalid span")
-        self.tower_patches = side * side
+        self.tower_patches = patches
         ms = [events[b].elapsed_time(events[b + 1]) for b in range(V.LAYERS)]
         self.tower_block_ms = max(ms)
         self.tower_peak = torch.cuda.max_memory_allocated() - before

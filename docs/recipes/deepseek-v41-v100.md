@@ -107,7 +107,7 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   request.
 - Tower: the mmproj ViT (32 x 1024) and 3 x 3 aligner on GPU 0 of rank 0, the friend's patch-150 numerics (BF16
   weights widened exactly to FP16, FP16 GEMMs with FP32 accumulation, FP32 residual, norms and RoPE). It is loaded
-  before the KV pool is sized and warmed at startup on the plan's largest image. Rank 0 encodes and broadcasts
+  before the KV pool is sized and warmed at startup on the plan's 9,189-patch bound. Rank 0 encodes and broadcasts
   each prompt chunk's image rows to the other ranks. While other streams decode, an encode runs in groups of
   tower blocks under the 175 ms policy, as prompt chunks do.
 - Backbone: image rows replace the image token's embedding. They route their experts with the vision bias
@@ -129,7 +129,7 @@ source ds41-vision2 1921ae48):
 - TTFT: about 1.14 s for one 994-token image (the tower takes about 0.63 s of it). For four such images (3,989
   prompt tokens) it is 4.25 s, about 940 prompt tok/s, against about 2,960 tok/s for a 4K text prompt.
 - Cost: the tower takes 0.91 GiB on rank 0, and the KV pool is sized by the smallest rank, so the pool drops from
-  7,780,032 to 6,681,984 tokens. The warm-up's transient peak (577 MiB) fits in the 3 GiB prompt reserve. Startup
+  7,780,032 to 6,681,984 tokens. The 994-token square warm-up used 577 MiB of the 3 GiB prompt reserve. Startup
   takes about 20 s longer.
 - Text requests: with `--vision`, the 20 greedy known-answer replies (thinking off and on) were identical to the
   base build's, and the C1/C8 4K/16K matrix cells matched within 0.3% on the same hold.
