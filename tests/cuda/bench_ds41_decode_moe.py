@@ -146,8 +146,8 @@ for kind, reps in (("g", rep_gate), ("d", rep_down)):
                                 ms = graph_ms(lambda: EXT.gate_up(WS.buffer, p, gate, up, gt, v))
                                 acc.setdefault((v, c), []).append(ms)
                     else:
-                        # a valid down input: run a fused gate/up once
-                        EXT.gate_up(WS.buffer, p, gate, up, gt, 4)
+                        # a valid down input: one fused gate/up whose chunk (16) covers every plan chunk
+                        EXT.gate_up(WS.buffer, p, gate, up, gt, 9)
                         for v, ch in DN.items():
                             if ch >= c:
                                 ms = graph_ms(lambda: EXT.down(WS.buffer, p, down, dt, left, v))

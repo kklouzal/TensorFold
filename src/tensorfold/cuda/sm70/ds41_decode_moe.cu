@@ -1061,6 +1061,8 @@ void ds41_decode_moe_experts(torch::Tensor ws, torch::Tensor out, const torch::T
 }
 
 // Stage ops for the schedule sweep (tests/cuda/bench_ds41_decode_moe.py): same launches, one at a time.
+// Caller contract (unchecked: the plan lives on the device): gate_up / down variants' chunks must be >= the
+// chunk passed to prep (experts() uses the smaller of the pair's).
 void ds41_decode_moe_prep(torch::Tensor ws, const torch::Tensor& x, const torch::Tensor& ids,
                           const torch::Tensor& probabilities, int64_t experts, int64_t chunk) {
   const Views v = workspace_of(ws, x);
