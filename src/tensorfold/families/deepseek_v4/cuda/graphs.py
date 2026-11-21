@@ -99,8 +99,7 @@ class Shape:
             return self.out
         return self.body()
 
-    def capture(self, pool) -> None:
-        stream = torch.cuda.Stream()
+    def capture(self, pool, stream) -> None:
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
             for _ in range(2):          # compile/grow every kernel and scratch outside capture
@@ -122,15 +121,20 @@ class DecodeGraphs:
         self.shapes = {b: Shape(engine, b) for b in self.sizes}
         torch.cuda.synchronize()
         before = torch.cuda.mem_get_info()[0]
+        self.reserved_before = torch.cuda.memory_reserved()
         t0 = time.perf_counter()
         pool = torch.cuda.graph_pool_handle()
+        stream = torch.cuda.Stream()            # one capture stream (one cuBLAS workspace) for every bucket
+        self.trace = []                         # (bucket, device bytes in use after its capture, torch reserved)
         # Inference mode as every forward (the warm-up's persistent scratch is inference tensors); the static
         # inputs above stay normal tensors so staging works from any caller.
         with torch.inference_mode():
             for b in sorted(self.sizes, reverse=True):
                 shape = self.shapes[b]
                 shape.stage([], [])
-                shape.capture(pool)
+                shape.capture(pool, stream)
+                torch.cuda.synchronize()
+                self.trace.append((b, before - torch.cuda.mem_get_info()[0], torch.cuda.memory_reserved()))
         torch.cuda.synchronize()
         self.seconds = time.perf_counter() - t0
         torch.cuda.empty_cache()
