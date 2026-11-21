@@ -81,11 +81,20 @@ class DS41Engine:
                              "first shard) and engram_file (the llama.cpp Engram GGUF)")
         resolve = lambda p: Path(p) if Path(p).is_absolute() else model_dir / p
         shards = W.Shards(resolve(entry), resolve(engram_file))
-        rows = W.engram_split(shards, g)
-        self.engram = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
-        print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
+        # Development smoke (TENSORFOLD_DS41_SMOKE_LAYERS=N): only the first N decoder layers load, so plumbing and
+        # integration changes run in seconds; outputs are not the model's. Below the first Engram layer the table is
+        # never read, so it is not mapped either. Numerics gates and benchmarks never set it.
+        smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
+        layers = range(min(smoke, g.layers)) if smoke > 0 else None
+        self.engram = None
+        if layers is None or len(layers) > min(g.engram_layers):
+            rows = W.engram_split(shards, g)
+            self.engram = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
+            print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
+        if layers is not None:
+            print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
         self._barrier()
-        self.w = W.load(shards, g, rank, device)
+        self.w = W.load(shards, g, rank, device, layers=layers)
         shards.close()
         torch.cuda.synchronize()
         free = torch.cuda.mem_get_info()[0]
@@ -127,9 +136,10 @@ class DS41Engine:
             if self.graphs is not None:
                 print(f"[tensorfold] DeepSeek-V4.1 SM70: decode graphs for batches {list(self.graphs.sizes)} captured "
                       f"in {self.graphs.seconds:.1f} s, {self.graphs.bytes / 2**20:.0f} MiB", flush=True)
-            print(f"[tensorfold] DeepSeek-V4.1 SM70: loaded in {self.load_seconds:.0f} s (Engram table "
-                  f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s, host RAM only: VRAM residency "
-                  f"{self.engram.device_bytes} B + per-step working buffer "
+            engram = ("not mapped (development smoke)" if self.engram is None else
+                      f"{self.engram.size / 2**30:.1f} GiB in {self.engram.seconds:.0f} s, host RAM only: VRAM residency "
+                      f"{self.engram.device_bytes} B")
+            print(f"[tensorfold] DeepSeek-V4.1 SM70: loaded in {self.load_seconds:.0f} s (Engram table {engram} + per-step working buffer "
                   f"{self.target.engram_rows.numel() * 2 >> 20} MiB); KV pool {pages} pages of "
                   f"{page_bytes} B ({pages * 64} tokens), {slots} streams", flush=True)
         if rank == 0 and serve:
@@ -444,7 +454,8 @@ class DS41Engine:
                     self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
         finally:
             self.graphs = None              # graphs read the mapped Engram table: release them first
-            self.engram.close()
+            if self.engram is not None:
+                self.engram.close()
 
 
 class Decoder:
