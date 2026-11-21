@@ -84,9 +84,23 @@ class Pool:
 
 
 # ------------------------------------------------------------------------------------------------ the model
+PREFILL_MOE = ("lattice", "lattice16")
+
+
+def prefill_moe_mode():
+    """The prefill routed experts' arithmetic (TENSORFOLD_DS41_PREFILL_MOE, default 'lattice'; A/B until the lead's
+    decision): 'lattice' = exact weight decode + FP32 gate/up (ds41_lattice_moe exact=True), 'lattice16' = the
+    friend's FP16 arithmetic (exact=False)."""
+    import os
+    mode = os.environ.get("TENSORFOLD_DS41_PREFILL_MOE", "lattice")
+    if mode not in PREFILL_MOE:
+        raise ValueError(f"TENSORFOLD_DS41_PREFILL_MOE must be one of {PREFILL_MOE}")
+    return mode
+
+
 class Target:
     def __init__(self, w: Weights, comm: Collectives, *, slots: int, pages: int, max_tokens: int, context: int,
-                 engram, device):
+                 engram, device, lattice):
         from .kernels import quant_rope, mu_state
         self.w, self.c, self.g = w, comm, w.geometry
         self.device = device
@@ -109,6 +123,10 @@ class Target:
         self.engram_rows = torch.empty(max_tokens, 24 * 256, dtype=torch.float16, device=device)
         from tensorfold.cuda.sm70 import ds41_decode_moe
         self.decode_moe = ds41_decode_moe.Workspace(device)   # routed experts below the grouped-prefill threshold
+        # Prefill routed experts (>= MIN_TOKENS rows): the friend's TurboMind lattice path (ds41_lattice_moe); its
+        # canonical-bank workspace is the caller's (allocated before the KV pool is sized).
+        self.prefill_moe = prefill_moe_mode()
+        self.lattice = lattice
         # Engram lookup telemetry for the deferred hot-row VRAM cache candidate (off unless the variable names a
         # file; rank 0 only, since every rank looks up the same rows): appends each forward's valid hashed row ids
         # (int64 [tokens, 2 tables, 24 heads], table-local) for offline hit-rate / churn analysis.
@@ -215,7 +233,8 @@ class Target:
 
     # ---- MoE
     def moe(self, ly, x):
-        from tensorfold.cuda.sm70 import ds41_prefill_moe as prefill_moe, onecat_ds41 as native
+        from tensorfold.cuda.sm70 import ds41_lattice_moe as lattice_moe
+        from tensorfold.cuda.sm70 import onecat_ds41 as native
         from .kernels.mhc import fp32_projection
         from .kernels.router import route_topk
         g = self.g
@@ -226,9 +245,10 @@ class Target:
         mine = (local >= 0) & (local < len(self.local))
         local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
         weights = torch.where(mine, probabilities.float(), torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
-        if x.shape[0] >= prefill_moe.MIN_TOKENS:  # grouped prefill experts (one host sync; not captured)
-            out = prefill_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
-                                      ly.gate_up_type, ly.down_type, ly.down_left)
+        if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
+            out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
+                                      ly.gate_up_type, ly.down_type, ly.down_left, self.lattice,
+                                      exact=self.prefill_moe == "lattice")
         else:  # expert-major decode experts (the friend's EM3), bit-equal to the 6-row op, graph-capturable
             out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                           ly.gate_up_type, ly.down_type, ly.down_left)

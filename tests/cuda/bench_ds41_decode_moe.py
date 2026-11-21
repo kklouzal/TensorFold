@@ -222,34 +222,8 @@ for layer in test_layers:
                 f"bit-equal {same}")
         del gate, up, down
         torch.cuda.empty_cache()
-# ---- crossover with the grouped prefill op (eager both: chunks above the graph sizes run eager)
-from tensorfold.cuda.sm70 import ds41_prefill_moe as pre  # noqa: E402
-
-pre.prepare()
-layer = max(PAIRS, key=PAIRS.get)
-layer = next(l for l in range(40) if TYPES[l] == layer)
-(gate, up, down), gt, dt, left = banks(layer, 1)
-results["crossover"] = []
-
-
-def eager_ms(fn):
-    fn()
-    torch.cuda.synchronize()
-    samples = []
-    for _ in range(7):
-        t = time.perf_counter()
-        fn()
-        torch.cuda.synchronize()
-        samples.append((time.perf_counter() - t) * 1e3)
-    return sorted(samples)[3]
-
-
-for m in (32, 64, 96, 128, 192, 256, 384):
-    x, ids, p, routes, _ = routing(layer, m, 1, 990000 + m)
-    t_pre = eager_ms(lambda: pre.experts(x, ids, p, gate, up, down, gt, dt, left))
-    t_em = eager_ms(lambda: WS.experts(x, ids, p, gate, up, down, gt, dt, left, schedule=schedule))
-    results["crossover"].append(dict(layer=layer, m=m, routes=routes, prefill_ms=t_pre, em3_eager_ms=t_em))
-    log(f"crossover layer {layer} M{m} routes {routes}: prefill op {t_pre:.3f} ms | EM3 pieces of 64 eager {t_em:.3f} ms")
+# (the crossover with the grouped prefill op lives in tests/cuda/test_sm70_ds41_lattice_moe.py: the lattice path
+#  replaced ds41_prefill_moe)
 json.dump(results, open(OUT, "w"), indent=1)
 bad = [r for r in results["e2e"] if not r["bit_equal"]]
 print("BENCH DONE" if not bad else f"BENCH FAIL {len(bad)} unequal rows", flush=True)

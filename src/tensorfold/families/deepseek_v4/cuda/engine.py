@@ -117,6 +117,10 @@ class DS41Engine:
         self._barrier()
         self.w = W.load(shards, g, rank, device, layers=layers)
         shards.close()
+        # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
+        # sized, so it does not come out of RESERVE.
+        from tensorfold.cuda.sm70 import ds41_lattice_moe
+        lattice = ds41_lattice_moe.Workspace(device)
         torch.cuda.synchronize()
         free = torch.cuda.mem_get_info()[0]
         mine = torch.tensor([free], dtype=torch.int64, device=device)
@@ -135,7 +139,7 @@ class DS41Engine:
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(buckets(slots)) if capture else 0
         pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
-                             context=self.context, engram=self.engram, device=device)
+                             context=self.context, engram=self.engram, device=device, lattice=lattice)
         self.layer_count = len(self.w.layers)
         self.units = self.target.units      # pause points of a prompt forward (attention, experts per layer)
         from .prefix import SlotState
@@ -215,11 +219,11 @@ class DS41Engine:
         kernels on slot 0 (a prompt chunk past the grouped-experts and prefill-indexer thresholds, then one decode
         row), so the first request builds nothing. Slot 0 is reset by its next attach."""
         import torch
-        from tensorfold.cuda.sm70 import ds41_prefill_moe, onecat_ds41
+        from tensorfold.cuda.sm70 import ds41_lattice_moe, onecat_ds41
         from .target import DECODE_MAX
-        ds41_prefill_moe.prepare()
+        ds41_lattice_moe.prepare()
         onecat_ds41.prepare()
-        rows = max(ds41_prefill_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
+        rows = max(ds41_lattice_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
         with torch.inference_mode():
             self._attach(0, rows + 1)
             self.layer_marks = [] if self.rank == 0 else None
