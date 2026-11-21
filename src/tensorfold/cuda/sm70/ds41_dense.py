@@ -82,6 +82,7 @@ class Planes:
         sizes = plane_bytes(fmt, n, k)
         self.codes, self.high, self.scale = (torch.empty(s, dtype=torch.uint8, device=device) for s in sizes)
         self.tiles = -(-n // 32)
+        self.name, self.ref = "", None   # diagnostic: source tensor name, ggml FP16 decode (DENSE_DIAG only)
 
     @property
     def shape(self):
@@ -196,6 +197,20 @@ class Group:
         return torch.cat(parts, dim=-1)
 
     def __call__(self, x, outs=None, *, max_rows: int = ROWS_BAND):
+        tokens = _diag_tokens()
+        if tokens and not torch.cuda.is_current_stream_capturing():
+            got = self._call(x, outs, max_rows=max_rows)
+            for i, m in enumerate(self.members):
+                if m.ref is not None and any(t in m.name for t in tokens):
+                    ref = torch.matmul(x, m.ref.t())
+                    if outs is not None:
+                        got[i].copy_(ref)
+                    else:
+                        got[i] = ref
+            return got
+        return self._call(x, outs, max_rows=max_rows)
+
+    def _call(self, x, outs=None, *, max_rows: int = ROWS_BAND):
         if x.dtype != torch.float16 or x.ndim != 2 or x.shape[1] != self.k or x.device != self.scratch.device:
             raise ValueError(f"dmv13 group expects FP16 [rows, {self.k}] on {self.scratch.device}")
         rows = x.shape[0]
@@ -209,6 +224,20 @@ class Group:
         if outs is not None:
             raise ValueError("caller-owned outputs are admitted for the dense_rows band only")
         return [self._gemm(x, m) for m in self.members]
+
+
+def _diag_tokens():
+    """DIAGNOSTIC (TENSORFOLD_DS41_DENSE_DIAG=<file>): comma-separated tensor-name substrings whose eager
+    (uncaptured) projections multiply the load-time ggml FP16 decode instead of the planes."""
+    import os
+    path = os.environ.get("TENSORFOLD_DS41_DENSE_DIAG")
+    if not path:
+        return ()
+    try:
+        text = Path(path).read_text().strip()
+    except FileNotFoundError:
+        return ()
+    return tuple(t for t in text.split(",") if t and t != "none")
 
 
 def q5k_rows(table: torch.Tensor, ids: torch.Tensor, first: int, out: torch.Tensor) -> torch.Tensor:

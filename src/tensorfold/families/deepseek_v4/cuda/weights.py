@@ -241,6 +241,10 @@ class Loader:
             n = min(step, count - at)
             packed = torch.from_numpy(np.array(data[first + at:first + at + n])).to(self.device)
             out.pack(packed, t.ggml_type, c0 // 32, tile0=at // 32)
+        import os
+        out.name = name
+        if os.environ.get("TENSORFOLD_DS41_DENSE_DIAG"):
+            out.ref = self.dense(name, rows=(first, count), cols=(c0, width))
         return out
 
     def column_planes(self, name, parts=TP):
