@@ -20,12 +20,17 @@ of its first h tokens only (patch 85's slot semantics; every kernel resolves its
 
 So the state at any forward boundary of a slot is exact. What decides where a point may be kept is the arithmetic of
 the rows a resumed request still computes: its prompt chunks must be the chunks a cold prefill of the same prompt
-runs (same rows per forward, so the same GEMM shapes, MoE path, indexer path and reductions). Cold prompts chunk at
-multiples of ``prompt_rows`` from position 0 (load-invariant), so points are kept only at those boundaries (at or
-before each message start and the prompt end: ``PrefixOwner._stops``) plus the exact prompt end with its last-row
-logits (an exact repeat computes no prompt row; its reply is the cold reply). A request extending an exact end
-resumes at the aligned point below it (``place``). Under these rules a cached request's every computed row is
-bitwise the cold request's (verified with tools/quality_eval cachecheck).
+runs (same rows per forward, so the same GEMM shapes, MoE path, indexer path and reductions). Every prompt, cold or
+resumed, is therefore chunked at its message boundaries (``chunk_bounds``: the renderer's ``message_points`` -- the
+system prompt's end, each user turn or tool-result group, each assistant reply, each generation header's end --
+at least ``MIN_CHUNK`` rows apart, and every ``prompt_rows`` inside a longer message), and points are kept only on
+those boundaries plus the exact prompt end. The boundaries below any position are a function of the ids before it
+(and the id at it), so a later prompt sharing a kept point's ids has the same boundaries below it; a resume lands only
+on a boundary of the new prompt (``_resume_at``, which otherwise falls back to the best kept boundary below) and then
+computes exactly the cold chunks. The exact end is kept twice: one token early with its last-row logits for exact
+repeats (an exact repeat computes no prompt row; its reply is the cold reply), and at its end for a prompt that
+extends it on a boundary (a next turn re-renders the generation header the end stops on). Under these rules a cached
+request's every computed row is bitwise the cold request's (verified with tools/quality_eval cachecheck).
 
 Ranks: rank 0's owner decides and announces the Gemma ``ops`` codes; every rank runs ``SlotState`` on its own
 tensors in announcement order (identical shapes and page ids, so snapshot ids and slab offsets are rank-replicated).
@@ -60,6 +65,33 @@ def snapshot_bytes(layers: int, c2_sources: int) -> int:
 def extent_bytes(layout, first: int, end: int) -> int:
     """Bytes of the KV rows of positions [first, end) (every source's rows first // r .. end // r)."""
     return sum((end // ratio - first // ratio) * (C_ROW + I_ROW) for ratio, _, _, _ in layout.regions.values())
+
+
+MIN_CHUNK = 256          # rows: a message boundary closer than this to the previous one is not a chunk boundary
+SPACING = 4096          # rows: kept points inside a prompt besides its first and last two boundaries
+
+
+def chunk_bounds(points, n: int, rows: int) -> list[int]:
+    """A prompt's chunk boundaries in (0, n) from its message ``points`` (sorted): a point at least MIN_CHUNK rows
+    past the previous boundary, and every ``rows`` past the previous boundary inside a longer message. Read left to
+    right from position 0, so the boundaries below a position depend on the ids before it only (and the id at it)."""
+    out: list[int] = []
+    prev = 0
+    for p in (*points, n):
+        while p - prev > rows:
+            prev += rows
+            out.append(prev)
+        if p < n and p - prev >= MIN_CHUNK:
+            out.append(p)
+            prev = p
+    return out
+
+
+def chunk_end(bounds, start: int, n: int) -> int:
+    """Where the prompt chunk at ``start`` ends: the next boundary, or the prompt end."""
+    from bisect import bisect_right
+    k = bisect_right(bounds, start)
+    return bounds[k] if k < len(bounds) else n
 
 
 def default_keep_slots(streams: int) -> int:
@@ -115,7 +147,7 @@ class PrefixOwner(_gemma.PrefixOwner):
         self.kept: list = []
         self.used: dict[int, int] = {}
         self.clock = 0
-        self.keep = 4 * max(1, engine.keep_slots)        # kept points (a prompt keeps up to four)
+        self.keep = 6 * max(1, engine.keep_slots)        # kept points (a prompt: its first, last two and spaced stops, two ends)
         self.depth = 0                                   # no drafter rows past the prompt
         self.prefix_counters = dict.fromkeys(prefixes.COUNTERS, 0)
         self.points = points
@@ -130,25 +162,59 @@ class PrefixOwner(_gemma.PrefixOwner):
     def _cap(self, rows: int) -> int:
         return min(self.e.context, -(-rows // BLOCK) * BLOCK)
 
+    def bounds(self, prompt) -> list[int]:
+        """``prompt``'s chunk boundaries (every request's chunks, cold or resumed, end on them)."""
+        points = self.points(prompt) if self.points is not None else []
+        return chunk_bounds(points, len(prompt), self.e.prompt_rows)
+
+    def _stops(self, s) -> list[int]:
+        """The boundaries past the resume point this prompt keeps states at: its first (the system prompt's end, a
+        prefix other conversations share), its last two (the latest message and reply, where the next turn
+        diverges) and one about every SPACING rows between (a long prompt edited midway)."""
+        ahead = [b for b in s.bounds if b > s.cached]
+        out = []
+        for i, b in enumerate(ahead):
+            if i == 0 or i >= len(ahead) - 2 or b - out[-1] >= SPACING:
+                out.append(b)
+        return out
+
+    def _resume_at(self, s, st, resume, cached: int, sid):
+        """A resume lands on a boundary of ``s``'s prompt, from a state kept exactly there: else (an exact end
+        extended, or a kept point that is not a boundary of this prompt) on the longest kept boundary point below
+        it, or cold. Points of ``st`` past that landing go: this request rewrites their rows in other chunks."""
+        if s.head is not None or (cached in s.bounds and not resume["state"].get("exact")):
+            return cached, sid
+        aligned, sid = 0, None
+        for ids, _st, snap, _tail in self.kept:
+            n = len(ids)
+            if aligned < n <= cached and n in s.bounds and not snap.get("exact") and s.prompt[:n] == ids:
+                aligned, sid = n, snap["sid"]
+        self._recount(cached - aligned)
+        stale = [k for k in self.kept if k[1] is st and len(k[0]) > aligned]
+        if stale:
+            self.kept = [k for k in self.kept if not (k[1] is st and len(k[0]) > aligned)]
+            self._sweep()
+        return aligned, sid
+
     def keep_end(self, s, logits) -> None:
-        """The exact prompt end (state at n and last-row logits) for exact repeats. Gemma's kept point for it sits
-        one token early (n - 1) and an extension resumes it there when n - 1 is a chunk boundary; here the state at
-        n cannot resume at n - 1 (the Engram history and C2 state are past it), so when n - 1 is a boundary the
-        exact end joins the boundary point ``keep_before`` kept there (the extension resumes that point's state),
-        and without that point it is not kept."""
+        """The exact prompt end (state at n): for exact repeats as the point one token early with the last-row
+        logits (``prefixes``' prompt-end convention: the state at n cannot resume at n - 1, so ``_resume_at`` never
+        lands on it), and as the point at n for a prompt extending it on a boundary. When n - 1 is a kept boundary
+        the exact end joins that point (whose state is at n - 1) instead."""
         n = len(s.prompt)
-        if n < 2 or (n - 1) % self.e.prompt_rows:
-            return super().keep_end(s, logits)
-        ids = list(s.prompt[:n - 1])
-        point = next((k for k in self.kept if k[1] is s.st and k[0] == ids and not k[2].get("exact")), None)
-        if point is None:
+        if n < 2:
             return
         sid = self._snapshot(s.st, n)
         if sid is None:
             return
-        snap = {**point[2], "prompt_end": {"token": s.prompt[-1], "state": {"sid": sid, "pos": n, "mtp_len": n},
-                                           "tail": None, "head": logits.clone(), "last": None}}
+        ids = list(s.prompt[:n - 1])
+        end = {"token": s.prompt[-1], "state": {"sid": sid, "pos": n, "mtp_len": n}, "tail": None,
+               "head": logits.clone(), "last": None}
+        point = next((k for k in self.kept if k[1] is s.st and k[0] == ids and not k[2].get("exact")), None)
+        snap = ({**point[2], "prompt_end": end} if point is not None else
+                {"sid": sid, "pos": n - 1, "mtp_len": n - 1, "exact": True, "prompt_end": end})
         prefixes.remember(self, ids, s.st, snap, None)
+        prefixes.remember(self, list(s.prompt), s.st, {"sid": sid, "pos": n, "mtp_len": n}, None)
         self._sweep()
 
 

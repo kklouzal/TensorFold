@@ -112,3 +112,53 @@ def test_dsml_tool_call_round_trips_through_deepseeks_parser(thinking):
     [call] = parsed['tool_calls']
     assert call['function']['name'] == 'weather'
     assert json.loads(call['function']['arguments']) == json.loads(CALL['function']['arguments'])
+
+
+def _turns(thinking, tools):
+    """An agent conversation growing turn by turn: system prompt, user, assistant (reasoning + DSML call), tool
+    result, assistant answer, next user."""
+    call = {'id': 'c1', 'type': 'function', 'function': {'name': 'weather', 'arguments': '{"city": "Paris", "days": 3}'}}
+    history = [{'role': 'system', 'content': 'You are a careful assistant. ' * 3},
+               {'role': 'user', 'content': 'What is the weather in Paris?'}]
+    replies = [{'role': 'assistant', 'content': None, 'reasoning_content': 'I should call the tool.', 'tool_calls': [call]},
+               {'role': 'tool', 'tool_call_id': 'c1', 'content': 'sunny, 21 C'},
+               {'role': 'assistant', 'content': 'It is sunny.', 'reasoning_content': 'The tool said sunny.'},
+               {'role': 'user', 'content': 'And tomorrow?'}]
+    out = [list(history)]
+    for m in replies:
+        history.append(m)
+        if m['role'] != 'assistant':
+            out.append(list(history))
+    return out
+
+
+@pytest.mark.parametrize('thinking', [False, True])
+@pytest.mark.parametrize('tools', [None, TOOLS])
+def test_message_points_end_each_message_and_hold_across_turns(tokenizer, thinking, tools):
+    from tensorfold.families.deepseek_v4.prompts_v41 import message_points
+    wrap = wrapper(tokenizer)
+    points = message_points(tokenizer.token_to_id)
+    prompts = [wrap.apply_chat_template(m, tools=tools, enable_thinking=thinking) for m in _turns(thinking, tools)]
+    ctl = {tokenizer.token_to_id(t) for t in (native.USER_SP_TOKEN, native.SYSTEM_SP_TOKEN)}
+    head = {tokenizer.token_to_id(t) for t in (native.thinking_start_token, native.thinking_end_token)}
+    A = tokenizer.token_to_id(native.ASSISTANT_SP_TOKEN)
+    for ids in prompts:
+        found = points(ids)
+        assert found == sorted(set(found)) and all(0 < p < len(ids) for p in found)
+        for p in found:      # every point starts a message or ends a generation header
+            assert ids[p] in ctl or (ids[p - 1] in head and ids[p - 2] == A)
+        # the system prompt's end, each user turn / tool result and each reply start
+        assert sum(ids[p] in ctl for p in found) == sum(i in ctl for i in ids[1:])
+    for a, b in zip(prompts, prompts[1:]):
+        n = len(a)
+        shared = next((i for i, (x, y) in enumerate(zip(a, b)) if x != y), n)
+        # the points below the shared prefix agree (a later turn has the earlier one's boundaries)
+        assert [p for p in points(a) if p < shared] == [p for p in points(b) if p < shared]
+        if shared == n:
+            assert n in points(b)            # the next turn extends this prompt: its end is a boundary there
+        else:
+            # thinking without tools: a new user turn drops the earlier replies' reasoning, so the header of the
+            # previous user turn re-renders (</think> for <think>); the turn resumes at that user message's start
+            assert thinking and not tools and b[shared - 1] == A and b[shared] in head
+            last = max(p for p in points(a) if p <= shared)
+            assert a[last] in ctl and A not in a[last:shared - 1]

@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tensorfold.families.gemma4.sm70.ops import OP_RESTORE
+
 torch = pytest.importorskip("torch")
 
 
@@ -149,23 +151,31 @@ def _owner(rows=64):
 
 
 def _serve(o, prompt, reuse=True):
-    """A request through admission, its chunks (keep_before / keep_end as the Decoder calls them) and retirement."""
+    """A request through admission, its chunks (keep_before / keep_end as the Decoder calls them) and retirement;
+    returns (cached tokens, request) with ``s.chunks`` the chunk starts it computed."""
+    from tensorfold.families.deepseek_v4.cuda.prefix import chunk_end
     s = SimpleNamespace(prompt=list(prompt), count=4, draft=True)
+    s.bounds = o.bounds(s.prompt)
     o.place(s, o._cap(len(prompt) + 4), reuse)
     cached = s.cached
-    rows = o.e.prompt_rows
+    s.chunks = []
     if s.head is None:
         o.filling.append(s)
         start = s.pos
-        assert start % rows == 0                         # every computed chunk is a cold chunk
+        assert start == 0 or start in s.bounds           # every computed chunk is a cold chunk
         while start < len(prompt):
+            s.chunks.append(start)
             o.keep_before(s, start)
-            start = min(len(prompt), (start // rows + 1) * rows)
+            start = chunk_end(s.bounds, start, len(prompt))
         o.filling.remove(s)
         if s.keep_end:
             o.keep_end(s, torch.zeros(1, 8))
     o.retire_slot(s)
     return cached, s
+
+
+def _restored(o):
+    return o.e.snaps[[x for x in o.e.ops if x[0] == OP_RESTORE][-1][2]]
 
 
 def test_owner_exact_repeat_extension_and_boundary_end():
@@ -175,18 +185,15 @@ def test_owner_exact_repeat_extension_and_boundary_end():
     assert _serve(o, p)[0] == 0
     cached, s = _serve(o, p)
     assert cached == 200                                 # exact repeat: the kept end's state and logits
-    sid = o.e.ops[-1][2] if o.e.ops[-1][0] == prefix.OP_RESTORE else None
-    assert sid is not None and o.e.snaps[sid] == 200
-    cached, _ = _serve(o, p + [7, 8, 9])                 # an extension resumes the aligned point below the end
-    assert cached == 192
-    assert o.e.snaps[[x for x in o.e.ops if x[0] == prefix.OP_RESTORE][-1][2]] == 192
+    assert _restored(o) == 200                           # (a fork: the chain keeps its end at 200 too)
+    cached, _ = _serve(o, p + [7, 8, 9])                 # an extension resumes the boundary point below the end
+    assert cached == 192 and _restored(o) == 192
     # n - 1 on a boundary: the exact end joins that boundary point (no resume of the state at n at n - 1)
     q = list(range(500, 629))                            # 129 tokens: n - 1 = 128
     _serve(o, q)
     cached, _ = _serve(o, q + [1])
     assert cached == 128
-    restored = [x for x in o.e.ops if x[0] == prefix.OP_RESTORE][-1]
-    assert o.e.snaps[restored[2]] == 128
+    assert _restored(o) == 128
     cached, _ = _serve(o, q + [1])                       # (the in-place extension superseded q's own end)
     assert cached == 130
     assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
@@ -199,3 +206,82 @@ def test_owner_no_reuse_keeps_nothing():
     _serve(o, p, reuse=False)
     assert not o.kept and not o.snap_ids
     assert _serve(o, p)[0] == 0
+
+
+def test_chunk_bounds_rules_and_prefix_stability():
+    import random
+    from tensorfold.families.deepseek_v4.cuda.prefix import MIN_CHUNK, chunk_bounds, chunk_end
+    assert chunk_bounds([], 100, 64) == [64]
+    assert chunk_bounds([], 128, 64) == [64]                   # a boundary never ends the prompt
+    assert chunk_bounds([1, 300, 400, 900], 1000, 8192) == [300, 900]   # closer than MIN_CHUNK: not a boundary
+    assert chunk_bounds([300], 20000, 8192) == [300, 300 + 8192, 300 + 2 * 8192]
+    assert chunk_end([300, 900], 0, 1000) == 300 and chunk_end([300, 900], 900, 1000) == 1000
+    rng = random.Random(5)
+    for _ in range(300):
+        n2 = rng.randrange(2, 3000)
+        pts = sorted(rng.sample(range(1, n2), min(n2 - 1, rng.randrange(0, 12))))
+        n1 = rng.randrange(1, n2 + 1)
+        a = chunk_bounds([p for p in pts if p < n1], n1, 512)
+        b = chunk_bounds(pts, n2, 512)
+        # a shorter prompt (its points: the longer one's below its end) has the longer one's boundaries below it
+        assert a == [x for x in b if x < n1]
+        assert all(y - x >= MIN_CHUNK or y - x == 512 for x, y in zip([0] + b, b))
+
+
+U, A, T, E = 9000, 9001, 9002, 9003           # toy controls: message start, assistant, think token, EOS
+
+
+def _toy_points(ids):
+    return [p for p in range(1, len(ids)) if ids[p] == U or (p >= 2 and ids[p - 2] == A and ids[p - 1] == T)]
+
+
+def _msg(seed, n):
+    return [100 + (seed * 131 + i * 7) % 5000 for i in range(n)]
+
+
+def _cold_chunks(prompt):
+    o = _owner(rows=8192)
+    o.points = _toy_points
+    return _serve(o, prompt, reuse=False)[1].chunks
+
+
+def test_owner_resumes_at_message_boundaries_bitwise_by_construction():
+    o = _owner(rows=8192)
+    o.e.context = 1 << 16
+    o.points = _toy_points
+    p1 = [1] + _msg(1, 300) + [U] + _msg(2, 300) + [A, T]                    # system, user, generation header
+    n1 = len(p1)
+    assert _serve(o, p1)[1].chunks == [0, 301] == _cold_chunks(p1)
+    # an agent turn: the reply (reasoning, call) and a tool result extend the prompt; it resumes at its end
+    p2 = p1 + _msg(3, 280) + [E, U] + _msg(4, 400) + [A, T]
+    cached, s = _serve(o, p2)
+    assert cached == n1 and _restored(o) == n1
+    assert s.chunks == [c for c in _cold_chunks(p2) if c >= n1] == [n1, n1 + 281]
+    # an exact repeat computes nothing; a regenerated last turn resumes at that message's start
+    assert _serve(o, p2)[0] == len(p2)
+    p3 = p2[:n1 + 282] + _msg(5, 500) + [A, T]
+    cached, s = _serve(o, p3)
+    assert cached == n1 + 281 and s.chunks == [c for c in _cold_chunks(p3) if c >= cached]
+    # thinking without tools re-renders the previous header (</think>): the turn resumes at that user message
+    p4 = p1[:n1 - 1] + [T + 10] + _msg(6, 300) + [E, U] + _msg(7, 300) + [A, T]
+    cached, s = _serve(o, p4)
+    assert cached == 301 and s.chunks == [c for c in _cold_chunks(p4) if c >= cached]
+    # another conversation with the same system prompt resumes after it
+    cached, s = _serve(o, [1] + _msg(1, 300) + [U] + _msg(9, 600) + [A, T])
+    assert cached == 301
+    assert o.held == sum(o._bytes(st) for st in o.slots) + len(o.snap_ids) * o.snap_bytes
+    assert set(o.e.snaps) == o.snap_ids
+
+
+def test_owner_lands_only_on_the_new_prompts_boundaries():
+    """A kept point that is not a boundary of the new prompt (its next id is no message start) is not resumed:
+    the request lands on the longest kept boundary below it, and the chain's points past that go."""
+    o = _owner(rows=8192)
+    o.e.context = 1 << 16
+    o.points = _toy_points
+    p1 = [1] + _msg(1, 300) + [U] + _msg(2, 300) + [U] + _msg(3, 300)        # raw prompt, ends mid-message
+    _serve(o, p1)
+    p2 = p1 + _msg(4, 50)                                                     # extends, but p1's end is no boundary
+    cached, s = _serve(o, p2)
+    assert cached == 602 and s.chunks == [c for c in _cold_chunks(p2) if c >= cached]
+    assert all(len(k[0]) <= 602 or len(k[0]) >= len(p2) - 1 for k in o.kept)

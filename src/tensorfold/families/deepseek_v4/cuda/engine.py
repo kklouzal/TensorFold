@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from .prefix import OPS as PREFIX_OPS, PrefixOwner
+from .prefix import OPS as PREFIX_OPS, PrefixOwner, chunk_end
 
 # The Gemma 4 SM70 operation codes (the prefix owner announces them; prefix.SlotState runs the prefix ones); OP_STEP
 # (this provider's batched forward) takes Gemma's OP_FORWARD code.
@@ -127,8 +127,8 @@ class DS41Engine:
         self.token_bytes = self.layout.bytes_per_token
         self.snap_bytes = self.prefix.snap_bytes
         self.budget = pages * page_bytes            # the prefix owner's ledger: slot pages and snapshot pages
-        # Prompt chunks: fixed multiples of prompt_rows from position 0 (load-invariant); kept prefix points lie on
-        # them, so a resumed prompt computes exactly the cold chunks (prefix.py).
+        # Prompt chunks end on the prompt's message boundaries, at most prompt_rows apart (load-invariant); kept
+        # prefix points lie on them, so a resumed prompt computes exactly the cold chunks (prefix.py).
         self.prompt_rows = max_tokens
         self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
         self.layer_marks = None             # rank 0: per-layer CUDA events of the prompt forward being timed
@@ -172,14 +172,10 @@ class DS41Engine:
                   f"{page_bytes} B ({pages * 64} tokens), {slots} streams", flush=True)
         if rank == 0 and serve:
             from tensorfold.cuda.scheduler import Scheduler
-            self.points = None
-            try:                                    # message starts of a rendered prompt (kept-point candidates)
-                from tensorfold.cuda.markers import resume_points
-                from .. import cuda_chat_template
-                self.points = resume_points(model_dir, turn=True, template=cuda_chat_template(model_dir))
-            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
-                print(f"[tensorfold] DeepSeek-V4.1 SM70: no message-start prefix points ({error}); prompt ends only",
-                      flush=True)
+            # The V4.1 encoder's message boundaries of a prompt's ids (chunk ends and kept-point candidates).
+            from tensorfold.token_metadata import load_tokenizer
+            from ..prompts_v41 import message_points
+            self.points = message_points(load_tokenizer(model_dir).token_to_id)
             self.decoder = Decoder(self)
             # Requests beyond --parallel wait in the scheduler's queue; --queue-timeout-s bounds that wait (503 after).
             self.scheduler = Scheduler(self.decoder, max_streams=slots, queue_timeout_s=queue_timeout_s)
@@ -512,8 +508,9 @@ class Decoder(PrefixOwner):
     """The shared Scheduler's decoder on rank 0: slots, prompt chunks and batched decode rounds.
 
     A round decides the batch in flight, launches the next batch over every decoding stream (one row each), then
-    delivers the decided tokens and runs the next prompt chunk of the next filling request (round-robin, fixed
-    ``max_tokens`` boundaries: a prompt's arithmetic never depends on load). While streams decode, the chunk runs
+    delivers the decided tokens and runs the next prompt chunk of the next filling request (round-robin; chunks
+    end on the prompt's own message boundaries, at most ``max_tokens`` apart: a prompt's arithmetic never depends on
+    load or on what was cached). While streams decode, the chunk runs
     in layer groups (one per round) of about equal measured cost, so a decoding stream waits one group plus its
     round (about ``GAP_MS``), not the whole chunk (the Gemma 4 SM70 Decoder's schedule).
 
@@ -598,6 +595,7 @@ class Decoder(PrefixOwner):
         reuse = bool(s.draft and s.vision is None)
         if hasattr(s.probabilities, "add_prompt") and not getattr(s.probabilities, "reuse", False):
             reuse = False
+        s.bounds = self.bounds(s.prompt)              # every request's chunks end on them (reused or not)
         try:
             self.place(s, capacity, reuse)
         except NoRoom:
@@ -693,8 +691,7 @@ class Decoder(PrefixOwner):
         if s.head is not None:                     # an exact repeat: the kept prompt end's own last-row logits
             logits, s.head = s.head, None
             return self._filled(s, (start, n, True, None, False), logits)
-        rows = e.prompt_rows                       # chunk boundaries at multiples of rows from position 0
-        stop = min(n, (start // rows + 1) * rows)
+        stop = chunk_end(s.bounds, start, n)       # the prompt's own boundaries: a resumed chunk is a cold one
         last = stop == n
         self.keep_before(s, start)
         plan = self._plan(stop - start)
