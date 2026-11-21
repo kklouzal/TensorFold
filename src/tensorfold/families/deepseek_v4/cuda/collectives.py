@@ -63,18 +63,21 @@ class Collectives:
         from tensorfold.cuda import comm
         self.small = getattr(world, "small_gather", None) is not None
         self.reduce = self.small and comm._SMALL_ALLREDUCE          # TF_SMALL_ALLREDUCE=0: no LL row all-reduce
+        lib = getattr(world, "lib", None)
+        if lib is not None:      # ncclAllReduce typed once (not per call: ~80 sums per prompt forward)
+            import ctypes
+            fn = lib.ncclAllReduce
+            fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
+                           ctypes.c_void_p, ctypes.c_void_p]
+            fn.restype = ctypes.c_int
+            self._nccl_all_reduce = fn
 
     def _all_reduce(self, tensor):
         """In-place NCCL sum of an FP32 or FP16 tensor."""
-        import ctypes
         comm = self.world
-        fn = comm.lib.ncclAllReduce
-        fn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int,
-                       ctypes.c_void_p, ctypes.c_void_p]
-        fn.restype = ctypes.c_int
         stream = torch.cuda.current_stream().cuda_stream
-        comm._check(fn(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(), _NCCL_TYPES[tensor.dtype], _NCCL_SUM,
-                       comm.comm, stream))
+        comm._check(self._nccl_all_reduce(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(),
+                                          _NCCL_TYPES[tensor.dtype], _NCCL_SUM, comm.comm, stream))
 
     def path(self, n: int, dims: int) -> str:
         """The collective an FP16-rounded sum of ``n`` FP32 elements per rank ([n / dims, dims]) takes:
