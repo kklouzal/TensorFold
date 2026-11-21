@@ -828,6 +828,14 @@ docker build --network=none \
 48c51356 application (the same whole wheel `ec0650f4` as `4b2661d8`) on
 `py315-pillow-48c51356` (`5cdbd3f3`); its installed distributions differ from
 `4b2661d8` only by `pillow==13.0.0`, and its image configuration is identical.
+On 8x V100 (2026-11-21, snapshot `rb-7a06a5a5` overlaid) it passed Flash Next
+golden-vg2 (prod INT8 session, IDENTICAL; the session's protected source binding
+audit included) and Gemma 4 golden_g4 (live configuration, 23/23 keys IDENTICAL,
+drafted == undrafted 9/9). The CPU suite (`tests/` minus `tests/cuda`) on the
+same tree went from 408 failed / 23,505 passed / 22 errors on `4b2661d8` to
+391 / 23,886 / 2: the media/vision modules that failed to collect without Pillow
+now run; five tests that Pillow had skipped now fail on stale fixtures
+unrelated to the image.
 
 The refresh's final repaired core `829ebca2` and media `a817b9a4` images passed
 actual source binding/pip checks, protected SDK/media audits, 25 installed
