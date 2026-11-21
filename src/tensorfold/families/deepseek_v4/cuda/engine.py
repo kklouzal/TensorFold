@@ -34,7 +34,8 @@ SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
 RESERVE = 3 << 30          # bytes left free per rank for prompt transients, after the KV pool
-GRAPH_ROW_BYTES = 32 << 20  # decode graph pool bytes per row of the largest captured bucket (sizing bound)
+GRAPH_EACH_BYTES = 40 << 20 # decode graph memory per captured bucket (sizing bound; measured ~30 MiB)
+GRAPH_BYTES = 128 << 20     # + the graphs' shared torch pool (measured ~40 MiB)
 
 
 class DS41Engine:
@@ -118,11 +119,12 @@ class DS41Engine:
         page_bytes = PackedLayout({l: g.compress_ratios[l] for l in g.kv_sources}, BLOCK).page_bytes
         self.slots = slots + keep_slots + 1          # streams, kept chains, the scratch slot
         ring_bytes = self.slots * g.layers * 128 * 512 * 2
-        # The decode graphs' private memory pool is captured after the KV pool exists, so it comes out of the free
-        # memory too (measured ~28.5 MiB per row of the largest bucket, int2-gate-h1: 910 MiB at 32).
+        # The decode graphs are captured after the KV pool exists, so their memory comes out of the free memory too:
+        # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
+        # 606 MiB for 18 buckets on one capture stream).
         from .graphs import buckets
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
-        graph_bytes = GRAPH_ROW_BYTES * max(buckets(slots)) if capture else 0
+        graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(buckets(slots)) if capture else 0
         pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device)
