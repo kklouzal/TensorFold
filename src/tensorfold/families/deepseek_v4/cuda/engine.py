@@ -78,15 +78,13 @@ class DS41Engine:
         started = time.perf_counter()
         self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.coll = Collectives(self.comm)
-        # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains; the host tier's
-        # pinned slab (Gemma 4 SM70 sizing, on by default) is allocated before the weights.
+        # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
         from .prefix import default_keep_slots, host_slab
         if keep_slots is None:
             keep_slots = default_keep_slots(slots)
         if type(keep_slots) is not int or keep_slots < 0:
             raise ValueError("keep_slots must be a nonnegative integer")
         self.keep_slots = keep_slots
-        self.host_per_rank, self.host_slab = host_slab(self.comm, rank, tp, prefix_host_bytes)
         entry = raw.get("gguf_file") or raw.get("gguf_entrypoint")
         engram_file = raw.get("engram_file")
         if not entry or not engram_file:
@@ -115,7 +113,7 @@ class DS41Engine:
                              context=self.context, engram=self.engram, device=device)
         self.layer_count = len(self.w.layers)
         from .prefix import SlotState
-        self.prefix = SlotState(self.target, self.host_slab)
+        self.prefix = SlotState(self.target)
         self.layout = self.target.pool.layout
         self.token_bytes = self.layout.bytes_per_token
         self.snap_bytes = self.prefix.snap_bytes
@@ -126,6 +124,14 @@ class DS41Engine:
         self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
         self.layer_marks = None             # rank 0: per-layer CUDA events of the prompt forward being timed
         self._warm()
+        # The host tier's pinned slab (Gemma 4 SM70 sizing, on by default), pinned after the Engram registration and
+        # the weights: pinning while the Engram table registers slowed m-pf1's registration 4x.
+        pinned = time.perf_counter()
+        self.host_per_rank, self.host_slab = host_slab(self.comm, rank, tp, prefix_host_bytes)
+        self.prefix.slab = self.host_slab
+        if rank == 0:
+            print(f"[tensorfold] DeepSeek-V4.1 SM70: host prefix tier {self.host_per_rank >> 20} MiB/rank pinned in "
+                  f"{time.perf_counter() - pinned:.1f} s", flush=True)
         self.pipes = ControlPipes(self.comm.store, rank, tp, timeout_s=PIPE_TIMEOUT)
         if rank == 0 and sorted(self.pipes.piped()) != list(range(1, tp)):
             raise RuntimeError("DeepSeek-V4.1 SM70 requires all eight ranks on one host (control pipes)")
