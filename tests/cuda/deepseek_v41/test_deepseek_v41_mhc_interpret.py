@@ -264,3 +264,21 @@ def test_engram_gate_on_interpreter(inplace):
     assert (actual.data_ptr() == x.data_ptr()) == inplace
     torch.testing.assert_close(actual, expected, rtol=0.001, atol=2e-6)
     torch.testing.assert_close(actual[1], residual[1], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("mix", [True, False])
+def test_hc_transition_parts_tokens_per_program_keep_every_word(mix, monkeypatch):
+    """Patch 192: tokens per _transition_parts program change no output word (11 tokens: masked tails)."""
+    v = _transition_inputs(11, mix, seed=3)
+    results = []
+    for tok in (1, 2, 3, 8):
+        monkeypatch.setattr(mhc_fused, "PARTS_TOK", tok)
+        run = dict(v, residual=v["residual"].clone())
+        out, mixes = _windowed(run, 2048)
+        results.append((run["residual"], out, mixes))
+    for residual, out, mixes in results[1:]:
+        torch.testing.assert_close(residual, results[0][0], rtol=0, atol=0)
+        torch.testing.assert_close(out, results[0][1], rtol=0, atol=0)
+        if mix:
+            for a, b in zip(mixes, results[0][2]):
+                torch.testing.assert_close(a, b, rtol=0, atol=0)
