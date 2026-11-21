@@ -11,21 +11,19 @@ arithmetic per key block and head: unscaled E2M1 keys, one FP32 dot per 32-wide 
 round, ReLU, x weight, FP16 round), sums the 32 heads in FP32 and rounds once to FP16 (the head-sharded path sums
 4 heads per rank, then the 8 rank partials, in FP32, and rounds once: the same values, summed in another order).
 An FP16 all-gather of the [rows, width / 8] shards (a quarter of the FP32 all-reduce's bytes per rank) gives
-every rank the whole row in rank-major block order, and ``_shard_topk`` is ``index_topk``'s selection (same
-threshold / tie rule: the top k by (score, lower position first), ascending positions, -1 padded) reading that
-order. Each rank unpacks 1/8 of the keys and runs 4x fewer head dots than the padded head-sharded kernel.
+every rank the whole row in rank-major block order; one copy restores position order and the head-sharded path's
+own selection (``mu_topk.topk``: index_topk / index_topk_parallel) picks the top k. Each rank unpacks 1/8 of the keys and runs 4x fewer head dots than the padded head-sharded kernel.
 """
 
 import torch
 
 from .attention_ops import _e2m1_bits
-from .index_topk import _masked_histogram, _orderable
+from . import mu_topk
 from .triton_utils import fma_dot, jit, tl, triton
 
 WORLD = 8
 BN = 64                 # compressed positions per key block (the shard unit)
 HEADS = 32
-SHARD_MAX_WIDTH = 16384  # index_topk's single-program width (wider rows keep the head-sharded path)
 
 
 @jit(do_not_specialize=["N_OUT", "TABLE_STRIDE"])
@@ -76,64 +74,8 @@ def _shard_scores(q, w, cache, block_table, positions, valid_tokens, token_req, 
                 tl.store(out + t.to(tl.int64) * N_OUT + j * BN_ + tl.arange(0, BN_), total.to(tl.float16), n < end)
 
 
-@jit(do_not_specialize=["width"])
-def _shard_topk(scores, out, positions, valid, width, row_stride, part_stride, out_stride, RATIO: tl.constexpr,
-                K: tl.constexpr, BLOCK: tl.constexpr, BN_: tl.constexpr, WORLD_: tl.constexpr):
-    """index_topk._index_topk verbatim except the score address: global position idx of row ``row`` sits at
-    scores + (block % W) * part_stride + row * row_stride + (block // W) * BN + idx % BN (all-gathered shards)."""
-    row = tl.program_id(0)
-    pos = tl.load(positions + row).to(tl.int32)
-    n = tl.minimum((pos + 1) // RATIO, width)
-    n = tl.where(tl.load(valid + row) != 0, n, 0)
-    lanes = tl.arange(0, K)
-    dst = out + row * out_stride
-    if n <= K:
-        tl.store(dst + lanes, tl.where(lanes < n, lanes, -1))
-    else:
-        src = scores + row.to(tl.int64) * row_stride
-        bins = tl.arange(0, 256)
-        hist = tl.zeros((256,), dtype=tl.int32)
-        for start in range(0, n, BLOCK):
-            idx = start + tl.arange(0, BLOCK)
-            m = idx < n
-            at = (idx // BN_ % WORLD_).to(tl.int64) * part_stride + (idx // BN_ // WORLD_) * BN_ + idx % BN_
-            u = _orderable(tl.load(src + at, mask=m, other=0.0))
-            hist += _masked_histogram(u >> 8, m, 256)
-        total = tl.sum(hist, 0)
-        suffix = total - (tl.cumsum(hist, 0) - hist)
-        hi = tl.max(tl.where(suffix >= K, bins, -1), 0)
-        want = K - tl.sum(tl.where(bins > hi, hist, 0), 0)
-        hist = tl.zeros((256,), dtype=tl.int32)
-        for start in range(0, n, BLOCK):
-            idx = start + tl.arange(0, BLOCK)
-            m = idx < n
-            at = (idx // BN_ % WORLD_).to(tl.int64) * part_stride + (idx // BN_ // WORLD_) * BN_ + idx % BN_
-            u = _orderable(tl.load(src + at, mask=m, other=0.0))
-            hist += _masked_histogram(u & 255, m & ((u >> 8) == hi), 256)
-        total = tl.sum(hist, 0)
-        suffix = total - (tl.cumsum(hist, 0) - hist)
-        lo = tl.max(tl.where(suffix >= want, bins, -1), 0)
-        want = want - tl.sum(tl.where(bins > lo, hist, 0), 0)
-        threshold = hi * 256 + lo
-        written = 0
-        ties = 0
-        for start in range(0, n, BLOCK):
-            idx = start + tl.arange(0, BLOCK)
-            m = idx < n
-            at = (idx // BN_ % WORLD_).to(tl.int64) * part_stride + (idx // BN_ // WORLD_) * BN_ + idx % BN_
-            u = _orderable(tl.load(src + at, mask=m, other=0.0))
-            gt = (m & (u > threshold)).to(tl.int32)
-            eq = (m & (u == threshold)).to(tl.int32)
-            rank = ties + tl.cumsum(eq, 0) - eq
-            take = gt | (eq & (rank < want).to(tl.int32))
-            at_out = written + tl.cumsum(take, 0) - take
-            tl.store(dst + at_out, idx, mask=take != 0)
-            written += tl.sum(take, 0)
-            ties += tl.sum(eq, 0)
-
-
 def eligible(heads: int, world: int, width: int) -> bool:
-    return heads * world == HEADS and world == WORLD and width % (WORLD * BN) == 0 and width <= SHARD_MAX_WIDTH
+    return heads * world == HEADS and world == WORLD and width % (WORLD * BN) == 0
 
 
 def select_decode(query, weights, positions, valid, token_req, cache, block_table, *, layout, source, ratio, width,
@@ -160,10 +102,15 @@ def select_decode(query, weights, positions, valid, token_req, cache, block_tabl
         q_all, w_all, cache, block_table, positions, valid, token_req, shard, shard.stride(0),
         block_table.stride(0), rank, PAGE=layout.page_bytes, BLOCK_SIZE=layout.block_size, RATIO=ratio_,
         OFFSET=i_offset, H=HEADS, BN_=BN, BLOCKS=per, WORLD_=WORLD, num_warps=8)
-    # 3. every rank: the whole row (rank-major blocks), then index_topk's selection
+    # 3. every rank: the whole rows (rank-major blocks -> position order), then the head-sharded path's selection
     rows = torch.empty((WORLD, tokens, part), dtype=torch.float16, device=device)
     comm.all_gather(shard, rows)
-    result = out if out is not None else torch.empty(tokens, k, dtype=torch.int32, device=device)
-    _shard_topk[(tokens,)](rows, result, positions, valid, width, part, tokens * part, result.stride(0),
-                           RATIO=ratio, K=k, BLOCK=1024, BN_=BN, WORLD_=WORLD, num_warps=8)
-    return result
+    return select_gathered(rows, positions, valid, ratio, out=out, k=k)
+
+
+def select_gathered(rows, positions, valid, ratio, *, out=None, k=512):
+    """Top-k [T, k] of the all-gathered shards rows [WORLD, T, width / WORLD] (rank-major key blocks)."""
+    _, tokens, part = rows.shape
+    scores = rows.view(WORLD, tokens, part // BN, BN).permute(1, 2, 0, 3).reshape(tokens, WORLD * part)
+    result = out if out is not None else torch.empty(tokens, k, dtype=torch.int32, device=rows.device)
+    return mu_topk.topk(result, scores, positions, valid, ratio, k)

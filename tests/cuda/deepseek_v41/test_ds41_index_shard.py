@@ -3,7 +3,7 @@
 
 Reference: per rank r, mu_packed.index_scores with heads [4 r, 4 r + 4) into FP32, the 8 partials summed in rank
 order (FP32), rounded once to FP16, index_topk. Sharded: per rank r, _shard_scores (32 heads, key blocks b % 8 ==
-r), the shards stacked as the all-gather lays them out, _shard_topk. The FP16 scores may differ only by the FP32
+r), the shards stacked as the all-gather lays them out, select_gathered. The FP16 scores may differ only by the FP32
 summation order of the 32 head terms (asserted: <= 1 FP16 ulp where they differ, and rarely); the selections must
 equal index_topk run on the sharded path's own scores (exact selection contract), and agree with the reference
 selection except where its scores differ."""
@@ -13,16 +13,16 @@ import torch
 
 from tensorfold.families.deepseek_v4.cuda.kernels import index_shard as ish
 from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
-from tensorfold.families.deepseek_v4.cuda.kernels.index_topk import index_topk
+from tensorfold.families.deepseek_v4.cuda.kernels.mu_topk import topk as index_topk
 from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import attention_qdq
 from tensorfold.families.deepseek_v4.cuda.kernels.triton_utils import INTERPRET, triton
 
 DEVICE = "cpu" if INTERPRET else "cuda"
 pytestmark = pytest.mark.skipif(not INTERPRET and not torch.cuda.is_available(), reason="CUDA or TRITON_INTERPRET")
-RATIO, BLOCK = 4, 64
+BLOCK = 64
 
 
-def build(lengths, width, seed):
+def build(lengths, width, seed, RATIO=4):
     torch.manual_seed(seed)
     layout = pk.PackedLayout({0: RATIO}, BLOCK)
     pages_per = width * RATIO // BLOCK
@@ -43,9 +43,10 @@ def build(lengths, width, seed):
     return layout, cache, table, q, w, pos, valid, req
 
 
-@pytest.mark.parametrize("lengths,width", [((16384, 9000, 2049, 300, 64), 8192), ((4096, 4093, 2052), 2048)])
-def test_sharded_indexer(lengths, width):
-    layout, cache, table, q, w, pos, valid, req = build(lengths, width, len(lengths))
+@pytest.mark.parametrize("lengths,width,RATIO", [((16384, 9000, 2049, 300, 64), 8192, 4), ((4096, 4093, 2052), 2048, 4),
+                                                ((16384, 12000, 600), 32768, 1), ((16384, 16000), 16384, 2)])
+def test_sharded_indexer(lengths, width, RATIO):
+    layout, cache, table, q, w, pos, valid, req = build(lengths, width, len(lengths), RATIO)
     rows = len(lengths)
     partial = torch.zeros(rows, width, dtype=torch.float32, device=DEVICE)
     for r in range(8):
@@ -65,9 +66,7 @@ def test_sharded_indexer(lengths, width):
             q, w, cache, table, pos, valid, req, shards[r], part, table.stride(0), r, PAGE=layout.page_bytes,
             BLOCK_SIZE=BLOCK, RATIO=RATIO, OFFSET=layout.regions[0][3], H=32, BN_=ish.BN, BLOCKS=4, WORLD_=8,
             num_warps=8)
-    got = torch.empty(rows, 512, dtype=torch.int32, device=DEVICE)
-    ish._shard_topk[(rows,)](shards, got, pos, valid, width, part, rows * part, got.stride(0), RATIO=RATIO, K=512,
-                             BLOCK=1024, BN_=ish.BN, WORLD_=8, num_warps=8)
+    got = ish.select_gathered(shards, pos, valid, RATIO)
     # the sharded scores in global order
     flat = shards.view(8, rows, blocks, ish.BN).permute(1, 2, 0, 3).reshape(rows, width)
     n = torch.clamp((pos + 1) // RATIO, max=width)
