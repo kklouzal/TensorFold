@@ -163,12 +163,13 @@ class Target:
     def attention(self, ly, x, step: Step, table, shared):
         from .kernels import quant_rope as qr_ops
         from .kernels import mu_packed as pk
+        from .kernels.rope_qdq import rope_qdq
         tokens = x.shape[0]
         positions = step.positions
         q_low, kv_low = ly.qa_kv(x)
         qr = self._norm(q_low, ly.q_norm)
         query = qr_ops.apply_rope(self._linear(qr, ly.wq_b).view(tokens, -1, 512), positions, table)
-        window = qr_ops.attention_qdq(qr_ops.apply_rope(self._norm(kv_low, ly.kv_norm), positions, table))
+        window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table)     # qdq(rope(.)) in one launch
         pool = self.pool
         extra = {}
         if ly.ratio:
@@ -187,8 +188,7 @@ class Target:
                          topk=shared["topk"])
         output = self._attend(query, step, pool.rings[ly.index], window, ly.sink, **extra)
         pk.insert_ring(pool.rings[ly.index], window, positions, step.valid, step.token_req, step.qsl, step.req_slot)
-        output = qr_ops.apply_rope(output, positions, table, inverse=True)
-        output = qr_ops.attention_qdq(output.reshape(tokens, 1, -1))      # TP8: one output group per rank
+        output = rope_qdq(output, positions, table, inverse=True)   # TP8: one output group per rank; qdq(rope^-1)
         projected = self._linear(output.reshape(tokens, -1), ly.wo_a)
         return self.c.sum(self._linear(projected, ly.wo_b))
 
@@ -204,11 +204,11 @@ class Target:
 
     def _select(self, ly, x, qr, step, table):
         """top-512 compressed positions per token (patch 87 ``_select``: Full layers, segmented top-k)."""
-        from .kernels import quant_rope as qr_ops
         from .kernels import mu_packed as pk
+        from .kernels.rope_qdq import rope_qdq
         tokens = x.shape[0]
         query = self._linear(qr, ly.idx_wq_b).view(tokens, -1, 128)
-        query = qr_ops.attention_qdq(qr_ops.apply_rope(query, step.positions, table), fp4=True, group=32)
+        query = rope_qdq(query, step.positions, table, fp4=True, group=32)
         weights = self._linear(x, ly.idx_proj) * (1.0 / 64.0)
         return pk.select_positions(query, weights, step.positions, step, self.pool.cache, step.block_table,
                                    layout=self.pool.layout, source=ly.source, ratio=ly.ratio,
