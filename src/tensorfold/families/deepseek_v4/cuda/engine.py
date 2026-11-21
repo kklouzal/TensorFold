@@ -127,8 +127,8 @@ class DS41Engine:
         self.token_bytes = self.layout.bytes_per_token
         self.snap_bytes = self.prefix.snap_bytes
         self.budget = pages * page_bytes            # the prefix owner's ledger: slot pages and snapshot pages
-        # Prompt chunks end on the prompt's message boundaries, at most prompt_rows apart (load-invariant); kept
-        # prefix points lie on them, so a resumed prompt computes exactly the cold chunks (prefix.py).
+        # Prompt chunks split at most prompt_rows apart and where prefix points are kept (prefix.chunk_splits: the
+        # prompt's first and last message boundary), independent of load.
         self.prompt_rows = max_tokens
         self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
         self.layer_marks = None             # rank 0: per-layer CUDA events of the prompt forward being timed
@@ -172,7 +172,7 @@ class DS41Engine:
                   f"{page_bytes} B ({pages * 64} tokens), {slots} streams", flush=True)
         if rank == 0 and serve:
             from tensorfold.cuda.scheduler import Scheduler
-            # The V4.1 encoder's message boundaries of a prompt's ids (chunk ends and kept-point candidates).
+            # The V4.1 encoder's message boundaries of a prompt's ids (kept-point and chunk-split candidates).
             from tensorfold.token_metadata import load_tokenizer
             from ..prompts_v41 import message_points
             self.points = message_points(load_tokenizer(model_dir).token_to_id)
@@ -509,8 +509,8 @@ class Decoder(PrefixOwner):
 
     A round decides the batch in flight, launches the next batch over every decoding stream (one row each), then
     delivers the decided tokens and runs the next prompt chunk of the next filling request (round-robin; chunks
-    end on the prompt's own message boundaries, at most ``max_tokens`` apart: a prompt's arithmetic never depends on
-    load or on what was cached). While streams decode, the chunk runs
+    split at most ``max_tokens`` apart and at the prompt's kept message boundaries: a prompt's arithmetic never
+    depends on load). While streams decode, the chunk runs
     in layer groups (one per round) of about equal measured cost, so a decoding stream waits one group plus its
     round (about ``GAP_MS``), not the whole chunk (the Gemma 4 SM70 Decoder's schedule).
 
@@ -595,8 +595,6 @@ class Decoder(PrefixOwner):
         reuse = bool(s.draft and s.vision is None)
         if hasattr(s.probabilities, "add_prompt") and not getattr(s.probabilities, "reuse", False):
             reuse = False
-        if getattr(s, "bounds", None) is None:       # every request's chunks end on them (reused or not)
-            s.bounds = self.bounds(s.prompt)
         try:
             self.place(s, capacity, reuse)
         except NoRoom:
@@ -692,7 +690,7 @@ class Decoder(PrefixOwner):
         if s.head is not None:                     # an exact repeat: the kept prompt end's own last-row logits
             logits, s.head = s.head, None
             return self._filled(s, (start, n, True, None, False), logits)
-        stop = chunk_end(s.bounds, start, n)       # the prompt's own boundaries: a resumed chunk is a cold one
+        stop = chunk_end(s.bounds, start, n)       # the splits placement chose (prefix.chunk_splits)
         last = stop == n
         self.keep_before(s, start)
         plan = self._plan(stop - start)

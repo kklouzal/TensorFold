@@ -167,7 +167,7 @@ def test_message_points_end_each_message_and_hold_across_turns(tokenizer, thinki
 @pytest.mark.parametrize('thinking', [False, True])
 def test_single_message_prompts_keep_the_plain_chunks(tokenizer, thinking):
     """A one-message chat prompt (the matrix's) has no message boundary: its chunks stay every prompt_rows rows."""
-    from tensorfold.families.deepseek_v4.cuda.prefix import MIN_CHUNK, chunk_bounds
+    from tensorfold.families.deepseek_v4.cuda.prefix import MIN_CHUNK, chunk_splits
     from tensorfold.families.deepseek_v4.prompts_v41 import message_points
     wrap = wrapper(tokenizer)
     points = message_points(tokenizer.token_to_id)
@@ -175,4 +175,4 @@ def test_single_message_prompts_keep_the_plain_chunks(tokenizer, thinking):
                      [{'role': 'system', 'content': 'tool call'}, {'role': 'user', 'content': 'history ' * 2000}]):
         ids = wrap.apply_chat_template(messages, enable_thinking=thinking)
         assert all(p < MIN_CHUNK for p in points(ids))
-        assert chunk_bounds(points(ids), len(ids), 1024) == chunk_bounds([], len(ids), 1024)
+        assert chunk_splits(points(ids), 0, len(ids), 1024) == chunk_splits([], 0, len(ids), 1024)

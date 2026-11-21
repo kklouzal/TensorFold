@@ -18,19 +18,16 @@ of its first h tokens only (patch 85's slot semantics; every kernel resolves its
   * No other per-slot state: the decode/prefill indexers read only the pages (Full mode, no patch-170 reuse
     state); DeepSeek-V4.1's compress ratios are 0/1/2 (no ratio 4 / 128 groups to align to).
 
-So the state at any forward boundary of a slot is exact. What decides where a point may be kept is the arithmetic of
-the rows a resumed request still computes: its prompt chunks must be the chunks a cold prefill of the same prompt
-runs (same rows per forward, so the same GEMM shapes, MoE path, indexer path and reductions). Every prompt, cold or
-resumed, is therefore chunked at its message boundaries (``chunk_bounds``: the renderer's ``message_points`` -- the
-system prompt's end, each user turn or tool-result group, each assistant reply, each generation header's end --
-at least ``MIN_CHUNK`` rows apart, and every ``prompt_rows`` inside a longer message), and points are kept only on
-those boundaries plus the exact prompt end. The boundaries below any position are a function of the ids before it
-(and the id at it), so a later prompt sharing a kept point's ids has the same boundaries below it; a resume lands only
-on a boundary of the new prompt (``_resume_at``, which otherwise falls back to the best kept boundary below) and then
-computes exactly the cold chunks. The exact end is kept twice: one token early with its last-row logits for exact
-repeats (an exact repeat computes no prompt row; its reply is the cold reply), and at its end for a prompt that
-extends it on a boundary (a next turn re-renders the generation header the end stops on). Under these rules a cached
-request's every computed row is bitwise the cold request's (verified with tools/quality_eval cachecheck).
+So the state at any forward boundary of a slot is exact, and a point may be kept wherever a prompt chunk ends.
+Where they end is a cost choice: a prompt forward costs about 0.21 s plus 0.45 ms per row at TP8 (pfx2-a), so a
+prompt is split only where a later request is likely to resume (``chunk_splits``): the system prompt's end (the first
+of the renderer's ``message_points``: a prefix other conversations share), the last message's start (a regenerated
+or re-rendered turn -- thinking without tools re-renders the previous header -- resumes there) and every
+``prompt_rows`` rows in between; a next turn that extends the prompt resumes at its exact end. Chunking every message
+boundary instead (bitwise cached == cold by construction, pfx2-a cachecheck 22/22 identical) cost 1.28-1.85x the
+one-chunk cold prefill on multi-turn prompts. So a resumed request computes its rows in other chunks than a cold
+prefill of its prompt would: equal up to the reductions' rounding, gated by tools/quality_eval cachecheck compare
+(cached vs cold NLL). An exact repeat computes no prompt row at all (its reply is the cold reply).
 
 Ranks: rank 0's owner decides and announces the Gemma ``ops`` codes; every rank runs ``SlotState`` on its own
 tensors in announcement order (identical shapes and page ids, so snapshot ids and slab offsets are rank-replicated).
@@ -67,17 +64,19 @@ def extent_bytes(layout, first: int, end: int) -> int:
     return sum((end // ratio - first // ratio) * (C_ROW + I_ROW) for ratio, _, _, _ in layout.regions.values())
 
 
-MIN_CHUNK = 256          # rows: a message boundary closer than this to the previous one is not a chunk boundary
-SPACING = 4096          # rows: kept points inside a prompt besides its first and last two boundaries
+MIN_CHUNK = 256          # rows: no split closer than this to the previous one (a forward costs ~470 rows' work)
 
 
-def chunk_bounds(points, n: int, rows: int) -> list[int]:
-    """A prompt's chunk boundaries in (0, n) from its message ``points`` (sorted): a point at least MIN_CHUNK rows
-    past the previous boundary, and every ``rows`` past the previous boundary inside a longer message. Read left to
-    right from position 0, so the boundaries below a position depend on the ids before it only (and the id at it)."""
+def chunk_splits(points, start: int, n: int, rows: int) -> list[int]:
+    """Where a prompt computed from ``start`` splits its chunks in (start, n): its first message point at least
+    MIN_CHUNK rows into the prompt (the system prompt's end, when past ``start``) and its last one (``points``
+    sorted), each at least MIN_CHUNK rows past the previous split, and every ``rows`` rows past the previous split."""
+    first = next((p for p in points if p >= MIN_CHUNK), None)
+    ahead = [p for p in points if start < p < n]
+    wanted = sorted({first, ahead[-1]}) if ahead and first is not None and start < first < n else ahead[-1:]
     out: list[int] = []
-    prev = 0
-    for p in (*points, n):
+    prev = start
+    for p in (*wanted, n):
         while p - prev > rows:
             prev += rows
             out.append(prev)
@@ -88,7 +87,7 @@ def chunk_bounds(points, n: int, rows: int) -> list[int]:
 
 
 def chunk_end(bounds, start: int, n: int) -> int:
-    """Where the prompt chunk at ``start`` ends: the next boundary, or the prompt end."""
+    """Where the prompt chunk at ``start`` ends: the next split, or the prompt end."""
     from bisect import bisect_right
     k = bisect_right(bounds, start)
     return bounds[k] if k < len(bounds) else n
@@ -147,7 +146,7 @@ class PrefixOwner(_gemma.PrefixOwner):
         self.kept: list = []
         self.used: dict[int, int] = {}
         self.clock = 0
-        self.keep = 6 * max(1, engine.keep_slots)        # kept points (a prompt: its first, last two and spaced stops, two ends)
+        self.keep = 6 * max(1, engine.keep_slots)        # kept points (a prompt: its splits, two ends)
         self.depth = 0                                   # no drafter rows past the prompt
         self.prefix_counters = dict.fromkeys(prefixes.COUNTERS, 0)
         self.points = points
@@ -162,38 +161,35 @@ class PrefixOwner(_gemma.PrefixOwner):
     def _cap(self, rows: int) -> int:
         return min(self.e.context, -(-rows // BLOCK) * BLOCK)
 
-    def bounds(self, prompt) -> list[int]:
-        """``prompt``'s chunk boundaries (every request's chunks, cold or resumed, end on them)."""
-        points = self.points(prompt) if self.points is not None else []
-        return chunk_bounds(points, len(prompt), self.e.prompt_rows)
+    def place(self, s, capacity: int, reuse: bool) -> None:
+        super().place(s, capacity, reuse)
+        if not reuse:
+            s.bounds = self._splits(s)
+
+    def _splits(self, s) -> list[int]:
+        if getattr(s, "message_points", None) is None:
+            s.message_points = self.points(s.prompt) if self.points is not None else []
+        return chunk_splits(s.message_points, s.cached, len(s.prompt), self.e.prompt_rows)
 
     def _stops(self, s) -> list[int]:
-        """The boundaries past the resume point this prompt keeps states at: its first (the system prompt's end, a
-        prefix other conversations share), its last two (the latest message and reply, where the next turn
-        diverges) and one about every SPACING rows between (a long prompt edited midway)."""
-        ahead = [b for b in s.bounds if b > s.cached]
-        out = []
-        for i, b in enumerate(ahead):
-            if i == 0 or i >= len(ahead) - 2 or b - out[-1] >= SPACING:
-                out.append(b)
-        return out
+        """Every split of this request's chunks keeps a point (``s.bounds``: its chunks end on them)."""
+        s.bounds = self._splits(s)
+        return list(s.bounds)
 
     def _resume_at(self, s, st, resume, cached: int, sid):
-        """A resume lands on a boundary of ``s``'s prompt, from a state kept exactly there: else (an exact end
-        extended, or a kept point that is not a boundary of this prompt) on the longest kept boundary point below
-        it, or cold. Points of ``st`` past that landing go: this request rewrites their rows in other chunks. (This
-        includes an exact point resumed in place, whose prompt end ``prefixes`` then removed: its state is at its
-        end, not its length, so it would serve nothing; it never stays kept or spills.)"""
-        if s.head is not None or (cached in s.bounds and not resume["state"].get("exact")):
+        """Any kept point's state is exact at its length, except an exact end's (at the prompt end, one token past
+        its length): a prompt merely extending that point lands on the longest kept point below it, or cold. Points
+        of ``st`` past the landing go (this request rewrites their rows), so no exact point without its prompt end
+        (``prefixes`` removes it on a resume in place) stays kept or spills."""
+        if s.head is not None or not resume["state"].get("exact"):
             return cached, sid
         aligned, sid = 0, None
         for ids, _st, snap, _tail in self.kept:
             n = len(ids)
-            if aligned < n <= cached and n in s.bounds and not snap.get("exact") and s.prompt[:n] == ids:
+            if aligned < n <= cached and not snap.get("exact") and s.prompt[:n] == ids:
                 aligned, sid = n, snap["sid"]
         self._recount(cached - aligned)
-        stale = [k for k in self.kept if k[1] is st and len(k[0]) > aligned]
-        if stale:
+        if any(k[1] is st and len(k[0]) > aligned for k in self.kept):
             self.kept = [k for k in self.kept if not (k[1] is st and len(k[0]) > aligned)]
             self._sweep()
         return aligned, sid
@@ -201,7 +197,7 @@ class PrefixOwner(_gemma.PrefixOwner):
     def keep_end(self, s, logits) -> None:
         """The exact prompt end (state at n): for exact repeats as the point one token early with the last-row
         logits (``prefixes``' prompt-end convention: the state at n cannot resume at n - 1, so ``_resume_at`` never
-        lands on it), and as the point at n for a prompt extending it on a boundary. When n - 1 is a kept boundary
+        lands on it), and as the point at n for a prompt extending it (a next turn). When n - 1 is a kept split
         the exact end joins that point (whose state is at n - 1) instead."""
         n = len(s.prompt)
         if n < 2:
