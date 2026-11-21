@@ -3,12 +3,11 @@ decode) on real checkpoint bytes.
 
 The oracle is an FP32 product of the NumPy-dequantized FP16 weights (test_sm70_onecat_ds41.reference, ggml-quants.c
 order), with FP32 gate/up and the reference's FP16 SwiGLU output boundary. The prefill op is compared with it,
-alongside the decode op (v41_experts per 6 rows, Q8_1 activations), an emulation of the 1Cat prefill rounding points
-(FP16 gate/up and FP16 per-route down rows) and the friend's FP16 lattice arithmetic (exact=False). Asserted: the
-exact path's error is no larger than the decode op's or the emulation's, outputs are deterministic, dropped
-(probability 0) routes have no effect, no transcode overflow. Timing (printed, not asserted) runs real 192-expert
-rank banks: both lattice arithmetics at 512..16384 rows and the exact path against the decode loop at the
-MIN_TOKENS crossover.
+alongside the decode op (v41_experts per 6 rows, Q8_1 activations) and an emulation of the 1Cat prefill rounding
+points (FP16 gate/up and FP16 per-route down rows). Asserted: the exact path's error is no larger than the decode op's
+or the emulation's, outputs are deterministic, dropped (probability 0) routes have no effect, no transcode overflow.
+Timing (printed, not asserted) runs real 192-expert rank banks at 512..16384 rows and the exact path against the
+decode loop at the MIN_TOKENS crossover.
 """
 
 import time
@@ -78,7 +77,7 @@ def test_lattice_experts_against_fp32(ops, kind):
     lat, dec, ws = ops
     carriers = Carriers(kind)
     generator = torch.Generator().manual_seed(600 + kind)
-    worst = [0.0, 0.0]
+    worst = 0.0
     for r in (0, 1, 2, 3):
         banks, weights, left = carriers.rank(r)
         for m in SIZES:
@@ -90,22 +89,18 @@ def test_lattice_experts_against_fp32(ops, kind):
             assert torch.isfinite(out).all()
             again = lat.experts(x, ids, p, *banks, kind, kind, left, ws)
             assert torch.equal(out.view(torch.int16), again.view(torch.int16))
-            friend = lat.experts(x, ids, p, *banks, kind, kind, left, ws, exact=False)
-            assert torch.isfinite(friend).all()
-            got, fp16 = error(out, expected), error(friend, expected)
-            worst = [max(worst[0], got[0]), max(worst[1], fp16[0])]
+            got = error(out, expected)
+            worst = max(worst, got[0])
             line = (f"type {kind} rank {r} left {left} M{m}: lattice exact rel_l2 {got[0]:.4g} max_abs {got[1]:.3g} | "
-                    f"lattice fp16 {fp16[0]:.4g} / {fp16[1]:.3g} | 1Cat-rounding emulation {emulated[0]:.3g} / "
-                    f"{emulated[1]:.3g}")
+                    f"1Cat-rounding emulation {emulated[0]:.3g} / {emulated[1]:.3g}")
             assert got[0] <= emulated[0]
-            assert fp16[0] <= 2 * emulated[0]
             if m <= 2048:      # the decode loop is 6 rows per call
                 decode = error(decode_loop(dec, x, ids, p, banks, kind, kind, left), expected)
                 line += f" | decode {decode[0]:.4g} / {decode[1]:.3g}"
                 assert got[0] <= decode[0]
             print(line + f" | ref_max {expected.abs().max().item():.3g}")
     ws.check()
-    print(f"type {kind} worst rel_l2: lattice exact {worst[0]:.4g} lattice fp16 {worst[1]:.4g}")
+    print(f"type {kind} worst rel_l2: lattice exact {worst:.4g}")
 
 
 @pytest.mark.parametrize("kind", [16, 29])
@@ -177,11 +172,8 @@ def test_lattice_timing_192_experts(ops):
             x = torch.randn(m, 5120, generator=generator).half().cuda()
             local, p = rank_routes(m, generator)
             a = timed(lambda: lat.experts(x, local, p, *banks, gate_type, down_type, left, ws), 7)
-            f = timed(lambda: lat.experts(x, local, p, *banks, gate_type, down_type, left, ws, exact=False), 7)
-            med = [t[len(t) // 2] for t in (a, f)]
-            print(f"{prefix} types {gate_type}/{down_type} M{m}: lattice exact median {med[0]:.3f} ms "
-                  f"[{a[0]:.3f}, {a[-1]:.3f}] | lattice fp16 median {med[1]:.3f} ms [{f[0]:.3f}, {f[-1]:.3f}] | "
-                  f"fp16/exact {med[1] / med[0]:.3f}")
+            print(f"{prefix} types {gate_type}/{down_type} M{m}: lattice exact median {a[len(a) // 2]:.3f} ms "
+                  f"[{a[0]:.3f}, {a[-1]:.3f}]")
     ws.check()
     print(f"lattice workspace {ws.nbytes / 2**20:.0f} MiB (tile {ws.tile})")
 

@@ -41,19 +41,15 @@ __global__ void tile_lists_kernel(const int32_t* offsets, int32_t* lists, int32_
 // hidden[p] = fp16((silu(min(g, L)) * clamp(u, -L, L)) * w[order[p]]) for p < offsets[E]; proj rows are gate|up
 // interleaved (column 2c gate, 2c + 1 up). silu(g) = g / (1 + expf(-g)) with IEEE division; no FMA contraction
 // (patch 140 _pf_swiglu, enable_fp_fusion=False, libdevice expf).
-// TensorFold: proj FP16 (the friend's rounding) or FP32 (the exact path: gate/up unrounded into the SwiGLU).
-__device__ __forceinline__ float load_f32(const half* p) { return __half2float(*p); }
-__device__ __forceinline__ float load_f32(const float* p) { return *p; }
-
-template <typename T>
-__global__ void swiglu_kernel(const T* proj, const float* weights, const int64_t* order, const int32_t* valid,
+// TensorFold: proj is FP32 (the exact path: gate/up unrounded into the SwiGLU).
+__global__ void swiglu_kernel(const float* proj, const float* weights, const int64_t* order, const int32_t* valid,
                               half* hidden, int width, float limit) {
   const int64_t p = blockIdx.x;
   if (p >= *valid) return;
   const float w = weights[order[p]];
   for (int c = blockIdx.y * blockDim.x + threadIdx.x; c < width; c += gridDim.y * blockDim.x) {
-    float g = load_f32(proj + p * 2 * width + 2 * c);
-    float u = load_f32(proj + p * 2 * width + 2 * c + 1);
+    float g = proj[p * 2 * width + 2 * c];
+    float u = proj[p * 2 * width + 2 * c + 1];
     g = g > limit ? limit : g;
     u = u < -limit ? -limit : u;
     u = u > limit ? limit : u;
@@ -129,26 +125,20 @@ void ds41_lattice_swiglu(const torch::Tensor& proj, const torch::Tensor& weights
   for (const torch::Tensor* t : std::initializer_list<const torch::Tensor*>{&weights, &order, &valid, &hidden})
     same_device(proj, *t);
   const int64_t routes = proj.size(0), width = hidden.size(1);
-  const bool wide = proj.scalar_type() == torch::kFloat;
-  TORCH_CHECK((wide || proj.scalar_type() == torch::kHalf) && hidden.scalar_type() == torch::kHalf &&
+  TORCH_CHECK(proj.scalar_type() == torch::kFloat && hidden.scalar_type() == torch::kHalf &&
                   weights.scalar_type() == torch::kFloat && order.scalar_type() == torch::kLong &&
                   valid.scalar_type() == torch::kInt && proj.is_contiguous() && hidden.is_contiguous() &&
                   weights.is_contiguous() && order.numel() == routes && weights.numel() == routes &&
                   hidden.size(0) == routes && proj.size(1) == 2 * width,
-              "ds41 lattice MoE SwiGLU: FP16/FP32 [R, 2W] -> FP16 [R, W], FP32 weights, int64 order");
+              "ds41 lattice MoE SwiGLU: FP32 [R, 2W] -> FP16 [R, W], FP32 weights, int64 order");
   if (!routes) return;
   const c10::cuda::CUDAGuard guard(proj.device());
   const dim3 grid(unsigned(routes), unsigned((width + 255) / 256));
   const auto stream = at::cuda::getCurrentCUDAStream();
   half* out = reinterpret_cast<half*>(hidden.data_ptr<at::Half>());
-  if (wide)
-    swiglu_kernel<<<grid, 256, 0, stream>>>(proj.data_ptr<float>(), weights.data_ptr<float>(),
-                                            order.data_ptr<int64_t>(), valid.data_ptr<int32_t>(), out, int(width),
-                                            float(limit));
-  else
-    swiglu_kernel<<<grid, 256, 0, stream>>>(reinterpret_cast<const half*>(proj.data_ptr<at::Half>()),
-                                            weights.data_ptr<float>(), order.data_ptr<int64_t>(),
-                                            valid.data_ptr<int32_t>(), out, int(width), float(limit));
+  swiglu_kernel<<<grid, 256, 0, stream>>>(proj.data_ptr<float>(), weights.data_ptr<float>(),
+                                          order.data_ptr<int64_t>(), valid.data_ptr<int32_t>(), out, int(width),
+                                          float(limit));
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

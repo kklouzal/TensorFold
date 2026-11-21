@@ -16,15 +16,13 @@ TensorFold adaptation for EP2 x ETP4: probability-0 routes sort behind a sentine
 (the friend's TP4 ranks hold all 384 experts). No host synchronization; operands and the workspace must outlive
 current-stream completion.
 
-Numerics. ``exact=True`` (TensorFold, the default): every weight is ggml's FP32 dequantized value rounded once to
-FP16 (the canonical stats keep the source FP16 block scale d and the integer sub-scale; the decode forms
+Numerics (TensorFold's exact decode; the friend's patch 140 FP16 arithmetic was measured at about 2.6x the rel L2
+error vs the FP32 oracle for <= 7% faster MoE and removed): every weight is ggml's FP32 dequantized value rounded
+once to FP16 (the canonical stats keep the source FP16 block scale d and the integer sub-scale; the decode forms
 (2s+1)/8 * signed grid exactly in FP16 and rounds once in the HMUL by d), gate/up leave the GEMM in FP32 into the
 clamped SwiGLU (FP32), times the probability, rounded to FP16; down rounds per route to FP16; the token output is
 the FP32 sum of its routes (the rounding points of the fused-WMMA path this replaced, ds41_prefill_moe, whose
-outputs it matched bitwise in lat2-x1).
-``exact=False`` is the friend's patch 140 arithmetic: the transcode rounds the block scale d * (2s+1)/8 to FP16 and
-the decode rounds its product with the grid value again, and gate/up round to FP16 before the SwiGLU (about 2.6x
-the rel L2 error vs the FP32 oracle). K order is the kernel's (no split-K). The transcode flags in
+outputs it matched bitwise in lat2-x1). K order is the kernel's (no split-K). The transcode flags in
 ``Workspace.error`` a group whose (largest) weight overflows FP16 (``check`` raises).
 """
 
@@ -96,14 +94,15 @@ def canonical(kind, n, k):
     return group, n * k // 4, k // group * n * stat
 
 
-# The exact decode's instantiations of the rule's tilings (ds41kern_variants.cuh): FP32-output gate|up, FP16 down.
-EXACT = {1152: {6: 9, 7: 10}, 5120: {3: 11, 6: 12, 7: 13}}
+# The exact decode's instantiations (ds41kern_variants.cuh) of the rule's tilings (the friend's patch-340 variant
+# numbers 3/6/7): FP32-output gate|up, FP16 down.
+EXACT = {1152: {6: 0, 7: 1}, 5120: {3: 2, 6: 3, 7: 4}}
 
 
-def pick(decoder, n, k, routes, exact=True):
+def pick(decoder, n, k, routes):
     for max_routes, variant, swizzle in RULE[(decoder, n, k)]:
         if routes <= max_routes:
-            return (EXACT[n][variant] if exact else variant), swizzle
+            return EXACT[n][variant], swizzle
     raise AssertionError("the last rule bucket is unbounded")
 
 
@@ -151,8 +150,8 @@ def _addresses(bank):
     return bank.data_ptr() + torch.arange(bank.shape[0], dtype=torch.int64, device=bank.device) * bank.stride(0)
 
 
-def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, workspace, *, out=None, exact=True):
-    """Routed experts for FP16 x [M, 5120], top-6 local ids/probabilities -> FP16 [M, 5120] (``exact``: see the
+def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, workspace, *, out=None):
+    """Routed experts for FP16 x [M, 5120], top-6 local ids/probabilities -> FP16 [M, 5120] (numerics: see the
     module docstring)."""
     if gate_type not in LATTICE or down_type not in LATTICE:
         raise ValueError("V4.1 lattice prefill experts require IQ2_XXS/IQ2_XS/IQ1_M carriers")
@@ -182,15 +181,15 @@ def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, w
     def projection(key, kind, n, k, k_offset, src0, src1, stride, source, indices, result):
         group = LATTICE[kind][0]
         bank_w, bank_s, wbytes, sbytes, wt, st = workspace.table(key, kind, n, k)
-        variant, swizzle = pick(kind, n, k, routes, exact)
+        variant, swizzle = pick(kind, n, k, routes)
         for index, (first, count) in enumerate(plan):
             ext.transcode(bank_w, bank_s, wbytes, sbytes, src0[first:first + count],
                           None if src1 is None else src1[first:first + count], lists[index],
-                          counts[index:index + 1], CTAS, kind, n, k, k_offset, stride, workspace.error, exact)
+                          counts[index:index + 1], CTAS, kind, n, k, k_offset, stride, workspace.error)
             ext.lattice_gemm(result, source, offsets[first:first + count + 1], wt[:count * 16], st[:count * 16],
                              kind, n, count, group, indices, variant, swizzle)
 
-    proj = torch.empty(routes, 2 * inter, dtype=torch.float32 if exact else torch.float16, device=device)
+    proj = torch.empty(routes, 2 * inter, dtype=torch.float32, device=device)
     projection("gu", gate_type, 2 * inter, HIDDEN, 0, _addresses(gate), _addresses(up), gate.stride(1),
                x.contiguous(), rows, proj)
     hidden = torch.empty(routes, inter, dtype=torch.float16, device=device)

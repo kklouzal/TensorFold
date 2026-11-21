@@ -25,7 +25,7 @@
 
 namespace ds41kern {
 using turbomind::gemm::Kernel;
-constexpr int kVariants = 14;
+constexpr int kVariants = 5;
 template <int Type, int Group>
 Kernel* make_variant(int v);
 template <> Kernel* make_variant<16, 32>(int v);
@@ -101,8 +101,8 @@ void lattice_gemm(torch::Tensor out, torch::Tensor input, torch::Tensor offsets,
                   offsets.device() == input.device() && weight_ptrs.device() == input.device() &&
                   stats_ptrs.device() == input.device(),
               "ds41kern: tensors must share a CUDA device");
-  // TensorFold: variants 9/10 (exact decode, FP32 C) write FP32; every other variant FP16.
-  const bool float_out = variant == 9 || variant == 10;
+  // TensorFold: variants 0/1 (exact decode gate|up, FP32 C) write FP32; 2..4 (down) FP16.
+  const bool float_out = variant == 0 || variant == 1;
   TORCH_CHECK(input.scalar_type() == torch::kFloat16 &&
                   out.scalar_type() == (float_out ? torch::kFloat32 : torch::kFloat16) &&
                   offsets.scalar_type() == torch::kInt32 &&

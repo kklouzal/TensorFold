@@ -13,6 +13,7 @@ Each family page describes its supported checkpoint, kernels and operating limit
 | Gemma 4 E2B | [Deployed CUDA BF16/DFlash2 correctness baseline](gemma-4-e2b.md) |
 | Gemma 4 E4B | [Historical mixed NVFP4/BF16 deployment, retained rollback](gemma-4-e4b.md) |
 | DeepSeek-V4-Flash | [MLX on a 256 GB Mac, DSpark and MTP drafts](deepseek-v4-flash.md) |
+| DeepSeek-V4.1-Flash | [Eight V100s, TP8/ETP4 x EP2, GGUF + host-RAM Engram](deepseek-v41-v100.md) |
 | Qwen3.6-35B-A3B | [MLX with MTP drafts, one-GPU CUDA](qwen3.6-moe.md) |
 
 ## Capability floor

@@ -55,8 +55,8 @@ Git blob or SHA-256, accompany the component. Inclusion does not qualify or sele
 1Cat's GGUF lattice quant types; `lattice_codebooks.h` carries GGML tables under the
 [GGML MIT notice](LICENSES/GGML-MIT.txt)), its GGUF prefill transcode, and the tile-variant op of a 1Cat overlay
 snapshot (patch 340, Apache-2.0 SPDX). `ds41_lattice_moe.cu` ports the glue kernels of overlay patch 140. TensorFold
-rewrites the quoted include paths relative to each file and replaces the `TORCH_LIBRARY` registration with plain
-entry points; nothing else changes. The [license](src/tensorfold/cuda/sm70/ds41_lattice/LICENSE.txt) and
+rewrites the quoted include paths relative to each file, replaces the `TORCH_LIBRARY` registration with plain
+entry points, adds an exact weight decode and builds only its variants (the notice lists each modified file). The [license](src/tensorfold/cuda/sm70/ds41_lattice/LICENSE.txt) and
 [provenance notice](src/tensorfold/cuda/sm70/ds41_lattice/NOTICE.txt), with each file's upstream SHA-256,
 accompany the component. Inclusion does not qualify or select a serving path.
 

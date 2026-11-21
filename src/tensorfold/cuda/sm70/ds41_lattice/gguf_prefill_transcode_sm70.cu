@@ -49,8 +49,7 @@ void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
                                  torch::Tensor experts, torch::Tensor count,
                                  int64_t ctas, int64_t source_type,
                                  int64_t n_out, int64_t k, int64_t k_offset,
-                                 int64_t src_stride, torch::Tensor error,
-                                 bool exact) {
+                                 int64_t src_stride, torch::Tensor error) {
   TORCH_CHECK(dst_w.is_cuda() && dst_s.is_cuda() && src0.is_cuda() &&
                   experts.is_cuda() && count.is_cuda() && error.is_cuda() &&
                   count.scalar_type() == at::kInt && count.numel() >= 1 &&
@@ -75,16 +74,9 @@ void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
     return k % 32 == 0 && k_offset >= 0 && src_stride % bytes == 0 &&
            src_stride / bytes * block >= k_offset + k;
   };
-#define CASE(TYPE, BLOCK, BYTES)                                               \
-  case TYPE:                                                                   \
-    TORCH_CHECK(rows_ok(BLOCK, BYTES), "prefill transcode: GGUF type ", TYPE,  \
-                " rows do not cover the requested columns");                   \
-    launch<TYPE>(dst_w, dst_s, w_stride, s_stride, src0, src1, experts, count, \
-                 ctas, n_out, k, k_offset, src_stride, error);                 \
-    break;
-  // TensorFold: exact = the exact-sub-scale stats encoding (GroupExact), IQ2_XXS / IQ2_XS / IQ1_M.
-  if (exact) {
-    switch (source_type) {
+  // TensorFold: only the exact-sub-scale stats encoding (GroupExact) is built, IQ2_XXS / IQ2_XS / IQ1_M (the
+  // friend's FP16-scale encodings and its other GGUF types were removed with his FP16 arithmetic).
+  switch (source_type) {
 #define EXACT(TYPE, BLOCK, BYTES)                                              \
   case TYPE:                                                                   \
     TORCH_CHECK(rows_ok(BLOCK, BYTES), "prefill transcode: GGUF type ", TYPE,  \
@@ -92,26 +84,10 @@ void gguf_prefill_transcode_sm70(torch::Tensor dst_w, torch::Tensor dst_s,
     launch<TYPE, true>(dst_w, dst_s, w_stride, s_stride, src0, src1, experts,  \
                        count, ctas, n_out, k, k_offset, src_stride, error);    \
     return;
-      EXACT(16, 256, 66)
-      EXACT(17, 256, 74)
-      EXACT(29, 256, 56)
+    EXACT(16, 256, 66)
+    EXACT(17, 256, 74)
+    EXACT(29, 256, 56)
 #undef EXACT
-    }
-    TORCH_CHECK(false, "prefill transcode: no exact encoding for GGUF type ", source_type);
   }
-  switch (source_type) {
-    CASE(16, 256, 66)
-    CASE(17, 256, 74)
-    CASE(29, 256, 56)
-    CASE(18, 256, 98)
-    CASE(21, 256, 110)
-    CASE(22, 256, 82)
-    CASE(20, 32, 18)
-    CASE(23, 256, 136)
-    CASE(42, 64, 18)
-    default:
-      TORCH_CHECK(false, "prefill transcode: unsupported GGUF type ",
-                  source_type);
-  }
-#undef CASE
+  TORCH_CHECK(false, "prefill transcode: no exact encoding for GGUF type ", source_type);
 }

@@ -12,11 +12,17 @@ Sources:
   (misc/ds41-knobs/kern340-rule.json, enabled in his production runtime) is the RULE table in ds41_lattice_moe.py.
 - The glue kernels in ../ds41_lattice_moe.cu port patch 140 (ds41_pf_moe, local_ds41_pf_moe.py Triton kernels).
 
-TensorFold changes to the vendored files (nothing else differs; "modified" rows below):
+TensorFold changes to the vendored files ("modified" rows below):
 - every quoted #include is rewritten to a path relative to the including file (TensorFold's SM70 JIT admits no
   extra include roots); applies to all files that include another vendored file;
 - ds41kern_op.cu: the TORCH_LIBRARY(ds41kern) registration and <torch/library.h> are replaced by the
   ds41kern::lattice_gemm_op / variant_name_op entry points for the pybind module.
+- exact weight decode (ds41-lattice2): gguf_prefill_transcode.cuh adds the exact-sub-scale stats encoding
+  (GroupExact, transcode_kernel<Type, Exact>), the TurboMind lattice transform an Exact decode, ds41kern_variants.cuh
+  the exact instantiations (FP32-output gate|up, FP16 down) of the rule's tilings;
+- the friend's FP16 lattice arithmetic is removed (R2, 2.6x the operator error): ds41kern_variants.cuh builds only
+  the five exact variants (kVariants 5), ds41kern_op.cu selects FP32 output for variants 0/1, and
+  gguf_prefill_transcode_sm70.cu launches only the exact encoding of IQ2_XXS / IQ2_XS / IQ1_M (no `exact` argument).
 
 Files (vendored path <- origin, upstream sha256):
 ds41kern_op.cu  <-  friend overlay patch 340 kern340/src/ds41kern_op.cu  sha256 067542e57919f0495ae314720d6ad8e3be5fce7bd53f5fb7f67bccf20d551d2f  modified (see above)
@@ -24,8 +30,8 @@ ds41kern_t16.cu  <-  friend overlay patch 340 kern340/src/ds41kern_t16.cu  sha25
 ds41kern_t17.cu  <-  friend overlay patch 340 kern340/src/ds41kern_t17.cu  sha256 5e4591981d96ae2b9cfd8ee72b4bb415d3a6851a5be183920ebce505d96d1e42  identical
 ds41kern_t29.cu  <-  friend overlay patch 340 kern340/src/ds41kern_t29.cu  sha256 f895fb98ddbee95247ef3a15af37afc0f1ff569de2524bf3f094643370b57df0  identical
 ds41kern_variants.cuh  <-  friend overlay patch 340 kern340/src/ds41kern_variants.cuh  sha256 e0368846d36a1f7d42dd485196d45d0db1fe28b7174672406ba17abe132dab6b  modified (see above)
-gguf_prefill_transcode.cuh  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/ops/gguf_prefill_transcode.cuh  sha256 aea18320050d1f31774f7d544bb62bcb96357c4eff7fb6db30ae2d51d28a4360  identical
-gguf_prefill_transcode_sm70.cu  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/ops/gguf_prefill_transcode_sm70.cu  sha256 0ef1f0788715d5585c4103584fb77a947e7669569a93d05c321374f3ea3e04ed  identical
+gguf_prefill_transcode.cuh  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/ops/gguf_prefill_transcode.cuh  sha256 aea18320050d1f31774f7d544bb62bcb96357c4eff7fb6db30ae2d51d28a4360  modified (see above)
+gguf_prefill_transcode_sm70.cu  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/ops/gguf_prefill_transcode_sm70.cu  sha256 0ef1f0788715d5585c4103584fb77a947e7669569a93d05c321374f3ea3e04ed  modified (see above)
 sm70_tile_runtime_signal.cuh  <-  1Cat-vLLM 4d57473d csrc/sm70_tile_runtime_signal.cuh  sha256 91f2977cbdd206c7bbf37f40330fcd99a1266f04da585b713f1c4e514982c350  identical
 turbomind/core/check.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/core/check.h  sha256 830fdf749d3b4b86f7802dd5bb01d65c09ca7a877381977f52884c469de60038  identical
 turbomind/core/data_type.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/core/data_type.h  sha256 49adb973b870bb89e7572da307e196edb9b9cbfd5f17a941c940faa19b34ba6a  modified (see above)
