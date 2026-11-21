@@ -142,8 +142,7 @@ class Target:
         from tensorfold.cuda.sm70 import ds41_dense as dense
         rows = torch.empty(ids.shape[0], self.g.hidden, dtype=torch.float16, device=ids.device)
         dense.q5k_rows(self.w.embed, ids, self.w.embed_first, rows)
-        self.c._all_reduce(rows)
-        return rows
+        return self.c.exact_sum_half(rows)
 
     # ---- attention (patch 87 attention_forward)
     def attention(self, ly, x, step: Step, table, shared):

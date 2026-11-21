@@ -78,15 +78,11 @@ class DS41Engine:
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         device = torch.device("cuda", 0)
         started = time.perf_counter()
-        # The Flash Next / Gemma 4 NVLink collectives (collectives.py): the small all-gather mailbox (every
-        # all-gather up to 256 KiB per rank) and the bulk row all-reduce mailbox, sized for the widest decode sum
-        # (the indexer's [32 rows, context] FP32 scores, at most 8 MiB). Every rank sets the same values before the
-        # communicator opens (its open checks they agree); the mailboxes are allocated before the KV pages are sized.
+        # The Flash Next / Gemma 4 NVLink small all-gather mailbox (collectives.py: small gathers and the LL row
+        # all-reduce); every rank sets the same value before the communicator opens (its open checks they agree).
         from tensorfold.cuda import small_gather
         os.environ.setdefault(small_gather.ENV, str(small_gather.MAX_CAPACITY))
-        bulk = min(small_gather.MAX_BULK, self.streams * max(self.context, g.hidden) * 4)
-        os.environ.setdefault(small_gather.BULK_ENV, str(bulk // (16 * tp) * 16 * tp))
-        self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port, row_reduce=True)
+        self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
         from .prefix import default_keep_slots, host_slab

@@ -2,8 +2,8 @@
 
 ``rank_sum`` (the gather path's consumer) under TRITON_INTERPRET=1: bitwise the rank-ordered FP32 adds rounded once
 (what the LL and bulk row all-reduces produce), including signed zeros, infinities, NaN and subnormals. Path
-selection: a table entry is used only where the communicator's mailbox admits the shape (else NCCL), and the LL /
-bulk entries fall back to NCCL when TF_SMALL_ALLREDUCE=0 disabled them. The 8-GPU in-graph comparison against
+selection: by elements per rank, each path only where the communicator's mailbox admits the shape (else NCCL), and
+no LL row all-reduce when TF_SMALL_ALLREDUCE=0 disabled it. The 8-GPU in-graph comparison against
 NCCL and the gathered rank-order oracle is the K3 microbenchmark (ledger).
 """
 
@@ -45,23 +45,19 @@ def test_rank_sum_is_rank_ordered_fp32_rounded_once(dtype, shape):
 
 class _Small:
     def reduce_lines(self, rows, dims):
-        return 1 if rows * dims <= 4 * 5120 else 0
-
-    def bulk_chunk_rows(self, rows, dims, f32):
-        return 1 if rows * dims <= 32 * 5120 else 0
+        return 1 if rows * dims <= 8 * 5120 else 0
 
 
 class _Comm:
     small_gather = _Small()
-    small_gather_bytes = 2 * 5120 * 4
+    small_gather_bytes = 5120 * 4
 
 
-def test_path_selection_respects_admission(monkeypatch):
-    monkeypatch.setattr(C, "_PATHS", {5120: {1: "gather", 3: "gather", 4: "ll", 8: "ll", 16: "bulk", 64: "bulk"}})
+def test_path_selection_by_elements_and_admission():
     c = C.Collectives(_Comm())
-    assert [c.path(r, 5120) for r in (1, 3, 4, 8, 16, 64, 2)] == ["gather", "nccl", "ll", "nccl", "bulk", "nccl", "nccl"]
-    assert c.path(1, 4096) == "nccl"
+    shapes = [(1, 5120), (2, 5120), (8, 5120), (9, 5120), (11, 5120), (12, 5120), (1, 32768), (1, 65536), (2, 2560)]
+    assert [c.path(r * d, d) for r, d in shapes] == ["gather", "ll", "ll", "nccl", "nccl", "nccl", "ll", "nccl", "gather"]
     c.reduce = False                                     # TF_SMALL_ALLREDUCE=0
-    assert [c.path(r, 5120) for r in (1, 4, 16)] == ["gather", "nccl", "nccl"]
+    assert [c.path(r * 5120, 5120) for r in (1, 2)] == ["gather", "nccl"]
     c = C.Collectives(object())                          # no small collectives: NCCL everywhere
-    assert c.path(1, 5120) == "nccl"
+    assert c.path(5120, 5120) == "nccl"

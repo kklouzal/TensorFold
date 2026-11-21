@@ -1,19 +1,25 @@
 """Cross-rank sums and gathers of the DeepSeek-V4.1 SM70 lane over its one 8-rank communicator (TP8 attention/dense
 and the ETP4 x EP2 experts).
 
-``Collectives.sum(partial, torch.float16)`` (attention output, MoE output, decode indexer scores, embedding rows)
-takes one of the Flash Next / Gemma 4 NVLink collectives of ``tensorfold.cuda.comm`` where its mailboxes admit the
-shape (the communicator is opened with ``row_reduce``: ``engine.py``), selected per [rows, dims] by measured
-in-graph latency (``_PATHS``; ledger section "DeepSeek V4.1 V100 lane", candidate K3):
+The communicator carries the Flash Next / Gemma 4 NVLink small all-gather mailbox (``engine.py`` sets
+``TF_SMALL_GATHER_BYTES``): every all-gather up to its capacity per rank (decode logits rows, Engram projections,
+control exchanges) takes it instead of NCCL (exact copies either way). ``Collectives.sum(partial, torch.float16)``
+(attention output, MoE output, indexer scores) and ``exact_sum_half`` (embedding rows) select by the partial's
+element count ``n`` per rank (measured in CUDA graphs, 8x V100-SXM2, 180 W; ledger candidate K3, us per call):
 
-- ``gather``: the small all-gather of the FP32 partials, then ``rank_sum`` (one Triton kernel);
-- ``ll``: the low-latency small row all-reduce (``NCCL.all_reduce_rows_mode(bulk=False)``);
-- ``bulk``: the bulk row all-reduce (``bulk=True``).
+- ``n <= GATHER_MAX``: the small all-gather of the FP32 partials, then ``rank_sum`` (one Triton kernel)
+  (1 x 5120: 11.2 vs LL 13.5 vs NCCL 28.8);
+- ``n <= LL_MAX``: the low-latency small row all-reduce (``NCCL.all_reduce_rows_ll``) (2 / 4 / 8 / 11 x 5120:
+  13.9 / 14.6 / 22.1 / 27.7 vs NCCL 34.4 / 32.5 / 24.1 / 30.4; 1 x 32768: 18.5 vs 24.4; 12 x 5120 29.6 vs 30.2 and
+  from 13 x 5120 or 1 x 65536 NCCL is as fast or faster);
+- larger (prompt rows, wide decode indexer scores): the NCCL FP32 all-reduce in place, rounded once.
 
-All three give bitwise the same FP16 values: every partial in rank order (rank 0 first, FP32 adds) rounded once to
-FP16 (round to nearest even), on every rank. Shapes outside the table (prompt rows) and FP32 results keep the NCCL
-FP32 all-reduce (NCCL's own sum order, the same bytes on every rank) rounded once. The selection depends only on
-the shape, so every rank submits the same collective sequence (eager and inside the startup CUDA graphs).
+The gather and LL paths give bitwise the same FP16 values: every partial in rank order (rank 0 first, FP32 adds)
+rounded once to FP16 (round to nearest even), identical on every rank; the NCCL path's sum order is NCCL's own (the
+same bytes on every rank). The rank-ordered bulk row all-reduce was slower than NCCL at every measured DS41 shape
+(5120 x 1..96 rows, 32768 / 65536 x 1..32), so its mailbox is not opened. Selection depends only on the shape and
+the communicator's configuration (identical on every rank, checked at open), so every rank submits the same
+collective sequence, eager and inside the startup CUDA graphs.
 """
 
 from __future__ import annotations
@@ -45,13 +51,8 @@ def rank_sum(parts: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
     return out
 
 
-def _table(rows: int, dims: int) -> str | None:
-    """The measured path of an FP16-rounded [rows, dims] FP32 sum (None: NCCL)."""
-    return _PATHS.get(dims, {}).get(rows)
-
-
-# dims -> {rows: path}. Filled from the in-graph microbenchmark (8x V100-SXM2, 180 W).
-_PATHS: dict[int, dict[int, str]] = {}
+GATHER_MAX = 5120          # elements per rank (one hidden row)
+LL_MAX = 11 * 5120         # elements per rank
 
 
 class Collectives:
@@ -61,7 +62,7 @@ class Collectives:
         self.world = world
         from tensorfold.cuda import comm
         self.small = getattr(world, "small_gather", None) is not None
-        self.reduce = self.small and comm._SMALL_ALLREDUCE          # TF_SMALL_ALLREDUCE=0 keeps the gather / NCCL
+        self.reduce = self.small and comm._SMALL_ALLREDUCE          # TF_SMALL_ALLREDUCE=0: no LL row all-reduce
 
     def _all_reduce(self, tensor):
         """In-place NCCL sum of an FP32 or FP16 tensor."""
@@ -75,42 +76,46 @@ class Collectives:
         comm._check(fn(tensor.data_ptr(), tensor.data_ptr(), tensor.numel(), _NCCL_TYPES[tensor.dtype], _NCCL_SUM,
                        comm.comm, stream))
 
-    def path(self, rows: int, dims: int) -> str:
-        """The collective an FP16-rounded [rows, dims] sum takes: gather, ll, bulk or nccl. Every rank opened the same
-        mailboxes (the communicator checks), so every rank selects the same path for the same shape."""
-        path = _table(rows, dims) if self.small else None
-        small = self.world.small_gather if path else None
-        if path == "gather" and rows * dims * 4 <= self.world.small_gather_bytes:
-            return path
-        if path == "ll" and self.reduce and small.reduce_lines(rows, dims) > 0:
-            return path
-        if path == "bulk" and self.reduce and small.bulk_chunk_rows(rows, dims, False) > 0:
-            return path
+    def path(self, n: int, dims: int) -> str:
+        """The collective an FP16-rounded sum of ``n`` FP32 elements per rank ([n / dims, dims]) takes:
+        gather, ll or nccl (module docstring)."""
+        if self.small and n <= GATHER_MAX and n * 4 <= self.world.small_gather_bytes:
+            return "gather"
+        if self.reduce and n <= LL_MAX and self.world.small_gather.reduce_lines(n // dims, dims) > 0:
+            return "ll"
         return "nccl"
 
-    def reduce_half(self, send: torch.Tensor, path: str) -> torch.Tensor:
-        """Rank-ordered FP32 sum of FP32 [rows, dims] partials rounded once to FP16 through ``path`` (not nccl)."""
+    def _reduce_half(self, send: torch.Tensor, path: str) -> torch.Tensor:
         rows, dims = send.shape
         recv = torch.empty(rows, dims, dtype=torch.float16, device=send.device)
         if path == "gather":
             parts = torch.empty((WORLD, rows, dims), dtype=torch.float32, device=send.device)
             self.world.all_gather(send, parts)
             return rank_sum(parts, recv)
-        if not self.world.all_reduce_rows_mode(send, recv, path == "bulk"):
-            raise RuntimeError(f"the {path} row all-reduce did not admit [{rows}, {dims}] (its table entry is invalid)")
+        if not self.world.all_reduce_rows_ll(send, recv):
+            raise RuntimeError(f"the small row all-reduce refused [{rows}, {dims}] after admitting it")
         return recv
 
     def sum(self, partial: torch.Tensor, dtype=None) -> torch.Tensor:
-        """8-rank sum of partials, accumulated in FP32 and rounded once to ``dtype`` (default: the partial's).
-        FP16 results of 2-D partials in the measured table are rank-ordered (module docstring)."""
+        """8-rank sum of [rows, dims] partials, accumulated in FP32 and rounded once to ``dtype`` (default: the
+        partial's); FP16 results take the path ``path`` selects."""
         dtype = dtype or partial.dtype
-        if dtype == torch.float16 and partial.ndim == 2:
-            path = self.path(*partial.shape)
+        if dtype == torch.float16:
+            path = self.path(partial.numel(), partial.shape[-1])
             if path != "nccl":
-                return self.reduce_half(partial.float().contiguous(), path)
+                return self._reduce_half(partial.float().contiguous().view(-1, partial.shape[-1]), path)
         total = partial.float().contiguous()
         self._all_reduce(total)
         return total.to(dtype)
+
+    def exact_sum_half(self, rows: torch.Tensor) -> torch.Tensor:
+        """Sum of FP16 [rows, dims] partials to which at most one rank contributes each nonzero element (exact in
+        any order, so bitwise the same on every path): the rank-ordered paths where they are faster, else the NCCL
+        FP16 all-reduce in place (half the FP32 bytes)."""
+        if self.path(rows.numel(), rows.shape[-1]) != "nccl":
+            return self.sum(rows, torch.float16)
+        self._all_reduce(rows)
+        return rows
 
     def gather(self, part: torch.Tensor) -> torch.Tensor:
         """Concatenate the eight ranks' parts along the last dimension, rank order."""
