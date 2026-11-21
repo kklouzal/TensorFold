@@ -11,11 +11,13 @@
       document's prompt tokens are scored by prompt-pass (prefill) rows and its continuation by teacher-forced
       decode/MTP-verify rows (``--continuation-limit N``: only the first N, for prefill-path runs). vLLM: /v1/completions with ``prompt_logprobs`` over prompt+continuation (one pass).
   cachecheck --tokens corpus.tokens.json --mode extend|repeat --out-cold COLD.json --out-cached CACHED.json
-        [--url ...] [--top 20] [--continuation-limit N] [--min-prompt 64]
+        [--url ...] [--top 20] [--continuation-limit N] [--min-prompt 64] [--align ROWS]
       Prefix-cache qualification (TensorFold only). Per document: prime the server's prompt cache with a plain
       greedy /v1/completions request (``extend``: the first half of the prompt plus one token; ``repeat``: the
       whole prompt), score the document borrowing that state (score ``reuse``), then score it cold. Writes two
       runs restricted to the rows the cached request computed, so ``compare COLD.json CACHED.json`` judges them.
+      ``--align ROWS``: the server keeps extension points only at multiples of ROWS (its prompt-chunk boundaries,
+      e.g. DeepSeek-V4.1 SM70's 8192), so an ``extend`` hit resumes at the boundary at or below the prime's end.
   compare A.json B.json [--margin 0.005] [--prefill-kinds PREFIX,...] [--out RESULT.json]
       Paired per-token statistics of B against A per path and kind, and a verdict (see ``compare``'s doc).
       ``--prefill-kinds`` restricts only the prefill verdict to those document kinds; decode keeps every document
@@ -240,7 +242,9 @@ def cachecheck(args) -> None:
         cold = _score_rows(args.url, doc, args.top, args.model, False)
         n = int(cached.get("cached_tokens") or 0)
         expected = len(prime) - 1 if args.mode == "extend" else len(doc["prompt"])
-        if n != expected:
+        if args.align and args.mode == "extend":
+            expected = expected // args.align * args.align
+        if n != expected or not expected:       # (an aligned prime shorter than ROWS reuses nothing)
             # Excluded from both runs: a miss scores (nearly) the same rows twice and would dilute the comparison.
             print(f"{doc['id']}: cached {n} tokens, expected {expected} (a miss: excluded)")
             misses.append(doc["id"])
@@ -444,6 +448,7 @@ def main(argv=None) -> None:
     p.add_argument("--top", type=int, default=20)
     p.add_argument("--continuation-limit", type=int)
     p.add_argument("--min-prompt", type=int, default=64)
+    p.add_argument("--align", type=int, help="extend: hits resume at the multiple of ROWS at or below the prime end")
     p.add_argument("--shuffle-seed", type=int, help="score documents in this seeded random order")
     p.add_argument("--max-seconds", type=float, help="stop starting new documents after this long (results so far kept)")
     p.set_defaults(run=cachecheck)

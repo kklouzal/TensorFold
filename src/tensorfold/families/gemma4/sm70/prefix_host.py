@@ -88,6 +88,10 @@ class HostTier:
             start = self._run(k)
         return start
 
+    def _rows_bytes(self, first: int, rows: int) -> int:
+        """Slab bytes of a row extent holding rows [first, rows) (per-row caches: every row the same size)."""
+        return (rows - first) * self.owner.e.token_bytes
+
     # ------------------------------------------------------------------------------------------ shared rows
     # As Flash Next's tier (qwen4_exp prefix_host): a spill stores the slot's rows past those the slab already holds
     # for its current history as a row extent (rows [first, end) after its parent chain's), and ``st.host_rows``
@@ -176,7 +180,7 @@ class HostTier:
         base, first = self._base(st, ids, rows)
         # One run of blocks: the new extent's rows (every rank) from its first block, then the snapshots (every
         # rank) and rank 0's exact-end logits after them (the tier's capacity bounds them too).
-        x_bytes = 0 if first is None else (rows - first) * o.e.token_bytes
+        x_bytes = 0 if first is None else self._rows_bytes(first, rows)
         xk = -(-x_bytes // BLOCK_BYTES)
         need = -(-(len(sids) * o.snap_bytes) // ALIGN) * ALIGN
         at = []
@@ -192,7 +196,7 @@ class HostTier:
         if start is None and base is not None:
             self._release(base)                      # no room beside it: copy every row
             base, first = None, 0
-            x_bytes = rows * o.e.token_bytes
+            x_bytes = self._rows_bytes(0, rows)
             xk = -(-x_bytes // BLOCK_BYTES)
             if xk + k <= self.blocks:
                 start = self._place(xk + k)
@@ -220,7 +224,7 @@ class HostTier:
                              "principal": principal})
         self.counters["spills"] += 1
         self.counters["spill_bytes"] += x_bytes + need
-        self.counters["shared_bytes"] += rows * o.e.token_bytes - x_bytes
+        self.counters["shared_bytes"] += self._rows_bytes(0, rows) - x_bytes
 
     def best(self, prompt, principal):
         found, length = None, 0
@@ -300,7 +304,7 @@ class HostTier:
             entry["value"] = o.clock + len(entry["points"][index][0])
         ids, meta = entry["points"][index]
         self.counters["restores"] += 1
-        self.counters["restore_bytes"] += entry["rows"] * o.e.token_bytes + len(sids) * o.snap_bytes
+        self.counters["restore_bytes"] += self._rows_bytes(0, entry["rows"]) + len(sids) * o.snap_bytes
         return list(ids), self._snap(meta, sids[meta["snap"]]), None
 
     @staticmethod

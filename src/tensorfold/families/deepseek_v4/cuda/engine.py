@@ -22,7 +22,11 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-OP_ATTACH, OP_DETACH, OP_STEP, OP_LAYERS, OP_STOP = 1, 2, 3, 4, 9
+from .prefix import OPS as PREFIX_OPS, PrefixOwner
+
+# The Gemma 4 SM70 operation codes (the prefix owner announces them; prefix.SlotState runs the prefix ones); OP_STEP
+# (this provider's batched forward) takes Gemma's OP_FORWARD code.
+from tensorfold.families.gemma4.sm70.ops import OP_ATTACH, OP_DETACH, OP_FORWARD as OP_STEP, OP_LAYERS, OP_STOP
 _HEAD = struct.Struct("<qqqqq")
 PIPE_TIMEOUT = 600.0
 F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer): score every row; and the last row
@@ -41,7 +45,8 @@ class DS41Engine:
 
     def __init__(self, model_dir: Path, *, rank: int, tp: int, master: str = "", master_port: int = 29551,
                  context: int | None = None, slots: int = 4, max_tokens: int = MAX_TOKENS, parallel: int | None = None,
-                 serve: bool = False, queue_timeout_s: float | None = None, **_options) -> None:
+                 serve: bool = False, queue_timeout_s: float | None = None, keep_slots: int | None = None,
+                 prefix_host_bytes: int | None = None, **_options) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -73,6 +78,15 @@ class DS41Engine:
         started = time.perf_counter()
         self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.coll = Collectives(self.comm)
+        # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains; the host tier's
+        # pinned slab (Gemma 4 SM70 sizing, on by default) is allocated before the weights.
+        from .prefix import default_keep_slots, host_slab
+        if keep_slots is None:
+            keep_slots = default_keep_slots(slots)
+        if type(keep_slots) is not int or keep_slots < 0:
+            raise ValueError("keep_slots must be a nonnegative integer")
+        self.keep_slots = keep_slots
+        self.host_per_rank, self.host_slab = host_slab(self.comm, rank, tp, prefix_host_bytes)
         entry = raw.get("gguf_file") or raw.get("gguf_entrypoint")
         engram_file = raw.get("engram_file")
         if not entry or not engram_file:
@@ -94,12 +108,21 @@ class DS41Engine:
         from .target import Pool, BLOCK
         from .kernels.mu_packed import PackedLayout
         page_bytes = PackedLayout({l: g.compress_ratios[l] for l in g.kv_sources}, BLOCK).page_bytes
-        ring_bytes = slots * g.layers * 128 * 512 * 2
+        self.slots = slots + keep_slots + 1          # streams, kept chains, the scratch slot
+        ring_bytes = self.slots * g.layers * 128 * 512 * 2
         pages = max(1, (int(every.min()) - RESERVE - ring_bytes) // page_bytes)
-        self.slots = slots + 1
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device)
         self.layer_count = len(self.w.layers)
+        from .prefix import SlotState
+        self.prefix = SlotState(self.target, self.host_slab)
+        self.layout = self.target.pool.layout
+        self.token_bytes = self.layout.bytes_per_token
+        self.snap_bytes = self.prefix.snap_bytes
+        self.budget = pages * page_bytes            # the prefix owner's ledger: slot pages and snapshot pages
+        # Prompt chunks: fixed multiples of prompt_rows from position 0 (load-invariant); kept prefix points lie on
+        # them, so a resumed prompt computes exactly the cold chunks (prefix.py).
+        self.prompt_rows = max_tokens
         self.part = None                    # a paused prompt forward (state, logits rows), identical on every rank
         self.layer_marks = None             # rank 0: per-layer CUDA events of the prompt forward being timed
         self._warm()
@@ -119,6 +142,14 @@ class DS41Engine:
                   f"{page_bytes} B ({pages * 64} tokens), {slots} streams", flush=True)
         if rank == 0 and serve:
             from tensorfold.cuda.scheduler import Scheduler
+            self.points = None
+            try:                                    # message starts of a rendered prompt (kept-point candidates)
+                from tensorfold.cuda.markers import resume_points
+                from .. import cuda_chat_template
+                self.points = resume_points(model_dir, turn=True, template=cuda_chat_template(model_dir))
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                print(f"[tensorfold] DeepSeek-V4.1 SM70: no message-start prefix points ({error}); prompt ends only",
+                      flush=True)
             self.decoder = Decoder(self)
             # Requests beyond --parallel wait in the scheduler's queue; --queue-timeout-s bounds that wait (503 after).
             self.scheduler = Scheduler(self.decoder, max_streams=slots, queue_timeout_s=queue_timeout_s)
@@ -169,6 +200,10 @@ class DS41Engine:
 
     def _detach(self, slot):
         self.target.pool.detach(slot)
+
+    def slot_bytes(self, capacity: int) -> int:
+        """Ledger bytes of a slot holding ``capacity`` positions: its pages."""
+        return -(-capacity // 64) * self.page_bytes
 
     def _step(self, entries, ids, logits_rows, stop=0):
         flags, stop = stop & ~0xFFFF, stop & 0xFFFF
@@ -241,7 +276,10 @@ class DS41Engine:
             scores = self._score_rows(local, targets)
             if not last:
                 return scores
-            full = self.coll.gather(local[-1:].contiguous())
+            # the last row's logits as an unscored chunk computes them (a one-row head GEMM), so a scored request
+            # and a prefix-cached repeat of an unscored one start their replies from the same bits
+            last_row = torch.tensor([len(targets) - 1], dtype=torch.long, device=self.target.device)
+            full = self.coll.gather(self.target.end(state, last_row))
             return (scores, full) if self.rank == 0 else None
         local = self.target.end(state, rows)
         if local is None:
@@ -284,6 +322,8 @@ class DS41Engine:
             return self._step(entries, tokens, rows, d)
         if op == OP_LAYERS:
             return self._layers(a)
+        if op in PREFIX_OPS:
+            return self.prefix.run(op, a, b, c, d, ids)
         raise RuntimeError(f"unknown DeepSeek-V4.1 control operation {op}")
 
     def announce(self, op, a=0, b=0, c=0, d=0, ids=()):
@@ -332,7 +372,9 @@ class DS41Engine:
         options = {"background": True} if background else {}
         if penalties is not None and penalties.active:
             options["penalties"] = penalties
-        return self.scheduler.submit(list(prompt), max_tokens, sampling, False, on_tokens, stop_eos=stop_eos,
+        # ``draft`` carries prompt-prefix eligibility (no drafter yet), as the Gemma 4 SM70 Decoder reads it
+        return self.scheduler.submit(list(prompt), max_tokens, sampling, bool(draft and cache_prompt), on_tokens,
+                                     stop_eos=stop_eos,
                                      constraint=constraint, probabilities=probabilities, progress=progress, **options)
 
     def drain(self) -> None:
@@ -422,14 +464,19 @@ class DS41Engine:
             self.engram.close()
 
 
-class Decoder:
+class Decoder(PrefixOwner):
     """The shared Scheduler's decoder on rank 0: slots, prompt chunks and batched decode rounds.
 
     A round decides the batch in flight, launches the next batch over every decoding stream (one row each), then
     delivers the decided tokens and runs the next prompt chunk of the next filling request (round-robin, fixed
     ``max_tokens`` boundaries: a prompt's arithmetic never depends on load). While streams decode, the chunk runs
     in layer groups (one per round) of about equal measured cost, so a decoding stream waits one group plus its
-    round (about ``GAP_MS``), not the whole chunk (the Gemma 4 SM70 Decoder's schedule)."""
+    round (about ``GAP_MS``), not the whole chunk (the Gemma 4 SM70 Decoder's schedule).
+
+    Slots and their pages come from the prompt-prefix owner (``prefix.PrefixOwner``, the Gemma 4 SM70 / Flash Next
+    policy): admission places a request in a kept chain (resume in place, fork, host tier) or cold; prompt chunks
+    keep points at their boundaries and the exact prompt end; a finished stream's slot stays idle while it keeps
+    points."""
 
     def __init__(self, engine: DS41Engine):
         import torch
@@ -441,13 +488,13 @@ class Decoder:
         self.next_id = 0
         self._broken = None
         self.eos = tuple(engine.eos)
-        self.free_slots = list(range(engine.streams - 1, -1, -1))   # the last slot (engine.streams) is scratch
         self.inflight = None                         # (group, entries, logits, t0) of the launched decode batch
         self.split = None                            # (stream, chunk, remaining layer stops) of a paused chunk
         self.round_ms = 50.0                         # GPU time of a recent decode round (EMA; CUDA events)
         self.layer_ms = list(engine.warm_layer_ms)   # per prompt row, per layer: the last measured chunk
         self.measuring = None
         self.started, self.done = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        self._init_prefix(engine, engine.points)
 
     @property
     def broken(self):
@@ -471,13 +518,14 @@ class Decoder:
         return len(self.streams) + len(self.filling)
 
     def usage(self) -> dict:
-        pool = self.e.target.pool
-        held = (pool.pages - len(pool.free)) * self.e.page_bytes
-        budget = pool.pages * self.e.page_bytes
-        per_token = self.e.page_bytes // 64
-        return {"kv": {"budget_bytes": budget, "held_bytes": held, "active_bytes": held,
-                       "usage_ratio": round(held / budget, 6) if budget else None, "bytes_per_token": per_token,
-                       "free_tokens_estimate": len(pool.free) * 64}}
+        """/stats' KV-memory and prefix-cache readings."""
+        budget = self.e.budget
+        active = sum(self._bytes(s.st) for s in (*self.streams.values(), *self.filling) if s.st is not None)
+        per_token = self.e.token_bytes
+        return {"kv": {"budget_bytes": budget, "held_bytes": self.held, "active_bytes": active,
+                       "usage_ratio": round(active / budget, 6) if budget else None, "bytes_per_token": per_token,
+                       "free_tokens_estimate": max(0, budget - active) // per_token},
+                "prefix_cache": self.prefix_usage()}
 
     def _check(self):
         if self._broken is not None:
@@ -495,23 +543,24 @@ class Decoder:
         e = self.e
         if s.vision is not None:
             raise ValueError("DeepSeek-V4.1 SM70 does not serve image input yet")
-        capacity = len(s.prompt) + s.count
-        if capacity > e.context:
+        if len(s.prompt) + s.count > e.context:
             raise ValueError(f"prompt and reply exceed the {e.context}-token admitted context")
-        need = -(-capacity // 64)
-        if need > e.pages:
-            raise ValueError(f"a {len(s.prompt)}-token prompt with {s.count} reply tokens needs {need} KV pages per "
-                             f"GPU; {e.pages} exist")
-        if need > len(e.target.pool.free) or not self.free_slots:
-            raise NoRoom("DeepSeek-V4.1 KV pages or slots are in use; waiting for a stream to finish")
-        slot = self.free_slots.pop()
+        capacity = self._cap(len(s.prompt) + s.count)
+        if e.slot_bytes(capacity) > e.budget:
+            raise ValueError(f"a {len(s.prompt)}-token prompt with {s.count} reply tokens needs "
+                             f"{-(-capacity // 64)} KV pages per GPU; {e.pages} exist")
+        # Prompt reuse: eligible requests without media; a teacher-forcing sink only when it asks to borrow (it
+        # scores the rows it computes). Sampling does not change prompt state.
+        reuse = bool(s.draft and s.vision is None)
+        if hasattr(s.probabilities, "add_prompt") and not getattr(s.probabilities, "reuse", False):
+            reuse = False
         try:
-            e.announce(OP_ATTACH, slot, capacity)
+            self.place(s, capacity, reuse)
+        except NoRoom:
+            raise
         except BaseException as error:
-            self.free_slots.append(slot)
             self.broken = error
             raise
-        s.slot, s.st, s.pos = slot, slot, 0
         s.sid, self.next_id = self.next_id, self.next_id + 1
         s.history = History(s.penalties, s.prompt) if s.penalties is not None and s.penalties.active else None
         s.forced = getattr(s.probabilities, "forced", None)
@@ -535,17 +584,15 @@ class Decoder:
             self.streams.pop(getattr(s, "sid", None), None)
             if s in self.filling:
                 self.filling.remove(s)
-            slot = getattr(s, "slot", None)
-            if slot is None:
+            if getattr(s, "st", None) is None:
                 continue
-            s.slot = s.st = None
+            s.slot = None
             if self._broken is None:
                 try:
-                    self.e.announce(OP_DETACH, slot)
+                    self.retire_slot(s)
                 except BaseException as error:
                     self.broken = error
                     raise
-                self.free_slots.append(slot)
 
     def drop(self, error=None) -> list:
         """After an error in a round: forget every live stream; the ranks can no longer be trusted to agree."""
@@ -599,8 +646,13 @@ class Decoder:
         foreground = [x for x in self.filling if not x.background]
         s = (foreground or self.filling)[0]
         n, start = len(s.prompt), s.pos
-        stop = min(n, start + e.max_tokens)
+        if s.head is not None:                     # an exact repeat: the kept prompt end's own last-row logits
+            logits, s.head = s.head, None
+            return self._filled(s, (start, n, True, None, False), logits)
+        rows = e.prompt_rows                       # chunk boundaries at multiples of rows from position 0
+        stop = min(n, (start // rows + 1) * rows)
         last = stop == n
+        self.keep_before(s, start)
         plan = self._plan(stop - start)
         sink = s.probabilities if hasattr(s.probabilities, "add_prompt") else None
         layer = plan[0] if plan[0] < e.layer_count else 0
@@ -616,12 +668,14 @@ class Decoder:
                          layer)
         s.prefill_s += time.perf_counter() - t0
         if plan[0] < e.layer_count:
-            self.split = (s, (start, stop, last, sink), plan[1:])
+            self.split = (s, (start, stop, last, sink, True), plan[1:])
             return []
-        return self._filled(s, (start, stop, last, sink), out)
+        return self._filled(s, (start, stop, last, sink, True), out)
 
     def _filled(self, s, chunk, out) -> list:
-        start, stop, last, sink = chunk
+        """Prompt chunk ``chunk`` (start, stop, last, scoring sink, computed: False for an exact repeat's kept
+        logits) of ``s`` is done (``out``: its result)."""
+        start, stop, last, sink, computed = chunk
         n = len(s.prompt)
         logits = out
         if sink is not None:                   # scored chunk: scores, or (scores, last row) for a last chunk
@@ -629,6 +683,8 @@ class Decoder:
             for r in range(stop - start - (1 if last else 0)):
                 pos = start + r + 1
                 sink.add_prompt([pos], [s.prompt[pos]], [tl[r]], [ti[r][:sink.top]], [tv[r][:sink.top]])
+        if last and computed and s.keep_end:
+            self.keep_end(s, logits)
         s.pos = stop
         self.filling.remove(s)
         if s.on_fill is not None:
