@@ -117,21 +117,33 @@ class DS41Engine:
         smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
         layers = range(min(smoke, g.layers)) if smoke > 0 else None
         self.engram = None
+        mapping = None
         if layers is None or len(layers) > min(g.engram_layers):
+            # The Engram mapping (page tables, ordered registrations: host and driver work, no device memory) runs on
+            # its own thread while this one loads the weights; the forward first reads it in _warm, after the join.
+            from concurrent.futures import ThreadPoolExecutor
             rows = W.engram_split(shards, g)
-            with clock.phase("engram") as note:
-                self.engram = e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
-                note[0] = f"fill {e.fill_seconds:.1f} wait {e.wait_seconds:.1f} register {e.register_seconds:.1f}"
-            print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
+
+            def map_engram():
+                with clock.phase("engram") as note:
+                    e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
+                    note[0] = f"fill {e.fill_seconds:.1f} wait {e.wait_seconds:.1f} register {e.register_seconds:.1f}"
+                return e
+            mapping = ThreadPoolExecutor(1, thread_name_prefix="ds41-engram")
+            engram = mapping.submit(map_engram)
+            mapping.shutdown(wait=False)
         if layers is not None:
             print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
         prebuild.wait()
-        with clock.phase("barrier"):
-            self._barrier()
         with clock.phase("weights"):
             self.w = W.load(shards, g, rank, device, layers=layers)
-            shards.close()
             torch.cuda.synchronize()
+        if mapping is not None:
+            self.engram = engram.result()
+            print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
+        shards.close()
+        with clock.phase("barrier"):
+            self._barrier()
         # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
         # sized, so it does not come out of RESERVE.
         from tensorfold.cuda.sm70 import ds41_lattice_moe
