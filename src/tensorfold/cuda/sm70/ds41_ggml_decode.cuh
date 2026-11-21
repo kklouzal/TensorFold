@@ -2,8 +2,8 @@
 // GGML block decoding for DeepSeek-V4.1 original-GGUF carriers, TensorFold-owned,
 // written from llama.cpp ggml-quants.c reference dequantize_row_* (MIT): every
 // operation in FP32 with explicit rounding (no contraction), in reference order.
-// The same functions as onecat_ds41.cu's dequantize_kernel helpers (that unit
-// keeps its own copy until its owner switches it to this header).
+// The same values as onecat_ds41.cu's dequantize_kernel helpers (that unit keeps
+// its own copy until its owner switches it to this header); grid rows are read as words.
 #pragma once
 #include <cuda_fp16.h>
 #include <cstdint>
@@ -19,6 +19,18 @@ __device__ __forceinline__ float byte_half(const uint8_t* p) {
 template <int Book>
 __device__ __forceinline__ float grid_value(int entry, int j) {
   return float(int(turbomind::gemm::LatticeCodebook<Book>::value(entry * 8 + j)) - 128);
+}
+// The 8 grid values of one entry as float(byte - 128), read as two aligned 32-bit words (the
+// tables are 16-byte aligned, entries 8 bytes): the same values as grid_value(entry, 0..7).
+template <int Book>
+__device__ __forceinline__ void grid_row(int entry, float* v) {
+  using Codebook = turbomind::gemm::LatticeCodebook<Book>;
+  const uint32_t lo = Codebook::word(2 * entry), hi = Codebook::word(2 * entry + 1);
+#pragma unroll
+  for (int j = 0; j < 4; ++j) {
+    v[j] = float(int((lo >> (8 * j)) & 255) - 128);
+    v[j + 4] = float(int((hi >> (8 * j)) & 255) - 128);
+  }
 }
 static __constant__ int8_t kIQ4NL[16] = {-127, -104, -83, -65, -49, -35, -22, -10,
                                   1,    13,   25,  38,  53,  69,  89,  113};
@@ -65,9 +77,10 @@ __device__ void decode8(const uint8_t* b, int g, float* y) {
     const float db = __fmul_rn(__fmul_rn(d, __fadd_rn(0.5f, float(aux1 >> 28))), 0.25f);
     int signs = (aux1 >> (7 * l)) & 127;
     signs |= (__popc(signs) & 1) << 7;
+    float grid[8];
+    grid_row<16>(q[l], grid);
     for (int j = 0; j < 8; ++j)
-      y[j] = __fmul_rn(__fmul_rn(db, grid_value<16>(q[l], j)),
-                       signs & (1 << j) ? -1.f : 1.f);
+      y[j] = __fmul_rn(__fmul_rn(db, grid[j]), signs & (1 << j) ? -1.f : 1.f);
   } else if constexpr (Type == 17) {  // IQ2_XS
     const float d = byte_half(b);
     const int ib32 = g / 4, l = g % 4;
@@ -76,9 +89,10 @@ __device__ void decode8(const uint8_t* b, int g, float* y) {
     const uint32_t code = byte_u16(b + 2 + 2 * (4 * ib32 + l));
     int signs = code >> 9;
     signs |= (__popc(signs) & 1) << 7;
+    float grid[8];
+    grid_row<17>(code & 511, grid);
     for (int j = 0; j < 8; ++j)
-      y[j] = __fmul_rn(__fmul_rn(db, grid_value<17>(code & 511, j)),
-                       signs & (1 << j) ? -1.f : 1.f);
+      y[j] = __fmul_rn(__fmul_rn(db, grid[j]), signs & (1 << j) ? -1.f : 1.f);
   } else {  // IQ1_M: dl * (grid + delta)
     static_assert(Type == 29);
     const uint8_t* sc = b + 48;
@@ -94,8 +108,9 @@ __device__ void decode8(const uint8_t* b, int g, float* y) {
     const int qh = b[32 + 2 * ib + l / 2];
     const int index = b[4 * ib + l] | ((l % 2 ? qh << 4 : qh << 8) & 0x700);
     const float delta = qh & (l % 2 ? 0x80 : 0x08) ? -0.125f : 0.125f;
-    for (int j = 0; j < 8; ++j)
-      y[j] = __fmul_rn(dl, __fadd_rn(grid_value<29>(index, j), delta));
+    float grid[8];
+    grid_row<29>(index, grid);
+    for (int j = 0; j < 8; ++j) y[j] = __fmul_rn(dl, __fadd_rn(grid[j], delta));
   }
 }
 }  // namespace tensorfold::ds41_ggml
