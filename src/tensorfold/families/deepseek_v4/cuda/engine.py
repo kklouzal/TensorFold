@@ -219,9 +219,10 @@ class DS41Engine:
         kernels on slot 0 (a prompt chunk past the grouped-experts and prefill-indexer thresholds, then one decode
         row), so the first request builds nothing. Slot 0 is reset by its next attach."""
         import torch
-        from tensorfold.cuda.sm70 import ds41_lattice_moe, onecat_ds41
+        from tensorfold.cuda.sm70 import ds41_lattice_moe, ds41_sparse_attention, onecat_ds41
         from .target import DECODE_MAX
         ds41_lattice_moe.prepare()
+        ds41_sparse_attention.prepare()
         onecat_ds41.prepare()
         rows = max(ds41_lattice_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
         with torch.inference_mode():
