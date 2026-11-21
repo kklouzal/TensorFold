@@ -2833,7 +2833,8 @@ The V100 image runs on [CPython 3.15.2](deploy/v100/python315-runtime.md), built
 the source foundation: the pinned python-build-standalone 3.15.2 archive at
 `/opt/python3.15`, the owned PyTorch source rebuilt for cp315, and owned source builds
 of Triton 3.2.0 (with a compatibility patch), PyYAML and xgrammar, which have no
-usable cp315 wheels. On 8×V100 (SC117 IQ3_S, TP8/ETP4, MTP4, `--context 262144
+usable cp315 wheels. The serving image also carries the hash-pinned Pillow 13.0.0 cp315
+wheel for the image loader (`Dockerfile.pillow`; image `py315-app-48c51356-pillow13`). On 8×V100 (SC117 IQ3_S, TP8/ETP4, MTP4, `--context 262144
 --parallel 24`, manifest `m-bdec-pad35`, greedy, 512 output tokens), two sessions per
 arm of the pipeline-built image against the CPython 3.12.3 image `cf8c0ff6` measured
 prefill geomean 1.004 (0.998–1.010) and per-stream decode geomean 1.003 (0.983–1.024)

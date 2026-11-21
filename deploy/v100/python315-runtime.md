@@ -17,6 +17,7 @@ pipeline-built image is verified separately (see the ledger and the README).
 | Triton | PyPI `3.2.0` cp312 wheel | `3.2.0` source build for cp315 with [the owned patch](framework-patches/triton-3.2.0/0001-python315-compatibility.patch) |
 | pyyaml 6.0.3, xgrammar 0.2.9 | PyPI wheels | built from their PyPI sdists (no cp315 wheels) |
 | Other runtime packages | locked versions | same versions, cp315/abi3/py3 PyPI wheels |
+| Pillow (image loader) | not in the application image | `13.0.0` official cp315 wheel, hash-pinned, added by `Dockerfile.pillow` (see the [source foundation](source-foundation.md#whole-application-wheel-updates)) |
 
 Why each workaround exists:
 
@@ -55,7 +56,8 @@ Why each workaround exists:
 ## Building the image
 
 Use the source foundation's build stages; the owned builds run in its
-`owned-wheels` phase. The first measurements below came from an experimental
+`owned-wheels` phase. The serving image chain is SDK, `sm70-triton32-v1` runtime
+profile, `Dockerfile.pillow`, then `Dockerfile.application-wheel`. The first measurements below came from an experimental
 image assembled outside the pipeline (FROM the 3.12 image, separate caches); that
 recipe is superseded and not maintained.
 
