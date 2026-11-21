@@ -91,6 +91,9 @@ class DS41Engine:
         # all-reduce); every rank sets the same value before the communicator opens (its open checks they agree).
         from tensorfold.cuda import small_gather
         os.environ.setdefault(small_gather.ENV, str(small_gather.MAX_CAPACITY))
+        from .startup import Prebuild
+        prebuild = Prebuild(clock)         # every native extension, built/loaded in parallel beside the startup
+        prebuild.wait(small_gather.__name__)
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
         self.coll = Collectives(self.comm)
@@ -122,6 +125,7 @@ class DS41Engine:
             print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
         if layers is not None:
             print(f"[tensorfold] rank {rank}: DEVELOPMENT SMOKE: {len(layers)} of {g.layers} layers loaded", flush=True)
+        prebuild.wait()
         with clock.phase("barrier"):
             self._barrier()
         with clock.phase("weights"):
