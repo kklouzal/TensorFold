@@ -440,6 +440,8 @@ def test_the_warm_up_cost_sample_is_not_the_first_prompt_forward(monkeypatch):
     monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
     e = object.__new__(E.DS41Engine)
     e.rank, e.tower, e.geometry, e.layer_marks = 0, None, SimpleNamespace(bos=0), None
+    from tensorfold.families.deepseek_v4.cuda.startup import Timeline
+    e.timeline = Timeline(0)                # the startup phase clock _warm reports into (ds41-start)
     prompts = []
 
     class Event:
