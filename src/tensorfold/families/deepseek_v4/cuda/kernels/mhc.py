@@ -8,8 +8,8 @@
 # - vllm.triton_utils -> triton_utils; vllm.envs VLLM_V41_COL_PROJ/COL_B/COL_BLOCK/COL_W -> production
 #   default VLLM_V41_COL_PROJ=0, so the column-projection kernels (_col_projection, _col_projection2) and
 #   their dispatch are unreachable and removed; the bf16 widening condition reduces to ``normalized``.
-# - fp32_projection's row kernels take 1..band.BAND_ROWS (64) rows (the friend's patch 89 band, VLLM_V41_COL_PROJ=0:
-#   the row grid; every row keeps its M1 reduction).
+# - fp32_projection's row kernels take 1..band.GATE_ROWS (12) rows for unnormalized projections (the friend's patch
+#   89 band, VLLM_V41_COL_PROJ=0: the row grid; every row keeps its M1 reduction; measured crossover, band.py).
 # - Triton/torch-fallback selection uses on_triton_device() (== tensor.is_cuda in compiled runs; also CPU
 #   tensors under TRITON_INTERPRET=1 so interpreter tests exercise the kernels).
 # - Triton 3.2 rewrites: _row_projection reads BF16 coefficients as int16 bit patterns widened by a 16-bit
@@ -24,7 +24,7 @@ remain FP32, including the HC stream's wide range; linear sublayers use FP16.
 import torch
 import torch.nn.functional as F
 
-from .band import BAND_ROWS
+from .band import GATE_ROWS
 from .triton_utils import jit, on_triton_device, tl, triton
 
 
@@ -95,7 +95,7 @@ def _hc_projection_finish(
 
 
 def fp32_projection(x, weight, *, normalized=False, eps=1e-20):
-    """FP32 gate/mHC projection; fixed per-row reductions for M1..BAND_ROWS."""
+    """FP32 gate/mHC projection; fixed per-row reductions for M1..6 (mHC) / M1..GATE_ROWS (gate)."""
     if x.ndim != 2 or weight.ndim != 2 or x.shape[1] != weight.shape[1]:
         raise ValueError("V4.1 FP32 projection shapes do not match")
     if (
@@ -106,7 +106,7 @@ def fp32_projection(x, weight, *, normalized=False, eps=1e-20):
         raise ValueError("V4.1 coefficients must be contiguous FP32")
     if x.device != weight.device:
         raise ValueError("V4.1 activations and coefficients must share a device")
-    if on_triton_device(x) and x.shape[0] <= BAND_ROWS:
+    if on_triton_device(x) and x.shape[0] <= (6 if normalized else GATE_ROWS):
         result = torch.empty(
             x.shape[0], weight.shape[0], dtype=torch.float32, device=x.device
         )

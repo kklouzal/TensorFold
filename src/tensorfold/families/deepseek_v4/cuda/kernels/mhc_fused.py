@@ -11,8 +11,8 @@
 # - Removed paths unreachable at those values: V2 (_transition_parts2/_transition_finish2/_hc_transition2),
 #   the vLLM CUDA-extension path (_cuda_ready/_hc_transition_cuda) and the token-blocked tl.dot path
 #   (_transition_parts_tok/_hc_transition_tok). hc_transition dispatch: V3 for 1..8 tokens, otherwise the
-#   windowed per-token kernels, as upstream at these values; V3 up to band.BAND_ROWS (64) tokens (the friend's
-#   patch 89 band: the V3 grid is per token, so a token's result does not depend on M).
+#   windowed per-token kernels, as upstream at these values; V3 up to band.HC_ROWS (16) tokens (the friend's
+#   patch 89 band, cut at the measured crossover; V3 and the windowed kernels give the same bits, band.py).
 # - Triton 3.2 rewrites: none.
 """Fused V4.1 HC transition: expand (in place) + next mixes + delayed collapse.
 
@@ -30,7 +30,7 @@ is fixed per row, so M1..M6 graphs produce identical routes for a token.
 
 import torch
 
-from .band import BAND_ROWS
+from .band import HC_ROWS
 from .triton_utils import jit, tl
 
 H = 5120
@@ -212,7 +212,7 @@ def hc_transition(
         raise ValueError("V4.1 fused HC transition requires FP32 [T, 4, 5120]")
     mix = fn is not None
     device = residual.device
-    if 0 < tokens <= BAND_ROWS:
+    if 0 < tokens <= HC_ROWS:
         return _hc_transition3(
             residual,
             y,

@@ -11,10 +11,15 @@ same bits: the probabilities are the same FP32 expression, the mapping is intege
 ``add_halves``: FP32 ``a.float() + b.float()`` of two FP16 [rows, cols] tensors (the routed + shared expert sum
 before the cross-rank sum): one launch for two converting copies and an add, the same FP32 add.
 
-``project_rows``: the FP32 gate/mHC projection ``x @ w.T`` for decode bands (patch 89's band, up to
-``BAND_ROWS`` rows): every output element is ``_row_projection``'s per-row reduction (1024-element FP32 blocks
-summed in K order), so a row's result does not depend on the batch it is in (selection: tests/cuda/deepseek_v41
-band bench).
+Row bands (the friend's patch 89 extends V4.1's row-wise decode kernels to 64 rows; one V100, 180 W, CUDA-graph
+us per call, tests/cuda/deepseek_v41/ds41_band_bench.py, gpuq/runs/dec-band2r):
+  * ``BAND_ROWS`` (64): short_rms_norm (M32: 2.7 vs 21.8 us for the torch FP32 expression);
+  * ``GATE_ROWS`` (12): the unnormalized FP32 projection (router gate, BF16 [384, 5120]) on ``_row_projection``'s
+    row grid (M8 21.7 vs 40.5 us for the FP32 GEMM with its BF16 widening; M16 44.1 vs 42.3, M32 96.3 vs 44.9:
+    the GEMM above). A column-program variant reading each weight row once per row group was not faster (M16
+    40.7-52.1, M32 85-101 us) and was removed. The normalized mHC projection keeps upstream's 6 rows (unmeasured);
+  * ``HC_ROWS`` (16): the V3 fused HC transition (bitwise the windowed per-token kernels at every M measured:
+    M12 25.9 vs 29.2 us, M16 28.7 vs 29.0, M24 40.1 vs 35.4, M32 50.2 vs 47.2).
 """
 
 import torch
@@ -22,6 +27,8 @@ import torch
 from .triton_utils import jit, tl, triton
 
 BAND_ROWS = 64          # patch 89: row-wise decode kernels up to this many rows (VLLM_LOCAL_DS41_MU_INVARIANT_ROWS)
+GATE_ROWS = 12
+HC_ROWS = 16
 
 
 @jit
@@ -85,37 +92,3 @@ def add_halves(a, b):
     n = a.numel()
     _add_halves[(triton.cdiv(n, 1024),)](a, b, out, n, BLOCK=1024, num_warps=4)
     return out
-
-
-@jit
-def _project_rows(x, weight, out, M, K: tl.constexpr, N: tl.constexpr, ROWS: tl.constexpr, BLOCK: tl.constexpr,
-                  BF16_BITS: tl.constexpr):
-    # One program: one output column for ROWS rows. The weight block is read once per row group (L1 serves the
-    # repeats); each (row, column) keeps _row_projection's reduction: 1024-element blocks, tl.sum each, K order.
-    group, col = tl.program_id(0), tl.program_id(1)
-    index = tl.arange(0, BLOCK)
-    for i in tl.static_range(ROWS):
-        row = group * ROWS + i
-        if row < M:
-            dot = tl.full((), 0, tl.float32)
-            for first in range(triton.cdiv(K, BLOCK)):
-                k = first * BLOCK + index
-                a = tl.load(x + row * K + k, k < K, 0).to(tl.float32)
-                if BF16_BITS:
-                    b = (tl.load(weight + col * K + k, k < K, 0).to(tl.int32) << 16).to(tl.float32, bitcast=True)
-                else:
-                    b = tl.load(weight + col * K + k, k < K, 0).to(tl.float32)
-                dot += tl.sum(a * b, 0)
-            tl.store(out + row * N + col, dot)
-
-
-def project_rows(x, weight, rows_per_program=8):
-    """FP32 [M, N] = x [M, K] (FP16/FP32) @ weight [N, K] (FP32 or BF16-exact) .T, M <= BAND_ROWS, per-row
-    arithmetic of ``mhc._row_projection`` (unnormalized)."""
-    m = x.shape[0]
-    result = torch.empty(m, weight.shape[0], dtype=torch.float32, device=x.device)
-    bits = weight.dtype == torch.bfloat16
-    _project_rows[(triton.cdiv(m, rows_per_program), weight.shape[0])](
-        x, weight.view(torch.int16) if bits else weight, result, m, K=x.shape[1], N=weight.shape[0],
-        ROWS=rows_per_program, BLOCK=1024, BF16_BITS=bits, num_warps=4, enable_fp_fusion=False)
-    return result
