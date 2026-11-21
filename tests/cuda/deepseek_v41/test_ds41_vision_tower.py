@@ -168,6 +168,17 @@ def test_tower_against_upstream_and_friend(setup, name):
     entry["fp16_vs_ref"] = _compare(out16, gold)
     span = out16.float()
     assert torch.equal(span[0], ours16.start.half().float()) and torch.equal(span[-1], ours16.end.half().float())
+    # the serving path encodes in groups of blocks (Decoder._encode): the same kernels, so the same bits
+    reduced = torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+    try:
+        with torch.inference_mode():
+            st = ours16.start_frame(frame)
+            for first in range(0, V.LAYERS, 5):
+                ours16.run(st, min(V.LAYERS, first + 5))
+            assert torch.equal(ours16.span(frame, st), out16)
+    finally:
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = reduced
     assert entry["fp32_vs_ref"]["rel_l2"] < 1e-3 and entry["fp32_vs_ref"]["finite"]
     assert entry["fp16_vs_ref"]["finite"]
     if friend is not None:

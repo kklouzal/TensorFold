@@ -208,10 +208,59 @@ def expand_placeholders(prompt_ids: Sequence[int], frames: Sequence[ImageFrame])
     return PreparedVision(tuple(tokens), tuple(frames), tuple(blocks), tuple(f.content_hash for f in frames))
 
 
-def image_rows(ids):
-    """Device bool mask of image-span rows of a step (upstream rule: input id == IMAGE_TOKEN_ID). Text can never
-    carry the id: the V4.1 renderer refuses the literal placeholder in text."""
-    return ids == IMAGE_TOKEN_ID
+class Frontend:
+    """The CUDA server's image frontend of this lane (``engine.vision`` on rank 0; ``server.prompts.prepare_images``
+    calls ``prepare``). The server's V4.1 renderer writes one trusted ``<｜deepseek_image｜>`` per image part
+    (``prompts_v41``, images on); ``prepare`` encodes that prompt with the renderer's literal encoder (request text
+    never becomes the image token), preprocesses each image (``preprocess``) and expands the placeholders."""
+
+    videos = False
+    audio = False
+
+    def __init__(self, model_dir, *, allow_urls: bool = False) -> None:
+        from tensorfold.token_metadata import load_tokenizer
+
+        from ..serving_v41 import V41ChatTemplate
+
+        self.allow_urls = bool(allow_urls)
+        self.template = V41ChatTemplate(model_dir)
+        self.tokenizer = load_tokenizer(model_dir)
+        if self.tokenizer.token_to_id(IMAGE_PLACEHOLDER) != IMAGE_TOKEN_ID:
+            raise ValueError(f"the tokenizer's {IMAGE_PLACEHOLDER} is not id {IMAGE_TOKEN_ID}")
+
+    def prepare(self, rendered_prompt, images: Sequence[Any], *, max_prompt_tokens: int | None = None,
+                max_visual_tokens: int | None = None, **_unused) -> PreparedVision:
+        tokens = self.template.encode(self.tokenizer, rendered_prompt)
+        if not images or sum(t == IMAGE_TOKEN_ID for t in tokens) != len(images):
+            raise ValueError("the DeepSeek-V4.1 prompt must hold exactly one image placeholder per image")
+        frames = [preprocess(image) for image in images]
+        visual = sum(f.tokens for f in frames)
+        if max_visual_tokens is not None and visual > max_visual_tokens:
+            raise ValueError(f"the request's images take {visual} visual tokens; at most {max_visual_tokens} are "
+                             "admitted (--vision-image-tokens)")
+        prepared = expand_placeholders(tokens, frames)
+        if max_prompt_tokens is not None and len(prepared.token_ids) > max_prompt_tokens:
+            raise ValueError(f"context length exceeds {max_prompt_tokens} tokens after image expansion")
+        return prepared
+
+    @staticmethod
+    def continued(prepared: PreparedVision, ids) -> PreparedVision:
+        return prepared.continued(ids)
+
+
+def prefix_ids(prepared: PreparedVision, vocab: int) -> list[int]:
+    """The prompt ids the prompt-prefix cache keys on (and the engine's forwards carry): every image-span position
+    holds an id >= ``vocab`` derived from its frame's content (sha256 of the source pixels and the patch grid), word
+    ``j % 8`` of the digest at span offset ``j``, so two prompts share a prefix only where their images are the same
+    pixels. ``model_ids`` maps them back to IMAGE_TOKEN_ID; ids < ``vocab`` are the prompt's own."""
+    room = (1 << 31) - 1 - vocab
+    ids = list(prepared.token_ids)
+    for frame, (s, e) in zip(prepared.frames, prepared.blocks):
+        digest = hashlib.sha256(f"ds41-image-v1\0{frame.content_hash}\0{frame.n_vit_h}x{frame.n_vit_w}".encode()).digest()
+        words = [vocab + int.from_bytes(digest[4 * k:4 * k + 4], "little") % room for k in range(8)]
+        for j in range(e - s):
+            ids[s + j] = words[j % 8]
+    return ids
 
 
 # ------------------------------------------------------------------------------------------- mmproj reading
@@ -378,18 +427,26 @@ class VisionTower:
         with sdpa_kernel([SDPBackend.EFFICIENT_ATTENTION]):
             return torch.nn.functional.scaled_dot_product_attention(q, k, v)[0]
 
-    def grid(self, patches, n_h: int, n_w: int):
-        """ViT + aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] in reading order (compute dtype)."""
+    def begin(self, patches, n_h: int, n_w: int) -> dict:
+        """A resumable encode (``run`` advances it block by block, ``grid`` finishes it): the patch embedding of
+        ``patches`` [n_h * n_w, 3, 14, 14] (uint8 pixels, or float already normalized). Every step queues GPU work
+        only (no host wait), so the caller may run other forwards between blocks."""
         torch = self.torch
         F = torch.nn.functional
         if patches.shape != (n_h * n_w, 3, PATCH, PATCH):
             raise ValueError(f"{tuple(patches.shape)} patches for a {n_h} x {n_w} grid")
-        x = patches.to(self.device)
+        x = patches.to(self.device, non_blocking=True)
         x = ((x.float() / 255 - 0.5) / 0.5) if x.dtype == torch.uint8 else x.float()
         x = F.linear(x.flatten(1), self.patch_w, self.patch_b)             # FP32 residual stream
         cos, sin = rope_cos_sin(n_h, n_w, self.device)
+        return {"x": x, "cos": cos, "sin": sin, "n_h": n_h, "n_w": n_w, "next": 0}
+
+    def run(self, st: dict, stop: int) -> None:
+        """Blocks [st["next"], stop) of the ViT."""
+        F = self.torch.nn.functional
+        x, cos, sin = st["x"], st["cos"], st["sin"]
         n, hd = x.shape[0], DIM // HEADS
-        for b in self.blocks:
+        for b in self.blocks[st["next"]:stop]:
             h = self._linear(self._rms(x, b["ln1"]), b["qkv"], b["qkv_b"])
             q, k, v = (t.reshape(n, HEADS, hd) for t in h.chunk(3, dim=-1))
             q, k = self._rotary(q, cos, sin), self._rotary(k, cos, sin)
@@ -398,54 +455,58 @@ class VisionTower:
             x = x + o.float()
             gate, up = self._linear(self._rms(x, b["ln2"]), b["gate_up"]).float().chunk(2, dim=-1)
             x = x + self._linear((F.silu(gate) * up).to(self.compute), b["down"]).float()
-        x = self._rms(x, self.post_ln).view(n_h, n_w, DIM).permute(2, 0, 1)
+        st["x"], st["next"] = x, max(st["next"], stop)
+
+    def aligner(self, st: dict):
+        """post-norm, 3 x 3 merge and the aligner of a finished ViT: [ceil(n_h/3) * ceil(n_w/3), 5120] in reading
+        order (compute dtype)."""
+        F = self.torch.nn.functional
+        if st["next"] != LAYERS:
+            raise RuntimeError("the DeepSeek-V4.1 aligner runs after the last ViT block")
+        n_h, n_w = st["n_h"], st["n_w"]
+        x = self._rms(st["x"], self.post_ln).view(n_h, n_w, DIM).permute(2, 0, 1)
         x = F.pad(x, (0, -n_w % MERGE, 0, -n_h % MERGE))
         x = F.unfold(x.unsqueeze(0), MERGE, stride=MERGE).squeeze(0).transpose(0, 1)
         y = self._linear(x, self.mm1, self.mm1_b)
         y = F.gelu(y.float()).to(self.compute)
         return self._linear(y, self.mm2, self.mm2_b)
 
-    def encode(self, frame: ImageFrame, out_dtype=None):
-        """The frame's span [frame.tokens, 5120]: START, rows of (grid row, NEWLINE), END. ``out_dtype`` default
-        FP16 (the friend's merge into his FP16 inputs_embeds; the backbone lifts the stream to FP32 after)."""
+    def grid(self, patches, n_h: int, n_w: int):
+        """ViT + aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] in reading order (compute dtype)."""
+        st = self.begin(patches, n_h, n_w)
+        self.run(st, LAYERS)
+        return self.aligner(st)
+
+    def span(self, frame: ImageFrame, st: dict, out_dtype=None):
+        """The frame's span [frame.tokens, 5120] from its finished encode ``st``: START, rows of (grid row,
+        NEWLINE), END."""
         torch = self.torch
         out_dtype = torch.float16 if out_dtype is None else out_dtype
-        patches = torch.from_numpy(np.array(frame.patches))
-        reduced = torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
-        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-        try:
-            with torch.inference_mode():
-                grid = self.grid(patches, frame.n_vit_h, frame.n_vit_w)
-                rows = grid.float().view(frame.n_llm_h, frame.n_llm_w, OUT_DIM)
-                newline = self.newline.view(1, 1, OUT_DIM).expand(frame.n_llm_h, 1, OUT_DIM)
-                body = torch.cat([rows, newline], dim=1).reshape(-1, OUT_DIM)
-                span = torch.cat([self.start.view(1, -1), body, self.end.view(1, -1)], dim=0)
-        finally:
-            torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = reduced
+        rows = self.aligner(st).float().view(frame.n_llm_h, frame.n_llm_w, OUT_DIM)
+        newline = self.newline.view(1, 1, OUT_DIM).expand(frame.n_llm_h, 1, OUT_DIM)
+        body = torch.cat([rows, newline], dim=1).reshape(-1, OUT_DIM)
+        span = torch.cat([self.start.view(1, -1), body, self.end.view(1, -1)], dim=0)
         if span.shape[0] != frame.tokens:
             raise AssertionError("DeepSeek-V4.1 span length differs from its plan")
         return span.to(out_dtype)
 
+    def start_frame(self, frame: ImageFrame) -> dict:
+        """``begin`` for a frame's patches (pinned host copy, so the upload does not wait on the host)."""
+        patches = self.torch.from_numpy(np.array(frame.patches))
+        if self.device.type == "cuda":
+            patches = patches.pin_memory()
+        return self.begin(patches, frame.n_vit_h, frame.n_vit_w)
 
-@dataclass(frozen=True, slots=True)
-class EncodedVision:
-    rows: Any        # device int64 [V]: prompt positions of every image-span token, ascending
-    features: Any    # device [V, 5120]: the spans concatenated in prompt order
-
-
-def encode(tower: VisionTower, prepared: PreparedVision, start: int = 0, out_dtype=None) -> EncodedVision:
-    """Every span of ``prepared`` that ends after prompt position ``start`` (a prefix hit before ``start`` keeps
-    earlier spans out); spans straddling ``start`` are encoded whole and their rows before ``start`` dropped."""
-    torch = tower.torch
-    rows, features = [], []
-    for frame, (s, e) in zip(prepared.frames, prepared.blocks):
-        if e <= start:
-            continue
-        span = tower.encode(frame, out_dtype)
-        lo = max(s, start)
-        rows.append(torch.arange(lo, e, device=tower.device))
-        features.append(span[lo - s:])
-    if not rows:
-        empty = torch.empty(0, OUT_DIM, dtype=out_dtype or torch.float16, device=tower.device)
-        return EncodedVision(torch.empty(0, dtype=torch.int64, device=tower.device), empty)
-    return EncodedVision(torch.cat(rows), torch.cat(features))
+    def encode(self, frame: ImageFrame, out_dtype=None):
+        """The frame's whole span [frame.tokens, 5120] (delimiters included). ``out_dtype`` default FP16 (the
+        friend's merge into his FP16 inputs_embeds; the backbone lifts the stream to FP32 after)."""
+        torch = self.torch
+        reduced = torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        try:
+            with torch.inference_mode():
+                st = self.start_frame(frame)
+                self.run(st, LAYERS)
+                return self.span(frame, st, out_dtype)
+        finally:
+            torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = reduced

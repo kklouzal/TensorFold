@@ -34,6 +34,7 @@ PIPE_TIMEOUT = 600.0
 F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer): score every row; and the last row
 # graph decode flags: return the compact greedy packet (``round_sampling``); and also gather the full rows
 F_COMPACT, F_FULL = 1 << 22, 1 << 23
+F_IMAGE = 1 << 24          # a prompt chunk with image rows: rank 0 broadcasts their features after the frame
 SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
@@ -53,7 +54,8 @@ class DS41Engine:
     def __init__(self, model_dir: Path, *, rank: int, tp: int, master: str = "", master_port: int = 29551,
                  context: int | None = None, slots: int = 4, max_tokens: int = MAX_TOKENS, parallel: int | None = None,
                  serve: bool = False, queue_timeout_s: float | None = None, graphs: bool = True,
-                 keep_slots: int | None = None, prefix_host_bytes: int | None = None, **_options) -> None:
+                 keep_slots: int | None = None, prefix_host_bytes: int | None = None, vision: bool = False,
+                 vision_urls: bool = False, vision_offload: bool = False, **_options) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -119,6 +121,33 @@ class DS41Engine:
         self._barrier()
         self.w = W.load(shards, g, rank, device, layers=layers)
         shards.close()
+        # Image input (--vision): the vision router bias on every rank, the mmproj tower on rank 0 only (it encodes,
+        # then broadcasts each prompt chunk's image rows). Loaded before the KV pool is sized, so the pool pays for
+        # it; the KV pool is sized by the smallest rank, so one rank's tower costs every rank the same pages as a
+        # replicated one would, without seven idle copies.
+        self.tower = self.vision = None
+        self.bias_vl = None
+        if vision_offload:
+            raise ValueError("DeepSeek-V4.1 SM70 keeps its vision tower on GPU 0: --vision-offload is unsupported")
+        if vision:
+            from . import vision as V
+            V.check_config(raw)
+            mmproj, bias_file = raw.get("mmproj_file"), raw.get("vision_bias_file")
+            if not mmproj or not bias_file:
+                raise ValueError("--vision needs config.json mmproj_file (the deepseek41v mmproj GGUF) and "
+                                 "vision_bias_file (exp_probs_b_vl.f32, 40 x 384 F32)")
+            table, digest = V.read_bias_vl(resolve(bias_file))
+            if table.shape[0] != g.layers:
+                raise ValueError(f"the vision router bias has {table.shape[0]} layers; the model has {g.layers}")
+            self.bias_vl = torch.from_numpy(table).to(device)
+            if rank == 0:
+                tensors = V.read_mmproj(resolve(mmproj))
+                self.tower = V.VisionTower(tensors, device)
+                del tensors
+                self.vision = V.Frontend(model_dir, allow_urls=vision_urls)
+                print(f"[tensorfold] DeepSeek-V4.1 SM70: vision tower on GPU 0 of rank 0, "
+                      f"{self.tower.nbytes() / 2**30:.2f} GiB (FP16 GEMMs, FP32 residual); vision router bias "
+                      f"sha256 {'matches' if digest == V.BIAS_VL_SHA256 else 'DIFFERS from'} upstream's", flush=True)
         # The lattice prefill experts' persistent canonical-bank workspace (540 MiB) exists before the KV pool is
         # sized, so it does not come out of RESERVE.
         from tensorfold.cuda.sm70 import ds41_lattice_moe
@@ -141,7 +170,9 @@ class DS41Engine:
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
         pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
-                             context=self.context, engram=self.engram, device=device, lattice=lattice)
+                             context=self.context, engram=self.engram, device=device, lattice=lattice,
+                             bias_vl=self.bias_vl)
+        self.image_features = None          # rank 0: the next F_IMAGE step's image rows [n, 5120] FP16
         self.layer_count = len(self.w.layers)
         self.units = self.target.units      # pause points of a prompt forward (attention, experts per layer)
         from .prefix import SlotState
@@ -239,7 +270,43 @@ class DS41Engine:
             self.layer_marks = None
             self._step([(0, rows, 1)], [self.geometry.bos], [0])
             self._detach(0)
+            if self.tower is not None:
+                self._warm_tower()
         torch.cuda.synchronize()
+
+    def _warm_tower(self):
+        """Rank 0: encode the plan's largest image (93 x 93 patches, 994 tokens) once, so its kernels, cuBLAS
+        handles and allocator blocks exist before the first request, and time its blocks: ``tower_block_ms`` is
+        the per-block cost the Decoder cuts encodes in groups by while streams decode (scaled by patch count, which
+        overestimates smaller images: attention is quadratic)."""
+        import numpy as np
+        import torch
+        from . import vision as V
+        side = 93
+        frame = V.ImageFrame(np.zeros((side * side, 3, V.PATCH, V.PATCH), np.uint8), side, side, "warm")
+        free = torch.cuda.mem_get_info()[0]
+        torch.cuda.reset_peak_memory_stats()
+        before = torch.cuda.memory_allocated()
+        st = self.tower.start_frame(frame)
+        events = [torch.cuda.Event(enable_timing=True) for _ in range(V.LAYERS + 1)]
+        events[0].record()
+        for b in range(V.LAYERS):
+            self.tower.run(st, b + 1)
+            events[b + 1].record()
+        span = self.tower.span(frame, st)
+        torch.cuda.synchronize()
+        if span.shape != (frame.tokens, V.OUT_DIM) or not bool(torch.isfinite(span).all()):
+            raise RuntimeError("DeepSeek-V4.1 vision tower warm-up produced an invalid span")
+        self.tower_patches = side * side
+        ms = [events[b].elapsed_time(events[b + 1]) for b in range(V.LAYERS)]
+        self.tower_block_ms = max(ms)
+        self.tower_peak = torch.cuda.max_memory_allocated() - before
+        del st, span
+        print(f"[tensorfold] DeepSeek-V4.1 SM70: vision tower warm ({frame.tokens}-token image): blocks "
+              f"{sum(ms):.0f} ms ({self.tower_block_ms:.1f} ms max), transient peak {self.tower_peak >> 20} MiB "
+              f"of {free >> 20} MiB free", flush=True)
+        if self.tower_peak > RESERVE:
+            raise RuntimeError("the DeepSeek-V4.1 vision tower's transients exceed the prompt reserve")
 
     def _barrier(self):
         import torch
@@ -278,7 +345,7 @@ class DS41Engine:
         for slot, start, count in entries:
             if start + count > len(pool.owned.get(slot, ())) * 64:
                 raise RuntimeError(f"slot {slot}: positions up to {start + count} exceed its KV pages")
-        if (stop == 0 and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
+        if (stop == 0 and not flags & F_IMAGE and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
             compact = bool(flags & F_COMPACT)
             return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL))
@@ -299,10 +366,28 @@ class DS41Engine:
                 inside.update(range(s0, s1))
             rest = [i for i in range(qsl[-1]) if i not in inside]
             decode_index = t(rest, torch.long) if rest else torch.empty(0, dtype=torch.long, device=device)
+        image = image_rows = features = None
+        if flags & F_IMAGE:          # image rows carry prompt-cache ids >= vocab (``vision.prefix_ids``)
+            from .vision import IMAGE_TOKEN_ID, OUT_DIM
+            rows_at = [i for i, token in enumerate(ids) if token >= self.vocab]
+            if not rows_at:
+                raise RuntimeError("an image step without image rows")
+            ids = [IMAGE_TOKEN_ID if token >= self.vocab else token for token in ids]
+            if self.rank == 0:
+                features, self.image_features = self.image_features, None
+                if features is None or features.shape != (len(rows_at), OUT_DIM) or features.dtype != torch.float16:
+                    raise RuntimeError("the image step's features do not match its image rows")
+            else:
+                features = torch.empty(len(rows_at), OUT_DIM, dtype=torch.float16, device=device)
+            self.comm.broadcast(features, 0)
+            image_rows = t(rows_at, torch.long)
+            image = torch.zeros(len(ids), dtype=torch.bool, device=device)
+            image[image_rows] = True
         step = Step(ids=t(ids, torch.long), positions=t(positions, torch.long),
                     valid=torch.ones(len(ids), dtype=torch.bool, device=device), token_req=t(token_req, torch.int32),
                     qsl=t(qsl, torch.int32), qsl_cpu=qsl, num_reqs=len(entries), req_slot=t(req_slot, torch.int32),
-                    block_table=t(table, torch.int32), prefill=prefill, decode_index=decode_index)
+                    block_table=t(table, torch.int32), prefill=prefill, decode_index=decode_index,
+                    image=image, image_rows=image_rows, features=features)
         del rows
         state = self.target.begin(step)
         if flags & F_SCORE:                # logits_rows carries each row's next token: score all rows
@@ -426,7 +511,11 @@ class DS41Engine:
         if self.rank != 0:
             raise RuntimeError("only rank 0 generates")
         if vision is not None:
-            raise ValueError("DeepSeek-V4.1 SM70 does not serve image input yet")
+            from .vision import PreparedVision
+            if self.tower is None:
+                raise ValueError("image input requires the server started with --vision")
+            if type(vision) is not PreparedVision or tuple(prompt) != vision.token_ids:
+                raise ValueError("DeepSeek-V4.1 image prompts must be the vision frontend's prepared prompt")
         if not isinstance(prompt, (list, tuple)) or not prompt or any(
                 type(t) is not int or not 0 <= t < self.vocab for t in prompt):
             raise ValueError("DeepSeek-V4.1 needs a nonempty list of in-vocabulary prompt token IDs")
@@ -441,7 +530,7 @@ class DS41Engine:
             options["penalties"] = penalties
         # ``draft`` carries prompt-prefix eligibility (no drafter yet), as the Gemma 4 SM70 Decoder reads it
         return self.scheduler.submit(list(prompt), max_tokens, sampling, bool(draft and cache_prompt), on_tokens,
-                                     stop_eos=stop_eos,
+                                     stop_eos=stop_eos, vision=vision,
                                      constraint=constraint, probabilities=probabilities, progress=progress, **options)
 
     def drain(self) -> None:
@@ -617,7 +706,16 @@ class Decoder(PrefixOwner):
         self._check()
         e = self.e
         if s.vision is not None:
-            raise ValueError("DeepSeek-V4.1 SM70 does not serve image input yet")
+            # Image spans carry content-derived ids >= vocab in the prompt the prefix cache keys on and the forwards
+            # carry (``vision.prefix_ids``), so a kept point covers its images' pixels, not just their token count.
+            from .vision import prefix_ids
+            if e.tower is None:
+                raise ValueError("image input requires the server started with --vision")
+            if hasattr(s.probabilities, "add_prompt"):
+                raise ValueError("DeepSeek-V4.1 SM70 scores text prompts only")
+            s.prompt = prefix_ids(s.vision, e.vocab)
+            s.encoded = {}                 # frame index -> its span, while a later chunk still needs rows of it
+            s.encoding = None              # (frame index, the tower's paused encode)
         if len(s.prompt) + s.count > e.context:
             raise ValueError(f"prompt and reply exceed the {e.context}-token admitted context")
         capacity = self._cap(len(s.prompt) + s.count)
@@ -626,7 +724,7 @@ class Decoder(PrefixOwner):
                              f"{-(-capacity // 64)} KV pages per GPU; {e.pages} exist")
         # Prompt reuse: eligible requests without media; a teacher-forcing sink only when it asks to borrow (it
         # scores the rows it computes). Sampling does not change prompt state.
-        reuse = bool(s.draft and s.vision is None)
+        reuse = bool(s.draft)
         if hasattr(s.probabilities, "add_prompt") and not getattr(s.probabilities, "reuse", False):
             reuse = False
         try:
@@ -637,7 +735,8 @@ class Decoder(PrefixOwner):
             self.broken = error
             raise
         s.sid, self.next_id = self.next_id, self.next_id + 1
-        s.history = History(s.penalties, s.prompt) if s.penalties is not None and s.penalties.active else None
+        s.history = (History(s.penalties, list(s.prompt if s.vision is None else s.vision.token_ids))
+                     if s.penalties is not None and s.penalties.active else None)
         s.forced = getattr(s.probabilities, "forced", None)
         self.filling.append(s)
 
@@ -729,6 +828,14 @@ class Decoder(PrefixOwner):
             return self._filled(s, (start, n, True, None, False), logits)
         stop = chunk_end(s.bounds, start, n)       # the splits placement chose (prefix.chunk_splits)
         last = stop == n
+        image = 0
+        if s.vision is not None:
+            t0 = time.perf_counter()
+            ready = self._encode(s, start, stop)
+            s.prefill_s += time.perf_counter() - t0
+            if not ready:                          # an encode group ran this round; the chunk waits for the rest
+                return []
+            image = F_IMAGE if e.image_features is not None else 0
         self.keep_before(s, start)
         self._absorb()
         self.timing = (stop - start, [])
@@ -745,7 +852,7 @@ class Decoder(PrefixOwner):
                          layer | F_SCORE | (F_LAST if last else 0))
         else:
             out = e.step([(s.slot, start, stop - start)], s.prompt[start:stop], [stop - start - 1] if last else [],
-                         layer)
+                         layer | image)
         s.prefill_s += time.perf_counter() - t0
         if unit < e.units:
             self.split = (s, (start, stop, last, sink, True), unit)
@@ -783,6 +890,46 @@ class Decoder(PrefixOwner):
             return [s]
         s.take([first], self._ends(s))
         return [s] if s.done else []
+
+    def _encode(self, s, start: int, stop: int) -> bool:
+        """Rank 0: the image rows of prompt chunk [start, stop) of ``s`` into ``e.image_features`` (None: no image
+        row in it). Frames are encoded in tower blocks; while streams decode, one group of blocks a round, each
+        group's predicted cost at most the decode gap (as prompt units are cut), so an image never stalls decoding
+        streams for its whole encode. Returns False while an encode is unfinished. Only spans a later chunk still
+        reads stay (``s.encoded``)."""
+        import torch
+        from tensorfold.cuda.geometry import group_target
+        from .vision import LAYERS
+        e = self.e
+        tower = e.tower
+        need = [i for i, (a, b) in enumerate(s.vision.blocks) if a < stop and b > start]
+        for i in need:
+            if i in s.encoded:
+                continue
+            frame = s.vision.frames[i]
+            if s.encoding is None or s.encoding[0] != i:
+                s.encoding = (i, tower.start_frame(frame))
+            st = s.encoding[1]
+            end = LAYERS
+            if self.streams:
+                block = e.tower_block_ms * frame.patches.shape[0] / e.tower_patches
+                target = group_target(self.GAP_MS, self.rounds.estimate(self._bucket(len(self.streams))))
+                end = min(LAYERS, st["next"] + max(1, int(target // max(block, 1e-3))))
+            tower.run(st, end)
+            if st["next"] < LAYERS:
+                return False
+            s.encoded[i] = tower.span(frame, st)
+            s.encoding = None
+            if self.streams:                       # the aligner closed this round's group
+                return False
+        rows = []
+        for i in need:
+            a, b = s.vision.blocks[i]
+            rows.append(s.encoded[i][max(a, start) - a:min(b, stop) - a])
+            if b <= stop:
+                del s.encoded[i]
+        e.image_features = torch.cat(rows).contiguous() if rows else None
+        return True
 
     def _stop(self, rows, at) -> int:
         """The unit after which the prompt chunk of ``rows`` rows, now at unit ``at``, pauses next: every remaining

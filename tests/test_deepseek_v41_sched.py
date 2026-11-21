@@ -91,8 +91,8 @@ def _fake_target(monkeypatch, layers=5, engram=(2,)):
                         attn_norm=1 + i / 10, ffn_norm=1 - i / 20) for i in range(layers)])
     t.compressed_rope, t.window_rope = "compressed", "window"
     t.attention = lambda ly, x, step, table, shared: (log.append(("attention", ly.index, table)), x * (1 + ly.index / 9) + 1)[1]
-    t.moe = lambda ly, x: (log.append(("moe", ly.index)), x * 0.5 - ly.index / 3)[1]
-    t.engram_layer = lambda ly, hidden, hashes, step: (log.append(("engram", ly.index)), hidden * 1.01 + 0.5)[1]
+    t.moe = lambda ly, x, image: (log.append(("moe", ly.index)), x * 0.5 - ly.index / 3)[1]
+    t.engram_layer = lambda ly, hidden, hashes, step, valid: (log.append(("engram", ly.index)), hidden * 1.01 + 0.5)[1]
     return t, log
 
 
@@ -102,7 +102,8 @@ def _run(t, stops):
     pre = torch.zeros(6, 4, dtype=torch.float64)
     pre[:, 0] = 1
     st = {"step": None, "hashes": None, "hidden": hidden, "pre": pre, "shared": {"topk": None}, "mix": None,
-          "half": None, "next": 0, "result": None}
+          "half": None, "next": 0, "result": None,
+          "valid": None, "image": None}
     for stop in stops:
         t.layers(st, stop)
     assert st["next"] == t.units
@@ -134,7 +135,8 @@ def test_marks_time_each_unit(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "Event", Event)
     st = {"step": None, "hashes": None, "hidden": torch.ones(2, 4, 8), "pre": torch.ones(2, 4), "shared": {},
-          "mix": None, "half": None, "next": 0, "result": None}
+          "mix": None, "half": None, "next": 0, "result": None,
+          "valid": None, "image": None}
     marks = []
     t.layers(st, 1, marks)
     t.layers(st, 4, marks)
