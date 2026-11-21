@@ -24,7 +24,7 @@ us per call, tests/cuda/deepseek_v41/ds41_band_bench.py, gpuq/runs/dec-band2r):
 
 import torch
 
-from .triton_utils import fma_dot_acc, jit, tl, triton
+from .triton_utils import jit, tl, triton
 
 BAND_ROWS = 64          # patch 89: row-wise decode kernels up to this many rows (VLLM_LOCAL_DS41_MU_INVARIANT_ROWS)
 GATE_ROWS = 12
@@ -91,37 +91,4 @@ def add_halves(a, b):
     out = torch.empty(a.shape, dtype=torch.float32, device=a.device)
     n = a.numel()
     _add_halves[(triton.cdiv(n, 1024),)](a, b, out, n, BLOCK=1024, num_warps=4)
-    return out
-
-
-@jit
-def _gate_gemm(x, weight, out, M, N: tl.constexpr, K: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr,
-               BK: tl.constexpr, BF16_BITS: tl.constexpr):
-    # FP32 [BM, BN] tile of x @ weight.T: FP16 x and BF16 weight (int16 bits widened by a 16-bit shift, exact),
-    # products exact in FP32 (11 x 8 significant bits), FP32 FMA accumulation in K order (IEEE dot on SM70).
-    pm, pn = tl.program_id(0), tl.program_id(1)
-    rows = pm * BM + tl.arange(0, BM)
-    cols = pn * BN + tl.arange(0, BN)
-    k = tl.arange(0, BK)
-    acc = tl.zeros((BM, BN), tl.float32)
-    for k0 in range(0, K, BK):
-        a = tl.load(x + rows[:, None] * K + (k0 + k)[None, :], (rows < M)[:, None], 0.0).to(tl.float32)
-        w = tl.load(weight + cols[:, None] * K + (k0 + k)[None, :])
-        b = (w.to(tl.int32) << 16).to(tl.float32, bitcast=True) if BF16_BITS else w
-        acc = fma_dot_acc(a, tl.trans(b), acc)
-    tl.store(out + rows[:, None] * N + cols[None, :], acc, (rows < M)[:, None])
-
-
-def gate_projection(x, weight):
-    """FP32 x [M, K] @ weight [N, K].T for FP16 x and the FP32 or BF16-exact gate (the router above GATE_ROWS)."""
-    m, k = x.shape
-    n = weight.shape[0]
-    if (x.dtype != torch.float16 or weight.dtype not in (torch.bfloat16, torch.float32) or not x.is_contiguous()
-            or not weight.is_contiguous() or k % 32 or n % 32):
-        raise ValueError("gate_projection needs contiguous FP16 x and FP32/BF16 weights, K and N multiples of 32")
-    bits = weight.dtype == torch.bfloat16
-    out = torch.empty(m, n, dtype=torch.float32, device=x.device)
-    bm = 16 if m <= 16 else 32
-    _gate_gemm[(triton.cdiv(m, bm), n // 32)](x, weight.view(torch.int16) if bits else weight, out, m, N=n, K=k,
-                                             BM=bm, BN=32, BK=32, BF16_BITS=bits, num_warps=4)
     return out
