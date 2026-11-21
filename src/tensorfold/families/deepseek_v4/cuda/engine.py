@@ -139,6 +139,9 @@ class DS41Engine:
         from tensorfold.cuda.sm70 import ds41_prefill_moe, onecat_ds41
         from .target import DECODE_MAX
         ds41_prefill_moe.prepare()
+        if self.target.lattice is not None:
+            from tensorfold.cuda.sm70 import ds41_lattice_moe
+            ds41_lattice_moe.prepare()
         onecat_ds41.prepare()
         rows = max(ds41_prefill_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
         with torch.inference_mode():

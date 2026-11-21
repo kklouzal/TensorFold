@@ -47,6 +47,19 @@ header. The [license](src/tensorfold/families/deepseek_v4/cuda/kernels/onecat_v4
 [provenance notice](src/tensorfold/families/deepseek_v4/cuda/kernels/onecat_v41_NOTICE.txt), with each file's
 Git blob or SHA-256, accompany the component. Inclusion does not qualify or select a serving path.
 
+## 1Cat DeepSeek-V4.1 TurboMind lattice prefill experts
+
+`src/tensorfold/cuda/sm70/ds41_lattice/` vendors the SM70 TurboMind grouped-GEMM templates of
+[1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM/tree/4d57473db67eb77a13018d179e4d95169e82044f) revision
+`4d57473db67eb77a13018d179e4d95169e82044f` (TurboMind/LMDeploy, Copyright (c) OpenMMLab, Apache License 2.0, with
+1Cat's GGUF lattice quant types; `lattice_codebooks.h` carries GGML tables under the
+[GGML MIT notice](LICENSES/GGML-MIT.txt)), its GGUF prefill transcode, and the tile-variant op of a 1Cat overlay
+snapshot (patch 340, Apache-2.0 SPDX). `ds41_lattice_moe.cu` ports the glue kernels of overlay patch 140. TensorFold
+rewrites the quoted include paths relative to each file and replaces the `TORCH_LIBRARY` registration with plain
+entry points; nothing else changes. The [license](src/tensorfold/cuda/sm70/ds41_lattice/LICENSE.txt) and
+[provenance notice](src/tensorfold/cuda/sm70/ds41_lattice/NOTICE.txt), with each file's upstream SHA-256,
+accompany the component. Inclusion does not qualify or select a serving path.
+
 ## Gemma E4B EAGLE3 adapter
 
 The first-layer boundary in `src/tensorfold/families/gemma4/cuda/eagle3.py` and
