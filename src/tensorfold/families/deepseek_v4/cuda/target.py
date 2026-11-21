@@ -4,7 +4,8 @@ packed attention (overlay patches 85/87), on TensorFold-owned KV pages, slots an
 Order and arithmetic follow 1Cat-vLLM 4d57473d ``vllm/models/deepseek_v41/model.py`` (``_forward_fused``:
 VLLM_V41_HC_FUSED=1, VLLM_V41_ROUTER_FUSED=1) with patch 87's ``attention_forward`` (packed FP4 KV rows on the
 GPU, per-slot window rings, row-wise decode indexer, single-request prefill indexer). Kernels are the vendored
-1Cat/overlay Triton kernels (``.kernels``) and the 1Cat SM70 GGUF expert ops (``tensorfold.cuda.sm70.onecat_ds41``).
+1Cat/overlay Triton kernels (``.kernels``), the 1Cat SM70 GGUF expert ops (``tensorfold.cuda.sm70.onecat_ds41``) and,
+below the grouped-prefill threshold, the friend's expert-major decode experts (``ds41_decode_moe``, patch 240 EM3).
 
 TensorFold changes, recorded: TP8 attention/dense (8 query heads, 1 output group, 4 indexer heads per rank)
 instead of TP4, and experts ETP4 x EP2 (rank r holds experts [192 (r // 4), +192) at TP slice r % 4) instead of
@@ -138,6 +139,8 @@ class Target:
                 self.c2[layer.index] = mu_state.MuC2State(layer.comp_norm, slots=slots - 1, trap=True)
         self.local = range(w.group * (g.experts // EP), (w.group + 1) * (g.experts // EP))
         self.engram_rows = torch.empty(max_tokens, 24 * 256, dtype=torch.float16, device=device)
+        from tensorfold.cuda.sm70 import ds41_decode_moe
+        self.decode_moe = ds41_decode_moe.Workspace(device)   # routed experts below the grouped-prefill threshold
         # Engram lookup telemetry for the deferred hot-row VRAM cache candidate (off unless the variable names a
         # file; rank 0 only, since every rank looks up the same rows): appends each forward's valid hashed row ids
         # (int64 [tokens, 2 tables, 24 heads], table-local) for offline hit-rate / churn analysis.
@@ -255,13 +258,9 @@ class Target:
         if x.shape[0] >= prefill_moe.MIN_TOKENS:  # grouped prefill experts (one host sync; not captured)
             out = prefill_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left)
-        else:
-            out = torch.empty_like(x)
-            for at in range(0, x.shape[0], 6):
-                end = min(at + 6, x.shape[0])
-                out[at:end] = native.v41_experts(x[at:end].contiguous(), local[at:end], weights[at:end],
-                                                 ly.exp_gate, ly.exp_up, ly.exp_down, ly.gate_up_type,
-                                                 ly.down_type, ly.down_left)
+        else:  # expert-major decode experts (the friend's EM3), bit-equal to the 6-row op, graph-capturable
+            out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
+                                          ly.gate_up_type, ly.down_type, ly.down_left)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
         total = out.float() + self._linear(hidden, ly.sh_down).float()
         self.c._all_reduce(total)
