@@ -425,3 +425,37 @@ def test_a_chunk_measurement_unread_when_the_next_chunk_starts_is_kept(monkeypat
     d._absorb()
     assert d.timed == [] and [rows for rows, _ in read] == [4096, 8192]     # both read, oldest first
     assert all(ms == pytest.approx([10.0] * 8, abs=0.5) for _, ms in read)
+
+
+def test_the_warm_up_cost_sample_is_not_the_first_prompt_forward(monkeypatch):
+    """The first prompt forward of the process carries first-use host stalls on its first units (kernel loads and
+    compiles, library handles, allocator growth). Timed as the Decoder's first cost sample (the small anchor that
+    4096-row chunks were planned from in a session without short prompts), it cut unit 0 and unit 1 alone and then,
+    the chunk's progress scaled by their inflated predictions, ran every other unit in one group: 1.0-1.4 s decode
+    gaps at C24 4K (fin-h2, i5-h2). The sample is timed on a second identical chunk."""
+    from tensorfold.cuda.sm70 import ds41_lattice_moe, ds41_sparse_attention, onecat_ds41
+    from tensorfold.families.deepseek_v4.cuda import engine as E
+    for module in (ds41_lattice_moe, ds41_sparse_attention, onecat_ds41):
+        monkeypatch.setattr(module, "prepare", lambda: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda: None)
+    e = object.__new__(E.DS41Engine)
+    e.rank, e.tower, e.geometry, e.layer_marks = 0, None, SimpleNamespace(bos=0), None
+    prompts = []
+
+    class Event:
+        def __init__(self, at):
+            self.at = at
+
+        def elapsed_time(self, other):
+            return other.at - self.at
+
+    def step(entries, ids, rows, stop=0):
+        if entries[0][2] > 1:
+            first = not prompts
+            prompts.append(e.layer_marks is not None)
+            if e.layer_marks is not None:            # first-use stalls inflate the first forward's first units
+                e.layer_marks.append((0, [Event(t) for t in ([0, 900, 1800] if first else [0, 2, 4])]))
+    e._step, e._attach, e._detach = step, lambda slot, tokens: None, lambda slot: None
+    e._warm()
+    assert prompts[0] is False and prompts.count(True) == 1
+    assert e.warm_unit_ms[1] == [2, 2]

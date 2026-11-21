@@ -252,7 +252,13 @@ class DS41Engine:
     def _warm(self):
         """Startup, every rank, no control frames: build the native extensions and compile the forward's Triton
         kernels on slot 0 (a prompt chunk past the grouped-experts and prefill-indexer thresholds, then one decode
-        row), so the first request builds nothing. Slot 0 is reset by its next attach."""
+        row), so the first request builds nothing. Slot 0 is reset by its next attach.
+
+        The Decoder's first per-unit cost sample is timed on a second identical chunk: the first one's units carry
+        the process's first-use host stalls (kernel loads and compiles, library handles, allocator growth; seconds
+        on layer 0's units), and that sample stays the small cost anchor, so a chunk planned from it ran unit 0 and
+        unit 1 alone and then, its measured progress scaled by those inflated predictions, every other unit in one
+        group (``Decoder._stop``): a whole 4096-row chunk between two decode rounds."""
         import torch
         from tensorfold.cuda.sm70 import ds41_lattice_moe, ds41_sparse_attention, onecat_ds41
         from .target import DECODE_MAX
@@ -261,6 +267,8 @@ class DS41Engine:
         onecat_ds41.prepare()
         rows = max(ds41_lattice_moe.MIN_TOKENS, DECODE_MAX + 1) * 2
         with torch.inference_mode():
+            self._attach(0, rows + 1)
+            self._step([(0, 0, rows)], [self.geometry.bos] * rows, [rows - 1])
             self._attach(0, rows + 1)
             self.layer_marks = [] if self.rank == 0 else None
             self._step([(0, 0, rows)], [self.geometry.bos] * rows, [rows - 1])
