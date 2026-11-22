@@ -89,6 +89,48 @@ uncertainty unresolved.
 All admitted TensorFold replies streamed concurrently. Whole-run output rose in all ten cells, while median
 per-user decode was lower in seven. The largest observed TensorFold token gap was 308.5 ms at C24 4K.
 
+### Fixed-order prefill RMS
+
+The fused prefill normalization preserves the FP32 reduction order of ATen `05adb434` and FP16 rounding. Against
+`aef6e42a`, source `3e86f455` had bitwise-identical target log probabilities across all twelve scoring checks,
+including the 268-document cap64 corpus and the 32-document uncapped long-prompt corpus. On the latter, prefill perplexity
+was 5.361628 and full-decode perplexity was 3.849869 in both arms. All 35 native normalization tests passed.
+Fixed-schedule FP32 logits also matched on all 15 tested paths.
+
+Four independent SC117 sessions ran in reference, candidate, candidate, reference order, with four additional
+reference sessions for uncertainty calibration. The load used the frozen ten-cell greedy plan, 512 output tokens
+per request, 180 W per V100, image `67b43e682057`, 32 lanes, a 65,536-token context and a 16 GiB host prefix tier.
+The usable KV pool was 7,775,360 tokens in each run. Each row shows the candidate's change from the reference.
+
+| Cell | Aggregate prefill | Median decode per user |
+| --- | ---: | ---: |
+| C1 4K | +1.11% | −0.03% |
+| C1 16K | +1.33% | −0.13% |
+| C8 4K | +1.39% | +0.15% |
+| C8 16K | +1.28% | +0.35% |
+| C16 4K | +1.20% | +0.40% |
+| C16 16K | +1.19% | +2.49% |
+| C24 4K | +1.45% | +0.43% |
+| C24 16K | +1.25% | +0.56% |
+| C32 4K | +1.27% | +0.57% |
+| C32 16K | +0.63% | −8.33% |
+
+The geometric mean prefill gain was 1.21% (95% interval +0.92% to +1.51%). Six prefill cells and C32/4K
+decode gained under the familywise comparison. The original C32/16K decode estimate had an adjusted interval
+from −22.29% to +8.14%. A fresh six-cell repeat measured −0.23% at C32/16K, with an adjusted two-endpoint
+interval from −18.56% to +22.23%. That result remains uncertain. The largest text-cell p99 gap across the four
+full sessions was 177.64 ms.
+
+The original and fresh sessions shared the same C1 startup prefix and produced identical replies. The fresh C1/16K
+estimate was −0.125% user-visible decode throughput, with an adjusted interval from −0.423% to +0.175%.
+The combined estimate was −0.129%, with an adjusted interval from −0.239% to −0.019%.
+The project accepted this specific tradeoff. In four instrumented repeats, the measured difference was inside
+GPU round events. The trace did not identify a practical RMS-specific correction.
+
+Four separate vision sessions passed all seven image checks, cached image reuse, and both 8192×1 and 1×8192
+inputs. All four retained 7,697,600 usable KV tokens and a maximum rank warm tower peak of 235 MiB. The two
+mixed-load prefill results and their p99 gap comparisons remain inconclusive.
+
 ## Quality gate
 
 Two `tools/quality_eval` repeats on `corpus-v1.ds41` were bitwise identical to each other and to the earlier

@@ -1674,6 +1674,11 @@ after correcting sequence-parallel expert routing. On the larger 268-document co
 or more. Overall early-decode NLL met the equivalence criterion. The [recipe](docs/recipes/deepseek-v41-v100.md)
 gives the intervals and measurement scope. DSpark drafts are pending.
 
+On the same eight-V100 setup, fixed-order prefill RMS raised geometric mean prefill throughput **1.21%** across
+the ten text cells against `aef6e42a`. Target log probabilities matched bit for bit across all twelve scoring
+checks. The accepted C1/16K median decode tradeoff was **0.13% slower** over eight matched sessions. The C32/16K decode
+comparison remains inconclusive. [Fixed-order RMS measurements](docs/recipes/deepseek-v41-v100.md#fixed-order-prefill-rms)
+
 Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The TP8
 tower gathers FP16 features so each projection accumulates over its full input dimension in FP32. In repeated
 SC117 sessions at 32 lanes and a 65,536-token context before the sequence-parallel routing correction, median cold image TTFT fell from about 1.15 s to 0.68 s

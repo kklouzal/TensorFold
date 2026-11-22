@@ -23,7 +23,7 @@ from tensorfold.families.deepseek_v4.cuda.kernels import attention_ops as ops
 from tensorfold.families.deepseek_v4.cuda.kernels.activations import swiglu
 from tensorfold.families.deepseek_v4.cuda.kernels.index_topk import index_topk, index_topk_parallel
 from tensorfold.families.deepseek_v4.cuda.kernels.kv_pack import pack_rows, unpack_rows
-from tensorfold.families.deepseek_v4.cuda.kernels.norm import short_rms_norm
+from tensorfold.families.deepseek_v4.cuda.kernels.norm import rms_norm
 from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import apply_rope, attention_qdq, rope_table
 
 
@@ -57,12 +57,12 @@ def test_short_rms(hidden):
     g = torch.Generator().manual_seed(4190)
     x = (torch.randn(6, hidden, generator=g) * 1.37).half()
     weight = torch.rand(hidden, generator=g) + 0.5
-    output = short_rms_norm(x, weight, 1e-20)
+    output = rms_norm(x, weight, 1e-20)
     values = x.float()
     expected = (values * torch.rsqrt(values.square().mean(-1, keepdim=True) + 1e-20) * weight).half()
     torch.testing.assert_close(output, expected, rtol=0.001, atol=2e-6)
     for rows in range(1, 7):
-        torch.testing.assert_close(short_rms_norm(x[:rows], weight, 1e-20), output[:rows], rtol=0, atol=0)
+        torch.testing.assert_close(rms_norm(x[:rows], weight, 1e-20), output[:rows], rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("compressed", [True, False])

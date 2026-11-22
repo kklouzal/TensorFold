@@ -175,12 +175,8 @@ class Target:
 
     # ---- small pieces
     def _norm(self, x, weight):
-        from .kernels.norm import BAND_ROWS, short_rms_norm
-        if (x.dtype == torch.float16 and x.ndim == 2 and 1 <= x.shape[0] <= BAND_ROWS and x.shape[1] in (128, 512, 1280, 5120)
-                and x.is_contiguous()):
-            return short_rms_norm(x, weight, self.g.eps)
-        values = x.float()
-        return (values * torch.rsqrt(values.square().mean(-1, keepdim=True) + self.g.eps) * weight).to(x.dtype)
+        from .kernels.norm import rms_norm
+        return rms_norm(x, weight, self.g.eps)
 
     @staticmethod
     def _linear(x, weight):

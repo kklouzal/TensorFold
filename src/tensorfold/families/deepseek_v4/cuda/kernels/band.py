@@ -13,7 +13,7 @@ before the cross-rank sum): one launch for two converting copies and an add, the
 
 Row bands (the friend's patch 89 extends V4.1's row-wise decode kernels to 64 rows; one V100, 180 W, CUDA-graph
 us per call, tests/cuda/deepseek_v41/ds41_band_bench.py, gpuq/runs/dec-band2r):
-  * ``BAND_ROWS`` (64): short_rms_norm (M32: 2.7 vs 21.8 us for the torch FP32 expression);
+  * RMS normalization (M32: 2.7 vs 21.8 us for the torch FP32 expression);
   * ``GATE_ROWS`` (12): the unnormalized FP32 projection (router gate, BF16 [384, 5120]) on ``_row_projection``'s
     row grid (M8 21.7 vs 40.5 us for the FP32 GEMM with its BF16 widening; M16 44.1 vs 42.3, M32 96.3 vs 44.9:
     the GEMM above). A column-program variant reading each weight row once per row group was not faster (M16
@@ -26,7 +26,6 @@ import torch
 
 from .triton_utils import jit, tl, triton
 
-BAND_ROWS = 64          # patch 89: row-wise decode kernels up to this many rows (VLLM_LOCAL_DS41_MU_INVARIANT_ROWS)
 GATE_ROWS = 12
 HC_ROWS = 16
 
