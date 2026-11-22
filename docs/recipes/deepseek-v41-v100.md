@@ -21,6 +21,9 @@ python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backe
   --name deepseek-v4.1-flash --parallel 32 --context 65536 --prefix-host-bytes 17179869184 --port 8000
 ```
 
+This launch serves exact chat counting, the active renderer's capabilities, and telemetry through
+the standard [CUDA API](../api.md). Select the **TensorFold** provider in Harness.
+
 The container needs `--ipc host --ulimit memlock=-1:-1 --cap-add IPC_LOCK` for the host-mapped Engram table and the
 pinned prefix tier. With warm extension and page caches, the C24/C32 matrix server became ready in about 45 s.
 The C1/C8/C16 server took about 85 s with disk reads during startup. The earlier startup study measured 47-48 s

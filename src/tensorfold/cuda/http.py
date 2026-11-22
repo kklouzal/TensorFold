@@ -185,7 +185,7 @@ def make_handler(app: App):
                 return self._json(400, {"error": invalid_request("the request body is not JSON")})
             if tokenizer:                                   # vLLM's /tokenize and /detokenize
                 try:
-                    reply = app.detokenize(body) if path.endswith("/detokenize") else app.tokenize(body)
+                    reply = app.detokenize(body) if path.endswith("/detokenize") else app.tokenize(body, model=model)
                 except RequestError as exc:
                     return self._refuse(exc)
                 except Exception as exc:

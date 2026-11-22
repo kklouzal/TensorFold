@@ -103,6 +103,51 @@ def test_the_server_renders_v41_prompts_with_deepseeks_encoder(model_dir):
     assert prompt_text(app_for(model_dir), {"messages": chat}) == head + tail + "</think>"   # --no-thinking
 
 
+def test_native_cuda_tokenize_exposes_exact_count_and_deepseek_render_metadata(model_dir):
+    from http.client import HTTPConnection
+    from threading import Thread
+
+    from tensorfold.cuda.http import make_handler
+    from tensorfold.server.http import Server
+
+    app = app_for(model_dir, default_thinking=True, aliases=("alias",))
+    body = {"model": "alias", "messages": [{"role": "user", "content": "Paris weather?"}],
+            "chat_template_kwargs": {"enable_thinking": False}}
+    prepared = app.prepare_for_count(body, True)
+    try:
+        result = app.tokenize({**body, "return_prompt": True})
+        assert (result["count"], result["tokens"]) == (len(prepared.prompt), prepared.prompt)
+        assert result["prompt"] == app.tok.decode(prepared.prompt, skip_special_tokens=False)
+    finally:
+        prepared.close()
+    assert result["model"] == "alias"
+    assert result["context_length"] == result["max_model_len"] == 65536
+    assert result["harness_tokenizer_version"] == 1
+    assert result["chat_template_sha256"] == app.template.provenance()["sha256"]
+    assert result["capabilities"]["thinking_control"]["keyword"] == "enable_thinking"
+    count = app.tokenize({**body, "return_tokens": False})
+    assert count["count"] == result["count"] and "tokens" not in count and "prompt" not in count
+    raw = app.tokenize({"prompt": "Paris"})
+    assert set(raw) == {"count", "tokens", "max_model_len"}
+    for flag in ("return_tokens", "return_prompt"):
+        with pytest.raises(RequestError, match=f"{flag} must be a boolean"):
+            app.tokenize({**body, flag: 1})
+    with Server(("127.0.0.1", 0), make_handler(app)) as listener:
+        server = Thread(target=listener.serve_forever)
+        server.start()
+        client = HTTPConnection(*listener.server_address, timeout=2)
+        try:
+            payload = json.dumps({**body, "return_tokens": False})
+            client.request("POST", "/v1/tokenize", payload, {"Content-Type": "application/json"})
+            response = client.getresponse()
+            assert response.status == 200 and json.load(response) == count
+        finally:
+            client.close()
+            listener.shutdown()
+            server.join()
+    assert not app.engine.prompts
+
+
 @pytest.mark.parametrize("thinking", [False, True])
 def test_tools_tool_history_and_late_system_render_as_the_encoder_does(model_dir, thinking):
     app = app_for(model_dir)

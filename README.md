@@ -769,7 +769,9 @@ reasoning and holds incomplete control markers while streaming. Channel controls
 stay out of visible content; native quoted tool arguments retain their literal
 values. CUDA and non-CUDA servers share this channel parser.
 
-Harness connections require the container's compatibility entrypoint, `cuda_entrypoint.py` → `tensorfold_harness.py`, with `--thinking-budget 0`. The native CLI's token-count response lacks Harness's versioned model/context metadata. Gemma count-only image preparation can measure prompts beyond the served context while retaining media safety limits; generation still enforces its context window.
+Harness reads versioned model and context metadata from the native CUDA server's `/v1/tokenize`.
+Use `--thinking-budget 0` to leave the reasoning budget to individual requests. Count-only image
+preparation can measure prompts beyond the served context while retaining media safety limits.
 
 Required-tool format discovery follows the rendered call envelope, including DSML. A tool-name list after the example call in a custom chat template no longer becomes part of the forced call prefix. Existing HTTP enforcement regressions and the Heretic installed-model strict-tool checks pass.
 
@@ -1673,6 +1675,9 @@ after correcting sequence-parallel expert routing. On the larger 268-document co
 0.00190 nats/token against the historical `p1` build, with the increase concentrated in prompts of 1,024 tokens
 or more. Overall early-decode NLL met the equivalence criterion. The [recipe](docs/recipes/deepseek-v41-v100.md)
 gives the intervals and measurement scope. DSpark drafts are pending.
+
+The normal CUDA server exposes exact chat token counts, renderer capabilities and request
+statistics to [Harness and other API clients](docs/recipes/deepseek-v41-v100.md#launch).
 
 On the same eight-V100 setup, fixed-order prefill RMS raised geometric mean prefill throughput **1.21%** across
 the ten text cells against `aef6e42a`. Target log probabilities matched bit for bit across all twelve scoring

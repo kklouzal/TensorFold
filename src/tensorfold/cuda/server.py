@@ -1057,7 +1057,7 @@ class App:
                 rendered = prepare_images(self.vision, body["messages"],
                                           lambda messages: render(messages, allow_images=True,
                                                                   allow_audio=bool(getattr(self.vision, 'audio', False))),
-                                          context_limit=self._context_limit(),
+                                          context_limit=self._context_limit() if for_generation else None,
                                           limits=getattr(self, "image_limits", DEFAULT_LIMITS),
                                           max_visual_tokens=getattr(self, "vision_image_tokens", None))
                 try:
@@ -1188,7 +1188,28 @@ class App:
         size = tokenizer_vocab_size(self.tok) if hasattr(self.tok, "get_vocab_size") else None
         return token_ids(value, size, field)
 
-    def tokenize(self, body: dict[str, Any]) -> dict[str, Any]:
+    @functools.cached_property
+    def _tokenizer_capabilities(self):
+        from importlib.util import find_spec
+
+        from tensorfold.chat_capabilities import discover_chat_capabilities
+
+        fixed = tuple(self._fixed_thinking(tools) for tools in (False, True))
+        observed, _ = discover_chat_capabilities(self.template.render, fixed=fixed)
+        observed.update(
+            structured_output=(find_spec("xgrammar") is not None
+                               and "constraint" in inspect.signature(self.engine.generate).parameters
+                               and not getattr(self.engine, "refuses_structured_output", None)),
+            vision=self.vision is not None,
+            video=bool(getattr(self.vision, "videos", False)),
+        )
+        if "thinking_control" in observed:
+            observed["default_thinking"] = self.default_thinking
+        if bool(getattr(self.vision, "audio", False)):
+            observed["audio"] = True
+        return observed
+
+    def tokenize(self, body: dict[str, Any], *, model: str | None = None) -> dict[str, Any]:
         """vLLM's ``/tokenize`` (``server.token_routes``): a prompt's ids (``add_special_tokens``, default true, as
         vLLM's), or ``messages``' as the chat route renders them (``add_generation_prompt``, default true)."""
 
@@ -1197,10 +1218,13 @@ class App:
         if not isinstance(body, dict):
             raise RequestError("the request body must be a JSON object")
         strings = flag(body, "return_token_strs", False)
+        tokens = flag(body, "return_tokens", True)
+        rendered = flag(body, "return_prompt", False)
         credit = self._host_credits() if getattr(self, "host_payload_pool", None) is not None else None
         if credit is not None:
-            credit.tokenization_reply, credit.lexical_output = True, strings
-        if "messages" in body:
+            credit.tokenization_reply, credit.lexical_output = tokens or strings or rendered, strings or rendered
+        chat = "messages" in body
+        if chat:
             fields = dict(body)
             def release_prepared_media():
                 prepared.release_media()
@@ -1209,6 +1233,7 @@ class App:
                                      add_generation_prompt=flag(body, "add_generation_prompt", True))
             try:
                 ids = prepared.prompt
+                tools = bool(prepared.tools)
             except BaseException as primary:
                 rollback(prepared, primary, release_prepared_media)
             release_prepared_media()
@@ -1223,14 +1248,40 @@ class App:
                 credit.ids(len(encoded))
                 ids = encoded.ids
                 del encoded
+        count = len(ids)
         if credit is not None:
-            credit.ids(len(ids))  # Reply copy/lexical strings are funded before either is built.
+            # Count-only chat can still own expanded media IDs. Pay their
+            # extent and any requested reply copies before publishing.
+            credit.ids(count)
         limit = self._context_limit()
-        reply: dict[str, Any] = {"count": len(ids), "tokens": [int(t) for t in ids],
-                                 "max_model_len": limit if limit is not None else self.native_context_window}
+        context = limit if limit is not None else self.native_context_window
+        reply: dict[str, Any] = {"count": count, "max_model_len": context}
+        if tokens:
+            reply["tokens"] = [int(t) for t in ids]
         if strings:
             unused = getattr(self.tok, "unused_token_ids", ())
-            reply["token_strs"] = ["" if t in unused else self.tok.id_to_token(t) for t in reply["tokens"]]
+            reply["token_strs"] = ["" if t in unused else self.tok.id_to_token(t) for t in ids]
+        if rendered:
+            from tensorfold.server.prompt_literals import MAX_RENDER_BYTES
+
+            prompt = self.tok.decode(ids, skip_special_tokens=False)
+            escaped = 2
+            for start in range(0, len(prompt), 4096):
+                escaped += len(json.dumps(prompt[start:start + 4096], ensure_ascii=True)) - 2
+                if escaped > MAX_RENDER_BYTES:
+                    raise RequestError("rendered prompt exceeds the inspection response budget; request only the count")
+            reply["prompt"] = prompt
+        if chat:
+            from tensorfold.server.http import requested_model
+
+            route = self.template.selected(tools=tools)
+            capabilities = {**self._tokenizer_capabilities, "reasoning_efforts": sorted(route.efforts)}
+            if self.reasoning_effort is not None:
+                effort = heard_effort(None, self.reasoning_effort, route.efforts)
+                if effort in route.efforts:
+                    capabilities["default_reasoning_effort"] = effort
+            reply.update(model=requested_model(self, body) if model is None else model, context_length=context,
+                         harness_tokenizer_version=1, capabilities=capabilities, chat_template_sha256=route.sha256)
         return reply
 
     def detokenize(self, body: dict[str, Any]) -> dict[str, Any]:
