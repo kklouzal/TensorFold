@@ -30,6 +30,25 @@ def mb():
 CORPUS = "".join(f"line {i} of the frozen corpus\n" for i in range(2000))
 
 
+@pytest.mark.parametrize("command", ["plan", "run"])
+def test_deepseek_v100_preset_selects_eight_cells(mb, monkeypatch, command):
+    recorded = []
+    monkeypatch.setattr(mb, "build_plan" if command == "plan" else "run", lambda args: recorded.append(args) or 0)
+    common = ["--corpus", "corpus.txt", "--out", "out.json"]
+    required = (["--tokenizer", "model", "--template", "template.jinja"] if command == "plan"
+                else ["--plan", "plan.json", "--model", "model", "--label", "source"])
+    monkeypatch.setattr(sys, "argv", ["matrix_benchmark.py", command, *common, *required,
+                                      "--preset", "deepseek-v41-v100"])
+    assert mb.main() == 0
+    args = recorded.pop()
+    assert (args.modes, args.concurrency, args.lengths, args.reps) == (["greedy"], [1, 8, 16, 32], [4096, 16384], 1)
+
+    monkeypatch.setattr(sys, "argv", ["matrix_benchmark.py", command, *common, *required, "--concurrency", "24"])
+    assert mb.main() == 0
+    diagnostic = recorded.pop()
+    assert diagnostic.concurrency == [24] and diagnostic.reps == 5
+
+
 def make_plan(mb, tmp_path, lengths, levels, reps):
     corpus = tmp_path / "corpus.txt"
     corpus.write_text(CORPUS, encoding="utf-8")

@@ -38,6 +38,9 @@ hit can enter a measurement. Cells the server cannot run are recorded as
 never silently dropped. Full details:
 [Serving matrix](benchmarking.md#serving-matrix-prefill-and-decode-across-concurrency-and-prompt-length).
 
+The [DeepSeek V4.1 V100 serving matrix](recipes/deepseek-v41-v100.md#current-serving-matrix)
+uses its eight-cell preset for routine qualification.
+
 ### Procedure
 
 ```bash

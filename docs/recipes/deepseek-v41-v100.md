@@ -66,6 +66,15 @@ registered Engram table.
   conversation's last-message point is protected. Evicted points spill to the host tier and are restored
   byte-exactly. On a 13-turn agent session, total time was 16.3 s cached against 81.0 s cold.
 
+## Current serving matrix
+
+Use `tools/matrix_benchmark.py plan --preset deepseek-v41-v100` to create a plan
+and `tools/matrix_benchmark.py run --preset deepseek-v41-v100` to measure each
+reference or candidate session with that plan. The preset runs eight greedy
+cells at C1, C8, C16 and C32 with 4,096 and 16,384 prompt tokens and 512 output
+tokens per request. Compare fresh sessions that use the same preset and order.
+The paired perplexity and near-context-limit checks remain required.
+
 ## Measurements
 
 10-cell matrix on SC117 (`tools/matrix_benchmark.py`, frozen `plan-ds41-v1`, 512 output tokens per request, greedy,

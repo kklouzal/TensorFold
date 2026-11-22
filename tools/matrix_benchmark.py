@@ -46,6 +46,10 @@ SCHEMA_VERSION = 1
 PLAN_SCHEMA = "tensorfold.matrix-plan"
 CORPUS_SUFFIXES = (("README.md", ""), ("docs/", ".md"), ("src/", ".py"))
 MODES = ("greedy", "sampled")
+DEFAULT_MATRIX = (MODES, (1, 2, 4, 8, 16, 24, 32), (4096, 8192, 16384, 32768, 65536), 5)
+MATRIX_PRESETS = {
+    "deepseek-v41-v100": (("greedy",), (1, 8, 16, 32), (4096, 16384), 1),
+}
 SCORED = ("prefill_agg_tps", "decode_median_tps")
 HEADER = ("Request {key}.\nBelow is an excerpt from a software project's documentation and source code.\n\n")
 FOOTER = ("\n\nWrite a detailed technical summary of the excerpt above: its purpose, its main components and "
@@ -899,6 +903,14 @@ def compare(args) -> int:
     return 0
 
 
+def add_matrix_arguments(parser):
+    parser.add_argument("--preset", choices=MATRIX_PRESETS, help="set the modes, concurrency, lengths and repeats")
+    parser.add_argument("--modes", type=word_list(MODES))
+    parser.add_argument("--concurrency", type=int_list)
+    parser.add_argument("--lengths", type=int_list)
+    parser.add_argument("--reps", type=int)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -914,10 +926,7 @@ def main() -> int:
     p.add_argument("--tokenizer", type=Path, required=True)
     p.add_argument("--template", type=Path, required=True, help="the served chat template")
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--modes", type=word_list(MODES), default=list(MODES))
-    p.add_argument("--concurrency", type=int_list, default=[1, 2, 4, 8, 16, 24, 32])
-    p.add_argument("--lengths", type=int_list, default=[4096, 8192, 16384, 32768, 65536])
-    p.add_argument("--reps", type=int, default=5)
+    add_matrix_arguments(p)
     p.add_argument("--stagger-ms", type=float, nargs="*", default=[0.0])
     p.add_argument("--jobs", type=int, default=8, help="tokenizer worker processes")
 
@@ -930,10 +939,7 @@ def main() -> int:
     p.add_argument("--label", required=True, help="engine/source/configuration identity of this arm")
     p.add_argument("--note", default="", help="free text: launch command, image, flags")
     p.add_argument("--source-dir", type=Path, help="served source tree to digest into the result")
-    p.add_argument("--modes", type=word_list(MODES), default=list(MODES))
-    p.add_argument("--concurrency", type=int_list, default=[1, 2, 4, 8, 16, 24, 32])
-    p.add_argument("--lengths", type=int_list, default=[4096, 8192, 16384, 32768, 65536])
-    p.add_argument("--reps", type=int, default=5)
+    add_matrix_arguments(p)
     p.add_argument("--first-rep", type=int, default=0, help="first repeat index (continue a server session in another file; every scored session "
                         "must run the same repeats)")
     p.add_argument("--warmup-lengths", type=int_list, help="C=1 warmup requests per mode (default: every length)")
@@ -965,6 +971,12 @@ def main() -> int:
     p.add_argument("--json", type=Path)
 
     args = parser.parse_args()
+    if args.command in ("plan", "run"):
+        modes, concurrency, lengths, reps = MATRIX_PRESETS.get(args.preset, DEFAULT_MATRIX)
+        for name, value in (("modes", list(modes)), ("concurrency", list(concurrency)),
+                            ("lengths", list(lengths)), ("reps", reps)):
+            if getattr(args, name) is None:
+                setattr(args, name, value)
     if args.command == "run" and (args.reps < 1 or args.first_rep < 0 or args.output_tokens < 2):
         parser.error("run needs --reps >= 1, --first-rep >= 0 and --output-tokens >= 2")
     return {"corpus": build_corpus, "plan": build_plan, "run": run, "summary": summary, "compare": compare}[

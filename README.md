@@ -1662,6 +1662,9 @@ All scoped candidate, source, build, native, packaging and fresh API gates are c
 
 #### DeepSeek-V4.1-Flash on eight V100s (2026-11-21)
 
+The [DeepSeek benchmark preset](docs/recipes/deepseek-v41-v100.md#current-serving-matrix)
+uses eight cells at C1, C8, C16 and C32 with 4K and 16K prompts.
+
 New CUDA lane for DeepSeek-V4.1-Flash-1017 GGUF (GSQ-RCO IQ2_XXS backbone; the IQ4_NL Engram table stays in host RAM),
 TP8 attention/dense and ETP4 x EP2 routed experts, up to 32 streams. It uses startup decode graphs, the friend's EM3
 decode experts and TurboMind lattice prefill experts (with an exact weight decode), fused sparse prefill attention,

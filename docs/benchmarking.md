@@ -1503,6 +1503,9 @@ fixed 512-token output. A cell's C requests start together behind a barrier
 (`sync`); `--stagger-ms X` starts request i at i·X ms instead, a separate arrival
 REGION with its own prompt keys.
 
+The [DeepSeek V4.1 V100 recipe](recipes/deepseek-v41-v100.md#current-serving-matrix)
+uses `--preset deepseek-v41-v100` for both `plan` and `run`.
+
 ### Prompts
 
 1. `corpus` freezes the text: `README.md`, `docs/**/*.md` and `src/**/*.py` at
