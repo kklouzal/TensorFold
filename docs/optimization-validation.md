@@ -24,6 +24,9 @@ The [DeepSeek V4.1 vision qualification](recipes/deepseek-v41-v100.md#tp8-servin
 eight-V100 rank-0 versus TP8 comparison on image `67b43e682057`. Source `51acced7` passed the per-image accuracy,
 text parity, cache, and extreme-orientation checks with `--vision --parallel 32 --context 65536`. Reversed
 server sessions established the image TTFT gains and recorded uncertainty in the accompanying text matrix.
+Those measurements precede the sequence-parallel routing repair. Corrected source `aef6e42a` passed the
+vision coverage and the text serving matrix on the same eight-V100 profile. It retained 7,697,600 shared KV
+tokens and the 235 MiB worst-rank tower warm-up transient.
 
 ## Gemma 4 five-row SM70 decode
 

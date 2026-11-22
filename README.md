@@ -1664,18 +1664,18 @@ New CUDA lane for DeepSeek-V4.1-Flash-1017 GGUF (GSQ-RCO IQ2_XXS backbone; the I
 TP8 attention/dense and ETP4 x EP2 routed experts, up to 32 streams. It uses startup decode graphs, the friend's EM3
 decode experts and TurboMind lattice prefill experts (with an exact weight decode), fused sparse prefill attention,
 prefix points at message boundaries with the pinned host tier, and the 175 ms decode-during-prefill policy. On SC117
-(180 W, image `67b43e682057`, source `a7ba45a4`, `--parallel 32 --context 65536`), the 10-cell greedy screen measured
-30% to 179% higher prefill and higher whole-run output in every cell against the frozen 1Cat-vLLM deployment.
-Median per-user decode was higher at C1 and C8 4K and lower in the other cells. At C32 16K it measured 11.0 vs
+(180 W, image `67b43e682057`, source `aef6e42a`, `--parallel 32 --context 65536`), the 10-cell greedy screen measured
+30% to 177% higher prefill and higher whole-run output in every cell against the frozen 1Cat-vLLM deployment.
+Median per-user decode was higher at C1 and C8 4K and lower in the other cells. At C32 16K it measured 10.1 vs
 27.2 tok/s per user, with all 32 replies streaming concurrently on TensorFold and at most two in the reference run.
-The largest cell p99 inter-token gap was 176 ms. Startup took about 45 s with warm caches. Prefill and decode NLL
-met the equivalence margin against the previous published lane. The comparison against the initial `p1` baseline
+The largest cell p99 inter-token gap was 177.5 ms. The standard short-prompt NLL test was bitwise unchanged
+after correcting sequence-parallel expert routing. The short-corpus comparison with the initial `p1` baseline
 remains inconclusive. The [recipe](docs/recipes/deepseek-v41-v100.md) gives the workloads, settings, and measurement
 limits. DSpark drafts are pending.
 
 Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The TP8
 tower gathers FP16 features so each projection accumulates over its full input dimension in FP32. In repeated
-SC117 sessions at 32 lanes and a 65,536-token context, median cold image TTFT fell from about 1.15 s to 0.68 s
+SC117 sessions at 32 lanes and a 65,536-token context before the sequence-parallel routing correction, median cold image TTFT fell from about 1.15 s to 0.68 s
 for one 994-token image and from 3.86 s to 1.98 s for four. The shared KV pool grew from 6.68M to 7.70M tokens.
 Both extreme image orientations and all seven image checks passed. The greedy chat and private text scoring
 receipts matched the rank-0 tower build exactly. The [vision qualification](docs/recipes/deepseek-v41-v100.md#tp8-serving-qualification)

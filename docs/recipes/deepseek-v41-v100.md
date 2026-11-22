@@ -56,6 +56,9 @@ registered Engram table.
   friend's patch 181 at 8 heads per rank) and dmv13 dense GEMMs with exact FP32 Q5_K restore coefficients.
 - Scheduling: decode runs during prefill in automatic layer groups under the 175 ms policy, with half-layer prompt
   units.
+- Sequence-parallel prefill: at 1,024 forward rows and above, ranks exchange global expert IDs and their
+  probabilities before translating the routes to their own expert banks. The routing correction in `1d763a3d`
+  applies to text and mixed image prompts. A rank that owns a sequence shard can belong to either expert group.
 - Prefix cache: points are kept only at V4.1 message boundaries; 8192-token chunk ends are not kept. The newest
   conversation's last-message point is protected. Evicted points spill to the host tier and are restored
   byte-exactly. On a 13-turn agent session, total time was 16.3 s cached against 81.0 s cold.
@@ -63,8 +66,8 @@ registered Engram table.
 ## Measurements
 
 10-cell matrix on SC117 (`tools/matrix_benchmark.py`, frozen `plan-ds41-v1`, 512 output tokens per request, greedy,
-one repeat per cell, 180 W, `--parallel 32 --context 65536 --prefix-host-bytes 16G`, source `a7ba45a4`). C1/C8/C16
-and C24/C32 used separate server sessions. Ten requests across five cells rendered 2 to 27 tokens above the
+one server session with one repeat per cell, 180 W, image `67b43e682057`, `--parallel 32 --context 65536
+--prefix-host-bytes 16G`, corrected source `aef6e42a`). Ten requests across five cells rendered 2 to 27 tokens above the
 planned length. The reference is the frozen 1Cat-vLLM deployment on the same host at 180 W with its configured
 1,048,576-token context and the same benchmark plan. The first three measurement columns show TensorFold vs 1Cat.
 These measurements describe the tested deployments and workloads. One repeat per cell leaves between-session
@@ -72,23 +75,24 @@ uncertainty unresolved.
 
 | Cell | Prefill tok/s | Decode tok/s per user | Output tok/s, whole run | TensorFold p99 token gap (ms) |
 | --- | --- | --- | --- | ---: |
-| C1 4K | 3850 vs 2383 | 71.1 vs 60.6 | 62 vs 50 | 15.6 |
-| C1 16K | 4297 vs 3305 | 68.2 vs 59.0 | 45 vs 38 | 16.3 |
-| C8 4K | 3526 vs 1484 | 36.1 vs 35.3 | 207 vs 127 | 168.7 |
-| C8 16K | 4071 vs 1460 | 29.4 vs 32.0 | 96 vs 42 | 167.9 |
-| C16 4K | 3371 vs 1719 | 22.1 vs 24.0 | 239 vs 164 | 170.8 |
-| C16 16K | 3962 vs 1616 | 18.4 vs 27.1 | 102 vs 48 | 175.1 |
-| C24 4K | 3214 vs 1839 | 16.1 vs 17.3 | 253 vs 183 | 171.6 |
-| C24 16K | 3847 vs 1943 | 12.2 vs 16.4 | 103 vs 58 | 176.1 |
-| C32 4K | 3075 vs 1936 | 13.2 vs 14.5 | 263 vs 196 | 174.5 |
-| C32 16K | 3793 vs 1636 | 11.0 vs 27.2 | 104 vs 50 | 175.7 |
+| C1 4K | 3884 vs 2383 | 71.1 vs 60.6 | 62 vs 50 | 15.6 |
+| C1 16K | 4293 vs 3305 | 68.2 vs 59.0 | 45 vs 38 | 16.1 |
+| C8 4K | 3537 vs 1484 | 36.3 vs 35.3 | 208 vs 127 | 168.1 |
+| C8 16K | 4051 vs 1460 | 29.5 vs 32.0 | 95 vs 42 | 164.2 |
+| C16 4K | 3368 vs 1719 | 22.1 vs 24.0 | 240 vs 164 | 170.3 |
+| C16 16K | 3979 vs 1616 | 21.2 vs 27.1 | 101 vs 48 | 173.7 |
+| C24 4K | 3188 vs 1839 | 16.1 vs 17.3 | 251 vs 183 | 172.2 |
+| C24 16K | 3817 vs 1943 | 12.2 vs 16.4 | 103 vs 58 | 174.3 |
+| C32 4K | 3062 vs 1936 | 13.2 vs 14.5 | 263 vs 196 | 173.4 |
+| C32 16K | 3730 vs 1636 | 10.1 vs 27.2 | 104 vs 50 | 177.5 |
 
 All admitted TensorFold replies streamed concurrently. Whole-run output rose in all ten cells, while median
-per-user decode was lower in seven. The largest observed TensorFold token gap was 260.8 ms at C24 4K.
+per-user decode was lower in seven. The largest observed TensorFold token gap was 308.5 ms at C24 4K.
 
 ## Quality gate
 
-Two `tools/quality_eval` repeats on `corpus-v1.ds41` were bitwise identical. Against the `e68d06a3` measurement
+Two `tools/quality_eval` repeats on `corpus-v1.ds41` were bitwise identical to each other and to the earlier
+`a7ba45a4` result. This corpus has a maximum prompt of 496 tokens, below the sharding threshold. Against the `e68d06a3` measurement
 for the previous published lane, the 95% intervals for the NLL delta were [0, +0.00388] prefill and [0, +0.00112]
 decode, both inside the predeclared 0.005 nats/token equivalence margin. Against the initial `p1` baseline,
 prefill d was -0.00015
@@ -125,13 +129,18 @@ messages and tool results. The model directory's `config.json` names the mmproj 
 
 ### TP8 serving qualification
 
+The corrected source `aef6e42a` passed the seven image checks, the 456-token image-cache repeat, and both extreme
+image orientations. It retained 7,697,600 shared KV tokens and a 235 MiB worst-rank tower warm-up transient.
+The first 16K prefill while 23 other requests were decoding had a 211.6 ms p99 gap across 903 visible text gaps.
+
 The tower-only build `24a4636d` passed the original per-image gate on all seven images. It produced bitwise-identical
 spans across all eight ranks. Against the FP32 oracle, each TP8 relative L2 error was 0.999972–1.000009 times the
 rank-0 tower's error, and the change in minimum token cosine was at most 1.2e-7 in magnitude. The largest image's
 span also matched the rank-0 tower bit for bit, and the other six differed in low bits. The independent upstream
 FP32 and patch-150 comparisons passed on one device.
 
-On SC117 at 180 W with image `67b43e682057`, `--vision --parallel 32 --context 65536 --prefix-host-bytes 16G`,
+Before the sequence-parallel routing correction, on SC117 at 180 W with image `67b43e682057`,
+`--vision --parallel 32 --context 65536 --prefix-host-bytes 16G`,
 the rank-0 build `1c093114` and integrated TP8 build `51acced7` ran in A/B then B/A order. Each arm used a fresh
 server. All four sessions passed seven image checks, exact-image prefix reuse, and the two 8192 × 1 and 1 × 8192
 orientations at the 1,024-token image limit. The same 20 greedy chats and 4,522 prefill and 1,008 decode rows from
