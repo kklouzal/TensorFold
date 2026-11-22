@@ -134,6 +134,45 @@ Four separate vision sessions passed all seven image checks, cached image reuse,
 inputs. All four retained 7,697,600 usable KV tokens and a maximum rank warm tower peak of 235 MiB. The two
 mixed-load prefill results and their p99 gap comparisons remain inconclusive.
 
+### Combined prefill and decode kernels
+
+The decode graph fuses window RMS and rotary quantization, publishes the window ring early,
+and commits C2 and Engram state while their values are available. Packed sparse prefill
+reads adjacent key-scale bytes together and expands their exact encoded values.
+
+The text comparison used `d94781b5` as the reference and `67bcfc67` as the candidate, with two
+independent starts of each in reference, candidate, candidate, reference order. SC117 used
+eight V100s at 180 W, image `67b43e682057`, 32 lanes, a 65,536-token context, and a 16 GiB host
+prefix tier. Each run completed the ten matched greedy cells with 512 output tokens per
+request. All four held **7,775,360 usable KV tokens** and matched the hashes and token counts
+of the 90 controlled short and cached replies.
+
+| Cell | Reference → candidate aggregate prefill tok/s | Reference → candidate median decode tok/s per stream |
+| --- | ---: | ---: |
+| C1 4K | 3,968 → 4,144 | 71.11 → 72.15 |
+| C1 16K | 4,372 → 4,581 | 68.07 → 69.26 |
+| C8 4K | 3,594 → 3,744 | 36.41 → 37.02 |
+| C8 16K | 4,112 → 4,327 | 29.61 → 30.28 |
+| C16 4K | 3,413 → 3,562 | 22.26 → 22.70 |
+| C16 16K | 4,004 → 4,204 | 19.30 → 19.51 |
+| C24 4K | 3,232 → 3,388 | 16.16 → 16.49 |
+| C24 16K | 3,879 → 4,074 | 12.84 → 12.87 |
+| C32 4K | 3,104 → 3,242 | 13.33 → 13.57 |
+| C32 16K | 3,790 → 4,002 | 10.44 → 11.37 |
+
+The geometric gains were **4.79% prefill** (95% interval +4.15% to +5.43%) and **2.29% decode**
+(+0.91% to +3.69%). The familywise comparison established gains at ten cell endpoints and
+left ten uncertain. All twelve paired text quality checks matched bit for bit, including
+the uncapped prefill and full-decode perplexities of **5.361628** and **3.849869**. The
+fixed-schedule witness matched 147 FP32 logit batches. The 65,536-token witness matched
+283 sampled next-token scores through the last admitted position.
+
+Four separate vision starts matched all 14 image replies and retained **7,697,600 usable KV
+tokens**. With a cold 16K prompt overlapping 23 decoders, p99 stream gaps were
+211.8 / 202.6 / 201.4 / 398.7 ms in reference, candidate, candidate, reference order.
+With eight short prompts and one decoder they were 216.0 / 185.9 / 213.3 / 217.9 ms.
+The adjusted mixed-load prefill and pacing comparisons remain inconclusive.
+
 ## Quality gate
 
 Two `tools/quality_eval` repeats on `corpus-v1.ds41` were bitwise identical to each other and to the earlier
