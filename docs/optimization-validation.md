@@ -28,6 +28,10 @@ Those measurements precede the sequence-parallel routing repair. Corrected sourc
 vision coverage and the text serving matrix on the same eight-V100 profile. It retained 7,697,600 shared KV
 tokens and the 235 MiB worst-rank tower warm-up transient.
 
+The [paired v2 quality comparison](recipes/deepseek-v41-v100.md#quality-gate) of `aef6e42a` versus the historical
+`fa3ca06e` build found a prefill NLL increase concentrated in longer prompts. Overall early-decode NLL met the
+equivalence criterion. The corpus, continuation cap, row counts, and prompt-band intervals are in the recipe.
+
 ## Gemma 4 five-row SM70 decode
 
 The [2026-11-15 Gemma checkpoint](gemma4-sm70-throughput-20261115.md#five-row-decode-follow-up)

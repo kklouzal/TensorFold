@@ -99,6 +99,24 @@ prefill d was -0.00015
 (CI [-0.00782, +0.00726]) and decode d was +0.00271 (CI [-0.00032, +0.00622]). Both comparisons with `p1` were
 inconclusive at that margin. The known-answer check scored 9/10 with thinking off and 10/10 with thinking on.
 
+A larger paired teacher-forced comparison used the frozen 268-document v2 corpus, tokenized with the DeepSeek
+V4.1 renderer. It compared historical `fa3ca06e` with corrected `aef6e42a` on SC117, image `67b43e682057`,
+`--parallel 8 --context 65536`, and the same GSQ-RCO checkpoint and tokenizer. Each continuation was capped at
+64 tokens. Its first continuation token, scored by the prompt-end head, is counted under prefill. Intervals
+below use document-blocked resampling and report corrected minus historical NLL, in nats/token.
+
+| Prompt band | Prefill rows | Prefill NLL delta (95% interval) | Early decode rows | Early decode NLL delta (95% interval) |
+| --- | ---: | ---: | ---: | ---: |
+| All 268 documents | 221,428 | +0.00190 [+0.00040, +0.00375] | 16,884 | +0.00040 [−0.00201, +0.00283] |
+| Below 1,024 tokens | 75,129 | +0.00022 [−0.00130, +0.00172] | 14,868 | −0.00021 [−0.00276, +0.00236] |
+| 1,024 tokens and above | 146,299 | +0.00276 [+0.00070, +0.00555] | 2,016 | +0.00495 [−0.00127, +0.01109] |
+
+Overall prefill perplexity was 5.7228 in `p1` and 5.7337 in corrected source. The prefill loss is established
+on the full corpus, within the overall 0.005 nats/token margin. The long-prompt interval extends above that
+margin. Overall early-decode perplexity was 3.8711 and 3.8727, with the paired difference meeting the
+equivalence criterion. Early decode in the long-prompt band is inconclusive. The long-prefill loss is under
+investigation.
+
 ## Image input (`--vision`)
 
 `--vision` serves OpenAI `image_url` content parts (data URLs; public HTTPS URLs also with `--vision-urls`) in user

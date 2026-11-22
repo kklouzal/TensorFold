@@ -1669,9 +1669,10 @@ prefix points at message boundaries with the pinned host tier, and the 175 ms de
 Median per-user decode was higher at C1 and C8 4K and lower in the other cells. At C32 16K it measured 10.1 vs
 27.2 tok/s per user, with all 32 replies streaming concurrently on TensorFold and at most two in the reference run.
 The largest cell p99 inter-token gap was 177.5 ms. The standard short-prompt NLL test was bitwise unchanged
-after correcting sequence-parallel expert routing. The short-corpus comparison with the initial `p1` baseline
-remains inconclusive. The [recipe](docs/recipes/deepseek-v41-v100.md) gives the workloads, settings, and measurement
-limits. DSpark drafts are pending.
+after correcting sequence-parallel expert routing. On the larger 268-document corpus, prefill NLL rose by
+0.00190 nats/token against the historical `p1` build, with the increase concentrated in prompts of 1,024 tokens
+or more. Overall early-decode NLL met the equivalence criterion. The [recipe](docs/recipes/deepseek-v41-v100.md)
+gives the intervals and measurement scope. DSpark drafts are pending.
 
 Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The TP8
 tower gathers FP16 features so each projection accumulates over its full input dimension in FP32. In repeated
