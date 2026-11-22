@@ -28,8 +28,9 @@ void launch(torch::Tensor& dst_w, torch::Tensor& dst_s, int64_t w_stride,
   using F = Format<Type>;
   using Packet = PacketOf<Type>;
   const int64_t groups = k / F::kGroup;
-  TORCH_CHECK(k % F::kGroup == 0 && groups <= std::numeric_limits<int>::max() / kPack,
-              "prefill transcode: bad packet group count");
+  TORCH_CHECK(k % F::kGroup == 0 && k_offset % F::kGroup == 0 &&
+                  groups <= std::numeric_limits<int>::max() / kPack,
+              "prefill transcode: invalid packet group width or offset");
   TORCH_CHECK(w_stride >= (k / 8) * n_out * sizeof(Packet) &&
                   s_stride >= groups * n_out * sizeof(typename F::Stat) &&
                   dst_w.numel() / w_stride >= src0.size(0) &&

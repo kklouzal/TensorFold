@@ -118,6 +118,51 @@ def test_lattice_dropped_routes(ops, kind):
     assert not none.view(torch.int16).any()
 
 
+@pytest.mark.parametrize("kind,paired", [(16, True), (17, True), (29, False)])
+def test_transcode_uses_the_tensor_slice_expert_base(ops, kind, paired):
+    lat, _, _ = ops
+    (gate, up, down), _, down_offset = Carriers(kind).rank(1)
+    source = gate if paired else down
+    second = up if paired else None
+    n, k, left = (1152, 5120, 0) if paired else (5120, 576, down_offset)
+    _, wbytes, sbytes = lat.canonical(kind, n, k)
+    extension = lat.extension()
+    count = torch.ones(1, dtype=torch.int32, device="cuda")
+    error = torch.zeros_like(count)
+
+    def run(start, experts, selected):
+        a = source[start:start + experts]
+        b = second[start:start + experts] if second is not None else None
+        index = torch.tensor([selected], dtype=torch.int32, device="cuda")
+        w = torch.empty((experts, wbytes), dtype=torch.uint8, device="cuda")
+        s = torch.empty((experts, sbytes), dtype=torch.uint8, device="cuda")
+        extension.transcode(w, s, wbytes, sbytes, a, b, index, count, 80, kind, n, k, left, error)
+        return w[selected], s[selected]
+
+    direct = run(0, 3, 2)
+    sliced = run(2, 1, 0)
+    assert all(torch.equal(a, b) for a, b in zip(direct, sliced, strict=True))
+    assert not error.item()
+
+
+def test_transcode_rejects_noncovering_destination_and_unaligned_group(ops):
+    lat, _, _ = ops
+    _, wbytes, sbytes = lat.canonical(16, 32, 256)
+    source = torch.zeros(2, 32, 66, dtype=torch.uint8, device="cuda")
+    w = torch.empty(wbytes, dtype=torch.uint8, device="cuda")
+    s = torch.empty(sbytes * 2, dtype=torch.uint8, device="cuda")
+    ids = torch.tensor([1], dtype=torch.int32, device="cuda")
+    count = torch.ones_like(ids)
+    with pytest.raises(RuntimeError, match="incompatible destination banks"):
+        lat.extension().transcode(w, s, wbytes, sbytes, source, None, ids, count, 80, 16, 32, 256, 0,
+                                  torch.zeros_like(count))
+    source = torch.zeros(2, 32, 132, dtype=torch.uint8, device="cuda")
+    w = torch.empty(2 * wbytes, dtype=torch.uint8, device="cuda")
+    with pytest.raises(RuntimeError, match="invalid packet group width or offset"):
+        lat.extension().transcode(w, s, wbytes, sbytes, source, None, ids, count, 80, 16, 32, 256, 1,
+                                  torch.zeros_like(count))
+
+
 def rank_banks(layer_prefix=None):
     """One real layer's 192-expert rank-1 banks (second EP2 half, ETP slice 1)."""
     from test_sm70_onecat_ds41 import checkpoint
