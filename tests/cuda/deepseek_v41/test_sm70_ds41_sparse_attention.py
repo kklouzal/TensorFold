@@ -130,8 +130,9 @@ def test_decode_window_ring_store_matches_post_attention_commit(requests, compre
         value.neg_()
 
 
-@pytest.mark.parametrize("rows,compressed", [(1, False), (8, True), (32, True), (64, False)])
-def test_decode_window_rms_matches_separate_launch(rows, compressed):
+@pytest.mark.parametrize("rows,compressed,eps",
+    [(1, False, 1e-20), (8, True, 1e-20), (32, True, 1e-20), (64, False, 1e-6)])
+def test_decode_window_rms_matches_separate_launch(rows, compressed, eps):
     from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import RING
     from tensorfold.families.deepseek_v4.cuda.kernels.norm import rms_norm
     from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
@@ -153,7 +154,6 @@ def test_decode_window_rms_matches_separate_launch(rows, compressed):
     table = rope_table(compressed=compressed)
     initial = torch.randn((rows + 1, RING, 512), device=device, generator=rng).half()
     old_ring, new_ring = initial.clone(), initial.clone()
-    eps = 1e-6
 
     def combined():
         return rope_qdq(value, positions, table, decode_ring=(new_ring, slots, valid), decode_norm=(weight, eps))
