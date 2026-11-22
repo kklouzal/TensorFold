@@ -89,7 +89,7 @@ class Shape:
                          qsl=torch.arange(count + 1, dtype=torch.int32, device=dev), qsl_cpu=list(range(count + 1)),
                          num_reqs=count, req_slot=req_slot,
                          block_table=torch.full((count, engine.slot_pages.width), -1, dtype=torch.int32, device=dev),
-                         prefill=[], decode_index=None)
+                         prefill=[], decode_index=None, single_token_slots=True)
         self.graph = None
         self.out = None
         self.local = None               # this rank's FP32 logits shard [count, vocab / 8] (graph-owned)

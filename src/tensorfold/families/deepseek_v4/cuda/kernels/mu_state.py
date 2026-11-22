@@ -414,6 +414,7 @@ def _mu_pool_c2(
     EPS: tl.constexpr,
     BLOCK: tl.constexpr,
     TRAP: tl.constexpr,
+    COMMIT_SINGLE: tl.constexpr,
 ):
     t = tl.program_id(0)
     d = tl.arange(0, BLOCK)
@@ -449,11 +450,20 @@ def _mu_pool_c2(
     variance = tl.sum(tl.where(valid, value * value, 0), 0) / D
     value = value * tl.rsqrt(variance + EPS) * tl.load(norm + d, valid, 0)
     tl.store(out + t * D + d, value, valid)
-    tl.store(complete + t, done)
+    if not COMMIT_SINGLE:
+        tl.store(complete + t, done)
     # A continuing request whose first token closes a group reads the slot's
     # partial row: it must be the row committed at exactly this position.
     stale = mine & (slot < S) & (local == 0) & done & (tl.load(committed + slot) != position)
     _report(err, tl.where(stale, 4, 0), TRAP)
+    if COMMIT_SINGLE:
+        # The decode graph has exactly one row per live slot. This program
+        # has finished every read of that slot's previous partial.
+        tl.debug_barrier()
+        if mine & (slot < S):
+            tl.store(partial + slot * 2 * D + d, tl.where(done, 0, current), valid)
+            tl.store(partial + (slot * 2 + 1) * D + d, tl.where(done, 0, current_score), valid)
+            tl.store(committed + slot, position + 1)
 
 
 @jit
@@ -512,7 +522,8 @@ class MuC2State(torch.nn.Module):
         )
         self.slots, self.eps, self.trap = slots, eps, trap
 
-    def forward(self, kv, score, positions, token_req, qsl, req_slot):
+    def forward(self, kv, score, positions, token_req, qsl, req_slot, *, commit_single=False):
+        """Pool C2 rows. A decode graph with one row per live slot can commit here and omit completion flags."""
         n = kv.shape[0]
         if (
             kv.shape != score.shape
@@ -523,7 +534,7 @@ class MuC2State(torch.nn.Module):
         ):
             raise ValueError("LOCAL-PATCH 85: C2 requires FP32 projections")
         result = torch.empty_like(kv, dtype=torch.float16)
-        complete = torch.empty(n, dtype=torch.bool, device=kv.device)
+        complete = None if commit_single else torch.empty(n, dtype=torch.bool, device=kv.device)
         if n:
             _mu_pool_c2[(n,)](
                 kv.contiguous(),
@@ -543,6 +554,7 @@ class MuC2State(torch.nn.Module):
                 EPS=self.eps,
                 BLOCK=512,
                 TRAP=self.trap,
+                COMMIT_SINGLE=commit_single,
                 enable_fp_fusion=False,
             )
         return result, complete

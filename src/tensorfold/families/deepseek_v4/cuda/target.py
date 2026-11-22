@@ -87,6 +87,7 @@ class Step:
     image: torch.Tensor | None = None          # [T] bool
     image_rows: torch.Tensor | None = None     # [V] int64, ascending
     features: torch.Tensor | None = None       # [V, 5120] FP16
+    single_token_slots: bool = False           # decode graph: one row per live slot, scratch rows never commit
 
 
 class Pool:
@@ -235,8 +236,10 @@ class Target:
         xf = x.float()
         values, scores = self._linear(xf, ly.comp_wkv), self._linear(xf, ly.comp_wgate)
         state = self.c2[ly.index]
-        latent, _ = state(values, scores, step.positions, step.token_req, step.qsl, step.req_slot)
-        state.commit_all(values, scores, step.positions, step.qsl, step.req_slot, step.num_reqs, step.token_req)
+        latent, _ = state(values, scores, step.positions, step.token_req, step.qsl, step.req_slot,
+                          commit_single=step.single_token_slots)
+        if not step.single_token_slots:
+            state.commit_all(values, scores, step.positions, step.qsl, step.req_slot, step.num_reqs, step.token_req)
         return latent
 
     def _select(self, ly, x, qr, step, table):
