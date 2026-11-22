@@ -122,9 +122,18 @@ __device__ __forceinline__ void dequant4(uint32_t c, uint32_t scale2, uint32_t& 
   hi = *reinterpret_cast<const uint32_t*>(&y);
 }
 
-__device__ __forceinline__ uint32_t splat_scale(const uint8_t* row, int group) {
-  const uint32_t bits = e4m3_half_bits(__ldg(row + 256 + group));
+__device__ __forceinline__ uint32_t splat_scale(uint32_t code) {
+  const uint32_t bits = e4m3_half_bits(code);
   return bits | (bits << 16);
+}
+
+// The binding and packed row stride guarantee alignment. These cache bytes
+// are read-only during attention. Load four bytes directly so the compiler
+// sees the indirect memory access without a C++ typed alias of byte storage.
+__device__ __forceinline__ uint32_t load_scale_word(const uint8_t* bytes) {
+  uint32_t result;
+  asm volatile("ld.global.nc.b32 %0, [%1];" : "=r"(result) : "l"(__cvta_generic_to_global(bytes)) : "memory");
+  return result;
 }
 
 // 0 = unused key; FP16 row pointer; packed row pointer | 1.
@@ -167,18 +176,23 @@ __device__ __forceinline__ void tile_scores(bool window, uint64_t d, const half*
   } else {  // packed rows (256 B of E2M1 codes, 32 E4M3 scales)
     const uint8_t* row = reinterpret_cast<const uint8_t*>(d & ~1ull);
     uint2 nxt = d ? __ldg(reinterpret_cast<const uint2*>(row)) : make_uint2(0, 0);
-#pragma unroll 2
-    for (int c = 0; c < kDim / 16; ++c) {  // 16 dims (one scale group) per chunk
-      const uint2 v = nxt;
-      if (c + 1 < kDim / 16) nxt = d ? __ldg(reinterpret_cast<const uint2*>(row) + c + 1) : make_uint2(0, 0);
-      const uint32_t s2 = d ? splat_scale(row, c) : 0u;
+#pragma unroll 1
+    for (int four = 0; four < kDim / 16; four += 4) {
+      const uint32_t scales = d ? load_scale_word(row + 256 + four) : 0u;
 #pragma unroll
-      for (int j = 0; j < 4; ++j) {  // k-step: dims 16c + 4j .. + 3
-        const uint32_t word = j < 2 ? v.x : v.y;
-        uint32_t k0, k1;
-        dequant4((word >> (16 * (j & 1))) & 0xffffu, s2, k0, k1);
-        const uint2 a0 = *reinterpret_cast<const uint2*>(qa + 16 * c + 4 * j);
-        mma_rc(lo, a0.x, a0.y, k0, k1);
+      for (int g = 0; g < 4; ++g) {
+        const int c = four + g;
+        const uint2 v = nxt;
+        if (c + 1 < kDim / 16) nxt = d ? __ldg(reinterpret_cast<const uint2*>(row) + c + 1) : make_uint2(0, 0);
+        const uint32_t s2 = splat_scale((scales >> (8 * g)) & 0xffu);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {  // k-step: dims 16c + 4j .. + 3
+          const uint32_t word = j < 2 ? v.x : v.y;
+          uint32_t k0, k1;
+          dequant4((word >> (16 * (j & 1))) & 0xffffu, s2, k0, k1);
+          const uint2 a0 = *reinterpret_cast<const uint2*>(qa + 16 * c + 4 * j);
+          mma_rc(lo, a0.x, a0.y, k0, k1);
+        }
       }
     }
   }
@@ -202,7 +216,7 @@ __device__ __forceinline__ void pv_steps(const uint64_t* desc, int key0, const h
     } else if (d) {
       const uint8_t* row = reinterpret_cast<const uint8_t*>(d & ~1ull);
       const uint2 v = __ldg(reinterpret_cast<const uint2*>(row + dbase / 2));
-      const uint32_t s2 = splat_scale(row, dbase / 16);
+      const uint32_t s2 = splat_scale(__ldg(row + 256 + dbase / 16));
       dequant4(v.x & 0xffffu, s2, b[0], b[1]);
       dequant4(v.x >> 16, s2, b[2], b[3]);
       dequant4(v.y & 0xffffu, s2, b[4], b[5]);
