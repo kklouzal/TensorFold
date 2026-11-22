@@ -130,6 +130,60 @@ def test_decode_window_ring_store_matches_post_attention_commit(requests, compre
         value.neg_()
 
 
+@pytest.mark.parametrize("rows,compressed", [(1, False), (8, True), (32, True), (64, False)])
+def test_decode_window_rms_matches_separate_launch(rows, compressed):
+    from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import RING
+    from tensorfold.families.deepseek_v4.cuda.kernels.norm import rms_norm
+    from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
+    from tensorfold.families.deepseek_v4.cuda.kernels.rope_qdq import rope_qdq
+
+    device = "cuda"
+    rng = torch.Generator(device=device).manual_seed(407)
+    scale = torch.logspace(-3, 1, 512, device=device)
+    value = torch.empty((rows, 512), device=device, dtype=torch.float16)
+    weight = torch.rand(512, device=device, dtype=torch.float32, generator=rng).add_(0.5)
+    positions = torch.tensor([127, 128, 4095, 16383, 16384], device=device).repeat((rows + 4) // 5)[:rows]
+    slots = torch.arange(rows, device=device, dtype=torch.int32)
+    valid = torch.ones(rows, device=device, dtype=torch.bool)
+    if rows > 1:
+        valid[-2] = False
+        slots[-1] = rows  # scratch
+        positions[-1] = 0
+    live_rows = rows if rows == 1 else rows - 1
+    table = rope_table(compressed=compressed)
+    initial = torch.randn((rows + 1, RING, 512), device=device, generator=rng).half()
+    old_ring, new_ring = initial.clone(), initial.clone()
+    eps = 1e-6
+
+    def combined():
+        return rope_qdq(value, positions, table, decode_ring=(new_ring, slots, valid), decode_norm=(weight, eps))
+
+    value.zero_()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        combined()
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        captured = combined()
+    new_ring.copy_(initial)
+
+    for replay in range(5):
+        if replay == 1:
+            # Exercise unequal rotary partners, including signed zero and small half values.
+            value[:, -64::2] = 2.0**-14
+            value[:, -63::2] = -0.0
+            value[:, -1] = 1.0
+        elif replay > 1:
+            value.copy_(torch.randn(value.shape, device=device, generator=rng) * scale)
+        expected = rope_qdq(rms_norm(value, weight, eps), positions, table, decode_ring=(old_ring, slots, valid))
+        graph.replay()
+        assert torch.equal(captured.view(torch.int16), expected.view(torch.int16))
+        assert torch.equal(new_ring.view(torch.int16), old_ring.view(torch.int16))
+        positions[:live_rows].add_(1)
+
+
 def oracle(args, kw, rows):
     """FP64 attention of token ``rows`` over the reference's gathered FP16 keys (exact decodes of the pages)."""
     from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk

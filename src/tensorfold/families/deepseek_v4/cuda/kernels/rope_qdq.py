@@ -17,13 +17,18 @@ from .triton_utils import jit, on_triton_device, tl
 
 
 @jit
-def _rope_qdq(x, positions, table, out, ring, req_slot, valid, LENGTH, HEADS: tl.constexpr, D: tl.constexpr,
+def _rope_qdq(x, positions, table, out, ring, req_slot, valid, weight, LENGTH, HEADS: tl.constexpr, D: tl.constexpr,
               INVERSE: tl.constexpr, GROUP: tl.constexpr, FP4: tl.constexpr, E4M3_SCALE: tl.constexpr,
-              RING_ROWS: tl.constexpr, RING_SLOTS: tl.constexpr):
+              RING_ROWS: tl.constexpr, RING_SLOTS: tl.constexpr, NORMALIZE: tl.constexpr, EPS: tl.constexpr):
     token, head = tl.program_id(0), tl.program_id(1)
     base = (token * HEADS + head) * D
     col = tl.arange(0, D)
     value = tl.load(x + base + col)
+    if NORMALIZE:
+        own = value.to(tl.float32)
+        variance = tl.sum(own * own, 0) / D
+        # Preserve the separate short-RMS FP16 store before exchanging the rotary pairs.
+        value = (own * tl.rsqrt(variance + EPS) * tl.load(weight + col)).to(tl.float16)
     rotary = col >= D - 64
     pair = tl.where(rotary, (col - (D - 64)) // 2, 0)
     position = tl.load(positions + token).to(tl.int64)
@@ -36,7 +41,11 @@ def _rope_qdq(x, positions, table, out, ring, req_slot, valid, LENGTH, HEADS: tl
     if INVERSE:
         s = -s
     odd = (col % 2) == 1
-    partner = tl.load(x + base + (col ^ 1)).to(tl.float32)
+    if NORMALIZE:
+        even_value, odd_value = tl.split(tl.reshape(value, (D // 2, 2)))
+        partner = tl.reshape(tl.join(odd_value, even_value), (D,)).to(tl.float32)
+    else:
+        partner = tl.load(x + base + (col ^ 1)).to(tl.float32)
     own = value.to(tl.float32)
     a = tl.where(odd, partner, own)
     b = tl.where(odd, own, partner)
@@ -64,13 +73,17 @@ def _rope_qdq(x, positions, table, out, ring, req_slot, valid, LENGTH, HEADS: tl
         tl.store(ring + (slot * RING_ROWS + position % RING_ROWS) * D + col, result, live)
 
 
-def rope_qdq(x, positions, table, *, inverse=False, fp4=False, group=128, e4m3_scale=False, decode_ring=None):
+def rope_qdq(x, positions, table, *, inverse=False, fp4=False, group=128, e4m3_scale=False,
+             decode_ring=None, decode_norm=None):
     """attention_qdq(apply_rope(x, positions, table, inverse=inverse), fp4=fp4, group=group, e4m3_scale=...)
     for FP16 x [T, D] or [T, H, D] (D 128 / 512), in one launch; returns x's shape.
 
     ``decode_ring`` carries (ring, request slots, valid rows) for a window projection with one row per live
     slot. The caller supplies nonnegative positions, orders these writes before attention, and guarantees
     that each live slot has one writer.
+
+    For a short decode window, ``decode_norm`` carries (FP32 RMS weight, epsilon) for the unnormalized
+    FP16 projection. Rotation consumes the rounded FP16 normalized values.
     """
     shape = x.shape
     if x.ndim == 2:
@@ -101,11 +114,19 @@ def rope_qdq(x, positions, table, *, inverse=False, fp4=False, group=128, e4m3_s
                 or table.shape[0] < 2
                 or any(t.device != x.device or not t.is_contiguous() for t in (ring, req_slot, valid, positions, table))):
             raise ValueError("V4.1 decode ring QDQ requires one FP16 window row per live slot")
+    weight, eps = None, 0.0
+    if decode_norm is not None:
+        weight, eps = decode_norm
+        if (ring is None or len(shape) != 2 or not 1 <= x.shape[0] <= 64
+                or weight.shape != (512,) or weight.dtype != torch.float32
+                or weight.device != x.device or not weight.is_contiguous()):
+            raise ValueError("V4.1 fused decode window RMS requires short FP16 rows and a local FP32 weight")
     out = torch.empty_like(x)
     if x.shape[0]:
         _rope_qdq[(x.shape[0], x.shape[1])](
-            x, positions, table, out, ring, req_slot, valid, table.shape[0] - 1,
+            x, positions, table, out, ring, req_slot, valid, weight, table.shape[0] - 1,
             HEADS=x.shape[1], D=x.shape[-1], INVERSE=inverse, GROUP=group, FP4=fp4, E4M3_SCALE=e4m3_scale,
             RING_ROWS=0 if ring is None else ring.shape[1], RING_SLOTS=0 if ring is None else ring.shape[0] - 1,
+            NORMALIZE=weight is not None, EPS=eps,
             num_warps=4, enable_fp_fusion=False)
     return out.view(shape)

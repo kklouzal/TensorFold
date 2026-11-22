@@ -209,7 +209,11 @@ class Target:
         # A one-row request reads the current value from window; the prior
         # RING-1 positions never alias the ring row being written here.
         decode_ring = (ring, step.req_slot, step.valid) if step.single_token_slots else None
-        window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table, decode_ring=decode_ring)
+        if decode_ring is not None and 1 <= tokens <= 64:
+            window = rope_qdq(kv_low, positions, table, decode_ring=decode_ring,
+                              decode_norm=(ly.kv_norm, self.g.eps))
+        else:
+            window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table, decode_ring=decode_ring)
         extra = {}
         if ly.ratio:
             if ly.owns_kv:
