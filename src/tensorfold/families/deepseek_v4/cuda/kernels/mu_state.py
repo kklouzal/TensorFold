@@ -119,6 +119,17 @@ def _mu_compressed(ids, valid, token_map, s0, at, inside, VOCAB: tl.constexpr):
 
 
 @jit
+def _store_hash_words(hashes, primes, offsets, token_row, channel, p0, p1, p2, p3):
+    heads = tl.arange(0, 32)
+    value = p0 ^ p1
+    value = tl.where(heads >= 8, value ^ p2, value)
+    value = tl.where(heads >= 16, value ^ p3, value)
+    prime = tl.load(primes + channel * 24 + heads, heads < 24, 1)
+    base = tl.load(offsets + channel * 24 + heads, heads < 24, 0)
+    tl.store(hashes + (token_row * 2 + channel) * 24 + heads, value % prime + base, heads < 24)
+
+
+@jit
 def _mu_hash_rows(
     ids,
     positions,
@@ -140,7 +151,6 @@ def _mu_hash_rows(
     TRAP: tl.constexpr,
 ):
     t, layer = tl.program_id(0), tl.program_id(1)
-    heads = tl.arange(0, 32)
     r = tl.load(token_req + t)
     rr = tl.where(r >= 0, r, 0)
     s0 = tl.load(qsl + rr).to(tl.int64)
@@ -170,12 +180,7 @@ def _mu_hash_rows(
     p1 = tl.sum(tl.where(tl.arange(0, 4) == 1, products, 0), 0)
     p2 = tl.sum(tl.where(tl.arange(0, 4) == 2, products, 0), 0)
     p3 = tl.sum(tl.where(tl.arange(0, 4) == 3, products, 0), 0)
-    value = p0 ^ p1
-    value = tl.where(heads >= 8, value ^ p2, value)
-    value = tl.where(heads >= 16, value ^ p3, value)
-    prime = tl.load(primes + layer * 24 + heads, heads < 24, 1)
-    base = tl.load(offsets + layer * 24 + heads, heads < 24, 0)
-    tl.store(hashes + (t * 2 + layer) * 24 + heads, value % prime + base, heads < 24)
+    _store_hash_words(hashes, primes, offsets, t, layer, p0, p1, p2, p3)
     if layer == 0:
         # Validation once per token.
         live = mine & (tl.load(valid + t) != 0)
@@ -193,6 +198,49 @@ def _mu_hash_rows(
         )
         bits |= tl.where(bad_slot, 16, 0)
         _report(err, bits, TRAP)
+
+
+@jit
+def _mu_hash_commit_single(
+    ids, positions, valid, req_slot, token_map, primes, offsets, multipliers, pad, history, hashes, err,
+    S: tl.constexpr, VOCAB: tl.constexpr, MAX_CONTEXT: tl.constexpr, TRAP: tl.constexpr,
+):
+    """One program owns a decode graph row and both channels of its hash state."""
+    t = tl.program_id(0)
+    slot = tl.load(req_slot + t).to(tl.int64)
+    bad_slot = (slot < 0) | (slot > S)
+    slot = tl.where(bad_slot, S, slot)
+    position = tl.load(positions + t).to(tl.int64)
+    token = tl.load(ids + t).to(tl.int64)
+    token_valid = (token >= 0) & (token < VOCAB)
+    live = tl.load(valid + t) != 0
+    raw = tl.load(token_map + tl.where(token_valid, token, 0)).to(tl.int64)
+    raw = tl.where(live, raw, -1)
+    recent = tl.load(history + slot * 4 + 2, position != 0, -1)
+    middle = tl.load(history + slot * 4 + 1, position != 0, -1)
+    oldest = tl.load(history + slot * 4, position != 0, -1)
+    padding = tl.load(pad)
+    have0 = raw != -1
+    have1 = have0 & (recent != -1)
+    have2 = have1 & (middle != -1)
+    c0 = tl.where(have0, raw, padding)
+    c1 = tl.where(have1, recent, padding)
+    c2 = tl.where(have2, middle, padding)
+    c3 = tl.where(have2 & (oldest != -1), oldest, padding)
+    for channel in tl.static_range(2):
+        m = multipliers + channel * 4
+        _store_hash_words(hashes, primes, offsets, t, channel,
+                          c0 * tl.load(m), c1 * tl.load(m + 1), c2 * tl.load(m + 2), c3 * tl.load(m + 3))
+    committed = tl.load(history + slot * 4 + 3)
+    bits = tl.where(live & ~token_valid, 1, 0)
+    bits |= tl.where((slot < S) & (position != 0) & (position != committed), 4, 0)
+    bits |= tl.where((slot < S) & (position + 1 > MAX_CONTEXT), 8, 0)
+    bits |= tl.where(bad_slot, 16, 0)
+    _report(err, bits, TRAP)
+    tl.debug_barrier()
+    col = tl.arange(0, 4)
+    value = tl.where(col == 0, middle, tl.where(col == 1, recent, tl.where(col == 2, raw, position + 1)))
+    tl.store(history + slot * 4 + col, value, slot < S)
 
 
 @jit
@@ -281,11 +329,23 @@ class MuEngramHashState(torch.nn.Module):
         self.slots, self.max_tokens, self.max_context = slots, max_tokens, max_context
         self.trap = trap
 
-    def forward(self, input_ids, positions, valid, token_req, qsl, req_slot):
+    def forward(self, input_ids, positions, valid, token_req, qsl, req_slot, *, commit_single=False):
+        """Hash rows, optionally committing the decode graph's unique live slots.
+
+        The fused path requires one row per request, with qsl and token_req in row
+        order. Its padding uses the scratch slot; dummy token_req rows use the split path.
+        """
         n = input_ids.numel()
         if not 0 < n <= self.max_tokens or positions.shape != input_ids.shape:
             raise ValueError("LOCAL-PATCH 85: Engram hash batch shape")
         result = torch.empty(n, 2, 24, dtype=torch.int64, device=input_ids.device)
+        if commit_single:
+            _mu_hash_commit_single[(n,)](
+                input_ids, positions, valid, req_slot, self.token_map, self.primes, self.offsets, self.multipliers,
+                self.pad, self.history, result, self.err, S=self.slots, VOCAB=self.token_map.numel(),
+                MAX_CONTEXT=self.max_context, TRAP=self.trap,
+            )
+            return result
         _mu_hash_rows[(n, 2)](
             input_ids,
             positions,

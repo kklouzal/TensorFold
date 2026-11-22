@@ -370,9 +370,13 @@ class Target:
         # Image-span rows are dead Engram n-gram members (upstream: valid & ~image into the hash state, its commit
         # and the Engram gate); KV and attention keep every row.
         valid = step.valid if step.image is None else step.valid & ~step.image
-        hashes = self.hash_state(step.ids, step.positions, valid, step.token_req, step.qsl, step.req_slot)
-        self.hash_state.commit_all(step.ids, step.positions, valid, step.qsl, step.req_slot, step.num_reqs,
-                                   step.token_req)
+        if step.single_token_slots:
+            hashes = self.hash_state(step.ids, step.positions, valid, step.token_req, step.qsl, step.req_slot,
+                                     commit_single=True)
+        else:
+            hashes = self.hash_state(step.ids, step.positions, valid, step.token_req, step.qsl, step.req_slot)
+            self.hash_state.commit_all(step.ids, step.positions, valid, step.qsl, step.req_slot, step.num_reqs,
+                                       step.token_req)
         if self.engram_trace is not None:
             self.engram_trace.write(hashes[valid].cpu().numpy().tobytes())
         hidden = self.embed(step.ids)
