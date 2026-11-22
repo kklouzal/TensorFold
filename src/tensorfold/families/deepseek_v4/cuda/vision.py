@@ -416,11 +416,10 @@ class VisionTower:
     delimiters are replicated, so every rank holds the same span. Two FP32 all-reduces of [patches, 1024] a block and
     one of [tokens, 5120] for the aligner; no other exchange.
 
-    ``compute`` torch.float16 (default, the friend's patch-150 numerics except at the row-parallel outputs): BF16
-    weights widened exactly to FP16, FP16 GEMM operands with FP32 accumulation; column-parallel outputs (qkv,
-    gate/up, mm.1) round to FP16 as his do; the row-parallel ones stay FP32 through the sum and the bias (his round
-    each to FP16 before the FP32 residual add: one rounding fewer here). torch.float32: every operand FP32 (the GPU
-    oracle; ~8x slower GEMMs on V100)."""
+    ``compute`` torch.float16 (default): BF16 weights widen exactly to FP16 and GEMMs accumulate in FP32.
+    Row-parallel outputs round to FP16 after the cross-rank FP32 reduction, at the same logical boundary as a
+    one-device GEMM. A bias is added in FP32 and rounded back to FP16 before the FP32 residual add. The TP
+    reduction still changes the accumulation order. torch.float32: every operand FP32 (the GPU oracle)."""
 
     def __init__(self, tensors: dict, device, *, compute=None, rank: int = 0, world: int = 1, comm=None):
         import torch
@@ -487,17 +486,17 @@ class VisionTower:
         return y
 
     def _row_parallel(self, x, weight, bias=None):
-        """sum over the ranks of x @ weight.T (this rank's input columns) + bias: FP32 GEMM output (FP16 operands,
-        FP32 accumulation: cuBLAS GemmEx with an FP32 C), FP32 sum, FP32 bias; [rows, out] FP32 on every rank."""
+        """Reduce unrounded partials before applying the one-device GEMM and bias rounding points."""
+        if self.world == 1:
+            return self._linear(x, weight, bias)
         torch = self.torch
         if self.compute == torch.float16:
             y = torch.mm(x.to(torch.float16), weight.t(), out_dtype=torch.float32)
         else:
             y = torch.nn.functional.linear(x.float(), weight)
-        if self.world > 1:
-            y = self.comm.sum(y, torch.float32)
+        y = self.comm.sum(y, torch.float32).to(self.compute)
         if bias is not None:
-            y += bias
+            y = (y.float() + bias).to(self.compute)
         return y
 
     def _rms(self, x, weight):
@@ -548,8 +547,7 @@ class VisionTower:
         st["x"], st["next"] = x, max(st["next"], stop)
 
     def aligner(self, st: dict):
-        """post-norm, 3 x 3 merge and the aligner of a finished ViT: [ceil(n_h/3) * ceil(n_w/3), 5120] FP32 in
-        reading order."""
+        """Post-norm, 3 x 3 merge and aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] in reading order."""
         F = self.torch.nn.functional
         if st["next"] != LAYERS:
             raise RuntimeError("the DeepSeek-V4.1 aligner runs after the last ViT block")
