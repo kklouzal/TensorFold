@@ -295,22 +295,32 @@ class Target:
         g = self.g
         logits = fp32_projection(x if shard is None else x_rows, ly.gate)
         mask = image if image is None or shard is None else shard.take(image)
-        if mask is None:
+        if mask is None and shard is None:
             # the router epilogue and this rank's EP2 mapping in one launch (local id, weight 0 for the other group)
             local, weights = route_local(logits, ly.gate_bias, g.top_k, g.routed_scale, self.local.start,
                                          len(self.local))
-        else:       # image rows route with the vision bias (upstream Gate.bias_vl; weights stay unbiased)
-            from .vision import route_with_vision
-            probabilities, ids = route_with_vision(logits.float(), ly.gate_bias, self.bias_vl[ly.index], mask,
-                                                   g.top_k, g.routed_scale)
+        else:
+            if mask is None:
+                from .kernels.router import route_topk
+
+                probabilities, ids = route_topk(logits, ly.gate_bias, g.top_k, g.routed_scale)
+            else:       # image rows route with the vision bias (upstream Gate.bias_vl; weights stay unbiased)
+                from .vision import route_with_vision
+
+                probabilities, ids = route_with_vision(logits, ly.gate_bias, self.bias_vl[ly.index], mask,
+                                                       g.top_k, g.routed_scale)
+            ids = ids.to(torch.int32)
+            if shard is not None:
+                # The row owner can belong to either EP group. Share global routes before applying the
+                # receiving rank's local expert mapping, which discards routes owned by the other group.
+                ids = self.c.gather_rows(ids, shard)
+                probabilities = self.c.gather_rows(probabilities, shard)
             first = self.local.start
-            local = ids.to(torch.int32) - first
+            local = ids - first
             mine = (local >= 0) & (local < len(self.local))
             local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
             weights = torch.where(mine, probabilities.float(),
                                   torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
-        if shard is not None:       # every rank's routes for every row (the experts run on all rows)
-            local, weights = self.c.gather_rows(local, shard), self.c.gather_rows(weights, shard)
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left, self.lattice)
