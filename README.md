@@ -1674,9 +1674,12 @@ remains inconclusive. The [recipe](docs/recipes/deepseek-v41-v100.md) gives the 
 limits. DSpark drafts are pending.
 
 Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The TP8
-tower gathers FP16 features so each projection computes over its full input dimension, with FP32 accumulation.
-The prompt cache keys image spans by their pixels. The tower-only SC117 check passed the per-image accuracy
-gates and gave identical spans across ranks. Integrated serving verification is pending for this tower layout.
+tower gathers FP16 features so each projection accumulates over its full input dimension in FP32. In repeated
+SC117 sessions at 32 lanes and a 65,536-token context, median cold image TTFT fell from about 1.15 s to 0.68 s
+for one 994-token image and from 3.86 s to 1.98 s for four. The shared KV pool grew from 6.68M to 7.70M tokens.
+Both extreme image orientations and all seven image checks passed. The greedy chat and private text scoring
+receipts matched the rank-0 tower build exactly. The [vision qualification](docs/recipes/deepseek-v41-v100.md#tp8-serving-qualification)
+records the C32 decode timing and mixed-stream results.
 
 #### Gemma 4 on eight V100s: prompt reuse, sampled drafts, `--parallel` (2026-11-19)
 

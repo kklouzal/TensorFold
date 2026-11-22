@@ -123,11 +123,44 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   reused only by a prompt with the same images. Points stay at message boundaries. Prompt scoring
   (`/v1/tensorfold/score`) stays text only.
 
-The TP8 tower-only build `24a4636d` passed the original per-image gate on seven images with identical spans on all
-eight ranks. The FP32 oracle also passed the independent upstream comparison. Six TP8 spans differed in low bits
-from the rank-0 tower. Integrated serving verification is pending for the TP8 tower.
+### TP8 serving qualification
 
-Earlier rank-0 tower measurements on SC117 (180 W, image `67b43e682057`,
+The tower-only build `24a4636d` passed the original per-image gate on all seven images. It produced bitwise-identical
+spans across all eight ranks. Against the FP32 oracle, each TP8 relative L2 error was 0.999972–1.000009 times the
+rank-0 tower's error, and the change in minimum token cosine was at most 1.2e-7 in magnitude. The largest image's
+span also matched the rank-0 tower bit for bit, and the other six differed in low bits. The independent upstream
+FP32 and patch-150 comparisons passed on one device.
+
+On SC117 at 180 W with image `67b43e682057`, `--vision --parallel 32 --context 65536 --prefix-host-bytes 16G`,
+the rank-0 build `1c093114` and integrated TP8 build `51acced7` ran in A/B then B/A order. Each arm used a fresh
+server. All four sessions passed seven image checks, exact-image prefix reuse, and the two 8192 × 1 and 1 × 8192
+orientations at the 1,024-token image limit. The same 20 greedy chats and 4,522 prefill and 1,008 decode rows from
+16 teacher-forced text documents matched exactly across all four sessions.
+
+| Cold image workload | Rank-0 session medians | TP8 session medians | Rank-0 / TP8 TTFT and family-corrected interval |
+| --- | ---: | ---: | ---: |
+| One 994-token image | 1.158 / 1.148 s | 0.673 / 0.680 s | 1.705 [1.637, 1.776] |
+| Four 994-token images | 3.861 / 3.862 s | 1.984 / 1.971 s | 1.953 [1.914, 1.993] |
+
+The shared KV pool held 6,677,248 tokens with the rank-0 tower and 7,697,600 with TP8. The worst-rank transient
+peak at startup's 9,189-patch bound fell from 613 to 235 MiB within the 3 GiB prompt reserve. The tower tensor
+footprint was 972,189,696 bytes on rank 0 or 123,921,408 bytes per TP8 rank, an increase of 19,181,568 bytes
+across the machine. During the mixed four-image request, the background text stream finished all 400 chunks.
+The overlap p99 gaps in A/B/B/A order were 157.33 / 157.89 / 156.94 / 156.81 ms. The automatic 175 ms grouping
+policy stayed in effect.
+
+The ten-cell text matrix with `--vision` classified all prefill and decode cells as uncertain at its familywise
+comparison level. The aggregate TP8/rank-0 prefill and per-user decode ratios were 1.001 [0.997, 1.004] and
+1.010 [1.000, 1.020], respectively, with 95% intervals rounded for display. At C32 16K the median per-user decode
+point estimate was 0.938 [0.594, 1.481] with its familywise interval. The median user received a first token
+2.6–4.7 s earlier in the paired TP8 runs and finished 0.6–0.7 s earlier. The slower per-user decode estimate included
+a larger share of time overlapping other prompts' prefill. At the end of prefill while all 32 replies still
+streamed, delivery rates were 668.0 / 660.5 / 657.7 / 657.2 tok/s in A/B/B/A order, and whole-run rates were
+104.48 / 104.67 / 104.43 / 104.60 tok/s. Those windows characterize the tested schedule and arrival order.
+
+### Earlier rank-0 measurements
+
+Measured on SC117 (180 W, image `67b43e682057`,
 `--parallel 32 --context 65536 --prefix-host-bytes 16G --vision`, source ds41-vision2 1921ae48):
 
 - Tower parity (one V100, real mmproj, 7 images including tall/wide/largest): the FP16 tower is bitwise equal to the
