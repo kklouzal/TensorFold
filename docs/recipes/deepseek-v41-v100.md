@@ -111,11 +111,11 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   (upstream's resize plan, Pillow `ImageOps.pad` with grey 127). Unlike the friend's server, EXIF orientation is
   applied before the plan. `--vision-max-images` (default 4) and `--vision-image-tokens` (default 4096) bound a
   request.
-- Tower: the mmproj ViT (32 x 1024) and 3 x 3 aligner on GPU 0 of rank 0, the friend's patch-150 numerics (BF16
-  weights widened exactly to FP16, FP16 GEMMs with FP32 accumulation, FP32 residual, norms and RoPE). It is loaded
-  before the KV pool is sized and warmed at startup on the plan's 9,189-patch bound. Rank 0 encodes and broadcasts
-  each prompt chunk's image rows to the other ranks. While other streams decode, an encode runs in groups of
-  tower blocks under the 175 ms policy, as prompt chunks do.
+- Tower. The mmproj ViT (32 x 1024) and 3 x 3 aligner split their projection outputs across eight ranks. Gathers
+  assemble FP16 features in input order, each GEMM accumulates its full input dimension in FP32, and the residual,
+  norms and RoPE stay FP32. The deployment keeps the mmproj and vision bias files stable during loading. The tower
+  is loaded before the KV pool is sized and warmed at startup on the plan's 9,189-patch bound. Each rank computes
+  the image span. While other streams decode, the leader schedules groups of tower blocks under the 175 ms policy.
 - Backbone: image rows replace the image token's embedding. They route their experts with the vision bias
   (`exp_probs_b_vl`), and they are dead Engram n-gram members (`valid & ~image`), as upstream does. Text-only
   steps run exactly the text model's kernels.
@@ -123,8 +123,12 @@ messages and tool results. The model directory's `config.json` names the mmproj 
   reused only by a prompt with the same images. Points stay at message boundaries. Prompt scoring
   (`/v1/tensorfold/score`) stays text only.
 
-Measured on SC117 (180 W, image `67b43e682057`, `--parallel 32 --context 65536 --prefix-host-bytes 16G --vision`,
-source ds41-vision2 1921ae48):
+The TP8 tower-only build `24a4636d` passed the original per-image gate on seven images with identical spans on all
+eight ranks. The FP32 oracle also passed the independent upstream comparison. Six TP8 spans differed in low bits
+from the rank-0 tower. Integrated serving verification is pending for the TP8 tower.
+
+Earlier rank-0 tower measurements on SC117 (180 W, image `67b43e682057`,
+`--parallel 32 --context 65536 --prefix-host-bytes 16G --vision`, source ds41-vision2 1921ae48):
 
 - Tower parity (one V100, real mmproj, 7 images including tall/wide/largest): the FP16 tower is bitwise equal to the
   friend's patch-150 tower, and the FP32 oracle is within relative L2 1e-4 of upstream's FP32 math. Group-wise

@@ -1,6 +1,5 @@
 """DeepSeek-V4.1-Flash image input on SM70: the server frontend, preprocessing, placeholder expansion and prompt-cache
-ids, the mmproj ViT + aligner (resumable by blocks), and the
-vision router bias.
+ids, the mmproj ViT + aligner (tensor parallel, resumable by blocks), and the vision router bias.
 
 Provenance (arithmetic and plan ported, recorded): the friend's overlay patch 150
 (``patches/dsvis_files/local_ds41_vision_tower.py`` / ``local_ds41_vision.py``, snapshot lp-snap-c1es8-...), which
@@ -17,11 +16,16 @@ Graph (upstream):
   span: [START] ([IMAGE] * n_llm_w + [NEWLINE]) * n_llm_h + [END]; every position carries id 129264
         (<｜deepseek_image｜>); START/NEWLINE/END are learned 5120-vectors of the mmproj.
 
-Precision (the friend's production numerics, kept for parity; V100 has no BF16): BF16 weights widened to FP16
-(checked at load: finite, exact in FP16's normal range, |error| <= 2**-25 on its subnormal grid), FP16 GEMM
-operands with FP32 accumulation (cuBLAS reduced-precision reduction off while the tower runs), FP16 linear
-outputs; the residual stream, RMSNorm, RoPE, GELU input and the patch embedding are FP32 (``compute=float32``
-runs everything in FP32: the GPU oracle). Residual magnitudes reach ~1.7e3 after layer 12, so an FP16 residual
+Placement: TP8 over the lane's eight ranks (``VisionTower``: Megatron heads / MLP columns, FP32 all-reduce of the
+row-parallel partials), so each GPU holds 1/8 of the 0.91 GiB tower and every rank ends with the same span (no
+feature broadcast to the backbone).
+
+Precision (the friend's production numerics, kept except at the row-parallel outputs; V100 has no BF16): BF16
+weights widened to FP16 (checked at load: finite, exact in FP16's normal range, |error| <= 2**-25 on its subnormal
+grid), FP16 GEMM operands with FP32 accumulation (cuBLAS reduced-precision reduction off while the tower runs),
+FP16 column-parallel outputs (qkv, gate/up, mm.1); attn_out, ffn_down and mm.2 keep FP32 through the cross-rank sum
+and the bias (his round them to FP16); the residual stream, RMSNorm, RoPE, GELU input and the patch embedding are
+FP32 (``compute=float32`` runs everything in FP32: the GPU oracle). Residual magnitudes reach ~1.7e3 after layer 12, so an FP16 residual
 loses ~3 bits there (the friend's ``fp16res`` variant, min token cosine 0.938 on carrots.jpeg).
 
 Routing and Engram contract (upstream model.py, patch 150): image-span tokens route the MoE with the vision
@@ -268,9 +272,39 @@ def prefix_ids(prepared: PreparedVision, vocab: int) -> list[int]:
 
 
 # ------------------------------------------------------------------------------------------- mmproj reading
-def read_mmproj(path: str | Path) -> dict[str, Any]:
+def shard_axes(name: str) -> tuple[int, int] | None:
+    """The TP split of mmproj tensor ``name``: (axis, pieces), every one of the ``pieces`` equal blocks along
+    ``axis`` cut into ``world`` contiguous parts (rank r takes part r of each), or None (replicated). Projections
+    split over output features. Fused qkv splits q | k | v separately to keep whole heads together."""
+    if name.endswith(("attn_qkv.weight", "attn_qkv.bias")):
+        return 0, 3
+    if name.endswith(("attn_out.weight", "attn_out.bias", "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight")) or \
+            name in ("mm.1.weight", "mm.1.bias", "mm.2.weight", "mm.2.bias"):
+        return 0, 1
+    return None
+
+
+def take_shard(value, name: str, rank: int, world: int):
+    """Rank ``rank``'s part of ``value`` (numpy array or torch tensor, full shape) under ``shard_axes(name)``."""
+    spec = shard_axes(name) if world > 1 else None
+    if spec is None:
+        return value
+    axis, pieces = spec
+    size = value.shape[axis]
+    if size % (pieces * world):
+        raise ValueError(f"{name}: dimension {size} does not split into {pieces} x {world} parts")
+    part = size // (pieces * world)
+    shape = tuple(value.shape)
+    blocks = value.reshape(shape[:axis] + (pieces, size // pieces) + shape[axis + 1:])
+    index = (slice(None),) * (axis + 1) + (slice(rank * part, (rank + 1) * part),)
+    return blocks[index].reshape(shape[:axis] + (pieces * part,) + shape[axis + 1:])
+
+
+def read_mmproj(path: str | Path, rank: int = 0, world: int = 1) -> dict[str, Any]:
     """The deepseek41v mmproj as {name: CPU torch tensor}: F32 tensors FP32, BF16 matrices FP16 (exactness
-    checked), shapes in torch order. Reads through TensorFold's GGUF inventory (``gguf_file._shard``)."""
+    checked), shapes in torch order; with ``world`` > 1 only rank ``rank``'s TP part of each split tensor
+    (``shard_axes``; cut before widening, so a rank reads and converts its part only). Reads through TensorFold's
+    GGUF inventory (``gguf_file._shard``); the full shapes are checked before any cut."""
     import torch
 
     from tensorfold.gguf_file import _shard
@@ -281,42 +315,52 @@ def read_mmproj(path: str | Path) -> dict[str, Any]:
     eps = metadata.get("clip.vision.attention.layer_norm_epsilon")
     if wrong or not isinstance(eps, float) or abs(eps - EPS) > 1e-12:
         raise ValueError(f"{path}: not the DeepSeek-V4.1 mmproj ({wrong}, eps {eps})")
-    data = np.memmap(path, dtype=np.uint8, mode="r")
-    tensors = {}
-    try:
-        for t in entries:
-            raw = data[t.offset:t.offset + t.nbytes]
-            if t.ggml_type == 0:
-                value = torch.from_numpy(np.frombuffer(raw, dtype="<f4").copy()).reshape(t.shape)
-            elif t.ggml_type == 30:
-                wide = torch.from_numpy((np.frombuffer(raw, dtype="<u2").astype(np.int32) << 16)).view(torch.float32)
-                half = wide.half()
-                # FP16 holds every BF16 weight in its normal range exactly; values below 2**-14 round to the
-                # subnormal grid (|error| <= 2**-25). This file: 88,173 of 484,442,112 values inexact, max error
-                # 2.98e-8, max |w| 2.33 (measured 2026-11-21); anything else is refused.
-                if not bool(torch.isfinite(half).all()) or float((half.float() - wide).abs().max()) > 2.0**-25:
-                    raise ValueError(f"{path}: {t.name} does not fit FP16")
-                value = half.reshape(t.shape)
-            else:
-                raise ValueError(f"{path}: {t.name} has ggml type {t.ggml_type}; the deepseek41v mmproj is F32/BF16")
-            tensors[t.name] = value
-    finally:
-        del data
     need = ["v.patch_embd.weight", "v.patch_embd.bias", "v.post_ln.weight", "mm.1.weight", "mm.1.bias", "mm.2.weight",
             "mm.2.bias", "v.token_embd.img_start", "v.token_embd.img_end", "v.image_newline"]
     for i in range(LAYERS):
         need += [f"v.blk.{i}.{n}" for n in ("attn_qkv.weight", "attn_qkv.bias", "attn_out.weight", "attn_out.bias",
                                            "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight", "ln1.weight",
                                            "ln2.weight")]
-    missing = [n for n in need if n not in tensors]
-    if missing or len(tensors) != len(need):
+    names = {t.name for t in entries}
+    missing = [n for n in need if n not in names]
+    if missing or len(entries) != len(need):
         raise ValueError(f"{path}: tensor set differs from deepseek41v (missing {missing[:4]})")
     expected = {"v.patch_embd.weight": (DIM, 3, PATCH, PATCH), "mm.1.weight": (OUT_DIM, DIM * MERGE * MERGE),
-                "mm.2.weight": (OUT_DIM, OUT_DIM), "v.blk.0.attn_qkv.weight": (3 * DIM, DIM),
-                "v.blk.0.ffn_down.weight": (DIM, INTER), "v.image_newline": (OUT_DIM,)}
-    for name, shape in expected.items():
-        if tuple(tensors[name].shape) != shape:
-            raise ValueError(f"{path}: {name} has shape {tuple(tensors[name].shape)}, expected {shape}")
+                "mm.2.weight": (OUT_DIM, OUT_DIM), "v.image_newline": (OUT_DIM,)}
+    for i in range(LAYERS):
+        expected.update({f"v.blk.{i}.attn_qkv.weight": (3 * DIM, DIM), f"v.blk.{i}.attn_qkv.bias": (3 * DIM,),
+                         f"v.blk.{i}.attn_out.weight": (DIM, DIM), f"v.blk.{i}.attn_out.bias": (DIM,),
+                         f"v.blk.{i}.ffn_gate.weight": (INTER, DIM),
+                         f"v.blk.{i}.ffn_up.weight": (INTER, DIM), f"v.blk.{i}.ffn_down.weight": (DIM, INTER)})
+    expected["mm.1.bias"] = expected["mm.2.bias"] = (OUT_DIM,)
+    for t in entries:
+        if t.name in expected and tuple(t.shape) != expected[t.name]:
+            raise ValueError(f"{path}: {t.name} has shape {tuple(t.shape)}, expected {expected[t.name]}")
+        if shard_axes(t.name) is not None and t.name not in expected:
+            raise AssertionError(f"{t.name}: a split tensor without a checked shape")
+    data = np.memmap(path, dtype=np.uint8, mode="r")
+    tensors = {}
+    try:
+        for t in entries:
+            raw = data[t.offset:t.offset + t.nbytes]
+            if t.ggml_type == 0:
+                part = take_shard(np.frombuffer(raw, dtype="<f4").reshape(t.shape), t.name, rank, world)
+                value = torch.from_numpy(np.ascontiguousarray(part, dtype=np.float32).copy())
+            elif t.ggml_type == 30:
+                part = take_shard(np.frombuffer(raw, dtype="<u2").reshape(t.shape), t.name, rank, world)
+                wide = torch.from_numpy(np.ascontiguousarray(part).astype(np.int32) << 16).view(torch.float32)
+                half = wide.half()
+                # FP16 holds every BF16 weight in its normal range exactly; values below 2**-14 round to the
+                # subnormal grid (|error| <= 2**-25). This file: 88,173 of 484,442,112 values inexact, max error
+                # 2.98e-8, max |w| 2.33 (measured 2026-11-21); anything else is refused.
+                if not bool(torch.isfinite(half).all()) or float((half.float() - wide).abs().max()) > 2.0**-25:
+                    raise ValueError(f"{path}: {t.name} does not fit FP16")
+                value = half
+            else:
+                raise ValueError(f"{path}: {t.name} has ggml type {t.ggml_type}; the deepseek41v mmproj is F32/BF16")
+            tensors[t.name] = value
+    finally:
+        del data
     return tensors
 
 
@@ -362,13 +406,19 @@ def rope_cos_sin(n_h: int, n_w: int, device):
 
 
 class VisionTower:
-    """Device-resident ViT + aligner of one rank; ``encode(frame)`` -> the frame's whole span
-    [frame.tokens, 5120] (delimiters included) in ``out_dtype``.
+    """Device-resident ViT + aligner of TP rank ``rank`` of ``world`` (``world`` 1: the whole tower on one device);
+    ``encode(frame)`` -> the frame's whole span [frame.tokens, 5120] (delimiters included) in ``out_dtype``.
 
-    ``compute`` torch.float16 (default): the friend's production numerics (module docstring). torch.float32: every
-    operand FP32 (the GPU oracle; ~8x slower GEMMs on V100)."""
+    Each TP rank owns whole attention heads and its output rows of every projection. Before attn_out, ffn_down
+    and mm.2, lossless gathers assemble the input features in rank order. Each local GEMM reduces over the full
+    input dimension before the original GEMM and bias roundings. Another gather reconstructs the full outputs.
+    The residual stream, norms, patch embedding, RoPE and delimiters stay replicated. There is no floating-point
+    reduction between ranks. GEMM tiling may still differ with output width.
 
-    def __init__(self, tensors: dict, device, *, compute=None):
+    ``compute`` torch.float16 (default) uses FP16 GEMM operands and FP32 accumulation. The individual GEMM and
+    bias operations round to FP16 and the residual adds in FP32. ``torch.float32`` is the GPU oracle."""
+
+    def __init__(self, tensors: dict, device, *, compute=None, rank: int = 0, world: int = 1, comm=None):
         import torch
 
         self.torch = torch
@@ -376,6 +426,25 @@ class VisionTower:
         self.compute = torch.float16 if compute is None else compute
         if self.compute not in (torch.float16, torch.float32):
             raise ValueError("the DeepSeek-V4.1 tower computes in FP16 (production) or FP32 (oracle)")
+        if type(world) is not int or world < 1 or not 0 <= rank < world or HEADS % world or INTER % world \
+                or OUT_DIM % world:
+            raise ValueError(f"the DeepSeek-V4.1 tower does not split over rank {rank} of {world}")
+        if world > 1 and comm is None:
+            raise ValueError("a tensor-parallel DeepSeek-V4.1 tower needs the ranks' collectives")
+        self.rank, self.world, self.comm = rank, world, comm
+        self.heads = HEADS // world
+        width = self.heads * (DIM // HEADS)
+        shapes = {"attn_qkv.weight": (3 * width, DIM), "attn_qkv.bias": (3 * width,),
+                  "attn_out.weight": (DIM // world, DIM), "attn_out.bias": (DIM // world,),
+                  "ffn_gate.weight": (INTER // world, DIM), "ffn_up.weight": (INTER // world, DIM),
+                  "ffn_down.weight": (DIM // world, INTER)}
+        aligner = {"mm.1.weight": (OUT_DIM // world, DIM * MERGE * MERGE), "mm.1.bias": (OUT_DIM // world,),
+                   "mm.2.weight": (OUT_DIM // world, OUT_DIM), "mm.2.bias": (OUT_DIM // world,)}
+        wrong = [n for n, shape in aligner.items() if tuple(tensors[n].shape) != shape]
+        wrong += [f"v.blk.{i}.{n}" for i in range(LAYERS) for n, shape in shapes.items()
+                  if tuple(tensors[f"v.blk.{i}.{n}"].shape) != shape]
+        if wrong:
+            raise ValueError(f"mmproj parts {wrong[:3]} are not rank {rank} of {world}'s (read_mmproj)")
 
         def mat(name):
             return tensors[name].to(self.compute).to(self.device).contiguous()
@@ -414,6 +483,12 @@ class VisionTower:
             y = (y.float() + bias).to(self.compute)
         return y
 
+    def _gather_linear(self, x, weight, bias=None):
+        """Compute the rank's output rows with the full rank-ordered input, then gather the result."""
+        if self.world == 1:
+            return self._linear(x, weight, bias)
+        return self.comm.gather(self._linear(self.comm.gather(x.to(self.compute)), weight, bias))
+
     def _rms(self, x, weight):
         x = x.float()
         return weight * (x * self.torch.rsqrt(x.square().mean(-1, keepdim=True) + EPS))
@@ -432,9 +507,10 @@ class VisionTower:
             return torch.nn.functional.scaled_dot_product_attention(q, k, v)[0]
 
     def begin(self, patches, n_h: int, n_w: int) -> dict:
-        """A resumable encode (``run`` advances it block by block, ``grid`` finishes it): the patch embedding of
+        """A resumable encode (``run`` advances it block by block, ``span`` finishes it): the patch embedding of
         ``patches`` [n_h * n_w, 3, 14, 14] (uint8 pixels, or float already normalized). Every step queues GPU work
-        only (no host wait), so the caller may run other forwards between blocks."""
+        only (no host wait), so the caller may run other forwards between blocks; with ``world`` > 1 every rank
+        runs the same steps in the same order (their collectives pair up)."""
         torch = self.torch
         F = torch.nn.functional
         if patches.shape != (n_h * n_w, 3, PATCH, PATCH):
@@ -452,18 +528,16 @@ class VisionTower:
         n, hd = x.shape[0], DIM // HEADS
         for b in self.blocks[st["next"]:stop]:
             h = self._linear(self._rms(x, b["ln1"]), b["qkv"], b["qkv_b"])
-            q, k, v = (t.reshape(n, HEADS, hd) for t in h.chunk(3, dim=-1))
+            q, k, v = (t.reshape(n, self.heads, hd) for t in h.chunk(3, dim=-1))
             q, k = self._rotary(q, cos, sin), self._rotary(k, cos, sin)
             o = self._attention(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))
-            o = self._linear(o.transpose(0, 1).reshape(n, DIM), b["wo"], b["wo_b"])
-            x = x + o.float()
+            x = x + self._gather_linear(o.transpose(0, 1).reshape(n, self.heads * hd), b["wo"], b["wo_b"])
             gate, up = self._linear(self._rms(x, b["ln2"]), b["gate_up"]).float().chunk(2, dim=-1)
-            x = x + self._linear((F.silu(gate) * up).to(self.compute), b["down"]).float()
+            x = x + self._gather_linear(F.silu(gate) * up, b["down"])
         st["x"], st["next"] = x, max(st["next"], stop)
 
     def aligner(self, st: dict):
-        """post-norm, 3 x 3 merge and the aligner of a finished ViT: [ceil(n_h/3) * ceil(n_w/3), 5120] in reading
-        order (compute dtype)."""
+        """Post-norm, 3 x 3 merge and aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] in reading order."""
         F = self.torch.nn.functional
         if st["next"] != LAYERS:
             raise RuntimeError("the DeepSeek-V4.1 aligner runs after the last ViT block")
@@ -473,37 +547,35 @@ class VisionTower:
         x = F.unfold(x.unsqueeze(0), MERGE, stride=MERGE).squeeze(0).transpose(0, 1)
         y = self._linear(x, self.mm1, self.mm1_b)
         y = F.gelu(y.float()).to(self.compute)
-        return self._linear(y, self.mm2, self.mm2_b)
+        return self._gather_linear(y, self.mm2, self.mm2_b)
 
     def grid(self, patches, n_h: int, n_w: int):
-        """ViT + aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] in reading order (compute dtype)."""
+        """ViT + aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] FP32 in reading order."""
         st = self.begin(patches, n_h, n_w)
         self.run(st, LAYERS)
         return self.aligner(st)
 
-    def span(self, frame: ImageFrame, st: dict, out_dtype=None):
-        """The frame's span [frame.tokens, 5120] from its finished encode ``st``: START, rows of (grid row,
-        NEWLINE), END."""
+    def span(self, st: dict, out_dtype=None):
+        """The span [tokens, 5120] of the finished encode ``st``: START, rows of (grid row, NEWLINE), END."""
         torch = self.torch
         out_dtype = torch.float16 if out_dtype is None else out_dtype
-        rows = self.aligner(st).float().view(frame.n_llm_h, frame.n_llm_w, OUT_DIM)
-        newline = self.newline.view(1, 1, OUT_DIM).expand(frame.n_llm_h, 1, OUT_DIM)
+        n_llm_h, n_llm_w = -(-st["n_h"] // MERGE), -(-st["n_w"] // MERGE)
+        rows = self.aligner(st).view(n_llm_h, n_llm_w, OUT_DIM)
+        newline = self.newline.view(1, 1, OUT_DIM).expand(n_llm_h, 1, OUT_DIM)
         body = torch.cat([rows, newline], dim=1).reshape(-1, OUT_DIM)
         span = torch.cat([self.start.view(1, -1), body, self.end.view(1, -1)], dim=0)
-        if span.shape[0] != frame.tokens:
+        if span.shape[0] != num_image_tokens(n_llm_h, n_llm_w):
             raise AssertionError("DeepSeek-V4.1 span length differs from its plan")
         return span.to(out_dtype)
 
     def start_frame(self, frame: ImageFrame) -> dict:
         """``begin`` for a frame's patches (pinned host copy, so the upload does not wait on the host)."""
-        patches = self.torch.from_numpy(np.array(frame.patches))
-        if self.device.type == "cuda":
-            patches = patches.pin_memory()
-        return self.begin(patches, frame.n_vit_h, frame.n_vit_w)
+        return self.begin(pinned_patches(frame, self.device.type == "cuda"), frame.n_vit_h, frame.n_vit_w)
 
     def encode(self, frame: ImageFrame, out_dtype=None):
         """The frame's whole span [frame.tokens, 5120] (delimiters included). ``out_dtype`` default FP16 (the
-        friend's merge into his FP16 inputs_embeds; the backbone lifts the stream to FP32 after)."""
+        friend's merge into his FP16 inputs_embeds; the backbone lifts the stream to FP32 after). With ``world``
+        > 1 every rank encodes the same frame at once."""
         torch = self.torch
         reduced = torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
@@ -511,6 +583,17 @@ class VisionTower:
             with torch.inference_mode():
                 st = self.start_frame(frame)
                 self.run(st, LAYERS)
-                return self.span(frame, st, out_dtype)
+                span = self.span(st, out_dtype)
         finally:
             torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = reduced
+        if span.shape[0] != frame.tokens:
+            raise AssertionError("DeepSeek-V4.1 span length differs from its frame")
+        return span
+
+
+def pinned_patches(frame: ImageFrame, pin: bool = True):
+    """The frame's uint8 patches as an owned (pinned with ``pin``) CPU tensor [n, 3, 14, 14]."""
+    import torch
+
+    patches = torch.from_numpy(np.array(frame.patches))
+    return patches.pin_memory() if pin else patches

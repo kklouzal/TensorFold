@@ -7,8 +7,10 @@ References (read-only, outside the repository; the test skips without them):
   TENSORFOLD_DS41_FRIEND_TOWER  dir with the friend's patch-150 local_ds41_vision_tower.py (optional: parity gate)
   TENSORFOLD_DS41_BIAS_VL       exp_probs_b_vl.f32 (optional: digest check)
 Gates per image: our FP32 tower == upstream FP32 (rel L2 < 1e-3, the friend's gate); our FP16 production tower
-no worse than the friend's FP16 tower (rel L2 and min token cosine vs upstream FP32); delimiters exact; plan and
-patches equal to upstream's image_processor (patches compared after upstream's BF16 rounding).
+(one device, world 1) no worse than the friend's FP16 tower (rel L2 and min token cosine vs upstream FP32);
+delimiters exact; plan and
+patches equal to upstream's image_processor (patches compared after upstream's BF16 rounding). The TP8 tower's
+parity is ds41_vision_tp_check.py (eight ranks).
 """
 
 import importlib.util
@@ -176,7 +178,7 @@ def test_tower_against_upstream_and_friend(setup, name):
             st = ours16.start_frame(frame)
             for first in range(0, V.LAYERS, 5):
                 ours16.run(st, min(V.LAYERS, first + 5))
-            assert torch.equal(ours16.span(frame, st), out16)
+            assert torch.equal(ours16.span(st), out16)
     finally:
         torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = reduced
     assert entry["fp32_vs_ref"]["rel_l2"] < 1e-3 and entry["fp32_vs_ref"]["finite"]

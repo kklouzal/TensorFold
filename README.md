@@ -1673,12 +1673,10 @@ met the equivalence margin against the previous published lane. The comparison a
 remains inconclusive. The [recipe](docs/recipes/deepseek-v41-v100.md) gives the workloads, settings, and measurement
 limits. DSpark drafts are pending.
 
-Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The tower
-runs the friend's numerics, bitwise equal to his tower, on GPU 0 (0.91 GiB, which takes 1.1M tokens from the KV
-pool). The prompt cache keys image spans by their pixels. On SC117 it answered 7/7 describe/OCR/count checks.
-The reviewed source also handled both extreme image orientations at the 1,024-token image limit. In the earlier
-vision timing run, TTFT was about 1.1 s for one 994-token image and 4.25 s for four. Text matrix cells were unchanged
-within 0.3% in that run.
+Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The TP8
+tower gathers FP16 features so each projection computes over its full input dimension, with FP32 accumulation.
+The prompt cache keys image spans by their pixels. The tower-only SC117 check passed the per-image accuracy
+gates and gave identical spans across ranks. Integrated serving verification is pending for this tower layout.
 
 #### Gemma 4 on eight V100s: prompt reuse, sampled drafts, `--parallel` (2026-11-19)
 
