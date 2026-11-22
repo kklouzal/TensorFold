@@ -7,8 +7,8 @@ References (read-only, outside the repository; the test skips without them):
   TENSORFOLD_DS41_FRIEND_TOWER  dir with the friend's patch-150 local_ds41_vision_tower.py (optional: parity gate)
   TENSORFOLD_DS41_BIAS_VL       exp_probs_b_vl.f32 (optional: digest check)
 Gates per image: our FP32 tower == upstream FP32 (rel L2 < 1e-3, the friend's gate); our FP16 production tower
-(one device, world 1) no worse than the friend's FP16 tower (rel L2 and min token cosine vs upstream FP32; it keeps
-the row-parallel GEMM outputs FP32 where his round to FP16, so it is not bitwise his); delimiters exact; plan and
+(one device, world 1) no worse than the friend's FP16 tower (rel L2 and min token cosine vs upstream FP32);
+delimiters exact; plan and
 patches equal to upstream's image_processor (patches compared after upstream's BF16 rounding). The TP8 tower's
 parity is ds41_vision_tp_check.py (eight ranks).
 """

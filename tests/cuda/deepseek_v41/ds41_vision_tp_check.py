@@ -8,7 +8,7 @@ usage: python ds41_vision_tp_check.py OUT.json       (8 GPUs; it starts one proc
 Every rank encodes test_ds41_vision_tower.py's seven images with its TP part; rank 0 also runs the one-device FP32
 oracle (world 1), the one-device FP16 tower of this source (world 1) and the old tower, and records per image the
 per-token cosine (min / mean) and relative L2 of each pair, whether every rank's span is bitwise rank 0's, warm encode
-times, and the time of the tower's all-reduces alone at the largest image. Gate: the TP8 tower is not less accurate
+times, and the time of the tower's feature gathers alone at the largest image. Gate: the TP8 tower is not less accurate
 than the old one against the FP32 oracle (rel L2 within 5%, min token cosine within 1e-4) and spans agree across
 ranks; delimiters exact.
 """
@@ -126,19 +126,25 @@ def rank_main(rank, port, out_path):
                                          torch.equal(span[-1], tower.end.half()))
         result["images"].append(entry)
         print("DS41VISIONTP " + json.dumps(entry), flush=True)
-    # the tower's all-reduces alone at the largest image (2 per block of [patches, 1024] FP32, 1 of [tokens, 5120])
+    # Feature gathers alone on the largest image, using the serving dtype and shapes.
     frame = frames[-1][1]
     n, m = frame.n_vit_h * frame.n_vit_w, frame.n_llm_h * frame.n_llm_w
-    a, b = torch.zeros(n, V.DIM, device="cuda"), torch.zeros(m, V.OUT_DIM, device="cuda")
+    a = torch.zeros(n, V.DIM // WORLD, dtype=torch.float16, device="cuda")
+    b = torch.zeros(n, V.INTER // WORLD, dtype=torch.float16, device="cuda")
+    c = torch.zeros(m, V.OUT_DIM // WORLD, dtype=torch.float16, device="cuda")
 
-    def reduces():
-        for _ in range(2 * V.LAYERS):
-            coll.sum(a, torch.float32)
-        coll.sum(b, torch.float32)
-    reduces()
-    _, ar_s = _timed(reduces)
+    def gathers():
+        for _ in range(V.LAYERS):
+            coll.gather(a)
+            coll.gather(a)
+            coll.gather(b)
+            coll.gather(a)
+        coll.gather(c)
+        coll.gather(c)
+    gathers()
+    _, gather_s = _timed(gathers)
     if rank == 0:
-        result["allreduce_only_s_largest"] = round(ar_s, 4)
+        result["gather_only_s_largest"] = round(gather_s, 4)
         imgs = result["images"]
         result["pass"] = all(e["ranks_bitwise_equal"] and e["delimiters_exact"] and e.get("not_less_accurate", True)
                              for e in imgs)

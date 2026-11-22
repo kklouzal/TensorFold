@@ -230,18 +230,22 @@ def test_take_shard_partitions_megatron_parts():
     parts = [V.take_shard(full, "v.blk.0.attn_qkv.weight", r, 8) for r in range(8)]
     assert all(p.shape == (6, 2) for p in parts)
     assert torch.equal(parts[3], torch.cat([full[6:8], full[22:24], full[38:40]]))
-    cols = torch.arange(4 * 16, dtype=torch.float32).reshape(4, 16)
-    assert torch.equal(torch.cat([V.take_shard(cols, "mm.2.weight", r, 8) for r in range(8)], 1), cols)
+    matrix = torch.arange(16 * 4, dtype=torch.float32).reshape(16, 4)
+    for name in ("v.blk.0.attn_out.weight", "v.blk.0.ffn_down.weight", "mm.2.weight"):
+        parts = [V.take_shard(matrix, name, r, 8) for r in range(8)]
+        assert all(part.shape == (2, 4) for part in parts)
+        assert torch.equal(torch.cat(parts), matrix)
     rows = torch.arange(16, dtype=torch.float32)
     assert torch.equal(torch.cat([V.take_shard(rows, "mm.1.bias", r, 8) for r in range(8)]), rows)
-    assert V.take_shard(rows, "mm.2.bias", 3, 8) is rows and V.take_shard(full, "v.blk.0.attn_qkv.weight", 0, 1) is full
+    for name in ("v.blk.0.attn_out.bias", "mm.2.bias"):
+        assert torch.equal(V.take_shard(rows, name, 3, 8), rows[6:8])
+    assert V.take_shard(full, "v.blk.0.attn_qkv.weight", 0, 1) is full
     with pytest.raises(ValueError):
         V.take_shard(torch.zeros(10, 3), "mm.1.weight", 0, 8)
 
 
 def test_tp8_tower_equals_the_whole_tower(monkeypatch):
-    """Eight simulated ranks (threads; FP32 sums in rank order) against the one-device tower, FP32 compute on the
-    CPU, 2 blocks: the same span up to FP32 reassociation, bitwise the same on every rank."""
+    """Eight simulated ranks gather features in rank order and reproduce the one-device FP32 span."""
     import threading
 
     import torch
@@ -263,14 +267,12 @@ def test_tp8_tower_equals_the_whole_tower(monkeypatch):
         def __init__(self, rank):
             self.rank = rank
 
-        def sum(self, partial, dtype):
+        def gather(self, partial):
             parts[self.rank] = partial
             barrier.wait()
-            total = parts[0].clone()
-            for p in parts[1:]:
-                total += p
+            gathered = torch.cat(parts, dim=-1)
             barrier.wait()
-            return total.to(dtype)
+            return gathered
 
     towers = [V.VisionTower({n: V.take_shard(t, n, r, world) for n, t in full.items()}, "cpu",
                             compute=torch.float32, rank=r, world=world, comm=Coll(r)) for r in range(world)]

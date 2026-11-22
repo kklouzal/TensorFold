@@ -271,16 +271,13 @@ def prefix_ids(prepared: PreparedVision, vocab: int) -> list[int]:
 # ------------------------------------------------------------------------------------------- mmproj reading
 def shard_axes(name: str) -> tuple[int, int] | None:
     """The TP split of mmproj tensor ``name``: (axis, pieces), every one of the ``pieces`` equal blocks along
-    ``axis`` cut into ``world`` contiguous parts (rank r takes part r of each), or None (replicated). Megatron
-    layout: column-parallel fused qkv (q | k | v, each heads x 64: whole heads per rank), ffn gate and up, and the
-    aligner's mm.1 (weights and biases); row-parallel attn_out, ffn_down and mm.2 (input columns; their biases are
-    added once after the sum)."""
+    ``axis`` cut into ``world`` contiguous parts (rank r takes part r of each), or None (replicated). Projections
+    split over output features. Fused qkv splits q | k | v separately to keep whole heads together."""
     if name.endswith(("attn_qkv.weight", "attn_qkv.bias")):
         return 0, 3
-    if name.endswith(("ffn_gate.weight", "ffn_up.weight")) or name in ("mm.1.weight", "mm.1.bias"):
+    if name.endswith(("attn_out.weight", "attn_out.bias", "ffn_gate.weight", "ffn_up.weight", "ffn_down.weight")) or \
+            name in ("mm.1.weight", "mm.1.bias", "mm.2.weight", "mm.2.bias"):
         return 0, 1
-    if name.endswith(("attn_out.weight", "ffn_down.weight")) or name == "mm.2.weight":
-        return 1, 1
     return None
 
 
@@ -329,9 +326,10 @@ def read_mmproj(path: str | Path, rank: int = 0, world: int = 1) -> dict[str, An
                 "mm.2.weight": (OUT_DIM, OUT_DIM), "v.image_newline": (OUT_DIM,)}
     for i in range(LAYERS):
         expected.update({f"v.blk.{i}.attn_qkv.weight": (3 * DIM, DIM), f"v.blk.{i}.attn_qkv.bias": (3 * DIM,),
-                         f"v.blk.{i}.attn_out.weight": (DIM, DIM), f"v.blk.{i}.ffn_gate.weight": (INTER, DIM),
+                         f"v.blk.{i}.attn_out.weight": (DIM, DIM), f"v.blk.{i}.attn_out.bias": (DIM,),
+                         f"v.blk.{i}.ffn_gate.weight": (INTER, DIM),
                          f"v.blk.{i}.ffn_up.weight": (INTER, DIM), f"v.blk.{i}.ffn_down.weight": (DIM, INTER)})
-    expected["mm.1.bias"] = (OUT_DIM,)
+    expected["mm.1.bias"] = expected["mm.2.bias"] = (OUT_DIM,)
     for t in entries:
         if t.name in expected and tuple(t.shape) != expected[t.name]:
             raise ValueError(f"{path}: {t.name} has shape {tuple(t.shape)}, expected {expected[t.name]}")
@@ -408,18 +406,14 @@ class VisionTower:
     """Device-resident ViT + aligner of TP rank ``rank`` of ``world`` (``world`` 1: the whole tower on one device);
     ``encode(frame)`` -> the frame's whole span [frame.tokens, 5120] (delimiters included) in ``out_dtype``.
 
-    Tensor parallel (Megatron; ``tensors`` holds this rank's parts, ``read_mmproj(path, rank, world)``): each rank
-    owns HEADS / world whole attention heads of the fused qkv and their attn_out input columns, INTER / world ffn
-    gate/up rows and their ffn_down columns, and OUT_DIM / world mm.1 rows and their mm.2 columns. The row-parallel
-    GEMMs (attn_out, ffn_down, mm.2) write FP32 partials, which ``comm.sum`` adds across the ranks in FP32 (NCCL, the
-    same bytes on every rank) before their bias; the residual stream, the norms, the patch embedding, RoPE and the
-    delimiters are replicated, so every rank holds the same span. Two FP32 all-reduces of [patches, 1024] a block and
-    one of [tokens, 5120] for the aligner; no other exchange.
+    Each TP rank owns whole attention heads and its output rows of every projection. Before attn_out, ffn_down
+    and mm.2, lossless gathers assemble the input features in rank order. Each local GEMM reduces over the full
+    input dimension before the original GEMM and bias roundings. Another gather reconstructs the full outputs.
+    The residual stream, norms, patch embedding, RoPE and delimiters stay replicated. There is no floating-point
+    reduction between ranks. GEMM tiling may still differ with output width.
 
-    ``compute`` torch.float16 (default): BF16 weights widen exactly to FP16 and GEMMs accumulate in FP32.
-    Row-parallel outputs round to FP16 after the cross-rank FP32 reduction, at the same logical boundary as a
-    one-device GEMM. A bias is added in FP32 and rounded back to FP16 before the FP32 residual add. The TP
-    reduction still changes the accumulation order. torch.float32: every operand FP32 (the GPU oracle)."""
+    ``compute`` torch.float16 (default) uses FP16 GEMM operands and FP32 accumulation. The individual GEMM and
+    bias operations round to FP16 and the residual adds in FP32. ``torch.float32`` is the GPU oracle."""
 
     def __init__(self, tensors: dict, device, *, compute=None, rank: int = 0, world: int = 1, comm=None):
         import torch
@@ -437,11 +431,12 @@ class VisionTower:
         self.rank, self.world, self.comm = rank, world, comm
         self.heads = HEADS // world
         width = self.heads * (DIM // HEADS)
-        shapes = {"attn_qkv.weight": (3 * width, DIM), "attn_qkv.bias": (3 * width,), "attn_out.weight": (DIM, width),
+        shapes = {"attn_qkv.weight": (3 * width, DIM), "attn_qkv.bias": (3 * width,),
+                  "attn_out.weight": (DIM // world, DIM), "attn_out.bias": (DIM // world,),
                   "ffn_gate.weight": (INTER // world, DIM), "ffn_up.weight": (INTER // world, DIM),
-                  "ffn_down.weight": (DIM, INTER // world)}
+                  "ffn_down.weight": (DIM // world, INTER)}
         aligner = {"mm.1.weight": (OUT_DIM // world, DIM * MERGE * MERGE), "mm.1.bias": (OUT_DIM // world,),
-                   "mm.2.weight": (OUT_DIM, OUT_DIM // world)}
+                   "mm.2.weight": (OUT_DIM // world, OUT_DIM), "mm.2.bias": (OUT_DIM // world,)}
         wrong = [n for n, shape in aligner.items() if tuple(tensors[n].shape) != shape]
         wrong += [f"v.blk.{i}.{n}" for i in range(LAYERS) for n, shape in shapes.items()
                   if tuple(tensors[f"v.blk.{i}.{n}"].shape) != shape]
@@ -485,19 +480,11 @@ class VisionTower:
             y = (y.float() + bias).to(self.compute)
         return y
 
-    def _row_parallel(self, x, weight, bias=None):
-        """Reduce unrounded partials before applying the one-device GEMM and bias rounding points."""
+    def _gather_linear(self, x, weight, bias=None):
+        """Compute the rank's output rows with the full rank-ordered input, then gather the result."""
         if self.world == 1:
             return self._linear(x, weight, bias)
-        torch = self.torch
-        if self.compute == torch.float16:
-            y = torch.mm(x.to(torch.float16), weight.t(), out_dtype=torch.float32)
-        else:
-            y = torch.nn.functional.linear(x.float(), weight)
-        y = self.comm.sum(y, torch.float32).to(self.compute)
-        if bias is not None:
-            y = (y.float() + bias).to(self.compute)
-        return y
+        return self.comm.gather(self._linear(self.comm.gather(x.to(self.compute)), weight, bias))
 
     def _rms(self, x, weight):
         x = x.float()
@@ -541,9 +528,9 @@ class VisionTower:
             q, k, v = (t.reshape(n, self.heads, hd) for t in h.chunk(3, dim=-1))
             q, k = self._rotary(q, cos, sin), self._rotary(k, cos, sin)
             o = self._attention(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))
-            x = x + self._row_parallel(o.transpose(0, 1).reshape(n, self.heads * hd), b["wo"], b["wo_b"])
+            x = x + self._gather_linear(o.transpose(0, 1).reshape(n, self.heads * hd), b["wo"], b["wo_b"])
             gate, up = self._linear(self._rms(x, b["ln2"]), b["gate_up"]).float().chunk(2, dim=-1)
-            x = x + self._row_parallel((F.silu(gate) * up).to(self.compute), b["down"], None)
+            x = x + self._gather_linear(F.silu(gate) * up, b["down"])
         st["x"], st["next"] = x, max(st["next"], stop)
 
     def aligner(self, st: dict):
@@ -557,7 +544,7 @@ class VisionTower:
         x = F.unfold(x.unsqueeze(0), MERGE, stride=MERGE).squeeze(0).transpose(0, 1)
         y = self._linear(x, self.mm1, self.mm1_b)
         y = F.gelu(y.float()).to(self.compute)
-        return self._row_parallel(y, self.mm2, self.mm2_b)
+        return self._gather_linear(y, self.mm2, self.mm2_b)
 
     def grid(self, patches, n_h: int, n_w: int):
         """ViT + aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] FP32 in reading order."""
