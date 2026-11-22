@@ -142,6 +142,10 @@ source ds41-vision2 1921ae48):
 - Decoding streams: while a four-image prompt encoded and filled, the largest gap in a decoding stream was 0.26 s.
   A text prompt of the same size gave 0.27 to 0.40 s (the existing prompt-group policy).
 
+The reviewed source (`01c5109d`, same launch settings and image) passed all seven vision checks and answered
+requests with 8192 x 1 and 1 x 8192 images. The 1024-token image warm-up used a 613 MiB transient peak within
+the 3 GiB prompt reserve. This was a functional run with a CPU suite in flight.
+
 ## Diagnostics (never for serving or benchmarks)
 
 - `TENSORFOLD_DS41_ENGRAM_TRACE=FILE`: rank 0 appends each forward's Engram row ids to FILE. **It disables the decode

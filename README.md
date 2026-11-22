@@ -1676,7 +1676,9 @@ limits. DSpark drafts are pending.
 Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The tower
 runs the friend's numerics, bitwise equal to his tower, on GPU 0 (0.91 GiB, which takes 1.1M tokens from the KV
 pool). The prompt cache keys image spans by their pixels. On SC117 it answered 7/7 describe/OCR/count checks.
-TTFT was about 1.1 s for one 994-token image and 4.25 s for four. Text matrix cells were unchanged within 0.3%.
+The reviewed source also handled both extreme image orientations at the 1,024-token image limit. In the earlier
+vision timing run, TTFT was about 1.1 s for one 994-token image and 4.25 s for four. Text matrix cells were unchanged
+within 0.3% in that run.
 
 #### Gemma 4 on eight V100s: prompt reuse, sampled drafts, `--parallel` (2026-11-19)
 

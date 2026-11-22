@@ -41,6 +41,11 @@ Private receipts are provenance, not dependencies for fresh-checkout tests.
 
 ## Requested, implemented, qualified and effective
 
+DeepSeek-V4.1-Flash-1017 is available as an SC117 development lane for the GSQ-RCO IQ2_XXS backbone and
+host-mapped IQ4_NL Engram. The [DeepSeek recipe](../recipes/deepseek-v41-v100.md) records the TP8/ETP4
+text and image gates and the 65,536-token, 32-stream matrix. That matrix describes the tested context
+and workload. Model-maximum context capacity and DSpark qualification remain open.
+
 The2026-11-13 user authority updates the graph resource contract for complete
 resident SC117 capacity: otherwise unused memory may fund execution after24 Q8
 or32 Q4 full262,144-token contexts and required speculative tails, workspace,
