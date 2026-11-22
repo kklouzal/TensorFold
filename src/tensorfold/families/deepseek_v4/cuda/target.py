@@ -325,7 +325,7 @@ class Target:
         return self.c.sum(add_halves(out, self._linear(hidden, ly.sh_down)), torch.float16)
 
     # ---- Engram
-    def engram_layer(self, ly, hidden, hashes, step, valid, shard=None):
+    def engram_layer(self, ly, hidden, hashes, valid, shard=None):
         from .kernels.engram import apply_engram_gate
         tokens = hashes.shape[0]        # every row of the step (with a shard, hidden holds only this rank's)
         channel = self.g.engram_layers.index(ly.index)
@@ -401,7 +401,7 @@ class Target:
             ly = layers[i]
             if not second:
                 if ly.engram_wkv is not None:
-                    hidden = self.engram_layer(ly, hidden, hashes, step, st["valid"], shard)
+                    hidden = self.engram_layer(ly, hidden, hashes, st["valid"], shard)
                     state = None
                 if state is None:
                     attn_mix = hc_mixes(hidden, ly.hc["attn_fn"], ly.hc["attn_scale"], ly.hc["attn_base"])

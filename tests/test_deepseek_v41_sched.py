@@ -111,7 +111,7 @@ def _fake_target(monkeypatch, layers=5, engram=(2,)):
     t.compressed_rope, t.window_rope = "compressed", "window"
     t.attention = lambda ly, x, step, table, shared, shard: (log.append(("attention", ly.index, table)), x * (1 + ly.index / 9) + 1)[1]
     t.moe = lambda ly, x, image, shard, rows: (log.append(("moe", ly.index)), x * 0.5 - ly.index / 3)[1]
-    t.engram_layer = lambda ly, hidden, hashes, step, valid, shard: (log.append(("engram", ly.index)), hidden * 1.01 + 0.5)[1]
+    t.engram_layer = lambda ly, hidden, hashes, valid, shard: (log.append(("engram", ly.index)), hidden * 1.01 + 0.5)[1]
     return t, log
 
 
@@ -258,7 +258,7 @@ def test_engram_layer_with_a_shard_looks_up_every_row_and_gates_its_own(monkeypa
     step = SimpleNamespace(valid=torch.arange(tokens) % 5 != 0)
     hidden = torch.zeros(shard.rows, 4, h)
     ly = SimpleNamespace(index=1, engram_wkv=None, engram_q=None, engram_k=None)
-    t.engram_layer(ly, hidden, hashes, step, step.valid, shard)
+    t.engram_layer(ly, hidden, hashes, step.valid, shard)
     rows = torch.arange(shard.first, shard.first + shard.rows)
     assert seen["hidden"] == (shard.rows, 4, h)
     assert torch.equal(seen["projected"][:, 0], rows.half())
