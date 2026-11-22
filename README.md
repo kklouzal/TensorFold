@@ -1664,11 +1664,14 @@ New CUDA lane for DeepSeek-V4.1-Flash-1017 GGUF (GSQ-RCO IQ2_XXS backbone; the I
 TP8 attention/dense and ETP4 x EP2 routed experts, up to 32 streams. It uses startup decode graphs, the friend's EM3
 decode experts and TurboMind lattice prefill experts (with an exact weight decode), fused sparse prefill attention,
 prefix points at message boundaries with the pinned host tier, and the 175 ms decode-during-prefill policy. On SC117
-(180 W, image `67b43e682057`, `--parallel 32 --context 65536`) its 10-cell prefill beats the frozen 1Cat-vLLM
-reference in 9 of 10 cells, from +14% to +93%; C1 16K is the exception at -8%. Whole-run output is at or above the
-reference in every cell. Startup (launch to `/v1/models`, warm page cache) is about 48 s, down from 144-375 s. Per-user decode is lower at 8 or more concurrent requests (for example 8.1 vs 27.2 tok/s
-at C32 16K), because every admitted user streams at once; it is higher at C1. The quality gate (NLL-delta CI vs the first passing build) passed. Commands, the full table
-and diagnostics are in the [recipe](docs/recipes/deepseek-v41-v100.md). DSpark drafts are pending.
+(180 W, image `67b43e682057`, source `a7ba45a4`, `--parallel 32 --context 65536`), the 10-cell greedy screen measured
+30% to 179% higher prefill and higher whole-run output in every cell against the frozen 1Cat-vLLM deployment.
+Median per-user decode was higher at C1 and C8 4K and lower in the other cells. At C32 16K it measured 11.0 vs
+27.2 tok/s per user, with all 32 replies streaming concurrently on TensorFold and at most two in the reference run.
+The largest cell p99 inter-token gap was 176 ms. Startup took about 45 s with warm caches. Prefill and decode NLL
+met the equivalence margin against the previous published lane. The comparison against the initial `p1` baseline
+remains inconclusive. The [recipe](docs/recipes/deepseek-v41-v100.md) gives the workloads, settings, and measurement
+limits. DSpark drafts are pending.
 
 Image input (`--vision`, the mmproj named in `config.json`) is served through OpenAI `image_url` parts. The tower
 runs the friend's numerics, bitwise equal to his tower, on GPU 0 (0.91 GiB, which takes 1.1M tokens from the KV

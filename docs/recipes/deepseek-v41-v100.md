@@ -22,9 +22,10 @@ python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backe
 ```
 
 The container needs `--ipc host --ulimit memlock=-1:-1 --cap-add IPC_LOCK` for the host-mapped Engram table and the
-pinned prefix tier. With warm extension caches and the model files in the page cache, launch to `/v1/models` takes
-about 47-48 s (it took 144-375 s before the startup work; with the model files dropped from the page cache, 126 s
-against 166 s). Every rank maps the Engram table read-only straight from the GGUF file (its page-cache pages are the one
+pinned prefix tier. With warm extension and page caches, the C24/C32 matrix server became ready in about 45 s.
+The C1/C8/C16 server took about 85 s with disk reads during startup. The earlier startup study measured 47-48 s
+warm, down from 144-375 s, and 126 s with model pages dropped, down from 166 s. Every rank maps the Engram table
+read-only straight from the GGUF file (its page-cache pages are the one
 host copy; no second 103 GiB copy) and registers it on a thread while the weights load through pinned staging
 buffers; the host tier's slab pins beside the warm-up; the decode graphs take about 9 s. Each rank prints one
 `startup (...)` line with every phase's start, wall time, CPU time and storage reads. A first start that has to
@@ -35,7 +36,7 @@ registered Engram table.
 | Flag | DeepSeek-V4.1 SM70 |
 | --- | --- |
 | `--parallel N` | 1-32 concurrent streams. Requests beyond N wait in the queue. |
-| `--context N` | Admitted context per stream (default: the model's maximum). The KV pool is shared, so `--context 65536 --parallel 32` gives a 7.78M-token pool. |
+| `--context N` | Admitted context per stream (default: the model's maximum). The text-only matrix at `--context 65536 --parallel 32` reported 7,775,360 tokens in the shared KV pool. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
 | `--queue-timeout-s S` | Bounds the queue wait (503 after). |
 | `--no-graphs` | Eager decode, for A/B checks only. |
@@ -61,33 +62,38 @@ registered Engram table.
 
 ## Measurements
 
-10-cell matrix (`tools/matrix_benchmark.py`, plan `plan-ds41-v1`, greedy, one rep, 180 W, `--parallel 32 --context
-65536 --prefix-host-bytes 16G`; source ds41-int3 e68d06a3). The friend's 1Cat-vLLM container numbers are his frozen
-runs on the same host at 180 W. Each cell shows TensorFold vs 1Cat.
+10-cell matrix on SC117 (`tools/matrix_benchmark.py`, frozen `plan-ds41-v1`, 512 output tokens per request, greedy,
+one repeat per cell, 180 W, `--parallel 32 --context 65536 --prefix-host-bytes 16G`, source `a7ba45a4`). C1/C8/C16
+and C24/C32 used separate server sessions. Ten requests across five cells rendered 2 to 27 tokens above the
+planned length. The reference is the frozen 1Cat-vLLM deployment on the same host at 180 W with its configured
+1,048,576-token context and the same benchmark plan. The first three measurement columns show TensorFold vs 1Cat.
+These measurements describe the tested deployments and workloads. One repeat per cell leaves between-session
+uncertainty unresolved.
 
-| Cell | Prefill tok/s | Decode tok/s per user | Output tok/s, whole run |
-| --- | --- | --- | --- |
-| C1 4K | 2925 vs 2383 | 63.0 vs 60.6 | 54 vs 50 |
-| C1 16K | 3044 vs 3305 | 62.0 vs 59.0 | 38 vs 38 |
-| C8 4K | 2606 vs 1484 | 28.2 vs 35.3 | 159 vs 127 |
-| C8 16K | 2823 vs 1460 | 21.6 vs 32.0 | 68 vs 42 |
-| C16 4K | 2453 vs 1719 | 18.2 vs 24.0 | 189 vs 164 |
-| C16 16K | 2695 vs 1616 | 13.9 vs 27.1 | 72 vs 48 |
-| C24 4K | 2734 vs 1839 | 13.3 vs 17.3 | 212 vs 183 |
-| C24 16K | 2772 vs 1943 | 9.6 vs 16.4 | 75 vs 58 |
-| C32 4K | 2215 vs 1936 | 11.0 vs 14.5 | 205 vs 196 |
-| C32 16K | 2551 vs 1636 | 8.1 vs 27.2 | 73 vs 50 |
+| Cell | Prefill tok/s | Decode tok/s per user | Output tok/s, whole run | TensorFold p99 token gap (ms) |
+| --- | --- | --- | --- | ---: |
+| C1 4K | 3850 vs 2383 | 71.1 vs 60.6 | 62 vs 50 | 15.6 |
+| C1 16K | 4297 vs 3305 | 68.2 vs 59.0 | 45 vs 38 | 16.3 |
+| C8 4K | 3526 vs 1484 | 36.1 vs 35.3 | 207 vs 127 | 168.7 |
+| C8 16K | 4071 vs 1460 | 29.4 vs 32.0 | 96 vs 42 | 167.9 |
+| C16 4K | 3371 vs 1719 | 22.1 vs 24.0 | 239 vs 164 | 170.8 |
+| C16 16K | 3962 vs 1616 | 18.4 vs 27.1 | 102 vs 48 | 175.1 |
+| C24 4K | 3214 vs 1839 | 16.1 vs 17.3 | 253 vs 183 | 171.6 |
+| C24 16K | 3847 vs 1943 | 12.2 vs 16.4 | 103 vs 58 | 176.1 |
+| C32 4K | 3075 vs 1936 | 13.2 vs 14.5 | 263 vs 196 | 174.5 |
+| C32 16K | 3793 vs 1636 | 11.0 vs 27.2 | 104 vs 50 | 175.7 |
 
-TensorFold streams every admitted user at once, so per-user decode at 8 or more concurrent requests is lower while
-whole-run output is higher in every cell. C1 16K prefill is the one cell below the reference (-8%).
+All admitted TensorFold replies streamed concurrently. Whole-run output rose in all ten cells, while median
+per-user decode was lower in seven. The largest observed TensorFold token gap was 260.8 ms at C24 4K.
 
 ## Quality gate
 
-Every numerics-affecting change is judged with `tools/quality_eval` on `corpus-v1.ds41` against the baseline of the
-first build that passed, using the **confidence interval of the NLL delta**, not KL. Any bit-level change shows
-KL of about 1.8e-2 and per-token |d| up to about 0.015 on this corpus (a chaotic floor). For the final tree, prefill
-d was -0.0013 (CI [-0.0091, +0.0055]) and decode d +0.0022 (CI [-0.0008, +0.0058]), both within the floor. As a cheap
-smoke test, known answers scored 9/10 with thinking off and 10/10 with thinking on.
+Two `tools/quality_eval` repeats on `corpus-v1.ds41` were bitwise identical. Against the `e68d06a3` measurement
+for the previous published lane, the 95% intervals for the NLL delta were [0, +0.00388] prefill and [0, +0.00112]
+decode, both inside the predeclared 0.005 nats/token equivalence margin. Against the initial `p1` baseline,
+prefill d was -0.00015
+(CI [-0.00782, +0.00726]) and decode d was +0.00271 (CI [-0.00032, +0.00622]). Both comparisons with `p1` were
+inconclusive at that margin. The known-answer check scored 9/10 with thinking off and 10/10 with thinking on.
 
 ## Image input (`--vision`)
 
@@ -146,4 +152,4 @@ source ds41-vision2 1921ae48):
 
 ## Not yet
 
-DSpark drafting is not merged into the serving lane. The C1 16K prefill gap is an open optimization item.
+DSpark drafting is not merged into the serving lane.
