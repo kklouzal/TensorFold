@@ -73,6 +73,10 @@ and `tools/matrix_benchmark.py run --preset deepseek-v41-v100` to measure each
 reference or candidate session with that plan. The preset runs eight greedy
 cells at C1, C8, C16 and C32 with 4,096 and 16,384 prompt tokens and 512 output
 tokens per request. Compare fresh sessions that use the same preset and order.
+Build the plan from the frozen corpus with `--corpus`, `--tokenizer` and
+`--template`. SC117 uses the native DeepSeek renderer with the frozen Jinja
+plan and passes `--allow-prompt-token-drift`. The comparison checks that the
+server counted the same rendered tokens for every matching request.
 The paired perplexity and near-context-limit checks remain required.
 
 ## Measurements
