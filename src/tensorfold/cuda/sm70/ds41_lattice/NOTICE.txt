@@ -23,6 +23,8 @@ TensorFold changes to the vendored files ("modified" rows below):
 - the friend's FP16 lattice arithmetic is removed (R2, 2.6x the operator error): ds41kern_variants.cuh builds only
   the five exact variants (kVariants 5), ds41kern_op.cu selects FP32 output for variants 0/1, and
   gguf_prefill_transcode_sm70.cu launches only the exact encoding of IQ2_XXS / IQ2_XS / IQ1_M (no `exact` argument).
+- GGUF expert staging uses the strides of the owned contiguous device banks. TensorFold no longer materializes
+  per-expert address tables for the transcode launch. The packet and statistic encodings are unchanged.
 
 Files (vendored path <- origin, upstream sha256):
 ds41kern_op.cu  <-  friend overlay patch 340 kern340/src/ds41kern_op.cu  sha256 067542e57919f0495ae314720d6ad8e3be5fce7bd53f5fb7f67bccf20d551d2f  modified (see above)
