@@ -18,6 +18,13 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## DeepSeek V4.1 TP8 vision
+
+The [DeepSeek V4.1 vision qualification](recipes/deepseek-v41-v100.md#tp8-serving-qualification) records the
+eight-V100 rank-0 versus TP8 comparison on image `67b43e682057`. Source `51acced7` passed the per-image accuracy,
+text parity, cache, and extreme-orientation checks with `--vision --parallel 32 --context 65536`. Reversed
+server sessions established the image TTFT gains and recorded uncertainty in the accompanying text matrix.
+
 ## Gemma 4 five-row SM70 decode
 
 The [2026-11-15 Gemma checkpoint](gemma4-sm70-throughput-20261115.md#five-row-decode-follow-up)
