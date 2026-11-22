@@ -83,6 +83,53 @@ def fused(args, kw, **extra):
     return sa.attend(*args, **kw, **extra)
 
 
+@pytest.mark.parametrize("requests,compressed", [([(127, 1)], True),
+    ([(127, 1), (128, 1), (16384, 1), (0, 1)], True),
+    ([(127, 1), (128, 1), (16384, 1), (0, 1)], False)])
+def test_decode_window_ring_store_matches_post_attention_commit(requests, compressed):
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
+    from tensorfold.families.deepseek_v4.cuda.kernels.rope_qdq import rope_qdq
+
+    args, kw = build(requests, compressed=compressed, seed=120)
+    query, positions, step, req_slot, initial, value, sink = args
+    rows = len(requests)
+    live_rows = rows
+    if rows > 1:
+        req_slot[-1] = initial.shape[0] - 1
+        live_rows -= 1  # graph padding keeps the scratch slot at position zero
+    table = rope_table(compressed=compressed)
+    old_ring, new_ring = initial.clone(), initial.clone()
+    attend = fused if rows > 1 and not compressed else reference
+
+    def forward(ring, early):
+        write = (ring, req_slot, step.valid) if early else None
+        window = rope_qdq(value, positions, table, decode_ring=write)
+        output = attend((query, positions, step, req_slot, ring, window, sink), kw)
+        if not early:
+            pk.insert_ring(ring, window, positions, step.valid, step.token_req, step.qsl, req_slot)
+        return window, output
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        forward(new_ring, True)
+        new_ring.copy_(initial)
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        actual = forward(new_ring, True)
+
+    for _ in range(3):
+        expected = forward(old_ring, False)
+        graph.replay()
+        assert all(torch.equal(x.view(torch.int16), y.view(torch.int16)) for x, y in zip(actual, expected, strict=True))
+        assert torch.equal(old_ring.view(torch.int16), new_ring.view(torch.int16))
+        assert torch.equal(new_ring[-1], initial[-1])
+        positions[:live_rows].add_(1)
+        value.neg_()
+
+
 def oracle(args, kw, rows):
     """FP64 attention of token ``rows`` over the reference's gathered FP16 keys (exact decodes of the pages)."""
     from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk

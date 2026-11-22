@@ -17,8 +17,9 @@ from .triton_utils import jit, on_triton_device, tl
 
 
 @jit
-def _rope_qdq(x, positions, table, out, LENGTH, HEADS: tl.constexpr, D: tl.constexpr, INVERSE: tl.constexpr,
-              GROUP: tl.constexpr, FP4: tl.constexpr, E4M3_SCALE: tl.constexpr):
+def _rope_qdq(x, positions, table, out, ring, req_slot, valid, LENGTH, HEADS: tl.constexpr, D: tl.constexpr,
+              INVERSE: tl.constexpr, GROUP: tl.constexpr, FP4: tl.constexpr, E4M3_SCALE: tl.constexpr,
+              RING_ROWS: tl.constexpr, RING_SLOTS: tl.constexpr):
     token, head = tl.program_id(0), tl.program_id(1)
     base = (token * HEADS + head) * D
     col = tl.arange(0, D)
@@ -55,13 +56,22 @@ def _rope_qdq(x, positions, table, out, LENGTH, HEADS: tl.constexpr, D: tl.const
         amax = tl.maximum(amax, 1e-4)
         scale = _ceil_power_two(amax * (1.0 / 448.0))
         quant = fp8_e4m3fn_bits_to_fp32_bitcast(fp32_to_fp8_e4m3fn_bits(tl.div_rn(groups, scale[:, None])))
-    result = tl.reshape(quant * scale[:, None], (D,))
-    tl.store(out + base + col, result.to(tl.float16))
+    result = tl.reshape(quant * scale[:, None], (D,)).to(tl.float16)
+    tl.store(out + base + col, result)
+    if RING_ROWS:
+        slot = tl.load(req_slot + token).to(tl.int64)
+        live = (tl.load(valid + token) != 0) & (slot >= 0) & (slot < RING_SLOTS) & (position >= 0)
+        tl.store(ring + (slot * RING_ROWS + position % RING_ROWS) * D + col, result, live)
 
 
-def rope_qdq(x, positions, table, *, inverse=False, fp4=False, group=128, e4m3_scale=False):
+def rope_qdq(x, positions, table, *, inverse=False, fp4=False, group=128, e4m3_scale=False, decode_ring=None):
     """attention_qdq(apply_rope(x, positions, table, inverse=inverse), fp4=fp4, group=group, e4m3_scale=...)
-    for FP16 x [T, D] or [T, H, D] (D 128 / 512), in one launch; returns x's shape."""
+    for FP16 x [T, D] or [T, H, D] (D 128 / 512), in one launch; returns x's shape.
+
+    ``decode_ring`` carries (ring, request slots, valid rows) for a window projection with one row per live
+    slot. The caller supplies nonnegative positions, orders these writes before attention, and guarantees
+    that each live slot has one writer.
+    """
     shape = x.shape
     if x.ndim == 2:
         x = x.unsqueeze(1)
@@ -79,9 +89,23 @@ def rope_qdq(x, positions, table, *, inverse=False, fp4=False, group=128, e4m3_s
         or (not fp4 and (group != 128 or e4m3_scale))
     ):
         raise ValueError("Unsupported V4.1 fused RoPE + QDQ geometry")
+    ring = req_slot = valid = None
+    if decode_ring is not None:
+        from .mu_packed import RING
+
+        ring, req_slot, valid = decode_ring
+        if (x.shape[1:] != (1, 512) or fp4 or inverse or ring.ndim != 3 or ring.shape[1:] != (RING, 512)
+                or ring.shape[0] < 2 or ring.dtype != torch.float16 or req_slot.ndim != 1
+                or req_slot.numel() < x.shape[0] or req_slot.dtype != torch.int32
+                or valid.shape != (x.shape[0],) or valid.dtype != torch.bool
+                or table.shape[0] < 2
+                or any(t.device != x.device or not t.is_contiguous() for t in (ring, req_slot, valid, positions, table))):
+            raise ValueError("V4.1 decode ring QDQ requires one FP16 window row per live slot")
     out = torch.empty_like(x)
     if x.shape[0]:
         _rope_qdq[(x.shape[0], x.shape[1])](
-            x, positions, table, out, table.shape[0] - 1, HEADS=x.shape[1], D=x.shape[-1], INVERSE=inverse,
-            GROUP=group, FP4=fp4, E4M3_SCALE=e4m3_scale, num_warps=4, enable_fp_fusion=False)
+            x, positions, table, out, ring, req_slot, valid, table.shape[0] - 1,
+            HEADS=x.shape[1], D=x.shape[-1], INVERSE=inverse, GROUP=group, FP4=fp4, E4M3_SCALE=e4m3_scale,
+            RING_ROWS=0 if ring is None else ring.shape[1], RING_SLOTS=0 if ring is None else ring.shape[0] - 1,
+            num_warps=4, enable_fp_fusion=False)
     return out.view(shape)

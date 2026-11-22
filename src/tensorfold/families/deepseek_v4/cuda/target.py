@@ -204,8 +204,12 @@ class Target:
         q_low, kv_low = ly.qa_kv(x)
         qr = self._norm(q_low, ly.q_norm)
         query = qr_ops.apply_rope(self._linear(qr, ly.wq_b).view(tokens, -1, 512), positions, table)
-        window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table)     # qdq(rope(.)) in one launch
         pool = self.pool
+        ring = pool.rings[ly.index]
+        # A one-row request reads the current value from window; the prior
+        # RING-1 positions never alias the ring row being written here.
+        decode_ring = (ring, step.req_slot, step.valid) if step.single_token_slots else None
+        window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table, decode_ring=decode_ring)
         extra = {}
         if ly.ratio:
             if ly.owns_kv:
@@ -221,8 +225,9 @@ class Target:
                 shared["topk"] = self._select(ly, x, qr, step, table)
             extra = dict(cache=pool.cache, block_table=step.block_table, layout=pool.layout, layer=ly.source,
                          topk=shared["topk"])
-        output = self._attend(query, step, pool.rings[ly.index], window, ly.sink, **extra)
-        pk.insert_ring(pool.rings[ly.index], window, positions, step.valid, step.token_req, step.qsl, step.req_slot)
+        output = self._attend(query, step, ring, window, ly.sink, **extra)
+        if decode_ring is None:
+            pk.insert_ring(ring, window, positions, step.valid, step.token_req, step.qsl, step.req_slot)
         output = rope_qdq(output, positions, table, inverse=True)   # TP8: one output group per rank; qdq(rope^-1)
         projected = self._linear(output.reshape(tokens, -1), ly.wo_a)
         partial = self._linear(projected, ly.wo_b)
