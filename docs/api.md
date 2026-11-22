@@ -381,14 +381,14 @@ The grammar holds only the calls and what `tool_choice` asks; prose is the model
   CUDA also enforces Gemma 4's native `<|tool_call>call:NAME{key:value,…}<tool_call|>` markup, with sorted bare keys
   and `<|"|>`-delimited strings. Null is spelled as the selected template renders it: `None` in Google's launch
   template, `null` in its current one. Only that spelling is allowed and read.
-  DeepSeek-V4.1 development source uses its native `<｜DSML｜ calls>` block with `invoke` and `parameter` tags.
+  DeepSeek-V4.1 uses its native `<｜DSML｜ calls>` block with `invoke` and `parameter` tags.
   Its `string="true"` parameters carry raw text, and `string="false"` parameters carry JSON values.
   The flag distinguishes strings from null and other types. A strict DSML call uses only the declared
   parameter names. Standard `/v1/tokenize` validates the same request schema and counts its native prompt.
   With thinking enabled, DeepSeek starts enforcing the answer grammar after its native `</think>` close.
   Tool markup inside still-open reasoning stays in the reasoning stream. Streaming publishes complete
   DSML blocks as tool-call deltas.
-  Full-checkpoint CUDA serving verification is pending.
+  The [eight-V100 recipe](recipes/deepseek-v41-v100.md#strict-tool-calls) records full-checkpoint verification.
 - **`tool_choice`:** `auto` leaves text free before, between and after calls, and the model may answer without one;
   `required` or a named function allows only blanks (at most 32) and calls separated by newlines.
   `parallel_tool_calls: false` ends the reply after its first call.

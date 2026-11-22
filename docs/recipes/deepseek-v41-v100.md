@@ -173,6 +173,18 @@ tokens**. With a cold 16K prompt overlapping 23 decoders, p99 stream gaps were
 With eight short prompts and one decoder they were 216.0 / 185.9 / 213.3 / 217.9 ms.
 The adjusted mixed-load prefill and pacing comparisons remain inconclusive.
 
+### Strict tool calls
+
+The standard CUDA launcher on SC117, with source `95ffd7f0` and image `67b43e682057`,
+passed the full-checkpoint strict-tool probe at 32 lanes and a 65,536-token context.
+The native `/v1/tokenize` count-only request accepted an automatic tool catalog with both
+strict and ordinary functions. It returned HTTP 400 for an unsupported strict schema.
+A named strict function returned the expected arguments and `finish_reason: tool_calls`
+in both a non-streamed completion and a streamed completion with thinking enabled.
+Both completion usages matched their separate prompt counts and included TensorFold v2 timing.
+The ordinary completion retained its token fingerprint and the server held 7,775,360 usable
+text KV tokens.
+
 ## Quality gate
 
 Two `tools/quality_eval` repeats on `corpus-v1.ds41` were bitwise identical to each other and to the earlier
