@@ -16,17 +16,15 @@ Graph (upstream):
   span: [START] ([IMAGE] * n_llm_w + [NEWLINE]) * n_llm_h + [END]; every position carries id 129264
         (<｜deepseek_image｜>); START/NEWLINE/END are learned 5120-vectors of the mmproj.
 
-Placement: TP8 over the lane's eight ranks (``VisionTower``: Megatron heads / MLP columns, FP32 all-reduce of the
-row-parallel partials), so each GPU holds 1/8 of the 0.91 GiB tower and every rank ends with the same span (no
-feature broadcast to the backbone).
+Placement: TP8 over the lane's eight ranks. Each rank holds its output rows of the projection weights, with
+whole attention heads and replicated residuals. Feature gathers preserve input order and let each projection
+reduce its full input dimension locally. Every rank computes the same span for its backbone shard.
 
-Precision (the friend's production numerics, kept except at the row-parallel outputs; V100 has no BF16): BF16
-weights widened to FP16 (checked at load: finite, exact in FP16's normal range, |error| <= 2**-25 on its subnormal
-grid), FP16 GEMM operands with FP32 accumulation (cuBLAS reduced-precision reduction off while the tower runs),
-FP16 column-parallel outputs (qkv, gate/up, mm.1); attn_out, ffn_down and mm.2 keep FP32 through the cross-rank sum
-and the bias (his round them to FP16); the residual stream, RMSNorm, RoPE, GELU input and the patch embedding are
-FP32 (``compute=float32`` runs everything in FP32: the GPU oracle). Residual magnitudes reach ~1.7e3 after layer 12, so an FP16 residual
-loses ~3 bits there (the friend's ``fp16res`` variant, min token cosine 0.938 on carrots.jpeg).
+Precision: BF16 weights convert to FP16 (checked at load: finite, exact in FP16's normal range, |error| <= 2**-25
+on its subnormal grid). FP16 GEMMs accumulate in FP32 and round their outputs to FP16. Bias adds execute in FP32
+and round back to FP16. The residual stream, RMSNorm, RoPE, GELU input and patch embedding are FP32. The GPU
+oracle uses ``compute=float32``. Residual magnitudes reach ~1.7e3 after layer 12, where the FP16 residual variant
+lost ~3 bits (min token cosine 0.938 on carrots.jpeg).
 
 Routing and Engram contract (upstream model.py, patch 150): image-span tokens route the MoE with the vision
 bias ``bias_vl`` (``exp_probs_b_vl``, 40 x 384 FP32) instead of the text bias, routing weights still from the
@@ -550,7 +548,7 @@ class VisionTower:
         return self._gather_linear(y, self.mm2, self.mm2_b)
 
     def grid(self, patches, n_h: int, n_w: int):
-        """ViT + aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] FP32 in reading order."""
+        """ViT + aligner: [ceil(n_h/3) * ceil(n_w/3), 5120] in compute dtype and reading order."""
         st = self.begin(patches, n_h, n_w)
         self.run(st, LAYERS)
         return self.aligner(st)

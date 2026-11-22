@@ -216,6 +216,29 @@ def test_decoder_cancel_releases_paused_and_unstaged_encodes():
     assert not d.e.states and not d.e.spans and s.encoded == {} and s.encoding is None
 
 
+def test_failed_vision_cancel_preserves_requests_for_drop():
+    from types import SimpleNamespace
+
+    d = _decoder()
+    first = SimpleNamespace(vision=object(), encoded={0: 10}, encoding=None, done=False)
+    second = SimpleNamespace(vision=object(), encoded={}, encoding=(0, 11, 2), done=False)
+    d.split = d.finishing = None
+    d.filling = [first, second]
+    failure = RuntimeError("follower closed the control pipe")
+
+    def free(handles):
+        if handles == [11]:
+            raise failure
+
+    d.e.tower_free = free
+    with pytest.raises(RuntimeError, match="follower closed"):
+        d.cancel([first, second])
+    assert not first.done and not second.done
+    assert second.encoding == (0, 11, 2)
+    d._broken = failure
+    assert d.drop() == [first, second]
+
+
 def test_engine_reuses_a_retired_tower_handle(monkeypatch):
     from types import SimpleNamespace
 

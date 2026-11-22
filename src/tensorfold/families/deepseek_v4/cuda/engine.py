@@ -905,23 +905,25 @@ class Decoder(PrefixOwner):
                 # barrier for that batch, but release the cancelled prompt's result and skip its completion.
                 self.finishing = (None, None, None) if self.inflight is not None else None
             if s in self.filling:
-                self.filling.remove(s)
                 self._release(s)
-                s.done, s.finished = True, time.perf_counter()
                 out.append(s)
+        # Fallible cohort operations precede retirement. On failure drop() still finds every cancelled request.
+        for s in out:
+            self.filling.remove(s)
+            s.done, s.finished = True, time.perf_counter()
         return out
 
     def finish(self, done) -> None:
         for s in done:
             self.streams.pop(getattr(s, "sid", None), None)
             if s in self.filling:
-                self.filling.remove(s)
                 if self._broken is None:
                     try:
                         self._release(s)
                     except BaseException as error:
                         self.broken = error
                         raise
+                self.filling.remove(s)
             if getattr(s, "st", None) is None:
                 continue
             s.slot = None
@@ -1122,8 +1124,8 @@ class Decoder(PrefixOwner):
         if getattr(s, "vision", None) is None:
             return
         handles = list(s.encoded.values()) + ([s.encoding[1]] if s.encoding is not None else [])
-        s.encoded, s.encoding = {}, None
         self.e.tower_free(handles)
+        s.encoded, s.encoding = {}, None
 
     def _stop(self, rows, at) -> int:
         """The unit after which the prompt chunk of ``rows`` rows, now at unit ``at``, pauses next: every remaining
