@@ -99,12 +99,11 @@ __device__ __forceinline__ float div_full(float a, float b) {
 // E4M3 byte -> FP16 bits (exact: 4-bit exponent, 3-bit mantissa fit FP16).
 __device__ __forceinline__ uint32_t e4m3_half_bits(uint32_t b) {
   const uint32_t sign = (b & 0x80u) << 8, e = (b >> 3) & 15u, m = b & 7u;
-  if (e == 15u && m == 7u) return 0x7e00u;
-  if (e != 0u) return sign | ((e + 8u) << 10) | (m << 7);
-  if (m == 0u) return sign;
-  // subnormal E4M3: m * 2^-9 (normal in FP16)
-  const half h = __float2half_rn(float(m) * 0.001953125f);
-  return sign | __half_as_ushort(h);
+  const uint32_t normal = ((e + 8u) << 10) | (m << 7);
+  // The eight m * 2^-9 values have a zero low FP16 byte. Select their high byte.
+  const uint32_t subnormal = (__byte_perm(0x1E1C1800u, 0x23222120u, m) & 0xFFu) << 8;
+  const uint32_t finite = sign | (e == 0u ? subnormal : normal);
+  return e == 15u && m == 7u ? 0x7e00u : finite;
 }
 
 // Four E2M1 codes (16 bits, code k in bits 4k..4k+3) -> 2 half2 (codes 0,1 / 2,3),
