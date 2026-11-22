@@ -593,7 +593,7 @@ class _Schema:
 
         return {_side(t) for t in self.types(node)}
 
-    def raw(self, node: dict[str, Any], where: str) -> dict[str, Any]:
+    def raw(self, node: dict[str, Any], where: str, *, delimiter: str = VALUE_END) -> dict[str, Any]:
         """The grammar of the strings a checked ``node`` admits, as raw text inside a parameter: the alternatives of its
         string branches (``check`` refused constraints beside ``$ref``, ``anyOf``, ``enum`` or ``const``, and pattern
         beside format), each once; a schema that refers back to itself is refused."""
@@ -624,7 +624,7 @@ class _Schema:
                 stack.extend((b, f"{at}.{union}[{i}]", False) for i, b in reversed(list(enumerate(_branches(n))))
                              if "string" in self.admits(b))
             else:
-                for option in _raw_options(n, at):
+                for option in _raw_options(n, at, delimiter=delimiter):
                     key = json.dumps(option, sort_keys=True)
                     if key not in options:
                         emitted += len(key.encode())
@@ -866,7 +866,7 @@ def _own_types(node: dict[str, Any]) -> frozenset[str]:
     return found
 
 
-def _raw_options(node: dict[str, Any], where: str) -> list[dict[str, Any]]:
+def _raw_options(node: dict[str, Any], where: str, *, delimiter: str = VALUE_END) -> list[dict[str, Any]]:
     """The raw-text grammar of a checked string ``node`` without ``$ref`` or ``anyOf``: its literals, its pattern or
     format, or any text that does not end the value."""
 
@@ -875,23 +875,23 @@ def _raw_options(node: dict[str, Any], where: str) -> list[dict[str, Any]]:
         literals = [v for v in allowed if isinstance(v, str) and ("const" not in node or v == node["const"])]
         if not literals:
             raise _refuse(where, "no string satisfies this parameter's enum/const")
-        if any(VALUE_END in v for v in literals):
-            raise _refuse(where, f"a string parameter's value cannot contain {VALUE_END}")
+        if any(delimiter in v for v in literals):
+            raise _refuse(where, f"a string parameter's value cannot contain {delimiter}")
         return [_const(v) for v in dict.fromkeys(literals)]
     if _LENGTHS & set(node):
         from tensorfold.server.strict_grammar import string_length
 
         return [{"type": "grammar", "grammar": string_length(node.get("minLength", 0), node.get("maxLength"),
-                                                             exclude=VALUE_END)}]
+                                                             exclude=delimiter)}]
     if "pattern" in node:
         tree = _regex(node["pattern"], where)
-        if all(_may_match(tree, ch) for ch in VALUE_END):
-            raise _refuse(where, f"this string parameter's pattern can spell {VALUE_END}, which ends a raw value in this "
+        if all(_may_match(tree, ch) for ch in delimiter):
+            raise _refuse(where, f"this string parameter's pattern can spell {delimiter}, which ends a raw value in this "
                                  "model's call markup: narrow the pattern")
         return [{"type": "regex", "pattern": node["pattern"]}]
     if "format" in node:
         return [{"type": "regex", "pattern": FORMATS[node["format"]]}]
-    return [{"type": "any_text", "excludes": [VALUE_END]}]
+    return [{"type": "any_text", "excludes": [delimiter]}]
 
 
 def _subschemas(node: dict[str, Any]) -> list[tuple[str, Any, Any]]:

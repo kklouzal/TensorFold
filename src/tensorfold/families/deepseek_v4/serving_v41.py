@@ -196,6 +196,12 @@ class V41ChatTemplate:
     options = (None, None)           # no --chat-template selection: the encoder is the only renderer
     calls = Calls
 
+    @staticmethod
+    def strict_tool_plan(tools, *, required, parallel, offered):
+        from .strict_tools_v41 import Plan
+
+        return Plan(tools, required=required, parallel=parallel, offered=offered)
+
     def __init__(self, model_dir: str | Path) -> None:
         from tokenizers import Tokenizer
 

@@ -1129,6 +1129,10 @@ class App:
             raise RequestError("this model's engine does not enforce strict function tools: send strict false")
         if for_generation and getattr(self.engine, "refuses_structured_output", None):
             raise RequestError(self.engine.refuses_structured_output)
+        native_plan = getattr(self.template, "strict_tool_plan", None)
+        if native_plan is not None:
+            return native_plan(tools, required=tool_choice_requires_call(body.get("tool_choice")),
+                               parallel=not policy.single, offered=body.get("tools"))
         if getattr(self, "_strict_markup", None) is None:          # (plan factory, why not), read once
             try:
                 rendered = self.template.render(strict_tools.PROBE, tools=strict_tools.PROBE_TOOLS, enable_thinking=False)

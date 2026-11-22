@@ -41,6 +41,7 @@ def model_dir(tmp_path):
     tok.add_tokens([AddedToken(token, special=False) for token in CONTROLS])    # as the checkpoint marks them
     tok.save(str(tmp_path / "tokenizer.json"))
     (tmp_path / "config.json").write_text(json.dumps({"model_type": "deepseek_v41", "eos_token_id": 1,
+                                                      "vocab_size": tok.get_vocab_size(),
                                                       "text_config": {"max_position_embeddings": 65536}}))
     (tmp_path / "chat_template.jinja").write_text("JINJA MUST NOT RENDER {{ messages }}")
     return tmp_path
@@ -241,6 +242,107 @@ def test_a_cut_or_malformed_block_is_no_call(model_dir):
     app = app_for(model_dir, bad, 2)
     result = app.run(body, True, lambda d: True)
     assert not result["calls"] and result["finish"] == "stop" and "invoke" in result["content"]
+
+
+def strict_tools():
+    weather, files = TOOLS
+    function = weather["function"]
+    parameters = {**function["parameters"], "required": ["city", "days"], "additionalProperties": False}
+    return [{**weather, "function": {**function, "strict": True, "parameters": parameters}}, files]
+
+
+def test_strict_dsml_grammar_keeps_parameter_types_and_call_choice():
+    pytest.importorskip("xgrammar")
+    from xgrammar import Grammar
+    from xgrammar.testing import _is_grammar_accept_string
+
+    from tensorfold.families.deepseek_v4.strict_tools_v41 import Plan
+
+    def accepts(plan, text):
+        return _is_grammar_accept_string(Grammar.from_structural_tag(plan.spec.text), text)
+
+    tools = strict_tools()
+    block = BLOCK[:BLOCK.index('<｜DSML｜ invoke name="files::read">')] + serving_v41.CLOSER
+    plan = Plan(tools, required=True, parallel=False)
+    assert accepts(plan, block)
+    assert not accepts(plan, BLOCK)
+    assert not accepts(plan, "A normal answer")
+    assert not accepts(plan, block.replace('string="false">3', 'string="true">3'))
+    assert not accepts(plan, block.replace('name="days"', 'name="unknown"'))
+    assert not accepts(plan, block.replace('name="weather"', 'name="unoffered"'))
+    assert not accepts(plan, "\n".join(line for line in block.splitlines() if 'name="days"' not in line))
+    auto = Plan(tools, required=False, parallel=True)
+    assert accepts(auto, "A normal answer")
+    assert accepts(auto, "Checking.\n\n" + BLOCK)
+    assert not accepts(Plan(tools, required=False, parallel=False), BLOCK + "\n" + block)
+
+
+def test_strict_dsml_reader_preserves_json_source_and_holds_a_partial_block():
+    pytest.importorskip("xgrammar")
+    from xgrammar import Grammar
+    from xgrammar.testing import _is_grammar_accept_string
+
+    from tensorfold.families.deepseek_v4.strict_tools_v41 import Plan
+
+    tools = strict_tools()
+    loose = tools[1]["function"]["name"]
+    value = '{"number":1.000000000000000000001,"huge":1e309,"marker":"</｜DSML｜ parameter>"}'
+    block = BLOCK.replace('string="true">/tmp/a b.txt', 'string="false">' + value)
+    plan = Plan(tools, required=False, parallel=True)
+    assert _is_grammar_accept_string(Grammar.from_structural_tag(plan.spec.text), block)
+    reader = plan.reader()
+    prefix = block.removesuffix(serving_v41.CLOSER)
+    for end in range(len(prefix) + 1):
+        assert not reader.feed(prefix[:end])
+    assert plan.parse_finished(prefix) == (prefix.strip(), None, False)
+    deltas = reader.feed(block)
+    assert [d["tool_calls"][0]["index"] for d in deltas] == [0, 0, 1, 1]
+    assert reader.index == 1 and reader.streamed and reader.feed(block) == []
+    content, calls, complete = plan.parse_finished(block)
+    assert complete and content == ""
+    assert calls[1]["function"] == {"name": loose, "arguments": '{"path":' + value + "}"}
+    assert deltas[-1]["tool_calls"][0]["function"]["arguments"] == calls[1]["function"]["arguments"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_strict_dsml_token_count_and_completion_use_same_native_prompt(model_dir, stream):
+    pytest.importorskip("xgrammar")
+    from http.client import HTTPConnection
+
+    from tests.test_cuda_admission import http_server, post
+    from tests.test_strict_tools import _reply
+
+    class ConstrainedScripted(Scripted):
+        def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, constraint=None):
+            assert constraint.spec.kind == "tools"
+
+            def send(tokens):
+                constraint.advance(tokens)
+                return on_tokens(tokens)
+
+            return super().generate(prompt, max_tokens, sampling, send, draft)
+
+    app = app_for(model_dir, default_thinking=True)
+    app.engine = ConstrainedScripted(app.tok, "check</think>Checking.\n\n" + BLOCK, step=3)
+    tools = strict_tools()
+    body = {"model": "ds41", "messages": [{"role": "user", "content": "Weather?"}],
+            "tools": tools, "stream": stream, "max_tokens": 1024}
+    with http_server(app) as port:
+        conn = HTTPConnection("127.0.0.1", port, timeout=3)
+        try:
+            conn.request("POST", "/v1/tokenize", json.dumps(body), {"Content-Type": "application/json"})
+            reply = conn.getresponse()
+            counted = json.load(reply)
+            assert reply.status == 200, counted
+            assert not app.engine.prompts
+        finally:
+            conn.close()
+        status, text = post(port, body, True)
+    assert status == 200, text
+    assert counted["count"] == len(app.engine.prompts[0])
+    content, calls, finish = _reply(stream, text)
+    assert content.strip() == "Checking." and finish == "tool_calls"
+    assert [(name, json.loads(args)) for name, args in calls] == EXPECTED
 
 
 def test_image_parts_expand_through_the_vision_frontend(model_dir, monkeypatch):

@@ -1678,6 +1678,9 @@ gives the intervals and measurement scope. DSpark drafts are pending.
 
 The normal CUDA server exposes exact chat token counts, renderer capabilities and request
 statistics to [Harness and other API clients](docs/recipes/deepseek-v41-v100.md#launch).
+Development source also accepts strict function tool schemas in the native DSML format through
+the standard CUDA API. Full-checkpoint serving verification is pending.
+[Strict function tools](docs/api.md#strict-function-tools)
 
 On the same eight-V100 setup, fixed-order prefill RMS raised geometric mean prefill throughput **1.21%** across
 the ten text cells against `aef6e42a`. Target log probabilities matched bit for bit across all twelve scoring

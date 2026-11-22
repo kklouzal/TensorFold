@@ -381,6 +381,14 @@ The grammar holds only the calls and what `tool_choice` asks; prose is the model
   CUDA also enforces Gemma 4's native `<|tool_call>call:NAME{key:value,…}<tool_call|>` markup, with sorted bare keys
   and `<|"|>`-delimited strings. Null is spelled as the selected template renders it: `None` in Google's launch
   template, `null` in its current one. Only that spelling is allowed and read.
+  DeepSeek-V4.1 development source uses its native `<｜DSML｜ calls>` block with `invoke` and `parameter` tags.
+  Its `string="true"` parameters carry raw text, and `string="false"` parameters carry JSON values.
+  The flag distinguishes strings from null and other types. A strict DSML call uses only the declared
+  parameter names. Standard `/v1/tokenize` validates the same request schema and counts its native prompt.
+  With thinking enabled, DeepSeek starts enforcing the answer grammar after its native `</think>` close.
+  Tool markup inside still-open reasoning stays in the reasoning stream. Streaming publishes complete
+  DSML blocks as tool-call deltas.
+  Full-checkpoint CUDA serving verification is pending.
 - **`tool_choice`:** `auto` leaves text free before, between and after calls, and the model may answer without one;
   `required` or a named function allows only blanks (at most 32) and calls separated by newlines.
   `parallel_tool_calls: false` ends the reply after its first call.
@@ -432,11 +440,12 @@ must stay within 96 MiB (each JSON parameter carries the definitions and root sc
 would not enforce whole are refused too: constraints beside `$ref`, anything but `type` beside `enum`, `const` or
 `anyOf` (an `anyOf` branch must admit only the types listed beside it), a `const` beside an `enum` that does not list
 it, type-specific keywords without a `type` or with several non-null types, `pattern` beside `format`, and
-`multipleOf` with a range. The call markup refuses a parameter that admits strings and non-string values other than
-null (raw text could be either), a string parameter whose schema refers back to itself, a string parameter's `pattern`
-that can spell `</parameter>`, `enum`/`const` strings containing it, and tool or parameter names with whitespace, `<`
-or `>`. Strict tools are also refused beside `response_format` or the `guided_*` fields, on an engine without grammar
-support (or the modern Flash Next provider on two GPUs under `--parallel`), and for a template whose call markup is not Qwen XML;
+`multipleOf` with a range. Qwen XML refuses a parameter that admits strings and non-string values other than
+null because it cannot identify their types. A raw string schema cannot refer back to itself. Patterns and
+literal values must exclude the renderer's parameter delimiter (`</parameter>` for Qwen XML and
+`</｜DSML｜ parameter>` for DeepSeek-V4.1). Tool and parameter names must fit the renderer's markup.
+Strict tools require a supported renderer and an engine with grammar support. They are refused beside
+`response_format` or the `guided_*` fields and on the modern Flash Next provider on two GPUs under `--parallel`.
 `strict: false` keeps the lenient path. Clients that validate ordinary tool arguments before execution can explicitly
 choose that path without changing their schemas. TensorFold never retries a strict request without enforcement or
 silently drops its constraints.
