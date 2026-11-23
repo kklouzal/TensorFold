@@ -222,14 +222,17 @@ class Target:
         pool = self.pool
         ring = pool.rings[ly.index]
         rotor = self.rotor_cache
+        cold = shared.get("rotor_cold_legacy")
         valid = step.valid
         # A one-row request reads the current value from window; the prior
         # RING-1 positions never alias the ring row being written here.
         decode_ring = (ring, step.req_slot, step.valid) if rotor is None and step.single_token_slots else None
         if rotor is not None:
             valid = shared["rotor_valid"]
-            query = rotor.rotate(query, valid, ly.index)
-            physical_window = qr_ops.apply_rope(self._norm(kv_low, ly.kv_norm), positions, table)
+            if cold is None:
+                query = rotor.rotate(query, valid, ly.index)
+            normalized_window = self._norm(kv_low, ly.kv_norm)
+            physical_window = qr_ops.apply_rope(normalized_window, positions, table)
             window = rotor.pack(physical_window, valid, ly.index)
         elif decode_ring is not None and 1 <= tokens <= 64:
             window = rope_qdq(kv_low, positions, table, decode_ring=decode_ring,
@@ -247,17 +250,37 @@ class Target:
                 compact = qr_ops.apply_rope(latent, (positions - ly.ratio + 1).clamp_min(0), table)
                 if rotor is not None:
                     live = valid if ly.ratio == 1 else valid & ((positions + 1) % ly.ratio == 0)
+                    if cold is not None:
+                        # Consumers read only the latest source. Keep its scratch pages across a layer pause.
+                        scratch = pk.PackedLayout({ly.index: ly.ratio}, pool.layout.block_size)
+                        pages = torch.empty(cold["table"].numel(), scratch.page_bytes, device=x.device,
+                                            dtype=torch.uint8)
+                        pk.insert_rows(pages, compact, positions, valid, step.token_req, cold["table"],
+                                       layout=scratch, layer=ly.index, compressed=True)
+                        cold["source"] = (ly.index, pages, scratch)
                     compact = rotor.pack(compact, live, ly.index)
                 pk.insert_rows(pool.cache, compact, positions, valid, step.token_req, step.block_table,
                                layout=pool.layout, layer=ly.index, compressed=True)
             if ly.has_indexer:
                 shared["topk"] = self._select(ly, x, qr, step, table)
-            extra = dict(cache=pool.cache, block_table=step.block_table, layout=pool.layout, layer=ly.source,
-                         topk=shared["topk"])
-        output = self._attend(query, step, ring, window, ly.sink, **extra)
+            if cold is None:
+                extra = dict(cache=pool.cache, block_table=step.block_table, layout=pool.layout, layer=ly.source,
+                             topk=shared["topk"])
+            else:
+                source, pages, scratch = cold["source"]
+                if source != ly.source:
+                    raise RuntimeError("DeepSeek cold prefill lost its compact source")
+                extra = dict(cache=pages, block_table=cold["table"], layout=scratch, layer=source,
+                             topk=shared["topk"])
+        if cold is None:
+            output = self._attend(query, step, ring, window, ly.sink, **extra)
+        else:
+            # Retain the earlier FP8 window QDQ and E2M1 compact attention operand boundaries.
+            window_operand = rope_qdq(normalized_window, positions, table)
+            output = self._attend(query, step, cold["ring"], window_operand, ly.sink, **extra)
         if decode_ring is None:
             pk.insert_ring(ring, window, positions, valid, step.token_req, step.qsl, step.req_slot)
-        if rotor is not None:
+        if rotor is not None and cold is None:
             output = rotor.rotate(output, valid, ly.index, inverse=True)
         output = rope_qdq(output, positions, table, inverse=True)   # TP8: one output group per rank; qdq(rope^-1)
         projected = self._linear(output.reshape(tokens, -1), ly.wo_a)
@@ -423,6 +446,22 @@ class Target:
             from .rotor_cache import live_rows
 
             shared["rotor_valid"] = live_rows(step, self.slots - 1)
+            if (9 <= tokens < 1024 and step.image is None and step.num_reqs == 1
+                    and step.prefill == [(0, 0, tokens, tokens - 1)]):
+                from .kernels.kv_pack import C_DIM
+                from .kernels.mu_packed import RING
+
+                block_size = self.pool.layout.block_size
+                blocks = -(-tokens // block_size)
+                shared["rotor_cold_legacy"] = {
+                    "table": torch.arange(blocks, device=hidden.device, dtype=torch.int32).view(1, blocks),
+                    # Starts at position zero, so historical ring operands are always masked.
+                    "ring": torch.empty((1, RING, C_DIM), device=hidden.device, dtype=torch.float16),
+                }
+                if self.w.rank == 0:
+                    print(f"[tensorfold] RotorQuant legacy cold prefill: {tokens} rows", flush=True)
+            elif self.w.rank == 0 and tokens < 1024 and step.prefill:
+                print(f"[tensorfold] RotorQuant packed prefill: {tokens} rows", flush=True)
         return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": shared,
                 "mix": None, "half": None, "next": 0, "result": None, "valid": valid,
                 "image": step.image, "shard": shard}

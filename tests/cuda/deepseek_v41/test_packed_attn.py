@@ -71,6 +71,45 @@ def test_packed_attention_bit_exact_vs_paged_fp16():
     assert ok
 
 
+@pytest.mark.skipif(torch.cuda.is_available() and torch.cuda.get_device_capability() != (7, 0), reason="SM70 native")
+@pytest.mark.parametrize("tokens,ratio", [(9, 2), (137, 1), (137, 2)])
+def test_legacy_cold_working_pages_match_normal_attention(tokens, ratio):
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    from tensorfold.families.deepseek_v4.cuda.target import Target
+
+    source = 7
+    dev = torch.device("cuda")
+    generator = torch.Generator(device=dev).manual_seed(53)
+    positions = torch.arange(tokens, device=dev)
+    valid = torch.ones(tokens, device=dev, dtype=torch.bool)
+    request = torch.zeros(tokens, device=dev, dtype=torch.int32)
+    boundaries = torch.tensor([0, tokens], device=dev, dtype=torch.int32)
+    slot = torch.tensor([3], device=dev, dtype=torch.int32)
+    step = SimpleNamespace(valid=valid, token_req=request, qsl=boundaries, req_slot=slot)
+    count = -(-tokens // 64)
+    logical_topk = torch.arange(512, device=dev, dtype=torch.int32)[None, :]
+    topk = torch.where(logical_topk < (positions[:, None] + 1) // ratio, logical_topk, -1)
+    query = torch.randn(tokens, 8, 512, dtype=torch.float16, device=dev, generator=generator)
+    window = torch.randn(tokens, 512, dtype=torch.float16, device=dev, generator=generator)
+    compact = torch.randn(tokens, 512, dtype=torch.float16, device=dev, generator=generator)
+    sink = torch.randn(8, device=dev, generator=generator)
+
+    def attend(sources, table, ring):
+        layout = pk.PackedLayout(sources, 64)
+        cache = torch.full((count, layout.page_bytes), 0xA5, device=dev, dtype=torch.uint8)
+        pk.insert_rows(cache, compact, positions, valid, request, table, layout=layout, layer=source, compressed=True)
+        return Target._attend(None, query, step, ring, window, sink, cache=cache, block_table=table,
+                              layout=layout, layer=source, topk=topk)
+
+    identity = torch.arange(count, device=dev, dtype=torch.int32)[None, :]
+    standard = attend({1: 1, source: ratio}, identity.flip(1), torch.zeros(5, pk.RING, 512, device=dev,
+                                                                        dtype=torch.float16))
+    poisoned = torch.full((1, pk.RING, 512), float("nan"), device=dev, dtype=torch.float16)
+    working = attend({source: ratio}, identity, poisoned)
+    assert torch.isfinite(working).all()
+    assert torch.equal(working.view(torch.int16), standard.view(torch.int16))
+
+
 @pytest.mark.skipif(torch.cuda.is_available() and torch.cuda.get_device_capability() != (7, 0), reason="SM70 codec")
 def test_rotorquant_window_and_compressed_gather_match_native_codec():
     from tensorfold.cuda.sm70 import rotorquant_q4_native as native
