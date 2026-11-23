@@ -22,12 +22,30 @@ struct Transform_HMMA_SM70_Lattice {
   static constexpr auto kQuantType = static_cast<QuantType>(8 + (
       Type == 16 ? 0 : Type == 17 ? 1 : Type == 18 ? 2 : Type == 19 ? 3 :
       Type == 21 ? 4 : Type == 22 ? 5 : 6));
+  template<bool PublishAtOperandBarrier = false>
   __device__ static void initialize(uint8_t* shared) {
-    static_assert(kCodebookBytes % sizeof(uint32_t) == 0);
-    auto* words = reinterpret_cast<uint32_t*>(shared);
-    for (int i = threadIdx.x; i < kCodebookBytes / sizeof(uint32_t); i += blockDim.x)
-      words[i] = Codebook::word(i / kReplicas);
-    __syncthreads();
+    if constexpr (PublishAtOperandBarrier && Exact && Type == 29 && kReplicas == 1) {
+      // The source table and WithDecoderCodebook storage are both aligned
+      // to 16 bytes. Each thread owns disjoint complete vectors. The caller
+      // publishes these shared writes at its first operand barrier.
+      constexpr int bytes = 16;
+      static_assert(kCodebookBytes % bytes == 0);
+      for (int i = threadIdx.x; i < kCodebookBytes / bytes; i += blockDim.x) {
+        const auto src = __cvta_generic_to_global(Codebook::data() + bytes * i);
+        const auto dst = static_cast<uint32_t>(__cvta_generic_to_shared(shared + bytes * i));
+        asm volatile("{\n\t"
+                     ".reg .b32 a, b, c, d;\n\t"
+                     "ld.global.v4.b32 {a, b, c, d}, [%0];\n\t"
+                     "st.shared.v4.b32 [%1], {a, b, c, d};\n\t"
+                     "}" :: "l"(src), "r"(dst) : "memory");
+      }
+    } else {
+      static_assert(kCodebookBytes % sizeof(uint32_t) == 0);
+      auto* words = reinterpret_cast<uint32_t*>(shared);
+      for (int i = threadIdx.x; i < kCodebookBytes / sizeof(uint32_t); i += blockDim.x)
+        words[i] = Codebook::word(i / kReplicas);
+      __syncthreads();
+    }
   }
   template<class F, int Nf, int Mf, int K, class D, int Nd, int Md,
            class S, int Ns, int Ms, int Ks>

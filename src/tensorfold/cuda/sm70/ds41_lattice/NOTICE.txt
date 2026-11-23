@@ -23,6 +23,8 @@ TensorFold changes to the vendored files ("modified" rows below):
 - the friend's FP16 lattice arithmetic is removed (R2, 2.6x the operator error): ds41kern_variants.cuh builds only
   the five exact variants (kVariants 5), ds41kern_op.cu selects FP32 output for variants 0/1, and
   gguf_prefill_transcode_sm70.cu launches only the exact encoding of IQ2_XXS / IQ2_XS / IQ1_M (no `exact` argument).
+- IQ1_M exact GEMM staging copies the unchanged aligned codebook in 16-byte vectors
+  (`lattice_codebooks.h`, `lattice_transform.h`) and publishes it at the first operand barrier (`mainloop_sm70.h`).
 
 Files (vendored path <- origin, upstream sha256):
 ds41kern_op.cu  <-  friend overlay patch 340 kern340/src/ds41kern_op.cu  sha256 067542e57919f0495ae314720d6ad8e3be5fce7bd53f5fb7f67bccf20d551d2f  modified (see above)
@@ -63,7 +65,7 @@ turbomind/kernels/gemm/iterator_sm70.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomi
 turbomind/kernels/gemm/kernel.cu  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/kernel.cu  sha256 3c7e07df633e87924f08bbd2f03295402baf1105e3358e01a31609be3405cc05  modified (see above)
 turbomind/kernels/gemm/kernel.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/kernel.h  sha256 b477aff18366692b98889ab73078f516a9810001a98a43f0a5729c5f7f9e3390  modified (see above)
 turbomind/kernels/gemm/kernel_impl.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/kernel_impl.h  sha256 f73d3064a31045c921f7154d27fd11712c43cb17597498e36e53b340074b67bd  modified (see above)
-turbomind/kernels/gemm/lattice_codebooks.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/lattice_codebooks.h  sha256 f5b8962a7a2722a44d0a209a9fbafee4f1482fd2ad7953a8d61c9212ececa22c  identical
+turbomind/kernels/gemm/lattice_codebooks.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/lattice_codebooks.h  sha256 f5b8962a7a2722a44d0a209a9fbafee4f1482fd2ad7953a8d61c9212ececa22c  modified (see above)
 turbomind/kernels/gemm/lattice_transform.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/lattice_transform.h  sha256 9cab95b6918f42504b4a0b73831cdff052a25749b9f97344ab372f8541d224d1  modified (see above)
 turbomind/kernels/gemm/mainloop_sm70.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/mainloop_sm70.h  sha256 45fc6801338ab706a2e8393e4d8cda24416ae0cc1101061771a8eaeccdb449ec  modified (see above)
 turbomind/kernels/gemm/matrix_ptr.h  <-  1Cat-vLLM 4d57473d csrc/sm70_turbomind/lmdeploy/src/turbomind/kernels/gemm/matrix_ptr.h  sha256 71184e0e4529902b48cc3edf50c08c53d518024849a86262f78c4018173a6b6e  modified (see above)
