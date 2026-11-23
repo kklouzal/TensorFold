@@ -4,6 +4,7 @@ import torch
 
 from tensorfold.cuda.sm70 import rotorquant_q4_native as native
 from tensorfold.families.deepseek_v4 import ROTOR_KV_DTYPE
+from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import CENTROIDS_4
 from tensorfold.families.qwen4_exp.kv_formats import get
 
 DIM = 512
@@ -23,6 +24,8 @@ def live_rows(step, scratch):
 class RotorCache:
     def __init__(self, device):
         native.extension()  # Build/import before graph capture.
+        # The fallback reader borrows this immutable table for the cache and its graph lifetime.
+        self.centroids = torch.tensor(CENTROIDS_4, dtype=torch.float32, device=device)
         self.status = torch.tensor([0, -2], dtype=torch.int32, device=device)
 
     def pack(self, values, valid, layer):

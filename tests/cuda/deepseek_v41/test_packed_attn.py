@@ -117,6 +117,7 @@ def test_rotorquant_window_and_compressed_gather_match_native_codec():
     from tensorfold.cuda.sm70 import rotorquant_q4_native as native
     from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
     from tensorfold.families.deepseek_v4.cuda.kernels.kv_pack import I_ROW, ROTOR_ROW
+    from tensorfold.families.deepseek_v4.cuda.rotor_cache import RotorCache
 
     device = "cuda"
     gen = torch.Generator(device=device).manual_seed(11)
@@ -162,8 +163,14 @@ def test_rotorquant_window_and_compressed_gather_match_native_codec():
     topk = torch.tensor([[0, 31, 32, 63, 64, 65, 66, -1]] * 4, dtype=torch.int32, device=device)
     keys = torch.empty((4, pk.WINDOW + 8, 512), dtype=torch.float16, device=device)
     unused = torch.empty(keys.shape[:-1], dtype=torch.bool, device=device)
-    pk.gather_attention(keys, unused, 0, 4, positions, live, requests, qsl, slots, ring, packed[132:],
-                        cache=cache, block_table=table, layout=layout, layer=3, topk=topk)
+    rotor = RotorCache(device)
+
+    def gather(centroids):
+        pk.gather_attention(keys, unused, 0, 4, positions, live, requests, qsl, slots, ring, packed[132:],
+                            cache=cache, block_table=table, layout=layout, layer=3, topk=topk,
+                            rotor_centroids=centroids)
+
+    gather(rotor.centroids)
 
     expected = torch.zeros_like(keys)
     expected[0, :128], expected[1, :128] = decoded[5:133], decoded[6:134]
@@ -172,5 +179,28 @@ def test_rotorquant_window_and_compressed_gather_match_native_codec():
     expected_unused = torch.ones_like(unused)
     expected_unused[:2, :132] = False
     expected_unused[2, 127] = False
+    assert torch.equal(unused, expected_unused)
+    assert torch.equal(keys.view(torch.int16), expected.view(torch.int16))
+
+    with pytest.raises(ValueError, match="H64 window requires the device centroid table"):
+        gather(None)
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        gather(rotor.centroids)
+
+    # Exercise every nibble and keep padded rows poisoned. The existing page and
+    # history rows must retain their bytes and the current row must read anew.
+    nibble = (torch.arange(256, device=device) & 15).to(torch.uint8)
+    packed[134, :256] = nibble | (((nibble + 3) & 15) << 4)
+    packed[135].fill_(255)
+    ring[2].fill_(255)
+    updated = native.decode(packed[134:135, :256].view(1, 1, 256),
+                            packed[134:135, 256:].view(torch.float32).view(1, 1, 4),
+                            torch.empty((1, 1, 512), dtype=torch.float16, device=device), codec=11)
+    expected[2, 127] = updated[0, 0]
+    graph.replay()
     assert torch.equal(unused, expected_unused)
     assert torch.equal(keys.view(torch.int16), expected.view(torch.int16))

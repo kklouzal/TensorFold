@@ -439,6 +439,7 @@ def _pk_gather_attention(
     valid_tokens,
     token_req,
     topk,
+    centroids,
     keys,
     unused,
     FIRST,
@@ -475,7 +476,7 @@ def _pk_gather_attention(
         if ROTORQUANT:
             new = values + (s0 + at - start) * LATENT_ROW
             old = ring + (slot * RING_ROWS + at % RING_ROWS) * LATENT_ROW
-            value = unpack_rotor_row(tl.where(inside, new, old), valid)
+            value = unpack_rotor_row(tl.where(inside, new, old), valid, centroids)
         else:
             new = tl.load(values + (s0 + at - start) * 512 + col, valid & inside, 0)
             old = tl.load(
@@ -492,7 +493,7 @@ def _pk_gather_attention(
         valid &= page >= 0
         if ROTORQUANT:
             row = cache + page * PAGE + OFFSET + (index % ROWS) * LATENT_ROW
-            value = unpack_rotor_row(row, valid)
+            value = unpack_rotor_row(row, valid, centroids)
         else:
             # unpack_c_row loads unconditionally: keep the address in bounds.
             page = tl.where(valid, page, 0)
@@ -545,16 +546,20 @@ def insert_ring(ring, values, positions, valid_tokens, token_req, qsl, req_slot)
 def gather_attention(
     keys, unused, first, last, positions, valid_tokens, token_req, qsl, req_slot,
     ring, values, *, cache=None, block_table=None, layout=None, layer=None,
-    topk=None,
+    topk=None, rotor_centroids=None,
 ):
     """keys [n, 128 + k, 512] FP16 / unused [n, 128 + k] for tokens [first, last).
 
     topk, positions, valid_tokens, token_req and values are the whole batch's.
-    RotorQuant keys are decoded to FP16 in their rotated basis."""
+    RotorQuant keys are decoded to FP16 in their rotated basis using the cache's centroid table."""
     compressed = cache is not None
     count = topk.shape[1] if compressed else 0
     n = last - first
     rotorquant = _window_row_width(ring, values, positions.numel()) == ROTOR_ROW
+    if rotorquant and (not isinstance(rotor_centroids, torch.Tensor) or rotor_centroids.shape != (16,)
+                       or rotor_centroids.dtype != torch.float32 or rotor_centroids.device != ring.device
+                       or not rotor_centroids.is_contiguous()):
+        raise ValueError(f"{LOG}: H64 window requires the device centroid table")
     if keys.shape != (n, WINDOW + count, 512) or unused.shape != (n, WINDOW + count):
         raise ValueError(f"{LOG}: gather output shapes")
     if compressed:
@@ -578,6 +583,7 @@ def gather_attention(
             valid_tokens,
             token_req,
             topk if compressed else positions,
+            rotor_centroids,
             keys,
             unused,
             first,
@@ -654,7 +660,7 @@ def select_positions(
 
 def attend(
     query, positions, step, req_slot, window_ring, window, sink, *, cache=None, block_table=None,
-    layout=None, source=None, topk=None, tokens_per_pass=64,
+    layout=None, source=None, topk=None, tokens_per_pass=64, rotor_centroids=None,
 ):
     """Patch 87's _attend without its vLLM glue: sparse attention output [T, heads, 512] FP16.
 
@@ -672,7 +678,7 @@ def attend(
         gather_attention(
             keys, unused, first, last, positions, step.valid, step.token_req,
             step.qsl, req_slot, window_ring, window, cache=cache,
-            block_table=block_table, layout=layout, layer=source, topk=topk,
+            block_table=block_table, layout=layout, layer=source, topk=topk, rotor_centroids=rotor_centroids,
         )
         scores = torch.empty(n, heads, width, dtype=torch.float32, device=query.device)
         _attend_fused(query[first:last], keys, unused, 512**-0.5, sink, result[first:last], scores)
