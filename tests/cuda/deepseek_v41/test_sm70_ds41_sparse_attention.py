@@ -173,6 +173,70 @@ def test_fused_rotor_paged_latent_matches_single_selected_key(source):
         fused(args, kw)
 
 
+@pytest.mark.parametrize("start", [0, 193])
+@pytest.mark.parametrize("source", [None, 2, 20])
+def test_h64_prefill_decoded_current_matches_packed_reader(start, source, monkeypatch):
+    from tensorfold.cuda.sm70 import ds41_sparse_attention as sa
+    from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import PackedLayout
+    from tensorfold.families.deepseek_v4.cuda.target import Target
+
+    tokens = 1024
+    args, kw = build([(start, tokens)], source=source or 2, compressed=source is not None, seed=93)
+    query, positions, step, req_slot, ring, window, sink = args
+    window[:, 64:128] *= 5
+    window[::3, 128:192] = -0.0
+    packed_ring, _ = encode_rotor_rows(ring)
+    packed_window, _ = encode_rotor_rows(window)
+    operands = (query, positions, step, req_slot, packed_ring, packed_window, sink)
+    step.positions, step.req_slot = positions, req_slot
+    step.image, step.num_reqs = None, 1
+    step.prefill = [(0, 0, tokens, start + tokens - 1)]
+    if source is not None:
+        layout = PackedLayout(SOURCES, BLOCK, rotorquant=True)
+        _ratio, per_page, offset, _ = layout.regions[source]
+        pages = kw["cache"].shape[0]
+        generator = torch.Generator(device=query.device).manual_seed(27)
+        latents = (torch.randn((pages, per_page, 512), device=query.device, generator=generator) * 0.45).half()
+        packed_latents, _ = encode_rotor_rows(latents)
+        cache = torch.zeros((pages, layout.page_bytes), device=query.device, dtype=torch.uint8)
+        cache[:, offset:offset + per_page * 272].copy_(packed_latents.flatten(1))
+        kw.update(cache=cache, layout=layout)
+
+    want = fused(operands, kw)
+    attend = sa.attend
+    selected = []
+
+    def record(*args, **kwargs):
+        selected.append(kwargs["decode_window"])
+        return attend(*args, **kwargs)
+
+    monkeypatch.setattr(sa, "attend", record)
+    target = Target.__new__(Target)
+    kwargs = dict(kw)
+    if source is not None:
+        kwargs["layer"] = kwargs.pop("source")
+    got = target._attend(query, step, packed_ring, packed_window, sink, **kwargs)
+    assert selected == [True]
+    assert torch.equal(got.view(torch.int16), want.view(torch.int16))
+    assert not torch.count_nonzero(got[tokens // 3])   # inactive query inside the current chunk
+
+    if start and source is None:
+        # The last old age is visible at local row 126 and absent at 127.
+        # A changed historical row must affect exactly that side of the seam.
+        changed = packed_ring.clone()
+        changed[1, (start - 1) % 128].copy_(packed_window[0])
+        changed_args = (query, positions, step, req_slot, changed, packed_window, sink)
+        reference = attend(*changed_args)
+        candidate = attend(*changed_args, decode_window=True)
+        assert torch.equal(candidate.view(torch.int16), reference.view(torch.int16))
+        assert not torch.equal(candidate[126].view(torch.int16), got[126].view(torch.int16))
+        assert torch.equal(candidate[127:].view(torch.int16), got[127:].view(torch.int16))
+        with pytest.raises(RuntimeError, match="single memory location"):
+            attend(*operands, out=query, decode_window=True)
+        with pytest.raises(RuntimeError, match="single-request H64 step"):
+            attend(*args, decode_window=True)
+
+
 @pytest.mark.parametrize("requests,compressed", [([(127, 1)], True),
     ([(127, 1), (128, 1), (16384, 1), (0, 1)], True),
     ([(127, 1), (128, 1), (16384, 1), (0, 1)], False)])

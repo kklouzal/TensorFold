@@ -14,8 +14,9 @@ differ in the last FP16 bits (see tests/cuda/deepseek_v41/test_sm70_ds41_sparse_
 Operands are ``mu_packed.attend``'s: query [T, 8, 512] FP16, the layer's ring [S + 1, 128, D], this
 forward's window latents [T, D] (FP16 D=512 or RotorQuant uint8 D=272), the Step's qsl / req_slot / positions /
 valid / token_req, the pool's packed pages / block table / layout region and top-512 int32 positions (compressed
-layers), the [8] FP32 sinks.
-Graph-capturable (no host synchronization; allocates only ``out`` when not given).
+layers), the [8] FP32 sinks. Long single-request H64 prefill can decode the current window once into bounded
+per-call FP16 scratch. Older window and compressed keys retain their packed representation.
+Graph-capturable without host synchronization.
 """
 
 from functools import lru_cache
@@ -25,6 +26,8 @@ from pathlib import Path
 import torch
 
 SCALE = 512 ** -0.5
+CURRENT_WINDOW_MIN = 1024
+CURRENT_WINDOW_MAX = 8192
 
 
 @lru_cache(maxsize=1)
@@ -53,7 +56,7 @@ def prepare():
 
 
 def attend(query, positions, step, req_slot, window_ring, window, sink, *, cache=None, block_table=None,
-           layout=None, source=None, topk=None, out=None):
+           layout=None, source=None, topk=None, out=None, decode_window=False):
     """Sparse attention output [T, 8, 512] FP16 (``mu_packed.attend``'s contract and operands)."""
     if out is None:
         out = torch.empty_like(query)
@@ -71,5 +74,6 @@ def attend(query, positions, step, req_slot, window_ring, window, sink, *, cache
         ratio, c_offset, block_size, compressed_row_bytes = 1, 0, 1, 0
     extension().attend(out, query, window_ring, window, step.qsl, req_slot, cache if compressed else None,
                        block_table if compressed else None, positions, step.valid, step.token_req,
-                       topk if compressed else None, sink, SCALE, block_size, ratio, c_offset, 0, query.shape[0], compressed_row_bytes)
+                       topk if compressed else None, sink, SCALE, block_size, ratio, c_offset, 0, query.shape[0],
+                       compressed_row_bytes, decode_window)
     return out

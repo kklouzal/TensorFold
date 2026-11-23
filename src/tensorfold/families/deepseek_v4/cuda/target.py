@@ -355,8 +355,13 @@ class Target:
         gather + bmm passes (decode buckets of compressed layers); both read the same keys and FP16 probabilities."""
         if query.shape[0] >= (FUSED_MIN_COMPRESSED if cache is not None else FUSED_MIN_WINDOW):
             from tensorfold.cuda.sm70 import ds41_sparse_attention as fused
+            tokens = query.shape[0]
+            decode_window = (fused.CURRENT_WINDOW_MIN <= tokens <= fused.CURRENT_WINDOW_MAX
+                             and ring.dtype == torch.uint8 and step.image is None and step.num_reqs == 1
+                             and len(step.prefill) == 1 and step.prefill[0][:3] == (0, 0, tokens))
             return fused.attend(query.contiguous(), step.positions, step, step.req_slot, ring, window.contiguous(),
-                                sink, cache=cache, block_table=block_table, layout=layout, source=layer, topk=topk)
+                                sink, cache=cache, block_table=block_table, layout=layout, source=layer, topk=topk,
+                                decode_window=decode_window)
         from .kernels import mu_packed as pk
         centroids = (self.rotor_cache.centroids
                      if cache is not None and ring.dtype == torch.uint8 and not reuse_compressed else None)

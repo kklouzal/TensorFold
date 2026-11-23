@@ -29,6 +29,7 @@
 
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/MemoryOverlap.h>
 #include <c10/cuda/CUDAGuard.h>
 
 #include "rotorquant_q4.cuh"
@@ -40,12 +41,14 @@ constexpr int kQLd = kDim + 8;  // halves per shared query row
 constexpr int kCodeBytes = kDim / 2, kLegacyRow = kCodeBytes + kDim / 16;
 constexpr int kRotorCodec = 11, kRotorGroup = 128, kRotorHalf = kRotorGroup / 2, kRotorTable = 16;
 constexpr int kRotorRow = kCodeBytes + sizeof(uint32_t) * (kDim / kRotorGroup);
+constexpr int kCurrentMin = 1024, kCurrentMax = 8192;
 static_assert(kRotorRow == 272 && kRotorRow % 16 == 0 && kLegacyRow == 288 && kLegacyRow % 16 == 0);
 
 struct Args {
   const half* query;      // [N, 8, 512]
   const void* ring;       // [S + 1, 128, 512] FP16 or [S + 1, 128, 272] uint8
   const void* values;     // [N, 512] FP16 or [N, 272] uint8
+  const half* decoded;    // [N, 512] rotated current window, only on long H64 prefill
   const int32_t* qsl;     // [R + 1]
   const int32_t* req_slot;
   const uint8_t* cache;   // pages
@@ -167,16 +170,31 @@ __device__ __forceinline__ float rotor_scale(const uint8_t* row, int dim) {
   return tf_rq4::half_group_scale(__uint_as_float(word), (dim % kRotorGroup) / kRotorHalf);
 }
 
+__global__ void decode_current(const uint8_t* packed, uint32_t* decoded) {
+  __shared__ float centroids[kRotorTable];
+  if (threadIdx.x < kRotorTable) centroids[threadIdx.x] = tf_rq4::selected_centroid<kRotorCodec>(threadIdx.x);
+  __syncthreads();
+  const int row = blockIdx.x;
+  const uint8_t* src = packed + row * kRotorRow;
+  uint32_t* dst = decoded + row * kCodeBytes;
+  // Two adjacent dimensions always share one H64 scale. Reuse the exact
+  // packed reader's FP32 multiplication and final rounding of both halves.
+#pragma unroll 2
+  for (int pair = threadIdx.x; pair < kCodeBytes; pair += kThreads)
+    dst[pair] = rotor_pair(src[pair], rotor_scale(src, 2 * pair), centroids);
+}
+
 // 0 = unused key; FP16 row pointer; packed row pointer | 1.
 template <bool Rotor>
 __device__ __forceinline__ uint64_t describe(const Args& a, int key, int64_t t, int64_t r,
                                              int64_t position, bool live, int64_t s0,
-                                             int64_t start, int64_t slot) {
+                                             int64_t start, int64_t slot, const half* decoded) {
   if (!live) return 0;
   if (key < kWindow) {
     const int64_t at = position - kWindow + 1 + key;
     if (at < 0) return 0;
     if constexpr (Rotor) {
+      if (decoded) return reinterpret_cast<uint64_t>(decoded + (s0 + (at - start)) * kDim);
       const uint8_t* src = at >= start ? static_cast<const uint8_t*>(a.values) + (s0 + (at - start)) * kRotorRow
                                       : static_cast<const uint8_t*>(a.ring) + (slot * kRing + at % kRing) * kRotorRow;
       return reinterpret_cast<uint64_t>(src) | 1ull;
@@ -368,7 +386,7 @@ __device__ __forceinline__ void store_out(const Args& a, int64_t t, const float 
           __floats2half2_rn(o[j][e], o[j][e + 1]);
 }
 
-template <int W, bool Rotor>
+template <int W, bool Rotor, bool DecodeCurrent>
 __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
   using G = Geo<W>;
   extern __shared__ __align__(16) unsigned char smem[];
@@ -384,9 +402,13 @@ __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
   }
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
   const Token k = token_of<Rotor>(a, a.first + blockIdx.x);
+  // Keep the original packed path for the first 127 queries of a resumed
+  // request. This choice is uniform for the CTA, including every MMA lane.
+  const bool decoded_window = DecodeCurrent && k.live && (k.start == 0 || k.position - k.start >= kWindow - 1);
+  const half* decoded = decoded_window ? a.decoded : nullptr;
   load_query(a, k.t, qs);
   for (int i = threadIdx.x; i < W; i += kThreads)
-    desc[i] = describe<Rotor>(a, i, k.t, k.r, k.position, k.live, k.s0, k.start, k.slot);
+    desc[i] = describe<Rotor>(a, i, k.t, k.r, k.position, k.live, k.s0, k.start, k.slot, decoded);
   __syncthreads();
 
   // ---------------- phase 1: scores, 8 heads x 32 keys per tile, in registers
@@ -396,7 +418,12 @@ __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
 #pragma unroll
   for (int i = 0; i < G::kTilesPerWarp; ++i) {
     const int tile = warp + i * kWarps;
-    tile_scores<Rotor>(tile * 32 < kWindow, desc[tile * 32 + bkey], qs + arow * kQLd, centroids, sc[i]);
+    const uint64_t d = desc[tile * 32 + bkey];
+    const bool window = tile * 32 < kWindow;
+    if (decoded_window && window)
+      tile_scores<false>(true, d, qs + arow * kQLd, nullptr, sc[i]);
+    else
+      tile_scores<Rotor>(window, d, qs + arow * kQLd, centroids, sc[i]);
   }
 
   // ---------------- phase 2: _sink_softmax
@@ -484,29 +511,32 @@ __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
 #pragma unroll
     for (int e = 0; e < 8; ++e) o[j][e] = 0.f;
   const half* pa = ps + arow * G::kPLd;
-  pv_steps<Rotor>(desc, 0, pa, 0, 0, kWindow / 4, dbase, kr, centroids, o);
+  if (decoded_window)
+    pv_steps<false>(desc, 0, pa, 0, 0, kWindow / 4, dbase, kr, nullptr, o);
+  else
+    pv_steps<Rotor>(desc, 0, pa, 0, 0, kWindow / 4, dbase, kr, centroids, o);
   pv_steps<Rotor>(desc, 0, pa, 0, kWindow / 4, W / 4, dbase, kr, centroids, o);
   store_out(a, k.t, o);
 }
 
-template <int W, bool Rotor>
+template <int W, bool Rotor, bool DecodeCurrent>
 void launch_w(const Args& a, int tokens, cudaStream_t stream) {
   static bool carved = false;
   if (!carved) {
     // Prefer the 96 KiB shared configuration (6 CTAs x ~16 KB per SM); a hint only.
-    (void)cudaFuncSetAttribute(attend_kernel<W, Rotor>, cudaFuncAttributePreferredSharedMemoryCarveout,
+    (void)cudaFuncSetAttribute(attend_kernel<W, Rotor, DecodeCurrent>, cudaFuncAttributePreferredSharedMemoryCarveout,
                                int(cudaSharedmemCarveoutMaxShared));
     (void)cudaGetLastError();
     carved = true;
   }
   constexpr int shared = Geo<W>::kShared + (Rotor ? kRotorTable * sizeof(float) : 0);
-  attend_kernel<W, Rotor><<<tokens, kThreads, shared, stream>>>(a);
+  attend_kernel<W, Rotor, DecodeCurrent><<<tokens, kThreads, shared, stream>>>(a);
 }
 
-template <bool Rotor>
+template <bool Rotor, bool DecodeCurrent = false>
 void launch(const Args& a, int tokens, cudaStream_t stream) {
-  if (a.topk) launch_w<kWindow + 512, Rotor>(a, tokens, stream);
-  else launch_w<kWindow, Rotor>(a, tokens, stream);
+  if (a.topk) launch_w<kWindow + 512, Rotor, DecodeCurrent>(a, tokens, stream);
+  else launch_w<kWindow, Rotor, DecodeCurrent>(a, tokens, stream);
 }
 
 void require(bool ok, const char* what) { TORCH_CHECK(ok, "ds41_sparse_attention: ", what); }
@@ -516,7 +546,7 @@ void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::T
             std::optional<torch::Tensor> table, torch::Tensor positions, torch::Tensor valid,
             torch::Tensor token_req, std::optional<torch::Tensor> topk, torch::Tensor sink,
             double scale, int64_t block_size, int64_t ratio, int64_t offset, int64_t first,
-            int64_t last, int64_t compressed_row_bytes) {
+            int64_t last, int64_t compressed_row_bytes, bool decode_window) {
   require(query.scalar_type() == torch::kFloat16 && query.is_contiguous() && query.dim() == 3 &&
               query.size(1) == kHeads && query.size(2) == kDim,
           "query must be FP16 [N, 8, 512]");
@@ -605,11 +635,32 @@ void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::T
     a.topk = topk->data_ptr<int32_t>();
     a.topk_count = 512;
   }
+  if (decode_window) {
+    require(rotor && qsl.numel() == 2 && first == 0 && last == query.size(0) &&
+                last >= kCurrentMin && last <= kCurrentMax,
+            "decoded current window requires a whole 1024 to 8192 row single-request H64 step");
+    for (const torch::Tensor* input : {&query, &ring, &values, &qsl, &req_slot, &positions, &valid, &token_req, &sink})
+      at::assert_no_overlap(out, *input);
+    at::assert_no_overlap(values, ring);
+    if (topk) {
+      at::assert_no_overlap(out, *cache);
+      at::assert_no_overlap(out, *table);
+      at::assert_no_overlap(out, *topk);
+    }
+  }
   if (last == first) return;
   const c10::cuda::CUDAGuard guard(device);
   const int tokens = int(last - first);
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  if (rotor) launch<true>(a, tokens, stream);
+  if (decode_window) {
+    auto decoded = torch::empty({tokens, kDim}, values.options().dtype(torch::kFloat16));
+    decode_current<<<tokens, kThreads, 0, stream>>>(values.data_ptr<uint8_t>(),
+        reinterpret_cast<uint32_t*>(decoded.data_ptr()));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    a.decoded = reinterpret_cast<const half*>(decoded.data_ptr());
+    // Both consumers are enqueued before the current-stream scratch is released.
+    launch<true, true>(a, tokens, stream);
+  } else if (rotor) launch<true>(a, tokens, stream);
   else launch<false>(a, tokens, stream);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -621,7 +672,8 @@ void ds41_sparse_attend(torch::Tensor out, torch::Tensor query, torch::Tensor ri
                         std::optional<torch::Tensor> table, torch::Tensor positions, torch::Tensor valid,
                         torch::Tensor token_req, std::optional<torch::Tensor> topk, torch::Tensor sink,
                         double scale, int64_t block_size, int64_t ratio, int64_t offset, int64_t first,
-                        int64_t last, int64_t compressed_row_bytes) {
+                        int64_t last, int64_t compressed_row_bytes, bool decode_window) {
   ds41_sparse_attention::attend(out, query, ring, values, qsl, req_slot, cache, table, positions, valid, token_req,
-                                topk, sink, scale, block_size, ratio, offset, first, last, compressed_row_bytes);
+                                topk, sink, scale, block_size, ratio, offset, first, last, compressed_row_bytes,
+                                decode_window);
 }
