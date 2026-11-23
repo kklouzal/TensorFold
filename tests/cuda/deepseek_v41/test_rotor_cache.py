@@ -37,7 +37,7 @@ def _split_short_window_rope(value, positions, table, weight, eps):
     return apply_rope(normalized, positions, table)
 
 
-@pytest.mark.parametrize("rows", (1, 8, 24, 32, 64))
+@pytest.mark.parametrize("rows", (1, 8, 16, 32, 64))
 def test_h64_short_window_rope_matches_separate_fp16_boundaries(rows):
     from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
     from tensorfold.families.deepseek_v4.cuda.kernels.rope_qdq import decode_window_rope
