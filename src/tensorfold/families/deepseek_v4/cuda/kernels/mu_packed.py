@@ -465,7 +465,10 @@ def _pk_gather_attention(
     position = tl.load(positions + token).to(tl.int64)
     valid = (tl.load(valid_tokens + token) != 0) & (r >= 0)
     col = tl.arange(0, 512)
-    if WINDOW_ONLY or key < WINDOW_KEYS:
+    ONLY_WINDOW: tl.constexpr = WINDOW_ONLY or TOPK == 0
+    # The window specialization has no centroid table. Let Triton discard the
+    # compressed branch at the frontend before it lowers pointer arithmetic.
+    if (True if ONLY_WINDOW else key < WINDOW_KEYS):
         rr = tl.where(r >= 0, r, 0)
         s0 = tl.load(qsl + rr, valid, 0).to(tl.int64)
         start = tl.load(positions + s0, valid, 0).to(tl.int64)
@@ -477,7 +480,7 @@ def _pk_gather_attention(
         if ROTORQUANT:
             new = values + (s0 + at - start) * LATENT_ROW
             old = ring + (slot * RING_ROWS + at % RING_ROWS) * LATENT_ROW
-            value = unpack_rotor_row(tl.where(inside, new, old), valid, centroids, TOPK > 0 and not WINDOW_ONLY)
+            value = unpack_rotor_row(tl.where(inside, new, old), valid, centroids, not ONLY_WINDOW)
         else:
             new = tl.load(values + (s0 + at - start) * 512 + col, valid & inside, 0)
             old = tl.load(
