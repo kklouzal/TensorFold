@@ -905,7 +905,7 @@ class Decoder(PrefixOwner):
                 # barrier for that batch, but release the cancelled prompt's result and skip its completion.
                 self.finishing = (None, None, None) if self.inflight is not None else None
             if s in self.filling:
-                self._release(s)
+                self._release_tower_handles(s)
                 out.append(s)
         # Fallible cohort operations precede retirement. On failure drop() still finds every cancelled request.
         for s in out:
@@ -919,7 +919,7 @@ class Decoder(PrefixOwner):
             if s in self.filling:
                 if self._broken is None:
                     try:
-                        self._release(s)
+                        self._release_tower_handles(s)
                     except BaseException as error:
                         self.broken = error
                         raise
@@ -1119,7 +1119,7 @@ class Decoder(PrefixOwner):
             e.tower_stage(pieces)
         return True
 
-    def _release(self, s) -> None:
+    def _release_tower_handles(self, s) -> None:
         """Drop the tower encodes and spans an unfinished image request still holds (every rank)."""
         if getattr(s, "vision", None) is None:
             return

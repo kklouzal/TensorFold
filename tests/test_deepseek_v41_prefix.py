@@ -233,6 +233,67 @@ def test_owner_no_reuse_keeps_nothing():
     assert _serve(o, p)[0] == 0
 
 
+@pytest.mark.parametrize("outcome", ("text-finished", "vision-finished", "vision-cancelled"))
+def test_decoder_finish_releases_uncached_slot(outcome):
+    from tensorfold.families.deepseek_v4.cuda.engine import Decoder, DS41Engine, OP_ATTACH, OP_DETACH
+
+    engine = _Engine(pages=16)
+    engine.target = _target(pages=16)
+    engine.target.reset_slot = lambda slot: None
+    pool = engine.target.pool
+    engine.page_bytes = pool.layout.page_bytes
+    engine.budget = pool.pages * engine.page_bytes
+    engine.token_bytes = pool.token_bytes()
+    slot_pages, tower_frees = {}, []
+    engine.slot_pages = SimpleNamespace(set=lambda slot, pages: slot_pages.__setitem__(slot, tuple(pages)))
+    engine.tower_free = lambda handles: tower_frees.append(tuple(handles))
+    record = engine.announce
+
+    def announce(op, slot, capacity=0):
+        record(op, slot, capacity)
+        if op == OP_ATTACH:
+            DS41Engine._attach(engine, slot, capacity)
+        else:
+            assert op == OP_DETACH
+            DS41Engine._detach(engine, slot)
+
+    engine.announce = announce
+    decoder = object.__new__(Decoder)
+    decoder.e, decoder.streams, decoder.filling, decoder._broken = engine, {}, [], None
+    decoder.split = decoder.finishing = None
+    decoder._init_prefix(engine, None)
+    vision = outcome.startswith("vision")
+    stream = SimpleNamespace(sid=7, prompt=list(range(1, 150)), count=4, draft=False,
+                             vision=object() if vision else None, encoded={0: 11} if vision else {},
+                             encoding=(1, 13) if vision else None)
+    capacity = decoder._cap(len(stream.prompt) + stream.count)
+    decoder.place(stream, capacity, reuse=False)
+    state, slot = stream.st, stream.slot
+    assert stream.cached == 0 and state.capacity == capacity
+    assert decoder.held == engine.slot_bytes(capacity) > 0
+    assert slot_pages[slot] == tuple(pool.owned[slot]) and pool.owned[slot]
+    if vision:
+        decoder.filling.append(stream)
+    else:
+        decoder.streams[stream.sid] = stream
+    if outcome == "vision-cancelled":
+        assert decoder.cancel([stream]) == [stream]
+        assert stream.done and stream.st is state and slot in pool.owned
+        assert tower_frees == [(11, 13)]
+
+    decoder.finish([stream])
+
+    assert decoder.live() == 0 and decoder.broken is None
+    assert stream.st is None and stream.slot is None
+    assert state.capacity == decoder.held == 0
+    assert tower_frees == ([(11, 13)] if vision else [])
+    assert not stream.encoded and stream.encoding is None
+    assert list(engine.ops) == [(OP_ATTACH, slot, capacity, 0), (OP_DETACH, slot, 0, 0)]
+    assert not pool.owned and len(pool.free) == pool.pages and slot_pages[slot] == ()
+    assert sum(free is state for free in decoder.free) == 1
+    assert decoder.usage()["kv"]["free_tokens_estimate"] == pool.pages * 64
+
+
 def test_chunk_splits_rules():
     from tensorfold.families.deepseek_v4.cuda.prefix import chunk_end, chunk_splits
     assert chunk_splits([], 0, 100, 64) == [64]
