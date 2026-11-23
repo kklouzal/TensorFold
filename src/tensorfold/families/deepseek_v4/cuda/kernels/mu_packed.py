@@ -452,6 +452,7 @@ def _pk_gather_attention(
     WINDOW_KEYS: tl.constexpr,
     TOPK: tl.constexpr,
     ROTORQUANT: tl.constexpr,
+    LATENT_ROW: tl.constexpr,
 ):
     """Window keys from this forward / the slot ring (attention_ops.
     _gather_attention_ring per request), compressed keys unpacked from the
@@ -472,8 +473,8 @@ def _pk_gather_attention(
         valid &= at >= 0
         inside = at >= start
         if ROTORQUANT:
-            new = values + (s0 + at - start) * ROTOR_ROW
-            old = ring + (slot * RING_ROWS + at % RING_ROWS) * ROTOR_ROW
+            new = values + (s0 + at - start) * LATENT_ROW
+            old = ring + (slot * RING_ROWS + at % RING_ROWS) * LATENT_ROW
             value = unpack_rotor_row(tl.where(inside, new, old), valid)
         else:
             new = tl.load(values + (s0 + at - start) * 512 + col, valid & inside, 0)
@@ -490,13 +491,13 @@ def _pk_gather_attention(
         ).to(tl.int64)
         valid &= page >= 0
         if ROTORQUANT:
-            row = cache + page * PAGE + OFFSET + (index % ROWS) * ROTOR_ROW
+            row = cache + page * PAGE + OFFSET + (index % ROWS) * LATENT_ROW
             value = unpack_rotor_row(row, valid)
         else:
             # unpack_c_row loads unconditionally: keep the address in bounds.
             page = tl.where(valid, page, 0)
             safe = tl.where(valid, index, 0)
-            row = cache + page * PAGE + OFFSET + (safe % ROWS) * C_ROW
+            row = cache + page * PAGE + OFFSET + (safe % ROWS) * LATENT_ROW
             value = tl.where(valid, unpack_c_row(row), 0.0).to(tl.float16)
     tl.store(keys + (local * (WINDOW_KEYS + TOPK) + key) * 512 + col, value)
     tl.store(unused + local * (WINDOW_KEYS + TOPK) + key, ~valid)
@@ -561,8 +562,10 @@ def gather_attention(
         if layout.rotorquant != rotorquant:
             raise ValueError(f"{LOG}: compressed pages and window require a common attention basis")
         ratio, _rows, c_offset, _i = layout.regions[layer]
+        latent_row = layout.compressed_row_bytes
     else:
         ratio, c_offset = 1, 0
+        latent_row = ROTOR_ROW if rotorquant else C_ROW
     if n:
         _pk_gather_attention[(n, WINDOW + count)](
             ring,
@@ -588,6 +591,7 @@ def gather_attention(
             WINDOW_KEYS=WINDOW,
             TOPK=count,
             ROTORQUANT=rotorquant,
+            LATENT_ROW=latent_row,
         )
 
 

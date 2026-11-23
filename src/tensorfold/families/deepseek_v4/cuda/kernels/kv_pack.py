@@ -30,6 +30,7 @@ from .triton_utils import jit, tl
 C_DIM, C_GROUP, C_ROW = 512, 16, 288
 I_DIM, I_GROUP, I_ROW = 128, 32, 68
 ROTOR_ROW = C_DIM // 2 + (C_DIM // 64) * 2
+ROTOR_DIM = tl.constexpr(C_DIM)
 ROTOR_CENTROIDS = tl.constexpr(CENTROIDS_4)
 
 
@@ -98,20 +99,20 @@ def unpack_c_row(row_ptr):
 @jit
 def unpack_rotor_row(row_ptr, valid):
     """Codec 11 decoded to FP16 in its rotated basis (tf_rq4::half_group_scale)."""
-    j = tl.arange(0, C_DIM)
+    j = tl.arange(0, ROTOR_DIM)
     byte = tl.load(row_ptr + j // 2, valid, 0).to(tl.int32)
     code = (byte >> (4 * (j % 2))) & 15
-    half_ptr = row_ptr + C_DIM // 2 + 2 * (j // 64)
+    half_ptr = row_ptr + ROTOR_DIM // 2 + 2 * (j // 64)
     lo = tl.load(half_ptr, valid, 0).to(tl.uint16)
     hi = tl.load(half_ptr + 1, valid, 0).to(tl.uint16)
     scale = (lo | (hi << 8)).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
     # The pinned V100 Triton hashes every branch of a JIT dependency. Select
     # only from the Q4 table here, without the newer DSL's eight-bit gather.
-    centroid = tl.full((C_DIM,), ROTOR_CENTROIDS[15], tl.float32)
+    centroid = tl.full((ROTOR_DIM,), ROTOR_CENTROIDS.value[15], tl.float32)
     for index in tl.static_range(15):
-        centroid = tl.where(code == index, ROTOR_CENTROIDS[index], centroid)
+        centroid = tl.where(code == index, ROTOR_CENTROIDS.value[index], centroid)
     value = (centroid * scale).to(tl.float16)
-    return tl.where(valid, value, tl.full((C_DIM,), 0, tl.float16))
+    return tl.where(valid, value, tl.full((ROTOR_DIM,), 0, tl.float16))
 
 
 @jit
