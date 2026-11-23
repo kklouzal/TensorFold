@@ -75,7 +75,7 @@ def test_packed_attention_bit_exact_vs_paged_fp16():
 @pytest.mark.parametrize("tokens,ratio", [(9, 2), (137, 1), (137, 2)])
 def test_legacy_cold_working_pages_match_normal_attention(tokens, ratio):
     from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
-    from tensorfold.families.deepseek_v4.cuda.target import Target
+    from tensorfold.families.deepseek_v4.cuda.target import Step, Target
 
     source = 7
     dev = torch.device("cuda")
@@ -85,7 +85,6 @@ def test_legacy_cold_working_pages_match_normal_attention(tokens, ratio):
     request = torch.zeros(tokens, device=dev, dtype=torch.int32)
     boundaries = torch.tensor([0, tokens], device=dev, dtype=torch.int32)
     slot = torch.tensor([3], device=dev, dtype=torch.int32)
-    step = SimpleNamespace(valid=valid, token_req=request, qsl=boundaries, req_slot=slot)
     count = -(-tokens // 64)
     logical_topk = torch.arange(512, device=dev, dtype=torch.int32)[None, :]
     topk = torch.where(logical_topk < (positions[:, None] + 1) // ratio, logical_topk, -1)
@@ -98,6 +97,9 @@ def test_legacy_cold_working_pages_match_normal_attention(tokens, ratio):
         layout = pk.PackedLayout(sources, 64)
         cache = torch.full((count, layout.page_bytes), 0xA5, device=dev, dtype=torch.uint8)
         pk.insert_rows(cache, compact, positions, valid, request, table, layout=layout, layer=source, compressed=True)
+        step = Step(ids=request.long(), positions=positions, valid=valid, token_req=request,
+                    qsl=boundaries, qsl_cpu=[0, tokens], num_reqs=1, req_slot=slot, block_table=table,
+                    prefill=[(0, 0, tokens, tokens - 1)], decode_index=None)
         return Target._attend(None, query, step, ring, window, sink, cache=cache, block_table=table,
                               layout=layout, layer=source, topk=topk)
 
