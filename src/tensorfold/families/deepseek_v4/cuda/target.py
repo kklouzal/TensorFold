@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import torch
 
 from .collectives import Collectives
-from .weights import EP, Geometry, Weights
+from .weights import EP, WORLD, Geometry, Weights
 
 DECODE_MAX = 8                 # patch 85: requests with more tokens take the single-request prefill indexer
 BLOCK = 64                     # KV page: tokens per page (the friend's production --block-size 64)
@@ -35,6 +35,7 @@ FUSED_MIN_WINDOW = 2
 # Fewest step tokens for sequence-parallel HC (Shard): prompt chunks from here keep the FP32 HC residual, its
 # transitions, the Engram gate and routing on 1/8 of the rows per rank; decode rows and graphs never take it.
 SP_MIN = 1024
+DRAFT_TAP_LAYERS = (37, 38, 39)  # DeepSeek-V4.1-1017 dspark_target_layer_ids
 
 
 @dataclass(frozen=True)
@@ -524,6 +525,56 @@ class Target:
                 events.append(torch.cuda.Event(enable_timing=True))
                 events[-1].record()
         st.update(hidden=hidden, pre=pre, mix=state, half=half, next=max(st["next"], stop))
+
+    def layers_with_draft_taps(self, st: dict, stop: int, tap_rows: torch.Tensor, out: torch.Tensor,
+                               marks: list | None = None) -> None:
+        """Advance an opt-in forward and copy each crossed draft tap into caller-owned FP16 out.
+
+        tap_rows names full-step rows in caller order and must agree across the tensor-parallel
+        ranks. The output has shape [len(tap_rows), 3 * hidden],
+        with consecutive columns for layers 37, 38, and 39. This call writes the slices whose attention
+        units lie in [st["next"], stop). To fill every slice, use this method for every segment which
+        crosses a tap and keep the same rows and output through the last one. Buffers must stay valid,
+        nonaliasing and stream-ordered until consumed. The target keeps no tap state.
+        """
+        layers = self.w.layers
+        if len(layers) <= DRAFT_TAP_LAYERS[-1] or any(
+            layers[i].index != i or layers[i].engram_wkv is not None for i in DRAFT_TAP_LAYERS
+        ):
+            raise ValueError("DSpark taps require the full trained DeepSeek-V4.1 target layers")
+        if not st["next"] <= stop <= self.units:
+            raise ValueError("DSpark tap segment is outside the remaining forward")
+        hidden_size = self.g.hidden
+        rows = tap_rows.numel()
+        if (tap_rows.ndim != 1 or tap_rows.dtype != torch.int64 or not rows or tap_rows.device != self.device
+                or out.shape != (rows, len(DRAFT_TAP_LAYERS) * hidden_size) or out.dtype != torch.float16
+                or out.device != self.device or not out.is_contiguous()):
+            raise ValueError("DSpark taps require int64 row indices and a contiguous FP16 destination")
+        tokens = st["step"].ids.numel()
+        torch._assert_async(((tap_rows >= 0) & (tap_rows < tokens)).all(),
+                            "DSpark tap row is outside the forward")
+        shard = st["shard"]
+        for column, layer in enumerate(DRAFT_TAP_LAYERS):
+            cut = 2 * layer
+            if st["next"] <= cut < stop:
+                if st["next"] < cut:
+                    self.layers(st, cut, marks)
+                # The preceding layer expanded the HC residual in place. Neither this layer's collapse nor
+                # the terminal HC collapse/head projection is part of the trained auxiliary output.
+                hidden = st["hidden"]
+                if shard is None:
+                    selected = hidden.index_select(0, tap_rows)
+                else:
+                    # Gather only requested FP16 rows, then take the original owner without a sum/round.
+                    local_rows = (tap_rows - shard.first).clamp(0, shard.rows - 1)
+                    selected = hidden.index_select(0, local_rows)
+                tap = selected.mean(1).mul_(2.0 ** -6).half()
+                if shard is not None:
+                    gathered = torch.empty((WORLD, rows, hidden_size), device=self.device, dtype=torch.float16)
+                    self.c.world.all_gather(tap, gathered)
+                    tap = gathered[tap_rows // shard.size, torch.arange(rows, device=self.device)]
+                out[:, column * hidden_size:(column + 1) * hidden_size].copy_(tap)
+        self.layers(st, stop, marks)
 
     def end(self, st: dict, logits_rows: torch.Tensor | None):
         if st["next"] != self.units:
