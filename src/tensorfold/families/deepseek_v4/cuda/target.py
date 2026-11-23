@@ -214,7 +214,7 @@ class Target:
     def attention(self, ly, x, step: Step, table, shared, shard=None):
         from .kernels import quant_rope as qr_ops
         from .kernels import mu_packed as pk
-        from .kernels.rope_qdq import rope_qdq
+        from .kernels.rope_qdq import decode_window_rope, rope_qdq
         tokens = x.shape[0]
         positions = step.positions
         q_low, kv_low = ly.qa_kv(x)
@@ -235,8 +235,11 @@ class Target:
                 query = rotor.rotate(query, valid, ly.index)
                 if step.single_token_slots and step.pack_window_ring:
                     h64_ring = (ring, positions, step.req_slot)
-            normalized_window = self._norm(kv_low, ly.kv_norm)
-            physical_window = qr_ops.apply_rope(normalized_window, positions, table)
+            if cold is None and step.single_token_slots and 1 <= tokens <= 64:
+                physical_window = decode_window_rope(kv_low, positions, table, ly.kv_norm, self.g.eps)
+            else:
+                normalized_window = self._norm(kv_low, ly.kv_norm)
+                physical_window = qr_ops.apply_rope(normalized_window, positions, table)
             window = rotor.pack(physical_window, valid, ly.index, decode_ring=h64_ring)
         elif decode_ring is not None and 1 <= tokens <= 64:
             window = rope_qdq(kv_low, positions, table, decode_ring=decode_ring,

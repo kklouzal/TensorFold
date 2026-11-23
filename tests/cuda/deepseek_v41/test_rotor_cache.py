@@ -27,6 +27,93 @@ def _split_rotate(value, valid, *, inverse=False):
     return native.rotate(source, torch.empty_like(source), codec=11, inverse=inverse, trap_on_error=True)
 
 
+def _split_short_window_rope(value, positions, table, weight, eps):
+    from tensorfold.families.deepseek_v4.cuda.kernels.norm import _short_rms
+    from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import apply_rope
+
+    normalized = torch.empty_like(value)
+    _short_rms[(value.shape[0],)](value, weight, normalized, H=512, EPS=eps, BLOCK=512,
+                                num_warps=4, enable_fp_fusion=False)
+    return apply_rope(normalized, positions, table)
+
+
+@pytest.mark.parametrize("rows", (1, 8, 24, 32, 64))
+def test_h64_short_window_rope_matches_separate_fp16_boundaries(rows):
+    from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
+    from tensorfold.families.deepseek_v4.cuda.kernels.rope_qdq import decode_window_rope
+
+    device = "cuda"
+    generator = torch.Generator(device=device).manual_seed(4190 + rows)
+    base = torch.arange(rows, dtype=torch.int64, device=device)
+    magnitudes = torch.logspace(-5, 3, 512, device=device)
+    values = (torch.randn((rows, 512), generator=generator, device=device) * magnitudes).half()
+    weight = torch.rand(512, generator=generator, device=device) + 0.5
+    for compressed in (False, True):
+        table = rope_table(16384, compressed=compressed, device=device)
+        for start in (0, 127, 16_383, 65_535 - rows + 1):
+            positions = base + start
+            split = _split_short_window_rope(values, positions, table, weight, 1e-20)
+            fused = decode_window_rope(values, positions, table, weight, 1e-20)
+            assert torch.equal(fused.view(torch.int16), split.view(torch.int16)), (rows, start, compressed)
+        values[0, 0:4] = torch.tensor([65504, -65504, 2.0**-24, -0.0], dtype=torch.float16, device=device)
+        split = _split_short_window_rope(values, positions, table, weight, 1e-20)
+        fused = decode_window_rope(values, positions, table, weight, 1e-20)
+        assert torch.equal(fused.view(torch.int16), split.view(torch.int16)), (rows, compressed, "extreme")
+
+
+def test_h64_short_window_rope_writer_replay_keeps_wrap_tail_and_padding_exact():
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table
+    from tensorfold.families.deepseek_v4.cuda.kernels.rope_qdq import decode_window_rope
+
+    device = "cuda"
+    count, scratch = 8, 8
+    generator = torch.Generator(device=device).manual_seed(4191)
+    table = rope_table(16384, compressed=True, device=device)
+    weight = torch.rand(512, generator=generator, device=device) + 0.5
+    values = torch.zeros((count, 512), dtype=torch.float16, device=device)
+    positions = torch.zeros(count, dtype=torch.int64, device=device)
+    slots = torch.full((count,), scratch, dtype=torch.int32, device=device)
+    live_flags = torch.ones(count, dtype=torch.bool, device=device)
+    requests = torch.arange(count, dtype=torch.int32, device=device)
+    qsl = torch.arange(count + 1, dtype=torch.int32, device=device)
+    step = SimpleNamespace(single_token_slots=True, req_slot=slots, valid=live_flags)
+    writer = RotorCache(device)
+    ring = torch.full((scratch + 1, pk.RING, 272), 0xC4, dtype=torch.uint8, device=device)
+    expected_ring = ring.clone()
+
+    def forward():
+        live = live_rows(step, scratch)
+        physical = decode_window_rope(values, positions, table, weight, 1e-20)
+        packed = writer.pack(physical, live, 7)
+        pk.insert_ring(ring, packed, positions, live, requests, qsl, slots)
+        return physical, packed
+
+    forward()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        physical, packed = forward()
+    for addresses, places in (
+        ([0, 1, 2, scratch, 3, 4, scratch, 5], [127, 128, 16_383, 0, 16_384, 32_768, 0, 65_535]),
+        ([scratch, 0, 1, 2, scratch, 3, 4, 5], [0, 128, 256, 16_384, 0, 16_385, 32_769, 65_535]),
+    ):
+        slots.copy_(torch.tensor(addresses, dtype=slots.dtype, device=device))
+        positions.copy_(torch.tensor(places, dtype=positions.dtype, device=device))
+        values.normal_(generator=generator)
+        live = slots < scratch
+        values[~live] = float("nan")
+        graph.replay()
+        expected = _split_short_window_rope(values, positions, table, weight, 1e-20)
+        expected_packed = _split_pack(expected, live)
+        assert torch.equal(physical[live].view(torch.int16), expected[live].view(torch.int16))
+        assert torch.equal(packed, expected_packed)
+        for row, (slot, pos) in enumerate(zip(addresses, places, strict=True)):
+            if slot < scratch:
+                expected_ring[slot, pos % pk.RING] = expected_packed[row]
+        assert torch.equal(ring, expected_ring)
+        assert writer.status.tolist() == [0, -2]
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_rotorquant_row_adapter_keeps_masked_codec_and_basis_replay(dtype):
     cache = RotorCache("cuda")
