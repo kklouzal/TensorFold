@@ -193,8 +193,8 @@ class DSparkHead:
         return self.comm.sum(partial, torch.float16)
 
     def _attention(self, s, x, positions, slots, anchor_pos):
-        # The TP8 trace locates the largest remaining same-input attention drift at stage 1.
-        if s.index == 1 and self.w.layout.world == 8:
+        # The TP8 trace finds same-input attention drift in both later stages.
+        if s.index in (1, 2) and self.w.layout.world == 8:
             return self._requestwise_attention(s, x.split(dw.BLOCK), positions, slots, anchor_pos)
 
         from .kernels import quant_rope as qr
