@@ -277,7 +277,9 @@ class Target:
         else:
             # Retain the earlier FP8 window QDQ and E2M1 compact attention operand boundaries.
             window_operand = rope_qdq(normalized_window, positions, table)
+            torch._assert_async(torch.isfinite(query).all(), f"DeepSeek layer {ly.index}: nonfinite cold attention query")
             output = self._attend(query, step, cold["ring"], window_operand, ly.sink, **extra)
+            torch._assert_async(torch.isfinite(output).all(), f"DeepSeek layer {ly.index}: nonfinite cold attention output")
         if decode_ring is None:
             pk.insert_ring(ring, window, positions, valid, step.token_req, step.qsl, step.req_slot)
         if rotor is not None and cold is None:
@@ -458,10 +460,6 @@ class Target:
                     # Starts at position zero, so historical ring operands are always masked.
                     "ring": torch.empty((1, RING, C_DIM), device=hidden.device, dtype=torch.float16),
                 }
-                if self.w.rank == 0:
-                    print(f"[tensorfold] RotorQuant legacy cold prefill: {tokens} rows", flush=True)
-            elif self.w.rank == 0 and tokens < 1024 and step.prefill:
-                print(f"[tensorfold] RotorQuant packed prefill: {tokens} rows", flush=True)
         return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": shared,
                 "mix": None, "half": None, "next": 0, "result": None, "valid": valid,
                 "image": step.image, "shard": shard}
