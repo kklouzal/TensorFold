@@ -76,10 +76,11 @@ class DSparkHead:
     """One rank's DSpark head: the per-slot draft window ring and the batched proposal forward.
 
     ``comm``: the lane's ``Collectives`` (FP32 sums rounded once, rank-order gathers) for TP8, ``LocalComm`` for
-    world 1. ``vocab_first``: this rank's first vocabulary row (the target head's shard)."""
+    world 1. ``vocab_first``: this rank's first vocabulary row (the target head's shard).
+    ``target_embed`` optionally prepares one NOISE row from the installed target before graph capture."""
 
     def __init__(self, w: dw.DSparkWeights, *, slots: int, comm=None, device="cuda", q8_experts=False,
-                 vocab_first: int = 0):
+                 vocab_first: int = 0, target_embed=None):
         from .kernels import quant_rope
         self.w, self.comm = w, comm or LocalComm()
         if w.layout.world > 1 and comm is None:
@@ -89,6 +90,10 @@ class DSparkHead:
         self.rope = quant_rope.rope_table(device=self.device)
         self.stage0_frequencies = stage0.frequencies(self.device)
         self.ring = torch.zeros(slots, dw.STAGES, RING, 512, dtype=torch.float16, device=self.device)
+        self._proposal_embed = None
+        if target_embed is not None:
+            from .dspark_embedding import ProposalEmbedding
+            self._proposal_embed = ProposalEmbedding(target_embed, self.ring.device)
         self.vocab_first = vocab_first
         self.local_vocab = w.markov_head.shape[0]
         self.first = w.first_expert
@@ -284,17 +289,29 @@ class DSparkHead:
         return expand_hc(self._moe(s, inputs), hidden, post, comb), next_pre
 
     # ------------------------------------------------------------------ proposal
-    def forward(self, anchors, anchor_pos, slots, embed):
-        """Draft hidden for B requests: anchors int64 [B], anchor positions int64 [B] (the anchor's own position),
-        slots int64 [B]; ``embed(ids [B*5]) -> FP16 [B*5, 5120]`` is the target embedding."""
-        from .kernels.mhc import collapse_hc
+    def _proposal_rows(self, anchors, embed):
+        if embed is None:
+            if self._proposal_embed is None:
+                raise ValueError("DSpark needs an installed target embedding or a standalone embedding callback")
+            return self._proposal_embed(anchors)
         b = anchors.shape[0]
         ids = torch.full((b, dw.BLOCK), dw.NOISE, dtype=torch.int64, device=self.device)
         ids[:, 0] = anchors
-        positions = (anchor_pos[:, None] + torch.arange(dw.BLOCK, device=self.device)).reshape(-1)
         x = embed(ids.reshape(-1))
         if x.dtype != torch.float16 or x.shape != (b * dw.BLOCK, dw.HIDDEN):
             raise ValueError("the target embedding callback returns FP16 [B*5, 5120]")
+        return x
+
+    def forward(self, anchors, anchor_pos, slots, embed):
+        """Draft hidden for B requests with anchors, anchor positions and slots as int64 [B].
+
+        Pass ``embed(ids [B*5]) -> FP16 [B*5, 5120]`` for standalone use or ``None`` for the installed target.
+        The installed path takes contiguous anchor IDs from the proposal input buffer.
+        """
+        from .kernels.mhc import collapse_hc
+        b = anchors.shape[0]
+        positions = (anchor_pos[:, None] + torch.arange(dw.BLOCK, device=self.device)).reshape(-1)
+        x = self._proposal_rows(anchors, embed)
         hidden = x.float()[:, None].expand(-1, 4, -1).contiguous()
         pre = torch.zeros(b * dw.BLOCK, 4, dtype=torch.float32, device=self.device)
         pre[:, 0] = 1
