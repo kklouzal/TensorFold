@@ -3,6 +3,7 @@
 import json
 import math
 import struct
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -118,3 +119,71 @@ def test_greedy_accept():
     drafts = torch.tensor([[1, 2, 3, 4, 5], [1, 9, 3, 4, 5], [7, 2, 3, 4, 5]])
     target = torch.tensor([[1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6], [1, 2, 3, 4, 5, 6]])
     assert greedy_accept(drafts, target).tolist() == [5, 1, 0]
+
+
+def test_greedy_draft_depth_keeps_full_projection_and_markov_prefix():
+    from tensorfold.families.deepseek_v4.cuda.dspark_head import DSparkHead
+
+    b, vocab = 3, 13
+    anchors = torch.arange(2 * b)[::2]
+    positions = torch.arange(2 * b)[1::2]
+    slots = torch.arange(2 * b)[::2]
+    hidden = torch.full((b * dw.BLOCK, dw.HIDDEN), 0.12345, dtype=torch.float32)
+    normalized = hidden * 1.25
+    base = torch.arange(b * dw.BLOCK * (vocab + 1), dtype=torch.float32).view(-1, vocab + 1)[:, 1:]
+    norm_weight, embed = object(), object()
+    state = DSparkHead.__new__(DSparkHead)
+    state.device = torch.device("cpu")
+    state.w = SimpleNamespace(norm=norm_weight)
+    calls, steps = [], []
+
+    def forward(ids, pos, slot_ids, embedding):
+        assert (ids is anchors and pos is positions and slot_ids is slots and embedding is embed)
+        assert all(not t.is_contiguous() for t in (ids, pos, slot_ids))
+        calls.append("forward")
+        return hidden
+
+    def norm(h, weight):
+        assert h is hidden and weight is norm_weight
+        calls.append("norm")
+        return normalized
+
+    def head(h):
+        assert h.dtype == torch.float16 and h.shape == (b * dw.BLOCK, dw.HIDDEN)
+        assert torch.equal(h, normalized.half())
+        calls.append("head")
+        return base
+
+    def step(rows, previous):
+        assert rows.shape == (b, vocab) and rows.stride() == ((vocab + 1) * dw.BLOCK, 1)
+        assert not rows.is_contiguous()
+        calls.append("markov")
+        steps.append((rows.clone(), previous.clone()))
+        return (rows[:, 0].to(torch.int64) + previous * 3) % 97
+
+    state.forward = forward
+    state._norm = norm
+    state._sharded = lambda: SimpleNamespace(step=step)
+    args = anchors, positions, slots, embed, head
+    full = state.draft(*args)
+    assert full.shape == (b, dw.BLOCK) and full.dtype == torch.int64
+    assert calls == ["forward", "norm", "head"] + ["markov"] * dw.BLOCK
+    full_steps = steps.copy()
+    for i, (rows, previous) in enumerate(full_steps):
+        assert torch.equal(rows, base.view(b, dw.BLOCK, vocab)[:, i])
+        assert torch.equal(previous, anchors if i == 0 else full[:, i - 1])
+
+    for depth in range(1, dw.BLOCK + 1):
+        calls.clear()
+        steps.clear()
+        drafted = state.draft(*args, depth=depth)
+        assert drafted.dtype == full.dtype and torch.equal(drafted, full[:, :depth])
+        assert calls == ["forward", "norm", "head"] + ["markov"] * depth
+        for (rows, previous), (expected_rows, expected_previous) in zip(steps, full_steps[:depth], strict=True):
+            assert torch.equal(rows, expected_rows) and torch.equal(previous, expected_previous)
+
+    calls.clear()
+    for depth in (0, -1, dw.BLOCK + 1, True, 3.0, None):
+        with pytest.raises(ValueError, match="DSpark draft depth must be an integer"):
+            state.draft(*args, depth=depth)
+    assert not calls
