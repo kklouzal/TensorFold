@@ -88,6 +88,7 @@ class Step:
     image_rows: torch.Tensor | None = None     # [V] int64, ascending
     features: torch.Tensor | None = None       # [V, 5120] FP16
     single_token_slots: bool = False           # decode graph: one row per live slot, scratch rows never commit
+    pack_window_ring: bool = False             # ordinary graph opts in; transactional forwards commit after attention
 
 
 def window_ring_bytes(rotorquant: bool) -> int:
@@ -227,13 +228,16 @@ class Target:
         # A one-row request reads the current value from window; the prior
         # RING-1 positions never alias the ring row being written here.
         decode_ring = (ring, step.req_slot, step.valid) if rotor is None and step.single_token_slots else None
+        h64_ring = None
         if rotor is not None:
             valid = shared["rotor_valid"]
             if cold is None:
                 query = rotor.rotate(query, valid, ly.index)
+                if step.single_token_slots and step.pack_window_ring:
+                    h64_ring = (ring, positions, step.req_slot)
             normalized_window = self._norm(kv_low, ly.kv_norm)
             physical_window = qr_ops.apply_rope(normalized_window, positions, table)
-            window = rotor.pack(physical_window, valid, ly.index)
+            window = rotor.pack(physical_window, valid, ly.index, decode_ring=h64_ring)
         elif decode_ring is not None and 1 <= tokens <= 64:
             window = rope_qdq(kv_low, positions, table, decode_ring=decode_ring,
                               decode_norm=(ly.kv_norm, self.g.eps))
@@ -297,7 +301,7 @@ class Target:
             torch._assert_async(torch.isfinite(query).all(), f"DeepSeek layer {ly.index}: nonfinite cold attention query")
             output = self._attend(query, step, cold["ring"], window_operand, ly.sink, **extra)
             torch._assert_async(torch.isfinite(output).all(), f"DeepSeek layer {ly.index}: nonfinite cold attention output")
-        if decode_ring is None:
+        if decode_ring is None and h64_ring is None:
             pk.insert_ring(ring, window, positions, valid, step.token_req, step.qsl, step.req_slot)
         if rotor is not None and cold is None:
             output = rotor.rotate(output, valid, ly.index, inverse=True)

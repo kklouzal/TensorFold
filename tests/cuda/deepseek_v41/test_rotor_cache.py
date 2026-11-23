@@ -219,6 +219,113 @@ def test_h64_packed_writer_fault_on_replay_with_changed_validity():
     assert "H64 packed writer rejected a replayed live NaN" in child.stdout
 
 
+@pytest.mark.parametrize("count", [1, 5])
+def test_h64_decode_ring_write_matches_post_attention_across_wrap_and_scratch(count):
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    from tensorfold.families.deepseek_v4.cuda.target import Target
+
+    device = "cuda"
+    scratch = 3
+    generator = torch.Generator(device=device).manual_seed(214)
+    owner = RotorCache(device)
+    target = Target.__new__(Target)
+    target.rotor_cache = owner
+    values = torch.empty((count, 512), dtype=torch.float16, device=device)
+    query = torch.empty((count, 8, 512), dtype=torch.float16, device=device)
+    sink = torch.linspace(-0.75, 1.25, 8, dtype=torch.float32, device=device)
+    positions = torch.empty(count, dtype=torch.int64, device=device)
+    slots = torch.empty(count, dtype=torch.int32, device=device)
+    valid = torch.empty(count, dtype=torch.bool, device=device)
+    token_req = torch.arange(count, dtype=torch.int32, device=device)
+    qsl = torch.arange(count + 1, dtype=torch.int32, device=device)
+    step = SimpleNamespace(positions=positions, req_slot=slots, valid=torch.ones_like(valid), qsl=qsl,
+                           token_req=token_req, single_token_slots=True)
+    history = torch.randn((scratch + 1) * pk.RING, 512, dtype=torch.float16, device=device, generator=generator)
+    initial = _split_pack(history, torch.ones(len(history), dtype=torch.bool, device=device)).view(scratch + 1, pk.RING, 272)
+    early, late = initial.clone(), initial.clone()
+    live_slots = ([0], [0], [0]) if count == 1 else ([0, 2, 1, scratch, scratch], [2, 1, 0, scratch, scratch])
+    live_positions = ([0], [127], [128]) if count == 1 else ([127, 128, -1, 0, 0], [128, 129, 255, 0, 0])
+
+    def prepare(epoch):
+        slots.copy_(torch.tensor(live_slots[epoch], device=device))
+        positions.copy_(torch.tensor(live_positions[epoch], device=device))
+        valid.copy_(live_rows(step, scratch))
+        values.normal_(generator=generator)
+        values[~valid] = float("nan")
+        query.normal_(generator=generator)
+
+    def fused():
+        packed = owner.pack(values, valid, 2, decode_ring=(early, positions, slots))
+        return packed, target._attend(query, step, early, packed, sink)
+
+    prepare(0)
+    fused()
+    early.copy_(initial)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        packed, actual = fused()
+
+    for epoch in range(len(live_positions)):
+        if epoch:
+            prepare(epoch)
+        before = late.clone()
+        want = _split_pack(values, valid)
+        expected = target._attend(query, step, late, want, sink)
+        pk.insert_ring(late, want, positions, valid, token_req, qsl, slots)
+        graph.replay()
+        assert torch.equal(packed, want)
+        assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+        assert torch.equal(early, late)
+        for row, (slot, position) in enumerate(zip(slots.tolist(), positions.tolist(), strict=True)):
+            if slot < scratch and position >= 0:
+                assert torch.equal(early[slot, position % pk.RING], packed[row])
+            else:
+                assert torch.equal(early[slot], before[slot])
+        assert owner.status.tolist() == [0, -2]
+
+
+def _decode_ring_fault():
+    owner = RotorCache("cuda")
+    values = torch.ones((2, 512), dtype=torch.float16, device="cuda")
+    ring = torch.zeros((3, 128, 272), dtype=torch.uint8, device="cuda")
+    slots = torch.tensor([0, 1], dtype=torch.int32, device="cuda")
+    positions = torch.tensor([127, 128], dtype=torch.int64, device="cuda")
+    valid = torch.ones(2, dtype=torch.bool, device="cuda")
+    observed = torch.empty(ring.shape, dtype=torch.uint8, pin_memory=True).fill_(0xA5)
+    sentinel = observed.clone()
+    owner.pack(values, valid, 6, decode_ring=(ring, positions, slots))
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        out = owner.pack(values, valid, 6, decode_ring=(ring, positions, slots))
+    graph.replay()
+    observed.copy_(ring, non_blocking=True)
+    torch.cuda.synchronize()
+    assert torch.equal(observed[0, 127], out[0].cpu()) and torch.equal(observed[1, 0], out[1].cpu())
+    observed.copy_(sentinel)
+    positions.add_(1)
+    values[1, 257] = float("nan")
+    try:
+        graph.replay()
+        observed.copy_(ring, non_blocking=True)
+        torch.cuda.synchronize()
+    except RuntimeError as error:
+        assert any(reason in str(error).lower() for reason in
+                   ("illegal instruction", "launch failure", "device-side assert")), error
+        assert torch.equal(observed, sentinel), "failed ring reached the ordered host observer"
+        print("H64 decode ring fault blocked the ordered host observer", flush=True)
+    else:
+        raise AssertionError("H64 decode ring fault reached successful publication")
+
+
+def test_h64_decode_ring_fault_blocks_ordered_host_observation():
+    invoke = "import runpy, sys; runpy.run_path(sys.argv[1])['_decode_ring_fault']()"
+    child = subprocess.run((sys.executable, "-B", "-c", invoke, __file__), capture_output=True, text=True, timeout=90)
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert "H64 decode ring fault blocked the ordered host observer" in child.stdout
+
+
 def _cold_fault(boundary):
     from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import RING
     from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import rope_table

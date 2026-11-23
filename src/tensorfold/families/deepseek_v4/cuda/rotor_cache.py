@@ -28,8 +28,11 @@ class RotorCache:
         self.centroids = torch.tensor(CENTROIDS_4, dtype=torch.float32, device=device)
         self.status = torch.tensor([0, -2], dtype=torch.int32, device=device)
 
-    def pack(self, values, valid, layer):
+    def pack(self, values, valid, layer, *, decode_ring=None):
         packed = torch.empty((values.shape[0], ROW_BYTES), dtype=torch.uint8, device=values.device)
+        if decode_ring is not None:
+            ring, positions, slots = decode_ring
+            return native.pack_h64_ring(values, valid, packed, ring, positions, slots, status=self.status, layer=layer)
         return native.pack_h64(values, valid, packed, status=self.status, layer=layer)
 
     def rotate(self, values, valid, layer, *, inverse=False):

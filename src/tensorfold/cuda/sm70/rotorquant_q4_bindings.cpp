@@ -11,7 +11,7 @@ using T = at::Tensor;
 using O = std::optional<T>;
 
 void sm70_rq4_encode_cuda(const T&, T&, T&, const O&, const O&, const O&, int, int, int, int, bool);
-void sm70_rq4_pack_h64_cuda(const T&, const T&, T&, T&, int);
+void sm70_rq4_pack_h64_cuda(const T&, const T&, T&, T&, int, T*, const T*, const T*);
 void sm70_rq4_rotate_cuda(const T&, T&, const O&, const O&, int, int, bool, int, int, bool);
 void sm70_rq4_rotate_h64_cuda(const T&, const T&, T&, T&, bool, int);
 void sm70_rq4_decode_cuda(const T&, const T&, T&, const O&, const O&, int, int, bool, int, int);
@@ -134,7 +134,8 @@ void encode(const T& x, T codes, T scales, O position, O status, O valid_rows,
     sm70_rq4_encode_cuda(x, codes, scales, position, status, valid_rows, codec, int(rows), error, layer, trap_on_error);
 }
 
-void pack_h64(const T& x, const T& valid, T out, T status, int layer) {
+namespace {
+void check_h64_pack(const T& x, const T& valid, const T& out, const T& status, int layer) {
     constexpr int dim = 512, groups = dim / 128, row_bytes = dim / 2 + groups * sizeof(uint32_t);
     floating(x, x, "H64 source", false);
     check(out, x, at::kByte, "H64 packed rows");
@@ -144,8 +145,32 @@ void pack_h64(const T& x, const T& valid, T out, T status, int layer) {
     TORCH_CHECK(reinterpret_cast<uintptr_t>(out.data_ptr()) % alignof(uint32_t) == 0,
                 "H64 packed rows need 4-byte alignment for group scales");
     h64_masked_controls(x, valid, out, status, 2, layer);
+}
+}  // namespace
+
+void pack_h64(const T& x, const T& valid, T out, T status, int layer) {
+    check_h64_pack(x, valid, out, status, layer);
     c10::cuda::CUDAGuard guard(x.device());
-    sm70_rq4_pack_h64_cuda(x, valid, out, status, layer);
+    sm70_rq4_pack_h64_cuda(x, valid, out, status, layer, nullptr, nullptr, nullptr);
+}
+
+void pack_h64_ring(const T& x, const T& valid, T out, T ring, const T& positions, const T& slots, T status, int layer) {
+    check_h64_pack(x, valid, out, status, layer);
+    check(ring, x, at::kByte, "H64 decode ring");
+    check(positions, x, at::kLong, "H64 decode positions");
+    check(slots, x, at::kInt, "H64 decode slots");
+    TORCH_CHECK(ring.dim() == 3 && ring.size(0) >= 2 && ring.size(0) <= std::numeric_limits<int>::max()
+                && ring.size(1) == 128 && ring.size(2) == out.size(1)
+                && reinterpret_cast<uintptr_t>(ring.data_ptr()) % alignof(uint32_t) == 0,
+                "H64 decode ring requires aligned [slots+1,128,272] storage");
+    TORCH_CHECK(positions.dim() == 1 && positions.size(0) == x.size(0)
+                && slots.dim() == 1 && slots.size(0) >= x.size(0), "H64 decode ring needs one position and slot per row");
+    for (const T* input : {&x, &valid, &positions, &slots}) disjoint(ring, *input);
+    disjoint(ring, out); disjoint(ring, status);
+    disjoint(out, positions); disjoint(out, slots);
+    disjoint(status, positions); disjoint(status, slots);
+    c10::cuda::CUDAGuard guard(x.device());
+    sm70_rq4_pack_h64_cuda(x, valid, out, status, layer, &ring, &positions, &slots);
 }
 
 void rotate(const T& x, T out, O status, O valid_rows,
@@ -217,6 +242,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("encode", &encode, arg("x"), arg("codes"), arg("scales"), arg("position"), arg("status"), arg("valid_rows"),
           arg("codec"), arg("rows"), arg("error"), arg("layer"), arg("trap_on_error") = false);
     m.def("pack_h64", &pack_h64, arg("x"), arg("valid"), arg("out"), arg("status"), arg("layer"));
+    m.def("pack_h64_ring", &pack_h64_ring, arg("x"), arg("valid"), arg("out"), arg("ring"), arg("positions"),
+          arg("slots"), arg("status"), arg("layer"));
     m.def("rotate", &rotate, arg("x"), arg("out"), arg("status"), arg("valid_rows"), arg("codec"), arg("rows"),
           arg("inverse"), arg("error"), arg("layer"), arg("trap_on_error") = false);
     m.def("rotate_h64", &rotate_h64, arg("x"), arg("valid"), arg("out"), arg("status"), arg("inverse"), arg("layer"));

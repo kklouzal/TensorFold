@@ -76,6 +76,18 @@ def pack_h64(x, valid, out, *, status, layer):
     return out
 
 
+def pack_h64_ring(x, valid, out, ring, positions, slots, *, status, layer):
+    """Pack one H64 window row per distinct live request slot and mirror it to the ring.
+
+    The prepared decode step owns slot uniqueness, the last slot is scratch,
+    and following attention must take its current row from ``out``. Ring
+    writes and all readers are ordered on the same serving stream. A fatal
+    group retires the cohort before any partially written ring can be reused.
+    """
+    extension().pack_h64_ring(x, valid, out, ring, positions, slots, status, layer)
+    return out
+
+
 def rotate(x, out, *, codec=4, inverse=False, status=None, error=1, layer=0,
            valid_rows=None, rows=None, trap_on_error=False):
     """Staged FP32 basis transform with the same optional fatal mode as encode."""

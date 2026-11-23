@@ -76,9 +76,10 @@ __global__ void encode_kernel(const Input* source, uint8_t* codes, float* scales
     else tf_rq4::store_encoded(encoded, col, shared, codes, scales, destination, 128, true);
 }
 
-template<class Input>
+template<class Input, bool WriteRing>
 __global__ void pack_h64_kernel(const Input* source, const bool* valid, uint8_t* out, int* status,
-                                int64_t source_row, int64_t source_col, int64_t valid_stride, int layer) {
+                                int64_t source_row, int64_t source_col, int64_t valid_stride, int layer,
+                                uint8_t* ring, const int64_t* positions, const int* slots, int scratch) {
     constexpr int dim = 512, group = 128, groups = dim / group;
     constexpr int code_bytes = dim / 2, row_bytes = code_bytes + groups * sizeof(uint32_t);
     __shared__ float shared[group];
@@ -86,7 +87,8 @@ __global__ void pack_h64_kernel(const Input* source, const bool* valid, uint8_t*
     const int64_t row = blockIdx.x / groups;
     // A masked lane has the exact wire representation of an all-positive-zero
     // input. Its projection storage may contain nonfinite or unwritten values.
-    const float value = valid[row * valid_stride]
+    const bool live = valid[row * valid_stride];
+    const float value = live
         ? read(source, row * source_row + (cluster * group + col) * source_col) : 0.0f;
     const auto encoded = tf_rq4::encode_component<11>(value, col, shared, 2);
     if (col == 0) report_error<true>(status, encoded.errors, layer);
@@ -94,8 +96,23 @@ __global__ void pack_h64_kernel(const Input* source, const bool* valid, uint8_t*
 
     uint8_t* destination = out + row * row_bytes;
     auto* group_scale = reinterpret_cast<float*>(destination + code_bytes + cluster * sizeof(uint32_t));
-    tf_rq4::store_encoded_halves(encoded, col, shared, destination + cluster * (group / 2), group_scale,
-                                 0, group, true);
+    uint8_t* group_codes = destination + cluster * (group / 2);
+    uint8_t* mirror_codes = nullptr;
+    uint32_t* mirror_scales = nullptr;
+    if constexpr (WriteRing) {
+        constexpr int ring_rows = 128;
+        if (live) {
+            const int slot = slots[row];
+            const int64_t position = positions[row];
+            if (slot >= 0 && slot < scratch && position >= 0) {
+                uint8_t* row_out = ring + (int64_t(slot) * ring_rows + position % ring_rows) * row_bytes;
+                mirror_codes = row_out + cluster * (group / 2);
+                mirror_scales = reinterpret_cast<uint32_t*>(row_out + code_bytes + cluster * sizeof(uint32_t));
+            }
+        }
+    }
+    tf_rq4::store_encoded_halves<WriteRing>(encoded, col, shared, group_codes, group_scale, 0, group, true,
+                                           mirror_codes, mirror_scales);
 }
 
 template<class Output, int CODEC, bool INVERSE, bool TRAP_ON_ERROR>
@@ -271,13 +288,21 @@ void sm70_rq4_encode_cuda(const T& x, T& codes, T& scales, const O& position, co
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-void sm70_rq4_pack_h64_cuda(const T& x, const T& valid, T& out, T& status, int layer) {
+void sm70_rq4_pack_h64_cuda(const T& x, const T& valid, T& out, T& status, int layer,
+                            T* ring, const T* positions, const T* slots) {
     if (!x.size(0)) return;
     const auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
     const int blocks = int(x.size(0) * 4);
     const auto launch = [&](auto input) {
-        pack_h64_kernel<<<blocks, 128, 0, stream>>>(input, valid.data_ptr<bool>(), out.data_ptr<uint8_t>(),
-            status.data_ptr<int>(), x.stride(0), x.stride(1), valid.stride(0), layer);
+        using Value = std::remove_const_t<std::remove_pointer_t<decltype(input)>>;
+        if (ring) {
+            pack_h64_kernel<Value, true><<<blocks, 128, 0, stream>>>(input, valid.data_ptr<bool>(), out.data_ptr<uint8_t>(),
+                status.data_ptr<int>(), x.stride(0), x.stride(1), valid.stride(0), layer,
+                ring->data_ptr<uint8_t>(), positions->data_ptr<int64_t>(), slots->data_ptr<int>(), int(ring->size(0) - 1));
+        } else {
+            pack_h64_kernel<Value, false><<<blocks, 128, 0, stream>>>(input, valid.data_ptr<bool>(), out.data_ptr<uint8_t>(),
+                status.data_ptr<int>(), x.stride(0), x.stride(1), valid.stride(0), layer, nullptr, nullptr, nullptr, 0);
+        }
     };
     if (x.scalar_type() == at::kHalf) launch(static_cast<const __half*>(x.data_ptr()));
     else launch(static_cast<const float*>(x.data_ptr()));

@@ -83,13 +83,16 @@ class Shape:
         req_slot = torch.full((count + 8,), self.scratch, dtype=torch.int32, device=dev)
         self.req_slot = req_slot
         self.rows = torch.arange(count, dtype=torch.long, device=dev)
+        # This graph also accepts a one-token prompt. It has the same
+        # single-row slot ownership and no transactional backup.
+        pack_window_ring = t.rotor_cache is not None
         self.step = Step(ids=self.staged[0], positions=self.staged[1],
                          valid=torch.ones(count, dtype=torch.bool, device=dev),
                          token_req=torch.arange(count, dtype=torch.int32, device=dev),
                          qsl=torch.arange(count + 1, dtype=torch.int32, device=dev), qsl_cpu=list(range(count + 1)),
                          num_reqs=count, req_slot=req_slot,
                          block_table=torch.full((count, engine.slot_pages.width), -1, dtype=torch.int32, device=dev),
-                         prefill=[], decode_index=None, single_token_slots=True)
+                         prefill=[], decode_index=None, single_token_slots=True, pack_window_ring=pack_window_ring)
         self.graph = None
         self.out = None
         self.local = None               # this rank's FP32 logits shard [count, vocab / 8] (graph-owned)
@@ -102,10 +105,13 @@ class Shape:
     def stage(self, entries, ids) -> None:
         """entries [(slot, position, 1)] in row order, ids their tokens; the rest of the bucket pads."""
         n = len(entries)
+        slots = [entry[0] for entry in entries]
+        if self.step.pack_window_ring and (len(set(slots)) != n or any(not 0 <= slot < self.scratch for slot in slots)):
+            raise ValueError("DeepSeek decode graph needs distinct live slots")
         h = self.host
         h[0, :n] = ids
         h[1, :n] = [entry[1] for entry in entries]
-        h[2, :n] = [entry[0] for entry in entries]
+        h[2, :n] = slots
         h[0, n:], h[1, n:], h[2, n:] = self.pad_id, 0, self.scratch
         self.staged.copy_(torch.from_numpy(h), non_blocking=True)
 
