@@ -188,3 +188,34 @@ def test_engram_stays_mapped_if_device_retirement_fails(monkeypatch):
     with pytest.raises(RuntimeError, match="device progress failed"):
         e.close()
     assert e.graphs is graph
+
+
+def test_target_reuses_h64_current_window_in_qualified_shapes(monkeypatch):
+    torch = pytest.importorskip("torch")
+
+    from tensorfold.cuda.sm70 import ds41_sparse_attention as fused
+    from tensorfold.families.deepseek_v4.cuda.target import Target
+
+    def selected(*args, decode_window, **kwargs):
+        return decode_window
+
+    monkeypatch.setattr(fused, "attend", selected)
+    h64 = torch.empty(0, dtype=torch.uint8)
+    fp16 = torch.empty(0, dtype=torch.float16)
+    pages = object()
+    for tokens, start, ring, cache, image, requests, expected in (
+        (1023, 0, h64, pages, None, 1, False),
+        (1024, 0, h64, pages, None, 1, True),
+        (1024, 193, h64, pages, None, 1, False),
+        (4096, 193, h64, pages, None, 1, True),
+        (8192, 193, h64, pages, None, 1, True),
+        (8193, 0, h64, pages, None, 1, False),
+        (8192, 0, h64, None, None, 1, False),
+        (8192, 0, fp16, pages, None, 1, False),
+        (8192, 0, h64, pages, object(), 1, False),
+        (8192, 0, h64, pages, None, 2, False),
+    ):
+        query = torch.empty(tokens, 1)
+        step = types.SimpleNamespace(prefill=[(0, 0, tokens, start + tokens - 1)], image=image,
+                               num_reqs=requests, positions=None, req_slot=None)
+        assert Target._attend(None, query, step, ring, ring, None, cache=cache) is expected
