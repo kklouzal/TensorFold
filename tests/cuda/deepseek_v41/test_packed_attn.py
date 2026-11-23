@@ -182,7 +182,7 @@ def test_rotorquant_window_and_compressed_gather_match_native_codec():
     assert torch.equal(unused, expected_unused)
     assert torch.equal(keys.view(torch.int16), expected.view(torch.int16))
 
-    with pytest.raises(ValueError, match="H64 window requires the device centroid table"):
+    with pytest.raises(ValueError, match="H64 compressed attention requires the device centroid table"):
         gather(None)
 
     stream = torch.cuda.Stream()
@@ -204,3 +204,19 @@ def test_rotorquant_window_and_compressed_gather_match_native_codec():
     graph.replay()
     assert torch.equal(unused, expected_unused)
     assert torch.equal(keys.view(torch.int16), expected.view(torch.int16))
+
+    window_keys = torch.empty((4, pk.WINDOW, 512), dtype=torch.float16, device=device)
+    window_unused = torch.empty(window_keys.shape[:-1], dtype=torch.bool, device=device)
+
+    def gather_window():
+        pk.gather_attention(window_keys, window_unused, 0, 4, positions, live, requests, qsl, slots,
+                            ring, packed[132:])
+
+    gather_window()
+    stream.wait_stream(torch.cuda.current_stream())
+    window_graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(window_graph, stream=stream):
+        gather_window()
+    window_graph.replay()
+    assert torch.equal(window_unused, expected_unused[:, :pk.WINDOW])
+    assert torch.equal(window_keys.view(torch.int16), expected[:, :pk.WINDOW].view(torch.int16))

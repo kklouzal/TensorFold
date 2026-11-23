@@ -476,7 +476,7 @@ def _pk_gather_attention(
         if ROTORQUANT:
             new = values + (s0 + at - start) * LATENT_ROW
             old = ring + (slot * RING_ROWS + at % RING_ROWS) * LATENT_ROW
-            value = unpack_rotor_row(tl.where(inside, new, old), valid, centroids)
+            value = unpack_rotor_row(tl.where(inside, new, old), valid, centroids, TOPK > 0)
         else:
             new = tl.load(values + (s0 + at - start) * 512 + col, valid & inside, 0)
             old = tl.load(
@@ -493,7 +493,7 @@ def _pk_gather_attention(
         valid &= page >= 0
         if ROTORQUANT:
             row = cache + page * PAGE + OFFSET + (index % ROWS) * LATENT_ROW
-            value = unpack_rotor_row(row, valid, centroids)
+            value = unpack_rotor_row(row, valid, centroids, True)
         else:
             # unpack_c_row loads unconditionally: keep the address in bounds.
             page = tl.where(valid, page, 0)
@@ -551,15 +551,17 @@ def gather_attention(
     """keys [n, 128 + k, 512] FP16 / unused [n, 128 + k] for tokens [first, last).
 
     topk, positions, valid_tokens, token_req and values are the whole batch's.
-    RotorQuant keys are decoded to FP16 in their rotated basis using the cache's centroid table."""
+    RotorQuant keys are decoded to FP16 in their rotated basis. A gather with selected compressed keys
+    uses the cache's centroid table."""
     compressed = cache is not None
     count = topk.shape[1] if compressed else 0
     n = last - first
     rotorquant = _window_row_width(ring, values, positions.numel()) == ROTOR_ROW
-    if rotorquant and (not isinstance(rotor_centroids, torch.Tensor) or rotor_centroids.shape != (16,)
-                       or rotor_centroids.dtype != torch.float32 or rotor_centroids.device != ring.device
-                       or not rotor_centroids.is_contiguous()):
-        raise ValueError(f"{LOG}: H64 window requires the device centroid table")
+    use_table = rotorquant and count > 0
+    if use_table and (not isinstance(rotor_centroids, torch.Tensor) or rotor_centroids.shape != (16,)
+                      or rotor_centroids.dtype != torch.float32 or rotor_centroids.device != ring.device
+                      or not rotor_centroids.is_contiguous()):
+        raise ValueError(f"{LOG}: H64 compressed attention requires the device centroid table")
     if keys.shape != (n, WINDOW + count, 512) or unused.shape != (n, WINDOW + count):
         raise ValueError(f"{LOG}: gather output shapes")
     if compressed:
@@ -583,7 +585,7 @@ def gather_attention(
             valid_tokens,
             token_req,
             topk if compressed else positions,
-            rotor_centroids,
+            rotor_centroids if use_table else None,
             keys,
             unused,
             first,

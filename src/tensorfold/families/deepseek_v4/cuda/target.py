@@ -341,7 +341,7 @@ class Target:
             return fused.attend(query.contiguous(), step.positions, step, step.req_slot, ring, window.contiguous(),
                                 sink, cache=cache, block_table=block_table, layout=layout, source=layer, topk=topk)
         from .kernels import mu_packed as pk
-        centroids = self.rotor_cache.centroids if ring.dtype == torch.uint8 else None
+        centroids = self.rotor_cache.centroids if cache is not None and ring.dtype == torch.uint8 else None
         return pk.attend(query, step.positions, step, step.req_slot, ring, window, sink, cache=cache,
                          block_table=block_table, layout=layout, source=layer, topk=topk, rotor_centroids=centroids)
 
