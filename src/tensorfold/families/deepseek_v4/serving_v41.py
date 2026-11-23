@@ -195,6 +195,7 @@ class V41ChatTemplate:
 
     options = (None, None)           # no --chat-template selection: the encoder is the only renderer
     calls = Calls
+    segment_opener = native.USER_SP_TOKEN
 
     @staticmethod
     def strict_tool_plan(tools, *, required, parallel, offered):

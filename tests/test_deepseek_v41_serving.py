@@ -104,6 +104,63 @@ def test_the_server_renders_v41_prompts_with_deepseeks_encoder(model_dir):
     assert prompt_text(app_for(model_dir), {"messages": chat}) == head + tail + "</think>"   # --no-thinking
 
 
+def test_native_segment_cache_preserves_tokens_and_request_origin(model_dir):
+    from copy import deepcopy
+    from importlib.metadata import version
+    from tokenizers import AddedToken, normalizers, processors
+    from tensorfold.server.prompt_literals import RenderedPrompt
+    from tensorfold.server.prompt_origin import OriginText, trusted
+    from tensorfold.token_metadata import load_tokenizer
+
+    tok = load_tokenizer(model_dir)
+    tok.normalizer = normalizers.Sequence([])
+    tok.post_processor = processors.ByteLevel(trim_offsets=False)
+    path = str(model_dir / "tokenizer.json")
+    tok.save(path)
+    app = app_for(model_dir, default_thinking=True)
+    if version("tokenizers") != "0.23.3":
+        assert app.segments is None
+        return
+
+    opener = native.USER_SP_TOKEN
+    assert app.segments is not None and app.segments.opener == opener
+    prompt = f" \t日本語é{opener}{opener}🙂\n"
+    protection = app.template.literals
+    expected = []
+    for value in (trusted(prompt), OriginText(prompt), trusted(prompt)):
+        text = RenderedPrompt(value, protection.literals)
+        whole = app.template.encode(app.tok, text)
+        assert app.template.encode(app.tok, text, segments=app.segments) == whole
+        expected.append(whole)
+    assert expected[0] == expected[2] != expected[1]
+
+    body = {"messages": [{"role": "system", "content": "Read the excerpt."},
+                         {"role": "user", "content": f"Literal text {opener} and a line break.\n"}],
+            "tools": strict_tools(), "max_tokens": 8}
+    prepared = app.prepare_for_count(body, True)
+    try:
+        text = app.template.render(body["messages"], tools=body["tools"], enable_thinking=True)
+        assert prepared.prompt == app.template.encode(app.tok, text)
+    finally:
+        prepared.close()
+
+    for crossing in (AddedToken("User", normalized=False), AddedToken(opener + "tail", normalized=True)):
+        alternate = deepcopy(tok)
+        alternate.add_tokens([crossing])
+        alternate.save(path)
+        assert app_for(model_dir).segments is None
+
+    alternate = deepcopy(tok)
+    alternate.add_special_tokens([AddedToken(opener, special=True, normalized=False)])
+    alternate.save(path)
+    raw = app_for(model_dir)
+    assert raw.segments is not None and raw.segments.opener == opener
+
+    tok.model.dropout = 0.25
+    tok.save(path)
+    assert app_for(model_dir).segments is None
+
+
 def test_native_cuda_tokenize_exposes_exact_count_and_deepseek_render_metadata(model_dir):
     from http.client import HTTPConnection
     from threading import Thread

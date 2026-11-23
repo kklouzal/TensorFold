@@ -29,7 +29,7 @@ from tensorfold.server.request_options import (
     PENALTY_FIELDS, drop_penalties, fixed_thinking, heard_effort, parse_numbers, thinking_fields, thinking_budget,
 )
 from tensorfold.server.request_limits import RequestLimit, optional_limit
-from tensorfold.server.segments import SegmentEncoder
+from tensorfold.server.segments import SegmentEncoder, UnsupportedSegmentOpener
 from tensorfold.server.stopping import matched_stop, stop_options
 from tensorfold.server import failure_capture
 from tensorfold.server.thinking_notes import ended_thinking, ended_thinking_note, unanswered
@@ -522,8 +522,14 @@ def _native_context(model_dir: Path) -> int:
 
 
 def _segment_encoder(tok, template) -> SegmentEncoder | None:
-    """A message-at-a-time encoder when the chat template opens every message with one token the tokenizer splits its
-    input on exactly (Qwen's ``<|im_start|>``), else None."""
+    """Use the template's proved split, or discover a raw opener shared by its messages."""
+
+    opener = getattr(template, "segment_opener", None)
+    if opener is not None:
+        try:
+            return SegmentEncoder(tok, opener, identity_normalized=True)
+        except UnsupportedSegmentOpener:
+            pass
 
     from tensorfold.cuda.markers import TemplateTokens
     from tensorfold.engine.prefill_plan import message_markers
