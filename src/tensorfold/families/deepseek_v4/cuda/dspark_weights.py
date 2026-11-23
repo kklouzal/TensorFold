@@ -8,8 +8,8 @@ their ``model.safetensors.index.json`` and hold the same 2,401 ``mtp.*`` tensors
   value is fp8 * 2^(s - 127) (s == 0 is 2^-127, as upstream's bitcast), rounded to FP16. 1Cat-vLLM's
   ``fp8_block32_linear`` (``vllm/models/deepseek_v41/fp8_linear.py`` @4d57473d) dequantizes each tile with exactly
   this product and ``.to(float16)`` before its FP16 MMA, so the FP16 bank is the same operand his GEMM sees.
-  Every tensor is audited (``Audit``): values that overflow to inf, flush to zero or round inexactly in FP16 are
-  counted with their worst cases. Overflow is refused (no such tensor is kept in FP16; see ``FP16_REFUSE``).
+  Each rank audits its owned dense values (all values in audit-only mode): FP16 overflow, flush to zero and inexact
+  rounding are counted with their worst cases. Nonfinite decoded values and FP16 overflow are refused.
 - Routed experts (128 per stage, top-3): MXFP4 -- int8 bytes holding two E2M1 codes (low nibble = even element)
   and one E8M0 scale per 32 inputs. Kept as the original bytes (``tensorfold.cuda.sm70.mxfp4_ds41``).
 - BF16 norms, the router gate and the confidence head: widened to FP32 (exact; upstream keeps them FP32).
@@ -51,8 +51,17 @@ MARKOV_RANK = 256
 BLOCK = 5
 NOISE = 128799
 TAPS = (37, 38, 39)
-DENSE = ("attn.wq_a", "attn.wq_b", "attn.wkv", "attn.wo_a", "attn.wo_b",
-         "ffn.shared_experts.w1", "ffn.shared_experts.w2", "ffn.shared_experts.w3")
+_DENSE_SHAPES = {
+    "attn.wq_a": (Q_LORA, HIDDEN),
+    "attn.wq_b": (HEADS * HEAD_DIM, Q_LORA),
+    "attn.wkv": (HEAD_DIM, HIDDEN),
+    "attn.wo_a": (O_GROUPS * O_LORA, HEADS * HEAD_DIM // O_GROUPS),
+    "attn.wo_b": (HIDDEN, O_GROUPS * O_LORA),
+    "ffn.shared_experts.w1": (INTER, HIDDEN),
+    "ffn.shared_experts.w2": (HIDDEN, INTER),
+    "ffn.shared_experts.w3": (INTER, HIDDEN),
+    "main_proj": (HIDDEN, len(TAPS) * HIDDEN),
+}
 FP16_MAX = 65504.0
 FP16_MIN_NORMAL = 2.0 ** -14
 
@@ -129,6 +138,29 @@ def fp8_block_decode(codes: np.ndarray, scales: np.ndarray, device="cpu") -> tor
     scale = torch.ldexp(torch.ones((), dtype=torch.float64, device=exponent.device), exponent.double() - 127).float()
     scale = scale.repeat_interleave(32, 0)[:n].repeat_interleave(32, 1)[:, :k]
     return values * scale                       # power-of-two scaling: exact in FP32 (2^-127 is FP32 subnormal)
+
+
+def _dense_fp8_arrays(ck: Checkpoint, name: str, shape: tuple[int, int], rows: slice | None, cols: slice | None):
+    weight, scale = name + ".weight", name + ".scale"
+    if ck.kind(weight) != "F8_E4M3" or ck.kind(scale) != "F8_E8M0":
+        raise ValueError(f"{name}: expected FP8 E4M3 weight with E8M0 block scales")
+    if ck.shape(weight) != shape:
+        raise ValueError(f"{name}: FP8 weight shape {ck.shape(weight)} differs from {shape}")
+    if ck.shape(scale) != tuple(-(-size // 32) for size in shape):
+        raise ValueError(f"{name}: FP8 block scales do not cover the weight in 32x32 blocks")
+
+    code_slices, scale_slices = [], []
+    for size, owned in zip(shape, (rows, cols)):
+        if owned is None:
+            code_slices.append(slice(None))
+            scale_slices.append(slice(None))
+            continue
+        start, stop = owned.start, owned.stop
+        if owned.step is not None or not 0 <= start < stop <= size or start % 32 or (stop % 32 and stop != size):
+            raise ValueError(f"{name}: invalid FP8 block ownership {owned} for extent {size}")
+        code_slices.append(owned)
+        scale_slices.append(slice(start // 32, -(-stop // 32)))
+    return ck.array(weight)[tuple(code_slices)], ck.array(scale)[tuple(scale_slices)]
 
 
 # ---------------------------------------------------------------------------------------------- audit
@@ -297,7 +329,7 @@ def check_config(directory: str | Path) -> dict:
 
 def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", config_dir: str | Path | None = None,
          audit_only: bool = False) -> DSparkWeights | Audit:
-    """Load (or with ``audit_only`` just audit, on the CPU) one rank's DSpark head."""
+    """Load one rank's DSpark head, or audit the full dense banks on CPU with ``audit_only``."""
     check_config(config_dir or directory)
     ck = Checkpoint(directory)
     audit = Audit()
@@ -307,7 +339,7 @@ def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", con
         if audit_only:
             return None
         t = t.contiguous().to(device)
-        # a rank's slice of a bank decoded whole on the GPU is a view: copy it out, so the whole bank is freed
+        # Do not retain unrelated rows when a parameter is a view into a larger allocation.
         return t.clone() if t.untyped_storage().nbytes() > t.numel() * t.element_size() else t
 
     def fp32(name):
@@ -324,18 +356,14 @@ def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", con
         return value
 
     def dense(name, rows=None, cols=None):
-        codes, scales = ck.array(name + ".weight"), ck.array(name + ".scale")
-        if ck.kind(name + ".weight") != "F8_E4M3" or ck.kind(name + ".scale") != "F8_E8M0":
-            raise ValueError(f"{name}: expected FP8 E4M3 weight with E8M0 block scales")
-        # audit the whole tensor once (every rank sees the same bytes); keep this rank's slice
+        shape = _DENSE_SHAPES[name.split(".", 2)[2]]
+        codes, scales = _dense_fp8_arrays(ck, name, shape, None if audit_only else rows, None if audit_only else cols)
         half, a = audit_fp16(name, "F8_E4M3", fp8_block_decode(codes, scales, "cpu" if audit_only else device))
         audit.add(a)
+        if not math.isfinite(a.max_abs):
+            raise ValueError(f"{name}: nonfinite values after FP8 decode; FP16 bank refused")
         if a.overflow:
             raise ValueError(f"{name}: {a.overflow} values overflow FP16 (max {a.max_abs}); FP16 bank refused")
-        if rows is not None:
-            half = half[rows]
-        if cols is not None:
-            half = half[:, cols]
         return half
 
     lay = layout
@@ -347,8 +375,9 @@ def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", con
         heads = lay.rows(HEADS)
         wq_b = dense(p + "attn.wq_b", rows=slice(heads.start * HEAD_DIM, heads.stop * HEAD_DIM))
         groups = lay.rows(O_GROUPS)
-        wo_a = dense(p + "attn.wo_a", rows=slice(groups.start * O_LORA, groups.stop * O_LORA))
-        wo_a = wo_a.view(groups.stop - groups.start, O_LORA, -1)
+        wo_a = put(dense(p + "attn.wo_a", rows=slice(groups.start * O_LORA, groups.stop * O_LORA)))
+        if wo_a is not None:
+            wo_a = wo_a.view(groups.stop - groups.start, O_LORA, -1)
         wo_b = dense(p + "attn.wo_b", cols=slice(groups.start * O_LORA, groups.stop * O_LORA))
         shared = lay.rows(INTER)
         sink = fp32(p + "attn.attn_sink")[heads]
@@ -385,7 +414,7 @@ def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", con
             index=i,
             wq_a=put(dense(p + "attn.wq_a")), q_norm=put(fp32(p + "attn.q_norm.weight")),
             wq_b=put(wq_b), wkv=put(dense(p + "attn.wkv")), kv_norm=put(fp32(p + "attn.kv_norm.weight")),
-            wo_a=put(wo_a), wo_b=put(wo_b), sink=put(sink),
+            wo_a=wo_a, wo_b=put(wo_b), sink=put(sink),
             attn_norm=put(fp32(p + "attn_norm.weight")), ffn_norm=put(fp32(p + "ffn_norm.weight")), hc=hc,
             gate=put(fp32(p + "ffn.gate.weight")), gate_bias=put(fp32(p + "ffn.gate.bias")),
             sh_gate=put(dense(p + "ffn.shared_experts.w1", rows=shared)),

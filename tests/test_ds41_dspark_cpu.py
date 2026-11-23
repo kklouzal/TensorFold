@@ -61,22 +61,56 @@ def test_layout_partitions_every_rank():
         dw.Layout(0, 8, 1)
 
 
-def test_checkpoint_reader_index(tmp_path):
-    tensors = {"mtp.0.a": np.arange(6, dtype=np.float32).reshape(2, 3), "mtp.0.b": np.array([1, 2, 3], dtype=np.uint8)}
+def write_checkpoint(tmp_path, tensors):
     header, blobs, offset = {}, [], 0
-    for name, arr in tensors.items():
+    for name, (kind, arr) in tensors.items():
         raw = arr.tobytes()
-        header[name] = {"dtype": "F32" if arr.dtype == np.float32 else "U8", "shape": list(arr.shape),
-                        "data_offsets": [offset, offset + len(raw)]}
+        header[name] = {"dtype": kind, "shape": list(arr.shape), "data_offsets": [offset, offset + len(raw)]}
         blobs.append(raw)
         offset += len(raw)
     body = json.dumps(header).encode()
     (tmp_path / "x.safetensors").write_bytes(struct.pack("<Q", len(body)) + body + b"".join(blobs))
-    (tmp_path / "model.safetensors.index.json").write_text(json.dumps(
-        {"weight_map": {"mtp.0.a": "x.safetensors", "mtp.0.b": "x.safetensors", "embed": "missing.safetensors"}}))
-    ck = dw.Checkpoint(tmp_path)
-    assert np.array_equal(ck.array("mtp.0.a"), tensors["mtp.0.a"]) and ck.shape("mtp.0.b") == (3,)
+    index = {name: "x.safetensors" for name in tensors}
+    index["embed"] = "missing.safetensors"
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": index}))
+    return dw.Checkpoint(tmp_path)
+
+
+def test_checkpoint_reader_index(tmp_path):
+    a = np.arange(6, dtype=np.float32).reshape(2, 3)
+    b = np.array([1, 2, 3], dtype=np.uint8)
+    ck = write_checkpoint(tmp_path, {"mtp.0.a": ("F32", a), "mtp.0.b": ("U8", b)})
+    assert np.array_equal(ck.array("mtp.0.a"), a) and ck.shape("mtp.0.b") == (3,)
     assert math.prod(ck.shape("mtp.0.a")) == 6
+
+
+def test_dense_owned_blocks_decode_to_exact_full_bank_slices(tmp_path):
+    name = "mtp.0.dense"
+    finite_codes = [code for code in range(256) if code & 0x7f != 0x7f]
+    codes = np.resize(np.array(finite_codes, dtype=np.uint8), (65, 70))
+    scales = np.array([[0, 100, 120], [101, 117, 127], [106, 129, 130]], dtype=np.uint8)
+    ck = write_checkpoint(tmp_path, {name + ".weight": ("F8_E4M3", codes), name + ".scale": ("F8_E8M0", scales)})
+    full = dw.fp8_block_decode(codes, scales).half().view(torch.int16)
+    for rows, cols in ((None, None), (slice(32, 64), None), (None, slice(32, 64)), (slice(32, 65), slice(64, 70))):
+        part_codes, part_scales = dw._dense_fp8_arrays(ck, name, codes.shape, rows, cols)
+        assert np.shares_memory(part_codes, ck.array(name + ".weight")) and not part_codes.flags.writeable
+        assert np.shares_memory(part_scales, ck.array(name + ".scale")) and not part_scales.flags.writeable
+        got = dw.fp8_block_decode(part_codes, part_scales).half()
+        assert got.untyped_storage().nbytes() == got.numel() * got.element_size()
+        assert torch.equal(got.view(torch.int16), full[rows or slice(None), cols or slice(None)])
+    with pytest.raises(ValueError, match="invalid FP8 block ownership"):
+        dw._dense_fp8_arrays(ck, name, codes.shape, slice(31, 64), None)
+
+
+def test_dense_owned_blocks_validate_full_scale_metadata(tmp_path):
+    name = "mtp.0.dense"
+    codes = np.zeros((64, 64), dtype=np.uint8)
+    scales = np.full((1, 2), 127, dtype=np.uint8)
+    ck = write_checkpoint(tmp_path, {name + ".weight": ("F8_E4M3", codes), name + ".scale": ("F8_E8M0", scales)})
+    with pytest.raises(ValueError, match="FP8 weight shape"):
+        dw._dense_fp8_arrays(ck, name, (32, 64), slice(0, 32), None)
+    with pytest.raises(ValueError, match="scales do not cover"):
+        dw._dense_fp8_arrays(ck, name, codes.shape, slice(0, 32), None)
 
 
 def test_greedy_accept():
