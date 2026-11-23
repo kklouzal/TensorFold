@@ -76,6 +76,28 @@ __global__ void encode_kernel(const Input* source, uint8_t* codes, float* scales
     else tf_rq4::store_encoded(encoded, col, shared, codes, scales, destination, 128, true);
 }
 
+template<class Input>
+__global__ void pack_h64_kernel(const Input* source, const bool* valid, uint8_t* out, int* status,
+                                int64_t source_row, int64_t source_col, int64_t valid_stride, int layer) {
+    constexpr int dim = 512, group = 128, groups = dim / group;
+    constexpr int code_bytes = dim / 2, row_bytes = code_bytes + groups * sizeof(uint32_t);
+    __shared__ float shared[group];
+    const int cluster = blockIdx.x % groups, col = threadIdx.x;
+    const int64_t row = blockIdx.x / groups;
+    // A masked lane has the exact wire representation of an all-positive-zero
+    // input. Its projection storage may contain nonfinite or unwritten values.
+    const float value = valid[row * valid_stride]
+        ? read(source, row * source_row + (cluster * group + col) * source_col) : 0.0f;
+    const auto encoded = tf_rq4::encode_component<11>(value, col, shared, 2);
+    if (col == 0) report_error<true>(status, encoded.errors, layer);
+    if (encoded.errors) return;
+
+    uint8_t* destination = out + row * row_bytes;
+    auto* group_scale = reinterpret_cast<float*>(destination + code_bytes + cluster * sizeof(uint32_t));
+    tf_rq4::store_encoded_halves(encoded, col, shared, destination + cluster * (group / 2), group_scale,
+                                 0, group, true);
+}
+
 template<class Input, class Output, int CODEC, bool INVERSE, bool TRAP_ON_ERROR>
 __global__ void rotate_kernel(const Input* source, Output* target, int* status, const int* valid_rows,
                               int rows, int heads, int dim, int64_t source_stride, int error, int layer) {
@@ -223,6 +245,19 @@ void sm70_rq4_encode_cuda(const T& x, T& codes, T& scales, const O& position, co
         });
     };
     if (trap_on_error) invoke(std::true_type{}); else invoke(std::false_type{});
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_rq4_pack_h64_cuda(const T& x, const T& valid, T& out, T& status, int layer) {
+    if (!x.size(0)) return;
+    const auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
+    const int blocks = int(x.size(0) * 4);
+    const auto launch = [&](auto input) {
+        pack_h64_kernel<<<blocks, 128, 0, stream>>>(input, valid.data_ptr<bool>(), out.data_ptr<uint8_t>(),
+            status.data_ptr<int>(), x.stride(0), x.stride(1), valid.stride(0), layer);
+    };
+    if (x.scalar_type() == at::kHalf) launch(static_cast<const __half*>(x.data_ptr()));
+    else launch(static_cast<const float*>(x.data_ptr()));
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

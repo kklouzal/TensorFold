@@ -65,6 +65,17 @@ def encode(x, codes, scales, *, codec=4, position=None, status=None, error=2, la
     return codes, scales
 
 
+def pack_h64(x, valid, out, *, status, layer):
+    """Write H64 [R,272] rows from [R,512] with arbitrary device-side bool holes.
+
+    Inactive rows encode positive zero. Active numeric errors latch status and
+    trap on the current stream before the failed group writes. The caller owns
+    the separate inputs and aligned output through stream or graph completion.
+    """
+    extension().pack_h64(x, valid, out, status, layer)
+    return out
+
+
 def rotate(x, out, *, codec=4, inverse=False, status=None, error=1, layer=0,
            valid_rows=None, rows=None, trap_on_error=False):
     """Staged FP32 basis transform with the same optional fatal mode as encode."""

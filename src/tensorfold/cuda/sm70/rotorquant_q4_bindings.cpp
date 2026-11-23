@@ -11,6 +11,7 @@ using T = at::Tensor;
 using O = std::optional<T>;
 
 void sm70_rq4_encode_cuda(const T&, T&, T&, const O&, const O&, const O&, int, int, int, int, bool);
+void sm70_rq4_pack_h64_cuda(const T&, const T&, T&, T&, int);
 void sm70_rq4_rotate_cuda(const T&, T&, const O&, const O&, int, int, bool, int, int, bool);
 void sm70_rq4_decode_cuda(const T&, const T&, T&, const O&, const O&, int, int, bool, int, int);
 void sm70_rq4_copy_cuda(const T&, T&, const O&, const O&, const O&, int);
@@ -124,6 +125,24 @@ void encode(const T& x, T codes, T scales, O position, O status, O valid_rows,
     sm70_rq4_encode_cuda(x, codes, scales, position, status, valid_rows, codec, int(rows), error, layer, trap_on_error);
 }
 
+void pack_h64(const T& x, const T& valid, T out, T status, int layer) {
+    constexpr int dim = 512, groups = dim / 128, row_bytes = dim / 2 + groups * sizeof(uint32_t);
+    floating(x, x, "H64 source", false);
+    check(valid, x, at::kBool, "H64 row validity", false);
+    check(out, x, at::kByte, "H64 packed rows");
+    TORCH_CHECK(x.dim() == 2 && x.size(1) == dim && x.size(0) <= std::numeric_limits<int>::max() / groups
+                && valid.dim() == 1 && valid.size(0) == x.size(0)
+                && out.dim() == 2 && out.size(0) == x.size(0) && out.size(1) == row_bytes,
+                "H64 packing requires source [R,512], validity [R] and packed [R,272]");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(out.data_ptr()) % alignof(uint32_t) == 0,
+                "H64 packed rows need 4-byte alignment for group scales");
+    controls(x, {}, status, {}, 11, 2, layer);
+    disjoint(out, x); disjoint(out, valid); disjoint(out, status);
+    disjoint(status, x); disjoint(status, valid);
+    c10::cuda::CUDAGuard guard(x.device());
+    sm70_rq4_pack_h64_cuda(x, valid, out, status, layer);
+}
+
 void rotate(const T& x, T out, O status, O valid_rows,
             int codec, int64_t rows, bool inverse, int error, int layer, bool trap_on_error) {
     floating(x, x, "rotation input", false); geometry(x, rows, true);
@@ -182,6 +201,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     using pybind11::arg;
     m.def("encode", &encode, arg("x"), arg("codes"), arg("scales"), arg("position"), arg("status"), arg("valid_rows"),
           arg("codec"), arg("rows"), arg("error"), arg("layer"), arg("trap_on_error") = false);
+    m.def("pack_h64", &pack_h64, arg("x"), arg("valid"), arg("out"), arg("status"), arg("layer"));
     m.def("rotate", &rotate, arg("x"), arg("out"), arg("status"), arg("valid_rows"), arg("codec"), arg("rows"),
           arg("inverse"), arg("error"), arg("layer"), arg("trap_on_error") = false);
     m.def("decode", &decode);
