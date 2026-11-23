@@ -84,6 +84,17 @@ def rotate(x, out, *, codec=4, inverse=False, status=None, error=1, layer=0,
     return out
 
 
+def rotate_h64(x, valid, out, *, status, layer, inverse=False):
+    """Rotate H64 [R,H,128*k] values with an independent device bool mask [R].
+
+    Holes enter the same transform as positive zero and do not read the input.
+    Live numerical failures latch status and trap before writing the failed
+    group. The caller owns the tensors through stream or graph completion.
+    """
+    extension().rotate_h64(x, valid, out, status, inverse, layer)
+    return out
+
+
 def decode(codes, scales, out, *, codec=4, inverse=False, status=None, error=8, layer=0,
            valid_rows=None, rows=None):
     """Decode to rotated FP16/FP32, or inverse-rotate FP32 values before output rounding."""

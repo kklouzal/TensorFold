@@ -22,18 +22,28 @@ def _split_pack(value, valid):
     return torch.cat((codes[:, 0], scales[:, 0].view(torch.uint8)), dim=1)
 
 
+def _split_rotate(value, valid, *, inverse=False):
+    source = torch.where(valid[:, None, None], value, 0).contiguous()
+    return native.rotate(source, torch.empty_like(source), codec=11, inverse=inverse, trap_on_error=True)
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 def test_rotorquant_row_adapter_keeps_masked_codec_and_basis_replay(dtype):
     cache = RotorCache("cuda")
     count, heads, dim = 4, 8, 512
     value = torch.empty(count, dim * 2, device="cuda", dtype=dtype)[:, ::2].normal_()
-    queries = torch.randn(count, heads, dim, device="cuda", dtype=torch.float16)
+    queries = torch.empty(count, 2 * heads, 2 * dim, device="cuda", dtype=dtype)[:, ::2, ::2].normal_()
     scratch = 6
     slots = torch.tensor([1, scratch, 2, scratch], device="cuda", dtype=torch.int32)
     step = SimpleNamespace(single_token_slots=True, req_slot=slots, valid=torch.ones(count, device="cuda", dtype=torch.bool))
     valid = slots != scratch
     value[~valid] = float("nan")
-    queries[~valid] = float("nan")
+
+    def adversarial_query():
+        queries[:, :, 128:192] = -0.0
+        queries[~valid] = float("nan")
+
+    adversarial_query()
 
     def forward():
         live = live_rows(step, scratch)
@@ -52,18 +62,83 @@ def test_rotorquant_row_adapter_keeps_masked_codec_and_basis_replay(dtype):
             value.normal_()
             queries.normal_()
             value[~valid] = float("nan")
-            queries[~valid] = float("nan")
+            adversarial_query()
         graph.replay()
         assert packed.shape == (count, 272)
         assert torch.equal(packed, _split_pack(value, valid))
-        query = queries.clone()
-        query[~valid] = 0
-        want_turned, want_original = torch.empty_like(query), torch.empty_like(query)
-        native.rotate(query, want_turned, codec=11)
-        native.rotate(want_turned, want_original, codec=11, inverse=True)
-        assert torch.equal(turned.view(torch.int16), want_turned.view(torch.int16))
-        assert torch.equal(original.view(torch.int16), want_original.view(torch.int16))
+        want_turned = _split_rotate(queries, valid)
+        want_original = _split_rotate(want_turned, valid, inverse=True)
+        bits = torch.int16 if dtype == torch.float16 else torch.int32
+        assert torch.equal(turned.view(bits), want_turned.view(bits))
+        assert torch.equal(original.view(bits), want_original.view(bits))
         assert cache.status.tolist() == [0, -2]
+
+
+def test_h64_masked_rotation_strided_validity_and_disjoint_output():
+    owner = RotorCache("cuda")
+    values = torch.zeros((3, 1, 128), dtype=torch.float16, device="cuda")
+    values[0, 0, ::2] = -0.0
+    values[1].fill_(float("inf"))
+    values[2, 0, 3] = 1.0
+    valid = torch.tensor([True, False, False, True, True, False], device="cuda")[::2]
+    for inverse in (False, True):
+        actual = owner.rotate(values, valid, 0, inverse=inverse)
+        expected = _split_rotate(values, valid, inverse=inverse)
+        assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+    assert owner.status.tolist() == [0, -2]
+    with pytest.raises(RuntimeError, match="disjoint"):
+        native.rotate_h64(values, valid, values, status=owner.status, layer=0)
+    with pytest.raises(RuntimeError, match="validity must match"):
+        owner.rotate(values, valid[:1], 0)
+
+
+def _masked_rotation_fault(fault):
+    owner = RotorCache("cuda")
+    values = torch.ones((2, 1, 128), dtype=torch.float16, device="cuda")
+    valid = torch.tensor([True, False], device="cuda")
+    inverse = fault == "overflow"
+    if inverse:
+        # Align with a column of the forward transform so its inverse
+        # produces a finite FP32 value above the FP16 representable range.
+        unit = torch.zeros((1, 1, 128), dtype=torch.float32, device="cuda")
+        unit[0, 0, 0] = 1
+        column = native.rotate(unit, torch.empty_like(unit), codec=11)
+        values[1:].copy_(torch.where(column < 0, -65504.0, 65504.0))
+        source = values[1:].float()
+        large = native.rotate(source, torch.empty_like(source), codec=11, inverse=True)
+        assert torch.isfinite(large).all() and large.abs().amax().item() > 65520
+    else:
+        values[1, 0, 7] = float("nan")
+
+    owner.rotate(values, valid, 6, inverse=inverse)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        rotated = owner.rotate(values, valid, 6, inverse=inverse)
+    graph.replay()
+    expected = _split_rotate(values, valid, inverse=inverse)
+    assert torch.equal(rotated.view(torch.int16), expected.view(torch.int16))
+    assert owner.status.tolist() == [0, -2]
+
+    valid[1] = True
+    try:
+        graph.replay()
+        torch.cuda.synchronize()
+    except RuntimeError as error:
+        assert any(reason in str(error).lower() for reason in
+                   ("illegal instruction", "launch failure", "device-side assert")), error
+        print(f"H64 masked rotation rejected replayed {fault}", flush=True)
+    else:
+        raise AssertionError(f"H64 masked rotation completed after {fault}")
+
+
+@pytest.mark.parametrize("fault", ["nan", "overflow"])
+def test_h64_masked_rotate_fault_on_replay_with_changed_validity(fault):
+    invoke = "import runpy, sys; runpy.run_path(sys.argv[1])['_masked_rotation_fault'](sys.argv[2])"
+    child = subprocess.run((sys.executable, "-B", "-c", invoke, __file__, fault),
+                           capture_output=True, text=True, timeout=90)
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert f"H64 masked rotation rejected replayed {fault}" in child.stdout
 
 
 def test_h64_packed_writer_bytes_survive_prefix_copy_and_restore():

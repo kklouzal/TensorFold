@@ -98,6 +98,20 @@ __global__ void pack_h64_kernel(const Input* source, const bool* valid, uint8_t*
                                  0, group, true);
 }
 
+template<class Output, int CODEC, bool INVERSE, bool TRAP_ON_ERROR>
+__device__ __forceinline__ void rotate_group(float value, Output* target, int64_t output, int col,
+                                            float* shared, int* status, int error, int layer) {
+    const bool bad_source = __syncthreads_or(!isfinite(value));
+    if (bad_source) value = 0.0f;
+    value = tf_rq4::rotate_component<CODEC, INVERSE>(value, col, shared);
+    const bool bad_output = __syncthreads_or(!representable<Output>(value));
+    if (col == 0 && (bad_source || bad_output)) report_error<TRAP_ON_ERROR>(status, error, layer);
+    if constexpr (TRAP_ON_ERROR) {
+        if (bad_source || bad_output) return;
+    }
+    write(target, output, bad_source || bad_output ? 0.0f : value);
+}
+
 template<class Input, class Output, int CODEC, bool INVERSE, bool TRAP_ON_ERROR>
 __global__ void rotate_kernel(const Input* source, Output* target, int* status, const int* valid_rows,
                               int rows, int heads, int dim, int64_t source_stride, int error, int layer) {
@@ -114,16 +128,25 @@ __global__ void rotate_kernel(const Input* source, Output* target, int* status, 
         write(target, output, 0.0f);
         return;
     }
-    float value = read(source, int64_t(row) * source_stride + int64_t(head) * dim + group * 128 + col);
-    const bool bad_source = __syncthreads_or(!isfinite(value));
-    if (bad_source) value = 0.0f;
-    value = tf_rq4::rotate_component<CODEC, INVERSE>(value, col, shared);
-    const bool bad_output = __syncthreads_or(!representable<Output>(value));
-    if (col == 0 && (bad_source || bad_output)) report_error<TRAP_ON_ERROR>(status, error, layer);
-    if constexpr (TRAP_ON_ERROR) {
-        if (bad_source || bad_output) return;
-    }
-    write(target, output, bad_source || bad_output ? 0.0f : value);
+    const float value = read(source, int64_t(row) * source_stride + int64_t(head) * dim + group * 128 + col);
+    rotate_group<Output, CODEC, INVERSE, TRAP_ON_ERROR>(value, target, output, col, shared, status, error, layer);
+}
+
+template<class Value, bool INVERSE>
+__global__ void rotate_h64_kernel(const Value* source, const bool* valid, Value* target, int* status,
+                                  int heads, int dim, int64_t source_row, int64_t source_head,
+                                  int64_t source_col, int64_t valid_stride, int layer) {
+    __shared__ float shared[128];
+    const int groups = dim / 128, group = blockIdx.x % groups;
+    const int outer = blockIdx.x / groups, row = outer / heads, head = outer % heads;
+    const int col = threadIdx.x;
+    const int64_t output = int64_t(blockIdx.x) * 128 + col;
+    // Run the original transform on positive zero for holes. A zero-filled
+    // output would skip the transform's signed-zero behavior.
+    const float value = valid[int64_t(row) * valid_stride]
+        ? read(source, int64_t(row) * source_row + int64_t(head) * source_head + (group * 128 + col) * source_col)
+        : 0.0f;
+    rotate_group<Value, 11, INVERSE, true>(value, target, output, col, shared, status, 1, layer);
 }
 
 template<class Output, int CODEC, bool INVERSE>
@@ -278,6 +301,24 @@ void sm70_rq4_rotate_cuda(const T& x, T& out, const O& status, const O& valid,
         });
     };
     if (trap_on_error) invoke(std::true_type{}); else invoke(std::false_type{});
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void sm70_rq4_rotate_h64_cuda(const T& x, const T& valid, T& out, T& status, bool inverse, int layer) {
+    if (!x.size(0)) return;
+    const auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
+    const int blocks = int(x.size(0) * x.size(1) * (x.size(2) / 128));
+    const auto typed = [&](auto output) {
+        using Value = std::remove_pointer_t<decltype(output)>;
+        const auto launch = [&](auto direction) {
+            rotate_h64_kernel<Value, decltype(direction)::value><<<blocks, 128, 0, stream>>>(
+                static_cast<const Value*>(x.data_ptr()), valid.data_ptr<bool>(), output, status.data_ptr<int>(),
+                x.size(1), x.size(2), x.stride(0), x.stride(1), x.stride(2), valid.stride(0), layer);
+        };
+        if (inverse) launch(std::true_type{}); else launch(std::false_type{});
+    };
+    if (x.scalar_type() == at::kHalf) typed(static_cast<__half*>(out.data_ptr()));
+    else typed(out.data_ptr<float>());
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

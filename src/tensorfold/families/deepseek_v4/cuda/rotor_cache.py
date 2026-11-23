@@ -33,8 +33,5 @@ class RotorCache:
         return native.pack_h64(values, valid, packed, status=self.status, layer=layer)
 
     def rotate(self, values, valid, layer, *, inverse=False):
-        source = torch.where(valid[:, None, None], values, 0)
-        output = torch.empty_like(source)
-        native.rotate(source, output, codec=FORMAT.codec, inverse=inverse, status=self.status, layer=layer,
-                      trap_on_error=True)
-        return output
+        output = torch.empty_like(values, memory_format=torch.contiguous_format)
+        return native.rotate_h64(values, valid, output, inverse=inverse, status=self.status, layer=layer)

@@ -13,6 +13,7 @@ using O = std::optional<T>;
 void sm70_rq4_encode_cuda(const T&, T&, T&, const O&, const O&, const O&, int, int, int, int, bool);
 void sm70_rq4_pack_h64_cuda(const T&, const T&, T&, T&, int);
 void sm70_rq4_rotate_cuda(const T&, T&, const O&, const O&, int, int, bool, int, int, bool);
+void sm70_rq4_rotate_h64_cuda(const T&, const T&, T&, T&, bool, int);
 void sm70_rq4_decode_cuda(const T&, const T&, T&, const O&, const O&, int, int, bool, int, int);
 void sm70_rq4_copy_cuda(const T&, T&, const O&, const O&, const O&, int);
 
@@ -102,6 +103,14 @@ void output_controls(const T& output, const O& position, const O& status, const 
     if (status) disjoint(output, *status, prefix);
     if (live) disjoint(output, *live, prefix);
 }
+
+void h64_masked_controls(const T& x, const T& valid, const T& out, const T& status, int error, int layer) {
+    check(valid, x, at::kBool, "H64 row validity", false);
+    TORCH_CHECK(valid.dim() == 1 && valid.size(0) == x.size(0), "H64 row validity must match the source rows");
+    controls(x, {}, status, {}, 11, error, layer);
+    disjoint(out, x); disjoint(out, valid); disjoint(out, status);
+    disjoint(status, x); disjoint(status, valid);
+}
 }  // namespace
 
 void encode(const T& x, T codes, T scales, O position, O status, O valid_rows,
@@ -128,17 +137,13 @@ void encode(const T& x, T codes, T scales, O position, O status, O valid_rows,
 void pack_h64(const T& x, const T& valid, T out, T status, int layer) {
     constexpr int dim = 512, groups = dim / 128, row_bytes = dim / 2 + groups * sizeof(uint32_t);
     floating(x, x, "H64 source", false);
-    check(valid, x, at::kBool, "H64 row validity", false);
     check(out, x, at::kByte, "H64 packed rows");
     TORCH_CHECK(x.dim() == 2 && x.size(1) == dim && x.size(0) <= std::numeric_limits<int>::max() / groups
-                && valid.dim() == 1 && valid.size(0) == x.size(0)
                 && out.dim() == 2 && out.size(0) == x.size(0) && out.size(1) == row_bytes,
-                "H64 packing requires source [R,512], validity [R] and packed [R,272]");
+                "H64 packing requires source [R,512] and packed [R,272]");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(out.data_ptr()) % alignof(uint32_t) == 0,
                 "H64 packed rows need 4-byte alignment for group scales");
-    controls(x, {}, status, {}, 11, 2, layer);
-    disjoint(out, x); disjoint(out, valid); disjoint(out, status);
-    disjoint(status, x); disjoint(status, valid);
+    h64_masked_controls(x, valid, out, status, 2, layer);
     c10::cuda::CUDAGuard guard(x.device());
     sm70_rq4_pack_h64_cuda(x, valid, out, status, layer);
 }
@@ -155,6 +160,16 @@ void rotate(const T& x, T out, O status, O valid_rows,
     disjoint(out, x, count); output_controls(out, {}, status, valid_rows, count);
     c10::cuda::CUDAGuard guard(x.device());
     sm70_rq4_rotate_cuda(x, out, status, valid_rows, codec, int(rows), inverse, error, layer, trap_on_error);
+}
+
+void rotate_h64(const T& x, const T& valid, T out, T status, bool inverse, int layer) {
+    floating(x, x, "H64 rotation input", false);
+    geometry(x, x.dim() ? x.size(0) : 0);
+    check(out, x, x.scalar_type(), "H64 rotation output");
+    TORCH_CHECK(out.sizes() == x.sizes(), "H64 rotation output must match the source shape");
+    h64_masked_controls(x, valid, out, status, 1, layer);
+    c10::cuda::CUDAGuard guard(x.device());
+    sm70_rq4_rotate_h64_cuda(x, valid, out, status, inverse, layer);
 }
 
 void decode(const T& codes, const T& scales, T out, O status, O valid_rows,
@@ -204,6 +219,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("pack_h64", &pack_h64, arg("x"), arg("valid"), arg("out"), arg("status"), arg("layer"));
     m.def("rotate", &rotate, arg("x"), arg("out"), arg("status"), arg("valid_rows"), arg("codec"), arg("rows"),
           arg("inverse"), arg("error"), arg("layer"), arg("trap_on_error") = false);
+    m.def("rotate_h64", &rotate_h64, arg("x"), arg("valid"), arg("out"), arg("status"), arg("inverse"), arg("layer"));
     m.def("decode", &decode);
     m.def("copy_rows", &copy_rows);
 }
