@@ -58,6 +58,98 @@ def test_prebuild_reraises_a_build_failure():
         prebuild.wait()
 
 
+def test_deepseek_q4_and_yarn_flags_are_family_bound(tmp_path, monkeypatch):
+    from tensorfold import cli, families
+    from tensorfold.families import deepseek_v4
+    from tensorfold.families.deepseek_v4.cuda.weights import Geometry
+
+    (tmp_path / "config.json").write_text('{"model_type":"deepseek_v41"}')
+    family = families.detect(tmp_path)
+    monkeypatch.setattr(Geometry, "from_config", classmethod(lambda cls, raw: cls()))
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--tp", "8",
+                                          "--master", "127.0.0.1", "--kv-dtype", "rotorquant-iso64-norm4-h64", "--yarn-factor", "2"])
+    cli._check_serve_options(args, family, "cuda", tmp_path)
+    rope = deepseek_v4.rope_parameters(tmp_path, args.yarn_factor)
+    assert (args.kv_dtype, rope.factor, rope.context_limit) == ("rotorquant-iso64-norm4-h64", 2, 131_072)
+    assert deepseek_v4.rope_parameters(tmp_path).factor == 16
+    for invalid in (0.5, float("inf"), float("nan")):
+        args.yarn_factor = invalid
+        with pytest.raises(ValueError, match="YaRN factor"):
+            cli._check_serve_options(args, family, "cuda", tmp_path)
+    args.yarn_factor = None
+    args.kv_dtype = "int4"
+    with pytest.raises(ValueError, match="not --kv-dtype int4"):
+        cli._check_serve_options(args, family, "cuda", tmp_path)
+
+
+def test_deepseek_gguf_keeps_its_native_default_and_accepts_q4_yarn2(tmp_path, monkeypatch):
+    import json
+
+    from tensorfold import cli
+    from tensorfold.families.deepseek_v4.cuda.weights import Geometry
+
+    config = {"model_type": "deepseek_v41", "quantization_config": {"quant_method": "gguf"},
+              "gguf_file": "backbone.gguf", "engram_file": "engram.gguf", "max_position_embeddings": 1_048_576}
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    for name in ("gguf_file", "engram_file"):
+        (tmp_path / config[name]).touch()
+    monkeypatch.setattr(Geometry, "from_config", classmethod(lambda cls, raw: cls()))
+    monkeypatch.setattr(cli.stacks, "start", lambda: None)
+    supplied = []
+
+    def serve(args, family, directory, context):
+        assert family.model_type == "deepseek_v41" and directory == tmp_path
+        supplied.append((args.kv_dtype, args.yarn_factor, context))
+        return 0
+
+    monkeypatch.setattr(cli, "_serve_cuda", serve)
+    command = ["serve", str(tmp_path), "--backend", "cuda", "--tp", "8", "--master", "127.0.0.1",
+               "--no-update-check"]
+    parser = cli.build_parser()
+    assert cli.cmd_serve(parser.parse_args(command)) == 0
+    assert cli.cmd_serve(parser.parse_args([*command, "--kv-dtype", "rotorquant-iso64-norm4-h64", "--yarn-factor", "2",
+                                           "--context", "65536"])) == 0
+    assert supplied == [("bf16", None, 1_048_576), ("rotorquant-iso64-norm4-h64", 2.0, 65_536)]
+
+
+@pytest.mark.parametrize("fault", [False, True])
+def test_rotorquant_follower_detects_device_fault_while_its_pipe_is_idle(monkeypatch, fault):
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda import cohort
+    from tensorfold.families.deepseek_v4.cuda import engine
+
+    events = []
+    frames = iter((engine._HEAD.pack(engine.OP_LAYERS, 1, 0, 0, 0), TimeoutError(), None))
+
+    def receive(timeout):
+        events.append(("receive", timeout))
+        frame = next(frames)
+        if isinstance(frame, TimeoutError):
+            raise frame
+        return frame
+
+    def query():
+        events.append(("query",))
+        if fault:
+            raise RuntimeError("device trap")
+        return True
+
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda: types.SimpleNamespace(query=query))
+    monkeypatch.setattr(cohort, "notify_failure", lambda: events.append(("notify",)))
+    follower = object.__new__(engine.DS41Engine)
+    follower.target = types.SimpleNamespace(rotor_cache=object())
+    follower.pipes = types.SimpleNamespace(receive=receive)
+    follower._run = lambda op, first, *_: events.append(("run", op, first))
+    if fault:
+        with pytest.raises(RuntimeError, match="device trap"):
+            follower.follow()
+    else:
+        follower.follow()
+    expected = [("receive", engine.PIPE_TIMEOUT), ("run", engine.OP_LAYERS, 1),
+                ("receive", engine.ROTOR_ERROR_POLL_S), ("query",)]
+    assert events == expected + ([("notify",)] if fault else [("receive", engine.PIPE_TIMEOUT)])
+
+
 @pytest.mark.parametrize("rank", [0, 1])
 def test_engram_unmaps_after_device_retirement(monkeypatch, rank):
     torch = pytest.importorskip("torch")

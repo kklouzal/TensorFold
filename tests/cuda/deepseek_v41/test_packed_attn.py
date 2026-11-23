@@ -69,3 +69,67 @@ def test_packed_attention_bit_exact_vs_paged_fp16():
         maxdiff = (ref.float() - new.float()).abs().max().item()
         print(f"T={T} start={start} hot_rows={hot_rows} mode={mode} bit-exact={same} maxdiff={maxdiff:.3g}")
     assert ok
+
+
+@pytest.mark.skipif(torch.cuda.is_available() and torch.cuda.get_device_capability() != (7, 0), reason="SM70 codec")
+def test_rotorquant_window_and_compressed_gather_match_native_codec():
+    from tensorfold.cuda.sm70 import rotorquant_q4_native as native
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    from tensorfold.families.deepseek_v4.cuda.kernels.kv_pack import I_ROW, ROTOR_ROW
+
+    device = "cuda"
+    gen = torch.Generator(device=device).manual_seed(11)
+    raw = torch.randn((136, 1, 512), generator=gen, device=device, dtype=torch.float16)
+    raw[..., 64:128] *= 11
+    raw[..., 128:192] = 0
+    codes = torch.empty((136, 1, 256), dtype=torch.uint8, device=device)
+    scales = torch.empty((136, 1, 4), dtype=torch.float32, device=device)
+    status = torch.tensor([0, -2], dtype=torch.int32, device=device)
+    native.encode(raw, codes, scales, codec=11, status=status)
+    packed = torch.cat((codes, scales.view(torch.uint8)), dim=-1).squeeze(1)
+    decoded = native.decode(codes, scales, torch.empty_like(raw), codec=11, status=status).squeeze(1)
+    assert status.tolist() == [0, -2]
+
+    layout = pk.PackedLayout({3: 2, 7: 2}, 64, rotorquant=True)
+    assert layout.compressed_row_bytes == ROTOR_ROW == 272
+    assert layout.regions == {3: (2, 32, 0, 32 * ROTOR_ROW),
+                              7: (2, 32, 32 * (ROTOR_ROW + I_ROW), 32 * (2 * ROTOR_ROW + I_ROW))}
+    cache = torch.full((3, layout.page_bytes), 0xA5, dtype=torch.uint8, device=device)
+    table = torch.tensor([[2, 0, -1], [1, -1, -1]], dtype=torch.int32, device=device)
+    ring = torch.zeros((3, pk.RING, ROTOR_ROW), dtype=torch.uint8, device=device)
+
+    history = torch.arange(132, dtype=torch.int32, device=device)
+    history_req = torch.zeros_like(history)
+    history_live = torch.ones_like(history, dtype=torch.bool)
+    history_qsl = torch.tensor([0, 132], dtype=torch.int32, device=device)
+    slots = torch.tensor([1, 0], dtype=torch.int32, device=device)
+    pk.insert_rows(cache, packed[:132], history, history_live, history_req, table, layout=layout, layer=3,
+                   compressed=True)
+    pk.insert_ring(ring, packed[:132], history, history_live, history_req, history_qsl, slots)
+    assert torch.equal(ring[1], torch.cat((packed[128:132], packed[4:128])))
+    assert torch.count_nonzero(ring[[0, 2]]).item() == 0
+    gathered = pk.gather_request_rows(cache, table[0], 66, layout=layout, layer=3, compressed=True)
+    assert torch.equal(gathered[:64], packed[1:128:2])
+    assert torch.count_nonzero(gathered[64:]).item() == 0
+    assert torch.all(cache[:, 32 * ROTOR_ROW:] == 0xA5).item()
+    assert torch.all(cache[1] == 0xA5).item()
+
+    positions = torch.tensor([132, 133, 0, -1], dtype=torch.int32, device=device)
+    requests = torch.tensor([0, 0, 1, -1], dtype=torch.int32, device=device)
+    live = torch.tensor([True, True, True, False], device=device)
+    qsl = torch.tensor([0, 2, 3], dtype=torch.int32, device=device)
+    topk = torch.tensor([[0, 31, 32, 63, 64, 65, 66, -1]] * 4, dtype=torch.int32, device=device)
+    keys = torch.empty((4, pk.WINDOW + 8, 512), dtype=torch.float16, device=device)
+    unused = torch.empty(keys.shape[:-1], dtype=torch.bool, device=device)
+    pk.gather_attention(keys, unused, 0, 4, positions, live, requests, qsl, slots, ring, packed[132:],
+                        cache=cache, block_table=table, layout=layout, layer=3, topk=topk)
+
+    expected = torch.zeros_like(keys)
+    expected[0, :128], expected[1, :128] = decoded[5:133], decoded[6:134]
+    expected[:2, 128:132] = decoded[[1, 63, 65, 127]]
+    expected[2, 127] = decoded[134]
+    expected_unused = torch.ones_like(unused)
+    expected_unused[:2, :132] = False
+    expected_unused[2, 127] = False
+    assert torch.equal(unused, expected_unused)
+    assert torch.equal(keys.view(torch.int16), expected.view(torch.int16))

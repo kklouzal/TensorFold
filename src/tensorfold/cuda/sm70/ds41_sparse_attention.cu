@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// DeepSeek-V4.1 fused sparse attention over the patch-87 window rings and packed FP4 rows, SM70.
+// DeepSeek-V4.1 fused sparse attention over window rings and packed compressed rows, SM70.
 //
 // Provenance: the friend's overlay patch 181 (ds41_pf_attn, SPDX Apache-2.0), snapshot
 //   lp-snap-c1es8-numa-admit2-imgtext-share2-fix5-ram4-stepbud-ram3-memfix-ctx1m-ppovl-opt2-pfx-1-eng-pfxfix4,
@@ -20,23 +20,32 @@
 //   position in this step) or the request's slot ring; compressed keys are the packed rows decoded exactly as
 //   kv_pack.unpack_c_row (E2M1 x E4M3 products are exact in FP16). The FP16 key values and the FP16
 //   probability boundary are the reference's; FP32 summation orders differ (dot, softmax sum, P.K).
+//   With RotorQuant ISO64 H64, both caches contain codec 11 rows. Q and the result are in the
+//   same rotated basis; the FP16 QK and PV key fragments are centroid * scale rounded once.
 //   One token per CTA (row-wise, batch invariant), deterministic.
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <limits>
 
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
+#include "rotorquant_q4.cuh"
+
 namespace ds41_sparse_attention {
 
 constexpr int kHeads = 8, kDim = 512, kWindow = 128, kRing = 128, kWarps = 4, kThreads = 128;
 constexpr int kQLd = kDim + 8;  // halves per shared query row
+constexpr int kCodeBytes = kDim / 2, kLegacyRow = kCodeBytes + kDim / 16;
+constexpr int kRotorCodec = 11, kRotorGroup = 128, kRotorHalf = kRotorGroup / 2, kRotorTable = 16;
+constexpr int kRotorRow = kCodeBytes + sizeof(uint32_t) * (kDim / kRotorGroup);
+static_assert(kRotorRow == 272 && kRotorRow % 16 == 0 && kLegacyRow == 288 && kLegacyRow % 16 == 0);
 
 struct Args {
   const half* query;      // [N, 8, 512]
-  const half* ring;       // [S + 1, 128, 512]
-  const half* values;     // [N, 512] this forward's window latents
+  const void* ring;       // [S + 1, 128, 512] FP16 or [S + 1, 128, 272] uint8
+  const void* values;     // [N, 512] FP16 or [N, 272] uint8
   const int32_t* qsl;     // [R + 1]
   const int32_t* req_slot;
   const uint8_t* cache;   // pages
@@ -47,7 +56,7 @@ struct Args {
   const int32_t* topk;    // [N, 512] or null
   const float* sink;      // [8]
   half* out;              // [N, 8, 512]
-  int64_t table_stride, page_bytes;
+  int64_t table_stride, page_bytes, pages, table_columns, requests;
   int block_size, ratio, offset, topk_count, slots, first;
   float scale;
 };
@@ -62,7 +71,8 @@ struct Geo {
   static constexpr int kRed = 2 * kWarps * kHeads * 4;
   static constexpr int kShared = kBuf + kRed + W * 8;
 };
-static_assert(Geo<640>::kShared <= 48 * 1024, "no dynamic shared-memory opt-in needed");
+static_assert(Geo<640>::kShared + kRotorTable * sizeof(float) <= 48 * 1024,
+              "no dynamic shared-memory opt-in needed");
 static_assert(Geo<640>::kBuf % 16 == 0 && Geo<128>::kBuf % 16 == 0, "aligned reduction / descriptor areas");
 
 __device__ __forceinline__ void mma_rc(float (&d)[8], uint32_t a0, uint32_t a1, uint32_t b0, uint32_t b1) {
@@ -135,7 +145,30 @@ __device__ __forceinline__ uint32_t load_scale_word(const uint8_t* bytes) {
   return result;
 }
 
+// QK processes four coordinates at a time. PV uses four of the same groups
+// to form its contiguous 16-coordinate fragment.
+__device__ __forceinline__ uint32_t rotor_pair(uint32_t codes, float scale, const float* centroids) {
+  const float lo = __fmul_rn(centroids[codes & 15u], scale);
+  const float hi = __fmul_rn(centroids[(codes >> 4) & 15u], scale);
+  const half2 pair = __floats2half2_rn(lo, hi);
+  return uint32_t(__half_as_ushort(__low2half(pair))) | (uint32_t(__half_as_ushort(__high2half(pair))) << 16);
+}
+
+// Each packed chunk covers 16 coordinates at an 8-byte-aligned byte address.
+__device__ __forceinline__ uint2 rotor_codes(const uint8_t* bytes) {
+  uint2 result;
+  asm volatile("ld.global.nc.v2.b32 {%0, %1}, [%2];"
+               : "=r"(result.x), "=r"(result.y) : "l"(__cvta_generic_to_global(bytes)) : "memory");
+  return result;
+}
+
+__device__ __forceinline__ float rotor_scale(const uint8_t* row, int dim) {
+  const uint32_t word = load_scale_word(row + kCodeBytes + sizeof(uint32_t) * (dim / kRotorGroup));
+  return tf_rq4::half_group_scale(__uint_as_float(word), (dim % kRotorGroup) / kRotorHalf);
+}
+
 // 0 = unused key; FP16 row pointer; packed row pointer | 1.
+template <bool Rotor>
 __device__ __forceinline__ uint64_t describe(const Args& a, int key, int64_t t, int64_t r,
                                              int64_t position, bool live, int64_t s0,
                                              int64_t start, int64_t slot) {
@@ -143,24 +176,59 @@ __device__ __forceinline__ uint64_t describe(const Args& a, int key, int64_t t, 
   if (key < kWindow) {
     const int64_t at = position - kWindow + 1 + key;
     if (at < 0) return 0;
-    const half* src = at >= start ? a.values + (s0 + at - start) * kDim
-                                  : a.ring + (slot * kRing + at % kRing) * kDim;
-    return reinterpret_cast<uint64_t>(src);
+    if constexpr (Rotor) {
+      const uint8_t* src = at >= start ? static_cast<const uint8_t*>(a.values) + (s0 + (at - start)) * kRotorRow
+                                      : static_cast<const uint8_t*>(a.ring) + (slot * kRing + at % kRing) * kRotorRow;
+      return reinterpret_cast<uint64_t>(src) | 1ull;
+    } else {
+      const half* src = at >= start ? static_cast<const half*>(a.values) + (s0 + at - start) * kDim
+                                    : static_cast<const half*>(a.ring) + (slot * kRing + at % kRing) * kDim;
+      return reinterpret_cast<uint64_t>(src);
+    }
   }
   const int64_t index = a.topk[t * a.topk_count + key - kWindow];
   if (index < 0 || index >= (position + 1) / a.ratio) return 0;
   const int rows = a.block_size / a.ratio;
-  const int64_t page = a.table[r * a.table_stride + index / rows];
+  const int64_t column = index / rows;
+  if constexpr (Rotor) {
+    if (column >= a.table_columns) return 0;
+  }
+  const int64_t page = a.table[r * a.table_stride + column];
   if (page < 0) return 0;
-  const uint8_t* row = a.cache + page * a.page_bytes + a.offset + (index % rows) * 288;
+  if constexpr (Rotor) {
+    if (page >= a.pages) return 0;
+  }
+  constexpr int row_bytes = Rotor ? kRotorRow : kLegacyRow;
+  const uint8_t* row = a.cache + page * a.page_bytes + a.offset + (index % rows) * row_bytes;
   return reinterpret_cast<uint64_t>(row) | 1ull;
 }
 
 // Scores of one 32-key tile (8 heads x 32 keys, C layout) for this lane's key d.
-__device__ __forceinline__ void tile_scores(bool window, uint64_t d, const half* qa, float (&lo)[8]) {
+template <bool Rotor>
+__device__ __forceinline__ void tile_scores(bool window, uint64_t d, const half* qa, const float* centroids,
+                                            float (&lo)[8]) {
 #pragma unroll
   for (int e = 0; e < 8; ++e) lo[e] = 0.f;
-  if (window) {  // FP16 rows
+  if constexpr (Rotor) {
+    const uint8_t* row = reinterpret_cast<const uint8_t*>(d & ~1ull);
+#pragma unroll 1
+    for (int start = 0; start < kDim; start += kRotorHalf) {
+      const float scale = d ? rotor_scale(row, start) : 0.0f;
+#pragma unroll 2
+      for (int dim = start; dim < start + kRotorHalf; dim += 16) {
+        const uint2 v = d ? rotor_codes(row + dim / 2) : make_uint2(0, 0);
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+          const uint32_t word = j < 2 ? v.x : v.y;
+          const uint32_t codes = word >> (16 * (j & 1));
+          const uint32_t k0 = d ? rotor_pair(codes, scale, centroids) : 0u;
+          const uint32_t k1 = d ? rotor_pair(codes >> 8, scale, centroids) : 0u;
+          const uint2 a0 = *reinterpret_cast<const uint2*>(qa + dim + 4 * j);
+          mma_rc(lo, a0.x, a0.y, k0, k1);
+        }
+      }
+    }
+  } else if (window) {  // FP16 rows
     const uint4* src = reinterpret_cast<const uint4*>(d);
     uint4 nxt = d ? __ldg(src) : make_uint4(0, 0, 0, 0);
 #pragma unroll 4
@@ -198,14 +266,23 @@ __device__ __forceinline__ void tile_scores(bool window, uint64_t d, const half*
 }
 
 // out[8 x 128-dim warp slice] += P[:, keys 4 ks0 .. 4 ks1) . K (P columns pcol0-based).
+template <bool Rotor>
 __device__ __forceinline__ void pv_steps(const uint64_t* desc, int key0, const half* pa, int pcol0, int ks0,
-                                         int ks1, int dbase, int kr, float (&o)[4][8]) {
+                                         int ks1, int dbase, int kr, const float* centroids, float (&o)[4][8]) {
 #pragma unroll 2
   for (int ks = ks0; ks < ks1; ++ks) {
     const int key = 4 * ks + kr;
     const uint64_t d = desc[key - key0];
     uint32_t b[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    if (key < kWindow) {
+    if constexpr (Rotor) {
+      if (d) {
+        const uint8_t* row = reinterpret_cast<const uint8_t*>(d & ~1ull);
+        const uint2 v = rotor_codes(row + dbase / 2);
+        const float scale = rotor_scale(row, dbase);  // 16 aligned coordinates fit a single 64-value half.
+#pragma unroll
+        for (int j = 0; j < 8; ++j) b[j] = rotor_pair((j < 4 ? v.x : v.y) >> (8 * (j & 3)), scale, centroids);
+      }
+    } else if (key < kWindow) {
       if (d) {
         const uint4* src = reinterpret_cast<const uint4*>(reinterpret_cast<const half*>(d) + dbase);
         const uint4 v0 = __ldg(src), v1 = __ldg(src + 1);
@@ -232,15 +309,29 @@ struct Token {
   bool live;
 };
 
+template <bool Rotor>
 __device__ __forceinline__ Token token_of(const Args& a, int64_t t) {
   Token k;
   k.t = t;
   k.r = a.token_req[t];
   k.position = a.positions[t];
   k.live = a.valid[t] != 0 && k.r >= 0;
+  if constexpr (Rotor) {
+    if (!k.live || k.position < 0 || k.position == INT64_MAX || k.r >= a.requests)
+      return {k.t, k.r, k.position, 0, 0, a.slots, false};
+  }
   const int64_t rr = k.r >= 0 ? k.r : 0;
   k.s0 = a.qsl[rr];
+  if constexpr (Rotor) {
+    if (k.s0 < 0 || k.s0 > t)
+      return {k.t, k.r, k.position, 0, 0, a.slots, false};
+  }
   k.start = a.positions[k.s0];
+  if constexpr (Rotor) {
+    // The current-row offset is nonnegative and no later than this token.
+    if (k.start < 0 || k.position < k.start || k.position - k.start > k.t - k.s0)
+      return {k.t, k.r, k.position, 0, 0, a.slots, false};
+  }
   k.slot = k.live ? a.req_slot[rr] : a.slots;
   if (k.slot < 0 || k.slot > a.slots) k.slot = a.slots;
   return k;
@@ -277,7 +368,7 @@ __device__ __forceinline__ void store_out(const Args& a, int64_t t, const float 
           __floats2half2_rn(o[j][e], o[j][e + 1]);
 }
 
-template <int W>
+template <int W, bool Rotor>
 __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
   using G = Geo<W>;
   extern __shared__ __align__(16) unsigned char smem[];
@@ -285,11 +376,17 @@ __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
   half* ps = reinterpret_cast<half*>(smem);   // [8][kPLd]   (phases 2-3, same bytes)
   float* red = reinterpret_cast<float*>(smem + G::kBuf);  // [2][kWarps][8]
   uint64_t* desc = reinterpret_cast<uint64_t*>(smem + G::kBuf + G::kRed);  // [W]
+  float* centroids = nullptr;
+  if constexpr (Rotor) {
+    centroids = reinterpret_cast<float*>(smem + G::kShared);
+    // Different lanes may read different codes; preload the constant table once per CTA.
+    if (threadIdx.x < kRotorTable) centroids[threadIdx.x] = tf_rq4::selected_centroid<kRotorCodec>(threadIdx.x);
+  }
   const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
-  const Token k = token_of(a, a.first + blockIdx.x);
+  const Token k = token_of<Rotor>(a, a.first + blockIdx.x);
   load_query(a, k.t, qs);
   for (int i = threadIdx.x; i < W; i += kThreads)
-    desc[i] = describe(a, i, k.t, k.r, k.position, k.live, k.s0, k.start, k.slot);
+    desc[i] = describe<Rotor>(a, i, k.t, k.r, k.position, k.live, k.s0, k.start, k.slot);
   __syncthreads();
 
   // ---------------- phase 1: scores, 8 heads x 32 keys per tile, in registers
@@ -299,7 +396,7 @@ __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
 #pragma unroll
   for (int i = 0; i < G::kTilesPerWarp; ++i) {
     const int tile = warp + i * kWarps;
-    tile_scores(tile * 32 < kWindow, desc[tile * 32 + bkey], qs + arow * kQLd, sc[i]);
+    tile_scores<Rotor>(tile * 32 < kWindow, desc[tile * 32 + bkey], qs + arow * kQLd, centroids, sc[i]);
   }
 
   // ---------------- phase 2: _sink_softmax
@@ -387,27 +484,29 @@ __global__ __launch_bounds__(kThreads, 6) void attend_kernel(Args a) {
 #pragma unroll
     for (int e = 0; e < 8; ++e) o[j][e] = 0.f;
   const half* pa = ps + arow * G::kPLd;
-  pv_steps(desc, 0, pa, 0, 0, kWindow / 4, dbase, kr, o);
-  pv_steps(desc, 0, pa, 0, kWindow / 4, W / 4, dbase, kr, o);
+  pv_steps<Rotor>(desc, 0, pa, 0, 0, kWindow / 4, dbase, kr, centroids, o);
+  pv_steps<Rotor>(desc, 0, pa, 0, kWindow / 4, W / 4, dbase, kr, centroids, o);
   store_out(a, k.t, o);
 }
 
-template <int W>
+template <int W, bool Rotor>
 void launch_w(const Args& a, int tokens, cudaStream_t stream) {
   static bool carved = false;
   if (!carved) {
     // Prefer the 96 KiB shared configuration (6 CTAs x ~16 KB per SM); a hint only.
-    (void)cudaFuncSetAttribute(attend_kernel<W>, cudaFuncAttributePreferredSharedMemoryCarveout,
+    (void)cudaFuncSetAttribute(attend_kernel<W, Rotor>, cudaFuncAttributePreferredSharedMemoryCarveout,
                                int(cudaSharedmemCarveoutMaxShared));
     (void)cudaGetLastError();
     carved = true;
   }
-  attend_kernel<W><<<tokens, kThreads, Geo<W>::kShared, stream>>>(a);
+  constexpr int shared = Geo<W>::kShared + (Rotor ? kRotorTable * sizeof(float) : 0);
+  attend_kernel<W, Rotor><<<tokens, kThreads, shared, stream>>>(a);
 }
 
+template <bool Rotor>
 void launch(const Args& a, int tokens, cudaStream_t stream) {
-  if (a.topk) launch_w<kWindow + 512>(a, tokens, stream);
-  else launch_w<kWindow>(a, tokens, stream);
+  if (a.topk) launch_w<kWindow + 512, Rotor>(a, tokens, stream);
+  else launch_w<kWindow, Rotor>(a, tokens, stream);
 }
 
 void require(bool ok, const char* what) { TORCH_CHECK(ok, "ds41_sparse_attention: ", what); }
@@ -417,22 +516,27 @@ void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::T
             std::optional<torch::Tensor> table, torch::Tensor positions, torch::Tensor valid,
             torch::Tensor token_req, std::optional<torch::Tensor> topk, torch::Tensor sink,
             double scale, int64_t block_size, int64_t ratio, int64_t offset, int64_t first,
-            int64_t last) {
+            int64_t last, int64_t compressed_row_bytes) {
   require(query.scalar_type() == torch::kFloat16 && query.is_contiguous() && query.dim() == 3 &&
               query.size(1) == kHeads && query.size(2) == kDim,
           "query must be FP16 [N, 8, 512]");
   require(out.sizes() == query.sizes() && out.scalar_type() == torch::kFloat16 && out.is_contiguous(),
           "out must match query");
-  require(ring.scalar_type() == torch::kFloat16 && ring.is_contiguous() && ring.dim() == 3 &&
-              ring.size(1) == kRing && ring.size(2) == kDim,
-          "ring must be FP16 [S + 1, 128, 512]");
-  require(values.scalar_type() == torch::kFloat16 && values.is_contiguous() && values.dim() == 2 &&
-              values.size(0) == query.size(0) && values.size(1) == kDim,
-          "values must be FP16 [N, 512]");
+  const bool rotor = ring.scalar_type() == torch::kUInt8;
+  const int window_width = rotor ? kRotorRow : kDim;
+  require((rotor || ring.scalar_type() == torch::kFloat16) && ring.is_contiguous() && ring.dim() == 3 &&
+              ring.size(0) > 0 && ring.size(0) <= std::numeric_limits<int>::max() &&
+              ring.size(1) == kRing && ring.size(2) == window_width,
+          "ring must be FP16 [S + 1, 128, 512] or RotorQuant uint8 [S + 1, 128, 272]");
+  require(values.scalar_type() == ring.scalar_type() && values.is_contiguous() && values.dim() == 2 &&
+              values.size(0) == query.size(0) && values.size(1) == window_width,
+          "values must match the window-ring format");
   require(reinterpret_cast<uintptr_t>(values.data_ptr()) % 16 == 0 &&
               reinterpret_cast<uintptr_t>(ring.data_ptr()) % 16 == 0 &&
               reinterpret_cast<uintptr_t>(query.data_ptr()) % 16 == 0,
           "16-byte aligned query / values / ring");
+  if (rotor)
+    require(reinterpret_cast<uintptr_t>(out.data_ptr()) % 4 == 0, "4-byte aligned RotorQuant output");
   require(positions.scalar_type() == torch::kInt64 && valid.scalar_type() == torch::kBool &&
               token_req.scalar_type() == torch::kInt32 && qsl.scalar_type() == torch::kInt32 &&
               req_slot.scalar_type() == torch::kInt32 && positions.is_contiguous() && valid.is_contiguous() &&
@@ -441,16 +545,20 @@ void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::T
   require(positions.numel() >= query.size(0) && valid.numel() >= query.size(0) &&
               token_req.numel() >= query.size(0),
           "per-token index tensors cover the query rows");
+  if (rotor)
+    require(qsl.numel() >= 1 && req_slot.numel() >= qsl.numel() - 1,
+            "request indexing must cover every request");
   require(sink.scalar_type() == torch::kFloat32 && sink.is_contiguous() && sink.numel() == kHeads,
           "sink FP32 [8]");
-  require(0 <= first && first <= last && last <= query.size(0), "token range");
+  require(0 <= first && first <= last && last <= query.size(0) && last <= std::numeric_limits<int>::max(),
+          "token range");
   const auto device = query.device();
   for (const torch::Tensor* t : {&out, &ring, &values, &qsl, &req_slot, &positions, &valid, &token_req, &sink})
     require(t->device() == device, "every tensor on the query's device");
   Args a{};
   a.query = reinterpret_cast<const half*>(query.data_ptr());
-  a.ring = reinterpret_cast<const half*>(ring.data_ptr());
-  a.values = reinterpret_cast<const half*>(values.data_ptr());
+  a.ring = ring.data_ptr();
+  a.values = values.data_ptr();
   a.qsl = qsl.data_ptr<int32_t>();
   a.req_slot = req_slot.data_ptr<int32_t>();
   a.positions = positions.data_ptr<int64_t>();
@@ -461,11 +569,19 @@ void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::T
   a.slots = int(ring.size(0) - 1);
   a.first = int(first);
   a.scale = float(scale);
-  a.block_size = int(block_size);
-  a.ratio = int(ratio);
-  a.offset = int(offset);
+  a.requests = qsl.numel() - 1;
+  require(cache.has_value() == topk.has_value() && table.has_value() == topk.has_value(),
+          "compressed keys need cache, table and topk together");
+  require(compressed_row_bytes == (topk ? (rotor ? kRotorRow : kLegacyRow) : 0),
+          "compressed row format must match the window-ring mode");
   if (topk.has_value()) {
-    require(cache.has_value() && table.has_value(), "compressed keys need cache and table");
+    require(block_size > 0 && block_size <= std::numeric_limits<int>::max() && ratio > 0 &&
+                ratio <= block_size && block_size % ratio == 0 && offset >= 0 &&
+                offset <= std::numeric_limits<int>::max(),
+            "page geometry");
+    a.block_size = int(block_size);
+    a.ratio = int(ratio);
+    a.offset = int(offset);
     require(topk->scalar_type() == torch::kInt32 && topk->is_contiguous() && topk->dim() == 2 &&
                 topk->size(0) >= query.size(0) && topk->size(1) == 512 && topk->device() == device,
             "topk must be int32 [N, 512]");
@@ -478,11 +594,14 @@ void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::T
             "table int32 [R, pages]");
     a.cache = cache->data_ptr<uint8_t>();
     a.page_bytes = cache->size(1);
-    require(a.page_bytes % 8 == 0 && ratio > 0 && block_size % ratio == 0 &&
-                offset + (block_size / ratio) * 288 <= a.page_bytes,
+    require(a.page_bytes % 8 == 0 && offset + (block_size / ratio) * compressed_row_bytes <= a.page_bytes,
             "page geometry");
+    if (rotor)
+      require(table->size(0) >= a.requests, "page table must cover every request");
+    a.pages = cache->size(0);
     a.table = table->data_ptr<int32_t>();
     a.table_stride = table->stride(0);
+    a.table_columns = table->size(1);
     a.topk = topk->data_ptr<int32_t>();
     a.topk_count = 512;
   }
@@ -490,7 +609,8 @@ void attend(torch::Tensor out, torch::Tensor query, torch::Tensor ring, torch::T
   const c10::cuda::CUDAGuard guard(device);
   const int tokens = int(last - first);
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  launch(a, tokens, stream);
+  if (rotor) launch<true>(a, tokens, stream);
+  else launch<false>(a, tokens, stream);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -501,7 +621,7 @@ void ds41_sparse_attend(torch::Tensor out, torch::Tensor query, torch::Tensor ri
                         std::optional<torch::Tensor> table, torch::Tensor positions, torch::Tensor valid,
                         torch::Tensor token_req, std::optional<torch::Tensor> topk, torch::Tensor sink,
                         double scale, int64_t block_size, int64_t ratio, int64_t offset, int64_t first,
-                        int64_t last) {
+                        int64_t last, int64_t compressed_row_bytes) {
   ds41_sparse_attention::attend(out, query, ring, values, qsl, req_slot, cache, table, positions, valid, token_req,
-                                topk, sink, scale, block_size, ratio, offset, first, last);
+                                topk, sink, scale, block_size, ratio, offset, first, last, compressed_row_bytes);
 }

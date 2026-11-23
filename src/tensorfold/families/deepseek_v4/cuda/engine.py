@@ -31,6 +31,9 @@ from .schedule import RoundCosts, UnitCosts
 from tensorfold.families.gemma4.sm70.ops import OP_ATTACH, OP_DETACH, OP_FORWARD as OP_STEP, OP_GROW, OP_LAYERS, OP_STOP
 _HEAD = struct.Struct("<qqqqq")
 PIPE_TIMEOUT = 600.0
+# An idle follower with outstanding RotorQuant work must surface a device trap
+# even while the leader is blocked on a cross-rank GPU operation.
+ROTOR_ERROR_POLL_S = 1.0
 F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer): score every row; and the last row
 # graph decode flags: return the compact greedy packet (``round_sampling``); and also gather the full rows
 F_COMPACT, F_FULL = 1 << 22, 1 << 23
@@ -59,11 +62,13 @@ class DS41Engine:
                  context: int | None = None, slots: int = 4, max_tokens: int = MAX_TOKENS, parallel: int | None = None,
                  serve: bool = False, queue_timeout_s: float | None = None, graphs: bool = True,
                  keep_slots: int | None = None, prefix_host_bytes: int | None = None, vision: bool = False,
-                 vision_urls: bool = False, vision_offload: bool = False, **_options) -> None:
+                 vision_urls: bool = False, vision_offload: bool = False, yarn_factor: float | None = None,
+                 kv_dtype: str = "bf16", **_options) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
         from tensorfold.cuda.control_pipes import ControlPipes
+        from .. import CUDA_KV_DTYPES, ROTOR_KV_DTYPE
         from . import weights as W
         from .engram import HostEngram
         from .collectives import Collectives
@@ -80,7 +85,15 @@ class DS41Engine:
         self.streams = slots
         raw = read_config(model_dir)
         self.geometry = g = W.Geometry.from_config(raw)
-        self.context = self.context_window = min(int(context or g.max_positions), g.max_positions)
+        if kv_dtype not in CUDA_KV_DTYPES:
+            raise ValueError(f"DeepSeek-V4.1 does not support --kv-dtype {kv_dtype!r}")
+        rotorquant = kv_dtype == ROTOR_KV_DTYPE
+        self.model_kv_dtype = kv_dtype if rotorquant else "fp8-window+fp4-compressed"
+        rope = g.rope_parameters(yarn_factor)
+        self.yarn_factor = rope.factor
+        self.context = self.context_window = int(context or rope.context_limit)
+        if not 1 <= self.context <= rope.context_limit:
+            raise ValueError(f"DeepSeek-V4.1 context must be within the {rope.context_limit}-token YaRN window")
         self.rank, self.world = rank, tp
         self.vocab = g.vocab
         self.max_tokens = max_tokens
@@ -212,11 +225,12 @@ class DS41Engine:
         mine = torch.tensor([free], dtype=torch.int64, device=device)
         every = torch.empty(tp, dtype=torch.int64, device=device)
         self.comm.all_gather(mine, every)
-        from .target import Pool, BLOCK
+        from .target import BLOCK, window_ring_bytes
         from .kernels.mu_packed import PackedLayout
-        page_bytes = PackedLayout({l: g.compress_ratios[l] for l in g.kv_sources}, BLOCK).page_bytes
+        layout = PackedLayout({l: g.compress_ratios[l] for l in g.kv_sources}, BLOCK, rotorquant=rotorquant)
+        page_bytes = layout.page_bytes
         self.slots = slots + keep_slots + 1          # streams, kept chains, the scratch slot
-        ring_bytes = self.slots * g.layers * 128 * 512 * 2
+        ring_bytes = self.slots * g.layers * window_ring_bytes(rotorquant)
         # The decode graphs are captured after the KV pool exists, so their memory comes out of the free memory too:
         # ~30 MiB per captured graph outside the torch pool (graph/NCCL resources) + ~40 MiB pool (ds41-graphs g2:
         # 606 MiB for 18 buckets on one capture stream).
@@ -227,7 +241,7 @@ class DS41Engine:
         target_started = time.perf_counter()
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice,
-                             bias_vl=self.bias_vl)
+                             bias_vl=self.bias_vl, rope=rope, layout=layout)
         clock.add("target", target_started, time.perf_counter() - target_started)
         self.image_features = None          # every rank: the next F_IMAGE step's image rows [n, 5120] FP16
         self.layer_count = len(self.w.layers)
@@ -598,20 +612,37 @@ class DS41Engine:
 
     def follow(self) -> None:
         import torch
-        with torch.inference_mode():
-            while True:
+
+        watch = self.target.rotor_cache is not None
+        pending = False
+        try:
+            with torch.inference_mode():
+                while True:
+                    try:
+                        frame = self.pipes.receive(ROTOR_ERROR_POLL_S if pending else PIPE_TIMEOUT)
+                    except TimeoutError:
+                        if pending:
+                            pending = not torch.cuda.current_stream().query()
+                        continue
+                    if frame is None:
+                        return
+                    op, a, b, c, d = _HEAD.unpack_from(frame)
+                    if op == OP_STOP:
+                        return
+                    payload = array.array("i")
+                    payload.frombytes(frame[_HEAD.size:])
+                    self._run(op, a, b, c, d, list(payload))
+                    pending = watch
+        except BaseException as primary:
+            if watch:
+                from tensorfold.cuda.cohort import notify_failure
+                from tensorfold.cleanup import raise_failures
+
                 try:
-                    frame = self.pipes.receive(PIPE_TIMEOUT)
-                except TimeoutError:
-                    continue
-                if frame is None:
-                    return
-                op, a, b, c, d = _HEAD.unpack_from(frame)
-                if op == OP_STOP:
-                    return
-                payload = array.array("i")
-                payload.frombytes(frame[_HEAD.size:])
-                self._run(op, a, b, c, d, list(payload))
+                    notify_failure()
+                except BaseException as cleanup:
+                    raise_failures(primary, [cleanup])
+            raise
 
     # ---------------------------------------------------------------------------------------- leader
     def step(self, entries, ids, logits_rows, stop=0):

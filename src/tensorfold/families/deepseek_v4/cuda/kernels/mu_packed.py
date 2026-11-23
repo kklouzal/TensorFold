@@ -28,9 +28,9 @@
 """LOCAL-PATCH 87 (ds41_mu_packed) paged FP4 latent rows.
 
 Multi-request DeepSeek-V4.1 (patch 85) with the compressed latents and indexer
-keys stored as the lossless packed FP4 rows of kv_pack.py (288 B per
-compressed row: 256 B E2M1 nibbles + 32 E4M3 group scales; 68 B per index
-row: 64 B nibbles + 4 power-of-two exponents), paged through vLLM's KV
+keys stored as the packed rows of kv_pack.py (288 B per E2M1 compressed
+row or 272 B in the RotorQuant mode; 68 B per index row: 64 B nibbles +
+4 power-of-two exponents), paged through vLLM's KV
 manager, on the GPU. Patch 85 keeps the fork's FP16 paged latents (1 KiB per
 row after the page alignment) and caps contexts at 16K; this lifts the cap to
 the contract's 524288 and stores 534 B per token on PP stage 0 (sources 2, 8,
@@ -44,7 +44,7 @@ Layout (one KV layer per stage, MULTIUSER_DESIGN.md section 15):
     window layer left, vLLM builds exactly one KV group (no SWA groups, one
     block table, no page padding).
   * Window latents (128 keys per token) live in per-slot rings
-    [S + 1, RING, 512] FP16 per layer, like the fork's single-sequence
+    [S + 1, RING, 512] FP16 or [S + 1, RING, 272] uint8 per layer, like the fork's single-sequence
     window rings: keys of this forward come from its own latents, older
     ones from the ring, and the last RING positions of each request are
     written back after attention. A slot is owned by one request (patch 85's
@@ -52,9 +52,9 @@ Layout (one KV layer per stage, MULTIUSER_DESIGN.md section 15):
     are never read (at < 0 is masked).
 
 Numerics (bit-exactness, tests/ds41mu_interpret_check.py section "packed"):
-  * inserts call kv_pack.pack_c_group / pack_i_group on the pre-QDQ values,
-    exactly like the single-sequence packed store (insert_packed_rows /
-    V41PackedKV.insert_compressed): identical bytes per position;
+  * E2M1 inserts call kv_pack.pack_c_group / pack_i_group on the pre-QDQ
+    values, exactly like the single-sequence packed store. RotorQuant latents
+    arrive encoded and are copied by byte to their paged and window stores;
   * attention keys are kv_pack.unpack_c_row of those bytes (the single-
     sequence packed gather), equal to the FP16 QDQ cache values bit for bit;
   * prefill requests (> DECODE_MAX tokens) unpack their live index keys once
@@ -76,11 +76,17 @@ import torch
 from .attention_ops import (ROW_SPLIT_MIN, _attend_fused, _e2m1_bits, _unpack_i_block, select_compressed_positions,
                             select_rows_split)
 from .kv_pack import (
+    C_DIM,
+    C_GROUP,
     C_ROW,
+    I_DIM,
+    I_GROUP,
     I_ROW,
+    ROTOR_ROW,
     pack_c_group,
     pack_i_group,
     unpack_c_row,
+    unpack_rotor_row,
 )
 from .mu_topk import topk as _topk
 from .triton_utils import fma_dot, jit, tl, triton
@@ -98,12 +104,14 @@ class PackedLayout:
     """Byte layout of one KV page (block_size tokens) for a stage's sources.
 
     sources: {layer: ratio}. Regions in ascending layer order:
-    [B/r compressed rows of 288 B][B/r index rows of 68 B] per source."""
+    [B/r compressed rows][B/r index rows of 68 B] per source."""
 
-    def __init__(self, sources, block_size):
+    def __init__(self, sources, block_size, *, rotorquant=False):
         if not sources:
             raise ValueError(f"{LOG}: a packed V4.1 page needs at least one KV source")
         self.block_size = block_size
+        self.rotorquant = rotorquant
+        self.compressed_row_bytes = ROTOR_ROW if rotorquant else C_ROW
         self.regions = {}
         offset = 0
         for layer in sorted(sources):
@@ -111,8 +119,8 @@ class PackedLayout:
             if block_size % ratio:
                 raise ValueError(f"{LOG}: block {block_size} splits a ratio-{ratio} group")
             rows = block_size // ratio
-            self.regions[layer] = (ratio, rows, offset, offset + rows * C_ROW)
-            offset += rows * (C_ROW + I_ROW)
+            self.regions[layer] = (ratio, rows, offset, offset + rows * self.compressed_row_bytes)
+            offset += rows * (self.compressed_row_bytes + I_ROW)
         if offset % block_size:
             raise ValueError(f"{LOG}: page bytes {offset} not a whole bytes-per-token")
         self.page_bytes = offset
@@ -136,6 +144,7 @@ def _pk_insert(
     DIM: tl.constexpr,
     ROW: tl.constexpr,
     COMPRESSED: tl.constexpr,
+    ROTORQUANT: tl.constexpr,
 ):
     """attention_ops._insert_packed with the token's own block-table row."""
     token, group = tl.program_id(0), tl.program_id(1)
@@ -152,7 +161,11 @@ def _pk_insert(
     ).to(tl.int64)
     if valid & (page >= 0):
         row = cache + page * PAGE + OFFSET + ((position % BLOCK_SIZE) // RATIO) * ROW
-        if COMPRESSED:
+        if ROTORQUANT:
+            col = tl.arange(0, 512)
+            data = tl.load(values + token.to(tl.int64) * ROW + col, col < ROW, 0)
+            tl.store(row + col, data, col < ROW)
+        elif COMPRESSED:
             pack_c_group(values + token.to(tl.int64) * DIM, row, group)
         else:
             pack_i_group(values + token.to(tl.int64) * DIM, row, group)
@@ -176,18 +189,25 @@ def insert_rows(
     cache, values, positions, valid_tokens, token_req, block_table, *,
     layout, layer, compressed,
 ):
-    """values: pre-QDQ FP16 [T, 512] (compressed) / [T, 128] (index), RoPE applied."""
+    """RoPE-applied FP16 [T, 512] (E2M1) / [T, 128] (index), or packed uint8 RotorQuant rows."""
     _check(cache, block_table, layout.page_bytes)
     ratio, _rows, c_offset, i_offset = layout.regions[layer]
-    dim, group, size = (512, 16, C_ROW) if compressed else (128, 32, I_ROW)
+    rotorquant = compressed and layout.rotorquant
+    size = layout.compressed_row_bytes if compressed else I_ROW
+    if rotorquant:
+        dim, groups, dtype = size, 1, torch.uint8
+    elif compressed:
+        dim, groups, dtype = C_DIM, C_DIM // C_GROUP, torch.float16
+    else:
+        dim, groups, dtype = I_DIM, I_DIM // I_GROUP, torch.float16
     if (
-        values.dtype != torch.float16
+        values.dtype != dtype
         or values.shape != (positions.numel(), dim)
         or token_req.numel() < positions.numel()
     ):
         raise ValueError(f"{LOG}: packed insertion shapes")
     if values.shape[0]:
-        _pk_insert[(values.shape[0], dim // group)](
+        _pk_insert[(values.shape[0], groups)](
             values.contiguous(),
             positions,
             valid_tokens,
@@ -202,6 +222,7 @@ def insert_rows(
             DIM=dim,
             ROW=size,
             COMPRESSED=compressed,
+            ROTORQUANT=rotorquant,
         )
 
 
@@ -389,7 +410,7 @@ def gather_request_rows(cache, block_table_row, length, *, layout, layer, compre
     """The single-sequence store's position-addressed rows of one request."""
     _check(cache, block_table_row, layout.page_bytes, ndim=1)
     _ratio, rows, c_offset, i_offset = layout.regions[layer]
-    size = C_ROW if compressed else I_ROW
+    size = layout.compressed_row_bytes if compressed else I_ROW
     out = torch.zeros(max(length, 1), size, dtype=torch.uint8, device=cache.device)
     if length:
         _pk_gather_rows[(length,)](
@@ -430,6 +451,7 @@ def _pk_gather_attention(
     RING_ROWS: tl.constexpr,
     WINDOW_KEYS: tl.constexpr,
     TOPK: tl.constexpr,
+    ROTORQUANT: tl.constexpr,
 ):
     """Window keys from this forward / the slot ring (attention_ops.
     _gather_attention_ring per request), compressed keys unpacked from the
@@ -442,18 +464,23 @@ def _pk_gather_attention(
     col = tl.arange(0, 512)
     if key < WINDOW_KEYS:
         rr = tl.where(r >= 0, r, 0)
-        s0 = tl.load(qsl + rr).to(tl.int64)
-        start = tl.load(positions + s0).to(tl.int64)
+        s0 = tl.load(qsl + rr, valid, 0).to(tl.int64)
+        start = tl.load(positions + s0, valid, 0).to(tl.int64)
         slot = tl.load(req_slot + rr, valid, S).to(tl.int64)
         slot = tl.where((slot >= 0) & (slot <= S), slot, S)
         at = position - WINDOW_KEYS + 1 + key
         valid &= at >= 0
         inside = at >= start
-        new = tl.load(values + (s0 + at - start) * 512 + col, valid & inside, 0)
-        old = tl.load(
-            ring + (slot * RING_ROWS + at % RING_ROWS) * 512 + col, valid & ~inside, 0
-        )
-        value = tl.where(inside, new, old)
+        if ROTORQUANT:
+            new = values + (s0 + at - start) * ROTOR_ROW
+            old = ring + (slot * RING_ROWS + at % RING_ROWS) * ROTOR_ROW
+            value = unpack_rotor_row(tl.where(inside, new, old), valid)
+        else:
+            new = tl.load(values + (s0 + at - start) * 512 + col, valid & inside, 0)
+            old = tl.load(
+                ring + (slot * RING_ROWS + at % RING_ROWS) * 512 + col, valid & ~inside, 0
+            )
+            value = tl.where(inside, new, old)
     else:
         index = tl.load(topk + token * TOPK + key - WINDOW_KEYS).to(tl.int64)
         valid &= (index >= 0) & (index < (position + 1) // RATIO)
@@ -462,11 +489,15 @@ def _pk_gather_attention(
             block_table + r * TABLE_STRIDE + index // ROWS, valid, -1
         ).to(tl.int64)
         valid &= page >= 0
-        # unpack_c_row loads unconditionally: keep the address in bounds.
-        page = tl.where(valid, page, 0)
-        safe = tl.where(valid, index, 0)
-        row = cache + page * PAGE + OFFSET + (safe % ROWS) * 288
-        value = tl.where(valid, unpack_c_row(row), 0.0).to(tl.float16)
+        if ROTORQUANT:
+            row = cache + page * PAGE + OFFSET + (index % ROWS) * ROTOR_ROW
+            value = unpack_rotor_row(row, valid)
+        else:
+            # unpack_c_row loads unconditionally: keep the address in bounds.
+            page = tl.where(valid, page, 0)
+            safe = tl.where(valid, index, 0)
+            row = cache + page * PAGE + OFFSET + (safe % ROWS) * C_ROW
+            value = tl.where(valid, unpack_c_row(row), 0.0).to(tl.float16)
     tl.store(keys + (local * (WINDOW_KEYS + TOPK) + key) * 512 + col, value)
     tl.store(unused + local * (WINDOW_KEYS + TOPK) + key, ~valid)
 
@@ -474,30 +505,39 @@ def _pk_gather_attention(
 @jit
 def _pk_ring_insert(
     values, positions, valid_tokens, token_req, qsl, req_slot, ring,
-    S: tl.constexpr, RING_ROWS: tl.constexpr,
+    S: tl.constexpr, RING_ROWS: tl.constexpr, ROW: tl.constexpr,
 ):
     """After attention: each request's last RING_ROWS positions into its slot."""
     t = tl.program_id(0)
     r = tl.load(token_req + t).to(tl.int64)
     rr = tl.where(r >= 0, r, 0)
     live = (tl.load(valid_tokens + t) != 0) & (r >= 0)
-    s1 = tl.load(qsl + rr + 1).to(tl.int64)
+    s1 = tl.load(qsl + rr + 1, live, 0).to(tl.int64)
     last = tl.load(positions + s1 - 1, live, 0).to(tl.int64)
     position = tl.load(positions + t).to(tl.int64)
     slot = tl.load(req_slot + rr, live, S).to(tl.int64)
     ok = live & (position >= 0) & (slot >= 0) & (slot < S) & (position > last - RING_ROWS)
     col = tl.arange(0, 512)
-    data = tl.load(values + t * 512 + col, ok, 0)
-    tl.store(ring + (slot * RING_ROWS + position % RING_ROWS) * 512 + col, data, ok)
+    valid = ok & (col < ROW)
+    data = tl.load(values + t.to(tl.int64) * ROW + col, valid, 0)
+    tl.store(ring + (slot * RING_ROWS + position % RING_ROWS) * ROW + col, data, valid)
+
+
+def _window_row_width(ring, values, tokens):
+    width, dtype = (ROTOR_ROW, torch.uint8) if ring.dtype == torch.uint8 else (C_DIM, torch.float16)
+    if (ring.ndim != 3 or ring.shape[0] < 1 or ring.shape[1:] != (RING, width)
+            or not ring.is_contiguous() or ring.dtype != dtype or values.dtype != dtype
+            or values.shape != (tokens, width) or values.device != ring.device):
+        raise ValueError(f"{LOG}: window ring shapes or dtype")
+    return width
 
 
 def insert_ring(ring, values, positions, valid_tokens, token_req, qsl, req_slot):
-    if values.shape != (positions.numel(), 512) or ring.shape[1:] != (RING, 512):
-        raise ValueError(f"{LOG}: window ring shapes")
+    width = _window_row_width(ring, values, positions.numel())
     if values.shape[0]:
         _pk_ring_insert[(values.shape[0],)](
             values.contiguous(), positions, valid_tokens, token_req, qsl, req_slot,
-            ring, S=ring.shape[0] - 1, RING_ROWS=RING,
+            ring, S=ring.shape[0] - 1, RING_ROWS=RING, ROW=width,
         )
 
 
@@ -508,14 +548,18 @@ def gather_attention(
 ):
     """keys [n, 128 + k, 512] FP16 / unused [n, 128 + k] for tokens [first, last).
 
-    topk, positions, valid_tokens, token_req and values are the whole batch's."""
+    topk, positions, valid_tokens, token_req and values are the whole batch's.
+    RotorQuant keys are decoded to FP16 in their rotated basis."""
     compressed = cache is not None
     count = topk.shape[1] if compressed else 0
     n = last - first
+    rotorquant = _window_row_width(ring, values, positions.numel()) == ROTOR_ROW
     if keys.shape != (n, WINDOW + count, 512) or unused.shape != (n, WINDOW + count):
         raise ValueError(f"{LOG}: gather output shapes")
     if compressed:
         _check(cache, block_table, layout.page_bytes)
+        if layout.rotorquant != rotorquant:
+            raise ValueError(f"{LOG}: compressed pages and window require a common attention basis")
         ratio, _rows, c_offset, _i = layout.regions[layer]
     else:
         ratio, c_offset = 1, 0
@@ -543,6 +587,7 @@ def gather_attention(
             RING_ROWS=RING,
             WINDOW_KEYS=WINDOW,
             TOPK=count,
+            ROTORQUANT=rotorquant,
         )
 
 

@@ -92,12 +92,16 @@ def attention_qdq(x, *, fp4=False, group=128, e4m3_scale=False, inplace=False):
     return result
 
 
-def rope_table(max_length=16384, *, compressed=False, device="cuda"):
+def rope_table(max_length=16384, *, compressed=False, device="cuda", rope=None):
     """Checkpoint YaRN applies to compressed layers even below 16K tokens."""
-    dim, base = 64, 160000.0 if compressed else 10000.0
+    if rope is None:
+        from ..weights import Geometry
+
+        rope = Geometry().rope_parameters()
+    dim, base = 64, rope.compressed_theta if compressed else rope.window_theta
     frequencies = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
     if compressed:
-        original, factor = 65536, 16.0
+        original, factor = rope.original_context, rope.factor
 
         def corrected(rotations):
             return (
@@ -107,8 +111,8 @@ def rope_table(max_length=16384, *, compressed=False, device="cuda"):
             )
 
         low, high = (
-            max(math.floor(corrected(32)), 0),
-            min(math.ceil(corrected(1)), dim - 1),
+            max(math.floor(corrected(rope.beta_fast)), 0),
+            min(math.ceil(corrected(rope.beta_slow)), dim - 1),
         )
         ramp = (
             (torch.arange(dim // 2, dtype=torch.float32) - low) / max(high - low, 1e-3)

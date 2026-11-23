@@ -90,17 +90,27 @@ class Step:
     single_token_slots: bool = False           # decode graph: one row per live slot, scratch rows never commit
 
 
-class Pool:
-    """Packed KV pages (patch 87 PackedLayout: per source, B/r compressed rows of 288 B then B/r index rows of
-    68 B) and per-slot window rings [slots, 128, 512] FP16 for every layer. Identical on every rank."""
+def window_ring_bytes(rotorquant: bool) -> int:
+    from .kernels.kv_pack import C_DIM, ROTOR_ROW
+    from .kernels.mu_packed import RING
 
-    def __init__(self, geometry: Geometry, pages: int, slots: int, device):
+    return RING * (ROTOR_ROW if rotorquant else C_DIM * 2)
+
+
+class Pool:
+    """Packed latent/index pages and one FP16 or RotorQuant window ring per layer and slot."""
+
+    def __init__(self, geometry: Geometry, pages: int, slots: int, device, *, layout=None):
+        from .kernels.kv_pack import C_DIM, ROTOR_ROW
         from .kernels.mu_packed import PackedLayout, RING
-        sources = {layer: geometry.compress_ratios[layer] for layer in geometry.kv_sources}
-        self.layout = PackedLayout(sources, BLOCK)
+        if layout is None:
+            sources = {layer: geometry.compress_ratios[layer] for layer in geometry.kv_sources}
+            layout = PackedLayout(sources, BLOCK)
+        self.layout = layout
         self.pages = pages
         self.cache = torch.zeros(pages, self.layout.page_bytes, dtype=torch.uint8, device=device)
-        self.rings = [torch.zeros(slots, RING, 512, dtype=torch.float16, device=device)
+        width, dtype = (ROTOR_ROW, torch.uint8) if layout.rotorquant else (C_DIM, torch.float16)
+        self.rings = [torch.zeros(slots, RING, width, dtype=dtype, device=device)
                       for _ in range(geometry.layers)]
         self.free = list(range(pages - 1, -1, -1))    # lowest page first (pop from the end)
         self.owned: dict[int, list[int]] = {}
@@ -130,7 +140,7 @@ class Pool:
 # ------------------------------------------------------------------------------------------------ the model
 class Target:
     def __init__(self, w: Weights, comm: Collectives, *, slots: int, pages: int, max_tokens: int, context: int,
-                 engram, device, lattice, bias_vl=None):
+                 engram, device, lattice, rope, layout, bias_vl=None):
         from .kernels import quant_rope, mu_state
         self.w, self.c, self.g = w, comm, w.geometry
         self.device = device
@@ -140,10 +150,15 @@ class Target:
         # ratio): the admitted context, or a smaller startup graph class (graphs.py) every row of the batch fits
         self.index_context = context
         self.max_tokens = max_tokens
-        self.pool = Pool(self.g, pages, slots, device)
+        self.pool = Pool(self.g, pages, slots, device, layout=layout)
+        self.rotor_cache = None
+        if layout.rotorquant:
+            from .rotor_cache import RotorCache
+
+            self.rotor_cache = RotorCache(device)
         self.engram = engram
-        self.window_rope = quant_rope.rope_table().to(device)
-        self.compressed_rope = quant_rope.rope_table(compressed=True).to(device)
+        self.window_rope = quant_rope.rope_table(rope=rope, device=device)
+        self.compressed_rope = quant_rope.rope_table(compressed=True, rope=rope, device=device)
         g = self.g
         self.hash_state = mu_state.MuEngramHashState(
             w.engram_token_map, w.engram_primes, w.engram_offsets, w.engram_multipliers, slots=slots - 1,
@@ -206,10 +221,17 @@ class Target:
         query = qr_ops.apply_rope(self._linear(qr, ly.wq_b).view(tokens, -1, 512), positions, table)
         pool = self.pool
         ring = pool.rings[ly.index]
+        rotor = self.rotor_cache
+        valid = step.valid
         # A one-row request reads the current value from window; the prior
         # RING-1 positions never alias the ring row being written here.
-        decode_ring = (ring, step.req_slot, step.valid) if step.single_token_slots else None
-        if decode_ring is not None and 1 <= tokens <= 64:
+        decode_ring = (ring, step.req_slot, step.valid) if rotor is None and step.single_token_slots else None
+        if rotor is not None:
+            valid = shared["rotor_valid"]
+            query = rotor.rotate(query, valid, ly.index)
+            physical_window = qr_ops.apply_rope(self._norm(kv_low, ly.kv_norm), positions, table)
+            window = rotor.pack(physical_window, valid, ly.index)
+        elif decode_ring is not None and 1 <= tokens <= 64:
             window = rope_qdq(kv_low, positions, table, decode_ring=decode_ring,
                               decode_norm=(ly.kv_norm, self.g.eps))
         else:
@@ -220,10 +242,13 @@ class Target:
                 latent = self._compress(ly, x, step)
                 key = self._norm(self._linear(latent, ly.idx_wk), ly.idx_k_norm)
                 key = qr_ops.apply_rope(key, (positions - (ly.ratio - 1)).clamp_min(0), table)
-                pk.insert_rows(pool.cache, key, positions, step.valid, step.token_req, step.block_table,
+                pk.insert_rows(pool.cache, key, positions, valid, step.token_req, step.block_table,
                                layout=pool.layout, layer=ly.index, compressed=False)
                 compact = qr_ops.apply_rope(latent, (positions - ly.ratio + 1).clamp_min(0), table)
-                pk.insert_rows(pool.cache, compact, positions, step.valid, step.token_req, step.block_table,
+                if rotor is not None:
+                    live = valid if ly.ratio == 1 else valid & ((positions + 1) % ly.ratio == 0)
+                    compact = rotor.pack(compact, live, ly.index)
+                pk.insert_rows(pool.cache, compact, positions, valid, step.token_req, step.block_table,
                                layout=pool.layout, layer=ly.index, compressed=True)
             if ly.has_indexer:
                 shared["topk"] = self._select(ly, x, qr, step, table)
@@ -231,7 +256,9 @@ class Target:
                          topk=shared["topk"])
         output = self._attend(query, step, ring, window, ly.sink, **extra)
         if decode_ring is None:
-            pk.insert_ring(ring, window, positions, step.valid, step.token_req, step.qsl, step.req_slot)
+            pk.insert_ring(ring, window, positions, valid, step.token_req, step.qsl, step.req_slot)
+        if rotor is not None:
+            output = rotor.rotate(output, valid, ly.index, inverse=True)
         output = rope_qdq(output, positions, table, inverse=True)   # TP8: one output group per rank; qdq(rope^-1)
         projected = self._linear(output.reshape(tokens, -1), ly.wo_a)
         partial = self._linear(projected, ly.wo_b)
@@ -391,7 +418,12 @@ class Target:
         hidden = hidden.float()[:, None].expand(-1, g.hc, -1).contiguous()
         pre = torch.zeros(hidden.shape[0], g.hc, device=hidden.device, dtype=torch.float32)
         pre[:, 0] = 1
-        return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": {"topk": None},
+        shared = {"topk": None}
+        if self.rotor_cache is not None:
+            from .rotor_cache import live_rows
+
+            shared["rotor_valid"] = live_rows(step, self.slots - 1)
+        return {"step": step, "hashes": hashes, "hidden": hidden, "pre": pre, "shared": shared,
                 "mix": None, "half": None, "next": 0, "result": None, "valid": valid,
                 "image": step.image, "shard": shard}
 

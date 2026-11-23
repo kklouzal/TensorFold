@@ -14,9 +14,9 @@ zero inactive scratch rows, while preserving output rows beyond ``rows``.
 Status is the existing int32 [bits, first_layer] with an initial layer sentinel
 of -2. Bad source/rotation values latch ``error``; invalid RMS or FP16 decoded
 operands latch8; invalid device indices/live-row counts latch16. Status remains
-sticky. Omitting it is only valid for previously validated finite/range-safe
-operands and device controls. Model encoding/query preparation supplies status;
-readers may omit it only under their validated cache and working-range contract.
+sticky. Encoding and rotation can also trap on the current stream before a
+failed group writes. Without either status or a trap, callers must prove their
+operands and device controls finite and in range.
 These primitives do not admit a format: the existing ordered descriptor policy
 selects supported model formats independently.
 """
@@ -46,7 +46,7 @@ def extension():
 
 
 def encode(x, codes, scales, *, codec=4, position=None, status=None, error=2, layer=0,
-           valid_rows=None, rows=None):
+           valid_rows=None, rows=None, trap_on_error=False):
     """[R,H,D] FP16/FP32 -> uint8 [C,H,D/2], four-byte metadata [C,H,D/128].
 
     The metadata tensor dtype is float32. CODEC1..5 store numerical FP32
@@ -56,18 +56,20 @@ def encode(x, codes, scales, *, codec=4, position=None, status=None, error=2, la
     int64 ``position[1]`` selects the destination base; bounds are checked on
     device without a host readback. A nullable CUDA int32 ``valid_rows[1]``
     limits active source rows. An invalid active cache index latches16 and does
-    not write. No allocations occur after preparation.
+    not write. With ``trap_on_error=True``, active numeric or control failures
+    are fatal on the current stream, including when it is replaying a graph.
+    No allocations occur after preparation.
     """
     extension().encode(x, codes, scales, position, status, valid_rows,
-                       codec, x.shape[0] if rows is None else rows, error, layer)
+                       codec, x.shape[0] if rows is None else rows, error, layer, trap_on_error)
     return codes, scales
 
 
 def rotate(x, out, *, codec=4, inverse=False, status=None, error=1, layer=0,
-           valid_rows=None, rows=None):
-    """Staged FP32 basis transform, rounded to the caller's FP16/FP32 output."""
+           valid_rows=None, rows=None, trap_on_error=False):
+    """Staged FP32 basis transform with the same optional fatal mode as encode."""
     extension().rotate(x, out, status, valid_rows, codec, x.shape[0] if rows is None else rows,
-                       inverse, error, layer)
+                       inverse, error, layer, trap_on_error)
     return out
 
 

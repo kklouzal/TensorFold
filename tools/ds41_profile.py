@@ -1,9 +1,10 @@
 """DeepSeek-V4.1 SM70 per-kernel profile driver (development tool; one model load serves every case).
 
 usage: ds41_profile.py MODEL_DIR OUT_DIR [--cases 16384x32,16384x8,...] [--corpus TEXT_FILE]
+       [--kv-dtype rotorquant-iso64-norm4-h64] [--yarn-factor 2]
 
 Eight rank processes (CUDA_VISIBLE_DEVICES=r, as tools/launch_cuda_tp.py and harness/m2.py) build DS41Engine
-(serve=False, --parallel 32 --context 65536 graphs on: the matrix server's configuration, host prefix tier off).
+(serve=False, 32 lanes, 65536 context, RotorQuant Q4 KV, YaRN 2, graphs on, host prefix tier off).
 Rank 0 drives through the control pipes; profiler / clone / eager-twin control frames use operation codes >= 900
 handled by a driver-side ``_run`` wrapper on every rank (no production change).
 
@@ -24,6 +25,7 @@ annotated phases: label stack, kind, dtype, elements). tools/ds41_profile_report
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import functools
 import json
@@ -190,7 +192,7 @@ def case_names(spec):
     return names
 
 
-def rank_main(rank, model, out, port, spec):
+def rank_main(rank, model, out, port, spec, kv_dtype, yarn_factor):
     import torch
     from tensorfold.families.deepseek_v4.cuda import engine as EN
     install_wrappers()
@@ -206,14 +208,15 @@ def rank_main(rank, model, out, port, spec):
     EN.DS41Engine._run = run
     t_start = time.perf_counter()
     e = EN.DS41Engine(model, rank=rank, tp=8, master="127.0.0.1", master_port=port, context=65536, parallel=32,
-                      serve=False, prefix_host_bytes=0)
+                      serve=False, prefix_host_bytes=0, kv_dtype=kv_dtype, yarn_factor=yarn_factor)
     holder["prof"] = Prof(e, out)
     e.comm.all_gather = _comm_logger("all_gather", e.comm.all_gather)   # Collectives.world is this object
     if rank:
         e.follow()
         e.close()
         return
-    phases = {"engine_init_s": time.perf_counter() - t_start, "load_seconds": e.load_seconds,
+    phases = {"kv_dtype": e.model_kv_dtype, "yarn_factor": e.yarn_factor,
+              "engine_init_s": time.perf_counter() - t_start, "load_seconds": e.load_seconds,
               "graph_capture_s": e.graphs.seconds if e.graphs else None,
               "graph_bytes": e.graphs.bytes if e.graphs else None}
     print(f"[prof] engine up in {phases['engine_init_s']:.1f} s", flush=True)
@@ -344,18 +347,20 @@ def tokenize(model, corpus, count):
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "--rank":
-        spec = [tuple(int(v) for v in x.split("x")) for x in sys.argv[6].split(",") if x]
-        rank_main(int(sys.argv[2]), sys.argv[3], sys.argv[4], int(sys.argv[5]), spec)
+    if sys.argv[1:2] == ["--rank"]:
+        _, _, rank, model, out, port, cases, kv_dtype, yarn_factor = sys.argv
+        spec = [tuple(int(v) for v in x.split("x")) for x in cases.split(",") if x]
+        rank_main(int(rank), model, out, int(port), spec, kv_dtype, float(yarn_factor))
         sys.exit(0)
-    model, out = sys.argv[1], sys.argv[2]
-    args = sys.argv[3:]
-    cases = "16384x32,16384x8,16384x1,4096x32,4096x8,4096x1"
-    corpus = "/home/kklouzal/build-cache/matrix-ds41/corpus-0913d721-ds41.txt"
-    if "--cases" in args:
-        cases = args[args.index("--cases") + 1]
-    if "--corpus" in args:
-        corpus = args[args.index("--corpus") + 1]
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("model")
+    parser.add_argument("out")
+    parser.add_argument("--cases", default="16384x32,16384x8,16384x1,4096x32,4096x8,4096x1")
+    parser.add_argument("--corpus", default="/home/kklouzal/build-cache/matrix-ds41/corpus-0913d721-ds41.txt")
+    parser.add_argument("--kv-dtype", choices=("rotorquant-iso64-norm4-h64", "bf16"), default="rotorquant-iso64-norm4-h64")
+    parser.add_argument("--yarn-factor", type=float, default=2.0)
+    args = parser.parse_args()
+    model, out, cases, corpus = args.model, args.out, args.cases, args.corpus
     os.makedirs(out, exist_ok=True)
     json.dump(tokenize(model, corpus, 16384), open(os.path.join(out, "prompt-ids.json"), "w"))
     port = 29700
@@ -363,7 +368,8 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     for r in range(8):
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(r))
-        cmd = [sys.executable, __file__, "--rank", str(r), model, out, str(port), cases]
+        cmd = [sys.executable, __file__, "--rank", str(r), model, out, str(port), cases,
+               args.kv_dtype, str(args.yarn_factor)]
         node = "0" if r < 4 else "1"
         if subprocess.run(["which", "numactl"], capture_output=True).returncode == 0:
             cmd = (["numactl", f"--cpunodebind={node}", f"--membind={node}"] if r else

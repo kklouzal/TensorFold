@@ -83,6 +83,96 @@ def fused(args, kw, **extra):
     return sa.attend(*args, **kw, **extra)
 
 
+def encode_rotor_rows(rows):
+    from tensorfold.cuda.sm70 import rotorquant_q4_native as codec
+
+    matrix = rows.reshape(-1, 1, 512)
+    n = matrix.shape[0]
+    codes = torch.empty(n, 1, 256, dtype=torch.uint8, device=rows.device)
+    scales = torch.empty(n, 1, 4, dtype=torch.float32, device=rows.device)
+    codec.encode(matrix, codes, scales, codec=11)
+    decoded = torch.empty_like(matrix)
+    codec.decode(codes, scales, decoded, codec=11)
+    wire = torch.cat((codes.view(n, 256), scales.view(torch.uint8).view(n, 16)), dim=1)
+    return wire.reshape(*rows.shape[:-1], 272), decoded.view_as(rows)
+
+
+def test_fused_rotor_window_matches_explicit_decode_on_replay():
+    args, kw = build([(129, 4), (0, 3)], compressed=False, seed=52)
+    query, positions, step, req_slot, ring, window, sink = args
+    packed_ring, _ = encode_rotor_rows(ring)
+    packed_window, _ = encode_rotor_rows(window)
+    operands = (query, positions, step, req_slot, packed_ring, packed_window, sink)
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        fused(operands, kw)
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        actual = fused(operands, kw)
+
+    for scale in (1, -2):
+        ring_bytes, ring_half = encode_rotor_rows(ring * scale)
+        window_bytes, window_half = encode_rotor_rows(window * scale)
+        packed_ring.copy_(ring_bytes)
+        packed_window.copy_(window_bytes)
+        want = fused((query, positions, step, req_slot, ring_half, window_half, sink), kw)
+        graph.replay()
+        assert torch.equal(actual.view(torch.int16), want.view(torch.int16))
+
+    with pytest.raises(RuntimeError, match="values must match the window-ring format"):
+        fused((query, positions, step, req_slot, packed_ring, window, sink), kw)
+
+
+@pytest.mark.parametrize("source", [2, 20])
+def test_fused_rotor_paged_latent_matches_single_selected_key(source):
+    from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import PackedLayout
+
+    args, legacy = build([(62, 4), (126, 4), (0, 2)], source=source, seed=81)
+    query, positions, step, req_slot, ring, window, sink = args
+    query.zero_()
+    sink.zero_()
+    layout = PackedLayout(SOURCES, BLOCK, rotorquant=True)
+    ratio, per, offset, _ = layout.regions[source]
+    table = legacy["block_table"].clone()
+    table[1, 1] = -1
+    pages = legacy["cache"].shape[0]
+    cache = torch.full((pages, layout.page_bytes), 255, dtype=torch.uint8, device=query.device)
+    rng = torch.Generator(device=query.device).manual_seed(34)
+    latents = (0.7 + torch.rand((pages, per, 512), generator=rng, device=query.device)).half()
+    wire, decoded = encode_rotor_rows(latents)
+    cache[:, offset:offset + per * 272].copy_(wire.flatten(1))
+    # A zero code and zero scale represent a zero row. Its sign has no impact on the one-term PV result.
+    packed_ring = torch.zeros((*ring.shape[:-1], 272), dtype=torch.uint8, device=query.device)
+    packed_window = torch.zeros((len(window), 272), dtype=torch.uint8, device=query.device)
+    topk = torch.full_like(legacy["topk"], -1)
+    newest = (positions + 1) // ratio - 1
+    topk[:, 0] = newest.int()
+    topk[:, 1] = newest.int() + 1  # a causally future key must be masked
+    kw = dict(cache=cache, block_table=table, layout=layout, source=source, topk=topk)
+    actual = fused((query, positions, step, req_slot, packed_ring, packed_window, sink), kw)
+
+    expected = torch.zeros_like(actual)
+    requests = step.token_req.tolist()
+    live = step.valid.tolist()
+    page_ids = table.tolist()
+    for row, (pos, req, valid, index) in enumerate(zip(positions.tolist(), requests, live, newest.tolist())):
+        if not valid or index < 0:
+            continue
+        page = page_ids[req][index // per]
+        if page >= 0:
+            probability = torch.tensor(1 / (min(pos + 1, 128) + 2), device=query.device).half()
+            expected[row] = (decoded[page, index % per].float() * probability.float()).half()
+    assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+
+    with pytest.raises(ValueError, match="compressed row format must match"):
+        fused((query, positions, step, req_slot, packed_ring, packed_window, sink), legacy)
+    with pytest.raises(ValueError, match="compressed row format must match"):
+        fused(args, kw)
+
+
 @pytest.mark.parametrize("requests,compressed", [([(127, 1)], True),
     ([(127, 1), (128, 1), (16384, 1), (0, 1)], True),
     ([(127, 1), (128, 1), (16384, 1), (0, 1)], False)])

@@ -6,7 +6,7 @@
 # - @triton.jit -> triton_utils.jit: the same JITFunction; launches add the SM70 Triton 3.2 profile options
 #   (ptx_version=83, needed with CUDA 12.9 ptxas). Kernel arithmetic unchanged.
 # - vllm.triton_utils / fp8_software imports -> package-relative.
-"""Lossless packed V4.1 KV rows (G4b).
+"""Packed V4.1 KV rows.
 
 The checkpoint stores QDQ values in the caches. Compressed latents use E2M1
 groups of 16 with an E4M3 scale; indexer keys use E2M1 groups of 32 with a
@@ -15,15 +15,21 @@ values bit for bit at a fraction of the bytes:
 
   compressed row (512): 256 B nibbles + 32 B E4M3 scales  = 288 B
   index row      (128):  64 B nibbles +  4 B scale exponents = 68 B
+
+The optional SM70 RotorQuant window and compressed latents share codec 11's
+layout (256 B nibbles + eight FP16 scales), in its rotated basis.
 """
 
 import torch
+
+from tensorfold.families.qwen4_exp.cuda.rotorquant_kernel import _centroids
 
 from .fp8_software import fp8_e4m3fn_bits_to_fp32_bitcast, fp32_to_fp8_e4m3fn_bits
 from .triton_utils import jit, tl
 
 C_DIM, C_GROUP, C_ROW = 512, 16, 288
 I_DIM, I_GROUP, I_ROW = 128, 32, 68
+ROTOR_ROW = C_DIM // 2 + (C_DIM // 64) * 2
 
 
 @jit
@@ -86,6 +92,21 @@ def unpack_c_row(row_ptr):
     code = tl.where(j % 2 == 0, byte & 15, (byte >> 4) & 15)
     scale = fp8_e4m3fn_bits_to_fp32_bitcast(tl.load(row_ptr + 256 + j // 16))
     return (_fp4_decode(code) * scale).to(tl.float16)
+
+
+@jit
+def unpack_rotor_row(row_ptr, valid):
+    """Codec 11 decoded to FP16 in its rotated basis (tf_rq4::half_group_scale)."""
+    j = tl.arange(0, C_DIM)
+    byte = tl.load(row_ptr + j // 2, valid, 0).to(tl.int32)
+    code = (byte >> (4 * (j % 2))) & 15
+    half_ptr = row_ptr + C_DIM // 2 + 2 * (j // 64)
+    lo = tl.load(half_ptr, valid, 0).to(tl.uint16)
+    hi = tl.load(half_ptr + 1, valid, 0).to(tl.uint16)
+    scale = (lo | (hi << 8)).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    # Finite nonzero FP16 scales times these FP32 centroids are normal FP32.
+    value = (_centroids(code, 4) * scale).to(tl.float16)
+    return tl.where(valid, value, tl.full((C_DIM,), 0, tl.float16))
 
 
 @jit

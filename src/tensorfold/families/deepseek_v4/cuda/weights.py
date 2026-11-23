@@ -37,6 +37,18 @@ ENGRAM_ROW_BYTES = 144                   # 256 IQ4_NL values
 
 
 @dataclass(frozen=True)
+class RopeParameters:
+    factor: float
+    context_limit: int
+    original_context: int
+    beta_fast: float
+    beta_slow: float
+    window_theta: float
+    compressed_theta: float
+    rope_type = "yarn"
+
+
+@dataclass(frozen=True)
 class Geometry:
     """The checkpoint geometry the ported kernels admit (upstream contract.py and the adapter's checks)."""
 
@@ -112,6 +124,34 @@ class Geometry:
             raise ValueError("DeepSeek-V4.1 CUDA lane admits the V4.1 Flash geometry only (the ported 1Cat kernels' "
                              f"contract); this checkpoint has {actual}")
         return g
+
+    def rope_parameters(self, yarn_factor: float | None = None) -> RopeParameters:
+        """YaRN scales the compressed layers. The window-only layers keep plain RoPE."""
+        scaling = self.rope_scaling
+        kind = scaling.get("rope_type", scaling.get("type", "yarn"))
+        if kind != "yarn" or scaling.get("type", kind) != kind:
+            raise ValueError("DeepSeek-V4.1 compressed layers require static YaRN")
+        original = scaling.get("original_max_position_embeddings", 65_536)
+        if type(original) is not int or not 0 < original <= self.max_positions:
+            raise ValueError("DeepSeek-V4.1 YaRN original context must be within the checkpoint's context")
+        native = scaling.get("factor", 16.0)
+        factor = native if yarn_factor is None else yarn_factor
+        fast, slow = scaling.get("beta_fast", 32), scaling.get("beta_slow", 1)
+        floats = np.finfo(np.float32)
+        least, most = float(floats.smallest_subnormal), float(floats.max)
+        for value, name in ((factor, "YaRN factor"), (fast, "beta_fast"), (slow, "beta_slow"),
+                            (self.rope_theta, "rope_theta"), (self.compress_rope_theta, "compress_rope_theta")):
+            if type(value) not in (int, float) or not least <= value <= most:
+                raise ValueError(f"DeepSeek-V4.1 {name} must be positive in the finite FP32 range")
+        if factor < 1:
+            raise ValueError("DeepSeek-V4.1 requires YaRN factor >= 1")
+        if np.float32(min(self.rope_theta, self.compress_rope_theta)) <= 1:
+            raise ValueError("DeepSeek-V4.1 RoPE bases must exceed 1 in FP32")
+        if slow > fast:
+            raise ValueError("DeepSeek-V4.1 YaRN beta_slow cannot exceed beta_fast")
+        context = self.max_positions if factor >= self.max_positions / original else math.floor(original * factor)
+        return RopeParameters(float(factor), context, original, float(fast), float(slow), self.rope_theta,
+                              self.compress_rope_theta)
 
     def source_of(self, layer: int) -> int:
         """The KV source layer a compressed layer reads (the last source at or below it)."""

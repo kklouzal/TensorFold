@@ -676,8 +676,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
             )
     settings = families.read_config(config_dir)
     families.require_readable(family, settings, backend)
-    if (families.quant_method(settings) == "gguf" or getattr(args, "family_manifest", None) is not None
-            ) and not getattr(args, "_kv_dtype_explicit", False):
+    if (backend == "cuda" and family.model_type == "qwen4_exp"
+            and (families.quant_method(settings) == "gguf" or getattr(args, "family_manifest", None) is not None)
+            and not getattr(args, "_kv_dtype_explicit", False)):
         args.kv_dtype = "fp16"
     _check_model_overrides(args, config_dir, settings)
     _sampling_defaults(args, config_dir)

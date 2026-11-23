@@ -10,14 +10,16 @@ from tensorfold.families.gemma4.sm70.ops import OP_RESTORE
 torch = pytest.importorskip("torch")
 
 
-def _target(slots=4, pages=64, layers=3):
-    from tensorfold.families.deepseek_v4.cuda.target import Pool
+def _target(slots=4, pages=64, layers=3, *, rotorquant=False):
+    from tensorfold.families.deepseek_v4.cuda.kernels.mu_packed import PackedLayout
+    from tensorfold.families.deepseek_v4.cuda.target import BLOCK, Pool
     ratios = [0] * 21
     for layer in (2, 8, 14):
         ratios[layer] = 2
     ratios[20] = 1
     geometry = SimpleNamespace(compress_ratios=ratios, kv_sources=(2, 8, 14, 20), layers=layers)
-    pool = Pool(geometry, pages, slots, torch.device("cpu"))
+    layout = PackedLayout({layer: ratios[layer] for layer in geometry.kv_sources}, BLOCK, rotorquant=rotorquant)
+    pool = Pool(geometry, pages, slots, torch.device("cpu"), layout=layout)
     c2 = {layer: SimpleNamespace(partial=torch.zeros(slots, 2, 512), committed=torch.zeros(slots, dtype=torch.int64))
           for layer in (2, 8, 14)}
     history = torch.full((slots, 4), -1, dtype=torch.int64)
@@ -27,7 +29,10 @@ def _target(slots=4, pages=64, layers=3):
 def _fill(target, slot, seed):
     g = torch.Generator().manual_seed(seed)
     for ring in target.pool.rings:
-        ring[slot] = torch.randn(128, 512, generator=g).half()
+        if ring.dtype == torch.uint8:
+            ring[slot] = torch.randint(0, 256, ring.shape[1:], dtype=torch.uint8, generator=g)
+        else:
+            ring[slot] = torch.randn(ring.shape[1:], generator=g).half()
     for state in target.c2.values():
         state.partial[slot] = torch.randn(2, 512, generator=g)
         state.committed[slot] = seed
@@ -46,13 +51,18 @@ def _same(a, b):
             and torch.equal(a[2], b[2]))
 
 
-def test_snapshot_pages_roundtrip_and_fork():
+@pytest.mark.parametrize("rotorquant,row_bytes,token_bytes", [(False, 1024, 890), (True, 272, 850)])
+def test_snapshot_pages_roundtrip_and_fork(rotorquant, row_bytes, token_bytes):
     from tensorfold.families.deepseek_v4.cuda import prefix
-    t = _target()
+    from tensorfold.families.deepseek_v4.cuda.target import window_ring_bytes
+
+    t = _target(rotorquant=rotorquant)
     state = prefix.SlotState(t)
     page = t.pool.layout.page_bytes
-    assert t.pool.layout.bytes_per_token == 890
-    assert state.raw == prefix.snapshot_bytes(3, 3) and state.pages == -(-state.raw // page)
+    assert t.pool.layout.bytes_per_token == token_bytes and page == token_bytes * 64
+    assert window_ring_bytes(rotorquant) == 128 * row_bytes
+    assert state.raw == 3 * 128 * row_bytes + 3 * (2 * 512 * 4 + 8) + 32
+    assert state.pages == -(-state.raw // page)
     free = len(t.pool.free)
     _fill(t, 1, 7)
     want = _state(t, 1)
@@ -79,9 +89,10 @@ def _rows(t, slot, first, end):
     """Every source's latent and index rows of positions [first, end) of ``slot`` (reference: plain loops)."""
     out = []
     layout = t.pool.layout
+    latent_bytes = 272 if layout.rotorquant else 288
     for layer in sorted(layout.regions):
         ratio, per, c_off, i_off = layout.regions[layer]
-        for off, size in ((c_off, 288), (i_off, 68)):
+        for off, size in ((c_off, latent_bytes), (i_off, 68)):
             for k in range(first // ratio, end // ratio):
                 page = t.pool.owned[slot][k // per]
                 at = off + (k % per) * size
@@ -89,10 +100,11 @@ def _rows(t, slot, first, end):
     return out
 
 
-def test_host_extents_exact_bytes_and_chain_restore():
+@pytest.mark.parametrize("rotorquant,token_bytes", [(False, 890), (True, 850)])
+def test_host_extents_exact_bytes_and_chain_restore(rotorquant, token_bytes):
     from tensorfold.families.deepseek_v4.cuda import prefix
     from tensorfold.families.qwen4_exp.cuda.prefix_host import BLOCK_BYTES
-    t = _target(pages=96)
+    t = _target(pages=96, rotorquant=rotorquant)
     slab = torch.zeros(8 * BLOCK_BYTES, dtype=torch.uint8)
     state = prefix.SlotState(t, slab)
     t.pool.attach(0, 1000)
@@ -105,7 +117,7 @@ def test_host_extents_exact_bytes_and_chain_restore():
     state.run(prefix.OP_HSPILL, 12, 0, 701, 3, [1, 1, 13, 333, 2])
     for first, end in ((0, 333), (333, 701), (5, 6), (6, 7)):
         assert prefix.extent_bytes(t.pool.layout, first, end) == sum(r.numel() for r in _rows(t, 0, first, end))
-    assert prefix.extent_bytes(t.pool.layout, 0, 640) == 640 * 890
+    assert prefix.extent_bytes(t.pool.layout, 0, 640) == 640 * token_bytes
     want_rows, want_state = _rows(t, 0, 0, 701), _state(t, 0)
     t.pool.attach(3, 1000)
     t.pool.cache[t.pool.owned[3]] = 0

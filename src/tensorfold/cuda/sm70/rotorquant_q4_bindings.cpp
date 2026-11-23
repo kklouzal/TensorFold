@@ -10,8 +10,8 @@
 using T = at::Tensor;
 using O = std::optional<T>;
 
-void sm70_rq4_encode_cuda(const T&, T&, T&, const O&, const O&, const O&, int, int, int, int);
-void sm70_rq4_rotate_cuda(const T&, T&, const O&, const O&, int, int, bool, int, int);
+void sm70_rq4_encode_cuda(const T&, T&, T&, const O&, const O&, const O&, int, int, int, int, bool);
+void sm70_rq4_rotate_cuda(const T&, T&, const O&, const O&, int, int, bool, int, int, bool);
 void sm70_rq4_decode_cuda(const T&, const T&, T&, const O&, const O&, int, int, bool, int, int);
 void sm70_rq4_copy_cuda(const T&, T&, const O&, const O&, const O&, int);
 
@@ -104,7 +104,7 @@ void output_controls(const T& output, const O& position, const O& status, const 
 }  // namespace
 
 void encode(const T& x, T codes, T scales, O position, O status, O valid_rows,
-            int codec, int64_t rows, int error, int layer) {
+            int codec, int64_t rows, int error, int layer, bool trap_on_error) {
     floating(x, x, "codec source", false);
     geometry(x, rows, true);
     check(codes, x, at::kByte, "packed Q4 codes"); check(scales, x, at::kFloat, "Q4 original RMS");
@@ -121,11 +121,11 @@ void encode(const T& x, T codes, T scales, O position, O status, O valid_rows,
     }
     disjoint(codes, scales);
     c10::cuda::CUDAGuard guard(x.device());
-    sm70_rq4_encode_cuda(x, codes, scales, position, status, valid_rows, codec, int(rows), error, layer);
+    sm70_rq4_encode_cuda(x, codes, scales, position, status, valid_rows, codec, int(rows), error, layer, trap_on_error);
 }
 
 void rotate(const T& x, T out, O status, O valid_rows,
-            int codec, int64_t rows, bool inverse, int error, int layer) {
+            int codec, int64_t rows, bool inverse, int error, int layer, bool trap_on_error) {
     floating(x, x, "rotation input", false); geometry(x, rows, true);
     floating(out, x, "rotation output");
     TORCH_CHECK(out.dim() == 3 && out.size(0) >= rows && out.size(1) == x.size(1) && out.size(2) == x.size(2),
@@ -135,7 +135,7 @@ void rotate(const T& x, T out, O status, O valid_rows,
     mutable_controls(x, {}, status, valid_rows);
     disjoint(out, x, count); output_controls(out, {}, status, valid_rows, count);
     c10::cuda::CUDAGuard guard(x.device());
-    sm70_rq4_rotate_cuda(x, out, status, valid_rows, codec, int(rows), inverse, error, layer);
+    sm70_rq4_rotate_cuda(x, out, status, valid_rows, codec, int(rows), inverse, error, layer, trap_on_error);
 }
 
 void decode(const T& codes, const T& scales, T out, O status, O valid_rows,
@@ -179,8 +179,11 @@ void copy_rows(const T& x, T target, O position, O status, O valid_rows, int lay
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("encode", &encode);
-    m.def("rotate", &rotate);
+    using pybind11::arg;
+    m.def("encode", &encode, arg("x"), arg("codes"), arg("scales"), arg("position"), arg("status"), arg("valid_rows"),
+          arg("codec"), arg("rows"), arg("error"), arg("layer"), arg("trap_on_error") = false);
+    m.def("rotate", &rotate, arg("x"), arg("out"), arg("status"), arg("valid_rows"), arg("codec"), arg("rows"),
+          arg("inverse"), arg("error"), arg("layer"), arg("trap_on_error") = false);
     m.def("decode", &decode);
     m.def("copy_rows", &copy_rows);
 }

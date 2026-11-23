@@ -178,10 +178,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             help="prompt plus reply window (default: model config; CUDA default/0: "
                                  "affordable native capacity; Metal 0: remove metadata cap)")
     generation.add_argument("--yarn-factor", type=float, default=None,
-                            help="Flash Next, Qwen3.8 dense and Qwen3.6 on CUDA: static YaRN text RoPE extension (2: "
-                                 "524288 tokens, 4: 1048576 for a 262144-token checkpoint); overrides the checkpoint "
-                                 "factor, requires >=1. Short-context quality may change; --context still controls "
-                                 "admission")
+                            help="Flash Next, Qwen3.8 dense, Qwen3.6 and DeepSeek-V4.1 on CUDA use static YaRN. "
+                                 "Override the checkpoint factor with a value of at least 1. DeepSeek scales only "
+                                 "compressed layers. --context still controls admission")
     generation.add_argument("--position-profile-manifest", type=Path, default=None, metavar="PATH",
                             help="Flash Next SM70 unique TP8 GPU histories: immutable target/MTP/draft positions; positive "
                                  "--context must match, default/0 uses its declared rows. Source candidates need "
@@ -368,6 +367,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                            "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA). "
                            "Gemma 4 on eight V100s (--tp 8): bf16 (FP16 caches), rotorquant8-norm or "
                            "rotorquant-iso64-norm4-h64 for its target full-attention caches; its sliding rings stay FP16. "
+                           "DeepSeek-V4.1 on eight V100s supports rotorquant-iso64-norm4-h64 for shared window and "
+                           "compressed attention KV. "
                            "GGUF/SM70 supports fp16, int8, rotorquant-signed128-4, rotorquant-signed64-norm4, "
                            "rotorquant8(-norm), rotorquant-planar4/iso4/iso64-norm4(-h64) and the compact "
                            "rotorquant-planar4-sm70-v1/iso4-sm70-v1 (the eight-bit and Planar/Iso formats on "

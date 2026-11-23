@@ -710,6 +710,7 @@ Times are seconds, sizes bytes.
 | `model.model_type`, `model.context_length` | The checkpoint's `model_type`; the served context (the `max_model_len` of `/v1/models`) |
 | `model.default_max_tokens`, `model.thinking_default`, `model.vision` | The reply limit a request without one gets, whether replies think by default, whether images are accepted |
 | `model.kv_dtype`, `model.mtp_drafts` | The KV cache format (`KEY/VALUE` when they differ) and drafts a round, where the engine has them |
+| `model.yarn_factor` | The effective static YaRN factor, when reported by the engine |
 | `limits.lanes` | Allocated concurrent request slots (CUDA `--parallel`; 1 when one runs at a time; the Mac's batch). Adaptive resident capacity can exceed one execution microbatch; its effective admission ceiling and actual scheduled count are in `runtime` |
 | `limits.pending_requests`, `limits.engine_calls`, `limits.http_connections` | `--max-pending-requests`, `--max-engine-calls`, `--max-http-connections`, or null when unset |
 | `limits.prefix_cache_entries` | Maximum kept prompt points where that backend uses an entry ceiling; null for the Gemma byte-budget archive |

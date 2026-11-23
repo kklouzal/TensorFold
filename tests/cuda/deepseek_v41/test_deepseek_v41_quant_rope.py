@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Ported from 1Cat-vLLM 4d57473db67eb77a13018d179e4d95169e82044f tests/models/test_deepseek_v41_quant_rope.py (blob c110c9a13dd35abadbdceee47a25917d92a64a88).
-# TensorFold change: imports only (vendored kernels package).
+# TensorFold changes: local imports and an explicit YaRN override test.
 import ast
 import math
 from functools import lru_cache
@@ -130,6 +130,25 @@ def test_rope_table_matches_reviewed_official_function(compressed):
     torch.testing.assert_close(
         rope_table(compressed=compressed, device="cpu"), expected, rtol=0, atol=0
     )
+
+
+def test_yarn_factor_two_changes_compressed_low_frequencies_only():
+    from tensorfold.families.deepseek_v4.cuda.weights import Geometry
+
+    geometry = Geometry()
+    stock = geometry.rope_parameters()
+    scaled = geometry.rope_parameters(2)
+    assert scaled.context_limit == 131_072
+    common = dict(max_length=17, device="cpu")
+    assert torch.equal(rope_table(**common, rope=stock), rope_table(**common, rope=scaled))
+    prior = rope_table(**common, rope=stock, compressed=True)
+    actual = rope_table(**common, rope=scaled, compressed=True)
+    assert torch.equal(prior[:, [0, 32]], actual[:, [0, 32]])
+    assert actual[-1, 31] == prior[-1, 31] * 8
+    angle = 16 * actual[-1, 31]
+    expected = torch.tensor([math.cos(angle.item()), math.sin(angle.item())], dtype=torch.float32)
+    # The CPU polar kernel and scalar libm may round the FP32 phase one bit apart.
+    torch.testing.assert_close(actual[16, [31, 63]], expected, rtol=torch.finfo(torch.float32).eps, atol=0)
 
 
 @pytest.mark.parametrize("dim", [128, 512])

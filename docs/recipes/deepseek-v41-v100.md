@@ -41,9 +41,15 @@ registered Engram table.
 | `--parallel N` | 1-32 concurrent streams. Requests beyond N wait in the queue. |
 | `--context N` | Admitted context per stream (default: the model's maximum). The text-only matrix at `--context 65536 --parallel 32` reported 7,775,360 tokens in the shared KV pool. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
+| `--kv-dtype rotorquant-iso64-norm4-h64` | RotorQuant Q4 for both sliding-window and compressed attention latents. DeepSeek stores one 272-byte row for shared K and V. The learned index rows retain their separate format. |
+| `--yarn-factor F` | Overrides the checkpoint's static YaRN factor on compressed layers. Window-only layers retain plain RoPE. |
 | `--queue-timeout-s S` | Bounds the queue wait (503 after). |
 | `--no-graphs` | Eager decode, for A/B checks only. |
 | `--vision` | Image input (needs `mmproj_file` and `vision_bias_file` in `config.json`; see "Image input"). |
+
+The RotorQuant Q4 profile uses `--kv-dtype rotorquant-iso64-norm4-h64 --yarn-factor 2 --context 65536`.
+`/v1/stats` reports the effective `model.kv_dtype` and `model.yarn_factor`. Full-model quality and throughput
+for this profile are pending.
 
 ## What runs
 

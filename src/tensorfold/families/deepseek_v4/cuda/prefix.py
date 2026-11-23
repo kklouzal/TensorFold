@@ -10,7 +10,7 @@ of its first h tokens only (patch 85's slot semantics; every kernel resolves its
     Rows at positions >= h may hold anything (a later reply, a cancelled chunk, another slot's old data in a reused
     page): a forward writes a position's rows before any read of them (insert precedes select/attend per layer,
     and reads are causal), exactly as a cold prefill into reused pages relies on.
-  * The window rings ([slots, 128, 512] FP16 per layer): after a forward ending at h a ring holds positions
+  * The window rings (128 FP16 or RotorQuant rows per slot/layer): after a forward ending at h a ring holds positions
     h-128..h-1 at p % 128 (patch 87 writes each request's last 128 positions); copied whole.
   * The ratio-2 compressor partials (``MuC2State``: partial [2, 512] FP32 + committed position per source) and the
     Engram n-gram history (``MuEngramHashState.history`` [4] int64: three compressed ids + committed position);
@@ -56,23 +56,23 @@ from tensorfold.families.gemma4.sm70.ops import (OP_COPY, OP_DROP, OP_GROW, OP_H
 from tensorfold.families.qwen4_exp.cuda import prefixes
 from tensorfold.families.qwen4_exp.cuda.prefix_host import BLOCK_BYTES
 
-from .kernels.kv_pack import C_ROW, I_ROW
+from .kernels.kv_pack import I_ROW
 from .target import BLOCK
 
-RING = 128
 WIDTH = 512
 OPS = (OP_SNAP, OP_RESTORE, OP_DROP, OP_COPY, OP_GROW, OP_HSPILL, OP_HRESTORE)
 
 
-def snapshot_bytes(layers: int, c2_sources: int) -> int:
+def snapshot_bytes(ring_bytes: int, c2_sources: int) -> int:
     """Raw bytes of one kept point's slot state on one rank: every layer's ring rows, the C2 partials and committed
     positions, the Engram history."""
-    return layers * RING * WIDTH * 2 + c2_sources * (2 * WIDTH * 4 + 8) + 4 * 8
+    return ring_bytes + c2_sources * (2 * WIDTH * 4 + 8) + 4 * 8
 
 
 def extent_bytes(layout, first: int, end: int) -> int:
     """Bytes of the KV rows of positions [first, end) (every source's rows first // r .. end // r)."""
-    return sum((end // ratio - first // ratio) * (C_ROW + I_ROW) for ratio, _, _, _ in layout.regions.values())
+    return sum((end // ratio - first // ratio) * (layout.compressed_row_bytes + I_ROW)
+               for ratio, _, _, _ in layout.regions.values())
 
 
 MIN_CHUNK = 256          # rows: no split closer than this to the previous one (a forward costs ~470 rows' work)
@@ -335,7 +335,8 @@ class SlotState:
 
     def __init__(self, target, slab=None) -> None:
         self.target, self.pool, self.slab = target, target.pool, slab
-        self.raw = snapshot_bytes(len(self.pool.rings), len(target.c2))
+        ring_bytes = sum(ring.nbytes // ring.shape[0] for ring in self.pool.rings)
+        self.raw = snapshot_bytes(ring_bytes, len(target.c2))
         self.pages = -(-self.raw // self.pool.layout.page_bytes)     # pool pages per snapshot
         self.snaps: dict[int, int] = {}                              # sid -> position
         self.host_layout: dict[int, list] = {}                       # entry id -> [(slab offset, position)]
@@ -420,7 +421,7 @@ class SlotState:
         cache = self.pool.cache
         for layer in sorted(self.pool.layout.regions):
             ratio, per, c_offset, i_offset = self.pool.layout.regions[layer]
-            for offset, size in ((c_offset, C_ROW), (i_offset, I_ROW)):
+            for offset, size in ((c_offset, self.pool.layout.compressed_row_bytes), (i_offset, I_ROW)):
                 view = cache[:, offset:offset + per * size].unflatten(1, (per, size))
                 yield view, per, first // ratio, end // ratio
 

@@ -167,10 +167,12 @@ def _describe(app: Any) -> dict[str, Any]:
         lanes = getattr(app, "max_batch_size", None)
         default_max, thinking = getattr(app, "default_max_tokens", None), getattr(app, "enable_thinking", None)
     pair = getattr(engine, "kv_pair", None)
-    kv_dtype = None
+    kv_dtype = getattr(engine, "model_kv_dtype", None)
     if pair is not None and getattr(pair, "key_dtype", None):
         kv_dtype = pair.key_dtype if pair.key_dtype == pair.value_dtype else f"{pair.key_dtype}/{pair.value_dtype}"
     depth = getattr(engine, "depth", None)
+    yarn_factor = getattr(engine, "yarn_factor", None)
+    positions = {"yarn_factor": yarn_factor} if yarn_factor is not None else {}
     limit = getattr(mac, "max_engine_calls", None)
     return {
         "server": {"version": __version__, "backend": "cuda" if cuda else ("mlx" if mac is not None else None),
@@ -180,7 +182,7 @@ def _describe(app: Any) -> dict[str, Any]:
                   "context_length": context, "default_max_tokens": default_max,
                   "kv_dtype": kv_dtype, "mtp_drafts": depth if isinstance(depth, int) else None,
                   "vision": getattr(app, "vision", None) is not None,
-                  "thinking_default": thinking if isinstance(thinking, bool) else None},
+                  "thinking_default": thinking if isinstance(thinking, bool) else None, **positions},
         "limits": {"lanes": lanes, "pending_requests": getattr(app, "max_pending_requests", None),
                    "engine_calls": limit, "http_connections": None,
                    "prefix_cache_entries": getattr(decoder, "keep", None) if decoder is not None else None},

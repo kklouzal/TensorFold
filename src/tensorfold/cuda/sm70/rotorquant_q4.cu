@@ -19,10 +19,21 @@ __device__ void latch(int* status, int errors, int layer) {
     }
 }
 
+template<bool TRAP_ON_ERROR>
+__device__ __forceinline__ void report_error(int* status, int errors, int layer) {
+    latch(status, errors, layer);
+    if constexpr (TRAP_ON_ERROR) {
+        if (errors) asm volatile("trap;");
+    }
+}
+
+template<bool TRAP_ON_ERROR = false>
 __device__ int live_rows(const int* control, int rows, int* status, int layer) {
     const int value = control ? *control : rows;
-    if ((value < 0 || value > rows) && threadIdx.x == 0 && blockIdx.x == 0) latch(status, 16, layer);
-    return value < 0 || value > rows ? 0 : value;
+    const bool invalid = value < 0 || value > rows;
+    if (invalid && threadIdx.x == 0 && blockIdx.x == 0)
+        report_error<TRAP_ON_ERROR>(status, 16, layer);
+    return invalid ? (TRAP_ON_ERROR ? -1 : 0) : value;
 }
 
 template<class V> __device__ float read(const V* source, int64_t index) { return source[index]; }
@@ -36,7 +47,7 @@ template<> __device__ bool representable<__half>(float value) {
     return isfinite(value) && isfinite(__half2float(__float2half_rn(value)));
 }
 
-template<class Input, int CODEC>
+template<class Input, int CODEC, bool TRAP_ON_ERROR>
 __global__ void encode_kernel(const Input* source, uint8_t* codes, float* scales,
                               const void* position, bool position64, int* status, const int* valid_rows,
                               int rows, int heads, int dim, int64_t source_stride, int64_t capacity,
@@ -44,25 +55,28 @@ __global__ void encode_kernel(const Input* source, uint8_t* codes, float* scales
     __shared__ float shared[128];
     const int group_count = dim / 128, group = blockIdx.x % group_count;
     const int outer = blockIdx.x / group_count, row = outer / heads, head = outer % heads;
-    const int live = live_rows(valid_rows, rows, status, layer);
+    const int live = live_rows<TRAP_ON_ERROR>(valid_rows, rows, status, layer);
     if (row >= live) return;                 // Dead graph lanes cannot mutate retained cache rows.
     const int64_t base = !position ? 0 : position64 ? *static_cast<const int64_t*>(position)
                                                           : *static_cast<const int*>(position);
     if (base < 0 || row >= capacity || base > capacity - 1 - row) {
-        if (threadIdx.x == 0) latch(status, 16, layer);
+        if (threadIdx.x == 0) report_error<TRAP_ON_ERROR>(status, 16, layer);
         return;
     }
     const int col = threadIdx.x;
     const float value = read(source, int64_t(row) * source_stride + int64_t(head) * dim + group * 128 + col);
     const auto encoded = tf_rq4::encode_component<CODEC>(value, col, shared, source_error);
-    if (col == 0) latch(status, encoded.errors, layer);
+    if (col == 0) report_error<TRAP_ON_ERROR>(status, encoded.errors, layer);
+    if constexpr (TRAP_ON_ERROR) {
+        if (encoded.errors) return;
+    }
     const int64_t destination = ((base + row) * heads + head) * dim + group * 128;
     if constexpr (tf_rq4::eight_bit(CODEC)) tf_rq4::store_encoded8(encoded, col, codes, scales, destination, 128, true);
     else if constexpr (CODEC == 11) tf_rq4::store_encoded_halves(encoded, col, shared, codes, scales, destination, 128, true);
     else tf_rq4::store_encoded(encoded, col, shared, codes, scales, destination, 128, true);
 }
 
-template<class Input, class Output, int CODEC, bool INVERSE>
+template<class Input, class Output, int CODEC, bool INVERSE, bool TRAP_ON_ERROR>
 __global__ void rotate_kernel(const Input* source, Output* target, int* status, const int* valid_rows,
                               int rows, int heads, int dim, int64_t source_stride, int error, int layer) {
     __shared__ float shared[128];
@@ -70,7 +84,11 @@ __global__ void rotate_kernel(const Input* source, Output* target, int* status, 
     const int outer = blockIdx.x / groups, row = outer / heads, head = outer % heads;
     const int col = threadIdx.x;
     const int64_t output = (int64_t(row) * heads + head) * dim + group * 128 + col;
-    if (row >= live_rows(valid_rows, rows, status, layer)) {
+    const int live = live_rows<TRAP_ON_ERROR>(valid_rows, rows, status, layer);
+    if (row >= live) {
+        if constexpr (TRAP_ON_ERROR) {
+            if (live < 0 || rows == 0) return;
+        }
         write(target, output, 0.0f);
         return;
     }
@@ -79,7 +97,10 @@ __global__ void rotate_kernel(const Input* source, Output* target, int* status, 
     if (bad_source) value = 0.0f;
     value = tf_rq4::rotate_component<CODEC, INVERSE>(value, col, shared);
     const bool bad_output = __syncthreads_or(!representable<Output>(value));
-    if (col == 0 && (bad_source || bad_output)) latch(status, error, layer);
+    if (col == 0 && (bad_source || bad_output)) report_error<TRAP_ON_ERROR>(status, error, layer);
+    if constexpr (TRAP_ON_ERROR) {
+        if (bad_source || bad_output) return;
+    }
     write(target, output, bad_source || bad_output ? 0.0f : value);
 }
 
@@ -116,25 +137,27 @@ __global__ void decode_kernel(const uint8_t* codes, const float* scales, Output*
     write(target, logical, bad_scale || bad_output ? 0.0f : output);
 }
 
-template<class Input, int CODEC>
+template<class Input, int CODEC, bool TRAP_ON_ERROR>
 void launch_encode(const T& x, T& codes, T& scales, const O& position, const O& status,
                    const O& valid, int rows, int error, int layer, cudaStream_t stream) {
     const int64_t blocks = int64_t(rows) * x.size(1) * (x.size(2) / 128);
-    if (!blocks) return;
-    encode_kernel<Input, CODEC><<<int(blocks), 128, 0, stream>>>(
+    // Just the device control is checked for an empty fatal-mode launch.
+    if (!blocks && !(TRAP_ON_ERROR && valid)) return;
+    encode_kernel<Input, CODEC, TRAP_ON_ERROR><<<int(std::max<int64_t>(blocks, 1)), 128, 0, stream>>>(
         static_cast<const Input*>(x.data_ptr()), codes.data_ptr<uint8_t>(), scales.data_ptr<float>(),
         position ? position->data_ptr() : nullptr, position && position->scalar_type() == at::kLong,
         status ? status->data_ptr<int>() : nullptr, valid ? valid->data_ptr<int>() : nullptr,
         rows, x.size(1), x.size(2), x.stride(0), codes.size(0), error, layer);
 }
 
-template<class Input, class Output, int CODEC>
+template<class Input, class Output, int CODEC, bool TRAP_ON_ERROR>
 void launch_rotate(const T& x, T& out, const O& status, const O& valid,
                    int rows, bool inverse, int error, int layer, cudaStream_t stream) {
     const int64_t blocks = int64_t(rows) * x.size(1) * (x.size(2) / 128);
-    if (!blocks) return;
+    if (!blocks && !(TRAP_ON_ERROR && valid)) return;
     const auto invoke = [&](auto direction) {
-        rotate_kernel<Input, Output, CODEC, decltype(direction)::value><<<int(blocks), 128, 0, stream>>>(
+        rotate_kernel<Input, Output, CODEC, decltype(direction)::value, TRAP_ON_ERROR>
+            <<<int(std::max<int64_t>(blocks, 1)), 128, 0, stream>>>(
             static_cast<const Input*>(x.data_ptr()), static_cast<Output*>(out.data_ptr()),
             status ? status->data_ptr<int>() : nullptr, valid ? valid->data_ptr<int>() : nullptr,
             rows, x.size(1), x.size(2), x.stride(0), error, layer);
@@ -188,28 +211,38 @@ __global__ void copy_kernel(const uint8_t* source, uint8_t* target, const void* 
 }  // namespace
 
 void sm70_rq4_encode_cuda(const T& x, T& codes, T& scales, const O& position, const O& status,
-                          const O& valid, int codec, int rows, int error, int layer) {
+                          const O& valid, int codec, int rows, int error, int layer, bool trap_on_error) {
     const auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
-    dispatch_codec(codec, [&](auto selected) {
-        if (x.scalar_type() == at::kHalf)
-            launch_encode<__half, decltype(selected)::value>(x, codes, scales, position, status, valid, rows, error, layer, stream);
-        else launch_encode<float, decltype(selected)::value>(x, codes, scales, position, status, valid, rows, error, layer, stream);
-    });
+    const auto invoke = [&](auto trap) {
+        dispatch_codec(codec, [&](auto selected) {
+            constexpr int format = decltype(selected)::value;
+            constexpr bool fatal = decltype(trap)::value;
+            if (x.scalar_type() == at::kHalf)
+                launch_encode<__half, format, fatal>(x, codes, scales, position, status, valid, rows, error, layer, stream);
+            else launch_encode<float, format, fatal>(x, codes, scales, position, status, valid, rows, error, layer, stream);
+        });
+    };
+    if (trap_on_error) invoke(std::true_type{}); else invoke(std::false_type{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void sm70_rq4_rotate_cuda(const T& x, T& out, const O& status, const O& valid,
-                          int codec, int rows, bool inverse, int error, int layer) {
+                          int codec, int rows, bool inverse, int error, int layer, bool trap_on_error) {
     const auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
-    dispatch_codec(codec, [&](auto selected) {
-        if (x.scalar_type() == at::kHalf) {
-            if (out.scalar_type() == at::kHalf)
-                launch_rotate<__half, __half, decltype(selected)::value>(x, out, status, valid, rows, inverse, error, layer, stream);
-            else launch_rotate<__half, float, decltype(selected)::value>(x, out, status, valid, rows, inverse, error, layer, stream);
-        } else if (out.scalar_type() == at::kHalf)
-            launch_rotate<float, __half, decltype(selected)::value>(x, out, status, valid, rows, inverse, error, layer, stream);
-        else launch_rotate<float, float, decltype(selected)::value>(x, out, status, valid, rows, inverse, error, layer, stream);
-    });
+    const auto invoke = [&](auto trap) {
+        dispatch_codec(codec, [&](auto selected) {
+            constexpr int format = decltype(selected)::value;
+            constexpr bool fatal = decltype(trap)::value;
+            if (x.scalar_type() == at::kHalf) {
+                if (out.scalar_type() == at::kHalf)
+                    launch_rotate<__half, __half, format, fatal>(x, out, status, valid, rows, inverse, error, layer, stream);
+                else launch_rotate<__half, float, format, fatal>(x, out, status, valid, rows, inverse, error, layer, stream);
+            } else if (out.scalar_type() == at::kHalf)
+                launch_rotate<float, __half, format, fatal>(x, out, status, valid, rows, inverse, error, layer, stream);
+            else launch_rotate<float, float, format, fatal>(x, out, status, valid, rows, inverse, error, layer, stream);
+        });
+    };
+    if (trap_on_error) invoke(std::true_type{}); else invoke(std::false_type{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
