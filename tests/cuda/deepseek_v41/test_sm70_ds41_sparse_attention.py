@@ -216,9 +216,13 @@ def test_h64_prefill_decoded_current_matches_packed_reader(start, source, monkey
     if source is not None:
         kwargs["layer"] = kwargs.pop("source")
     got = target._attend(query, step, packed_ring, packed_window, sink, **kwargs)
-    assert selected == [True]
+    expand_in_serving = source is not None and start == 0
+    assert selected == [expand_in_serving]
     assert torch.equal(got.view(torch.int16), want.view(torch.int16))
     assert not torch.count_nonzero(got[tokens // 3])   # inactive query inside the current chunk
+    if not expand_in_serving:
+        expanded = attend(*operands, **kw, decode_window=True)
+        assert torch.equal(expanded.view(torch.int16), want.view(torch.int16))
 
     if start and source is None:
         # The last old age is visible at local row 126 and absent at 127.
