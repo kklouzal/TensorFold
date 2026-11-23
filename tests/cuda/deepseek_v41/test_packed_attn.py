@@ -220,3 +220,82 @@ def test_rotorquant_window_and_compressed_gather_match_native_codec():
     window_graph.replay()
     assert torch.equal(window_unused, expected_unused[:, :pk.WINDOW])
     assert torch.equal(window_keys.view(torch.int16), expected[:, :pk.WINDOW].view(torch.int16))
+
+
+@pytest.mark.skipif(torch.cuda.is_available() and torch.cuda.get_device_capability() != (7, 0), reason="SM70 codec")
+@pytest.mark.parametrize("tokens", [1, 4, 32])
+def test_rotorquant_decode_gather_reuse_is_exact_across_graph_replays(tokens):
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as pk
+    from tensorfold.families.deepseek_v4.cuda.rotor_cache import RotorCache
+    from tensorfold.families.deepseek_v4.cuda.target import Target
+
+    device = "cuda"
+    generator = torch.Generator(device=device).manual_seed(331)
+    target = Target.__new__(Target)
+    target.rotor_cache = RotorCache(device)
+
+    def packed(*shape):
+        codes = torch.randint(0, 256, (*shape, 256), dtype=torch.uint8, device=device, generator=generator)
+        scales = torch.rand(*shape, 8, dtype=torch.float16, device=device, generator=generator) * 0.03 + 0.01
+        return torch.cat((codes, scales.view(torch.uint8)), dim=-1)
+
+    pages = 5
+    layout = pk.PackedLayout({2: 2, 20: 1}, 64, rotorquant=True)
+    cache = torch.zeros(pages, layout.page_bytes, dtype=torch.uint8, device=device)
+    for _, rows, offset, _ in layout.regions.values():
+        cache[:, offset:offset + rows * 272] = packed(pages, rows).view(pages, -1)
+    ranges = torch.arange(tokens, device=device, dtype=torch.int32)
+    slots = ranges.clone()
+    positions = (ranges.long() * 57 + 3) % 192
+    table = (ranges[:, None] + torch.arange(3, device=device, dtype=torch.int32)) % pages
+    if tokens > 1:
+        slots[-1] = tokens       # the graph padding row has a scratch slot and no pages
+        positions[-1] = 0
+        table[-1] = -1
+    qsl = torch.arange(tokens + 1, dtype=torch.int32, device=device)
+    step = SimpleNamespace(positions=positions, valid=torch.ones(tokens, dtype=torch.bool, device=device),
+                           token_req=ranges, req_slot=slots, qsl=qsl)
+    ring = [packed(tokens + 1, pk.RING) for _ in range(2)]
+    window = [packed(tokens) for _ in range(2)]
+    if tokens > 1:
+        for current in window:
+            current[-1].zero_()
+    query = torch.randn(tokens, 8, 512, device=device, dtype=torch.float16, generator=generator)
+    sink = torch.randn(8, device=device, generator=generator)
+    ascending = torch.arange(512, device=device, dtype=torch.int32)
+    topk = (ascending.expand(tokens, -1).contiguous().clone(),
+            ascending.flip(0).expand(tokens, -1).contiguous().clone())
+    # The middle epoch changes only the index selection. The last epoch changes source and compression ratio.
+    sequence = ((2, 0, 0, False), (2, 0, 1, True), (2, 1, 1, False),
+                (2, 1, 0, True), (20, 1, 0, False), (20, 1, 1, True))
+
+    def forward(reused):
+        buffers = pk.gather_buffers(tokens, 640, device) if reused else None
+        return [target._attend(query, step, ring[layer], window[layer], sink, cache=cache, block_table=table,
+                               layout=layout, layer=source, topk=topk[selection], key_buffers=buffers,
+                               reuse_compressed=reused and keep)
+                for source, selection, layer, keep in sequence]
+
+    def check(actual, expected):
+        assert all(torch.equal(a.view(torch.int16), b.view(torch.int16))
+                   for a, b in zip(actual, expected, strict=True))
+
+    warm = torch.cuda.Stream()
+    warm.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(warm):
+        check(forward(True), forward(False))
+    torch.cuda.current_stream().wait_stream(warm)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = forward(True)
+    graph.replay()
+    check(actual, forward(False))
+
+    # Change the page mapping, positions, and contents without replacing the tensors accessed by the graph.
+    active = tokens - 1 if tokens > 1 else tokens
+    table[:active].copy_((table[:active] + 2) % pages)
+    positions[:1].fill_(133)
+    topk[0][:, :9].fill_(-1)
+    cache[:, :8].bitwise_xor_(0xFF)
+    graph.replay()
+    check(actual, forward(False))

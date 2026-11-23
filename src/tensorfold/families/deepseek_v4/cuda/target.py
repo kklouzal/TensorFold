@@ -239,6 +239,11 @@ class Target:
                               decode_norm=(ly.kv_norm, self.g.eps))
         else:
             window = rope_qdq(self._norm(kv_low, ly.kv_norm), positions, table, decode_ring=decode_ring)
+        decode_keys = (step.single_token_slots and rotor is not None and cold is None
+                       and ly.ratio != 0 and tokens < FUSED_MIN_COMPRESSED)
+        if decode_keys and (ly.owns_kv or ly.has_indexer):
+            # A source write or index selection ends the current compressed key lifetime.
+            shared.pop("decode_key_selection", None)
         extra = {}
         if ly.ratio:
             if ly.owns_kv:
@@ -273,7 +278,19 @@ class Target:
                 extra = dict(cache=pages, block_table=cold["table"], layout=scratch, layer=source,
                              topk=shared["topk"])
         if cold is None:
+            if decode_keys:
+                topk = shared["topk"]
+                buffers = shared.get("decode_key_buffers")
+                if buffers is None:
+                    # One full-stride workspace inside the captured forward.
+                    buffers = shared["decode_key_buffers"] = pk.gather_buffers(
+                        tokens, pk.WINDOW + topk.shape[1], query.device)
+                selection = shared.get("decode_key_selection")
+                reuse = selection is not None and selection[0] == ly.source and selection[1] is topk
+                extra.update(key_buffers=buffers, reuse_compressed=reuse)
             output = self._attend(query, step, ring, window, ly.sink, **extra)
+            if decode_keys and not reuse:
+                shared["decode_key_selection"] = (ly.source, topk)
         else:
             # Retain the earlier FP8 window QDQ and E2M1 compact attention operand boundaries.
             window_operand = rope_qdq(normalized_window, positions, table)
@@ -332,7 +349,7 @@ class Target:
         return self.c.sum(scores, torch.float16)
 
     def _attend(self, query, step, ring, window, sink, *, cache=None, block_table=None, layout=None, layer=None,
-                topk=None):
+                topk=None, key_buffers=None, reuse_compressed=False):
         """Sparse attention [T, 8, 512]: the fused kernel (patch 181 at TP8, ``ds41_sparse_attention``: keys
         streamed from the ring / pages, no gathered key buffer) from FUSED_MIN_* step tokens, else patch 87's
         gather + bmm passes (decode buckets of compressed layers); both read the same keys and FP16 probabilities."""
@@ -341,9 +358,11 @@ class Target:
             return fused.attend(query.contiguous(), step.positions, step, step.req_slot, ring, window.contiguous(),
                                 sink, cache=cache, block_table=block_table, layout=layout, source=layer, topk=topk)
         from .kernels import mu_packed as pk
-        centroids = self.rotor_cache.centroids if cache is not None and ring.dtype == torch.uint8 else None
+        centroids = (self.rotor_cache.centroids
+                     if cache is not None and ring.dtype == torch.uint8 and not reuse_compressed else None)
         return pk.attend(query, step.positions, step, step.req_slot, ring, window, sink, cache=cache,
-                         block_table=block_table, layout=layout, source=layer, topk=topk, rotor_centroids=centroids)
+                         block_table=block_table, layout=layout, source=layer, topk=topk, rotor_centroids=centroids,
+                         key_buffers=key_buffers, reuse_compressed=reuse_compressed)
 
     # ---- MoE
     def moe(self, ly, x, image=None, shard=None, x_rows=None):

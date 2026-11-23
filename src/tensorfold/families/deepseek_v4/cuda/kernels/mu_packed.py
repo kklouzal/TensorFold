@@ -452,6 +452,7 @@ def _pk_gather_attention(
     RING_ROWS: tl.constexpr,
     WINDOW_KEYS: tl.constexpr,
     TOPK: tl.constexpr,
+    WINDOW_ONLY: tl.constexpr,
     ROTORQUANT: tl.constexpr,
     LATENT_ROW: tl.constexpr,
 ):
@@ -464,7 +465,7 @@ def _pk_gather_attention(
     position = tl.load(positions + token).to(tl.int64)
     valid = (tl.load(valid_tokens + token) != 0) & (r >= 0)
     col = tl.arange(0, 512)
-    if key < WINDOW_KEYS:
+    if WINDOW_ONLY or key < WINDOW_KEYS:
         rr = tl.where(r >= 0, r, 0)
         s0 = tl.load(qsl + rr, valid, 0).to(tl.int64)
         start = tl.load(positions + s0, valid, 0).to(tl.int64)
@@ -476,7 +477,7 @@ def _pk_gather_attention(
         if ROTORQUANT:
             new = values + (s0 + at - start) * LATENT_ROW
             old = ring + (slot * RING_ROWS + at % RING_ROWS) * LATENT_ROW
-            value = unpack_rotor_row(tl.where(inside, new, old), valid, centroids, TOPK > 0)
+            value = unpack_rotor_row(tl.where(inside, new, old), valid, centroids, TOPK > 0 and not WINDOW_ONLY)
         else:
             new = tl.load(values + (s0 + at - start) * 512 + col, valid & inside, 0)
             old = tl.load(
@@ -546,18 +547,19 @@ def insert_ring(ring, values, positions, valid_tokens, token_req, qsl, req_slot)
 def gather_attention(
     keys, unused, first, last, positions, valid_tokens, token_req, qsl, req_slot,
     ring, values, *, cache=None, block_table=None, layout=None, layer=None,
-    topk=None, rotor_centroids=None,
+    topk=None, rotor_centroids=None, window_only=False,
 ):
     """keys [n, 128 + k, 512] FP16 / unused [n, 128 + k] for tokens [first, last).
 
     topk, positions, valid_tokens, token_req and values are the whole batch's.
-    RotorQuant keys are decoded to FP16 in their rotated basis. A gather with selected compressed keys
-    uses the cache's centroid table."""
+    RotorQuant keys are decoded to FP16 in their rotated basis. Gathering a new compressed selection
+    uses the cache's centroid table. With window_only, the caller owns a valid compressed suffix
+    for this exact selection. Both output strides still include the suffix."""
     compressed = cache is not None
     count = topk.shape[1] if compressed else 0
     n = last - first
     rotorquant = _window_row_width(ring, values, positions.numel()) == ROTOR_ROW
-    use_table = rotorquant and count > 0
+    use_table = rotorquant and count > 0 and not window_only
     if use_table and (not isinstance(rotor_centroids, torch.Tensor) or rotor_centroids.shape != (16,)
                       or rotor_centroids.dtype != torch.float32 or rotor_centroids.device != ring.device
                       or not rotor_centroids.is_contiguous()):
@@ -574,7 +576,7 @@ def gather_attention(
         ratio, c_offset = 1, 0
         latent_row = ROTOR_ROW if rotorquant else C_ROW
     if n:
-        _pk_gather_attention[(n, WINDOW + count)](
+        _pk_gather_attention[(n, WINDOW if window_only else WINDOW + count)](
             ring,
             values.contiguous(),
             qsl,
@@ -598,6 +600,7 @@ def gather_attention(
             RING_ROWS=RING,
             WINDOW_KEYS=WINDOW,
             TOPK=count,
+            WINDOW_ONLY=window_only,
             ROTORQUANT=rotorquant,
             LATENT_ROW=latent_row,
         )
@@ -660,9 +663,15 @@ def select_positions(
     return result
 
 
+def gather_buffers(tokens, width, device):
+    return (torch.empty(tokens, width, 512, dtype=torch.float16, device=device),
+            torch.empty(tokens, width, dtype=torch.bool, device=device))
+
+
 def attend(
     query, positions, step, req_slot, window_ring, window, sink, *, cache=None, block_table=None,
-    layout=None, source=None, topk=None, tokens_per_pass=64, rotor_centroids=None,
+    layout=None, source=None, topk=None, tokens_per_pass=64, rotor_centroids=None, key_buffers=None,
+    reuse_compressed=False,
 ):
     """Patch 87's _attend without its vLLM glue: sparse attention output [T, heads, 512] FP16.
 
@@ -672,15 +681,19 @@ def attend(
     result = torch.empty_like(query)
     count = topk.shape[1] if cache is not None else 0
     width = WINDOW + count
+    if key_buffers is not None and (query.shape[0] > tokens_per_pass or not count or not layout.rotorquant):
+        raise ValueError(f"{LOG}: reusable gather buffers require one RotorQuant compressed pass")
+    if reuse_compressed and key_buffers is None:
+        raise ValueError(f"{LOG}: compressed reuse requires initialized gather buffers")
     for first in range(0, query.shape[0], tokens_per_pass):
         last = min(first + tokens_per_pass, query.shape[0])
         n, heads = last - first, query.shape[1]
-        keys = torch.empty(n, width, 512, dtype=torch.float16, device=query.device)
-        unused = torch.empty(n, width, dtype=torch.bool, device=query.device)
+        keys, unused = gather_buffers(n, width, query.device) if key_buffers is None else key_buffers
         gather_attention(
             keys, unused, first, last, positions, step.valid, step.token_req,
             step.qsl, req_slot, window_ring, window, cache=cache,
             block_table=block_table, layout=layout, layer=source, topk=topk, rotor_centroids=rotor_centroids,
+            window_only=reuse_compressed,
         )
         scores = torch.empty(n, heads, width, dtype=torch.float32, device=query.device)
         _attend_fused(query[first:last], keys, unused, 512**-0.5, sink, result[first:last], scores)
