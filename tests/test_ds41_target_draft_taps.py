@@ -22,7 +22,8 @@ def test_taps_use_entering_residual_in_row_order_across_pauses(sharded):
     tokens, hidden = 1027, 8
     target = _target(hidden)
     indices = torch.tensor([1026, 0, 904, 128, 1026])
-    shard = Shard.of(tokens, 7, 8) if sharded else None
+    rank = 7
+    shard = Shard.of(tokens, rank, 8) if sharded else None
     st = {"next": 0, "shard": shard, "step": SimpleNamespace(ids=torch.zeros(tokens, dtype=torch.int64))}
     out = torch.full((len(indices), 3 * hidden), torch.nan, dtype=torch.float16)
     raw = torch.arange(tokens * 4 * hidden, dtype=torch.float32).reshape(tokens, 4, hidden) / 8
@@ -47,7 +48,7 @@ def test_taps_use_entering_residual_in_row_order_across_pauses(sharded):
         def gather(part, received):
             assert received.shape == (8, len(indices), hidden) and part.dtype == received.dtype == torch.float16
             expected = oracle(st["next"])
-            owned = owners == shard.rank
+            owned = owners == rank
             assert torch.equal(part[owned], expected[owned])
             # Supply independent results only at their owning rank. Stale or
             # wrongly selected rows remain NaN instead of weakening the check.
