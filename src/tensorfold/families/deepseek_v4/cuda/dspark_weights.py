@@ -187,8 +187,9 @@ class TensorAudit:
                 f"@{self.worst_value:.4g}")
 
 
-def audit_fp16(name: str, source: str, exact: torch.Tensor) -> tuple[torch.Tensor, TensorAudit]:
-    """Round exact FP32 values to FP16 and count every range/rounding effect."""
+def audit_fp16(name: str, source: str, exact: torch.Tensor, *,
+               keep_widened: bool = False) -> tuple[torch.Tensor, TensorAudit]:
+    """Audit FP16 rounding and optionally retain the exact widening used by the audit."""
     half = exact.half()
     a = TensorAudit(name, source, "F16", exact.numel())
     magnitude = exact.abs()
@@ -207,7 +208,7 @@ def audit_fp16(name: str, source: str, exact: torch.Tensor) -> tuple[torch.Tenso
         rel = torch.where(torch.isinf(back), torch.full_like(rel, float("inf")), rel)
         at = int(rel.flatten().argmax())
         a.worst_rel, a.worst_value = float(rel.flatten()[at]), float(exact.flatten()[at])
-    return half, a
+    return (back if keep_widened else half), a
 
 
 @dataclass
@@ -266,7 +267,7 @@ class Layout:
 
 @dataclass
 class Stage:
-    # TP8 serving may replace the four requestwise-only attention banks with FP32 storage.
+    # TP8 serving may retain widened FP16 values for the four requestwise attention banks.
     index: int
     wq_a: torch.Tensor          # [1280, 5120]
     q_norm: torch.Tensor        # FP32 [1280]
@@ -329,7 +330,7 @@ def check_config(directory: str | Path) -> dict:
 
 
 def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", config_dir: str | Path | None = None,
-         audit_only: bool = False) -> DSparkWeights | Audit:
+         audit_only: bool = False, keep_requestwise_fp32: bool = False) -> DSparkWeights | Audit:
     """Load one rank's DSpark head, or audit the full dense banks on CPU with ``audit_only``."""
     check_config(config_dir or directory)
     ck = Checkpoint(directory)
@@ -356,30 +357,35 @@ def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", con
                               max_abs=float(value.abs().max())))
         return value
 
-    def dense(name, rows=None, cols=None):
+    def dense(name, rows=None, cols=None, *, keep_widened=False):
         shape = _DENSE_SHAPES[name.split(".", 2)[2]]
         codes, scales = _dense_fp8_arrays(ck, name, shape, None if audit_only else rows, None if audit_only else cols)
-        half, a = audit_fp16(name, "F8_E4M3", fp8_block_decode(codes, scales, "cpu" if audit_only else device))
+        bank, a = audit_fp16(name, "F8_E4M3", fp8_block_decode(codes, scales, "cpu" if audit_only else device),
+                             keep_widened=keep_widened)
         audit.add(a)
         if not math.isfinite(a.max_abs):
             raise ValueError(f"{name}: nonfinite values after FP8 decode; FP16 bank refused")
         if a.overflow:
             raise ValueError(f"{name}: {a.overflow} values overflow FP16 (max {a.max_abs}); FP16 bank refused")
-        return half
+        return bank
 
     lay = layout
     stages = []
     first = lay.experts.start
     for i in range(STAGES):
         p = f"mtp.{i}."
+        keep_widened = keep_requestwise_fp32 and not audit_only and i < 2
         hc = {f"{b}_{part}": put(fp32(p + f"hc_{b}_{part}")) for b in ("attn", "ffn") for part in ("fn", "scale", "base")}
         heads = lay.rows(HEADS)
-        wq_b = dense(p + "attn.wq_b", rows=slice(heads.start * HEAD_DIM, heads.stop * HEAD_DIM))
+        wq_b = dense(p + "attn.wq_b", rows=slice(heads.start * HEAD_DIM, heads.stop * HEAD_DIM),
+                     keep_widened=keep_widened)
         groups = lay.rows(O_GROUPS)
-        wo_a = put(dense(p + "attn.wo_a", rows=slice(groups.start * O_LORA, groups.stop * O_LORA)))
+        wo_a = put(dense(p + "attn.wo_a", rows=slice(groups.start * O_LORA, groups.stop * O_LORA),
+                         keep_widened=keep_widened))
         if wo_a is not None:
             wo_a = wo_a.view(groups.stop - groups.start, O_LORA, -1)
-        wo_b = dense(p + "attn.wo_b", cols=slice(groups.start * O_LORA, groups.stop * O_LORA))
+        wo_b = dense(p + "attn.wo_b", cols=slice(groups.start * O_LORA, groups.stop * O_LORA),
+                     keep_widened=keep_widened)
         shared = lay.rows(INTER)
         sink = fp32(p + "attn.attn_sink")[heads]
         expert = {}
@@ -413,7 +419,7 @@ def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", con
             audit.expert_scale_max = max(audit.expert_scale_hist)
         stage = Stage(
             index=i,
-            wq_a=put(dense(p + "attn.wq_a")), q_norm=put(fp32(p + "attn.q_norm.weight")),
+            wq_a=put(dense(p + "attn.wq_a", keep_widened=keep_widened)), q_norm=put(fp32(p + "attn.q_norm.weight")),
             wq_b=put(wq_b), wkv=put(dense(p + "attn.wkv")), kv_norm=put(fp32(p + "attn.kv_norm.weight")),
             wo_a=wo_a, wo_b=put(wo_b), sink=put(sink),
             attn_norm=put(fp32(p + "attn_norm.weight")), ffn_norm=put(fp32(p + "ffn_norm.weight")), hc=hc,
