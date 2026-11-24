@@ -228,7 +228,7 @@ def test_capture_prewarms_only_scratch_with_live_commit_buffers(monkeypatch):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph required")
 def test_captured_shape_replays_changed_live_slots_and_commits_once():
     with torch.inference_mode():
-        engine, head, spec, events = owners(torch.device("cuda"))
+        engine, head, spec, events = owners(torch.device("cuda", torch.cuda.current_device()))
         shape = SpecShape(engine, head, spec, 4, 3, 8192)
         shape.capture(torch.cuda.graph_pool_handle(), torch.cuda.Stream())
         events.clear()
