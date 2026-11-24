@@ -67,7 +67,7 @@ class SpecShape:
         if tokens > min(RING, target.hash_state.max_tokens):
             raise ValueError("DSpark verify rows exceed the shape's scratch ring or target budget")
         self.engine, self.target, self.head, self.spec = engine, target, head, spec
-        self._embed = None if use_prepared_embedding else target.embed
+        self._embed = None if use_prepared_embedding or depth == 0 else target.embed
         self.bucket, self.depth, self.index_context = bucket, depth, index_context
         self.rows = rows
         self.scratch = engine.slots - 1
