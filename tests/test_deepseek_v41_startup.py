@@ -219,5 +219,27 @@ def test_target_reuses_h64_current_window_in_qualified_shapes(monkeypatch):
     ):
         query = torch.empty(tokens, 1)
         step = types.SimpleNamespace(prefill=[(0, 0, tokens, start + tokens - 1)], image=image,
-                               num_reqs=requests, positions=None, req_slot=None)
+                               num_reqs=requests, positions=None, req_slot=None, spec=None)
         assert Target._attend(None, query, step, ring, ring, None, cache=cache) is expected
+
+
+def test_single_request_verification_uses_the_c1_window_reader(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda.sm70 import ds41_sparse_attention as fused
+    from tensorfold.families.deepseek_v4.cuda.kernels import mu_packed as packed
+    from tensorfold.families.deepseek_v4.cuda.target import Target
+
+    monkeypatch.setattr(fused, "attend", lambda *args, **kwargs: "fused")
+    monkeypatch.setattr(packed, "attend", lambda *args, **kwargs: "gather")
+    window = torch.empty(0, dtype=torch.uint8)
+    for rows, requests, verify, expected in (
+        (1, 1, False, "gather"),
+        (4, 1, True, "gather"),
+        (6, 1, True, "gather"),
+        (4, 1, False, "fused"),
+        (8, 2, True, "fused"),
+    ):
+        step = types.SimpleNamespace(spec=object() if verify else None,
+                                     num_reqs=requests, req_slot=None, positions=None)
+        query = torch.empty(rows, 1)
+        assert Target._attend(None, query, step, window, window, None) == expected

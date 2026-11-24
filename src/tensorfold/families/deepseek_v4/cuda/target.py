@@ -373,9 +373,11 @@ class Target:
         """Sparse attention [T, 8, 512]: the fused kernel (patch 181 at TP8, ``ds41_sparse_attention``: keys
         streamed from the ring / pages, no gathered key buffer) from FUSED_MIN_* step tokens, else patch 87's
         gather + bmm passes (decode buckets of compressed layers); both read the same keys and FP16 probabilities."""
-        if query.shape[0] >= (FUSED_MIN_COMPRESSED if cache is not None else FUSED_MIN_WINDOW):
+        tokens = query.shape[0]
+        fused_min = FUSED_MIN_COMPRESSED if cache is not None else FUSED_MIN_WINDOW
+        # A single-request verification block uses the ordinary C1 window reader.
+        if tokens >= fused_min and (cache is not None or step.spec is None or step.num_reqs != 1):
             from tensorfold.cuda.sm70 import ds41_sparse_attention as fused
-            tokens = query.shape[0]
             # Reusing decoded rows pays off with compressed attention, and resumed chunks need more rows
             # to amortize the expansion across the old-window seam.
             decode_window = (cache is not None and fused.CURRENT_WINDOW_MIN <= tokens <= fused.CURRENT_WINDOW_MAX
