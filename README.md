@@ -1682,12 +1682,15 @@ The standard CUDA API supports strict function tools in DeepSeek's native DSML f
 Full-checkpoint validation covered count-only, nonstreaming tool calls, streamed thinking
 and tools, and ordinary streamed chat. [Strict function tools](docs/api.md#strict-function-tools)
 
-The RotorQuant Q4 serving profile uses the checkpoint's native YaRN factor and a configured
-65,536 tokens per session. On SC117,
-`2b8bf324` retained 8,435,648 shared KV tokens at 850 bytes per logical token in the 32-session profile.
-Against `236cdd52` at the same settings, geometric mean aggregate prefill rose **3.26%**
-and median per-user decode rose **5.26%** across the current eight-cell serving matrix. All 394,298
-raw scoring packets matched bit for bit across 300 requests, and all 12 perplexity comparisons were identical.
+The 32-session RotorQuant Q4 profile uses checkpoint-native YaRN 16, a 65,536-token context and
+16 GiB of pinned host prefix storage. On eight SC117 V100s at 180 W, the lattice changes in
+`844bd413` raised geometric mean aggregate prefill **1.09%** (95% interval **+0.95% to +1.23%**)
+against `2b8bf324` over four HTTP sessions and eight cells. C1/4K median per-user decode rose **0.46%**
+with a familywise gain. Aggregate decode was **0.31% lower** and remained uncertain, as did the lower
+C16/16K and C32/16K per-user decode estimates. Both candidate sessions finished both of those cohorts
+sooner. The shared KV pool retained **8,435,648 tokens** at 850 bytes per token. All **394,298** raw
+scoring packets matched the same archived `236cdd52` reference that `2b8bf324` matched, and all
+12 perplexity comparisons were identical across 300 scoring requests.
 [RotorQuant Q4 measurements](docs/recipes/deepseek-v41-v100.md#rotorquant-q4-serving-profile)
 
 On the same eight-V100 setup, fixed-order prefill RMS raised geometric mean prefill throughput **1.21%** across

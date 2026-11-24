@@ -34,10 +34,19 @@ equivalence criterion. The corpus, continuation cap, row counts, and prompt-band
 
 ## DeepSeek V4.1 RotorQuant Q4
 
-The SC117 eight-cell comparison measures the 32-session, 65,536-token H64 profile at
-checkpoint-native YaRN on eight V100s.
-`2b8bf324` retained the shared KV pool and passed the 300-request exact quality gate against
-`236cdd52`. The recipe records the throughput results, endpoint uncertainty, and near-context coverage.
+The SC117 H64 lattice comparison measured `844bd413` against `2b8bf324` across eight
+ordinary text cells in four independent sessions on eight 180 W V100s (image `67b43e682057`).
+With 32 lanes, context 65,536, RotorQuant Q4, native YaRN 16 and a 16 GiB host prefix tier, the
+candidate retained 8,435,648 KV tokens. Aggregate prefill rose 1.09% and C1/4K median per-user
+decode had a familywise gain of 0.46%. Aggregate decode and the adverse C16/16K and C32/16K
+median decode points remain uncertain. Both candidate sessions finished both of those cohorts
+sooner. The recipe retains the short and mixed-pacing observations and the earlier
+`236cdd52` to `2b8bf324` comparison.
+
+The final lattice source passed the native and fault checks, the 283-target near-context
+witness through position 65,535 and the 300-request exact quality gate. Both `2b8bf324`
+and `844bd413` matched the archived `236cdd52` reference across all 394,298 raw target
+packets and 12 perplexity comparisons.
 [RotorQuant Q4 measurements](recipes/deepseek-v41-v100.md#rotorquant-q4-serving-profile)
 
 ## Gemma 4 five-row SM70 decode

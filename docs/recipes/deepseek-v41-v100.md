@@ -77,7 +77,52 @@ The qualified profile admits 65,536 tokens per request. `/v1/stats` reports the 
 
 ### RotorQuant Q4 serving profile
 
-The 2026-11-24 SC117 comparison ran `236cdd52` and `2b8bf324` in reference, candidate, candidate,
+The 2026-11-24 SC117 lattice comparison tested
+`844bd4136ab24658e06114d69292b5ef1d2d1761` against the selected `2b8bf324` runtime.
+The candidate uses strided expert-bank transcode and vector staging of the unchanged IQ1_M lattice
+codebook. Four independent HTTP sessions ran in reference, candidate, candidate, reference order on
+image `67b43e682057` with eight 32 GiB V100s at 180 W. The launch above admits 32 sessions at 65,536 tokens,
+with RotorQuant Q4, native YaRN 16 and 16 GiB of pinned host prefix storage. All four sessions ran
+ordinary decode and retained 8,435,648 logical KV tokens at 850 bytes per token. The matrix used
+synchronized greedy requests with 512 output tokens on 4K and 16K prompts.
+
+| Concurrency | Prompt | Aggregate prefill tok/s, 2b → 844 | Median decode tok/s per user, 2b → 844 |
+| ---: | ---: | ---: | ---: |
+| 1 | 4K | 3953.82 → 4025.97 | 69.20 → 69.52 |
+| 1 | 16K | 4381.46 → 4410.42 | 66.46 → 66.72 |
+| 8 | 4K | 3635.68 → 3681.08 | 36.15 → 36.28 |
+| 8 | 16K | 4156.63 → 4199.44 | 29.50 → 29.62 |
+| 16 | 4K | 3445.95 → 3485.16 | 22.37 → 22.45 |
+| 16 | 16K | 4068.51 → 4109.39 | 21.40 → 20.69 |
+| 32 | 4K | 3142.21 → 3175.31 | 13.45 → 13.53 |
+| 32 | 16K | 3855.31 → 3885.30 | 10.78 → 10.61 |
+
+Geometric mean aggregate prefill improved **1.09%** (95% interval +0.95% to +1.23%). The familywise
+comparison established a C1/4K median per-user decode gain of **0.46%** (+0.02% to +0.91%). Aggregate
+decode was 0.31% lower (95% interval −1.23% to +0.62%). The C16/16K and C32/16K per-user points fell
+3.36% and 1.58%, respectively, with familywise intervals of −49.22% to +83.94% and −31.06% to +40.52%.
+The [matrix classifier](../testing-methodology.md#scoring-rule-predeclared) reported superiority
+with no established regression. The high-concurrency decode points remain uncertain.
+
+Each candidate session finished both 16K cohorts sooner than its paired reference. C16 elapsed
+times went from 79.34 to 78.48 s and 79.16 to 78.65 s. C32 times went from 154.03 to 152.88 s and
+154.09 to 152.60 s. In the separate mixed warm-pacing workload, the background visible-text-frame p99
+gap ranged from 176.35 to 177.38 ms in the reference sessions and 175.37 to 175.51 ms in the
+candidate sessions. These are observed session ranges. The cold 768- and 1,024-token probes and
+the resumed 1,023- and 1,024-token probes had familywise inverse-TTFT gains in the separate
+90-probe short suite.
+
+The lattice runtime matched all 394,298 raw scoring packets and all 12 perplexity comparisons
+against the frozen `236cdd52` scores, the same archive matched by `2b8bf324`. The capped suite
+had 268 requests and 221,428 prefill plus 16,884 decode targets. The uncapped suite had 32 requests
+and 146,299 prefill plus 9,687 decode targets. A fresh near-context run matched all 283 FP32 score
+packets through position 65,535 and retained the startup reserve, capacity and complete page
+retirement on all eight ranks. This comparison qualifies the scoped text profile with ordinary
+decode.
+
+#### Earlier exact H64 comparison
+
+The earlier 2026-11-24 SC117 comparison ran `236cdd52` and `2b8bf324` in reference, candidate, candidate,
 reference order on image `67b43e682057`. It used synchronized greedy HTTP requests with 512 output tokens,
 32 sessions, a 65,536-token context, 16 GiB of pinned host prefix storage, and the launch's Q4 and native
 YaRN settings. Both builds retained 8,435,648 logical KV tokens at 850 bytes per token. Ordinary decode
