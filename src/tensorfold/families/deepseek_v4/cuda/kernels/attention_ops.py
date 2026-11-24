@@ -1022,10 +1022,18 @@ def _sink_softmax(
     tl.store(probs + row * WIDTH + col, p.to(tl.float16), mask=inside)
 
 
-def _attend_fused(q, keys, unused, scale, attn_sink, output, scores):
+def _attend_fused(q, keys, unused, scale, attn_sink, output, scores, *, requestwise_bmm=False):
     """attend_gathered_keys for gathers that already zero unused keys."""
     n, heads, width = scores.shape
-    torch.bmm(q, keys.transpose(1, 2), out=scores, out_dtype=torch.float32)
+    kt = keys.transpose(1, 2)
+    if requestwise_bmm:
+        # The batch dimension affects cuBLAS's reduction even with equal rows.
+        # Keep the gathered buffers and use each row's original C1 view.
+        for i in range(n):
+            row = slice(i, i + 1)
+            torch.bmm(q[row], kt[row], out=scores[row], out_dtype=torch.float32)
+    else:
+        torch.bmm(q, kt, out=scores, out_dtype=torch.float32)
     probs = torch.empty(n, heads, width, dtype=torch.float16, device=q.device)
     _sink_softmax[(n * heads,)](
         scores,
@@ -1038,7 +1046,12 @@ def _attend_fused(q, keys, unused, scale, attn_sink, output, scores):
         BLOCK=triton.next_power_of_2(width),
         num_warps=4,
     )
-    torch.bmm(probs, keys, out=output)
+    if requestwise_bmm:
+        for i in range(n):
+            row = slice(i, i + 1)
+            torch.bmm(probs[row], keys[row], out=output[row])
+    else:
+        torch.bmm(probs, keys, out=output)
 
 
 def attend_paged_latents(
