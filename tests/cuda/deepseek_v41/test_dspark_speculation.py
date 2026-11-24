@@ -170,3 +170,81 @@ def test_commit_rejects_missing_and_out_of_range_counts_without_mutation():
     spec.commit(slots, counts)
     _assert_exact(_committed(target), before)
     assert int(target.hash_state.err) == ERR_CONTINUE and int(target.c2[3].err) == ERR_CONTINUE
+
+
+def test_captured_target_verify_uses_snapshots_before_h64_writes():
+    from tensorfold.families.deepseek_v4.cuda.speculation import Speculation
+    from tensorfold.families.deepseek_v4.cuda.target import Target
+
+    slots, layers = 2, 2
+    target = Target.__new__(Target)
+    target.__dict__.update(vars(_target(slots, layers, True)))
+    target.rotor_cache = target.rotor
+    target.slots = slots + 1
+    target.g = SimpleNamespace(hc=4, eps=1e-6)
+    target.w = SimpleNamespace(layers=tuple(range(layers)))
+    target.engram_trace = None
+    target.c = SimpleNamespace(sum=lambda x: x)
+    target._norm = lambda x, _: x
+    target._linear = lambda x, weight: x if weight is None else weight(x)
+    target._attend = lambda query, *_args, **_kwargs: torch.zeros_like(query)
+    target.embed = lambda ids: torch.zeros((ids.numel(), 512), device=ids.device, dtype=torch.float16)
+    target.end = lambda state, _: state["hashes"]
+    reference = _target(slots, layers, True)
+    generator = torch.Generator().manual_seed(19)
+    prompt = _step([(0, 0, 127), (1, 0, 128)], slots)
+    values = torch.randn(len(prompt.ids), 512, generator=generator).to(DEVICE)
+    for model in (target, reference):
+        _forward(model, prompt, values, values * 0.5)
+    original = _committed(target)
+
+    step = _step([(0, 127, 4), (1, 128, 4), (slots, 0, 4)], slots)
+    step.ids[-4:] = 700  # Out of the synthetic hash vocabulary. The graph scratch request must be masked.
+    step.spec = Speculation(target)
+    req_slot = step.req_slot.clone()
+    step.req_slot.fill_(slots)
+    values = torch.randn(len(step.ids), 512, generator=generator).to(DEVICE)
+    rope = torch.zeros(135, 64, device=DEVICE, dtype=torch.float32)
+    rope[:, :32] = 1  # Identity RoPE keeps the independent short-forward window operands.
+    column = torch.arange(512, device=DEVICE) / 512 - 0.5
+    amplitude = 0.25 + step.positions.float()[:, None] / 64
+    comp = SimpleNamespace(index=3, ratio=2, comp_wkv=None, comp_wgate=lambda x: x * 0.5)
+
+    def layers_with_fixture_projections(state, _stop):
+        batch = state["step"]
+        assert batch is not step and batch.valid is state["shared"]["rotor_valid"]
+        torch._assert_async((~batch.valid[-4:]).all(), "verify reader did not mask a scratch request")
+        target._compress(comp, values, batch)
+        for index in range(layers):
+            raw = ((amplitude + index / 8) * column[None, :]).half()
+            raw[-4:] = float("nan")  # A masked scratch row cannot trip the H64 codec.
+            layer = SimpleNamespace(index=index, ratio=0, qa_kv=lambda x: (x, x), q_norm=None, kv_norm=None,
+                                    wq_b=None, wo_a=None, wo_b=None, sink=None)
+            target.attention(layer, raw, batch, rope, state["shared"])
+
+    target.layers = layers_with_fixture_projections
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        target.forward(step, None)
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        target.forward(step, None)
+    _assert_exact(_committed(target), original)
+    step.req_slot.copy_(req_slot)
+    graph.replay()
+    proposed = _committed(target)
+    assert step.valid.all()  # The graph still owns the original staging mask.
+    _assert_exact(proposed[:3], original[:3])
+    for before, after in zip(original[3:], proposed[3:], strict=True):
+        assert not torch.equal(before[0], after[0])
+        assert torch.equal(before[slots], after[slots])
+
+    counts = torch.tensor([2, 0, -1], dtype=torch.int64, device=DEVICE)
+    step.spec.commit(step.req_slot[:3], counts)
+    short = _step([(0, 127, 2)], slots)
+    _forward(reference, short, values[:2], values[:2] * 0.5)
+    _assert_exact(_committed(target), _committed(reference))
+    assert int(target.hash_state.err) == int(target.c2[3].err) == 0
+    assert target.rotor_cache.status.tolist() == [0, -2]

@@ -1,5 +1,6 @@
 """CPU checks of the DeepSeek-V4.1 DSpark head loader pieces (decode tables, layout, index reader, verification)."""
 
+from dataclasses import replace
 import json
 import math
 import struct
@@ -11,6 +12,70 @@ import torch
 
 from tensorfold.cuda.sm70 import mxfp4_ds41 as mx
 from tensorfold.families.deepseek_v4.cuda import dspark_weights as dw
+
+
+def test_target_verify_validates_static_shape_and_masks_a_local_step_before_snapshot():
+    from tensorfold.families.deepseek_v4.cuda.speculation import Speculation
+    from tensorfold.families.deepseek_v4.cuda.target import Step, Target
+
+    events = []
+
+    class Hash:
+        history = torch.empty(3, 4, dtype=torch.int64)
+        max_tokens = 8
+
+        def __call__(self, ids, _positions, valid, *_metadata):
+            events.append(("hash", valid))
+            return torch.empty(len(ids), 2, 24, dtype=torch.int64)
+
+        def commit_all(self, *_args):
+            events.append(("commit", None))
+
+    target = Target.__new__(Target)
+    target.g = SimpleNamespace(hc=4)
+    target.slots = 3
+    target.hash_state = Hash()
+    target.rotor_cache = object()
+    target.engram_trace = None
+    target.embed = lambda ids: torch.empty(len(ids), 512, dtype=torch.float16)
+    spec = Speculation.__new__(Speculation)
+    spec._target = target
+    spec.slots = 2
+    spec.hash_state = target.hash_state
+    spec.snapshot_hash = lambda step: events.append(("snapshot", step))
+    staged = Step(ids=torch.arange(4), positions=torch.tensor([127, 128, 0, 1]),
+                  valid=torch.ones(4, dtype=torch.bool), token_req=torch.tensor([0, 0, 1, 1], dtype=torch.int32),
+                  qsl=torch.tensor([0, 2, 4], dtype=torch.int32), qsl_cpu=[0, 2, 4], num_reqs=2,
+                  req_slot=torch.tensor([0, 2] + [2] * 8, dtype=torch.int32),
+                  block_table=torch.tensor([[0], [-1]], dtype=torch.int32), prefill=[], decode_index=None, spec=spec)
+
+    with pytest.raises(ValueError, match="belongs to another target"):
+        Target.begin(SimpleNamespace(g=target.g), staged)
+    for kwargs, error in (
+        ({"qsl_cpu": [0, 0, 4]}, "bounded token rows"),
+        ({"qsl_cpu": [0, 2, 3]}, "bounded token rows"),
+        ({"single_token_slots": True}, "bounded token rows"),
+        ({"token_req": staged.token_req.long()}, "row metadata"),
+        ({"req_slot": staged.req_slot[:1]}, "slot and page tables"),
+        ({"image": staged.valid}, "text decode step"),
+    ):
+        with pytest.raises(ValueError, match=error):
+            target.begin(replace(staged, **kwargs))
+    assert events == []
+
+    result = target.begin(staged)
+    assert [name for name, _ in events] == ["hash", "snapshot"]
+    updated = result["step"]
+    assert updated is not staged and updated is events[1][1]
+    assert updated.valid is events[0][1] is result["shared"]["rotor_valid"]
+    assert updated.valid.tolist() == [True, True, False, False] and staged.valid.all()
+    assert updated.ids is staged.ids and updated.req_slot is staged.req_slot
+
+    events.clear()
+    ordinary = replace(staged, spec=None)
+    result = target.begin(ordinary)
+    assert [name for name, _ in events] == ["hash", "commit"]
+    assert result["step"] is ordinary and result["shared"]["rotor_valid"] is ordinary.valid
 
 
 def e4m3fn(code):

@@ -17,12 +17,16 @@ patch 112 for <= 32 rows, bounded restore + cuBLAS above); the embedding is voca
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import torch
 
 from .collectives import Collectives
 from .weights import EP, WORLD, Geometry, Weights
+
+if TYPE_CHECKING:
+    from .speculation import Speculation
 
 DECODE_MAX = 8                 # patch 85: requests with more tokens take the single-request prefill indexer
 BLOCK = 64                     # KV page: tokens per page (the friend's production --block-size 64)
@@ -89,6 +93,7 @@ class Step:
     image_rows: torch.Tensor | None = None     # [V] int64, ascending
     features: torch.Tensor | None = None       # [V, 5120] FP16
     single_token_slots: bool = False           # decode graph: one row per live slot, scratch rows never commit
+    spec: Speculation | None = None            # verify only: defer per-slot state commit to this owner
 
 
 def window_ring_bytes(rotorquant: bool) -> int:
@@ -227,7 +232,8 @@ class Target:
         valid = step.valid
         # A one-row request reads the current value from window; the prior
         # RING-1 positions never alias the ring row being written here.
-        decode_ring = (ring, step.req_slot, step.valid) if rotor is None and step.single_token_slots else None
+        decode_ring = ((ring, step.req_slot, step.valid)
+                       if rotor is None and step.single_token_slots and step.spec is None else None)
         if rotor is not None:
             valid = shared["rotor_valid"]
             if cold is None:
@@ -282,6 +288,8 @@ class Target:
             output = self._attend(query, step, cold["ring"], window_operand, ly.sink, **extra)
             torch._assert_async(torch.isfinite(output).all(), f"DeepSeek layer {ly.index}: nonfinite cold attention output")
         if decode_ring is None:
+            if step.spec is not None:
+                step.spec.backup_ring(ly.index, step)
             pk.insert_ring(ring, window, positions, valid, step.token_req, step.qsl, step.req_slot)
         if rotor is not None and cold is None:
             output = rotor.rotate(output, valid, ly.index, inverse=True)
@@ -298,9 +306,12 @@ class Target:
         xf = x.float()
         values, scores = self._linear(xf, ly.comp_wkv), self._linear(xf, ly.comp_wgate)
         state = self.c2[ly.index]
+        commit_single = step.single_token_slots and step.spec is None
         latent, _ = state(values, scores, step.positions, step.token_req, step.qsl, step.req_slot,
-                          commit_single=step.single_token_slots)
-        if not step.single_token_slots:
+                          commit_single=commit_single)
+        if step.spec is not None:
+            step.spec.snapshot_c2(ly.index, values, scores, step)
+        elif not commit_single:
             state.commit_all(values, scores, step.positions, step.qsl, step.req_slot, step.num_reqs, step.token_req)
         return latent
 
@@ -417,19 +428,32 @@ class Target:
     def begin(self, step: Step) -> dict:
         """Hash and embed ``step``'s tokens; the returned state runs through ``layers`` then ``end``. A paused
         state holds only its own tensors: per-slot KV, rings, Engram history and C2 partials are written in layer
-        order, so other forwards may run between its layers (they touch other slots)."""
+        order, so other forwards may run between its layers (they touch other slots). A verify step defers the
+        Engram and C2 commits and backs up its live ring writes on the current stream for the caller to settle."""
         g = self.g
+        spec = step.spec
+        if spec is not None:
+            spec.validate_step(self, step)
         tokens = step.ids.shape[0]
         # Image-span rows are dead Engram n-gram members (upstream: valid & ~image into the hash state, its commit
         # and the Engram gate); KV and attention keep every row.
         valid = step.valid if step.image is None else step.valid & ~step.image
-        if step.single_token_slots:
+        if spec is not None:
+            # Graph padding can occupy a whole multirow request at the scratch slot.
+            req = step.token_req
+            slot = step.req_slot.index_select(0, req.clamp(0, step.num_reqs - 1))
+            valid = valid & (req >= 0) & (req < step.num_reqs) & (slot >= 0) & (slot < self.slots - 1)
+            step = replace(step, valid=valid)
+        if step.single_token_slots and spec is None:
             hashes = self.hash_state(step.ids, step.positions, valid, step.token_req, step.qsl, step.req_slot,
                                      commit_single=True)
         else:
             hashes = self.hash_state(step.ids, step.positions, valid, step.token_req, step.qsl, step.req_slot)
-            self.hash_state.commit_all(step.ids, step.positions, valid, step.qsl, step.req_slot, step.num_reqs,
-                                       step.token_req)
+            if spec is not None:
+                spec.snapshot_hash(step)
+            else:
+                self.hash_state.commit_all(step.ids, step.positions, valid, step.qsl, step.req_slot, step.num_reqs,
+                                           step.token_req)
         if self.engram_trace is not None:
             self.engram_trace.write(hashes[valid].cpu().numpy().tobytes())
         hidden = self.embed(step.ids)
@@ -448,7 +472,7 @@ class Target:
         if self.rotor_cache is not None:
             from .rotor_cache import live_rows
 
-            shared["rotor_valid"] = live_rows(step, self.slots - 1)
+            shared["rotor_valid"] = live_rows(step, self.slots - 1) if spec is None else valid
             if (9 <= tokens < 1024 and step.image is None and step.num_reqs == 1
                     and step.prefill == [(0, 0, tokens, tokens - 1)]):
                 from .kernels.kv_pack import C_DIM

@@ -98,6 +98,7 @@ class Speculation(MuSpeculation):
             raise ValueError("DSpark window rings must be aligned and disjoint")
 
         super().__init__(hs, c2.values(), slots=hs.slots, max_inputs=MAX_ROWS)
+        self._target = target
         self._c2_indices = {layer: index for index, layer in enumerate(c2)}
         # Copy storage words so FP16 values and the H64 scale tail retain their original bits.
         self._rings = tuple(ring.view(torch.int32) for ring in rings)
@@ -119,6 +120,41 @@ class Speculation(MuSpeculation):
     @property
     def nbytes(self) -> int:
         return self.state_bytes(self.slots, len(self._rings), len(self._c2_indices), self._row_words * _WORD_BYTES)
+
+    def validate_step(self, target, step) -> None:
+        """Check the static metadata before any target state work is enqueued.
+
+        The caller owns the immutable device query offsets and token mapping
+        corresponding to qsl_cpu, with distinct live slots (scratch may repeat).
+        It stages valid positions, token IDs and page-table storage on this
+        stream and settles the block before another use of a pending slot.
+        """
+        if target is not self._target:
+            raise ValueError("DSpark verify state belongs to another target")
+        if step.image is not None or step.prefill or step.decode_index is not None:
+            raise ValueError("DSpark verify requires a text decode step")
+        tokens, requests = step.ids.numel(), step.num_reqs
+        offsets = step.qsl_cpu
+        if (not 0 < tokens <= self.hash_state.max_tokens or type(requests) is not int
+                or not 0 < requests <= self.slots + 1
+                or len(offsets) != requests + 1 or offsets[0] != 0 or offsets[-1] != tokens
+                or any(type(offset) is not int for offset in offsets)
+                or any(not 1 <= stop - start <= MAX_ROWS for start, stop in zip(offsets, offsets[1:]))
+                or (step.single_token_slots and requests != tokens)):
+            raise ValueError("DSpark verify requests do not match the bounded token rows")
+        device = self.hash_state.history.device
+        rows = ((step.ids, torch.int64, tokens), (step.positions, torch.int64, tokens),
+                (step.valid, torch.bool, tokens), (step.token_req, torch.int32, tokens),
+                (step.qsl, torch.int32, requests + 1))
+        if any(t.shape != (count,) or t.dtype != dtype or t.device != device or not t.is_contiguous()
+               for t, dtype, count in rows):
+            raise ValueError("DSpark verify requires contiguous target-device row metadata")
+        slots, table = step.req_slot, step.block_table
+        if (slots.ndim != 1 or slots.numel() < requests or slots.dtype != torch.int32
+                or slots.device != device or not slots.is_contiguous() or table.ndim != 2
+                or table.shape[0] != requests or table.shape[1] < 1 or table.dtype != torch.int32
+                or table.device != device or not table.is_contiguous()):
+            raise ValueError("DSpark verify requires slot and page tables for every request row")
 
     def snapshot_hash(self, step) -> None:
         if not step.num_reqs:
