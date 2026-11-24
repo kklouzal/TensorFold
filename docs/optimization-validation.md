@@ -32,6 +32,13 @@ The [paired v2 quality comparison](recipes/deepseek-v41-v100.md#quality-gate) of
 `fa3ca06e` build found a prefill NLL increase concentrated in longer prompts. Overall early-decode NLL met the
 equivalence criterion. The corpus, continuation cap, row counts, and prompt-band intervals are in the recipe.
 
+## DeepSeek V4.1 experimental DSpark
+
+The SC117 depth-3 comparison of `4fbc07d9` and `46f68770` used two fresh sessions per build
+and four held, uncached C1 prompts. The candidate improved server decode on both pairs, preserved
+output and draft counters, and retained 6,634,816 KV tokens. Full head and ordinary-versus-draft
+qualification remain open. [DSpark measurements](recipes/deepseek-v41-v100.md#experimental-dspark-decode)
+
 ## Gemma 4 five-row SM70 decode
 
 The [2026-11-15 Gemma checkpoint](gemma4-sm70-throughput-20261115.md#five-row-decode-follow-up)

@@ -1675,7 +1675,10 @@ after correcting sequence-parallel expert routing. On the larger 268-document co
 0.00190 nats/token against the historical `p1` build, with the increase concentrated in prompts of 1,024 tokens
 or more. Overall early-decode NLL met the equivalence criterion. The [recipe](docs/recipes/deepseek-v41-v100.md)
 gives the intervals and measurement scope. The default uses ordinary decode.
-DSpark is experimental and requires explicit opt-in. Native head and serving qualification are pending.
+DSpark is experimental and requires explicit opt-in. On SC117 at depth 3, `46f68770` improved server
+decode by **1.69–2.91%** across four held C1 prompts compared with `4fbc07d9` and recovered
+**86,336 KV tokens**. The paired runs matched output tokens and draft counters exactly.
+Full head and ordinary-versus-draft qualification remain open. [DSpark measurements](docs/recipes/deepseek-v41-v100.md#experimental-dspark-decode)
 
 The normal CUDA server exposes exact chat token counts, renderer capabilities and request
 statistics to [Harness and other API clients](docs/recipes/deepseek-v41-v100.md#launch).

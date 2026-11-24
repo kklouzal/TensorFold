@@ -18,7 +18,8 @@ Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 
 
 ```sh
 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backend cuda \
-  --name deepseek-v4.1-flash --parallel 32 --context 65536 --prefix-host-bytes 17179869184 --port 8000
+  --name deepseek-v4.1-flash --parallel 32 --context 65536 --prefix-host-bytes 17179869184 \
+  --kv-dtype rotorquant-iso64-norm4-h64 --port 8000
 ```
 
 This launch serves exact chat counting, the active renderer's capabilities, and telemetry through
@@ -39,7 +40,7 @@ registered Engram table.
 | Flag | DeepSeek-V4.1 SM70 |
 | --- | --- |
 | `--parallel N` | 1-32 concurrent streams. Requests beyond N wait in the queue. |
-| `--context N` | Admitted context per stream (default: the model's maximum). The text-only matrix at `--context 65536 --parallel 32` reported 7,775,360 tokens in the shared KV pool. |
+| `--context N` | Admitted context per stream. The default is the model's maximum. The tested H64 profile configures 65,536 tokens per stream. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
 | `--kv-dtype rotorquant-iso64-norm4-h64` | RotorQuant Q4 for both sliding-window and compressed attention latents. DeepSeek stores one 272-byte row for shared K and V. The learned index rows retain their separate format. |
 | `--yarn-factor F` | Overrides the checkpoint's static YaRN factor on compressed layers. Window-only layers retain plain RoPE. |
@@ -47,17 +48,17 @@ registered Engram table.
 | `--no-graphs` | Eager decode, for A/B checks only. |
 | `--vision` | Image input (needs `mmproj_file` and `vision_bias_file` in `config.json`; see "Image input"). |
 
-The RotorQuant Q4 profile uses `--kv-dtype rotorquant-iso64-norm4-h64 --yarn-factor 2 --context 65536`.
-`/v1/stats` reports the effective `model.kv_dtype` and `model.yarn_factor`. Full-model quality and throughput
-for this profile are pending.
+The RotorQuant Q4 launch uses native YaRN 16 from the checkpoint. The checkpoint advertises
+1,048,576 positions, and the launch admits 65,536 tokens per request. `/v1/stats` reports
+the effective `model.kv_dtype` and `model.yarn_factor`.
 
 ## What runs
 
 ### Experimental DSpark decode
 
-To test DSpark through the standard launch, add `--kv-dtype rotorquant-iso64-norm4-h64 --draft-method dspark
---drafter /models/ds41-dspark-1017 --mtp-drafts 5`. The native bundle contains `ft/model.safetensors.index.json`,
-the referenced FT shards, and `official/config.json`. `--mtp-drafts 3` selects the other prepared depth.
+To test DSpark through the standard launch, add `--draft-method dspark --drafter /models/ds41-dspark-1017
+--mtp-drafts 3`. The native bundle contains `ft/model.safetensors.index.json`, the referenced FT shards,
+and `official/config.json`. `--mtp-drafts 5` selects the other prepared depth.
 This option uses the checkpoint's existing YaRN settings and keeps the configured admission width. It takes the
 verify graph only for one live greedy text request whose normal prefill computed all real rows in the final draft
 window. Concurrent decode, score requests, sampling, constrained requests, and requests without that complete
@@ -65,6 +66,23 @@ window use ordinary decoding. Existing draft counters report evaluated proposals
 including a matched final proposal at EOS or the output cap. Every rank acknowledges its completed verification
 commit before the server publishes the round. The experimental serving path still requires native, exact-quality
 and performance qualification before it can be selected as a serving profile.
+
+The 2026-11-24 SC117 experiment ran `4fbc07d9` and `46f68770` as four fresh depth-3 servers in
+reference, candidate, candidate, reference order. It used the eight-V100 image `67b43e682057`,
+the 180 W limit, and the 32-session H64 launch above. Each of the four held greedy prompts had
+zero cached tokens and a 120-token output cap. The table reports median server decode rates.
+
+| Prompt tokens | Reference tok/s | Candidate tok/s |
+| ---: | ---: | ---: |
+| 1,024 | 125.775 | 129.255 |
+| 4,602 | 79.115 | 81.420 |
+| 10,109 | 118.265 | 120.800 |
+| 13,792 | 99.615 | 101.295 |
+
+Both pairs improved on all four prompts. Output IDs, text, usage and draft counters matched.
+The KV pool grew from 6,548,480 to 6,634,816 tokens. This comparison measures two experimental
+depth-3 implementations. Full head accuracy and ordinary-versus-draft output parity are
+separate qualification checks.
 
 ### Target execution
 
