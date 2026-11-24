@@ -157,6 +157,7 @@ def test_engram_unmaps_after_device_retirement(monkeypatch, rank):
 
     e = object.__new__(DS41Engine)
     e._closed, e.rank, e.graphs = False, rank, object()
+    e.drafter = None
     actions = []
 
     def unmap():
@@ -179,6 +180,7 @@ def test_engram_stays_mapped_if_device_retirement_fails(monkeypatch):
     e = object.__new__(DS41Engine)
     graph = object()
     e._closed, e.rank, e.graphs = False, 1, graph
+    e.drafter = None
     e.engram = types.SimpleNamespace(close=lambda: pytest.fail("released unretired mapping"))
 
     def fail():

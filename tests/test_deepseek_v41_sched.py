@@ -313,6 +313,7 @@ def _timeline_decoder(monkeypatch, unit_ms, round_ms=20.0, units=8, warm_rows=25
     class Engine:
         def __init__(self):
             self.units, self.graphs, self.layer_marks, self.image_features = units, SimpleNamespace(sizes=(1, 2, 4)), None, None
+            self.drafter = None
             self.rows = self.at = None
 
         def _units(self, stop):
@@ -366,6 +367,7 @@ class _Stream:
     def __init__(self, sid, rows, count, clock):
         self.sid, self.slot, self.prompt, self.count, self.bounds, self.clock = sid, sid, [1] * rows, count, [], clock
         self.pos, self.head, self.vision, self.background, self.probabilities = 0, None, None, False, None
+        self.token_limit = None
         self.prefill_s, self.keep_end, self.on_fill, self.forced = 0.0, False, None, None
         self.constraint = self.history = self.sampling = None
         self.done, self.stop_eos, self.out, self.times = False, False, [], []

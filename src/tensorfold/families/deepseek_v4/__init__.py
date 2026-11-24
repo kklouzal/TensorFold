@@ -13,11 +13,13 @@ LANES = True
 CUDA_TP8 = True              # DeepSeek-V4.1 GGUF: TP8 attention/dense + ETP4 x EP2 experts on eight V100s
 ROTOR_KV_DTYPE = "rotorquant-iso64-norm4-h64"
 CUDA_KV_DTYPES = ("bf16", ROTOR_KV_DTYPE)
+CUDA_DRAFT_METHODS = ("none", "dspark")
 ROPE_BACKENDS = ("cuda",)
 # affine 4-bit groups of 64, routed experts in mxfp4 (DeepSeek's own FP4 bytes)
 MODELS = ("mlx-community/DeepSeek-V4-Flash-4bit",)
 # DeepSeek's DSpark blocks converted (MIT); TensorFold/DeepSeek-V4-Flash-MTP-MLX holds the MTP layer the same way
 DRAFTER = "TensorFold/DeepSeek-V4-Flash-DSpark-MLX"
+CUDA_DRAFTER = ""  # Native CUDA heads are explicit and use the FT/official bundle layout.
 KERNEL_PACKAGE = "tensorfold.kernels.deepseek.v4"
 KERNEL_VERSION = "v1"
 # the shared GLM-5.3 pieces this engine runs (hyper-connections, row linears), hashed into snapshot keys
@@ -142,13 +144,24 @@ def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
 
 
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0, master: str = "",
-                master_port: int = 29551, no_drafts: bool = False, context: int | None = None, **options: Any):
+                master_port: int = 29551, no_drafts: bool = False, context: int | None = None,
+                draft_method: str = "auto", mtp_drafts: int | None = None, **options: Any):
     """DeepSeek-V4.1-Flash GGUF on eight V100s: TP8 attention/dense, ETP4 x EP2 routed experts."""
     from tensorfold.families import read_config
 
     if read_config(model_dir).get("model_type") != V41:
         raise ValueError("the CUDA engine serves DeepSeek-V4.1-Flash GGUF (model_type deepseek_v41)")
+    if draft_method not in ("auto", *CUDA_DRAFT_METHODS):
+        raise ValueError("DeepSeek-V4.1 CUDA supports explicit DSpark or ordinary decoding")
+    draft_root, depth = None, None
+    if draft_method == "dspark" and not no_drafts and mtp_drafts != 0:
+        if not drafter:
+            raise ValueError("experimental DeepSeek DSpark requires --drafter with the native FT/official bundle")
+        depth = 5 if mtp_drafts is None else mtp_drafts
+        if type(depth) is not int or depth not in (3, 5):
+            raise ValueError("experimental DeepSeek DSpark uses --mtp-drafts 3 or 5")
+        draft_root = Path(drafter)
     from .cuda.engine import DS41Engine
 
     return DS41Engine(Path(model_dir), rank=rank, tp=tp, master=master, master_port=master_port, context=context,
-                      serve=True, **options)
+                      serve=True, draft_root=draft_root, draft_depth=depth, **options)

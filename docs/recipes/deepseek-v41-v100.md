@@ -53,6 +53,21 @@ for this profile are pending.
 
 ## What runs
 
+### Experimental DSpark decode
+
+To test DSpark through the standard launch, add `--kv-dtype rotorquant-iso64-norm4-h64 --draft-method dspark
+--drafter /models/ds41-dspark-1017 --mtp-drafts 5`. The native bundle contains `ft/model.safetensors.index.json`,
+the referenced FT shards, and `official/config.json`. `--mtp-drafts 3` selects the other prepared depth.
+This option uses the checkpoint's existing YaRN settings and keeps the configured admission width. It takes the
+verify graph only for one live greedy text request whose normal prefill computed all real rows in the final draft
+window. Concurrent decode, score requests, sampling, constrained requests, and requests without that complete
+window use ordinary decoding. Existing draft counters report evaluated proposals and matching target decisions,
+including a matched final proposal at EOS or the output cap. Every rank acknowledges its completed verification
+commit before the server publishes the round. The experimental serving path still requires native, exact-quality
+and performance qualification before it can be selected as a serving profile.
+
+### Target execution
+
 - Decode: startup CUDA graphs for batches 1-16, 24 and 32. Capture happens at startup, never lazily. Each batch has
   index-score classes 8192 / 32768 / `--context`, sized by the batch's live maximum length. Decode also uses small
   all-gathers and an LL row all-reduce for small sums, a compact device greedy argmax with batched round sampling
@@ -268,7 +283,3 @@ the 3 GiB prompt reserve. This was a functional run with a CPU suite in flight.
 - `TENSORFOLD_DS41_SCHED_TRACE=1`: prints the Decoder's layer-group plans and costs.
 - `TENSORFOLD_DS41_SMOKE_LAYERS=N`: loads only the first N layers (N=1 skips the Engram mapping) for plumbing
   checks. Outputs are meaningless.
-
-## Not yet
-
-DSpark drafting is not merged into the serving lane.
