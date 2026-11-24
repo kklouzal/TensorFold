@@ -8,6 +8,8 @@ Metrics are printed (pytest -s) for the report.
 
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -56,6 +58,136 @@ def test_mxfp4_experts_synthetic():
         none = torch.full_like(ids, -1)
         assert torch.equal(mx.experts(x, none, probs, gate, gs, up, us, down, ds), torch.zeros(m, h, dtype=torch.half,
                                                                                                device=dev))
+
+
+@cuda
+def test_stage0_route_partials_retain_fp32_until_independent_branch_cuts():
+    from tensorfold.cuda.sm70 import mxfp4_ds41 as mx
+
+    device = "cuda"
+    m, top, hidden, k = 2, 3, 8, 32
+    expert_count = 4
+    width = 4 * k
+    ids = torch.tensor([[0, 3, -1], [2, 1, 2]], dtype=torch.int64, device=device)
+    weights = torch.tensor([[0.5, 0.375, float("nan")], [0.625, 0.125, 0.75]], device=device)
+    entries = m * top * width
+    inputs = ((torch.arange(entries, device=device).view(m, top, width) % 29 - 14) / 256).half()
+    codes = torch.arange(expert_count * hidden * width // 2, device=device).to(torch.uint8)
+    codes = codes.view(expert_count, hidden, width // 2)
+    scales = torch.full((expert_count, hidden, width // 32), 125, dtype=torch.uint8, device=device)
+    full_weights = mx.decode(codes, scales, torch.float64)
+    contributions = []
+    for rank in range(8):
+        first = rank // 4 * 2
+        shard = rank % 4
+        local = ids - first
+        local = torch.where((local >= 0) & (local < 2), local, -1).int()
+        inter = inputs[..., shard * k:(shard + 1) * k].contiguous()
+        inter[local < 0] = float("nan")
+        bank = codes[first:first + 2, :, shard * (k // 2):(shard + 1) * (k // 2)].contiguous()
+        bank_scales = scales[first:first + 2, :, shard:shard + 1].contiguous()
+        parts = torch.empty((top + 1, m, hidden), dtype=torch.float32, device=device)
+        parts.fill_(float("nan"))
+        mx.extension().down_partials(parts[:top], inter, local, bank, bank_scales)
+        expected = torch.zeros_like(parts[:top])
+        for row, routes in enumerate(local.tolist()):
+            for route, expert in enumerate(routes):
+                if expert >= 0:
+                    w = full_weights[first + expert, :, shard * k:(shard + 1) * k]
+                    expected[route, row] = (w @ inter[row, route].double()).float()
+        assert torch.equal(parts[:top].view(torch.int32), expected.view(torch.int32))
+        assert torch.isnan(parts[-1]).all()  # The routed writer cannot publish the shared plane.
+        parts[-1].fill_(0.125 + rank / 4096)
+        contributions.append(parts)
+
+    reduced = torch.stack(contributions).sum(0)
+    reduced[2, 0].fill_(float("nan"))  # An invalid route cannot consume either operand.
+    result = mx.finish_partials(reduced, ids, weights, experts=expert_count)
+    routed = torch.zeros((m, hidden), device=device)
+    for row, routes in enumerate(ids.tolist()):
+        for route, expert in enumerate(routes):
+            if expert >= 0:
+                full = (full_weights[expert] @ inputs[row, route].double()).half().float()
+                routed[row] += full * weights[row, route]
+    shared = torch.tensor(sum(0.125 + rank / 4096 for rank in range(8)), device=device).half().float()
+    expected = routed.half().float() + shared
+    assert torch.equal(result.view(torch.int32), expected.view(torch.int32))
+
+    # The halfway expert value must be cut before its weighted cancellation.
+    # The shared value must independently round to 1 before the FP32 add.
+    corner = torch.tensor([2049.0, -2048.0, float("nan"), 1.0004], device=device).view(4, 1, 1)
+    result = mx.finish_partials(corner, ids[:1], torch.tensor([[0.5, 0.5, float("nan")]], device=device),
+                               experts=expert_count)
+    assert result.item() == 1
+
+
+@cuda
+def test_stage0_route_partials_reject_invalid_expert_on_graph_replay():
+    program = """
+import torch
+from tensorfold.cuda.sm70 import mxfp4_ds41 as mx
+
+ext = mx.prepare()
+inter = torch.ones((1, 1, 32), dtype=torch.float16, device='cuda')
+ids = torch.zeros((1, 1), dtype=torch.int32, device='cuda')
+bank = torch.full((1, 8, 16), 0x22, dtype=torch.uint8, device='cuda')
+scales = torch.full((1, 8, 1), 125, dtype=torch.uint8, device='cuda')
+out = torch.empty((1, 1, 8), dtype=torch.float32, device='cuda')
+ext.down_partials(out, inter, ids, bank, scales)
+torch.cuda.synchronize()
+graph = torch.cuda.CUDAGraph()
+with torch.cuda.graph(graph):
+    ext.down_partials(out, inter, ids, bank, scales)
+graph.replay()
+assert torch.all(out == 8).item()
+ids.fill_(1)
+try:
+    graph.replay()
+    torch.cuda.synchronize()
+except RuntimeError as error:
+    assert any(mark in str(error).lower() for mark in ('illegal instruction', 'launch failure', 'device-side assert'))
+    print('invalid Stage0 expert trapped', flush=True)
+else:
+    raise AssertionError('invalid Stage0 expert reached a bank read')
+"""
+    child = subprocess.run((sys.executable, "-B", "-c", program), capture_output=True, text=True, timeout=90)
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert "invalid Stage0 expert trapped" in child.stdout
+
+
+@cuda
+@pytest.mark.parametrize("invalid", [-2, 4])
+def test_stage0_route_reduction_rejects_invalid_global_expert_on_graph_replay(invalid):
+    program = """
+import sys
+import torch
+from tensorfold.cuda.sm70 import mxfp4_ds41 as mx
+
+mx.prepare()
+ids = torch.tensor([[0, -1]], dtype=torch.int64, device='cuda')
+probs = torch.tensor([[0.5, float('nan')]], device='cuda')
+planes = torch.tensor([1.125, float('nan'), 0.25], device='cuda').view(3, 1, 1)
+warm = mx.finish_partials(planes, ids, probs, experts=4)
+assert warm.item() == 0.8125
+graph = torch.cuda.CUDAGraph()
+with torch.cuda.graph(graph):
+    actual = mx.finish_partials(planes, ids, probs, experts=4)
+graph.replay()
+assert actual.item() == 0.8125
+ids[0, 0] = int(sys.argv[1])
+try:
+    graph.replay()
+    torch.cuda.synchronize()
+except RuntimeError as error:
+    assert any(mark in str(error).lower() for mark in ('illegal instruction', 'launch failure', 'device-side assert'))
+    print('invalid global Stage0 expert trapped', flush=True)
+else:
+    raise AssertionError('invalid global Stage0 expert reached successful reduction')
+"""
+    child = subprocess.run((sys.executable, "-B", "-c", program, str(invalid)), capture_output=True,
+                           text=True, timeout=90)
+    assert child.returncode == 0, child.stdout + child.stderr
+    assert "invalid global Stage0 expert trapped" in child.stdout
 
 
 @cuda

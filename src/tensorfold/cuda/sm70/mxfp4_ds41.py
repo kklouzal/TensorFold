@@ -15,6 +15,8 @@ Modes (``q8``):
   accumulation. An explicit activation quantization (NOT the reference's FP16 activations).
 Rounding boundaries: FP16 gate/up; vLLM ``silu_and_mul_with_clamp`` SwiGLU (limit 10); FP16 per-route down; FP32
 route-weighted sum in route order rounded once to FP16 -- the stages of upstream ``execute_fp4``.
+Split ETP can defer the two routed casts with ``experts_partials`` and ``finish_partials``. The collective
+sums unweighted FP32 down planes per route and the separate shared-down plane before either is finalized.
 
 All operands CUDA, contiguous, one device. ``out``/scratch tensors are caller-owned and fully written; passing them
 keeps a call graph-capturable (no allocation). The caller retains operands until current-stream completion.
@@ -85,6 +87,31 @@ def experts(x, ids, probs, gate, gate_s, up, up_s, down, down_s, *, q8=False, ws
     ext.swiglu(ws.inter, ws.iq, ws.gate_up, bool(q8))
     ext.down(ws.out, ws.inter, ws.iq, ids, probs, down, down_s, bool(q8))
     return ws.out
+
+
+def experts_partials(x, ids, gate, gate_s, up, up_s, down, down_s, *, out):
+    """Write one unweighted FP32 down plane per route, with +0 for unowned expert ids."""
+    if (x.dtype != torch.float16 or x.ndim != 2 or ids.dtype != torch.int32
+            or ids.ndim != 2 or ids.shape[0] != x.shape[0]
+            or any(t.device != x.device for t in (ids, gate, gate_s, up, up_s, down, down_s, out))):
+        raise ValueError("MXFP4 split experts require [M,K] FP16 rows and same-device [M,top] int32 ids")
+    routes, channels = ids.numel(), gate.shape[1]
+    gate_up = torch.empty((routes, 2, channels), dtype=torch.float16, device=x.device)
+    inter = torch.empty((routes, channels), dtype=torch.float16, device=x.device)
+    ext = extension()
+    # Q8 buffers are unused by the FP16 gate/up and SwiGLU variants.
+    ext.gate_up(gate_up, x, x, ids, gate, gate_s, up, up_s, False)
+    ext.swiglu(inter, x, gate_up, False)
+    ext.down_partials(out, inter, ids, down, down_s)
+
+
+def finish_partials(planes, ids, probs, *, experts):
+    """Complete the expert, routed and shared FP16 boundaries after the FP32 collective."""
+    if planes.ndim != 3:
+        raise ValueError("MXFP4 complete partials need [top+1,M,H] planes")
+    out = torch.empty(planes.shape[1:], dtype=torch.float32, device=planes.device)
+    extension().finish_partials(out, planes, ids, probs, experts)
+    return out
 
 
 # ------------------------------------------------------------------------------------- torch reference

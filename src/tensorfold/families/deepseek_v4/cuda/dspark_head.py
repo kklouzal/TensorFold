@@ -22,7 +22,8 @@ Equations (upstream):
   (lowest index on ties). Confidence logit_j = ``w_conf . cat(h_j, embed(prev_j))``.
 TensorFold changes, recorded:
 - TP8 dense/attention (8 heads, 1 output group per rank) and ETP4 x EP2 experts instead of TP4; every cross-rank sum
-  in FP32 rounded once (``Comm.sum``). Upstream's routed and shared partials meet in one FP32 all-reduce (kept).
+  in FP32 (``Comm.sum``). On stage 0 with FP16 expert activations, the routed expert slots and shared branch
+  use separate planes in one all-reduce so their complete-output FP16 rounding boundaries remain independent.
 - Window: a per-slot ring [slots, 3, 256, 512] FP16 indexed by position mod 256 instead of the paged draft cache
   (same rows; reads p-128..p-1 only). Rows of rejected positions may stay in the ring: they lie at >= p and are
   never read before being overwritten. Positions past 16K rotate on the fly (upstream VLLM_V41_PACKED_KV=1 mode).
@@ -233,6 +234,14 @@ class DSparkHead:
         local = ids - self.first
         mine = (local >= 0) & (local < self.local)
         local = torch.where(mine, local, torch.full_like(local, -1)).to(torch.int32).contiguous()
+        if s.index == 0 and self.w.layout.world == 8 and not self.q8:
+            partials = torch.empty((dw.TOP_K + 1, x.shape[0], s.exp_down.shape[1]), dtype=torch.float32,
+                                   device=x.device)
+            mx.experts_partials(x.contiguous(), local, s.exp_gate, s.exp_gate_scale, s.exp_up, s.exp_up_scale,
+                                s.exp_down, s.exp_down_scale, out=partials[:-1])
+            shared = swiglu(self._linear(x, s.sh_gate), self._linear(x, s.sh_up))
+            torch.mm(shared, s.sh_down.t(), out_dtype=torch.float32, out=partials[-1])
+            return mx.finish_partials(self.comm.sum(partials), ids, probs, experts=s.gate.shape[0])
         routed = mx.experts(x.contiguous(), local, probs.contiguous(), s.exp_gate, s.exp_gate_scale, s.exp_up,
                             s.exp_up_scale, s.exp_down, s.exp_down_scale, q8=self.q8)
         shared = self._linear(swiglu(self._linear(x, s.sh_gate), self._linear(x, s.sh_up)), s.sh_down)

@@ -15,10 +15,12 @@
 // reads nothing). An id outside [-1, E) traps the device.
 #include <torch/all.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/MemoryOverlap.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <limits>
 
 namespace {
 
@@ -185,9 +187,10 @@ __global__ void swiglu_kernel(half* out, Q8F* q8, const half* gate_up, int n_row
   }
 }
 
-// out [M, H] FP16 = fp16(sum_k p[m,k] * fp16(down_e(inter[m,k]))); one warp per output row n of token m.
-template <bool Q8>
-__global__ void down_kernel(half* out, const half* inter, const Q8F* iq, const int* ids, const float* probs,
+// One warp per output dimension n of token m. The split ETP path keeps one
+// unweighted FP32 plane per route until the complete expert has been reduced.
+template <bool Q8, bool Partials = false>
+__global__ void down_kernel(void* out, const half* inter, const Q8F* iq, const int* ids, const float* probs,
                             const uint8_t* down, const uint8_t* down_s, int hidden, int k, int top, int experts) {
   extern __shared__ float smem[];  // [top, k] FP32 activations (F16 mode)
   __shared__ uint16_t lut[256];
@@ -205,8 +208,20 @@ __global__ void down_kernel(half* out, const half* inter, const Q8F* iq, const i
   float total = 0.f;
   for (int r = 0; r < top; ++r) {
     const int e = ids[m * top + r];
-    check_expert(e, experts);
-    if (e < 0) continue;
+    if constexpr (Partials) {
+      if (e < -1 || e >= experts) {
+        __trap();
+        return;
+      }
+    } else {
+      check_expert(e, experts);
+    }
+    if (e < 0) {
+      if constexpr (Partials) {
+        if (!lane) static_cast<float*>(out)[(int64_t(r) * gridDim.y + m) * hidden + n] = 0.f;
+      }
+      continue;
+    }
     const int64_t row = int64_t(e) * hidden + n;
     const uint4* w = reinterpret_cast<const uint4*>(down + row * (k / 2));
     const uint8_t* s = down_s + row * blocks;
@@ -224,9 +239,37 @@ __global__ void down_kernel(half* out, const half* inter, const Q8F* iq, const i
       }
     }
     acc = warp_sum(acc);
-    total += __half2float(__float2half_rn(acc)) * probs[m * top + r];
+    if constexpr (Partials) {
+      if (!lane) static_cast<float*>(out)[(int64_t(r) * gridDim.y + m) * hidden + n] = acc;
+    } else {
+      total += __half2float(__float2half_rn(acc)) * probs[m * top + r];
+    }
   }
-  if (!lane) out[int64_t(m) * hidden + n] = __float2half_rn(total);
+  if constexpr (!Partials) {
+    if (!lane) static_cast<half*>(out)[int64_t(m) * hidden + n] = __float2half_rn(total);
+  }
+}
+
+__global__ void finish_partials_kernel(float* out, const float* planes, const int64_t* ids, const float* probs,
+                                       int64_t elements, int64_t hidden, int top, int experts) {
+  const int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (i >= elements) return;
+  const int64_t row = i / hidden;
+  float routed = 0.f;
+  for (int r = 0; r < top; ++r) {
+    const int64_t route = row * top + r;
+    const int64_t expert = ids[route];
+    if (expert < -1 || expert >= experts) {
+      __trap();
+      return;
+    }
+    if (expert == -1) continue;
+    const float complete_expert = __half2float(__float2half_rn(planes[int64_t(r) * elements + i]));
+    routed = __fadd_rn(routed, __fmul_rn(complete_expert, probs[route]));
+  }
+  const float complete_routed = __half2float(__float2half_rn(routed));
+  const float complete_shared = __half2float(__float2half_rn(planes[int64_t(top) * elements + i]));
+  out[i] = __fadd_rn(complete_routed, complete_shared);
 }
 
 void check_cuda(const torch::Tensor& t, const char* name, at::ScalarType type) {
@@ -310,21 +353,34 @@ void mxfp4_swiglu(torch::Tensor out, torch::Tensor q8, const torch::Tensor& gate
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-void mxfp4_down(torch::Tensor out, const torch::Tensor& inter, const torch::Tensor& iq, const torch::Tensor& ids,
-                const torch::Tensor& probs, const torch::Tensor& down, const torch::Tensor& down_s, bool q8) {
-  check_cuda(out, "out", at::kHalf);
+namespace {
+void mxfp4_down_impl(torch::Tensor out, const torch::Tensor& inter, const torch::Tensor& iq, const torch::Tensor& ids,
+                     const torch::Tensor& probs, const torch::Tensor& down, const torch::Tensor& down_s,
+                     bool q8, bool partials) {
+  check_cuda(out, "out", partials ? at::kFloat : at::kHalf);
   check_cuda(ids, "ids", at::kInt);
-  check_cuda(probs, "probs", at::kFloat);
+  if (!partials) check_cuda(probs, "probs", at::kFloat);
   check_cuda(down, "down", at::kByte);
   check_cuda(down_s, "down_s", at::kByte);
   TORCH_CHECK(down.dim() == 3 && down_s.dim() == 3, "down bank [E, H, K/2] with scales [E, H, K/32]");
   const int64_t experts = down.size(0), hidden = down.size(1), k = down.size(2) * 2;
   TORCH_CHECK(down_s.size(0) == experts && down_s.size(1) == hidden && down_s.size(2) * 32 == k && k % 32 == 0,
               "down scales do not cover the bank");
-  TORCH_CHECK(ids.dim() == 2 && probs.sizes() == ids.sizes() && ids.size(1) <= 8, "ids/probs [M, top]");
+  TORCH_CHECK(ids.dim() == 2 && (partials || probs.sizes() == ids.sizes()) && ids.size(1) <= 8, "ids/probs [M, top]");
   const int64_t m = ids.size(0), top = ids.size(1);
-  TORCH_CHECK(out.dim() == 2 && out.size(0) == m && out.size(1) == hidden && m <= 65535 && hidden % kWarps == 0,
-              "down output shape");
+  TORCH_CHECK(m <= 65535 && hidden % kWarps == 0, "down launch geometry");
+  if (partials) {
+    TORCH_CHECK(top > 0 && experts > 0 && experts <= std::numeric_limits<int>::max()
+                && hidden > 0 && hidden <= std::numeric_limits<int>::max() && k > 0 && k <= 48 * 1024 / (top * 4)
+                && out.dim() == 3 && out.size(0) == top && out.size(1) == m && out.size(2) == hidden,
+                "down partials require FP32 [top, M, H]");
+    for (const auto* input : {&ids, &inter, &down, &down_s}) {
+      TORCH_CHECK(input->device() == out.device(), "down partials require same-device inputs");
+      at::assert_no_overlap(out, *input);
+    }
+  } else {
+    TORCH_CHECK(out.dim() == 2 && out.size(0) == m && out.size(1) == hidden, "down output shape");
+  }
   TORCH_CHECK(reinterpret_cast<uintptr_t>(down.data_ptr()) % 16 == 0 && (k / 2) % 16 == 0, "16-byte aligned rows");
   if (q8) {
     check_cuda(iq, "iq", at::kByte);
@@ -337,8 +393,12 @@ void mxfp4_down(torch::Tensor out, const torch::Tensor& inter, const torch::Tens
   if (!m) return;
   dim3 grid(hidden / kWarps, m);
   auto stream = at::cuda::getCurrentCUDAStream();
-  auto* o = reinterpret_cast<half*>(out.data_ptr());
-  if (q8) {
+  void* o = out.data_ptr();
+  if (partials) {
+    down_kernel<false, true><<<grid, 32 * kWarps, top * k * 4, stream>>>(
+        o, reinterpret_cast<const half*>(inter.data_ptr()), nullptr, ids.data_ptr<int>(), nullptr,
+        down.data_ptr<uint8_t>(), down_s.data_ptr<uint8_t>(), int(hidden), int(k), int(top), int(experts));
+  } else if (q8) {
     down_kernel<true><<<grid, 32 * kWarps, 0, stream>>>(
         o, nullptr, reinterpret_cast<const Q8F*>(iq.data_ptr()), ids.data_ptr<int>(), probs.data_ptr<float>(),
         down.data_ptr<uint8_t>(), down_s.data_ptr<uint8_t>(), int(hidden), int(k), int(top), int(experts));
@@ -347,5 +407,42 @@ void mxfp4_down(torch::Tensor out, const torch::Tensor& inter, const torch::Tens
         o, reinterpret_cast<const half*>(inter.data_ptr()), nullptr, ids.data_ptr<int>(), probs.data_ptr<float>(),
         down.data_ptr<uint8_t>(), down_s.data_ptr<uint8_t>(), int(hidden), int(k), int(top), int(experts));
   }
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+}  // namespace
+
+void mxfp4_down(torch::Tensor out, const torch::Tensor& inter, const torch::Tensor& iq, const torch::Tensor& ids,
+                const torch::Tensor& probs, const torch::Tensor& down, const torch::Tensor& down_s, bool q8) {
+  mxfp4_down_impl(out, inter, iq, ids, probs, down, down_s, q8, false);
+}
+
+void mxfp4_down_partials(torch::Tensor out, const torch::Tensor& inter, const torch::Tensor& ids,
+                         const torch::Tensor& down, const torch::Tensor& down_s) {
+  mxfp4_down_impl(out, inter, {}, ids, {}, down, down_s, false, true);
+}
+
+void mxfp4_finish_partials(torch::Tensor out, const torch::Tensor& planes, const torch::Tensor& ids,
+                           const torch::Tensor& probs, int experts) {
+  check_cuda(out, "out", at::kFloat);
+  check_cuda(planes, "complete branch planes", at::kFloat);
+  check_cuda(ids, "global ids", at::kLong);
+  check_cuda(probs, "route probabilities", at::kFloat);
+  TORCH_CHECK(ids.dim() == 2 && ids.size(1) >= 1 && ids.size(1) <= 8 && probs.sizes() == ids.sizes()
+              && out.dim() == 2 && out.size(0) == ids.size(0) && out.size(1) > 0 && experts > 0
+              && planes.dim() == 3 && planes.size(0) == ids.size(1) + 1
+              && planes.size(1) == out.size(0) && planes.size(2) == out.size(1),
+              "complete partials require [top+1, M, H] planes and matching ids/probabilities");
+  for (const auto* input : {&planes, &ids, &probs}) {
+    TORCH_CHECK(input->device() == out.device(), "complete partials require same-device inputs");
+    at::assert_no_overlap(out, *input);
+  }
+  if (!out.numel()) return;
+  constexpr int threads = 256;
+  const int64_t blocks = 1 + (out.numel() - 1) / threads;
+  TORCH_CHECK(blocks <= std::numeric_limits<int>::max(), "complete partials launch is too large");
+  const c10::cuda::CUDAGuard guard(out.device());
+  finish_partials_kernel<<<int(blocks), threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+      out.data_ptr<float>(), planes.data_ptr<float>(), ids.data_ptr<int64_t>(), probs.data_ptr<float>(), out.numel(),
+      out.size(1), int(ids.size(1)), experts);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
