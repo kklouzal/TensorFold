@@ -9,7 +9,7 @@ import torch
 from tensorfold.cuda.streams import Stream
 from tensorfold.families import deepseek_v4
 from tensorfold.families.deepseek_v4.cuda import engine, round_sampling
-from tensorfold.families.deepseek_v4.cuda.dspark_serving import DraftFlight, DraftOwner, decide
+from tensorfold.families.deepseek_v4.cuda.dspark_serving import DraftFlight, DraftOwner, decide, load_weights
 
 
 def test_cuda_family_draft_request_is_explicit(monkeypatch, tmp_path):
@@ -57,6 +57,31 @@ def test_draft_startup_uses_the_effective_smoke_layer_count(monkeypatch, tmp_pat
     else:
         with pytest.raises(ValueError, match="requires H64 CUDA graphs, the full model"):
             engine.DS41Engine(tmp_path, **options)
+
+
+def test_serving_replaces_only_the_measured_requestwise_banks(monkeypatch, tmp_path):
+    from tensorfold.families.deepseek_v4.cuda import dspark_weights
+
+    original = torch.tensor([0.0, -0.0, 2 ** -24, -1.125], dtype=torch.float16)
+    banks = ("wq_a", "wq_b", "wo_a", "wo_b")
+    weights = SimpleNamespace(stages=[
+        SimpleNamespace(wkv=original, **dict.fromkeys(banks, original)) for _ in range(3)
+    ])
+
+    def load(folder, *, layout, device, config_dir):
+        assert folder == tmp_path / "ft" and config_dir == tmp_path / "official"
+        assert layout == dspark_weights.Layout(0, 8, 4)
+        return weights
+
+    monkeypatch.setattr(dspark_weights, "load", load)
+    assert load_weights(tmp_path, 0, 8, torch.device("cpu")) is weights
+    for stage in weights.stages[:2]:
+        assert stage.wkv is original
+        for name in banks:
+            bank = getattr(stage, name)
+            assert bank.dtype == torch.float32
+            assert torch.equal(bank.half().view(torch.int16), original.view(torch.int16))
+    assert all(getattr(weights.stages[2], name) is original for name in (*banks, "wkv"))
 
 
 def test_seeded_prompt_frame_and_paused_window_publish_once():

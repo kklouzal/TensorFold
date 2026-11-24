@@ -266,14 +266,15 @@ class Layout:
 
 @dataclass
 class Stage:
+    # TP8 serving may replace the four requestwise-only attention banks with FP32 storage.
     index: int
-    wq_a: torch.Tensor          # FP16 [1280, 5120]
+    wq_a: torch.Tensor          # [1280, 5120]
     q_norm: torch.Tensor        # FP32 [1280]
-    wq_b: torch.Tensor          # FP16 [heads*512, 1280]
+    wq_b: torch.Tensor          # [heads*512, 1280]
     wkv: torch.Tensor           # FP16 [512, 5120]
     kv_norm: torch.Tensor       # FP32 [512]
-    wo_a: torch.Tensor          # FP16 [groups, 1024, 4096]
-    wo_b: torch.Tensor          # FP16 [5120, groups*1024]
+    wo_a: torch.Tensor          # [groups, 1024, 4096]
+    wo_b: torch.Tensor          # [5120, groups*1024]
     sink: torch.Tensor          # FP32 [heads]
     attn_norm: torch.Tensor     # FP32 [5120]
     ffn_norm: torch.Tensor      # FP32 [5120]

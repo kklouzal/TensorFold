@@ -17,7 +17,15 @@ def load_weights(root, rank, world, device):
     from .dspark_weights import Layout, load
 
     folder = Path(root)
-    return load(folder / "ft", layout=Layout(rank, world, 4), device=device, config_dir=folder / "official")
+    weights = load(folder / "ft", layout=Layout(rank, world, 4), device=device, config_dir=folder / "official")
+    # These banks are consumed only by FP32 requestwise attention. Replace
+    # their storage before the engine sizes the target cache.
+    for stage in weights.stages[:2]:
+        stage.wq_a = stage.wq_a.float()
+        stage.wq_b = stage.wq_b.float()
+        stage.wo_a = stage.wo_a.float()
+        stage.wo_b = stage.wo_b.float()
+    return weights
 
 
 def state_bytes(slots, geometry):
