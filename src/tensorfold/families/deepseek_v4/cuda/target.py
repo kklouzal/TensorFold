@@ -390,9 +390,11 @@ class Target:
         from .kernels import mu_packed as pk
         centroids = (self.rotor_cache.centroids
                      if cache is not None and ring.dtype == torch.uint8 and not reuse_compressed else None)
+        requestwise_bmm = (step.spec is not None and step.num_reqs == 1 and tokens in (4, 6)
+                           and ring.dtype == torch.uint8)
         return pk.attend(query, step.positions, step, step.req_slot, ring, window, sink, cache=cache,
                          block_table=block_table, layout=layout, source=layer, topk=topk, rotor_centroids=centroids,
-                         key_buffers=key_buffers, reuse_compressed=reuse_compressed)
+                         key_buffers=key_buffers, reuse_compressed=reuse_compressed, requestwise_bmm=requestwise_bmm)
 
     # ---- MoE
     def moe(self, ly, x, image=None, shard=None, x_rows=None):

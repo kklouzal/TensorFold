@@ -674,7 +674,7 @@ def gather_buffers(tokens, width, device):
 def attend(
     query, positions, step, req_slot, window_ring, window, sink, *, cache=None, block_table=None,
     layout=None, source=None, topk=None, tokens_per_pass=64, rotor_centroids=None, key_buffers=None,
-    reuse_compressed=False,
+    reuse_compressed=False, requestwise_bmm=False,
 ):
     """Patch 87's _attend without its vLLM glue: sparse attention output [T, heads, 512] FP16.
 
@@ -699,5 +699,6 @@ def attend(
             window_only=reuse_compressed,
         )
         scores = torch.empty(n, heads, width, dtype=torch.float32, device=query.device)
-        _attend_fused(query[first:last], keys, unused, 512**-0.5, sink, result[first:last], scores)
+        _attend_fused(query[first:last], keys, unused, 512**-0.5, sink, result[first:last], scores,
+                      requestwise_bmm=requestwise_bmm)
     return result

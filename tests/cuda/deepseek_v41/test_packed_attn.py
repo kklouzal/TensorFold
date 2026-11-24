@@ -19,6 +19,53 @@ from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import attention_qd
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 
+@pytest.mark.parametrize("tokens,width", [(4, 128), (6, 640)])
+def test_requestwise_bmm_matches_separate_c1_attention_in_graph(tokens, width):
+    device = "cuda"
+    generator = torch.Generator(device=device).manual_seed(216)
+    def half(shape):
+        return torch.randn(shape, device=device, generator=generator, dtype=torch.float16) * 0.25
+
+    q, keys = half((tokens, 8, 512)), half((tokens, width, 512))
+    unused = torch.arange(width, device=device)[None, :] >= (
+        torch.arange(tokens, device=device)[:, None] + width - tokens
+    )
+    sink = torch.randn(8, device=device, generator=generator)
+    output = torch.empty_like(q)
+    scores = torch.empty(tokens, 8, width, dtype=torch.float32, device=device)
+
+    def launch():
+        ops._attend_fused(q, keys, unused, 512**-0.5, sink, output, scores, requestwise_bmm=True)
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        launch()
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        launch()
+
+    expected_out, expected_scores = torch.empty_like(output), torch.empty_like(scores)
+    for epoch in (0, 1):
+        if epoch:
+            q.mul_(-0.5)
+            unused[:, 3].fill_(True)
+        masked = keys.masked_fill(unused[..., None], 0)
+        # Captured attention receives already zero-filled unused gathered rows.
+        keys.copy_(masked)
+        for i in range(tokens):
+            row = slice(i, i + 1)
+            ops._attend_fused(q[row], keys[row], unused[row], 512**-0.5, sink,
+                              expected_out[row], expected_scores[row])
+        launch()
+        assert torch.equal(scores.view(torch.int32), expected_scores.view(torch.int32))
+        assert torch.equal(output.view(torch.int16), expected_out.view(torch.int16))
+        graph.replay()
+        assert torch.equal(scores.view(torch.int32), expected_scores.view(torch.int32))
+        assert torch.equal(output.view(torch.int16), expected_out.view(torch.int16))
+
+
 def test_packed_attention_bit_exact_vs_paged_fp16():
     torch.manual_seed(0)
     dev = "cuda"
