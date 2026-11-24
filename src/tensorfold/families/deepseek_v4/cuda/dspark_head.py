@@ -87,11 +87,15 @@ class DSparkHead:
             raise ValueError("a TP8 DSpark head needs the lane's 8-rank FP32 communicator")
         self.device = torch.device(device)
         self.q8 = bool(q8_experts)
-        self._use_stage0_exact_loop = (
-            w.layout.world == 8 and not self.q8 and self.device.type == "cuda"
-            and torch.version.git_version == stage0.SINKHORN_TORCH_GIT
-            and torch.cuda.get_device_capability(self.device) == (7, 0)
-        )
+        self._use_stage0_exact_loop = False
+        if (w.layout.world == 8 and not self.q8 and self.device.type == "cuda"
+                and torch.version.git_version == stage0.SINKHORN_TORCH_GIT):
+            from .kernels.triton_utils import INTERPRET, triton
+
+            self._use_stage0_exact_loop = (
+                not INTERPRET and triton.__version__ == stage0.SINKHORN_TRITON_VERSION
+                and torch.cuda.get_device_capability(self.device) == (7, 0)
+            )
         self.rope = quant_rope.rope_table(device=self.device)
         self.stage0_frequencies = stage0.frequencies(self.device)
         self.ring = torch.zeros(slots, dw.STAGES, RING, 512, dtype=torch.float16, device=self.device)

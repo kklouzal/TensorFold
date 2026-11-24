@@ -23,9 +23,12 @@ model = pytest.mark.skipif(not (ROOT / "official" / "config.json").is_file(), re
 @cuda
 def test_stage0_normalization_preserves_subnormal_operands():
     from tensorfold.families.deepseek_v4.cuda import dspark_stage0
+    from tensorfold.families.deepseek_v4.cuda.dspark_stage0_kernels import _normalize_loop
+    from tensorfold.families.deepseek_v4.cuda.kernels.triton_utils import INTERPRET, triton
 
-    if torch.version.git_version != dspark_stage0.SINKHORN_TORCH_GIT:
-        pytest.skip("the fused reduction order is qualified for the pinned Torch build")
+    if (torch.version.git_version != dspark_stage0.SINKHORN_TORCH_GIT
+            or INTERPRET or triton.__version__ != dspark_stage0.SINKHORN_TRITON_VERSION):
+        pytest.skip("the fused reduction order is qualified for the pinned CUDA runtime")
     eps = 1e-6
     tiny = 2 ** -149
     initial = torch.tensor([
@@ -43,7 +46,7 @@ def test_stage0_normalization_preserves_subnormal_operands():
         expected = expected / (expected.sum(-1, keepdim=True) + eps)
         expected = expected / (expected.sum(-2, keepdim=True) + eps)
     actual = torch.empty_like(initial)
-    dspark_stage0._normalize_loop[(5,)](
+    _normalize_loop[(5,)](
         initial, actual, LOOP=19, EPSILON=eps, num_warps=1, enable_fp_fusion=False)
     assert torch.equal(actual.view(torch.int32), expected.view(torch.int32))
 
