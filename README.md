@@ -379,7 +379,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Gemma 4 E4B | `DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking` | CUDA BF16 candidate; [recipe](docs/recipes/gemma-4-e4b.md) | Native Google assistant and EAGLE3 candidates; comparison pending, neither is DFlash |
 | Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4; ModelOpt NVFP4 ([recipe](docs/recipes/gemma-4-26b-modelopt.md)) | MLX; initial CUDA trial; AEON-7 NVFP4 on eight V100s with `--tp 8` ([recipe](docs/recipes/gemma-4.md#eight-v100s-tp8etp4)) | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
-| DeepSeek-V4.1-Flash-1017 GGUF | GSQ-RCO IQ2_XXS backbone + IQ4_NL Engram (host RAM) | CUDA SM70 on eight V100s, TP8/ETP4 x EP2, up to 32 streams, image input with `--vision` ([recipe](docs/recipes/deepseek-v41-v100.md)) | None yet (DSpark port pending) |
+| DeepSeek-V4.1-Flash-1017 GGUF | GSQ-RCO IQ2_XXS backbone + IQ4_NL Engram (host RAM) | CUDA SM70 on eight V100s, TP8/ETP4 x EP2, up to 32 streams, image input with `--vision` ([recipe](docs/recipes/deepseek-v41-v100.md)) | Ordinary decoding by default. Experimental opt-in DSpark serving, pending end-to-end qualification. |
 | Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |
 | Qwen3.8-27B EXL3, experimental | `turboderp/Qwen3.8-27B-exl3`, branches `3.00bpw` / `4.00bpw` | CUDA | DFlash2 and context copies |
 | Flash Next EXL3, experimental | `turboderp/Qwen3.8-Flash-Next-exl3`, branch `3.05bpw_h5_ng5` | CUDA | Included MTP and context copies |
@@ -479,7 +479,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | Flags | Default / contract |
 | --- | --- |
 | `--parallel N\|auto` | `auto`: MLX up to 8 while projected memory fits; GGUF GPU-history CUDA computes full-context resident capacity; other CUDA providers use 1. On the adaptive path, an integer is an admission ceiling. |
-| `--draft-method auto\|none\|mtp\|dspark\|dflash2` | Flash Next CUDA selects an implemented method; `none` omits drafter resources. `dflash2` requires TP8 GGUF and an exact execution-profile pairing manifest ([recipe](docs/recipes/qwen3.8-flash-next.md)). |
+| `--draft-method auto\|none\|mtp\|dspark\|dflash2` | Flash Next CUDA selects an implemented method; `none` omits drafter resources. `dflash2` requires TP8 GGUF and an exact execution-profile pairing manifest ([recipe](docs/recipes/qwen3.8-flash-next.md)). Experimental DeepSeek-V4.1 CUDA DSpark requires explicit `dspark`, an FT bundle, and H64. |
 | `--execution-profile-manifest FILE` | Opt-in GGUF SM70 input/runtime binding and verified execution-profile receipts. GGUF shards are bound by size and header digest (payloads are not hashed); metadata, source and loaded libraries are hashed once; normal startup does not do this work. See the [manifest contract](docs/execution-profile-manifest.md). |
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |

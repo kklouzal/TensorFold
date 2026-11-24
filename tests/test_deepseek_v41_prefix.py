@@ -251,6 +251,7 @@ def test_decoder_finish_releases_uncached_slot(outcome):
 
     engine = _Engine(pages=16)
     engine.target = _target(pages=16)
+    engine.drafter = None
     engine.target.reset_slot = lambda slot: None
     pool = engine.target.pool
     engine.page_bytes = pool.layout.page_bytes

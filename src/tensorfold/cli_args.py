@@ -241,6 +241,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="proposal method; none selects serial execution without loading a draft model; "
                             "auto detects the drafter architecture. Flash Next CUDA supports MTP, DSpark and "
                             "DFlash2; DFlash2 requires TP8 GGUF and an exact execution-profile pairing manifest. "
+                            "Experimental DeepSeek-V4.1 CUDA DSpark requires H64 and an explicit native FT bundle. "
                             "--drafter selects the checkpoint")
     speed.add_argument("--drafter-bits", type=int, default=None,
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
