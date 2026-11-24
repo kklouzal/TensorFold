@@ -1678,9 +1678,17 @@ gives the intervals and measurement scope. DSpark drafts are pending.
 
 The normal CUDA server exposes exact chat token counts, renderer capabilities and request
 statistics to [Harness and other API clients](docs/recipes/deepseek-v41-v100.md#launch).
-Development source also accepts strict function tool schemas in the native DSML format through
-the standard CUDA API. Full-checkpoint serving verification is pending.
-[Strict function tools](docs/api.md#strict-function-tools)
+The standard CUDA API supports strict function tools in DeepSeek's native DSML format.
+Full-checkpoint validation covered count-only, nonstreaming tool calls, streamed thinking
+and tools, and ordinary streamed chat. [Strict function tools](docs/api.md#strict-function-tools)
+
+The RotorQuant Q4 serving profile uses the checkpoint's native YaRN factor and a configured
+65,536 tokens per session. On SC117,
+`2b8bf324` retained 8,435,648 shared KV tokens at 850 bytes per logical token in the 32-session profile.
+Against `236cdd52` at the same settings, geometric mean aggregate prefill rose **3.26%**
+and median per-user decode rose **5.26%** across the current eight-cell serving matrix. All 394,298
+raw scoring packets matched bit for bit across 300 requests, and all 12 perplexity comparisons were identical.
+[RotorQuant Q4 measurements](docs/recipes/deepseek-v41-v100.md#rotorquant-q4-serving-profile)
 
 On the same eight-V100 setup, fixed-order prefill RMS raised geometric mean prefill throughput **1.21%** across
 the ten text cells against `aef6e42a`. Target log probabilities matched bit for bit across all twelve scoring

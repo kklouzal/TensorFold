@@ -32,6 +32,14 @@ The [paired v2 quality comparison](recipes/deepseek-v41-v100.md#quality-gate) of
 `fa3ca06e` build found a prefill NLL increase concentrated in longer prompts. Overall early-decode NLL met the
 equivalence criterion. The corpus, continuation cap, row counts, and prompt-band intervals are in the recipe.
 
+## DeepSeek V4.1 RotorQuant Q4
+
+The SC117 eight-cell comparison measures the 32-session, 65,536-token H64 profile at
+checkpoint-native YaRN on eight V100s.
+`2b8bf324` retained the shared KV pool and passed the 300-request exact quality gate against
+`236cdd52`. The recipe records the throughput results, endpoint uncertainty, and near-context coverage.
+[RotorQuant Q4 measurements](recipes/deepseek-v41-v100.md#rotorquant-q4-serving-profile)
+
 ## Gemma 4 five-row SM70 decode
 
 The [2026-11-15 Gemma checkpoint](gemma4-sm70-throughput-20261115.md#five-row-decode-follow-up)

@@ -2,7 +2,7 @@
 
 TensorFold's CUDA lane for DeepSeek-V4.1-Flash-1017 on eight V100 (SM70) GPUs, without a vLLM runtime: attention and
 dense layers TP8, routed experts ETP4 x EP2. It serves the OpenAI-compatible server of the other V100 lanes.
-Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 W cap). Image
+Text serving is qualified on SC117 with eight 32 GiB V100s at 180 W each. Image
 `tensorfold-v100:py315-app-48c51356-pillow13` (`67b43e682057`).
 
 ## The model
@@ -18,7 +18,8 @@ Status: development lane, qualified on one host only (SC117: 8x V100 32 GB, 180 
 
 ```sh
 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backend cuda \
-  --name deepseek-v4.1-flash --parallel 32 --context 65536 --prefix-host-bytes 17179869184 --port 8000
+  --name deepseek-v4.1-flash --parallel 32 --context 65536 --prefix-host-bytes 17179869184 \
+  --kv-dtype rotorquant-iso64-norm4-h64 --port 8000
 ```
 
 This launch serves exact chat counting, the active renderer's capabilities, and telemetry through
@@ -39,7 +40,7 @@ registered Engram table.
 | Flag | DeepSeek-V4.1 SM70 |
 | --- | --- |
 | `--parallel N` | 1-32 concurrent streams. Requests beyond N wait in the queue. |
-| `--context N` | Admitted context per stream (default: the model's maximum). The text-only matrix at `--context 65536 --parallel 32` reported 7,775,360 tokens in the shared KV pool. |
+| `--context N` | Admitted context per stream. The default is the model's maximum. The qualified 32-session RotorQuant Q4 launch at `--context 65536` reported 8,435,648 tokens in the shared KV pool. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
 | `--kv-dtype rotorquant-iso64-norm4-h64` | RotorQuant Q4 for both sliding-window and compressed attention latents. DeepSeek stores one 272-byte row for shared K and V. The learned index rows retain their separate format. |
 | `--yarn-factor F` | Overrides the checkpoint's static YaRN factor on compressed layers. Window-only layers retain plain RoPE. |
@@ -47,9 +48,9 @@ registered Engram table.
 | `--no-graphs` | Eager decode, for A/B checks only. |
 | `--vision` | Image input (needs `mmproj_file` and `vision_bias_file` in `config.json`; see "Image input"). |
 
-The RotorQuant Q4 profile uses `--kv-dtype rotorquant-iso64-norm4-h64 --yarn-factor 2 --context 65536`.
-`/v1/stats` reports the effective `model.kv_dtype` and `model.yarn_factor`. Full-model quality and throughput
-for this profile are pending.
+The launch uses the checkpoint's native YaRN factor of 16. The checkpoint advertises 1,048,576 positions.
+The qualified profile admits 65,536 tokens per request. `/v1/stats` reports the effective
+`model.kv_dtype` and `model.yarn_factor`.
 
 ## What runs
 
@@ -73,6 +74,37 @@ for this profile are pending.
   byte-exactly. On a 13-turn agent session, total time was 16.3 s cached against 81.0 s cold.
 
 ## Measurements
+
+### RotorQuant Q4 serving profile
+
+The 2026-11-24 SC117 comparison ran `236cdd52` and `2b8bf324` in reference, candidate, candidate,
+reference order on image `67b43e682057`. It used synchronized greedy HTTP requests with 512 output tokens,
+32 sessions, a 65,536-token context, 16 GiB of pinned host prefix storage, and the launch's Q4 and native
+YaRN settings. Both builds retained 8,435,648 logical KV tokens at 850 bytes per token. Ordinary decode
+was selected in all four sessions.
+
+| Concurrency | Prompt | Aggregate prefill tok/s, reference → candidate | Median decode tok/s per user, reference → candidate |
+| ---: | ---: | ---: | ---: |
+| 1 | 4K | 3863.09 → 3972.61 | 62.97 → 69.21 |
+| 1 | 16K | 4280.02 → 4372.46 | 61.18 → 66.45 |
+| 8 | 4K | 3482.80 → 3629.59 | 34.11 → 36.10 |
+| 8 | 16K | 4048.58 → 4147.21 | 28.18 → 29.48 |
+| 16 | 4K | 3310.94 → 3436.66 | 21.11 → 22.33 |
+| 16 | 16K | 3938.52 → 4042.40 | 19.75 → 18.97 |
+| 32 | 4K | 2995.45 → 3138.95 | 12.71 → 13.43 |
+| 32 | 16K | 3727.62 → 3848.35 | 10.35 → 10.98 |
+
+Geometric mean gains were 3.26% for prefill and 5.26% for per-user decode. The familywise comparison established
+gains in five prefill cells and six decode cells. The other endpoints were uncertain, including C16/16K decode.
+A separate four-session C16/16K repeat established a 3.41% whole-batch output throughput gain with a familywise
+interval of 1.69% to 5.15%. Its median per-user decode estimate remained uncertain.
+
+Both sources matched all 394,298 raw scoring packets across 300 requests and all 12 perplexity comparisons.
+On the capped 268-request suite, prefill and decode perplexities were 5.730535 and 3.877855. On the 32 uncapped
+requests, they were 5.357155 and 3.852719. The native near-context test matched 283 FP32 score packets through
+position 65,535 and verified page retirement on all eight ranks.
+
+### Historical native KV comparison
 
 10-cell matrix on SC117 (`tools/matrix_benchmark.py`, frozen `plan-ds41-v1`, 512 output tokens per request, greedy,
 one server session with one repeat per cell, 180 W, image `67b43e682057`, `--parallel 32 --context 65536
