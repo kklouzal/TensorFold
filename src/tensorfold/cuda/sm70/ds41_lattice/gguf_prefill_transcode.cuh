@@ -369,16 +369,17 @@ struct Group<42> {  // Q2_0: 64-value blocks, value = code * d - d
 // entries of `experts`; the count stays on the device so a launch can cover
 // a residency-dependent subset (e.g. only cold experts, with few CTAs that
 // stream pinned host memory over PCIe without taking SMs from the GEMM).
-// src0/src1: per expert id, address of the expert's first source row (device
-// or host-mapped); rows are contiguous with `src_stride` bytes. src1 selects
-// gate/up interleaving. Output columns cover source columns
+// src0/src1: contiguous expert banks with a shared `expert_stride` in
+// bytes. Rows have `src_stride` bytes. src1 selects gate/up interleaving.
+// Output columns cover source columns
 // [k_offset, k_offset + k). dst_w/dst_s: stacked canonical banks.
 template <int Type, bool Exact = false>
 __global__ void __launch_bounds__(kThreads)
     transcode_kernel(uint8_t* __restrict__ dst_w, uint8_t* __restrict__ dst_s,
                      int64_t w_stride, int64_t s_stride,
-                     const int64_t* __restrict__ src0,
-                     const int64_t* __restrict__ src1,
+                     const uint8_t* __restrict__ src0,
+                     const uint8_t* __restrict__ src1, int64_t expert_stride,
+                     int experts_n, int slots,
                      const int32_t* __restrict__ experts,
                      const int32_t* __restrict__ count, int packs, int n_out,
                      int k, int k_offset, int src_stride, int* error) {
@@ -390,15 +391,24 @@ __global__ void __launch_bounds__(kThreads)
   const int sources = interleave ? 2 : 1;
   const int rows = kPack / sources;
   const int groups = k / F::kGroup;
-  const int items = __ldg(count) * packs;
+  const int active = __ldg(count);
+  if (active < 0 || active > slots || active > experts_n) {
+    asm volatile("trap;");
+    return;
+  }
+  const int items = active * packs;
   for (int work = blockIdx.x; work < items; work += gridDim.x) {
     const int expert = __ldg(experts + work / packs);
+    if (expert < 0 || expert >= experts_n) {
+      asm volatile("trap;");
+      return;
+    }
     const int pack = work % packs;
     __syncthreads();  // the previous item is done with the staged rows
     // Stage the pack's source rows (contiguous) with 8-byte loads.
     for (int s = 0; s < sources; ++s) {
       const auto* base = reinterpret_cast<const uint64_t*>(
-          reinterpret_cast<const uint8_t*>((s ? src1 : src0)[expert]) +
+          (s ? src1 : src0) + int64_t(expert) * expert_stride +
           int64_t(pack) * rows * src_stride);
       auto* stage = reinterpret_cast<uint64_t*>(smem + s * rows * src_stride);
       const int words = rows * src_stride / 8;

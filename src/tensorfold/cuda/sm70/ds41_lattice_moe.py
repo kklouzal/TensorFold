@@ -153,10 +153,6 @@ class Workspace:
             raise RuntimeError("DeepSeek-V4.1 lattice prefill transcode: an FP16 block scale overflowed")
 
 
-def _addresses(bank):
-    return bank.data_ptr() + torch.arange(bank.shape[0], dtype=torch.int64, device=bank.device) * bank.stride(0)
-
-
 def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, workspace, *, out=None):
     """Routed experts for FP16 x [M, 5120], top-6 local ids/probabilities -> FP16 [M, 5120] (numerics: see the
     module docstring)."""
@@ -185,25 +181,25 @@ def experts(x, ids, probabilities, gate, up, down, gate_type, down_type, left, w
     lists = lists.view(len(plan), tile)
     weights = probabilities.reshape(-1).contiguous()
 
-    def projection(key, kind, n, k, k_offset, src0, src1, stride, source, indices, result):
+    def projection(key, kind, n, k, k_offset, src0, src1, source, indices, result):
         group = LATTICE[kind][0]
         bank_w, bank_s, wbytes, sbytes, wt, st = workspace.table(key, kind, n, k)
         variant, swizzle = pick(kind, n, k, routes)
         for index, (first, count) in enumerate(plan):
             ext.transcode(bank_w, bank_s, wbytes, sbytes, src0[first:first + count],
                           None if src1 is None else src1[first:first + count], lists[index],
-                          counts[index:index + 1], CTAS, kind, n, k, k_offset, stride, workspace.error)
+                          counts[index:index + 1], CTAS, kind, n, k, k_offset, workspace.error)
             ext.lattice_gemm(result, source, offsets[first:first + count + 1], wt[:count * 16], st[:count * 16],
                              kind, n, count, group, indices, variant, swizzle)
 
     proj = torch.empty(routes, 2 * inter, dtype=torch.float32, device=device)
-    projection("gu", gate_type, 2 * inter, HIDDEN, 0, _addresses(gate), _addresses(up), gate.stride(1),
+    projection("gu", gate_type, 2 * inter, HIDDEN, 0, gate, up,
                x.contiguous(), rows, proj)
     hidden = torch.empty(routes, inter, dtype=torch.float16, device=device)
     ext.swiglu(proj, weights, order, valid, hidden, LIMIT)
     del proj
     down_rows = torch.empty(routes, HIDDEN, dtype=torch.float16, device=device)
-    projection("dn", down_type, HIDDEN, inter, int(left), _addresses(down), None, down.stride(1), hidden, None,
+    projection("dn", down_type, HIDDEN, inter, int(left), down, None, hidden, None,
                down_rows)
     if out is None:
         out = torch.empty_like(x)
