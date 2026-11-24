@@ -1682,8 +1682,16 @@ The standard CUDA API supports strict function tools in DeepSeek's native DSML f
 Full-checkpoint validation covered count-only, nonstreaming tool calls, streamed thinking
 and tools, and ordinary streamed chat. [Strict function tools](docs/api.md#strict-function-tools)
 
-The 32-session RotorQuant Q4 profile uses checkpoint-native YaRN 16, a 65,536-token context and
-16 GiB of pinned host prefix storage. On eight SC117 V100s at 180 W, the lattice changes in
+The selected 32-session RotorQuant Q4 text recipe uses checkpoint-native YaRN 16, a 131,072-token
+context and 16 GiB of pinned host prefix storage. With ordinary `844bd413` and 48 startup graphs,
+the measured shared KV pool held **8,435,648 tokens** at 850 bytes per token. Native checks held
+all 32 full reservations and sampled four histories through position 131,071. The same-source
+65,536-to-131,072 scoring comparison matched all **394,298** raw packets across **300** requests
+and all **12** perplexity checks. The user accepted the observed serving tradeoffs from one 64K
+reference and two 128K sessions and closed further benchmarks. The second reference session was
+intentionally omitted. [128K measurements](docs/recipes/deepseek-v41-v100.md#selected-128k-context-profile)
+
+In the earlier 65,536-token comparison on eight SC117 V100s at 180 W, the lattice changes in
 `844bd413` raised geometric mean aggregate prefill **1.09%** (95% interval **+0.95% to +1.23%**)
 against `2b8bf324` over four HTTP sessions and eight cells. C1/4K median per-user decode rose **0.46%**
 with a familywise gain. Aggregate decode was **0.31% lower** and remained uncertain, as did the lower

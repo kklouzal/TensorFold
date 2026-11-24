@@ -18,7 +18,7 @@ Text serving is qualified on SC117 with eight 32 GiB V100s at 180 W each. Image
 
 ```sh
 python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backend cuda \
-  --name deepseek-v4.1-flash --parallel 32 --context 65536 --prefix-host-bytes 17179869184 \
+  --name deepseek-v4.1-flash --parallel 32 --context 131072 --prefix-host-bytes 17179869184 \
   --kv-dtype rotorquant-iso64-norm4-h64 --port 8000
 ```
 
@@ -40,7 +40,7 @@ registered Engram table.
 | Flag | DeepSeek-V4.1 SM70 |
 | --- | --- |
 | `--parallel N` | 1-32 concurrent streams. Requests beyond N wait in the queue. |
-| `--context N` | Admitted context per stream. The default is the model's maximum. The qualified 32-session RotorQuant Q4 launch at `--context 65536` reported 8,435,648 tokens in the shared KV pool. |
+| `--context N` | Admitted context per stream. The default is the model's maximum. The selected 32-session RotorQuant Q4 recipe uses `--context 131072` and reported 8,435,648 tokens in the shared KV pool. |
 | `--prefix-host-bytes B` | Pinned host tier for evicted prefix points, shared across ranks (Gemma 4 SM70 sizing; `0` disables). |
 | `--kv-dtype rotorquant-iso64-norm4-h64` | RotorQuant Q4 for both sliding-window and compressed attention latents. DeepSeek stores one 272-byte row for shared K and V. The learned index rows retain their separate format. |
 | `--yarn-factor F` | Overrides the checkpoint's static YaRN factor on compressed layers. Window-only layers retain plain RoPE. |
@@ -49,13 +49,14 @@ registered Engram table.
 | `--vision` | Image input (needs `mmproj_file` and `vision_bias_file` in `config.json`; see "Image input"). |
 
 The launch uses the checkpoint's native YaRN factor of 16. The checkpoint advertises 1,048,576 positions.
-The qualified profile admits 65,536 tokens per request. `/v1/stats` reports the effective
-`model.kv_dtype` and `model.yarn_factor`.
+The selected text recipe admits 131,072 tokens per request. `/v1/stats` reports the effective
+`model.context_length`, `model.kv_dtype` and `model.yarn_factor`.
 
 ## What runs
 
-- Decode: startup CUDA graphs for batches 1-16, 24 and 32. Capture happens at startup, never lazily. Each batch has
-  index-score classes 8192 / 32768 / `--context`, sized by the batch's live maximum length. Decode also uses small
+- Decode: 48 startup CUDA graphs for batches 1–16, 24 and 32 in the selected recipe. Buckets 1–3 use the
+  full admitted context class. Larger buckets select the smallest index-score class that covers the
+  batch's longest live sequence from 8,192, 32,768 and 131,072. Decode also uses small
   all-gathers and an LL row all-reduce for small sums, a compact device greedy argmax with batched round sampling
   (one host wait per round), and expert-major routed experts (the friend's EM3 kernels, bit-exact with the per-6-row
   op) below 128 rows.
@@ -75,13 +76,38 @@ The qualified profile admits 65,536 tokens per request. `/v1/stats` reports the 
 
 ## Measurements
 
+### Selected 128K context profile
+
+On eight SC117 V100s at 180 W with image `67b43e682057`, the ordinary text runtime
+`844bd4136ab24658e06114d69292b5ef1d2d1761` reported 8,435,648 shared KV tokens at 850 bytes per
+token with 32 lanes, 16 GiB of pinned host prefix storage, H64 RotorQuant Q4 and native YaRN 16.
+The native capacity check held 32 full 131,072-token reservations on all eight ranks. It sampled
+607 FP32 score targets across four long histories through position 131,071 with 28 short peers,
+matched all 40 shared lower-context score targets, retained the startup reserve and retired every
+page. A separate same-source scoring comparison matched all 394,298 raw score packets across
+300 requests and all 12 perplexity comparisons against the 65,536-token reference.
+
+The serving comparison used one 65,536-token reference session (A1) and two 131,072-token
+sessions (B1-r2 and B2-r2). Each completed the eight-cell matrix, the 90-probe short suite and the
+mixed workload with 272 requests in total. Compared with A1, the geometric mean of aggregate prefill
+throughput was up 0.09% and 0.01%, while the geometric mean of per-user median decode rates was
+down 0.84% and 2.46%. C1 decode was 0.77–0.82% lower at 4K and 0.56–0.57% lower at 16K.
+At C16/16K the per-user median fell 0.54% and 13.04%, with cohort completion times of 78.48 and
+78.73 s against 78.63 s. At C32/16K the median fell 4.55% and 4.11%, with cohort completion
+times of 152.41 and 152.77 s against 152.70 s.
+
+The mixed background p99 visible-frame gap was 177.91 ms in A1 and 176.20 and 176.65 ms in
+the two 128K sessions. Sampled maximum gaps were 251.14, 262.68 and 281.24 ms, respectively.
+The user selected 128K with these observed tradeoffs and closed the comparison after B2-r2.
+A2 was intentionally omitted, so the results are descriptive and serving equivalence remains unestablished.
+
 ### RotorQuant Q4 serving profile
 
 The 2026-11-24 SC117 lattice comparison tested
 `844bd4136ab24658e06114d69292b5ef1d2d1761` against the selected `2b8bf324` runtime.
 The candidate uses strided expert-bank transcode and vector staging of the unchanged IQ1_M lattice
 codebook. Four independent HTTP sessions ran in reference, candidate, candidate, reference order on
-image `67b43e682057` with eight 32 GiB V100s at 180 W. The launch above admits 32 sessions at 65,536 tokens,
+image `67b43e682057` with eight 32 GiB V100s at 180 W. This historical comparison admitted 32 sessions at 65,536 tokens,
 with RotorQuant Q4, native YaRN 16 and 16 GiB of pinned host prefix storage. All four sessions ran
 ordinary decode and retained 8,435,648 logical KV tokens at 850 bytes per token. The matrix used
 synchronized greedy requests with 512 output tokens on 4K and 16K prompts.
