@@ -23,7 +23,8 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA requ
 @pytest.mark.parametrize("width", [128, 640])
 def test_requestwise_bmm_matches_separate_c1_attention_in_graph(tokens, width, request):
     matmul = torch.backends.cuda.matmul
-    original_reduction = matmul.allow_fp16_reduced_precision_reduction
+    original_reduction = (matmul.allow_fp16_reduced_precision_reduction,
+                          matmul.allow_fp16_reduced_precision_reduction_split_k)
     request.addfinalizer(lambda: setattr(matmul, "allow_fp16_reduced_precision_reduction", original_reduction))
     matmul.allow_fp16_reduced_precision_reduction = False
     device = "cuda"
