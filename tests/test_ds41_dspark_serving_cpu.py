@@ -32,6 +32,33 @@ def test_cuda_family_draft_request_is_explicit(monkeypatch, tmp_path):
         deepseek_v4.cuda_engine(tmp_path, draft_method="dspark")
 
 
+@pytest.mark.parametrize("smoke_layers", ("0", "3"))
+def test_draft_startup_uses_the_effective_smoke_layer_count(monkeypatch, tmp_path, smoke_layers):
+    from tensorfold import checkpoint_metadata
+    from tensorfold.families.deepseek_v4.cuda import weights
+
+    class DeviceReached(Exception):
+        pass
+
+    def stop_before_device(_):
+        raise DeviceReached
+
+    monkeypatch.setenv("TENSORFOLD_DS41_SMOKE_LAYERS", smoke_layers)
+    monkeypatch.delenv("TENSORFOLD_DS41_ENGRAM_TRACE", raising=False)
+    monkeypatch.setattr(checkpoint_metadata, "read_config", lambda _: {})
+    monkeypatch.setattr(weights.Geometry, "from_config", lambda _: SimpleNamespace(
+        vocab=129280, rope_parameters=lambda _: SimpleNamespace(factor=16.0, context_limit=65536)))
+    monkeypatch.setattr(torch.cuda, "set_device", stop_before_device)
+    options = dict(rank=1, tp=8, kv_dtype=deepseek_v4.ROTOR_KV_DTYPE,
+                   draft_root=tmp_path, draft_depth=3)
+    if smoke_layers == "0":
+        with pytest.raises(DeviceReached):
+            engine.DS41Engine(tmp_path, **options)
+    else:
+        with pytest.raises(ValueError, match="requires H64 CUDA graphs, the full model"):
+            engine.DS41Engine(tmp_path, **options)
+
+
 def test_seeded_prompt_frame_and_paused_window_publish_once():
     e = object.__new__(engine.DS41Engine)
     events = []

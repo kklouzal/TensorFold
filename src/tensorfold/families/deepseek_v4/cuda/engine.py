@@ -98,11 +98,12 @@ class DS41Engine:
         self.context = self.context_window = int(context or rope.context_limit)
         if not 1 <= self.context <= rope.context_limit:
             raise ValueError(f"DeepSeek-V4.1 context must be within the {rope.context_limit}-token YaRN window")
+        smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
         if draft_root is not None and (
                 type(draft_depth) is not int or draft_depth not in (3, 5) or not rotorquant or not graphs
                 or min(max_tokens, self.context) < draft_depth + 1
                 or os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
-                or os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS")):
+                or smoke > 0):
             raise ValueError("experimental DeepSeek DSpark requires H64 CUDA graphs, the full model and depth 3 or 5")
         self.rank, self.world = rank, tp
         self.vocab = g.vocab
@@ -143,7 +144,6 @@ class DS41Engine:
         # Development smoke (TENSORFOLD_DS41_SMOKE_LAYERS=N): only the first N decoder layers load, so plumbing and
         # integration changes run in seconds; outputs are not the model's. Below the first Engram layer the table is
         # never read, so it is not mapped either. Numerics gates and benchmarks never set it.
-        smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
         layers = range(min(smoke, g.layers)) if smoke > 0 else None
         self.engram = None
         mapping = None
