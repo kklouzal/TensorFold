@@ -128,6 +128,21 @@ def test_verify_frame_checked_prefix_commit_and_depth_zero():
     inspect(serial, output, head, [[31]], [[14]])
 
 
+def test_verify_uses_the_installed_embedding_when_requested(monkeypatch):
+    engine, head, spec, _ = owners(torch.device("cpu"))
+    original = head.draft
+
+    def draft(anchors, positions, owners, embed, project, *, depth):
+        assert embed is None
+        return original(anchors, positions, owners, engine.target.embed, project, depth=depth)
+
+    monkeypatch.setattr(head, "draft", draft)
+    shape = SpecShape(engine, head, spec, 1, 3, engine.context, use_prepared_embedding=True)
+    output = shape.run([VerifyEntry(0, 65, 11)])
+    assert output.drafts.tolist() == [[12, 13, 14]]
+    assert shape.step.ids.tolist() == [11, 12, 13, 14]
+
+
 def test_refuses_invalid_frames_before_target_or_commit():
     engine, head, spec, events = owners(torch.device("cpu"))
     shape = SpecShape(engine, head, spec, 4, 3, 8192)

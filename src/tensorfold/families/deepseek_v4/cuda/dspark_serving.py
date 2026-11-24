@@ -36,7 +36,7 @@ def state_bytes(slots, geometry):
 
     c2 = sum(geometry.compress_ratios[layer] == 2 for layer in geometry.kv_sources)
     return (Speculation.state_bytes(slots - 1, geometry.layers, c2, ROTOR_ROW)
-            + slots * len(TAPS) * RING * HEAD_DIM * 2)
+            + slots * len(TAPS) * RING * HEAD_DIM * 2 + geometry.hidden * 2)
 
 
 def decide(choices, anchor, proposed, room, eos):
@@ -75,9 +75,11 @@ class DraftOwner:
         self.pending = None
         device = self.target.device
         self.head = DSparkHead(weight, slots=engine.slots, comm=engine.coll, device=device,
-                               vocab_first=weight.layout.rows(engine.vocab).start, q8_experts=False)
+                               vocab_first=weight.layout.rows(engine.vocab).start, q8_experts=False,
+                               target_embed=self.target.embed)
         self.spec = Speculation(self.target)
-        self.shape = SpecShape(engine, self.head, self.spec, 1, depth, engine.context)
+        self.shape = SpecShape(engine, self.head, self.spec, 1, depth, engine.context,
+                               use_prepared_embedding=True)
         self._slot = torch.full((1,), engine.slots - 1, dtype=torch.int32, device=device)
         self._count = torch.full((1,), -1, dtype=torch.int64, device=device)
         # Prime the aligned serving commit operands separately from the

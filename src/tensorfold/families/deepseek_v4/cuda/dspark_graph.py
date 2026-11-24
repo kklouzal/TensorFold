@@ -55,7 +55,8 @@ class SpecShape:
     graph remains a separate owner.
     """
 
-    def __init__(self, engine, head, spec, bucket: int, depth: int, index_context: int):
+    def __init__(self, engine, head, spec, bucket: int, depth: int, index_context: int, *,
+                 use_prepared_embedding: bool = False):
         target = engine.target
         if (type(bucket) is not int or type(depth) is not int or type(index_context) is not int
                 or (bucket, index_context) not in shape_keys(engine.streams, engine.context)
@@ -66,6 +67,7 @@ class SpecShape:
         if tokens > min(RING, target.hash_state.max_tokens):
             raise ValueError("DSpark verify rows exceed the shape's scratch ring or target budget")
         self.engine, self.target, self.head, self.spec = engine, target, head, spec
+        self._embed = None if use_prepared_embedding else target.embed
         self.bucket, self.depth, self.index_context = bucket, depth, index_context
         self.rows = rows
         self.scratch = engine.slots - 1
@@ -155,7 +157,7 @@ class SpecShape:
         step.req_slot[:self.bucket].copy_(slots)
         step.valid.copy_((slots != self.scratch).repeat_interleave(self.rows))
         if self.depth:
-            drafts = self.head.draft(anchors, positions, slots, target.embed, self._head_logits, depth=self.depth)
+            drafts = self.head.draft(anchors, positions, slots, self._embed, self._head_logits, depth=self.depth)
             step.ids.copy_(torch.cat((anchors[:, None], drafts), 1).reshape(-1))
         else:
             drafts = self.empty_drafts
