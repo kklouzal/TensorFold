@@ -67,22 +67,63 @@ def expand(x, residual, post, comb):
     return torch.einsum("tij,tih->tjh", comb, residual) + post[..., None] * x[:, None].float()
 
 
-def _attention_rows(q, kv, window, live, sink):
+def _pad_axis(x, dim, size, offset):
+    shape = list(x.shape)
+    shape[dim] = size
+    padded = x.new_zeros(shape)
+    padded.narrow(dim, offset, x.shape[dim]).copy_(x)
+    return padded
+
+
+def _attention_rows(q, kv, window, live, sink, *, rank=None):
     # K and V are the same FP16 reconstruction. The sink participates in the
     # denominator and supplies no value row.
     keys = torch.cat((torch.where(live[:, None], window, torch.zeros_like(window)), kv)).float()
     valid = torch.cat((live, torch.ones(kv.shape[0], dtype=torch.bool, device=kv.device)))
+    if rank is not None:
+        # Stage-zero TP8 accuracy candidate: zero filler only; the independent
+        # probe needed full-width QK, 16-head PV, and two wo_a groups.
+        heads = q.shape[1]
+        offset = rank * heads
+        q = _pad_axis(q, 1, 64, offset)
     scores = (q.float() @ keys.t()) * 512 ** -0.5
+    if rank is not None:
+        scores = scores[:, offset:offset + heads].contiguous()
     scores = scores.masked_fill(~valid, float("-inf"))
     sink = sink.view(1, -1, 1)
     maximum = torch.maximum(scores.amax(-1, keepdim=True), sink)
     numerator = torch.exp(scores - maximum)
     probability = (numerator / (numerator.sum(-1, keepdim=True) + torch.exp(sink - maximum))).half()
-    return (probability.float() @ keys).half()
+    if rank is None:
+        return (probability.float() @ keys).half()
+    offset %= 16
+    probability = _pad_axis(probability, 1, 16, offset)
+    return (probability.float() @ keys).half()[:, offset:offset + heads].contiguous()
 
 
-def attention_partials(stage, inputs, positions, windows, live, freqs):
-    """Stage-zero attention per request, keeping the output projection partials in FP32."""
+def _project_attention(values, weight, rank):
+    if rank is not None:
+        offset = rank % 2
+        weight = _pad_axis(weight, 0, 2, offset)
+    wo_a = weight.float()
+    projected = []
+    for out in values:
+        if rank is not None:
+            out = _pad_axis(out, 1, 2, offset)
+        value = torch.einsum("ngk,gok->ngo", out.float(), wo_a).half()
+        if rank is not None:
+            value = value[:, offset:offset + 1]
+        projected.append(value.reshape(out.shape[0], -1))
+    return projected
+
+
+def attention_partials(stage, inputs, positions, windows, live, freqs, *, rank=None):
+    """Requestwise attention with FP32 output partials, optionally using the stage-zero TP8 candidate.
+
+    A rank selects the tested TP8 stage-zero shapes, trading 8x QK, 2x PV and 2x wo_a matmul work
+    for matching the standalone reference on the archived FT fixture. Later stages and world one
+    keep their original shapes. Collectives and weight ownership are unchanged.
+    """
     query_low = [_rms(q, stage.q_norm) for q in _linears(inputs, stage.wq_a)]
     query = _linears(query_low, stage.wq_b)
     kv = _linears(inputs, stage.wkv)
@@ -93,13 +134,9 @@ def attention_partials(stage, inputs, positions, windows, live, freqs):
         cos, sin = torch.cos(angles), torch.sin(angles)
         q = _rope(q.view(q.shape[0], stage.sink.numel(), 512), cos, sin)
         k = _qdq(_rope(_rms(k, stage.kv_norm), cos, sin))
-        out = _attention_rows(q, k, window, valid, stage.sink)
+        out = (_attention_rows(q, k, window, valid, stage.sink) if rank is None else
+               _attention_rows(q, k, window, valid, stage.sink, rank=rank))
         values.append(_qdq(_rope(out, cos, -sin).reshape(out.shape[0], groups, -1)))
 
-    wo_a = stage.wo_a.float()
-    projected = [
-        torch.einsum("ngk,gok->ngo", out.float(), wo_a).half().reshape(out.shape[0], -1)
-        for out in values
-    ]
-    del wo_a
+    projected = _project_attention(values, stage.wo_a, rank)
     return torch.cat(_linears(projected, stage.wo_b, output_dtype=torch.float32))

@@ -91,6 +91,66 @@ def _embedding(dev):
 
 
 @cuda
+@pytest.mark.parametrize("rank", [0, 7])
+def test_stage_zero_tp8_padding_matches_full_attention_in_cuda_graph(rank, monkeypatch):
+    from tensorfold.families.deepseek_v4.cuda import dspark_stage0 as native, dspark_reference as ref
+
+    g = torch.Generator(device="cuda").manual_seed(171)
+    q = (torch.randn(5, 64, 512, generator=g, device="cuda") * 0.125).half()
+    kv = (torch.randn(5, 512, generator=g, device="cuda") * 0.125).half()
+    window = (torch.randn(128, 512, generator=g, device="cuda") * 0.125).half()
+    live = torch.arange(128, device="cuda") >= 71
+    sink = torch.linspace(-0.875, 0.875, 64, device="cuda")
+    group_weights = (torch.rand(8, 1024, 4096, generator=g, dtype=torch.float16, device="cuda") - 0.5).half()
+    pos = torch.arange(57, 62, device="cuda")
+    cos_sin = pos[:, None].float() * native.frequencies(q.device)
+    cos, sin = cos_sin.cos(), cos_sin.sin()
+    heads = slice(rank * 8, rank * 8 + 8)
+
+    def reference():
+        keys = torch.cat((torch.where(live[:, None], window, 0), kv)).float()
+        valid = torch.cat((live, torch.ones(5, dtype=torch.bool, device="cuda")))
+        scores = (q.float() @ keys.t() * 512 ** -0.5).masked_fill(~valid, float("-inf"))
+        bias = sink[None, :, None]
+        peak = torch.maximum(scores.amax(-1, keepdim=True), bias)
+        numerator = (scores - peak).exp()
+        probs = (numerator / (numerator.sum(-1, keepdim=True) + (bias - peak).exp())).half()
+        attended = (probs.float() @ keys).half()
+        rotated = ref.rope(attended, pos, inverse=True)
+        values = ref.qdq_fp8(rotated.reshape(5, 8, 4096))
+        return torch.einsum("ngk,gok->ngo", values.float(), group_weights.float()).half()[:, rank]
+
+    def candidate():
+        attended = native._attention_rows(q[:, heads].contiguous(), kv, window, live, sink[heads], rank=rank)
+        values = native._qdq(native._rope(attended, cos, -sin).reshape(5, 1, 4096))
+        return native._project_attention([values], group_weights[rank:rank + 1], rank)[0]
+
+    pads = []
+    original = native._pad_axis
+
+    def observe(x, dim, size, offset):
+        pads.append((tuple(x.shape), dim, size, offset))
+        return original(x, dim, size, offset)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(native, "_pad_axis", observe)
+        actual = candidate()
+    assert pads == [((5, 8, 512), 1, 64, rank * 8), ((5, 8, 133), 1, 16, rank * 8 % 16),
+                    ((1, 1024, 4096), 0, 2, rank % 2), ((5, 1, 4096), 1, 2, rank % 2)]
+    assert torch.equal(actual.view(torch.int16), reference().view(torch.int16))
+
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        replay = candidate()
+    for scale in (0.6875, -1.25):
+        q.mul_(scale)
+        window.mul_(scale)
+        graph.replay()
+        assert torch.equal(replay.view(torch.int16), reference().view(torch.int16))
+
+
+@cuda
 @model
 @pytest.mark.parametrize("variant", ["official", "ft"])
 def test_head_forward_vs_reference(variant):
