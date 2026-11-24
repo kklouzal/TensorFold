@@ -48,16 +48,38 @@ def _markov_local(best_val, best_idx, first, packet, BLOCKS: tl.constexpr, PB: t
     tl.store(packet + b * 2 + 1, (token + first).to(tl.float32))     # global ids < 2^24: exact in FP32
 
 
-class ShardedMarkov:
-    """Greedy Markov steps over B requests on one vocabulary shard; ``gather`` concatenates the ranks' [B, 2]
-    packets along the last dimension (``Collectives.gather``; identity for world 1)."""
+@jit
+def _markov_tp8(every, tokens, B: tl.constexpr):
+    b = tl.program_id(0)
+    rank = tl.arange(0, 8)
+    value = tl.load(every + 2 * (rank * B + b))
+    nan = value != value
+    maximum = tl.max(tl.where(nan, float("-inf"), value), 0)
+    first = tl.min(tl.where(value == maximum, rank, 8), 0)
+    # Torch max propagates NaN, so the old equality mask is all false and
+    # its argmax selects rank zero, even when the NaN belongs to another rank.
+    owner = tl.where(tl.sum(nan.to(tl.int32), 0) != 0, 0, first)
+    token = tl.load(every + 2 * (owner * B + b) + 1)
+    tl.store(tokens + b, token.to(tl.int64))
 
-    def __init__(self, weight_bf16, embed_bf16, first: int, gather, world: int):
+
+def merge_rank_major(every):
+    """Select one int64 ID per request from contiguous FP32 [8, B, 2] packets."""
+    b = every.shape[1]
+    tokens = torch.empty(b, dtype=torch.int64, device=every.device)
+    _markov_tp8[(b,)](every, tokens, B=b, num_warps=1)
+    return tokens
+
+
+class ShardedMarkov:
+    """Greedy Markov steps per shard. For TP8, gather [B, 2] packets into contiguous [8, B, 2]."""
+
+    def __init__(self, weight_bf16, embed_bf16, first: int, gather_rank_major, world: int):
         self.weight = weight_bf16.contiguous().view(torch.int16)
         # BF16 bits as int16: SM70 PTX has no BF16 conversion, so kernels widen by a 16-bit shift (exact)
         self.embed = embed_bf16.contiguous().view(torch.int16)
         self.vocab, self.rank = self.weight.shape
-        self.first, self.gather, self.world = first, gather, world
+        self.first, self.gather_rank_major, self.world = first, gather_rank_major, world
         self.blocks = triton.cdiv(self.vocab, ROWS)
 
     def local_packet(self, logits, prev):
@@ -75,21 +97,12 @@ class ShardedMarkov:
                             PB=triton.next_power_of_2(self.blocks), num_warps=4)
         return packet
 
-    @staticmethod
-    def merge(every, world):
-        """[B, world * 2] rank-ordered packets -> int64 [B]: the first rank holding the global maximum."""
-        every = every.view(every.shape[0], world, 2)
-        values = every[:, :, 0]
-        best = values.max(dim=1, keepdim=True).values
-        owner = (values == best).to(torch.int32).argmax(dim=1, keepdim=True)
-        return every[:, :, 1].gather(1, owner)[:, 0].long()
-
     def step(self, logits, prev):
         """logits FP32 [B, V_local], prev int64 [B] -> int64 [B] tokens (identical on every rank)."""
         packet = self.local_packet(logits, prev)
         if self.world == 1:
             return packet[:, 1].long()
-        return self.merge(self.gather(packet), self.world)
+        return merge_rank_major(self.gather_rank_major(packet))
 
     def bias(self, prev):
         """FP32 [B, V_local] Markov bias rows of prev int64 [B] (the sampling path)."""

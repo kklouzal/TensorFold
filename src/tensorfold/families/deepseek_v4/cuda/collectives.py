@@ -150,9 +150,13 @@ class Collectives:
         self.world.all_gather(part, recv)
         return recv[:shard.tokens]
 
-    def gather(self, part: torch.Tensor) -> torch.Tensor:
-        """Concatenate the eight ranks' parts along the last dimension, rank order."""
+    def gather_rank_major(self, part: torch.Tensor) -> torch.Tensor:
+        """Return the eight rank-ordered parts on a leading rank dimension."""
         part = part.contiguous()
         recv = torch.empty((WORLD,) + tuple(part.shape), dtype=part.dtype, device=part.device)
         self.world.all_gather(part, recv)
-        return torch.cat(list(recv.unbind(0)), dim=-1)
+        return recv
+
+    def gather(self, part: torch.Tensor) -> torch.Tensor:
+        """Concatenate the eight ranks' parts along the last dimension, rank order."""
+        return torch.cat(list(self.gather_rank_major(part).unbind(0)), dim=-1)

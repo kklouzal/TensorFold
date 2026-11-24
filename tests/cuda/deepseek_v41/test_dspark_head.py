@@ -20,6 +20,49 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device
 model = pytest.mark.skipif(not (ROOT / "official" / "config.json").is_file(), reason="DSpark release not present")
 
 
+def torch_markov_packet_merge(packets):
+    # The former Torch path concatenated packet pairs across ranks.
+    every = torch.cat(list(packets.unbind(0)), dim=-1).view(packets.shape[1], 8, 2)
+    values = every[:, :, 0]
+    best = values.max(dim=1, keepdim=True).values
+    owner = (values == best).to(torch.int32).argmax(dim=1, keepdim=True)
+    return every[:, :, 1].gather(1, owner)[:, 0].long()
+
+
+@cuda
+def test_rank_major_markov_merge_matches_torch_in_graph():
+    from tensorfold.families.deepseek_v4.cuda.dspark_markov import merge_rank_major
+
+    inf, nan = float("inf"), float("nan")
+    scores = torch.tensor([
+        [1, 3, 2, 0, 4, 5, 6, 7],                 # distinct maximum
+        [1, 4, 3, 0, 2, 0, 4, 3],                 # finite tie away from rank 0
+        [-0.0, 0.0, -1, -inf, -inf, -2, -3, -4],  # signed zero tie
+        [0, inf, 1, 2, 3, inf, 4, 5],              # positive infinity tie
+        [-inf] * 8,                               # negative infinity tie
+        [1, 2, 3, 4, 5, 6, 7, nan],              # a nonzero rank NaN forces old rank 0
+        [nan, 1, 2, 3, 4, 5, 6, nan],            # several NaNs
+    ], device="cuda").T
+    ids = (torch.arange(8, device="cuda")[:, None] * 16_160
+           + torch.arange(scores.shape[1], device="cuda"))
+    every = torch.stack((scores, ids), dim=-1).contiguous()
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        assert torch.equal(merge_rank_major(every), torch_markov_packet_merge(every))
+    stream.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        picked = merge_rank_major(every)
+    for replay in range(2):
+        if replay:
+            every[:, :, 0].copy_(scores.flip((0,)))
+        expected = torch_markov_packet_merge(every)
+        graph.replay()
+        assert picked.dtype == torch.int64 and torch.equal(picked, expected)
+        assert torch.equal(merge_rank_major(every), expected)
+
+
 def rel(a, b):
     a, b = a.double(), b.double()
     return float((a - b).norm() / b.norm().clamp_min(1e-30))
@@ -288,12 +331,14 @@ def test_head_forward_vs_reference(variant):
         print(f"{variant} q8={q8}: draft() {drafts.tolist()} propose() {prop.tokens.tolist()}")
         assert torch.equal(drafts, prop.tokens)
         # the TP8 merge: eight contiguous vocabulary shards' packets merged = the full-vocabulary argmax
-        from tensorfold.families.deepseek_v4.cuda.dspark_markov import ShardedMarkov
+        from tensorfold.families.deepseek_v4.cuda.dspark_markov import ShardedMarkov, merge_rank_major
         logits = head(head_state.head_input(prop.hidden.reshape(-1, dw.HIDDEN))).view(2, dw.BLOCK, -1)[:, 0]
         part = dw.VOCAB // 8
         packets = [ShardedMarkov(w.markov_head[k * part:(k + 1) * part], w.markov_embed, k * part, None, 1)
                    .local_packet(logits[:, k * part:(k + 1) * part], anchors) for k in range(8)]
-        merged = ShardedMarkov.merge(torch.cat(packets, -1), 8)
+        rank_major = torch.stack(packets)
+        merged = merge_rank_major(rank_major)
+        assert torch.equal(merged, torch_markov_packet_merge(rank_major))
         full = (logits + w.markov_embed[anchors].float() @ w.markov_head.float().t()).argmax(-1)
         assert torch.equal(merged, full), (merged.tolist(), full.tolist())
     accepted = dh.greedy_accept(prop.tokens, torch.cat((prop.tokens, prop.tokens[:, :1]), 1))

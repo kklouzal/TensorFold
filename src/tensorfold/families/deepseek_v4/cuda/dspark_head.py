@@ -309,8 +309,9 @@ class DSparkHead:
     def _sharded(self):
         from .dspark_markov import ShardedMarkov
         if getattr(self, "_markov_sharded", None) is None:
+            gather = self.comm.gather_rank_major if self.w.layout.world == 8 else None
             self._markov_sharded = ShardedMarkov(self.w.markov_head, self.w.markov_embed, self.vocab_first,
-                                                 self.comm.gather, self.w.layout.world)
+                                                 gather, self.w.layout.world)
         return self._markov_sharded
 
     def draft(self, anchors, anchor_pos, slots, embed, head, *, depth: int = dw.BLOCK):
