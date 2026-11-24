@@ -170,6 +170,16 @@ def test_capture_prewarms_only_scratch_with_live_commit_buffers(monkeypatch):
     engine, head, spec, events = owners(torch.device("cpu"))
     shape = SpecShape(engine, head, spec, 4, 3, 8192)
     active, commits = [], []
+    with torch.inference_mode():
+        target_scratch = torch.ones(1)
+    begin = engine.target.begin
+
+    def clear_target_scratch(step):
+        # Ordinary warm-up has already allocated the target's shared scratch.
+        target_scratch.zero_()
+        return begin(step)
+
+    monkeypatch.setattr(engine.target, "begin", clear_target_scratch)
     current = SimpleNamespace(wait_stream=lambda stream: None)
     startup = SimpleNamespace(wait_stream=lambda stream: None, synchronize=lambda: None)
 
@@ -202,6 +212,8 @@ def test_capture_prewarms_only_scratch_with_live_commit_buffers(monkeypatch):
     monkeypatch.setattr(torch.cuda, "graph", lambda graph, **kwargs: nullcontext())
 
     shape.capture(None, startup)
+    assert target_scratch.item() == 0
+    assert not torch.is_inference_mode_enabled() and not shape._staged.is_inference()
     assert commits == [(startup, [5, 5, 5, 5], [-1, -1, -1, -1])]
     assert events[0] == ("commit", [5, 5, 5, 5], [-1, -1, -1, -1])
     assert len([event for event in events if event[0] == "commit"]) == 1

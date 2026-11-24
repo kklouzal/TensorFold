@@ -192,8 +192,9 @@ class SpecShape:
         self.graph.replay()
         return self._graph_out
 
+    @torch.inference_mode()
     def capture(self, pool, stream) -> None:
-        """Prepare kernels and capture an empty/scratch-only frame on the caller's startup stream."""
+        """Capture a scratch-only frame using the target's warmed inference workspaces."""
         if self.graph is not None:
             raise RuntimeError("DSpark verify shape is already captured")
         self._stage(())
