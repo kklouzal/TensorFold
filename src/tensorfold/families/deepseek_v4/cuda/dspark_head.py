@@ -189,10 +189,8 @@ class DSparkHead:
     def _requestwise_attention(self, s, inputs, positions, slots, anchor_pos):
         at = anchor_pos[:, None] - WINDOW + torch.arange(WINDOW, device=self.device)
         windows = self.ring[slots[:, None], s.index, at % RING]
-        layout = self.w.layout
-        rank = layout.rank if s.index == 0 and layout.world == 8 else None
         partial = stage0.attention_partials(s, inputs, positions.split(dw.BLOCK), windows,
-                                            at >= 0, self.stage0_frequencies, rank=rank)
+                                            at >= 0, self.stage0_frequencies)
         return self.comm.sum(partial, torch.float16)
 
     def _attention(self, s, x, positions, slots, anchor_pos):
