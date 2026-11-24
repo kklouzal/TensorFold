@@ -53,7 +53,7 @@ def build(requests, *, source=2, compressed=True, qscale=2.0, seed=0, dev="cuda"
     valid = torch.ones(T, dtype=torch.bool, device=dev)
     if T > 3:
         valid[T // 3] = False                       # an invalid row (padding) in the middle
-    step = SimpleNamespace(valid=valid, token_req=token_req, qsl=qsl)
+    step = SimpleNamespace(valid=valid, token_req=token_req, qsl=qsl, spec=None)
     query = (torch.randn(T, H, 512, generator=g, device=dev) * qscale).half()
     window = (torch.randn(T, 512, generator=g, device=dev) * 0.3).half()
     sink = torch.randn(H, generator=g, device=dev)
