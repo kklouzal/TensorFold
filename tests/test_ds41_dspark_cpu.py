@@ -96,10 +96,20 @@ def test_fp8_block_decode_every_code_and_scale():
 
 
 def test_audit_counts_fp16_effects():
-    exact = torch.tensor([1.0, 2.0 ** -20, 2.0 ** -26, 70000.0, 1 + 2.0 ** -12, 0.0])
-    _, a = dw.audit_fp16("t", "F32", exact)
+    exact = torch.tensor([1.0, 2.0 ** -20, 2.0 ** -26, 70000.0, 1 + 2.0 ** -12, -0.0])
+    half, a = dw.audit_fp16("t", "F32", exact)
+    widened, same_audit = dw.audit_fp16("t", "F32", exact, keep_widened=True)
+    assert widened.dtype == torch.float32
+    assert torch.equal(widened.view(torch.int32), half.float().view(torch.int32))
+    assert same_audit == a
     assert (a.overflow, a.flushed, a.subnormal, a.nonzero) == (1, 1, 1, 5)
     assert a.inexact == 3          # overflow, flush and the 1 + 2^-12 rounding
+
+
+@pytest.mark.parametrize(("layout", "audit_only"), [(dw.Layout(), False), (dw.Layout(0, 8, 4), True)])
+def test_widened_requestwise_banks_require_tp8_serving_load(tmp_path, layout, audit_only):
+    with pytest.raises(ValueError, match="require a TP8 DSpark serving load"):
+        dw.load(tmp_path, layout=layout, audit_only=audit_only, keep_requestwise_fp32=True)
 
 
 def test_mxfp4_decode_table():
