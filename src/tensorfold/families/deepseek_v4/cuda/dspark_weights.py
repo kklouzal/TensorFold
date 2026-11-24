@@ -332,6 +332,8 @@ def check_config(directory: str | Path) -> dict:
 def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", config_dir: str | Path | None = None,
          audit_only: bool = False, keep_requestwise_fp32: bool = False) -> DSparkWeights | Audit:
     """Load one rank's DSpark head, or audit the full dense banks on CPU with ``audit_only``."""
+    if keep_requestwise_fp32 and (audit_only or layout.world != 8):
+        raise ValueError("widened requestwise banks require a TP8 DSpark serving load")
     check_config(config_dir or directory)
     ck = Checkpoint(directory)
     audit = Audit()
@@ -374,7 +376,7 @@ def load(directory: str | Path, *, layout: Layout = Layout(), device="cuda", con
     first = lay.experts.start
     for i in range(STAGES):
         p = f"mtp.{i}."
-        keep_widened = keep_requestwise_fp32 and not audit_only and i < 2
+        keep_widened = keep_requestwise_fp32 and i < 2
         hc = {f"{b}_{part}": put(fp32(p + f"hc_{b}_{part}")) for b in ("attn", "ffn") for part in ("fn", "scale", "base")}
         heads = lay.rows(HEADS)
         wq_b = dense(p + "attn.wq_b", rows=slice(heads.start * HEAD_DIM, heads.stop * HEAD_DIM),

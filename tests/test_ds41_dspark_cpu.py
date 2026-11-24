@@ -106,6 +106,12 @@ def test_audit_counts_fp16_effects():
     assert a.inexact == 3          # overflow, flush and the 1 + 2^-12 rounding
 
 
+@pytest.mark.parametrize(("layout", "audit_only"), [(dw.Layout(), False), (dw.Layout(0, 8, 4), True)])
+def test_widened_requestwise_banks_require_tp8_serving_load(tmp_path, layout, audit_only):
+    with pytest.raises(ValueError, match="require a TP8 DSpark serving load"):
+        dw.load(tmp_path, layout=layout, audit_only=audit_only, keep_requestwise_fp32=True)
+
+
 def test_mxfp4_decode_table():
     codes = torch.arange(256, dtype=torch.uint8).view(1, 16, 16).reshape(16, 16)
     scales = torch.full((16, 1), 127 - 3, dtype=torch.uint8)
