@@ -307,7 +307,7 @@ def test_rotorquant_decode_gather_reuse_is_exact_across_graph_replays(tokens):
         table[-1] = -1
     qsl = torch.arange(tokens + 1, dtype=torch.int32, device=device)
     step = SimpleNamespace(positions=positions, valid=torch.ones(tokens, dtype=torch.bool, device=device),
-                           token_req=ranges, req_slot=slots, qsl=qsl)
+                           token_req=ranges, req_slot=slots, qsl=qsl, spec=None)
     ring = [packed(tokens + 1, pk.RING) for _ in range(2)]
     window = [packed(tokens) for _ in range(2)]
     if tokens > 1:
