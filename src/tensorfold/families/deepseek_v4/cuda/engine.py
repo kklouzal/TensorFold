@@ -312,8 +312,10 @@ class DS41Engine:
         if draft_weight is not None:
             from .dspark_serving import DraftOwner
 
-            with clock.phase("draft-verify-graph"):
+            with clock.phase("draft-verify-graph") as note:
                 self.drafter = DraftOwner(self, draft_weight, draft_depth)
+                if self.drafter.head._use_stage0_exact_loop:
+                    note[0] = "exact Stage 0 normalization"
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 if torch.cuda.mem_get_info()[0] < RESERVE:

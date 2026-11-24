@@ -87,6 +87,11 @@ class DSparkHead:
             raise ValueError("a TP8 DSpark head needs the lane's 8-rank FP32 communicator")
         self.device = torch.device(device)
         self.q8 = bool(q8_experts)
+        self._use_stage0_exact_loop = (
+            w.layout.world == 8 and not self.q8 and self.device.type == "cuda"
+            and torch.version.git_version == stage0.SINKHORN_TORCH_GIT
+            and torch.cuda.get_device_capability(self.device) == (7, 0)
+        )
         self.rope = quant_rope.rope_table(device=self.device)
         self.stage0_frequencies = stage0.frequencies(self.device)
         self.ring = torch.zeros(slots, dw.STAGES, RING, 512, dtype=torch.float16, device=self.device)
@@ -254,7 +259,8 @@ class DSparkHead:
         hc = s.hc
         blocks = hidden.split(dw.BLOCK)
         pre, post, comb = zip(*(
-            stage0.mixes(block, hc["attn_fn"], hc["attn_scale"], hc["attn_base"]) for block in blocks
+            stage0.mixes(block, hc["attn_fn"], hc["attn_scale"], hc["attn_base"],
+                         fuse_normalization=self._use_stage0_exact_loop) for block in blocks
         ), strict=True)
         inputs = [stage0.collapse(block, prev, s.attn_norm)
                   for block, prev in zip(blocks, previous_pre.split(dw.BLOCK), strict=True)]
@@ -265,7 +271,8 @@ class DSparkHead:
         ]
 
         next_pre, post, comb = zip(*(
-            stage0.mixes(block, hc["ffn_fn"], hc["ffn_scale"], hc["ffn_base"]) for block in after_attention
+            stage0.mixes(block, hc["ffn_fn"], hc["ffn_scale"], hc["ffn_base"],
+                         fuse_normalization=self._use_stage0_exact_loop) for block in after_attention
         ), strict=True)
         inputs = torch.cat([stage0.collapse(block, mix, s.ffn_norm)
                             for block, mix in zip(after_attention, pre, strict=True)])

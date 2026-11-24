@@ -20,6 +20,34 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device
 model = pytest.mark.skipif(not (ROOT / "official" / "config.json").is_file(), reason="DSpark release not present")
 
 
+@cuda
+def test_stage0_normalization_preserves_subnormal_operands():
+    from tensorfold.families.deepseek_v4.cuda import dspark_stage0
+
+    if torch.version.git_version != dspark_stage0.SINKHORN_TORCH_GIT:
+        pytest.skip("the fused reduction order is qualified for the pinned Torch build")
+    eps = 1e-6
+    tiny = 2 ** -149
+    initial = torch.tensor([
+        [[0.0] * 4] * 4,
+        [[tiny, 0.0, tiny, 2 * tiny], [0.0, 0.0, tiny, 0.0],
+         [tiny, 2 * tiny, 0.0, 0.0], [tiny, 0.0, 0.0, tiny]],
+        [[1.0, 0.0, 0.0, 0.0], [0.0, .25, 0.0, 0.0], [0.0, 0.0, eps, 0.0],
+         [0.0, 0.0, 0.0, eps / 8]],
+        [[.99, .04, .016, .1], [.014, .045, .993, .033],
+         [.424, .51, .4, .017], [.0002, .0047, .058, .004]],
+        [[.25] * 4] * 4,
+    ], device="cuda", dtype=torch.float32)
+    expected = initial
+    for _ in range(19):
+        expected = expected / (expected.sum(-1, keepdim=True) + eps)
+        expected = expected / (expected.sum(-2, keepdim=True) + eps)
+    actual = torch.empty_like(initial)
+    dspark_stage0._normalize_loop[(5,)](
+        initial, actual, LOOP=19, EPSILON=eps, num_warps=1, enable_fp_fusion=False)
+    assert torch.equal(actual.view(torch.int32), expected.view(torch.int32))
+
+
 def torch_markov_packet_merge(packets):
     # The former Torch path concatenated packet pairs across ranks.
     every = torch.cat(list(packets.unbind(0)), dim=-1).view(packets.shape[1], 8, 2)
