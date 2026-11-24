@@ -166,7 +166,7 @@ struct GemmUniversal {
     }
 };
 
-extern __shared__ char smem_buf[];
+extern __shared__ __align__(16) char smem_buf[];
 
 __device__ __forceinline__ bool TryRunTileAllReduceReducerCta(const EpilogueParam& epi_param)
 {

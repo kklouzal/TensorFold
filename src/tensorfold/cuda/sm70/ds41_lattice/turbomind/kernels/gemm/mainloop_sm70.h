@@ -227,7 +227,7 @@ struct MainloopSm70 {
                                SharedStorage& storage)
     {
         static_assert(MMA::kAtomK == 1);
-        if constexpr (kCodebookBytes > 0) TransformB::initialize(storage.codebook);
+        if constexpr (kCodebookBytes > 0) TransformB::template initialize<true>(storage.codebook);
 
         static constexpr int UU = 1;  // ceil_div(GroupSizeU_, MMA_Map::TileK);
         static constexpr int VV = 1;  // ceil_div(GroupSizeV_, MMA_Map::TileK);
@@ -281,6 +281,7 @@ struct MainloopSm70 {
 
         // r0,w1
 
+        // Publish the codebook staged in disjoint storage before TransformWeights.
         __syncthreads();
 
         auto fetch_stage = [&](auto& rmem) {
