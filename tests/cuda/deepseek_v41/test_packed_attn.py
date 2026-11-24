@@ -19,7 +19,8 @@ from tensorfold.families.deepseek_v4.cuda.kernels.quant_rope import attention_qd
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
 
-@pytest.mark.parametrize("tokens,width", [(4, 128), (6, 640)])
+@pytest.mark.parametrize("tokens", [4, 6])
+@pytest.mark.parametrize("width", [128, 640])
 def test_requestwise_bmm_matches_separate_c1_attention_in_graph(tokens, width):
     device = "cuda"
     generator = torch.Generator(device=device).manual_seed(216)
