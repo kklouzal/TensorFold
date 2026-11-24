@@ -179,11 +179,14 @@ class SpecShape:
         self.engine.comm.all_gather(packet, self.compact)
         return VerifyOutput(self.compact, drafts, logits)
 
+    def _commit_staged(self) -> None:
+        self.commit_slots.copy_(self._staged[4])
+        self.spec.commit(self.commit_slots, self._staged[3])
+
     def run(self, entries) -> VerifyOutput:
         """Commit the staged owners once, then enqueue this shape on the current stream."""
         if self._stage(entries):
-            self.commit_slots.copy_(self._staged[4])
-            self.spec.commit(self.commit_slots, self._staged[3])
+            self._commit_staged()
         if self.graph is None:
             return self._body()
         self.graph.replay()
@@ -196,6 +199,10 @@ class SpecShape:
         self._stage(())
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
+            # Use the live commit buffers, with every slot masked to scratch.
+            # Prepare this separately so the first accepted block cannot JIT
+            # compile a restore, and no commit is added to graph replay.
+            self._commit_staged()
             self._body()
         torch.cuda.current_stream().wait_stream(stream)
         stream.synchronize()

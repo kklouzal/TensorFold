@@ -1,5 +1,6 @@
 """DSpark graph-owner boundaries, with independent target and head witnesses."""
 
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -163,6 +164,53 @@ def test_rejects_wrong_same_extent_owner_and_foreign_static_storage():
     with pytest.raises(ValueError, match="contiguous device page storage"):
         SpecShape(engine, head, spec, 4, 0, 8192)
     assert events == other_events == []
+
+
+def test_capture_prewarms_only_scratch_with_live_commit_buffers(monkeypatch):
+    engine, head, spec, events = owners(torch.device("cpu"))
+    shape = SpecShape(engine, head, spec, 4, 3, 8192)
+    active, commits = [], []
+    current = SimpleNamespace(wait_stream=lambda stream: None)
+    startup = SimpleNamespace(wait_stream=lambda stream: None, synchronize=lambda: None)
+
+    @contextmanager
+    def choose(stream):
+        active.append(stream)
+        try:
+            yield
+        finally:
+            assert active.pop() is stream
+
+    class Graph:
+        @staticmethod
+        def replay():
+            events.append(("replay",))
+
+    original = spec.commit
+
+    def commit(slots, counts):
+        assert slots is shape.commit_slots and slots.dtype == torch.int32
+        assert counts.data_ptr() == shape._staged[3].data_ptr() and counts.dtype == torch.int64
+        assert slots.stride() == counts.stride() == (1,)
+        commits.append((active[-1] if active else current, slots.tolist(), counts.tolist()))
+        original(slots, counts)
+
+    monkeypatch.setattr(spec, "commit", commit)
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda: current)
+    monkeypatch.setattr(torch.cuda, "stream", choose)
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", Graph)
+    monkeypatch.setattr(torch.cuda, "graph", lambda graph, **kwargs: nullcontext())
+
+    shape.capture(None, startup)
+    assert commits == [(startup, [5, 5, 5, 5], [-1, -1, -1, -1])]
+    assert events[0] == ("commit", [5, 5, 5, 5], [-1, -1, -1, -1])
+    assert len([event for event in events if event[0] == "commit"]) == 1
+
+    events.clear()
+    shape.run([VerifyEntry(2, 16, 33, VerifyCommit(14, 4, 2))])
+    shape.run([VerifyEntry(0, 65, 11)])
+    assert commits[1:] == [(current, [2, 5, 5, 5], [2, -1, -1, -1])]
+    assert events == [("commit", [2, 5, 5, 5], [2, -1, -1, -1]), ("replay",), ("replay",)]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA graph required")
