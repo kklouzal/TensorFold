@@ -122,11 +122,12 @@ __global__ void build_signs(uint2* out) {
 
 // ---- one 32-weight group ----------------------------------------------------
 __device__ __forceinline__ void ld8(const uint8_t* p, uint32_t& w0, uint32_t& w1) {
-  // 8 bytes at a 2-byte-aligned address: three aligned words + funnel shifts.
+  // An aligned eight-byte read can end at the final IQ2_XXS carrier row.
   const uintptr_t a = reinterpret_cast<uintptr_t>(p);
   const uint32_t* q = reinterpret_cast<const uint32_t*>(a & ~uintptr_t(3));
   const uint32_t sh = uint32_t(a & 3) * 8;
-  const uint32_t x0 = __ldg(q), x1 = __ldg(q + 1), x2 = __ldg(q + 2);
+  const uint32_t x0 = __ldg(q), x1 = __ldg(q + 1);
+  const uint32_t x2 = sh ? __ldg(q + 2) : 0;
   w0 = __funnelshift_r(x0, x1, sh);
   w1 = __funnelshift_r(x1, x2, sh);
 }

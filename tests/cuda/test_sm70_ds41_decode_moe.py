@@ -50,6 +50,31 @@ def variant_table(em):
         [v for v, row in enumerate(r for r in table if r[0] == 1)]
 
 
+def test_iq2_xxs_exact_final_bank_reads(ops):
+    _, workspace, reference = ops
+    generator = torch.Generator().manual_seed(1301)
+
+    def bank(rows, blocks):
+        raw = torch.randint(256, (1, rows, blocks, 66), dtype=torch.uint8, generator=generator)
+        raw[..., 0] = 0
+        raw[..., 1] = 0x14  # FP16 block scale 2**-10.
+        return raw.flatten(-2).cuda()
+
+    banks = bank(576, 20), bank(576, 20), bank(5120, 3)
+    for carrier in banks:
+        assert carrier.storage_offset() == 0
+        assert carrier.untyped_storage().nbytes() == carrier.numel()
+        assert (carrier.data_ptr() + carrier.numel() - 8) % 4 == 0
+    x = torch.randn(1, 5120, generator=generator).half().cuda()
+    ids = torch.zeros(1, 6, device="cuda", dtype=torch.int32)
+    probabilities = torch.zeros(1, 6, device="cuda", dtype=torch.float32)
+    probabilities[0, 0] = 1
+    expected = pieces(reference, x, ids, probabilities, banks, 16, 192)
+    assert torch.isfinite(expected).all()
+    actual = workspace.experts(x, ids, probabilities, *banks, 16, 16, 192)
+    assert bits_equal(actual, expected)
+
+
 @pytest.mark.parametrize("kind", [16, 17, 29])
 def test_schedule_bit_exact_against_pieces(ops, kind):
     em, ws, dec = ops
