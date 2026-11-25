@@ -1,5 +1,5 @@
 """DeepSeek-V4.1-Flash forward on one SM70 rank: the 1Cat-vLLM DS41 forward with the friend's multi-request
-packed attention (overlay patches 85/87), on TensorFold-owned KV pages, slots and collectives, in the TP8 x (ETP4 x EP2) layout of the Flash Next and Gemma 4 lanes.
+packed attention (overlay patches 85/87), on TensorFold-owned KV pages, slots and collectives.
 
 Order and arithmetic follow 1Cat-vLLM 4d57473d ``vllm/models/deepseek_v41/model.py`` (``_forward_fused``:
 VLLM_V41_HC_FUSED=1, VLLM_V41_ROUTER_FUSED=1) with patch 87's ``attention_forward`` (packed FP4 KV rows on the
@@ -8,8 +8,8 @@ GPU, per-slot window rings, row-wise decode indexer, single-request prefill inde
 below the grouped-prefill threshold, the friend's expert-major decode experts (``ds41_decode_moe``, patch 240 EM3).
 
 TensorFold changes, recorded: TP8 attention/dense (8 query heads, 1 output group, 4 indexer heads per rank)
-instead of TP4, and experts ETP4 x EP2 (rank r holds experts [192 (r // 4), +192) at TP slice r % 4) instead of
-PP2 x TP4; a layer's routed and shared partials form one 8-rank sum. Every cross-rank sum is accumulated in FP32
+and routed experts in ETP4 x EP2 or ETP2 x EP4. A layer's routed and shared partials form one 8-rank sum.
+Every cross-rank sum is accumulated in FP32
 and rounded once (upstream sums FP16 partials of 4 ranks); the decode indexer's per-rank head sums stay FP32.
 Q8_0 / Q5_K dense projections stay quantized as 1Cat dmv13 planes (``tensorfold.cuda.sm70.ds41_dense``: dmv13 /
 patch 112 for <= 32 rows, bounded restore + cuBLAS above); the embedding is vocabulary-sharded (one FP16 sum). The Engram rows come from mapped host memory (``engram.py``).
@@ -420,7 +420,7 @@ class Target:
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left, self.lattice)
-        else:  # expert-major decode experts (the friend's EM3), bit-equal to the 6-row op, graph-capturable
+        else:  # EM3 expert-major decode is graph-capturable.
             out = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                           ly.gate_up_type, ly.down_type, ly.down_left)
         hidden = native.shared_swiglu(*ly.sh_gu(x))
