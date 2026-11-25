@@ -1668,8 +1668,15 @@ performance qualification is pending. [Expert placement recipe](docs/recipes/dee
 
 Live expert balancing is the DeepSeek TP8 serving default in this
 development branch. It applies eligible placements at an in-service
-maintenance boundary. `--no-expert-balance` disables it. End-to-end
-native validation is pending. [Live placement settings](docs/recipes/deepseek-v41-v100.md#routed-expert-placement)
+maintenance boundary. `--no-expert-balance` disables it. The `dcce7d0c`
+ETP4 transition passed with the generic 2,048 MiB allowance. [Live placement settings](docs/recipes/deepseek-v41-v100.md#routed-expert-placement)
+
+The integrated candidate uses a 1,536 MiB allowance for the exact
+ordered 48-capture catalogue in the 32-lane native-YaRN 128K H64 text profile
+with an explicit 16 GiB host prefix tier. The 2.5 GiB prompt reserve stays
+separate. The standalone `f9606970` test observed 11,554,240 KV tokens.
+Recapture, pressure, quality and serving verification with live balancing
+and this allowance are pending. [Graph expansion and qualification steps](docs/recipes/deepseek-v41-v100.md#experimental-decode-graph-memory-allowance)
 
 New CUDA lane for DeepSeek-V4.1-Flash-1017 GGUF (GSQ-RCO IQ2_XXS backbone; the IQ4_NL Engram table stays in host RAM),
 TP8 attention/dense and ETP4 x EP2 routed experts, up to 32 streams. It uses startup decode graphs, the friend's EM3

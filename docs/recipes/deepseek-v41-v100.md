@@ -63,6 +63,45 @@ ETP1 and ETP2 use a 3 GiB prompt reserve.
 The KV allocator budgets for decode graphs and uses the available memory on the tightest GPU
 to size the shared pool. `/v1/stats` reports the effective codec, YaRN factor, and KV budget.
 
+### Experimental decode graph memory allowance
+
+The integrated candidate reserves 1,536 MiB per GPU for the exact ordered
+48-key catalogue in the full compact ETP4 text profile. It uses 32 lanes,
+128K admission, 8,192-row prompt chunks, native YaRN 16 and default kept
+slots. Request the 16 GiB host prefix tier explicitly so all ranks agree
+on 2 GiB each and any pin refusal aborts startup. The prompt reserve
+stays at 2.5 GiB per GPU.
+
+```sh
+python tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- /models/ds41-tf --backend cuda \
+  --name deepseek-v4.1-flash --parallel 32 --context 131072 --prefix-host-bytes 17179869184 \
+  --kv-dtype rotorquant-iso64-norm4-h64 --expert-tensor-parallel-size 4 \
+  --expert-balance-state /state/expert-balance-etp4.json --port 8000
+```
+
+`shape_keys` in `src/tensorfold/families/deepseek_v4/cuda/graphs.py` owns
+the capture catalogue. Pool sizing deducts the allowance before startup
+and uses it to check actual graph memory after startup capture and live
+recapture. Other captured profiles use `GRAPH_BYTES` plus
+`GRAPH_EACH_BYTES` for each capture. The generic allowance also applies
+when the keys change or move to a different order, including changes that
+keep 48 captures.
+
+The standalone `f9606970` pressure run observed 11,554,240 KV tokens
+with all 48 graphs. The `dcce7d0c` live ETP4 transition passed at the
+generic 2,048 MiB allowance with a measured pool of 10,922,624 tokens.
+The integrated candidate's capacity, live recapture and performance
+remain to be measured.
+
+To expand or replace captures, requalify `H64_128K_GRAPH_KEYS` and
+`H64_128K_GRAPH_BYTES` in `src/tensorfold/families/deepseek_v4/cuda/engine.py`.
+Record CUDA driver free bytes and allocator allocated and reserved bytes
+on all eight ranks through startup, old-graph retirement, bank transfer,
+capture and recapture. Verify the actual KV pool and worst-rank memory
+during late 128K prefill overlapping decode and during full scoring.
+Keep the prompt reserve separate. Recheck paired perplexity and serving
+across C1, C8, C16 and C32 at 4K and 16K before selecting a new allowance.
+
 ## Routed expert placement
 
 `--expert-placement PLAN` loads a version 1 JSON placement at startup on TP8
@@ -102,7 +141,9 @@ active requests finish. The workers retire the previous placement's cached
 prefixes, move the packed expert banks, and rebuild the enabled decode graph
 catalogue. Admission resumes after all eight ranks confirm the placement and
 the new epoch is saved in the state file. A failed post-mutation transaction
-retires the cohort. End-to-end native and performance validation is pending.
+retires the cohort. ETP4 completed the native transition with the generic
+allowance. Validation with the 1,536 MiB allowance and performance
+qualification remain pending.
 
 ## What runs
 
