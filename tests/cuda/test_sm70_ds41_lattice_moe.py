@@ -260,7 +260,7 @@ def _check_partitioned_lattice(ops, kind, etp):
         g, u, d = (bank(t)[expert_start:expert_start + local] for t in tensors)
         raw = (g[:, first:first + width], u[:, first:first + width],
                d[:, :, first_block * size:(first_block + blocks) * size])
-        banks = [torch.from_numpy(np.ascontiguousarray(a)).cuda() for a in raw]
+        banks = [torch.from_numpy(np.array(a, copy=True, order="C")).cuda() for a in raw]
         assert [a.shape[:2] for a in banks] == [(local, width), (local, width), (local, 5120)]
         assert banks[-1].shape[-1] == blocks * size
         decoded = []
