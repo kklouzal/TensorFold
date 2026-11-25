@@ -12,6 +12,10 @@ void ds41_decode_moe_experts(torch::Tensor, torch::Tensor, const torch::Tensor&,
 void ds41_decode_moe_experts_fragments(torch::Tensor, torch::Tensor, const torch::Tensor&, const torch::Tensor&,
                                        const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
                                        const torch::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t, bool);
+void ds41_decode_moe_experts_fragments_shared(torch::Tensor, torch::Tensor, const torch::Tensor&,
+                                              const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+                                              const torch::Tensor&, const torch::Tensor&, int64_t, int64_t, int64_t,
+                                              int64_t, int64_t, const torch::Tensor&, const torch::Tensor&);
 void ds41_decode_moe_prep(torch::Tensor, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
                           int64_t, int64_t);
 void ds41_decode_moe_gate_up(torch::Tensor, const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
@@ -76,6 +80,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("variants", &ds41_decode_moe_variants);
   m.def("experts", &ds41_decode_moe_experts);
   m.def("experts_fragments", &ds41_decode_moe_experts_fragments);
+  m.def("experts_fragments_shared", &ds41_decode_moe_experts_fragments_shared);
   m.def("compact_down_row_bytes", &compact_down_row_bytes);
   m.def("pack_down_fragments", &pack_down_fragments, pybind11::call_guard<pybind11::gil_scoped_release>());
   m.def("prep", &ds41_decode_moe_prep);

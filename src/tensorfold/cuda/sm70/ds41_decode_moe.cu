@@ -702,13 +702,8 @@ __global__ __launch_bounds__(WARPS * 32) void down_kernel(
   }
 }
 
-// out[t, c] = half(sum over warps w = 0..3 of (sum of routes w, w + 4)), the
-// route-per-warp split and FP32 order of raw_down_unroute (top-6, 4 warps).
-// Dropped (probability 0) routes have no partial and add nothing (+-0 there).
-__global__ void combine_kernel(half* out, const half* partial, const float* probabilities, int tokens) {
-  const int c = blockIdx.x * blockDim.x + threadIdx.x;
-  const int t = blockIdx.y;
-  if (c >= 5120 || t >= tokens) return;
+// Preserve the raw_down_unroute FP32 order (top-6, 4 warps). Dropped routes have no initialized partial.
+__device__ __forceinline__ float combine_partials(const half* partial, const float* probabilities, int t, int c) {
   float sum = 0.f;
 #pragma unroll
   for (int w = 0; w < 4; ++w) {
@@ -718,7 +713,26 @@ __global__ void combine_kernel(half* out, const half* partial, const float* prob
         total = __fadd_rn(total, __half2float(partial[(int64_t(t) * kTopK + route) * 5120 + c]));
     sum = __fadd_rn(sum, total);
   }
-  out[int64_t(t) * 5120 + c] = __float2half_rn(sum);
+  return sum;
+}
+
+__global__ void combine_kernel(half* out, const half* partial, const float* probabilities, int tokens) {
+  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  const int t = blockIdx.y;
+  if (c >= 5120 || t >= tokens) return;
+  out[int64_t(t) * 5120 + c] = __float2half_rn(combine_partials(partial, probabilities, t, c));
+}
+
+__global__ void combine_shared_kernel(float* out, const half* partial, const float* probabilities,
+                                      const half* shared, const int64_t* round_routed, int tokens) {
+  const int c = blockIdx.x * blockDim.x + threadIdx.x;
+  const int t = blockIdx.y;
+  if (c >= 5120 || t >= tokens) return;
+  float routed = combine_partials(partial, probabilities, t, c);
+  if (*round_routed)
+    routed = __half2float(__float2half_rn(routed));  // The same graph can replay a one-token prompt.
+  const int64_t at = int64_t(t) * 5120 + c;
+  out[at] = __fadd_rn(routed, __half2float(shared[at]));
 }
 
 // Non-fused gate/up variants: onecat_ds41.cu v41_swiglu_q8 over every kept route (grid 1 x M * 6, 576
@@ -1220,11 +1234,12 @@ std::vector<std::vector<int64_t>> ds41_decode_moe_variants() {
   return out;
 }
 
-template <DownStorage Storage>
+template <DownStorage Storage, bool WithShared = false>
 void experts_impl(const torch::Tensor& ws, const torch::Tensor& out, const torch::Tensor& x,
                   const torch::Tensor& ids, const torch::Tensor& probabilities, const torch::Tensor& gate,
                   const torch::Tensor& up, const torch::Tensor& down, int64_t gate_type, int64_t down_type,
-                  int64_t left, int64_t gate_up_variant_, int64_t down_variant_) {
+                  int64_t left, int64_t gate_up_variant_, int64_t down_variant_,
+                  const torch::Tensor* shared = nullptr, const torch::Tensor* round_routed = nullptr) {
   const Views v = workspace_of(ws, x);
   check_gate_banks(gate, up, gate_type, v.layout.intermediate, x);
   check_down_bank<Storage>(down, down_type, left, v.layout.intermediate, x);
@@ -1233,13 +1248,32 @@ void experts_impl(const torch::Tensor& ws, const torch::Tensor& out, const torch
   if constexpr (Storage != DownStorage::raw)
     require(supports_fragment_variant(int(down_type), int(down_variant_)),
             "down fragment requires a scheduled ordinary variant");
+  int shared_rows = 0;
+  if constexpr (WithShared) {
+    static_assert(Storage == DownStorage::compact);
+    shared_rows = rows_of(probabilities);
+    require(v.layout.intermediate == 576 && out.device() == x.device() && shared->device() == x.device() &&
+                round_routed->device() == x.device() && out.scalar_type() == torch::kFloat32 &&
+                shared->scalar_type() == torch::kFloat16 && round_routed->scalar_type() == torch::kInt64 &&
+                out.is_contiguous() && shared->is_contiguous() && round_routed->is_contiguous() &&
+                out.dim() == 2 && out.size(0) == shared_rows && out.size(1) == 5120 &&
+                shared->sizes() == out.sizes() &&
+                round_routed->dim() == 1 && round_routed->size(0) == 1,
+            "shared combine requires compact W576, FP32 out and FP16 shared [M, 5120], and int64 round flag [1]");
+  }
   const c10::cuda::CUDAGuard guard(x.device());
   const auto stream = at::cuda::getCurrentCUDAStream();
   launch_prep(v, x, ids, probabilities, int(gate.size(0)), chunk_of(int(gate_up_variant_), int(down_variant_)),
               stream);
   launch_gate_up_any(v, probabilities, gate, up, int(gate_type), int(gate_up_variant_), stream);
   launch_down_any<Storage>(v, probabilities, down, int(down_type), int(left), int(down_variant_), stream);
-  launch_combine(v, out, probabilities, stream);
+  if constexpr (WithShared) {
+    combine_shared_kernel<<<dim3(5120 / 128, shared_rows), 128, 0, stream>>>(
+      out.data_ptr<float>(), v.partial(), probabilities.data_ptr<float>(),
+      reinterpret_cast<const half*>(shared->data_ptr()), round_routed->data_ptr<int64_t>(), shared_rows);
+  } else {
+    launch_combine(v, out, probabilities, stream);
+  }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -1264,6 +1298,18 @@ void ds41_decode_moe_experts_fragments(torch::Tensor ws, torch::Tensor out, cons
     experts_impl<DownStorage::compact>(ws, out, x, ids, probabilities, gate, up, down,
                                       gate_type, down_type, left, gate_up_variant_, down_variant_);
   }
+}
+
+// The private workspace wrapper allocates a fresh FP32 out, disjoint from all live inputs and stage scratch.
+void ds41_decode_moe_experts_fragments_shared(torch::Tensor ws, torch::Tensor out, const torch::Tensor& x,
+                                              const torch::Tensor& ids, const torch::Tensor& probabilities,
+                                              const torch::Tensor& gate, const torch::Tensor& up,
+                                              const torch::Tensor& down, int64_t gate_type, int64_t down_type,
+                                              int64_t left, int64_t gate_up_variant_, int64_t down_variant_,
+                                              const torch::Tensor& shared, const torch::Tensor& round_routed) {
+  experts_impl<DownStorage::compact, true>(ws, out, x, ids, probabilities, gate, up, down,
+                                         gate_type, down_type, left, gate_up_variant_, down_variant_,
+                                         &shared, &round_routed);
 }
 
 // Stage ops for the schedule sweep (tests/cuda/bench_ds41_decode_moe.py): same launches, one at a time.

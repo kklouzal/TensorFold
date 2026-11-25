@@ -454,6 +454,62 @@ def test_down_fragments_captured_replay(ops, kind):
             assert bits_equal(result, pieces(dec, x, ids, p, banks, kind, left))
 
 
+@pytest.mark.parametrize("kind,rank,m", [(16, 0, 1), (17, 2, 8), (29, 3, 32)])
+def test_down_fragments_fp32_shared_capture_changes_rounding_mode(ops, kind, rank, m):
+    _, ws, dec = ops
+    banks, _, left = Carriers(kind).rank(rank)
+    gate, up, down = banks
+    fragment_banks = gate, up, pack_down_fragments(down, kind, left, False)
+    generator = torch.Generator().manual_seed(1731 + kind)
+    x = torch.randn(m, 5120, generator=generator).half().cuda()
+    shared = torch.randn(m, 5120, generator=generator).half().cuda()
+    ids, p = routing(m, generator, hot=True, local_share=1.0)
+    flag = torch.ones(1, dtype=torch.int64, device="cuda")
+
+    def launch():
+        return ws.experts(x, ids, p, *fragment_banks, kind, kind, left,
+                          fragment_down=True, shared=shared, round_routed=flag)
+
+    # The stock reference rounds each weighted route to FP16 before the warp's sums. Isolate each route using
+    # the independent six-row raw path, then accumulate its represented value with explicit FP32 operations.
+    def fp32_reference():
+        routes = []
+        for route in range(6):
+            weight = torch.zeros_like(p)
+            weight[:, route] = p[:, route]
+            routes.append(pieces(dec, x, ids, weight, banks, kind, left).float())
+        local = torch.zeros_like(routes[0])
+        for group in ((0, 4), (1, 5), (2,), (3,)):
+            subtotal = torch.zeros_like(local)
+            for route in group:
+                subtotal = subtotal + routes[route]
+            local = local + subtotal
+        return local + shared.float()
+
+    launch()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        out = launch()
+    for state in (1, 0, 1):
+        flag.fill_(state)
+        graph.replay()
+        stock = pieces(dec, x, ids, p, banks, kind, left).float() + shared.float()
+        if state:
+            assert bits_equal(out, stock)
+        else:
+            assert bits_equal(out, fp32_reference())
+            assert not bits_equal(out, stock)
+            # All-dropped substitution must not read stale partials on a subsequent replay.
+            p[-1].zero_()
+            shared.neg_()
+            graph.replay()
+            assert bits_equal(out[-1], torch.zeros_like(out[-1]) + shared[-1].float())
+
+    with pytest.raises(RuntimeError, match="int64 round flag"):
+        ws.experts(x, ids, p, *fragment_banks, kind, kind, left,
+                   fragment_down=True, shared=shared, round_routed=flag.float())
+
+
 def test_down_fragments_reject_bad_component_inputs(ops):
     em, ws, _ = ops
     (gate, up, down), _, left = Carriers(29).rank(0)

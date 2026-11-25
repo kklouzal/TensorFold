@@ -91,6 +91,7 @@ class Step:
     pack_window_ring: bool = False             # ordinary graph opts in; transactional forwards commit after attention
     expert_sample: torch.Tensor | None = None  # device scalar: 0 off, 1 prefill, 2 decode
     expert_prefill_phase: int | None = None   # eager sampled phase for sequence/vision routing (0 prefill, 1 decode)
+    round_w576_routed: torch.Tensor | None = None  # experimental graph scalar: 1 stock local FP16, 0 retain FP32
 
 
 def window_ring_bytes(rotorquant: bool) -> int:
@@ -393,6 +394,7 @@ class Target:
         from .kernels.band import add_halves, route_local
         from .kernels.mhc import fp32_projection
         g = self.g
+        round_routed = step.round_w576_routed if step is not None else None
         logits = fp32_projection(x if shard is None else x_rows, ly.gate)
         mask = image if image is None or shard is None else shard.take(image)
         expert_to_local = getattr(ly, "expert_to_local", None)
@@ -439,6 +441,18 @@ class Target:
                 from .kernels.band import place_routes
 
                 local, weights = place_routes(ids, probabilities, expert_to_local)
+        if round_routed is not None:
+            if (shard is not None or image is not None or not step.single_token_slots or not step.pack_window_ring
+                    or x.shape[0] >= lattice_moe.MIN_TOKENS):
+                raise RuntimeError("experimental W576 combine requires a captured ordinary H64 text row batch")
+            # Independent dense scratch lives on the same stream. Its fresh FP16 down rows outlive native combine.
+            hidden = native.shared_swiglu(*ly.sh_gu(x))
+            shared_out = self._linear(hidden, ly.sh_down)
+            send = self.decode_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
+                                           ly.gate_up_type, ly.down_type, ly.down_left,
+                                           fragment_down=self.w.compact_expert_down,
+                                           shared=shared_out, round_routed=round_routed)
+            return self.c.sum(send, torch.float16)
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left, self.lattice,
@@ -539,7 +553,8 @@ class Target:
         w = self.w
         layers = w.layers
         step, hashes, shared, shard = st["step"], st["hashes"], st["shared"], st["shard"]
-        usage_step = step if getattr(self, "expert_usage", None) is not None else None
+        moe_step = step if step is not None and (
+            step.round_w576_routed is not None or getattr(self, "expert_usage", None) is not None) else None
         # with a shard, HC state (hidden, pre, mixes) holds this rank's rows; sublayer inputs are gathered whole
         full = (lambda rows: rows) if shard is None else (lambda rows: self.c.gather_rows(rows, shard))
         hidden, pre, state, half = st["hidden"], st["pre"], st["mix"], st["half"]
@@ -568,10 +583,10 @@ class Target:
             else:
                 inputs, ffn_mix, rows = half
                 half = None
-                if usage_step is None:
+                if moe_step is None:
                     y = self.moe(ly, inputs, st["image"], shard, rows)
                 else:
-                    y = self.moe(ly, inputs, st["image"], shard, rows, step=usage_step)
+                    y = self.moe(ly, inputs, st["image"], shard, rows, step=moe_step)
                 pre = ffn_mix[0]
                 following = layers[i + 1] if i + 1 < len(layers) else None
                 if following is not None and following.engram_wkv is None:

@@ -40,6 +40,7 @@ F_COMPACT, F_FULL = 1 << 22, 1 << 23
 F_IMAGE = 1 << 24          # a prompt chunk with image rows: their features are every rank's staged tower rows
 F_AHEAD = 1 << 25          # run-ahead round: token ids from the previous replay's device greedy tokens (graphs.py)
 EXPERT_SAMPLE_SHIFT = 26   # OP_STEP: 0 off, 1 prefill, 2 decode, visible only to the rank-zero observer
+F_W576_FP32 = 1 << 28      # experimental continuation math, independent of output packet format
 # The TP8 vision tower's operations (``OP_TOWER``, kind in a; every rank runs its shard, ``DS41Engine._tower``)
 OP_TOWER = 32
 OP_EXPERT_PLACEMENT = 33
@@ -131,6 +132,7 @@ class DS41Engine:
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8")
         etp = W.checked_etp(expert_tensor_parallel_size)
+        w576_fp32 = self._experimental_w576_fp32 = os.environ.get("TENSORFOLD_DS41_EXPERIMENT_W576_FP32") == "1"
         if expert_balance_state is not None:
             if (not serve or type(expert_balance_sample_every) is not int or not 1 <= expert_balance_sample_every <= 1 << 20
                     or type(expert_balance_half_life) is not int or not 1 <= expert_balance_half_life <= 1 << 52):
@@ -174,12 +176,12 @@ class DS41Engine:
         prebuild.wait(small_gather.__name__)
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
-            settings = [etp, int(expert_placement is not None), int(expert_balance_live)]
+            settings = [etp, int(expert_placement is not None), int(expert_balance_live) | (int(w576_fp32) << 1)]
             local = torch.tensor(settings, dtype=torch.int64, device=device)
             agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
             self.comm.all_gather(local, agreed)
             if agreed.tolist() != settings * tp:
-                raise ValueError("DeepSeek-V4.1 ranks must agree on ETP degree and expert placement mode")
+                raise ValueError("DeepSeek-V4.1 ranks must agree on ETP degree, expert placement and decode math")
             del local, agreed
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
@@ -391,15 +393,18 @@ class DS41Engine:
         # 606 MiB for 18 buckets on one capture stream).
         from .graphs import shape_keys
         graph_keys = shape_keys(slots, self.context) if capture else ()
+        compact_128k = (etp == W.ETP and h64_text and tuple(graph_keys) == H64_128K_GRAPH_KEYS
+                        and self.context == 131_072 and slots == MAX_STREAMS
+                        and keep_slots == default_keep_slots(slots) and max_tokens == MAX_TOKENS
+                        and yarn_factor is None and self.yarn_factor == 16.0 and layers is None
+                        and self.w.compact_expert_down and prefix_host_bytes == 16 << 30 and slab.per_rank == 2 << 30)
+        if w576_fp32 and not (serve and compact_128k):
+            raise ValueError("experimental W576 FP32 requires the native compact 128K H64 text serving profile")
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(graph_keys) if capture else 0
         prompt_reserve = RESERVE
         if etp == W.ETP and h64_text:
             prompt_reserve = H64_TEXT_RESERVE
-            if (tuple(graph_keys) == H64_128K_GRAPH_KEYS and self.context == 131_072
-                    and slots == MAX_STREAMS and keep_slots == default_keep_slots(slots)
-                    and max_tokens == MAX_TOKENS and yarn_factor is None and self.yarn_factor == 16.0
-                    and layers is None and self.w.compact_expert_down
-                    and prefix_host_bytes == 16 << 30 and slab.per_rank == 2 << 30):
+            if compact_128k:
                 graph_bytes = H64_128K_GRAPH_BYTES
         pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
         target_started = time.perf_counter()
@@ -660,11 +665,17 @@ class DS41Engine:
                 raise RuntimeError(f"slot {slot}: positions up to {start + count} exceed its KV pages")
         observer = self.expert_observer
         expert_sample = (flags >> EXPERT_SAMPLE_SHIFT) & 3 if observer is not None else 0
+        retain_routed = bool(flags & F_W576_FP32)
+        if retain_routed and (not self._experimental_w576_fp32 or flags & (F_SCORE | F_LAST | F_IMAGE)):
+            raise ValueError("experimental W576 FP32 is only for continuation frames")
         if (stop == 0 and not flags & F_IMAGE and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
             compact = bool(flags & F_COMPACT)
             return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL),
-                                   ahead=bool(flags & F_AHEAD), expert_sample=expert_sample)
+                                   ahead=bool(flags & F_AHEAD), expert_sample=expert_sample, retain_routed=retain_routed)
+        # The experiment applies only to graph continuations. Eager and prompt forwards keep stock arithmetic.
+        if retain_routed:
+            raise RuntimeError("experimental W576 FP32 continuation must replay a startup graph")
         if flags & F_AHEAD:
             raise RuntimeError("a run-ahead decode round must replay a startup graph")
         for r, (slot, start, count) in enumerate(entries):
@@ -1119,6 +1130,7 @@ class Decoder(PrefixOwner):
         import torch
         from tensorfold.cuda.geometry import DECODE_GAP_MS
         self.e = engine
+        self.decode_math = F_W576_FP32 if getattr(engine, "_experimental_w576_fp32", False) else 0
         self.GAP_MS = DECODE_GAP_MS
         self.streams: dict = {}
         self.filling: list = []
@@ -1547,7 +1559,7 @@ class Decoder(PrefixOwner):
         started, done = self._events()
         started.record()
         t0 = time.perf_counter()
-        out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0))
+        out = e.step(entries, ids, list(range(len(entries))), F_COMPACT | (F_FULL if need else 0) | self.decode_math)
         compact, rows = out if isinstance(out, tuple) else (None, out)      # an eager forward: full rows only
         if compact is None:
             need = list(range(len(live)))
@@ -1587,7 +1599,8 @@ class Decoder(PrefixOwner):
         started, done = self._events()
         started.record()
         t0 = time.perf_counter()
-        compact, rows = e.step(entries, [0] * len(entries), list(range(len(entries))), F_COMPACT | F_AHEAD)
+        compact, rows = e.step(entries, [0] * len(entries), list(range(len(entries))),
+                               F_COMPACT | F_AHEAD | self.decode_math)
         done.record()
         self.ahead = (live, [entry[1] + 1 for entry in entries], compact, rows, None, t0,
                       (started, done, self._bucket(len(entries))), entries)

@@ -91,19 +91,29 @@ class Workspace:
         ext.init(self.buffer)
 
     def experts(self, x, ids, probabilities, gate, up, down, gate_type, down_type, left, *, out=None,
-                schedule=None, fragment_down=False):
+                schedule=None, fragment_down=False, shared=None, round_routed=None):
         """Routed experts for FP16 x [M >= 1, 5120], int32 top-6 local ids and FP32 probabilities.
 
         With fragment_down, the ETP4 down bank uses compact fragments of the original GGUF rows.
+        The isolated shared epilogue returns the FP32 collective input, with an optional routed FP16 boundary
+        selected by a capture-stable device flag. It owns its output allocation.
         """
         if gate_type not in EXPERT_TYPES or down_type not in EXPERT_TYPES:
             raise ValueError("V4.1 decode experts require IQ2_XXS/IQ2_XS/IQ1_M carriers")
         if fragment_down and self.intermediate != ROWS:
             raise ValueError("down fragments require ETP4")
-        if out is None:
+        if shared is not None:
+            if not fragment_down or out is not None or round_routed is None or shared.shape != x.shape:
+                raise ValueError("shared combine requires down fragments, a separate shared row per input and round flag")
+            out = torch.empty_like(x, dtype=torch.float32, memory_format=torch.contiguous_format)
+        elif round_routed is not None:
+            raise ValueError("round flag requires shared combine")
+        elif out is None:
             out = torch.empty_like(x)
         ext = extension()
-        if fragment_down:
+        if shared is not None:
+            launch = ext.experts_fragments_shared
+        elif fragment_down:
             def launch(*args):
                 ext.experts_fragments(*args, False)
         else:
@@ -117,6 +127,10 @@ class Workspace:
             else:
                 gate_variant = pick("g", gate_type, m, schedule)
                 down_variant = pick("d", down_type, m, schedule)
-            launch(self.buffer, out[at:end], x[at:end], ids[at:end], probabilities[at:end], gate, up, down,
-                   int(gate_type), int(down_type), int(left), gate_variant, down_variant)
+            args = (self.buffer, out[at:end], x[at:end], ids[at:end], probabilities[at:end], gate, up, down,
+                    int(gate_type), int(down_type), int(left), gate_variant, down_variant)
+            if shared is None:
+                launch(*args)
+            else:
+                launch(*args, shared[at:end], round_routed)
         return out
