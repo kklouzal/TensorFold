@@ -155,6 +155,13 @@ class DS41Engine:
             from .expert_placement import agree_placement, placement_identity
 
             checkpoint = placement_identity(shards.placement_files(), raw)
+            identity = list(bytes.fromhex(checkpoint))
+            local = torch.tensor(identity, dtype=torch.int32, device=device)
+            agreed = torch.empty(tp * len(identity), dtype=torch.int32, device=device)
+            self.comm.all_gather(local, agreed)
+            if agreed.tolist() != identity * tp:
+                raise ValueError("DeepSeek-V4.1 ranks loaded different expert-balance checkpoint inputs")
+            del local, agreed
         if expert_placement is not None:
             placement_options["expert_placement"] = agree_placement(
                 Path(expert_placement), store=self.comm.store, rank=rank, checkpoint=checkpoint,
