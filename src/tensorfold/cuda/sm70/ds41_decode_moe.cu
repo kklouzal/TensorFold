@@ -64,6 +64,8 @@
 #include <c10/cuda/CUDAException.h>
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <initializer_list>
+#include <limits>
 #include <vector>
 #include "onecat_ds41_dp4a.cuh"
 #include "ds41_down_fragments.cuh"
@@ -1113,8 +1115,8 @@ void check_down_bank(const torch::Tensor& down, int64_t type, int64_t left, int 
               : "down fragment row width or alignment disagrees with the selected storage");
 }
 
-void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& ids,
-                 const torch::Tensor& probabilities, int experts, int chunk, cudaStream_t stream) {
+int check_prep(const torch::Tensor& x, const torch::Tensor& ids, const torch::Tensor& probabilities,
+               int experts, int chunk) {
   const int m = rows_of(probabilities);
   require(x.is_cuda() && x.scalar_type() == torch::kFloat16 && x.is_contiguous() && x.dim() == 2 &&
               x.size(0) == m && x.size(1) == 5120 && aligned(x, 2),
@@ -1123,9 +1125,47 @@ void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& id
               ids.sizes() == probabilities.sizes() && probabilities.device() == x.device(),
           "ids must be int32 [M, 6] like probabilities");
   require(experts >= 1 && experts <= kMaxExperts && chunk >= 1 && chunk <= 16, "experts/chunk");
+  return m;
+}
+
+void launch_prep(const Views& v, const torch::Tensor& x, const torch::Tensor& ids, const torch::Tensor& probabilities,
+                 int m, int experts, int chunk, cudaStream_t stream) {
   prep_kernel<<<1 + m * 10, 512, 0, stream>>>(v.xq(), v.xd(), reinterpret_cast<const half*>(x.data_ptr()),
                                               ids.data_ptr<int32_t>(), probabilities.data_ptr<float>(),
                                               m * kTopK, experts, chunk, v.units(), v.count(), v.order());
+}
+
+struct OperandSpan { uintptr_t begin, end; };
+
+// The fused binding can receive contiguous dtype views, even of the workspace or another operand.
+// Compare complete address spans rather than only data_ptr equality or storage identity.
+OperandSpan fused_operand_span(const torch::Tensor& value) {
+  require(value.layout() == at::kStrided && value.is_contiguous() && !value.is_neg() && !value.is_conj() &&
+              value.storage_offset() >= 0 && value.numel() > 0,
+          "shared combine requires plain nonempty contiguous operands");
+  const auto element = value.element_size();
+  const uint64_t stored = value.storage().nbytes() / element;
+  const uint64_t offset = value.storage_offset(), elements = value.numel();
+  require(offset <= stored && elements <= stored - offset, "shared combine operand backing storage is too small");
+  const auto begin = reinterpret_cast<uintptr_t>(value.data_ptr());
+  require(elements <= (std::numeric_limits<uintptr_t>::max() - begin) / element,
+          "shared combine operand address extent overflows");
+  return {begin, begin + uintptr_t(elements) * element};
+}
+
+bool disjoint(OperandSpan a, OperandSpan b) {
+  return a.end <= b.begin || b.end <= a.begin;
+}
+
+void check_fused_ownership(const torch::Tensor& ws, const torch::Tensor& out,
+                           std::initializer_list<const torch::Tensor*> inputs) {
+  const auto scratch = fused_operand_span(ws), written = fused_operand_span(out);
+  require(disjoint(scratch, written), "shared combine needs disjoint workspace and output");
+  for (const auto* input : inputs) {
+    const auto borrowed = fused_operand_span(*input);
+    require(disjoint(scratch, borrowed) && disjoint(written, borrowed),
+            "shared combine needs disjoint workspace, output and live inputs");
+  }
 }
 
 void launch_gate_up_any(const Views& v, const torch::Tensor& probabilities, const torch::Tensor& gate,
@@ -1248,29 +1288,29 @@ void experts_impl(const torch::Tensor& ws, const torch::Tensor& out, const torch
   if constexpr (Storage != DownStorage::raw)
     require(supports_fragment_variant(int(down_type), int(down_variant_)),
             "down fragment requires a scheduled ordinary variant");
-  int shared_rows = 0;
+  const c10::cuda::CUDAGuard guard(x.device());
+  const auto stream = at::cuda::getCurrentCUDAStream();
+  const int experts = gate.size(0), chunk = chunk_of(int(gate_up_variant_), int(down_variant_));
+  const int m = check_prep(x, ids, probabilities, experts, chunk);
   if constexpr (WithShared) {
     static_assert(Storage == DownStorage::compact);
-    shared_rows = rows_of(probabilities);
     require(v.layout.intermediate == 576 && out.device() == x.device() && shared->device() == x.device() &&
                 round_routed->device() == x.device() && out.scalar_type() == torch::kFloat32 &&
                 shared->scalar_type() == torch::kFloat16 && round_routed->scalar_type() == torch::kInt64 &&
                 out.is_contiguous() && shared->is_contiguous() && round_routed->is_contiguous() &&
-                out.dim() == 2 && out.size(0) == shared_rows && out.size(1) == 5120 &&
+                out.dim() == 2 && out.size(0) == m && out.size(1) == 5120 &&
                 shared->sizes() == out.sizes() &&
                 round_routed->dim() == 1 && round_routed->size(0) == 1,
             "shared combine requires compact W576, FP32 out and FP16 shared [M, 5120], and int64 round flag [1]");
+    check_fused_ownership(ws, out, {&x, &ids, &probabilities, &gate, &up, &down, shared, round_routed});
   }
-  const c10::cuda::CUDAGuard guard(x.device());
-  const auto stream = at::cuda::getCurrentCUDAStream();
-  launch_prep(v, x, ids, probabilities, int(gate.size(0)), chunk_of(int(gate_up_variant_), int(down_variant_)),
-              stream);
+  launch_prep(v, x, ids, probabilities, m, experts, chunk, stream);
   launch_gate_up_any(v, probabilities, gate, up, int(gate_type), int(gate_up_variant_), stream);
   launch_down_any<Storage>(v, probabilities, down, int(down_type), int(left), int(down_variant_), stream);
   if constexpr (WithShared) {
-    combine_shared_kernel<<<dim3(5120 / 128, shared_rows), 128, 0, stream>>>(
+    combine_shared_kernel<<<dim3(5120 / 128, m), 128, 0, stream>>>(
       out.data_ptr<float>(), v.partial(), probabilities.data_ptr<float>(),
-      reinterpret_cast<const half*>(shared->data_ptr()), round_routed->data_ptr<int64_t>(), shared_rows);
+      reinterpret_cast<const half*>(shared->data_ptr()), round_routed->data_ptr<int64_t>(), m);
   } else {
     launch_combine(v, out, probabilities, stream);
   }
@@ -1319,7 +1359,8 @@ void ds41_decode_moe_prep(torch::Tensor ws, const torch::Tensor& x, const torch:
                           const torch::Tensor& probabilities, int64_t experts, int64_t chunk) {
   const Views v = workspace_of(ws, x);
   const c10::cuda::CUDAGuard guard(x.device());
-  launch_prep(v, x, ids, probabilities, int(experts), int(chunk), at::cuda::getCurrentCUDAStream());
+  const int m = check_prep(x, ids, probabilities, int(experts), int(chunk));
+  launch_prep(v, x, ids, probabilities, m, int(experts), int(chunk), at::cuda::getCurrentCUDAStream());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

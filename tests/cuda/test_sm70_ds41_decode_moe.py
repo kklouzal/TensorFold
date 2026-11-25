@@ -517,6 +517,42 @@ def test_down_fragments_reject_bad_component_inputs(ops):
     x = torch.zeros(1, 5120, device="cuda", dtype=torch.float16)
     ids, p = routing(1, torch.Generator().manual_seed(1300))
     result = torch.empty_like(x)
+    out_bytes = x.numel() * 4
+    shared_bytes = x.numel() * x.element_size()
+    backing = torch.empty(out_bytes + shared_bytes, dtype=torch.uint8, device="cuda")
+    send = backing[:out_bytes].view(torch.float32).view_as(x)
+    shared = backing[out_bytes:].view(torch.float16).view_as(x).zero_()
+    flag = torch.ones(1, dtype=torch.int64, device="cuda")
+    launch = em.extension().experts_fragments_shared
+    variants = em.pick("g", 29, 1), em.pick("d", 29, 1)
+
+    def fused(out, probabilities, shared_rows, round_flag):
+        launch(ws.buffer, out, x, ids, probabilities, gate, up, fragment, 29, 29, left, *variants,
+               shared_rows, round_flag)
+
+    # Each invalid operand retains a legal dtype/shape but overlaps at a different address.
+    bad_workspace_shared = ws.buffer[8:8 + shared_bytes].view(torch.float16).view_as(x)
+    bad_workspace_flag = ws.buffer[16:24].view(torch.int64)
+    bad_workspace_out = ws.buffer[24:24 + out_bytes].view(torch.float32).view_as(x)
+    bad_out_shared = backing[8:8 + shared_bytes].view(torch.float16).view_as(x)
+    bad_out_probs = send.view(-1)[1:7].view_as(p)
+    bad_out_flag = backing[8:16].view(torch.int64)
+    for out, probabilities, shared_rows, round_flag in (
+        (send, p, bad_workspace_shared, flag),
+        (send, p, shared, bad_workspace_flag),
+        (bad_workspace_out, p, shared, flag),
+        (send, p, bad_out_shared, flag),
+        (send, bad_out_probs, shared, flag),
+        (send, p, shared, bad_out_flag),
+    ):
+        with pytest.raises(RuntimeError, match="disjoint workspace"):
+            fused(out, probabilities, shared_rows, round_flag)
+
+    # Adjacent typed views of one allocation are disjoint and remain usable.
+    fused(send, p, shared, flag)
+    fragments(em, ws, result, x, ids, p, (gate, up, fragment), 29, left, False)
+    assert bits_equal(send, result.float() + shared.float())
+
     with pytest.raises(RuntimeError, match="row width or alignment"):
         fragments(em, ws, result, x, ids, p, (gate, up, fragment[..., :-2].contiguous()), 29, left, False)
     with pytest.raises(RuntimeError, match="row width or alignment"):

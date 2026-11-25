@@ -216,6 +216,7 @@ def _decoder(units=8, streams=1):
     from tensorfold.families.deepseek_v4.cuda.schedule import RoundCosts, UnitCosts
     d = object.__new__(Decoder)
     d.e = SimpleNamespace(units=units, graphs=SimpleNamespace(sizes=(1, 2, 4, 8, 16, 24, 32)))
+    d.decode_math = 0                           # Stock Decoder.__init__ mode.
     d.GAP_MS = 175.0
     d.streams = {i: object() for i in range(streams)}
     d.costs = UnitCosts(100, [25.0] * units)           # 100 rows: 25 ms per unit
