@@ -1,5 +1,6 @@
 """Checkpoint-scoped CPU history for expert placement recommendations."""
 import contextlib
+import fcntl
 import json
 from math import fsum, isfinite, ulp
 import os
@@ -51,6 +52,25 @@ def _atomic_replace(path, data):
             os.unlink(temporary)
 
 
+def _claim_history(path):
+    """Keep the same companion inode across writers without editing it."""
+    marker = path.with_name(path.name + ".lock")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(marker, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ValueError(f"invalid expert balance history lock: {marker}")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"expert balance history already has a writer: {path}") from exc
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
 class ExpertBalanceState:
     """Own observed load history and publish restart-only placement proposals.
 
@@ -59,6 +79,9 @@ class ExpertBalanceState:
     save. The caller may retry a failed flush without recording the batch again.
     Recommendations require a caller-selected minimum of fresh observations in
     both phases. The active placement is fixed for the running engine epoch.
+    A persisted recommendation is the last emitted proposal, so it can remain
+    after later observations yield no proposal. The stable companion lock is
+    held until close, after the recorder and any final flush have finished.
     """
 
     def __init__(self, path, *, checkpoint, etp, layers, experts, half_life_routes, current):
@@ -86,19 +109,39 @@ class ExpertBalanceState:
         self._empty_exposures = ((0,) * layers,) * _PHASES
         self._pending_recommendation = None
         self._lock = Lock()
-        saved = self._read()
-        if saved is None:
-            self._loads = (((0.0,) * experts,) * layers,) * _PHASES
-            self._exposures = self._empty_exposures
-            self._saved_exposures = None
-        else:
-            self._loads, self._exposures = saved
-            self._saved_exposures = self._exposures
-        self._initial_exposures = self._exposures
+        self._history_fd = _claim_history(self.path)
+        try:
+            saved = self._read()
+            if saved is None:
+                self._loads = (((0.0,) * experts,) * layers,) * _PHASES
+                self._exposures = self._empty_exposures
+                self._saved_exposures = None
+            else:
+                self._loads, self._exposures = saved
+                self._saved_exposures = self._exposures
+            self._initial_exposures = self._exposures
+        except BaseException as error:
+            try:
+                self.close()
+            except OSError as cleanup:
+                raise error from cleanup
+            raise
 
     @property
     def current(self):
         return self._current
+
+    def _require_open(self):
+        if self._history_fd is None:
+            raise RuntimeError("expert balance history is closed")
+
+    def close(self):
+        """Release the writer after the caller stops recording and flushes."""
+        with self._lock:
+            if self._history_fd is not None:
+                fd, self._history_fd = self._history_fd, None
+                self._pending_recommendation = None
+                os.close(fd)
 
     def _encode(self, loads, exposures):
         return json.dumps({**self._metadata, "loads": loads, "exposures": exposures},
@@ -153,6 +196,7 @@ class ExpertBalanceState:
                         "expert route counts")
         increment = tuple(tuple(sum(row) for row in phase) for phase in counts)
         with self._lock:
+            self._require_open()
             if any(total for phase in increment for total in phase):
                 totals = tuple(tuple(value + added for value, added in zip(phase, more, strict=True))
                                for phase, more in zip(self._exposures, increment, strict=True))
@@ -171,6 +215,7 @@ class ExpertBalanceState:
     def flush(self):
         """Atomically preserve the latest observations without modifying placement."""
         with self._lock:
+            self._require_open()
             if self._saved_exposures != self._exposures:
                 _atomic_replace(self.path, self._encode(self._loads, self._exposures))
                 self._saved_exposures = self._exposures
@@ -180,6 +225,7 @@ class ExpertBalanceState:
         if minimum_routes is not None and not _positive(minimum_routes):
             raise ValueError("minimum_routes must be finite and positive")
         with self._lock:
+            self._require_open()
             self._pending_recommendation = None
             if minimum_routes is None or any(
                 total - first < minimum_routes
@@ -194,6 +240,7 @@ class ExpertBalanceState:
             return None
         data = encode_placement(plan, checkpoint=self._metadata["checkpoint"], etp=self._metadata["etp"])
         with self._lock:
+            self._require_open()
             if loads is not self._loads:
                 return None
             self._pending_recommendation = data
@@ -202,6 +249,7 @@ class ExpertBalanceState:
     def publish_recommendation(self, data):
         """Publish only a proposal issued for the current observation snapshot."""
         with self._lock:
+            self._require_open()
             if type(data) is not bytes or data != self._pending_recommendation:
                 raise ValueError("expert placement recommendation is stale or was not issued by this state")
             _atomic_replace(self.recommendation_path, data)
