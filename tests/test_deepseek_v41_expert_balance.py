@@ -34,6 +34,16 @@ def test_balanced_proposal_is_deterministic_and_improves_both_phases(etp):
     assert all(worst(proposal, phase, groups) < worst(incumbent, phase, groups) for phase in phases)
 
 
+def test_swap_ordering_retains_improvements_below_float_resolution():
+    high = 2**60
+    phase = (high + 2, high + 4, high, high - 2)
+    [proposal] = plan_expert_placement(((phase,),), etp=4)
+    # The first improving swap (0, 2) leaves a higher worst load. Two
+    # optimal swaps follow, so existing slot order still chooses (0, 3).
+    assert proposal == (3, 1, 2, 0)
+    assert worst(proposal, phase, 2) == 2 * high + 2
+
+
 def test_ties_and_incompatible_phase_do_not_move_experts():
     incumbent = ((1, 0, 3, 2),)
     assert plan_expert_placement((((7, 7, 1, 1),), ((4, 4, 0, 8),)), etp=4, current=incumbent) == incumbent

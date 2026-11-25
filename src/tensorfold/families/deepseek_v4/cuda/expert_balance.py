@@ -1,6 +1,6 @@
 """CPU load estimates and balanced, non-replicated expert placement proposals."""
 from itertools import combinations
-from math import exp, expm1, fsum, isfinite, log
+from math import exp, expm1, fsum, isfinite, lcm, log
 
 
 _LN_2 = log(2.0)
@@ -80,6 +80,10 @@ def _balanced_swap(placement, loads, groups):
     mass = tuple(sum(phase) for phase in totals)
     if all(high * groups == total for high, total in zip(worst, mass, strict=True)):
         return placement
+    # Normalize every phase to one denominator. Integer keys retain close
+    # improvements without constructing fractions in the swap loop.
+    denominator = lcm(*(total for total in mass if total))
+    units = tuple(denominator // total if total else 0 for total in mass)
     best = None
     move = None
     for left, right in combinations(range(groups), 2):
@@ -97,7 +101,7 @@ def _balanced_swap(placement, loads, groups):
                 else:
                     if not any(high < limit for high, limit in zip(updated, worst, strict=True)):
                         continue
-                    score = tuple(sorted((high / total for high, total in zip(updated, mass, strict=True) if total),
+                    score = tuple(sorted((high * unit for high, unit in zip(updated, units, strict=True) if unit),
                                          reverse=True))
                     if best is None or score < best:
                         best = score
