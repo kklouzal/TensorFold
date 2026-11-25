@@ -114,16 +114,75 @@ def _balanced_swap(placement, loads, groups):
     return tuple(slots)
 
 
+def _pack(placement, loads, groups):
+    """Pack heaviest experts first with a fixed number of slots per group."""
+    size = len(placement) // groups
+    assigned = [set() for _ in range(groups)]
+    totals = [(0,) * len(loads) for _ in range(groups)]
+    weights = tuple(zip(*loads, strict=True))
+    for expert in sorted(range(len(placement)), key=lambda e: -max(weights[e])):
+        def priority(group):
+            merged = (a + b for a, b in zip(totals[group], weights[expert], strict=True))
+            return tuple(sorted(merged, reverse=True)), group != expert // size, group
+
+        chosen = min((group for group in range(groups) if len(assigned[group]) < size), key=priority)
+        assigned[chosen].add(expert)
+        totals[chosen] = tuple(a + b for a, b in zip(totals[chosen], weights[expert], strict=True))
+    slots = []
+    for group, selected in enumerate(assigned):
+        incumbent = placement[group * size:(group + 1) * size]
+        # Keep the existing physical slots of every expert that stays local.
+        incoming = iter(sorted(selected.difference(incumbent)))
+        slots.extend(expert if expert in selected else next(incoming) for expert in incumbent)
+    return tuple(slots)
+
+
+def _worst_groups(placement, loads, groups):
+    size = len(placement) // groups
+    return tuple(max(sum(phase[expert] for expert in placement[start:start + size])
+                     for start in range(0, len(placement), size)) for phase in loads)
+
+
+def _initial_placement(placement, loads, groups):
+    active = [(phase, sum(phase)) for phase in loads]
+    active = [(phase, total) for phase, total in active if total]
+    denominator = lcm(*(total for _, total in active))
+    normalized = [tuple(weight * (denominator // total) for weight in phase) for phase, total in active]
+    baseline = _worst_groups(placement, normalized, groups)
+    if all(high * groups == denominator for high in baseline):
+        return placement
+
+    best = _balanced_swap(placement, loads, groups)
+    def key(slots, worst):
+        moves = sum(a != b for a, b in zip(placement, slots, strict=True))
+        return tuple(sorted(worst, reverse=True)), moves
+
+    best_key = key(best, _worst_groups(best, normalized, groups))
+    # Try each active phase on its own and a joint packing on the same scale.
+    seeds = [(phase,) for phase in normalized]
+    if len(normalized) > 1:
+        seeds.append(tuple(normalized))
+    for seed in seeds:
+        slots = _pack(placement, seed, groups)
+        worst = _worst_groups(slots, normalized, groups)
+        if worst == baseline or any(new > old for new, old in zip(worst, baseline, strict=True)):
+            continue
+        score = key(slots, worst)
+        if score < best_key:
+            best, best_key = slots, score
+    return best
+
+
 def plan_expert_placement(loads, *, etp, current=None):
     """Return [layer][physical slot] global expert IDs for TP8 ETP1/2/4.
 
-    Each consecutive equal-size group of slots is one EP group. Consider at
-    most one swap per layer, the smallest nonempty balanced migration. Accept
-    only a strict improvement in at least one phase with no increase in any
-    phase's worst group. Minimize the worst normalized phase load first, with
-    ties among improving swaps decided by existing group and slot order. This
-    is a local proposal, so a layer can stay unchanged when a larger move
-    would help. Movement costs and observed persistence are separate decisions.
+    Each consecutive equal-size group of slots is one EP group. Initial
+    placement tries equal-cardinality packing for each phase and a joint
+    packing, with a single swap as a fallback. For an active map, consider
+    only one swap per layer. Every proposal improves at least one phase's
+    worst group without increasing any other phase's worst group. Minimize
+    the worst normalized phase first, then avoid unnecessary movement.
+    Movement costs and observed persistence are separate decisions.
     """
     if type(etp) is not int or etp not in (1, 2, 4):
         raise ValueError("expert placement requires TP8 ETP1, ETP2 or ETP4")
@@ -136,6 +195,7 @@ def plan_expert_placement(loads, *, etp, current=None):
     if experts % groups:
         raise ValueError("expert count must divide evenly across EP groups")
     identity = tuple(range(experts))
+    propose = _initial_placement if current is None else _balanced_swap
     if current is None:
         current = (identity,) * layers
     elif _shape(current) != (layers, experts):
@@ -146,5 +206,5 @@ def plan_expert_placement(loads, *, etp, current=None):
         if any(type(expert) is not int for expert in row) or set(row) != expected:
             raise ValueError("each layer must contain every expert exactly once")
         weights = [_scaled_loads(phase[layer]) for phase in loads]
-        result.append(_balanced_swap(tuple(row), weights, groups))
+        result.append(propose(tuple(row), weights, groups))
     return tuple(result)

@@ -34,6 +34,27 @@ def test_balanced_proposal_is_deterministic_and_improves_both_phases(etp):
     assert all(worst(proposal, phase, groups) < worst(incumbent, phase, groups) for phase in phases)
 
 
+def test_initial_packing_balances_more_than_one_swap_without_reordering_local_slots():
+    incumbent = tuple(range(8))
+    prefill = (10, 10, 10, 10, 0, 0, 0, 0)
+    decode = (8, 8, 8, 8, 1, 1, 1, 1)
+    loads = ((prefill,), (decode,))
+    [packed] = plan_expert_placement(loads, etp=4)
+    [local] = plan_expert_placement(loads, etp=4, current=(incumbent,))
+    assert sorted(packed) == list(incumbent)
+    assert (worst(packed, prefill, 2), worst(packed, decode, 2)) == (20, 18)
+    assert (worst(local, prefill, 2), worst(local, decode, 2)) == (30, 25)
+    assert sum(old != new for old, new in zip(incumbent, packed, strict=True)) == 4
+    assert all(slot == expert for slot, expert in enumerate(packed) if slot // 4 == expert // 4)
+
+
+def test_initial_packing_preserves_a_balanced_phase():
+    # Preserving the decode maximum requires keeping the two 4-route
+    # experts together, so the prefill gain alone cannot admit a move.
+    loads = (((7, 7, 1, 1),), ((4, 4, 0, 8),))
+    assert plan_expert_placement(loads, etp=4) == ((0, 1, 2, 3),)
+
+
 def test_swap_ordering_retains_improvements_below_float_resolution():
     high = 2**60
     phase = (high + 2, high + 4, high, high - 2)
