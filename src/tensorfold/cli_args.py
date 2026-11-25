@@ -353,6 +353,14 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--expert-tensor-parallel-size", type=int, choices=(1, 2, 4, 8), default=None,
                       help="routed-expert tensor parallel degree on TP8 CUDA: Flash Next GGUF (2, 4, 8; PP1), "
                            "DeepSeek-V4.1 GGUF (1, 2 or 4; default 4). Shared experts stay TP8. Gemma 4 TP8 uses 4.")
+    cuda.add_argument("--expert-placement", type=Path, metavar="PLAN",
+                      help="load a checkpoint-bound DeepSeek-V4.1 routed expert placement before CUDA graph capture")
+    cuda.add_argument("--expert-balance-state", type=Path, metavar="FILE",
+                      help="save sampled DeepSeek-V4.1 expert load history and write eligible startup placement proposals")
+    cuda.add_argument("--expert-balance-sample-every", type=int, metavar="N",
+                      help="sample one in N expert-routing forwards on average (default 64 with --expert-balance-state)")
+    cuda.add_argument("--expert-balance-half-life", type=int, metavar="ROUTES",
+                      help="observed routes per phase and layer per load half-life (default 262144)")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
                       help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
     cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",

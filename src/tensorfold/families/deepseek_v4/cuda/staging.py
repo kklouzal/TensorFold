@@ -21,8 +21,9 @@ BUFFERS = 4               # staging buffers = reader threads
 class Staging:
     """One loader's staging ring. A failed copy ends the load and the caller closes the ring."""
 
-    def __init__(self, chunk: int = CHUNK, buffers: int = BUFFERS):
+    def __init__(self, chunk: int = CHUNK, buffers: int = BUFFERS, *, open_fd=None):
         self.chunk = chunk
+        self.open_fd = open_fd
         self.buffers = [torch.empty(chunk, dtype=torch.uint8, pin_memory=True) for _ in range(buffers)]
         self.views = [memoryview(b.numpy()) for b in self.buffers]
         self.events: list[torch.cuda.Event | None] = [None] * buffers
@@ -33,7 +34,8 @@ class Staging:
     def _fd(self, path) -> int:
         fd = self.fds.get(path)
         if fd is None:
-            fd = self.fds[path] = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+            fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC) if self.open_fd is None else self.open_fd(path)
+            self.fds[path] = fd
         return fd
 
     def _read(self, slot, fd, pieces, after, pack):

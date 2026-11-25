@@ -78,8 +78,9 @@ class Shape:
         self.e, self.count, self.index_context = engine, count, index_context
         self.scratch = engine.slots - 1
         self.pad_id = engine.geometry.bos
-        self.host = np.zeros((3, count), dtype=np.int64)
-        self.staged = torch.zeros((3, count), dtype=torch.int64, device=dev)
+        sample_experts = getattr(t, "expert_usage", None) is not None
+        self.host = np.zeros((3 + sample_experts, count), dtype=np.int64)
+        self.staged = torch.zeros(self.host.shape, dtype=torch.int64, device=dev)
         req_slot = torch.full((count + 8,), self.scratch, dtype=torch.int32, device=dev)
         self.req_slot = req_slot
         self.rows = torch.arange(count, dtype=torch.long, device=dev)
@@ -93,6 +94,8 @@ class Shape:
                          num_reqs=count, req_slot=req_slot,
                          block_table=torch.full((count, engine.slot_pages.width), -1, dtype=torch.int32, device=dev),
                          prefill=[], decode_index=None, single_token_slots=True, pack_window_ring=pack_window_ring)
+        if sample_experts:
+            self.step.expert_sample = self.staged[3, 0]
         self.graph = None
         self.out = None
         self.local = None               # this rank's FP32 logits shard [count, vocab / 8] (graph-owned)
@@ -102,7 +105,7 @@ class Shape:
                              for _ in range(2)] if engine.rank == 0 else None
         self.flip = 0
 
-    def stage(self, entries, ids) -> None:
+    def stage(self, entries, ids, expert_sample=0) -> None:
         """entries [(slot, position, 1)] in row order, ids their tokens; the rest of the bucket pads."""
         n = len(entries)
         slots = [entry[0] for entry in entries]
@@ -113,6 +116,8 @@ class Shape:
         h[1, :n] = [entry[1] for entry in entries]
         h[2, :n] = slots
         h[0, n:], h[1, n:], h[2, n:] = self.pad_id, 0, self.scratch
+        if self.step.expert_sample is not None:
+            h[3, 0] = expert_sample
         self.staged.copy_(torch.from_numpy(h), non_blocking=True)
 
     def body(self):
@@ -199,7 +204,7 @@ class DecodeGraphs:
         need = max(entry[1] for entry in entries) + 1
         return next(c for c in self.classes[bucket] if c >= need)
 
-    def run(self, entries, ids, compact=False, full=True, ahead=False):
+    def run(self, entries, ids, compact=False, full=True, ahead=False, *, expert_sample=0):
         """Replay the smallest bucket holding ``entries``. ``full``: the real rows' full-vocabulary FP32 logits are
         gathered after the replay (every rank). Rank 0 gets those rows (``compact`` False), or (the compact packet's
         pinned host buffer [world, bucket, 3], copied behind the replay, landed once the caller's later event
@@ -213,10 +218,10 @@ class DecodeGraphs:
             last = self.last
             if last is None or last[1] != n:
                 raise RuntimeError("a run-ahead decode round needs the previous replay of the same rows")
-            shape.stage(entries, [shape.pad_id] * n)
+            shape.stage(entries, [shape.pad_id] * n, expert_sample)
             shape.staged[0, :n].copy_(last[0].next_ids[:n])
         else:
-            shape.stage(entries, ids)
+            shape.stage(entries, ids, expert_sample)
         packet = shape.run()
         self.last = (shape, n)
         rows = self.e.coll.gather(shape.local[:n]) if full else None

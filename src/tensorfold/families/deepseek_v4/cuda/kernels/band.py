@@ -3,8 +3,8 @@
 each, and the FP32 gate projection for 7..64 rows.
 
 ``route_local``: the vendored router epilogue (``router._route``, arithmetic copied verbatim: sqrt(softplus) scores,
-biased top-k, renormalized) plus ``Target.moe``'s EP2 mapping in the same program: global expert id -> this rank's
-local id (``id - first``), rows routed elsewhere -> local id 0 with weight 0.0. It replaces route_topk and nine
+biased top-k, renormalized) plus ``Target.moe``'s expert-group mapping in the same program: global expert id -> this rank's
+local id from a contiguous span or loaded placement, rows routed elsewhere -> local id 0 with weight 0.0. It replaces route_topk and nine
 elementwise launches (int64 -> int32, subtract, two compares, and, two selects, contiguous, FP32 copy) with the
 same bits: the probabilities are the same FP32 expression, the mapping is integer compare/select.
 
@@ -31,8 +31,9 @@ HC_ROWS = 16
 
 
 @jit
-def _route_local(logits, bias, local, weights, first, count, E: tl.constexpr, K: tl.constexpr,
-                 SCALE: tl.constexpr, BLOCK: tl.constexpr):
+def _route_local(logits, bias, local, weights, first, count, expert_to_local, expert_counts, expert_sample, req_slot,
+                 E: tl.constexpr, K: tl.constexpr, SCALE: tl.constexpr, BLOCK: tl.constexpr,
+                 PHASE_STRIDE: tl.constexpr, SCRATCH_SLOT: tl.constexpr):
     t = tl.program_id(0)
     e = tl.arange(0, BLOCK)
     valid = e < E
@@ -53,23 +54,67 @@ def _route_local(logits, bias, local, weights, first, count, E: tl.constexpr, K:
         key = tl.where(e == index, float("-inf"), key)
     total = tl.sum(tl.where(k < K, values, 0.0), 0)
     out = values / (total + 1e-20) * SCALE
-    # Target.moe's EP mapping (torch ops before): local id, or 0 with weight 0 for another group's expert
-    shifted = chosen - first
-    mine = (shifted >= 0) & (shifted < count)
+    if expert_counts is not None:
+        sample = tl.load(expert_sample)
+        if (sample == 1) | (sample == 2):
+            valid_routes = (k < K) & (chosen >= 0) & (chosen < E)
+            if req_slot is not None:
+                slot = tl.load(req_slot + t)
+                valid_routes &= (slot >= 0) & (slot < SCRATCH_SLOT)
+            counts = expert_counts + (sample - 1) * PHASE_STRIDE
+            tl.atomic_add(counts + chosen, tl.full((8,), 1, tl.int64), mask=valid_routes, sem="relaxed")
+    # The placement is applied only after global routing and tie-breaking.
+    if expert_to_local is None:
+        shifted = chosen - first
+        mine = (shifted >= 0) & (shifted < count)
+    else:
+        shifted = tl.load(expert_to_local + chosen, (k < K) & (chosen >= 0) & (chosen < E), -1)
+        mine = shifted >= 0
     tl.store(local + t * K + k, tl.where(mine, shifted, 0), k < K)
     tl.store(weights + t * K + k, tl.where(mine, out, 0.0), k < K)
 
 
-def route_local(logits, bias, top_k, scale, first, count):
-    """FP32 logits [T, E] -> (int32 local ids [T, K], FP32 weights [T, K]) of this rank's experts [first, +count)."""
+def route_local(logits, bias, top_k, scale, first, count, *, expert_to_local=None, expert_counts=None,
+                expert_sample=None, req_slot=None, scratch_slot=0):
+    """Select global experts, then emit this group's local IDs and FP32 route weights.
+
+    The engine may supply its layer's [phase, expert] counts view and a device sample scalar.
+    Captured rows use request slots to exclude padding; all eager token rows are live.
+    """
     tokens, experts = logits.shape
     if logits.dtype != torch.float32 or bias.dtype != torch.float32 or top_k > 8 or not logits.is_contiguous():
         raise ValueError("V4.1 fused routing requires contiguous FP32 logits/bias, top_k<=8")
     local = torch.empty(tokens, top_k, dtype=torch.int32, device=logits.device)
     weights = torch.empty(tokens, top_k, dtype=torch.float32, device=logits.device)
     if tokens:
-        _route_local[(tokens,)](logits, bias, local, weights, first, count, E=experts, K=top_k, SCALE=scale,
-                                BLOCK=triton.next_power_of_2(experts), num_warps=4)
+        _route_local[(tokens,)](
+            logits, bias, local, weights, first, count, expert_to_local, expert_counts, expert_sample, req_slot,
+            E=experts, K=top_k, SCALE=scale, BLOCK=triton.next_power_of_2(experts),
+            PHASE_STRIDE=0 if expert_counts is None else expert_counts.stride(0), SCRATCH_SLOT=scratch_slot,
+            num_warps=4,
+        )
+    return local, weights
+
+
+@jit
+def _place_routes(ids, probabilities, expert_to_local, local, weights, size, experts, BLOCK: tl.constexpr):
+    at = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    valid = at < size
+    ids = tl.load(ids + at, valid, -1)
+    owner = tl.load(expert_to_local + ids, valid & (ids >= 0) & (ids < experts), -1)
+    value = tl.load(probabilities + at, valid, 0.0)
+    tl.store(local + at, tl.where(owner >= 0, owner, 0), valid)
+    tl.store(weights + at, tl.where(owner >= 0, value, 0.0), valid)
+
+
+def place_routes(ids, probabilities, expert_to_local):
+    """Translate contiguous, authoritative global routes after sequence/vision routing."""
+    local = torch.empty_like(ids, dtype=torch.int32)
+    weights = torch.empty_like(probabilities, dtype=torch.float32)
+    size = ids.numel()
+    if size:
+        _place_routes[(triton.cdiv(size, 256),)](
+            ids, probabilities, expert_to_local, local, weights, size, expert_to_local.numel(), BLOCK=256, num_warps=4)
     return local, weights
 
 

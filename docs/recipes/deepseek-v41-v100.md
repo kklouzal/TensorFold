@@ -63,6 +63,31 @@ ETP1 and ETP2 use a 3 GiB prompt reserve.
 The KV allocator budgets for decode graphs and uses the available memory on the tightest GPU
 to size the shared pool. `/v1/stats` reports the effective codec, YaRN factor, and KV budget.
 
+## Routed expert placement
+
+`--expert-placement PLAN` loads a version 1 JSON placement at startup on TP8
+with ETP1, ETP2, or ETP4. Each layer lists all 384 logical expert IDs exactly
+once in physical slot order. Each consecutive group of 48, 96, or 192 IDs
+belongs to one expert-parallel group for ETP1, ETP2, or ETP4, respectively.
+The ranks in a group keep their original tensor-parallel cuts of those experts.
+
+The plan carries `version`, `checkpoint`, `etp`, and `placement` fields.
+`checkpoint` binds the local GGUF files and model configuration. Rank 0 reads
+the plan once and every rank verifies the same plan before loading weights or
+capturing graphs. Configured placement starts with a fresh worker process and
+fresh KV state. Native qualification is pending for this development option.
+
+`--expert-balance-state FILE` samples executed routed experts in prefill and
+decode separately. The history decays with the number of observed routes. The
+development defaults sample one in 64 forwards on average and use 262,144
+observed routes per phase and layer as the half-life. Use the corresponding
+`--expert-balance-sample-every` and `--expert-balance-half-life` options for
+controlled qualification. Startup warm-up and graph padding are excluded.
+When both phases have enough fresh observations, an eligible proposal is
+written to `FILE.placement.json`. The active placement remains fixed for that
+process. A separately qualified proposal can be selected at the next startup
+with `--expert-placement`.
+
 ## What runs
 
 - Decode: startup CUDA graphs for batches 1-16, 24 and 32. Capture happens at startup, never lazily. Each batch has

@@ -39,6 +39,7 @@ F_SCORE, F_LAST = 1 << 20, 1 << 21  # OP_STEP d flags (low bits: the stop layer)
 F_COMPACT, F_FULL = 1 << 22, 1 << 23
 F_IMAGE = 1 << 24          # a prompt chunk with image rows: their features are every rank's staged tower rows
 F_AHEAD = 1 << 25          # run-ahead round: token ids from the previous replay's device greedy tokens (graphs.py)
+EXPERT_SAMPLE_SHIFT = 26   # OP_STEP: 0 off, 1 prefill, 2 decode, visible only to the rank-zero observer
 # The TP8 vision tower's operations (``OP_TOWER``, kind in a; every rank runs its shard, ``DS41Engine._tower``)
 OP_TOWER = 32
 T_BEGIN, T_RUN, T_SPAN, T_STAGE, T_FREE = range(5)
@@ -64,7 +65,10 @@ class DS41Engine:
                  serve: bool = False, queue_timeout_s: float | None = None, graphs: bool = True,
                  keep_slots: int | None = None, prefix_host_bytes: int | None = None, vision: bool = False,
                  vision_urls: bool = False, vision_offload: bool = False, yarn_factor: float | None = None,
-                 kv_dtype: str = "bf16", expert_tensor_parallel_size: int | None = None, **_options) -> None:
+                 kv_dtype: str = "bf16", expert_tensor_parallel_size: int | None = None,
+                 expert_placement: Path | None = None, expert_balance_state: Path | None = None,
+                 expert_balance_sample_every: int = 64, expert_balance_half_life: int = 262_144,
+                 **_options) -> None:
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.comm import open_comm
@@ -79,6 +83,10 @@ class DS41Engine:
         if tp != W.WORLD or not 0 <= rank < tp:
             raise ValueError("DeepSeek-V4.1 SM70 serving requires --tp 8")
         etp = W.checked_etp(expert_tensor_parallel_size)
+        if expert_balance_state is not None:
+            if (not serve or type(expert_balance_sample_every) is not int or not 1 <= expert_balance_sample_every <= 1 << 20
+                    or type(expert_balance_half_life) is not int or not 1 <= expert_balance_half_life <= 1 << 52):
+                raise ValueError("DeepSeek expert balancing requires serving and positive bounded sampling settings")
         self.expert_tensor_parallel_size = etp
         model_dir = Path(model_dir)
         if parallel is not None:
@@ -118,12 +126,13 @@ class DS41Engine:
         prebuild.wait(small_gather.__name__)
         with clock.phase("comm"):
             self.comm = open_comm(rank, tp, master or "127.0.0.1", master_port)
-            degree = torch.tensor([etp], dtype=torch.int64, device=device)
-            degrees = torch.empty(tp, dtype=torch.int64, device=device)
-            self.comm.all_gather(degree, degrees)
-            if degrees.tolist() != [etp] * tp:
-                raise ValueError("DeepSeek-V4.1 ranks must use the same expert tensor parallel size")
-            del degree, degrees
+            settings = [etp, int(expert_placement is not None), int(expert_balance_state is not None)]
+            local = torch.tensor(settings, dtype=torch.int64, device=device)
+            agreed = torch.empty(tp * len(settings), dtype=torch.int64, device=device)
+            self.comm.all_gather(local, agreed)
+            if agreed.tolist() != settings * tp:
+                raise ValueError("DeepSeek-V4.1 ranks must agree on ETP degree and expert placement mode")
+            del local, agreed
         self.coll = Collectives(self.comm)
         # Prompt-prefix reuse (prefix.py): ``keep_slots`` more slots keep idle conversations' chains.
         from .prefix import HostSlab, default_keep_slots
@@ -138,11 +147,51 @@ class DS41Engine:
             raise ValueError("the DeepSeek-V4.1 model directory's config.json must name gguf_file (the backbone's "
                              "first shard) and engram_file (the llama.cpp Engram GGUF)")
         resolve = lambda p: Path(p) if Path(p).is_absolute() else model_dir / p
-        shards = W.Shards(resolve(entry), resolve(engram_file))
+        bind_files = expert_placement is not None or expert_balance_state is not None
+        shards = W.Shards(resolve(entry), resolve(engram_file), bind_files=True) if bind_files else W.Shards(
+            resolve(entry), resolve(engram_file))
+        placement_options = {}
+        if bind_files:
+            from .expert_placement import agree_placement, placement_identity
+
+            checkpoint = placement_identity(shards.placement_files(), raw)
+        if expert_placement is not None:
+            placement_options["expert_placement"] = agree_placement(
+                Path(expert_placement), store=self.comm.store, rank=rank, checkpoint=checkpoint,
+                layers=g.layers, experts=g.experts, etp=etp,
+            )
         # Development smoke (TENSORFOLD_DS41_SMOKE_LAYERS=N): only the first N decoder layers load, so plumbing and
         # integration changes run in seconds; outputs are not the model's. Below the first Engram layer the table is
         # never read, so it is not mapped either. Numerics gates and benchmarks never set it.
         smoke = int(os.environ.get("TENSORFOLD_DS41_SMOKE_LAYERS") or 0)
+        if smoke > 0 and expert_balance_state is not None:
+            raise ValueError("DeepSeek expert balancing requires all model layers")
+        self.expert_observer = None
+        if expert_balance_state is not None:
+            key = "deepseek-v41/expert-history-startup-v1"
+            if rank == 0:
+                from .expert_balance_state import ExpertBalanceState
+                from .expert_observer import ExpertObserver
+
+                history = None
+                try:
+                    history = ExpertBalanceState(Path(expert_balance_state), checkpoint=checkpoint, etp=etp,
+                                                 layers=g.layers, experts=g.experts, half_life_routes=expert_balance_half_life,
+                                                 current=placement_options.get("expert_placement"))
+                    self.expert_observer = ExpertObserver(device, history, sample_every=expert_balance_sample_every,
+                                                          minimum_routes=expert_balance_half_life)
+                except (OSError, ValueError, RuntimeError) as exc:
+                    from tensorfold.cleanup import finish, rollback
+
+                    error = str(exc).encode(errors="replace")[:1024]
+                    operations = [lambda: self.comm.store.set(key, b"!" + error)]
+                    if history is not None:
+                        operations.append(history.close)
+                    rollback(self, exc, lambda: finish(operations))
+                self.comm.store.set(key, b"ok")
+            elif (status := self.comm.store.get(key)) != b"ok":
+                error = status[1:].decode(errors="replace")
+                raise RuntimeError(f"DeepSeek expert history initialization failed on rank zero: {error}")
         layers = range(min(smoke, g.layers)) if smoke > 0 else None
         self.engram = None
         mapping = None
@@ -157,7 +206,8 @@ class DS41Engine:
 
             def map_engram():
                 with clock.phase("engram") as note:
-                    e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store)
+                    options = {"open_fd": shards.duplicate_file} if bind_files else {}
+                    e = HostEngram(shards.engram.path, shards.engram.offset, rows, rank, self.comm.store, **options)
                     note[0] = f"fill {e.fill_seconds:.1f} wait {e.wait_seconds:.1f} register {e.register_seconds:.1f}"
                 return e
             mapping = ThreadPoolExecutor(1, thread_name_prefix="ds41-engram")
@@ -170,11 +220,13 @@ class DS41Engine:
         prebuild.wait()
         with clock.phase("weights"):
             self.w = W.load(shards, g, rank, device, layers=layers, expert_tensor_parallel_size=etp,
-                            compact_expert_down=h64_text and layers is None)
+                            compact_expert_down=h64_text and layers is None, **placement_options)
             torch.cuda.synchronize()
         if mapping is not None:
             self.engram = engram.result()
             print(f"[tensorfold] rank {rank}: Engram table mapped and registered in {self.engram.seconds:.0f} s", flush=True)
+        if bind_files:
+            shards.verify_placement_files()
         shards.close()
         # Image input (--vision): the vision router bias and a TP8 part of the mmproj tower on every rank (each rank
         # reads only its part). Every rank encodes in step (``_tower``), so each ends with the same span and a prompt
@@ -260,6 +312,8 @@ class DS41Engine:
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice,
                              bias_vl=self.bias_vl, rope=rope, layout=layout)
+        if self.expert_observer is not None:
+            self.target.expert_usage = self.expert_observer.usage
         clock.add("target", target_started, time.perf_counter() - target_started)
         self.image_features = None          # every rank: the next F_IMAGE step's image rows [n, 5120] FP16
         self.layer_count = len(self.w.layers)
@@ -311,6 +365,8 @@ class DS41Engine:
         self.page_bytes = page_bytes
         self.decoder = self.scheduler = None
         self._closed = False
+        if self.expert_observer is not None:
+            self.expert_observer.active = True
         if rank == 0:
             print(f"[tensorfold] DeepSeek-V4.1 SM70: routed experts ETP{etp} x EP{tp // etp}", flush=True)
             if self.graphs is not None:
@@ -490,11 +546,13 @@ class DS41Engine:
         for slot, start, count in entries:
             if start + count > len(pool.owned.get(slot, ())) * 64:
                 raise RuntimeError(f"slot {slot}: positions up to {start + count} exceed its KV pages")
+        observer = self.expert_observer
+        expert_sample = (flags >> EXPERT_SAMPLE_SHIFT) & 3 if observer is not None else 0
         if (stop == 0 and not flags & F_IMAGE and self.graphs is not None and len(entries) <= self.graphs.sizes[-1]
                 and all(count == 1 for _, _, count in entries) and list(logits_rows) == list(range(len(entries)))):
             compact = bool(flags & F_COMPACT)
             return self.graphs.run(entries, ids, compact, full=not compact or bool(flags & F_FULL),
-                                   ahead=bool(flags & F_AHEAD))
+                                   ahead=bool(flags & F_AHEAD), expert_sample=expert_sample)
         if flags & F_AHEAD:
             raise RuntimeError("a run-ahead decode round must replay a startup graph")
         for r, (slot, start, count) in enumerate(entries):
@@ -533,6 +591,9 @@ class DS41Engine:
                     qsl=t(qsl, torch.int32), qsl_cpu=qsl, num_reqs=len(entries), req_slot=t(req_slot, torch.int32),
                     block_table=t(table, torch.int32), prefill=prefill, decode_index=decode_index,
                     image=image, image_rows=image_rows, features=features)
+        if expert_sample:
+            step.expert_sample = observer.eager_flags[expert_sample]
+            step.expert_prefill_phase = expert_sample - 1
         del rows
         state = self.target.begin(step)
         if flags & F_SCORE:                # logits_rows carries each row's next token: score all rows
@@ -666,6 +727,11 @@ class DS41Engine:
     # ---------------------------------------------------------------------------------------- leader
     def step(self, entries, ids, logits_rows, stop=0):
         payload = [v for e in entries for v in e] + list(ids) + list(logits_rows)
+        observer = self.expert_observer
+        if observer is not None:
+            # Polling history can fail. Prepare the sample before notifying peers to enter the TP8 forward.
+            phase = int(bool(stop & F_COMPACT))
+            stop |= observer.sample(phase, may_copy=self.part is None) << EXPERT_SAMPLE_SHIFT
         return self.announce(OP_STEP, len(entries), len(ids), len(logits_rows), stop, payload)
 
     # the vision tower (every rank runs its TP part; ``_tower``); handles are rank 0's
@@ -805,22 +871,52 @@ class DS41Engine:
         if self._closed:
             return
         self._closed = True
-        if self.rank == 0:
-            def stop():
-                self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
 
-            if self.scheduler is None:
-                stop()
-            else:
-                finish((self.scheduler.close, stop))
+        def retire_device():
+            # A run-ahead graph can still be queued after the scheduler stops. Fence readers before releasing
+            # graphs, pinned history snapshots, or the Engram map. A failed fence retains their owners.
+            torch.cuda.synchronize()
+            self.graphs = None
+            operations = []
+            if self.expert_observer is not None:
+                operations.append(self.expert_observer.finish)
+            if self.engram is not None:
+                operations.append(self.engram.close)
+            finish(operations)
+
+        if self.rank != 0:
+            retire_device()
+            return
+
+        scheduler = self.scheduler
+        joined = scheduler is None
+        stopped = False
+
+        def join():
+            nonlocal joined
+            scheduler.close()
+            joined = True
+
+        def stop():
+            nonlocal stopped
+            self.pipes.send(_HEAD.pack(OP_STOP, 0, 0, 0, 0))
+            stopped = True
+
+        def retire_if_quiescent():
+            # Scheduler.close can report an earlier request failure after verified worker retirement.
+            if not joined and self.expert_observer is not None:
+                if scheduler._worker_done.is_set() and scheduler._cleanup_failure is None:
+                    with scheduler._worker_lease:
+                        pass
+                else:
+                    return
+            elif not joined:
+                return
+            if stopped:
                 self.scheduler = None
-        # The last request can stop after a successor graph was already queued. Host worker exit and OP_STOP
-        # only establish that no more work will be issued. Each rank fences its outstanding users of Engram
-        # before destroying their graphs and unregistering the table. A failed fence leaves the mapping owned.
-        torch.cuda.synchronize()
-        self.graphs = None
-        if self.engram is not None:
-            self.engram.close()
+                retire_device()
+
+        finish((lambda: finish((join, stop) if scheduler is not None else (stop,)), retire_if_quiescent))
 
 
 class Decoder(PrefixOwner):

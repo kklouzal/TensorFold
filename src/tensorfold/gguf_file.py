@@ -180,9 +180,9 @@ class PackedTensor:
         return reader.read(self.path, offset, length, device).reshape(count, self.row_bytes)
 
 
-def _shard(path, consumed=None):
+def _shard(path, consumed=None, *, opener=None):
     """(metadata, tensors) of one shard; ``consumed`` receives (file size, parsed header bytes)."""
-    with _open_shard(path) as stream:
+    with (opener or _open_shard)(path) as stream:
         header = _Header(stream)
         if header.read(4) != b"GGUF" or header.number("I") != 3:
             raise ValueError("GGUF inventory requires little-endian GGUF version 3")
@@ -256,7 +256,7 @@ class GGUFCheckpoint:
     paths: tuple[Path, ...]
 
     @classmethod
-    def open(cls, entrypoint):
+    def open(cls, entrypoint, *, opener=None):
         path = Path(entrypoint).resolve(strict=True)
         match = _SPLIT.fullmatch(path.name)
         if match:
@@ -267,6 +267,10 @@ class GGUFCheckpoint:
             paths = tuple(path.with_name(f"{stem}-{i:05d}-of-{count:05d}.gguf") for i in range(1, count + 1))
         else:
             paths = (path,)
+        if opener is not None:
+            # A descriptor-bound load parses the exact incarnation it will
+            # consume, independent of the path-based inventory cache.
+            return cls._parse(paths, None, opener=opener)
         with _OPENED_LOCK:
             cached = _OPENED.get(paths)
         if cached is not None and _unchanged(paths, cached[0]):
@@ -281,10 +285,11 @@ class GGUFCheckpoint:
         return result
 
     @classmethod
-    def _parse(cls, paths, consumed):
+    def _parse(cls, paths, consumed, *, opener=None):
         metadata, tensors = {}, {}
         for index, shard in enumerate(paths):
-            fields, entries = _shard(shard, consumed)
+            fields, entries = (_shard(shard, consumed) if opener is None
+                               else _shard(shard, consumed, opener=opener))
             if len(paths) > 1 and (fields.get("split.no") != index or fields.get("split.count") != len(paths)):
                 raise ValueError("GGUF split metadata does not match the complete ordered shard set")
             for key, value in fields.items():

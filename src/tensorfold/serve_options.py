@@ -133,7 +133,15 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
     serve."""
 
+    placement = getattr(args, "expert_placement", None)
+    balance_state = getattr(args, "expert_balance_state", None)
     etp = getattr(args, "expert_tensor_parallel_size", None)
+    if (placement is not None or balance_state is not None) and (
+            backend != "cuda" or getattr(family, "model_type", "") != "deepseek_v41" or getattr(args, "tp", None) != 8):
+        raise ValueError("expert placement and balance history require DeepSeek-V4.1 GGUF on CUDA with --tp 8")
+    if balance_state is None and any(getattr(args, setting, None) is not None for setting in (
+            "expert_balance_sample_every", "expert_balance_half_life")):
+        raise ValueError("expert balance sampling settings require --expert-balance-state")
     if etp is not None:
         model_type = getattr(family, "model_type", "")
         if model_type == "deepseek_v41":

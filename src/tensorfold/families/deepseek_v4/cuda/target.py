@@ -89,6 +89,8 @@ class Step:
     features: torch.Tensor | None = None       # [V, 5120] FP16
     single_token_slots: bool = False           # decode graph: one row per live slot, scratch rows never commit
     pack_window_ring: bool = False             # ordinary graph opts in; transactional forwards commit after attention
+    expert_sample: torch.Tensor | None = None  # device scalar: 0 off, 1 prefill, 2 decode
+    expert_prefill_phase: int | None = None   # eager sampled phase for sequence/vision routing (0 prefill, 1 decode)
 
 
 def window_ring_bytes(rotorquant: bool) -> int:
@@ -178,6 +180,7 @@ class Target:
         # canonical-bank workspace is the caller's (allocated before the KV pool is sized).
         self.lattice = lattice
         self.bias_vl = bias_vl             # [layers, experts] FP32: image rows' router bias (--vision), else None
+        self.expert_usage = None          # rank 0's optional global-route counts, set before graph capture
         # Engram lookup telemetry for the deferred hot-row VRAM cache candidate (off unless the variable names a
         # file; rank 0 only, since every rank looks up the same rows): appends each forward's valid hashed row ids
         # (int64 [tokens, 2 tables, 24 heads], table-local) for offline hit-rate / churn analysis.
@@ -382,7 +385,7 @@ class Target:
                          key_buffers=key_buffers, reuse_compressed=reuse_compressed)
 
     # ---- MoE
-    def moe(self, ly, x, image=None, shard=None, x_rows=None):
+    def moe(self, ly, x, image=None, shard=None, x_rows=None, *, step=None):
         """Experts for ``x`` [T, H]; ``image``: bool [T] rows that route with the vision bias; with ``shard``,
         routing runs on this rank's rows ``x_rows`` (gathered after) and the result is this rank's FP16 shard rows."""
         from tensorfold.cuda.sm70 import ds41_lattice_moe as lattice_moe
@@ -392,10 +395,22 @@ class Target:
         g = self.g
         logits = fp32_projection(x if shard is None else x_rows, ly.gate)
         mask = image if image is None or shard is None else shard.take(image)
+        expert_to_local = getattr(ly, "expert_to_local", None)
         if mask is None and shard is None:
-            # The router epilogue also maps global IDs to this group's local experts.
-            local, weights = route_local(logits, ly.gate_bias, g.top_k, g.routed_scale, self.local.start,
-                                         len(self.local))
+            # The router epilogue maps global IDs to this group's local experts.
+            if step is not None and step.expert_sample is not None:
+                local, weights = route_local(
+                    logits, ly.gate_bias, g.top_k, g.routed_scale, self.local.start, len(self.local),
+                    expert_to_local=expert_to_local, expert_counts=self.expert_usage.counts[:, ly.index],
+                    expert_sample=step.expert_sample, req_slot=step.req_slot if step.single_token_slots else None,
+                    scratch_slot=self.slots - 1,
+                )
+            elif expert_to_local is None:
+                local, weights = route_local(logits, ly.gate_bias, g.top_k, g.routed_scale, self.local.start,
+                                             len(self.local))
+            else:
+                local, weights = route_local(logits, ly.gate_bias, g.top_k, g.routed_scale, self.local.start,
+                                             len(self.local), expert_to_local=expert_to_local)
         else:
             if mask is None:
                 from .kernels.router import route_topk
@@ -411,12 +426,19 @@ class Target:
                 # Share global routes before applying the receiving rank's own expert mapping.
                 ids = self.c.gather_rows(ids, shard)
                 probabilities = self.c.gather_rows(probabilities, shard)
-            first = self.local.start
-            local = ids - first
-            mine = (local >= 0) & (local < len(self.local))
-            local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
-            weights = torch.where(mine, probabilities.float(),
-                                  torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
+            if step is not None and step.expert_prefill_phase is not None:
+                self.expert_usage.count_routes(ids, layer=ly.index, phase=step.expert_prefill_phase)
+            if expert_to_local is None:
+                first = self.local.start
+                local = ids - first
+                mine = (local >= 0) & (local < len(self.local))
+                local = torch.where(mine, local, torch.zeros_like(local)).contiguous()
+                weights = torch.where(mine, probabilities.float(),
+                                      torch.zeros_like(probabilities, dtype=torch.float32)).contiguous()
+            else:
+                from .kernels.band import place_routes
+
+                local, weights = place_routes(ids, probabilities, expert_to_local)
         if x.shape[0] >= lattice_moe.MIN_TOKENS:   # grouped lattice GEMMs (no host sync)
             out = lattice_moe.experts(x.contiguous(), local, weights, ly.exp_gate, ly.exp_up, ly.exp_down,
                                       ly.gate_up_type, ly.down_type, ly.down_left, self.lattice,
@@ -517,6 +539,7 @@ class Target:
         w = self.w
         layers = w.layers
         step, hashes, shared, shard = st["step"], st["hashes"], st["shared"], st["shard"]
+        usage_step = step if getattr(self, "expert_usage", None) is not None else None
         # with a shard, HC state (hidden, pre, mixes) holds this rank's rows; sublayer inputs are gathered whole
         full = (lambda rows: rows) if shard is None else (lambda rows: self.c.gather_rows(rows, shard))
         hidden, pre, state, half = st["hidden"], st["pre"], st["mix"], st["half"]
@@ -545,7 +568,10 @@ class Target:
             else:
                 inputs, ffn_mix, rows = half
                 half = None
-                y = self.moe(ly, inputs, st["image"], shard, rows)
+                if usage_step is None:
+                    y = self.moe(ly, inputs, st["image"], shard, rows)
+                else:
+                    y = self.moe(ly, inputs, st["image"], shard, rows, step=usage_step)
                 pre = ffn_mix[0]
                 following = layers[i + 1] if i + 1 < len(layers) else None
                 if following is not None and following.engram_wkv is None:
