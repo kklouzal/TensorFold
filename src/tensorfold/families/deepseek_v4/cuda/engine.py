@@ -46,6 +46,7 @@ SCORE_TOP = 20
 MAX_TOKENS = 8192          # tokens per forward (the friend's --max-num-batched-tokens); also the prompt chunk
 MAX_STREAMS = 32
 RESERVE = 3 << 30          # bytes left free per rank for prompt transients, after the KV pool
+H64_TEXT_RESERVE = 5 << 29
 GRAPH_EACH_BYTES = 40 << 20 # decode graph memory per captured bucket (sizing bound; measured ~30 MiB)
 GRAPH_BYTES = 128 << 20     # + the graphs' shared torch pool (measured ~40 MiB)
 TRACE = bool(os.environ.get("TENSORFOLD_DS41_SCHED_TRACE"))   # diagnostic: the Decoder's group plans and costs
@@ -237,7 +238,8 @@ class DS41Engine:
         from .graphs import shape_keys
         capture = graphs and not os.environ.get("TENSORFOLD_DS41_ENGRAM_TRACE")
         graph_bytes = GRAPH_BYTES + GRAPH_EACH_BYTES * len(shape_keys(slots, self.context)) if capture else 0
-        pages = max(1, (int(every.min()) - RESERVE - graph_bytes - ring_bytes) // page_bytes)
+        prompt_reserve = H64_TEXT_RESERVE if rotorquant and not vision else RESERVE
+        pages = max(1, (int(every.min()) - prompt_reserve - graph_bytes - ring_bytes) // page_bytes)
         target_started = time.perf_counter()
         self.target = Target(self.w, self.coll, slots=self.slots, pages=pages, max_tokens=max_tokens,
                              context=self.context, engram=self.engram, device=device, lattice=lattice,
@@ -276,10 +278,10 @@ class DS41Engine:
                 self.graphs = DecodeGraphs(self, slots)
                 note[0] = f"{len(self.graphs.keys)}, warm-up runs {self.graphs.warm_seconds:.1f}"
             spare = torch.cuda.mem_get_info()[0] + torch.cuda.memory_reserved() - torch.cuda.memory_allocated()
-            if self.graphs.bytes > graph_bytes or spare < RESERVE:
+            if self.graphs.bytes > graph_bytes or spare < prompt_reserve:
                 raise RuntimeError(f"DeepSeek-V4.1 SM70 rank {rank}: decode graphs took {self.graphs.bytes >> 20} MiB "
                                    f"(sized {graph_bytes >> 20} MiB); {spare >> 20} MiB left for prompt transients, "
-                                   f"{RESERVE >> 20} MiB required")
+                                   f"{prompt_reserve >> 20} MiB required")
         elif rank == 0:
             print("[tensorfold] DeepSeek-V4.1 SM70: eager decode (" +
                   ("graphs disabled)" if not graphs else "TENSORFOLD_DS41_ENGRAM_TRACE set)"), flush=True)

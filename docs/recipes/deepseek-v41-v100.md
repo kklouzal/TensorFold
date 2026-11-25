@@ -47,9 +47,10 @@ registered Engram table.
 | `--no-graphs` | Eager decode, for A/B checks only. |
 | `--vision` | Image input (needs `mmproj_file` and `vision_bias_file` in `config.json`; see "Image input"). |
 
-The RotorQuant Q4 profile uses `--kv-dtype rotorquant-iso64-norm4-h64 --yarn-factor 2 --context 65536`.
-`/v1/stats` reports the effective `model.kv_dtype` and `model.yarn_factor`. Full-model quality and throughput
-for this profile are pending.
+The 128K text profile uses `--kv-dtype rotorquant-iso64-norm4-h64 --context 131072` with the
+checkpoint's native YaRN factor. This text mode reserves 2.5 GiB on each GPU for prompt work.
+The KV allocator budgets for decode graphs and uses the available memory on the tightest GPU
+to size the shared pool. `/v1/stats` reports the effective codec, YaRN factor, and KV budget.
 
 ## What runs
 
